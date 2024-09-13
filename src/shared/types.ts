@@ -1,0 +1,241 @@
+export type RuleKind = 'host' | 'regex';
+
+export interface Rule {
+  kind: RuleKind;
+  /** hostname for kind host (matches the host and all subdomains), regex source for kind regex (matches the full URL) */
+  pattern: string;
+}
+
+export type CategoryId = 'social' | 'video' | 'news' | 'mail' | 'shopping' | 'gaming' | 'forums';
+
+export interface CategoryList {
+  id: CategoryId;
+  title: string;
+  hosts: string[];
+}
+
+export interface ListsConfig {
+  custom: Rule[];
+  whitelist: Rule[];
+  categories: Record<CategoryId, boolean>;
+  /** per category: host entries the user excluded (the facebook-for-work case) */
+  exclusions: Partial<Record<CategoryId, string[]>>;
+}
+
+export type SessionMode = 'blacklist' | 'whitelist';
+export type Strictness = 'hard' | 'friction';
+export type Phase = 'idle' | 'focus' | 'break' | 'paused';
+
+export interface CycleConfig {
+  focusMin: number;
+  shortBreakMin: number;
+  longBreakMin: number;
+  /** every Nth break is a long one */
+  longEvery: number;
+}
+
+export interface SessionConfig {
+  mode: SessionMode;
+  strictness: Strictness;
+  /** total session length in minutes, fractional allowed (tests use 0.1) */
+  durationMin: number;
+  cycling: CycleConfig | null;
+  intention: string;
+  source: 'manual' | 'schedule';
+  scheduleEntryId: string | null;
+}
+
+/** Persisted machine state. Pure functions in src/core/session.ts own all transitions. */
+export interface SessionState {
+  config: SessionConfig;
+  startedAt: number;
+  sessionEndsAt: number;
+  phase: 'focus' | 'break' | 'paused';
+  phaseStartedAt: number;
+  phaseEndsAt: number;
+  /** 0-based index of the current focus cycle */
+  cycleIndex: number;
+  /** set while paused: what to restore on resume */
+  pausedFrom: { phase: 'focus' | 'break'; phaseEndsAt: number } | null;
+  /** focus ms completed so far, maintained by advance(), excludes breaks and pauses */
+  focusedMs: number;
+}
+
+export type GateKind = 'pause' | 'unlockSite' | 'cancel';
+
+export interface GateState {
+  kind: GateKind;
+  /** registrable domain being unlocked when kind is unlockSite */
+  host: string | null;
+  openedAt: number;
+  readyAt: number;
+  /** exact phrase the user must type, null when typing is not required */
+  requiredPhrase: string | null;
+}
+
+export interface SiteUnlock {
+  host: string;
+  until: number;
+}
+
+/** Read model broadcast to every UI surface. The worker is the only writer. */
+export interface SessionSnapshot {
+  at: number;
+  phase: Phase;
+  config: SessionConfig | null;
+  startedAt: number | null;
+  phaseStartedAt: number | null;
+  phaseEndsAt: number | null;
+  sessionEndsAt: number | null;
+  cycleIndex: number;
+  bankMs: number;
+  /** pause ms earned per elapsed ms at snapshot time, 0 outside focus */
+  bankAccrualPerMs: number;
+  bankCapMs: number;
+  /** current costs of the two spends, so UIs can render affordability countdowns */
+  pauseCostMs: number;
+  unlockCostMs: number;
+  activeUnlocks: SiteUnlock[];
+  gate: GateState | null;
+  attemptsToday: number;
+  scheduleActive: boolean;
+  nextSchedule: { entryId: string; startsAt: number } | null;
+}
+
+export interface PauseEconomy {
+  /** pause ms earned per focus ms, default 5/30 */
+  earnRatio: number;
+  capMs: number;
+  /** length and cost of a full pause */
+  pauseMs: number;
+  /** length and cost of a single-site unlock */
+  unlockMs: number;
+}
+
+export interface GateSettings {
+  delayMs: number;
+  requireTypedPhrase: boolean;
+}
+
+export interface SoundSettings {
+  masterVolume: number;
+  sessionComplete: boolean;
+  breakStart: boolean;
+  breakEnd: boolean;
+  scheduleStart: boolean;
+}
+
+export interface ScheduleEntry {
+  id: string;
+  /** 0 = Sunday through 6 = Saturday, Date.getDay convention */
+  days: number[];
+  /** "HH:MM" local wall clock, start must be earlier than end on the same day */
+  start: string;
+  end: string;
+  mode: SessionMode;
+  strictness: Strictness;
+  cycling: CycleConfig | null;
+  intention: string;
+  enabled: boolean;
+}
+
+export interface Settings {
+  presetsMin: [number, number, number];
+  defaultMode: SessionMode;
+  defaultStrictness: Strictness;
+  defaultCycling: CycleConfig;
+  cyclingOnByDefault: boolean;
+  pause: PauseEconomy;
+  gate: GateSettings;
+  badgeCountdown: boolean;
+  sounds: SoundSettings;
+  schedule: ScheduleEntry[];
+  streakGoalMin: number;
+  retentionDays: number;
+}
+
+export interface BankState {
+  balanceMs: number;
+}
+
+export interface DailyAgg {
+  /** YYYY-MM-DD local */
+  date: string;
+  focusMs: number;
+  sessionsStarted: number;
+  sessionsCompleted: number;
+  /** blocked attempts per registrable domain */
+  attempts: Record<string, number>;
+  attemptsOther: number;
+  pausesTaken: number;
+  pauseMsSpent: number;
+  unlocksTaken: number;
+  /** deliberation gates opened and then abandoned, the win metric */
+  resisted: number;
+}
+
+export interface MonthlyAgg {
+  /** YYYY-MM local */
+  month: string;
+  focusMs: number;
+  sessionsStarted: number;
+  sessionsCompleted: number;
+  attempts: Record<string, number>;
+  attemptsOther: number;
+  pausesTaken: number;
+  pauseMsSpent: number;
+  unlocksTaken: number;
+  resisted: number;
+}
+
+export interface StreakState {
+  current: number;
+  /** banked freeze tokens, max 2, one granted per Monday */
+  freezeTokens: number;
+  lastCountedDate: string | null;
+  lastFreezeGrantDate: string | null;
+  /** day numbers of activeMonth that met the goal */
+  activeDays: number[];
+  activeMonth: string;
+}
+
+export type EventRecord =
+  | {
+      t: 'sessionStarted';
+      at: number;
+      source: 'manual' | 'schedule';
+      mode: SessionMode;
+      strictness: Strictness;
+      durationMin: number;
+      intention: string;
+    }
+  | { t: 'sessionCompleted'; at: number; focusedMs: number }
+  | { t: 'sessionCanceled'; at: number; focusedMs: number }
+  | { t: 'phase'; at: number; from: Phase; to: Phase }
+  | {
+      t: 'attempt';
+      at: number;
+      url: string;
+      host: string;
+      tabId: number;
+      kind: 'navigation' | 'existing';
+    }
+  | { t: 'gateOpened'; at: number; gate: GateKind }
+  | { t: 'gateResisted'; at: number; gate: GateKind }
+  | { t: 'pauseTaken'; at: number; ms: number }
+  | { t: 'unlockTaken'; at: number; host: string; ms: number };
+
+export interface Verdict {
+  blocked: boolean;
+  reason:
+    | 'no-session'
+    | 'always-allow'
+    | 'unlock'
+    | 'excluded'
+    | 'category'
+    | 'custom'
+    | 'whitelist'
+    | 'whitelist-miss'
+    | 'default';
+  matchedPattern: string | null;
+}
