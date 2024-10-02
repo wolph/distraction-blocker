@@ -1,5 +1,8 @@
 import type { VNode } from 'preact';
-import type { SessionSnapshot } from '../shared/types';
+import { useEffect, useState } from 'preact/hooks';
+import { sendRequest } from '../shared/messages';
+import type { ListsConfig, SessionSnapshot, Settings } from '../shared/types';
+import { StartForm } from './StartForm';
 import { useSnapshot } from './use-snapshot';
 
 const DAY_NAMES: readonly string[] = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -77,9 +80,22 @@ function Footer({ snapshot }: { snapshot: SessionSnapshot }): VNode {
   );
 }
 
+function IdleView(): VNode {
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [lists, setLists] = useState<ListsConfig | null>(null);
+  useEffect((): void => {
+    void sendRequest({ type: 'getSettings' }).then(setSettings);
+    void sendRequest({ type: 'getLists' }).then(setLists);
+  }, []);
+  if (settings === null || lists === null) {
+    return <section class="view" aria-busy="true" />;
+  }
+  return <StartForm settings={settings} lists={lists} />;
+}
+
 function Body({ snapshot }: { snapshot: SessionSnapshot; now: number }): VNode {
   if (snapshot.phase === 'idle') {
-    return <section class="view">Ready to focus</section>;
+    return <IdleView />;
   }
   return <section class="view">{snapshot.phase}</section>;
 }

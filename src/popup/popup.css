@@ -105,3 +105,141 @@ body {
 .meter-label {
   font-variant-numeric: tabular-nums;
 }
+
+.start-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chip-row,
+.pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.chip {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip:hover {
+  border-color: var(--focus-color);
+}
+
+.chip-selected {
+  background: var(--accent-soft);
+  border-color: var(--focus-color);
+  color: var(--focus-strong);
+  font-weight: 600;
+}
+
+.custom-min {
+  width: 56px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.intention-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.intention-input:focus,
+.custom-min:focus {
+  outline: 2px solid var(--focus-color);
+  outline-offset: 0;
+  border-color: transparent;
+}
+
+.options summary {
+  cursor: pointer;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.options fieldset {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.options legend {
+  padding: 0 4px;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.radio-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.radio-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.radio-label {
+  font-weight: 600;
+}
+
+.radio-hint {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.check-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+
+.start-button {
+  padding: 12px;
+  border: none;
+  border-radius: 10px;
+  background: var(--focus-color);
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.start-button:hover {
+  background: var(--focus-strong);
+}
+
+.form-error {
+  margin: 0;
+  color: var(--paused-color);
+  font-size: 12.5px;
+}
