@@ -1,3 +1,5 @@
 import { render } from 'preact';
+import { App } from './App';
+import './stats.css';
 
-render(<p>Focus Lock stats stub</p>, document.getElementById('app') as HTMLElement);
+render(<App />, document.getElementById('app') as HTMLElement);
