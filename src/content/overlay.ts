@@ -32,6 +32,7 @@ interface Mounted {
   timer: number;
   verdict: Verdict;
   snapshot: SessionSnapshot;
+  stopped: boolean;
   clock: HTMLElement | null;
   bankLabel: HTMLElement | null;
   meterFill: HTMLElement | null;
@@ -71,6 +72,8 @@ const OVERLAY_CSS: string = `
   display: flex; align-items: center; justify-content: center;
   text-align: center;
 }
+.backdrop.opaque { background: #0f172a; }
+.notloaded { font-size: 0.9rem; color: #94a3b8; }
 .panel {
   max-width: 40rem; padding: 2rem;
   display: flex; flex-direction: column; align-items: center; gap: 0.9rem;
@@ -142,10 +145,11 @@ button:disabled { cursor: default; }
 }
 `;
 
-export function showOverlay(verdict: Verdict, snapshot: SessionSnapshot): void {
+export function showOverlay(verdict: Verdict, snapshot: SessionSnapshot, stopped?: boolean): void {
   if (mounted === null) mounted = mount();
   mounted.verdict = verdict;
   mounted.snapshot = snapshot;
+  mounted.stopped = stopped ?? false;
   render(mounted);
   focusInitial(mounted);
 }
@@ -184,6 +188,7 @@ function mount(): Mounted {
     timer,
     verdict: { blocked: true, reason: 'default', matchedPattern: null },
     snapshot: null as unknown as SessionSnapshot, // overwritten by showOverlay before any render
+    stopped: false,
     clock: null,
     bankLabel: null,
     meterFill: null,
@@ -238,6 +243,7 @@ function render(m: Mounted): void {
   const snap: SessionSnapshot = m.snapshot;
   m.spends = [];
   m.gate = null;
+  m.container.className = m.stopped ? 'backdrop opaque' : 'backdrop';
   const panel: HTMLElement = document.createElement('div');
   panel.className = 'panel';
   panel.appendChild(padlockSvg());
@@ -245,6 +251,7 @@ function render(m: Mounted): void {
   m.clock = appendClock(panel, snap, now);
   appendIntention(panel, snap);
   appendAttempts(panel, snap);
+  if (m.stopped) appendNotLoaded(panel);
   appendBank(m, panel, snap, now);
   if (snap.gate === null) panel.appendChild(buildButtons(m, snap, now));
   else panel.appendChild(buildGate(m, snap.gate, snap, now));
@@ -278,6 +285,13 @@ function appendIntention(panel: HTMLElement, snap: SessionSnapshot): void {
   const el: HTMLElement = document.createElement('div');
   el.className = 'intention';
   el.textContent = intention;
+  panel.appendChild(el);
+}
+
+function appendNotLoaded(panel: HTMLElement): void {
+  const el: HTMLElement = document.createElement('div');
+  el.className = 'notloaded';
+  el.textContent = 'This page did not load. It will load by itself when the session ends.';
   panel.appendChild(el);
 }
 

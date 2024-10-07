@@ -50,4 +50,14 @@ describe('overlay', () => {
     expect(root?.textContent).not.toContain('End session');
     hideOverlay(emptySnapshot(Date.now()));
   });
+  it('paints the stopped-tab presentation only when asked', () => {
+    showOverlay(verdict, focusSnap(), true);
+    const root = (globalThis as { __focusLockShadow?: ShadowRoot }).__focusLockShadow;
+    expect(root?.textContent).toContain('This page did not load.');
+    expect(root?.querySelector('.backdrop')?.classList.contains('opaque')).toBe(true);
+    showOverlay(verdict, focusSnap());
+    expect(root?.textContent).not.toContain('This page did not load.');
+    expect(root?.querySelector('.backdrop')?.classList.contains('opaque')).toBe(false);
+    hideOverlay(emptySnapshot(Date.now()));
+  });
 });
