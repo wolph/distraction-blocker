@@ -1,6 +1,8 @@
 import type { VNode } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import type { ListsConfig, SessionSnapshot, Settings } from '../shared/types';
+import type { ListsConfig, Rule, SessionSnapshot, Settings } from '../shared/types';
+import { RulesEditor } from './RulesEditor';
+import { SaveRow } from './SaveRow';
 import type { SettingsStore } from './use-settings';
 import { useSettingsStore } from './use-settings';
 
@@ -42,7 +44,38 @@ interface SectionProps {
   store: SettingsStore;
 }
 
+function ListsSection(props: SectionProps): VNode {
+  return (
+    <section>
+      <h2>Lists</h2>
+      <p class="help">
+        Custom rules block during blacklist sessions. The whitelist is what stays reachable during
+        whitelist sessions.
+      </p>
+      <RulesEditor
+        title="Custom blacklist"
+        rules={props.lists.custom}
+        onChange={(next: Rule[]): void => {
+          props.onLists({ ...props.lists, custom: next });
+        }}
+      />
+      <RulesEditor
+        title="Whitelist"
+        rules={props.lists.whitelist}
+        onChange={(next: Rule[]): void => {
+          props.onLists({ ...props.lists, whitelist: next });
+        }}
+      />
+      <SaveRow
+        label="Save lists"
+        onSave={(): Promise<string | null> => props.store.saveLists(props.lists)}
+      />
+    </section>
+  );
+}
+
 function SectionBody(props: SectionProps): VNode {
+  if (props.section === 'lists') return <ListsSection {...props} />;
   const label: string =
     SECTIONS.find((s: { id: SectionId; label: string }): boolean => s.id === props.section)
       ?.label ?? '';
