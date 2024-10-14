@@ -1,15 +1,21 @@
+import { CoreError } from '../shared/errors';
 import type { BankState, PauseEconomy } from '../shared/types';
 
 export function accrue(bank: BankState, focusMsDelta: number, eco: PauseEconomy): BankState {
-  throw new Error('not implemented, plan 02');
+  const earned: number = Math.max(0, focusMsDelta) * eco.earnRatio;
+  return { balanceMs: Math.min(eco.capMs, bank.balanceMs + earned) };
 }
 
 /** Throws CoreError('insufficient-budget'). */
 export function spend(bank: BankState, ms: number): BankState {
-  throw new Error('not implemented, plan 02');
+  if (ms > bank.balanceMs) {
+    throw new CoreError('insufficient-budget', 'not enough pause budget banked');
+  }
+  return { balanceMs: bank.balanceMs - ms };
 }
 
 /** ms of continued focus until costMs is affordable, 0 when affordable now. */
 export function msUntilAffordable(bank: BankState, costMs: number, eco: PauseEconomy): number {
-  throw new Error('not implemented, plan 02');
+  if (bank.balanceMs >= costMs) return 0;
+  return Math.ceil((costMs - bank.balanceMs) / eco.earnRatio);
 }
