@@ -34,15 +34,21 @@ describe('activeEntry', () => {
 
 describe('windowEnd', () => {
   it('returns the end as an absolute local Date', () => {
-    expect(windowEnd(entry({}), friday1000).getTime()).toBe(new Date(2026, 7, 28, 12, 30).getTime());
+    expect(windowEnd(entry({}), friday1000).getTime()).toBe(
+      new Date(2026, 7, 28, 12, 30).getTime(),
+    );
   });
 });
 
 describe('nextStart', () => {
   it('finds later today, next matching day, and null with nothing enabled', () => {
     const at = new Date(2026, 7, 28, 8, 0);
-    expect(nextStart([entry({})], at)?.startsAt.getTime()).toBe(new Date(2026, 7, 28, 9, 0).getTime());
-    expect(nextStart([entry({})], friday1300)?.startsAt.getTime()).toBe(new Date(2026, 7, 31, 9, 0).getTime());
+    expect(nextStart([entry({})], at)?.startsAt.getTime()).toBe(
+      new Date(2026, 7, 28, 9, 0).getTime(),
+    );
+    expect(nextStart([entry({})], friday1300)?.startsAt.getTime()).toBe(
+      new Date(2026, 7, 31, 9, 0).getTime(),
+    );
     expect(nextStart([entry({ enabled: false })], at)).toBeNull();
   });
 });

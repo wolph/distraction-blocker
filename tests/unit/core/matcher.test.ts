@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { compileMatcher, evaluateUrl, registrableHost, validateRule } from '../../../src/core/matcher';
+import {
+  compileMatcher,
+  evaluateUrl,
+  registrableHost,
+  validateRule,
+} from '../../../src/core/matcher';
 import { DEFAULT_LISTS } from '../../../src/shared/constants';
 import type { CategoryList, ListsConfig, SiteUnlock } from '../../../src/shared/types';
 
-const CATS: CategoryList[] = [
-  { id: 'social', title: 'Social', hosts: ['facebook.com', 'x.com'] },
-];
+const CATS: CategoryList[] = [{ id: 'social', title: 'Social', hosts: ['facebook.com', 'x.com'] }];
 
 function lists(partial: Partial<ListsConfig>): ListsConfig {
   return { ...DEFAULT_LISTS, categories: { ...DEFAULT_LISTS.categories }, ...partial };
@@ -15,7 +18,11 @@ const NOW = 1_000_000;
 const NONE: SiteUnlock[] = [];
 
 describe('host rules', () => {
-  const m = compileMatcher(lists({ custom: [{ kind: 'host', pattern: 'reddit.com' }] }), [], 'blacklist');
+  const m = compileMatcher(
+    lists({ custom: [{ kind: 'host', pattern: 'reddit.com' }] }),
+    [],
+    'blacklist',
+  );
   it('blocks the domain and all subdomains', () => {
     expect(evaluateUrl(m, 'https://reddit.com/r/all', NONE, NOW).blocked).toBe(true);
     expect(evaluateUrl(m, 'https://old.reddit.com/', NONE, NOW).blocked).toBe(true);
@@ -33,7 +40,9 @@ describe('host rules', () => {
       [],
       'blacklist',
     );
-    expect(evaluateUrl(sub, 'https://news.ycombinator.com/item?id=1', NONE, NOW).blocked).toBe(true);
+    expect(evaluateUrl(sub, 'https://news.ycombinator.com/item?id=1', NONE, NOW).blocked).toBe(
+      true,
+    );
     expect(evaluateUrl(sub, 'https://ycombinator.com/', NONE, NOW).blocked).toBe(false);
   });
 });
@@ -69,7 +78,11 @@ describe('categories and exclusions', () => {
 });
 
 describe('always-allow and unlocks', () => {
-  const m = compileMatcher(lists({ custom: [{ kind: 'host', pattern: 'facebook.com' }] }), [], 'blacklist');
+  const m = compileMatcher(
+    lists({ custom: [{ kind: 'host', pattern: 'facebook.com' }] }),
+    [],
+    'blacklist',
+  );
   it('never blocks internal pages or local hosts', () => {
     expect(evaluateUrl(m, 'chrome://extensions/', NONE, NOW).reason).toBe('always-allow');
     expect(evaluateUrl(m, 'http://localhost:3000/', NONE, NOW).reason).toBe('always-allow');

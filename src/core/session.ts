@@ -85,7 +85,13 @@ export function advance(
         return { next: null, events };
       }
       events.push({ type: 'phaseChanged', from: 'focus', to: 'break', at: boundary });
-      s = { ...s, phase: 'break', phaseStartedAt: boundary, phaseEndsAt: boundary + len, pausedFrom: null };
+      s = {
+        ...s,
+        phase: 'break',
+        phaseStartedAt: boundary,
+        phaseEndsAt: boundary + len,
+        pausedFrom: null,
+      };
     } else if (s.phase === 'break') {
       const c = s.config.cycling;
       const focusLen: number = c === null ? 0 : minToMs(c.focusMin);
@@ -102,7 +108,13 @@ export function advance(
       const from = s.pausedFrom;
       if (from === null) throw new CoreError('not-cancelable', 'paused without pausedFrom');
       events.push({ type: 'phaseChanged', from: 'paused', to: from.phase, at: boundary });
-      s = { ...s, phase: from.phase, phaseStartedAt: boundary, phaseEndsAt: from.phaseEndsAt, pausedFrom: null };
+      s = {
+        ...s,
+        phase: from.phase,
+        phaseStartedAt: boundary,
+        phaseEndsAt: from.phaseEndsAt,
+        pausedFrom: null,
+      };
     }
   }
 }

@@ -3,7 +3,12 @@ import { accrue, msUntilAffordable, spend } from '../../../src/core/budget';
 import { CoreError } from '../../../src/shared/errors';
 import type { PauseEconomy } from '../../../src/shared/types';
 
-const ECO: PauseEconomy = { earnRatio: 5 / 30, capMs: 30 * 60_000, pauseMs: 5 * 60_000, unlockMs: 5 * 60_000 };
+const ECO: PauseEconomy = {
+  earnRatio: 5 / 30,
+  capMs: 30 * 60_000,
+  pauseMs: 5 * 60_000,
+  unlockMs: 5 * 60_000,
+};
 
 describe('accrue', () => {
   it('earns 5 pause minutes per 30 focused minutes', () => {

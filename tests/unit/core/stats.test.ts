@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { addEvent, capAttempts, emptyDaily, mergeDaily, rollupMonth } from '../../../src/core/stats';
+import {
+  addEvent,
+  capAttempts,
+  emptyDaily,
+  mergeDaily,
+  rollupMonth,
+} from '../../../src/core/stats';
 import type { DailyAgg } from '../../../src/shared/types';
 
 const AT = 1_000;
@@ -7,9 +13,31 @@ const AT = 1_000;
 describe('addEvent', () => {
   it('folds the aggregating events and ignores the rest', () => {
     let agg: DailyAgg = emptyDaily('2026-08-28');
-    agg = addEvent(agg, { t: 'sessionStarted', at: AT, source: 'manual', mode: 'blacklist', strictness: 'hard', durationMin: 25, intention: '' });
-    agg = addEvent(agg, { t: 'attempt', at: AT, url: 'https://x.com/', host: 'x.com', tabId: 1, kind: 'navigation' });
-    agg = addEvent(agg, { t: 'attempt', at: AT, url: 'https://x.com/', host: 'x.com', tabId: 1, kind: 'existing' });
+    agg = addEvent(agg, {
+      t: 'sessionStarted',
+      at: AT,
+      source: 'manual',
+      mode: 'blacklist',
+      strictness: 'hard',
+      durationMin: 25,
+      intention: '',
+    });
+    agg = addEvent(agg, {
+      t: 'attempt',
+      at: AT,
+      url: 'https://x.com/',
+      host: 'x.com',
+      tabId: 1,
+      kind: 'navigation',
+    });
+    agg = addEvent(agg, {
+      t: 'attempt',
+      at: AT,
+      url: 'https://x.com/',
+      host: 'x.com',
+      tabId: 1,
+      kind: 'existing',
+    });
     agg = addEvent(agg, { t: 'gateResisted', at: AT, gate: 'pause' });
     agg = addEvent(agg, { t: 'pauseTaken', at: AT, ms: 300_000 });
     agg = addEvent(agg, { t: 'sessionCanceled', at: AT, focusedMs: 600_000 });
@@ -26,8 +54,17 @@ describe('addEvent', () => {
 
 describe('mergeDaily', () => {
   it('adds two devices of the same day', () => {
-    const a: DailyAgg = { ...emptyDaily('2026-08-28'), focusMs: 10, attempts: { 'x.com': 1 }, attemptsOther: 2 };
-    const b: DailyAgg = { ...emptyDaily('2026-08-28'), focusMs: 5, attempts: { 'x.com': 2, 'nu.nl': 1 } };
+    const a: DailyAgg = {
+      ...emptyDaily('2026-08-28'),
+      focusMs: 10,
+      attempts: { 'x.com': 1 },
+      attemptsOther: 2,
+    };
+    const b: DailyAgg = {
+      ...emptyDaily('2026-08-28'),
+      focusMs: 5,
+      attempts: { 'x.com': 2, 'nu.nl': 1 },
+    };
     const m: DailyAgg = mergeDaily([a, b]);
     expect(m.focusMs).toBe(15);
     expect(m.attempts).toEqual({ 'x.com': 3, 'nu.nl': 1 });

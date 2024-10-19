@@ -56,7 +56,8 @@ export function nextStart(
         startMin % 60,
       );
       if (startsAt.getTime() <= at.getTime()) continue;
-      if (best === null || startsAt.getTime() < best.startsAt.getTime()) best = { entry: e, startsAt };
+      if (best === null || startsAt.getTime() < best.startsAt.getTime())
+        best = { entry: e, startsAt };
       break;
     }
   }

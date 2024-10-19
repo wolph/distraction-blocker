@@ -51,7 +51,9 @@ describe('advance', () => {
     const { next, events } = advance(s, T0 + 25 * MIN + 1);
     expect(next?.phase).toBe('break');
     expect(next?.focusedMs).toBe(25 * MIN);
-    expect(events).toEqual([{ type: 'phaseChanged', from: 'focus', to: 'break', at: T0 + 25 * MIN }]);
+    expect(events).toEqual([
+      { type: 'phaseChanged', from: 'focus', to: 'break', at: T0 + 25 * MIN },
+    ]);
   });
   it('fast-forwards through multiple missed transitions after a worker restart', () => {
     const s = startSession(cfg(), T0);
