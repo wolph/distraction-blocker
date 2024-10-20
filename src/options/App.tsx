@@ -1,6 +1,7 @@
 import type { VNode } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import type { ListsConfig, Rule, SessionSnapshot, Settings } from '../shared/types';
+import { Categories } from './Categories';
 import { RulesEditor } from './RulesEditor';
 import { SaveRow } from './SaveRow';
 import type { SettingsStore } from './use-settings';
@@ -74,8 +75,26 @@ function ListsSection(props: SectionProps): VNode {
   );
 }
 
+function CategoriesSection(props: SectionProps): VNode {
+  return (
+    <section>
+      <h2>Categories</h2>
+      <p class="help">
+        Bundled lists of common time sinks. Toggle a whole category, then open it to keep single
+        sites available.
+      </p>
+      <Categories lists={props.lists} onChange={props.onLists} />
+      <SaveRow
+        label="Save categories"
+        onSave={(): Promise<string | null> => props.store.saveLists(props.lists)}
+      />
+    </section>
+  );
+}
+
 function SectionBody(props: SectionProps): VNode {
   if (props.section === 'lists') return <ListsSection {...props} />;
+  if (props.section === 'categories') return <CategoriesSection {...props} />;
   const label: string =
     SECTIONS.find((s: { id: SectionId; label: string }): boolean => s.id === props.section)
       ?.label ?? '';
