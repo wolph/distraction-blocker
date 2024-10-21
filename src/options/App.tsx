@@ -1,9 +1,10 @@
 import type { VNode } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import type { ListsConfig, Rule, SessionSnapshot, Settings } from '../shared/types';
+import type { ListsConfig, Rule, ScheduleEntry, SessionSnapshot, Settings } from '../shared/types';
 import { Categories } from './Categories';
 import { RulesEditor } from './RulesEditor';
 import { SaveRow } from './SaveRow';
+import { Schedule } from './Schedule';
 import type { SettingsStore } from './use-settings';
 import { useSettingsStore } from './use-settings';
 
@@ -92,9 +93,33 @@ function CategoriesSection(props: SectionProps): VNode {
   );
 }
 
+function ScheduleSection(props: SectionProps): VNode {
+  return (
+    <section>
+      <h2>Schedule</h2>
+      <p class="help">
+        Sessions start on their own inside these windows. Strictness set here applies for the whole
+        window.
+      </p>
+      <Schedule
+        entries={props.settings.schedule}
+        defaults={props.settings}
+        onChange={(next: ScheduleEntry[]): void => {
+          props.onSettings({ ...props.settings, schedule: next });
+        }}
+      />
+      <SaveRow
+        label="Save schedule"
+        onSave={(): Promise<string | null> => props.store.saveSettings(props.settings)}
+      />
+    </section>
+  );
+}
+
 function SectionBody(props: SectionProps): VNode {
   if (props.section === 'lists') return <ListsSection {...props} />;
   if (props.section === 'categories') return <CategoriesSection {...props} />;
+  if (props.section === 'schedule') return <ScheduleSection {...props} />;
   const label: string =
     SECTIONS.find((s: { id: SectionId; label: string }): boolean => s.id === props.section)
       ?.label ?? '';
