@@ -1,13 +1,15 @@
 import type { JSX } from 'preact';
 import type { StatsBundle } from '../shared/messages';
-import type { PauseEconomy } from '../shared/types';
+import type { EventRecord, PauseEconomy } from '../shared/types';
+import { Charts } from './Charts';
 import { Streak } from './Streak';
 import { Tiles } from './Tiles';
-import { useEconomy, useStats } from './use-stats';
+import { useAttemptEvents, useEconomy, useStats } from './use-stats';
 
 export function App(): JSX.Element {
   const bundle: StatsBundle | null = useStats();
   const economy: PauseEconomy = useEconomy();
+  const events: EventRecord[] | null = useAttemptEvents();
   const now: number = Date.now();
   return (
     <main class="stats-page">
@@ -20,6 +22,7 @@ export function App(): JSX.Element {
         <>
           <Tiles bundle={bundle} economy={economy} now={now} />
           <Streak streak={bundle.streak} now={now} />
+          <Charts bundle={bundle} events={events} now={now} />
         </>
       )}
     </main>
