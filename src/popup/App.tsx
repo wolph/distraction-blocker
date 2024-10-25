@@ -1,7 +1,9 @@
 import type { VNode } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
+import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../shared/constants';
 import { sendRequest } from '../shared/messages';
 import type { ListsConfig, SessionSnapshot, Settings } from '../shared/types';
+import { ActiveView } from './ActiveView';
 import { StartForm } from './StartForm';
 import { useSnapshot } from './use-snapshot';
 
@@ -80,12 +82,35 @@ function Footer({ snapshot }: { snapshot: SessionSnapshot }): VNode {
   );
 }
 
+function isSettings(value: unknown): value is Settings {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Array.isArray((value as { presetsMin?: unknown }).presetsMin)
+  );
+}
+
+function isLists(value: unknown): value is ListsConfig {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { categories?: unknown }).categories === 'object'
+  );
+}
+
 function IdleView(): VNode {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [lists, setLists] = useState<ListsConfig | null>(null);
   useEffect((): void => {
-    void sendRequest({ type: 'getSettings' }).then(setSettings);
-    void sendRequest({ type: 'getLists' }).then(setLists);
+    // Boundary guard: a stub or restarting worker may answer with a
+    // rejection object instead of the data. Fall back to defaults so the
+    // form still renders, the worker validates everything on start anyway.
+    void sendRequest({ type: 'getSettings' }).then((s: Settings): void => {
+      setSettings(isSettings(s) ? s : DEFAULT_SETTINGS);
+    });
+    void sendRequest({ type: 'getLists' }).then((l: ListsConfig): void => {
+      setLists(isLists(l) ? l : DEFAULT_LISTS);
+    });
   }, []);
   if (settings === null || lists === null) {
     return <section class="view" aria-busy="true" />;
@@ -93,11 +118,11 @@ function IdleView(): VNode {
   return <StartForm settings={settings} lists={lists} />;
 }
 
-function Body({ snapshot }: { snapshot: SessionSnapshot; now: number }): VNode {
+function Body({ snapshot, now }: { snapshot: SessionSnapshot; now: number }): VNode {
   if (snapshot.phase === 'idle') {
     return <IdleView />;
   }
-  return <section class="view">{snapshot.phase}</section>;
+  return <ActiveView snapshot={snapshot} now={now} />;
 }
 
 export function App(): VNode {

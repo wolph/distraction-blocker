@@ -30,6 +30,11 @@
   box-sizing: border-box;
 }
 
+input[type="radio"],
+input[type="checkbox"] {
+  accent-color: var(--focus-color);
+}
+
 body {
   margin: 0;
   width: 340px;
@@ -242,4 +247,191 @@ body {
   margin: 0;
   color: var(--paused-color);
   font-size: 12.5px;
+}
+
+.active-view {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.ring-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.ring-center {
+  position: absolute;
+  top: 0;
+  width: 140px;
+  height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.clock {
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.phase-label {
+  margin: 6px 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.cycle-note {
+  color: var(--text-soft);
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.intention-line {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.today-line {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.meter {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.meter-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--focus-color);
+  transition: width 250ms linear;
+}
+
+.meter-label {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.actions {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.spend-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.spend-button:hover:enabled {
+  border-color: var(--focus-color);
+}
+
+.spend-button:disabled {
+  cursor: default;
+  color: var(--text-soft);
+}
+
+.spend-sub {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.cancel-link {
+  border: none;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12.5px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.gate-panel {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gate-intention {
+  margin: 0;
+  text-align: center;
+  font-weight: 600;
+}
+
+.gate-wait {
+  margin: 0;
+  text-align: center;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.gate-phrase {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.gate-phrase input {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.gate-confirm {
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text-soft);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.gate-confirm:enabled {
+  color: var(--text);
+  cursor: pointer;
+}
+
+.gate-confirm:disabled {
+  cursor: default;
 }

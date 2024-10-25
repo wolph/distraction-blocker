@@ -10,6 +10,7 @@ type MessageListener = (msg: unknown) => void;
 export const sendMessageMock: Mock = vi.fn();
 export const openOptionsPageMock: Mock = vi.fn();
 export const tabsCreateMock: Mock = vi.fn();
+export const tabsQueryMock: Mock = vi.fn(async (): Promise<unknown[]> => []);
 
 export const messageListeners: MessageListener[] = [];
 
@@ -24,6 +25,8 @@ export function resetChromeFake(): void {
   sendMessageMock.mockReset();
   openOptionsPageMock.mockReset();
   tabsCreateMock.mockReset();
+  tabsQueryMock.mockReset();
+  tabsQueryMock.mockResolvedValue([]);
   messageListeners.length = 0;
 }
 
@@ -44,6 +47,7 @@ const chromeFake = {
   },
   tabs: {
     create: tabsCreateMock,
+    query: tabsQueryMock,
   },
 };
 
