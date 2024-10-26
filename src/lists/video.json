@@ -1,0 +1,19 @@
+{
+  "id": "video",
+  "title": "Video and streaming",
+  "hosts": [
+    "youtube.com",
+    "netflix.com",
+    "twitch.tv",
+    "kick.com",
+    "hulu.com",
+    "disneyplus.com",
+    "primevideo.com",
+    "max.com",
+    "hbomax.com",
+    "crunchyroll.com",
+    "vimeo.com",
+    "dailymotion.com",
+    "videoland.nl"
+  ]
+}
