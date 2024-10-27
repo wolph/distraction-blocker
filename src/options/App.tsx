@@ -1,10 +1,13 @@
 import type { VNode } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import type { ListsConfig, Rule, ScheduleEntry, SessionSnapshot, Settings } from '../shared/types';
+import { BehaviorDefaults, PauseEconomy } from './Behavior';
 import { Categories } from './Categories';
+import { Data } from './Data';
 import { RulesEditor } from './RulesEditor';
 import { SaveRow } from './SaveRow';
 import { Schedule } from './Schedule';
+import { SoundsBadge } from './SoundsBadge';
 import type { SettingsStore } from './use-settings';
 import { useSettingsStore } from './use-settings';
 
@@ -116,18 +119,71 @@ function ScheduleSection(props: SectionProps): VNode {
   );
 }
 
-function SectionBody(props: SectionProps): VNode {
-  if (props.section === 'lists') return <ListsSection {...props} />;
-  if (props.section === 'categories') return <CategoriesSection {...props} />;
-  if (props.section === 'schedule') return <ScheduleSection {...props} />;
-  const label: string =
-    SECTIONS.find((s: { id: SectionId; label: string }): boolean => s.id === props.section)
-      ?.label ?? '';
+function StrictnessSection(props: SectionProps): VNode {
   return (
     <section>
-      <h2>{label}</h2>
+      <h2>Strictness and gate</h2>
+      <BehaviorDefaults settings={props.settings} onChange={props.onSettings} />
+      <SaveRow
+        label="Save strictness and gate"
+        onSave={(): Promise<string | null> => props.store.saveSettings(props.settings)}
+      />
     </section>
   );
+}
+
+function PauseSection(props: SectionProps): VNode {
+  return (
+    <section>
+      <h2>Pause economy</h2>
+      <PauseEconomy settings={props.settings} onChange={props.onSettings} />
+      <SaveRow
+        label="Save pause economy"
+        onSave={(): Promise<string | null> => props.store.saveSettings(props.settings)}
+      />
+    </section>
+  );
+}
+
+function SoundsSection(props: SectionProps): VNode {
+  return (
+    <section>
+      <h2>Sounds and badge</h2>
+      <SoundsBadge settings={props.settings} onChange={props.onSettings} />
+      <SaveRow
+        label="Save sounds and badge"
+        onSave={(): Promise<string | null> => props.store.saveSettings(props.settings)}
+      />
+    </section>
+  );
+}
+
+function DataSection(): VNode {
+  return (
+    <section>
+      <h2>Data</h2>
+      <Data />
+    </section>
+  );
+}
+
+function SectionBody(props: SectionProps): VNode {
+  switch (props.section) {
+    case 'lists':
+      return <ListsSection {...props} />;
+    case 'categories':
+      return <CategoriesSection {...props} />;
+    case 'schedule':
+      return <ScheduleSection {...props} />;
+    case 'strictness':
+      return <StrictnessSection {...props} />;
+    case 'pause':
+      return <PauseSection {...props} />;
+    case 'sounds':
+      return <SoundsSection {...props} />;
+    case 'data':
+      return <DataSection />;
+  }
 }
 
 export function App(): VNode {
