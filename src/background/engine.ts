@@ -269,6 +269,18 @@ export class Engine {
     await this.ports.saveRuntime(this.runtime);
   }
 
+  /** Purges a closed tab from mute, stopped, and debounce bookkeeping. */
+  async dropTab(tabId: number): Promise<void> {
+    delete this.runtime.mutedTabs[tabId];
+    this.runtime.stoppedTabIds = this.runtime.stoppedTabIds.filter(
+      (id: number): boolean => id !== tabId,
+    );
+    for (const key of Object.keys(this.runtime.attemptDebounce)) {
+      if (key.startsWith(`${tabId}:`)) delete this.runtime.attemptDebounce[key];
+    }
+    await this.ports.saveRuntime(this.runtime);
+  }
+
   /** The 1-minute tick alarm and exact phase alarms both land here. */
   async tick(): Promise<void> {
     const now: number = this.ports.now();
