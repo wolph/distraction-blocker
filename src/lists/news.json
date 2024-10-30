@@ -1,0 +1,22 @@
+{
+  "id": "news",
+  "title": "News",
+  "hosts": [
+    "nu.nl",
+    "nos.nl",
+    "tweakers.net",
+    "telegraaf.nl",
+    "ad.nl",
+    "volkskrant.nl",
+    "nrc.nl",
+    "rtlnieuws.nl",
+    "fd.nl",
+    "geenstijl.nl",
+    "bbc.com",
+    "bbc.co.uk",
+    "cnn.com",
+    "nytimes.com",
+    "theguardian.com",
+    "reuters.com"
+  ]
+}
