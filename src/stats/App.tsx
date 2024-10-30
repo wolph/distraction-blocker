@@ -2,6 +2,7 @@ import type { JSX } from 'preact';
 import type { StatsBundle } from '../shared/messages';
 import type { EventRecord, PauseEconomy } from '../shared/types';
 import { Charts } from './Charts';
+import { SessionLog } from './SessionLog';
 import { Streak } from './Streak';
 import { Tiles } from './Tiles';
 import { useAttemptEvents, useEconomy, useStats } from './use-stats';
@@ -23,6 +24,7 @@ export function App(): JSX.Element {
           <Tiles bundle={bundle} economy={economy} now={now} />
           <Streak streak={bundle.streak} now={now} />
           <Charts bundle={bundle} events={events} now={now} />
+          <SessionLog events={bundle.recentSessions} />
         </>
       )}
     </main>

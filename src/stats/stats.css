@@ -298,3 +298,75 @@ h2 {
   border-bottom: 1px solid var(--grid);
   font-variant-numeric: tabular-nums;
 }
+
+/* Session log: quiet table, positive outcome chips, no red anywhere. */
+.table-scroll {
+  overflow-x: auto;
+}
+
+.session-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+.session-table th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 12px;
+  padding: 4px 12px 4px 0;
+  border-bottom: 1px solid var(--baseline);
+}
+
+.session-table td {
+  padding: 6px 12px 6px 0;
+  border-bottom: 1px solid var(--grid);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.intention-cell {
+  color: var(--ink-2);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.chip.completed {
+  color: var(--good-text);
+  background: color-mix(in srgb, var(--focus-series) 12%, var(--surface));
+}
+
+.chip.neutral {
+  color: var(--ink-2);
+  background: color-mix(in srgb, var(--muted) 14%, var(--surface));
+}
+
+.chip.running {
+  color: var(--ink-2);
+  border: 1px solid var(--baseline);
+  background: transparent;
+}
+
+.glyph.source {
+  color: var(--muted);
+  width: 14px;
+  height: 14px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
