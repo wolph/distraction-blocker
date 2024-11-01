@@ -1,6 +1,5 @@
-// @vitest-environment jsdom
+/** @vitest-environment jsdom */
 import { cleanup, fireEvent, render } from '@testing-library/preact';
-import { h } from 'preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Schedule } from '../../../src/options/Schedule';
 import { DEFAULT_SETTINGS } from '../../../src/shared/constants';
@@ -37,7 +36,7 @@ describe('Schedule', () => {
   it('creates an entry with the defaults: weekdays, 09:00 to 12:00', (): void => {
     const onChange = vi.fn();
     const { getByRole } = render(
-      h(Schedule, { entries: [], defaults: DEFAULT_SETTINGS, onChange }),
+      <Schedule entries={[]} defaults={DEFAULT_SETTINGS} onChange={onChange} />,
     );
     fireEvent.click(getByRole('button', { name: 'Add schedule entry' }));
     fireEvent.click(getByRole('button', { name: 'Save entry' }));
@@ -58,7 +57,7 @@ describe('Schedule', () => {
   it('shows the validation error inline for inverted times and never calls onChange', (): void => {
     const onChange = vi.fn();
     const { getByRole, getByLabelText, getByText } = render(
-      h(Schedule, { entries: [], defaults: DEFAULT_SETTINGS, onChange }),
+      <Schedule entries={[]} defaults={DEFAULT_SETTINGS} onChange={onChange} />,
     );
     fireEvent.click(getByRole('button', { name: 'Add schedule entry' }));
     fireEvent.input(getByLabelText('End'), { target: { value: '08:00' } });
@@ -70,7 +69,7 @@ describe('Schedule', () => {
   it('toggles an entry enabled state in place', (): void => {
     const onChange = vi.fn();
     const { getByLabelText } = render(
-      h(Schedule, { entries: [existingEntry()], defaults: DEFAULT_SETTINGS, onChange }),
+      <Schedule entries={[existingEntry()]} defaults={DEFAULT_SETTINGS} onChange={onChange} />,
     );
     fireEvent.click(getByLabelText('Enabled'));
     const next: ScheduleEntry[] = onChange.mock.calls[0]?.[0] as ScheduleEntry[];
@@ -80,7 +79,7 @@ describe('Schedule', () => {
   it('deletes an entry', (): void => {
     const onChange = vi.fn();
     const { getByRole } = render(
-      h(Schedule, { entries: [existingEntry()], defaults: DEFAULT_SETTINGS, onChange }),
+      <Schedule entries={[existingEntry()]} defaults={DEFAULT_SETTINGS} onChange={onChange} />,
     );
     fireEvent.click(getByRole('button', { name: 'Delete' }));
     expect(onChange).toHaveBeenCalledWith([]);
@@ -89,7 +88,7 @@ describe('Schedule', () => {
   it('edits an existing entry through the form', (): void => {
     const onChange = vi.fn();
     const { getByRole, getByLabelText } = render(
-      h(Schedule, { entries: [existingEntry()], defaults: DEFAULT_SETTINGS, onChange }),
+      <Schedule entries={[existingEntry()]} defaults={DEFAULT_SETTINGS} onChange={onChange} />,
     );
     fireEvent.click(getByRole('button', { name: 'Edit' }));
     fireEvent.input(getByLabelText('Intention'), { target: { value: 'write the report' } });

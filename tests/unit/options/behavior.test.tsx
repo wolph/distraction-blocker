@@ -1,6 +1,5 @@
-// @vitest-environment jsdom
+/** @vitest-environment jsdom */
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
-import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BehaviorDefaults, PauseEconomy } from '../../../src/options/Behavior';
 import { Data } from '../../../src/options/Data';
@@ -26,7 +25,9 @@ afterEach((): void => {
 describe('PauseEconomy', () => {
   it('maps the earn-rate input to earnRatio = value / 30', (): void => {
     const onChange = vi.fn();
-    const { getByLabelText } = render(h(PauseEconomy, { settings: DEFAULT_SETTINGS, onChange }));
+    const { getByLabelText } = render(
+      <PauseEconomy settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
     fireEvent.input(getByLabelText('Minutes of pause per 30 minutes of focus'), {
       target: { value: '10' },
     });
@@ -38,7 +39,9 @@ describe('PauseEconomy', () => {
 
   it('ignores input that is not a non-negative number', (): void => {
     const onChange = vi.fn();
-    const { getByLabelText } = render(h(PauseEconomy, { settings: DEFAULT_SETTINGS, onChange }));
+    const { getByLabelText } = render(
+      <PauseEconomy settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
     fireEvent.input(getByLabelText('Minutes of pause per 30 minutes of focus'), {
       target: { value: '-3' },
     });
@@ -50,7 +53,7 @@ describe('BehaviorDefaults', () => {
   it('switches the gate delay to 30 seconds', (): void => {
     const onChange = vi.fn();
     const { getByLabelText } = render(
-      h(BehaviorDefaults, { settings: DEFAULT_SETTINGS, onChange }),
+      <BehaviorDefaults settings={DEFAULT_SETTINGS} onChange={onChange} />,
     );
     fireEvent.click(getByLabelText('Wait 30 seconds'));
     const next: Settings = onChange.mock.calls[0]?.[0] as Settings;
@@ -61,14 +64,16 @@ describe('BehaviorDefaults', () => {
 describe('SoundsBadge', () => {
   it('sends previewSound for the play button', (): void => {
     const onChange = vi.fn();
-    const { getByRole } = render(h(SoundsBadge, { settings: DEFAULT_SETTINGS, onChange }));
+    const { getByRole } = render(<SoundsBadge settings={DEFAULT_SETTINGS} onChange={onChange} />);
     fireEvent.click(getByRole('button', { name: 'Preview Session complete' }));
     expect(fake.sent).toContainEqual({ type: 'previewSound', sound: 'sessionComplete' });
   });
 
   it('maps the volume slider 0-100 to masterVolume 0-1', (): void => {
     const onChange = vi.fn();
-    const { getByLabelText } = render(h(SoundsBadge, { settings: DEFAULT_SETTINGS, onChange }));
+    const { getByLabelText } = render(
+      <SoundsBadge settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
     fireEvent.input(getByLabelText('Master volume'), { target: { value: '40' } });
     const next: Settings = onChange.mock.calls[0]?.[0] as Settings;
     expect(next.sounds.masterVolume).toBeCloseTo(0.4);
@@ -82,7 +87,7 @@ describe('Data', () => {
     Object.assign(URL, { createObjectURL, revokeObjectURL });
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation((): void => {});
 
-    const { getByText, getByRole } = render(h(Data, null));
+    const { getByText, getByRole } = render(<Data />);
     await waitFor((): void => {
       expect(getByText('test-device-id')).toBeTruthy();
     });

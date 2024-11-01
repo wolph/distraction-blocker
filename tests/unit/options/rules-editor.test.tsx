@@ -1,6 +1,5 @@
-// @vitest-environment jsdom
+/** @vitest-environment jsdom */
 import { cleanup, fireEvent, render } from '@testing-library/preact';
-import { h } from 'preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RulesEditor } from '../../../src/options/RulesEditor';
 import type { Rule } from '../../../src/shared/types';
@@ -29,7 +28,7 @@ describe('RulesEditor', () => {
   it('adds a valid host rule through onChange', (): void => {
     const onChange = vi.fn();
     const { getByLabelText, getByRole } = render(
-      h(RulesEditor, { title: 'Custom blacklist', rules: [], onChange }),
+      <RulesEditor title="Custom blacklist" rules={[]} onChange={onChange} />,
     );
     fireEvent.input(getByLabelText('Pattern'), { target: { value: 'nu.nl' } });
     fireEvent.click(getByRole('button', { name: 'Add rule' }));
@@ -40,7 +39,7 @@ describe('RulesEditor', () => {
   it('shows the validation message inline for a bad regex and never calls onChange', (): void => {
     const onChange = vi.fn();
     const { getByLabelText, getByRole, getByText } = render(
-      h(RulesEditor, { title: 'Custom blacklist', rules: [], onChange }),
+      <RulesEditor title="Custom blacklist" rules={[]} onChange={onChange} />,
     );
     fireEvent.change(getByLabelText('Rule kind'), { target: { value: 'regex' } });
     fireEvent.input(getByLabelText('Pattern'), { target: { value: '(' } });
@@ -52,7 +51,7 @@ describe('RulesEditor', () => {
   it('strips slash delimiters on input and stores the bare regex source', (): void => {
     const onChange = vi.fn();
     const { getByLabelText, getByRole } = render(
-      h(RulesEditor, { title: 'Custom blacklist', rules: [], onChange }),
+      <RulesEditor title="Custom blacklist" rules={[]} onChange={onChange} />,
     );
     fireEvent.change(getByLabelText('Rule kind'), { target: { value: 'regex' } });
     fireEvent.input(getByLabelText('Pattern'), {
@@ -69,7 +68,7 @@ describe('RulesEditor', () => {
     ];
     const onChange = vi.fn();
     const { getByText, getByRole } = render(
-      h(RulesEditor, { title: 'Custom blacklist', rules, onChange }),
+      <RulesEditor title="Custom blacklist" rules={rules} onChange={onChange} />,
     );
     expect(getByText('/youtube\\.com\\/shorts/')).toBeTruthy();
     fireEvent.click(getByRole('button', { name: 'Remove facebook.com' }));

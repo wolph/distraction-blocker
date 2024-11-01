@@ -1,7 +1,6 @@
-// @vitest-environment jsdom
+/** @vitest-environment jsdom */
 import { act, cleanup, render, waitFor } from '@testing-library/preact';
 import type { VNode } from 'preact';
-import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from '../../../src/options/App';
 import type { SettingsStore } from '../../../src/options/use-settings';
@@ -16,7 +15,7 @@ let captured: SettingsStore | null = null;
 
 function Harness(): VNode {
   captured = useSettingsStore();
-  return h('output', null, captured.lists === null ? 'loading' : 'ready');
+  return <output>{captured.lists === null ? 'loading' : 'ready'}</output>;
 }
 
 function store(): SettingsStore {
@@ -59,7 +58,7 @@ afterEach((): void => {
 
 describe('useSettingsStore', () => {
   it('loads settings, lists, and snapshot on mount', async (): Promise<void> => {
-    render(h(Harness, null));
+    render(<Harness />);
     await waitFor((): void => {
       expect(store().lists).not.toBeNull();
     });
@@ -70,7 +69,7 @@ describe('useSettingsStore', () => {
 
   it('saveLists resolves null on ok and the store serves the saved lists', async (): Promise<void> => {
     fake.respond('updateLists', { ok: true });
-    render(h(Harness, null));
+    render(<Harness />);
     await waitFor((): void => {
       expect(store().lists).not.toBeNull();
     });
@@ -89,7 +88,7 @@ describe('useSettingsStore', () => {
   it('saveLists resolves the rejection string verbatim and keeps the current lists', async (): Promise<void> => {
     const rejection: string = 'a hard session is running: weakening changes are locked until 16:45';
     fake.respond('updateLists', { ok: false, error: rejection });
-    render(h(Harness, null));
+    render(<Harness />);
     await waitFor((): void => {
       expect(store().lists).not.toBeNull();
     });
@@ -105,7 +104,7 @@ describe('useSettingsStore', () => {
   it('saveSettings mirrors the same contract', async (): Promise<void> => {
     const rejection: string = 'a hard session is running: strictness cannot be weakened';
     fake.respond('updateSettings', { ok: false, error: rejection });
-    render(h(Harness, null));
+    render(<Harness />);
     await waitFor((): void => {
       expect(store().settings).not.toBeNull();
     });
@@ -120,7 +119,7 @@ describe('useSettingsStore', () => {
 
 describe('App frame', () => {
   it('renders the seven nav sections', async (): Promise<void> => {
-    const { getByRole } = render(h(App, null));
+    const { getByRole } = render(<App />);
     await waitFor((): void => {
       expect(getByRole('button', { name: 'Lists' })).toBeTruthy();
     });
@@ -140,7 +139,7 @@ describe('App frame', () => {
   it('shows the hard-session banner with the end time', async (): Promise<void> => {
     const endsAt: number = new Date(2026, 7, 28, 16, 45).getTime();
     fake.respond('getSnapshot', hardSnapshot(endsAt));
-    const { getByText } = render(h(App, null));
+    const { getByText } = render(<App />);
     await waitFor((): void => {
       expect(
         getByText(
@@ -151,7 +150,7 @@ describe('App frame', () => {
   });
 
   it('shows no banner while idle and picks up a stateChanged broadcast', async (): Promise<void> => {
-    const { getByText, queryByText } = render(h(App, null));
+    const { getByText, queryByText } = render(<App />);
     await waitFor((): void => {
       expect(getByText('Lists')).toBeTruthy();
     });

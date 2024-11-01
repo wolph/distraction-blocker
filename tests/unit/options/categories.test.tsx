@@ -1,6 +1,5 @@
-// @vitest-environment jsdom
+/** @vitest-environment jsdom */
 import { cleanup, fireEvent, render } from '@testing-library/preact';
-import { h } from 'preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Categories } from '../../../src/options/Categories';
 import { DEFAULT_LISTS } from '../../../src/shared/constants';
@@ -26,7 +25,7 @@ afterEach((): void => {
 describe('Categories', () => {
   it('toggling a category on fires onChange with the toggle set', (): void => {
     const onChange = vi.fn();
-    const { getByLabelText } = render(h(Categories, { lists: DEFAULT_LISTS, onChange }));
+    const { getByLabelText } = render(<Categories lists={DEFAULT_LISTS} onChange={onChange} />);
     fireEvent.click(getByLabelText('Social'));
     expect(onChange).toHaveBeenCalledTimes(1);
     const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
@@ -40,7 +39,7 @@ describe('Categories', () => {
       categories: { ...DEFAULT_LISTS.categories, social: true },
     };
     const onChange = vi.fn();
-    const { getByLabelText, getByRole } = render(h(Categories, { lists, onChange }));
+    const { getByLabelText, getByRole } = render(<Categories lists={lists} onChange={onChange} />);
     fireEvent.click(getByRole('button', { name: 'Show Social sites' }));
     fireEvent.click(getByLabelText('facebook.com'));
     expect(onChange).toHaveBeenCalledTimes(1);
@@ -55,7 +54,7 @@ describe('Categories', () => {
       exclusions: { social: ['facebook.com', 'x.com'] },
     };
     const onChange = vi.fn();
-    const { getByLabelText, getByRole } = render(h(Categories, { lists, onChange }));
+    const { getByLabelText, getByRole } = render(<Categories lists={lists} onChange={onChange} />);
     fireEvent.click(getByRole('button', { name: 'Show Social sites' }));
     fireEvent.click(getByLabelText('facebook.com'));
     const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
@@ -69,7 +68,7 @@ describe('Categories', () => {
       exclusions: { social: ['facebook.com'] },
     };
     const onChange = vi.fn();
-    const { getByLabelText } = render(h(Categories, { lists, onChange }));
+    const { getByLabelText } = render(<Categories lists={lists} onChange={onChange} />);
     fireEvent.click(getByLabelText('Social'));
     const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
     expect(next.categories.social).toBe(false);
