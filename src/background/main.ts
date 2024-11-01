@@ -13,10 +13,18 @@ import {
   saveRuntime,
 } from './stores';
 import { SyncWriter } from './sync-writer';
+import { applyBlockingFactory, injectIntoExistingTabs, registerTabListeners } from './tabs';
 
 const SYNC_FLUSH_MS: number = 10_000;
 const TICK_ALARM: string = 'tick';
 const PHASE_ALARM: string = 'phase';
+
+let engineInstance: Engine | null = null;
+
+function currentEngine(): Engine {
+  if (engineInstance === null) throw new Error('engine used before boot finished');
+  return engineInstance;
+}
 
 async function boot(): Promise<Engine> {
   const now: number = Date.now();
@@ -45,9 +53,7 @@ async function boot(): Promise<Engine> {
         return undefined;
       });
     },
-    applyBlocking: async (): Promise<void> => {
-      // tab effects land in task 5
-    },
+    applyBlocking: applyBlockingFactory(currentEngine),
     playSound: (): void => {
       // offscreen audio lands in task 7
     },
@@ -62,7 +68,9 @@ async function boot(): Promise<Engine> {
       else void chrome.alarms.create(PHASE_ALARM, { when: atMs });
     },
   };
-  return new Engine(ports, settings, lists, bank, streak, runtime, deviceId);
+  const engine: Engine = new Engine(ports, settings, lists, bank, streak, runtime, deviceId);
+  engineInstance = engine;
+  return engine;
 }
 
 /**
@@ -91,9 +99,11 @@ export function main(): void {
     void ready.then((engine: Engine): Promise<void> => engine.tick());
   });
 
+  registerTabListeners((): Promise<Engine> => ready);
+
   chrome.runtime.onInstalled.addListener((): void => {
     void chrome.alarms.create(TICK_ALARM, { periodInMinutes: 1 });
-    // content-script injection into existing tabs lands in task 5
+    void injectIntoExistingTabs();
   });
 
   chrome.tabs.onRemoved.addListener((tabId: number): void => {

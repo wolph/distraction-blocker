@@ -269,6 +269,35 @@ export class Engine {
     await this.ports.saveRuntime(this.runtime);
   }
 
+  /** Mute and stopped-tab facts for one tab, for tabs.ts action planning. */
+  tabFacts(tabId: number): { wasMutedByUs: boolean; priorMuted: boolean; wasStopped: boolean } {
+    const prior: boolean | undefined = this.runtime.mutedTabs[tabId];
+    return {
+      wasMutedByUs: prior !== undefined,
+      priorMuted: prior ?? false,
+      wasStopped: this.runtime.stoppedTabIds.includes(tabId),
+    };
+  }
+
+  /** In-memory bookkeeping mutators for tabs.ts, persisted by flushRuntime. */
+  noteMuted(tabId: number, priorMuted: boolean): void {
+    this.runtime.mutedTabs[tabId] = priorMuted;
+  }
+
+  noteMuteRestored(tabId: number): void {
+    delete this.runtime.mutedTabs[tabId];
+  }
+
+  noteReloaded(tabId: number): void {
+    this.runtime.stoppedTabIds = this.runtime.stoppedTabIds.filter(
+      (id: number): boolean => id !== tabId,
+    );
+  }
+
+  flushRuntime(): Promise<void> {
+    return this.ports.saveRuntime(this.runtime);
+  }
+
   /** Purges a closed tab from mute, stopped, and debounce bookkeeping. */
   async dropTab(tabId: number): Promise<void> {
     delete this.runtime.mutedTabs[tabId];
