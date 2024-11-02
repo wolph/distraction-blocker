@@ -1,6 +1,7 @@
 import type { Request } from '../shared/messages';
 import type { SessionSnapshot } from '../shared/types';
 import { Engine, type EnginePorts } from './engine';
+import { updateIcon } from './icon';
 import { routeMessage } from './router';
 import {
   appendEvents,
@@ -60,8 +61,8 @@ async function boot(): Promise<Engine> {
     notify: (): void => {
       // notifications land in task 7
     },
-    updateIcon: (): void => {
-      // icon rendering lands in task 6
+    updateIcon: (snapshot: SessionSnapshot): void => {
+      updateIcon(snapshot, currentEngine().getSettings().badgeCountdown);
     },
     scheduleWake: (atMs: number | null): void => {
       if (atMs === null) void chrome.alarms.clear(PHASE_ALARM);
