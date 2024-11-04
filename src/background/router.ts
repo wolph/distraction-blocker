@@ -1,5 +1,6 @@
 import type { Request } from '../shared/messages';
 import type { Verdict } from '../shared/types';
+import { playSound } from './audio';
 import type { Engine } from './engine';
 
 /**
@@ -53,9 +54,13 @@ export async function routeMessage(
     case 'exportEvents':
       // wired in task 8
       return { ok: false, error: 'stats wiring lands in task 8' };
-    case 'previewSound':
-      // wired in task 7
-      return { ok: false, error: 'sound wiring lands in task 7' };
+    case 'previewSound': {
+      // Previews ignore the per-event toggle: the options page needs to
+      // demo a sound the user is about to enable.
+      const sounds = engine.getSettings().sounds;
+      await playSound(msg.sound, { ...sounds, [msg.sound]: true });
+      return { ok: true };
+    }
     default: {
       const exhaustive: never = msg;
       return { ok: false, error: `unhandled message ${JSON.stringify(exhaustive)}` };

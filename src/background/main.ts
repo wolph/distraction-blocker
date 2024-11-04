@@ -1,5 +1,6 @@
 import type { Request } from '../shared/messages';
 import type { SessionSnapshot } from '../shared/types';
+import { notify, playSound } from './audio';
 import { Engine, type EnginePorts } from './engine';
 import { updateIcon } from './icon';
 import { routeMessage } from './router';
@@ -55,12 +56,10 @@ async function boot(): Promise<Engine> {
       });
     },
     applyBlocking: applyBlockingFactory(currentEngine),
-    playSound: (): void => {
-      // offscreen audio lands in task 7
+    playSound: (sound): void => {
+      void playSound(sound, currentEngine().getSettings().sounds);
     },
-    notify: (): void => {
-      // notifications land in task 7
-    },
+    notify,
     updateIcon: (snapshot: SessionSnapshot): void => {
       updateIcon(snapshot, currentEngine().getSettings().badgeCountdown);
     },
