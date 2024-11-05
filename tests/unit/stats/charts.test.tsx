@@ -1,6 +1,5 @@
-// @vitest-environment jsdom
+/** @vitest-environment jsdom */
 import { cleanup, render } from '@testing-library/preact';
-import { h } from 'preact';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { StatsBundle } from '../../../src/shared/messages';
 import type { DailyAgg, EventRecord } from '../../../src/shared/types';
@@ -48,14 +47,14 @@ function bundleWith(days: DailyAgg[]): StatsBundle {
 describe('BarChart', () => {
   it('renders one mark per datum with proportional heights', () => {
     const { container } = render(
-      h(BarChart, {
-        data: [
+      <BarChart
+        data={[
           { label: 'a', value: 10 },
           { label: 'b', value: 20 },
           { label: 'c', value: 0 },
-        ],
-        format: (v: number): string => `${v} m`,
-      }),
+        ]}
+        format={(v: number): string => `${v} m`}
+      />,
     );
     const marks: Element[] = Array.from(container.querySelectorAll('.bar-mark'));
     expect(marks.length).toBe(3);
@@ -67,16 +66,16 @@ describe('BarChart', () => {
   });
 
   it('renders the quiet empty line for empty and all-zero data', () => {
-    const empty = render(h(BarChart, { data: [], format: (v: number): string => String(v) }));
+    const empty = render(<BarChart data={[]} format={(v: number): string => String(v)} />);
     expect(empty.container.textContent).toContain('No data yet.');
     const zeros = render(
-      h(BarChart, {
-        data: [
+      <BarChart
+        data={[
           { label: 'a', value: 0 },
           { label: 'b', value: 0 },
-        ],
-        format: (v: number): string => String(v),
-      }),
+        ]}
+        format={(v: number): string => String(v)}
+      />,
     );
     expect(zeros.container.querySelectorAll('.bar-mark').length).toBe(0);
     expect(zeros.container.textContent).toContain('No data yet.');
@@ -86,13 +85,13 @@ describe('BarChart', () => {
 describe('HBarChart', () => {
   it('renders one row per datum with the formatted value at the tip', () => {
     const { container } = render(
-      h(HBarChart, {
-        data: [
+      <HBarChart
+        data={[
           { label: 'facebook.com', value: 12 },
           { label: 'youtube.com', value: 4 },
-        ],
-        format: (v: number): string => String(v),
-      }),
+        ]}
+        format={(v: number): string => String(v)}
+      />,
     );
     expect(container.querySelectorAll('.hbar-mark').length).toBe(2);
     expect(container.textContent).toContain('facebook.com');
@@ -100,9 +99,7 @@ describe('HBarChart', () => {
   });
 
   it('renders the quiet empty line with no data', () => {
-    const { container } = render(
-      h(HBarChart, { data: [], format: (v: number): string => String(v) }),
-    );
+    const { container } = render(<HBarChart data={[]} format={(v: number): string => String(v)} />);
     expect(container.textContent).toContain('No data yet.');
   });
 });
@@ -160,7 +157,7 @@ describe('Charts', () => {
     const bundle: StatsBundle = bundleWith([
       day('2026-08-28', { focusMs: 30 * 60_000, attempts: { 'x.com': 2 } }),
     ]);
-    const { container } = render(h(Charts, { bundle, events: [], now: NOW }));
+    const { container } = render(<Charts bundle={bundle} events={[]} now={NOW} />);
     const text: string = container.textContent ?? '';
     expect(text).toContain('Focus minutes per day');
     expect(text).toContain('Blocked attempts per day');

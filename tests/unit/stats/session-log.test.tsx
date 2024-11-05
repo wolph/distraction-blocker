@@ -1,6 +1,5 @@
-// @vitest-environment jsdom
+/** @vitest-environment jsdom */
 import { cleanup, render } from '@testing-library/preact';
-import { h } from 'preact';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EventRecord } from '../../../src/shared/types';
 import { pairSessions, SessionLog, type SessionRow } from '../../../src/stats/SessionLog';
@@ -96,7 +95,7 @@ describe('pairSessions', () => {
 
 describe('SessionLog', () => {
   it('renders a row per session with outcome chips', () => {
-    const { container } = render(h(SessionLog, { events: EVENTS }));
+    const { container } = render(<SessionLog events={EVENTS} />);
     expect(container.querySelectorAll('tbody tr').length).toBe(3);
     expect(container.querySelectorAll('.chip.completed').length).toBe(1);
     expect(container.querySelectorAll('.chip.neutral').length).toBe(1);
@@ -106,7 +105,7 @@ describe('SessionLog', () => {
   });
 
   it('renders the quiet first-run line with no sessions', () => {
-    const { container } = render(h(SessionLog, { events: [] }));
+    const { container } = render(<SessionLog events={[]} />);
     expect(container.textContent).toContain('Your first session will appear here.');
   });
 });

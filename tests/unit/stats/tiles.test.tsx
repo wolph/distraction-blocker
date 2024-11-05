@@ -1,6 +1,5 @@
-// @vitest-environment jsdom
+/** @vitest-environment jsdom */
 import { cleanup, render } from '@testing-library/preact';
-import { h } from 'preact';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { StatsBundle } from '../../../src/shared/messages';
 import type { DailyAgg, PauseEconomy, StreakState } from '../../../src/shared/types';
@@ -109,7 +108,7 @@ describe('formatDuration', () => {
 
 describe('Tiles', () => {
   it('renders the six tile values from the bundle', () => {
-    const { container } = render(h(Tiles, { bundle: BUNDLE, economy: ECONOMY, now: NOW }));
+    const { container } = render(<Tiles bundle={BUNDLE} economy={ECONOMY} now={NOW} />);
     expect(tileValue(container, 'Focus today')).toBe('1 h 05 m');
     expect(tileValue(container, 'Focus this week')).toBe('1 h 55 m');
     expect(tileValue(container, 'Current streak')).toBe('4 days');
@@ -122,7 +121,7 @@ describe('Tiles', () => {
   });
 
   it('renders the quiet zero-state line for an empty bundle', () => {
-    const { container } = render(h(Tiles, { bundle: EMPTY, economy: ECONOMY, now: NOW }));
+    const { container } = render(<Tiles bundle={EMPTY} economy={ECONOMY} now={NOW} />);
     expect(container.textContent).toContain('Stats appear after your first session.');
     expect(container.querySelectorAll('.tile').length).toBe(0);
   });
@@ -130,7 +129,7 @@ describe('Tiles', () => {
 
 describe('Streak', () => {
   it('renders the chain, freeze chips, and one calendar dot per active day', () => {
-    const { container } = render(h(Streak, { streak: STREAK, now: NOW }));
+    const { container } = render(<Streak streak={STREAK} now={NOW} />);
     expect(container.querySelector('.streak-chain')?.textContent).toContain('4');
     expect(container.querySelectorAll('.freeze-chip').length).toBe(2);
     expect(container.querySelectorAll('.cal-day.active').length).toBe(4);
@@ -140,7 +139,7 @@ describe('Streak', () => {
   });
 
   it('renders a quiet first-run line when there is no streak yet', () => {
-    const { container } = render(h(Streak, { streak: EMPTY.streak, now: NOW }));
+    const { container } = render(<Streak streak={EMPTY.streak} now={NOW} />);
     expect(container.textContent).toContain('Your streak starts with your first focus day.');
   });
 });
