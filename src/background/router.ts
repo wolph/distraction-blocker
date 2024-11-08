@@ -2,6 +2,8 @@ import type { Request } from '../shared/messages';
 import type { Verdict } from '../shared/types';
 import { playSound } from './audio';
 import type { Engine } from './engine';
+import { fetchStats } from './stats-service';
+import { readEvents } from './stores';
 
 /**
  * One exhaustive switch from typed requests to engine calls. The never
@@ -49,11 +51,9 @@ export async function routeMessage(
     case 'getLists':
       return engine.getLists();
     case 'getStats':
-      // wired in task 8
-      return { ok: false, error: 'stats wiring lands in task 8' };
+      return fetchStats(msg.days, Date.now());
     case 'exportEvents':
-      // wired in task 8
-      return { ok: false, error: 'stats wiring lands in task 8' };
+      return { json: JSON.stringify(await readEvents(), null, 2) };
     case 'previewSound': {
       // Previews ignore the per-event toggle: the options page needs to
       // demo a sound the user is about to enable.

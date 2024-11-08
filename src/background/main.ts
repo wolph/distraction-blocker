@@ -4,6 +4,7 @@ import { notify, playSound } from './audio';
 import { Engine, type EnginePorts } from './engine';
 import { updateIcon } from './icon';
 import { routeMessage } from './router';
+import { runPrune } from './stats-service';
 import {
   appendEvents,
   getDeviceId,
@@ -66,6 +67,9 @@ async function boot(): Promise<Engine> {
     scheduleWake: (atMs: number | null): void => {
       if (atMs === null) void chrome.alarms.clear(PHASE_ALARM);
       else void chrome.alarms.create(PHASE_ALARM, { when: atMs });
+    },
+    prune: (retentionDays: number, nowMs: number): void => {
+      void runPrune(retentionDays, nowMs);
     },
   };
   const engine: Engine = new Engine(ports, settings, lists, bank, streak, runtime, deviceId);

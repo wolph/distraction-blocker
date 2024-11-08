@@ -6,7 +6,7 @@ import {
   evaluateUrl,
   registrableHost,
 } from '../core/matcher';
-import { nextStart } from '../core/schedule';
+import { activeEntry, nextStart, windowEnd } from '../core/schedule';
 import {
   advance,
   beginPause,
@@ -16,6 +16,7 @@ import {
   startNextFocusEarly as machineStartNextFocusEarly,
 } from '../core/session';
 import { addEvent, emptyDaily } from '../core/stats';
+import { emptyStreak } from '../core/streak';
 import {
   ATTEMPT_DEBOUNCE_MS,
   CANCEL_GATE_DELAY_MS,
@@ -24,7 +25,14 @@ import {
 } from '../shared/constants';
 import { CoreError } from '../shared/errors';
 import type { Ack, SoundId } from '../shared/messages';
-import { SYNC_BANK, SYNC_LISTS, SYNC_SETTINGS, syncAggKey } from '../shared/storage-keys';
+import {
+  SYNC_BANK,
+  SYNC_LISTS,
+  SYNC_SETTINGS,
+  SYNC_STREAK,
+  syncAggKey,
+} from '../shared/storage-keys';
+import { localDateStr, localMonthStr } from '../shared/time';
 import type {
   BankState,
   DailyAgg,
@@ -42,6 +50,7 @@ import type {
   Verdict,
 } from '../shared/types';
 import { listsChangeAllowed, settingsChangeAllowed } from './guard';
+import { planRollover, type RolloverPlan } from './rollover';
 import type { RuntimeState } from './stores';
 
 export interface EnginePorts {
@@ -55,6 +64,8 @@ export interface EnginePorts {
   notify(title: string, message: string): void;
   updateIcon(snapshot: SessionSnapshot): void;
   scheduleWake(atMs: number | null): void;
+  /** run the weekly sync-storage retention prune */
+  prune(retentionDays: number, now: number): void;
 }
 
 const NO_SESSION_VERDICT: Verdict = { blocked: false, reason: 'no-session', matchedPattern: null };
@@ -137,9 +148,11 @@ export class Engine {
       if (this.bank.balanceMs < cost) return this.fail(now, 'not enough pause budget yet');
     }
     const needsPhrase: boolean = gate === 'cancel' || this.settings.gate.requireTypedPhrase;
+    const unlockHost: string | null =
+      gate === 'unlockSite' && host !== null ? (registrableHost(host) ?? host) : null;
     this.runtime.gate = {
       kind: gate,
-      host: gate === 'unlockSite' ? host : null,
+      host: unlockHost,
       openedAt: now,
       readyAt: now + (gate === 'cancel' ? CANCEL_GATE_DELAY_MS : this.settings.gate.delayMs),
       requiredPhrase: needsPhrase ? cancelPhrase(session.config.intention) : null,
@@ -434,14 +447,95 @@ export class Engine {
     }
   }
 
-  // wired in task 8
-  private scheduleCheck(_now: number): void {
-    // schedule auto-sessions land in task 8
+  private scheduleCheck(now: number): void {
+    const entries: ScheduleEntry[] = this.settings.schedule.filter(
+      (e: ScheduleEntry): boolean => e.enabled,
+    );
+    const active: ScheduleEntry | null =
+      entries.length === 0 ? null : activeEntry(entries, new Date(now));
+    const session: SessionState | null = this.runtime.session;
+    if (active === null) {
+      if (this.runtime.scheduleActiveEntryId !== null && session === null) {
+        this.runtime.scheduleActiveEntryId = null;
+        this.dirty = true;
+      }
+      return;
+    }
+    if (session === null) {
+      this.startFromScheduleEntry(active, now);
+      return;
+    }
+    // One session at a time. A hard window upgrades a running friction
+    // session, never the other way around (spec section 5).
+    if (active.strictness === 'hard' && session.config.strictness === 'friction') {
+      this.runtime.session = {
+        ...session,
+        config: { ...session.config, strictness: 'hard' },
+      };
+      this.dirty = true;
+    }
   }
 
-  // wired in task 8
-  private rolloverCheck(_now: number): void {
-    // date rollover and stats persistence land in task 8
+  private startFromScheduleEntry(entry: ScheduleEntry, now: number): void {
+    const endsAt: number = windowEnd(entry, new Date(now)).getTime();
+    const config: SessionConfig = {
+      mode: entry.mode,
+      strictness: entry.strictness,
+      durationMin: Math.max(0, (endsAt - now) / 60_000),
+      cycling: entry.cycling,
+      intention: entry.intention,
+      source: 'schedule',
+      scheduleEntryId: entry.id,
+    };
+    this.runtime.session = machineStart(config, now);
+    this.runtime.accruedFocusMs = 0;
+    this.runtime.scheduleActiveEntryId = entry.id;
+    this.matcher = compileMatcher(this.lists, ALL_CATEGORIES, config.mode);
+    this.pendingEvents.push({
+      t: 'sessionStarted',
+      at: now,
+      source: 'schedule',
+      mode: config.mode,
+      strictness: config.strictness,
+      durationMin: config.durationMin,
+      intention: config.intention,
+    });
+    this.ports.playSound('scheduleStart');
+    this.ports.notify('Focus schedule started', `Locked until ${entry.end}.`);
+    this.dirty = true;
+    this.needsBlocking = true;
+  }
+
+  private rolloverCheck(now: number): void {
+    const today: string = localDateStr(now);
+    if (today === this.runtime.date) return;
+    const streak: StreakState = this.streak ?? emptyStreak(localMonthStr(now));
+    const plan: RolloverPlan = planRollover(
+      this.runtime.date,
+      now,
+      this.runtime.todayAgg,
+      streak,
+      this.settings.streakGoalMin,
+    );
+    this.ports.queueSync(syncAggKey(this.deviceId, plan.finished.date), plan.finished);
+    this.streak = plan.streak;
+    this.ports.queueSync(SYNC_STREAK, plan.streak);
+    this.runtime.todayAgg = plan.newAgg;
+    this.runtime.date = today;
+    this.dirty = true;
+    this.maybePrune(today);
+  }
+
+  /** Weekly retention prune, tracked by date so a busy midnight runs it once. */
+  private maybePrune(today: string): void {
+    const last: string | null = this.runtime.lastPruneDate;
+    if (last !== null) {
+      const elapsedDays: number =
+        (new Date(today).getTime() - new Date(last).getTime()) / 86_400_000;
+      if (elapsedDays < 7) return;
+    }
+    this.runtime.lastPruneDate = today;
+    this.ports.prune(this.settings.retentionDays, this.ports.now());
   }
 
   // --- the commit tail: fold events, persist, broadcast, icon, wake ---

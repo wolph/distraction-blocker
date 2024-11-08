@@ -1,17 +1,21 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EnginePorts } from '../../../src/background/engine';
 import { Engine } from '../../../src/background/engine';
-import { emptyRuntime } from '../../../src/background/stores';
+import { emptyRuntime, type RuntimeState } from '../../../src/background/stores';
+import { activeEntry, windowEnd } from '../../../src/core/schedule';
 import {
   CANCEL_GATE_DELAY_MS,
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
   GATE_EXPIRY_MS,
 } from '../../../src/shared/constants';
+import { localDateStr } from '../../../src/shared/time';
 import type {
   BankState,
   EventRecord,
+  ScheduleEntry,
   SessionConfig,
+  SessionSnapshot,
   SessionState,
   Settings,
 } from '../../../src/shared/types';
@@ -95,7 +99,8 @@ vi.mock('../../../src/core/matcher', () => ({
     now: number,
   ): { blocked: boolean; reason: string; matchedPattern: string | null } => {
     const host: string = new URL(url).hostname;
-    if (unlocks.some((u): boolean => u.host === host && u.until > now)) {
+    const domain: string = host.endsWith('facebook.com') ? 'facebook.com' : host;
+    if (unlocks.some((u): boolean => (u.host === domain || u.host === host) && u.until > now)) {
       return { blocked: false, reason: 'unlock', matchedPattern: host };
     }
     if (host.endsWith('facebook.com')) {
@@ -103,14 +108,17 @@ vi.mock('../../../src/core/matcher', () => ({
     }
     return { blocked: false, reason: 'default', matchedPattern: null };
   },
-  registrableHost: (url: string): string | null => new URL(url).hostname,
+  registrableHost: (url: string): string | null => {
+    const host: string = url.includes('://') ? new URL(url).hostname : url;
+    return host.endsWith('facebook.com') ? 'facebook.com' : host;
+  },
   validateRule: (): null => null,
 }));
 
 vi.mock('../../../src/core/schedule', () => ({
-  activeEntry: (): null => null,
+  activeEntry: vi.fn((): null => null),
   nextStart: (): null => null,
-  windowEnd: (): Date => new Date(0),
+  windowEnd: vi.fn((): Date => new Date(0)),
   validateEntry: (): null => null,
 }));
 
@@ -174,6 +182,7 @@ interface Harness {
 }
 
 const T0: number = 1_000_000_000;
+const DAY_MS: number = 86_400_000;
 
 function makeEngine(opts?: { bankMs?: number; settings?: Partial<Settings> }): Harness {
   let nowMs: number = T0;
@@ -188,6 +197,7 @@ function makeEngine(opts?: { bankMs?: number; settings?: Partial<Settings> }): H
     notify: vi.fn(),
     updateIcon: vi.fn(),
     scheduleWake: vi.fn(),
+    prune: vi.fn(),
   };
   const settings: Settings = { ...DEFAULT_SETTINGS, ...opts?.settings };
   const engine: Engine = new Engine(
@@ -220,7 +230,24 @@ const manualConfig: SessionConfig = {
   scheduleEntryId: null,
 };
 
+const scheduledEntry: ScheduleEntry = {
+  id: 'weekday-focus',
+  days: [0, 1, 2, 3, 4, 5, 6],
+  start: '09:00',
+  end: '10:00',
+  mode: 'blacklist',
+  strictness: 'hard',
+  cycling: null,
+  intention: 'scheduled work',
+  enabled: true,
+};
+
 describe('Engine', () => {
+  beforeEach((): void => {
+    vi.mocked(activeEntry).mockReset().mockReturnValue(null);
+    vi.mocked(windowEnd).mockReset().mockReturnValue(new Date(0));
+  });
+
   it('startSession broadcasts, applies blocking, schedules a wake', async () => {
     const h: Harness = makeEngine();
     const ack = await h.engine.startSession(manualConfig);
@@ -238,6 +265,55 @@ describe('Engine', () => {
     await h.engine.startSession(manualConfig);
     const ack = await h.engine.startSession(manualConfig);
     expect(ack.ok).toBe(false);
+  });
+
+  it('self-heals into an active scheduled session', () => {
+    const h: Harness = makeEngine({ settings: { schedule: [scheduledEntry] } });
+    vi.mocked(activeEntry).mockReturnValue(scheduledEntry);
+    vi.mocked(windowEnd).mockReturnValue(new Date(T0 + 45 * 60_000));
+
+    const snapshot: SessionSnapshot = h.engine.snapshot();
+
+    expect(snapshot.config).toMatchObject({
+      source: 'schedule',
+      scheduleEntryId: scheduledEntry.id,
+      strictness: 'hard',
+      durationMin: 45,
+    });
+    expect(h.ports.playSound).toHaveBeenCalledWith('scheduleStart');
+    expect(h.ports.notify).toHaveBeenCalledWith('Focus schedule started', 'Locked until 10:00.');
+  });
+
+  it('upgrades a running friction session when a hard schedule opens', async () => {
+    const h: Harness = makeEngine({ settings: { schedule: [scheduledEntry] } });
+    await h.engine.startSession(manualConfig);
+    vi.mocked(activeEntry).mockReturnValue(scheduledEntry);
+
+    const snapshot: SessionSnapshot = h.engine.snapshot();
+
+    expect(snapshot.config?.strictness).toBe('hard');
+    expect(h.ports.playSound).not.toHaveBeenCalledWith('scheduleStart');
+  });
+
+  it('rolls the local day and runs retention pruning at most weekly', async () => {
+    const h: Harness = makeEngine();
+    h.setNow(T0 + DAY_MS);
+
+    await h.engine.tick();
+
+    expect(h.ports.queueSync).toHaveBeenCalledWith(
+      `agg:dev-test:${localDateStr(T0)}`,
+      expect.objectContaining({ date: localDateStr(T0) }),
+    );
+    expect(h.ports.prune).toHaveBeenCalledOnce();
+    expect(h.ports.prune).toHaveBeenCalledWith(DEFAULT_SETTINGS.retentionDays, T0 + DAY_MS);
+
+    h.setNow(T0 + 2 * DAY_MS);
+    await h.engine.tick();
+
+    expect(h.ports.prune).toHaveBeenCalledOnce();
+    const savedRuntime: RuntimeState = h.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState;
+    expect(savedRuntime.date).toBe(localDateStr(T0 + 2 * DAY_MS));
   });
 
   it('accrues pause budget from focus time', async () => {
@@ -358,6 +434,22 @@ describe('Engine', () => {
     ]);
     h.setNow(T0 + DEFAULT_SETTINGS.gate.delayMs + DEFAULT_SETTINGS.pause.unlockMs + 1);
     expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(true);
+  });
+
+  it('normalizes a site unlock to its registrable host', async () => {
+    const h: Harness = makeEngine({
+      bankMs: 300_000,
+      settings: {
+        pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0 },
+      },
+    });
+    await h.engine.startSession(manualConfig);
+    await h.engine.openGate('unlockSite', 'm.facebook.com');
+    h.setNow(T0 + DEFAULT_SETTINGS.gate.delayMs);
+    await h.engine.confirmGate(null);
+
+    expect(h.engine.snapshot().activeUnlocks[0]?.host).toBe('facebook.com');
+    expect(h.engine.verdictFor('https://www.facebook.com/feed').blocked).toBe(false);
   });
 
   it('completes the session on tick past sessionEndsAt with sound and notification', async () => {
