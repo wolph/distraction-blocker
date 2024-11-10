@@ -174,6 +174,8 @@ function mount(): Mounted {
   container.className = 'backdrop';
   container.setAttribute('role', 'dialog');
   container.setAttribute('aria-modal', 'true');
+  container.setAttribute('aria-label', 'Focus Lock');
+  container.tabIndex = -1;
   root.append(style, container);
   trapInteraction(host, root);
   document.documentElement.appendChild(host);
@@ -198,6 +200,7 @@ function mount(): Mounted {
 }
 
 function applyHostStyle(host: HTMLElement): void {
+  host.style.setProperty('all', 'initial', 'important');
   host.style.setProperty('position', 'fixed', 'important');
   host.style.setProperty('inset', '0', 'important');
   host.style.setProperty('z-index', '2147483647', 'important');
@@ -216,7 +219,11 @@ function trapInteraction(host: HTMLElement, root: ShadowRoot): void {
     const focusables: HTMLElement[] = Array.from(
       root.querySelectorAll<HTMLElement>('button:not([disabled]):not([hidden]), input'),
     );
-    if (focusables.length === 0) return;
+    if (focusables.length === 0) {
+      ev.preventDefault();
+      root.querySelector<HTMLElement>('[role="dialog"]')?.focus();
+      return;
+    }
     const first: HTMLElement = focusables[0] as HTMLElement;
     const last: HTMLElement = focusables[focusables.length - 1] as HTMLElement;
     const active: Element | null = root.activeElement;
@@ -235,7 +242,7 @@ function focusInitial(m: Mounted): void {
   const target: HTMLElement | null = m.root.querySelector<HTMLElement>(
     'button:not([disabled]):not([hidden])',
   );
-  target?.focus();
+  (target ?? m.container).focus();
 }
 
 function render(m: Mounted): void {
@@ -291,7 +298,7 @@ function appendIntention(panel: HTMLElement, snap: SessionSnapshot): void {
 function appendNotLoaded(panel: HTMLElement): void {
   const el: HTMLElement = document.createElement('div');
   el.className = 'notloaded';
-  el.textContent = 'This page did not load. It will load by itself when the session ends.';
+  el.textContent = 'This page did not load. It will load by itself when session ends.';
   panel.appendChild(el);
 }
 
@@ -334,12 +341,12 @@ function buildButtons(m: Mounted, snap: SessionSnapshot, now: number): HTMLEleme
   const row: HTMLElement = document.createElement('div');
   row.className = 'buttons';
   const unlock: SpendRef = spendButton(
-    `Unlock this site for ${costMin(snap.unlockCostMs)} min`,
+    `Unlock this site ${costMin(snap.unlockCostMs)} min`,
     snap.unlockCostMs,
     (): void => requestOpenGate('unlockSite', location.hostname),
   );
   const pause: SpendRef = spendButton(
-    `Pause everything for ${costMin(snap.pauseCostMs)} min`,
+    `Pause everything ${costMin(snap.pauseCostMs)} min`,
     snap.pauseCostMs,
     (): void => requestOpenGate('pause', null),
   );
@@ -387,15 +394,15 @@ function readyIn(deficitMs: number, accrualPerMs: number): string {
 }
 
 function gateTitle(gate: GateState, snap: SessionSnapshot): string {
-  if (gate.kind === 'pause') return `Pause everything for ${costMin(snap.pauseCostMs)} min`;
+  if (gate.kind === 'pause') return `Pause everything ${costMin(snap.pauseCostMs)} min`;
   if (gate.kind === 'unlockSite') {
-    return `Unlock ${gate.host ?? 'this site'} for ${costMin(snap.unlockCostMs)} min`;
+    return `Unlock ${gate.host ?? 'this site'} ${costMin(snap.unlockCostMs)} min`;
   }
   return 'End this session';
 }
 
 function gateConfirmLabel(kind: GateKind): string {
-  if (kind === 'pause') return 'Take the break';
+  if (kind === 'pause') return 'Take break';
   if (kind === 'unlockSite') return 'Unlock it';
   return 'End session';
 }
@@ -528,7 +535,7 @@ async function sendAndRefresh(
   try {
     await sendRequest(req);
     const snapshot: SessionSnapshot = await sendRequest({ type: 'getSnapshot' });
-    if (mounted !== null) showOverlay(mounted.verdict, snapshot);
+    if (mounted !== null) showOverlay(mounted.verdict, snapshot, mounted.stopped);
   } catch {
     // worker unavailable (shutdown race): keep the last render, the next push corrects us
   }

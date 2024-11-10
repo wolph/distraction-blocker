@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest';
+import type { Mock } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { hideOverlay, showOverlay } from '../../../src/content/overlay';
 import { emptySnapshot } from '../../../src/shared/constants';
 import type { SessionSnapshot, Verdict } from '../../../src/shared/types';
@@ -25,6 +26,19 @@ function focusSnap(): SessionSnapshot {
     attemptsToday: 3,
   };
 }
+
+function shadowRoot(): ShadowRoot {
+  const root: ShadowRoot | undefined = (globalThis as { __focusLockShadow?: ShadowRoot })
+    .__focusLockShadow;
+  if (root === undefined) throw new Error('Focus Lock shadow root was not mounted');
+  return root;
+}
+
+afterEach((): void => {
+  hideOverlay(emptySnapshot(Date.now()));
+  document.body.replaceChildren();
+  vi.unstubAllGlobals();
+});
 
 describe('overlay', () => {
   it('mounts once, shows intention and attempt count, and unmounts', () => {
@@ -59,5 +73,78 @@ describe('overlay', () => {
     expect(root?.textContent).not.toContain('This page did not load.');
     expect(root?.querySelector('.backdrop')?.classList.contains('opaque')).toBe(false);
     hideOverlay(emptySnapshot(Date.now()));
+  });
+
+  it('keeps the stopped-tab presentation after a gate action refreshes the snapshot', async () => {
+    const snap: SessionSnapshot = focusSnap();
+    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+      async (request: { type: string }): Promise<unknown> => {
+        if (request.type === 'getSnapshot') return snap;
+        return { ok: true };
+      },
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    showOverlay(verdict, snap, true);
+    const root: ShadowRoot = shadowRoot();
+    const endSession: HTMLButtonElement | undefined = Array.from(
+      root.querySelectorAll<HTMLButtonElement>('button'),
+    ).find((button: HTMLButtonElement): boolean => button.textContent === 'End session');
+
+    endSession?.click();
+
+    await vi.waitFor((): void => {
+      expect(sendMessage).toHaveBeenCalledTimes(2);
+      expect(root.querySelector('.backdrop')?.classList.contains('opaque')).toBe(true);
+      expect(root.querySelector('.notloaded')?.textContent).toBe(
+        'This page did not load. It will load by itself when session ends.',
+      );
+    });
+  });
+
+  it('owns focus and traps Tab when hard mode has no enabled controls', () => {
+    const outside: HTMLButtonElement = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+    const snap: SessionSnapshot = focusSnap();
+    const hardSnap: SessionSnapshot = {
+      ...snap,
+      bankAccrualPerMs: 0,
+      bankMs: 0,
+      config: snap.config === null ? null : { ...snap.config, strictness: 'hard' },
+    };
+
+    showOverlay(verdict, hardSnap);
+
+    const host: HTMLElement = document.querySelector('focus-lock-overlay') as HTMLElement;
+    const root: ShadowRoot = shadowRoot();
+    const dialog: HTMLElement = root.querySelector('[role="dialog"]') as HTMLElement;
+    const tab: KeyboardEvent = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    });
+    dialog.dispatchEvent(tab);
+    expect(document.activeElement).toBe(host);
+    expect(root.activeElement).toBe(dialog);
+    expect(tab.defaultPrevented).toBe(true);
+  });
+
+  it('resets the host styles while preserving the fixed overlay', () => {
+    showOverlay(verdict, focusSnap());
+    const host: HTMLElement = document.querySelector('focus-lock-overlay') as HTMLElement;
+
+    expect(host.style.getPropertyValue('all')).toBe('initial');
+    expect(host.style.getPropertyPriority('all')).toBe('important');
+    expect(host.style.getPropertyValue('position')).toBe('fixed');
+    expect(host.style.getPropertyPriority('position')).toBe('important');
+    expect(host.style.getPropertyValue('inset')).toBe('0px');
+  });
+
+  it('gives the dialog an accessible name', () => {
+    showOverlay(verdict, focusSnap());
+    const dialog: HTMLElement = shadowRoot().querySelector('[role="dialog"]') as HTMLElement;
+
+    expect(dialog.getAttribute('aria-label')).toBe('Focus Lock');
   });
 });
