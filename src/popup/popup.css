@@ -6,8 +6,14 @@
   --text-soft: #5a6b60;
   --focus-color: #22c55e;
   --focus-strong: #15803d;
+  --focus-text: #15803d;
   --break-color: #14b8a6;
+  --break-text: #0f766e;
   --paused-color: #f59e0b;
+  --paused-text: #a16207;
+  --primary-bg: #15803d;
+  --primary-bg-hover: #166534;
+  --primary-text: #ffffff;
   --accent-soft: #e5f6ea;
 }
 
@@ -20,8 +26,14 @@
     --text-soft: #9db2a4;
     --focus-color: #22c55e;
     --focus-strong: #4ade80;
+    --focus-text: #4ade80;
     --break-color: #2dd4bf;
+    --break-text: #2dd4bf;
     --paused-color: #fbbf24;
+    --paused-text: #fbbf24;
+    --primary-bg: #22c55e;
+    --primary-bg-hover: #4ade80;
+    --primary-text: #052e16;
     --accent-soft: #1e3327;
   }
 }
@@ -232,15 +244,15 @@ body {
   padding: 12px;
   border: none;
   border-radius: 10px;
-  background: var(--focus-color);
-  color: #ffffff;
+  background: var(--primary-bg);
+  color: var(--primary-text);
   font-size: 15px;
   font-weight: 700;
   cursor: pointer;
 }
 
 .start-button:hover {
-  background: var(--focus-strong);
+  background: var(--primary-bg-hover);
 }
 
 .form-error {
@@ -287,6 +299,22 @@ body {
   gap: 2px;
   font-weight: 600;
   font-size: 13px;
+}
+
+.phase-label-focus {
+  color: var(--focus-text);
+}
+
+.phase-label-break {
+  color: var(--break-text);
+}
+
+.phase-label-paused {
+  color: var(--paused-text);
+}
+
+.snapshot-status {
+  color: var(--text-soft);
 }
 
 .cycle-note {

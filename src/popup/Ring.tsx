@@ -75,7 +75,7 @@ export function Ring({ snapshot, now }: { snapshot: SessionSnapshot; now: number
       <div class="ring-center">
         <span class="clock">{formatClock(remainingPhaseMs(snapshot, now))}</span>
       </div>
-      <p class="phase-label" style={{ color }}>
+      <p class={`phase-label phase-label-${phase}`}>
         {phaseLabel(snapshot)}
         {cycle !== null ? <span class="cycle-note">{cycle}</span> : null}
       </p>

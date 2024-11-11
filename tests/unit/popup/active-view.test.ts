@@ -56,6 +56,16 @@ function pausedSnap(): SessionSnapshot {
   };
 }
 
+function breakSnap(elapsedMs: number): SessionSnapshot {
+  return {
+    ...focusSnap(),
+    phase: 'break',
+    phaseStartedAt: NOW - elapsedMs,
+    phaseEndsAt: NOW + 3 * 60_000,
+    bankAccrualPerMs: 0,
+  };
+}
+
 const statsBundle: StatsBundle = {
   days: [],
   months: [],
@@ -85,14 +95,23 @@ describe('ActiveView', () => {
     cleanup();
   });
 
-  it('renders the clock, both spend buttons, and the friction cancel', async (): Promise<void> => {
-    const { getByText, getByRole } = render(h(ActiveView, { snapshot: focusSnap(), now: NOW }));
+  it('renders the clock and overlay action labels in matching order', async (): Promise<void> => {
+    const { container, getByText, getByRole } = render(
+      h(ActiveView, { snapshot: focusSnap(), now: NOW }),
+    );
 
     expect(getByText('20:00')).toBeTruthy();
     expect(getByText('focusing')).toBeTruthy();
-    expect(getByRole('button', { name: /Unlock this site/ })).toBeTruthy();
-    expect(getByRole('button', { name: /Pause everything/ })).toBeTruthy();
-    expect(getByRole('button', { name: /End session early/ })).toBeTruthy();
+    expect(container.querySelector('.phase-label-focus')).toBeTruthy();
+    expect(container.querySelectorAll('circle')[1]?.getAttribute('stroke')).toBe('#22c55e');
+    expect(getByRole('button', { name: /Unlock this site 5 min/ })).toBeTruthy();
+    expect(getByRole('button', { name: /Pause everything 5 min/ })).toBeTruthy();
+    expect(getByRole('button', { name: 'End session' })).toBeTruthy();
+    expect(
+      Array.from(container.querySelectorAll('.actions button')).map((button: Element): string =>
+        (button.querySelector('.spend-label')?.textContent ?? button.textContent ?? '').trim(),
+      ),
+    ).toEqual(['Unlock this site 5 min', 'Pause everything 5 min', 'End session']);
     await waitFor((): void => {
       expect(getByText('52 min focused today')).toBeTruthy();
     });
@@ -104,7 +123,7 @@ describe('ActiveView', () => {
       config: { ...config, strictness: 'hard' },
     };
     const { queryByRole } = render(h(ActiveView, { snapshot: hard, now: NOW }));
-    expect(queryByRole('button', { name: /End session early/ })).toBeNull();
+    expect(queryByRole('button', { name: 'End session' })).toBeNull();
   });
 
   it('renders the gate with back-to-work as the only enabled button before readyAt', (): void => {
@@ -124,14 +143,51 @@ describe('ActiveView', () => {
   it('enables the gate confirm once readyAt has passed', (): void => {
     const { getByRole } = render(h(ActiveView, { snapshot: gateSnap(), now: NOW + 9_000 }));
     const confirm: HTMLButtonElement = getByRole('button', {
-      name: 'Take the pause',
+      name: 'Take break',
     }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(false);
+  });
+
+  it.each([
+    { kind: 'unlockSite' as const, label: 'Unlock it' },
+    { kind: 'cancel' as const, label: 'End session' },
+  ])('uses the overlay confirmation label for $kind', ({ kind, label }): void => {
+    const gateSnapshot: SessionSnapshot = gateSnap();
+    if (gateSnapshot.gate === null) throw new Error('gate fixture must contain a gate');
+    const snapshot: SessionSnapshot = {
+      ...gateSnapshot,
+      gate: { ...gateSnapshot.gate, kind },
+    };
+    const { getByRole } = render(h(ActiveView, { snapshot, now: NOW + 9_000 }));
+
+    expect(getByRole('button', { name: label })).toBeTruthy();
   });
 
   it('renders paused state with a resume button', (): void => {
     const { getByRole, getByText } = render(h(ActiveView, { snapshot: pausedSnap(), now: NOW }));
     expect(getByRole('button', { name: 'Resume now' })).toBeTruthy();
     expect(getByText(/paused, back at/)).toBeTruthy();
+  });
+
+  it('renders no escape controls during the first two minutes of a break', (): void => {
+    const { queryByRole } = render(
+      h(ActiveView, { snapshot: breakSnap(2 * 60_000 - 1), now: NOW }),
+    );
+
+    expect(queryByRole('button', { name: /Unlock this site/ })).toBeNull();
+    expect(queryByRole('button', { name: /Pause everything/ })).toBeNull();
+    expect(queryByRole('button', { name: 'End session' })).toBeNull();
+    expect(queryByRole('button', { name: 'Start next focus early' })).toBeNull();
+  });
+
+  it('only offers starting focus early after two minutes of a break', (): void => {
+    const { getByRole, queryByRole } = render(
+      h(ActiveView, { snapshot: breakSnap(2 * 60_000), now: NOW }),
+    );
+
+    expect(getByRole('button', { name: 'Start next focus early' })).toBeTruthy();
+    expect(queryByRole('button', { name: /Unlock this site/ })).toBeNull();
+    expect(queryByRole('button', { name: /Pause everything/ })).toBeNull();
+    expect(queryByRole('button', { name: 'End session' })).toBeNull();
   });
 });

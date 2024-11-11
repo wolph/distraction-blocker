@@ -128,23 +128,9 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
         >
           Resume now
         </button>
-      ) : (
-        <div class="actions">
-          <SpendButton
-            label={`Unlock this site (${costMin(snapshot.unlockCostMs)} min)`}
-            sub={activeHost}
-            affordable={unlockAfford.affordable && activeHost !== null}
-            countdown={unlockAfford.countdown}
-            onClick={(): void => openGate('unlockSite', activeHost)}
-          />
-          <SpendButton
-            label={`Pause everything (${costMin(snapshot.pauseCostMs)} min)`}
-            sub={null}
-            affordable={pauseAfford.affordable}
-            countdown={pauseAfford.countdown}
-            onClick={(): void => openGate('pause', null)}
-          />
-          {breakEarlyVisible ? (
+      ) : snapshot.phase === 'break' ? (
+        breakEarlyVisible ? (
+          <div class="actions">
             <button
               type="button"
               class="spend-button"
@@ -152,14 +138,31 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
             >
               Start next focus early
             </button>
-          ) : null}
+          </div>
+        ) : null
+      ) : (
+        <div class="actions">
+          <SpendButton
+            label={`Unlock this site ${costMin(snapshot.unlockCostMs)} min`}
+            sub={activeHost}
+            affordable={unlockAfford.affordable && activeHost !== null}
+            countdown={unlockAfford.countdown}
+            onClick={(): void => openGate('unlockSite', activeHost)}
+          />
+          <SpendButton
+            label={`Pause everything ${costMin(snapshot.pauseCostMs)} min`}
+            sub={null}
+            affordable={pauseAfford.affordable}
+            countdown={pauseAfford.countdown}
+            onClick={(): void => openGate('pause', null)}
+          />
           {strictness === 'friction' ? (
             <button
               type="button"
               class="cancel-link"
               onClick={(): void => openGate('cancel', null)}
             >
-              End session early
+              End session
             </button>
           ) : null}
         </div>

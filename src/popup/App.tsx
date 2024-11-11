@@ -126,11 +126,15 @@ function Body({ snapshot, now }: { snapshot: SessionSnapshot; now: number }): VN
 }
 
 export function App(): VNode {
-  const { snapshot, now } = useSnapshot();
+  const { error, snapshot, now } = useSnapshot();
   return (
     <div class="app">
       <Header />
-      {snapshot === null ? (
+      {error ? (
+        <section class="view snapshot-status" role="status">
+          Focus status unavailable
+        </section>
+      ) : snapshot === null ? (
         <section class="view" aria-busy="true" />
       ) : (
         <Body snapshot={snapshot} now={now} />
