@@ -1,0 +1,13 @@
+{
+  "id": "mail",
+  "title": "Mail",
+  "hosts": [
+    "mail.google.com",
+    "gmail.com",
+    "outlook.com",
+    "outlook.live.com",
+    "mail.yahoo.com",
+    "proton.me",
+    "mail.com"
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "id": "gaming",
+  "title": "Gaming",
+  "hosts": [
+    "store.steampowered.com",
+    "steamcommunity.com",
+    "epicgames.com",
+    "gog.com",
+    "itch.io",
+    "chess.com",
+    "lichess.org",
+    "roblox.com",
+    "miniclip.com",
+    "poki.com",
+    "crazygames.com"
+  ]
+}
