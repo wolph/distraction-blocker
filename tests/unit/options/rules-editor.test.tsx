@@ -4,22 +4,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RulesEditor } from '../../../src/options/RulesEditor';
 import type { Rule } from '../../../src/shared/types';
 
-vi.mock('../../../src/core/matcher', () => ({
-  // Mirrors the real validator's contract: null when valid, message when not.
-  // The real implementation lands in plan 02, so tests run against this fake.
-  validateRule: (rule: Rule): string | null => {
-    if (rule.pattern.trim() === '') return 'pattern is empty';
-    if (rule.kind === 'regex') {
-      try {
-        new RegExp(rule.pattern);
-      } catch {
-        return 'invalid regular expression';
-      }
-    }
-    return null;
-  },
-}));
-
 afterEach((): void => {
   cleanup();
 });
@@ -45,7 +29,7 @@ describe('RulesEditor', () => {
     fireEvent.input(getByLabelText('Pattern'), { target: { value: '(' } });
     fireEvent.click(getByRole('button', { name: 'Add rule' }));
     expect(onChange).not.toHaveBeenCalled();
-    expect(getByText('invalid regular expression')).toBeTruthy();
+    expect(getByText(/not a valid regex:/)).toBeTruthy();
   });
 
   it('strips slash delimiters on input and stores the bare regex source', (): void => {

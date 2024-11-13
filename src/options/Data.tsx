@@ -7,6 +7,7 @@ import { localDateStr } from '../shared/time';
 /** Export of the local event log plus the device id behind cross-device stats. */
 export function Data(): VNode {
   const [deviceId, setDeviceId] = useState<string>('');
+  const [exportError, setExportError] = useState<string | null>(null);
 
   useEffect((): void => {
     const load = async (): Promise<void> => {
@@ -18,14 +19,28 @@ export function Data(): VNode {
   }, []);
 
   const exportEvents = async (): Promise<void> => {
-    const { json }: { json: string } = await sendRequest({ type: 'exportEvents' });
-    const blob: Blob = new Blob([json], { type: 'application/json' });
-    const url: string = URL.createObjectURL(blob);
-    const anchor: HTMLAnchorElement = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `focus-lock-events-${localDateStr(Date.now())}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    setExportError(null);
+    try {
+      const response: unknown = await sendRequest({ type: 'exportEvents' });
+      if (
+        typeof response !== 'object' ||
+        response === null ||
+        !('json' in response) ||
+        typeof response.json !== 'string'
+      ) {
+        throw new Error('invalid export response');
+      }
+      JSON.parse(response.json);
+      const blob: Blob = new Blob([response.json], { type: 'application/json' });
+      const url: string = URL.createObjectURL(blob);
+      const anchor: HTMLAnchorElement = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `focus-lock-events-${localDateStr(Date.now())}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setExportError('Could not export the event log. Try again.');
+    }
   };
 
   return (
@@ -45,6 +60,11 @@ export function Data(): VNode {
         >
           Export event log
         </button>
+        {exportError !== null ? (
+          <p class="save-error" role="alert">
+            {exportError}
+          </p>
+        ) : null}
       </div>
       <h3>This device</h3>
       <p class="help">

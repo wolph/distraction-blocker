@@ -5,19 +5,6 @@ import { Categories } from '../../../src/options/Categories';
 import { DEFAULT_LISTS } from '../../../src/shared/constants';
 import type { ListsConfig } from '../../../src/shared/types';
 
-vi.mock('../../../src/core/categories', () => ({
-  // Plan 02 fills the real list from src/lists JSON. The component only
-  // needs the shape, so a two-category fixture stands in.
-  ALL_CATEGORIES: [
-    {
-      id: 'social',
-      title: 'Social',
-      hosts: ['facebook.com', 'instagram.com', 'x.com'],
-    },
-    { id: 'news', title: 'News', hosts: ['nu.nl', 'tweakers.net'] },
-  ],
-}));
-
 afterEach((): void => {
   cleanup();
 });
@@ -26,7 +13,7 @@ describe('Categories', () => {
   it('toggling a category on fires onChange with the toggle set', (): void => {
     const onChange = vi.fn();
     const { getByLabelText } = render(<Categories lists={DEFAULT_LISTS} onChange={onChange} />);
-    fireEvent.click(getByLabelText('Social'));
+    fireEvent.click(getByLabelText('Social media'));
     expect(onChange).toHaveBeenCalledTimes(1);
     const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
     expect(next.categories.social).toBe(true);
@@ -40,7 +27,7 @@ describe('Categories', () => {
     };
     const onChange = vi.fn();
     const { getByLabelText, getByRole } = render(<Categories lists={lists} onChange={onChange} />);
-    fireEvent.click(getByRole('button', { name: 'Show Social sites' }));
+    fireEvent.click(getByRole('button', { name: 'Show Social media sites' }));
     fireEvent.click(getByLabelText('facebook.com'));
     expect(onChange).toHaveBeenCalledTimes(1);
     const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
@@ -55,7 +42,7 @@ describe('Categories', () => {
     };
     const onChange = vi.fn();
     const { getByLabelText, getByRole } = render(<Categories lists={lists} onChange={onChange} />);
-    fireEvent.click(getByRole('button', { name: 'Show Social sites' }));
+    fireEvent.click(getByRole('button', { name: 'Show Social media sites' }));
     fireEvent.click(getByLabelText('facebook.com'));
     const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
     expect(next.exclusions.social).toEqual(['x.com']);
@@ -69,7 +56,7 @@ describe('Categories', () => {
     };
     const onChange = vi.fn();
     const { getByLabelText } = render(<Categories lists={lists} onChange={onChange} />);
-    fireEvent.click(getByLabelText('Social'));
+    fireEvent.click(getByLabelText('Social media'));
     const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
     expect(next.categories.social).toBe(false);
     expect(next.exclusions.social).toEqual(['facebook.com']);

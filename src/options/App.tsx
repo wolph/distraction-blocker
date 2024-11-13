@@ -50,6 +50,7 @@ interface SectionProps {
 }
 
 function ListsSection(props: SectionProps): VNode {
+  const committed: ListsConfig = props.store.lists ?? props.lists;
   return (
     <section>
       <h2>Lists</h2>
@@ -73,13 +74,20 @@ function ListsSection(props: SectionProps): VNode {
       />
       <SaveRow
         label="Save lists"
-        onSave={(): Promise<string | null> => props.store.saveLists(props.lists)}
+        onSave={(): Promise<string | null> =>
+          props.store.saveLists({
+            ...committed,
+            custom: props.lists.custom,
+            whitelist: props.lists.whitelist,
+          })
+        }
       />
     </section>
   );
 }
 
 function CategoriesSection(props: SectionProps): VNode {
+  const committed: ListsConfig = props.store.lists ?? props.lists;
   return (
     <section>
       <h2>Categories</h2>
@@ -90,13 +98,20 @@ function CategoriesSection(props: SectionProps): VNode {
       <Categories lists={props.lists} onChange={props.onLists} />
       <SaveRow
         label="Save categories"
-        onSave={(): Promise<string | null> => props.store.saveLists(props.lists)}
+        onSave={(): Promise<string | null> =>
+          props.store.saveLists({
+            ...committed,
+            categories: props.lists.categories,
+            exclusions: props.lists.exclusions,
+          })
+        }
       />
     </section>
   );
 }
 
 function ScheduleSection(props: SectionProps): VNode {
+  const committed: Settings = props.store.settings ?? props.settings;
   return (
     <section>
       <h2>Schedule</h2>
@@ -113,46 +128,73 @@ function ScheduleSection(props: SectionProps): VNode {
       />
       <SaveRow
         label="Save schedule"
-        onSave={(): Promise<string | null> => props.store.saveSettings(props.settings)}
+        onSave={(): Promise<string | null> =>
+          props.store.saveSettings({ ...committed, schedule: props.settings.schedule })
+        }
       />
     </section>
   );
 }
 
 function StrictnessSection(props: SectionProps): VNode {
+  const committed: Settings = props.store.settings ?? props.settings;
   return (
     <section>
       <h2>Strictness and gate</h2>
       <BehaviorDefaults settings={props.settings} onChange={props.onSettings} />
       <SaveRow
         label="Save strictness and gate"
-        onSave={(): Promise<string | null> => props.store.saveSettings(props.settings)}
+        onSave={(): Promise<string | null> =>
+          props.store.saveSettings({
+            ...committed,
+            defaultMode: props.settings.defaultMode,
+            defaultStrictness: props.settings.defaultStrictness,
+            defaultCycling: props.settings.defaultCycling,
+            cyclingOnByDefault: props.settings.cyclingOnByDefault,
+            gate: props.settings.gate,
+          })
+        }
       />
     </section>
   );
 }
 
 function PauseSection(props: SectionProps): VNode {
+  const committed: Settings = props.store.settings ?? props.settings;
   return (
     <section>
       <h2>Pause economy</h2>
       <PauseEconomy settings={props.settings} onChange={props.onSettings} />
       <SaveRow
         label="Save pause economy"
-        onSave={(): Promise<string | null> => props.store.saveSettings(props.settings)}
+        onSave={(): Promise<string | null> =>
+          props.store.saveSettings({
+            ...committed,
+            pause: props.settings.pause,
+            streakGoalMin: props.settings.streakGoalMin,
+            retentionDays: props.settings.retentionDays,
+          })
+        }
       />
     </section>
   );
 }
 
 function SoundsSection(props: SectionProps): VNode {
+  const committed: Settings = props.store.settings ?? props.settings;
   return (
     <section>
       <h2>Sounds and badge</h2>
       <SoundsBadge settings={props.settings} onChange={props.onSettings} />
       <SaveRow
         label="Save sounds and badge"
-        onSave={(): Promise<string | null> => props.store.saveSettings(props.settings)}
+        onSave={(): Promise<string | null> =>
+          props.store.saveSettings({
+            ...committed,
+            sounds: props.settings.sounds,
+            badgeCountdown: props.settings.badgeCountdown,
+          })
+        }
       />
     </section>
   );
@@ -193,10 +235,16 @@ export function App(): VNode {
   const [draftLists, setDraftLists] = useState<ListsConfig | null>(null);
 
   useEffect((): void => {
-    setDraftSettings(store.settings);
+    const loaded: Settings | null = store.settings;
+    if (loaded !== null) {
+      setDraftSettings((current: Settings | null): Settings => current ?? loaded);
+    }
   }, [store.settings]);
   useEffect((): void => {
-    setDraftLists(store.lists);
+    const loaded: ListsConfig | null = store.lists;
+    if (loaded !== null) {
+      setDraftLists((current: ListsConfig | null): ListsConfig => current ?? loaded);
+    }
   }, [store.lists]);
 
   return (
@@ -221,7 +269,11 @@ export function App(): VNode {
       </nav>
       <main class="content">
         {hardBanner(store.snapshot)}
-        {draftSettings === null || draftLists === null ? (
+        {store.loadError !== null ? (
+          <p class="save-error" role="alert">
+            {store.loadError}
+          </p>
+        ) : draftSettings === null || draftLists === null ? (
           <p>Loading settings</p>
         ) : (
           <SectionBody

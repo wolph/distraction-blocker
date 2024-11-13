@@ -1,4 +1,5 @@
 import type { VNode } from 'preact';
+import { useState } from 'preact/hooks';
 import { minToMs } from '../shared/time';
 import type { Settings } from '../shared/types';
 
@@ -7,33 +8,52 @@ export interface BehaviorProps {
   onChange: (next: Settings) => void;
 }
 
-/** Parsed non-negative number from a number input, null for anything else. */
-function numberFrom(event: Event): number | null {
-  const raw: string = (event.currentTarget as HTMLInputElement).value;
-  const value: number = Number(raw);
-  if (raw.trim() === '' || !Number.isFinite(value) || value < 0) return null;
-  return value;
-}
-
-interface MinutesFieldProps {
+interface NumberFieldProps {
   label: string;
   value: number;
   onValue: (value: number) => void;
+  allowZero?: boolean;
+  allowFraction?: boolean;
 }
 
-function NumberField(props: MinutesFieldProps): VNode {
+function NumberField(props: NumberFieldProps): VNode {
+  const [error, setError] = useState<string | null>(null);
+  const allowZero: boolean = props.allowZero ?? false;
+  const allowFraction: boolean = props.allowFraction ?? false;
+  const errorMessage: string = allowFraction
+    ? `${props.label} must be zero or greater.`
+    : allowZero
+      ? `${props.label} must be a whole number of zero or greater.`
+      : `${props.label} must be a positive whole number.`;
   return (
     <label class="field">
       {props.label}
       <input
         type="number"
-        min="0"
+        min={allowZero ? '0' : '1'}
+        step={allowFraction ? 'any' : '1'}
         value={props.value}
         onInput={(event: Event): void => {
-          const value: number | null = numberFrom(event);
-          if (value !== null) props.onValue(value);
+          const raw: string = (event.currentTarget as HTMLInputElement).value;
+          const value: number = Number(raw);
+          const valid: boolean =
+            raw.trim() !== '' &&
+            Number.isFinite(value) &&
+            (allowZero ? value >= 0 : value > 0) &&
+            (allowFraction || Number.isInteger(value));
+          if (!valid) {
+            setError(errorMessage);
+            return;
+          }
+          setError(null);
+          props.onValue(value);
         }}
       />
+      {error !== null ? (
+        <span class="field-error" role="alert">
+          {error}
+        </span>
+      ) : null}
     </label>
   );
 }
@@ -196,23 +216,19 @@ export function PauseEconomy(props: BehaviorProps): VNode {
         Pause minutes accrue while you focus and spend from one bank, whether you pause everything
         or unlock a single site. The cap keeps a saved-up bank from funding a binge.
       </p>
-      <label class="field">
-        Minutes of pause per 30 minutes of focus
-        <input
-          type="number"
-          min="0"
-          value={earnPer30}
-          onInput={(event: Event): void => {
-            const value: number | null = numberFrom(event);
-            if (value !== null) {
-              props.onChange({ ...s, pause: { ...s.pause, earnRatio: value / 30 } });
-            }
-          }}
-        />
-      </label>
+      <NumberField
+        label="Minutes of pause per 30 minutes of focus"
+        value={earnPer30}
+        allowZero
+        allowFraction
+        onValue={(value: number): void => {
+          props.onChange({ ...s, pause: { ...s.pause, earnRatio: value / 30 } });
+        }}
+      />
       <NumberField
         label="Pause bank cap (minutes)"
         value={s.pause.capMs / 60_000}
+        allowZero
         onValue={(value: number): void => {
           props.onChange({ ...s, pause: { ...s.pause, capMs: minToMs(value) } });
         }}

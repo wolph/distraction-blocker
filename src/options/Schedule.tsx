@@ -34,6 +34,21 @@ function daySummary(days: number[]): string {
     .join(', ');
 }
 
+function overlapError(candidate: ScheduleEntry, entries: ScheduleEntry[]): string | null {
+  if (!candidate.enabled) return null;
+  for (const entry of entries) {
+    if (!entry.enabled || entry.id === candidate.id) continue;
+    const day: number | undefined = DAY_ORDER.find(
+      (value: number): boolean => candidate.days.includes(value) && entry.days.includes(value),
+    );
+    if (day === undefined) continue;
+    if (candidate.start < entry.end && entry.start < candidate.end) {
+      return `Overlaps another enabled entry on ${DAY_LABELS[day]}.`;
+    }
+  }
+  return null;
+}
+
 interface DayPickerProps {
   days: number[];
   onChange: (days: number[]) => void;
@@ -214,6 +229,11 @@ export function Schedule(props: ScheduleProps): VNode {
       setError(message);
       return;
     }
+    const overlap: string | null = overlapError(draft, props.entries);
+    if (overlap !== null) {
+      setError(overlap);
+      return;
+    }
     const exists: boolean = props.entries.some((e: ScheduleEntry): boolean => e.id === draft.id);
     const next: ScheduleEntry[] = exists
       ? props.entries.map((e: ScheduleEntry): ScheduleEntry => (e.id === draft.id ? draft : e))
@@ -224,8 +244,21 @@ export function Schedule(props: ScheduleProps): VNode {
   };
 
   const setEnabled = (id: string, enabled: boolean): void => {
+    const entry: ScheduleEntry | undefined = props.entries.find(
+      (candidate: ScheduleEntry): boolean => candidate.id === id,
+    );
+    if (entry === undefined) return;
+    const nextEntry: ScheduleEntry = { ...entry, enabled };
+    const overlap: string | null = overlapError(nextEntry, props.entries);
+    if (overlap !== null) {
+      setError(overlap);
+      return;
+    }
+    setError(null);
     props.onChange(
-      props.entries.map((e: ScheduleEntry): ScheduleEntry => (e.id === id ? { ...e, enabled } : e)),
+      props.entries.map(
+        (candidate: ScheduleEntry): ScheduleEntry => (candidate.id === id ? nextEntry : candidate),
+      ),
     );
   };
 
@@ -281,6 +314,11 @@ export function Schedule(props: ScheduleProps): VNode {
           </div>
         ),
       )}
+      {draft === null && error !== null ? (
+        <p class="field-error" role="alert">
+          {error}
+        </p>
+      ) : null}
       {draft !== null ? (
         <EntryForm
           draft={draft}
