@@ -293,10 +293,20 @@ h2 {
   font-size: 12px;
 }
 
+.chart-table th,
 .chart-table td {
   padding: 2px 12px 2px 0;
   border-bottom: 1px solid var(--grid);
   font-variant-numeric: tabular-nums;
+}
+
+.chart-table th {
+  text-align: left;
+  font-weight: 500;
+}
+
+.chart-table tbody th {
+  font-weight: 400;
 }
 
 /* Session log: quiet table, positive outcome chips, no red anywhere. */

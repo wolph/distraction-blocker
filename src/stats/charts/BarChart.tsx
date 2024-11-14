@@ -1,5 +1,5 @@
 import type { JSX } from 'preact';
-import { useState } from 'preact/hooks';
+import { useId, useState } from 'preact/hooks';
 
 export interface ChartDatum {
   label: string;
@@ -9,6 +9,8 @@ export interface ChartDatum {
 export interface BarChartProps {
   data: ChartDatum[];
   format: (v: number) => string;
+  /** accessible chart name, normally matching the surrounding heading */
+  label?: string;
   /** CSS color for the marks, one entity per chart */
   color?: string;
   /** quiet first-run line shown when there is nothing to plot */
@@ -27,6 +29,8 @@ const LABEL_BAND = 22;
 const BASELINE_Y = H - LABEL_BAND;
 const PLOT_H = BASELINE_Y - PAD_TOP;
 const PLOT_W = W - PAD_LEFT - PAD_RIGHT;
+const CHART_DESCRIPTION =
+  'Bar chart. Use the keyboard to move through data points, or open View as table for the same values.';
 
 /** Smallest clean number at or above the max, for a calm axis. */
 export function niceMax(maxValue: number): number {
@@ -57,6 +61,8 @@ function barPath(x: number, w: number, h: number): string {
 
 export function BarChart(props: BarChartProps): JSX.Element {
   const [hovered, setHovered] = useState<number | null>(null);
+  const titleId: string = useId();
+  const descriptionId: string = useId();
   const data: ChartDatum[] = props.data;
   const emptyLine: string = props.emptyLine ?? 'No data yet.';
   if (data.length === 0 || data.every((d: ChartDatum): boolean => d.value <= 0)) {
@@ -80,7 +86,14 @@ export function BarChart(props: BarChartProps): JSX.Element {
     hovered === null ? (null as ChartDatum | null) : (data[hovered] ?? null);
   return (
     <div class="chart-wrap">
-      <svg viewBox={`0 0 ${W} ${H}`} class="chart" aria-hidden="true">
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        class="chart"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+      >
+        <title id={titleId}>{props.label ?? 'Bar chart'}</title>
+        <desc id={descriptionId}>{CHART_DESCRIPTION}</desc>
         {ticks.map(
           (t: number): JSX.Element => (
             <g key={t}>
@@ -172,11 +185,17 @@ export function BarChart(props: BarChartProps): JSX.Element {
       <details class="chart-table">
         <summary>View as table</summary>
         <table>
+          <thead>
+            <tr>
+              <th scope="col">Category</th>
+              <th scope="col">Value</th>
+            </tr>
+          </thead>
           <tbody>
             {data.map(
               (d: ChartDatum): JSX.Element => (
                 <tr key={d.label}>
-                  <td>{d.label}</td>
+                  <th scope="row">{d.label}</th>
                   <td>{props.format(d.value)}</td>
                 </tr>
               ),

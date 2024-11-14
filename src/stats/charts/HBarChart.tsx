@@ -1,10 +1,13 @@
 import type { JSX } from 'preact';
+import { useId } from 'preact/hooks';
 import type { ChartDatum } from './BarChart';
 import { niceMax } from './BarChart';
 
 export interface HBarChartProps {
   data: ChartDatum[];
   format: (v: number) => string;
+  /** accessible chart name, normally matching the surrounding heading */
+  label?: string;
   color?: string;
   emptyLine?: string;
 }
@@ -16,6 +19,8 @@ const ROW_H = 22;
 const BAR_H = 12;
 const PAD_Y = 4;
 const BAR_MAX_W = W - LABEL_W - VALUE_W;
+const CHART_DESCRIPTION =
+  'Horizontal bar chart. Use the keyboard to move through data points, or open View as table for the same values.';
 
 function truncate(label: string): string {
   return label.length > 24 ? `${label.slice(0, 21)}...` : label;
@@ -38,6 +43,8 @@ function hbarPath(y: number, w: number): string {
 }
 
 export function HBarChart(props: HBarChartProps): JSX.Element {
+  const titleId: string = useId();
+  const descriptionId: string = useId();
   const data: ChartDatum[] = props.data;
   const emptyLine: string = props.emptyLine ?? 'No data yet.';
   if (data.length === 0 || data.every((d: ChartDatum): boolean => d.value <= 0)) {
@@ -48,7 +55,14 @@ export function HBarChart(props: HBarChartProps): JSX.Element {
   const height: number = data.length * ROW_H + PAD_Y * 2;
   return (
     <div class="chart-wrap">
-      <svg viewBox={`0 0 ${W} ${height}`} class="chart hbar" aria-hidden="true">
+      <svg
+        viewBox={`0 0 ${W} ${height}`}
+        class="chart hbar"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+      >
+        <title id={titleId}>{props.label ?? 'Horizontal bar chart'}</title>
+        <desc id={descriptionId}>{CHART_DESCRIPTION}</desc>
         <line class="baseline" x1={LABEL_W} x2={LABEL_W} y1={PAD_Y} y2={height - PAD_Y} />
         {data.map((d: ChartDatum, i: number): JSX.Element => {
           const rowY: number = PAD_Y + i * ROW_H;
@@ -78,11 +92,17 @@ export function HBarChart(props: HBarChartProps): JSX.Element {
       <details class="chart-table">
         <summary>View as table</summary>
         <table>
+          <thead>
+            <tr>
+              <th scope="col">Category</th>
+              <th scope="col">Value</th>
+            </tr>
+          </thead>
           <tbody>
             {data.map(
               (d: ChartDatum): JSX.Element => (
                 <tr key={d.label}>
-                  <td>{d.label}</td>
+                  <th scope="row">{d.label}</th>
                   <td>{props.format(d.value)}</td>
                 </tr>
               ),

@@ -101,6 +101,7 @@ export function Charts(props: ChartsProps): JSX.Element {
         <BarChart
           data={focus}
           format={formatMinutes}
+          label="Focus minutes per day"
           tickFormat={(v: number): string => `${v}m`}
           color="var(--focus-series)"
           emptyLine="Focus minutes appear after your first session."
@@ -111,6 +112,7 @@ export function Charts(props: ChartsProps): JSX.Element {
         <BarChart
           data={attempts}
           format={(v: number): string => `${v} blocked`}
+          label="Blocked attempts per day"
           color="var(--attempts-series)"
           emptyLine="Blocked attempts show up here once a session catches one."
         />
@@ -120,6 +122,7 @@ export function Charts(props: ChartsProps): JSX.Element {
         <HBarChart
           data={sites}
           format={(v: number): string => String(v)}
+          label="Top blocked sites"
           color="var(--attempts-series)"
           emptyLine="Nothing blocked yet. That is a fine start."
         />
@@ -131,6 +134,7 @@ export function Charts(props: ChartsProps): JSX.Element {
         <HBarChart
           data={hours}
           format={(v: number): string => String(v)}
+          label="Attempts by hour of day, this machine only"
           color="var(--attempts-series)"
           emptyLine="Hourly patterns appear after your first blocked attempt."
         />

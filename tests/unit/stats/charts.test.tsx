@@ -80,6 +80,39 @@ describe('BarChart', () => {
     expect(zeros.container.querySelectorAll('.bar-mark').length).toBe(0);
     expect(zeros.container.textContent).toContain('No data yet.');
   });
+
+  it('exposes keyboard data points and a headed data table', () => {
+    const { container } = render(
+      <BarChart
+        data={[
+          { label: '28 Aug', value: 10 },
+          { label: '29 Aug', value: 20 },
+        ]}
+        format={(v: number): string => `${v} m`}
+        label="Focus minutes per day"
+      />,
+    );
+    const chart: SVGElement | null = container.querySelector('svg.chart');
+    expect(chart?.getAttribute('aria-hidden')).toBeNull();
+    const title: Element | null = chart?.querySelector('title') ?? null;
+    const description: Element | null = chart?.querySelector('desc') ?? null;
+    expect(title?.textContent).toBe('Focus minutes per day');
+    expect(description?.textContent).toContain('keyboard');
+    expect(chart?.getAttribute('aria-labelledby')).toBe(title?.id);
+    expect(chart?.getAttribute('aria-describedby')).toBe(description?.id);
+    const points: Element[] = Array.from(chart?.querySelectorAll('[tabindex="0"]') ?? []);
+    expect(points).toHaveLength(2);
+    expect(points[0]?.getAttribute('aria-label')).toBe('28 Aug: 10 m');
+
+    const columnHeaders: Element[] = Array.from(
+      container.querySelectorAll('.chart-table thead th[scope="col"]'),
+    );
+    expect(columnHeaders.map((header: Element): string | null => header.textContent)).toEqual([
+      'Category',
+      'Value',
+    ]);
+    expect(container.querySelectorAll('.chart-table tbody th[scope="row"]')).toHaveLength(2);
+  });
 });
 
 describe('HBarChart', () => {
@@ -101,6 +134,33 @@ describe('HBarChart', () => {
   it('renders the quiet empty line with no data', () => {
     const { container } = render(<HBarChart data={[]} format={(v: number): string => String(v)} />);
     expect(container.textContent).toContain('No data yet.');
+  });
+
+  it('exposes keyboard data points and a headed data table', () => {
+    const { container } = render(
+      <HBarChart
+        data={[
+          { label: 'facebook.com', value: 12 },
+          { label: 'youtube.com', value: 4 },
+        ]}
+        format={(v: number): string => String(v)}
+        label="Top blocked sites"
+      />,
+    );
+    const chart: SVGElement | null = container.querySelector('svg.chart');
+    expect(chart?.getAttribute('aria-hidden')).toBeNull();
+    const title: Element | null = chart?.querySelector('title') ?? null;
+    const description: Element | null = chart?.querySelector('desc') ?? null;
+    expect(title?.textContent).toBe('Top blocked sites');
+    expect(description?.textContent).toContain('keyboard');
+    expect(chart?.getAttribute('aria-labelledby')).toBe(title?.id);
+    expect(chart?.getAttribute('aria-describedby')).toBe(description?.id);
+    const points: Element[] = Array.from(chart?.querySelectorAll('[tabindex="0"]') ?? []);
+    expect(points).toHaveLength(2);
+    expect(points[0]?.getAttribute('aria-label')).toBe('facebook.com: 12');
+
+    expect(container.querySelectorAll('.chart-table thead th[scope="col"]')).toHaveLength(2);
+    expect(container.querySelectorAll('.chart-table tbody th[scope="row"]')).toHaveLength(2);
   });
 });
 
