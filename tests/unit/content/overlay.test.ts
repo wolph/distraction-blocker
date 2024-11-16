@@ -141,6 +141,19 @@ describe('overlay', () => {
     expect(host.style.getPropertyValue('inset')).toBe('0px');
   });
 
+  it('does not inherit right-to-left text direction from the blocked page', () => {
+    document.documentElement.dir = 'rtl';
+
+    showOverlay(verdict, focusSnap());
+
+    const host: HTMLElement = document.querySelector('focus-lock-overlay') as HTMLElement;
+    expect(host.style.getPropertyValue('direction')).toBe('ltr');
+    expect(host.style.getPropertyPriority('direction')).toBe('important');
+    expect(host.style.getPropertyValue('unicode-bidi')).toBe('isolate');
+    expect(host.style.getPropertyPriority('unicode-bidi')).toBe('important');
+    document.documentElement.removeAttribute('dir');
+  });
+
   it('gives the dialog an accessible name', () => {
     showOverlay(verdict, focusSnap());
     const dialog: HTMLElement = shadowRoot().querySelector('[role="dialog"]') as HTMLElement;

@@ -205,6 +205,8 @@ function applyHostStyle(host: HTMLElement): void {
   host.style.setProperty('inset', '0', 'important');
   host.style.setProperty('z-index', '2147483647', 'important');
   host.style.setProperty('display', 'block', 'important');
+  host.style.setProperty('direction', 'ltr', 'important');
+  host.style.setProperty('unicode-bidi', 'isolate', 'important');
 }
 
 function trapInteraction(host: HTMLElement, root: ShadowRoot): void {
