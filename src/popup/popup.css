@@ -257,7 +257,7 @@ body {
 
 .form-error {
   margin: 0;
-  color: var(--paused-color);
+  color: var(--paused-text);
   font-size: 12.5px;
 }
 

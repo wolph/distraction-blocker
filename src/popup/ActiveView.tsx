@@ -92,7 +92,7 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
     if (bankMs >= costMs) return { affordable: true, countdown: null };
     if (snapshot.bankAccrualPerMs <= 0) return { affordable: false, countdown: null };
     const waitMs: number = (costMs - bankMs) / snapshot.bankAccrualPerMs;
-    return { affordable: false, countdown: `enough in ${formatClock(waitMs)}` };
+    return { affordable: false, countdown: `ready in ${formatClock(waitMs)}` };
   };
 
   const unlockAfford = affordability(snapshot.unlockCostMs);

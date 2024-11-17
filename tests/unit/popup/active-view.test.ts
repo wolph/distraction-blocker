@@ -1,4 +1,6 @@
 /** @vitest-environment jsdom */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import './chrome-fake';
 
 import { cleanup, render, waitFor } from '@testing-library/preact';
@@ -124,6 +126,20 @@ describe('ActiveView', () => {
     };
     const { queryByRole } = render(h(ActiveView, { snapshot: hard, now: NOW }));
     expect(queryByRole('button', { name: 'End session' })).toBeNull();
+  });
+
+  it('uses the plan affordability countdown copy', (): void => {
+    const snapshot: SessionSnapshot = { ...focusSnap(), bankMs: 0 };
+    const { getAllByText, queryByText } = render(h(ActiveView, { snapshot, now: NOW }));
+
+    expect(getAllByText('ready in 30:00')).toHaveLength(2);
+    expect(queryByText('enough in 30:00')).toBeNull();
+  });
+
+  it('uses the contrast-safe paused text token for errors', (): void => {
+    const css: string = readFileSync(resolve(process.cwd(), 'src/popup/popup.css'), 'utf8');
+
+    expect(css).toMatch(/\.form-error\s*\{[^}]*color:\s*var\(--paused-text\)/s);
   });
 
   it('renders the gate with back-to-work as the only enabled button before readyAt', (): void => {
