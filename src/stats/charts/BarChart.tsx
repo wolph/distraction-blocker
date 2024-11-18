@@ -82,6 +82,7 @@ export function BarChart(props: BarChartProps): JSX.Element {
   const labelStep: number = Math.ceil(data.length / 7);
   const barX = (i: number): number => PAD_LEFT + band * i + (band - barW) / 2;
   const barH = (value: number): number => (value / max) * PLOT_H;
+  const directLabelAnchor: 'middle' | 'end' = maxIndex === data.length - 1 ? 'end' : 'middle';
   const hoveredDatum: ChartDatum | null =
     hovered === null ? (null as ChartDatum | null) : (data[hovered] ?? null);
   return (
@@ -145,7 +146,7 @@ export function BarChart(props: BarChartProps): JSX.Element {
           class="direct-label"
           x={PAD_LEFT + band * maxIndex + band / 2}
           y={BASELINE_Y - barH(data[maxIndex]?.value ?? 0) - 5}
-          text-anchor="middle"
+          text-anchor={directLabelAnchor}
         >
           {props.format(data[maxIndex]?.value ?? 0)}
         </text>

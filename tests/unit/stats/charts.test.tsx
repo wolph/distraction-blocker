@@ -65,6 +65,22 @@ describe('BarChart', () => {
     expect((heights[1] ?? 0) / (heights[0] ?? 1)).toBeCloseTo(2, 5);
   });
 
+  it('end-anchors the selective label when the rightmost value is the maximum', () => {
+    const { container } = render(
+      <BarChart
+        data={[
+          { label: '28 Aug', value: 10 },
+          { label: '29 Aug', value: 65 },
+        ]}
+        format={(v: number): string => `${v} minutes focused`}
+      />,
+    );
+    const labels: Element[] = Array.from(container.querySelectorAll('.direct-label'));
+    expect(labels).toHaveLength(1);
+    expect(labels[0]?.getAttribute('text-anchor')).toBe('end');
+    expect(Number(labels[0]?.getAttribute('x'))).toBeLessThanOrEqual(560);
+  });
+
   it('renders the quiet empty line for empty and all-zero data', () => {
     const empty = render(<BarChart data={[]} format={(v: number): string => String(v)} />);
     expect(empty.container.textContent).toContain('No data yet.');
