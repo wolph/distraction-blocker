@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SyncWriter } from '../../../src/background/sync-writer';
+import { SyncEchoes, SyncWriter } from '../../../src/background/sync-writer';
 
 describe('SyncWriter', () => {
   beforeEach(() => vi.useFakeTimers());
@@ -25,5 +25,31 @@ describe('SyncWriter', () => {
     expect(write).toHaveBeenCalledWith({ bank: { balanceMs: 5 } });
     await vi.advanceTimersByTimeAsync(20_000);
     expect(write).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves a failed batch and retries it with later writes', async () => {
+    const write = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('sync unavailable'))
+      .mockResolvedValueOnce(undefined);
+    const writer = new SyncWriter(10_000, write);
+    writer.queue('bank', 5);
+
+    await expect(writer.flushNow()).rejects.toThrow('sync unavailable');
+    writer.queue('streak', 3);
+    await writer.flushNow();
+
+    expect(write).toHaveBeenNthCalledWith(2, { bank: 5, streak: 3 });
+  });
+});
+
+describe('SyncEchoes', () => {
+  it('consumes only the matching local storage echo', () => {
+    const echoes = new SyncEchoes();
+    echoes.remember('bank', { balanceMs: 10 });
+
+    expect(echoes.consume('bank', { balanceMs: 20 })).toBe(false);
+    expect(echoes.consume('bank', { balanceMs: 10 })).toBe(true);
+    expect(echoes.consume('bank', { balanceMs: 10 })).toBe(false);
   });
 });

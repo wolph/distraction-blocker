@@ -26,8 +26,7 @@ import type {
  * only the worker reads or writes it.
  *
  * todayAgg stays null until the first event of the day folds in. Minting
- * an empty DailyAgg is core's job (emptyDaily), and core is stubbed until
- * ws/core merges, so the boot path must not depend on it.
+ * an empty DailyAgg is core's job, so the boot path does not depend on it.
  */
 export interface RuntimeState {
   session: SessionState | null;
@@ -48,6 +47,17 @@ export interface RuntimeState {
   lastPruneDate: string | null;
 }
 
+type StoredSettings = Partial<Omit<Settings, 'pause' | 'gate' | 'sounds'>> & {
+  pause?: Partial<Settings['pause']>;
+  gate?: Partial<Settings['gate']>;
+  sounds?: Partial<Settings['sounds']>;
+};
+
+type StoredLists = Partial<Omit<ListsConfig, 'categories' | 'exclusions'>> & {
+  categories?: Partial<ListsConfig['categories']>;
+  exclusions?: ListsConfig['exclusions'];
+};
+
 export function emptyRuntime(now: number): RuntimeState {
   return {
     session: null,
@@ -66,12 +76,31 @@ export function emptyRuntime(now: number): RuntimeState {
 
 export async function loadSettings(): Promise<Settings> {
   const raw: unknown = (await chrome.storage.sync.get(SYNC_SETTINGS))[SYNC_SETTINGS];
-  return { ...DEFAULT_SETTINGS, ...(raw as Partial<Settings> | undefined) };
+  return mergeSettings(raw as StoredSettings | undefined);
 }
 
 export async function loadLists(): Promise<ListsConfig> {
   const raw: unknown = (await chrome.storage.sync.get(SYNC_LISTS))[SYNC_LISTS];
-  return { ...DEFAULT_LISTS, ...(raw as Partial<ListsConfig> | undefined) };
+  return mergeLists(raw as StoredLists | undefined);
+}
+
+export function mergeSettings(raw: StoredSettings | undefined): Settings {
+  return {
+    ...DEFAULT_SETTINGS,
+    ...raw,
+    pause: { ...DEFAULT_SETTINGS.pause, ...raw?.pause },
+    gate: { ...DEFAULT_SETTINGS.gate, ...raw?.gate },
+    sounds: { ...DEFAULT_SETTINGS.sounds, ...raw?.sounds },
+  };
+}
+
+export function mergeLists(raw: StoredLists | undefined): ListsConfig {
+  return {
+    ...DEFAULT_LISTS,
+    ...raw,
+    categories: { ...DEFAULT_LISTS.categories, ...raw?.categories },
+    exclusions: { ...DEFAULT_LISTS.exclusions, ...raw?.exclusions },
+  };
 }
 
 export async function loadBank(): Promise<BankState> {

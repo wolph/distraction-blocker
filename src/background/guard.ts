@@ -83,6 +83,9 @@ export function settingsChangeAllowed(
   incoming: Settings,
 ): string | null {
   if (!isHard(session)) return null;
+  if (current.defaultStrictness === 'hard' && incoming.defaultStrictness === 'friction') {
+    return 'a hard session is running: weakening the default strictness waits until it ends';
+  }
   if (incoming.gate.delayMs < current.gate.delayMs) {
     return 'a hard session is running: shortening the deliberation delay weakens the gate';
   }

@@ -16,7 +16,7 @@ export async function routeMessage(
 ): Promise<unknown> {
   switch (msg.type) {
     case 'getSnapshot':
-      return engine.snapshot();
+      return engine.snapshotPersisted();
     case 'getBlockState': {
       const verdict: Verdict = engine.verdictFor(msg.url);
       const tabId: number | undefined = sender.tab?.id;
@@ -28,7 +28,7 @@ export async function routeMessage(
         );
         if (msg.docState === 'fresh') await engine.markStopped(tabId);
       }
-      return { verdict, snapshot: engine.snapshot() };
+      return { verdict, snapshot: await engine.snapshotPersisted() };
     }
     case 'startSession':
       return engine.startSession(msg.config);
@@ -51,7 +51,7 @@ export async function routeMessage(
     case 'getLists':
       return engine.getLists();
     case 'getStats':
-      return fetchStats(msg.days, Date.now());
+      return fetchStats(msg.days, Date.now(), engine.statsOverlay());
     case 'exportEvents':
       return { json: JSON.stringify(await readEvents(), null, 2) };
     case 'previewSound': {

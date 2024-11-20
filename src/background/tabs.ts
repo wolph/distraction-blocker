@@ -32,13 +32,14 @@ export function planTabAction(verdict: Verdict, tabState: TabState): TabAction {
   };
 }
 
-async function applyToTab(
+export async function applyToTab(
   engine: Engine,
   tabId: number,
   url: string,
   mutedNow: boolean,
 ): Promise<void> {
   const verdict: Verdict = engine.verdictFor(url);
+  if (verdict.blocked) await engine.recordAttempt(url, tabId, 'existing');
   const snapshot: SessionSnapshot = engine.snapshot();
   const facts: { wasMutedByUs: boolean; priorMuted: boolean; wasStopped: boolean } =
     engine.tabFacts(tabId);
@@ -53,18 +54,18 @@ async function applyToTab(
     // tabs without the content script (chrome://, the web store) reject, fine
   }
   if (action.mute !== null) {
-    if (action.command === 'applyBlock') engine.noteMuted(tabId, mutedNow);
-    else engine.noteMuteRestored(tabId);
     try {
       await chrome.tabs.update(tabId, { muted: action.mute });
+      if (action.command === 'applyBlock') engine.noteMuted(tabId, mutedNow);
+      else engine.noteMuteRestored(tabId);
     } catch {
       // the tab may be gone already
     }
   }
   if (action.reload) {
-    engine.noteReloaded(tabId);
     try {
       await chrome.tabs.reload(tabId);
+      engine.noteReloaded(tabId);
     } catch {
       // the tab may be gone already
     }

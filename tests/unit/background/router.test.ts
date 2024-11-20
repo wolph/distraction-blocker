@@ -10,7 +10,24 @@ vi.mock('../../../src/background/audio', () => ({ playSound: vi.fn() }));
 vi.mock('../../../src/background/stats-service', () => ({ fetchStats: vi.fn() }));
 vi.mock('../../../src/background/stores', () => ({ readEvents: vi.fn() }));
 
-const engine: Engine = {} as Engine;
+const overlay: ReturnType<Engine['statsOverlay']> = {
+  deviceId: 'devA',
+  todayAgg: {
+    date: '2026-08-29',
+    focusMs: 0,
+    sessionsStarted: 0,
+    sessionsCompleted: 0,
+    attempts: {},
+    attemptsOther: 0,
+    pausesTaken: 0,
+    pauseMsSpent: 0,
+    unlocksTaken: 0,
+    resisted: 0,
+  },
+  streak: null,
+  pendingEvents: [],
+};
+const engine: Engine = { statsOverlay: vi.fn(() => overlay) } as unknown as Engine;
 const sender: chrome.runtime.MessageSender = {};
 const stats: StatsBundle = {
   days: [],
@@ -49,7 +66,7 @@ describe('routeMessage stats wiring', () => {
     const result: unknown = await routeMessage(engine, { type: 'getStats', days: 14 }, sender);
 
     expect(result).toBe(stats);
-    expect(fetchStats).toHaveBeenCalledWith(14, now);
+    expect(fetchStats).toHaveBeenCalledWith(14, now, overlay);
   });
 
   it('exports the local event log as formatted JSON', async () => {

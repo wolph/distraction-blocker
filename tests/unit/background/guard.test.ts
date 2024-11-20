@@ -96,6 +96,14 @@ const scheduleEntry: ScheduleEntry = {
 };
 
 describe('settingsChangeAllowed', () => {
+  it('rejects weakening the default strictness during a hard session', () => {
+    const hardDefault: Settings = { ...DEFAULT_SETTINGS, defaultStrictness: 'hard' };
+    const frictionDefault: Settings = { ...DEFAULT_SETTINGS, defaultStrictness: 'friction' };
+
+    expect(settingsChangeAllowed(hardSession, hardDefault, frictionDefault)).toMatch(/hard/i);
+    expect(settingsChangeAllowed(hardSession, frictionDefault, hardDefault)).toBeNull();
+  });
+
   it('rejects lowering the gate delay during hard, allows raising it', () => {
     const weaker: Settings = {
       ...DEFAULT_SETTINGS,

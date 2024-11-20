@@ -15,13 +15,14 @@ import {
   startSession as machineStart,
   startNextFocusEarly as machineStartNextFocusEarly,
 } from '../core/session';
-import { addEvent, emptyDaily } from '../core/stats';
+import { addEvent, capAttempts, emptyDaily } from '../core/stats';
 import { emptyStreak } from '../core/streak';
 import {
   ATTEMPT_DEBOUNCE_MS,
   CANCEL_GATE_DELAY_MS,
   cancelPhrase,
   GATE_EXPIRY_MS,
+  TOP_SITES_DAILY,
 } from '../shared/constants';
 import { CoreError } from '../shared/errors';
 import type { Ack, SoundId } from '../shared/messages';
@@ -65,7 +66,15 @@ export interface EnginePorts {
   updateIcon(snapshot: SessionSnapshot): void;
   scheduleWake(atMs: number | null): void;
   /** run the weekly sync-storage retention prune */
-  prune(retentionDays: number, now: number): void;
+  prune(retentionDays: number, now: number): Promise<void>;
+  reportError(error: unknown): void;
+}
+
+export interface EngineStatsOverlay {
+  deviceId: string;
+  todayAgg: DailyAgg;
+  streak: StreakState | null;
+  pendingEvents: EventRecord[];
 }
 
 const NO_SESSION_VERDICT: Verdict = { blocked: false, reason: 'no-session', matchedPattern: null };
@@ -81,6 +90,8 @@ export class Engine {
   private pendingEvents: EventRecord[] = [];
   private dirty = false;
   private needsBlocking = false;
+  private commitQueue: Promise<void> = Promise.resolve();
+  private applyingBlocking = false;
 
   constructor(
     private readonly ports: EnginePorts,
@@ -96,14 +107,22 @@ export class Engine {
     const now: number = this.ports.now();
     this.catchUp(now);
     const snap: SessionSnapshot = this.buildSnapshot(now);
-    if (this.dirty) void this.commit(now);
+    if (this.dirty) this.commitInBackground(now);
     return snap;
+  }
+
+  async snapshotPersisted(): Promise<SessionSnapshot> {
+    const now: number = this.ports.now();
+    this.catchUp(now);
+    if (this.dirty) await this.commit(now);
+    else await this.commitQueue;
+    return this.buildSnapshot(now);
   }
 
   verdictFor(url: string): Verdict {
     const now: number = this.ports.now();
     this.catchUp(now);
-    if (this.dirty) void this.commit(now);
+    if (this.dirty) this.commitInBackground(now);
     const session: SessionState | null = this.runtime.session;
     if (session === null || session.phase !== 'focus') return NO_SESSION_VERDICT;
     return evaluateUrl(this.ensureMatcher(session.config.mode), url, this.runtime.unlocks, now);
@@ -114,9 +133,11 @@ export class Engine {
     this.catchUp(now);
     if (this.runtime.session !== null) return this.fail(now, 'a session is already running');
     this.runtime.session = machineStart(config, now);
+    this.runtime.gate = null;
+    this.runtime.unlocks = [];
     this.runtime.accruedFocusMs = 0;
     this.matcher = compileMatcher(this.lists, ALL_CATEGORIES, config.mode);
-    this.pendingEvents.push({
+    this.recordEvent({
       t: 'sessionStarted',
       at: now,
       source: config.source,
@@ -157,7 +178,7 @@ export class Engine {
       readyAt: now + (gate === 'cancel' ? CANCEL_GATE_DELAY_MS : this.settings.gate.delayMs),
       requiredPhrase: needsPhrase ? cancelPhrase(session.config.intention) : null,
     };
-    this.pendingEvents.push({ t: 'gateOpened', at: now, gate });
+    this.recordEvent({ t: 'gateOpened', at: now, gate });
     this.dirty = true;
     await this.commit(now);
     return { ok: true };
@@ -195,8 +216,8 @@ export class Engine {
     if (gate.kind === 'pause') {
       this.bank = spend(this.bank, this.settings.pause.pauseMs);
       this.runtime.session = beginPause(session, now, this.settings.pause.pauseMs);
-      this.pendingEvents.push({ t: 'phase', at: now, from: session.phase, to: 'paused' });
-      this.pendingEvents.push({ t: 'pauseTaken', at: now, ms: this.settings.pause.pauseMs });
+      this.recordEvent({ t: 'phase', at: now, from: session.phase, to: 'paused' });
+      this.recordEvent({ t: 'pauseTaken', at: now, ms: this.settings.pause.pauseMs });
     } else if (gate.kind === 'unlockSite') {
       const host: string = gate.host ?? '';
       this.bank = spend(this.bank, this.settings.pause.unlockMs);
@@ -204,15 +225,21 @@ export class Engine {
         ...this.runtime.unlocks,
         { host, until: now + this.settings.pause.unlockMs },
       ];
-      this.pendingEvents.push({
+      this.recordEvent({
         t: 'unlockTaken',
         at: now,
         host,
         ms: this.settings.pause.unlockMs,
       });
     } else {
-      this.pendingEvents.push({ t: 'sessionCanceled', at: now, focusedMs: session.focusedMs });
+      this.recordEvent({
+        t: 'sessionCanceled',
+        at: now,
+        focusedMs: focusedMsAt(session, now),
+      });
       this.runtime.session = null;
+      this.runtime.gate = null;
+      this.runtime.unlocks = [];
       this.runtime.accruedFocusMs = 0;
       this.runtime.scheduleActiveEntryId = null;
     }
@@ -223,7 +250,7 @@ export class Engine {
     const now: number = this.ports.now();
     this.catchUp(now);
     if (this.runtime.gate !== null) {
-      this.pendingEvents.push({ t: 'gateResisted', at: now, gate: this.runtime.gate.kind });
+      this.recordEvent({ t: 'gateResisted', at: now, gate: this.runtime.gate.kind });
       this.runtime.gate = null;
       this.dirty = true;
     }
@@ -239,7 +266,7 @@ export class Engine {
       return this.fail(now, 'no pause is running');
     }
     const restored: SessionState = endPauseEarly(session, now);
-    this.pendingEvents.push({ t: 'phase', at: now, from: 'paused', to: restored.phase });
+    this.recordEvent({ t: 'phase', at: now, from: 'paused', to: restored.phase });
     this.runtime.session = restored;
     this.dirty = true;
     this.needsBlocking = true;
@@ -258,7 +285,7 @@ export class Engine {
       if (err instanceof CoreError) return this.fail(now, err.message);
       throw err;
     }
-    this.pendingEvents.push({ t: 'phase', at: now, from: 'break', to: 'focus' });
+    this.recordEvent({ t: 'phase', at: now, from: 'break', to: 'focus' });
     this.dirty = true;
     this.needsBlocking = true;
     await this.commit(now);
@@ -271,15 +298,16 @@ export class Engine {
     const last: number | undefined = this.runtime.attemptDebounce[key];
     if (last !== undefined && now - last < ATTEMPT_DEBOUNCE_MS) return;
     this.runtime.attemptDebounce[key] = now;
-    this.pendingEvents.push({ t: 'attempt', at: now, url, host: hostOf(url), tabId, kind });
+    this.recordEvent({ t: 'attempt', at: now, url, host: hostOf(url), tabId, kind });
     this.dirty = true;
+    if (this.applyingBlocking) return;
     await this.commit(now);
   }
 
   async markStopped(tabId: number): Promise<void> {
     if (this.runtime.stoppedTabIds.includes(tabId)) return;
     this.runtime.stoppedTabIds = [...this.runtime.stoppedTabIds, tabId];
-    await this.ports.saveRuntime(this.runtime);
+    await this.persistRuntime();
   }
 
   /** Mute and stopped-tab facts for one tab, for tabs.ts action planning. */
@@ -308,7 +336,7 @@ export class Engine {
   }
 
   flushRuntime(): Promise<void> {
-    return this.ports.saveRuntime(this.runtime);
+    return this.persistRuntime();
   }
 
   /** Purges a closed tab from mute, stopped, and debounce bookkeeping. */
@@ -320,7 +348,7 @@ export class Engine {
     for (const key of Object.keys(this.runtime.attemptDebounce)) {
       if (key.startsWith(`${tabId}:`)) delete this.runtime.attemptDebounce[key];
     }
-    await this.ports.saveRuntime(this.runtime);
+    await this.persistRuntime();
   }
 
   /** The 1-minute tick alarm and exact phase alarms both land here. */
@@ -328,6 +356,7 @@ export class Engine {
     const now: number = this.ports.now();
     this.catchUp(now);
     this.pruneDebounce(now);
+    await this.maybePrune(now);
     await this.commit(now);
   }
 
@@ -362,6 +391,51 @@ export class Engine {
     return { ok: true };
   }
 
+  async applySyncedSettings(settings: Settings): Promise<Ack> {
+    const now: number = this.ports.now();
+    this.catchUp(now);
+    const reason: string | null = settingsChangeAllowed(
+      this.runtime.session,
+      this.settings,
+      settings,
+    );
+    if (reason !== null) return this.fail(now, reason);
+    this.settings = settings;
+    this.dirty = true;
+    await this.commit(now);
+    return { ok: true };
+  }
+
+  async applySyncedLists(lists: ListsConfig): Promise<Ack> {
+    const now: number = this.ports.now();
+    this.catchUp(now);
+    const reason: string | null = listsChangeAllowed(
+      this.runtime.session,
+      this.runtime.session?.config.mode ?? null,
+      this.lists,
+      lists,
+    );
+    if (reason !== null) return this.fail(now, reason);
+    this.lists = lists;
+    this.matcher = null;
+    this.dirty = true;
+    this.needsBlocking = this.runtime.session !== null;
+    await this.commit(now);
+    return { ok: true };
+  }
+
+  async applySyncedBank(bank: BankState): Promise<Ack> {
+    const now: number = this.ports.now();
+    if (!Number.isFinite(bank.balanceMs) || bank.balanceMs < 0) {
+      return this.fail(now, 'invalid synced pause bank');
+    }
+    this.catchUp(now);
+    this.bank = { balanceMs: Math.min(bank.balanceMs, this.settings.pause.capMs) };
+    this.dirty = true;
+    await this.commit(now);
+    return { ok: true };
+  }
+
   getSettings(): Settings {
     return this.settings;
   }
@@ -375,14 +449,36 @@ export class Engine {
     return this.streak;
   }
 
+  statsOverlay(): EngineStatsOverlay {
+    const now: number = this.ports.now();
+    this.catchUp(now);
+    if (this.dirty) this.commitInBackground(now);
+    return {
+      deviceId: this.deviceId,
+      todayAgg: capAttempts(
+        this.runtime.todayAgg ?? emptyDaily(this.runtime.date),
+        TOP_SITES_DAILY,
+      ),
+      streak: this.streak,
+      pendingEvents: [...this.pendingEvents],
+    };
+  }
+
   // --- catch-up: settle accrual, advance the machine, expire gates and unlocks ---
 
   private catchUp(now: number): void {
+    const today: string = localDateStr(now);
+    while (this.runtime.date !== today) {
+      const boundary: number = localMidnightAfter(this.runtime.date);
+      this.settleSession(boundary);
+      this.expireGate(boundary);
+      this.expireUnlocks(boundary);
+      this.rolloverCheck(boundary);
+    }
     this.settleSession(now);
     this.expireGate(now);
     this.expireUnlocks(now);
     this.scheduleCheck(now);
-    this.rolloverCheck(now);
   }
 
   private settleSession(now: number): void {
@@ -393,15 +489,13 @@ export class Engine {
       (e: MachineEvent): boolean => e.type === 'completed',
     );
     const focusedNow: number =
-      next !== null
-        ? next.focusedMs
-        : completed?.type === 'completed'
-          ? completed.focusedMs
-          : session.focusedMs;
+      completed?.type === 'completed' ? completed.focusedMs : focusedMsAt(next ?? session, now);
     const delta: number = Math.max(0, focusedNow - this.runtime.accruedFocusMs);
     if (delta > 0) {
       this.bank = accrue(this.bank, delta, this.settings.pause);
       this.runtime.accruedFocusMs = focusedNow;
+      const aggregate: DailyAgg = this.runtime.todayAgg ?? emptyDaily(this.runtime.date);
+      this.runtime.todayAgg = { ...aggregate, focusMs: aggregate.focusMs + delta };
       this.ports.queueSync(SYNC_BANK, this.bank);
       this.dirty = true;
     }
@@ -414,13 +508,15 @@ export class Engine {
 
   private routeMachineEvent(ev: MachineEvent): void {
     if (ev.type === 'phaseChanged') {
-      this.pendingEvents.push({ t: 'phase', at: ev.at, from: ev.from, to: ev.to });
+      this.recordEvent({ t: 'phase', at: ev.at, from: ev.from, to: ev.to });
       if (ev.from === 'focus' && ev.to === 'break') this.ports.playSound('breakStart');
       if (ev.from === 'break' && ev.to === 'focus') this.ports.playSound('breakEnd');
     } else {
-      this.pendingEvents.push({ t: 'sessionCompleted', at: ev.at, focusedMs: ev.focusedMs });
+      this.recordEvent({ t: 'sessionCompleted', at: ev.at, focusedMs: ev.focusedMs });
       this.ports.playSound('sessionComplete');
       this.ports.notify('Focus session complete', 'The lock is off. Time for a real break.');
+      this.runtime.gate = null;
+      this.runtime.unlocks = [];
       this.runtime.accruedFocusMs = 0;
       this.runtime.scheduleActiveEntryId = null;
     }
@@ -431,7 +527,7 @@ export class Engine {
   private expireGate(now: number): void {
     const gate: GateState | null = this.runtime.gate;
     if (gate === null || now <= gate.readyAt + GATE_EXPIRY_MS) return;
-    this.pendingEvents.push({ t: 'gateResisted', at: now, gate: gate.kind });
+    this.recordEvent({ t: 'gateResisted', at: now, gate: gate.kind });
     this.runtime.gate = null;
     this.dirty = true;
   }
@@ -491,7 +587,7 @@ export class Engine {
     this.runtime.accruedFocusMs = 0;
     this.runtime.scheduleActiveEntryId = entry.id;
     this.matcher = compileMatcher(this.lists, ALL_CATEGORIES, config.mode);
-    this.pendingEvents.push({
+    this.recordEvent({
       t: 'sessionStarted',
       at: now,
       source: 'schedule',
@@ -523,19 +619,25 @@ export class Engine {
     this.runtime.todayAgg = plan.newAgg;
     this.runtime.date = today;
     this.dirty = true;
-    this.maybePrune(today);
   }
 
-  /** Weekly retention prune, tracked by date so a busy midnight runs it once. */
-  private maybePrune(today: string): void {
+  /** Weekly retention prune, marked only after storage operations finish. */
+  private async maybePrune(now: number): Promise<void> {
+    const today: string = localDateStr(now);
     const last: string | null = this.runtime.lastPruneDate;
     if (last !== null) {
       const elapsedDays: number =
         (new Date(today).getTime() - new Date(last).getTime()) / 86_400_000;
       if (elapsedDays < 7) return;
     }
+    try {
+      await this.ports.prune(this.settings.retentionDays, now);
+    } catch (error: unknown) {
+      this.ports.reportError(error);
+      return;
+    }
     this.runtime.lastPruneDate = today;
-    this.ports.prune(this.settings.retentionDays, this.ports.now());
+    this.dirty = true;
   }
 
   // --- the commit tail: fold events, persist, broadcast, icon, wake ---
@@ -545,27 +647,80 @@ export class Engine {
     return { ok: false, error };
   }
 
-  private flushEvents(): void {
-    if (this.pendingEvents.length === 0) return;
-    let agg: DailyAgg = this.runtime.todayAgg ?? emptyDaily(this.runtime.date);
-    for (const ev of this.pendingEvents) agg = addEvent(agg, ev);
-    this.runtime.todayAgg = agg;
-    this.ports.queueSync(syncAggKey(this.deviceId, this.runtime.date), agg);
-    void this.ports.appendEvents(this.pendingEvents);
-    this.pendingEvents = [];
+  private recordEvent(event: EventRecord): void {
+    const aggregateEvent: EventRecord =
+      event.t === 'sessionCompleted' || event.t === 'sessionCanceled'
+        ? { ...event, focusedMs: 0 }
+        : event;
+    const aggregate: DailyAgg = this.runtime.todayAgg ?? emptyDaily(this.runtime.date);
+    this.runtime.todayAgg = addEvent(aggregate, aggregateEvent);
+    this.pendingEvents.push(event);
+    this.dirty = true;
   }
 
-  private async commit(now: number): Promise<void> {
-    this.flushEvents();
+  private async flushEvents(): Promise<void> {
+    const aggregate: DailyAgg | null = this.runtime.todayAgg;
+    if (aggregate !== null) {
+      this.ports.queueSync(
+        syncAggKey(this.deviceId, this.runtime.date),
+        capAttempts(aggregate, TOP_SITES_DAILY),
+      );
+    }
+    if (this.pendingEvents.length === 0) return;
+    const batch: EventRecord[] = [...this.pendingEvents];
+    await this.ports.appendEvents(batch);
+    this.pendingEvents.splice(0, batch.length);
+  }
+
+  private commit(now: number): Promise<void> {
+    const queued: Promise<void> = this.commitQueue.then(
+      (): Promise<void> => this.performCommit(now),
+    );
+    this.commitQueue = queued.catch((): void => {
+      // Keep later commits usable. The caller still receives the rejection.
+    });
+    return queued;
+  }
+
+  private commitInBackground(now: number): void {
+    void this.commit(now).catch((error: unknown): void => this.ports.reportError(error));
+  }
+
+  private async performCommit(now: number): Promise<void> {
+    await this.flushEvents();
     this.dirty = false;
     const block: boolean = this.needsBlocking;
     this.needsBlocking = false;
     const snap: SessionSnapshot = this.buildSnapshot(now);
-    await this.ports.saveRuntime(this.runtime);
+    await this.persistRuntime();
     this.ports.broadcast(snap);
     this.ports.updateIcon(snap);
     this.ports.scheduleWake(this.runtime.session?.phaseEndsAt ?? null);
-    if (block) await this.ports.applyBlocking();
+    if (block) {
+      this.applyingBlocking = true;
+      try {
+        await this.ports.applyBlocking();
+      } finally {
+        this.applyingBlocking = false;
+      }
+    }
+    if (this.dirty) {
+      await this.flushEvents();
+      this.dirty = false;
+      const updated: SessionSnapshot = this.buildSnapshot(this.ports.now());
+      await this.persistRuntime();
+      this.ports.broadcast(updated);
+      this.ports.updateIcon(updated);
+    }
+  }
+
+  private async persistRuntime(): Promise<void> {
+    try {
+      await this.ports.saveRuntime(this.runtime);
+    } catch (error: unknown) {
+      this.dirty = true;
+      throw error;
+    }
   }
 
   private ensureMatcher(mode: SessionConfig['mode']): CompiledMatcher {
@@ -629,11 +784,23 @@ function hostOf(url: string): string {
     const registrable: string | null = registrableHost(url);
     if (registrable !== null) return registrable;
   } catch {
-    // registrableHost only throws while ws/core is stubbed, fall through
+    // Malformed external input falls through to URL parsing.
   }
   try {
     return new URL(url).hostname;
   } catch {
     return url;
   }
+}
+
+function focusedMsAt(session: SessionState, now: number): number {
+  if (session.phase !== 'focus') return session.focusedMs;
+  const focusedUntil: number = Math.min(now, session.phaseEndsAt, session.sessionEndsAt);
+  return session.focusedMs + Math.max(0, focusedUntil - session.phaseStartedAt);
+}
+
+function localMidnightAfter(date: string): number {
+  const midnight: Date = new Date(`${date}T00:00:00`);
+  midnight.setDate(midnight.getDate() + 1);
+  return midnight.getTime();
 }

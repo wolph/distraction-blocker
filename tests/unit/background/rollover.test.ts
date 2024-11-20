@@ -1,131 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { planRollover, type RolloverPlan } from '../../../src/background/rollover';
-import { buildStats, pruneAndRollup } from '../../../src/background/stats-service';
+import { applyPrunePlan, buildStats, pruneAndRollup } from '../../../src/background/stats-service';
 import type { StatsBundle } from '../../../src/shared/messages';
 import { localDateStr } from '../../../src/shared/time';
 import type { DailyAgg, EventRecord, MonthlyAgg, StreakState } from '../../../src/shared/types';
-
-// The real src/core modules still throw "not implemented" on this branch.
-// These fakes implement just enough semantics to exercise the grouping,
-// merging, and key handling that rollover.ts and stats-service.ts own.
-// Delete once ws/core merges.
-vi.mock('../../../src/core/stats', () => {
-  function zero(date: string): DailyAgg {
-    return {
-      date,
-      focusMs: 0,
-      sessionsStarted: 0,
-      sessionsCompleted: 0,
-      attempts: {},
-      attemptsOther: 0,
-      pausesTaken: 0,
-      pauseMsSpent: 0,
-      unlocksTaken: 0,
-      resisted: 0,
-    };
-  }
-  function addInto(
-    into: Record<string, number>,
-    from: Record<string, number>,
-  ): Record<string, number> {
-    const out: Record<string, number> = { ...into };
-    const entries: Array<[string, number]> = Object.entries(from);
-    for (let index: number = 0; index < entries.length; index++) {
-      const entry: [string, number] = entries[index] as [string, number];
-      const key: string = entry[0];
-      const value: number = entry[1];
-      out[key] = (out[key] ?? 0) + value;
-    }
-    return out;
-  }
-  return {
-    emptyDaily: zero,
-    addEvent: (agg: DailyAgg): DailyAgg => agg,
-    mergeDaily: (sameDay: DailyAgg[]): DailyAgg => {
-      let out: DailyAgg = zero(sameDay[0]?.date ?? '');
-      for (let index: number = 0; index < sameDay.length; index++) {
-        const day: DailyAgg = sameDay[index] as DailyAgg;
-        out = {
-          ...out,
-          focusMs: out.focusMs + day.focusMs,
-          sessionsStarted: out.sessionsStarted + day.sessionsStarted,
-          sessionsCompleted: out.sessionsCompleted + day.sessionsCompleted,
-          attempts: addInto(out.attempts, day.attempts),
-          attemptsOther: out.attemptsOther + day.attemptsOther,
-          pausesTaken: out.pausesTaken + day.pausesTaken,
-          pauseMsSpent: out.pauseMsSpent + day.pauseMsSpent,
-          unlocksTaken: out.unlocksTaken + day.unlocksTaken,
-          resisted: out.resisted + day.resisted,
-        };
-      }
-      return out;
-    },
-    mergeMonthly: (sameMonth: MonthlyAgg[]): MonthlyAgg => {
-      let out: MonthlyAgg = {
-        month: sameMonth[0]?.month ?? '',
-        focusMs: 0,
-        sessionsStarted: 0,
-        sessionsCompleted: 0,
-        attempts: {},
-        attemptsOther: 0,
-        pausesTaken: 0,
-        pauseMsSpent: 0,
-        unlocksTaken: 0,
-        resisted: 0,
-      };
-      for (let index: number = 0; index < sameMonth.length; index++) {
-        const month: MonthlyAgg = sameMonth[index] as MonthlyAgg;
-        out = {
-          ...out,
-          focusMs: out.focusMs + month.focusMs,
-          attempts: addInto(out.attempts, month.attempts),
-        };
-      }
-      return out;
-    },
-    capAttempts: (agg: DailyAgg, topN: number): DailyAgg => {
-      const sorted: Array<[string, number]> = Object.entries(agg.attempts).sort(
-        (a: [string, number], b: [string, number]): number => b[1] - a[1],
-      );
-      const kept: Array<[string, number]> = sorted.slice(0, topN);
-      const dropped: number = sorted
-        .slice(topN)
-        .reduce((a: number, [, v]: [string, number]): number => a + v, 0);
-      return {
-        ...agg,
-        attempts: Object.fromEntries(kept),
-        attemptsOther: agg.attemptsOther + dropped,
-      };
-    },
-    rollupMonth: (month: string, dailies: DailyAgg[]): MonthlyAgg => ({
-      month,
-      focusMs: dailies.reduce((a: number, d: DailyAgg): number => a + d.focusMs, 0),
-      sessionsStarted: 0,
-      sessionsCompleted: 0,
-      attempts: {},
-      attemptsOther: 0,
-      pausesTaken: 0,
-      pauseMsSpent: 0,
-      unlocksTaken: 0,
-      resisted: 0,
-    }),
-  };
-});
-
-vi.mock('../../../src/core/streak', () => ({
-  emptyStreak: (month: string): StreakState => ({
-    current: 0,
-    freezeTokens: 0,
-    lastCountedDate: null,
-    lastFreezeGrantDate: null,
-    activeDays: [],
-    activeMonth: month,
-  }),
-  closeDay: (streak: StreakState, date: string, focusMin: number, goalMin: number): StreakState =>
-    focusMin >= goalMin
-      ? { ...streak, current: streak.current + 1, lastCountedDate: date }
-      : { ...streak, current: 0 },
-}));
 
 const DAY_MS: number = 86_400_000;
 const NOW: number = new Date(2026, 7, 29, 12, 0, 0).getTime();
@@ -135,6 +13,22 @@ const YESTERDAY: string = localDateStr(NOW - DAY_MS);
 function daily(date: string, over: Partial<DailyAgg>): DailyAgg {
   return {
     date,
+    focusMs: 0,
+    sessionsStarted: 0,
+    sessionsCompleted: 0,
+    attempts: {},
+    attemptsOther: 0,
+    pausesTaken: 0,
+    pauseMsSpent: 0,
+    unlocksTaken: 0,
+    resisted: 0,
+    ...over,
+  };
+}
+
+function monthly(month: string, over: Partial<MonthlyAgg>): MonthlyAgg {
+  return {
+    month,
     focusMs: 0,
     sessionsStarted: 0,
     sessionsCompleted: 0,
@@ -179,6 +73,21 @@ describe('planRollover', () => {
 });
 
 describe('buildStats', () => {
+  it('replaces debounced sync data with the current in-memory aggregate', () => {
+    const stale: DailyAgg = daily(TODAY, { focusMs: 1, resisted: 0 });
+    const current: DailyAgg = daily(TODAY, { focusMs: 60_000, resisted: 1 });
+
+    const bundle: StatsBundle = buildStats('devA', { [`agg:devA:${TODAY}`]: stale }, [], 14, NOW, {
+      deviceId: 'devA',
+      todayAgg: current,
+      streak: null,
+      pendingEvents: [],
+    });
+
+    expect(bundle.totals.focusMsToday).toBe(60_000);
+    expect(bundle.totals.resistedToday).toBe(1);
+  });
+
   it('merges same-day aggs across devices additively, totals count today only', () => {
     const syncItems: Record<string, unknown> = {
       [`agg:devA:${TODAY}`]: daily(TODAY, { focusMs: 60_000, attempts: { 'x.com': 2 } }),
@@ -255,5 +164,43 @@ describe('pruneAndRollup', () => {
     };
     const plan: ReturnType<typeof pruneAndRollup> = pruneAndRollup('devA', syncItems, 90, NOW);
     expect((plan.set[`aggm:devA:${oldMonth}`] as MonthlyAgg).focusMs).toBe(55_000);
+  });
+});
+
+describe('applyPrunePlan', () => {
+  afterEach((): void => {
+    vi.unstubAllGlobals();
+  });
+
+  it('resumes a partially applied prune without adding the daily twice', async () => {
+    const oldKey = 'agg:devA:2026-05-01';
+    const monthKey = 'aggm:devA:2026-05';
+    const state: Record<string, unknown> = {
+      [oldKey]: daily('2026-05-01', { focusMs: 5 }),
+      [monthKey]: monthly('2026-05', { focusMs: 10 }),
+    };
+    const sync = {
+      get: vi.fn(async (key: string): Promise<Record<string, unknown>> => ({ [key]: state[key] })),
+      set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+        Object.assign(state, items);
+      }),
+      remove: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('remove failed'))
+        .mockImplementation(async (keys: string | string[]): Promise<void> => {
+          for (const key of typeof keys === 'string' ? [keys] : keys) delete state[key];
+        }),
+    };
+    vi.stubGlobal('chrome', { storage: { sync } });
+    const plan = pruneAndRollup('devA', state, 90, NOW);
+
+    await expect(applyPrunePlan('devA', plan)).rejects.toThrow('remove failed');
+    await applyPrunePlan('devA', plan);
+
+    expect((state[monthKey] as MonthlyAgg).focusMs).toBe(15);
+    expect(state[oldKey]).toBeUndefined();
+    expect(Object.keys(state).filter((key: string): boolean => key.startsWith('prune:'))).toEqual(
+      [],
+    );
   });
 });
