@@ -1,0 +1,78 @@
+import type { Ack } from '../shared/messages';
+import { SYNC_BANK, SYNC_LISTS, SYNC_SETTINGS, SYNC_STREAK } from '../shared/storage-keys';
+import type { BankState, ListsConfig, Settings, StreakState } from '../shared/types';
+import { mergeLists, mergeSettings } from './stores';
+import type { SyncEchoes } from './sync-writer';
+
+export interface SyncChangeEngine {
+  applySyncedSettings(settings: Settings): Promise<Ack>;
+  applySyncedLists(lists: ListsConfig): Promise<Ack>;
+  applySyncedBank(bank: BankState): Promise<Ack>;
+  applySyncedStreak(streak: StreakState): Promise<void>;
+  getSettings(): Settings;
+  getLists(): ListsConfig;
+}
+
+export interface SyncStorageChange {
+  newValue?: unknown;
+}
+
+export type SyncStorageChanges = Record<string, SyncStorageChange | undefined>;
+export type SyncStorageWrite = (items: Record<string, unknown>) => Promise<void>;
+
+async function correctRejectedChange<T>(
+  key: string,
+  incoming: T,
+  echoes: SyncEchoes,
+  apply: (value: T) => Promise<Ack>,
+  current: () => T,
+  write: SyncStorageWrite,
+): Promise<void> {
+  const result: Ack = await apply(incoming);
+  if (result.ok) return;
+
+  const correctiveValue: T = current();
+  echoes.remember(key, correctiveValue);
+  await write({ [key]: correctiveValue });
+}
+
+export async function handleSyncChanges(
+  engine: SyncChangeEngine,
+  changes: SyncStorageChanges,
+  echoes: SyncEchoes,
+  write: SyncStorageWrite,
+): Promise<void> {
+  const settingsValue: unknown = changes[SYNC_SETTINGS]?.newValue;
+  if (settingsValue !== undefined && !echoes.consume(SYNC_SETTINGS, settingsValue)) {
+    await correctRejectedChange(
+      SYNC_SETTINGS,
+      mergeSettings(settingsValue as Parameters<typeof mergeSettings>[0]),
+      echoes,
+      (settings: Settings): Promise<Ack> => engine.applySyncedSettings(settings),
+      (): Settings => engine.getSettings(),
+      write,
+    );
+  }
+
+  const listsValue: unknown = changes[SYNC_LISTS]?.newValue;
+  if (listsValue !== undefined && !echoes.consume(SYNC_LISTS, listsValue)) {
+    await correctRejectedChange(
+      SYNC_LISTS,
+      mergeLists(listsValue as Parameters<typeof mergeLists>[0]),
+      echoes,
+      (lists: ListsConfig): Promise<Ack> => engine.applySyncedLists(lists),
+      (): ListsConfig => engine.getLists(),
+      write,
+    );
+  }
+
+  const bankValue: unknown = changes[SYNC_BANK]?.newValue;
+  if (bankValue !== undefined && !echoes.consume(SYNC_BANK, bankValue)) {
+    await engine.applySyncedBank(bankValue as BankState);
+  }
+
+  const streakValue: unknown = changes[SYNC_STREAK]?.newValue;
+  if (streakValue !== undefined && !echoes.consume(SYNC_STREAK, streakValue)) {
+    await engine.applySyncedStreak(streakValue as StreakState);
+  }
+}

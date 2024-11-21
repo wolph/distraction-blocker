@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { planRollover, type RolloverPlan } from '../../../src/background/rollover';
+import {
+  planBackwardDateRebase,
+  planRollover,
+  type RolloverPlan,
+} from '../../../src/background/rollover';
 import { applyPrunePlan, buildStats, pruneAndRollup } from '../../../src/background/stats-service';
 import type { StatsBundle } from '../../../src/shared/messages';
+import { SYNC_STREAK } from '../../../src/shared/storage-keys';
 import { localDateStr } from '../../../src/shared/time';
 import type { DailyAgg, EventRecord, MonthlyAgg, StreakState } from '../../../src/shared/types';
 
@@ -70,9 +75,122 @@ describe('planRollover', () => {
     expect(plan.finished).toEqual(daily(YESTERDAY, {}));
     expect(plan.streak.current).toBe(0);
   });
+
+  it('opens the new display month after closing the previous month correctly', () => {
+    const now: number = new Date(2026, 9, 1, 0, 1).getTime();
+    const streak: StreakState = {
+      ...zeroStreak,
+      current: 2,
+      activeMonth: '2026-09',
+      activeDays: [2, 30],
+      freezeTokens: 1,
+    };
+
+    const plan: RolloverPlan = planRollover(
+      '2026-09-30',
+      now,
+      daily('2026-09-30', { focusMs: 30 * 60_000 }),
+      streak,
+      25,
+    );
+
+    expect(plan.streak).toMatchObject({
+      current: 3,
+      activeMonth: '2026-10',
+      activeDays: [],
+      freezeTokens: 1,
+      lastCountedDate: '2026-09-30',
+    });
+  });
+});
+
+describe('planBackwardDateRebase', () => {
+  it('archives the future-dated aggregate and starts the current local day empty', () => {
+    const current: DailyAgg = daily('2026-10-02', {
+      focusMs: 60_000,
+      attempts: { 'x.com': 2 },
+    });
+
+    const plan = planBackwardDateRebase('2026-10-01', current);
+
+    expect(plan.archive).toEqual(current);
+    expect(plan.newAgg).toEqual(daily('2026-10-01', {}));
+  });
 });
 
 describe('buildStats', () => {
+  it('keeps a newer synced streak over a stale in-memory overlay', () => {
+    const synced: StreakState = {
+      ...zeroStreak,
+      current: 5,
+      lastCountedDate: '2026-08-28',
+      activeDays: [24, 25, 26, 27, 28],
+    };
+    const staleLocal: StreakState = {
+      ...zeroStreak,
+      current: 4,
+      lastCountedDate: '2026-08-27',
+      activeDays: [24, 25, 26, 27],
+    };
+
+    const bundle: StatsBundle = buildStats('devA', { [SYNC_STREAK]: synced }, [], 14, NOW, {
+      deviceId: 'devA',
+      todayAgg: daily(TODAY, {}),
+      streak: staleLocal,
+      pendingEvents: [],
+    });
+
+    expect(bundle.streak).toEqual(synced);
+  });
+
+  it('keeps a newer in-memory streak while its sync write is debounced', () => {
+    const staleSync: StreakState = {
+      ...zeroStreak,
+      current: 4,
+      lastCountedDate: '2026-08-27',
+      activeDays: [24, 25, 26, 27],
+    };
+    const newerLocal: StreakState = {
+      ...zeroStreak,
+      current: 5,
+      lastCountedDate: '2026-08-28',
+      activeDays: [24, 25, 26, 27, 28],
+    };
+
+    const bundle: StatsBundle = buildStats('devA', { [SYNC_STREAK]: staleSync }, [], 14, NOW, {
+      deviceId: 'devA',
+      todayAgg: daily(TODAY, {}),
+      streak: newerLocal,
+      pendingEvents: [],
+    });
+
+    expect(bundle.streak).toEqual(newerLocal);
+  });
+
+  it('prefers sync when streak progress markers are equal', () => {
+    const synced: StreakState = {
+      ...zeroStreak,
+      current: 5,
+      lastCountedDate: '2026-08-28',
+      lastFreezeGrantDate: '2026-08-24',
+      activeDays: [24, 25, 26, 27, 28],
+    };
+    const local: StreakState = {
+      ...synced,
+      current: 4,
+      activeDays: [24, 25, 26, 27],
+    };
+
+    const bundle: StatsBundle = buildStats('devA', { [SYNC_STREAK]: synced }, [], 14, NOW, {
+      deviceId: 'devA',
+      todayAgg: daily(TODAY, {}),
+      streak: local,
+      pendingEvents: [],
+    });
+
+    expect(bundle.streak).toEqual(synced);
+  });
+
   it('replaces debounced sync data with the current in-memory aggregate', () => {
     const stale: DailyAgg = daily(TODAY, { focusMs: 1, resisted: 0 });
     const current: DailyAgg = daily(TODAY, { focusMs: 60_000, resisted: 1 });

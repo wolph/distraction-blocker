@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Engine } from '../../../src/background/engine';
-import { applyToTab, planTabAction } from '../../../src/background/tabs';
+import { applyBlockingFactory, applyToTab, planTabAction } from '../../../src/background/tabs';
 import { emptySnapshot } from '../../../src/shared/constants';
 import type { Verdict } from '../../../src/shared/types';
 
@@ -39,6 +39,17 @@ describe('planTabAction', () => {
         wasStopped: false,
       }),
     ).toEqual({ command: 'applyBlock', mute: null, reload: false });
+  });
+
+  it('re-mutes a persisted worker-muted tab that is live-unmuted', () => {
+    expect(
+      planTabAction(blocked, {
+        muted: false,
+        wasMutedByUs: true,
+        priorMuted: true,
+        wasStopped: false,
+      }),
+    ).toEqual({ command: 'applyBlock', mute: true, reload: false });
   });
 
   it('clears with mute restore: puts the recorded prior state back', () => {
@@ -113,6 +124,21 @@ describe('applyToTab', () => {
     expect(engine.recordAttempt).toHaveBeenCalledWith('https://facebook.com/feed', 7, 'existing');
   });
 
+  it('records a committed navigation as fresh and preserves persisted restore state', async () => {
+    const engine: Engine = engineFor(blocked);
+    vi.mocked(engine.tabFacts).mockReturnValue({
+      wasMutedByUs: true,
+      priorMuted: true,
+      wasStopped: false,
+    });
+
+    await applyToTab(engine, 7, 'https://facebook.com/feed', false, 'navigation');
+
+    expect(engine.recordAttempt).toHaveBeenCalledWith('https://facebook.com/feed', 7, 'navigation');
+    expect(update).toHaveBeenCalledWith(7, { muted: true });
+    expect(engine.noteMuted).not.toHaveBeenCalled();
+  });
+
   it('keeps mute bookkeeping when Chrome fails to restore mute state', async () => {
     const engine: Engine = engineFor(allowed);
     update.mockRejectedValueOnce(new Error('tab closed'));
@@ -129,5 +155,54 @@ describe('applyToTab', () => {
     await applyToTab(engine, 7, 'https://example.com', true);
 
     expect(engine.noteReloaded).not.toHaveBeenCalled();
+  });
+});
+
+describe('applyBlockingFactory', () => {
+  afterEach((): void => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reconciles bookkeeping against every live tab id, including tabs without URLs', async () => {
+    const reconcileTabs = vi.fn();
+    const flushRuntime = vi.fn().mockResolvedValue(undefined);
+    const engine: Engine = {
+      reconcileTabs,
+      flushRuntime,
+      verdictFor: vi.fn((): Verdict => allowed),
+      snapshot: vi.fn(() => emptySnapshot(0)),
+      tabFacts: vi.fn(() => ({
+        wasMutedByUs: false,
+        priorMuted: false,
+        wasStopped: false,
+      })),
+      recordAttempt: vi.fn().mockResolvedValue(undefined),
+      noteMuted: vi.fn(),
+      noteMuteRestored: vi.fn(),
+      noteReloaded: vi.fn(),
+    } as unknown as Engine;
+    vi.stubGlobal('chrome', {
+      tabs: {
+        query: vi
+          .fn()
+          .mockResolvedValue([
+            { id: 7, url: 'https://example.com', mutedInfo: { muted: false } },
+            { id: 8 },
+            { id: 9, url: '' },
+            { url: 'https://missing-id.example' },
+          ]),
+        sendMessage: vi.fn().mockResolvedValue(undefined),
+        update: vi.fn().mockResolvedValue(undefined),
+        reload: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+
+    await applyBlockingFactory((): Engine => engine)();
+
+    expect(reconcileTabs).toHaveBeenCalledTimes(1);
+    const reconciled: ReadonlySet<number> | undefined = vi.mocked(reconcileTabs).mock.calls[0]?.[0];
+    expect(reconciled).toBeDefined();
+    expect([...(reconciled ?? new Set<number>())]).toEqual([7, 8, 9]);
+    expect(flushRuntime).toHaveBeenCalledTimes(1);
   });
 });

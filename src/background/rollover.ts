@@ -12,6 +12,11 @@ export interface RolloverPlan {
   streak: StreakState;
 }
 
+export interface BackwardDateRebasePlan {
+  archive: DailyAgg;
+  newAgg: DailyAgg;
+}
+
 /**
  * Pure midnight rollover: cap the finished day's attempt hosts, close
  * the streak day with its focus minutes, mint the new day's aggregate.
@@ -26,9 +31,24 @@ export function planRollover(
 ): RolloverPlan {
   const finished: DailyAgg = capAttempts(todayAgg ?? emptyDaily(prevDate), TOP_SITES_DAILY);
   const focusMin: number = finished.focusMs / 60_000;
+  const closed: StreakState = closeDay(streak, prevDate, focusMin, goalMin);
+  const currentMonth: string = localDateStr(now).slice(0, 7);
   return {
     finished,
     newAgg: emptyDaily(localDateStr(now)),
-    streak: closeDay(streak, prevDate, focusMin, goalMin),
+    streak:
+      closed.activeMonth === currentMonth
+        ? closed
+        : { ...closed, activeMonth: currentMonth, activeDays: [] },
+  };
+}
+
+export function planBackwardDateRebase(
+  currentDate: string,
+  futureAgg: DailyAgg,
+): BackwardDateRebasePlan {
+  return {
+    archive: capAttempts(futureAgg, TOP_SITES_DAILY),
+    newAgg: emptyDaily(currentDate),
   };
 }

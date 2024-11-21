@@ -51,8 +51,9 @@ import type {
   Verdict,
 } from '../shared/types';
 import { listsChangeAllowed, settingsChangeAllowed } from './guard';
-import { planRollover, type RolloverPlan } from './rollover';
+import { planBackwardDateRebase, planRollover, type RolloverPlan } from './rollover';
 import type { RuntimeState } from './stores';
+import { chooseNewerStreak } from './streak-sync';
 
 export interface EnginePorts {
   now(): number;
@@ -335,6 +336,15 @@ export class Engine {
     );
   }
 
+  reconcileTabs(liveTabIds: ReadonlySet<number>): void {
+    for (const tabId of Object.keys(this.runtime.mutedTabs).map(Number)) {
+      if (!liveTabIds.has(tabId)) delete this.runtime.mutedTabs[tabId];
+    }
+    this.runtime.stoppedTabIds = this.runtime.stoppedTabIds.filter((tabId: number): boolean =>
+      liveTabIds.has(tabId),
+    );
+  }
+
   flushRuntime(): Promise<void> {
     return this.persistRuntime();
   }
@@ -436,6 +446,10 @@ export class Engine {
     return { ok: true };
   }
 
+  async applySyncedStreak(streak: StreakState): Promise<void> {
+    this.streak = chooseNewerStreak(streak, this.streak);
+  }
+
   getSettings(): Settings {
     return this.settings;
   }
@@ -468,6 +482,7 @@ export class Engine {
 
   private catchUp(now: number): void {
     const today: string = localDateStr(now);
+    if (this.runtime.date > today) this.rebaseDateBackward(today);
     while (this.runtime.date !== today) {
       const boundary: number = localMidnightAfter(this.runtime.date);
       this.settleSession(boundary);
@@ -479,6 +494,21 @@ export class Engine {
     this.expireGate(now);
     this.expireUnlocks(now);
     this.scheduleCheck(now);
+  }
+
+  private rebaseDateBackward(today: string): void {
+    const futureDate: string = this.runtime.date;
+    const plan = planBackwardDateRebase(today, this.runtime.todayAgg ?? emptyDaily(futureDate));
+    this.ports.queueSync(syncAggKey(this.deviceId, futureDate), plan.archive);
+    this.runtime.date = today;
+    this.runtime.todayAgg = plan.newAgg;
+    this.runtime.attemptDebounce = {};
+    this.runtime.lastPruneDate = null;
+    if (this.streak !== null && this.streak.activeMonth !== today.slice(0, 7)) {
+      this.streak = { ...this.streak, activeMonth: today.slice(0, 7), activeDays: [] };
+      this.ports.queueSync(SYNC_STREAK, this.streak);
+    }
+    this.dirty = true;
   }
 
   private settleSession(now: number): void {

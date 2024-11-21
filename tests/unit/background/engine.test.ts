@@ -10,11 +10,13 @@ import {
 } from '../../../src/shared/constants';
 import { localDateStr } from '../../../src/shared/time';
 import type {
+  DailyAgg,
   EventRecord,
   ScheduleEntry,
   SessionConfig,
   SessionSnapshot,
   Settings,
+  StreakState,
 } from '../../../src/shared/types';
 
 interface Harness {
@@ -29,7 +31,12 @@ interface Harness {
 const T0: number = new Date(2026, 7, 29, 8, 59).getTime();
 const DAY_MS: number = 86_400_000;
 
-function makeEngine(opts?: { bankMs?: number; settings?: Partial<Settings> }): Harness {
+function makeEngine(opts?: {
+  bankMs?: number;
+  settings?: Partial<Settings>;
+  runtime?: RuntimeState;
+  streak?: StreakState | null;
+}): Harness {
   let nowMs: number = T0;
   const ports: Harness['ports'] = {
     now: vi.fn((): number => nowMs),
@@ -54,8 +61,8 @@ function makeEngine(opts?: { bankMs?: number; settings?: Partial<Settings> }): H
       custom: [{ kind: 'host', pattern: 'facebook.com' }],
     },
     { balanceMs: opts?.bankMs ?? 0 },
-    null,
-    emptyRuntime(T0),
+    opts?.streak ?? null,
+    opts?.runtime ?? emptyRuntime(T0),
     'dev-test',
   );
   return {
@@ -335,6 +342,45 @@ describe('Engine', () => {
     expect(h.engine.getStreak()).toMatchObject({ current: 2 });
   });
 
+  it('rebases a future local date without looping and archives its aggregate', () => {
+    const runtime: RuntimeState = emptyRuntime(T0);
+    const futureDate: string = localDateStr(T0 + 3 * DAY_MS);
+    const futureAgg: DailyAgg = {
+      date: futureDate,
+      focusMs: 60_000,
+      sessionsStarted: 1,
+      sessionsCompleted: 0,
+      attempts: { 'x.com': 2 },
+      attemptsOther: 0,
+      pausesTaken: 0,
+      pauseMsSpent: 0,
+      unlocksTaken: 0,
+      resisted: 0,
+    };
+    runtime.date = futureDate;
+    runtime.todayAgg = futureAgg;
+    const futureStreak: StreakState = {
+      current: 2,
+      freezeTokens: 1,
+      lastCountedDate: futureDate,
+      lastFreezeGrantDate: null,
+      activeDays: [1, 2],
+      activeMonth: futureDate.slice(0, 7),
+    };
+    const h: Harness = makeEngine({ runtime, streak: futureStreak });
+
+    const overlay = h.engine.statsOverlay();
+
+    expect(overlay.todayAgg.date).toBe(localDateStr(T0));
+    expect(overlay.todayAgg.focusMs).toBe(0);
+    expect(h.ports.queueSync).toHaveBeenCalledWith(`agg:dev-test:${futureDate}`, futureAgg);
+    expect(h.ports.queueSync).toHaveBeenCalledWith('streak', {
+      ...futureStreak,
+      activeDays: [],
+      activeMonth: localDateStr(T0).slice(0, 7),
+    });
+  });
+
   it('clears a pending gate when a session completes before a new session starts', async () => {
     const h: Harness = makeEngine({ bankMs: 300_000 });
     await h.engine.startSession({ ...manualConfig, durationMin: 0.1 });
@@ -516,6 +562,32 @@ describe('Engine', () => {
     expect(h.engine.snapshot().attemptsToday).toBe(1);
   });
 
+  it('prunes absent tab records while preserving live restore state', async () => {
+    const h: Harness = makeEngine();
+    h.engine.noteMuted(7, true);
+    h.engine.noteMuted(8, false);
+    await h.engine.markStopped(7);
+    await h.engine.markStopped(9);
+
+    h.engine.reconcileTabs(new Set([7]));
+
+    expect(h.engine.tabFacts(7)).toEqual({
+      wasMutedByUs: true,
+      priorMuted: true,
+      wasStopped: true,
+    });
+    expect(h.engine.tabFacts(8)).toEqual({
+      wasMutedByUs: false,
+      priorMuted: false,
+      wasStopped: false,
+    });
+    expect(h.engine.tabFacts(9)).toEqual({
+      wasMutedByUs: false,
+      priorMuted: false,
+      wasStopped: false,
+    });
+  });
+
   it('caps the active daily attempt map before queueing sync data', async () => {
     const h: Harness = makeEngine();
     await h.engine.startSession(manualConfig);
@@ -572,5 +644,50 @@ describe('Engine', () => {
     expect(h.engine.snapshot().bankMs).toBe(42_000);
     expect(h.ports.queueSync).not.toHaveBeenCalledWith('settings', expect.anything());
     expect(h.ports.queueSync).not.toHaveBeenCalledWith('bank', expect.anything());
+  });
+
+  it('applies newer synced streak progress without echoing it', async () => {
+    const local: StreakState = {
+      current: 2,
+      freezeTokens: 0,
+      lastCountedDate: '2026-08-26',
+      lastFreezeGrantDate: '2026-08-24',
+      activeDays: [25, 26],
+      activeMonth: '2026-08',
+    };
+    const remote: StreakState = {
+      ...local,
+      current: 3,
+      lastCountedDate: '2026-08-27',
+      activeDays: [25, 26, 27],
+    };
+    const h: Harness = makeEngine({ streak: local });
+
+    await h.engine.applySyncedStreak(remote);
+
+    expect(h.engine.getStreak()).toEqual(remote);
+    expect(h.ports.queueSync).not.toHaveBeenCalledWith('streak', expect.anything());
+  });
+
+  it('does not replace newer local streak progress with stale sync data', async () => {
+    const remote: StreakState = {
+      current: 2,
+      freezeTokens: 0,
+      lastCountedDate: '2026-08-26',
+      lastFreezeGrantDate: '2026-08-24',
+      activeDays: [25, 26],
+      activeMonth: '2026-08',
+    };
+    const local: StreakState = {
+      ...remote,
+      current: 3,
+      lastCountedDate: '2026-08-27',
+      activeDays: [25, 26, 27],
+    };
+    const h: Harness = makeEngine({ streak: local });
+
+    await h.engine.applySyncedStreak(remote);
+
+    expect(h.engine.getStreak()).toEqual(local);
   });
 });

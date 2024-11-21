@@ -23,7 +23,11 @@ export interface TabAction {
 /** Pure per-tab decision: what to send and which side effects to run. */
 export function planTabAction(verdict: Verdict, tabState: TabState): TabAction {
   if (verdict.blocked) {
-    return { command: 'applyBlock', mute: tabState.wasMutedByUs ? null : true, reload: false };
+    return {
+      command: 'applyBlock',
+      mute: tabState.wasMutedByUs && tabState.muted ? null : true,
+      reload: false,
+    };
   }
   return {
     command: 'clearBlock',
@@ -37,9 +41,10 @@ export async function applyToTab(
   tabId: number,
   url: string,
   mutedNow: boolean,
+  attemptKind: 'navigation' | 'existing' = 'existing',
 ): Promise<void> {
   const verdict: Verdict = engine.verdictFor(url);
-  if (verdict.blocked) await engine.recordAttempt(url, tabId, 'existing');
+  if (verdict.blocked) await engine.recordAttempt(url, tabId, attemptKind);
   const snapshot: SessionSnapshot = engine.snapshot();
   const facts: { wasMutedByUs: boolean; priorMuted: boolean; wasStopped: boolean } =
     engine.tabFacts(tabId);
@@ -56,8 +61,11 @@ export async function applyToTab(
   if (action.mute !== null) {
     try {
       await chrome.tabs.update(tabId, { muted: action.mute });
-      if (action.command === 'applyBlock') engine.noteMuted(tabId, mutedNow);
-      else engine.noteMuteRestored(tabId);
+      if (action.command === 'applyBlock') {
+        if (!facts.wasMutedByUs) engine.noteMuted(tabId, mutedNow);
+      } else {
+        engine.noteMuteRestored(tabId);
+      }
     } catch {
       // the tab may be gone already
     }
@@ -85,6 +93,10 @@ export function applyBlockingFactory(engine: () => Engine): () => Promise<void> 
     try {
       const e: Engine = engine();
       const tabs: chrome.tabs.Tab[] = await chrome.tabs.query({});
+      const liveTabIds: Set<number> = new Set(
+        tabs.flatMap((tab: chrome.tabs.Tab): number[] => (tab.id === undefined ? [] : [tab.id])),
+      );
+      e.reconcileTabs(liveTabIds);
       for (const tab of tabs) {
         if (tab.id === undefined || tab.url === undefined || tab.url === '') continue;
         await applyToTab(e, tab.id, tab.url, tab.mutedInfo?.muted ?? false);
@@ -101,19 +113,30 @@ export function applyBlockingFactory(engine: () => Engine): () => Promise<void> 
  * Catches YouTube-style pushState navigation that never reloads.
  */
 export function registerTabListeners(ready: () => Promise<Engine>): void {
-  const onNav = (details: { tabId: number; url: string; frameId: number }): void => {
+  const onNav = (
+    details: { tabId: number; url: string; frameId: number },
+    attemptKind: 'navigation' | 'existing',
+  ): void => {
     if (details.frameId !== 0) return;
     void ready().then(async (engine: Engine): Promise<void> => {
       const tab: chrome.tabs.Tab | null = await chrome.tabs
         .get(details.tabId)
         .catch((): null => null);
       if (tab === null) return;
-      await applyToTab(engine, details.tabId, details.url, tab.mutedInfo?.muted ?? false);
+      await applyToTab(
+        engine,
+        details.tabId,
+        details.url,
+        tab.mutedInfo?.muted ?? false,
+        attemptKind,
+      );
       await engine.flushRuntime();
     });
   };
-  chrome.webNavigation.onCommitted.addListener(onNav);
-  chrome.webNavigation.onHistoryStateUpdated.addListener(onNav);
+  chrome.webNavigation.onCommitted.addListener((details): void => onNav(details, 'navigation'));
+  chrome.webNavigation.onHistoryStateUpdated.addListener((details): void =>
+    onNav(details, 'existing'),
+  );
 }
 
 /** onInstalled: content scripts only auto-attach to new loads, inject into what is open. */

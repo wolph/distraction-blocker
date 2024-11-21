@@ -5,6 +5,7 @@ import { SYNC_STREAK, syncAggKey, syncMonthKey } from '../shared/storage-keys';
 import { localDateStr, localMonthStr } from '../shared/time';
 import type { DailyAgg, EventRecord, MonthlyAgg, StreakState } from '../shared/types';
 import { getDeviceId, readEvents } from './stores';
+import { chooseNewerStreak } from './streak-sync';
 
 const DAY_MS: number = 86_400_000;
 const DAILY_KEY_RE: RegExp = /^agg:[^:]+:(\d{4}-\d{2}-\d{2})$/;
@@ -56,7 +57,10 @@ export function buildStats(
   const allEvents: EventRecord[] = mergeEvents(events, live?.pendingEvents ?? []);
   if (live !== null) {
     items[syncAggKey(live.deviceId, live.todayAgg.date)] = live.todayAgg;
-    if (live.streak !== null) items[SYNC_STREAK] = live.streak;
+    const syncedStreak: StreakState | null =
+      (items[SYNC_STREAK] as StreakState | undefined) ?? null;
+    const currentStreak: StreakState | null = chooseNewerStreak(syncedStreak, live.streak);
+    if (currentStreak !== null) items[SYNC_STREAK] = currentStreak;
   }
   const dailyByDate: Map<string, DailyAgg[]> = new Map();
   const monthlyByMonth: Map<string, MonthlyAgg[]> = new Map();
