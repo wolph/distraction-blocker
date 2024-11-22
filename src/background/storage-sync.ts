@@ -18,39 +18,36 @@ export interface SyncStorageChange {
 }
 
 export type SyncStorageChanges = Record<string, SyncStorageChange | undefined>;
-export type SyncStorageWrite = (items: Record<string, unknown>) => Promise<void>;
+export type SyncStorageQueue = (key: string, value: unknown) => void;
 
 async function correctRejectedChange<T>(
   key: string,
   incoming: T,
-  echoes: SyncEchoes,
   apply: (value: T) => Promise<Ack>,
   current: () => T,
-  write: SyncStorageWrite,
+  queueSync: SyncStorageQueue,
 ): Promise<void> {
   const result: Ack = await apply(incoming);
   if (result.ok) return;
 
   const correctiveValue: T = current();
-  echoes.remember(key, correctiveValue);
-  await write({ [key]: correctiveValue });
+  queueSync(key, correctiveValue);
 }
 
 export async function handleSyncChanges(
   engine: SyncChangeEngine,
   changes: SyncStorageChanges,
   echoes: SyncEchoes,
-  write: SyncStorageWrite,
+  queueSync: SyncStorageQueue,
 ): Promise<void> {
   const settingsValue: unknown = changes[SYNC_SETTINGS]?.newValue;
   if (settingsValue !== undefined && !echoes.consume(SYNC_SETTINGS, settingsValue)) {
     await correctRejectedChange(
       SYNC_SETTINGS,
       mergeSettings(settingsValue as Parameters<typeof mergeSettings>[0]),
-      echoes,
       (settings: Settings): Promise<Ack> => engine.applySyncedSettings(settings),
       (): Settings => engine.getSettings(),
-      write,
+      queueSync,
     );
   }
 
@@ -59,10 +56,9 @@ export async function handleSyncChanges(
     await correctRejectedChange(
       SYNC_LISTS,
       mergeLists(listsValue as Parameters<typeof mergeLists>[0]),
-      echoes,
       (lists: ListsConfig): Promise<Ack> => engine.applySyncedLists(lists),
       (): ListsConfig => engine.getLists(),
-      write,
+      queueSync,
     );
   }
 

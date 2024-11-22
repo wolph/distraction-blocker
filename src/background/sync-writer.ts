@@ -5,15 +5,30 @@
  */
 export class SyncWriter {
   private pending: Map<string, unknown> = new Map();
+  private pendingRemovals: Set<string> = new Set();
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private flushQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly flushMs: number,
     private readonly write: (items: Record<string, unknown>) => Promise<void>,
+    private readonly removeStored?: (keys: string[]) => Promise<void>,
   ) {}
 
   queue(key: string, value: unknown): void {
+    this.pendingRemovals.delete(key);
     this.pending.set(key, value);
+    this.schedule();
+  }
+
+  supersede(key: string, value: unknown): void {
+    if (!this.pending.has(key)) return;
+    this.pending.set(key, value);
+  }
+
+  remove(key: string): void {
+    this.pending.delete(key);
+    this.pendingRemovals.add(key);
     this.schedule();
   }
 
@@ -28,15 +43,28 @@ export class SyncWriter {
     }
   }
 
-  async flushNow(): Promise<void> {
+  flushNow(): Promise<void> {
+    const requested: Promise<void> = this.flushQueue.then((): Promise<void> => this.performFlush());
+    this.flushQueue = requested.catch((): void => {});
+    return requested;
+  }
+
+  private async performFlush(): Promise<void> {
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    if (this.pending.size === 0) return;
+    if (this.pending.size === 0 && this.pendingRemovals.size === 0) return;
     const batch: Map<string, unknown> = new Map(this.pending);
+    const removals: Set<string> = new Set(this.pendingRemovals);
     try {
-      await this.write(Object.fromEntries(batch));
+      if (removals.size > 0) {
+        if (this.removeStored === undefined) {
+          throw new Error('sync removal requested without a remove callback');
+        }
+        await this.removeStored([...removals]);
+      }
+      if (batch.size > 0) await this.write(Object.fromEntries(batch));
     } catch (error: unknown) {
       this.schedule();
       throw error;
@@ -44,7 +72,8 @@ export class SyncWriter {
     for (const [key, value] of batch) {
       if (this.pending.get(key) === value) this.pending.delete(key);
     }
-    if (this.pending.size > 0) this.schedule();
+    for (const key of removals) this.pendingRemovals.delete(key);
+    if (this.pending.size > 0 || this.pendingRemovals.size > 0) this.schedule();
   }
 }
 

@@ -32,9 +32,7 @@ export interface RuntimeState {
   session: SessionState | null;
   gate: GateState | null;
   unlocks: SiteUnlock[];
-  stoppedTabIds: number[];
-  /** tabId -> mute state the tab had before the worker muted it */
-  mutedTabs: Record<number, boolean>;
+  tabStates: Record<number, RuntimeTabState>;
   /** focus ms of the current session already credited to the pause bank */
   accruedFocusMs: number;
   /** "tabId:url" -> last attempt timestamp, for the 30 s attempt debounce */
@@ -45,6 +43,12 @@ export interface RuntimeState {
   todayAgg: DailyAgg | null;
   /** last date the weekly sync prune ran, null before the first run */
   lastPruneDate: string | null;
+}
+
+export interface RuntimeTabState {
+  url: string;
+  priorMuted: boolean | null;
+  stopped: boolean;
 }
 
 type StoredSettings = Partial<Omit<Settings, 'pause' | 'gate' | 'sounds'>> & {
@@ -63,8 +67,7 @@ export function emptyRuntime(now: number): RuntimeState {
     session: null,
     gate: null,
     unlocks: [],
-    stoppedTabIds: [],
-    mutedTabs: {},
+    tabStates: {},
     accruedFocusMs: 0,
     attemptDebounce: {},
     scheduleActiveEntryId: null,
@@ -116,7 +119,43 @@ export async function loadStreak(): Promise<StreakState | null> {
 
 export async function loadRuntime(now: number): Promise<RuntimeState> {
   const raw: unknown = (await chrome.storage.local.get(LOCAL_RUNTIME))[LOCAL_RUNTIME];
-  return { ...emptyRuntime(now), ...(raw as Partial<RuntimeState> | undefined) };
+  return mergeRuntime(raw, now);
+}
+
+export function mergeRuntime(raw: unknown, now: number): RuntimeState {
+  if (typeof raw !== 'object' || raw === null) return emptyRuntime(now);
+  const stored: Record<string, unknown> = raw as Record<string, unknown>;
+  const {
+    mutedTabs: _legacyMutedTabs,
+    stoppedTabIds: _legacyStoppedTabIds,
+    tabStates,
+    ...rest
+  } = stored;
+  return {
+    ...emptyRuntime(now),
+    ...(rest as Partial<RuntimeState>),
+    tabStates: parseTabStates(tabStates),
+  };
+}
+
+function parseTabStates(value: unknown): Record<number, RuntimeTabState> {
+  if (typeof value !== 'object' || value === null) return {};
+  const parsed: Record<number, RuntimeTabState> = {};
+  for (const [tabIdText, candidate] of Object.entries(value)) {
+    const tabId: number = Number(tabIdText);
+    if (!Number.isInteger(tabId) || tabId < 0) continue;
+    if (typeof candidate !== 'object' || candidate === null) continue;
+    const state: Record<string, unknown> = candidate as Record<string, unknown>;
+    if (typeof state.url !== 'string' || state.url === '') continue;
+    if (state.priorMuted !== null && typeof state.priorMuted !== 'boolean') continue;
+    if (typeof state.stopped !== 'boolean') continue;
+    parsed[tabId] = {
+      url: state.url,
+      priorMuted: state.priorMuted,
+      stopped: state.stopped,
+    };
+  }
+  return parsed;
 }
 
 export async function saveRuntime(r: RuntimeState): Promise<void> {

@@ -20,13 +20,15 @@ export async function routeMessage(
     case 'getBlockState': {
       const verdict: Verdict = engine.verdictFor(msg.url);
       const tabId: number | undefined = sender.tab?.id;
-      if (verdict.blocked && tabId !== undefined) {
+      const senderOwnsUrl: boolean = sender.url === msg.url && sender.tab?.url === msg.url;
+      if (verdict.blocked && tabId !== undefined && senderOwnsUrl) {
+        engine.rebindTab(tabId, msg.url);
         await engine.recordAttempt(
           msg.url,
           tabId,
           msg.docState === 'fresh' ? 'navigation' : 'existing',
         );
-        if (msg.docState === 'fresh') await engine.markStopped(tabId);
+        if (msg.docState === 'fresh') await engine.markStopped(tabId, msg.url);
       }
       return { verdict, snapshot: await engine.snapshotPersisted() };
     }

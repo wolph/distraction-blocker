@@ -1,13 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EnginePorts } from '../../../src/background/engine';
 import { Engine } from '../../../src/background/engine';
+import { clockRebaseArchiveKey } from '../../../src/background/rollover';
 import { emptyRuntime, type RuntimeState } from '../../../src/background/stores';
+import { SyncWriter } from '../../../src/background/sync-writer';
 import {
   CANCEL_GATE_DELAY_MS,
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
   GATE_EXPIRY_MS,
 } from '../../../src/shared/constants';
+import { SYNC_STREAK } from '../../../src/shared/storage-keys';
 import { localDateStr } from '../../../src/shared/time';
 import type {
   DailyAgg,
@@ -36,12 +39,16 @@ function makeEngine(opts?: {
   settings?: Partial<Settings>;
   runtime?: RuntimeState;
   streak?: StreakState | null;
+  queueSync?: EnginePorts['queueSync'];
+  supersedeSync?: EnginePorts['supersedeSync'];
 }): Harness {
   let nowMs: number = T0;
   const ports: Harness['ports'] = {
     now: vi.fn((): number => nowMs),
     saveRuntime: vi.fn().mockResolvedValue(undefined),
-    queueSync: vi.fn(),
+    queueSync: opts?.queueSync === undefined ? vi.fn() : vi.fn(opts.queueSync),
+    supersedeSync: opts?.supersedeSync === undefined ? vi.fn() : vi.fn(opts.supersedeSync),
+    removeSync: vi.fn(),
     appendEvents: vi.fn().mockResolvedValue(undefined),
     broadcast: vi.fn(),
     applyBlocking: vi.fn().mockResolvedValue(undefined),
@@ -342,7 +349,7 @@ describe('Engine', () => {
     expect(h.engine.getStreak()).toMatchObject({ current: 2 });
   });
 
-  it('rebases a future local date without looping and archives its aggregate', () => {
+  it('quarantines a future local aggregate and removes its daily key', async () => {
     const runtime: RuntimeState = emptyRuntime(T0);
     const futureDate: string = localDateStr(T0 + 3 * DAY_MS);
     const futureAgg: DailyAgg = {
@@ -369,16 +376,57 @@ describe('Engine', () => {
     };
     const h: Harness = makeEngine({ runtime, streak: futureStreak });
 
+    await h.engine.tick();
     const overlay = h.engine.statsOverlay();
 
     expect(overlay.todayAgg.date).toBe(localDateStr(T0));
     expect(overlay.todayAgg.focusMs).toBe(0);
-    expect(h.ports.queueSync).toHaveBeenCalledWith(`agg:dev-test:${futureDate}`, futureAgg);
+    expect(h.ports.removeSync).toHaveBeenCalledWith(`agg:dev-test:${futureDate}`);
+    expect(h.ports.queueSync).not.toHaveBeenCalledWith(
+      `agg:dev-test:${futureDate}`,
+      expect.anything(),
+    );
+    expect(h.ports.queueSync).toHaveBeenCalledWith(
+      clockRebaseArchiveKey('dev-test', futureDate, T0),
+      futureAgg,
+    );
+    expect(h.ports.queueSync).not.toHaveBeenCalledWith(
+      `agg:dev-test:${localDateStr(T0)}`,
+      expect.anything(),
+    );
     expect(h.ports.queueSync).toHaveBeenCalledWith('streak', {
       ...futureStreak,
+      current: 0,
+      lastCountedDate: null,
       activeDays: [],
       activeMonth: localDateStr(T0).slice(0, 7),
     });
+  });
+
+  it('clears future streak markers during a same-month clock rebase', async () => {
+    const runtime: RuntimeState = emptyRuntime(T0);
+    const futureDate: string = localDateStr(T0 + DAY_MS);
+    runtime.date = futureDate;
+    const futureStreak: StreakState = {
+      current: 3,
+      freezeTokens: 1,
+      lastCountedDate: futureDate,
+      lastFreezeGrantDate: futureDate,
+      activeDays: [28, 30],
+      activeMonth: futureDate.slice(0, 7),
+    };
+    const h: Harness = makeEngine({ runtime, streak: futureStreak });
+
+    await h.engine.tick();
+
+    expect(h.engine.getStreak()).toEqual({
+      ...futureStreak,
+      current: 0,
+      lastCountedDate: null,
+      lastFreezeGrantDate: null,
+      activeDays: [28],
+    });
+    expect(h.ports.queueSync).toHaveBeenCalledWith(SYNC_STREAK, h.engine.getStreak());
   });
 
   it('clears a pending gate when a session completes before a new session starts', async () => {
@@ -564,27 +612,82 @@ describe('Engine', () => {
 
   it('prunes absent tab records while preserving live restore state', async () => {
     const h: Harness = makeEngine();
-    h.engine.noteMuted(7, true);
-    h.engine.noteMuted(8, false);
-    await h.engine.markStopped(7);
-    await h.engine.markStopped(9);
+    h.engine.noteMuted(7, 'https://kept.example', true);
+    h.engine.noteMuted(8, 'https://missing.example', false);
+    await h.engine.markStopped(7, 'https://kept.example');
+    await h.engine.markStopped(9, 'https://missing.example');
 
-    h.engine.reconcileTabs(new Set([7]));
+    h.engine.reconcileTabs(new Map([[7, 'https://kept.example']]));
 
-    expect(h.engine.tabFacts(7)).toEqual({
+    expect(h.engine.tabFacts(7, 'https://kept.example')).toEqual({
       wasMutedByUs: true,
       priorMuted: true,
       wasStopped: true,
     });
-    expect(h.engine.tabFacts(8)).toEqual({
+    expect(h.engine.tabFacts(8, 'https://missing.example')).toEqual({
       wasMutedByUs: false,
       priorMuted: false,
       wasStopped: false,
     });
-    expect(h.engine.tabFacts(9)).toEqual({
+    expect(h.engine.tabFacts(9, 'https://missing.example')).toEqual({
       wasMutedByUs: false,
       priorMuted: false,
       wasStopped: false,
+    });
+  });
+
+  it('drops persisted tab state when a reused id has a different URL', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.markStopped(7, 'https://blocked.example/old');
+    h.engine.noteMuted(7, 'https://blocked.example/old', false);
+
+    h.engine.reconcileTabs(new Map([[7, 'https://allowed.example/new']]));
+
+    expect(h.engine.tabFacts(7, 'https://allowed.example/new')).toEqual({
+      wasMutedByUs: false,
+      priorMuted: false,
+      wasStopped: false,
+    });
+  });
+
+  it('does not relabel persisted state through a direct URL mismatch', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.markStopped(7, 'https://blocked.example/old');
+    h.engine.noteMuted(7, 'https://blocked.example/old', false);
+
+    expect(h.engine.tabFacts(7, 'https://allowed.example/new')).toEqual({
+      wasMutedByUs: false,
+      priorMuted: false,
+      wasStopped: false,
+    });
+  });
+
+  it('rebinds a confirmed navigation while preserving its tab state', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.markStopped(7, 'https://blocked.example/old');
+    h.engine.noteMuted(7, 'https://blocked.example/old', false);
+
+    h.engine.rebindTab(7, 'https://blocked.example/new');
+
+    expect(h.engine.tabFacts(7, 'https://blocked.example/new')).toEqual({
+      wasMutedByUs: true,
+      priorMuted: false,
+      wasStopped: true,
+    });
+  });
+
+  it('ignores stale restore and reload completions for another URL', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.markStopped(7, 'https://blocked.example/new');
+    h.engine.noteMuted(7, 'https://blocked.example/new', false);
+
+    h.engine.noteMuteRestored(7, 'https://blocked.example/old');
+    h.engine.noteReloaded(7, 'https://blocked.example/old');
+
+    expect(h.engine.tabFacts(7, 'https://blocked.example/new')).toEqual({
+      wasMutedByUs: true,
+      priorMuted: false,
+      wasStopped: true,
     });
   });
 
@@ -646,7 +749,7 @@ describe('Engine', () => {
     expect(h.ports.queueSync).not.toHaveBeenCalledWith('bank', expect.anything());
   });
 
-  it('applies newer synced streak progress without echoing it', async () => {
+  it('applies newer synced streak progress and supersedes pending state', async () => {
     const local: StreakState = {
       current: 2,
       freezeTokens: 0,
@@ -666,7 +769,7 @@ describe('Engine', () => {
     await h.engine.applySyncedStreak(remote);
 
     expect(h.engine.getStreak()).toEqual(remote);
-    expect(h.ports.queueSync).not.toHaveBeenCalledWith('streak', expect.anything());
+    expect(h.ports.supersedeSync).toHaveBeenCalledWith(SYNC_STREAK, remote);
   });
 
   it('does not replace newer local streak progress with stale sync data', async () => {
@@ -689,5 +792,55 @@ describe('Engine', () => {
     await h.engine.applySyncedStreak(remote);
 
     expect(h.engine.getStreak()).toEqual(local);
+  });
+
+  it('supersedes an older pending streak write with newer remote progress', async () => {
+    const older: StreakState = {
+      current: 2,
+      freezeTokens: 0,
+      lastCountedDate: '2026-08-26',
+      lastFreezeGrantDate: '2026-08-24',
+      activeDays: [25, 26],
+      activeMonth: '2026-08',
+    };
+    const newer: StreakState = {
+      ...older,
+      current: 3,
+      lastCountedDate: '2026-08-27',
+      activeDays: [25, 26, 27],
+    };
+    const write = vi.fn().mockResolvedValue(undefined);
+    const writer: SyncWriter = new SyncWriter(10_000, write);
+    writer.queue(SYNC_STREAK, older);
+    const h: Harness = makeEngine({
+      streak: older,
+      supersedeSync: (key: string, value: unknown): void => writer.supersede(key, value),
+    });
+
+    await h.engine.applySyncedStreak(newer);
+    await writer.flushNow();
+
+    expect(write).toHaveBeenCalledWith({ [SYNC_STREAK]: newer });
+  });
+
+  it('does not create a sync write when no local streak is pending', async () => {
+    const remote: StreakState = {
+      current: 3,
+      freezeTokens: 0,
+      lastCountedDate: '2026-08-27',
+      lastFreezeGrantDate: '2026-08-24',
+      activeDays: [25, 26, 27],
+      activeMonth: '2026-08',
+    };
+    const write = vi.fn().mockResolvedValue(undefined);
+    const writer: SyncWriter = new SyncWriter(10_000, write);
+    const h: Harness = makeEngine({
+      supersedeSync: (key: string, value: unknown): void => writer.supersede(key, value),
+    });
+
+    await h.engine.applySyncedStreak(remote);
+    await writer.flushNow();
+
+    expect(write).not.toHaveBeenCalled();
   });
 });

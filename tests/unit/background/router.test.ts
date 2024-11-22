@@ -3,6 +3,7 @@ import type { Engine } from '../../../src/background/engine';
 import { routeMessage } from '../../../src/background/router';
 import { fetchStats } from '../../../src/background/stats-service';
 import { readEvents } from '../../../src/background/stores';
+import { emptySnapshot } from '../../../src/shared/constants';
 import type { StatsBundle } from '../../../src/shared/messages';
 import type { EventRecord } from '../../../src/shared/types';
 
@@ -82,5 +83,62 @@ describe('routeMessage stats wiring', () => {
     const result: unknown = await routeMessage(engine, { type: 'exportEvents' }, sender);
 
     expect(result).toEqual({ json: JSON.stringify(events, null, 2) });
+  });
+});
+
+describe('routeMessage tab identity wiring', () => {
+  it('binds a stopped fresh document to its URL', async () => {
+    const url: string = 'https://blocked.example/page';
+    const markStopped = vi.fn().mockResolvedValue(undefined);
+    const rebindTab = vi.fn();
+    const blockingEngine: Engine = {
+      verdictFor: vi.fn(() => ({ blocked: true, reason: 'custom', matchedPattern: url })),
+      recordAttempt: vi.fn().mockResolvedValue(undefined),
+      rebindTab,
+      markStopped,
+      snapshotPersisted: vi.fn().mockResolvedValue(emptySnapshot(0)),
+    } as unknown as Engine;
+    const tabSender: chrome.runtime.MessageSender = {
+      tab: { id: 7, url } as chrome.tabs.Tab,
+      url,
+    };
+
+    await routeMessage(
+      blockingEngine,
+      { type: 'getBlockState', url, docState: 'fresh' },
+      tabSender,
+    );
+
+    expect(markStopped).toHaveBeenCalledWith(7, url);
+    expect(rebindTab).toHaveBeenCalledWith(7, url);
+  });
+
+  it('ignores stale block-state mutations after the tab navigates', async () => {
+    const oldUrl: string = 'https://blocked.example/old';
+    const newUrl: string = 'https://allowed.example/new';
+    const recordAttempt = vi.fn().mockResolvedValue(undefined);
+    const rebindTab = vi.fn();
+    const markStopped = vi.fn().mockResolvedValue(undefined);
+    const blockingEngine: Engine = {
+      verdictFor: vi.fn(() => ({ blocked: true, reason: 'custom', matchedPattern: oldUrl })),
+      recordAttempt,
+      rebindTab,
+      markStopped,
+      snapshotPersisted: vi.fn().mockResolvedValue(emptySnapshot(0)),
+    } as unknown as Engine;
+    const staleSender: chrome.runtime.MessageSender = {
+      tab: { id: 7, url: newUrl } as chrome.tabs.Tab,
+      url: oldUrl,
+    };
+
+    await routeMessage(
+      blockingEngine,
+      { type: 'getBlockState', url: oldUrl, docState: 'fresh' },
+      staleSender,
+    );
+
+    expect(rebindTab).not.toHaveBeenCalled();
+    expect(recordAttempt).not.toHaveBeenCalled();
+    expect(markStopped).not.toHaveBeenCalled();
   });
 });

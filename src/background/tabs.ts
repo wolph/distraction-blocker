@@ -20,6 +20,11 @@ export interface TabAction {
   reload: boolean;
 }
 
+async function tabStillAt(tabId: number, url: string): Promise<boolean> {
+  const tab: chrome.tabs.Tab | null = await chrome.tabs.get(tabId).catch((): null => null);
+  return tab?.url === url;
+}
+
 /** Pure per-tab decision: what to send and which side effects to run. */
 export function planTabAction(verdict: Verdict, tabState: TabState): TabAction {
   if (verdict.blocked) {
@@ -43,37 +48,45 @@ export async function applyToTab(
   mutedNow: boolean,
   attemptKind: 'navigation' | 'existing' = 'existing',
 ): Promise<void> {
+  if (!(await tabStillAt(tabId, url))) return;
   const verdict: Verdict = engine.verdictFor(url);
-  if (verdict.blocked) await engine.recordAttempt(url, tabId, attemptKind);
+  if (verdict.blocked) {
+    await engine.recordAttempt(url, tabId, attemptKind);
+    if (!(await tabStillAt(tabId, url))) return;
+  }
   const snapshot: SessionSnapshot = engine.snapshot();
   const facts: { wasMutedByUs: boolean; priorMuted: boolean; wasStopped: boolean } =
-    engine.tabFacts(tabId);
+    engine.tabFacts(tabId, url);
   const action: TabAction = planTabAction(verdict, { muted: mutedNow, ...facts });
   const command: ContentCommand =
     action.command === 'applyBlock'
       ? { type: 'applyBlock', verdict, snapshot }
       : { type: 'clearBlock', snapshot };
+  if (!(await tabStillAt(tabId, url))) return;
   try {
     await chrome.tabs.sendMessage(tabId, command);
   } catch {
     // tabs without the content script (chrome://, the web store) reject, fine
   }
   if (action.mute !== null) {
+    if (!(await tabStillAt(tabId, url))) return;
     try {
       await chrome.tabs.update(tabId, { muted: action.mute });
+      if (!(await tabStillAt(tabId, url))) return;
       if (action.command === 'applyBlock') {
-        if (!facts.wasMutedByUs) engine.noteMuted(tabId, mutedNow);
+        if (!facts.wasMutedByUs) engine.noteMuted(tabId, url, mutedNow);
       } else {
-        engine.noteMuteRestored(tabId);
+        engine.noteMuteRestored(tabId, url);
       }
     } catch {
       // the tab may be gone already
     }
   }
   if (action.reload) {
+    if (!(await tabStillAt(tabId, url))) return;
     try {
       await chrome.tabs.reload(tabId);
-      engine.noteReloaded(tabId);
+      if (await tabStillAt(tabId, url)) engine.noteReloaded(tabId, url);
     } catch {
       // the tab may be gone already
     }
@@ -93,10 +106,15 @@ export function applyBlockingFactory(engine: () => Engine): () => Promise<void> 
     try {
       const e: Engine = engine();
       const tabs: chrome.tabs.Tab[] = await chrome.tabs.query({});
-      const liveTabIds: Set<number> = new Set(
-        tabs.flatMap((tab: chrome.tabs.Tab): number[] => (tab.id === undefined ? [] : [tab.id])),
+      const liveTabs: Map<number, string> = new Map(
+        tabs.flatMap(
+          (tab: chrome.tabs.Tab): Array<[number, string]> =>
+            tab.id === undefined || tab.url === undefined || tab.url === ''
+              ? []
+              : [[tab.id, tab.url]],
+        ),
       );
-      e.reconcileTabs(liveTabIds);
+      e.reconcileTabs(liveTabs);
       for (const tab of tabs) {
         if (tab.id === undefined || tab.url === undefined || tab.url === '') continue;
         await applyToTab(e, tab.id, tab.url, tab.mutedInfo?.muted ?? false);
@@ -122,7 +140,8 @@ export function registerTabListeners(ready: () => Promise<Engine>): void {
       const tab: chrome.tabs.Tab | null = await chrome.tabs
         .get(details.tabId)
         .catch((): null => null);
-      if (tab === null) return;
+      if (tab === null || tab.url !== details.url) return;
+      engine.rebindTab(details.tabId, details.url);
       await applyToTab(
         engine,
         details.tabId,

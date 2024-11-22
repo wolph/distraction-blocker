@@ -41,6 +41,48 @@ describe('SyncWriter', () => {
 
     expect(write).toHaveBeenNthCalledWith(2, { bank: 5, streak: 3 });
   });
+
+  it('cancels a pending set and retries removal of its stored key', async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const remove = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('sync unavailable'))
+      .mockResolvedValueOnce(undefined);
+    const writer = new SyncWriter(10_000, write, remove);
+    writer.queue('agg:dev:2026-10-02', { date: '2026-10-02', focusMs: 60_000 });
+    writer.remove('agg:dev:2026-10-02');
+
+    await expect(writer.flushNow()).rejects.toThrow('sync unavailable');
+    await writer.flushNow();
+
+    expect(write).not.toHaveBeenCalled();
+    expect(remove).toHaveBeenNthCalledWith(1, ['agg:dev:2026-10-02']);
+    expect(remove).toHaveBeenNthCalledWith(2, ['agg:dev:2026-10-02']);
+  });
+
+  it('serializes overlapping flushes so an older write cannot finish last', async () => {
+    let releaseFirst: () => void = (): void => {};
+    const firstBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseFirst = resolve;
+    });
+    const write = vi.fn(async (): Promise<void> => {
+      if (write.mock.calls.length === 1) await firstBlocked;
+    });
+    const writer = new SyncWriter(10_000, write);
+    writer.queue('streak', 'older');
+
+    const firstFlush: Promise<void> = writer.flushNow();
+    await Promise.resolve();
+    expect(write).toHaveBeenCalledTimes(1);
+    writer.queue('streak', 'newer');
+    const secondFlush: Promise<void> = writer.flushNow();
+
+    expect(write).toHaveBeenCalledTimes(1);
+    releaseFirst();
+    await Promise.all([firstFlush, secondFlush]);
+    expect(write).toHaveBeenNthCalledWith(1, { streak: 'older' });
+    expect(write).toHaveBeenNthCalledWith(2, { streak: 'newer' });
+  });
 });
 
 describe('SyncEchoes', () => {

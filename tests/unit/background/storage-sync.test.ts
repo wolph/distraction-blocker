@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { handleSyncChanges, type SyncChangeEngine } from '../../../src/background/storage-sync';
-import { SyncEchoes } from '../../../src/background/sync-writer';
+import { SyncEchoes, SyncWriter } from '../../../src/background/sync-writer';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import {
   SYNC_BANK,
@@ -49,18 +49,32 @@ describe('handleSyncChanges', () => {
     const applySyncedSettings = vi.fn().mockResolvedValue({ ok: false, error: 'hard session' });
     const engine: SyncChangeEngine = makeEngine({ applySyncedSettings });
     const echoes: SyncEchoes = new SyncEchoes();
-    const write = vi.fn().mockResolvedValue(undefined);
+    const set = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('sync unavailable'))
+      .mockResolvedValueOnce(undefined);
+    const writer: SyncWriter = new SyncWriter(
+      10_000,
+      async (items: Record<string, unknown>): Promise<void> => {
+        for (const [key, value] of Object.entries(items)) echoes.remember(key, value);
+        await set(items);
+      },
+    );
+    const queueSync = (key: string, value: unknown): void => writer.queue(key, value);
 
-    await handleSyncChanges(engine, { [SYNC_SETTINGS]: { newValue: weaker } }, echoes, write);
+    await handleSyncChanges(engine, { [SYNC_SETTINGS]: { newValue: weaker } }, echoes, queueSync);
+    await expect(writer.flushNow()).rejects.toThrow('sync unavailable');
+    await writer.flushNow();
     await handleSyncChanges(
       engine,
       { [SYNC_SETTINGS]: { newValue: DEFAULT_SETTINGS } },
       echoes,
-      write,
+      queueSync,
     );
 
-    expect(write).toHaveBeenCalledTimes(1);
-    expect(write).toHaveBeenCalledWith({ [SYNC_SETTINGS]: DEFAULT_SETTINGS });
+    expect(set).toHaveBeenCalledTimes(2);
+    expect(set).toHaveBeenNthCalledWith(1, { [SYNC_SETTINGS]: DEFAULT_SETTINGS });
+    expect(set).toHaveBeenNthCalledWith(2, { [SYNC_SETTINGS]: DEFAULT_SETTINGS });
     expect(applySyncedSettings).toHaveBeenCalledTimes(1);
   });
 
@@ -69,13 +83,27 @@ describe('handleSyncChanges', () => {
     const applySyncedLists = vi.fn().mockResolvedValue({ ok: false, error: 'hard session' });
     const engine: SyncChangeEngine = makeEngine({ applySyncedLists });
     const echoes: SyncEchoes = new SyncEchoes();
-    const write = vi.fn().mockResolvedValue(undefined);
+    const set = vi.fn().mockResolvedValue(undefined);
+    const writer: SyncWriter = new SyncWriter(
+      10_000,
+      async (items: Record<string, unknown>): Promise<void> => {
+        for (const [key, value] of Object.entries(items)) echoes.remember(key, value);
+        await set(items);
+      },
+    );
+    const queueSync = (key: string, value: unknown): void => writer.queue(key, value);
 
-    await handleSyncChanges(engine, { [SYNC_LISTS]: { newValue: weaker } }, echoes, write);
-    await handleSyncChanges(engine, { [SYNC_LISTS]: { newValue: DEFAULT_LISTS } }, echoes, write);
+    await handleSyncChanges(engine, { [SYNC_LISTS]: { newValue: weaker } }, echoes, queueSync);
+    await writer.flushNow();
+    await handleSyncChanges(
+      engine,
+      { [SYNC_LISTS]: { newValue: DEFAULT_LISTS } },
+      echoes,
+      queueSync,
+    );
 
-    expect(write).toHaveBeenCalledTimes(1);
-    expect(write).toHaveBeenCalledWith({ [SYNC_LISTS]: DEFAULT_LISTS });
+    expect(set).toHaveBeenCalledTimes(1);
+    expect(set).toHaveBeenCalledWith({ [SYNC_LISTS]: DEFAULT_LISTS });
     expect(applySyncedLists).toHaveBeenCalledTimes(1);
   });
 

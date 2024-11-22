@@ -25,11 +25,17 @@ const TICK_ALARM: string = 'tick';
 const PHASE_ALARM: string = 'phase';
 
 let engineInstance: Engine | null = null;
+let syncWriterInstance: SyncWriter | null = null;
 const syncEchoes: SyncEchoes = new SyncEchoes();
 
 function currentEngine(): Engine {
   if (engineInstance === null) throw new Error('engine used before boot finished');
   return engineInstance;
+}
+
+function currentSyncWriter(): SyncWriter {
+  if (syncWriterInstance === null) throw new Error('sync writer used before boot finished');
+  return syncWriterInstance;
 }
 
 function reportBackgroundError(error: unknown): void {
@@ -61,11 +67,15 @@ async function boot(): Promise<Engine> {
       }
       await chrome.storage.sync.set(items);
     },
+    (keys: string[]): Promise<void> => chrome.storage.sync.remove(keys),
   );
+  syncWriterInstance = syncWriter;
   const ports: EnginePorts = {
     now: (): number => Date.now(),
     saveRuntime,
     queueSync: (key: string, value: unknown): void => syncWriter.queue(key, value),
+    supersedeSync: (key: string, value: unknown): void => syncWriter.supersede(key, value),
+    removeSync: (key: string): void => syncWriter.remove(key),
     appendEvents,
     broadcast: (snapshot: SessionSnapshot): void => {
       // Rejects when no extension page is open to hear it, which is fine.
@@ -126,7 +136,7 @@ export function main(): void {
             engine,
             changes,
             syncEchoes,
-            (items: Record<string, unknown>): Promise<void> => chrome.storage.sync.set(items),
+            (key: string, value: unknown): void => currentSyncWriter().queue(key, value),
           );
         })
         .catch(reportBackgroundError);

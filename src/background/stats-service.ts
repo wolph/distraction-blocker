@@ -55,6 +55,7 @@ export function buildStats(
 ): StatsBundle {
   const items: Record<string, unknown> = { ...syncItems };
   const allEvents: EventRecord[] = mergeEvents(events, live?.pendingEvents ?? []);
+  const today: string = localDateStr(now);
   if (live !== null) {
     items[syncAggKey(live.deviceId, live.todayAgg.date)] = live.todayAgg;
     const syncedStreak: StreakState | null =
@@ -70,7 +71,7 @@ export function buildStats(
     const key: string = entry[0];
     const value: unknown = entry[1];
     const dailyDate: string | undefined = DAILY_KEY_RE.exec(key)?.[1];
-    if (dailyDate !== undefined) {
+    if (dailyDate !== undefined && dailyDate <= today) {
       groupPush(dailyByDate, dailyDate, value as DailyAgg);
       continue;
     }
@@ -94,7 +95,6 @@ export function buildStats(
     )
     .slice(-RECENT_SESSION_CAP)
     .reverse();
-  const today: string = localDateStr(now);
   const weekFrom: string = localDateStr(now - 6 * DAY_MS);
   const todayAgg: DailyAgg | undefined = daysMerged.find(
     (d: DailyAgg): boolean => d.date === today,

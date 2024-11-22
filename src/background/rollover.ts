@@ -14,7 +14,7 @@ export interface RolloverPlan {
 
 export interface BackwardDateRebasePlan {
   archive: DailyAgg;
-  newAgg: DailyAgg;
+  newAgg: null;
 }
 
 /**
@@ -44,11 +44,19 @@ export function planRollover(
 }
 
 export function planBackwardDateRebase(
-  currentDate: string,
+  _currentDate: string,
   futureAgg: DailyAgg,
 ): BackwardDateRebasePlan {
   return {
     archive: capAttempts(futureAgg, TOP_SITES_DAILY),
-    newAgg: emptyDaily(currentDate),
+    newAgg: null,
   };
+}
+
+export function clockRebaseArchiveKey(
+  deviceId: string,
+  _futureDate: string,
+  _atMs: number,
+): string {
+  return `archive:clock-rebase:${deviceId}`;
 }

@@ -51,14 +51,21 @@ import type {
   Verdict,
 } from '../shared/types';
 import { listsChangeAllowed, settingsChangeAllowed } from './guard';
-import { planBackwardDateRebase, planRollover, type RolloverPlan } from './rollover';
-import type { RuntimeState } from './stores';
+import {
+  clockRebaseArchiveKey,
+  planBackwardDateRebase,
+  planRollover,
+  type RolloverPlan,
+} from './rollover';
+import type { RuntimeState, RuntimeTabState } from './stores';
 import { chooseNewerStreak } from './streak-sync';
 
 export interface EnginePorts {
   now(): number;
   saveRuntime(r: RuntimeState): Promise<void>;
   queueSync(key: string, value: unknown): void;
+  supersedeSync(key: string, value: unknown): void;
+  removeSync(key: string): void;
   appendEvents(evs: EventRecord[]): Promise<void>;
   broadcast(snapshot: SessionSnapshot): void;
   applyBlocking(): Promise<void>;
@@ -305,44 +312,63 @@ export class Engine {
     await this.commit(now);
   }
 
-  async markStopped(tabId: number): Promise<void> {
-    if (this.runtime.stoppedTabIds.includes(tabId)) return;
-    this.runtime.stoppedTabIds = [...this.runtime.stoppedTabIds, tabId];
+  async markStopped(tabId: number, url: string): Promise<void> {
+    const state: RuntimeTabState = this.ensureTabState(tabId, url);
+    state.stopped = true;
     await this.persistRuntime();
   }
 
   /** Mute and stopped-tab facts for one tab, for tabs.ts action planning. */
-  tabFacts(tabId: number): { wasMutedByUs: boolean; priorMuted: boolean; wasStopped: boolean } {
-    const prior: boolean | undefined = this.runtime.mutedTabs[tabId];
+  tabFacts(
+    tabId: number,
+    url: string,
+  ): { wasMutedByUs: boolean; priorMuted: boolean; wasStopped: boolean } {
+    const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
+    if (state === undefined) {
+      return { wasMutedByUs: false, priorMuted: false, wasStopped: false };
+    }
+    if (state.url !== url) {
+      delete this.runtime.tabStates[tabId];
+      return { wasMutedByUs: false, priorMuted: false, wasStopped: false };
+    }
     return {
-      wasMutedByUs: prior !== undefined,
-      priorMuted: prior ?? false,
-      wasStopped: this.runtime.stoppedTabIds.includes(tabId),
+      wasMutedByUs: state.priorMuted !== null,
+      priorMuted: state.priorMuted ?? false,
+      wasStopped: state.stopped,
     };
   }
 
   /** In-memory bookkeeping mutators for tabs.ts, persisted by flushRuntime. */
-  noteMuted(tabId: number, priorMuted: boolean): void {
-    this.runtime.mutedTabs[tabId] = priorMuted;
+  noteMuted(tabId: number, url: string, priorMuted: boolean): void {
+    const existing: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
+    if (existing !== undefined && existing.url !== url) return;
+    this.ensureTabState(tabId, url).priorMuted = priorMuted;
   }
 
-  noteMuteRestored(tabId: number): void {
-    delete this.runtime.mutedTabs[tabId];
+  noteMuteRestored(tabId: number, url: string): void {
+    const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
+    if (state === undefined || state.url !== url) return;
+    state.priorMuted = null;
+    this.dropEmptyTabState(tabId, state);
   }
 
-  noteReloaded(tabId: number): void {
-    this.runtime.stoppedTabIds = this.runtime.stoppedTabIds.filter(
-      (id: number): boolean => id !== tabId,
-    );
+  noteReloaded(tabId: number, url: string): void {
+    const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
+    if (state === undefined || state.url !== url) return;
+    state.stopped = false;
+    this.dropEmptyTabState(tabId, state);
   }
 
-  reconcileTabs(liveTabIds: ReadonlySet<number>): void {
-    for (const tabId of Object.keys(this.runtime.mutedTabs).map(Number)) {
-      if (!liveTabIds.has(tabId)) delete this.runtime.mutedTabs[tabId];
+  reconcileTabs(liveTabs: ReadonlyMap<number, string>): void {
+    for (const [tabIdText, state] of Object.entries(this.runtime.tabStates)) {
+      const tabId: number = Number(tabIdText);
+      if (liveTabs.get(tabId) !== state.url) delete this.runtime.tabStates[tabId];
     }
-    this.runtime.stoppedTabIds = this.runtime.stoppedTabIds.filter((tabId: number): boolean =>
-      liveTabIds.has(tabId),
-    );
+  }
+
+  rebindTab(tabId: number, url: string): void {
+    const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
+    if (state !== undefined) state.url = url;
   }
 
   flushRuntime(): Promise<void> {
@@ -351,14 +377,23 @@ export class Engine {
 
   /** Purges a closed tab from mute, stopped, and debounce bookkeeping. */
   async dropTab(tabId: number): Promise<void> {
-    delete this.runtime.mutedTabs[tabId];
-    this.runtime.stoppedTabIds = this.runtime.stoppedTabIds.filter(
-      (id: number): boolean => id !== tabId,
-    );
+    delete this.runtime.tabStates[tabId];
     for (const key of Object.keys(this.runtime.attemptDebounce)) {
       if (key.startsWith(`${tabId}:`)) delete this.runtime.attemptDebounce[key];
     }
     await this.persistRuntime();
+  }
+
+  private ensureTabState(tabId: number, url: string): RuntimeTabState {
+    const existing: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
+    if (existing !== undefined && existing.url === url) return existing;
+    const created: RuntimeTabState = { url, priorMuted: null, stopped: false };
+    this.runtime.tabStates[tabId] = created;
+    return created;
+  }
+
+  private dropEmptyTabState(tabId: number, state: RuntimeTabState): void {
+    if (state.priorMuted === null && !state.stopped) delete this.runtime.tabStates[tabId];
   }
 
   /** The 1-minute tick alarm and exact phase alarms both land here. */
@@ -447,7 +482,9 @@ export class Engine {
   }
 
   async applySyncedStreak(streak: StreakState): Promise<void> {
-    this.streak = chooseNewerStreak(streak, this.streak);
+    const chosen: StreakState | null = chooseNewerStreak(streak, this.streak);
+    this.streak = chosen;
+    if (chosen === streak) this.ports.supersedeSync(SYNC_STREAK, chosen);
   }
 
   getSettings(): Settings {
@@ -482,7 +519,7 @@ export class Engine {
 
   private catchUp(now: number): void {
     const today: string = localDateStr(now);
-    if (this.runtime.date > today) this.rebaseDateBackward(today);
+    if (this.runtime.date > today) this.rebaseDateBackward(today, now);
     while (this.runtime.date !== today) {
       const boundary: number = localMidnightAfter(this.runtime.date);
       this.settleSession(boundary);
@@ -496,19 +533,40 @@ export class Engine {
     this.scheduleCheck(now);
   }
 
-  private rebaseDateBackward(today: string): void {
+  private rebaseDateBackward(today: string, now: number): void {
     const futureDate: string = this.runtime.date;
     const plan = planBackwardDateRebase(today, this.runtime.todayAgg ?? emptyDaily(futureDate));
-    this.ports.queueSync(syncAggKey(this.deviceId, futureDate), plan.archive);
+    this.ports.removeSync(syncAggKey(this.deviceId, futureDate));
+    this.ports.queueSync(clockRebaseArchiveKey(this.deviceId, futureDate, now), plan.archive);
     this.runtime.date = today;
     this.runtime.todayAgg = plan.newAgg;
     this.runtime.attemptDebounce = {};
     this.runtime.lastPruneDate = null;
-    if (this.streak !== null && this.streak.activeMonth !== today.slice(0, 7)) {
-      this.streak = { ...this.streak, activeMonth: today.slice(0, 7), activeDays: [] };
-      this.ports.queueSync(SYNC_STREAK, this.streak);
-    }
+    this.rebaseStreakBackward(today);
     this.dirty = true;
+  }
+
+  private rebaseStreakBackward(today: string): void {
+    if (this.streak === null) return;
+    const month: string = today.slice(0, 7);
+    const day: number = Number(today.slice(8));
+    const countedInFuture: boolean =
+      this.streak.lastCountedDate !== null && this.streak.lastCountedDate > today;
+    this.streak = {
+      ...this.streak,
+      current: countedInFuture ? 0 : this.streak.current,
+      lastCountedDate: countedInFuture ? null : this.streak.lastCountedDate,
+      lastFreezeGrantDate:
+        this.streak.lastFreezeGrantDate !== null && this.streak.lastFreezeGrantDate > today
+          ? null
+          : this.streak.lastFreezeGrantDate,
+      activeMonth: month,
+      activeDays:
+        this.streak.activeMonth === month
+          ? this.streak.activeDays.filter((activeDay: number): boolean => activeDay <= day)
+          : [],
+    };
+    this.ports.queueSync(SYNC_STREAK, this.streak);
   }
 
   private settleSession(now: number): void {

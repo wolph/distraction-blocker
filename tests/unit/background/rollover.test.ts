@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  clockRebaseArchiveKey,
   planBackwardDateRebase,
   planRollover,
   type RolloverPlan,
 } from '../../../src/background/rollover';
 import { applyPrunePlan, buildStats, pruneAndRollup } from '../../../src/background/stats-service';
 import type { StatsBundle } from '../../../src/shared/messages';
-import { SYNC_STREAK } from '../../../src/shared/storage-keys';
+import { SYNC_STREAK, syncAggKey } from '../../../src/shared/storage-keys';
 import { localDateStr } from '../../../src/shared/time';
 import type { DailyAgg, EventRecord, MonthlyAgg, StreakState } from '../../../src/shared/types';
 
@@ -105,7 +106,13 @@ describe('planRollover', () => {
 });
 
 describe('planBackwardDateRebase', () => {
-  it('archives the future-dated aggregate and starts the current local day empty', () => {
+  it('uses one bounded quarantine key per device across clock oscillations', () => {
+    expect(clockRebaseArchiveKey('devA', '2026-10-02', 1)).toBe(
+      clockRebaseArchiveKey('devA', '2027-04-18', 2),
+    );
+  });
+
+  it('quarantines the future-dated aggregate and starts the current day unset', () => {
     const current: DailyAgg = daily('2026-10-02', {
       focusMs: 60_000,
       attempts: { 'x.com': 2 },
@@ -113,8 +120,50 @@ describe('planBackwardDateRebase', () => {
 
     const plan = planBackwardDateRebase('2026-10-01', current);
 
-    expect(plan.archive).toEqual(current);
-    expect(plan.newAgg).toEqual(daily('2026-10-01', {}));
+    expect(plan).toEqual({ archive: current, newAgg: null });
+  });
+
+  it('keeps rebased stats on the current day with no future daily item', () => {
+    const futureDate: string = '2026-10-02';
+    const archive: DailyAgg = daily(futureDate, { focusMs: 60_000 });
+    const now: number = new Date(2026, 9, 1, 12, 0).getTime();
+    const archiveKey: string = clockRebaseArchiveKey('devA', futureDate, now);
+
+    const bundle: StatsBundle = buildStats(
+      'devA',
+      {
+        [archiveKey]: archive,
+        [syncAggKey('devA', futureDate)]: archive,
+      },
+      [],
+      14,
+      now,
+    );
+
+    expect(bundle.days).toEqual([]);
+  });
+
+  it('keeps rebased data separate when the former future day arrives', () => {
+    const futureDate: string = '2026-10-02';
+    const archived: DailyAgg = daily(futureDate, { focusMs: 60_000 });
+    const actualFuture: DailyAgg = daily(futureDate, { focusMs: 120_000 });
+    const now: number = new Date(2026, 9, 2, 12, 0).getTime();
+    const archiveKey: string = clockRebaseArchiveKey('devA', futureDate, now - DAY_MS);
+
+    const bundle: StatsBundle = buildStats(
+      'devA',
+      {
+        [archiveKey]: archived,
+        [syncAggKey('devA', futureDate)]: actualFuture,
+      },
+      [],
+      14,
+      now,
+    );
+
+    expect(bundle.days.map((day: DailyAgg): [string, number] => [day.date, day.focusMs])).toEqual([
+      [futureDate, 120_000],
+    ]);
   });
 });
 
