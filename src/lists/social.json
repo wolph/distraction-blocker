@@ -1,0 +1,18 @@
+{
+  "id": "social",
+  "title": "Social media",
+  "hosts": [
+    "facebook.com",
+    "instagram.com",
+    "x.com",
+    "twitter.com",
+    "tiktok.com",
+    "threads.net",
+    "bsky.app",
+    "linkedin.com",
+    "snapchat.com",
+    "pinterest.com",
+    "tumblr.com",
+    "mastodon.social"
+  ]
+}

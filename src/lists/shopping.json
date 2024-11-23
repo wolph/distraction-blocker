@@ -1,0 +1,18 @@
+{
+  "id": "shopping",
+  "title": "Shopping",
+  "hosts": [
+    "amazon.com",
+    "amazon.nl",
+    "amazon.de",
+    "bol.com",
+    "coolblue.nl",
+    "marktplaats.nl",
+    "zalando.nl",
+    "wehkamp.nl",
+    "ebay.com",
+    "aliexpress.com",
+    "temu.com",
+    "etsy.com"
+  ]
+}
