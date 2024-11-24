@@ -16,3 +16,9 @@ test('popup page renders', async ({ context, extensionId }) => {
   await page.goto(`chrome-extension://${extensionId}/src/popup/popup.html`);
   await expect(page.locator('#app')).toBeVisible();
 });
+
+test('blockable test site loads without a session', async ({ context, siteUrl }) => {
+  const page = await context.newPage();
+  await page.goto(siteUrl('/plain.html'));
+  await expect(page.locator('#marker')).toHaveText('plain page');
+});
