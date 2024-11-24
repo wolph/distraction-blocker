@@ -1,3 +1,5 @@
 import { render } from 'preact';
+import { App } from './App';
+import './options.css';
 
-render(<p>Focus Lock options stub</p>, document.getElementById('app') as HTMLElement);
+render(<App />, document.getElementById('app') as HTMLElement);
