@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <title>Open focus lock</title>
+  <!-- idle state: gray open padlock, same geometry the worker draws at runtime -->
+  <g stroke="#9ca3af" stroke-width="13" stroke-linecap="round" fill="none">
+    <path d="M 40 52 A 24 24 0 0 1 88 52" transform="rotate(-20 88 56) translate(0 -8)" />
+  </g>
+  <rect x="28" y="56" width="72" height="56" rx="10" fill="#9ca3af" />
+</svg>
