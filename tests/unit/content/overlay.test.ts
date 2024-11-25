@@ -101,6 +101,30 @@ describe('overlay', () => {
     });
   });
 
+  it.each([
+    { kind: 'pause' as const, label: 'Take pause' },
+    { kind: 'unlockSite' as const, label: 'Unlock this site' },
+    { kind: 'cancel' as const, label: 'End session' },
+  ])('uses the shared $kind confirmation label', ({ kind, label }): void => {
+    const snap: SessionSnapshot = focusSnap();
+    showOverlay(verdict, {
+      ...snap,
+      gate: {
+        kind,
+        host: kind === 'unlockSite' ? 'blocked.example' : null,
+        openedAt: Date.now() - 2_000,
+        readyAt: Date.now() - 1_000,
+        requiredPhrase: null,
+      },
+    });
+
+    expect(
+      Array.from(shadowRoot().querySelectorAll('button')).some(
+        (button: HTMLButtonElement): boolean => button.textContent === label,
+      ),
+    ).toBe(true);
+  });
+
   it('owns focus and traps Tab when hard mode has no enabled controls', () => {
     const outside: HTMLButtonElement = document.createElement('button');
     document.body.appendChild(outside);

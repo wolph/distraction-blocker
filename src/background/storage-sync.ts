@@ -20,6 +20,23 @@ export interface SyncStorageChange {
 export type SyncStorageChanges = Record<string, SyncStorageChange | undefined>;
 export type SyncStorageQueue = (key: string, value: unknown) => void;
 
+export function missingSyncDefaults(
+  stored: Record<string, unknown>,
+  defaults: {
+    settings: Settings;
+    lists: ListsConfig;
+    bank: BankState;
+    streak: StreakState;
+  },
+): Record<string, unknown> {
+  const missing: Record<string, unknown> = {};
+  if (!(SYNC_SETTINGS in stored)) missing[SYNC_SETTINGS] = defaults.settings;
+  if (!(SYNC_LISTS in stored)) missing[SYNC_LISTS] = defaults.lists;
+  if (!(SYNC_BANK in stored)) missing[SYNC_BANK] = defaults.bank;
+  if (!(SYNC_STREAK in stored)) missing[SYNC_STREAK] = defaults.streak;
+  return missing;
+}
+
 async function correctRejectedChange<T>(
   key: string,
   incoming: T,

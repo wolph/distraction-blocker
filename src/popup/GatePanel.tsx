@@ -4,8 +4,8 @@ import { sendRequest } from '../shared/messages';
 import type { GateKind, GateState } from '../shared/types';
 
 const CONFIRM_LABELS: Record<GateKind, string> = {
-  pause: 'Take break',
-  unlockSite: 'Unlock it',
+  pause: 'Take pause',
+  unlockSite: 'Unlock this site',
   cancel: 'End session',
 };
 

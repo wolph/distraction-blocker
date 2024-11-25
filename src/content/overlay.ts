@@ -404,8 +404,8 @@ function gateTitle(gate: GateState, snap: SessionSnapshot): string {
 }
 
 function gateConfirmLabel(kind: GateKind): string {
-  if (kind === 'pause') return 'Take break';
-  if (kind === 'unlockSite') return 'Unlock it';
+  if (kind === 'pause') return 'Take pause';
+  if (kind === 'unlockSite') return 'Unlock this site';
   return 'End session';
 }
 

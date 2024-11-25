@@ -6,6 +6,7 @@ import {
   type Page,
   type Worker,
 } from '@playwright/test';
+import type { Request, ResponseMap } from '../../src/shared/messages';
 import type { Rule, SessionConfig } from '../../src/shared/types';
 import { startServer, type TestServer } from './server';
 
@@ -26,7 +27,7 @@ export const test = base.extend<ExtFixtures>({
       args: [
         `--disable-extensions-except=${dist}`,
         `--load-extension=${dist}`,
-        '--host-resolver-rules=MAP blocked.example 127.0.0.1',
+        '--host-resolver-rules=MAP blocked.example 127.0.0.1, MAP *.blocked.example 127.0.0.1',
       ],
     });
     await use(context);
@@ -57,6 +58,16 @@ export const test = base.extend<ExtFixtures>({
 });
 
 export const expect = test.expect;
+
+export async function sendExtensionRequest<T extends Request['type']>(
+  extPage: Page,
+  request: Extract<Request, { type: T }>,
+): Promise<ResponseMap[T]> {
+  return (await extPage.evaluate(
+    async (message: Request): Promise<unknown> => await chrome.runtime.sendMessage(message),
+    request,
+  )) as ResponseMap[T];
+}
 
 export async function startTestSession(
   extPage: Page,

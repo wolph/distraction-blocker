@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { handleSyncChanges, type SyncChangeEngine } from '../../../src/background/storage-sync';
+import {
+  handleSyncChanges,
+  missingSyncDefaults,
+  type SyncChangeEngine,
+} from '../../../src/background/storage-sync';
 import { SyncEchoes, SyncWriter } from '../../../src/background/sync-writer';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import {
@@ -24,6 +28,25 @@ function makeEngine(overrides: Partial<SyncChangeEngine> = {}): SyncChangeEngine
 }
 
 describe('handleSyncChanges', () => {
+  it('initializes only missing base sync items', () => {
+    const bank: BankState = { balanceMs: 0 };
+    const streak: StreakState = {
+      current: 0,
+      freezeTokens: 0,
+      lastCountedDate: null,
+      lastFreezeGrantDate: null,
+      activeDays: [],
+      activeMonth: '2026-08',
+    };
+
+    expect(
+      missingSyncDefaults(
+        { [SYNC_SETTINGS]: DEFAULT_SETTINGS, [SYNC_BANK]: bank },
+        { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS, bank, streak },
+      ),
+    ).toEqual({ [SYNC_LISTS]: DEFAULT_LISTS, [SYNC_STREAK]: streak });
+  });
+
   it('consumes settings echoes before normalizing their stored shape', async () => {
     const echoedValue: unknown = { gate: { delayMs: DEFAULT_SETTINGS.gate.delayMs } };
     const applySyncedSettings = vi.fn().mockResolvedValue({ ok: true });

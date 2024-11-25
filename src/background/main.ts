@@ -1,12 +1,14 @@
+import { emptyStreak } from '../core/streak';
 import type { Request } from '../shared/messages';
 import { SYNC_BANK, SYNC_LISTS, SYNC_SETTINGS, SYNC_STREAK } from '../shared/storage-keys';
+import { localMonthStr } from '../shared/time';
 import type { SessionSnapshot } from '../shared/types';
 import { notify, playSound } from './audio';
 import { Engine, type EnginePorts } from './engine';
 import { updateIcon } from './icon';
 import { routeMessage } from './router';
 import { runPrune } from './stats-service';
-import { handleSyncChanges } from './storage-sync';
+import { handleSyncChanges, missingSyncDefaults } from './storage-sync';
 import {
   appendEvents,
   getDeviceId,
@@ -70,6 +72,19 @@ async function boot(): Promise<Engine> {
     (keys: string[]): Promise<void> => chrome.storage.sync.remove(keys),
   );
   syncWriterInstance = syncWriter;
+  const storedSync: Record<string, unknown> = await chrome.storage.sync.get([
+    SYNC_SETTINGS,
+    SYNC_LISTS,
+    SYNC_BANK,
+    SYNC_STREAK,
+  ]);
+  const missingDefaults: Record<string, unknown> = missingSyncDefaults(storedSync, {
+    settings,
+    lists,
+    bank,
+    streak: streak ?? emptyStreak(localMonthStr(now)),
+  });
+  for (const [key, value] of Object.entries(missingDefaults)) syncWriter.queue(key, value);
   const ports: EnginePorts = {
     now: (): number => Date.now(),
     saveRuntime,
