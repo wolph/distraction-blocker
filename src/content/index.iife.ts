@@ -3,19 +3,25 @@ import { sendRequest } from '../shared/messages';
 import { docStateFor, shouldStop } from './gate';
 import { hideOverlay, showOverlay } from './overlay';
 
-/** True once this document was stopped before loading. A stopped tab keeps
- * the opaque presentation for every later overlay update, and the worker
- * reloads it on unblock, which resets this flag with the fresh document. */
+/** True once this document stopped before loading. A stopped tab keeps
+ * opaque presentation for every later overlay update. The worker
+ * reloads it on unblock, which resets the flag with a fresh document.
+ */
 let wasStopped: boolean = false;
+
+function removeStoppedPageContent(): void {
+  for (const child of Array.from(document.documentElement.children)) {
+    if (child.tagName !== 'HEAD' && child.tagName !== 'FOCUS-LOCK-OVERLAY') child.remove();
+  }
+}
 
 function markStopped(): void {
   wasStopped = true;
-  if (document.head === null) {
-    document.documentElement.insertBefore(
-      document.createElement('head'),
-      document.documentElement.firstChild,
-    );
-  }
+  const head: HTMLHeadElement = document.createElement('head');
+  const overlay: Element | null = document.querySelector('focus-lock-overlay');
+  document.documentElement.replaceChildren(head, ...(overlay === null ? [] : [overlay]));
+  const observer: MutationObserver = new MutationObserver(removeStoppedPageContent);
+  observer.observe(document.documentElement, { childList: true });
   document.title = 'Locked - Focus Lock';
 }
 
@@ -36,7 +42,7 @@ async function evaluate(docState: 'fresh' | 'loaded'): Promise<void> {
       hideOverlay(snapshot);
     }
   } catch {
-    // worker unavailable (shutdown race): fail open, the next push corrects us
+    // The worker can disappear during shutdown. Fail open until the next push.
   }
 }
 
@@ -46,8 +52,8 @@ chrome.runtime.onMessage.addListener((msg: ContentCommand): void => {
   else if (msg.type === 'reevaluate') void evaluate('loaded');
 });
 
-window.addEventListener('pageshow', (ev: PageTransitionEvent): void => {
-  if (ev.persisted) void evaluate('loaded');
+window.addEventListener('pageshow', (event: PageTransitionEvent): void => {
+  if (event.persisted) void evaluate('loaded');
 });
 
 void evaluate(docStateFor(document.readyState));
