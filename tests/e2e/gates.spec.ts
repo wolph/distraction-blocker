@@ -59,6 +59,18 @@ async function clickClosedShadowButton(
   }
 }
 
+async function closedShadowButtonNames(context: BrowserContext, page: Page): Promise<string[]> {
+  const session: CDPSession = await context.newCDPSession(page);
+  try {
+    const tree = await session.send('Accessibility.getFullAXTree');
+    return tree.nodes
+      .filter((node): boolean => node.role?.value === 'button')
+      .map((node): string => String(node.name?.value ?? ''));
+  } finally {
+    await session.detach();
+  }
+}
+
 test('pause gate rejects an early confirmation and unblocks after its delay', async ({
   context,
   extPage,
@@ -70,6 +82,12 @@ test('pause gate rejects an early confirmation and unblocks after its delay', as
   await startTestSession(extPage, { durationMin: 0.3 });
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
   await waitForBank(extPage, 1_000);
+  await expect
+    .poll(async (): Promise<string> => {
+      const names: string[] = await closedShadowButtonNames(context, page);
+      return names.find((name: string): boolean => name.startsWith('Unlock this site')) ?? '';
+    })
+    .toBe('Unlock this site 0 min');
 
   expect(
     await sendExtensionRequest(extPage, { type: 'openGate', gate: 'pause', host: null }),

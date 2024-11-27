@@ -108,6 +108,7 @@ button:disabled { cursor: default; }
 .pill:hover:not(:disabled) { background: rgba(148, 163, 184, 0.3); }
 .pill:disabled { opacity: 0.55; }
 .ready { display: block; font-size: 0.75rem; color: #94a3b8; }
+.ready[hidden] { display: none; }
 .linkish {
   background: none; color: #94a3b8; text-decoration: underline;
   font-size: 0.9rem; padding: 0.4rem;

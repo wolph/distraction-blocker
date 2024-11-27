@@ -7,8 +7,9 @@
   --text: #1c2321;
   --muted: #5b6663;
   --border: #d9ded9;
-  --accent: #1a7f4b;
+  --accent: #187744;
   --accent-soft: #e3f2e9;
+  --primary-text: #ffffff;
   --warn: #8a5a00;
   --warn-soft: #fdf3df;
 }
@@ -22,6 +23,7 @@
     --border: #37403c;
     --accent: #5fc78f;
     --accent-soft: #23352b;
+    --primary-text: #052e16;
     --warn: #e3b25e;
     --warn-soft: #33290f;
   }
@@ -115,7 +117,7 @@ body {
 
 button.primary {
   background: var(--accent);
-  color: #ffffff;
+  color: var(--primary-text);
   border: none;
   border-radius: 6px;
   padding: 8px 18px;
@@ -314,4 +316,31 @@ table.rules th {
 .mono {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 13px;
+}
+
+@media (max-width: 600px) {
+  .options {
+    flex-direction: column;
+  }
+
+  .nav {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
+    padding: 16px;
+  }
+
+  .nav h1 {
+    grid-column: 1 / -1;
+    margin-bottom: 8px;
+  }
+
+  .content {
+    min-width: 0;
+    padding: 8px 16px 48px;
+  }
+
+  .cat-hosts {
+    columns: 1;
+  }
 }
