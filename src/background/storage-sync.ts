@@ -18,7 +18,7 @@ export interface SyncStorageChange {
 }
 
 export type SyncStorageChanges = Record<string, SyncStorageChange | undefined>;
-export type SyncStorageQueue = (key: string, value: unknown) => void;
+export type SyncStorageQueue = (key: string, value: unknown) => void | Promise<void>;
 
 export function missingSyncDefaults(
   stored: Record<string, unknown>,
@@ -48,7 +48,7 @@ async function correctRejectedChange<T>(
   if (result.ok) return;
 
   const correctiveValue: T = current();
-  queueSync(key, correctiveValue);
+  await queueSync(key, correctiveValue);
 }
 
 export async function handleSyncChanges(

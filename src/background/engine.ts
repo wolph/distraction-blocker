@@ -58,14 +58,16 @@ import {
   type RolloverPlan,
 } from './rollover';
 import type { RuntimeState, RuntimeTabState } from './stores';
-import { chooseNewerStreak } from './streak-sync';
+import { chooseNewerStreak, rebaseStreakForDate, streaksEqual } from './streak-sync';
 
 export interface EnginePorts {
   now(): number;
+  newId(): string;
   saveRuntime(r: RuntimeState): Promise<void>;
   queueSync(key: string, value: unknown): void;
   supersedeSync(key: string, value: unknown): void;
   removeSync(key: string): void;
+  persistSyncJournal(): Promise<void>;
   appendEvents(evs: EventRecord[]): Promise<void>;
   broadcast(snapshot: SessionSnapshot): void;
   applyBlocking(): Promise<void>;
@@ -76,6 +78,12 @@ export interface EnginePorts {
   /** run the weekly sync-storage retention prune */
   prune(retentionDays: number, now: number): Promise<void>;
   reportError(error: unknown): void;
+}
+
+export interface LiveTabState {
+  url: string;
+  mutedByExtension: boolean;
+  documentId?: string | null;
 }
 
 export interface EngineStatsOverlay {
@@ -99,6 +107,7 @@ export class Engine {
   private dirty = false;
   private needsBlocking = false;
   private commitQueue: Promise<void> = Promise.resolve();
+  private runtimePersistQueue: Promise<void> = Promise.resolve();
   private applyingBlocking = false;
 
   constructor(
@@ -312,9 +321,10 @@ export class Engine {
     await this.commit(now);
   }
 
-  async markStopped(tabId: number, url: string): Promise<void> {
-    const state: RuntimeTabState = this.ensureTabState(tabId, url);
-    state.stopped = true;
+  async markStopped(tabId: number, _url: string, documentId?: string): Promise<void> {
+    if (typeof documentId !== 'string' || documentId === '') return;
+    const state: RuntimeTabState = this.ensureTabState(tabId);
+    state.stoppedDocumentId = documentId;
     await this.persistRuntime();
   }
 
@@ -322,53 +332,97 @@ export class Engine {
   tabFacts(
     tabId: number,
     url: string,
+    documentId: string | null = null,
   ): { wasMutedByUs: boolean; priorMuted: boolean; wasStopped: boolean } {
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (state === undefined) {
       return { wasMutedByUs: false, priorMuted: false, wasStopped: false };
     }
-    if (state.url !== url) {
-      delete this.runtime.tabStates[tabId];
-      return { wasMutedByUs: false, priorMuted: false, wasStopped: false };
-    }
+    const wasMutedByUs: boolean = state.priorMuted !== null && state.muteUrl === url;
     return {
-      wasMutedByUs: state.priorMuted !== null,
-      priorMuted: state.priorMuted ?? false,
-      wasStopped: state.stopped,
+      wasMutedByUs,
+      priorMuted: wasMutedByUs ? (state.priorMuted ?? false) : false,
+      wasStopped:
+        documentId !== null && state.stoppedDocumentId !== null
+          ? state.stoppedDocumentId === documentId
+          : false,
     };
   }
 
-  /** In-memory bookkeeping mutators for tabs.ts, persisted by flushRuntime. */
-  noteMuted(tabId: number, url: string, priorMuted: boolean): void {
+  async claimMute(tabId: number, url: string, priorMuted: boolean): Promise<boolean> {
     const existing: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
-    if (existing !== undefined && existing.url !== url) return;
-    this.ensureTabState(tabId, url).priorMuted = priorMuted;
+    if (existing !== undefined && existing.priorMuted !== null && existing.muteUrl !== url) {
+      return false;
+    }
+    const state: RuntimeTabState = this.ensureTabState(tabId);
+    state.muteUrl = url;
+    state.priorMuted = priorMuted;
+    await this.persistRuntime();
+    return true;
   }
 
+  async releaseMuteClaim(tabId: number, url: string): Promise<void> {
+    const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
+    if (state === undefined || state.muteUrl !== url) return;
+    state.muteUrl = null;
+    state.priorMuted = null;
+    this.dropEmptyTabState(tabId, state);
+    await this.persistRuntime();
+  }
+
+  async transferMuteClaim(tabId: number, fromUrl: string, toUrl: string): Promise<void> {
+    const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
+    if (state === undefined) return;
+    if (state.muteUrl === fromUrl) state.muteUrl = toUrl;
+    if (state.muteUrl !== toUrl || state.priorMuted === null) return;
+    await this.persistRuntime();
+  }
+
+  /** In-memory bookkeeping mutators for tabs.ts, persisted by flushRuntime. */
   noteMuteRestored(tabId: number, url: string): void {
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
-    if (state === undefined || state.url !== url) return;
+    if (state === undefined || state.muteUrl !== url) return;
+    state.muteUrl = null;
     state.priorMuted = null;
     this.dropEmptyTabState(tabId, state);
   }
 
-  noteReloaded(tabId: number, url: string): void {
+  noteReloaded(tabId: number, documentId: string): void {
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
-    if (state === undefined || state.url !== url) return;
-    state.stopped = false;
+    if (state === undefined || state.stoppedDocumentId !== documentId) return;
+    state.stoppedDocumentId = null;
     this.dropEmptyTabState(tabId, state);
   }
 
-  reconcileTabs(liveTabs: ReadonlyMap<number, string>): void {
+  reconcileTabs(liveTabs: ReadonlyMap<number, LiveTabState>): void {
     for (const [tabIdText, state] of Object.entries(this.runtime.tabStates)) {
       const tabId: number = Number(tabIdText);
-      if (liveTabs.get(tabId) !== state.url) delete this.runtime.tabStates[tabId];
+      const live: LiveTabState | undefined = liveTabs.get(tabId);
+      if (live === undefined) {
+        delete this.runtime.tabStates[tabId];
+        continue;
+      }
+      if (state.priorMuted !== null) {
+        if (live.mutedByExtension) state.muteUrl = live.url;
+        else {
+          state.muteUrl = null;
+          state.priorMuted = null;
+        }
+      }
+      if (
+        typeof live.documentId === 'string' &&
+        state.stoppedDocumentId !== null &&
+        live.documentId !== state.stoppedDocumentId
+      ) {
+        state.stoppedDocumentId = null;
+      }
+      this.dropEmptyTabState(tabId, state);
     }
   }
 
   rebindTab(tabId: number, url: string): void {
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
-    if (state !== undefined) state.url = url;
+    if (state !== undefined && state.priorMuted !== null) state.muteUrl = url;
   }
 
   flushRuntime(): Promise<void> {
@@ -384,16 +438,22 @@ export class Engine {
     await this.persistRuntime();
   }
 
-  private ensureTabState(tabId: number, url: string): RuntimeTabState {
+  private ensureTabState(tabId: number): RuntimeTabState {
     const existing: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
-    if (existing !== undefined && existing.url === url) return existing;
-    const created: RuntimeTabState = { url, priorMuted: null, stopped: false };
+    if (existing !== undefined) return existing;
+    const created: RuntimeTabState = {
+      muteUrl: null,
+      priorMuted: null,
+      stoppedDocumentId: null,
+    };
     this.runtime.tabStates[tabId] = created;
     return created;
   }
 
   private dropEmptyTabState(tabId: number, state: RuntimeTabState): void {
-    if (state.priorMuted === null && !state.stopped) delete this.runtime.tabStates[tabId];
+    if (state.priorMuted === null && state.stoppedDocumentId === null) {
+      delete this.runtime.tabStates[tabId];
+    }
   }
 
   /** The 1-minute tick alarm and exact phase alarms both land here. */
@@ -482,9 +542,16 @@ export class Engine {
   }
 
   async applySyncedStreak(streak: StreakState): Promise<void> {
-    const chosen: StreakState | null = chooseNewerStreak(streak, this.streak);
+    const sanitized: StreakState = rebaseStreakForDate(streak, localDateStr(this.ports.now()));
+    const chosen: StreakState | null = chooseNewerStreak(sanitized, this.streak);
     this.streak = chosen;
-    if (chosen === streak) this.ports.supersedeSync(SYNC_STREAK, chosen);
+    if (chosen === null) return;
+    if (streaksEqual(chosen, streak)) {
+      this.ports.supersedeSync(SYNC_STREAK, chosen);
+    } else {
+      this.ports.queueSync(SYNC_STREAK, chosen);
+    }
+    await this.ports.persistSyncJournal();
   }
 
   getSettings(): Settings {
@@ -537,7 +604,10 @@ export class Engine {
     const futureDate: string = this.runtime.date;
     const plan = planBackwardDateRebase(today, this.runtime.todayAgg ?? emptyDaily(futureDate));
     this.ports.removeSync(syncAggKey(this.deviceId, futureDate));
-    this.ports.queueSync(clockRebaseArchiveKey(this.deviceId, futureDate, now), plan.archive);
+    this.ports.queueSync(
+      clockRebaseArchiveKey(this.deviceId, futureDate, now, this.ports.newId()),
+      plan.archive,
+    );
     this.runtime.date = today;
     this.runtime.todayAgg = plan.newAgg;
     this.runtime.attemptDebounce = {};
@@ -548,24 +618,7 @@ export class Engine {
 
   private rebaseStreakBackward(today: string): void {
     if (this.streak === null) return;
-    const month: string = today.slice(0, 7);
-    const day: number = Number(today.slice(8));
-    const countedInFuture: boolean =
-      this.streak.lastCountedDate !== null && this.streak.lastCountedDate > today;
-    this.streak = {
-      ...this.streak,
-      current: countedInFuture ? 0 : this.streak.current,
-      lastCountedDate: countedInFuture ? null : this.streak.lastCountedDate,
-      lastFreezeGrantDate:
-        this.streak.lastFreezeGrantDate !== null && this.streak.lastFreezeGrantDate > today
-          ? null
-          : this.streak.lastFreezeGrantDate,
-      activeMonth: month,
-      activeDays:
-        this.streak.activeMonth === month
-          ? this.streak.activeDays.filter((activeDay: number): boolean => activeDay <= day)
-          : [],
-    };
+    this.streak = rebaseStreakForDate(this.streak, today);
     this.ports.queueSync(SYNC_STREAK, this.streak);
   }
 
@@ -776,6 +829,7 @@ export class Engine {
 
   private async performCommit(now: number): Promise<void> {
     await this.flushEvents();
+    await this.ports.persistSyncJournal();
     this.dirty = false;
     const block: boolean = this.needsBlocking;
     this.needsBlocking = false;
@@ -794,6 +848,7 @@ export class Engine {
     }
     if (this.dirty) {
       await this.flushEvents();
+      await this.ports.persistSyncJournal();
       this.dirty = false;
       const updated: SessionSnapshot = this.buildSnapshot(this.ports.now());
       await this.persistRuntime();
@@ -803,12 +858,15 @@ export class Engine {
   }
 
   private async persistRuntime(): Promise<void> {
-    try {
-      await this.ports.saveRuntime(this.runtime);
-    } catch (error: unknown) {
+    const snapshot: RuntimeState = structuredClone(this.runtime);
+    const requested: Promise<void> = this.runtimePersistQueue.then(
+      (): Promise<void> => this.ports.saveRuntime(snapshot),
+    );
+    this.runtimePersistQueue = requested.catch((): void => {});
+    return requested.catch((error: unknown): never => {
       this.dirty = true;
       throw error;
-    }
+    });
   }
 
   private ensureMatcher(mode: SessionConfig['mode']): CompiledMatcher {

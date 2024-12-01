@@ -55,8 +55,9 @@ export function planBackwardDateRebase(
 
 export function clockRebaseArchiveKey(
   deviceId: string,
-  _futureDate: string,
-  _atMs: number,
+  futureDate: string,
+  atMs: number,
+  nonce: string = '0',
 ): string {
-  return `archive:clock-rebase:${deviceId}`;
+  return `archive:clock-rebase:${deviceId}:${futureDate}:${atMs}:${nonce}`;
 }

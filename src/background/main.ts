@@ -1,8 +1,8 @@
 import { emptyStreak } from '../core/streak';
 import type { Request } from '../shared/messages';
 import { SYNC_BANK, SYNC_LISTS, SYNC_SETTINGS, SYNC_STREAK } from '../shared/storage-keys';
-import { localMonthStr } from '../shared/time';
-import type { SessionSnapshot } from '../shared/types';
+import { localDateStr, localMonthStr } from '../shared/time';
+import type { SessionSnapshot, StreakState } from '../shared/types';
 import { notify, playSound } from './audio';
 import { Engine, type EnginePorts } from './engine';
 import { updateIcon } from './icon';
@@ -17,9 +17,12 @@ import {
   loadRuntime,
   loadSettings,
   loadStreak,
+  loadSyncJournal,
   saveRuntime,
+  saveSyncJournal,
 } from './stores';
-import { SyncEchoes, SyncWriter } from './sync-writer';
+import { chooseNewerStreak, rebaseStreakForDate, streaksEqual } from './streak-sync';
+import { SyncEchoes, type SyncJournal, SyncWriter } from './sync-writer';
 import { applyBlockingFactory, injectIntoExistingTabs, registerTabListeners } from './tabs';
 
 const SYNC_FLUSH_MS: number = 10_000;
@@ -46,14 +49,43 @@ function reportBackgroundError(error: unknown): void {
 
 async function boot(): Promise<Engine> {
   const now: number = Date.now();
-  const [settings, lists, bank, streak, runtime, deviceId] = await Promise.all([
-    loadSettings(),
-    loadLists(),
-    loadBank(),
+  const journal: SyncJournal = await loadSyncJournal();
+  const [settings, lists, bank, syncedStreak, runtime, deviceId, storedSync] = await Promise.all([
+    loadSettings(journal),
+    loadLists(journal),
+    loadBank(journal),
     loadStreak(),
     loadRuntime(now),
     getDeviceId(),
+    chrome.storage.sync.get([SYNC_SETTINGS, SYNC_LISTS, SYNC_BANK, SYNC_STREAK]),
   ]);
+  const journalValue: unknown = journal.sets[SYNC_STREAK];
+  const journaledStreak: StreakState | null =
+    !journal.removes.includes(SYNC_STREAK) &&
+    typeof journalValue === 'object' &&
+    journalValue !== null
+      ? (journalValue as StreakState)
+      : null;
+  const today: string = localDateStr(now);
+  const rebasedSyncedStreak: StreakState | null =
+    syncedStreak === null ? null : rebaseStreakForDate(syncedStreak, today);
+  const rebasedJournaledStreak: StreakState | null =
+    journaledStreak === null ? null : rebaseStreakForDate(journaledStreak, today);
+  const streak: StreakState | null = chooseNewerStreak(rebasedSyncedStreak, rebasedJournaledStreak);
+  const journalNeedsStreak: boolean =
+    streak !== null &&
+    ((syncedStreak !== null && !streaksEqual(streak, syncedStreak)) ||
+      (journaledStreak !== null && !streaksEqual(streak, journaledStreak)));
+  const initialJournal: SyncJournal = {
+    sets: { ...journal.sets },
+    removes: [...journal.removes],
+  };
+  if (journalNeedsStreak) {
+    initialJournal.sets[SYNC_STREAK] = streak;
+    initialJournal.removes = initialJournal.removes.filter(
+      (key: string): boolean => key !== SYNC_STREAK,
+    );
+  }
   const syncWriter: SyncWriter = new SyncWriter(
     SYNC_FLUSH_MS,
     async (items: Record<string, unknown>): Promise<void> => {
@@ -70,27 +102,28 @@ async function boot(): Promise<Engine> {
       await chrome.storage.sync.set(items);
     },
     (keys: string[]): Promise<void> => chrome.storage.sync.remove(keys),
+    { initial: initialJournal, persist: saveSyncJournal },
   );
   syncWriterInstance = syncWriter;
-  const storedSync: Record<string, unknown> = await chrome.storage.sync.get([
-    SYNC_SETTINGS,
-    SYNC_LISTS,
-    SYNC_BANK,
-    SYNC_STREAK,
-  ]);
-  const missingDefaults: Record<string, unknown> = missingSyncDefaults(storedSync, {
+  if (journalNeedsStreak) syncWriter.queue(SYNC_STREAK, streak);
+  const effectiveStoredSync: Record<string, unknown> = { ...storedSync, ...initialJournal.sets };
+  for (const key of initialJournal.removes) delete effectiveStoredSync[key];
+  const missingDefaults: Record<string, unknown> = missingSyncDefaults(effectiveStoredSync, {
     settings,
     lists,
     bank,
     streak: streak ?? emptyStreak(localMonthStr(now)),
   });
   for (const [key, value] of Object.entries(missingDefaults)) syncWriter.queue(key, value);
+  await syncWriter.whenJournalDurable();
   const ports: EnginePorts = {
     now: (): number => Date.now(),
+    newId: (): string => crypto.randomUUID(),
     saveRuntime,
     queueSync: (key: string, value: unknown): void => syncWriter.queue(key, value),
     supersedeSync: (key: string, value: unknown): void => syncWriter.supersede(key, value),
     removeSync: (key: string): void => syncWriter.remove(key),
+    persistSyncJournal: (): Promise<void> => syncWriter.whenJournalDurable(),
     appendEvents,
     broadcast: (snapshot: SessionSnapshot): void => {
       // Rejects when no extension page is open to hear it, which is fine.
@@ -151,7 +184,11 @@ export function main(): void {
             engine,
             changes,
             syncEchoes,
-            (key: string, value: unknown): void => currentSyncWriter().queue(key, value),
+            async (key: string, value: unknown): Promise<void> => {
+              const writer: SyncWriter = currentSyncWriter();
+              writer.queue(key, value);
+              await writer.whenJournalDurable();
+            },
           );
         })
         .catch(reportBackgroundError);
@@ -159,21 +196,23 @@ export function main(): void {
   );
 
   chrome.alarms.onAlarm.addListener((): void => {
-    void ready.then((engine: Engine): Promise<void> => engine.tick());
+    void ready.then((engine: Engine): Promise<void> => engine.tick()).catch(reportBackgroundError);
   });
 
-  registerTabListeners((): Promise<Engine> => ready);
+  registerTabListeners((): Promise<Engine> => ready, reportBackgroundError);
 
   chrome.runtime.onInstalled.addListener((): void => {
-    void chrome.alarms.create(TICK_ALARM, { periodInMinutes: 1 });
-    void injectIntoExistingTabs();
+    void chrome.alarms.create(TICK_ALARM, { periodInMinutes: 1 }).catch(reportBackgroundError);
+    void injectIntoExistingTabs().catch(reportBackgroundError);
   });
 
   chrome.tabs.onRemoved.addListener((tabId: number): void => {
-    void ready.then((engine: Engine): Promise<void> => engine.dropTab(tabId));
+    void ready
+      .then((engine: Engine): Promise<void> => engine.dropTab(tabId))
+      .catch(reportBackgroundError);
   });
 
   // Reloads of an already-installed extension skip onInstalled, and
   // alarm creation is idempotent, so ensure the tick exists every boot.
-  void chrome.alarms.create(TICK_ALARM, { periodInMinutes: 1 });
+  void chrome.alarms.create(TICK_ALARM, { periodInMinutes: 1 }).catch(reportBackgroundError);
 }

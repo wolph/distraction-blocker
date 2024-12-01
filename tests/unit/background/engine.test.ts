@@ -41,14 +41,20 @@ function makeEngine(opts?: {
   streak?: StreakState | null;
   queueSync?: EnginePorts['queueSync'];
   supersedeSync?: EnginePorts['supersedeSync'];
+  persistSyncJournal?: EnginePorts['persistSyncJournal'];
 }): Harness {
   let nowMs: number = T0;
   const ports: Harness['ports'] = {
     now: vi.fn((): number => nowMs),
+    newId: vi.fn((): string => 'archive-id'),
     saveRuntime: vi.fn().mockResolvedValue(undefined),
     queueSync: opts?.queueSync === undefined ? vi.fn() : vi.fn(opts.queueSync),
     supersedeSync: opts?.supersedeSync === undefined ? vi.fn() : vi.fn(opts.supersedeSync),
     removeSync: vi.fn(),
+    persistSyncJournal:
+      opts?.persistSyncJournal === undefined
+        ? vi.fn().mockResolvedValue(undefined)
+        : vi.fn(opts.persistSyncJournal),
     appendEvents: vi.fn().mockResolvedValue(undefined),
     broadcast: vi.fn(),
     applyBlocking: vi.fn().mockResolvedValue(undefined),
@@ -387,7 +393,7 @@ describe('Engine', () => {
       expect.anything(),
     );
     expect(h.ports.queueSync).toHaveBeenCalledWith(
-      clockRebaseArchiveKey('dev-test', futureDate, T0),
+      clockRebaseArchiveKey('dev-test', futureDate, T0, 'archive-id'),
       futureAgg,
     );
     expect(h.ports.queueSync).not.toHaveBeenCalledWith(
@@ -612,14 +618,25 @@ describe('Engine', () => {
 
   it('prunes absent tab records while preserving live restore state', async () => {
     const h: Harness = makeEngine();
-    h.engine.noteMuted(7, 'https://kept.example', true);
-    h.engine.noteMuted(8, 'https://missing.example', false);
-    await h.engine.markStopped(7, 'https://kept.example');
-    await h.engine.markStopped(9, 'https://missing.example');
+    await h.engine.claimMute(7, 'https://kept.example', true);
+    await h.engine.claimMute(8, 'https://missing.example', false);
+    await h.engine.markStopped(7, 'https://kept.example', 'kept-document');
+    await h.engine.markStopped(9, 'https://missing.example', 'missing-document');
 
-    h.engine.reconcileTabs(new Map([[7, 'https://kept.example']]));
+    h.engine.reconcileTabs(
+      new Map([
+        [
+          7,
+          {
+            url: 'https://kept.example',
+            mutedByExtension: true,
+            documentId: 'kept-document',
+          },
+        ],
+      ]),
+    );
 
-    expect(h.engine.tabFacts(7, 'https://kept.example')).toEqual({
+    expect(h.engine.tabFacts(7, 'https://kept.example', 'kept-document')).toEqual({
       wasMutedByUs: true,
       priorMuted: true,
       wasStopped: true,
@@ -636,12 +653,56 @@ describe('Engine', () => {
     });
   });
 
+  it('persists mute ownership before resolving the claim and persists release', async () => {
+    const h: Harness = makeEngine();
+    let releaseSave: () => void = (): void => {};
+    let signalSave: () => void = (): void => {};
+    const saveBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseSave = resolve;
+    });
+    const saveStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalSave = resolve;
+    });
+    h.ports.saveRuntime.mockImplementationOnce((runtime: RuntimeState): Promise<void> => {
+      expect(runtime.tabStates[7]).toEqual({
+        muteUrl: 'https://blocked.example/page',
+        priorMuted: false,
+        stoppedDocumentId: null,
+      });
+      signalSave();
+      return saveBlocked;
+    });
+    let claimed: boolean = false;
+
+    const pendingClaim: Promise<void> = h.engine
+      .claimMute(7, 'https://blocked.example/page', false)
+      .then((result: boolean): void => {
+        claimed = result;
+      });
+    const firstCompletion: 'save' | 'claim' = await Promise.race([
+      saveStarted.then((): 'save' => 'save'),
+      pendingClaim.then((): 'claim' => 'claim'),
+    ]);
+
+    expect(firstCompletion).toBe('save');
+    expect(claimed).toBe(false);
+    releaseSave();
+    await pendingClaim;
+    expect(claimed).toBe(true);
+
+    h.ports.saveRuntime.mockClear();
+    await h.engine.releaseMuteClaim(7, 'https://blocked.example/page');
+    expect(h.ports.saveRuntime).toHaveBeenCalledWith(expect.objectContaining({ tabStates: {} }));
+  });
+
   it('drops persisted tab state when a reused id has a different URL', async () => {
     const h: Harness = makeEngine();
     await h.engine.markStopped(7, 'https://blocked.example/old');
-    h.engine.noteMuted(7, 'https://blocked.example/old', false);
+    await h.engine.claimMute(7, 'https://blocked.example/old', false);
 
-    h.engine.reconcileTabs(new Map([[7, 'https://allowed.example/new']]));
+    h.engine.reconcileTabs(
+      new Map([[7, { url: 'https://allowed.example/new', mutedByExtension: false }]]),
+    );
 
     expect(h.engine.tabFacts(7, 'https://allowed.example/new')).toEqual({
       wasMutedByUs: false,
@@ -650,10 +711,62 @@ describe('Engine', () => {
     });
   });
 
+  it('drops same-url tab effects when the live mute is not extension-owned', async () => {
+    const h: Harness = makeEngine();
+    const url = 'https://blocked.example/page';
+    await h.engine.markStopped(7, url);
+    await h.engine.claimMute(7, url, false);
+
+    h.engine.reconcileTabs(new Map([[7, { url, mutedByExtension: false }]]));
+
+    expect(h.engine.tabFacts(7, url)).toEqual({
+      wasMutedByUs: false,
+      priorMuted: false,
+      wasStopped: false,
+    });
+  });
+
+  it('drops same-url stopped ownership when no extension mute confirms the tab', async () => {
+    const h: Harness = makeEngine();
+    const url = 'https://blocked.example/page';
+    await h.engine.markStopped(7, url);
+
+    h.engine.reconcileTabs(new Map([[7, { url, mutedByExtension: false }]]));
+
+    expect(h.engine.tabFacts(7, url)).toEqual({
+      wasMutedByUs: false,
+      priorMuted: false,
+      wasStopped: false,
+    });
+  });
+
+  it('rebinds an extension-owned mute after navigation interrupts the mute update', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.claimMute(7, 'https://blocked.example/old', false);
+
+    h.engine.reconcileTabs(
+      new Map([
+        [
+          7,
+          {
+            url: 'https://allowed.example/new',
+            mutedByExtension: true,
+          },
+        ],
+      ]),
+    );
+
+    expect(h.engine.tabFacts(7, 'https://allowed.example/new')).toEqual({
+      wasMutedByUs: true,
+      priorMuted: false,
+      wasStopped: false,
+    });
+  });
+
   it('does not relabel persisted state through a direct URL mismatch', async () => {
     const h: Harness = makeEngine();
     await h.engine.markStopped(7, 'https://blocked.example/old');
-    h.engine.noteMuted(7, 'https://blocked.example/old', false);
+    await h.engine.claimMute(7, 'https://blocked.example/old', false);
 
     expect(h.engine.tabFacts(7, 'https://allowed.example/new')).toEqual({
       wasMutedByUs: false,
@@ -664,12 +777,12 @@ describe('Engine', () => {
 
   it('rebinds a confirmed navigation while preserving its tab state', async () => {
     const h: Harness = makeEngine();
-    await h.engine.markStopped(7, 'https://blocked.example/old');
-    h.engine.noteMuted(7, 'https://blocked.example/old', false);
+    await h.engine.markStopped(7, 'https://blocked.example/old', 'document-one');
+    await h.engine.claimMute(7, 'https://blocked.example/old', false);
 
     h.engine.rebindTab(7, 'https://blocked.example/new');
 
-    expect(h.engine.tabFacts(7, 'https://blocked.example/new')).toEqual({
+    expect(h.engine.tabFacts(7, 'https://blocked.example/new', 'document-one')).toEqual({
       wasMutedByUs: true,
       priorMuted: false,
       wasStopped: true,
@@ -678,16 +791,54 @@ describe('Engine', () => {
 
   it('ignores stale restore and reload completions for another URL', async () => {
     const h: Harness = makeEngine();
-    await h.engine.markStopped(7, 'https://blocked.example/new');
-    h.engine.noteMuted(7, 'https://blocked.example/new', false);
+    await h.engine.markStopped(7, 'https://blocked.example/new', 'document-current');
+    await h.engine.claimMute(7, 'https://blocked.example/new', false);
 
     h.engine.noteMuteRestored(7, 'https://blocked.example/old');
-    h.engine.noteReloaded(7, 'https://blocked.example/old');
+    h.engine.noteReloaded(7, 'document-stale');
 
-    expect(h.engine.tabFacts(7, 'https://blocked.example/new')).toEqual({
+    expect(h.engine.tabFacts(7, 'https://blocked.example/new', 'document-current')).toEqual({
       wasMutedByUs: true,
       priorMuted: false,
       wasStopped: true,
+    });
+  });
+
+  it('preserves stopped-document ownership before mute ownership exists', async () => {
+    const h: Harness = makeEngine();
+    const url = 'https://blocked.example/page';
+
+    await h.engine.markStopped(7, url, 'document-one');
+    h.engine.reconcileTabs(
+      new Map([
+        [
+          7,
+          {
+            url,
+            mutedByExtension: false,
+            documentId: 'document-one',
+          },
+        ],
+      ]),
+    );
+
+    expect(h.engine.tabFacts(7, url, 'document-one')).toEqual({
+      wasMutedByUs: false,
+      priorMuted: false,
+      wasStopped: true,
+    });
+  });
+
+  it('does not give a reused same-URL tab stopped-document ownership', async () => {
+    const h: Harness = makeEngine();
+    const url = 'https://blocked.example/page';
+
+    await h.engine.markStopped(7, url, 'document-one');
+
+    expect(h.engine.tabFacts(7, url, 'document-two')).toEqual({
+      wasMutedByUs: false,
+      priorMuted: false,
+      wasStopped: false,
     });
   });
 
@@ -727,6 +878,75 @@ describe('Engine', () => {
     expect(ack).toEqual({ ok: true });
     expect(h.engine.getSettings().gate.delayMs).toBe(30_000);
     expect(h.ports.queueSync).toHaveBeenCalledWith('settings', stronger);
+  });
+
+  it('does not acknowledge accepted lists before the sync journal is durable', async () => {
+    let releaseJournal: () => void = (): void => {};
+    let signalJournalStarted: () => void = (): void => {};
+    const journalBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseJournal = resolve;
+    });
+    const journalStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalJournalStarted = resolve;
+    });
+    const h: Harness = makeEngine({
+      persistSyncJournal: (): Promise<void> => {
+        signalJournalStarted();
+        return journalBlocked;
+      },
+    });
+    const updatedLists = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host' as const, pattern: 'blocked.example' }],
+    };
+    let acknowledged: boolean = false;
+
+    const pendingAck: Promise<void> = h.engine.updateLists(updatedLists).then((): void => {
+      acknowledged = true;
+    });
+    const firstCompletion: 'journal' | 'ack' = await Promise.race([
+      journalStarted.then((): 'journal' => 'journal'),
+      pendingAck.then((): 'ack' => 'ack'),
+    ]);
+
+    expect(firstCompletion).toBe('journal');
+    expect(acknowledged).toBe(false);
+    releaseJournal();
+    await pendingAck;
+    expect(acknowledged).toBe(true);
+  });
+
+  it('journals aggregate writes discovered during the blocking sweep before acknowledgement', async () => {
+    let persistCalls: number = 0;
+    let releaseSecondJournal: () => void = (): void => {};
+    let signalSecondJournal: () => void = (): void => {};
+    const secondJournalBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseSecondJournal = resolve;
+    });
+    const secondJournalStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalSecondJournal = resolve;
+    });
+    const h: Harness = makeEngine({
+      persistSyncJournal: (): Promise<void> => {
+        persistCalls += 1;
+        if (persistCalls !== 2) return Promise.resolve();
+        signalSecondJournal();
+        return secondJournalBlocked;
+      },
+    });
+    h.ports.applyBlocking.mockImplementation(
+      (): Promise<void> => h.engine.recordAttempt('https://facebook.com/feed', 7, 'existing'),
+    );
+
+    const pendingAck: Promise<unknown> = h.engine.startSession(manualConfig);
+    const firstCompletion: 'journal' | 'ack' = await Promise.race([
+      secondJournalStarted.then((): 'journal' => 'journal'),
+      pendingAck.then((): 'ack' => 'ack'),
+    ]);
+
+    expect(firstCompletion).toBe('journal');
+    releaseSecondJournal();
+    await pendingAck;
   });
 
   it('applies live sync changes without echoing and rejects hard-session weakening', async () => {
@@ -792,6 +1012,69 @@ describe('Engine', () => {
     await h.engine.applySyncedStreak(remote);
 
     expect(h.engine.getStreak()).toEqual(local);
+    expect(h.ports.queueSync).toHaveBeenCalledWith(SYNC_STREAK, local);
+  });
+
+  it('merges equal-marker streak counters and active days without regression', async () => {
+    const remote: StreakState = {
+      current: 3,
+      freezeTokens: 2,
+      lastCountedDate: '2026-08-28',
+      lastFreezeGrantDate: '2026-08-24',
+      activeDays: [25, 28],
+      activeMonth: '2026-08',
+    };
+    const local: StreakState = {
+      ...remote,
+      current: 5,
+      freezeTokens: 1,
+      activeDays: [24, 25, 26, 27],
+    };
+    const h: Harness = makeEngine({ streak: local });
+
+    await h.engine.applySyncedStreak(remote);
+
+    const merged: StreakState = {
+      ...remote,
+      current: 5,
+      freezeTokens: 2,
+      activeDays: [24, 25, 26, 27, 28],
+    };
+    expect(h.engine.getStreak()).toEqual(merged);
+    expect(h.ports.queueSync).toHaveBeenCalledWith(SYNC_STREAK, merged);
+  });
+
+  it('sanitizes future remote streak markers before arbitration', async () => {
+    const local: StreakState = {
+      current: 0,
+      freezeTokens: 1,
+      lastCountedDate: null,
+      lastFreezeGrantDate: '2026-08-24',
+      activeDays: [28],
+      activeMonth: '2026-08',
+    };
+    const remote: StreakState = {
+      current: 5,
+      freezeTokens: 2,
+      lastCountedDate: '2026-09-01',
+      lastFreezeGrantDate: '2026-09-01',
+      activeDays: [1],
+      activeMonth: '2026-09',
+    };
+    const h: Harness = makeEngine({ streak: local });
+
+    await h.engine.applySyncedStreak(remote);
+
+    const corrected: StreakState = {
+      current: 0,
+      freezeTokens: 1,
+      lastCountedDate: null,
+      lastFreezeGrantDate: '2026-08-24',
+      activeDays: [28],
+      activeMonth: '2026-08',
+    };
+    expect(h.engine.getStreak()).toEqual(corrected);
+    expect(h.ports.queueSync).toHaveBeenCalledWith(SYNC_STREAK, corrected);
   });
 
   it('supersedes an older pending streak write with newer remote progress', async () => {

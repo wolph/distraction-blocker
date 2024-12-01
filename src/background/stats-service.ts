@@ -11,6 +11,7 @@ const DAY_MS: number = 86_400_000;
 const DAILY_KEY_RE: RegExp = /^agg:[^:]+:(\d{4}-\d{2}-\d{2})$/;
 const MONTHLY_KEY_RE: RegExp = /^aggm:[^:]+:(\d{4}-\d{2})$/;
 const RECENT_SESSION_CAP: number = 50;
+const MAX_CLOCK_REBASE_ARCHIVES: number = 20;
 
 interface PrunePlan {
   remove: string[];
@@ -128,18 +129,36 @@ export function pruneAndRollup(
 ): PrunePlan {
   const cutoff: string = localDateStr(now - retentionDays * DAY_MS);
   const mineRe: RegExp = new RegExp(`^agg:${deviceId}:(\\d{4}-\\d{2}-\\d{2})$`);
+  const archiveRe: RegExp = new RegExp(
+    `^archive:clock-rebase:${deviceId}:\\d{4}-\\d{2}-\\d{2}:(\\d+):[^:]+$`,
+  );
   const remove: string[] = [];
+  const archives: Array<{ key: string; at: number }> = [];
   const byMonth: Map<string, DailyAgg[]> = new Map();
   const entries: Array<[string, unknown]> = Object.entries(syncItems);
   for (let index: number = 0; index < entries.length; index++) {
     const entry: [string, unknown] = entries[index] as [string, unknown];
     const key: string = entry[0];
     const value: unknown = entry[1];
+    const archiveAt: string | undefined = archiveRe.exec(key)?.[1];
+    if (archiveAt !== undefined) {
+      archives.push({ key, at: Number(archiveAt) });
+      continue;
+    }
     const date: string | undefined = mineRe.exec(key)?.[1];
     if (date === undefined || date >= cutoff) continue;
     remove.push(key);
     groupPush(byMonth, date.slice(0, 7), value as DailyAgg);
   }
+  archives.sort(
+    (left: { key: string; at: number }, right: { key: string; at: number }): number =>
+      right.at - left.at || right.key.localeCompare(left.key),
+  );
+  remove.push(
+    ...archives
+      .slice(MAX_CLOCK_REBASE_ARCHIVES)
+      .map((archive: { key: string; at: number }): string => archive.key),
+  );
   const set: Record<string, unknown> = {};
   const months: Array<[string, DailyAgg[]]> = [...byMonth.entries()];
   for (let index: number = 0; index < months.length; index++) {

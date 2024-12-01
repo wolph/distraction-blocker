@@ -1,7 +1,22 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { loadRuntime, mergeLists, mergeSettings } from '../../../src/background/stores';
+import {
+  loadBank,
+  loadLists,
+  loadRuntime,
+  loadSettings,
+  loadStreak,
+  mergeLists,
+  mergeSettings,
+} from '../../../src/background/stores';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
-import { LOCAL_RUNTIME } from '../../../src/shared/storage-keys';
+import {
+  LOCAL_RUNTIME,
+  SYNC_BANK,
+  SYNC_LISTS,
+  SYNC_SETTINGS,
+  SYNC_STREAK,
+} from '../../../src/shared/storage-keys';
+import type { StreakState } from '../../../src/shared/types';
 
 afterEach((): void => {
   vi.unstubAllGlobals();
@@ -18,6 +33,52 @@ describe('storage default merging', () => {
     expect(settings.pause).toEqual({ ...DEFAULT_SETTINGS.pause, earnRatio: 0.25 });
     expect(settings.gate).toEqual({ ...DEFAULT_SETTINGS.gate, delayMs: 30_000 });
     expect(settings.sounds).toEqual({ ...DEFAULT_SETTINGS.sounds, masterVolume: 0.2 });
+  });
+
+  it('loads pending journal values before their debounced sync flush', async () => {
+    const pendingStreak: StreakState = {
+      current: 4,
+      freezeTokens: 1,
+      lastCountedDate: '2026-08-28',
+      lastFreezeGrantDate: '2026-08-24',
+      activeDays: [25, 26, 27, 28],
+      activeMonth: '2026-08',
+    };
+    const journal: { sets: Record<string, unknown>; removes: string[] } = {
+      sets: {
+        [SYNC_SETTINGS]: { ...DEFAULT_SETTINGS, retentionDays: 30 },
+        [SYNC_LISTS]: {
+          ...DEFAULT_LISTS,
+          custom: [{ kind: 'host', pattern: 'blocked.example' }],
+        },
+        [SYNC_BANK]: { balanceMs: 42_000 },
+        [SYNC_STREAK]: pendingStreak,
+      },
+      removes: [],
+    };
+    vi.stubGlobal('chrome', {
+      storage: {
+        sync: {
+          get: vi.fn(
+            async (key: string): Promise<Record<string, unknown>> => ({
+              [key]: undefined,
+            }),
+          ),
+        },
+      },
+    });
+
+    const [settings, lists, bank, streak] = await Promise.all([
+      loadSettings(journal),
+      loadLists(journal),
+      loadBank(journal),
+      loadStreak(journal),
+    ]);
+
+    expect(settings.retentionDays).toBe(30);
+    expect(lists.custom).toEqual([{ kind: 'host', pattern: 'blocked.example' }]);
+    expect(bank.balanceMs).toBe(42_000);
+    expect(streak).toEqual(pendingStreak);
   });
 
   it('preserves category and exclusion defaults when stored lists are partial', () => {
@@ -55,7 +116,7 @@ describe('runtime storage migration', () => {
     expect(runtime).not.toHaveProperty('mutedTabs');
   });
 
-  it('preserves URL-bound tab state', async () => {
+  it('migrates URL-bound mute state and drops legacy stopped ownership', async () => {
     const now: number = new Date(2026, 7, 29, 12, 0).getTime();
     vi.stubGlobal('chrome', {
       storage: {
@@ -79,9 +140,40 @@ describe('runtime storage migration', () => {
 
     expect(runtime.tabStates).toEqual({
       7: {
-        url: 'https://blocked.example/page',
+        muteUrl: 'https://blocked.example/page',
         priorMuted: false,
-        stopped: true,
+        stoppedDocumentId: null,
+      },
+    });
+  });
+
+  it('preserves document-bound stopped ownership', async () => {
+    const now: number = new Date(2026, 7, 29, 12, 0).getTime();
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: vi.fn().mockResolvedValue({
+            [LOCAL_RUNTIME]: {
+              tabStates: {
+                7: {
+                  muteUrl: null,
+                  priorMuted: null,
+                  stoppedDocumentId: 'document-one',
+                },
+              },
+            },
+          }),
+        },
+      },
+    });
+
+    const runtime = await loadRuntime(now);
+
+    expect(runtime.tabStates).toEqual({
+      7: {
+        muteUrl: null,
+        priorMuted: null,
+        stoppedDocumentId: 'document-one',
       },
     });
   });

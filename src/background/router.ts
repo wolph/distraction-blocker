@@ -22,13 +22,14 @@ export async function routeMessage(
       const tabId: number | undefined = sender.tab?.id;
       const senderOwnsUrl: boolean = sender.url === msg.url && sender.tab?.url === msg.url;
       if (verdict.blocked && tabId !== undefined && senderOwnsUrl) {
-        engine.rebindTab(tabId, msg.url);
         await engine.recordAttempt(
           msg.url,
           tabId,
           msg.docState === 'fresh' ? 'navigation' : 'existing',
         );
-        if (msg.docState === 'fresh') await engine.markStopped(tabId, msg.url);
+        if (msg.docState === 'fresh' && sender.documentId !== undefined) {
+          await engine.markStopped(tabId, msg.url, sender.documentId);
+        }
       }
       return { verdict, snapshot: await engine.snapshotPersisted() };
     }

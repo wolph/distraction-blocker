@@ -3,6 +3,7 @@ import {
   LOCAL_DEVICE_ID,
   LOCAL_EVENTS,
   LOCAL_RUNTIME,
+  LOCAL_SYNC_JOURNAL,
   SYNC_BANK,
   SYNC_LISTS,
   SYNC_SETTINGS,
@@ -20,6 +21,7 @@ import type {
   SiteUnlock,
   StreakState,
 } from '../shared/types';
+import type { SyncJournal } from './sync-writer';
 
 /**
  * Background-internal persisted state. Not part of the shared contract:
@@ -46,9 +48,9 @@ export interface RuntimeState {
 }
 
 export interface RuntimeTabState {
-  url: string;
+  muteUrl: string | null;
   priorMuted: boolean | null;
-  stopped: boolean;
+  stoppedDocumentId: string | null;
 }
 
 type StoredSettings = Partial<Omit<Settings, 'pause' | 'gate' | 'sounds'>> & {
@@ -77,14 +79,14 @@ export function emptyRuntime(now: number): RuntimeState {
   };
 }
 
-export async function loadSettings(): Promise<Settings> {
+export async function loadSettings(journal?: SyncJournal): Promise<Settings> {
   const raw: unknown = (await chrome.storage.sync.get(SYNC_SETTINGS))[SYNC_SETTINGS];
-  return mergeSettings(raw as StoredSettings | undefined);
+  return mergeSettings(journalValue(journal, SYNC_SETTINGS, raw) as StoredSettings | undefined);
 }
 
-export async function loadLists(): Promise<ListsConfig> {
+export async function loadLists(journal?: SyncJournal): Promise<ListsConfig> {
   const raw: unknown = (await chrome.storage.sync.get(SYNC_LISTS))[SYNC_LISTS];
-  return mergeLists(raw as StoredLists | undefined);
+  return mergeLists(journalValue(journal, SYNC_LISTS, raw) as StoredLists | undefined);
 }
 
 export function mergeSettings(raw: StoredSettings | undefined): Settings {
@@ -106,15 +108,42 @@ export function mergeLists(raw: StoredLists | undefined): ListsConfig {
   };
 }
 
-export async function loadBank(): Promise<BankState> {
+export async function loadBank(journal?: SyncJournal): Promise<BankState> {
   const raw: unknown = (await chrome.storage.sync.get(SYNC_BANK))[SYNC_BANK];
-  return { balanceMs: 0, ...(raw as Partial<BankState> | undefined) };
+  return {
+    balanceMs: 0,
+    ...(journalValue(journal, SYNC_BANK, raw) as Partial<BankState> | undefined),
+  };
 }
 
 /** Null when no streak has been persisted yet: minting one needs core's emptyStreak. */
-export async function loadStreak(): Promise<StreakState | null> {
+export async function loadStreak(journal?: SyncJournal): Promise<StreakState | null> {
   const raw: unknown = (await chrome.storage.sync.get(SYNC_STREAK))[SYNC_STREAK];
-  return (raw as StreakState | undefined) ?? null;
+  return (journalValue(journal, SYNC_STREAK, raw) as StreakState | undefined) ?? null;
+}
+
+export async function loadSyncJournal(): Promise<SyncJournal> {
+  const raw: unknown = (await chrome.storage.local.get(LOCAL_SYNC_JOURNAL))[LOCAL_SYNC_JOURNAL];
+  if (typeof raw !== 'object' || raw === null) return { sets: {}, removes: [] };
+  const candidate: Record<string, unknown> = raw as Record<string, unknown>;
+  const sets: Record<string, unknown> =
+    typeof candidate.sets === 'object' && candidate.sets !== null
+      ? (candidate.sets as Record<string, unknown>)
+      : {};
+  const removes: string[] = Array.isArray(candidate.removes)
+    ? candidate.removes.filter((key: unknown): key is string => typeof key === 'string')
+    : [];
+  return { sets, removes };
+}
+
+export async function saveSyncJournal(journal: SyncJournal): Promise<void> {
+  await chrome.storage.local.set({ [LOCAL_SYNC_JOURNAL]: journal });
+}
+
+function journalValue(journal: SyncJournal | undefined, key: string, stored: unknown): unknown {
+  if (journal === undefined) return stored;
+  if (journal.removes.includes(key)) return undefined;
+  return Object.hasOwn(journal.sets, key) ? journal.sets[key] : stored;
 }
 
 export async function loadRuntime(now: number): Promise<RuntimeState> {
@@ -146,14 +175,35 @@ function parseTabStates(value: unknown): Record<number, RuntimeTabState> {
     if (!Number.isInteger(tabId) || tabId < 0) continue;
     if (typeof candidate !== 'object' || candidate === null) continue;
     const state: Record<string, unknown> = candidate as Record<string, unknown>;
-    if (typeof state.url !== 'string' || state.url === '') continue;
+    const priorMuted: boolean | null =
+      state.priorMuted === null || typeof state.priorMuted === 'boolean' ? state.priorMuted : null;
     if (state.priorMuted !== null && typeof state.priorMuted !== 'boolean') continue;
-    if (typeof state.stopped !== 'boolean') continue;
-    parsed[tabId] = {
-      url: state.url,
-      priorMuted: state.priorMuted,
-      stopped: state.stopped,
-    };
+
+    const legacyUrl: string | null =
+      typeof state.url === 'string' && state.url !== '' ? state.url : null;
+    const muteUrl: string | null =
+      priorMuted === null
+        ? null
+        : typeof state.muteUrl === 'string' && state.muteUrl !== ''
+          ? state.muteUrl
+          : legacyUrl;
+    if (priorMuted !== null && muteUrl === null) continue;
+
+    const stoppedDocumentId: string | null =
+      state.stoppedDocumentId === null || state.stoppedDocumentId === undefined
+        ? null
+        : typeof state.stoppedDocumentId === 'string' && state.stoppedDocumentId !== ''
+          ? state.stoppedDocumentId
+          : null;
+    if (
+      state.stoppedDocumentId !== null &&
+      state.stoppedDocumentId !== undefined &&
+      stoppedDocumentId === null
+    ) {
+      continue;
+    }
+    if (muteUrl === null && stoppedDocumentId === null) continue;
+    parsed[tabId] = { muteUrl, priorMuted, stoppedDocumentId };
   }
   return parsed;
 }

@@ -45,7 +45,7 @@ Checked items were confirmed by the Playwright extension suite or an isolated Ch
 - [ ] During a hard session, verify the options banner, a readable rejection when removing a rule, and successful addition of a stricter rule. The weakening rejection is automated, but the options UI flow was not visually checked.
 - [ ] Turn on Allow in Incognito and confirm an incognito tab is blocked. This requires a manual toggle in Chrome's extension-management UI.
 - [ ] Use two Chrome profiles signed into the same Google account and confirm settings plus a prior-day aggregate arrive after sync. This requires two signed-in profiles and live Google sync.
-- [ ] Relaunch the isolated Chrome profile during a session and confirm the session, overlay, and countdown recover. An isolated persistent-profile check restored the session, countdown, tab, and content-script receiver, but the overlay did not remount. The attempted restart-path fixes did not resolve that race and were removed.
+- [x] Relaunch the isolated Chrome profile mid-session and confirm the session, overlay, and countdown recover. The final persistent-profile proof restored the active countdown, runtime session, document-bound stopped state, overlay, locked title, and extension-owned mute while sync still held the old list. Accepted sync-backed changes previously existed only in volatile debounced writer state and were lost when the worker or browser stopped before the sync flush.
 - [ ] Listen to session-complete, break-start, break-end, and schedule-start chimes. Automated code can request and preview them, but it cannot make a safe hearing assertion.
 - [ ] Confirm a Focus Lock notification is visible in the operating system. Notification delivery was not manually observed.
 

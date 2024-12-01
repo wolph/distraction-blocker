@@ -89,6 +89,7 @@ describe('routeMessage stats wiring', () => {
 describe('routeMessage tab identity wiring', () => {
   it('binds a stopped fresh document to its URL', async () => {
     const url: string = 'https://blocked.example/page';
+    const documentId = 'document-one';
     const markStopped = vi.fn().mockResolvedValue(undefined);
     const rebindTab = vi.fn();
     const blockingEngine: Engine = {
@@ -101,6 +102,7 @@ describe('routeMessage tab identity wiring', () => {
     const tabSender: chrome.runtime.MessageSender = {
       tab: { id: 7, url } as chrome.tabs.Tab,
       url,
+      documentId,
     };
 
     await routeMessage(
@@ -109,8 +111,28 @@ describe('routeMessage tab identity wiring', () => {
       tabSender,
     );
 
-    expect(markStopped).toHaveBeenCalledWith(7, url);
-    expect(rebindTab).toHaveBeenCalledWith(7, url);
+    expect(markStopped).toHaveBeenCalledWith(7, url, documentId);
+    expect(rebindTab).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a fresh sender has no document identity', async () => {
+    const url: string = 'https://blocked.example/page';
+    const markStopped = vi.fn().mockResolvedValue(undefined);
+    const blockingEngine: Engine = {
+      verdictFor: vi.fn(() => ({ blocked: true, reason: 'custom', matchedPattern: url })),
+      recordAttempt: vi.fn().mockResolvedValue(undefined),
+      rebindTab: vi.fn(),
+      markStopped,
+      snapshotPersisted: vi.fn().mockResolvedValue(emptySnapshot(0)),
+    } as unknown as Engine;
+
+    await routeMessage(
+      blockingEngine,
+      { type: 'getBlockState', url, docState: 'fresh' },
+      { tab: { id: 7, url } as chrome.tabs.Tab, url },
+    );
+
+    expect(markStopped).not.toHaveBeenCalled();
   });
 
   it('ignores stale block-state mutations after the tab navigates', async () => {

@@ -106,8 +106,22 @@ describe('planRollover', () => {
 });
 
 describe('planBackwardDateRebase', () => {
-  it('uses one bounded quarantine key per device across clock oscillations', () => {
-    expect(clockRebaseArchiveKey('devA', '2026-10-02', 1)).toBe(
+  it('gives sequential and coalesced clock rebases distinct archive keys', () => {
+    const at: number = new Date(2026, 9, 1, 12, 0).getTime();
+
+    const first: string = clockRebaseArchiveKey('devA', '2026-10-02', at);
+    const coalesced: string = clockRebaseArchiveKey('devA', '2026-10-03', at);
+    const sequential: string = clockRebaseArchiveKey('devA', '2026-10-02', at + 1);
+    const sameMillisecondA: string = clockRebaseArchiveKey('devA', '2026-10-02', at, 'a');
+    const sameMillisecondB: string = clockRebaseArchiveKey('devA', '2026-10-02', at, 'b');
+
+    expect(new Set([first, coalesced, sequential, sameMillisecondA, sameMillisecondB]).size).toBe(
+      5,
+    );
+  });
+
+  it('keeps clock oscillation archives separate until pruning', () => {
+    expect(clockRebaseArchiveKey('devA', '2026-10-02', 1)).not.toBe(
       clockRebaseArchiveKey('devA', '2027-04-18', 2),
     );
   });
@@ -295,6 +309,22 @@ describe('buildStats', () => {
 });
 
 describe('pruneAndRollup', () => {
+  it('bounds retained clock-rebase archives per device', () => {
+    const syncItems: Record<string, unknown> = {};
+    for (let index: number = 0; index < 22; index++) {
+      const at: number = NOW - index;
+      syncItems[clockRebaseArchiveKey('devA', TODAY, at)] = daily(TODAY, {
+        focusMs: index,
+      });
+    }
+
+    const plan: ReturnType<typeof pruneAndRollup> = pruneAndRollup('devA', syncItems, 90, NOW);
+
+    expect(plan.remove).toHaveLength(2);
+    expect(plan.remove).toContain(clockRebaseArchiveKey('devA', TODAY, NOW - 21));
+    expect(plan.remove).toContain(clockRebaseArchiveKey('devA', TODAY, NOW - 20));
+  });
+
   it('rolls a 91-day-old daily of this device into its monthly item and removes the key', () => {
     const oldDate: string = localDateStr(NOW - 91 * DAY_MS);
     const oldMonth: string = oldDate.slice(0, 7);

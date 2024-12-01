@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Engine } from '../../../src/background/engine';
-import { applyBlockingFactory, applyToTab, planTabAction } from '../../../src/background/tabs';
+import type { Engine, LiveTabState } from '../../../src/background/engine';
+import {
+  applyBlockingFactory,
+  applyToTab,
+  planTabAction,
+  registerTabListeners,
+} from '../../../src/background/tabs';
 import { emptySnapshot } from '../../../src/shared/constants';
 import type { Verdict } from '../../../src/shared/types';
 
@@ -34,6 +39,7 @@ describe('planTabAction', () => {
     expect(
       planTabAction(blocked, {
         muted: true,
+        mutedByExtension: true,
         wasMutedByUs: true,
         priorMuted: false,
         wasStopped: false,
@@ -52,10 +58,23 @@ describe('planTabAction', () => {
     ).toEqual({ command: 'applyBlock', mute: true, reload: false });
   });
 
+  it('reloads the exact stopped document without requiring mute ownership', () => {
+    expect(
+      planTabAction(allowed, {
+        muted: false,
+        mutedByExtension: false,
+        wasMutedByUs: false,
+        priorMuted: false,
+        wasStopped: true,
+      }),
+    ).toEqual({ command: 'clearBlock', mute: null, reload: true });
+  });
+
   it('clears with mute restore: puts the recorded prior state back', () => {
     expect(
       planTabAction(allowed, {
         muted: true,
+        mutedByExtension: true,
         wasMutedByUs: true,
         priorMuted: true,
         wasStopped: false,
@@ -67,11 +86,28 @@ describe('planTabAction', () => {
     expect(
       planTabAction(allowed, {
         muted: true,
+        mutedByExtension: true,
         wasMutedByUs: true,
         priorMuted: false,
         wasStopped: true,
       }),
     ).toEqual({ command: 'clearBlock', mute: false, reload: true });
+  });
+
+  it('does not restore mute without attribution but still reloads the stopped document', () => {
+    const foreignMutedState = {
+      muted: true,
+      mutedByExtension: false,
+      wasMutedByUs: true,
+      priorMuted: false,
+      wasStopped: true,
+    };
+
+    expect(planTabAction(allowed, foreignMutedState)).toEqual({
+      command: 'clearBlock',
+      mute: null,
+      reload: true,
+    });
   });
 
   it('clears a tab we never touched without side effects', () => {
@@ -94,10 +130,16 @@ describe('applyToTab', () => {
   let liveUrl: string;
 
   beforeEach((): void => {
-    vi.clearAllMocks();
+    sendMessage.mockReset().mockResolvedValue(undefined);
+    update.mockReset().mockResolvedValue(undefined);
+    reload.mockReset().mockResolvedValue(undefined);
+    get.mockReset();
     liveUrl = 'https://facebook.com/feed';
     get.mockImplementation(async (): Promise<{ url: string }> => ({ url: liveUrl }));
-    vi.stubGlobal('chrome', { tabs: { sendMessage, update, reload, get } });
+    vi.stubGlobal('chrome', {
+      runtime: { id: 'focus-lock' },
+      tabs: { sendMessage, update, reload, get },
+    });
   });
 
   afterEach((): void => {
@@ -115,6 +157,9 @@ describe('applyToTab', () => {
       })),
       recordAttempt: vi.fn().mockResolvedValue(undefined),
       noteMuted: vi.fn(),
+      claimMute: vi.fn().mockResolvedValue(true),
+      releaseMuteClaim: vi.fn().mockResolvedValue(undefined),
+      transferMuteClaim: vi.fn().mockResolvedValue(undefined),
       noteMuteRestored: vi.fn(),
       noteReloaded: vi.fn(),
     } as unknown as Engine;
@@ -126,8 +171,187 @@ describe('applyToTab', () => {
     await applyToTab(engine, 7, 'https://facebook.com/feed', false);
 
     expect(engine.recordAttempt).toHaveBeenCalledWith('https://facebook.com/feed', 7, 'existing');
-    expect(engine.tabFacts).toHaveBeenCalledWith(7, 'https://facebook.com/feed');
-    expect(engine.noteMuted).toHaveBeenCalledWith(7, 'https://facebook.com/feed', false);
+    expect(engine.tabFacts).toHaveBeenCalledWith(7, 'https://facebook.com/feed', null);
+    expect(engine.claimMute).toHaveBeenCalledWith(7, 'https://facebook.com/feed', false);
+  });
+
+  it('waits for durable mute ownership before muting the tab', async () => {
+    const engine: Engine = engineFor(blocked);
+    let releaseClaim: (claimed: boolean) => void = (): void => {};
+    let signalClaim: () => void = (): void => {};
+    const claimStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalClaim = resolve;
+    });
+    vi.mocked(engine.claimMute).mockImplementationOnce(
+      (): Promise<boolean> =>
+        new Promise((resolve: (claimed: boolean) => void): void => {
+          releaseClaim = resolve;
+          signalClaim();
+        }),
+    );
+
+    const pending: Promise<void> = applyToTab(engine, 7, 'https://facebook.com/feed', false);
+    await claimStarted;
+
+    expect(update).not.toHaveBeenCalled();
+    releaseClaim(true);
+    await pending;
+    expect(update).toHaveBeenCalledWith(7, { muted: true });
+  });
+
+  it('durably releases mute ownership when Chrome rejects the mute', async () => {
+    const engine: Engine = engineFor(blocked);
+    let releaseRollback: () => void = (): void => {};
+    let signalRollback: () => void = (): void => {};
+    const rollbackStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalRollback = resolve;
+    });
+    update.mockRejectedValueOnce(new Error('mute failed'));
+    vi.mocked(engine.releaseMuteClaim).mockImplementationOnce(
+      (): Promise<void> =>
+        new Promise((resolve: () => void): void => {
+          releaseRollback = resolve;
+          signalRollback();
+        }),
+    );
+
+    const pending: Promise<void> = applyToTab(engine, 7, 'https://facebook.com/feed', false);
+    const firstCompletion: 'rollback' | 'done' = await Promise.race([
+      rollbackStarted.then((): 'rollback' => 'rollback'),
+      pending.then((): 'done' => 'done'),
+    ]);
+
+    expect(firstCompletion).toBe('rollback');
+    releaseRollback();
+    await pending;
+    expect(engine.releaseMuteClaim).toHaveBeenCalledWith(7, 'https://facebook.com/feed');
+  });
+
+  it('releases new ownership when a foreign mute appears after Chrome rejects the mute', async () => {
+    const engine: Engine = engineFor(blocked);
+    update.mockImplementationOnce(async (): Promise<void> => {
+      get.mockResolvedValue({
+        url: liveUrl,
+        mutedInfo: { muted: true, extensionId: 'another-extension' },
+      });
+      throw new Error('mute failed');
+    });
+
+    await applyToTab(engine, 7, 'https://facebook.com/feed', false);
+
+    expect(engine.releaseMuteClaim).toHaveBeenCalledWith(7, 'https://facebook.com/feed');
+    expect(engine.transferMuteClaim).not.toHaveBeenCalled();
+  });
+
+  it('releases new ownership when a successful mute remains foreign-attributed', async () => {
+    const engine: Engine = engineFor(blocked);
+    update.mockImplementationOnce(async (): Promise<void> => {
+      get.mockResolvedValue({
+        url: liveUrl,
+        mutedInfo: { muted: true, extensionId: 'another-extension' },
+      });
+    });
+
+    await applyToTab(engine, 7, 'https://facebook.com/feed', false);
+
+    expect(engine.releaseMuteClaim).toHaveBeenCalledWith(7, 'https://facebook.com/feed');
+  });
+
+  it('does not overwrite a user mute that appears while ownership is persisted', async () => {
+    const engine: Engine = engineFor(blocked);
+    vi.mocked(engine.claimMute).mockImplementationOnce(async (): Promise<boolean> => {
+      get.mockResolvedValue({ url: liveUrl, mutedInfo: { muted: true } });
+      return true;
+    });
+
+    await applyToTab(engine, 7, 'https://facebook.com/feed', false);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(engine.releaseMuteClaim).toHaveBeenCalledWith(7, 'https://facebook.com/feed');
+  });
+
+  it('does not restore over a foreign mute that appears while content clears', async () => {
+    const engine: Engine = engineFor(allowed);
+    sendMessage.mockImplementationOnce(async (): Promise<void> => {
+      get.mockResolvedValue({
+        url: liveUrl,
+        mutedInfo: { muted: true, extensionId: 'another-extension' },
+      });
+    });
+
+    await applyToTab(engine, 7, 'https://facebook.com/feed', true, 'existing', true);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(engine.releaseMuteClaim).toHaveBeenCalledWith(7, 'https://facebook.com/feed');
+  });
+
+  it('does not reload a reused tab id when the replacement has the same URL', async () => {
+    const engine: Engine = engineFor(allowed, true);
+    vi.mocked(engine.tabFacts).mockReturnValue({
+      wasMutedByUs: false,
+      priorMuted: false,
+      wasStopped: true,
+    });
+    let getCalls = 0;
+    let currentDocumentId = 'document-one';
+    get.mockImplementation(async (): Promise<{ url: string }> => {
+      getCalls += 1;
+      if (getCalls === 3) currentDocumentId = 'document-two';
+      return { url: liveUrl };
+    });
+    vi.stubGlobal('chrome', {
+      runtime: { id: 'focus-lock' },
+      tabs: { sendMessage, update, reload, get },
+      webNavigation: {
+        getFrame: vi.fn(
+          async (): Promise<{ documentId: string }> => ({
+            documentId: currentDocumentId,
+          }),
+        ),
+      },
+    });
+
+    await applyToTab(
+      engine,
+      7,
+      'https://facebook.com/feed',
+      false,
+      'existing',
+      false,
+      'document-one',
+    );
+
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('preserves a user mute when Chrome does not attribute it to the extension', async () => {
+    const engine: Engine = engineFor(blocked);
+    get.mockResolvedValue({ url: liveUrl, mutedInfo: { muted: true } });
+
+    await applyToTab(engine, 7, 'https://facebook.com/feed', true);
+
+    expect(engine.claimMute).not.toHaveBeenCalled();
+    expect(engine.releaseMuteClaim).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('transfers durable mute ownership when navigation completes during muting', async () => {
+    const engine: Engine = engineFor(blocked);
+    update.mockImplementationOnce(async (): Promise<void> => {
+      liveUrl = 'https://blocked.example/new';
+      get.mockResolvedValue({
+        url: liveUrl,
+        mutedInfo: { muted: true, extensionId: 'focus-lock' },
+      });
+    });
+
+    await applyToTab(engine, 7, 'https://facebook.com/feed', false);
+
+    expect(engine.transferMuteClaim).toHaveBeenCalledWith(
+      7,
+      'https://facebook.com/feed',
+      'https://blocked.example/new',
+    );
   });
 
   it('records a committed navigation as fresh and preserves persisted restore state', async () => {
@@ -138,11 +362,16 @@ describe('applyToTab', () => {
       wasStopped: false,
     });
 
-    await applyToTab(engine, 7, 'https://facebook.com/feed', false, 'navigation');
+    get.mockResolvedValue({
+      url: liveUrl,
+      mutedInfo: { muted: true, extensionId: 'focus-lock' },
+    });
+
+    await applyToTab(engine, 7, 'https://facebook.com/feed', false, 'navigation', true);
 
     expect(engine.recordAttempt).toHaveBeenCalledWith('https://facebook.com/feed', 7, 'navigation');
-    expect(update).toHaveBeenCalledWith(7, { muted: true });
-    expect(engine.noteMuted).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(engine.claimMute).not.toHaveBeenCalled();
   });
 
   it('keeps mute bookkeeping when Chrome fails to restore mute state', async () => {
@@ -150,7 +379,7 @@ describe('applyToTab', () => {
     liveUrl = 'https://example.com';
     update.mockRejectedValueOnce(new Error('tab closed'));
 
-    await applyToTab(engine, 7, 'https://example.com', true);
+    await applyToTab(engine, 7, 'https://example.com', true, 'existing', true);
 
     expect(engine.noteMuteRestored).not.toHaveBeenCalled();
   });
@@ -160,7 +389,7 @@ describe('applyToTab', () => {
     liveUrl = 'https://example.com';
     reload.mockRejectedValueOnce(new Error('tab closed'));
 
-    await applyToTab(engine, 7, 'https://example.com', true);
+    await applyToTab(engine, 7, 'https://example.com', true, 'existing', true);
 
     expect(engine.noteReloaded).not.toHaveBeenCalled();
   });
@@ -174,7 +403,7 @@ describe('applyToTab', () => {
     await applyToTab(engine, 7, 'https://facebook.com/feed', false);
 
     expect(update).not.toHaveBeenCalled();
-    expect(engine.noteMuted).not.toHaveBeenCalled();
+    expect(engine.claimMute).not.toHaveBeenCalled();
   });
 
   it('skips the content command when the tab already navigated', async () => {
@@ -201,6 +430,162 @@ describe('applyToTab', () => {
   });
 });
 
+describe('registerTabListeners', () => {
+  afterEach((): void => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reports detached navigation failures', async () => {
+    type NavigationDetails = { tabId: number; url: string; frameId: number };
+    const error = new Error('local storage unavailable');
+    const reportError = vi.fn();
+    let committedListener: ((details: NavigationDetails) => void) | undefined;
+    vi.stubGlobal('chrome', {
+      webNavigation: {
+        onCommitted: {
+          addListener: vi.fn((listener: (details: NavigationDetails) => void): void => {
+            committedListener = listener;
+          }),
+        },
+        onHistoryStateUpdated: { addListener: vi.fn() },
+      },
+    });
+    registerTabListeners((): Promise<Engine> => Promise.reject(error), reportError);
+    if (committedListener === undefined) throw new Error('committed listener was not registered');
+
+    committedListener({ tabId: 7, url: 'https://blocked.example', frameId: 0 });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(reportError).toHaveBeenCalledWith(error);
+  });
+
+  it('does not inherit stale ownership when a tab id is reused before ready resolves', async () => {
+    type NavigationDetails = { tabId: number; url: string; frameId: number };
+    const currentUrl = 'https://unrelated.example/new';
+    let committedListener: ((details: NavigationDetails) => void) | undefined;
+    let resolveReady: (engine: Engine) => void = (): void => {};
+    let signalFlushed: () => void = (): void => {};
+    const ready: Promise<Engine> = new Promise((resolve: (engine: Engine) => void): void => {
+      resolveReady = resolve;
+    });
+    const flushed: Promise<void> = new Promise((resolve: () => void): void => {
+      signalFlushed = resolve;
+    });
+    let ownedUrl = 'https://blocked.example/old';
+    const rebindTab = vi.fn((_tabId: number, url: string): void => {
+      ownedUrl = url;
+    });
+    const update = vi.fn().mockResolvedValue(undefined);
+    const reload = vi.fn().mockResolvedValue(undefined);
+    const engine: Engine = {
+      rebindTab,
+      verdictFor: vi.fn((): Verdict => allowed),
+      snapshot: vi.fn(() => emptySnapshot(0)),
+      tabFacts: vi.fn((_tabId: number, url: string) =>
+        ownedUrl === url
+          ? { wasMutedByUs: true, priorMuted: false, wasStopped: true }
+          : { wasMutedByUs: false, priorMuted: false, wasStopped: false },
+      ),
+      recordAttempt: vi.fn().mockResolvedValue(undefined),
+      claimMute: vi.fn().mockResolvedValue(true),
+      releaseMuteClaim: vi.fn().mockResolvedValue(undefined),
+      transferMuteClaim: vi.fn().mockResolvedValue(undefined),
+      noteMuteRestored: vi.fn(),
+      noteReloaded: vi.fn(),
+      flushRuntime: vi.fn(async (): Promise<void> => {
+        signalFlushed();
+      }),
+    } as unknown as Engine;
+    vi.stubGlobal('chrome', {
+      runtime: { id: 'focus-lock' },
+      tabs: {
+        get: vi.fn().mockResolvedValue({
+          id: 7,
+          url: currentUrl,
+          mutedInfo: { muted: false },
+        }),
+        sendMessage: vi.fn().mockResolvedValue(undefined),
+        update,
+        reload,
+      },
+      webNavigation: {
+        onCommitted: {
+          addListener: vi.fn((listener: (details: NavigationDetails) => void): void => {
+            committedListener = listener;
+          }),
+        },
+        onHistoryStateUpdated: { addListener: vi.fn() },
+      },
+    });
+    registerTabListeners((): Promise<Engine> => ready, vi.fn());
+    if (committedListener === undefined) throw new Error('committed listener was not registered');
+
+    committedListener({ tabId: 7, url: currentUrl, frameId: 0 });
+    resolveReady(engine);
+    await flushed;
+
+    expect(rebindTab).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('rebinds ownership when the extension mute confirms the navigating tab', async () => {
+    type NavigationDetails = { tabId: number; url: string; frameId: number };
+    const currentUrl = 'https://blocked.example/new';
+    let committedListener: ((details: NavigationDetails) => void) | undefined;
+    const rebindTab = vi.fn();
+    const flushRuntime = vi.fn().mockResolvedValue(undefined);
+    const engine: Engine = {
+      rebindTab,
+      verdictFor: vi.fn((): Verdict => blocked),
+      snapshot: vi.fn(() => emptySnapshot(0)),
+      tabFacts: vi.fn(() => ({
+        wasMutedByUs: true,
+        priorMuted: false,
+        wasStopped: false,
+      })),
+      recordAttempt: vi.fn().mockResolvedValue(undefined),
+      claimMute: vi.fn().mockResolvedValue(true),
+      releaseMuteClaim: vi.fn().mockResolvedValue(undefined),
+      transferMuteClaim: vi.fn().mockResolvedValue(undefined),
+      noteMuteRestored: vi.fn(),
+      noteReloaded: vi.fn(),
+      flushRuntime,
+    } as unknown as Engine;
+    vi.stubGlobal('chrome', {
+      runtime: { id: 'focus-lock' },
+      tabs: {
+        get: vi.fn().mockResolvedValue({
+          id: 7,
+          url: currentUrl,
+          mutedInfo: { muted: true, extensionId: 'focus-lock' },
+        }),
+        sendMessage: vi.fn().mockResolvedValue(undefined),
+        update: vi.fn().mockResolvedValue(undefined),
+        reload: vi.fn().mockResolvedValue(undefined),
+      },
+      webNavigation: {
+        onCommitted: {
+          addListener: vi.fn((listener: (details: NavigationDetails) => void): void => {
+            committedListener = listener;
+          }),
+        },
+        onHistoryStateUpdated: { addListener: vi.fn() },
+      },
+    });
+    registerTabListeners((): Promise<Engine> => Promise.resolve(engine), vi.fn());
+    if (committedListener === undefined) throw new Error('committed listener was not registered');
+
+    committedListener({ tabId: 7, url: currentUrl, frameId: 0 });
+    await vi.waitFor((): void => {
+      expect(flushRuntime).toHaveBeenCalledTimes(1);
+    });
+
+    expect(rebindTab).toHaveBeenCalledWith(7, currentUrl);
+  });
+});
+
 describe('applyBlockingFactory', () => {
   afterEach((): void => {
     vi.unstubAllGlobals();
@@ -221,10 +606,14 @@ describe('applyBlockingFactory', () => {
       })),
       recordAttempt: vi.fn().mockResolvedValue(undefined),
       noteMuted: vi.fn(),
+      claimMute: vi.fn().mockResolvedValue(true),
+      releaseMuteClaim: vi.fn().mockResolvedValue(undefined),
+      transferMuteClaim: vi.fn().mockResolvedValue(undefined),
       noteMuteRestored: vi.fn(),
       noteReloaded: vi.fn(),
     } as unknown as Engine;
     vi.stubGlobal('chrome', {
+      runtime: { id: 'focus-lock' },
       tabs: {
         query: vi
           .fn()
@@ -244,10 +633,12 @@ describe('applyBlockingFactory', () => {
     await applyBlockingFactory((): Engine => engine)();
 
     expect(reconcileTabs).toHaveBeenCalledTimes(1);
-    const reconciled: ReadonlyMap<number, string> | undefined =
+    const reconciled: ReadonlyMap<number, LiveTabState> | undefined =
       vi.mocked(reconcileTabs).mock.calls[0]?.[0];
     expect(reconciled).toBeDefined();
-    expect([...(reconciled ?? new Map<number, string>())]).toEqual([[7, 'https://example.com']]);
+    expect([...(reconciled ?? new Map<number, LiveTabState>())]).toEqual([
+      [7, { url: 'https://example.com', mutedByExtension: false, documentId: null }],
+    ]);
     expect(flushRuntime).toHaveBeenCalledTimes(1);
   });
 });
