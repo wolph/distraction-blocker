@@ -120,6 +120,10 @@ export class Engine {
     private readonly deviceId: string,
   ) {}
 
+  reportError(error: unknown): void {
+    this.ports.reportError(error);
+  }
+
   snapshot(): SessionSnapshot {
     const now: number = this.ports.now();
     this.catchUp(now);

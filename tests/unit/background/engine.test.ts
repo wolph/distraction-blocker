@@ -112,6 +112,15 @@ const scheduledEntry: ScheduleEntry = {
 };
 
 describe('Engine', () => {
+  it('forwards background errors to the configured port', () => {
+    const h: Harness = makeEngine();
+    const error = new Error('transient tab read failure');
+
+    h.engine.reportError(error);
+
+    expect(h.ports.reportError).toHaveBeenCalledWith(error);
+  });
+
   it('startSession broadcasts, applies blocking, schedules a wake', async () => {
     const h: Harness = makeEngine();
     const ack = await h.engine.startSession(manualConfig);

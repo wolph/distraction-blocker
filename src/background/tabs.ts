@@ -22,16 +22,37 @@ export interface TabAction {
   reload: boolean;
 }
 
+type TabReadResult = { ok: true; tab: chrome.tabs.Tab } | { ok: false; error: unknown };
+
+type DocumentReadResult = { ok: true; documentId: string | null } | { ok: false; error: unknown };
+
+async function readTab(tabId: number): Promise<TabReadResult> {
+  try {
+    return { ok: true, tab: await chrome.tabs.get(tabId) };
+  } catch (error: unknown) {
+    return { ok: false, error };
+  }
+}
+
 async function getTab(tabId: number): Promise<chrome.tabs.Tab | null> {
-  return chrome.tabs.get(tabId).catch((): null => null);
+  const result: TabReadResult = await readTab(tabId);
+  return result.ok ? result.tab : null;
+}
+
+async function readDocumentId(tabId: number): Promise<DocumentReadResult> {
+  if (chrome.webNavigation?.getFrame === undefined) return { ok: true, documentId: null };
+  try {
+    const frame: chrome.webNavigation.GetFrameResultDetails | null =
+      await chrome.webNavigation.getFrame({ tabId, frameId: 0 });
+    return { ok: true, documentId: frame?.documentId ?? null };
+  } catch (error: unknown) {
+    return { ok: false, error };
+  }
 }
 
 async function getDocumentId(tabId: number): Promise<string | null> {
-  if (chrome.webNavigation?.getFrame === undefined) return null;
-  const frame: chrome.webNavigation.GetFrameResultDetails | null = await chrome.webNavigation
-    .getFrame({ tabId, frameId: 0 })
-    .catch((): null => null);
-  return frame?.documentId ?? null;
+  const result: DocumentReadResult = await readDocumentId(tabId);
+  return result.ok ? result.documentId : null;
 }
 
 async function tabStillAt(tabId: number, url: string): Promise<boolean> {
@@ -90,9 +111,9 @@ export async function applyToTab(
     // tabs without the content script (chrome://, the web store) reject, fine
   }
   if (action.command === 'applyBlock') {
-    await applyMute(engine, tabId, url, facts, mutedNow, mutedByExtension);
+    await applyMute(engine, tabId, url, facts, mutedNow, mutedByExtension, documentId);
   } else if (facts.wasMutedByUs) {
-    await restoreMute(engine, tabId, url, facts.priorMuted, mutedNow, mutedByExtension);
+    await restoreMute(engine, tabId, url, facts.priorMuted, mutedNow, mutedByExtension, documentId);
   }
   if (action.reload) {
     if (documentId === null || !(await tabStillAt(tabId, url))) return;
@@ -121,6 +142,131 @@ function muteState(
   };
 }
 
+interface TabIdentity {
+  url: string;
+  documentId: string | null;
+}
+
+interface LiveTabIdentity {
+  tab: chrome.tabs.Tab;
+  identity: TabIdentity;
+}
+
+const MUTE_CORRECTION_LIMIT = 3;
+
+function missingUrlAfterMuteUpdate(tabId: number): Error {
+  return new Error(`Tab ${tabId} has no URL after a mute update`);
+}
+
+function muteCorrectionLimitError(tabId: number): Error {
+  return new Error(`Tab ${tabId} exceeded the mute correction limit`);
+}
+
+async function readLiveTabIdentity(engine: Engine, tabId: number): Promise<LiveTabIdentity | null> {
+  const tabRead: TabReadResult = await readTab(tabId);
+  if (!tabRead.ok) {
+    engine.reportError(tabRead.error);
+    return null;
+  }
+  const url: string | undefined = tabRead.tab.url;
+  if (url === undefined || url === '') {
+    engine.reportError(missingUrlAfterMuteUpdate(tabId));
+    return null;
+  }
+  const documentRead: DocumentReadResult = await readDocumentId(tabId);
+  if (!documentRead.ok) {
+    engine.reportError(documentRead.error);
+    return null;
+  }
+  return {
+    tab: tabRead.tab,
+    identity: { url, documentId: documentRead.documentId },
+  };
+}
+
+function identityChanged(previous: TabIdentity, current: TabIdentity): boolean {
+  if (previous.url !== current.url) return true;
+  return (
+    previous.documentId !== null &&
+    current.documentId !== null &&
+    previous.documentId !== current.documentId
+  );
+}
+
+async function settleMuteUpdate(
+  engine: Engine,
+  tabId: number,
+  sourceIdentity: TabIdentity,
+  priorMuted: boolean,
+  initiallyBlocked: boolean,
+  initialLiveTab: LiveTabIdentity | null = null,
+): Promise<void> {
+  let claimUrl: string = sourceIdentity.url;
+  let updateIdentity: TabIdentity = sourceIdentity;
+  let desiredBlocked: boolean = initiallyBlocked;
+  let desiredMuted: boolean = initiallyBlocked ? true : priorMuted;
+  let correctionsRemaining = MUTE_CORRECTION_LIMIT;
+  let pendingLiveTab: LiveTabIdentity | null = initialLiveTab;
+
+  while (true) {
+    const liveTab: LiveTabIdentity | null =
+      pendingLiveTab ?? (await readLiveTabIdentity(engine, tabId));
+    pendingLiveTab = null;
+    if (liveTab === null) return;
+    const liveIdentity: TabIdentity = liveTab.identity;
+    const liveUrl: string = liveIdentity.url;
+    const liveMute: { muted: boolean; owned: boolean } = muteState(
+      liveTab.tab,
+      desiredMuted,
+      desiredMuted,
+    );
+
+    if (!identityChanged(updateIdentity, liveIdentity)) {
+      if (!desiredBlocked || !liveMute.owned) {
+        await engine.releaseMuteClaim(tabId, claimUrl);
+      }
+      return;
+    }
+
+    const destinationBlocked: boolean = engine.verdictFor(liveUrl).blocked;
+    const destinationMuted: boolean = destinationBlocked ? true : priorMuted;
+    if (liveMute.muted && !liveMute.owned) {
+      await engine.releaseMuteClaim(tabId, claimUrl);
+      return;
+    }
+    if (liveMute.muted === destinationMuted) {
+      if (destinationBlocked && liveMute.owned) {
+        if (claimUrl !== liveUrl) {
+          await engine.transferMuteClaim(tabId, claimUrl, liveUrl);
+        }
+      } else {
+        await engine.releaseMuteClaim(tabId, claimUrl);
+      }
+      return;
+    }
+
+    if (claimUrl !== liveUrl) {
+      await engine.transferMuteClaim(tabId, claimUrl, liveUrl);
+      claimUrl = liveUrl;
+    }
+    if (correctionsRemaining === 0) {
+      engine.reportError(muteCorrectionLimitError(tabId));
+      return;
+    }
+
+    try {
+      await chrome.tabs.update(tabId, { muted: destinationMuted });
+    } catch (error: unknown) {
+      engine.reportError(error);
+      return;
+    }
+    correctionsRemaining -= 1;
+    updateIdentity = liveIdentity;
+    desiredBlocked = destinationBlocked;
+    desiredMuted = destinationMuted;
+  }
+}
+
 async function applyMute(
   engine: Engine,
   tabId: number,
@@ -128,6 +274,7 @@ async function applyMute(
   facts: { wasMutedByUs: boolean; priorMuted: boolean },
   fallbackMuted: boolean,
   fallbackOwned: boolean,
+  documentId: string | null,
 ): Promise<void> {
   let liveTab: chrome.tabs.Tab | null = await getTab(tabId);
   if (liveTab === null || liveTab.url !== url) return;
@@ -157,28 +304,22 @@ async function applyMute(
 
   try {
     await chrome.tabs.update(tabId, { muted: true });
-    const updatedTab: chrome.tabs.Tab | null = await getTab(tabId);
-    const updatedMute: { muted: boolean; owned: boolean } | null =
-      updatedTab === null ? null : muteState(updatedTab, true, true);
-    if (updatedTab === null || updatedTab.url !== url) {
-      if (updatedTab !== null && updatedTab.url !== undefined && updatedMute?.owned === true) {
-        await engine.transferMuteClaim(tabId, url, updatedTab.url);
-      } else {
-        await engine.releaseMuteClaim(tabId, url);
-      }
-    } else if (updatedMute?.owned !== true) {
+  } catch (error: unknown) {
+    engine.reportError(error);
+    const failedTab: LiveTabIdentity | null = await readLiveTabIdentity(engine, tabId);
+    if (failedTab === null) return;
+    const sourceIdentity: TabIdentity = { url, documentId };
+    if (identityChanged(sourceIdentity, failedTab.identity)) {
+      await settleMuteUpdate(engine, tabId, sourceIdentity, facts.priorMuted, true, failedTab);
+      return;
+    }
+    const failedMute: { muted: boolean; owned: boolean } = muteState(failedTab.tab, false, false);
+    if (!failedMute.owned) {
       await engine.releaseMuteClaim(tabId, url);
     }
-  } catch {
-    const failedTab: chrome.tabs.Tab | null = await getTab(tabId);
-    const failedMute: { muted: boolean; owned: boolean } | null =
-      failedTab === null ? null : muteState(failedTab, false, false);
-    if (failedTab !== null && failedTab.url !== undefined && failedMute?.owned === true) {
-      if (failedTab.url !== url) await engine.transferMuteClaim(tabId, url, failedTab.url);
-    } else {
-      await engine.releaseMuteClaim(tabId, url);
-    }
+    return;
   }
+  await settleMuteUpdate(engine, tabId, { url, documentId }, facts.priorMuted, true);
 }
 
 async function restoreMute(
@@ -188,6 +329,7 @@ async function restoreMute(
   priorMuted: boolean,
   fallbackMuted: boolean,
   fallbackOwned: boolean,
+  documentId: string | null,
 ): Promise<void> {
   const liveTab: chrome.tabs.Tab | null = await getTab(tabId);
   if (liveTab === null || liveTab.url !== url) return;
@@ -202,10 +344,17 @@ async function restoreMute(
   }
   try {
     await chrome.tabs.update(tabId, { muted: priorMuted });
-    await engine.releaseMuteClaim(tabId, url);
-  } catch {
-    // the tab may be gone already
+  } catch (error: unknown) {
+    engine.reportError(error);
+    const failedTab: LiveTabIdentity | null = await readLiveTabIdentity(engine, tabId);
+    if (failedTab === null) return;
+    const sourceIdentity: TabIdentity = { url, documentId };
+    if (identityChanged(sourceIdentity, failedTab.identity)) {
+      await settleMuteUpdate(engine, tabId, sourceIdentity, priorMuted, false, failedTab);
+    }
+    return;
   }
+  await settleMuteUpdate(engine, tabId, { url, documentId }, priorMuted, false);
 }
 
 /**

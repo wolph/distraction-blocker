@@ -127,6 +127,10 @@ describe('applyToTab', () => {
   const update = vi.fn().mockResolvedValue(undefined);
   const reload = vi.fn().mockResolvedValue(undefined);
   const get = vi.fn();
+  type MutableTabState = {
+    url: string;
+    mutedInfo: { muted: boolean; extensionId?: string };
+  };
   let liveUrl: string;
 
   beforeEach((): void => {
@@ -160,9 +164,48 @@ describe('applyToTab', () => {
       claimMute: vi.fn().mockResolvedValue(true),
       releaseMuteClaim: vi.fn().mockResolvedValue(undefined),
       transferMuteClaim: vi.fn().mockResolvedValue(undefined),
+      reportError: vi.fn(),
       noteMuteRestored: vi.fn(),
       noteReloaded: vi.fn(),
     } as unknown as Engine;
+  }
+
+  function durableEngineFor(
+    verdictForUrl: (url: string) => Verdict,
+    initialClaim: { url: string; priorMuted: boolean } | null = null,
+  ): Engine {
+    let claim: { url: string; priorMuted: boolean } | null = initialClaim;
+    return {
+      verdictFor: vi.fn(verdictForUrl),
+      snapshot: vi.fn(() => emptySnapshot(0)),
+      tabFacts: vi.fn((_tabId: number, url: string) => ({
+        wasMutedByUs: claim?.url === url,
+        priorMuted: claim?.url === url ? claim.priorMuted : false,
+        wasStopped: false,
+      })),
+      recordAttempt: vi.fn().mockResolvedValue(undefined),
+      claimMute: vi.fn(
+        async (_tabId: number, url: string, priorMuted: boolean): Promise<boolean> => {
+          claim = { url, priorMuted };
+          return true;
+        },
+      ),
+      releaseMuteClaim: vi.fn(async (_tabId: number, url: string): Promise<void> => {
+        if (claim?.url === url) claim = null;
+      }),
+      transferMuteClaim: vi.fn(
+        async (_tabId: number, fromUrl: string, toUrl: string): Promise<void> => {
+          if (claim?.url === fromUrl) claim = { ...claim, url: toUrl };
+        },
+      ),
+      reportError: vi.fn(),
+      noteMuteRestored: vi.fn(),
+      noteReloaded: vi.fn(),
+    } as unknown as Engine;
+  }
+
+  function hasDurableMuteClaim(engine: Engine, url: string): boolean {
+    return engine.tabFacts(7, url, null).wasMutedByUs;
   }
 
   it('records a blocked SPA verdict as an existing-tab attempt', async () => {
@@ -352,6 +395,413 @@ describe('applyToTab', () => {
       'https://facebook.com/feed',
       'https://blocked.example/new',
     );
+  });
+
+  it('restores prior mute after a transient post-mute tab read failure', async () => {
+    let currentVerdict: Verdict = blocked;
+    let muted = false;
+    let rejectPostMuteRead = true;
+    const transientError = new Error('transient tab read failure');
+    const engine: Engine = durableEngineFor((): Verdict => currentVerdict);
+    get.mockImplementation(async (): Promise<MutableTabState> => {
+      if (muted && rejectPostMuteRead) {
+        rejectPostMuteRead = false;
+        throw transientError;
+      }
+      return {
+        url: liveUrl,
+        mutedInfo: {
+          muted,
+          extensionId: muted ? 'focus-lock' : undefined,
+        },
+      };
+    });
+    update.mockImplementation(
+      async (_tabId: number, properties: chrome.tabs.UpdateProperties): Promise<void> => {
+        if (properties.muted !== undefined) muted = properties.muted;
+      },
+    );
+
+    await applyToTab(engine, 7, liveUrl, false);
+    currentVerdict = allowed;
+    await applyToTab(engine, 7, liveUrl, muted, 'existing', true);
+
+    expect(engine.reportError).toHaveBeenCalledOnce();
+    expect(engine.reportError).toHaveBeenCalledWith(transientError);
+    expect(muted).toBe(false);
+    expect(update).toHaveBeenNthCalledWith(2, 7, { muted: false });
+    expect(hasDurableMuteClaim(engine, liveUrl)).toBe(false);
+  });
+
+  it('preserves ownership when the post-mute tab read has no URL', async () => {
+    let muted = false;
+    const engine: Engine = durableEngineFor((): Verdict => blocked);
+    get.mockImplementation(
+      async (): Promise<{ url?: string; mutedInfo: { muted: boolean; extensionId?: string } }> => ({
+        ...(muted ? {} : { url: liveUrl }),
+        mutedInfo: {
+          muted,
+          extensionId: muted ? 'focus-lock' : undefined,
+        },
+      }),
+    );
+    update.mockImplementation(
+      async (_tabId: number, properties: chrome.tabs.UpdateProperties): Promise<void> => {
+        if (properties.muted !== undefined) muted = properties.muted;
+      },
+    );
+
+    await applyToTab(engine, 7, liveUrl, false);
+
+    expect(engine.reportError).toHaveBeenCalledOnce();
+    expect(engine.releaseMuteClaim).not.toHaveBeenCalled();
+  });
+
+  it('restores prior mute when successful muting lands on an allowed URL', async () => {
+    const allowedUrl = 'https://example.com/after-mute';
+    let muted = false;
+    let navigateOnMute = true;
+    const engine: Engine = durableEngineFor(
+      (url: string): Verdict => (url === allowedUrl ? allowed : blocked),
+    );
+    get.mockImplementation(
+      async (): Promise<MutableTabState> => ({
+        url: liveUrl,
+        mutedInfo: {
+          muted,
+          extensionId: muted ? 'focus-lock' : undefined,
+        },
+      }),
+    );
+    update.mockImplementation(
+      async (_tabId: number, properties: chrome.tabs.UpdateProperties): Promise<void> => {
+        if (properties.muted !== undefined) muted = properties.muted;
+        if (properties.muted === true && navigateOnMute) {
+          navigateOnMute = false;
+          liveUrl = allowedUrl;
+        }
+      },
+    );
+
+    await applyToTab(engine, 7, 'https://facebook.com/feed', false);
+
+    expect(engine.verdictFor).toHaveBeenCalledWith(allowedUrl);
+    expect(engine.recordAttempt).toHaveBeenCalledOnce();
+    expect(muted).toBe(false);
+    expect(hasDurableMuteClaim(engine, allowedUrl)).toBe(false);
+  });
+
+  it('reports a rejected corrective mute update without releasing ownership', async () => {
+    const allowedUrl = 'https://example.com/correction-fails';
+    const correctionError = new Error('corrective update failed');
+    let muted = false;
+    const engine: Engine = durableEngineFor(
+      (url: string): Verdict => (url === allowedUrl ? allowed : blocked),
+    );
+    get.mockImplementation(
+      async (): Promise<MutableTabState> => ({
+        url: liveUrl,
+        mutedInfo: {
+          muted,
+          extensionId: muted ? 'focus-lock' : undefined,
+        },
+      }),
+    );
+    update.mockImplementation(
+      async (_tabId: number, properties: chrome.tabs.UpdateProperties): Promise<void> => {
+        if (properties.muted === false) throw correctionError;
+        if (properties.muted !== undefined) muted = properties.muted;
+        liveUrl = allowedUrl;
+      },
+    );
+
+    await applyToTab(engine, 7, 'https://facebook.com/feed', false);
+
+    expect(engine.reportError).toHaveBeenCalledWith(correctionError);
+    expect(engine.releaseMuteClaim).not.toHaveBeenCalled();
+  });
+
+  it('corrects an applied mute when the initial update rejects after allowed navigation', async () => {
+    const sourceUrl = 'https://facebook.com/before-rejected-mute';
+    const allowedUrl = 'https://example.com/after-rejected-mute';
+    const updateError = new Error('initial mute update rejected');
+    liveUrl = sourceUrl;
+    let muted = false;
+    const engine: Engine = durableEngineFor(
+      (url: string): Verdict => (url === allowedUrl ? allowed : blocked),
+    );
+    get.mockImplementation(
+      async (): Promise<MutableTabState> => ({
+        url: liveUrl,
+        mutedInfo: {
+          muted,
+          extensionId: muted ? 'focus-lock' : undefined,
+        },
+      }),
+    );
+    update
+      .mockImplementationOnce(
+        async (_tabId: number, properties: chrome.tabs.UpdateProperties): Promise<void> => {
+          if (properties.muted !== undefined) muted = properties.muted;
+          liveUrl = allowedUrl;
+          throw updateError;
+        },
+      )
+      .mockImplementationOnce(
+        async (_tabId: number, properties: chrome.tabs.UpdateProperties): Promise<void> => {
+          if (properties.muted !== undefined) muted = properties.muted;
+        },
+      );
+
+    await applyToTab(engine, 7, sourceUrl, false);
+
+    expect(engine.reportError).toHaveBeenCalledWith(updateError);
+    expect(engine.verdictFor).toHaveBeenCalledWith(allowedUrl);
+    expect(update).toHaveBeenNthCalledWith(2, 7, { muted: false });
+    expect(muted).toBe(false);
+    expect(hasDurableMuteClaim(engine, allowedUrl)).toBe(false);
+    expect(engine.recordAttempt).toHaveBeenCalledOnce();
+  });
+
+  it('reapplies mute when successful restoration lands on a blocked URL', async () => {
+    const allowedUrl = 'https://example.com/before-restore';
+    const blockedUrl = 'https://facebook.com/after-restore';
+    liveUrl = allowedUrl;
+    let muted = true;
+    let navigateOnRestore = true;
+    const engine: Engine = durableEngineFor(
+      (url: string): Verdict => (url === blockedUrl ? blocked : allowed),
+      { url: allowedUrl, priorMuted: false },
+    );
+    get.mockImplementation(
+      async (): Promise<MutableTabState> => ({
+        url: liveUrl,
+        mutedInfo: {
+          muted,
+          extensionId: muted ? 'focus-lock' : undefined,
+        },
+      }),
+    );
+    update.mockImplementation(
+      async (_tabId: number, properties: chrome.tabs.UpdateProperties): Promise<void> => {
+        if (properties.muted !== undefined) muted = properties.muted;
+        if (properties.muted === false && navigateOnRestore) {
+          navigateOnRestore = false;
+          liveUrl = blockedUrl;
+        }
+      },
+    );
+
+    await applyToTab(engine, 7, allowedUrl, true, 'existing', true);
+
+    expect(engine.verdictFor).toHaveBeenCalledWith(blockedUrl);
+    expect(muted).toBe(true);
+    expect(hasDurableMuteClaim(engine, allowedUrl)).toBe(false);
+    expect(hasDurableMuteClaim(engine, blockedUrl)).toBe(true);
+  });
+
+  it('reapplies mute when the initial restore rejects after blocked navigation', async () => {
+    const allowedUrl = 'https://example.com/before-rejected-restore';
+    const blockedUrl = 'https://facebook.com/after-rejected-restore';
+    const updateError = new Error('initial restore update rejected');
+    liveUrl = allowedUrl;
+    let muted = true;
+    const engine: Engine = durableEngineFor(
+      (url: string): Verdict => (url === blockedUrl ? blocked : allowed),
+      { url: allowedUrl, priorMuted: false },
+    );
+    get.mockImplementation(
+      async (): Promise<MutableTabState> => ({
+        url: liveUrl,
+        mutedInfo: {
+          muted,
+          extensionId: muted ? 'focus-lock' : undefined,
+        },
+      }),
+    );
+    update
+      .mockImplementationOnce(
+        async (_tabId: number, properties: chrome.tabs.UpdateProperties): Promise<void> => {
+          if (properties.muted !== undefined) muted = properties.muted;
+          liveUrl = blockedUrl;
+          throw updateError;
+        },
+      )
+      .mockImplementationOnce(
+        async (_tabId: number, properties: chrome.tabs.UpdateProperties): Promise<void> => {
+          if (properties.muted !== undefined) muted = properties.muted;
+        },
+      );
+
+    await applyToTab(engine, 7, allowedUrl, true, 'existing', true);
+
+    expect(engine.reportError).toHaveBeenCalledWith(updateError);
+    expect(engine.verdictFor).toHaveBeenCalledWith(blockedUrl);
+    expect(update).toHaveBeenNthCalledWith(2, 7, { muted: true });
+    expect(muted).toBe(true);
+    expect(hasDurableMuteClaim(engine, allowedUrl)).toBe(false);
+    expect(hasDurableMuteClaim(engine, blockedUrl)).toBe(true);
+  });
+
+  it('preserves ownership when replacement-document lookup rejects after restore', async () => {
+    const allowedUrl = 'https://example.com/same-url-replacement';
+    const frameError = new Error('transient frame read failure');
+    liveUrl = allowedUrl;
+    let muted = true;
+    let documentId = 'document-one';
+    const engine: Engine = durableEngineFor((): Verdict => allowed, {
+      url: allowedUrl,
+      priorMuted: false,
+    });
+    get.mockImplementation(
+      async (): Promise<MutableTabState> => ({
+        url: liveUrl,
+        mutedInfo: {
+          muted,
+          extensionId: muted ? 'focus-lock' : undefined,
+        },
+      }),
+    );
+    update.mockImplementation(
+      async (_tabId: number, properties: chrome.tabs.UpdateProperties): Promise<void> => {
+        if (properties.muted !== undefined) muted = properties.muted;
+        documentId = 'document-two';
+      },
+    );
+    const getFrame = vi.fn().mockImplementation(async (): Promise<{ documentId: string }> => {
+      if (documentId === 'document-two') throw frameError;
+      return { documentId };
+    });
+    vi.stubGlobal('chrome', {
+      runtime: { id: 'focus-lock' },
+      tabs: { sendMessage, update, reload, get },
+      webNavigation: { getFrame },
+    });
+
+    await applyToTab(engine, 7, allowedUrl, true, 'existing', true, 'document-one');
+
+    expect(engine.reportError).toHaveBeenCalledWith(frameError);
+    expect(engine.releaseMuteClaim).not.toHaveBeenCalled();
+    expect(hasDurableMuteClaim(engine, allowedUrl)).toBe(true);
+  });
+
+  it('settles a second identity change during bounded mute correction', async () => {
+    const firstAllowedUrl = 'https://example.com/first-race';
+    const secondBlockedUrl = 'https://facebook.com/second-race';
+    let muted = false;
+    let updateCount = 0;
+    const engine: Engine = durableEngineFor(
+      (url: string): Verdict => (url === firstAllowedUrl ? allowed : blocked),
+    );
+    get.mockImplementation(
+      async (): Promise<MutableTabState> => ({
+        url: liveUrl,
+        mutedInfo: {
+          muted,
+          extensionId: muted ? 'focus-lock' : undefined,
+        },
+      }),
+    );
+    update.mockImplementation(
+      async (_tabId: number, properties: chrome.tabs.UpdateProperties): Promise<void> => {
+        updateCount += 1;
+        if (properties.muted !== undefined) muted = properties.muted;
+        if (updateCount === 1) liveUrl = firstAllowedUrl;
+        if (updateCount === 2) liveUrl = secondBlockedUrl;
+      },
+    );
+
+    await applyToTab(engine, 7, 'https://facebook.com/feed', false);
+
+    expect(muted).toBe(true);
+    expect(update).toHaveBeenCalledTimes(3);
+    expect(engine.recordAttempt).toHaveBeenCalledOnce();
+    expect(hasDurableMuteClaim(engine, secondBlockedUrl)).toBe(true);
+  });
+
+  it('reports bounded correction exhaustion without releasing ownership', async () => {
+    const racedUrls = [
+      'https://example.com/race-one',
+      'https://facebook.com/race-two',
+      'https://example.com/race-three',
+      'https://facebook.com/race-four',
+    ];
+    let muted = false;
+    let updateCount = 0;
+    const engine: Engine = durableEngineFor(
+      (url: string): Verdict => (url.includes('facebook.com') ? blocked : allowed),
+    );
+    get.mockImplementation(
+      async (): Promise<MutableTabState> => ({
+        url: liveUrl,
+        mutedInfo: {
+          muted,
+          extensionId: muted ? 'focus-lock' : undefined,
+        },
+      }),
+    );
+    update.mockImplementation(
+      async (_tabId: number, properties: chrome.tabs.UpdateProperties): Promise<void> => {
+        if (properties.muted !== undefined) muted = properties.muted;
+        const racedUrl: string | undefined = racedUrls[updateCount];
+        updateCount += 1;
+        if (racedUrl !== undefined) liveUrl = racedUrl;
+      },
+    );
+
+    await applyToTab(engine, 7, 'https://facebook.com/feed', false);
+
+    expect(engine.reportError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Tab 7 exceeded the mute correction limit' }),
+    );
+    expect(engine.releaseMuteClaim).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledTimes(4);
+    expect(hasDurableMuteClaim(engine, 'https://facebook.com/race-four')).toBe(true);
+  });
+
+  it('re-evaluates the same URL when muting completes in a replacement document', async () => {
+    let muted = false;
+    let documentId = 'document-one';
+    const engine: Engine = durableEngineFor((): Verdict => blocked);
+    get.mockImplementation(
+      async (): Promise<MutableTabState> => ({
+        url: liveUrl,
+        mutedInfo: {
+          muted,
+          extensionId: muted ? 'focus-lock' : undefined,
+        },
+      }),
+    );
+    update.mockImplementation(
+      async (_tabId: number, properties: chrome.tabs.UpdateProperties): Promise<void> => {
+        if (properties.muted !== undefined) muted = properties.muted;
+        if (properties.muted === true) documentId = 'document-two';
+      },
+    );
+    vi.stubGlobal('chrome', {
+      runtime: { id: 'focus-lock' },
+      tabs: { sendMessage, update, reload, get },
+      webNavigation: {
+        getFrame: vi.fn(
+          async (): Promise<{ documentId: string }> => ({
+            documentId,
+          }),
+        ),
+      },
+    });
+
+    await applyToTab(
+      engine,
+      7,
+      'https://facebook.com/feed',
+      false,
+      'existing',
+      false,
+      'document-one',
+    );
+
+    expect(engine.verdictFor).toHaveBeenCalledTimes(2);
+    expect(engine.recordAttempt).toHaveBeenCalledOnce();
   });
 
   it('records a committed navigation as fresh and preserves persisted restore state', async () => {
