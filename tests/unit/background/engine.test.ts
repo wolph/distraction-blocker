@@ -121,6 +121,30 @@ describe('Engine', () => {
     expect(h.ports.reportError).toHaveBeenCalledWith(error);
   });
 
+  it('atomically settles mute ownership after a concurrent URL rebind', async () => {
+    const h: Harness = makeEngine();
+    const engine = h.engine as Engine & {
+      settleMuteClaim(tabId: number, finalUrl: string | null): Promise<void>;
+    };
+
+    await h.engine.claimMute(7, 'https://blocked.example/source', false);
+    await h.engine.markStopped(7, 'https://blocked.example/source', 'replacement-document');
+    await h.engine.transferMuteClaim(
+      7,
+      'https://blocked.example/source',
+      'https://blocked.example/intermediate',
+    );
+
+    expect(typeof engine.settleMuteClaim).toBe('function');
+    await engine.settleMuteClaim(7, 'https://blocked.example/final');
+    expect(h.engine.tabFacts(7, 'https://blocked.example/final').wasMutedByUs).toBe(true);
+    await engine.settleMuteClaim(7, null);
+    expect(h.engine.tabFacts(7, 'https://blocked.example/final').wasMutedByUs).toBe(false);
+    expect(
+      h.engine.tabFacts(7, 'https://blocked.example/final', 'replacement-document').wasStopped,
+    ).toBe(true);
+  });
+
   it('startSession broadcasts, applies blocking, schedules a wake', async () => {
     const h: Harness = makeEngine();
     const ack = await h.engine.startSession(manualConfig);

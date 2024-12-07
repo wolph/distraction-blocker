@@ -382,6 +382,19 @@ export class Engine {
     await this.persistRuntime();
   }
 
+  async settleMuteClaim(tabId: number, finalUrl: string | null): Promise<void> {
+    const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
+    if (state === undefined || state.priorMuted === null) return;
+    if (finalUrl === null) {
+      state.muteUrl = null;
+      state.priorMuted = null;
+      this.dropEmptyTabState(tabId, state);
+    } else {
+      state.muteUrl = finalUrl;
+    }
+    await this.persistRuntime();
+  }
+
   /** In-memory bookkeeping mutators for tabs.ts, persisted by flushRuntime. */
   noteMuteRestored(tabId: number, url: string): void {
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];

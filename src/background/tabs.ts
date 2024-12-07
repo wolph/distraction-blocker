@@ -86,6 +86,7 @@ export async function applyToTab(
   mutedByExtension = false,
   documentId: string | null = null,
 ): Promise<void> {
+  cancelMuteContinuation(tabId);
   if (!(await tabStillAt(tabId, url))) return;
   const verdict: Verdict = engine.verdictFor(url);
   if (verdict.blocked) {
@@ -154,6 +155,25 @@ interface LiveTabIdentity {
 
 const MUTE_CORRECTION_LIMIT = 3;
 
+interface MuteContinuation {
+  cancelled: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+const muteContinuations: Map<number, MuteContinuation> = new Map();
+
+function cancelMuteContinuation(tabId: number): void {
+  const continuation: MuteContinuation | undefined = muteContinuations.get(tabId);
+  if (continuation === undefined) return;
+  continuation.cancelled = true;
+  if (continuation.timer !== null) clearTimeout(continuation.timer);
+  muteContinuations.delete(tabId);
+}
+
+function muteContinuationCancelled(continuation: MuteContinuation | null): boolean {
+  return continuation?.cancelled === true;
+}
+
 function missingUrlAfterMuteUpdate(tabId: number): Error {
   return new Error(`Tab ${tabId} has no URL after a mute update`);
 }
@@ -200,71 +220,95 @@ async function settleMuteUpdate(
   priorMuted: boolean,
   initiallyBlocked: boolean,
   initialLiveTab: LiveTabIdentity | null = null,
+  continuation: MuteContinuation | null = null,
 ): Promise<void> {
-  let claimUrl: string = sourceIdentity.url;
   let updateIdentity: TabIdentity = sourceIdentity;
   let desiredBlocked: boolean = initiallyBlocked;
   let desiredMuted: boolean = initiallyBlocked ? true : priorMuted;
   let correctionsRemaining = MUTE_CORRECTION_LIMIT;
   let pendingLiveTab: LiveTabIdentity | null = initialLiveTab;
+  let lastUpdateRejected = false;
 
   while (true) {
+    if (muteContinuationCancelled(continuation)) return;
     const liveTab: LiveTabIdentity | null =
       pendingLiveTab ?? (await readLiveTabIdentity(engine, tabId));
     pendingLiveTab = null;
-    if (liveTab === null) return;
+    if (liveTab === null || muteContinuationCancelled(continuation)) return;
     const liveIdentity: TabIdentity = liveTab.identity;
     const liveUrl: string = liveIdentity.url;
+    const changedIdentity: boolean = identityChanged(updateIdentity, liveIdentity);
+    if (changedIdentity) {
+      desiredBlocked = engine.verdictFor(liveUrl).blocked;
+      desiredMuted = desiredBlocked ? true : priorMuted;
+    }
     const liveMute: { muted: boolean; owned: boolean } = muteState(
       liveTab.tab,
       desiredMuted,
       desiredMuted,
     );
-
-    if (!identityChanged(updateIdentity, liveIdentity)) {
-      if (!desiredBlocked || !liveMute.owned) {
-        await engine.releaseMuteClaim(tabId, claimUrl);
-      }
-      return;
-    }
-
-    const destinationBlocked: boolean = engine.verdictFor(liveUrl).blocked;
-    const destinationMuted: boolean = destinationBlocked ? true : priorMuted;
     if (liveMute.muted && !liveMute.owned) {
-      await engine.releaseMuteClaim(tabId, claimUrl);
+      await engine.settleMuteClaim(tabId, null);
       return;
     }
-    if (liveMute.muted === destinationMuted) {
-      if (destinationBlocked && liveMute.owned) {
-        if (claimUrl !== liveUrl) {
-          await engine.transferMuteClaim(tabId, claimUrl, liveUrl);
-        }
+    if (lastUpdateRejected && !changedIdentity && liveMute.muted !== desiredMuted) return;
+    lastUpdateRejected = false;
+    if (liveMute.muted === desiredMuted) {
+      if (desiredBlocked && liveMute.owned) {
+        await engine.settleMuteClaim(tabId, liveUrl);
       } else {
-        await engine.releaseMuteClaim(tabId, claimUrl);
+        await engine.settleMuteClaim(tabId, null);
       }
       return;
     }
 
-    if (claimUrl !== liveUrl) {
-      await engine.transferMuteClaim(tabId, claimUrl, liveUrl);
-      claimUrl = liveUrl;
-    }
     if (correctionsRemaining === 0) {
       engine.reportError(muteCorrectionLimitError(tabId));
+      scheduleMuteContinuation(engine, tabId, liveIdentity, priorMuted, desiredBlocked);
       return;
     }
 
+    if (muteContinuationCancelled(continuation)) return;
     try {
-      await chrome.tabs.update(tabId, { muted: destinationMuted });
+      await chrome.tabs.update(tabId, { muted: desiredMuted });
     } catch (error: unknown) {
       engine.reportError(error);
-      return;
+      lastUpdateRejected = true;
     }
     correctionsRemaining -= 1;
     updateIdentity = liveIdentity;
-    desiredBlocked = destinationBlocked;
-    desiredMuted = destinationMuted;
   }
+}
+
+function scheduleMuteContinuation(
+  engine: Engine,
+  tabId: number,
+  sourceIdentity: TabIdentity,
+  priorMuted: boolean,
+  initiallyBlocked: boolean,
+): void {
+  cancelMuteContinuation(tabId);
+  const continuation: MuteContinuation = { cancelled: false, timer: null };
+  continuation.timer = setTimeout((): void => {
+    continuation.timer = null;
+    if (continuation.cancelled || muteContinuations.get(tabId) !== continuation) return;
+    void settleMuteUpdate(
+      engine,
+      tabId,
+      sourceIdentity,
+      priorMuted,
+      initiallyBlocked,
+      null,
+      continuation,
+    )
+      .catch((error: unknown): void => {
+        engine.reportError(error);
+      })
+      .finally((): void => {
+        if (muteContinuations.get(tabId) === continuation) muteContinuations.delete(tabId);
+      });
+  }, 0);
+  muteContinuations.set(tabId, continuation);
 }
 
 async function applyMute(
