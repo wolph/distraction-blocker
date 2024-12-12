@@ -22,6 +22,9 @@ const mocks = vi.hoisted(
   (): {
     engineArguments: unknown[] | null;
     alarmListener: AlarmListener | null;
+    bootGate: Promise<void> | null;
+    dropTabCalls: number[];
+    dropTabSignal: (() => void) | null;
     removedListener: RemovedListener | null;
     runtimeListener: RuntimeListener | null;
     savedJournals: SyncJournal[];
@@ -29,9 +32,14 @@ const mocks = vi.hoisted(
     tickCalls: number;
     tickError: Error | null;
     dropTabError: Error | null;
+    invalidationError: Error | null;
+    invalidatedTabIds: number[];
   } => ({
     engineArguments: null,
     alarmListener: null,
+    bootGate: null,
+    dropTabCalls: [],
+    dropTabSignal: null,
     removedListener: null,
     runtimeListener: null,
     savedJournals: [],
@@ -43,6 +51,8 @@ const mocks = vi.hoisted(
     tickCalls: 0,
     tickError: null,
     dropTabError: null,
+    invalidationError: null,
+    invalidatedTabIds: [],
   }),
 );
 
@@ -62,7 +72,9 @@ vi.mock('../../../src/background/engine', () => ({
       if (mocks.tickCalls > 1 && mocks.tickError !== null) throw mocks.tickError;
     }
 
-    async dropTab(_tabId: number): Promise<void> {
+    async dropTab(tabId: number): Promise<void> {
+      mocks.dropTabCalls.push(tabId);
+      mocks.dropTabSignal?.();
       if (mocks.dropTabError !== null) throw mocks.dropTabError;
     }
   },
@@ -90,6 +102,7 @@ vi.mock('../../../src/background/stores', () => ({
       return journal === undefined ? mocks.scenario.syncedStreak : mocks.scenario.journaledStreak;
     }),
   loadSyncJournal: vi.fn().mockImplementation(async (): Promise<SyncJournal> => {
+    if (mocks.bootGate !== null) await mocks.bootGate;
     return structuredClone(mocks.scenario.journal);
   }),
   saveRuntime: vi.fn(),
@@ -99,6 +112,11 @@ vi.mock('../../../src/background/stores', () => ({
 }));
 vi.mock('../../../src/background/tabs', () => ({
   applyBlockingFactory: vi.fn((): (() => void) => vi.fn()),
+  invalidateRemovedTab: vi.fn((tabId: number): Promise<void> => {
+    mocks.invalidatedTabIds.push(tabId);
+    if (mocks.invalidationError !== null) return Promise.reject(mocks.invalidationError);
+    return Promise.resolve();
+  }),
   injectIntoExistingTabs: vi.fn(),
   registerTabListeners: vi.fn(),
 }));
@@ -179,16 +197,22 @@ beforeEach((): void => {
   vi.setSystemTime(new Date(2026, 7, 29, 12, 0));
   mocks.engineArguments = null;
   mocks.alarmListener = null;
+  mocks.bootGate = null;
+  mocks.dropTabCalls = [];
+  mocks.dropTabSignal = null;
   mocks.removedListener = null;
   mocks.runtimeListener = null;
   mocks.savedJournals = [];
   mocks.tickCalls = 0;
   mocks.tickError = null;
   mocks.dropTabError = null;
+  mocks.invalidationError = null;
+  mocks.invalidatedTabIds = [];
   stubChrome();
 });
 
 afterEach((): void => {
+  vi.restoreAllMocks();
   vi.clearAllTimers();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -273,6 +297,50 @@ describe('background boot streak convergence', () => {
 });
 
 describe('background detached listener errors', () => {
+  it('invalidates a removed tab synchronously before boot finishes', async () => {
+    let releaseBoot: () => void = (): void => {
+      throw new Error('boot resolver was not initialized');
+    };
+    mocks.bootGate = new Promise((resolve: () => void): void => {
+      releaseBoot = resolve;
+    });
+    const dropped: Promise<void> = new Promise((resolve: () => void): void => {
+      mocks.dropTabSignal = resolve;
+    });
+    main();
+    if (mocks.removedListener === null) throw new Error('tab removal listener was not registered');
+
+    mocks.removedListener(7);
+
+    expect(mocks.invalidatedTabIds).toEqual([7]);
+    expect(mocks.dropTabCalls).toEqual([]);
+
+    releaseBoot();
+    await dropped;
+
+    expect(mocks.dropTabCalls).toEqual([7]);
+  });
+
+  it('reports each rejected tab-removal branch once', async () => {
+    const invalidationError = new Error('tab cleanup unavailable');
+    const dropTabError = new Error('runtime storage unavailable');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+    await finishBoot();
+    mocks.invalidationError = invalidationError;
+    mocks.dropTabError = dropTabError;
+    if (mocks.removedListener === null) throw new Error('tab removal listener was not registered');
+
+    mocks.removedListener(7);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(consoleError).toHaveBeenCalledTimes(2);
+    expect(consoleError).toHaveBeenCalledWith('focus-lock background error', invalidationError);
+    expect(consoleError).toHaveBeenCalledWith('focus-lock background error', dropTabError);
+  });
+
   it('reports alarm and tab-removal rejections', async () => {
     const error = new Error('local storage unavailable');
     let reportCount: number = 0;

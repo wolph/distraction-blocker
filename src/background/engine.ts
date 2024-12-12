@@ -93,6 +93,14 @@ export interface EngineStatsOverlay {
   pendingEvents: EventRecord[];
 }
 
+interface AttemptDurability {
+  revision: number;
+  durable: boolean;
+  promise: Promise<void>;
+  resolve(): void;
+  reject(error: unknown): void;
+}
+
 const NO_SESSION_VERDICT: Verdict = { blocked: false, reason: 'no-session', matchedPattern: null };
 
 /**
@@ -107,6 +115,10 @@ export class Engine {
   private dirty = false;
   private needsBlocking = false;
   private commitQueue: Promise<void> = Promise.resolve();
+  private blockingMutationPersistQueue: Promise<void> = Promise.resolve();
+  private attemptRevision = 0;
+  private attemptPersistInFlight: Map<string, Set<AttemptDurability>> = new Map();
+  private failedAttemptPersistence: Set<string> = new Set();
   private runtimePersistQueue: Promise<void> = Promise.resolve();
   private applyingBlocking = false;
 
@@ -317,12 +329,66 @@ export class Engine {
     const now: number = this.ports.now();
     const key = `${tabId}:${url}`;
     const last: number | undefined = this.runtime.attemptDebounce[key];
-    if (last !== undefined && now - last < ATTEMPT_DEBOUNCE_MS) return;
-    this.runtime.attemptDebounce[key] = now;
-    this.recordEvent({ t: 'attempt', at: now, url, host: hostOf(url), tabId, kind });
-    this.dirty = true;
-    if (this.applyingBlocking) return;
-    await this.commit(now);
+    const persistenceFailed: boolean = this.failedAttemptPersistence.delete(key);
+    const retryFailedPersistence: boolean =
+      persistenceFailed && last !== undefined && now - last < ATTEMPT_DEBOUNCE_MS;
+    if (!retryFailedPersistence && last !== undefined && now - last < ATTEMPT_DEBOUNCE_MS) {
+      const inFlight: Set<AttemptDurability> | undefined = this.attemptPersistInFlight.get(key);
+      let latest: AttemptDurability | undefined;
+      if (inFlight !== undefined) {
+        for (const durability of inFlight) latest = durability;
+      }
+      if (latest !== undefined) await latest.promise;
+      return;
+    }
+    const attemptMarker: number = retryFailedPersistence ? (last ?? now) : now;
+    if (!retryFailedPersistence) {
+      this.runtime.attemptDebounce[key] = attemptMarker;
+      this.recordEvent({ t: 'attempt', at: now, url, host: hostOf(url), tabId, kind });
+      this.dirty = true;
+    }
+    this.attemptRevision += 1;
+    const revision: number = this.attemptRevision;
+    let resolveDurability: () => void = (): void => undefined;
+    let rejectDurability: (error: unknown) => void = (): void => undefined;
+    const durabilityPromise: Promise<void> = new Promise(
+      (resolve: () => void, reject: (error: unknown) => void): void => {
+        resolveDurability = resolve;
+        rejectDurability = reject;
+      },
+    );
+    const durability: AttemptDurability = {
+      revision,
+      durable: false,
+      promise: durabilityPromise,
+      resolve: resolveDurability,
+      reject: rejectDurability,
+    };
+    const inFlight: Set<AttemptDurability> =
+      this.attemptPersistInFlight.get(key) ?? new Set<AttemptDurability>();
+    inFlight.add(durability);
+    this.attemptPersistInFlight.set(key, inFlight);
+    const persistence: Promise<void> = this.applyingBlocking
+      ? this.persistBlockingMutation(revision)
+      : this.commit(now);
+    void persistence.catch((error: unknown): void => {
+      if (durability.durable) {
+        this.ports.reportError(error);
+      } else {
+        if (this.runtime.attemptDebounce[key] === attemptMarker) {
+          this.failedAttemptPersistence.add(key);
+        }
+        durability.reject(error);
+      }
+    });
+    try {
+      await durability.promise;
+    } finally {
+      inFlight.delete(durability);
+      if (inFlight.size === 0 && this.attemptPersistInFlight.get(key) === inFlight) {
+        this.attemptPersistInFlight.delete(key);
+      }
+    }
   }
 
   async markStopped(tabId: number, _url: string, documentId?: string): Promise<void> {
@@ -411,11 +477,15 @@ export class Engine {
     this.dropEmptyTabState(tabId, state);
   }
 
-  reconcileTabs(liveTabs: ReadonlyMap<number, LiveTabState>): void {
+  reconcileTabs(
+    liveTabs: ReadonlyMap<number, LiveTabState>,
+    protectedTabIds: ReadonlySet<number> = new Set(),
+  ): void {
     for (const [tabIdText, state] of Object.entries(this.runtime.tabStates)) {
       const tabId: number = Number(tabIdText);
       const live: LiveTabState | undefined = liveTabs.get(tabId);
       if (live === undefined) {
+        if (protectedTabIds.has(tabId)) continue;
         delete this.runtime.tabStates[tabId];
         continue;
       }
@@ -450,7 +520,10 @@ export class Engine {
   async dropTab(tabId: number): Promise<void> {
     delete this.runtime.tabStates[tabId];
     for (const key of Object.keys(this.runtime.attemptDebounce)) {
-      if (key.startsWith(`${tabId}:`)) delete this.runtime.attemptDebounce[key];
+      if (key.startsWith(`${tabId}:`)) {
+        delete this.runtime.attemptDebounce[key];
+        this.failedAttemptPersistence.delete(key);
+      }
     }
     await this.persistRuntime();
   }
@@ -628,6 +701,7 @@ export class Engine {
     this.runtime.date = today;
     this.runtime.todayAgg = plan.newAgg;
     this.runtime.attemptDebounce = {};
+    this.failedAttemptPersistence.clear();
     this.runtime.lastPruneDate = null;
     this.rebaseStreakBackward(today);
     this.dirty = true;
@@ -844,7 +918,34 @@ export class Engine {
     void this.commit(now).catch((error: unknown): void => this.ports.reportError(error));
   }
 
+  private persistBlockingMutation(attemptRevision: number): Promise<void> {
+    const queued: Promise<void> = this.blockingMutationPersistQueue.then(
+      async (): Promise<void> => {
+        await this.flushEvents();
+        await this.ports.persistSyncJournal();
+        await this.persistRuntime();
+        this.resolveAttemptDurability(attemptRevision);
+      },
+    );
+    this.blockingMutationPersistQueue = queued.catch((): void => {
+      // Keep later in-sweep persistence usable. The caller still receives the rejection.
+    });
+    return queued;
+  }
+
+  private resolveAttemptDurability(revision: number): void {
+    for (const inFlight of this.attemptPersistInFlight.values()) {
+      for (const durability of inFlight) {
+        if (durability.revision <= revision) {
+          durability.durable = true;
+          durability.resolve();
+        }
+      }
+    }
+  }
+
   private async performCommit(now: number): Promise<void> {
+    const attemptRevision: number = this.attemptRevision;
     await this.flushEvents();
     await this.ports.persistSyncJournal();
     this.dirty = false;
@@ -852,6 +953,7 @@ export class Engine {
     this.needsBlocking = false;
     const snap: SessionSnapshot = this.buildSnapshot(now);
     await this.persistRuntime();
+    this.resolveAttemptDurability(attemptRevision);
     this.ports.broadcast(snap);
     this.ports.updateIcon(snap);
     this.ports.scheduleWake(this.runtime.session?.phaseEndsAt ?? null);
@@ -864,11 +966,13 @@ export class Engine {
       }
     }
     if (this.dirty) {
+      const updatedAttemptRevision: number = this.attemptRevision;
       await this.flushEvents();
       await this.ports.persistSyncJournal();
       this.dirty = false;
       const updated: SessionSnapshot = this.buildSnapshot(this.ports.now());
       await this.persistRuntime();
+      this.resolveAttemptDurability(updatedAttemptRevision);
       this.ports.broadcast(updated);
       this.ports.updateIcon(updated);
     }
@@ -895,7 +999,10 @@ export class Engine {
 
   private pruneDebounce(now: number): void {
     for (const [key, at] of Object.entries(this.runtime.attemptDebounce)) {
-      if (now - at >= ATTEMPT_DEBOUNCE_MS) delete this.runtime.attemptDebounce[key];
+      if (now - at >= ATTEMPT_DEBOUNCE_MS) {
+        delete this.runtime.attemptDebounce[key];
+        this.failedAttemptPersistence.delete(key);
+      }
     }
   }
 

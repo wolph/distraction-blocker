@@ -193,9 +193,13 @@ describe('Engine', () => {
 
   it('persists attempts discovered by the blocking sweep without commit deadlock', async () => {
     const h: Harness = makeEngine();
-    h.ports.applyBlocking.mockImplementation(
-      (): Promise<void> => h.engine.recordAttempt('https://facebook.com/feed', 7, 'existing'),
-    );
+    let attemptWasDurableBeforeSweepContinued = false;
+    h.ports.applyBlocking.mockImplementation(async (): Promise<void> => {
+      await h.engine.recordAttempt('https://facebook.com/feed', 7, 'existing');
+      attemptWasDurableBeforeSweepContinued = h
+        .loggedEvents()
+        .some((event: EventRecord): boolean => event.t === 'attempt');
+    });
     const timeout: Promise<never> = new Promise((_, reject: (reason: Error) => void): void => {
       setTimeout((): void => reject(new Error('commit deadlock')), 100);
     });
@@ -206,6 +210,7 @@ describe('Engine', () => {
     expect(h.loggedEvents().some((event: EventRecord): boolean => event.t === 'attempt')).toBe(
       true,
     );
+    expect(attemptWasDurableBeforeSweepContinued).toBe(true);
   });
 
   it('awaits catch-up persistence before answering an async snapshot request', async () => {
@@ -647,6 +652,165 @@ describe('Engine', () => {
       .filter((e: EventRecord): boolean => e.t === 'attempt');
     expect(attempts).toHaveLength(1);
     expect(h.engine.snapshot().attemptsToday).toBe(1);
+  });
+
+  it('keeps a debounced caller behind the matching in-flight attempt persistence', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession(manualConfig);
+    let releasePersistence: () => void = (): void => {
+      throw new Error('attempt persistence did not start');
+    };
+    let signalPersistence: () => void = (): void => {
+      throw new Error('attempt persistence signal was not initialized');
+    };
+    const persistenceStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalPersistence = resolve;
+    });
+    h.ports.appendEvents.mockImplementationOnce(
+      (): Promise<void> =>
+        new Promise((resolve: () => void): void => {
+          releasePersistence = resolve;
+          signalPersistence();
+        }),
+    );
+
+    const first: Promise<void> = h.engine.recordAttempt(
+      'https://facebook.com/feed',
+      7,
+      'navigation',
+    );
+    await persistenceStarted;
+    let secondResolved = false;
+    const second: Promise<void> = h.engine
+      .recordAttempt('https://facebook.com/feed', 7, 'existing')
+      .then((): void => {
+        secondResolved = true;
+      });
+    await Promise.resolve();
+
+    expect(secondResolved).toBe(false);
+    releasePersistence();
+    await Promise.all([first, second]);
+  });
+
+  it('does not strand overlapping same-key persistence after the debounce window', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession(manualConfig);
+    let releasePersistence: () => void = (): void => {
+      throw new Error('attempt persistence did not start');
+    };
+    let signalPersistence: () => void = (): void => {
+      throw new Error('attempt persistence signal was not initialized');
+    };
+    const persistenceStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalPersistence = resolve;
+    });
+    h.ports.appendEvents.mockImplementationOnce(
+      (): Promise<void> =>
+        new Promise((resolve: () => void): void => {
+          releasePersistence = resolve;
+          signalPersistence();
+        }),
+    );
+
+    const first: Promise<void> = h.engine.recordAttempt(
+      'https://facebook.com/feed',
+      7,
+      'navigation',
+    );
+    await persistenceStarted;
+    h.setNow(T0 + 31_000);
+    const second: Promise<void> = h.engine.recordAttempt(
+      'https://facebook.com/feed',
+      7,
+      'existing',
+    );
+    releasePersistence();
+    const outcome: 'completed' | 'stranded' = await Promise.race([
+      Promise.all([first, second]).then((): 'completed' => 'completed'),
+      new Promise((resolve: (value: 'stranded') => void): void => {
+        setTimeout((): void => resolve('stranded'), 50);
+      }),
+    ]);
+
+    expect(outcome).toBe('completed');
+  });
+
+  it('reports a commit rejection once after attempt persistence becomes durable', async () => {
+    const h: Harness = makeEngine();
+    const applyError = new Error('blocking sweep failed after persistence');
+    let rejectApply: (error: unknown) => void = (): void => {
+      throw new Error('apply rejection was not initialized');
+    };
+    let signalApplyStarted: () => void = (): void => {
+      throw new Error('apply start signal was not initialized');
+    };
+    const applyStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalApplyStarted = resolve;
+    });
+    h.ports.applyBlocking.mockImplementationOnce(
+      (): Promise<void> =>
+        new Promise((_resolve: () => void, reject: (error: unknown) => void): void => {
+          rejectApply = reject;
+          signalApplyStarted();
+        }),
+    );
+    Reflect.set(h.engine, 'needsBlocking', true);
+
+    const attempt: Promise<void> = h.engine.recordAttempt(
+      'https://facebook.com/feed',
+      7,
+      'navigation',
+    );
+    await applyStarted;
+    await expect(attempt).resolves.toBeUndefined();
+
+    rejectApply(applyError);
+    await vi.waitFor((): void => {
+      expect(h.ports.reportError).toHaveBeenCalledWith(applyError);
+    });
+    expect(h.ports.reportError).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries failed same-key attempt persistence inside the debounce window', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession(manualConfig);
+    h.ports.appendEvents.mockClear();
+    h.ports.appendEvents.mockRejectedValueOnce(new Error('event storage unavailable'));
+
+    await expect(
+      h.engine.recordAttempt('https://facebook.com/feed', 7, 'navigation'),
+    ).rejects.toThrow('event storage unavailable');
+    await expect(
+      h.engine.recordAttempt('https://facebook.com/feed', 7, 'existing'),
+    ).resolves.toBeUndefined();
+
+    expect(h.ports.appendEvents).toHaveBeenCalledTimes(2);
+    const retriedEvents: EventRecord[] = h.ports.appendEvents.mock.calls[1]?.[0] ?? [];
+    expect(
+      retriedEvents.filter((event: EventRecord): boolean => event.t === 'attempt'),
+    ).toHaveLength(1);
+    expect(h.engine.snapshot().attemptsToday).toBe(1);
+  });
+
+  it('counts a new same-key attempt after failed persistence debounce expires', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession(manualConfig);
+    h.ports.appendEvents.mockClear();
+    h.ports.appendEvents.mockRejectedValueOnce(new Error('event storage unavailable'));
+
+    await expect(
+      h.engine.recordAttempt('https://facebook.com/feed', 7, 'navigation'),
+    ).rejects.toThrow('event storage unavailable');
+    h.setNow(T0 + 31_000);
+    await h.engine.recordAttempt('https://facebook.com/feed', 7, 'existing');
+
+    expect(h.ports.appendEvents).toHaveBeenCalledTimes(2);
+    const retriedEvents: EventRecord[] = h.ports.appendEvents.mock.calls[1]?.[0] ?? [];
+    expect(
+      retriedEvents.filter((event: EventRecord): boolean => event.t === 'attempt'),
+    ).toHaveLength(2);
+    expect(h.engine.snapshot().attemptsToday).toBe(2);
   });
 
   it('prunes absent tab records while preserving live restore state', async () => {

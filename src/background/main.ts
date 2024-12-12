@@ -23,7 +23,12 @@ import {
 } from './stores';
 import { chooseNewerStreak, rebaseStreakForDate, streaksEqual } from './streak-sync';
 import { SyncEchoes, type SyncJournal, SyncWriter } from './sync-writer';
-import { applyBlockingFactory, injectIntoExistingTabs, registerTabListeners } from './tabs';
+import {
+  applyBlockingFactory,
+  injectIntoExistingTabs,
+  invalidateRemovedTab,
+  registerTabListeners,
+} from './tabs';
 
 const SYNC_FLUSH_MS: number = 10_000;
 const TICK_ALARM: string = 'tick';
@@ -207,9 +212,13 @@ export function main(): void {
   });
 
   chrome.tabs.onRemoved.addListener((tabId: number): void => {
-    void ready
-      .then((engine: Engine): Promise<void> => engine.dropTab(tabId))
-      .catch(reportBackgroundError);
+    const invalidationCleanup: Promise<void> = invalidateRemovedTab(tabId);
+    void Promise.all([
+      invalidationCleanup.catch(reportBackgroundError),
+      ready
+        .then((engine: Engine): Promise<void> => engine.dropTab(tabId))
+        .catch(reportBackgroundError),
+    ]);
   });
 
   // Reloads of an already-installed extension skip onInstalled, and
