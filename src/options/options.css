@@ -74,6 +74,10 @@ body {
   cursor: pointer;
 }
 
+.stats-link {
+  text-decoration: none;
+}
+
 .nav-item:hover {
   background: var(--accent-soft);
 }
@@ -300,8 +304,22 @@ table.rules th {
 }
 
 .entry-days {
+  border: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.entry-day-pill {
+  border: 1px solid var(--border);
+  border-radius: 999px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
+  padding: 1px 7px;
+  white-space: nowrap;
 }
 
 .entry-intention {

@@ -19,11 +19,14 @@
     "vite": "5.4.6",
     "vitest": "2.1.1"
   },
+  "engines": {
+    "node": ">=22"
+  },
   "license": "UNLICENSED",
   "name": "distraction-blocker",
   "private": true,
   "scripts": {
-    "build": "vite build",
+    "build": "node scripts/gen-icons.mjs && vite build",
     "check": "biome check . && tsc --noEmit && vitest run && vite build",
     "dev": "vite",
     "e2e": "npm run build && playwright test",

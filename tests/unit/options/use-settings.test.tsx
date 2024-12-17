@@ -170,11 +170,7 @@ describe('App frame', () => {
     fake.respond('getSnapshot', hardSnapshot(endsAt));
     const { getByText } = render(<App />);
     await waitFor((): void => {
-      expect(
-        getByText(
-          'Hard session until 16:45. Changes that weaken blocking will be rejected until then.',
-        ),
-      ).toBeTruthy();
+      expect(getByText('Changes that weaken blocking will be rejected until 16:45.')).toBeTruthy();
     });
   });
 
@@ -183,8 +179,7 @@ describe('App frame', () => {
     await waitFor((): void => {
       expect(getByText('Lists')).toBeTruthy();
     });
-    const bannerText: string =
-      'Hard session until 09:30. Changes that weaken blocking will be rejected until then.';
+    const bannerText: string = 'Changes that weaken blocking will be rejected until 09:30.';
     expect(queryByText(bannerText)).toBeNull();
     const endsAt: number = new Date(2026, 7, 29, 9, 30).getTime();
     await act(async (): Promise<void> => {

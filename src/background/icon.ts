@@ -12,6 +12,8 @@ export interface IconSpec {
   color: string;
   open: boolean;
   progress: number;
+  glyph: 'lock' | 'cup';
+  ring: boolean;
 }
 
 /** Pure description of the icon: state color, shackle position, phase progress. */
@@ -22,12 +24,18 @@ export function iconSpec(snapshot: SessionSnapshot): IconSpec {
     snapshot.phaseStartedAt === null ||
     snapshot.phaseEndsAt === null
   ) {
-    return { color, open: snapshot.phase === 'idle', progress: 0 };
+    return { color, open: snapshot.phase === 'idle', progress: 0, glyph: 'lock', ring: false };
   }
   const span: number = snapshot.phaseEndsAt - snapshot.phaseStartedAt;
   const progress: number =
     span <= 0 ? 0 : Math.min(1, Math.max(0, (snapshot.at - snapshot.phaseStartedAt) / span));
-  return { color, open: false, progress };
+  return {
+    color,
+    open: false,
+    progress,
+    glyph: snapshot.phase === 'break' ? 'cup' : 'lock',
+    ring: true,
+  };
 }
 
 export function badgeFor(
@@ -41,7 +49,8 @@ export function badgeFor(
   return { text: formatBadge(snapshot.phaseEndsAt - snapshot.at), color };
 }
 
-function drawPadlock(size: number, spec: IconSpec): ImageData {
+export function drawIcon(size: number, spec: IconSpec): ImageData {
+  if (spec.glyph === 'cup') return drawCup(size, spec);
   const canvas: OffscreenCanvas = new OffscreenCanvas(size, size);
   // biome-ignore lint/style/noNonNullAssertion: 2d context always exists on a fresh OffscreenCanvas
   const ctx: OffscreenCanvasRenderingContext2D = canvas.getContext('2d')!;
@@ -81,13 +90,44 @@ function drawPadlock(size: number, spec: IconSpec): ImageData {
   return ctx.getImageData(0, 0, size, size);
 }
 
+function drawCup(size: number, spec: IconSpec): ImageData {
+  const canvas: OffscreenCanvas = new OffscreenCanvas(size, size);
+  // biome-ignore lint/style/noNonNullAssertion: 2d context always exists on fresh OffscreenCanvas
+  const ctx: OffscreenCanvasRenderingContext2D = canvas.getContext('2d')!;
+  const u: number = size / 16;
+  ctx.clearRect(0, 0, size, size);
+  ctx.strokeStyle = spec.color;
+  ctx.fillStyle = spec.color;
+  ctx.lineWidth = 1.6 * u;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.roundRect(3.2 * u, 7 * u, 7 * u, 5.3 * u, 1.1 * u);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(10.1 * u, 9.2 * u, 2 * u, -Math.PI / 2, Math.PI / 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(5.6 * u, 5.9 * u, 1.1 * u, -0.2 * Math.PI, 0.7 * Math.PI);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(8.5 * u, 5.3 * u, 1.1 * u, -0.2 * Math.PI, 0.7 * Math.PI);
+  ctx.stroke();
+  if (spec.ring && spec.progress > 0) {
+    ctx.lineWidth = Math.max(1, 0.9 * u);
+    ctx.beginPath();
+    ctx.arc(8 * u, 8 * u, 7.5 * u, -Math.PI / 2, -Math.PI / 2 + spec.progress * 2 * Math.PI);
+    ctx.stroke();
+  }
+  return ctx.getImageData(0, 0, size, size);
+}
+
 /** Renders and applies icon plus badge. Never throws: an icon render must not kill a tick. */
 export function updateIcon(snapshot: SessionSnapshot, badgeCountdown: boolean): void {
   try {
     const spec: IconSpec = iconSpec(snapshot);
     const imageData: Record<number, ImageData> = {
-      16: drawPadlock(16, spec),
-      32: drawPadlock(32, spec),
+      16: drawIcon(16, spec),
+      32: drawIcon(32, spec),
     };
     void chrome.action.setIcon({ imageData });
     const badge: { text: string; color: string } = badgeFor(snapshot, badgeCountdown);

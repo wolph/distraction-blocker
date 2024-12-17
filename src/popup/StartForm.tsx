@@ -38,17 +38,27 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
   const [strictness, setStrictness] = useState<Strictness>(settings.defaultStrictness);
   const [cyclingOn, setCyclingOn] = useState<boolean>(settings.cyclingOnByDefault);
   const [localLists, setLocalLists] = useState<ListsConfig>(lists);
+  const [pendingCategory, setPendingCategory] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   const durationMin: number = customMin.trim() === '' ? selectedMin : Number(customMin);
 
-  const toggleCategory = (id: CategoryId): void => {
+  const toggleCategory = async (id: CategoryId): Promise<void> => {
+    if (pendingCategory) return;
     const next: ListsConfig = {
       ...localLists,
       categories: { ...localLists.categories, [id]: !localLists.categories[id] },
     };
-    setLocalLists(next);
-    void sendRequest({ type: 'updateLists', lists: next });
+    setPendingCategory(true);
+    setError(null);
+    const ack = await sendRequest({ type: 'updateLists', lists: next });
+    if (ack.ok) {
+      setLocalLists(next);
+    } else {
+      setLocalLists(lists);
+      setError(ack.error);
+    }
+    setPendingCategory(false);
   };
 
   const start = async (): Promise<void> => {
@@ -110,14 +120,21 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
       />
 
       {ALL_CATEGORIES.length > 0 ? (
-        <fieldset class="pill-row" aria-label="Blocked categories">
+        <fieldset
+          class="pill-row"
+          aria-label="Blocked categories"
+          aria-busy={pendingCategory}
+          disabled={pendingCategory}
+        >
           {ALL_CATEGORIES.map(
             (cat): VNode => (
               <Chip
                 key={cat.id}
                 label={cat.title}
                 selected={localLists.categories[cat.id]}
-                onClick={(): void => toggleCategory(cat.id)}
+                onClick={(): void => {
+                  void toggleCategory(cat.id);
+                }}
               />
             ),
           )}

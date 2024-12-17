@@ -32,7 +32,7 @@ function hardBanner(snapshot: SessionSnapshot | null): VNode | null {
   if (snapshot === null || snapshot.phase === 'idle') return null;
   if (snapshot.config === null || snapshot.config.strictness !== 'hard') return null;
   if (snapshot.sessionEndsAt === null) return null;
-  const text: string = `Hard session until ${formatWallTime(snapshot.sessionEndsAt)}. Changes that weaken blocking will be rejected until then.`;
+  const text: string = `Changes that weaken blocking will be rejected until ${formatWallTime(snapshot.sessionEndsAt)}.`;
   return (
     <p class="hard-banner" role="status">
       {text}
@@ -251,6 +251,9 @@ export function App(): VNode {
     <div class="options">
       <nav class="nav" aria-label="Settings sections">
         <h1>Focus Lock</h1>
+        <a class="nav-item stats-link" href="../stats/stats.html">
+          Stats
+        </a>
         {SECTIONS.map(
           (s: { id: SectionId; label: string }): VNode => (
             <button

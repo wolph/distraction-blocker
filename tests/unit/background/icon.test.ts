@@ -14,7 +14,13 @@ const focusSnap: SessionSnapshot = {
 
 describe('iconSpec', () => {
   it('is a gray open padlock when idle', () => {
-    expect(iconSpec(emptySnapshot(0))).toEqual({ color: '#9ca3af', open: true, progress: 0 });
+    expect(iconSpec(emptySnapshot(0))).toEqual({
+      color: '#9ca3af',
+      open: true,
+      progress: 0,
+      glyph: 'lock',
+      ring: false,
+    });
   });
 
   it('is green, closed, with phase progress during focus', () => {

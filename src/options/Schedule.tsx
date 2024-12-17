@@ -28,12 +28,6 @@ function newEntry(defaults: Settings): ScheduleEntry {
   };
 }
 
-function daySummary(days: number[]): string {
-  return DAY_ORDER.filter((d: number): boolean => days.includes(d))
-    .map((d: number): string => DAY_LABELS[d] ?? '')
-    .join(', ');
-}
-
 function overlapError(candidate: ScheduleEntry, entries: ScheduleEntry[]): string | null {
   if (!candidate.enabled) return null;
   for (const entry of entries) {
@@ -274,7 +268,15 @@ export function Schedule(props: ScheduleProps): VNode {
       {props.entries.map(
         (entry: ScheduleEntry): VNode => (
           <div class="entry-row" key={entry.id}>
-            <span class="entry-days">{daySummary(entry.days)}</span>
+            <fieldset class="entry-days" aria-label="Selected days">
+              {DAY_ORDER.filter((day: number): boolean => entry.days.includes(day)).map(
+                (day: number): VNode => (
+                  <span class="entry-day-pill" key={day}>
+                    {DAY_LABELS[day]}
+                  </span>
+                ),
+              )}
+            </fieldset>
             <span>
               {entry.start} to {entry.end}
             </span>
