@@ -50,7 +50,6 @@ export function badgeFor(
 }
 
 export function drawIcon(size: number, spec: IconSpec): ImageData {
-  if (spec.glyph === 'cup') return drawCup(size, spec);
   const canvas: OffscreenCanvas = new OffscreenCanvas(size, size);
   // biome-ignore lint/style/noNonNullAssertion: 2d context always exists on a fresh OffscreenCanvas
   const ctx: OffscreenCanvasRenderingContext2D = canvas.getContext('2d')!;
@@ -60,7 +59,7 @@ export function drawIcon(size: number, spec: IconSpec): ImageData {
   ctx.fillStyle = spec.color;
   ctx.lineWidth = 1.6 * u;
   ctx.lineCap = 'round';
-  // shackle: an arc sitting on the body, lifted and rotated when open
+
   ctx.save();
   if (spec.open) {
     ctx.translate(8 * u, 7 * u);
@@ -71,17 +70,17 @@ export function drawIcon(size: number, spec: IconSpec): ImageData {
   ctx.arc(8 * u, 7 * u, 3.2 * u, Math.PI, 2 * Math.PI);
   ctx.stroke();
   ctx.restore();
-  // body: filled rounded rect
-  const r: number = 1.2 * u;
-  const x: number = 3.5 * u;
-  const y: number = 7 * u;
-  const w: number = 9 * u;
-  const h: number = 7 * u;
+
   ctx.beginPath();
-  ctx.roundRect(x, y, w, h, r);
-  ctx.fill();
-  // progress ring: thin arc from 12 o'clock, clockwise
-  if (spec.progress > 0) {
+  ctx.roundRect(3.5 * u, 7 * u, 9 * u, 7 * u, 1.2 * u);
+  if (spec.glyph === 'cup') {
+    ctx.stroke();
+    drawCup(ctx, u);
+  } else {
+    ctx.fill();
+  }
+
+  if (spec.ring && spec.progress > 0) {
     ctx.lineWidth = Math.max(1, 0.9 * u);
     ctx.beginPath();
     ctx.arc(8 * u, 8 * u, 7.2 * u, -Math.PI / 2, -Math.PI / 2 + spec.progress * 2 * Math.PI);
@@ -90,35 +89,13 @@ export function drawIcon(size: number, spec: IconSpec): ImageData {
   return ctx.getImageData(0, 0, size, size);
 }
 
-function drawCup(size: number, spec: IconSpec): ImageData {
-  const canvas: OffscreenCanvas = new OffscreenCanvas(size, size);
-  // biome-ignore lint/style/noNonNullAssertion: 2d context always exists on fresh OffscreenCanvas
-  const ctx: OffscreenCanvasRenderingContext2D = canvas.getContext('2d')!;
-  const u: number = size / 16;
-  ctx.clearRect(0, 0, size, size);
-  ctx.strokeStyle = spec.color;
-  ctx.fillStyle = spec.color;
-  ctx.lineWidth = 1.6 * u;
-  ctx.lineCap = 'round';
+function drawCup(ctx: OffscreenCanvasRenderingContext2D, u: number): void {
   ctx.beginPath();
-  ctx.roundRect(3.2 * u, 7 * u, 7 * u, 5.3 * u, 1.1 * u);
+  ctx.roundRect(5 * u, 8.4 * u, 4.5 * u, 3.2 * u, u);
   ctx.fill();
   ctx.beginPath();
-  ctx.arc(10.1 * u, 9.2 * u, 2 * u, -Math.PI / 2, Math.PI / 2);
+  ctx.arc(9.7 * u, 10 * u, 1.4 * u, -Math.PI / 2, Math.PI / 2);
   ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(5.6 * u, 5.9 * u, 1.1 * u, -0.2 * Math.PI, 0.7 * Math.PI);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(8.5 * u, 5.3 * u, 1.1 * u, -0.2 * Math.PI, 0.7 * Math.PI);
-  ctx.stroke();
-  if (spec.ring && spec.progress > 0) {
-    ctx.lineWidth = Math.max(1, 0.9 * u);
-    ctx.beginPath();
-    ctx.arc(8 * u, 8 * u, 7.5 * u, -Math.PI / 2, -Math.PI / 2 + spec.progress * 2 * Math.PI);
-    ctx.stroke();
-  }
-  return ctx.getImageData(0, 0, size, size);
 }
 
 /** Renders and applies icon plus badge. Never throws: an icon render must not kill a tick. */
@@ -134,6 +111,6 @@ export function updateIcon(snapshot: SessionSnapshot, badgeCountdown: boolean): 
     void chrome.action.setBadgeText({ text: badge.text });
     void chrome.action.setBadgeBackgroundColor({ color: badge.color });
   } catch {
-    // OffscreenCanvas or action API hiccups must not break the engine
+    // OffscreenCanvas or action API hiccups must not break the engine.
   }
 }

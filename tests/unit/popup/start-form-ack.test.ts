@@ -37,9 +37,10 @@ describe('StartForm category acknowledgement', () => {
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
     fireEvent.click(getByRole('button', { name: 'Social' }));
+    expect((getByRole('button', { name: 'Social' }) as HTMLButtonElement).disabled).toBe(true);
     expect(
-      (getByRole('group', { name: 'Blocked categories' }) as HTMLFieldSetElement).disabled,
-    ).toBe(true);
+      (getByRole('button', { name: 'Video and streaming' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
     await waitFor((): void => {
       expect(sendMessageMock).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'updateLists' }),
@@ -47,10 +48,36 @@ describe('StartForm category acknowledgement', () => {
     });
     resolveUpdate({ ok: true });
     await waitFor((): void => {
-      expect(
-        (getByRole('group', { name: 'Blocked categories' }) as HTMLFieldSetElement).disabled,
-      ).toBe(false);
+      expect((getByRole('button', { name: 'Social' }) as HTMLButtonElement).disabled).toBe(false);
     });
+  });
+
+  it('keeps an accepted toggle when a later category toggle is rejected', async (): Promise<void> => {
+    const acknowledgements: Array<{ ok: true } | { ok: false; error: string }> = [
+      { ok: true },
+      { ok: false, error: 'Changes that weaken blocking are locked until 16:45.' },
+    ];
+    sendMessageMock.mockImplementation(async (req: Request): Promise<unknown> => {
+      if (req.type !== 'updateLists') return { ok: true };
+      return acknowledgements.shift();
+    });
+    const { getByRole } = render(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
+    );
+    fireEvent.click(getByRole('button', { name: 'Social' }));
+    await waitFor((): void => {
+      expect(getByRole('button', { name: 'Social' }).getAttribute('aria-pressed')).toBe('true');
+    });
+    fireEvent.click(getByRole('button', { name: 'Video and streaming' }));
+    await waitFor((): void => {
+      expect(getByRole('alert').textContent).toBe(
+        'Changes that weaken blocking are locked until 16:45.',
+      );
+    });
+    expect(getByRole('button', { name: 'Social' }).getAttribute('aria-pressed')).toBe('true');
+    expect(getByRole('button', { name: 'Video and streaming' }).getAttribute('aria-pressed')).toBe(
+      'false',
+    );
   });
 
   it('restores authoritative category state and shows a hard-guard rejection', async (): Promise<void> => {

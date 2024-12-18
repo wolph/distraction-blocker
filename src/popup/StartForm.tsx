@@ -38,27 +38,26 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
   const [strictness, setStrictness] = useState<Strictness>(settings.defaultStrictness);
   const [cyclingOn, setCyclingOn] = useState<boolean>(settings.cyclingOnByDefault);
   const [localLists, setLocalLists] = useState<ListsConfig>(lists);
-  const [pendingCategory, setPendingCategory] = useState<boolean>(false);
+  const [pendingCategoryId, setPendingCategoryId] = useState<CategoryId | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const durationMin: number = customMin.trim() === '' ? selectedMin : Number(customMin);
 
   const toggleCategory = async (id: CategoryId): Promise<void> => {
-    if (pendingCategory) return;
+    if (pendingCategoryId !== null) return;
     const next: ListsConfig = {
       ...localLists,
       categories: { ...localLists.categories, [id]: !localLists.categories[id] },
     };
-    setPendingCategory(true);
+    setPendingCategoryId(id);
     setError(null);
     const ack = await sendRequest({ type: 'updateLists', lists: next });
     if (ack.ok) {
       setLocalLists(next);
     } else {
-      setLocalLists(lists);
       setError(ack.error);
     }
-    setPendingCategory(false);
+    setPendingCategoryId(null);
   };
 
   const start = async (): Promise<void> => {
@@ -123,19 +122,22 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
         <fieldset
           class="pill-row"
           aria-label="Blocked categories"
-          aria-busy={pendingCategory}
-          disabled={pendingCategory}
+          aria-busy={pendingCategoryId !== null}
         >
           {ALL_CATEGORIES.map(
             (cat): VNode => (
-              <Chip
+              <button
+                type="button"
                 key={cat.id}
-                label={cat.title}
-                selected={localLists.categories[cat.id]}
+                class={localLists.categories[cat.id] ? 'chip chip-selected' : 'chip'}
+                aria-pressed={localLists.categories[cat.id]}
+                disabled={pendingCategoryId === cat.id}
                 onClick={(): void => {
                   void toggleCategory(cat.id);
                 }}
-              />
+              >
+                {cat.title}
+              </button>
             ),
           )}
         </fieldset>

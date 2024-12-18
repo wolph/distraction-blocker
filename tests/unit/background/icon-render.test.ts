@@ -93,21 +93,40 @@ afterEach((): void => {
 });
 
 describe('break icon pixels', () => {
-  it.each([16, 32])('draws a cup body and ring at %i pixels', (size: number): void => {
-    vi.stubGlobal('OffscreenCanvas', RecordingCanvas);
-    const image: ImageData = drawIcon(size, activeSpec('break'));
-    const context: RecordingContext | undefined = RecordingCanvas.contexts.at(-1);
-    expect(image.width).toBe(size);
-    expect(image.height).toBe(size);
-    expect(image.data[0]).toBe(Math.round(3.2 * (size / 16) * 10));
-    expect(context?.calls.filter((call: DrawCall): boolean => call.name === 'arc')).toHaveLength(4);
-  });
+  it.each([16, 32])(
+    'draws closed lock, cup, and ring geometry at %i pixels',
+    (size: number): void => {
+      vi.stubGlobal('OffscreenCanvas', RecordingCanvas);
+      const image: ImageData = drawIcon(size, activeSpec('break'));
+      const context: RecordingContext | undefined = RecordingCanvas.contexts.at(-1);
+      const calls: DrawCall[] = context?.calls ?? [];
+      const unit: number = size / 16;
+      expect(image.width).toBe(size);
+      expect(image.height).toBe(size);
+      expect(calls).toContainEqual({
+        name: 'arc',
+        args: [8 * unit, 7 * unit, 3.2 * unit, Math.PI, 2 * Math.PI],
+      });
+      expect(calls).toContainEqual({
+        name: 'roundRect',
+        args: [3.5 * unit, 7 * unit, 9 * unit, 7 * unit, 1.2 * unit],
+      });
+      expect(calls).toContainEqual({
+        name: 'roundRect',
+        args: [5 * unit, 8.4 * unit, 4.5 * unit, 3.2 * unit, unit],
+      });
+      expect(calls).toContainEqual({
+        name: 'arc',
+        args: [8 * unit, 8 * unit, 7.2 * unit, -Math.PI / 2, Math.PI / 2],
+      });
+    },
+  );
 
   it('uses a different rendered body for focus', (): void => {
     vi.stubGlobal('OffscreenCanvas', RecordingCanvas);
     const focus: ImageData = drawIcon(16, activeSpec('focus'));
     const rest: ImageData = drawIcon(16, activeSpec('break'));
     expect(focus.data[0]).toBe(35);
-    expect(rest.data[0]).toBe(32);
+    expect(rest.data[0]).toBe(35);
   });
 });
