@@ -26,11 +26,12 @@
   "name": "distraction-blocker",
   "private": true,
   "scripts": {
-    "build": "node scripts/gen-icons.mjs && vite build",
-    "check": "biome check . && tsc --noEmit && vitest run && vite build",
+    "build": "npm run gen-icons && vite build",
+    "check": "biome check . && tsc --noEmit && vitest run && npm run build",
     "dev": "vite",
     "e2e": "npm run build && playwright test",
     "format": "biome check --write .",
+    "gen-icons": "node scripts/gen-icons.mjs",
     "lint": "biome check .",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

@@ -1,5 +1,5 @@
 import type { VNode } from 'preact';
-import { useState } from 'preact/hooks';
+import { useRef, useState } from 'preact/hooks';
 import { ALL_CATEGORIES } from '../core/categories';
 import { sendRequest } from '../shared/messages';
 import type {
@@ -38,26 +38,42 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
   const [strictness, setStrictness] = useState<Strictness>(settings.defaultStrictness);
   const [cyclingOn, setCyclingOn] = useState<boolean>(settings.cyclingOnByDefault);
   const [localLists, setLocalLists] = useState<ListsConfig>(lists);
-  const [pendingCategoryId, setPendingCategoryId] = useState<CategoryId | null>(null);
+  const [pendingCategories, setPendingCategories] = useState<ReadonlyMap<CategoryId, boolean>>(
+    new Map(),
+  );
+  const localListsRef = useRef<ListsConfig>(lists);
+  const pendingCategoriesRef = useRef<Map<CategoryId, boolean>>(new Map());
   const [error, setError] = useState<string | null>(null);
 
   const durationMin: number = customMin.trim() === '' ? selectedMin : Number(customMin);
 
   const toggleCategory = async (id: CategoryId): Promise<void> => {
-    if (pendingCategoryId !== null) return;
+    if (pendingCategoriesRef.current.has(id)) return;
+    const desired: boolean = !localListsRef.current.categories[id];
+    const nextPending: Map<CategoryId, boolean> = new Map(pendingCategoriesRef.current);
+    nextPending.set(id, desired);
+    pendingCategoriesRef.current = nextPending;
+    setPendingCategories(nextPending);
     const next: ListsConfig = {
-      ...localLists,
-      categories: { ...localLists.categories, [id]: !localLists.categories[id] },
+      ...localListsRef.current,
+      categories: { ...localListsRef.current.categories, ...Object.fromEntries(nextPending) },
     };
-    setPendingCategoryId(id);
     setError(null);
     const ack = await sendRequest({ type: 'updateLists', lists: next });
     if (ack.ok) {
-      setLocalLists(next);
+      const committed: ListsConfig = {
+        ...localListsRef.current,
+        categories: { ...localListsRef.current.categories, [id]: desired },
+      };
+      localListsRef.current = committed;
+      setLocalLists(committed);
     } else {
       setError(ack.error);
     }
-    setPendingCategoryId(null);
+    const remainingPending: Map<CategoryId, boolean> = new Map(pendingCategoriesRef.current);
+    remainingPending.delete(id);
+    pendingCategoriesRef.current = remainingPending;
+    setPendingCategories(remainingPending);
   };
 
   const start = async (): Promise<void> => {
@@ -122,7 +138,7 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
         <fieldset
           class="pill-row"
           aria-label="Blocked categories"
-          aria-busy={pendingCategoryId !== null}
+          aria-busy={pendingCategories.size > 0}
         >
           {ALL_CATEGORIES.map(
             (cat): VNode => (
@@ -131,7 +147,7 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
                 key={cat.id}
                 class={localLists.categories[cat.id] ? 'chip chip-selected' : 'chip'}
                 aria-pressed={localLists.categories[cat.id]}
-                disabled={pendingCategoryId === cat.id}
+                disabled={pendingCategories.has(cat.id)}
                 onClick={(): void => {
                   void toggleCategory(cat.id);
                 }}

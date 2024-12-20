@@ -52,6 +52,66 @@ describe('StartForm category acknowledgement', () => {
     });
   });
 
+  it('sends concurrent category changes and keeps a later accepted change after an earlier rejection', async (): Promise<void> => {
+    const resolvers: Array<(ack: { ok: true } | { ok: false; error: string }) => void> = [];
+    sendMessageMock.mockImplementation(async (req: Request): Promise<unknown> => {
+      if (req.type !== 'updateLists') return { ok: true };
+      return new Promise<{ ok: true } | { ok: false; error: string }>(
+        (resolve: (ack: { ok: true } | { ok: false; error: string }) => void): void => {
+          resolvers.push(resolve);
+        },
+      );
+    });
+    const { getByRole } = render(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
+    );
+    fireEvent.click(getByRole('button', { name: 'Social' }));
+    fireEvent.click(getByRole('button', { name: 'Video and streaming' }));
+    await waitFor((): void => {
+      expect(resolvers).toHaveLength(2);
+    });
+    expect((getByRole('button', { name: 'Social' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (getByRole('button', { name: 'Video and streaming' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    resolvers[1]?.({ ok: true });
+    resolvers[0]?.({ ok: false, error: 'Changes that weaken blocking are locked until 16:45.' });
+    await waitFor((): void => {
+      expect(
+        getByRole('button', { name: 'Video and streaming' }).getAttribute('aria-pressed'),
+      ).toBe('true');
+    });
+    expect(getByRole('button', { name: 'Social' }).getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('keeps an earlier accepted change when a later pending category is rejected', async (): Promise<void> => {
+    const resolvers: Array<(ack: { ok: true } | { ok: false; error: string }) => void> = [];
+    sendMessageMock.mockImplementation(async (req: Request): Promise<unknown> => {
+      if (req.type !== 'updateLists') return { ok: true };
+      return new Promise<{ ok: true } | { ok: false; error: string }>(
+        (resolve: (ack: { ok: true } | { ok: false; error: string }) => void): void => {
+          resolvers.push(resolve);
+        },
+      );
+    });
+    const { getByRole } = render(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
+    );
+    fireEvent.click(getByRole('button', { name: 'Social' }));
+    fireEvent.click(getByRole('button', { name: 'Video and streaming' }));
+    await waitFor((): void => {
+      expect(resolvers).toHaveLength(2);
+    });
+    resolvers[0]?.({ ok: true });
+    resolvers[1]?.({ ok: false, error: 'Changes that weaken blocking are locked until 16:45.' });
+    await waitFor((): void => {
+      expect(getByRole('button', { name: 'Social' }).getAttribute('aria-pressed')).toBe('true');
+    });
+    expect(getByRole('button', { name: 'Video and streaming' }).getAttribute('aria-pressed')).toBe(
+      'false',
+    );
+  });
+
   it('keeps an accepted toggle when a later category toggle is rejected', async (): Promise<void> => {
     const acknowledgements: Array<{ ok: true } | { ok: false; error: string }> = [
       { ok: true },

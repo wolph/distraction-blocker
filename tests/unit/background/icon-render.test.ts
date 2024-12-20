@@ -122,11 +122,17 @@ describe('break icon pixels', () => {
     },
   );
 
-  it('uses a different rendered body for focus', (): void => {
+  it('draws the cup only for breaks while both phases retain the lock body', (): void => {
     vi.stubGlobal('OffscreenCanvas', RecordingCanvas);
     const focus: ImageData = drawIcon(16, activeSpec('focus'));
     const rest: ImageData = drawIcon(16, activeSpec('break'));
-    expect(focus.data[0]).toBe(35);
-    expect(rest.data[0]).toBe(35);
+    const focusCalls: DrawCall[] = RecordingCanvas.contexts[0]?.calls ?? [];
+    const breakCalls: DrawCall[] = RecordingCanvas.contexts[1]?.calls ?? [];
+    expect(focus.width).toBe(16);
+    expect(rest.width).toBe(16);
+    expect(focusCalls).toContainEqual({ name: 'roundRect', args: [3.5, 7, 9, 7, 1.2] });
+    expect(focusCalls).not.toContainEqual({ name: 'roundRect', args: [5, 8.4, 4.5, 3.2, 1] });
+    expect(breakCalls).toContainEqual({ name: 'roundRect', args: [3.5, 7, 9, 7, 1.2] });
+    expect(breakCalls).toContainEqual({ name: 'roundRect', args: [5, 8.4, 4.5, 3.2, 1] });
   });
 });

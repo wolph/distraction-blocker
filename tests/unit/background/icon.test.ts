@@ -30,6 +30,11 @@ describe('iconSpec', () => {
     expect(spec.progress).toBeCloseTo(0.5, 1);
   });
 
+  it('keeps focus as a lock and marks only break for the cup overlay', (): void => {
+    expect(iconSpec(focusSnap).glyph).toBe('lock');
+    expect(iconSpec({ ...focusSnap, phase: 'break' }).glyph).toBe('cup');
+  });
+
   it('is teal during break and amber during pause, both closed', () => {
     expect(iconSpec({ ...focusSnap, phase: 'break' }).color).toBe('#14b8a6');
     expect(iconSpec({ ...focusSnap, phase: 'paused' }).color).toBe('#f59e0b');
