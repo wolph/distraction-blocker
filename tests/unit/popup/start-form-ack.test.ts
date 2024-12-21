@@ -11,6 +11,7 @@ vi.mock('../../../src/core/categories', () => ({
   ALL_CATEGORIES: [
     { id: 'social', title: 'Social', hosts: ['facebook.com'] },
     { id: 'video', title: 'Video and streaming', hosts: ['youtube.com'] },
+    { id: 'news', title: 'News', hosts: ['news.example'] },
   ],
 }));
 
@@ -93,6 +94,46 @@ describe('StartForm category acknowledgement', () => {
       ).toBe('true');
     });
     expect(getByRole('button', { name: 'Social' }).getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('renders the worker rejection and queues an unrelated third category', async (): Promise<void> => {
+    const resolvers: ResolveAck[] = deferredUpdates();
+    const { getByRole } = render(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
+    );
+    fireEvent.click(getByRole('button', { name: 'Social' }));
+    fireEvent.click(getByRole('button', { name: 'Video and streaming' }));
+    expect((getByRole('button', { name: 'News' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(getByRole('button', { name: 'News' }));
+    expect((getByRole('button', { name: 'News' }) as HTMLButtonElement).disabled).toBe(true);
+    await waitFor((): void => {
+      expect(resolvers).toHaveLength(1);
+    });
+    resolvers[0]?.({ ok: false, error: 'Changes that weaken blocking are locked until 16:45.' });
+    await waitFor((): void => {
+      expect(getByRole('alert').textContent).toBe(
+        'Changes that weaken blocking are locked until 16:45.',
+      );
+      expect(resolvers).toHaveLength(2);
+    });
+    expect(updateRequests()[1]?.lists.categories).toMatchObject({
+      social: false,
+      video: true,
+      news: false,
+    });
+    resolvers[1]?.({ ok: true });
+    await waitFor((): void => {
+      expect(resolvers).toHaveLength(3);
+    });
+    expect(updateRequests()[2]?.lists.categories).toMatchObject({
+      social: false,
+      video: true,
+      news: true,
+    });
+    resolvers[2]?.({ ok: true });
+    await waitFor((): void => {
+      expect(getByRole('button', { name: 'News' }).getAttribute('aria-pressed')).toBe('true');
+    });
   });
 
   it('keeps A acknowledged when queued B is rejected', async (): Promise<void> => {
