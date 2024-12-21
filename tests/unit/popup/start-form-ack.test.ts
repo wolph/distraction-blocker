@@ -16,6 +16,27 @@ vi.mock('../../../src/core/categories', () => ({
 
 import { StartForm } from '../../../src/popup/StartForm';
 
+type Ack = { ok: true } | { ok: false; error: string };
+type ResolveAck = (ack: Ack) => void;
+type UpdateListsRequest = Extract<Request, { type: 'updateLists' }>;
+
+function updateRequests(): UpdateListsRequest[] {
+  return sendMessageMock.mock.calls
+    .map(([request]: unknown[]): Request => request as Request)
+    .filter((request: Request): request is UpdateListsRequest => request.type === 'updateLists');
+}
+
+function deferredUpdates(): ResolveAck[] {
+  const resolvers: ResolveAck[] = [];
+  sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+    if (request.type !== 'updateLists') return { ok: true };
+    return new Promise<Ack>((resolve: ResolveAck): void => {
+      resolvers.push(resolve);
+    });
+  });
+  return resolvers;
+}
+
 describe('StartForm category acknowledgement', () => {
   beforeEach((): void => {
     resetChromeFake();
@@ -25,14 +46,8 @@ describe('StartForm category acknowledgement', () => {
     cleanup();
   });
 
-  it('keeps category controls pending until the worker responds', async (): Promise<void> => {
-    let resolveUpdate: (value: { ok: true }) => void = (): void => {};
-    sendMessageMock.mockImplementation(async (req: Request): Promise<unknown> => {
-      if (req.type !== 'updateLists') return { ok: true };
-      return new Promise<{ ok: true }>((resolve: (value: { ok: true }) => void): void => {
-        resolveUpdate = resolve;
-      });
-    });
+  it('disables only the clicked category while its request is in flight', async (): Promise<void> => {
+    const resolvers: ResolveAck[] = deferredUpdates();
     const { getByRole } = render(
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
@@ -42,40 +57,36 @@ describe('StartForm category acknowledgement', () => {
       (getByRole('button', { name: 'Video and streaming' }) as HTMLButtonElement).disabled,
     ).toBe(false);
     await waitFor((): void => {
-      expect(sendMessageMock).toHaveBeenCalledWith(
-        expect.objectContaining({ type: 'updateLists' }),
-      );
+      expect(resolvers).toHaveLength(1);
     });
-    resolveUpdate({ ok: true });
+    resolvers[0]?.({ ok: true });
     await waitFor((): void => {
       expect((getByRole('button', { name: 'Social' }) as HTMLButtonElement).disabled).toBe(false);
     });
   });
 
-  it('sends concurrent category changes and keeps a later accepted change after an earlier rejection', async (): Promise<void> => {
-    const resolvers: Array<(ack: { ok: true } | { ok: false; error: string }) => void> = [];
-    sendMessageMock.mockImplementation(async (req: Request): Promise<unknown> => {
-      if (req.type !== 'updateLists') return { ok: true };
-      return new Promise<{ ok: true } | { ok: false; error: string }>(
-        (resolve: (ack: { ok: true } | { ok: false; error: string }) => void): void => {
-          resolvers.push(resolve);
-        },
-      );
-    });
+  it('queues B after rejected A and excludes A from B worker payload', async (): Promise<void> => {
+    const resolvers: ResolveAck[] = deferredUpdates();
     const { getByRole } = render(
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
     fireEvent.click(getByRole('button', { name: 'Social' }));
     fireEvent.click(getByRole('button', { name: 'Video and streaming' }));
     await waitFor((): void => {
-      expect(resolvers).toHaveLength(2);
+      expect(resolvers).toHaveLength(1);
     });
+    expect(updateRequests()).toHaveLength(1);
+    expect(updateRequests()[0]?.lists.categories).toMatchObject({ social: true, video: false });
     expect((getByRole('button', { name: 'Social' }) as HTMLButtonElement).disabled).toBe(true);
     expect(
       (getByRole('button', { name: 'Video and streaming' }) as HTMLButtonElement).disabled,
     ).toBe(true);
-    resolvers[1]?.({ ok: true });
     resolvers[0]?.({ ok: false, error: 'Changes that weaken blocking are locked until 16:45.' });
+    await waitFor((): void => {
+      expect(resolvers).toHaveLength(2);
+    });
+    expect(updateRequests()[1]?.lists.categories).toMatchObject({ social: false, video: true });
+    resolvers[1]?.({ ok: true });
     await waitFor((): void => {
       expect(
         getByRole('button', { name: 'Video and streaming' }).getAttribute('aria-pressed'),
@@ -84,25 +95,21 @@ describe('StartForm category acknowledgement', () => {
     expect(getByRole('button', { name: 'Social' }).getAttribute('aria-pressed')).toBe('false');
   });
 
-  it('keeps an earlier accepted change when a later pending category is rejected', async (): Promise<void> => {
-    const resolvers: Array<(ack: { ok: true } | { ok: false; error: string }) => void> = [];
-    sendMessageMock.mockImplementation(async (req: Request): Promise<unknown> => {
-      if (req.type !== 'updateLists') return { ok: true };
-      return new Promise<{ ok: true } | { ok: false; error: string }>(
-        (resolve: (ack: { ok: true } | { ok: false; error: string }) => void): void => {
-          resolvers.push(resolve);
-        },
-      );
-    });
+  it('keeps A acknowledged when queued B is rejected', async (): Promise<void> => {
+    const resolvers: ResolveAck[] = deferredUpdates();
     const { getByRole } = render(
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
     fireEvent.click(getByRole('button', { name: 'Social' }));
     fireEvent.click(getByRole('button', { name: 'Video and streaming' }));
     await waitFor((): void => {
-      expect(resolvers).toHaveLength(2);
+      expect(resolvers).toHaveLength(1);
     });
     resolvers[0]?.({ ok: true });
+    await waitFor((): void => {
+      expect(resolvers).toHaveLength(2);
+    });
+    expect(updateRequests()[1]?.lists.categories).toMatchObject({ social: true, video: true });
     resolvers[1]?.({ ok: false, error: 'Changes that weaken blocking are locked until 16:45.' });
     await waitFor((): void => {
       expect(getByRole('button', { name: 'Social' }).getAttribute('aria-pressed')).toBe('true');
@@ -112,50 +119,16 @@ describe('StartForm category acknowledgement', () => {
     );
   });
 
-  it('keeps an accepted toggle when a later category toggle is rejected', async (): Promise<void> => {
-    const acknowledgements: Array<{ ok: true } | { ok: false; error: string }> = [
-      { ok: true },
-      { ok: false, error: 'Changes that weaken blocking are locked until 16:45.' },
-    ];
-    sendMessageMock.mockImplementation(async (req: Request): Promise<unknown> => {
-      if (req.type !== 'updateLists') return { ok: true };
-      return acknowledgements.shift();
-    });
+  it('does not queue a category twice while it is pending', async (): Promise<void> => {
+    const resolvers: ResolveAck[] = deferredUpdates();
     const { getByRole } = render(
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
-    fireEvent.click(getByRole('button', { name: 'Social' }));
+    const social: HTMLButtonElement = getByRole('button', { name: 'Social' }) as HTMLButtonElement;
+    fireEvent.click(social);
+    fireEvent.click(social);
     await waitFor((): void => {
-      expect(getByRole('button', { name: 'Social' }).getAttribute('aria-pressed')).toBe('true');
+      expect(resolvers).toHaveLength(1);
     });
-    fireEvent.click(getByRole('button', { name: 'Video and streaming' }));
-    await waitFor((): void => {
-      expect(getByRole('alert').textContent).toBe(
-        'Changes that weaken blocking are locked until 16:45.',
-      );
-    });
-    expect(getByRole('button', { name: 'Social' }).getAttribute('aria-pressed')).toBe('true');
-    expect(getByRole('button', { name: 'Video and streaming' }).getAttribute('aria-pressed')).toBe(
-      'false',
-    );
-  });
-
-  it('restores authoritative category state and shows a hard-guard rejection', async (): Promise<void> => {
-    sendMessageMock.mockImplementation(async (req: Request): Promise<unknown> => {
-      if (req.type === 'updateLists') {
-        return { ok: false, error: 'Changes that weaken blocking are locked until 16:45.' };
-      }
-      return { ok: true };
-    });
-    const { getByRole } = render(
-      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
-    );
-    fireEvent.click(getByRole('button', { name: 'Social' }));
-    await waitFor((): void => {
-      expect(getByRole('alert').textContent).toBe(
-        'Changes that weaken blocking are locked until 16:45.',
-      );
-    });
-    expect(getByRole('button', { name: 'Social' }).getAttribute('aria-pressed')).toBe('false');
   });
 });

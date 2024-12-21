@@ -30,6 +30,11 @@ const MODE_HINTS: Record<SessionMode, string> = {
   whitelist: 'allow the listed sites, block the rest',
 };
 
+interface PendingCategoryChange {
+  id: CategoryId;
+  desired: boolean;
+}
+
 export function StartForm({ settings, lists }: { settings: Settings; lists: ListsConfig }): VNode {
   const [selectedMin, setSelectedMin] = useState<number>(settings.presetsMin[1]);
   const [customMin, setCustomMin] = useState<string>('');
@@ -38,42 +43,53 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
   const [strictness, setStrictness] = useState<Strictness>(settings.defaultStrictness);
   const [cyclingOn, setCyclingOn] = useState<boolean>(settings.cyclingOnByDefault);
   const [localLists, setLocalLists] = useState<ListsConfig>(lists);
-  const [pendingCategories, setPendingCategories] = useState<ReadonlyMap<CategoryId, boolean>>(
-    new Map(),
-  );
+  const [pendingCategories, setPendingCategories] = useState<ReadonlySet<CategoryId>>(new Set());
   const localListsRef = useRef<ListsConfig>(lists);
-  const pendingCategoriesRef = useRef<Map<CategoryId, boolean>>(new Map());
+  const pendingCategoriesRef = useRef<Set<CategoryId>>(new Set());
+  const categoryQueueRef = useRef<PendingCategoryChange[]>([]);
+  const categoryUpdateInFlightRef = useRef<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   const durationMin: number = customMin.trim() === '' ? selectedMin : Number(customMin);
 
-  const toggleCategory = async (id: CategoryId): Promise<void> => {
-    if (pendingCategoriesRef.current.has(id)) return;
-    const desired: boolean = !localListsRef.current.categories[id];
-    const nextPending: Map<CategoryId, boolean> = new Map(pendingCategoriesRef.current);
-    nextPending.set(id, desired);
-    pendingCategoriesRef.current = nextPending;
-    setPendingCategories(nextPending);
+  const dispatchNextCategoryUpdate = async (): Promise<void> => {
+    if (categoryUpdateInFlightRef.current) return;
+    const change: PendingCategoryChange | undefined = categoryQueueRef.current.shift();
+    if (change === undefined) return;
+    categoryUpdateInFlightRef.current = true;
     const next: ListsConfig = {
       ...localListsRef.current,
-      categories: { ...localListsRef.current.categories, ...Object.fromEntries(nextPending) },
+      categories: { ...localListsRef.current.categories, [change.id]: change.desired },
     };
-    setError(null);
     const ack = await sendRequest({ type: 'updateLists', lists: next });
     if (ack.ok) {
       const committed: ListsConfig = {
         ...localListsRef.current,
-        categories: { ...localListsRef.current.categories, [id]: desired },
+        categories: { ...localListsRef.current.categories, [change.id]: change.desired },
       };
       localListsRef.current = committed;
       setLocalLists(committed);
     } else {
       setError(ack.error);
     }
-    const remainingPending: Map<CategoryId, boolean> = new Map(pendingCategoriesRef.current);
-    remainingPending.delete(id);
+    const remainingPending: Set<CategoryId> = new Set(pendingCategoriesRef.current);
+    remainingPending.delete(change.id);
     pendingCategoriesRef.current = remainingPending;
     setPendingCategories(remainingPending);
+    categoryUpdateInFlightRef.current = false;
+    void dispatchNextCategoryUpdate();
+  };
+
+  const toggleCategory = (id: CategoryId): void => {
+    if (pendingCategoriesRef.current.has(id)) return;
+    const desired: boolean = !localListsRef.current.categories[id];
+    const nextPending: Set<CategoryId> = new Set(pendingCategoriesRef.current);
+    nextPending.add(id);
+    pendingCategoriesRef.current = nextPending;
+    setPendingCategories(nextPending);
+    categoryQueueRef.current.push({ id, desired });
+    setError(null);
+    void dispatchNextCategoryUpdate();
   };
 
   const start = async (): Promise<void> => {
@@ -149,7 +165,7 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
                 aria-pressed={localLists.categories[cat.id]}
                 disabled={pendingCategories.has(cat.id)}
                 onClick={(): void => {
-                  void toggleCategory(cat.id);
+                  toggleCategory(cat.id);
                 }}
               >
                 {cat.title}
