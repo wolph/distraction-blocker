@@ -61,23 +61,28 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
       ...localListsRef.current,
       categories: { ...localListsRef.current.categories, [change.id]: change.desired },
     };
-    const ack = await sendRequest({ type: 'updateLists', lists: next });
-    if (ack.ok) {
-      const committed: ListsConfig = {
-        ...localListsRef.current,
-        categories: { ...localListsRef.current.categories, [change.id]: change.desired },
-      };
-      localListsRef.current = committed;
-      setLocalLists(committed);
-    } else {
-      setError(ack.error);
+    try {
+      const ack = await sendRequest({ type: 'updateLists', lists: next });
+      if (ack.ok) {
+        const committed: ListsConfig = {
+          ...localListsRef.current,
+          categories: { ...localListsRef.current.categories, [change.id]: change.desired },
+        };
+        localListsRef.current = committed;
+        setLocalLists(committed);
+      } else {
+        setError(ack.error);
+      }
+    } catch {
+      setError('Could not update categories. Try again.');
+    } finally {
+      const remainingPending: Set<CategoryId> = new Set(pendingCategoriesRef.current);
+      remainingPending.delete(change.id);
+      pendingCategoriesRef.current = remainingPending;
+      setPendingCategories(remainingPending);
+      categoryUpdateInFlightRef.current = false;
+      void dispatchNextCategoryUpdate();
     }
-    const remainingPending: Set<CategoryId> = new Set(pendingCategoriesRef.current);
-    remainingPending.delete(change.id);
-    pendingCategoriesRef.current = remainingPending;
-    setPendingCategories(remainingPending);
-    categoryUpdateInFlightRef.current = false;
-    void dispatchNextCategoryUpdate();
   };
 
   const toggleCategory = (id: CategoryId): void => {

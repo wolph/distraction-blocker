@@ -172,4 +172,34 @@ describe('StartForm category acknowledgement', () => {
       expect(resolvers).toHaveLength(1);
     });
   });
+
+  it('continues queued updates after a transport rejection', async (): Promise<void> => {
+    let calls: number = 0;
+    let resolveSecond: ResolveAck = (): void => {};
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type !== 'updateLists') return { ok: true };
+      calls += 1;
+      if (calls === 1) throw new Error('worker disconnected');
+      return new Promise<Ack>((resolve: ResolveAck): void => {
+        resolveSecond = resolve;
+      });
+    });
+    const { getByRole } = render(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
+    );
+    fireEvent.click(getByRole('button', { name: 'Social' }));
+    fireEvent.click(getByRole('button', { name: 'Video and streaming' }));
+    await waitFor((): void => {
+      expect(getByRole('alert').textContent).toBe('Could not update categories. Try again.');
+      expect((getByRole('button', { name: 'Social' }) as HTMLButtonElement).disabled).toBe(false);
+      expect(calls).toBe(2);
+    });
+    expect(updateRequests()[1]?.lists.categories).toMatchObject({ social: false, video: true });
+    resolveSecond({ ok: true });
+    await waitFor((): void => {
+      expect(
+        getByRole('button', { name: 'Video and streaming' }).getAttribute('aria-pressed'),
+      ).toBe('true');
+    });
+  });
 });

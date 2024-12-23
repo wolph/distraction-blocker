@@ -23,14 +23,16 @@ afterEach((): void => {
 
 describe('icon generation', () => {
   it('runs generation through build and check', (): void => {
-    const packageJson: { scripts: Record<string, string> } = JSON.parse(
+    const packageJson: { engines: { node: string }; scripts: Record<string, string> } = JSON.parse(
       readFileSync('package.json', 'utf8'),
     ) as {
+      engines: { node: string };
       scripts: Record<string, string>;
     };
     expect(packageJson.scripts['gen-icons']).toBe('node scripts/gen-icons.mjs');
     expect(packageJson.scripts.build).toBe('npm run gen-icons && vite build');
     expect(packageJson.scripts.check).toContain('npm run build');
+    expect(packageJson.engines.node).toBe('^22.22.2 || ^24.15.0 || >=26.0.0');
   });
 
   it('restores stale static icons before build can consume them', (): void => {
