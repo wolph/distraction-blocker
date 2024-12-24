@@ -128,12 +128,13 @@ describe('ActiveView', () => {
     expect(queryByRole('button', { name: 'End session' })).toBeNull();
   });
 
-  it('uses the plan affordability countdown copy', (): void => {
+  it('shows time until the next earned pause minute while a spend is unaffordable', (): void => {
     const snapshot: SessionSnapshot = { ...focusSnap(), bankMs: 0 };
     const { getAllByText, queryByText } = render(h(ActiveView, { snapshot, now: NOW }));
 
-    expect(getAllByText('ready in 30:00')).toHaveLength(2);
+    expect(getAllByText('ready in 6:00')).toHaveLength(2);
     expect(queryByText('enough in 30:00')).toBeNull();
+    expect(queryByText('ready in 30:00')).toBeNull();
   });
 
   it('uses the contrast-safe paused text token for errors', (): void => {

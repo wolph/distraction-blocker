@@ -1,6 +1,7 @@
 import type { VNode } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { getDomain } from 'tldts';
+import { msUntilNextEarnedMinute } from '../core/budget';
 import { MIN_BREAK_BEFORE_EARLY_MS } from '../shared/constants';
 import { extrapolatedBank } from '../shared/live';
 import type { StatsBundle } from '../shared/messages';
@@ -90,9 +91,11 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
 
   const affordability = (costMs: number): { affordable: boolean; countdown: string | null } => {
     if (bankMs >= costMs) return { affordable: true, countdown: null };
-    if (snapshot.bankAccrualPerMs <= 0) return { affordable: false, countdown: null };
-    const waitMs: number = (costMs - bankMs) / snapshot.bankAccrualPerMs;
-    return { affordable: false, countdown: `ready in ${formatClock(waitMs)}` };
+    const waitMs: number | null = msUntilNextEarnedMinute(bankMs, snapshot.bankAccrualPerMs);
+    return {
+      affordable: false,
+      countdown: waitMs === null ? null : `ready in ${formatClock(waitMs)}`,
+    };
   };
 
   const unlockAfford = affordability(snapshot.unlockCostMs);

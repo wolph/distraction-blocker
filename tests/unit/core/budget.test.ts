@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { accrue, msUntilAffordable, spend } from '../../../src/core/budget';
+import {
+  accrue,
+  msUntilAffordable,
+  msUntilNextEarnedMinute,
+  spend,
+} from '../../../src/core/budget';
 import { CoreError } from '../../../src/shared/errors';
 import type { PauseEconomy } from '../../../src/shared/types';
 
@@ -32,5 +37,18 @@ describe('msUntilAffordable', () => {
   it('is 0 when affordable and scales with the earn ratio otherwise', () => {
     expect(msUntilAffordable({ balanceMs: 5 * 60_000 }, 5 * 60_000, ECO)).toBe(0);
     expect(msUntilAffordable({ balanceMs: 0 }, 5 * 60_000, ECO)).toBe(30 * 60_000);
+  });
+});
+
+describe('msUntilNextEarnedMinute', () => {
+  it('counts to the next whole bank minute at zero, fractional, and exact balances', () => {
+    expect(msUntilNextEarnedMinute(0, ECO.earnRatio)).toBe(6 * 60_000);
+    expect(msUntilNextEarnedMinute(30_000, ECO.earnRatio)).toBe(3 * 60_000);
+    expect(msUntilNextEarnedMinute(60_000, ECO.earnRatio)).toBe(6 * 60_000);
+  });
+
+  it('returns null when focus cannot earn pause time', () => {
+    expect(msUntilNextEarnedMinute(0, 0)).toBeNull();
+    expect(msUntilNextEarnedMinute(0, -1)).toBeNull();
   });
 });

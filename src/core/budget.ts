@@ -19,3 +19,12 @@ export function msUntilAffordable(bank: BankState, costMs: number, eco: PauseEco
   if (bank.balanceMs >= costMs) return 0;
   return Math.ceil((costMs - bank.balanceMs) / eco.earnRatio);
 }
+
+/** Focus time needed for the bank to reach its next whole pause minute. */
+export function msUntilNextEarnedMinute(bankMs: number, accrualPerMs: number): number | null {
+  if (!Number.isFinite(bankMs) || !Number.isFinite(accrualPerMs) || accrualPerMs <= 0) return null;
+  const balanceMs: number = Math.max(0, bankMs);
+  const remainderMs: number = balanceMs % 60_000;
+  const pauseMsNeeded: number = remainderMs === 0 ? 60_000 : 60_000 - remainderMs;
+  return Math.ceil(pauseMsNeeded / accrualPerMs);
+}

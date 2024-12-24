@@ -1,3 +1,4 @@
+import { msUntilNextEarnedMinute } from '../core/budget';
 import { extrapolatedBank, remainingPhaseMs } from '../shared/live';
 import type { Request } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
@@ -387,13 +388,10 @@ function updateSpend(ref: SpendRef, snap: SessionSnapshot, now: number): void {
   ref.button.disabled = !affordable;
   ref.ready.hidden = affordable;
   if (!affordable) {
-    ref.ready.textContent = `ready in ${readyIn(ref.costMs - bank, snap.bankAccrualPerMs)}`;
+    const waitMs: number | null = msUntilNextEarnedMinute(bank, snap.bankAccrualPerMs);
+    ref.ready.textContent =
+      waitMs === null ? 'earn pause time by focusing' : `ready in ${formatClock(waitMs)}`;
   }
-}
-
-function readyIn(deficitMs: number, accrualPerMs: number): string {
-  if (accrualPerMs <= 0) return '-';
-  return formatClock(deficitMs / accrualPerMs);
 }
 
 function gateTitle(gate: GateState, snap: SessionSnapshot): string {

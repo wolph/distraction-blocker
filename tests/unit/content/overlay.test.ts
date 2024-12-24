@@ -154,6 +154,28 @@ describe('overlay', () => {
     expect(tab.defaultPrevented).toBe(true);
   });
 
+  it('shows time until the next earned pause minute while spends remain disabled', () => {
+    const snap: SessionSnapshot = {
+      ...focusSnap(),
+      bankMs: 0,
+      bankAccrualPerMs: 5 / 30,
+      pauseCostMs: 5 * 60_000,
+      unlockCostMs: 5 * 60_000,
+    };
+
+    showOverlay(verdict, snap);
+
+    const root: ShadowRoot = shadowRoot();
+    const spendButtons: HTMLButtonElement[] = Array.from(
+      root.querySelectorAll<HTMLButtonElement>('.buttons .pill'),
+    );
+    expect(spendButtons).toHaveLength(2);
+    expect(spendButtons.every((button: HTMLButtonElement): boolean => button.disabled)).toBe(true);
+    expect(root.querySelectorAll('.ready')).toHaveLength(2);
+    expect(root.textContent).toContain('ready in 6:00');
+    expect(root.textContent).not.toContain('ready in 30:00');
+  });
+
   it('resets the host styles while preserving the fixed overlay', () => {
     showOverlay(verdict, focusSnap());
     const host: HTMLElement = document.querySelector('focus-lock-overlay') as HTMLElement;
