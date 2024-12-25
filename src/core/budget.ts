@@ -26,5 +26,6 @@ export function msUntilNextEarnedMinute(bankMs: number, accrualPerMs: number): n
   const balanceMs: number = Math.max(0, bankMs);
   const remainderMs: number = balanceMs % 60_000;
   const pauseMsNeeded: number = remainderMs === 0 ? 60_000 : 60_000 - remainderMs;
-  return Math.ceil(pauseMsNeeded / accrualPerMs);
+  const focusMsNeeded: number = pauseMsNeeded / accrualPerMs;
+  return Math.ceil(focusMsNeeded / 1_000) * 1_000;
 }

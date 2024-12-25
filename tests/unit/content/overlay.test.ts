@@ -38,6 +38,7 @@ afterEach((): void => {
   hideOverlay(emptySnapshot(Date.now()));
   document.body.replaceChildren();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe('overlay', () => {
@@ -174,6 +175,24 @@ describe('overlay', () => {
     expect(root.querySelectorAll('.ready')).toHaveLength(2);
     expect(root.textContent).toContain('ready in 6:00');
     expect(root.textContent).not.toContain('ready in 30:00');
+  });
+
+  it('never renders ready in zero for a positive sub-second wait', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-29T12:00:00Z'));
+    const snap: SessionSnapshot = {
+      ...focusSnap(),
+      bankMs: 59_900,
+      bankAccrualPerMs: 1,
+      pauseCostMs: 5 * 60_000,
+      unlockCostMs: 5 * 60_000,
+    };
+
+    showOverlay(verdict, snap);
+
+    const root: ShadowRoot = shadowRoot();
+    expect(root.textContent).toContain('ready in 0:01');
+    expect(root.textContent).not.toContain('ready in 0:00');
   });
 
   it('resets the host styles while preserving the fixed overlay', () => {

@@ -137,6 +137,18 @@ describe('ActiveView', () => {
     expect(queryByText('ready in 30:00')).toBeNull();
   });
 
+  it('never renders ready in zero for a positive sub-second wait', (): void => {
+    const snapshot: SessionSnapshot = {
+      ...focusSnap(),
+      bankMs: 59_900,
+      bankAccrualPerMs: 1,
+    };
+    const { getAllByText, queryByText } = render(h(ActiveView, { snapshot, now: NOW }));
+
+    expect(getAllByText('ready in 0:01')).toHaveLength(2);
+    expect(queryByText('ready in 0:00')).toBeNull();
+  });
+
   it('uses the contrast-safe paused text token for errors', (): void => {
     const css: string = readFileSync(resolve(process.cwd(), 'src/popup/popup.css'), 'utf8');
 

@@ -51,4 +51,8 @@ describe('msUntilNextEarnedMinute', () => {
     expect(msUntilNextEarnedMinute(0, 0)).toBeNull();
     expect(msUntilNextEarnedMinute(0, -1)).toBeNull();
   });
+
+  it('rounds a positive sub-second wait up for countdown display', () => {
+    expect(msUntilNextEarnedMinute(59_900, 1)).toBe(1_000);
+  });
 });
