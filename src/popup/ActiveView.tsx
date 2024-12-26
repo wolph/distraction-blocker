@@ -91,7 +91,11 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
 
   const affordability = (costMs: number): { affordable: boolean; countdown: string | null } => {
     if (bankMs >= costMs) return { affordable: true, countdown: null };
-    const waitMs: number | null = msUntilNextEarnedMinute(bankMs, snapshot.bankAccrualPerMs);
+    const waitMs: number | null = msUntilNextEarnedMinute(
+      bankMs,
+      snapshot.bankAccrualPerMs,
+      snapshot.bankCapMs,
+    );
     return {
       affordable: false,
       countdown: waitMs === null ? null : `ready in ${formatClock(waitMs)}`,

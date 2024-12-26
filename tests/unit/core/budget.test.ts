@@ -42,17 +42,23 @@ describe('msUntilAffordable', () => {
 
 describe('msUntilNextEarnedMinute', () => {
   it('counts to the next whole bank minute at zero, fractional, and exact balances', () => {
-    expect(msUntilNextEarnedMinute(0, ECO.earnRatio)).toBe(6 * 60_000);
-    expect(msUntilNextEarnedMinute(30_000, ECO.earnRatio)).toBe(3 * 60_000);
-    expect(msUntilNextEarnedMinute(60_000, ECO.earnRatio)).toBe(6 * 60_000);
+    expect(msUntilNextEarnedMinute(0, ECO.earnRatio, ECO.capMs)).toBe(6 * 60_000);
+    expect(msUntilNextEarnedMinute(30_000, ECO.earnRatio, ECO.capMs)).toBe(3 * 60_000);
+    expect(msUntilNextEarnedMinute(60_000, ECO.earnRatio, ECO.capMs)).toBe(6 * 60_000);
   });
 
   it('returns null when focus cannot earn pause time', () => {
-    expect(msUntilNextEarnedMinute(0, 0)).toBeNull();
-    expect(msUntilNextEarnedMinute(0, -1)).toBeNull();
+    expect(msUntilNextEarnedMinute(0, 0, ECO.capMs)).toBeNull();
+    expect(msUntilNextEarnedMinute(0, -1, ECO.capMs)).toBeNull();
   });
 
   it('rounds a positive sub-second wait up for countdown display', () => {
-    expect(msUntilNextEarnedMinute(59_900, 1)).toBe(1_000);
+    expect(msUntilNextEarnedMinute(59_900, 1, ECO.capMs)).toBe(1_000);
+  });
+
+  it('returns null when the cap makes the next minute unreachable or math overflows', () => {
+    expect(msUntilNextEarnedMinute(0, ECO.earnRatio, 0)).toBeNull();
+    expect(msUntilNextEarnedMinute(0, ECO.earnRatio, 30_000)).toBeNull();
+    expect(msUntilNextEarnedMinute(0, Number.MIN_VALUE, ECO.capMs)).toBeNull();
   });
 });

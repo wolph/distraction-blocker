@@ -195,6 +195,21 @@ describe('overlay', () => {
     expect(root.textContent).not.toContain('ready in 0:00');
   });
 
+  it('does not promise an earned minute above the configured bank cap', () => {
+    const snap: SessionSnapshot = {
+      ...focusSnap(),
+      bankMs: 0,
+      bankCapMs: 0,
+    };
+
+    showOverlay(verdict, snap);
+
+    const root: ShadowRoot = shadowRoot();
+    expect(root.querySelectorAll('.ready')).toHaveLength(2);
+    expect(root.textContent).toContain('earn pause time by focusing');
+    expect(root.textContent).not.toContain('ready in 6:00');
+  });
+
   it('resets the host styles while preserving the fixed overlay', () => {
     showOverlay(verdict, focusSnap());
     const host: HTMLElement = document.querySelector('focus-lock-overlay') as HTMLElement;

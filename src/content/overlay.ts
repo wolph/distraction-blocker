@@ -388,7 +388,11 @@ function updateSpend(ref: SpendRef, snap: SessionSnapshot, now: number): void {
   ref.button.disabled = !affordable;
   ref.ready.hidden = affordable;
   if (!affordable) {
-    const waitMs: number | null = msUntilNextEarnedMinute(bank, snap.bankAccrualPerMs);
+    const waitMs: number | null = msUntilNextEarnedMinute(
+      bank,
+      snap.bankAccrualPerMs,
+      snap.bankCapMs,
+    );
     ref.ready.textContent =
       waitMs === null ? 'earn pause time by focusing' : `ready in ${formatClock(waitMs)}`;
   }

@@ -149,6 +149,18 @@ describe('ActiveView', () => {
     expect(queryByText('ready in 0:00')).toBeNull();
   });
 
+  it('does not promise an earned minute above the configured bank cap', (): void => {
+    const snapshot: SessionSnapshot = {
+      ...focusSnap(),
+      bankMs: 0,
+      bankCapMs: 0,
+    };
+    const { getAllByText, queryByText } = render(h(ActiveView, { snapshot, now: NOW }));
+
+    expect(getAllByText('earn pause time by focusing')).toHaveLength(2);
+    expect(queryByText('ready in 6:00')).toBeNull();
+  });
+
   it('uses the contrast-safe paused text token for errors', (): void => {
     const css: string = readFileSync(resolve(process.cwd(), 'src/popup/popup.css'), 'utf8');
 
