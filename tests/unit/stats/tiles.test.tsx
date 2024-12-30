@@ -26,7 +26,9 @@ function day(date: string, overrides: Partial<DailyAgg>): DailyAgg {
     attemptsOther: 0,
     pausesTaken: 0,
     pauseMsSpent: 0,
+    pauseMsEarned: 0,
     unlocksTaken: 0,
+    unlockMsSpent: 0,
     resisted: 0,
     ...overrides,
   };
@@ -52,7 +54,9 @@ const BUNDLE: StatsBundle = {
       attemptsOther: 1,
       pausesTaken: 1,
       pauseMsSpent: 5 * 60_000,
+      pauseMsEarned: 17 * 60_000,
       unlocksTaken: 1,
+      unlockMsSpent: 2 * 60_000,
       resisted: 2,
     }),
   ],
@@ -114,9 +118,8 @@ describe('Tiles', () => {
     expect(tileValue(container, 'Current streak')).toBe('4 days');
     expect(tileValue(container, 'Attempts blocked today')).toBe('6');
     expect(tileValue(container, 'Temptations resisted today')).toBe('2');
-    // spent = 5 m pause + 1 unlock x 5 m, earned = 65 focus min x 5/30 rounded
-    expect(tileValue(container, 'Pause spent today')).toBe('10 m');
-    expect(container.textContent).toContain('of 11 m earned');
+    expect(tileValue(container, 'Pause spent today')).toBe('7 m');
+    expect(container.textContent).toContain('of 17 m earned');
     expect(container.textContent).toContain('2 freezes banked');
   });
 

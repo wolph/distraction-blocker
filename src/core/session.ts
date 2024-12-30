@@ -22,13 +22,14 @@ export type MachineEvent =
   | { type: 'phaseChanged'; from: Phase; to: Phase; at: number }
   | { type: 'completed'; at: number; focusedMs: number };
 
-export function startSession(config: SessionConfig, now: number): SessionState {
+export function startSession(config: SessionConfig, now: number, sessionId?: string): SessionState {
   const sessionEndsAt: number = now + minToMs(config.durationMin);
   const focusEnd: number =
     config.cycling === null
       ? sessionEndsAt
       : Math.min(now + minToMs(config.cycling.focusMin), sessionEndsAt);
   return {
+    ...(sessionId === undefined ? {} : { sessionId }),
     config,
     startedAt: now,
     sessionEndsAt,

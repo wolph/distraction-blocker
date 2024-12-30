@@ -92,7 +92,11 @@ export function buildStats(
   const recentSessions: EventRecord[] = allEvents
     .filter(
       (e: EventRecord): boolean =>
-        e.t === 'sessionStarted' || e.t === 'sessionCompleted' || e.t === 'sessionCanceled',
+        e.t === 'sessionStarted' ||
+        e.t === 'sessionCompleted' ||
+        e.t === 'sessionCanceled' ||
+        e.t === 'pauseTaken' ||
+        e.t === 'unlockTaken',
     )
     .slice(-RECENT_SESSION_CAP)
     .reverse();

@@ -157,6 +157,42 @@ describe('Engine', () => {
     expect(h.loggedEvents().some((e: EventRecord): boolean => e.t === 'sessionStarted')).toBe(true);
   });
 
+  it('persists the injected session identity and reuses it after restart', async () => {
+    const first: Harness = makeEngine();
+    await first.engine.startSession(manualConfig);
+
+    const persisted: RuntimeState = first.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState;
+    const started: EventRecord | undefined = first
+      .loggedEvents()
+      .find((event: EventRecord): boolean => event.t === 'sessionStarted');
+    expect(persisted.session?.sessionId).toBe('archive-id');
+    expect(started).toMatchObject({ t: 'sessionStarted', sessionId: 'archive-id' });
+
+    const restarted: Harness = makeEngine({ runtime: persisted });
+    await restarted.engine.recordAttempt('https://facebook.com/feed', 7, 'navigation');
+
+    expect(restarted.ports.newId).not.toHaveBeenCalled();
+    expect(restarted.loggedEvents()).toContainEqual(
+      expect.objectContaining({ t: 'attempt', sessionId: 'archive-id' }),
+    );
+  });
+
+  it('assigns and persists an identity to a legacy active session', async () => {
+    const first: Harness = makeEngine();
+    await first.engine.startSession(manualConfig);
+    const legacy: RuntimeState = structuredClone(
+      first.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+    );
+    if (legacy.session !== null) delete legacy.session.sessionId;
+
+    const migrated: Harness = makeEngine({ runtime: legacy });
+    await migrated.engine.snapshotPersisted();
+
+    expect(migrated.ports.saveRuntime.mock.calls.at(-1)?.[0]).toMatchObject({
+      session: { sessionId: 'archive-id' },
+    });
+  });
+
   it('does not resolve a mutation response before runtime and event persistence', async () => {
     const h: Harness = makeEngine();
     let releaseEvents: () => void = (): void => {
@@ -263,6 +299,20 @@ describe('Engine', () => {
     expect(h.ports.notify).toHaveBeenCalledWith('Focus schedule started', 'Locked until 10:00.');
   });
 
+  it('uses the injected identity for a scheduled session and its start event', async () => {
+    const h: Harness = makeEngine({ settings: { schedule: [scheduledEntry] } });
+    h.setNow(new Date(2026, 7, 29, 9, 1).getTime());
+
+    await h.engine.snapshotPersisted();
+
+    expect(h.ports.saveRuntime.mock.calls.at(-1)?.[0]).toMatchObject({
+      session: { sessionId: 'archive-id' },
+    });
+    expect(h.loggedEvents()).toContainEqual(
+      expect.objectContaining({ t: 'sessionStarted', sessionId: 'archive-id' }),
+    );
+  });
+
   it('upgrades a running friction session when a hard schedule opens', async () => {
     const h: Harness = makeEngine({ settings: { schedule: [scheduledEntry] } });
     await h.engine.startSession(manualConfig);
@@ -332,6 +382,29 @@ describe('Engine', () => {
     const second: SessionSnapshot = h.engine.snapshot();
 
     expect(second.bankMs).toBe(first.bankMs);
+  });
+
+  it('records only the exact newly credited budget without duplicate catch-up', async () => {
+    const h: Harness = makeEngine({
+      bankMs: 900,
+      settings: {
+        pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0.5, capMs: 1_000 },
+      },
+    });
+    await h.engine.startSession(manualConfig);
+    h.setNow(T0 + 1_000);
+
+    h.engine.snapshot();
+    await h.engine.snapshotPersisted();
+    await h.engine.snapshotPersisted();
+
+    const earned: EventRecord[] = h
+      .loggedEvents()
+      .filter((event: EventRecord): boolean => event.t === 'budgetEarned');
+    expect(earned).toEqual([
+      expect.objectContaining({ t: 'budgetEarned', ms: 100, sessionId: 'archive-id' }),
+    ]);
+    expect(h.engine.statsOverlay().todayAgg.pauseMsEarned).toBe(100);
   });
 
   it('credits only focus time across a cycling phase boundary', async () => {
@@ -405,7 +478,9 @@ describe('Engine', () => {
       attemptsOther: 0,
       pausesTaken: 0,
       pauseMsSpent: 0,
+      pauseMsEarned: 0,
       unlocksTaken: 0,
+      unlockMsSpent: 0,
       resisted: 0,
     };
     runtime.date = futureDate;
@@ -530,6 +605,40 @@ describe('Engine', () => {
     expect(snap.phase).toBe('paused');
     expect(snap.bankMs).toBe(300_000 - DEFAULT_SETTINGS.pause.pauseMs);
     expect(h.loggedEvents().some((e: EventRecord): boolean => e.t === 'pauseTaken')).toBe(true);
+  });
+
+  it('records exact pause and unlock spending against the active session', async () => {
+    const h: Harness = makeEngine({
+      bankMs: 600_000,
+      settings: { pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0 } },
+    });
+    await h.engine.startSession(manualConfig);
+    await h.engine.openGate('pause', null);
+    h.setNow(T0 + DEFAULT_SETTINGS.gate.delayMs);
+    await h.engine.confirmGate(null);
+    await h.engine.resumeFromPause();
+    await h.engine.openGate('unlockSite', 'facebook.com');
+    h.setNow(T0 + 2 * DEFAULT_SETTINGS.gate.delayMs);
+    await h.engine.confirmGate(null);
+
+    expect(h.loggedEvents()).toContainEqual(
+      expect.objectContaining({
+        t: 'pauseTaken',
+        ms: DEFAULT_SETTINGS.pause.pauseMs,
+        sessionId: 'archive-id',
+      }),
+    );
+    expect(h.loggedEvents()).toContainEqual(
+      expect.objectContaining({
+        t: 'unlockTaken',
+        ms: DEFAULT_SETTINGS.pause.unlockMs,
+        sessionId: 'archive-id',
+      }),
+    );
+    expect(h.engine.statsOverlay().todayAgg).toMatchObject({
+      pauseMsSpent: DEFAULT_SETTINGS.pause.pauseMs,
+      unlockMsSpent: DEFAULT_SETTINGS.pause.unlockMs,
+    });
   });
 
   it('abandonGate clears the gate and logs resisted', async () => {

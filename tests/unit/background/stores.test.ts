@@ -6,6 +6,7 @@ import {
   loadSettings,
   loadStreak,
   mergeLists,
+  mergeRuntime,
   mergeSettings,
 } from '../../../src/background/stores';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
@@ -94,6 +95,30 @@ describe('storage default merging', () => {
 });
 
 describe('runtime storage migration', () => {
+  it('defaults missing exact economy aggregate fields to zero', () => {
+    const now: number = new Date(2026, 7, 29, 12, 0).getTime();
+    const runtime = mergeRuntime(
+      {
+        date: '2026-08-29',
+        todayAgg: {
+          date: '2026-08-29',
+          focusMs: 1,
+          sessionsStarted: 0,
+          sessionsCompleted: 0,
+          attempts: {},
+          attemptsOther: 0,
+          pausesTaken: 0,
+          pauseMsSpent: 0,
+          unlocksTaken: 0,
+          resisted: 0,
+        },
+      },
+      now,
+    );
+
+    expect(runtime.todayAgg).toMatchObject({ pauseMsEarned: 0, unlockMsSpent: 0 });
+  });
+
   it('drops legacy tab-id-only mute and stopped records', async () => {
     const now: number = new Date(2026, 7, 29, 12, 0).getTime();
     vi.stubGlobal('chrome', {

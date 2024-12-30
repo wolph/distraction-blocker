@@ -11,6 +11,7 @@ function started(
   durationMin: number,
   intention: string,
   source: 'manual' | 'schedule',
+  sessionId?: string,
 ): EventRecord {
   return {
     t: 'sessionStarted',
@@ -20,6 +21,7 @@ function started(
     strictness: 'friction',
     durationMin,
     intention,
+    sessionId,
   };
 }
 
@@ -50,6 +52,8 @@ describe('pairSessions', () => {
       source: 'manual',
       outcome: 'running',
       focusedMs: null,
+      pauseMs: 0,
+      unlockMs: 0,
     });
     expect(rows[1]).toEqual({
       startedAt: T11,
@@ -58,6 +62,8 @@ describe('pairSessions', () => {
       source: 'schedule',
       outcome: 'ended early',
       focusedMs: 8 * 60_000,
+      pauseMs: 0,
+      unlockMs: 0,
     });
     expect(rows[2]).toEqual({
       startedAt: T9,
@@ -66,7 +72,30 @@ describe('pairSessions', () => {
       source: 'manual',
       outcome: 'completed',
       focusedMs: 25 * 60_000,
+      pauseMs: 0,
+      unlockMs: 0,
     });
+  });
+
+  it('pairs by session id and totals pause and unlock durations', () => {
+    const events: EventRecord[] = [
+      { t: 'sessionCompleted', at: T1110, focusedMs: 8 * 60_000, sessionId: 'later' },
+      { t: 'unlockTaken', at: T11 + 3_000, host: 'x.com', ms: 90_000, sessionId: 'later' },
+      { t: 'pauseTaken', at: T11 + 2_000, ms: 120_000, sessionId: 'later' },
+      { t: 'sessionCanceled', at: T11 + 1_000, focusedMs: 1, sessionId: 'earlier' },
+      started(T11, 25, 'later', 'manual', 'later'),
+      started(T9, 25, 'earlier', 'manual', 'earlier'),
+    ];
+
+    const rows: SessionRow[] = pairSessions(events);
+
+    expect(rows[0]).toMatchObject({
+      intention: 'later',
+      outcome: 'completed',
+      pauseMs: 120_000,
+      unlockMs: 90_000,
+    });
+    expect(rows[1]).toMatchObject({ intention: 'earlier', outcome: 'ended early' });
   });
 
   it('closes a start that is followed by another start without an end event', () => {
@@ -102,6 +131,8 @@ describe('SessionLog', () => {
     expect(container.querySelectorAll('.chip.running').length).toBe(1);
     expect(container.textContent).toContain('thesis chapter');
     expect(container.textContent).toContain('ended early');
+    expect(container.textContent).toContain('Pause');
+    expect(container.textContent).toContain('Unlock');
   });
 
   it('renders the quiet first-run line with no sessions', () => {

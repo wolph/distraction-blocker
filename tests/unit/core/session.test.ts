@@ -26,6 +26,18 @@ function cfg(partial: Partial<SessionConfig> = {}): SessionConfig {
 }
 
 describe('startSession', () => {
+  it('stores the supplied session identity across transitions', () => {
+    const started = startSession(cfg(), T0, 'session-one');
+    const paused = beginPause(started, T0 + MIN, MIN);
+    const resumed = endPauseEarly(paused, T0 + 2 * MIN);
+    const advanced = advance(resumed, T0 + 25 * MIN + 1).next;
+
+    expect(started.sessionId).toBe('session-one');
+    expect(paused.sessionId).toBe('session-one');
+    expect(resumed.sessionId).toBe('session-one');
+    expect(advanced?.sessionId).toBe('session-one');
+  });
+
   it('starts in focus with clamped phase end', () => {
     const s = startSession(cfg(), T0);
     expect(s.phase).toBe('focus');

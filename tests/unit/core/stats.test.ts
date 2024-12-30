@@ -39,7 +39,9 @@ describe('addEvent', () => {
       kind: 'existing',
     });
     agg = addEvent(agg, { t: 'gateResisted', at: AT, gate: 'pause' });
+    agg = addEvent(agg, { t: 'budgetEarned', at: AT, ms: 125_500 });
     agg = addEvent(agg, { t: 'pauseTaken', at: AT, ms: 300_000 });
+    agg = addEvent(agg, { t: 'unlockTaken', at: AT, host: 'x.com', ms: 90_000 });
     agg = addEvent(agg, { t: 'sessionCanceled', at: AT, focusedMs: 600_000 });
     agg = addEvent(agg, { t: 'phase', at: AT, from: 'focus', to: 'break' });
     expect(agg.sessionsStarted).toBe(1);
@@ -47,6 +49,8 @@ describe('addEvent', () => {
     expect(agg.resisted).toBe(1);
     expect(agg.pausesTaken).toBe(1);
     expect(agg.pauseMsSpent).toBe(300_000);
+    expect(agg.pauseMsEarned).toBe(125_500);
+    expect(agg.unlockMsSpent).toBe(90_000);
     expect(agg.focusMs).toBe(600_000);
     expect(agg.sessionsCompleted).toBe(0);
   });
@@ -63,12 +67,26 @@ describe('mergeDaily', () => {
     const b: DailyAgg = {
       ...emptyDaily('2026-08-28'),
       focusMs: 5,
+      pauseMsEarned: 20,
+      unlockMsSpent: 7,
       attempts: { 'x.com': 2, 'nu.nl': 1 },
     };
+    a.pauseMsEarned = 10;
+    a.unlockMsSpent = 3;
     const m: DailyAgg = mergeDaily([a, b]);
     expect(m.focusMs).toBe(15);
     expect(m.attempts).toEqual({ 'x.com': 3, 'nu.nl': 1 });
     expect(m.attemptsOther).toBe(2);
+    expect(m.pauseMsEarned).toBe(30);
+    expect(m.unlockMsSpent).toBe(10);
+  });
+
+  it('migrates missing exact economy fields to zero', () => {
+    const legacy: DailyAgg = emptyDaily('2026-08-28');
+    delete legacy.pauseMsEarned;
+    delete legacy.unlockMsSpent;
+
+    expect(mergeDaily([legacy])).toMatchObject({ pauseMsEarned: 0, unlockMsSpent: 0 });
   });
 });
 
@@ -83,12 +101,26 @@ describe('capAttempts', () => {
 
 describe('rollupMonth', () => {
   it('sums dailies and caps hosts', () => {
-    const d1: DailyAgg = { ...emptyDaily('2026-08-01'), focusMs: 10, attempts: { a: 1 } };
-    const d2: DailyAgg = { ...emptyDaily('2026-08-02'), focusMs: 20, attempts: { a: 2, b: 9 } };
+    const d1: DailyAgg = {
+      ...emptyDaily('2026-08-01'),
+      focusMs: 10,
+      pauseMsEarned: 4,
+      unlockMsSpent: 2,
+      attempts: { a: 1 },
+    };
+    const d2: DailyAgg = {
+      ...emptyDaily('2026-08-02'),
+      focusMs: 20,
+      pauseMsEarned: 6,
+      unlockMsSpent: 3,
+      attempts: { a: 2, b: 9 },
+    };
     const m = rollupMonth('2026-08', [d1, d2]);
     expect(m.month).toBe('2026-08');
     expect(m.focusMs).toBe(30);
     expect(m.attempts.a).toBe(3);
     expect(m.attempts.b).toBe(9);
+    expect(m.pauseMsEarned).toBe(10);
+    expect(m.unlockMsSpent).toBe(5);
   });
 });

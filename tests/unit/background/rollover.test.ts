@@ -26,7 +26,9 @@ function daily(date: string, over: Partial<DailyAgg>): DailyAgg {
     attemptsOther: 0,
     pausesTaken: 0,
     pauseMsSpent: 0,
+    pauseMsEarned: 0,
     unlocksTaken: 0,
+    unlockMsSpent: 0,
     resisted: 0,
     ...over,
   };
@@ -42,7 +44,9 @@ function monthly(month: string, over: Partial<MonthlyAgg>): MonthlyAgg {
     attemptsOther: 0,
     pausesTaken: 0,
     pauseMsSpent: 0,
+    pauseMsEarned: 0,
     unlocksTaken: 0,
+    unlockMsSpent: 0,
     resisted: 0,
     ...over,
   };
@@ -182,6 +186,29 @@ describe('planBackwardDateRebase', () => {
 });
 
 describe('buildStats', () => {
+  it('migrates legacy daily and monthly exact economy totals to zero', () => {
+    const legacyDay: DailyAgg = daily(TODAY, {});
+    const legacyMonth: MonthlyAgg = monthly(TODAY.slice(0, 7), {});
+    delete legacyDay.pauseMsEarned;
+    delete legacyDay.unlockMsSpent;
+    delete legacyMonth.pauseMsEarned;
+    delete legacyMonth.unlockMsSpent;
+
+    const bundle: StatsBundle = buildStats(
+      'devA',
+      {
+        [`agg:devA:${TODAY}`]: legacyDay,
+        [`aggm:devA:${TODAY.slice(0, 7)}`]: legacyMonth,
+      },
+      [],
+      14,
+      NOW,
+    );
+
+    expect(bundle.days[0]).toMatchObject({ pauseMsEarned: 0, unlockMsSpent: 0 });
+    expect(bundle.months[0]).toMatchObject({ pauseMsEarned: 0, unlockMsSpent: 0 });
+  });
+
   it('keeps a newer synced streak over a stale in-memory overlay', () => {
     const synced: StreakState = {
       ...zeroStreak,
@@ -289,9 +316,12 @@ describe('buildStats', () => {
         strictness: 'friction',
         durationMin: 25,
         intention: '',
+        sessionId: 'session-one',
       },
-      { t: 'attempt', at: 2, url: 'https://x.com/', host: 'x.com', tabId: 1, kind: 'navigation' },
-      { t: 'sessionCompleted', at: 3, focusedMs: 60_000 },
+      { t: 'pauseTaken', at: 2, ms: 60_000, sessionId: 'session-one' },
+      { t: 'unlockTaken', at: 3, host: 'x.com', ms: 30_000, sessionId: 'session-one' },
+      { t: 'attempt', at: 4, url: 'https://x.com/', host: 'x.com', tabId: 1, kind: 'navigation' },
+      { t: 'sessionCompleted', at: 5, focusedMs: 60_000, sessionId: 'session-one' },
     ];
     const bundle: StatsBundle = buildStats('devA', syncItems, events, 14, NOW);
     expect(bundle.days.map((d: DailyAgg): string => d.date)).toEqual([YESTERDAY, TODAY]);
@@ -303,6 +333,8 @@ describe('buildStats', () => {
     expect(bundle.totals.resistedToday).toBe(2);
     expect(bundle.recentSessions.map((e: EventRecord): string => e.t)).toEqual([
       'sessionCompleted',
+      'unlockTaken',
+      'pauseTaken',
       'sessionStarted',
     ]);
   });

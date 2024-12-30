@@ -47,6 +47,8 @@ export interface SessionConfig {
 
 /** Persisted machine state. Pure functions in src/core/session.ts own all transitions. */
 export interface SessionState {
+  /** Stable identity for this session. Missing only on legacy persisted state. */
+  sessionId?: string;
   config: SessionConfig;
   startedAt: number;
   sessionEndsAt: number;
@@ -169,7 +171,11 @@ export interface DailyAgg {
   attemptsOther: number;
   pausesTaken: number;
   pauseMsSpent: number;
+  /** Exact bank credit recorded when focus intervals settle. Missing on legacy data. */
+  pauseMsEarned?: number;
   unlocksTaken: number;
+  /** Exact unlock budget spent. Missing on legacy data. */
+  unlockMsSpent?: number;
   /** deliberation gates opened and then abandoned, the win metric */
   resisted: number;
 }
@@ -184,7 +190,9 @@ export interface MonthlyAgg {
   attemptsOther: number;
   pausesTaken: number;
   pauseMsSpent: number;
+  pauseMsEarned?: number;
   unlocksTaken: number;
+  unlockMsSpent?: number;
   resisted: number;
 }
 
@@ -208,10 +216,11 @@ export type EventRecord =
       strictness: Strictness;
       durationMin: number;
       intention: string;
+      sessionId?: string;
     }
-  | { t: 'sessionCompleted'; at: number; focusedMs: number }
-  | { t: 'sessionCanceled'; at: number; focusedMs: number }
-  | { t: 'phase'; at: number; from: Phase; to: Phase }
+  | { t: 'sessionCompleted'; at: number; focusedMs: number; sessionId?: string }
+  | { t: 'sessionCanceled'; at: number; focusedMs: number; sessionId?: string }
+  | { t: 'phase'; at: number; from: Phase; to: Phase; sessionId?: string }
   | {
       t: 'attempt';
       at: number;
@@ -219,11 +228,13 @@ export type EventRecord =
       host: string;
       tabId: number;
       kind: 'navigation' | 'existing';
+      sessionId?: string;
     }
-  | { t: 'gateOpened'; at: number; gate: GateKind }
-  | { t: 'gateResisted'; at: number; gate: GateKind }
-  | { t: 'pauseTaken'; at: number; ms: number }
-  | { t: 'unlockTaken'; at: number; host: string; ms: number };
+  | { t: 'gateOpened'; at: number; gate: GateKind; sessionId?: string }
+  | { t: 'gateResisted'; at: number; gate: GateKind; sessionId?: string }
+  | { t: 'budgetEarned'; at: number; ms: number; sessionId?: string }
+  | { t: 'pauseTaken'; at: number; ms: number; sessionId?: string }
+  | { t: 'unlockTaken'; at: number; host: string; ms: number; sessionId?: string };
 
 export interface Verdict {
   blocked: boolean;

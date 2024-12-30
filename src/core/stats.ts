@@ -10,8 +10,18 @@ interface AggCounters {
   attemptsOther: number;
   pausesTaken: number;
   pauseMsSpent: number;
+  pauseMsEarned?: number;
   unlocksTaken: number;
+  unlockMsSpent?: number;
   resisted: number;
+}
+
+function normalizeCounters<T extends AggCounters>(agg: T): T {
+  return {
+    ...agg,
+    pauseMsEarned: agg.pauseMsEarned ?? 0,
+    unlockMsSpent: agg.unlockMsSpent ?? 0,
+  };
 }
 
 function sumCounters<T extends AggCounters>(into: T, from: AggCounters): T {
@@ -28,14 +38,17 @@ function sumCounters<T extends AggCounters>(into: T, from: AggCounters): T {
     attemptsOther: into.attemptsOther + from.attemptsOther,
     pausesTaken: into.pausesTaken + from.pausesTaken,
     pauseMsSpent: into.pauseMsSpent + from.pauseMsSpent,
+    pauseMsEarned: (into.pauseMsEarned ?? 0) + (from.pauseMsEarned ?? 0),
     unlocksTaken: into.unlocksTaken + from.unlocksTaken,
+    unlockMsSpent: (into.unlockMsSpent ?? 0) + (from.unlockMsSpent ?? 0),
     resisted: into.resisted + from.resisted,
   };
 }
 
 /** Deterministic top-N: count desc, then host asc. The tail folds into attemptsOther. */
 function capCounters<T extends AggCounters>(agg: T, topN: number): T {
-  const entries: Array<[string, number]> = Object.entries(agg.attempts).sort(
+  const normalized: T = normalizeCounters(agg);
+  const entries: Array<[string, number]> = Object.entries(normalized.attempts).sort(
     (a: [string, number], b: [string, number]): number => b[1] - a[1] || (a[0] < b[0] ? -1 : 1),
   );
   const kept: Record<string, number> = {};
@@ -46,7 +59,11 @@ function capCounters<T extends AggCounters>(agg: T, topN: number): T {
     if (i < topN) kept[entry[0]] = entry[1];
     else folded += entry[1];
   }
-  return { ...agg, attempts: kept, attemptsOther: agg.attemptsOther + folded };
+  return {
+    ...normalized,
+    attempts: kept,
+    attemptsOther: normalized.attemptsOther + folded,
+  };
 }
 
 export function emptyDaily(date: string): DailyAgg {
@@ -59,7 +76,9 @@ export function emptyDaily(date: string): DailyAgg {
     attemptsOther: 0,
     pausesTaken: 0,
     pauseMsSpent: 0,
+    pauseMsEarned: 0,
     unlocksTaken: 0,
+    unlockMsSpent: 0,
     resisted: 0,
   };
 }
@@ -74,38 +93,54 @@ function emptyMonthly(month: string): MonthlyAgg {
     attemptsOther: 0,
     pausesTaken: 0,
     pauseMsSpent: 0,
+    pauseMsEarned: 0,
     unlocksTaken: 0,
+    unlockMsSpent: 0,
     resisted: 0,
   };
 }
 
 /** Folds one event into the day it belongs to. Ignores event kinds that do not aggregate. */
 export function addEvent(agg: DailyAgg, ev: EventRecord): DailyAgg {
+  const current: DailyAgg = normalizeCounters(agg);
   switch (ev.t) {
     case 'sessionStarted':
-      return { ...agg, sessionsStarted: agg.sessionsStarted + 1 };
+      return { ...current, sessionsStarted: current.sessionsStarted + 1 };
     case 'sessionCompleted':
       return {
-        ...agg,
-        sessionsCompleted: agg.sessionsCompleted + 1,
-        focusMs: agg.focusMs + ev.focusedMs,
+        ...current,
+        sessionsCompleted: current.sessionsCompleted + 1,
+        focusMs: current.focusMs + ev.focusedMs,
       };
     case 'sessionCanceled':
       // Canceled sessions still contribute the focus they achieved.
-      return { ...agg, focusMs: agg.focusMs + ev.focusedMs };
+      return { ...current, focusMs: current.focusMs + ev.focusedMs };
     case 'attempt':
       return {
-        ...agg,
-        attempts: { ...agg.attempts, [ev.host]: (agg.attempts[ev.host] ?? 0) + 1 },
+        ...current,
+        attempts: {
+          ...current.attempts,
+          [ev.host]: (current.attempts[ev.host] ?? 0) + 1,
+        },
       };
     case 'gateResisted':
-      return { ...agg, resisted: agg.resisted + 1 };
+      return { ...current, resisted: current.resisted + 1 };
+    case 'budgetEarned':
+      return { ...current, pauseMsEarned: (current.pauseMsEarned ?? 0) + ev.ms };
     case 'pauseTaken':
-      return { ...agg, pausesTaken: agg.pausesTaken + 1, pauseMsSpent: agg.pauseMsSpent + ev.ms };
+      return {
+        ...current,
+        pausesTaken: current.pausesTaken + 1,
+        pauseMsSpent: current.pauseMsSpent + ev.ms,
+      };
     case 'unlockTaken':
-      return { ...agg, unlocksTaken: agg.unlocksTaken + 1 };
+      return {
+        ...current,
+        unlocksTaken: current.unlocksTaken + 1,
+        unlockMsSpent: (current.unlockMsSpent ?? 0) + ev.ms,
+      };
     default:
-      return agg;
+      return current;
   }
 }
 

@@ -25,13 +25,10 @@ function todayAgg(bundle: StatsBundle, now: number): DailyAgg | null {
   return bundle.days.find((d: DailyAgg): boolean => d.date === today) ?? null;
 }
 
-function buildTiles(bundle: StatsBundle, economy: PauseEconomy, now: number): TileSpec[] {
+function buildTiles(bundle: StatsBundle, now: number): TileSpec[] {
   const today: DailyAgg | null = todayAgg(bundle, now);
-  // Minutes cost minutes regardless of scope, so unlocks count at their fixed price.
-  const spentMs: number =
-    today === null ? 0 : today.pauseMsSpent + today.unlocksTaken * economy.unlockMs;
-  // Accrual is continuous at earnRatio per focus ms, so earned today derives exactly.
-  const earnedMs: number = today === null ? 0 : today.focusMs * economy.earnRatio;
+  const spentMs: number = today === null ? 0 : today.pauseMsSpent + (today.unlockMsSpent ?? 0);
+  const earnedMs: number = today?.pauseMsEarned ?? 0;
   const freezes: number = bundle.streak.freezeTokens;
   return [
     { label: 'Focus today', value: formatDuration(bundle.totals.focusMsToday), subline: null },
@@ -67,7 +64,7 @@ export function Tiles(props: TilesProps): JSX.Element {
   if (isEmptyBundle(props.bundle)) {
     return <p class="empty-line">Stats appear after your first session.</p>;
   }
-  const tiles: TileSpec[] = buildTiles(props.bundle, props.economy, props.now);
+  const tiles: TileSpec[] = buildTiles(props.bundle, props.now);
   return (
     <div class="tile-row">
       {tiles.map(

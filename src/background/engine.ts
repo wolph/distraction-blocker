@@ -130,7 +130,12 @@ export class Engine {
     private streak: StreakState | null,
     private runtime: RuntimeState,
     private readonly deviceId: string,
-  ) {}
+  ) {
+    if (this.runtime.session !== null && this.runtime.session.sessionId === undefined) {
+      this.runtime.session = { ...this.runtime.session, sessionId: this.ports.newId() };
+      this.dirty = true;
+    }
+  }
 
   reportError(error: unknown): void {
     this.ports.reportError(error);
@@ -165,7 +170,8 @@ export class Engine {
     const now: number = this.ports.now();
     this.catchUp(now);
     if (this.runtime.session !== null) return this.fail(now, 'a session is already running');
-    this.runtime.session = machineStart(config, now);
+    const sessionId: string = this.ports.newId();
+    this.runtime.session = machineStart(config, now, sessionId);
     this.runtime.gate = null;
     this.runtime.unlocks = [];
     this.runtime.accruedFocusMs = 0;
@@ -178,6 +184,7 @@ export class Engine {
       strictness: config.strictness,
       durationMin: config.durationMin,
       intention: config.intention,
+      sessionId,
     });
     this.dirty = true;
     this.needsBlocking = true;
@@ -211,7 +218,7 @@ export class Engine {
       readyAt: now + (gate === 'cancel' ? CANCEL_GATE_DELAY_MS : this.settings.gate.delayMs),
       requiredPhrase: needsPhrase ? cancelPhrase(session.config.intention) : null,
     };
-    this.recordEvent({ t: 'gateOpened', at: now, gate });
+    this.recordEvent({ t: 'gateOpened', at: now, gate, ...sessionIdentity(session) });
     this.dirty = true;
     await this.commit(now);
     return { ok: true };
@@ -249,8 +256,19 @@ export class Engine {
     if (gate.kind === 'pause') {
       this.bank = spend(this.bank, this.settings.pause.pauseMs);
       this.runtime.session = beginPause(session, now, this.settings.pause.pauseMs);
-      this.recordEvent({ t: 'phase', at: now, from: session.phase, to: 'paused' });
-      this.recordEvent({ t: 'pauseTaken', at: now, ms: this.settings.pause.pauseMs });
+      this.recordEvent({
+        t: 'phase',
+        at: now,
+        from: session.phase,
+        to: 'paused',
+        ...sessionIdentity(session),
+      });
+      this.recordEvent({
+        t: 'pauseTaken',
+        at: now,
+        ms: this.settings.pause.pauseMs,
+        ...sessionIdentity(session),
+      });
     } else if (gate.kind === 'unlockSite') {
       const host: string = gate.host ?? '';
       this.bank = spend(this.bank, this.settings.pause.unlockMs);
@@ -263,12 +281,14 @@ export class Engine {
         at: now,
         host,
         ms: this.settings.pause.unlockMs,
+        ...sessionIdentity(session),
       });
     } else {
       this.recordEvent({
         t: 'sessionCanceled',
         at: now,
         focusedMs: focusedMsAt(session, now),
+        ...sessionIdentity(session),
       });
       this.runtime.session = null;
       this.runtime.gate = null;
@@ -283,7 +303,12 @@ export class Engine {
     const now: number = this.ports.now();
     this.catchUp(now);
     if (this.runtime.gate !== null) {
-      this.recordEvent({ t: 'gateResisted', at: now, gate: this.runtime.gate.kind });
+      this.recordEvent({
+        t: 'gateResisted',
+        at: now,
+        gate: this.runtime.gate.kind,
+        ...sessionIdentity(this.runtime.session),
+      });
       this.runtime.gate = null;
       this.dirty = true;
     }
@@ -299,7 +324,13 @@ export class Engine {
       return this.fail(now, 'no pause is running');
     }
     const restored: SessionState = endPauseEarly(session, now);
-    this.recordEvent({ t: 'phase', at: now, from: 'paused', to: restored.phase });
+    this.recordEvent({
+      t: 'phase',
+      at: now,
+      from: 'paused',
+      to: restored.phase,
+      ...sessionIdentity(session),
+    });
     this.runtime.session = restored;
     this.dirty = true;
     this.needsBlocking = true;
@@ -318,7 +349,13 @@ export class Engine {
       if (err instanceof CoreError) return this.fail(now, err.message);
       throw err;
     }
-    this.recordEvent({ t: 'phase', at: now, from: 'break', to: 'focus' });
+    this.recordEvent({
+      t: 'phase',
+      at: now,
+      from: 'break',
+      to: 'focus',
+      ...sessionIdentity(session),
+    });
     this.dirty = true;
     this.needsBlocking = true;
     await this.commit(now);
@@ -344,7 +381,15 @@ export class Engine {
     const attemptMarker: number = retryFailedPersistence ? (last ?? now) : now;
     if (!retryFailedPersistence) {
       this.runtime.attemptDebounce[key] = attemptMarker;
-      this.recordEvent({ t: 'attempt', at: now, url, host: hostOf(url), tabId, kind });
+      this.recordEvent({
+        t: 'attempt',
+        at: now,
+        url,
+        host: hostOf(url),
+        tabId,
+        kind,
+        ...sessionIdentity(this.runtime.session),
+      });
       this.dirty = true;
     }
     this.attemptRevision += 1;
@@ -724,10 +769,20 @@ export class Engine {
       completed?.type === 'completed' ? completed.focusedMs : focusedMsAt(next ?? session, now);
     const delta: number = Math.max(0, focusedNow - this.runtime.accruedFocusMs);
     if (delta > 0) {
+      const previousBalanceMs: number = this.bank.balanceMs;
       this.bank = accrue(this.bank, delta, this.settings.pause);
+      const earnedMs: number = this.bank.balanceMs - previousBalanceMs;
       this.runtime.accruedFocusMs = focusedNow;
       const aggregate: DailyAgg = this.runtime.todayAgg ?? emptyDaily(this.runtime.date);
       this.runtime.todayAgg = { ...aggregate, focusMs: aggregate.focusMs + delta };
+      if (earnedMs > 0) {
+        this.recordEvent({
+          t: 'budgetEarned',
+          at: now,
+          ms: earnedMs,
+          ...sessionIdentity(session),
+        });
+      }
       this.ports.queueSync(SYNC_BANK, this.bank);
       this.dirty = true;
     }
@@ -735,16 +790,27 @@ export class Engine {
       this.runtime.session = next;
       this.dirty = true;
     }
-    for (const ev of events) this.routeMachineEvent(ev);
+    for (const ev of events) this.routeMachineEvent(ev, session);
   }
 
-  private routeMachineEvent(ev: MachineEvent): void {
+  private routeMachineEvent(ev: MachineEvent, session: SessionState): void {
     if (ev.type === 'phaseChanged') {
-      this.recordEvent({ t: 'phase', at: ev.at, from: ev.from, to: ev.to });
+      this.recordEvent({
+        t: 'phase',
+        at: ev.at,
+        from: ev.from,
+        to: ev.to,
+        ...sessionIdentity(session),
+      });
       if (ev.from === 'focus' && ev.to === 'break') this.ports.playSound('breakStart');
       if (ev.from === 'break' && ev.to === 'focus') this.ports.playSound('breakEnd');
     } else {
-      this.recordEvent({ t: 'sessionCompleted', at: ev.at, focusedMs: ev.focusedMs });
+      this.recordEvent({
+        t: 'sessionCompleted',
+        at: ev.at,
+        focusedMs: ev.focusedMs,
+        ...sessionIdentity(session),
+      });
       this.ports.playSound('sessionComplete');
       this.ports.notify('Focus session complete', 'The lock is off. Time for a real break.');
       this.runtime.gate = null;
@@ -759,7 +825,12 @@ export class Engine {
   private expireGate(now: number): void {
     const gate: GateState | null = this.runtime.gate;
     if (gate === null || now <= gate.readyAt + GATE_EXPIRY_MS) return;
-    this.recordEvent({ t: 'gateResisted', at: now, gate: gate.kind });
+    this.recordEvent({
+      t: 'gateResisted',
+      at: now,
+      gate: gate.kind,
+      ...sessionIdentity(this.runtime.session),
+    });
     this.runtime.gate = null;
     this.dirty = true;
   }
@@ -815,7 +886,8 @@ export class Engine {
       source: 'schedule',
       scheduleEntryId: entry.id,
     };
-    this.runtime.session = machineStart(config, now);
+    const sessionId: string = this.ports.newId();
+    this.runtime.session = machineStart(config, now, sessionId);
     this.runtime.accruedFocusMs = 0;
     this.runtime.scheduleActiveEntryId = entry.id;
     this.matcher = compileMatcher(this.lists, ALL_CATEGORIES, config.mode);
@@ -827,6 +899,7 @@ export class Engine {
       strictness: config.strictness,
       durationMin: config.durationMin,
       intention: config.intention,
+      sessionId,
     });
     this.ports.playSound('scheduleStart');
     this.ports.notify('Focus schedule started', `Locked until ${entry.end}.`);
@@ -1067,6 +1140,10 @@ function focusedMsAt(session: SessionState, now: number): number {
   if (session.phase !== 'focus') return session.focusedMs;
   const focusedUntil: number = Math.min(now, session.phaseEndsAt, session.sessionEndsAt);
   return session.focusedMs + Math.max(0, focusedUntil - session.phaseStartedAt);
+}
+
+function sessionIdentity(session: SessionState | null): { sessionId?: string } {
+  return session?.sessionId === undefined ? {} : { sessionId: session.sessionId };
 }
 
 function localMidnightAfter(date: string): number {

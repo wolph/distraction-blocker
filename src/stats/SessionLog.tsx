@@ -12,13 +12,18 @@ export interface SessionRow {
   outcome: 'completed' | 'ended early' | 'running';
   /** null when the session is still running or its end event is missing */
   focusedMs: number | null;
+  pauseMs: number;
+  unlockMs: number;
 }
 
 interface OpenRow {
+  sessionId?: string;
   startedAt: number;
   plannedMin: number;
   intention: string;
   source: 'manual' | 'schedule';
+  pauseMs: number;
+  unlockMs: number;
 }
 
 function closed(
@@ -26,7 +31,25 @@ function closed(
   outcome: SessionRow['outcome'],
   focusedMs: number | null,
 ): SessionRow {
-  return { ...open, outcome, focusedMs };
+  return {
+    startedAt: open.startedAt,
+    plannedMin: open.plannedMin,
+    intention: open.intention,
+    source: open.source,
+    outcome,
+    focusedMs,
+    pauseMs: open.pauseMs,
+    unlockMs: open.unlockMs,
+  };
+}
+
+function belongsToOpen(open: OpenRow, event: EventRecord): boolean {
+  return (
+    !('sessionId' in event) ||
+    event.sessionId === undefined ||
+    open.sessionId === undefined ||
+    event.sessionId === open.sessionId
+  );
 }
 
 /**
@@ -43,15 +66,22 @@ export function pairSessions(events: EventRecord[]): SessionRow[] {
     if (event.t === 'sessionStarted') {
       if (open !== null) rows.push(closed(open, 'ended early', null));
       open = {
+        ...(event.sessionId === undefined ? {} : { sessionId: event.sessionId }),
         startedAt: event.at,
         plannedMin: event.durationMin,
         intention: event.intention,
         source: event.source,
+        pauseMs: 0,
+        unlockMs: 0,
       };
-    } else if (event.t === 'sessionCompleted' && open !== null) {
+    } else if (event.t === 'pauseTaken' && open !== null && belongsToOpen(open, event)) {
+      open.pauseMs += event.ms;
+    } else if (event.t === 'unlockTaken' && open !== null && belongsToOpen(open, event)) {
+      open.unlockMs += event.ms;
+    } else if (event.t === 'sessionCompleted' && open !== null && belongsToOpen(open, event)) {
       rows.push(closed(open, 'completed', event.focusedMs));
       open = null;
-    } else if (event.t === 'sessionCanceled' && open !== null) {
+    } else if (event.t === 'sessionCanceled' && open !== null && belongsToOpen(open, event)) {
       rows.push(closed(open, 'ended early', event.focusedMs));
       open = null;
     }
@@ -110,6 +140,8 @@ export function SessionLog(props: { events: EventRecord[] }): JSX.Element {
               <th>Start</th>
               <th>Planned</th>
               <th>Focused</th>
+              <th>Pause</th>
+              <th>Unlock</th>
               <th>Intention</th>
               <th>Outcome</th>
               <th>
@@ -125,6 +157,8 @@ export function SessionLog(props: { events: EventRecord[] }): JSX.Element {
                   <td>{formatTimeOfDay(row.startedAt)}</td>
                   <td>{formatDuration(row.plannedMin * 60_000)}</td>
                   <td>{row.focusedMs === null ? '-' : formatDuration(row.focusedMs)}</td>
+                  <td>{formatDuration(row.pauseMs)}</td>
+                  <td>{formatDuration(row.unlockMs)}</td>
                   <td class="intention-cell">{row.intention}</td>
                   <td>
                     <span class={chipClass(row.outcome)}>{row.outcome}</span>

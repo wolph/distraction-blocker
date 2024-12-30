@@ -1,3 +1,4 @@
+import { mergeDaily } from '../core/stats';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, EVENT_LOG_CAP } from '../shared/constants';
 import {
   LOCAL_DEVICE_ID,
@@ -158,12 +159,15 @@ export function mergeRuntime(raw: unknown, now: number): RuntimeState {
     mutedTabs: _legacyMutedTabs,
     stoppedTabIds: _legacyStoppedTabIds,
     tabStates,
+    todayAgg,
     ...rest
   } = stored;
   return {
     ...emptyRuntime(now),
     ...(rest as Partial<RuntimeState>),
     tabStates: parseTabStates(tabStates),
+    todayAgg:
+      typeof todayAgg === 'object' && todayAgg !== null ? mergeDaily([todayAgg as DailyAgg]) : null,
   };
 }
 
