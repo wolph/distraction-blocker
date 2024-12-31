@@ -10,7 +10,7 @@ import {
   DEFAULT_SETTINGS,
   GATE_EXPIRY_MS,
 } from '../../../src/shared/constants';
-import { SYNC_STREAK } from '../../../src/shared/storage-keys';
+import { SYNC_BANK, SYNC_STREAK } from '../../../src/shared/storage-keys';
 import { localDateStr } from '../../../src/shared/time';
 import type {
   DailyAgg,
@@ -33,6 +33,22 @@ interface Harness {
 
 const T0: number = new Date(2026, 7, 29, 8, 59).getTime();
 const DAY_MS: number = 86_400_000;
+
+function appendUnique(into: EventRecord[], events: EventRecord[]): void {
+  const seen: Set<string> = new Set(
+    into.map((event: EventRecord): string => JSON.stringify(event)),
+  );
+  for (const event of events) {
+    const key: string = JSON.stringify(event);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    into.push(event);
+  }
+}
+
+function hasCommitCheckpoint(runtime: RuntimeState): boolean {
+  return (runtime as RuntimeState & { commitCheckpoint?: unknown }).commitCheckpoint != null;
+}
 
 function makeEngine(opts?: {
   bankMs?: number;
@@ -206,12 +222,18 @@ describe('Engine', () => {
     );
 
     const starting: Promise<unknown> = h.engine.startSession(manualConfig);
+    await vi.waitFor((): void => expect(h.ports.appendEvents).toHaveBeenCalled());
+    let resolved = false;
+    starting.then((): void => {
+      resolved = true;
+    });
     await Promise.resolve();
 
-    expect(h.ports.saveRuntime).not.toHaveBeenCalled();
+    expect(resolved).toBe(false);
+    expect(h.ports.saveRuntime).toHaveBeenCalledTimes(1);
     releaseEvents();
     await starting;
-    expect(h.ports.saveRuntime).toHaveBeenCalled();
+    expect(h.ports.saveRuntime).toHaveBeenCalledTimes(2);
   });
 
   it('retries runtime persistence after a failed save', async () => {
@@ -224,7 +246,7 @@ describe('Engine', () => {
 
     await expect(h.engine.updateSettings(changed)).rejects.toThrow('local storage unavailable');
     await h.engine.snapshotPersisted();
-    expect(h.ports.saveRuntime).toHaveBeenCalledTimes(2);
+    expect(h.ports.saveRuntime).toHaveBeenCalledTimes(3);
   });
 
   it('persists attempts discovered by the blocking sweep without commit deadlock', async () => {
@@ -256,6 +278,7 @@ describe('Engine', () => {
     let releaseEvents: () => void = (): void => {
       throw new Error('event persistence did not start');
     };
+    h.ports.appendEvents.mockClear();
     h.ports.appendEvents.mockImplementationOnce(
       (): Promise<void> =>
         new Promise((resolve: () => void): void => {
@@ -264,7 +287,7 @@ describe('Engine', () => {
     );
 
     const reading: Promise<SessionSnapshot> = h.engine.snapshotPersisted();
-    await Promise.resolve();
+    await vi.waitFor((): void => expect(h.ports.appendEvents).toHaveBeenCalled());
     let resolved = false;
     void reading.then((): void => {
       resolved = true;
@@ -405,6 +428,50 @@ describe('Engine', () => {
       expect.objectContaining({ t: 'budgetEarned', ms: 100, sessionId: 'archive-id' }),
     ]);
     expect(h.engine.statsOverlay().todayAgg.pauseMsEarned).toBe(100);
+  });
+
+  it('recovers one accrual after runtime cleanup persistence fails and the worker restarts', async () => {
+    const h: Harness = makeEngine({
+      settings: { pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0.5 } },
+    });
+    await h.engine.startSession(manualConfig);
+    let storedRuntime: RuntimeState = structuredClone(
+      h.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+    );
+    let durableBankMs = 0;
+    const durableEvents: EventRecord[] = [];
+    h.ports.queueSync.mockImplementation((key: string, value: unknown): void => {
+      if (key === SYNC_BANK) durableBankMs = (value as { balanceMs: number }).balanceMs;
+    });
+    h.ports.appendEvents.mockImplementation(async (events: EventRecord[]): Promise<void> => {
+      appendUnique(durableEvents, events);
+    });
+    h.ports.saveRuntime.mockImplementation(async (runtime: RuntimeState): Promise<void> => {
+      if (!hasCommitCheckpoint(runtime)) throw new Error('runtime cleanup failed');
+      storedRuntime = structuredClone(runtime);
+    });
+    h.setNow(T0 + 1_000);
+
+    await expect(h.engine.snapshotPersisted()).rejects.toThrow('runtime cleanup failed');
+
+    const restarted: Harness = makeEngine({
+      bankMs: durableBankMs,
+      runtime: storedRuntime,
+      settings: { pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0.5 } },
+      queueSync: (key: string, value: unknown): void => {
+        if (key === SYNC_BANK) durableBankMs = (value as { balanceMs: number }).balanceMs;
+      },
+    });
+    restarted.ports.appendEvents.mockImplementation(
+      async (events: EventRecord[]): Promise<void> => appendUnique(durableEvents, events),
+    );
+    restarted.setNow(T0 + 1_000);
+    await restarted.engine.snapshotPersisted();
+
+    expect(restarted.engine.snapshot().bankMs).toBe(500);
+    expect(
+      durableEvents.filter((event: EventRecord): boolean => event.t === 'budgetEarned'),
+    ).toHaveLength(1);
   });
 
   it('credits only focus time across a cycling phase boundary', async () => {
@@ -640,6 +707,62 @@ describe('Engine', () => {
       unlockMsSpent: DEFAULT_SETTINGS.pause.unlockMs,
     });
   });
+
+  it.each([
+    ['pause', 'pauseTaken'],
+    ['unlockSite', 'unlockTaken'],
+  ] as const)(
+    'recovers one %s spend after runtime cleanup persistence fails and the worker restarts',
+    async (gate: 'pause' | 'unlockSite', eventType: 'pauseTaken' | 'unlockTaken') => {
+      const initialBankMs: number = 600_000;
+      const h: Harness = makeEngine({
+        bankMs: initialBankMs,
+        settings: { pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0 } },
+      });
+      await h.engine.startSession(manualConfig);
+      await h.engine.openGate(gate, gate === 'unlockSite' ? 'facebook.com' : null);
+      let storedRuntime: RuntimeState = structuredClone(
+        h.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+      );
+      let durableBankMs: number = initialBankMs;
+      const durableEvents: EventRecord[] = [];
+      h.ports.queueSync.mockImplementation((key: string, value: unknown): void => {
+        if (key === SYNC_BANK) durableBankMs = (value as { balanceMs: number }).balanceMs;
+      });
+      h.ports.appendEvents.mockImplementation(async (events: EventRecord[]): Promise<void> => {
+        appendUnique(durableEvents, events);
+      });
+      h.ports.saveRuntime.mockImplementation(async (runtime: RuntimeState): Promise<void> => {
+        if (!hasCommitCheckpoint(runtime)) throw new Error('runtime cleanup failed');
+        storedRuntime = structuredClone(runtime);
+      });
+      h.setNow(T0 + DEFAULT_SETTINGS.gate.delayMs);
+
+      await expect(h.engine.confirmGate(null)).rejects.toThrow('runtime cleanup failed');
+
+      const restarted: Harness = makeEngine({
+        bankMs: durableBankMs,
+        runtime: storedRuntime,
+        settings: { pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0 } },
+        queueSync: (key: string, value: unknown): void => {
+          if (key === SYNC_BANK) durableBankMs = (value as { balanceMs: number }).balanceMs;
+        },
+      });
+      restarted.ports.appendEvents.mockImplementation(
+        async (events: EventRecord[]): Promise<void> => appendUnique(durableEvents, events),
+      );
+      restarted.setNow(T0 + DEFAULT_SETTINGS.gate.delayMs);
+      if (storedRuntime.gate === null) await restarted.engine.snapshotPersisted();
+      else await restarted.engine.confirmGate(null);
+
+      expect(restarted.engine.snapshot().bankMs).toBe(
+        initialBankMs - DEFAULT_SETTINGS.pause.pauseMs,
+      );
+      expect(
+        durableEvents.filter((event: EventRecord): boolean => event.t === eventType),
+      ).toHaveLength(1);
+    },
+  );
 
   it('abandonGate clears the gate and logs resisted', async () => {
     const h: Harness = makeEngine({ bankMs: 300_000 });

@@ -98,6 +98,40 @@ describe('pairSessions', () => {
     expect(rows[1]).toMatchObject({ intention: 'earlier', outcome: 'ended early' });
   });
 
+  it('keeps multiple identified sessions open for interleaved events', () => {
+    const events: EventRecord[] = [
+      { t: 'sessionCanceled', at: T11 + 4_000, focusedMs: 7_000, sessionId: 'second' },
+      { t: 'sessionCompleted', at: T11 + 3_000, focusedMs: 20_000, sessionId: 'first' },
+      { t: 'unlockTaken', at: T11 + 2_000, host: 'x.com', ms: 90_000, sessionId: 'second' },
+      { t: 'pauseTaken', at: T11 + 1_000, ms: 120_000, sessionId: 'first' },
+      started(T11, 25, 'second', 'manual', 'second'),
+      started(T9, 25, 'first', 'manual', 'first'),
+    ];
+
+    expect(pairSessions(events)).toEqual([
+      {
+        startedAt: T11,
+        plannedMin: 25,
+        intention: 'second',
+        source: 'manual',
+        outcome: 'ended early',
+        focusedMs: 7_000,
+        pauseMs: 0,
+        unlockMs: 90_000,
+      },
+      {
+        startedAt: T9,
+        plannedMin: 25,
+        intention: 'first',
+        source: 'manual',
+        outcome: 'completed',
+        focusedMs: 20_000,
+        pauseMs: 120_000,
+        unlockMs: 0,
+      },
+    ]);
+  });
+
   it('closes a start that is followed by another start without an end event', () => {
     const rows: SessionRow[] = pairSessions([
       started(T11, 25, 'later', 'manual'),

@@ -1,4 +1,4 @@
-import { mergeDaily } from '../core/stats';
+import { isDailyDate, parseDailyAgg } from '../core/stats';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, EVENT_LOG_CAP } from '../shared/constants';
 import {
   LOCAL_DEVICE_ID,
@@ -46,6 +46,14 @@ export interface RuntimeState {
   todayAgg: DailyAgg | null;
   /** last date the weekly sync prune ran, null before the first run */
   lastPruneDate: string | null;
+  /** Durable recovery record cleared after events, sync journal, and runtime agree. */
+  commitCheckpoint: RuntimeCommitCheckpoint | null;
+}
+
+export interface RuntimeCommitCheckpoint {
+  bank: BankState;
+  events: EventRecord[];
+  syncBank: boolean;
 }
 
 export interface RuntimeTabState {
@@ -77,6 +85,7 @@ export function emptyRuntime(now: number): RuntimeState {
     date: localDateStr(now),
     todayAgg: null,
     lastPruneDate: null,
+    commitCheckpoint: null,
   };
 }
 
@@ -154,21 +163,56 @@ export async function loadRuntime(now: number): Promise<RuntimeState> {
 
 export function mergeRuntime(raw: unknown, now: number): RuntimeState {
   if (typeof raw !== 'object' || raw === null) return emptyRuntime(now);
+  const empty: RuntimeState = emptyRuntime(now);
   const stored: Record<string, unknown> = raw as Record<string, unknown>;
   const {
     mutedTabs: _legacyMutedTabs,
     stoppedTabIds: _legacyStoppedTabIds,
     tabStates,
     todayAgg,
+    commitCheckpoint,
     ...rest
   } = stored;
+  const date: string = isDailyDate(rest.date) ? rest.date : empty.date;
   return {
-    ...emptyRuntime(now),
+    ...empty,
     ...(rest as Partial<RuntimeState>),
+    date,
     tabStates: parseTabStates(tabStates),
-    todayAgg:
-      typeof todayAgg === 'object' && todayAgg !== null ? mergeDaily([todayAgg as DailyAgg]) : null,
+    todayAgg: parseDailyAgg(todayAgg, date),
+    commitCheckpoint: parseCommitCheckpoint(commitCheckpoint),
   };
+}
+
+function parseCommitCheckpoint(value: unknown): RuntimeCommitCheckpoint | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const candidate: Record<string, unknown> = value as Record<string, unknown>;
+  const bank: unknown = candidate.bank;
+  const events: unknown = candidate.events;
+  const syncBank: unknown = candidate.syncBank;
+  if (
+    typeof bank !== 'object' ||
+    bank === null ||
+    Array.isArray(bank) ||
+    !Array.isArray(events) ||
+    typeof syncBank !== 'boolean'
+  ) {
+    return null;
+  }
+  const balanceMs: unknown = (bank as Record<string, unknown>).balanceMs;
+  if (typeof balanceMs !== 'number' || !Number.isFinite(balanceMs) || balanceMs < 0) return null;
+  if (
+    !events.every(
+      (event: unknown): boolean =>
+        typeof event === 'object' &&
+        event !== null &&
+        typeof (event as Record<string, unknown>).t === 'string' &&
+        typeof (event as Record<string, unknown>).at === 'number',
+    )
+  ) {
+    return null;
+  }
+  return { bank: { balanceMs }, events: events as EventRecord[], syncBank };
 }
 
 function parseTabStates(value: unknown): Record<number, RuntimeTabState> {
@@ -230,7 +274,15 @@ export async function appendEvents(evs: EventRecord[]): Promise<void> {
   if (evs.length === 0) return;
   const log: EventRecord[] = ((await chrome.storage.local.get(LOCAL_EVENTS))[LOCAL_EVENTS] ??
     []) as EventRecord[];
-  const next: EventRecord[] = [...log, ...evs].slice(-EVENT_LOG_CAP);
+  const seen: Set<string> = new Set(log.map((event: EventRecord): string => JSON.stringify(event)));
+  const unique: EventRecord[] = [];
+  for (const event of evs) {
+    const key: string = JSON.stringify(event);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(event);
+  }
+  const next: EventRecord[] = [...log, ...unique].slice(-EVENT_LOG_CAP);
   await chrome.storage.local.set({ [LOCAL_EVENTS]: next });
 }
 

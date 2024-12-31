@@ -1,4 +1,10 @@
-import { mergeDaily, mergeMonthly, rollupMonth } from '../core/stats';
+import {
+  mergeDaily,
+  mergeMonthly,
+  parseDailyAgg,
+  parseMonthlyAgg,
+  rollupMonth,
+} from '../core/stats';
 import { emptyStreak } from '../core/streak';
 import type { StatsBundle } from '../shared/messages';
 import { SYNC_STREAK, syncAggKey, syncMonthKey } from '../shared/storage-keys';
@@ -73,11 +79,15 @@ export function buildStats(
     const value: unknown = entry[1];
     const dailyDate: string | undefined = DAILY_KEY_RE.exec(key)?.[1];
     if (dailyDate !== undefined && dailyDate <= today) {
-      groupPush(dailyByDate, dailyDate, value as DailyAgg);
+      const daily: DailyAgg | null = parseDailyAgg(value, dailyDate);
+      if (daily !== null) groupPush(dailyByDate, dailyDate, daily);
       continue;
     }
     const month: string | undefined = MONTHLY_KEY_RE.exec(key)?.[1];
-    if (month !== undefined) groupPush(monthlyByMonth, month, value as MonthlyAgg);
+    if (month !== undefined) {
+      const monthly: MonthlyAgg | null = parseMonthlyAgg(value, month);
+      if (monthly !== null) groupPush(monthlyByMonth, month, monthly);
+    }
   }
   const fromDate: string = localDateStr(now - (days - 1) * DAY_MS);
   const daysMerged: DailyAgg[] = [...dailyByDate.entries()]
@@ -152,7 +162,8 @@ export function pruneAndRollup(
     const date: string | undefined = mineRe.exec(key)?.[1];
     if (date === undefined || date >= cutoff) continue;
     remove.push(key);
-    groupPush(byMonth, date.slice(0, 7), value as DailyAgg);
+    const daily: DailyAgg | null = parseDailyAgg(value, date);
+    if (daily !== null) groupPush(byMonth, date.slice(0, 7), daily);
   }
   archives.sort(
     (left: { key: string; at: number }, right: { key: string; at: number }): number =>
@@ -170,9 +181,9 @@ export function pruneAndRollup(
     const month: string = entry[0];
     const dailies: DailyAgg[] = entry[1];
     const monthKey: string = syncMonthKey(deviceId, month);
-    const existing: MonthlyAgg | undefined = syncItems[monthKey] as MonthlyAgg | undefined;
+    const existing: MonthlyAgg | null = parseMonthlyAgg(syncItems[monthKey], month);
     const rolled: MonthlyAgg = rollupMonth(month, dailies);
-    set[monthKey] = existing === undefined ? rolled : mergeMonthly([existing, rolled]);
+    set[monthKey] = existing === null ? rolled : mergeMonthly([existing, rolled]);
   }
   return { remove, set };
 }

@@ -57,7 +57,7 @@ import {
   planRollover,
   type RolloverPlan,
 } from './rollover';
-import type { RuntimeState, RuntimeTabState } from './stores';
+import type { RuntimeCommitCheckpoint, RuntimeState, RuntimeTabState } from './stores';
 import { chooseNewerStreak, rebaseStreakForDate, streaksEqual } from './streak-sync';
 
 export interface EnginePorts {
@@ -121,6 +121,7 @@ export class Engine {
   private failedAttemptPersistence: Set<string> = new Set();
   private runtimePersistQueue: Promise<void> = Promise.resolve();
   private applyingBlocking = false;
+  private bankDirty = false;
 
   constructor(
     private readonly ports: EnginePorts,
@@ -131,6 +132,13 @@ export class Engine {
     private runtime: RuntimeState,
     private readonly deviceId: string,
   ) {
+    const checkpoint: RuntimeCommitCheckpoint | null = this.runtime.commitCheckpoint;
+    if (checkpoint !== null) {
+      this.bank = checkpoint.bank;
+      this.pendingEvents = [...checkpoint.events];
+      this.bankDirty = checkpoint.syncBank;
+      this.dirty = true;
+    }
     if (this.runtime.session !== null && this.runtime.session.sessionId === undefined) {
       this.runtime.session = { ...this.runtime.session, sessionId: this.ports.newId() };
       this.dirty = true;
@@ -255,6 +263,7 @@ export class Engine {
   private executeGate(gate: GateState, session: SessionState, now: number): void {
     if (gate.kind === 'pause') {
       this.bank = spend(this.bank, this.settings.pause.pauseMs);
+      this.bankDirty = true;
       this.runtime.session = beginPause(session, now, this.settings.pause.pauseMs);
       this.recordEvent({
         t: 'phase',
@@ -272,6 +281,7 @@ export class Engine {
     } else if (gate.kind === 'unlockSite') {
       const host: string = gate.host ?? '';
       this.bank = spend(this.bank, this.settings.pause.unlockMs);
+      this.bankDirty = true;
       this.runtime.unlocks = [
         ...this.runtime.unlocks,
         { host, until: now + this.settings.pause.unlockMs },
@@ -296,7 +306,6 @@ export class Engine {
       this.runtime.accruedFocusMs = 0;
       this.runtime.scheduleActiveEntryId = null;
     }
-    this.ports.queueSync(SYNC_BANK, this.bank);
   }
 
   async abandonGate(): Promise<Ack> {
@@ -776,6 +785,7 @@ export class Engine {
       const aggregate: DailyAgg = this.runtime.todayAgg ?? emptyDaily(this.runtime.date);
       this.runtime.todayAgg = { ...aggregate, focusMs: aggregate.focusMs + delta };
       if (earnedMs > 0) {
+        this.bankDirty = true;
         this.recordEvent({
           t: 'budgetEarned',
           at: now,
@@ -783,7 +793,6 @@ export class Engine {
           ...sessionIdentity(session),
         });
       }
-      this.ports.queueSync(SYNC_BANK, this.bank);
       this.dirty = true;
     }
     if (next !== session) {
@@ -994,9 +1003,7 @@ export class Engine {
   private persistBlockingMutation(attemptRevision: number): Promise<void> {
     const queued: Promise<void> = this.blockingMutationPersistQueue.then(
       async (): Promise<void> => {
-        await this.flushEvents();
-        await this.ports.persistSyncJournal();
-        await this.persistRuntime();
+        await this.persistDomainState();
         this.resolveAttemptDurability(attemptRevision);
       },
     );
@@ -1019,13 +1026,11 @@ export class Engine {
 
   private async performCommit(now: number): Promise<void> {
     const attemptRevision: number = this.attemptRevision;
-    await this.flushEvents();
-    await this.ports.persistSyncJournal();
+    await this.persistDomainState();
     this.dirty = false;
     const block: boolean = this.needsBlocking;
     this.needsBlocking = false;
     const snap: SessionSnapshot = this.buildSnapshot(now);
-    await this.persistRuntime();
     this.resolveAttemptDurability(attemptRevision);
     this.ports.broadcast(snap);
     this.ports.updateIcon(snap);
@@ -1040,15 +1045,28 @@ export class Engine {
     }
     if (this.dirty) {
       const updatedAttemptRevision: number = this.attemptRevision;
-      await this.flushEvents();
-      await this.ports.persistSyncJournal();
+      await this.persistDomainState();
       this.dirty = false;
       const updated: SessionSnapshot = this.buildSnapshot(this.ports.now());
-      await this.persistRuntime();
       this.resolveAttemptDurability(updatedAttemptRevision);
       this.ports.broadcast(updated);
       this.ports.updateIcon(updated);
     }
+  }
+
+  private async persistDomainState(): Promise<void> {
+    this.runtime.commitCheckpoint = {
+      bank: structuredClone(this.bank),
+      events: [...this.pendingEvents],
+      syncBank: this.bankDirty,
+    };
+    await this.persistRuntime();
+    if (this.bankDirty) this.ports.queueSync(SYNC_BANK, this.bank);
+    await this.flushEvents();
+    await this.ports.persistSyncJournal();
+    this.bankDirty = false;
+    this.runtime.commitCheckpoint = null;
+    await this.persistRuntime();
   }
 
   private async persistRuntime(): Promise<void> {

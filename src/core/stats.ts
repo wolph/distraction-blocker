@@ -16,6 +16,105 @@ interface AggCounters {
   resisted: number;
 }
 
+const DAILY_DATE_RE: RegExp = /^(\d{4})-(\d{2})-(\d{2})$/;
+const MONTH_RE: RegExp = /^(\d{4})-(\d{2})$/;
+const REQUIRED_COUNTERS: Array<keyof AggCounters> = [
+  'focusMs',
+  'sessionsStarted',
+  'sessionsCompleted',
+  'attemptsOther',
+  'pausesTaken',
+  'pauseMsSpent',
+  'unlocksTaken',
+  'resisted',
+];
+
+function isNonnegativeFinite(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+export function isDailyDate(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const match: RegExpExecArray | null = DAILY_DATE_RE.exec(value);
+  if (match === null) return false;
+  const year: number = Number(match[1]);
+  const month: number = Number(match[2]);
+  const day: number = Number(match[3]);
+  const parsed: Date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day
+  );
+}
+
+function isMonth(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const match: RegExpExecArray | null = MONTH_RE.exec(value);
+  if (match === null) return false;
+  const month: number = Number(match[2]);
+  return month >= 1 && month <= 12;
+}
+
+function parseCounters(value: unknown): AggCounters | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const candidate: Record<string, unknown> = value as Record<string, unknown>;
+  for (const key of REQUIRED_COUNTERS) {
+    if (!isNonnegativeFinite(candidate[key])) return null;
+  }
+  const attemptsValue: unknown = candidate.attempts;
+  if (typeof attemptsValue !== 'object' || attemptsValue === null || Array.isArray(attemptsValue)) {
+    return null;
+  }
+  const attempts: Record<string, number> = {};
+  for (const [host, count] of Object.entries(attemptsValue)) {
+    if (!isNonnegativeFinite(count)) return null;
+    attempts[host] = count;
+  }
+  const pauseMsEarned: unknown = candidate.pauseMsEarned ?? 0;
+  const unlockMsSpent: unknown = candidate.unlockMsSpent ?? 0;
+  if (!isNonnegativeFinite(pauseMsEarned) || !isNonnegativeFinite(unlockMsSpent)) return null;
+  return {
+    focusMs: candidate.focusMs as number,
+    sessionsStarted: candidate.sessionsStarted as number,
+    sessionsCompleted: candidate.sessionsCompleted as number,
+    attempts,
+    attemptsOther: candidate.attemptsOther as number,
+    pausesTaken: candidate.pausesTaken as number,
+    pauseMsSpent: candidate.pauseMsSpent as number,
+    pauseMsEarned,
+    unlocksTaken: candidate.unlocksTaken as number,
+    unlockMsSpent,
+    resisted: candidate.resisted as number,
+  };
+}
+
+export function parseDailyAgg(value: unknown, expectedDate?: string): DailyAgg | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const candidate: Record<string, unknown> = value as Record<string, unknown>;
+  if (
+    !isDailyDate(candidate.date) ||
+    (expectedDate !== undefined && candidate.date !== expectedDate)
+  ) {
+    return null;
+  }
+  const counters: AggCounters | null = parseCounters(candidate);
+  return counters === null ? null : { date: candidate.date, ...counters };
+}
+
+export function parseMonthlyAgg(value: unknown, expectedMonth?: string): MonthlyAgg | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const candidate: Record<string, unknown> = value as Record<string, unknown>;
+  if (
+    !isMonth(candidate.month) ||
+    (expectedMonth !== undefined && candidate.month !== expectedMonth)
+  ) {
+    return null;
+  }
+  const counters: AggCounters | null = parseCounters(candidate);
+  return counters === null ? null : { month: candidate.month, ...counters };
+}
+
 function normalizeCounters<T extends AggCounters>(agg: T): T {
   return {
     ...agg,

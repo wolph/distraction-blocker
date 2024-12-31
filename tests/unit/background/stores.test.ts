@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  appendEvents,
   loadBank,
   loadLists,
   loadRuntime,
@@ -11,6 +12,7 @@ import {
 } from '../../../src/background/stores';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import {
+  LOCAL_EVENTS,
   LOCAL_RUNTIME,
   SYNC_BANK,
   SYNC_LISTS,
@@ -119,6 +121,19 @@ describe('runtime storage migration', () => {
     expect(runtime.todayAgg).toMatchObject({ pauseMsEarned: 0, unlockMsSpent: 0 });
   });
 
+  it.each([
+    { attempts: [], focusMs: 1 },
+    { attempts: {}, focusMs: 'one' },
+    { attempts: {}, focusMs: 1, date: 'not-a-date' },
+  ])('rejects a malformed stored daily aggregate without throwing', (todayAgg: object) => {
+    const now: number = new Date(2026, 7, 29, 12, 0).getTime();
+
+    expect((): void => {
+      const runtime = mergeRuntime({ date: '2026-08-29', todayAgg }, now);
+      expect(runtime.todayAgg).toBeNull();
+    }).not.toThrow();
+  });
+
   it('drops legacy tab-id-only mute and stopped records', async () => {
     const now: number = new Date(2026, 7, 29, 12, 0).getTime();
     vi.stubGlobal('chrome', {
@@ -201,5 +216,32 @@ describe('runtime storage migration', () => {
         stoppedDocumentId: 'document-one',
       },
     });
+  });
+});
+
+describe('event storage replay', () => {
+  it('does not append an identical checkpoint event twice', async () => {
+    const event = {
+      t: 'budgetEarned' as const,
+      at: 1,
+      ms: 500,
+      sessionId: 'session-one',
+    };
+    const state: Record<string, unknown> = { [LOCAL_EVENTS]: [] };
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: vi.fn(async (): Promise<Record<string, unknown>> => state),
+          set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+            Object.assign(state, items);
+          }),
+        },
+      },
+    });
+
+    await appendEvents([event]);
+    await appendEvents([event]);
+
+    expect(state[LOCAL_EVENTS]).toEqual([event]);
   });
 });

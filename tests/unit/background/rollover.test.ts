@@ -209,6 +209,26 @@ describe('buildStats', () => {
     expect(bundle.months[0]).toMatchObject({ pauseMsEarned: 0, unlockMsSpent: 0 });
   });
 
+  it('rejects malformed sync aggregates without crashing the stats read', () => {
+    const previousMonth: string = '2026-07';
+    const syncItems: Record<string, unknown> = {
+      [`agg:devA:${TODAY}`]: { ...daily(TODAY, {}), attempts: null },
+      [`agg:devB:${TODAY}`]: { ...daily(TODAY, {}), focusMs: 'one' },
+      [`agg:devC:${TODAY}`]: { ...daily(YESTERDAY, {}) },
+      [`aggm:devA:${TODAY.slice(0, 7)}`]: {
+        ...monthly(TODAY.slice(0, 7), {}),
+        attempts: null,
+      },
+      [`aggm:devB:${previousMonth}`]: { ...monthly(previousMonth, {}), resisted: 'many' },
+      [`aggm:devC:${previousMonth}`]: { ...monthly(TODAY.slice(0, 7), {}) },
+    };
+
+    expect((): StatsBundle => buildStats('devA', syncItems, [], 60, NOW)).not.toThrow();
+    const bundle: StatsBundle = buildStats('devA', syncItems, [], 60, NOW);
+    expect(bundle.days).toEqual([]);
+    expect(bundle.months).toEqual([]);
+  });
+
   it('keeps a newer synced streak over a stale in-memory overlay', () => {
     const synced: StreakState = {
       ...zeroStreak,

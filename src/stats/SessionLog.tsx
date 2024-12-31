@@ -43,13 +43,14 @@ function closed(
   };
 }
 
-function belongsToOpen(open: OpenRow, event: EventRecord): boolean {
-  return (
-    !('sessionId' in event) ||
-    event.sessionId === undefined ||
-    open.sessionId === undefined ||
-    event.sessionId === open.sessionId
-  );
+function matchingOpenIndex(opens: OpenRow[], event: EventRecord): number {
+  const sessionId: string | undefined = 'sessionId' in event ? event.sessionId : undefined;
+  if (sessionId !== undefined) {
+    const exact: number = opens.findIndex((open: OpenRow): boolean => open.sessionId === sessionId);
+    if (exact >= 0) return exact;
+    return opens.findIndex((open: OpenRow): boolean => open.sessionId === undefined);
+  }
+  return opens.length - 1;
 }
 
 /**
@@ -61,11 +62,18 @@ function belongsToOpen(open: OpenRow, event: EventRecord): boolean {
 export function pairSessions(events: EventRecord[]): SessionRow[] {
   const chronological: EventRecord[] = [...events].reverse();
   const rows: SessionRow[] = [];
-  let open: OpenRow | null = null;
+  const opens: OpenRow[] = [];
   for (const event of chronological) {
     if (event.t === 'sessionStarted') {
-      if (open !== null) rows.push(closed(open, 'ended early', null));
-      open = {
+      const displacedIndex: number =
+        event.sessionId === undefined
+          ? opens.length - 1
+          : opens.findIndex((open: OpenRow): boolean => open.sessionId === event.sessionId);
+      if (displacedIndex >= 0) {
+        const displaced: OpenRow | undefined = opens.splice(displacedIndex, 1)[0];
+        if (displaced !== undefined) rows.push(closed(displaced, 'ended early', null));
+      }
+      opens.push({
         ...(event.sessionId === undefined ? {} : { sessionId: event.sessionId }),
         startedAt: event.at,
         plannedMin: event.durationMin,
@@ -73,21 +81,26 @@ export function pairSessions(events: EventRecord[]): SessionRow[] {
         source: event.source,
         pauseMs: 0,
         unlockMs: 0,
-      };
-    } else if (event.t === 'pauseTaken' && open !== null && belongsToOpen(open, event)) {
+      });
+      continue;
+    }
+    const openIndex: number = matchingOpenIndex(opens, event);
+    const open: OpenRow | undefined = opens[openIndex];
+    if (open === undefined) continue;
+    if (event.t === 'pauseTaken') {
       open.pauseMs += event.ms;
-    } else if (event.t === 'unlockTaken' && open !== null && belongsToOpen(open, event)) {
+    } else if (event.t === 'unlockTaken') {
       open.unlockMs += event.ms;
-    } else if (event.t === 'sessionCompleted' && open !== null && belongsToOpen(open, event)) {
+    } else if (event.t === 'sessionCompleted') {
       rows.push(closed(open, 'completed', event.focusedMs));
-      open = null;
-    } else if (event.t === 'sessionCanceled' && open !== null && belongsToOpen(open, event)) {
+      opens.splice(openIndex, 1);
+    } else if (event.t === 'sessionCanceled') {
       rows.push(closed(open, 'ended early', event.focusedMs));
-      open = null;
+      opens.splice(openIndex, 1);
     }
   }
-  if (open !== null) rows.push(closed(open, 'running', null));
-  rows.reverse();
+  for (const open of opens) rows.push(closed(open, 'running', null));
+  rows.sort((left: SessionRow, right: SessionRow): number => right.startedAt - left.startedAt);
   return rows.slice(0, MAX_ROWS);
 }
 
