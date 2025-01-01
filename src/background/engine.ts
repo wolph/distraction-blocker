@@ -116,12 +116,16 @@ export class Engine {
   private needsBlocking = false;
   private commitQueue: Promise<void> = Promise.resolve();
   private blockingMutationPersistQueue: Promise<void> = Promise.resolve();
+  private domainPersistQueue: Promise<void> = Promise.resolve();
   private attemptRevision = 0;
   private attemptPersistInFlight: Map<string, Set<AttemptDurability>> = new Map();
   private failedAttemptPersistence: Set<string> = new Set();
   private runtimePersistQueue: Promise<void> = Promise.resolve();
   private applyingBlocking = false;
   private bankDirty = false;
+  private bankRevision = 0;
+  private runtimePersistRevision = 0;
+  private ownedRuntimeSnapshot: RuntimeState;
 
   constructor(
     private readonly ports: EnginePorts,
@@ -134,15 +138,19 @@ export class Engine {
   ) {
     const checkpoint: RuntimeCommitCheckpoint | null = this.runtime.commitCheckpoint;
     if (checkpoint !== null) {
-      this.bank = checkpoint.bank;
       this.pendingEvents = [...checkpoint.events];
-      this.bankDirty = checkpoint.syncBank;
+      if (checkpoint.syncBank) {
+        this.bank = checkpoint.bank;
+        this.bankDirty = true;
+        this.bankRevision = 1;
+      }
       this.dirty = true;
     }
     if (this.runtime.session !== null && this.runtime.session.sessionId === undefined) {
       this.runtime.session = { ...this.runtime.session, sessionId: this.ports.newId() };
       this.dirty = true;
     }
+    this.ownedRuntimeSnapshot = structuredClone(this.runtime);
   }
 
   reportError(error: unknown): void {
@@ -264,6 +272,7 @@ export class Engine {
     if (gate.kind === 'pause') {
       this.bank = spend(this.bank, this.settings.pause.pauseMs);
       this.bankDirty = true;
+      this.bankRevision += 1;
       this.runtime.session = beginPause(session, now, this.settings.pause.pauseMs);
       this.recordEvent({
         t: 'phase',
@@ -282,6 +291,7 @@ export class Engine {
       const host: string = gate.host ?? '';
       this.bank = spend(this.bank, this.settings.pause.unlockMs);
       this.bankDirty = true;
+      this.bankRevision += 1;
       this.runtime.unlocks = [
         ...this.runtime.unlocks,
         { host, until: now + this.settings.pause.unlockMs },
@@ -579,7 +589,7 @@ export class Engine {
         this.failedAttemptPersistence.delete(key);
       }
     }
-    await this.persistRuntime();
+    await this.persistDroppedTab(tabId);
   }
 
   private ensureTabState(tabId: number): RuntimeTabState {
@@ -680,6 +690,7 @@ export class Engine {
     }
     this.catchUp(now);
     this.bank = { balanceMs: Math.min(bank.balanceMs, this.settings.pause.capMs) };
+    this.bankRevision += 1;
     this.dirty = true;
     await this.commit(now);
     return { ok: true };
@@ -786,6 +797,7 @@ export class Engine {
       this.runtime.todayAgg = { ...aggregate, focusMs: aggregate.focusMs + delta };
       if (earnedMs > 0) {
         this.bankDirty = true;
+        this.bankRevision += 1;
         this.recordEvent({
           t: 'budgetEarned',
           at: now,
@@ -972,18 +984,19 @@ export class Engine {
     this.dirty = true;
   }
 
-  private async flushEvents(): Promise<void> {
-    const aggregate: DailyAgg | null = this.runtime.todayAgg;
+  private async flushEvents(
+    aggregate: DailyAgg | null,
+    date: string,
+    batch: EventRecord[],
+  ): Promise<void> {
     if (aggregate !== null) {
       this.ports.queueSync(
-        syncAggKey(this.deviceId, this.runtime.date),
+        syncAggKey(this.deviceId, date),
         capAttempts(aggregate, TOP_SITES_DAILY),
       );
     }
-    if (this.pendingEvents.length === 0) return;
-    const batch: EventRecord[] = [...this.pendingEvents];
+    if (batch.length === 0) return;
     await this.ports.appendEvents(batch);
-    this.pendingEvents.splice(0, batch.length);
   }
 
   private commit(now: number): Promise<void> {
@@ -1054,23 +1067,63 @@ export class Engine {
     }
   }
 
-  private async persistDomainState(): Promise<void> {
-    this.runtime.commitCheckpoint = {
-      bank: structuredClone(this.bank),
-      events: [...this.pendingEvents],
-      syncBank: this.bankDirty,
-    };
-    await this.persistRuntime();
-    if (this.bankDirty) this.ports.queueSync(SYNC_BANK, this.bank);
-    await this.flushEvents();
-    await this.ports.persistSyncJournal();
-    this.bankDirty = false;
-    this.runtime.commitCheckpoint = null;
-    await this.persistRuntime();
+  private persistDomainState(): Promise<void> {
+    const queued: Promise<void> = this.domainPersistQueue.then(
+      (): Promise<void> => this.performDomainPersist(),
+    );
+    this.domainPersistQueue = queued.catch((): void => {
+      // Keep later domain persistence usable. The caller still receives the rejection.
+    });
+    return queued;
   }
 
-  private async persistRuntime(): Promise<void> {
-    const snapshot: RuntimeState = structuredClone(this.runtime);
+  private async performDomainPersist(): Promise<void> {
+    const bank: BankState = structuredClone(this.bank);
+    const events: EventRecord[] = [...this.pendingEvents];
+    const aggregate: DailyAgg | null = structuredClone(this.runtime.todayAgg);
+    const date: string = this.runtime.date;
+    const syncBank: boolean = this.bankDirty;
+    const bankRevision: number = this.bankRevision;
+    const runtimePersistRevision: number = this.runtimePersistRevision;
+    this.runtime.commitCheckpoint = { bank, events, syncBank };
+    const checkpointRuntime: RuntimeState = structuredClone(this.runtime);
+    this.ownedRuntimeSnapshot = structuredClone(checkpointRuntime);
+    await this.persistRuntime(checkpointRuntime);
+    if (syncBank) this.ports.queueSync(SYNC_BANK, bank);
+    await this.flushEvents(aggregate, date, events);
+    await this.ports.persistSyncJournal();
+    for (const event of events) {
+      const index: number = this.pendingEvents.indexOf(event);
+      if (index >= 0) this.pendingEvents.splice(index, 1);
+    }
+    if (this.bankRevision === bankRevision) this.bankDirty = false;
+    this.runtime.commitCheckpoint = null;
+    if (this.runtimePersistRevision === runtimePersistRevision) {
+      checkpointRuntime.commitCheckpoint = null;
+      this.ownedRuntimeSnapshot = structuredClone(checkpointRuntime);
+      await this.persistRuntime(checkpointRuntime);
+    }
+  }
+
+  private persistRuntime(snapshot?: RuntimeState): Promise<void> {
+    if (snapshot === undefined) {
+      this.runtimePersistRevision += 1;
+      this.ownedRuntimeSnapshot.tabStates = structuredClone(this.runtime.tabStates);
+      return this.queueRuntimeSnapshot(structuredClone(this.ownedRuntimeSnapshot));
+    }
+    return this.queueRuntimeSnapshot(snapshot);
+  }
+
+  private persistDroppedTab(tabId: number): Promise<void> {
+    this.runtimePersistRevision += 1;
+    this.ownedRuntimeSnapshot.tabStates = structuredClone(this.runtime.tabStates);
+    for (const key of Object.keys(this.ownedRuntimeSnapshot.attemptDebounce)) {
+      if (key.startsWith(`${tabId}:`)) delete this.ownedRuntimeSnapshot.attemptDebounce[key];
+    }
+    return this.queueRuntimeSnapshot(structuredClone(this.ownedRuntimeSnapshot));
+  }
+
+  private queueRuntimeSnapshot(snapshot: RuntimeState): Promise<void> {
     const requested: Promise<void> = this.runtimePersistQueue.then(
       (): Promise<void> => this.ports.saveRuntime(snapshot),
     );

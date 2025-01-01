@@ -2,14 +2,16 @@ import { describe, expect, it, vi } from 'vitest';
 import type { EnginePorts } from '../../../src/background/engine';
 import { Engine } from '../../../src/background/engine';
 import { clockRebaseArchiveKey } from '../../../src/background/rollover';
-import { emptyRuntime, type RuntimeState } from '../../../src/background/stores';
+import { emptyRuntime, mergeRuntime, type RuntimeState } from '../../../src/background/stores';
 import { SyncWriter } from '../../../src/background/sync-writer';
+import { beginPause, endPauseEarly, startSession } from '../../../src/core/session';
 import {
   CANCEL_GATE_DELAY_MS,
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
   GATE_EXPIRY_MS,
 } from '../../../src/shared/constants';
+import type { Ack } from '../../../src/shared/messages';
 import { SYNC_BANK, SYNC_STREAK } from '../../../src/shared/storage-keys';
 import { localDateStr } from '../../../src/shared/time';
 import type {
@@ -203,6 +205,22 @@ describe('Engine', () => {
 
     const migrated: Harness = makeEngine({ runtime: legacy });
     await migrated.engine.snapshotPersisted();
+
+    expect(migrated.ports.saveRuntime.mock.calls.at(-1)?.[0]).toMatchObject({
+      session: { sessionId: 'archive-id' },
+    });
+  });
+
+  it('preserves a migrated session identity during direct tab persistence', async () => {
+    const first: Harness = makeEngine();
+    await first.engine.startSession(manualConfig);
+    const legacy: RuntimeState = structuredClone(
+      first.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+    );
+    if (legacy.session !== null) delete legacy.session.sessionId;
+    const migrated: Harness = makeEngine({ runtime: legacy });
+
+    await migrated.engine.markStopped(7, 'https://blocked.example/page', 'document-id');
 
     expect(migrated.ports.saveRuntime.mock.calls.at(-1)?.[0]).toMatchObject({
       session: { sessionId: 'archive-id' },
@@ -472,6 +490,259 @@ describe('Engine', () => {
     expect(
       durableEvents.filter((event: EventRecord): boolean => event.t === 'budgetEarned'),
     ).toHaveLength(1);
+  });
+
+  it('keeps a second accrual revision while the first event append is blocked', async () => {
+    const h: Harness = makeEngine({
+      settings: { pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0.5 } },
+    });
+    await h.engine.startSession(manualConfig);
+    h.ports.appendEvents.mockClear();
+    h.ports.queueSync.mockClear();
+    let releaseFirstAppend: () => void = (): void => {
+      throw new Error('first append did not start');
+    };
+    h.ports.appendEvents.mockImplementationOnce(
+      (): Promise<void> =>
+        new Promise((resolve: () => void): void => {
+          releaseFirstAppend = resolve;
+        }),
+    );
+    h.setNow(T0 + 1_000);
+    const first: Promise<SessionSnapshot> = h.engine.snapshotPersisted();
+    await vi.waitFor((): void => expect(h.ports.appendEvents).toHaveBeenCalledTimes(1));
+
+    h.setNow(T0 + 2_000);
+    const second: Promise<SessionSnapshot> = h.engine.snapshotPersisted();
+    releaseFirstAppend();
+    await Promise.all([first, second]);
+
+    const bankWrites: Array<{ balanceMs: number }> = h.ports.queueSync.mock.calls
+      .filter((call: unknown[]): boolean => call[0] === SYNC_BANK)
+      .map((call: unknown[]): { balanceMs: number } => call[1] as { balanceMs: number });
+    expect(bankWrites.at(-1)?.balanceMs).toBe(1_000);
+    expect(
+      h.loggedEvents().filter((event: EventRecord): boolean => event.t === 'budgetEarned'),
+    ).toHaveLength(2);
+
+    const storedRuntime: RuntimeState = structuredClone(
+      h.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+    );
+    const restarted: Harness = makeEngine({
+      bankMs: bankWrites.at(-1)?.balanceMs ?? 0,
+      runtime: storedRuntime,
+      settings: { pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0.5 } },
+    });
+    restarted.setNow(T0 + 2_000);
+    await restarted.engine.snapshotPersisted();
+    expect(restarted.engine.snapshot().bankMs).toBe(1_000);
+  });
+
+  it('keeps a synced bank revision while an accrual event append is blocked', async () => {
+    const h: Harness = makeEngine({
+      settings: { pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0.5 } },
+    });
+    await h.engine.startSession(manualConfig);
+    h.ports.appendEvents.mockClear();
+    h.ports.queueSync.mockClear();
+    let releaseFirstAppend: () => void = (): void => {
+      throw new Error('first append did not start');
+    };
+    h.ports.appendEvents.mockImplementationOnce(
+      (): Promise<void> =>
+        new Promise((resolve: () => void): void => {
+          releaseFirstAppend = resolve;
+        }),
+    );
+    h.setNow(T0 + 1_000);
+    const accrual: Promise<SessionSnapshot> = h.engine.snapshotPersisted();
+    await vi.waitFor((): void => expect(h.ports.appendEvents).toHaveBeenCalledTimes(1));
+
+    const synced: Promise<Ack> = h.engine.applySyncedBank({ balanceMs: 250 });
+    releaseFirstAppend();
+    await Promise.all([accrual, synced]);
+
+    const bankWrites: Array<{ balanceMs: number }> = h.ports.queueSync.mock.calls
+      .filter((call: unknown[]): boolean => call[0] === SYNC_BANK)
+      .map((call: unknown[]): { balanceMs: number } => call[1] as { balanceMs: number });
+    expect(bankWrites.at(-1)?.balanceMs).toBe(250);
+    const storedRuntime: RuntimeState = structuredClone(
+      h.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+    );
+    const restarted: Harness = makeEngine({
+      bankMs: bankWrites.at(-1)?.balanceMs ?? 0,
+      runtime: storedRuntime,
+      settings: { pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0.5 } },
+    });
+    restarted.setNow(T0 + 1_000);
+    expect(restarted.engine.snapshot().bankMs).toBe(250);
+  });
+
+  it('keeps cross-queue attempt revisions when the first event append is blocked', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession(manualConfig);
+    h.ports.appendEvents.mockClear();
+    const durableEvents: EventRecord[] = [];
+    let releaseFirstAppend: () => void = (): void => {
+      throw new Error('first append did not start');
+    };
+    let signalSecondAppend: () => void = (): void => {
+      throw new Error('second append signal was not initialized');
+    };
+    const secondAppendStarted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalSecondAppend = resolve;
+    });
+    h.ports.appendEvents.mockImplementationOnce(async (events: EventRecord[]): Promise<void> => {
+      await new Promise<void>((resolve: () => void): void => {
+        releaseFirstAppend = resolve;
+      });
+      appendUnique(durableEvents, events);
+    });
+    h.ports.appendEvents.mockImplementation(async (events: EventRecord[]): Promise<void> => {
+      signalSecondAppend();
+      appendUnique(durableEvents, events);
+    });
+
+    Reflect.set(h.engine, 'applyingBlocking', true);
+    const first: Promise<void> = h.engine.recordAttempt(
+      'https://facebook.com/first',
+      7,
+      'existing',
+    );
+    await vi.waitFor((): void => expect(h.ports.appendEvents).toHaveBeenCalledTimes(1));
+
+    Reflect.set(h.engine, 'applyingBlocking', false);
+    const second: Promise<void> = h.engine.recordAttempt(
+      'https://facebook.com/second',
+      8,
+      'navigation',
+    );
+    await Promise.race([
+      secondAppendStarted,
+      new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 20);
+      }),
+    ]);
+    releaseFirstAppend();
+    await Promise.all([first, second]);
+
+    expect(
+      durableEvents.filter((event: EventRecord): boolean => event.t === 'attempt'),
+    ).toHaveLength(2);
+    const storedRuntime: RuntimeState = structuredClone(
+      h.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+    );
+    const restarted: Harness = makeEngine({ runtime: storedRuntime });
+    expect(restarted.engine.snapshot().attemptsToday).toBe(2);
+  });
+
+  it('does not overwrite a durable tab mutation when checkpoint cleanup finishes', async () => {
+    const h: Harness = makeEngine();
+    let releaseEvents: () => void = (): void => {
+      throw new Error('event persistence did not start');
+    };
+    h.ports.appendEvents.mockImplementationOnce(
+      (): Promise<void> =>
+        new Promise((resolve: () => void): void => {
+          releaseEvents = resolve;
+        }),
+    );
+
+    const starting: Promise<Ack> = h.engine.startSession(manualConfig);
+    await vi.waitFor((): void => expect(h.ports.appendEvents).toHaveBeenCalledTimes(1));
+    await h.engine.markStopped(7, 'https://facebook.com/feed', 'durable-document');
+    releaseEvents();
+    await starting;
+
+    const storedRuntime: RuntimeState = structuredClone(
+      h.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+    );
+    const restarted: Harness = makeEngine({ runtime: mergeRuntime(storedRuntime, T0) });
+    expect(
+      restarted.engine.tabFacts(7, 'https://facebook.com/feed', 'durable-document').wasStopped,
+    ).toBe(true);
+    await restarted.engine.snapshotPersisted();
+    expect(restarted.ports.saveRuntime.mock.calls.at(-1)?.[0]).toMatchObject({
+      tabStates: { 7: { stoppedDocumentId: 'durable-document' } },
+      commitCheckpoint: null,
+    });
+  });
+
+  it('does not persist an unowned accrual through a concurrent tab mutation', async () => {
+    const h: Harness = makeEngine({
+      settings: { pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0.5 } },
+    });
+    await h.engine.startSession(manualConfig);
+    h.ports.appendEvents.mockClear();
+    let releaseEvents: () => void = (): void => {
+      throw new Error('event persistence did not start');
+    };
+    h.ports.appendEvents.mockImplementationOnce(
+      (): Promise<void> =>
+        new Promise((resolve: () => void): void => {
+          releaseEvents = resolve;
+        }),
+    );
+
+    h.setNow(T0 + 1_000);
+    const first: Promise<SessionSnapshot> = h.engine.snapshotPersisted();
+    await vi.waitFor((): void => expect(h.ports.appendEvents).toHaveBeenCalledTimes(1));
+    h.setNow(T0 + 2_000);
+    const second: Promise<SessionSnapshot> = h.engine.snapshotPersisted();
+    await h.engine.markStopped(7, 'https://facebook.com/feed', 'durable-document');
+
+    const crashRuntime: RuntimeState = structuredClone(
+      h.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+    );
+    const restarted: Harness = makeEngine({
+      runtime: mergeRuntime(crashRuntime, T0 + 2_000),
+      settings: { pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0.5 } },
+    });
+    restarted.setNow(T0 + 2_000);
+    expect((await restarted.engine.snapshotPersisted()).bankMs).toBe(1_000);
+    expect(
+      restarted.engine.tabFacts(7, 'https://facebook.com/feed', 'durable-document').wasStopped,
+    ).toBe(true);
+
+    releaseEvents();
+    await Promise.all([first, second]);
+  });
+
+  it('does not restore bank data from a checkpoint that does not own a bank write', async () => {
+    const runtime: RuntimeState = emptyRuntime(T0);
+    runtime.commitCheckpoint = {
+      bank: { balanceMs: 100 },
+      events: [],
+      syncBank: false,
+    };
+
+    const h: Harness = makeEngine({ bankMs: 900, runtime });
+    expect(h.engine.snapshot().bankMs).toBe(900);
+    await h.engine.snapshotPersisted();
+    expect(h.engine.snapshot().bankMs).toBe(900);
+  });
+
+  it('restores and advances a resumed phase whose original boundary has passed', async () => {
+    const config: SessionConfig = {
+      ...manualConfig,
+      cycling: { focusMin: 5, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 },
+    };
+    const started = startSession(config, T0, 'resumed-session');
+    const paused = beginPause(started, T0 + 4 * 60_000, 5 * 60_000);
+    const resumed = endPauseEarly(paused, T0 + 6 * 60_000);
+    expect(resumed.phaseStartedAt).toBeGreaterThan(resumed.phaseEndsAt);
+    const runtime: RuntimeState = mergeRuntime(
+      {
+        ...emptyRuntime(T0 + 6 * 60_000),
+        session: resumed,
+        accruedFocusMs: resumed.focusedMs,
+      },
+      T0 + 6 * 60_000,
+    );
+
+    const h: Harness = makeEngine({ runtime });
+    h.setNow(T0 + 6 * 60_000);
+    expect((await h.engine.snapshotPersisted()).phase).toBe('break');
   });
 
   it('credits only focus time across a cycling phase boundary', async () => {

@@ -9,6 +9,7 @@ import {
   mergeLists,
   mergeRuntime,
   mergeSettings,
+  readEvents,
 } from '../../../src/background/stores';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import {
@@ -19,7 +20,7 @@ import {
   SYNC_SETTINGS,
   SYNC_STREAK,
 } from '../../../src/shared/storage-keys';
-import type { StreakState } from '../../../src/shared/types';
+import type { EventRecord, StreakState } from '../../../src/shared/types';
 
 afterEach((): void => {
   vi.unstubAllGlobals();
@@ -94,6 +95,147 @@ describe('storage default merging', () => {
     expect(lists.exclusions).toEqual({ ...DEFAULT_LISTS.exclusions, social: ['facebook.com'] });
     expect(lists.custom).toEqual(DEFAULT_LISTS.custom);
   });
+
+  it('sanitizes malformed settings and list fields from sync storage', async () => {
+    const validSchedule = {
+      id: 'weekday-focus',
+      days: [1, 2, 3, 4, 5],
+      start: '09:00',
+      end: '10:00',
+      mode: 'blacklist',
+      strictness: 'hard',
+      cycling: null,
+      intention: 'Work',
+      enabled: true,
+    };
+    const stored: Record<string, unknown> = {
+      [SYNC_SETTINGS]: {
+        presetsMin: [5, 'bad', 30],
+        defaultMode: 'invalid',
+        defaultStrictness: 'hard',
+        defaultCycling: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 0 },
+        cyclingOnByDefault: 'yes',
+        pause: {
+          earnRatio: -1,
+          capMs: 123,
+          pauseMs: Number.POSITIVE_INFINITY,
+          unlockMs: 456,
+        },
+        gate: { delayMs: -1, requireTypedPhrase: true },
+        badgeCountdown: 'yes',
+        sounds: {
+          masterVolume: 2,
+          sessionComplete: false,
+          breakStart: 'yes',
+          breakEnd: true,
+          scheduleStart: false,
+        },
+        schedule: [validSchedule, { ...validSchedule, id: ' ', start: 'tomorrow' }],
+        streakGoalMin: -1,
+        retentionDays: 30,
+        unknownField: 'discard me',
+      },
+      [SYNC_LISTS]: {
+        custom: [
+          { kind: 'host', pattern: 'blocked.example' },
+          { kind: 'regex', pattern: '' },
+          { kind: 'unknown', pattern: 'bad.example' },
+          null,
+        ],
+        whitelist: 'not-an-array',
+        categories: { social: true, video: 'yes', unknown: true },
+        exclusions: {
+          social: ['facebook.com', 42, ''],
+          video: 'not-an-array',
+          unknown: ['ignored.example'],
+        },
+        unknownField: 'discard me',
+      },
+    };
+    vi.stubGlobal('chrome', {
+      storage: {
+        sync: {
+          get: vi.fn(
+            async (key: string): Promise<Record<string, unknown>> => ({
+              [key]: stored[key],
+            }),
+          ),
+        },
+      },
+    });
+
+    const [settings, lists] = await Promise.all([loadSettings(), loadLists()]);
+
+    expect(settings).toMatchObject({
+      presetsMin: DEFAULT_SETTINGS.presetsMin,
+      defaultMode: DEFAULT_SETTINGS.defaultMode,
+      defaultStrictness: 'hard',
+      defaultCycling: DEFAULT_SETTINGS.defaultCycling,
+      cyclingOnByDefault: DEFAULT_SETTINGS.cyclingOnByDefault,
+      pause: {
+        earnRatio: DEFAULT_SETTINGS.pause.earnRatio,
+        capMs: 123,
+        pauseMs: DEFAULT_SETTINGS.pause.pauseMs,
+        unlockMs: 456,
+      },
+      gate: { delayMs: DEFAULT_SETTINGS.gate.delayMs, requireTypedPhrase: true },
+      badgeCountdown: DEFAULT_SETTINGS.badgeCountdown,
+      sounds: {
+        masterVolume: DEFAULT_SETTINGS.sounds.masterVolume,
+        sessionComplete: false,
+        breakStart: DEFAULT_SETTINGS.sounds.breakStart,
+        breakEnd: true,
+        scheduleStart: false,
+      },
+      schedule: [validSchedule],
+      streakGoalMin: DEFAULT_SETTINGS.streakGoalMin,
+      retentionDays: 30,
+    });
+    expect(settings).not.toHaveProperty('unknownField');
+    expect(lists).toEqual({
+      custom: [
+        { kind: 'host', pattern: 'blocked.example' },
+        { kind: 'regex', pattern: '' },
+      ],
+      whitelist: [],
+      categories: { ...DEFAULT_LISTS.categories, social: true },
+      exclusions: { social: ['facebook.com'] },
+    });
+  });
+
+  it.each([
+    { balanceMs: -1 },
+    { balanceMs: Number.POSITIVE_INFINITY },
+    { balanceMs: 'many' },
+    null,
+  ])('defaults a malformed bank from sync storage', async (rawBank: unknown) => {
+    vi.stubGlobal('chrome', {
+      storage: {
+        sync: {
+          get: vi.fn().mockResolvedValue({ [SYNC_BANK]: rawBank }),
+        },
+      },
+    });
+
+    await expect(loadBank()).resolves.toEqual({ balanceMs: 0 });
+  });
+
+  it.each([
+    { current: -1 },
+    { current: 1, freezeTokens: 3 },
+    { current: 1, freezeTokens: 1, activeDays: [0] },
+    { current: 1, freezeTokens: 1, activeDays: [], activeMonth: 'not-a-month' },
+  ])('rejects a malformed streak from sync storage', async (rawStreak: object) => {
+    vi.stubGlobal('chrome', {
+      storage: {
+        sync: {
+          get: vi.fn().mockResolvedValue({ [SYNC_STREAK]: rawStreak }),
+        },
+      },
+    });
+
+    await expect(loadStreak()).resolves.toBeNull();
+  });
 });
 
 describe('runtime storage migration', () => {
@@ -132,6 +274,209 @@ describe('runtime storage migration', () => {
       const runtime = mergeRuntime({ date: '2026-08-29', todayAgg }, now);
       expect(runtime.todayAgg).toBeNull();
     }).not.toThrow();
+  });
+
+  it.each([
+    {},
+    {
+      sessionId: 'bad-phase',
+      config: {
+        mode: 'blacklist',
+        strictness: 'friction',
+        durationMin: 25,
+        cycling: null,
+        intention: '',
+        source: 'manual',
+        scheduleEntryId: null,
+      },
+      startedAt: 1,
+      sessionEndsAt: 2,
+      phase: 'wrong',
+      phaseStartedAt: 1,
+      phaseEndsAt: 2,
+      cycleIndex: 0,
+      pausedFrom: null,
+      focusedMs: 0,
+    },
+    {
+      sessionId: 'bad-config',
+      config: {
+        mode: 'blacklist',
+        strictness: 'friction',
+        durationMin: 25,
+        cycling: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 0 },
+        intention: '',
+        source: 'manual',
+        scheduleEntryId: null,
+      },
+      startedAt: 1,
+      sessionEndsAt: 2,
+      phase: 'focus',
+      phaseStartedAt: 1,
+      phaseEndsAt: 2,
+      cycleIndex: 0,
+      pausedFrom: null,
+      focusedMs: 0,
+    },
+    {
+      sessionId: 'bad-time',
+      config: {
+        mode: 'blacklist',
+        strictness: 'friction',
+        durationMin: 25,
+        cycling: null,
+        intention: '',
+        source: 'manual',
+        scheduleEntryId: null,
+      },
+      startedAt: -1,
+      sessionEndsAt: 2,
+      phase: 'focus',
+      phaseStartedAt: 1,
+      phaseEndsAt: Number.NaN,
+      cycleIndex: 0,
+      pausedFrom: null,
+      focusedMs: 0,
+    },
+    {
+      sessionId: 'bad-pause',
+      config: {
+        mode: 'blacklist',
+        strictness: 'friction',
+        durationMin: 25,
+        cycling: null,
+        intention: '',
+        source: 'manual',
+        scheduleEntryId: null,
+      },
+      startedAt: 1,
+      sessionEndsAt: 10,
+      phase: 'paused',
+      phaseStartedAt: 2,
+      phaseEndsAt: 5,
+      cycleIndex: 0,
+      pausedFrom: null,
+      focusedMs: 1,
+    },
+    {
+      sessionId: 'bad-order',
+      config: {
+        mode: 'blacklist',
+        strictness: 'friction',
+        durationMin: 25,
+        cycling: null,
+        intention: '',
+        source: 'manual',
+        scheduleEntryId: null,
+      },
+      startedAt: 2,
+      sessionEndsAt: 10,
+      phase: 'focus',
+      phaseStartedAt: 5,
+      phaseEndsAt: 1,
+      cycleIndex: 0,
+      pausedFrom: null,
+      focusedMs: 0,
+    },
+    {
+      sessionId: '   ',
+      config: {
+        mode: 'blacklist',
+        strictness: 'friction',
+        durationMin: 25,
+        cycling: null,
+        intention: '',
+        source: 'manual',
+        scheduleEntryId: null,
+      },
+      startedAt: 1,
+      sessionEndsAt: 2,
+      phase: 'focus',
+      phaseStartedAt: 1,
+      phaseEndsAt: 2,
+      cycleIndex: 0,
+      pausedFrom: null,
+      focusedMs: 0,
+    },
+  ])('rejects a malformed persisted session safely', (session: object) => {
+    const now: number = new Date(2026, 7, 29, 12, 0).getTime();
+    const runtime = mergeRuntime({ session }, now);
+
+    expect(runtime.session).toBeNull();
+  });
+
+  it('sanitizes every malformed runtime field independently', () => {
+    const now: number = new Date(2026, 7, 29, 12, 0).getTime();
+    const runtime = mergeRuntime(
+      {
+        gate: { kind: 'pause', openedAt: -1 },
+        unlocks: [{ host: 42, until: Number.POSITIVE_INFINITY }],
+        accruedFocusMs: -1,
+        attemptDebounce: { bad: 'yesterday' },
+        scheduleActiveEntryId: 42,
+        lastPruneDate: 'not-a-date',
+        commitCheckpoint: { bank: { balanceMs: -1 }, events: [{}], syncBank: 'yes' },
+      },
+      now,
+    );
+
+    expect(runtime).toMatchObject({
+      session: null,
+      gate: null,
+      unlocks: [],
+      accruedFocusMs: 0,
+      attemptDebounce: {},
+      scheduleActiveEntryId: null,
+      lastPruneDate: null,
+      commitCheckpoint: null,
+    });
+  });
+
+  it('preserves a valid legacy session without copying unknown runtime fields', () => {
+    const now: number = new Date(2026, 7, 29, 12, 0).getTime();
+    const session = {
+      config: {
+        mode: 'blacklist' as const,
+        strictness: 'friction' as const,
+        durationMin: 25,
+        cycling: null,
+        intention: '',
+        source: 'manual' as const,
+        scheduleEntryId: null,
+      },
+      startedAt: now,
+      sessionEndsAt: now + 25 * 60_000,
+      phase: 'focus' as const,
+      phaseStartedAt: now,
+      phaseEndsAt: now + 25 * 60_000,
+      cycleIndex: 0,
+      pausedFrom: null,
+      focusedMs: 0,
+    };
+
+    const runtime = mergeRuntime({ session, unknownField: 'discard me' }, now);
+
+    expect(runtime.session).toEqual(session);
+    expect(runtime).not.toHaveProperty('unknownField');
+  });
+
+  it.each([
+    { t: 'unknown', at: 1 },
+    { t: 'budgetEarned', at: 1, ms: 500, sessionId: '   ' },
+  ])('rejects a checkpoint containing a malformed event', (event: object) => {
+    const now: number = new Date(2026, 7, 29, 12, 0).getTime();
+    const runtime = mergeRuntime(
+      {
+        commitCheckpoint: {
+          bank: { balanceMs: 500 },
+          events: [event],
+          syncBank: true,
+        },
+      },
+      now,
+    );
+
+    expect(runtime.commitCheckpoint).toBeNull();
   });
 
   it('drops legacy tab-id-only mute and stopped records', async () => {
@@ -220,6 +565,58 @@ describe('runtime storage migration', () => {
 });
 
 describe('event storage replay', () => {
+  it('drops malformed stored events while preserving valid records', async () => {
+    const valid: EventRecord = {
+      t: 'budgetEarned',
+      at: 1,
+      ms: 500,
+      sessionId: 'session-one',
+    };
+    const state: Record<string, unknown> = {
+      [LOCAL_EVENTS]: [
+        valid,
+        null,
+        { t: 'budgetEarned', at: Number.NaN, ms: 500 },
+        { t: 'unknown', at: 2 },
+      ],
+    };
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: vi.fn(async (): Promise<Record<string, unknown>> => state),
+          set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+            Object.assign(state, items);
+          }),
+        },
+      },
+    });
+
+    await expect(readEvents()).resolves.toEqual([valid]);
+    await appendEvents([{ t: 'pauseTaken', at: 2, ms: 100, sessionId: 'session-one' }]);
+    expect(state[LOCAL_EVENTS]).toEqual([
+      valid,
+      { t: 'pauseTaken', at: 2, ms: 100, sessionId: 'session-one' },
+    ]);
+  });
+
+  it('repairs a non-array event log before appending', async () => {
+    const event: EventRecord = { t: 'budgetEarned', at: 1, ms: 500 };
+    const state: Record<string, unknown> = { [LOCAL_EVENTS]: { malformed: true } };
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: vi.fn(async (): Promise<Record<string, unknown>> => state),
+          set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+            Object.assign(state, items);
+          }),
+        },
+      },
+    });
+
+    await expect(appendEvents([event])).resolves.toBeUndefined();
+    expect(state[LOCAL_EVENTS]).toEqual([event]);
+  });
+
   it('does not append an identical checkpoint event twice', async () => {
     const event = {
       t: 'budgetEarned' as const,
