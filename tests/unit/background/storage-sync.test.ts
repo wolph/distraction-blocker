@@ -164,4 +164,56 @@ describe('handleSyncChanges', () => {
     expect(applySyncedBank).toHaveBeenCalledWith(bank);
     expect(write).not.toHaveBeenCalled();
   });
+
+  it('ignores a malformed bank while applying valid settings and lists from the batch', async () => {
+    const settings: Settings = { ...DEFAULT_SETTINGS, retentionDays: 30 };
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'blocked.example' }],
+    };
+    const applySyncedSettings = vi.fn().mockResolvedValue({ ok: true });
+    const applySyncedLists = vi.fn().mockResolvedValue({ ok: true });
+    const applySyncedBank = vi.fn(async (bank: BankState): Promise<{ ok: true }> => {
+      void bank.balanceMs;
+      return { ok: true };
+    });
+    const engine: SyncChangeEngine = makeEngine({
+      applySyncedSettings,
+      applySyncedLists,
+      applySyncedBank,
+    });
+
+    await expect(
+      handleSyncChanges(
+        engine,
+        {
+          [SYNC_BANK]: { newValue: null },
+          [SYNC_SETTINGS]: { newValue: settings },
+          [SYNC_LISTS]: { newValue: lists },
+        },
+        new SyncEchoes(),
+        vi.fn().mockResolvedValue(undefined),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(applySyncedBank).not.toHaveBeenCalled();
+    expect(applySyncedSettings).toHaveBeenCalledWith(settings);
+    expect(applySyncedLists).toHaveBeenCalledWith(lists);
+  });
+
+  it('ignores a malformed streak without throwing', async () => {
+    const applySyncedStreak = vi.fn().mockResolvedValue(undefined);
+    const engine: SyncChangeEngine = makeEngine({ applySyncedStreak });
+
+    await expect(
+      handleSyncChanges(
+        engine,
+        { [SYNC_STREAK]: { newValue: { current: 4 } } },
+        new SyncEchoes(),
+        vi.fn().mockResolvedValue(undefined),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(applySyncedStreak).not.toHaveBeenCalled();
+  });
 });

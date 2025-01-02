@@ -186,7 +186,7 @@ export function mergeLists(raw: unknown): ListsConfig {
 
 export async function loadBank(journal?: SyncJournal): Promise<BankState> {
   const raw: unknown = (await chrome.storage.sync.get(SYNC_BANK))[SYNC_BANK];
-  return parseBank(journalValue(journal, SYNC_BANK, raw));
+  return parseBank(journalValue(journal, SYNC_BANK, raw)) ?? { balanceMs: 0 };
 }
 
 /** Null when no streak has been persisted yet: minting one needs core's emptyStreak. */
@@ -397,8 +397,8 @@ function parseExclusions(value: unknown): ListsConfig['exclusions'] {
   return exclusions;
 }
 
-function parseBank(value: unknown): BankState {
-  if (!isRecord(value) || !isNonNegativeNumber(value.balanceMs)) return { balanceMs: 0 };
+export function parseBank(value: unknown): BankState | null {
+  if (!isRecord(value) || !isNonNegativeNumber(value.balanceMs)) return null;
   return { balanceMs: value.balanceMs };
 }
 
@@ -414,7 +414,7 @@ function isNullableDailyDate(value: unknown): value is string | null {
   return value === null || isDailyDate(value);
 }
 
-function parseStreak(value: unknown): StreakState | null {
+export function parseStreak(value: unknown): StreakState | null {
   if (!isRecord(value)) return null;
   if (
     !isNonNegativeInteger(value.current) ||

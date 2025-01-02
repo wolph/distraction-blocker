@@ -1,7 +1,7 @@
 import type { Ack } from '../shared/messages';
 import { SYNC_BANK, SYNC_LISTS, SYNC_SETTINGS, SYNC_STREAK } from '../shared/storage-keys';
 import type { BankState, ListsConfig, Settings, StreakState } from '../shared/types';
-import { mergeLists, mergeSettings } from './stores';
+import { mergeLists, mergeSettings, parseBank, parseStreak } from './stores';
 import type { SyncEchoes } from './sync-writer';
 
 export interface SyncChangeEngine {
@@ -81,11 +81,13 @@ export async function handleSyncChanges(
 
   const bankValue: unknown = changes[SYNC_BANK]?.newValue;
   if (bankValue !== undefined && !echoes.consume(SYNC_BANK, bankValue)) {
-    await engine.applySyncedBank(bankValue as BankState);
+    const bank: BankState | null = parseBank(bankValue);
+    if (bank !== null) await engine.applySyncedBank(bank);
   }
 
   const streakValue: unknown = changes[SYNC_STREAK]?.newValue;
   if (streakValue !== undefined && !echoes.consume(SYNC_STREAK, streakValue)) {
-    await engine.applySyncedStreak(streakValue as StreakState);
+    const streak: StreakState | null = parseStreak(streakValue);
+    if (streak !== null) await engine.applySyncedStreak(streak);
   }
 }

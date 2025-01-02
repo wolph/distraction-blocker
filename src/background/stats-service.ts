@@ -10,7 +10,7 @@ import type { StatsBundle } from '../shared/messages';
 import { SYNC_STREAK, syncAggKey, syncMonthKey } from '../shared/storage-keys';
 import { localDateStr, localMonthStr } from '../shared/time';
 import type { DailyAgg, EventRecord, MonthlyAgg, StreakState } from '../shared/types';
-import { getDeviceId, readEvents } from './stores';
+import { getDeviceId, parseStreak, readEvents } from './stores';
 import { chooseNewerStreak } from './streak-sync';
 
 const DAY_MS: number = 86_400_000;
@@ -65,8 +65,7 @@ export function buildStats(
   const today: string = localDateStr(now);
   if (live !== null) {
     items[syncAggKey(live.deviceId, live.todayAgg.date)] = live.todayAgg;
-    const syncedStreak: StreakState | null =
-      (items[SYNC_STREAK] as StreakState | undefined) ?? null;
+    const syncedStreak: StreakState | null = parseStreak(items[SYNC_STREAK]);
     const currentStreak: StreakState | null = chooseNewerStreak(syncedStreak, live.streak);
     if (currentStreak !== null) items[SYNC_STREAK] = currentStreak;
   }
@@ -97,8 +96,7 @@ export function buildStats(
   const months: MonthlyAgg[] = [...monthlyByMonth.entries()]
     .sort(([a]: [string, MonthlyAgg[]], [b]: [string, MonthlyAgg[]]): number => a.localeCompare(b))
     .map(([, aggs]: [string, MonthlyAgg[]]): MonthlyAgg => mergeMonthly(aggs));
-  const streak: StreakState =
-    (items[SYNC_STREAK] as StreakState | undefined) ?? emptyStreak(localMonthStr(now));
+  const streak: StreakState = parseStreak(items[SYNC_STREAK]) ?? emptyStreak(localMonthStr(now));
   const recentSessions: EventRecord[] = allEvents
     .filter(
       (e: EventRecord): boolean =>

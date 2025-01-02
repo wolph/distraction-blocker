@@ -229,6 +229,59 @@ describe('buildStats', () => {
     expect(bundle.months).toEqual([]);
   });
 
+  it('rejects a malformed synced streak without dropping valid aggregates', () => {
+    const aggregate: DailyAgg = daily(TODAY, { focusMs: 60_000 });
+    const bundle: StatsBundle = buildStats(
+      'devA',
+      {
+        [SYNC_STREAK]: { current: 4 },
+        [`agg:devA:${TODAY}`]: aggregate,
+      },
+      [],
+      14,
+      NOW,
+    );
+
+    expect(bundle.streak).toEqual(zeroStreak);
+    expect(bundle.days).toEqual([aggregate]);
+  });
+
+  it('rejects a malformed synced streak before choosing against the live overlay', () => {
+    const liveStreak: StreakState = {
+      ...zeroStreak,
+      current: 5,
+      lastCountedDate: '2026-08-28',
+      activeDays: [24, 25, 26, 27, 28],
+    };
+    let bundle: StatsBundle | undefined;
+
+    expect((): void => {
+      bundle = buildStats(
+        'devA',
+        {
+          [SYNC_STREAK]: {
+            current: 4,
+            freezeTokens: 0,
+            lastCountedDate: liveStreak.lastCountedDate,
+            lastFreezeGrantDate: null,
+            activeDays: null,
+            activeMonth: liveStreak.activeMonth,
+          },
+        },
+        [],
+        14,
+        NOW,
+        {
+          deviceId: 'devA',
+          todayAgg: daily(TODAY, {}),
+          streak: liveStreak,
+          pendingEvents: [],
+        },
+      );
+    }).not.toThrow();
+    expect(bundle?.streak).toEqual(liveStreak);
+  });
+
   it('keeps a newer synced streak over a stale in-memory overlay', () => {
     const synced: StreakState = {
       ...zeroStreak,
