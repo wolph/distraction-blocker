@@ -18,6 +18,7 @@ export interface SessionRow {
 
 interface OpenRow {
   sessionId?: string;
+  superseded: boolean;
   startedAt: number;
   plannedMin: number;
   intention: string;
@@ -65,6 +66,7 @@ export function pairSessions(events: EventRecord[]): SessionRow[] {
   const opens: OpenRow[] = [];
   for (const event of chronological) {
     if (event.t === 'sessionStarted') {
+      for (const open of opens) open.superseded = true;
       const displacedIndex: number =
         event.sessionId === undefined
           ? opens.length - 1
@@ -75,6 +77,7 @@ export function pairSessions(events: EventRecord[]): SessionRow[] {
       }
       opens.push({
         ...(event.sessionId === undefined ? {} : { sessionId: event.sessionId }),
+        superseded: false,
         startedAt: event.at,
         plannedMin: event.durationMin,
         intention: event.intention,
@@ -99,7 +102,9 @@ export function pairSessions(events: EventRecord[]): SessionRow[] {
       opens.splice(openIndex, 1);
     }
   }
-  for (const open of opens) rows.push(closed(open, 'running', null));
+  for (const open of opens) {
+    rows.push(closed(open, open.superseded ? 'ended early' : 'running', null));
+  }
   rows.sort((left: SessionRow, right: SessionRow): number => right.startedAt - left.startedAt);
   return rows.slice(0, MAX_ROWS);
 }

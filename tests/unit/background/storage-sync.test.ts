@@ -102,9 +102,16 @@ describe('handleSyncChanges', () => {
   });
 
   it('corrects rejected lists and consumes the corrective echo', async () => {
-    const weaker: ListsConfig = { ...DEFAULT_LISTS, custom: [] };
+    const current: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'blocked.example' }],
+    };
+    const weaker: ListsConfig = { ...current, custom: [] };
     const applySyncedLists = vi.fn().mockResolvedValue({ ok: false, error: 'hard session' });
-    const engine: SyncChangeEngine = makeEngine({ applySyncedLists });
+    const engine: SyncChangeEngine = makeEngine({
+      applySyncedLists,
+      getLists: vi.fn((): ListsConfig => current),
+    });
     const echoes: SyncEchoes = new SyncEchoes();
     const set = vi.fn().mockResolvedValue(undefined);
     const writer: SyncWriter = new SyncWriter(
@@ -118,15 +125,10 @@ describe('handleSyncChanges', () => {
 
     await handleSyncChanges(engine, { [SYNC_LISTS]: { newValue: weaker } }, echoes, queueSync);
     await writer.flushNow();
-    await handleSyncChanges(
-      engine,
-      { [SYNC_LISTS]: { newValue: DEFAULT_LISTS } },
-      echoes,
-      queueSync,
-    );
+    await handleSyncChanges(engine, { [SYNC_LISTS]: { newValue: current } }, echoes, queueSync);
 
     expect(set).toHaveBeenCalledTimes(1);
-    expect(set).toHaveBeenCalledWith({ [SYNC_LISTS]: DEFAULT_LISTS });
+    expect(set).toHaveBeenCalledWith({ [SYNC_LISTS]: current });
     expect(applySyncedLists).toHaveBeenCalledTimes(1);
   });
 
@@ -215,5 +217,165 @@ describe('handleSyncChanges', () => {
     ).resolves.toBeUndefined();
 
     expect(applySyncedStreak).not.toHaveBeenCalled();
+  });
+
+  it('ignores malformed live settings and lists instead of resetting them', async () => {
+    const currentSettings: Settings = {
+      ...DEFAULT_SETTINGS,
+      gate: { ...DEFAULT_SETTINGS.gate, delayMs: 15_000 },
+    };
+    const currentLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'keep.example' }],
+    };
+    const applySyncedSettings = vi.fn().mockResolvedValue({ ok: true });
+    const applySyncedLists = vi.fn().mockResolvedValue({ ok: true });
+    const engine: SyncChangeEngine = makeEngine({
+      applySyncedSettings,
+      applySyncedLists,
+      getSettings: vi.fn((): Settings => currentSettings),
+      getLists: vi.fn((): ListsConfig => currentLists),
+    });
+
+    await handleSyncChanges(
+      engine,
+      {
+        [SYNC_SETTINGS]: { newValue: null },
+        [SYNC_LISTS]: { newValue: null },
+      },
+      new SyncEchoes(),
+      vi.fn().mockResolvedValue(undefined),
+    );
+    await handleSyncChanges(
+      engine,
+      {
+        [SYNC_SETTINGS]: { newValue: { gate: null } },
+        [SYNC_LISTS]: { newValue: { custom: null } },
+      },
+      new SyncEchoes(),
+      vi.fn().mockResolvedValue(undefined),
+    );
+
+    expect(applySyncedSettings).not.toHaveBeenCalled();
+    expect(applySyncedLists).not.toHaveBeenCalled();
+  });
+
+  it('merges valid partial live settings and lists over current state', async () => {
+    const currentSettings: Settings = { ...DEFAULT_SETTINGS, defaultMode: 'whitelist' };
+    const currentLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'keep.example' }],
+    };
+    const applySyncedSettings = vi.fn().mockResolvedValue({ ok: true });
+    const applySyncedLists = vi.fn().mockResolvedValue({ ok: true });
+    const engine: SyncChangeEngine = makeEngine({
+      applySyncedSettings,
+      applySyncedLists,
+      getSettings: vi.fn((): Settings => currentSettings),
+      getLists: vi.fn((): ListsConfig => currentLists),
+    });
+
+    await handleSyncChanges(
+      engine,
+      {
+        [SYNC_SETTINGS]: { newValue: { retentionDays: 30 } },
+        [SYNC_LISTS]: { newValue: { categories: { social: true } } },
+      },
+      new SyncEchoes(),
+      vi.fn().mockResolvedValue(undefined),
+    );
+
+    expect(applySyncedSettings).toHaveBeenCalledWith({
+      ...currentSettings,
+      retentionDays: 30,
+    });
+    expect(applySyncedLists).toHaveBeenCalledWith({
+      ...currentLists,
+      categories: { ...currentLists.categories, social: true },
+    });
+  });
+
+  it('attempts later keys before reporting a settings apply failure', async () => {
+    const failure: Error = new Error('settings apply failed');
+    const applySyncedLists = vi.fn().mockResolvedValue({ ok: true });
+    const applySyncedBank = vi.fn().mockResolvedValue({ ok: true });
+    const applySyncedStreak = vi.fn().mockResolvedValue(undefined);
+    const engine: SyncChangeEngine = makeEngine({
+      applySyncedSettings: vi.fn().mockRejectedValue(failure),
+      applySyncedLists,
+      applySyncedBank,
+      applySyncedStreak,
+    });
+    const streak: StreakState = {
+      current: 1,
+      freezeTokens: 0,
+      lastCountedDate: '2026-08-28',
+      lastFreezeGrantDate: null,
+      activeDays: [28],
+      activeMonth: '2026-08',
+    };
+
+    const reported: unknown = await handleSyncChanges(
+      engine,
+      {
+        [SYNC_SETTINGS]: { newValue: { retentionDays: 30 } },
+        [SYNC_LISTS]: {
+          newValue: { custom: [{ kind: 'host', pattern: 'blocked.example' }] },
+        },
+        [SYNC_BANK]: { newValue: { balanceMs: 500 } },
+        [SYNC_STREAK]: { newValue: streak },
+      },
+      new SyncEchoes(),
+      vi.fn().mockResolvedValue(undefined),
+    ).catch((error: unknown): unknown => error);
+
+    expect(reported).toBeInstanceOf(AggregateError);
+    expect((reported as AggregateError).errors).toEqual([failure]);
+
+    expect(applySyncedLists).toHaveBeenCalled();
+    expect(applySyncedBank).toHaveBeenCalled();
+    expect(applySyncedStreak).toHaveBeenCalled();
+  });
+
+  it('attempts later keys before reporting a corrective write failure', async () => {
+    const failure: Error = new Error('corrective write failed');
+    const applySyncedLists = vi.fn().mockResolvedValue({ ok: true });
+    const applySyncedBank = vi.fn().mockResolvedValue({ ok: true });
+    const applySyncedStreak = vi.fn().mockResolvedValue(undefined);
+    const engine: SyncChangeEngine = makeEngine({
+      applySyncedSettings: vi.fn().mockResolvedValue({ ok: false, error: 'rejected' }),
+      applySyncedLists,
+      applySyncedBank,
+      applySyncedStreak,
+    });
+    const streak: StreakState = {
+      current: 1,
+      freezeTokens: 0,
+      lastCountedDate: '2026-08-28',
+      lastFreezeGrantDate: null,
+      activeDays: [28],
+      activeMonth: '2026-08',
+    };
+
+    const reported: unknown = await handleSyncChanges(
+      engine,
+      {
+        [SYNC_SETTINGS]: { newValue: { retentionDays: 30 } },
+        [SYNC_LISTS]: {
+          newValue: { custom: [{ kind: 'host', pattern: 'blocked.example' }] },
+        },
+        [SYNC_BANK]: { newValue: { balanceMs: 500 } },
+        [SYNC_STREAK]: { newValue: streak },
+      },
+      new SyncEchoes(),
+      vi.fn().mockRejectedValue(failure),
+    ).catch((error: unknown): unknown => error);
+
+    expect(reported).toBeInstanceOf(AggregateError);
+    expect((reported as AggregateError).errors).toEqual([failure]);
+
+    expect(applySyncedLists).toHaveBeenCalled();
+    expect(applySyncedBank).toHaveBeenCalled();
+    expect(applySyncedStreak).toHaveBeenCalled();
   });
 });

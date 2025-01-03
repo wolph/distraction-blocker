@@ -4,6 +4,8 @@ import {
   capAttempts,
   emptyDaily,
   mergeDaily,
+  parseDailyAgg,
+  parseMonthlyAgg,
   rollupMonth,
 } from '../../../src/core/stats';
 import type { DailyAgg } from '../../../src/shared/types';
@@ -122,5 +124,60 @@ describe('rollupMonth', () => {
     expect(m.attempts.b).toBe(9);
     expect(m.pauseMsEarned).toBe(10);
     expect(m.unlockMsSpent).toBe(5);
+  });
+});
+
+describe('stored aggregate parsing', () => {
+  it.each([
+    ['sessionsStarted', 0.5],
+    ['sessionsCompleted', -1],
+    ['attemptsOther', 0.5],
+    ['pausesTaken', -1],
+    ['unlocksTaken', 0.5],
+    ['resisted', -1],
+  ])('rejects a non-integer semantic count in %s', (field: string, value: number) => {
+    const aggregate: Record<string, unknown> = {
+      ...emptyDaily('2026-08-28'),
+      [field]: value,
+    };
+
+    expect(parseDailyAgg(aggregate)).toBeNull();
+  });
+
+  it.each([0.5, -1])('rejects a malformed per-host attempt count of %s', (count: number) => {
+    const aggregate: Record<string, unknown> = {
+      ...emptyDaily('2026-08-28'),
+      attempts: { 'example.com': count },
+    };
+
+    expect(parseDailyAgg(aggregate)).toBeNull();
+  });
+
+  it('applies semantic count validation to monthly aggregates', () => {
+    const aggregate: Record<string, unknown> = {
+      ...emptyDaily('2026-08-28'),
+      month: '2026-08',
+      sessionsStarted: 0.5,
+    };
+    delete aggregate.date;
+
+    expect(parseMonthlyAgg(aggregate)).toBeNull();
+  });
+
+  it('preserves finite fractional millisecond totals', () => {
+    const aggregate: Record<string, unknown> = {
+      ...emptyDaily('2026-08-28'),
+      focusMs: 0.5,
+      pauseMsSpent: 1.25,
+      pauseMsEarned: 2.5,
+      unlockMsSpent: 3.75,
+    };
+
+    expect(parseDailyAgg(aggregate)).toMatchObject({
+      focusMs: 0.5,
+      pauseMsSpent: 1.25,
+      pauseMsEarned: 2.5,
+      unlockMsSpent: 3.75,
+    });
   });
 });

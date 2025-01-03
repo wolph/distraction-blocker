@@ -18,19 +18,22 @@ interface AggCounters {
 
 const DAILY_DATE_RE: RegExp = /^(\d{4})-(\d{2})-(\d{2})$/;
 const MONTH_RE: RegExp = /^(\d{4})-(\d{2})$/;
-const REQUIRED_COUNTERS: Array<keyof AggCounters> = [
-  'focusMs',
+const REQUIRED_COUNT_FIELDS: Array<keyof AggCounters> = [
   'sessionsStarted',
   'sessionsCompleted',
   'attemptsOther',
   'pausesTaken',
-  'pauseMsSpent',
   'unlocksTaken',
   'resisted',
 ];
+const REQUIRED_MS_FIELDS: Array<keyof AggCounters> = ['focusMs', 'pauseMsSpent'];
 
 function isNonnegativeFinite(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function isNonnegativeInteger(value: unknown): value is number {
+  return isNonnegativeFinite(value) && Number.isInteger(value);
 }
 
 export function isDailyDate(value: unknown): value is string {
@@ -59,7 +62,10 @@ function isMonth(value: unknown): value is string {
 function parseCounters(value: unknown): AggCounters | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const candidate: Record<string, unknown> = value as Record<string, unknown>;
-  for (const key of REQUIRED_COUNTERS) {
+  for (const key of REQUIRED_COUNT_FIELDS) {
+    if (!isNonnegativeInteger(candidate[key])) return null;
+  }
+  for (const key of REQUIRED_MS_FIELDS) {
     if (!isNonnegativeFinite(candidate[key])) return null;
   }
   const attemptsValue: unknown = candidate.attempts;
@@ -68,7 +74,7 @@ function parseCounters(value: unknown): AggCounters | null {
   }
   const attempts: Record<string, number> = {};
   for (const [host, count] of Object.entries(attemptsValue)) {
-    if (!isNonnegativeFinite(count)) return null;
+    if (!isNonnegativeInteger(count)) return null;
     attempts[host] = count;
   }
   const pauseMsEarned: unknown = candidate.pauseMsEarned ?? 0;

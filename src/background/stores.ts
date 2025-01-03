@@ -110,78 +110,89 @@ export async function loadLists(journal?: SyncJournal): Promise<ListsConfig> {
   return mergeLists(journalValue(journal, SYNC_LISTS, raw));
 }
 
-export function mergeSettings(raw: unknown): Settings {
+export function mergeSettings(raw: unknown, base: Settings = DEFAULT_SETTINGS): Settings {
   const stored: Record<string, unknown> = isRecord(raw) ? raw : {};
   const pause: Record<string, unknown> = isRecord(stored.pause) ? stored.pause : {};
   const gate: Record<string, unknown> = isRecord(stored.gate) ? stored.gate : {};
   const sounds: Record<string, unknown> = isRecord(stored.sounds) ? stored.sounds : {};
   return {
-    presetsMin: parsePresets(stored.presetsMin) ?? [...DEFAULT_SETTINGS.presetsMin],
+    presetsMin: parsePresets(stored.presetsMin) ?? [...base.presetsMin],
     defaultMode:
       stored.defaultMode === 'blacklist' || stored.defaultMode === 'whitelist'
         ? stored.defaultMode
-        : DEFAULT_SETTINGS.defaultMode,
+        : base.defaultMode,
     defaultStrictness:
       stored.defaultStrictness === 'hard' || stored.defaultStrictness === 'friction'
         ? stored.defaultStrictness
-        : DEFAULT_SETTINGS.defaultStrictness,
-    defaultCycling: parseCycleConfig(stored.defaultCycling) ?? {
-      ...DEFAULT_SETTINGS.defaultCycling,
-    },
+        : base.defaultStrictness,
+    defaultCycling: parseCycleConfig(stored.defaultCycling) ?? { ...base.defaultCycling },
     cyclingOnByDefault:
       typeof stored.cyclingOnByDefault === 'boolean'
         ? stored.cyclingOnByDefault
-        : DEFAULT_SETTINGS.cyclingOnByDefault,
+        : base.cyclingOnByDefault,
     pause: {
-      earnRatio: numberOrDefault(pause.earnRatio, DEFAULT_SETTINGS.pause.earnRatio),
-      capMs: numberOrDefault(pause.capMs, DEFAULT_SETTINGS.pause.capMs),
-      pauseMs: numberOrDefault(pause.pauseMs, DEFAULT_SETTINGS.pause.pauseMs),
-      unlockMs: numberOrDefault(pause.unlockMs, DEFAULT_SETTINGS.pause.unlockMs),
+      earnRatio: numberOrDefault(pause.earnRatio, base.pause.earnRatio),
+      capMs: numberOrDefault(pause.capMs, base.pause.capMs),
+      pauseMs: numberOrDefault(pause.pauseMs, base.pause.pauseMs),
+      unlockMs: numberOrDefault(pause.unlockMs, base.pause.unlockMs),
     },
     gate: {
-      delayMs: numberOrDefault(gate.delayMs, DEFAULT_SETTINGS.gate.delayMs),
+      delayMs: numberOrDefault(gate.delayMs, base.gate.delayMs),
       requireTypedPhrase:
         typeof gate.requireTypedPhrase === 'boolean'
           ? gate.requireTypedPhrase
-          : DEFAULT_SETTINGS.gate.requireTypedPhrase,
+          : base.gate.requireTypedPhrase,
     },
     badgeCountdown:
-      typeof stored.badgeCountdown === 'boolean'
-        ? stored.badgeCountdown
-        : DEFAULT_SETTINGS.badgeCountdown,
+      typeof stored.badgeCountdown === 'boolean' ? stored.badgeCountdown : base.badgeCountdown,
     sounds: {
       masterVolume: isUnitNumber(sounds.masterVolume)
         ? sounds.masterVolume
-        : DEFAULT_SETTINGS.sounds.masterVolume,
+        : base.sounds.masterVolume,
       sessionComplete:
         typeof sounds.sessionComplete === 'boolean'
           ? sounds.sessionComplete
-          : DEFAULT_SETTINGS.sounds.sessionComplete,
+          : base.sounds.sessionComplete,
       breakStart:
-        typeof sounds.breakStart === 'boolean'
-          ? sounds.breakStart
-          : DEFAULT_SETTINGS.sounds.breakStart,
-      breakEnd:
-        typeof sounds.breakEnd === 'boolean' ? sounds.breakEnd : DEFAULT_SETTINGS.sounds.breakEnd,
+        typeof sounds.breakStart === 'boolean' ? sounds.breakStart : base.sounds.breakStart,
+      breakEnd: typeof sounds.breakEnd === 'boolean' ? sounds.breakEnd : base.sounds.breakEnd,
       scheduleStart:
         typeof sounds.scheduleStart === 'boolean'
           ? sounds.scheduleStart
-          : DEFAULT_SETTINGS.sounds.scheduleStart,
+          : base.sounds.scheduleStart,
     },
-    schedule: parseSchedule(stored.schedule),
-    streakGoalMin: numberOrDefault(stored.streakGoalMin, DEFAULT_SETTINGS.streakGoalMin),
-    retentionDays: numberOrDefault(stored.retentionDays, DEFAULT_SETTINGS.retentionDays),
+    schedule: Array.isArray(stored.schedule)
+      ? parseSchedule(stored.schedule)
+      : structuredClone(base.schedule),
+    streakGoalMin: numberOrDefault(stored.streakGoalMin, base.streakGoalMin),
+    retentionDays: numberOrDefault(stored.retentionDays, base.retentionDays),
   };
 }
 
-export function mergeLists(raw: unknown): ListsConfig {
+export function mergeLists(raw: unknown, base: ListsConfig = DEFAULT_LISTS): ListsConfig {
   const stored: Record<string, unknown> = isRecord(raw) ? raw : {};
   return {
-    custom: parseRules(stored.custom),
-    whitelist: parseRules(stored.whitelist),
-    categories: parseCategories(stored.categories),
-    exclusions: parseExclusions(stored.exclusions),
+    custom: Array.isArray(stored.custom) ? parseRules(stored.custom) : structuredClone(base.custom),
+    whitelist: Array.isArray(stored.whitelist)
+      ? parseRules(stored.whitelist)
+      : structuredClone(base.whitelist),
+    categories: parseCategories(stored.categories, base.categories),
+    exclusions: isRecord(stored.exclusions)
+      ? parseExclusions(stored.exclusions)
+      : structuredClone(base.exclusions),
   };
+}
+
+export function parseLiveSettings(value: unknown, current: Settings): Settings | null {
+  if (!isRecord(value)) return null;
+  const parsed: Settings = mergeSettings(value, current);
+  return JSON.stringify(parsed) === JSON.stringify(current) ? null : parsed;
+}
+
+export function parseLiveLists(value: unknown, current: ListsConfig): ListsConfig | null {
+  if (!isRecord(value)) return null;
+  const parsed: ListsConfig = mergeLists(value, current);
+  return JSON.stringify(parsed) === JSON.stringify(current) ? null : parsed;
 }
 
 export async function loadBank(journal?: SyncJournal): Promise<BankState> {
@@ -372,9 +383,12 @@ function parseRules(value: unknown): Rule[] {
   return rules;
 }
 
-function parseCategories(value: unknown): ListsConfig['categories'] {
+function parseCategories(
+  value: unknown,
+  base: ListsConfig['categories'] = DEFAULT_LISTS.categories,
+): ListsConfig['categories'] {
   const stored: Record<string, unknown> = isRecord(value) ? value : {};
-  const categories: ListsConfig['categories'] = { ...DEFAULT_LISTS.categories };
+  const categories: ListsConfig['categories'] = { ...base };
   for (const id of CATEGORY_IDS) {
     if (typeof stored[id] === 'boolean') categories[id] = stored[id];
   }

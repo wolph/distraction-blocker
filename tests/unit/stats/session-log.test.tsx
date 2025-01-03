@@ -132,6 +132,37 @@ describe('pairSessions', () => {
     ]);
   });
 
+  it('ends an older identified session after a later identified session closes', () => {
+    const events: EventRecord[] = [
+      { t: 'sessionCompleted', at: T1110, focusedMs: 10 * 60_000, sessionId: 'later' },
+      started(T11, 25, 'later', 'manual', 'later'),
+      started(T9, 25, 'older', 'manual', 'older'),
+    ];
+
+    expect(pairSessions(events)).toEqual([
+      {
+        startedAt: T11,
+        plannedMin: 25,
+        intention: 'later',
+        source: 'manual',
+        outcome: 'completed',
+        focusedMs: 10 * 60_000,
+        pauseMs: 0,
+        unlockMs: 0,
+      },
+      {
+        startedAt: T9,
+        plannedMin: 25,
+        intention: 'older',
+        source: 'manual',
+        outcome: 'ended early',
+        focusedMs: null,
+        pauseMs: 0,
+        unlockMs: 0,
+      },
+    ]);
+  });
+
   it('closes a start that is followed by another start without an end event', () => {
     const rows: SessionRow[] = pairSessions([
       started(T11, 25, 'later', 'manual'),
