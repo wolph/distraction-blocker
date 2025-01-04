@@ -186,12 +186,16 @@ export function mergeLists(raw: unknown, base: ListsConfig = DEFAULT_LISTS): Lis
 export function parseLiveSettings(value: unknown, current: Settings): Settings | null {
   if (!isRecord(value)) return null;
   const parsed: Settings = mergeSettings(value, current);
+  parsed.schedule = parseStrictLiveSchedule(value.schedule, current.schedule);
   return JSON.stringify(parsed) === JSON.stringify(current) ? null : parsed;
 }
 
 export function parseLiveLists(value: unknown, current: ListsConfig): ListsConfig | null {
   if (!isRecord(value)) return null;
   const parsed: ListsConfig = mergeLists(value, current);
+  parsed.custom = parseStrictLiveRules(value.custom, current.custom);
+  parsed.whitelist = parseStrictLiveRules(value.whitelist, current.whitelist);
+  parsed.exclusions = parseStrictLiveExclusions(value.exclusions, current.exclusions);
   return JSON.stringify(parsed) === JSON.stringify(current) ? null : parsed;
 }
 
@@ -361,6 +365,17 @@ function parseSchedule(value: unknown): ScheduleEntry[] {
   return entries;
 }
 
+function parseStrictLiveSchedule(value: unknown, current: ScheduleEntry[]): ScheduleEntry[] {
+  if (!Array.isArray(value)) return structuredClone(current);
+  const entries: ScheduleEntry[] = [];
+  for (const candidate of value) {
+    const entry: ScheduleEntry | null = parseScheduleEntry(candidate);
+    if (entry === null) return structuredClone(current);
+    entries.push(entry);
+  }
+  return entries;
+}
+
 function parseRule(value: unknown): Rule | null {
   if (
     !isRecord(value) ||
@@ -379,6 +394,17 @@ function parseRules(value: unknown): Rule[] {
   for (const candidate of value) {
     const rule: Rule | null = parseRule(candidate);
     if (rule !== null) rules.push(rule);
+  }
+  return rules;
+}
+
+function parseStrictLiveRules(value: unknown, current: Rule[]): Rule[] {
+  if (!Array.isArray(value)) return structuredClone(current);
+  const rules: Rule[] = [];
+  for (const candidate of value) {
+    const rule: Rule | null = parseRule(candidate);
+    if (rule === null) return structuredClone(current);
+    rules.push(rule);
   }
   return rules;
 }
@@ -407,6 +433,31 @@ function parseExclusions(value: unknown): ListsConfig['exclusions'] {
       if (rule !== null) hosts.push(rule.pattern);
     }
     exclusions[id] = hosts;
+  }
+  return exclusions;
+}
+
+function parseStrictLiveExclusions(
+  value: unknown,
+  current: ListsConfig['exclusions'],
+): ListsConfig['exclusions'] {
+  const exclusions: ListsConfig['exclusions'] = structuredClone(current);
+  if (!isRecord(value)) return exclusions;
+  for (const id of CATEGORY_IDS) {
+    if (!Object.hasOwn(value, id)) continue;
+    const candidates: unknown = value[id];
+    if (!Array.isArray(candidates)) continue;
+    const hosts: string[] = [];
+    let valid: boolean = true;
+    for (const candidate of candidates) {
+      const rule: Rule | null = parseRule({ kind: 'host', pattern: candidate });
+      if (rule === null) {
+        valid = false;
+        break;
+      }
+      hosts.push(rule.pattern);
+    }
+    if (valid) exclusions[id] = hosts;
   }
   return exclusions;
 }

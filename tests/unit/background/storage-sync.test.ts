@@ -295,6 +295,185 @@ describe('handleSyncChanges', () => {
     });
   });
 
+  it('preserves the current schedule when any live schedule entry is malformed', async () => {
+    const currentEntry: Settings['schedule'][number] = {
+      id: 'keep',
+      days: [1, 2, 3, 4, 5],
+      start: '09:00',
+      end: '10:00',
+      mode: 'blacklist',
+      strictness: 'hard',
+      cycling: null,
+      intention: 'Keep',
+      enabled: true,
+    };
+    const replacement: Settings['schedule'][number] = {
+      ...currentEntry,
+      id: 'replacement',
+      intention: 'Replace',
+    };
+    const current: Settings = { ...DEFAULT_SETTINGS, schedule: [currentEntry] };
+    const applySyncedSettings = vi.fn().mockResolvedValue({ ok: true });
+    const engine: SyncChangeEngine = makeEngine({
+      applySyncedSettings,
+      getSettings: vi.fn((): Settings => current),
+    });
+
+    await handleSyncChanges(
+      engine,
+      {
+        [SYNC_SETTINGS]: {
+          newValue: {
+            retentionDays: 30,
+            schedule: [replacement, { ...replacement, start: 'invalid' }],
+          },
+        },
+      },
+      new SyncEchoes(),
+      vi.fn().mockResolvedValue(undefined),
+    );
+
+    expect(applySyncedSettings).toHaveBeenCalledWith({
+      ...current,
+      retentionDays: 30,
+    });
+  });
+
+  it('clears the current schedule for an explicit empty live schedule', async () => {
+    const current: Settings = {
+      ...DEFAULT_SETTINGS,
+      schedule: [
+        {
+          id: 'keep',
+          days: [1, 2, 3, 4, 5],
+          start: '09:00',
+          end: '10:00',
+          mode: 'blacklist',
+          strictness: 'hard',
+          cycling: null,
+          intention: 'Keep',
+          enabled: true,
+        },
+      ],
+    };
+    const applySyncedSettings = vi.fn().mockResolvedValue({ ok: true });
+    const engine: SyncChangeEngine = makeEngine({
+      applySyncedSettings,
+      getSettings: vi.fn((): Settings => current),
+    });
+
+    await handleSyncChanges(
+      engine,
+      { [SYNC_SETTINGS]: { newValue: { schedule: [] } } },
+      new SyncEchoes(),
+      vi.fn().mockResolvedValue(undefined),
+    );
+
+    expect(applySyncedSettings).toHaveBeenCalledWith({ ...current, schedule: [] });
+  });
+
+  it('preserves a current rules field when any live rule is malformed', async () => {
+    const current: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'keep.example' }],
+    };
+    const applySyncedLists = vi.fn().mockResolvedValue({ ok: true });
+    const engine: SyncChangeEngine = makeEngine({
+      applySyncedLists,
+      getLists: vi.fn((): ListsConfig => current),
+    });
+
+    await handleSyncChanges(
+      engine,
+      {
+        [SYNC_LISTS]: {
+          newValue: {
+            custom: [{ kind: 'host', pattern: 'replace.example' }, null],
+            categories: { social: true },
+          },
+        },
+      },
+      new SyncEchoes(),
+      vi.fn().mockResolvedValue(undefined),
+    );
+
+    expect(applySyncedLists).toHaveBeenCalledWith({
+      ...current,
+      categories: { ...current.categories, social: true },
+    });
+  });
+
+  it('clears current rules fields for explicit empty live arrays', async () => {
+    const current: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'custom.example' }],
+      whitelist: [{ kind: 'host', pattern: 'whitelist.example' }],
+    };
+    const applySyncedLists = vi.fn().mockResolvedValue({ ok: true });
+    const engine: SyncChangeEngine = makeEngine({
+      applySyncedLists,
+      getLists: vi.fn((): ListsConfig => current),
+    });
+
+    await handleSyncChanges(
+      engine,
+      { [SYNC_LISTS]: { newValue: { custom: [], whitelist: [] } } },
+      new SyncEchoes(),
+      vi.fn().mockResolvedValue(undefined),
+    );
+
+    expect(applySyncedLists).toHaveBeenCalledWith({
+      ...current,
+      custom: [],
+      whitelist: [],
+    });
+  });
+
+  it('merges partial live exclusions while preserving malformed and absent categories', async () => {
+    const current: ListsConfig = {
+      ...DEFAULT_LISTS,
+      exclusions: {
+        social: ['keep-social.example'],
+        video: ['keep-video.example'],
+        news: ['keep-news.example'],
+        mail: ['keep-mail.example'],
+        gaming: ['keep-gaming.example'],
+      },
+    };
+    const applySyncedLists = vi.fn().mockResolvedValue({ ok: true });
+    const engine: SyncChangeEngine = makeEngine({
+      applySyncedLists,
+      getLists: vi.fn((): ListsConfig => current),
+    });
+
+    await handleSyncChanges(
+      engine,
+      {
+        [SYNC_LISTS]: {
+          newValue: {
+            exclusions: {
+              social: [],
+              video: ['replace-video.example', null],
+              news: ['replace-news.example'],
+              gaming: 'invalid',
+            },
+          },
+        },
+      },
+      new SyncEchoes(),
+      vi.fn().mockResolvedValue(undefined),
+    );
+
+    expect(applySyncedLists).toHaveBeenCalledWith({
+      ...current,
+      exclusions: {
+        ...current.exclusions,
+        social: [],
+        news: ['replace-news.example'],
+      },
+    });
+  });
+
   it('attempts later keys before reporting a settings apply failure', async () => {
     const failure: Error = new Error('settings apply failed');
     const applySyncedLists = vi.fn().mockResolvedValue({ ok: true });

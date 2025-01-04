@@ -18,6 +18,7 @@ import {
   loadSettings,
   loadStreak,
   loadSyncJournal,
+  parseStreak,
   saveRuntime,
   saveSyncJournal,
 } from './stores';
@@ -65,28 +66,27 @@ async function boot(): Promise<Engine> {
     chrome.storage.sync.get([SYNC_SETTINGS, SYNC_LISTS, SYNC_BANK, SYNC_STREAK]),
   ]);
   const journalValue: unknown = journal.sets[SYNC_STREAK];
-  const journaledStreak: StreakState | null =
-    !journal.removes.includes(SYNC_STREAK) &&
-    typeof journalValue === 'object' &&
-    journalValue !== null
-      ? (journalValue as StreakState)
-      : null;
+  const journalHasStreak: boolean =
+    !journal.removes.includes(SYNC_STREAK) && Object.hasOwn(journal.sets, SYNC_STREAK);
+  const journaledStreak: StreakState | null = journalHasStreak ? parseStreak(journalValue) : null;
   const today: string = localDateStr(now);
   const rebasedSyncedStreak: StreakState | null =
     syncedStreak === null ? null : rebaseStreakForDate(syncedStreak, today);
   const rebasedJournaledStreak: StreakState | null =
     journaledStreak === null ? null : rebaseStreakForDate(journaledStreak, today);
   const streak: StreakState | null = chooseNewerStreak(rebasedSyncedStreak, rebasedJournaledStreak);
+  const persistedStreak: StreakState = streak ?? emptyStreak(localMonthStr(now));
   const journalNeedsStreak: boolean =
-    streak !== null &&
-    ((syncedStreak !== null && !streaksEqual(streak, syncedStreak)) ||
-      (journaledStreak !== null && !streaksEqual(streak, journaledStreak)));
+    (journalHasStreak && journaledStreak === null) ||
+    (streak !== null &&
+      ((syncedStreak !== null && !streaksEqual(streak, syncedStreak)) ||
+        (journaledStreak !== null && !streaksEqual(streak, journaledStreak))));
   const initialJournal: SyncJournal = {
     sets: { ...journal.sets },
     removes: [...journal.removes],
   };
   if (journalNeedsStreak) {
-    initialJournal.sets[SYNC_STREAK] = streak;
+    initialJournal.sets[SYNC_STREAK] = persistedStreak;
     initialJournal.removes = initialJournal.removes.filter(
       (key: string): boolean => key !== SYNC_STREAK,
     );
@@ -110,14 +110,14 @@ async function boot(): Promise<Engine> {
     { initial: initialJournal, persist: saveSyncJournal },
   );
   syncWriterInstance = syncWriter;
-  if (journalNeedsStreak) syncWriter.queue(SYNC_STREAK, streak);
+  if (journalNeedsStreak) syncWriter.queue(SYNC_STREAK, persistedStreak);
   const effectiveStoredSync: Record<string, unknown> = { ...storedSync, ...initialJournal.sets };
   for (const key of initialJournal.removes) delete effectiveStoredSync[key];
   const missingDefaults: Record<string, unknown> = missingSyncDefaults(effectiveStoredSync, {
     settings,
     lists,
     bank,
-    streak: streak ?? emptyStreak(localMonthStr(now)),
+    streak: persistedStreak,
   });
   for (const [key, value] of Object.entries(missingDefaults)) syncWriter.queue(key, value);
   await syncWriter.whenJournalDurable();

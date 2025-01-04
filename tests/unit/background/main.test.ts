@@ -89,27 +89,33 @@ vi.mock('../../../src/background/storage-sync', () => ({
   handleSyncChanges: vi.fn(),
   missingSyncDefaults: vi.fn((): Record<string, unknown> => ({})),
 }));
-vi.mock('../../../src/background/stores', () => ({
-  appendEvents: vi.fn(),
-  getDeviceId: vi.fn().mockResolvedValue('device-id'),
-  loadBank: vi.fn().mockResolvedValue({ balanceMs: 0 }),
-  loadLists: vi.fn().mockResolvedValue({}),
-  loadRuntime: vi.fn().mockResolvedValue({}),
-  loadSettings: vi.fn().mockResolvedValue({}),
-  loadStreak: vi
-    .fn()
-    .mockImplementation(async (journal?: SyncJournal): Promise<StreakState | null> => {
-      return journal === undefined ? mocks.scenario.syncedStreak : mocks.scenario.journaledStreak;
+vi.mock('../../../src/background/stores', async () => {
+  const actual: typeof import('../../../src/background/stores') = await vi.importActual(
+    '../../../src/background/stores',
+  );
+  return {
+    appendEvents: vi.fn(),
+    getDeviceId: vi.fn().mockResolvedValue('device-id'),
+    loadBank: vi.fn().mockResolvedValue({ balanceMs: 0 }),
+    loadLists: vi.fn().mockResolvedValue({}),
+    loadRuntime: vi.fn().mockResolvedValue({}),
+    loadSettings: vi.fn().mockResolvedValue({}),
+    loadStreak: vi
+      .fn()
+      .mockImplementation(async (journal?: SyncJournal): Promise<StreakState | null> => {
+        return journal === undefined ? mocks.scenario.syncedStreak : mocks.scenario.journaledStreak;
+      }),
+    loadSyncJournal: vi.fn().mockImplementation(async (): Promise<SyncJournal> => {
+      if (mocks.bootGate !== null) await mocks.bootGate;
+      return structuredClone(mocks.scenario.journal);
     }),
-  loadSyncJournal: vi.fn().mockImplementation(async (): Promise<SyncJournal> => {
-    if (mocks.bootGate !== null) await mocks.bootGate;
-    return structuredClone(mocks.scenario.journal);
-  }),
-  saveRuntime: vi.fn(),
-  saveSyncJournal: vi.fn().mockImplementation(async (journal: SyncJournal): Promise<void> => {
-    mocks.savedJournals.push(structuredClone(journal));
-  }),
-}));
+    parseStreak: actual.parseStreak,
+    saveRuntime: vi.fn(),
+    saveSyncJournal: vi.fn().mockImplementation(async (journal: SyncJournal): Promise<void> => {
+      mocks.savedJournals.push(structuredClone(journal));
+    }),
+  };
+});
 vi.mock('../../../src/background/tabs', () => ({
   applyBlockingFactory: vi.fn((): (() => void) => vi.fn()),
   invalidateRemovedTab: vi.fn((tabId: number): Promise<void> => {
@@ -293,6 +299,51 @@ describe('background boot streak convergence', () => {
 
     expect(engineStreak()).toEqual(corrected);
     expectJournaled(corrected);
+  });
+
+  it('ignores malformed journal streak data before rebasing boot state', async () => {
+    const synced: StreakState = {
+      current: 3,
+      freezeTokens: 1,
+      lastCountedDate: '2026-08-28',
+      lastFreezeGrantDate: '2026-08-24',
+      activeDays: [26, 27, 28],
+      activeMonth: '2026-08',
+    };
+    setScenario(synced, synced);
+    mocks.scenario.journal.sets[SYNC_STREAK] = {
+      ...synced,
+      activeDays: null,
+    };
+
+    await finishBoot();
+
+    expect(engineStreak()).toEqual(synced);
+    expectJournaled(synced);
+  });
+
+  it('defaults malformed journal streak data when sync has no valid streak', async () => {
+    const fallback: StreakState = {
+      current: 0,
+      freezeTokens: 0,
+      lastCountedDate: null,
+      lastFreezeGrantDate: null,
+      activeDays: [],
+      activeMonth: '2026-08',
+    };
+    mocks.scenario = {
+      journal: {
+        sets: { [SYNC_STREAK]: { current: 3, activeDays: null } },
+        removes: [],
+      },
+      journaledStreak: null,
+      syncedStreak: null,
+    };
+
+    await finishBoot();
+
+    expect(engineStreak()).toBeNull();
+    expectJournaled(fallback);
   });
 });
 
