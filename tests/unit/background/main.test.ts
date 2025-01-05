@@ -1,13 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { main } from '../../../src/background/main';
 import type { SyncJournal } from '../../../src/background/sync-writer';
-import { SYNC_STREAK } from '../../../src/shared/storage-keys';
-import type { StreakState } from '../../../src/shared/types';
+import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import {
+  SYNC_BANK,
+  SYNC_LISTS,
+  SYNC_SETTINGS,
+  SYNC_STREAK,
+} from '../../../src/shared/storage-keys';
+import type { BankState, ListsConfig, Settings, StreakState } from '../../../src/shared/types';
 
 interface BootScenario {
   journal: SyncJournal;
-  journaledStreak: StreakState | null;
-  syncedStreak: StreakState | null;
+  storedSync: Record<string, unknown>;
 }
 
 type RuntimeListener = (
@@ -45,8 +50,7 @@ const mocks = vi.hoisted(
     savedJournals: [],
     scenario: {
       journal: { sets: {}, removes: [] },
-      journaledStreak: null,
-      syncedStreak: null,
+      storedSync: {},
     },
     tickCalls: 0,
     tickError: null,
@@ -96,19 +100,20 @@ vi.mock('../../../src/background/stores', async () => {
   return {
     appendEvents: vi.fn(),
     getDeviceId: vi.fn().mockResolvedValue('device-id'),
-    loadBank: vi.fn().mockResolvedValue({ balanceMs: 0 }),
-    loadLists: vi.fn().mockResolvedValue({}),
+    loadBank: actual.loadBank,
+    loadLists: actual.loadLists,
     loadRuntime: vi.fn().mockResolvedValue({}),
-    loadSettings: vi.fn().mockResolvedValue({}),
-    loadStreak: vi
-      .fn()
-      .mockImplementation(async (journal?: SyncJournal): Promise<StreakState | null> => {
-        return journal === undefined ? mocks.scenario.syncedStreak : mocks.scenario.journaledStreak;
-      }),
+    loadSettings: actual.loadSettings,
+    loadStreak: actual.loadStreak,
     loadSyncJournal: vi.fn().mockImplementation(async (): Promise<SyncJournal> => {
       if (mocks.bootGate !== null) await mocks.bootGate;
       return structuredClone(mocks.scenario.journal);
     }),
+    mergeLists: actual.mergeLists,
+    mergeSettings: actual.mergeSettings,
+    parseBank: actual.parseBank,
+    parseLiveLists: actual.parseLiveLists,
+    parseLiveSettings: actual.parseLiveSettings,
     parseStreak: actual.parseStreak,
     saveRuntime: vi.fn(),
     saveSyncJournal: vi.fn().mockImplementation(async (journal: SyncJournal): Promise<void> => {
@@ -130,8 +135,7 @@ vi.mock('../../../src/background/tabs', () => ({
 function setScenario(journaledStreak: StreakState, syncedStreak: StreakState): void {
   mocks.scenario = {
     journal: { sets: { [SYNC_STREAK]: journaledStreak }, removes: [] },
-    journaledStreak,
-    syncedStreak,
+    storedSync: { [SYNC_STREAK]: syncedStreak },
   };
 }
 
@@ -158,11 +162,16 @@ function stubChrome(): void {
     storage: {
       onChanged: { addListener: vi.fn() },
       sync: {
-        get: vi.fn().mockImplementation(
-          async (): Promise<Record<string, unknown>> => ({
-            [SYNC_STREAK]: mocks.scenario.syncedStreak,
+        get: vi
+          .fn()
+          .mockImplementation(async (keys: string | string[]): Promise<Record<string, unknown>> => {
+            const requested: string[] = Array.isArray(keys) ? keys : [keys];
+            return Object.fromEntries(
+              requested
+                .filter((key: string): boolean => Object.hasOwn(mocks.scenario.storedSync, key))
+                .map((key: string): [string, unknown] => [key, mocks.scenario.storedSync[key]]),
+            );
           }),
-        ),
         remove: vi.fn().mockResolvedValue(undefined),
         set: vi.fn().mockResolvedValue(undefined),
       },
@@ -191,6 +200,21 @@ function engineStreak(): StreakState | null {
   return mocks.engineArguments[4] as StreakState | null;
 }
 
+function engineSettings(): Settings {
+  if (mocks.engineArguments === null) throw new Error('engine was not constructed');
+  return mocks.engineArguments[1] as Settings;
+}
+
+function engineLists(): ListsConfig {
+  if (mocks.engineArguments === null) throw new Error('engine was not constructed');
+  return mocks.engineArguments[2] as ListsConfig;
+}
+
+function engineBank(): BankState {
+  if (mocks.engineArguments === null) throw new Error('engine was not constructed');
+  return mocks.engineArguments[3] as BankState;
+}
+
 function expectJournaled(streak: StreakState): void {
   expect(mocks.savedJournals).toContainEqual({
     sets: { [SYNC_STREAK]: streak },
@@ -209,6 +233,7 @@ beforeEach((): void => {
   mocks.removedListener = null;
   mocks.runtimeListener = null;
   mocks.savedJournals = [];
+  mocks.scenario = { journal: { sets: {}, removes: [] }, storedSync: {} };
   mocks.tickCalls = 0;
   mocks.tickError = null;
   mocks.dropTabError = null;
@@ -224,7 +249,166 @@ afterEach((): void => {
   vi.unstubAllGlobals();
 });
 
-describe('background boot streak convergence', () => {
+describe('background boot state convergence', () => {
+  it('replaces malformed pending settings with valid sync state before boot and flush', async () => {
+    const synced: Settings = {
+      ...DEFAULT_SETTINGS,
+      defaultMode: 'whitelist',
+      retentionDays: 30,
+    };
+    mocks.scenario = {
+      journal: { sets: { [SYNC_SETTINGS]: null }, removes: [] },
+      storedSync: { [SYNC_SETTINGS]: synced },
+    };
+
+    await finishBoot();
+
+    expect(engineSettings()).toEqual(synced);
+    expect(mocks.savedJournals).toContainEqual({
+      sets: { [SYNC_SETTINGS]: synced },
+      removes: [],
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith({ [SYNC_SETTINGS]: synced });
+  });
+
+  it('replaces malformed pending lists with valid sync state before boot and flush', async () => {
+    const synced: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'synced.example' }],
+    };
+    mocks.scenario = {
+      journal: { sets: { [SYNC_LISTS]: null }, removes: [] },
+      storedSync: { [SYNC_LISTS]: synced },
+    };
+
+    await finishBoot();
+
+    expect(engineLists()).toEqual(synced);
+    expect(mocks.savedJournals).toContainEqual({
+      sets: { [SYNC_LISTS]: synced },
+      removes: [],
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith({ [SYNC_LISTS]: synced });
+  });
+
+  it('replaces malformed pending bank with valid sync state before boot and flush', async () => {
+    const synced: BankState = { balanceMs: 42_000 };
+    mocks.scenario = {
+      journal: { sets: { [SYNC_BANK]: { balanceMs: -1 } }, removes: [] },
+      storedSync: { [SYNC_BANK]: synced },
+    };
+
+    await finishBoot();
+
+    expect(engineBank()).toEqual(synced);
+    expect(mocks.savedJournals).toContainEqual({
+      sets: { [SYNC_BANK]: synced },
+      removes: [],
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith({ [SYNC_BANK]: synced });
+  });
+
+  it('defaults malformed pending base state when sync has no valid fallback', async () => {
+    const fallbackStreak: StreakState = {
+      current: 0,
+      freezeTokens: 0,
+      lastCountedDate: null,
+      lastFreezeGrantDate: null,
+      activeDays: [],
+      activeMonth: '2026-08',
+    };
+    const expectedSets: Record<string, unknown> = {
+      [SYNC_SETTINGS]: DEFAULT_SETTINGS,
+      [SYNC_LISTS]: DEFAULT_LISTS,
+      [SYNC_BANK]: { balanceMs: 0 },
+      [SYNC_STREAK]: fallbackStreak,
+    };
+    mocks.scenario = {
+      journal: {
+        sets: {
+          [SYNC_SETTINGS]: null,
+          [SYNC_LISTS]: null,
+          [SYNC_BANK]: { balanceMs: -1 },
+          [SYNC_STREAK]: { current: 3, activeDays: null },
+        },
+        removes: [],
+      },
+      storedSync: {
+        [SYNC_SETTINGS]: 'invalid',
+        [SYNC_LISTS]: 42,
+        [SYNC_BANK]: { balanceMs: -2 },
+        [SYNC_STREAK]: { current: -1 },
+      },
+    };
+
+    await finishBoot();
+
+    expect(engineSettings()).toEqual(DEFAULT_SETTINGS);
+    expect(engineLists()).toEqual(DEFAULT_LISTS);
+    expect(engineBank()).toEqual({ balanceMs: 0 });
+    expect(engineStreak()).toEqual(fallbackStreak);
+    expect(mocks.savedJournals).toContainEqual({ sets: expectedSets, removes: [] });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith(expectedSets);
+  });
+
+  it('preserves valid pending base state over older sync state', async () => {
+    const pendingSettings: Settings = { ...DEFAULT_SETTINGS, retentionDays: 14 };
+    const syncedSettings: Settings = { ...DEFAULT_SETTINGS, retentionDays: 30 };
+    const pendingLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'pending.example' }],
+    };
+    const syncedLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'synced.example' }],
+    };
+    const pendingBank: BankState = { balanceMs: 42_000 };
+    const syncedBank: BankState = { balanceMs: 21_000 };
+    const pendingStreak: StreakState = {
+      current: 3,
+      freezeTokens: 1,
+      lastCountedDate: '2026-08-28',
+      lastFreezeGrantDate: '2026-08-24',
+      activeDays: [26, 27, 28],
+      activeMonth: '2026-08',
+    };
+    const syncedStreak: StreakState = {
+      ...pendingStreak,
+      current: 2,
+      lastCountedDate: '2026-08-27',
+      activeDays: [26, 27],
+    };
+    const pendingSets: Record<string, unknown> = {
+      [SYNC_SETTINGS]: pendingSettings,
+      [SYNC_LISTS]: pendingLists,
+      [SYNC_BANK]: pendingBank,
+      [SYNC_STREAK]: pendingStreak,
+    };
+    mocks.scenario = {
+      journal: { sets: pendingSets, removes: [] },
+      storedSync: {
+        [SYNC_SETTINGS]: syncedSettings,
+        [SYNC_LISTS]: syncedLists,
+        [SYNC_BANK]: syncedBank,
+        [SYNC_STREAK]: syncedStreak,
+      },
+    };
+
+    await finishBoot();
+
+    expect(engineSettings()).toEqual(pendingSettings);
+    expect(engineLists()).toEqual(pendingLists);
+    expect(engineBank()).toEqual(pendingBank);
+    expect(engineStreak()).toEqual(pendingStreak);
+    expect(mocks.savedJournals).toContainEqual({ sets: pendingSets, removes: [] });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith(pendingSets);
+  });
+
   it('replaces an older journal streak with newer sync progress before engine creation', async () => {
     const journaled: StreakState = {
       current: 2,
@@ -336,13 +520,12 @@ describe('background boot streak convergence', () => {
         sets: { [SYNC_STREAK]: { current: 3, activeDays: null } },
         removes: [],
       },
-      journaledStreak: null,
-      syncedStreak: null,
+      storedSync: {},
     };
 
     await finishBoot();
 
-    expect(engineStreak()).toBeNull();
+    expect(engineStreak()).toEqual(fallback);
     expectJournaled(fallback);
   });
 });

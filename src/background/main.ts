@@ -2,7 +2,13 @@ import { emptyStreak } from '../core/streak';
 import type { Request } from '../shared/messages';
 import { SYNC_BANK, SYNC_LISTS, SYNC_SETTINGS, SYNC_STREAK } from '../shared/storage-keys';
 import { localDateStr, localMonthStr } from '../shared/time';
-import type { SessionSnapshot, StreakState } from '../shared/types';
+import type {
+  BankState,
+  ListsConfig,
+  SessionSnapshot,
+  Settings,
+  StreakState,
+} from '../shared/types';
 import { notify, playSound } from './audio';
 import { Engine, type EnginePorts } from './engine';
 import { updateIcon } from './icon';
@@ -18,6 +24,11 @@ import {
   loadSettings,
   loadStreak,
   loadSyncJournal,
+  mergeLists,
+  mergeSettings,
+  parseBank,
+  parseLiveLists,
+  parseLiveSettings,
   parseStreak,
   saveRuntime,
   saveSyncJournal,
@@ -53,17 +64,56 @@ function reportBackgroundError(error: unknown): void {
   console.error('focus-lock background error', error);
 }
 
+function hasPendingSet(journal: SyncJournal, key: string): boolean {
+  return !journal.removes.includes(key) && Object.hasOwn(journal.sets, key);
+}
+
+function validatedBaseJournal(
+  rawJournal: SyncJournal,
+  storedSync: Record<string, unknown>,
+  now: number,
+): SyncJournal {
+  const journal: SyncJournal = {
+    sets: { ...rawJournal.sets },
+    removes: [...rawJournal.removes],
+  };
+  if (hasPendingSet(journal, SYNC_SETTINGS)) {
+    const synced: Settings = mergeSettings(storedSync[SYNC_SETTINGS]);
+    journal.sets[SYNC_SETTINGS] = parseLiveSettings(journal.sets[SYNC_SETTINGS], synced) ?? synced;
+  }
+  if (hasPendingSet(journal, SYNC_LISTS)) {
+    const synced: ListsConfig = mergeLists(storedSync[SYNC_LISTS]);
+    journal.sets[SYNC_LISTS] = parseLiveLists(journal.sets[SYNC_LISTS], synced) ?? synced;
+  }
+  if (hasPendingSet(journal, SYNC_BANK)) {
+    const synced: BankState = parseBank(storedSync[SYNC_BANK]) ?? { balanceMs: 0 };
+    journal.sets[SYNC_BANK] = parseBank(journal.sets[SYNC_BANK]) ?? synced;
+  }
+  if (hasPendingSet(journal, SYNC_STREAK)) {
+    const synced: StreakState =
+      parseStreak(storedSync[SYNC_STREAK]) ?? emptyStreak(localMonthStr(now));
+    journal.sets[SYNC_STREAK] = parseStreak(journal.sets[SYNC_STREAK]) ?? synced;
+  }
+  return journal;
+}
+
 async function boot(): Promise<Engine> {
   const now: number = Date.now();
-  const journal: SyncJournal = await loadSyncJournal();
-  const [settings, lists, bank, syncedStreak, runtime, deviceId, storedSync] = await Promise.all([
+  const rawJournal: SyncJournal = await loadSyncJournal();
+  const storedSync: Record<string, unknown> = await chrome.storage.sync.get([
+    SYNC_SETTINGS,
+    SYNC_LISTS,
+    SYNC_BANK,
+    SYNC_STREAK,
+  ]);
+  const journal: SyncJournal = validatedBaseJournal(rawJournal, storedSync, now);
+  const [settings, lists, bank, syncedStreak, runtime, deviceId] = await Promise.all([
     loadSettings(journal),
     loadLists(journal),
     loadBank(journal),
     loadStreak(),
     loadRuntime(now),
     getDeviceId(),
-    chrome.storage.sync.get([SYNC_SETTINGS, SYNC_LISTS, SYNC_BANK, SYNC_STREAK]),
   ]);
   const journalValue: unknown = journal.sets[SYNC_STREAK];
   const journalHasStreak: boolean =
