@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { main } from '../../../src/background/main';
 import type { SyncJournal } from '../../../src/background/sync-writer';
+import { emptyDaily, rollupMonth } from '../../../src/core/stats';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import {
   SYNC_BANK,
@@ -8,7 +9,14 @@ import {
   SYNC_SETTINGS,
   SYNC_STREAK,
 } from '../../../src/shared/storage-keys';
-import type { BankState, ListsConfig, Settings, StreakState } from '../../../src/shared/types';
+import type {
+  BankState,
+  DailyAgg,
+  ListsConfig,
+  MonthlyAgg,
+  Settings,
+  StreakState,
+} from '../../../src/shared/types';
 
 interface BootScenario {
   journal: SyncJournal;
@@ -407,6 +415,147 @@ describe('background boot state convergence', () => {
     expect(mocks.savedJournals).toContainEqual({ sets: pendingSets, removes: [] });
     await vi.advanceTimersByTimeAsync(10_000);
     expect(chrome.storage.sync.set).toHaveBeenCalledWith(pendingSets);
+  });
+
+  it('replaces a malformed pending daily aggregate with valid sync history', async () => {
+    const key: string = 'agg:device-a:2026-08-28';
+    const synced: DailyAgg = { ...emptyDaily('2026-08-28'), focusMs: 60_000 };
+    mocks.scenario = {
+      journal: {
+        sets: { [key]: { ...synced, sessionsStarted: 0.5 } },
+        removes: [],
+      },
+      storedSync: { [key]: synced },
+    };
+
+    await finishBoot();
+
+    expect(mocks.savedJournals).toContainEqual({ sets: { [key]: synced }, removes: [] });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith({ [key]: synced });
+  });
+
+  it('replaces a malformed pending monthly aggregate with valid sync history', async () => {
+    const key: string = 'aggm:device-a:2026-08';
+    const synced: MonthlyAgg = rollupMonth('2026-08', [
+      { ...emptyDaily('2026-08-28'), focusMs: 60_000 },
+    ]);
+    mocks.scenario = {
+      journal: {
+        sets: { [key]: { ...synced, sessionsCompleted: 0.5 } },
+        removes: [],
+      },
+      storedSync: { [key]: synced },
+    };
+
+    await finishBoot();
+
+    expect(mocks.savedJournals).toContainEqual({ sets: { [key]: synced }, removes: [] });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith({ [key]: synced });
+  });
+
+  it('drops malformed pending aggregates when sync has no valid history', async () => {
+    const dailyKey: string = 'agg:device-a:2026-08-28';
+    const monthlyKey: string = 'aggm:device-a:2026-08';
+    mocks.scenario = {
+      journal: {
+        sets: {
+          [dailyKey]: { ...emptyDaily('2026-08-28'), sessionsStarted: 0.5 },
+          [monthlyKey]: {
+            ...rollupMonth('2026-08', []),
+            sessionsCompleted: 0.5,
+          },
+        },
+        removes: [],
+      },
+      storedSync: {
+        [dailyKey]: { ...emptyDaily('2026-08-28'), attemptsOther: 0.5 },
+        [monthlyKey]: { ...rollupMonth('2026-08', []), unlocksTaken: 0.5 },
+      },
+    };
+
+    await finishBoot();
+
+    expect(mocks.savedJournals).toContainEqual({ sets: {}, removes: [] });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+  });
+
+  it('rejects pending aggregates whose embedded period does not match the key', async () => {
+    const dailyKey: string = 'agg:device-a:2026-08-28';
+    const monthlyKey: string = 'aggm:device-a:2026-08';
+    const syncedDaily: DailyAgg = emptyDaily('2026-08-28');
+    const syncedMonthly: MonthlyAgg = rollupMonth('2026-08', []);
+    const expectedSets: Record<string, unknown> = {
+      [dailyKey]: syncedDaily,
+      [monthlyKey]: syncedMonthly,
+    };
+    mocks.scenario = {
+      journal: {
+        sets: {
+          [dailyKey]: emptyDaily('2026-08-27'),
+          [monthlyKey]: rollupMonth('2026-07', []),
+        },
+        removes: [],
+      },
+      storedSync: expectedSets,
+    };
+
+    await finishBoot();
+
+    expect(mocks.savedJournals).toContainEqual({ sets: expectedSets, removes: [] });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith(expectedSets);
+  });
+
+  it('preserves valid pending aggregates with matching key periods', async () => {
+    const dailyKey: string = 'agg:device-a:2026-08-28';
+    const monthlyKey: string = 'aggm:device-a:2026-08';
+    const pendingDaily: DailyAgg = { ...emptyDaily('2026-08-28'), focusMs: 60_000 };
+    const syncedDaily: DailyAgg = { ...pendingDaily, focusMs: 30_000 };
+    const pendingMonthly: MonthlyAgg = rollupMonth('2026-08', [pendingDaily]);
+    const syncedMonthly: MonthlyAgg = rollupMonth('2026-08', [syncedDaily]);
+    const pendingSets: Record<string, unknown> = {
+      [dailyKey]: pendingDaily,
+      [monthlyKey]: pendingMonthly,
+    };
+    mocks.scenario = {
+      journal: { sets: pendingSets, removes: [] },
+      storedSync: {
+        [dailyKey]: syncedDaily,
+        [monthlyKey]: syncedMonthly,
+      },
+    };
+
+    await finishBoot();
+
+    expect(mocks.savedJournals).toContainEqual({ sets: pendingSets, removes: [] });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith(pendingSets);
+  });
+
+  it('preserves unknown pending keys and aggregate removals', async () => {
+    const unknownKey: string = 'plugin:opaque-state';
+    const removedKey: string = 'agg:device-a:2026-08-27';
+    const unknownValue: Record<string, unknown> = { opaque: true };
+    mocks.scenario = {
+      journal: {
+        sets: { [unknownKey]: unknownValue },
+        removes: [removedKey],
+      },
+      storedSync: {},
+    };
+
+    await finishBoot();
+
+    expect(mocks.savedJournals).toContainEqual({
+      sets: { [unknownKey]: unknownValue },
+      removes: [removedKey],
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith({ [unknownKey]: unknownValue });
+    expect(chrome.storage.sync.remove).toHaveBeenCalledWith([removedKey]);
   });
 
   it('replaces an older journal streak with newer sync progress before engine creation', async () => {

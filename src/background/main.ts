@@ -1,10 +1,13 @@
+import { parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { emptyStreak } from '../core/streak';
 import type { Request } from '../shared/messages';
 import { SYNC_BANK, SYNC_LISTS, SYNC_SETTINGS, SYNC_STREAK } from '../shared/storage-keys';
 import { localDateStr, localMonthStr } from '../shared/time';
 import type {
   BankState,
+  DailyAgg,
   ListsConfig,
+  MonthlyAgg,
   SessionSnapshot,
   Settings,
   StreakState,
@@ -45,6 +48,11 @@ import {
 const SYNC_FLUSH_MS: number = 10_000;
 const TICK_ALARM: string = 'tick';
 const PHASE_ALARM: string = 'phase';
+const DAILY_AGG_KEY_RE: RegExp = /^agg:[^:]+:(\d{4}-\d{2}-\d{2})$/;
+const MONTHLY_AGG_KEY_RE: RegExp = /^aggm:[^:]+:(\d{4}-\d{2})$/;
+
+type AggregateKeyIdentity = { kind: 'daily'; period: string } | { kind: 'monthly'; period: string };
+type StoredAggregate = DailyAgg | MonthlyAgg;
 
 let engineInstance: Engine | null = null;
 let syncWriterInstance: SyncWriter | null = null;
@@ -68,7 +76,39 @@ function hasPendingSet(journal: SyncJournal, key: string): boolean {
   return !journal.removes.includes(key) && Object.hasOwn(journal.sets, key);
 }
 
-function validatedBaseJournal(
+function aggregateKeyIdentity(key: string): AggregateKeyIdentity | null {
+  const dailyDate: string | undefined = DAILY_AGG_KEY_RE.exec(key)?.[1];
+  if (dailyDate !== undefined) return { kind: 'daily', period: dailyDate };
+  const month: string | undefined = MONTHLY_AGG_KEY_RE.exec(key)?.[1];
+  return month === undefined ? null : { kind: 'monthly', period: month };
+}
+
+function parseAggregateForKey(
+  value: unknown,
+  identity: AggregateKeyIdentity,
+): StoredAggregate | null {
+  return identity.kind === 'daily'
+    ? parseDailyAgg(value, identity.period)
+    : parseMonthlyAgg(value, identity.period);
+}
+
+function validatePendingAggregates(
+  journal: SyncJournal,
+  storedSync: Record<string, unknown>,
+): void {
+  for (const [key, value] of Object.entries(journal.sets)) {
+    if (!hasPendingSet(journal, key)) continue;
+    const identity: AggregateKeyIdentity | null = aggregateKeyIdentity(key);
+    if (identity === null) continue;
+    const pending: StoredAggregate | null = parseAggregateForKey(value, identity);
+    const corrected: StoredAggregate | null =
+      pending ?? parseAggregateForKey(storedSync[key], identity);
+    if (corrected !== null) journal.sets[key] = corrected;
+    else delete journal.sets[key];
+  }
+}
+
+function validatedPendingJournal(
   rawJournal: SyncJournal,
   storedSync: Record<string, unknown>,
   now: number,
@@ -94,19 +134,24 @@ function validatedBaseJournal(
       parseStreak(storedSync[SYNC_STREAK]) ?? emptyStreak(localMonthStr(now));
     journal.sets[SYNC_STREAK] = parseStreak(journal.sets[SYNC_STREAK]) ?? synced;
   }
+  validatePendingAggregates(journal, storedSync);
   return journal;
 }
 
 async function boot(): Promise<Engine> {
   const now: number = Date.now();
   const rawJournal: SyncJournal = await loadSyncJournal();
+  const pendingAggregateKeys: string[] = Object.keys(rawJournal.sets).filter(
+    (key: string): boolean => aggregateKeyIdentity(key) !== null,
+  );
   const storedSync: Record<string, unknown> = await chrome.storage.sync.get([
     SYNC_SETTINGS,
     SYNC_LISTS,
     SYNC_BANK,
     SYNC_STREAK,
+    ...pendingAggregateKeys,
   ]);
-  const journal: SyncJournal = validatedBaseJournal(rawJournal, storedSync, now);
+  const journal: SyncJournal = validatedPendingJournal(rawJournal, storedSync, now);
   const [settings, lists, bank, syncedStreak, runtime, deviceId] = await Promise.all([
     loadSettings(journal),
     loadLists(journal),
