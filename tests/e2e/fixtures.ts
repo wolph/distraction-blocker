@@ -16,6 +16,46 @@ interface ExtFixtures {
   extensionId: string;
   extPage: Page;
   siteUrl(pathname: string): string;
+  restartableExtension: RestartableExtension;
+}
+
+export interface ExtensionLaunch {
+  context: BrowserContext;
+  worker: Worker;
+  extensionId: string;
+  extPage: Page;
+}
+
+export interface RestartableExtension {
+  launch(): Promise<ExtensionLaunch>;
+  close(): Promise<void>;
+}
+
+function extensionArgs(dist: string): string[] {
+  return [
+    `--disable-extensions-except=${dist}`,
+    `--load-extension=${dist}`,
+    '--host-resolver-rules=MAP blocked.example 127.0.0.1, MAP *.blocked.example 127.0.0.1',
+  ];
+}
+
+async function extensionLaunch(
+  profileDir: string,
+  restoreLastSession: boolean,
+): Promise<ExtensionLaunch> {
+  const dist: string = path.resolve(import.meta.dirname, '../../dist');
+  const args: string[] = extensionArgs(dist);
+  if (restoreLastSession) args.push('--restore-last-session');
+  const context: BrowserContext = await chromium.launchPersistentContext(profileDir, {
+    channel: 'chromium',
+    args,
+  });
+  const existing: Worker | undefined = context.serviceWorkers()[0];
+  const worker: Worker = existing ?? (await context.waitForEvent('serviceworker'));
+  const extensionId: string = new URL(worker.url()).host;
+  const extPage: Page = await context.newPage();
+  await extPage.goto(`chrome-extension://${extensionId}/src/popup/popup.html`);
+  return { context, worker, extensionId, extPage };
 }
 
 export const test = base.extend<ExtFixtures>({
@@ -24,11 +64,7 @@ export const test = base.extend<ExtFixtures>({
     const dist: string = path.resolve(import.meta.dirname, '../../dist');
     const context: BrowserContext = await chromium.launchPersistentContext('', {
       channel: 'chromium',
-      args: [
-        `--disable-extensions-except=${dist}`,
-        `--load-extension=${dist}`,
-        '--host-resolver-rules=MAP blocked.example 127.0.0.1, MAP *.blocked.example 127.0.0.1',
-      ],
+      args: extensionArgs(dist),
     });
     await use(context);
     await context.close();
@@ -54,6 +90,25 @@ export const test = base.extend<ExtFixtures>({
       return `http://blocked.example:${server.port}${pathname}`;
     });
     await server.close();
+  },
+  // biome-ignore lint/correctness/noEmptyPattern: playwright fixture signature
+  restartableExtension: async ({}, use, testInfo) => {
+    const profileDir: string = testInfo.outputPath('restart-profile');
+    let current: ExtensionLaunch | null = null;
+    const close = async (): Promise<void> => {
+      if (current === null) return;
+      const closing: ExtensionLaunch = current;
+      current = null;
+      await closing.context.close();
+    };
+    const launch = async (): Promise<ExtensionLaunch> => {
+      if (current !== null) throw new Error('close the isolated browser before relaunching it');
+      current = await extensionLaunch(profileDir, true);
+      return current;
+    };
+
+    await use({ launch, close });
+    await close();
   },
 });
 

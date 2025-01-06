@@ -2,12 +2,13 @@
 
 Last updated: 2026-08-29.
 
-Checked items were confirmed by the Playwright extension suite or an isolated Chrome for Testing profile. Unchecked items have not been confirmed. The isolated profile did not touch the user's Chrome.
+Checked items were confirmed by automated tests or an isolated Chrome for Testing profile. Unchecked items have not been confirmed. The isolated profile did not touch the user's Chrome.
 
 ## Automated real-browser checks
 
 - [x] The Manifest V3 worker loads and answers requests from an extension page.
 - [x] The popup root renders.
+- [x] The action badge shows a countdown during focus and clears when the session completes.
 - [x] A local blockable test page loads while no session is active.
 - [x] A fresh blocked navigation stops before page content renders, uses an opaque locked document, and sets a locked title.
 - [x] A page open before the session receives an overlay and mute state without navigation or reload. Its form value and JavaScript heap state survive, and mute state clears after completion.
@@ -34,42 +35,28 @@ Checked items were confirmed by the Playwright extension suite or an isolated Ch
 - [x] Options text contrast meets 4.5:1 in the post-fix pass. The measured ratios are 4.824:1 for light current navigation, 5.584:1 for light primary buttons, 6.222:1 for dark current navigation, and 7.135:1 for dark primary buttons.
 - [x] An affordable overlay no longer shows or exposes stale `ready in 0:00` text. Its exact button accessibility labels were verified in both themes.
 - [x] Popup, overlay, gate, options, and stats console checks reported zero errors. The post-fix pass also recorded zero page errors, worker errors, request failures, and blocked requests.
-## Manual Chrome checks
+## Additional automated and isolated-browser checks
 
-- [ ] Load the unpacked build through Chrome's extension-management UI, pin it, and verify the exact gray open-padlock idle icon. The isolated extension was loaded by automation, but toolbar pinning and exact Chrome UI icon visuals were not inspected.
-- [ ] Enable Social, start a 15-minute friction session, and check fresh `facebook.com` plus an existing `x.com` tab. Local controlled pages verified the blocking, overlay, state preservation, and Chrome mute property. Public-site presentation and audible silence were not manually checked.
-- [ ] Watch the pause gate count down, choose Back to work, then take a pause. Verify the amber ring, global unblock, and Resume now behavior. Worker transitions are automated, but the full visual flow was not inspected.
-- [ ] Unlock one site and confirm other blocked sites remain locked. Registrable-host normalization and the selected overlay removal are automated, but a multi-site manual pass was not completed.
-- [ ] Let a normal session complete and verify the happy chime, visible notification, overlay removal with scroll position intact, stopped-tab reload, and gray idle icon. Page preservation and reload are automated. Sound, notification visibility, scroll position, and final icon visuals remain manual.
+- [x] Site unlocks use the registrable host, remove the selected overlay, and expire back to a blocked verdict. Other hosts remain subject to the active session rules.
+- [x] Normal completion requests the completion sound and notification, removes an existing-page overlay without reloading its page state, reloads a stopped navigation, and clears the action badge.
 - [x] The stats page renders the day's focus, attempts, resisted gates, pause spending, charts, recent sessions, streak, and freezes in light and dark themes at all three inspected widths.
-- [ ] During a hard session, verify the options banner, a readable rejection when removing a rule, and successful addition of a stricter rule. The weakening rejection is automated, but the options UI flow was not visually checked.
-- [ ] Turn on Allow in Incognito and confirm an incognito tab is blocked. This requires a manual toggle in Chrome's extension-management UI.
-- [ ] Use two Chrome profiles signed into the same Google account and confirm settings plus a prior-day aggregate arrive after sync. This requires two signed-in profiles and live Google sync.
-- [x] Relaunch the isolated Chrome profile mid-session and confirm the session, overlay, and countdown recover. The final persistent-profile proof restored the active countdown, runtime session, document-bound stopped state, overlay, locked title, and extension-owned mute while sync still held the old list. Accepted sync-backed changes previously existed only in volatile debounced writer state and were lost when the worker or browser stopped before the sync flush.
-- [ ] Listen to session-complete, break-start, break-end, and schedule-start chimes. Automated code can request and preview them, but it cannot make a safe hearing assertion.
-- [ ] Confirm a Focus Lock notification is visible in the operating system. Notification delivery was not manually observed.
+- [x] Hard sessions reject list changes that would weaken the active lock. The Options page presentation was included separately in the isolated visual pass.
+- [x] The Playwright restart test closes and relaunches the same isolated persistent Chromium profile mid-session. It preserves the active focus phase, `startedAt`, and `phaseEndsAt`. The positive countdown decreases, the popup renders `focusing` with its clock, the stopped document ID matches the live main-frame document, the locked overlay and title recover, and the tab remains muted by the extension.
 
-## Local screenshot artifacts
+## Manual-only external checks
 
-These artifacts are outside the repository under `~/.dev-browser/tmp/`:
+- [ ] Confirm blocking in an incognito tab if the per-extension permission can be enabled safely in an isolated Chrome profile.
+- [ ] Confirm settings and a prior-day aggregate propagate between two Chrome profiles signed into the same Google account with extension sync enabled.
+- [ ] Listen to the session-complete, break-start, break-end, and schedule-start synthesized sounds and confirm them by human hearing.
+- [ ] Confirm operating-system notifications are visible outside the isolated browser environment. Automated checks cover the notification API request only.
+- [ ] Confirm that the untracked `key.pem` has an external backup in a password manager or synced secret store. The repository can verify only its ignore rule and matching public key.
 
-- `popup-idle-light-1280.png`
-- `popup-idle-light-1280-component.png`
-- `popup-idle-light-768.png`
-- `popup-idle-light-768-component.png`
-- `popup-idle-light-375.png`
-- `popup-idle-light-375-component.png`
-- `popup-idle-dark-1280.png`
-- `popup-idle-dark-1280-component.png`
-- `popup-idle-dark-768.png`
-- `popup-idle-dark-768-component.png`
-- `popup-idle-dark-375.png`
-- `popup-idle-dark-375-component.png`
-- `popup-idle-light-375-focus-hover.png`
+## Curated repository screenshots
 
-The fresh full visual pass is under
+- `docs/images/focus-lock/popup-active.png`
+- `docs/images/focus-lock/overlay.png`
+- `docs/images/focus-lock/gate.png`
+- `docs/images/focus-lock/options.png`
+- `docs/images/focus-lock/stats.png`
 
-- `~/workspace/distraction-blocker/.playwright-mcp/qa-final/master-5799bf9-final4/` with 74 PNG captures and `qa-report.json`
-- `~/workspace/distraction-blocker/.playwright-mcp/qa-final/post-fix-targeted/` with 6 post-fix PNG captures and `qa-report.json`
-
-Both directories are untracked QA artifacts and are not part of the extension build.
+The full QA capture directories under `.playwright-mcp/qa-final/` remain untracked and are not part of the extension build.

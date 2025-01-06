@@ -25,6 +25,8 @@ Then load the built extension:
 
 The manifest contains a fixed public key, so unpacked builds keep the same extension ID. That stable ID is required for Chrome Sync to associate installs consistently. Sync also requires Chrome profiles signed into the same Google account with extension sync enabled. Allow in Incognito is a per-profile Chrome permission and must be enabled manually.
 
+The corresponding `key.pem` must remain untracked. A maintainer must back it up outside Git in a password manager or synced secret store. The repository can verify the ignore rule and matching public key, but it cannot verify the external backup.
+
 After another build, use the Reload button on `chrome://extensions` to load the new files.
 
 ## Usage
@@ -39,6 +41,14 @@ Open the popup, choose a duration, enter the task you intend to finish, select c
 - Options contains category switches, per-site category exclusions, custom domain and URL-regex rules, whitelist rules, schedule entries, pause economy settings, sounds, badge behavior, and data export.
 
 Fresh blocked navigations show an opaque locked document. A page that was already open receives an overlay and is muted in place. When blocking ends, the existing page retains its form, scroll, and JavaScript state. A navigation that was stopped reloads so the requested page can render.
+
+## Screenshots
+
+| Active popup | Existing-page overlay | Deliberation gate |
+| --- | --- | --- |
+| ![Active focus popup](https://raw.githubusercontent.com/WoLpH/distraction-blocker/master/docs/images/focus-lock/popup-active.png) | ![Blocked existing page overlay](https://raw.githubusercontent.com/WoLpH/distraction-blocker/master/docs/images/focus-lock/overlay.png) | ![Deliberation gate](https://raw.githubusercontent.com/WoLpH/distraction-blocker/master/docs/images/focus-lock/gate.png) |
+| Options | Stats | |
+| ![Options page](https://raw.githubusercontent.com/WoLpH/distraction-blocker/master/docs/images/focus-lock/options.png) | ![Stats page](https://raw.githubusercontent.com/WoLpH/distraction-blocker/master/docs/images/focus-lock/stats.png) | |
 
 ## Stats and storage
 

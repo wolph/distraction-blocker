@@ -45,6 +45,32 @@ describe('host rules', () => {
     );
     expect(evaluateUrl(sub, 'https://ycombinator.com/', NONE, NOW).blocked).toBe(false);
   });
+
+  it('treats Unicode and punycode spellings as the same IDN host', () => {
+    const idn = compileMatcher(
+      lists({ custom: [{ kind: 'host', pattern: 'xn--bcher-kva.example' }] }),
+      [],
+      'blacklist',
+    );
+
+    expect(evaluateUrl(idn, 'https://bücher.example/catalog', NONE, NOW)).toEqual({
+      blocked: true,
+      reason: 'custom',
+      matchedPattern: 'xn--bcher-kva.example',
+    });
+    expect(evaluateUrl(idn, 'https://xn--bcher-kva.example/catalog', NONE, NOW).blocked).toBe(true);
+  });
+
+  it('does not confuse an IDN rule with a prefixed or Unicode-lookalike host', () => {
+    const idn = compileMatcher(
+      lists({ custom: [{ kind: 'host', pattern: 'bücher.example' }] }),
+      [],
+      'blacklist',
+    );
+
+    expect(evaluateUrl(idn, 'https://notbücher.example/', NONE, NOW).blocked).toBe(false);
+    expect(evaluateUrl(idn, 'https://bӵcher.example/', NONE, NOW).blocked).toBe(false);
+  });
 });
 
 describe('regex rules', () => {
@@ -117,6 +143,7 @@ describe('whitelist mode', () => {
 describe('validateRule', () => {
   it('accepts hosts, rejects garbage and bad regexes', () => {
     expect(validateRule({ kind: 'host', pattern: 'nu.nl' })).toBeNull();
+    expect(validateRule({ kind: 'host', pattern: 'bücher.example' })).toBeNull();
     expect(validateRule({ kind: 'host', pattern: 'not a host!' })).toMatch(/host/i);
     expect(validateRule({ kind: 'regex', pattern: '(' })).toMatch(/regex/i);
   });

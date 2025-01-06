@@ -1,6 +1,12 @@
 import type { ContentCommand } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
-import { docStateFor, shouldStop } from './gate';
+import {
+  claimContentLifecycle,
+  docStateFor,
+  installPersistedPageShow,
+  recoverRestoredOverlay,
+  shouldStop,
+} from './gate';
 import { hideOverlay, showOverlay } from './overlay';
 
 /** True once this document stopped before loading. A stopped tab keeps
@@ -46,14 +52,15 @@ async function evaluate(docState: 'fresh' | 'loaded'): Promise<void> {
   }
 }
 
-chrome.runtime.onMessage.addListener((msg: ContentCommand): void => {
-  if (msg.type === 'applyBlock') showOverlay(msg.verdict, msg.snapshot, wasStopped);
-  else if (msg.type === 'clearBlock') hideOverlay(msg.snapshot);
-  else if (msg.type === 'reevaluate') void evaluate('loaded');
-});
-
-window.addEventListener('pageshow', (event: PageTransitionEvent): void => {
-  if (event.persisted) void evaluate('loaded');
-});
-
-void evaluate(docStateFor(document.readyState));
+if (claimContentLifecycle(globalThis as unknown as Record<string, unknown>)) {
+  wasStopped = recoverRestoredOverlay(document);
+  chrome.runtime.onMessage.addListener((msg: ContentCommand): void => {
+    if (msg.type === 'applyBlock') showOverlay(msg.verdict, msg.snapshot, wasStopped);
+    else if (msg.type === 'clearBlock') hideOverlay(msg.snapshot);
+    else if (msg.type === 'reevaluate') void evaluate('loaded');
+  });
+  installPersistedPageShow(window, (): void => {
+    void evaluate('loaded');
+  });
+  void evaluate(docStateFor(document.readyState));
+}
