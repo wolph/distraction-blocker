@@ -4,8 +4,51 @@ import { describe, expect, it } from 'vitest';
 import { activeEntry, nextStart, validateEntry, windowEnd } from '../../../src/core/schedule';
 import type { ScheduleEntry } from '../../../src/shared/types';
 
-const DST_CHILD_FLAG = 'FOCUS_LOCK_AMSTERDAM_DST_CHILD';
+const DST_CHILD_FLAG: string = 'FOCUS_LOCK_AMSTERDAM_DST_CHILD';
+const DST_CHILD_TIMEOUT_MS: number = 30_000;
 const isAmsterdamChild: boolean = process.env[DST_CHILD_FLAG] === '1';
+
+interface ChildProcessFailure {
+  status?: number | null;
+  signal?: string | null;
+  stdout?: string | Uint8Array;
+  stderr?: string | Uint8Array;
+}
+
+function capturedOutput(value: unknown): string {
+  const output: string =
+    typeof value === 'string'
+      ? value
+      : value instanceof Uint8Array
+        ? Buffer.from(value).toString('utf8')
+        : '';
+  return output.trim() || '<empty>';
+}
+
+function runTimezoneChild(
+  timezone: string,
+  args: string[],
+  extraEnv: Record<string, string> = {},
+): string {
+  try {
+    return execFileSync(process.execPath, args, {
+      encoding: 'utf8',
+      env: { TZ: timezone, ...extraEnv },
+      stdio: 'pipe',
+      timeout: DST_CHILD_TIMEOUT_MS,
+    });
+  } catch (error: unknown) {
+    const failure: ChildProcessFailure = error as ChildProcessFailure;
+    throw new Error(
+      [
+        `timezone child failed: status=${failure.status ?? 'none'}, signal=${failure.signal ?? 'none'}`,
+        `stdout: ${capturedOutput(failure.stdout)}`,
+        `stderr: ${capturedOutput(failure.stderr)}`,
+      ].join('\n'),
+      { cause: error },
+    );
+  }
+}
 
 function entry(partial: Partial<ScheduleEntry>): ScheduleEntry {
   return {
@@ -68,18 +111,27 @@ describe('validateEntry', () => {
 });
 
 describe.runIf(!isAmsterdamChild)('schedule timezone isolation', () => {
+  it('reports child status, signal, stdout, and stderr on failure', () => {
+    expect((): string =>
+      runTimezoneChild('UTC', [
+        '--input-type=module',
+        '--eval',
+        "process.stdout.write('captured-out'); process.stderr.write('captured-err'); process.exit(7);",
+      ]),
+    ).toThrow(/status=7, signal=none[\s\S]*stdout: captured-out[\s\S]*stderr: captured-err/);
+  });
+
   it('passes the DST cases in a Europe/Amsterdam child process', () => {
     const vitestPath: string = fileURLToPath(
       new URL('../../../node_modules/vitest/vitest.mjs', import.meta.url),
     );
     const testPath: string = fileURLToPath(import.meta.url);
 
-    expect((): void => {
-      execFileSync(process.execPath, [vitestPath, 'run', testPath], {
-        env: { ...process.env, TZ: 'Europe/Amsterdam', [DST_CHILD_FLAG]: '1' },
-        stdio: 'pipe',
-      });
-    }).not.toThrow();
+    expect((): string =>
+      runTimezoneChild('Europe/Amsterdam', [vitestPath, 'run', testPath], {
+        [DST_CHILD_FLAG]: '1',
+      }),
+    ).not.toThrow();
   });
 });
 

@@ -8,6 +8,7 @@ import {
 } from '@playwright/test';
 import type { Request, ResponseMap, SoundId } from '../../src/shared/messages';
 import type { Rule, SessionConfig } from '../../src/shared/types';
+import { closeContextOnSetupFailure } from './context-cleanup';
 import { startServer, type TestServer } from './server';
 
 interface ExtFixtures {
@@ -56,12 +57,14 @@ async function extensionLaunch(
     channel: 'chromium',
     args,
   });
-  const existing: Worker | undefined = context.serviceWorkers()[0];
-  const worker: Worker = existing ?? (await context.waitForEvent('serviceworker'));
-  const extensionId: string = new URL(worker.url()).host;
-  const extPage: Page = await context.newPage();
-  await extPage.goto(`chrome-extension://${extensionId}/src/popup/popup.html`);
-  return { context, worker, extensionId, extPage };
+  return await closeContextOnSetupFailure(context, async (): Promise<ExtensionLaunch> => {
+    const existing: Worker | undefined = context.serviceWorkers()[0];
+    const worker: Worker = existing ?? (await context.waitForEvent('serviceworker'));
+    const extensionId: string = new URL(worker.url()).host;
+    const extPage: Page = await context.newPage();
+    await extPage.goto(`chrome-extension://${extensionId}/src/popup/popup.html`);
+    return { context, worker, extensionId, extPage };
+  });
 }
 
 export const test = base.extend<ExtFixtures>({

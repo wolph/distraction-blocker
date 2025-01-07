@@ -13,6 +13,8 @@ import {
   test,
 } from './fixtures';
 
+test.setTimeout(60_000);
+
 test('completion clears browser effects and reaches sound and notification APIs', async ({
   context,
   extPage,
@@ -52,11 +54,11 @@ test('completion clears browser effects and reaches sound and notification APIs'
   expect(settingsAck).toEqual({ ok: true });
 
   await startTestSession(extPage, {
-    durationMin: 0.08,
+    durationMin: 0.6,
     cycling: {
-      focusMin: 0.02,
-      shortBreakMin: 0.02,
-      longBreakMin: 0.02,
+      focusMin: 0.25,
+      shortBreakMin: 0.05,
+      longBreakMin: 0.05,
       longEvery: 4,
     },
   });
@@ -80,7 +82,7 @@ test('completion clears browser effects and reaches sound and notification APIs'
         });
         return snapshot.phase;
       },
-      { timeout: 15_000 },
+      { timeout: 50_000 },
     )
     .toBe('idle');
   await expect(existingPage.locator('focus-lock-overlay')).toHaveCount(0);

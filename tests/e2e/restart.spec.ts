@@ -8,6 +8,8 @@ import {
   test,
 } from './fixtures';
 
+test.setTimeout(60_000);
+
 interface PersistedTabState {
   hasTabState: boolean;
   priorMuted: boolean | null;
@@ -65,7 +67,7 @@ test('persistent profile restores a stopped muted tab and active countdown after
   const url: string = siteUrl('/plain.html');
   const first: ExtensionLaunch = await restartableExtension.launch();
   await startTestSession(first.extPage, {
-    durationMin: 0.15,
+    durationMin: 0.5,
     intention: 'survive browser restart',
   });
   const blockedPage: Page = await first.context.newPage();
@@ -116,7 +118,7 @@ test('persistent profile restores a stopped muted tab and active countdown after
         });
         return snapshot.phase;
       },
-      { timeout: 15_000 },
+      { timeout: 45_000 },
     )
     .toBe('idle');
   await expect(restoredPage.locator('focus-lock-overlay')).toHaveCount(0);
