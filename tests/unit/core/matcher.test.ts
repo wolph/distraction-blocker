@@ -68,6 +68,8 @@ describe('host rules', () => {
       'blacklist',
     );
 
+    expect(evaluateUrl(idn, 'https://bücher.example/catalog', NONE, NOW).blocked).toBe(true);
+    expect(evaluateUrl(idn, 'https://xn--bcher-kva.example/catalog', NONE, NOW).blocked).toBe(true);
     expect(evaluateUrl(idn, 'https://notbücher.example/', NONE, NOW).blocked).toBe(false);
     expect(evaluateUrl(idn, 'https://bӵcher.example/', NONE, NOW).blocked).toBe(false);
   });

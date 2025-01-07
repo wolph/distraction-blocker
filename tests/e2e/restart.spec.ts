@@ -9,6 +9,8 @@ import {
 } from './fixtures';
 
 interface PersistedTabState {
+  hasTabState: boolean;
+  priorMuted: boolean | null;
   stoppedDocumentId: string | null;
   frameDocumentId: string | null;
   muted: boolean;
@@ -23,12 +25,18 @@ async function readPersistedTabState(worker: Worker, url: string): Promise<Persi
     if (tab?.id === undefined) throw new Error(`restored tab not found: ${targetUrl}`);
     const stored: Record<string, unknown> = await chrome.storage.local.get('runtime');
     const runtime = stored.runtime as {
-      tabStates?: Record<number, { stoppedDocumentId?: string | null }>;
+      tabStates?: Record<
+        number,
+        { priorMuted?: boolean | null; stoppedDocumentId?: string | null }
+      >;
     };
+    const tabState = runtime.tabStates?.[tab.id];
     const frame: chrome.webNavigation.GetFrameResultDetails | null =
       await chrome.webNavigation.getFrame({ tabId: tab.id, frameId: 0 });
     return {
-      stoppedDocumentId: runtime.tabStates?.[tab.id]?.stoppedDocumentId ?? null,
+      hasTabState: tabState !== undefined,
+      priorMuted: tabState?.priorMuted ?? null,
+      stoppedDocumentId: tabState?.stoppedDocumentId ?? null,
       frameDocumentId: frame?.documentId ?? null,
       muted: tab.mutedInfo?.muted === true,
       extensionOwnedMute:
@@ -56,7 +64,10 @@ test('persistent profile restores a stopped muted tab and active countdown after
 }) => {
   const url: string = siteUrl('/plain.html');
   const first: ExtensionLaunch = await restartableExtension.launch();
-  await startTestSession(first.extPage, { durationMin: 2, intention: 'survive browser restart' });
+  await startTestSession(first.extPage, {
+    durationMin: 0.15,
+    intention: 'survive browser restart',
+  });
   const blockedPage: Page = await first.context.newPage();
   await blockedPage.goto(url, { waitUntil: 'commit' });
   await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
@@ -68,6 +79,8 @@ test('persistent profile restores a stopped muted tab and active countdown after
   const tabBefore: PersistedTabState = await readPersistedTabState(first.worker, url);
   expect(before.phase).toBe('focus');
   expect(before.phaseEndsAt).not.toBeNull();
+  expect(tabBefore.hasTabState).toBe(true);
+  expect(tabBefore.priorMuted).toBe(false);
   expect(tabBefore.stoppedDocumentId).toBe(tabBefore.frameDocumentId);
   expect(tabBefore.stoppedDocumentId).not.toBeNull();
   expect(tabBefore.muted).toBe(true);
@@ -94,4 +107,24 @@ test('persistent profile restores a stopped muted tab and active countdown after
   expect(tabAfter.stoppedDocumentId).not.toBeNull();
   expect(tabAfter.muted).toBe(true);
   expect(tabAfter.extensionOwnedMute).toBe(true);
+
+  await expect
+    .poll(
+      async (): Promise<SessionSnapshot['phase']> => {
+        const snapshot: SessionSnapshot = await sendExtensionRequest(second.extPage, {
+          type: 'getSnapshot',
+        });
+        return snapshot.phase;
+      },
+      { timeout: 15_000 },
+    )
+    .toBe('idle');
+  await expect(restoredPage.locator('focus-lock-overlay')).toHaveCount(0);
+  await expect(restoredPage.locator('#marker')).toHaveText('plain page');
+
+  const settledTab: PersistedTabState = await readPersistedTabState(second.worker, url);
+  expect(settledTab.hasTabState).toBe(false);
+  expect(settledTab.stoppedDocumentId).toBeNull();
+  expect(settledTab.muted).toBe(false);
+  expect(settledTab.extensionOwnedMute).toBe(false);
 });

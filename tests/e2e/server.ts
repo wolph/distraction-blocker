@@ -7,8 +7,8 @@ export interface TestServer {
 
 const PAGES: Readonly<Record<string, string>> = {
   '/plain.html': `<!doctype html>
-<html><head><title>Plain test page</title></head>
-<body><h1 id="marker">plain page</h1><input id="keep" /></body></html>`,
+    <html><head><title>Plain test page</title></head>
+    <body style="min-height: 3000px"><h1 id="marker">plain page</h1><input id="keep" /></body></html>`,
   '/spa.html': `<!doctype html>
 <html><head><title>SPA test page</title></head>
 <body>

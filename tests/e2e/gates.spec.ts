@@ -3,7 +3,11 @@ import { cancelPhrase } from '../../src/shared/constants';
 import type { SessionSnapshot, Settings } from '../../src/shared/types';
 import { expect, sendExtensionRequest, startTestSession, test } from './fixtures';
 
-async function configureFastEconomy(extPage: Page): Promise<void> {
+async function configureFastEconomy(
+  extPage: Page,
+  pauseMs: number = 1_000,
+  unlockMs: number = 1_000,
+): Promise<void> {
   const settings: Settings = await sendExtensionRequest(extPage, { type: 'getSettings' });
   const ack = await sendExtensionRequest(extPage, {
     type: 'updateSettings',
@@ -11,9 +15,9 @@ async function configureFastEconomy(extPage: Page): Promise<void> {
       ...settings,
       pause: {
         earnRatio: 10,
-        capMs: 60_000,
-        pauseMs: 1_000,
-        unlockMs: 1_000,
+        capMs: Math.max(60_000, pauseMs, unlockMs),
+        pauseMs,
+        unlockMs,
       },
       gate: { delayMs: 500, requireTypedPhrase: false },
     },
@@ -21,14 +25,21 @@ async function configureFastEconomy(extPage: Page): Promise<void> {
   if (!ack.ok) throw new Error(ack.error);
 }
 
-async function waitForBank(extPage: Page, amountMs: number): Promise<void> {
+async function waitForBank(
+  extPage: Page,
+  amountMs: number,
+  timeoutMs: number = 5_000,
+): Promise<void> {
   await expect
-    .poll(async (): Promise<number> => {
-      const snapshot: SessionSnapshot = await sendExtensionRequest(extPage, {
-        type: 'getSnapshot',
-      });
-      return snapshot.bankMs;
-    })
+    .poll(
+      async (): Promise<number> => {
+        const snapshot: SessionSnapshot = await sendExtensionRequest(extPage, {
+          type: 'getSnapshot',
+        });
+        return snapshot.bankMs;
+      },
+      { timeout: timeoutMs },
+    )
     .toBeGreaterThanOrEqual(amountMs);
 }
 
@@ -114,6 +125,44 @@ test('pause gate rejects an early confirmation and unblocks after its delay', as
   await expect(page.locator('focus-lock-overlay')).toHaveCount(0);
 });
 
+test('pause gate supports back to work, taking a pause, and resuming now', async ({
+  context,
+  extPage,
+  siteUrl,
+}) => {
+  const pauseMs: number = 10_000;
+  await configureFastEconomy(extPage, pauseMs);
+  const page: Page = await context.newPage();
+  await page.goto(siteUrl('/plain.html'));
+  await startTestSession(extPage, { durationMin: 0.3 });
+  await expect(page.locator('focus-lock-overlay')).toBeAttached();
+  await waitForBank(extPage, pauseMs);
+
+  const pauseButton = extPage.getByRole('button', { name: 'Pause everything 0 min' });
+  await expect(pauseButton).toBeEnabled();
+  await pauseButton.click();
+  await extPage.getByRole('button', { name: 'Never mind, back to work' }).click();
+  await expect(pauseButton).toBeEnabled();
+
+  await pauseButton.click();
+  const takePause = extPage.getByRole('button', { name: 'Take pause' });
+  await expect(takePause).toBeEnabled();
+  await takePause.click();
+  await expect(extPage.getByRole('button', { name: 'Resume now' })).toBeVisible();
+  await expect(page.locator('focus-lock-overlay')).toHaveCount(0);
+
+  await extPage.getByRole('button', { name: 'Resume now' }).click();
+  await expect
+    .poll(async (): Promise<SessionSnapshot['phase']> => {
+      const snapshot: SessionSnapshot = await sendExtensionRequest(extPage, {
+        type: 'getSnapshot',
+      });
+      return snapshot.phase;
+    })
+    .toBe('focus');
+  await expect(page.locator('focus-lock-overlay')).toBeAttached();
+});
+
 test('abandoning a gate records a resisted temptation', async ({ extPage }) => {
   await configureFastEconomy(extPage);
   await startTestSession(extPage, { durationMin: 0.3 });
@@ -183,21 +232,30 @@ test('friction cancellation requires the delay and exact phrase', async ({ extPa
   expect(snapshot.phase).toBe('idle');
 });
 
-test('overlay unlock normalizes a subdomain to its registrable host', async ({
+test('overlay unlock isolates another site and reblocks after expiry', async ({
   context,
   extPage,
   siteUrl,
+  worker,
 }) => {
-  await configureFastEconomy(extPage);
+  const unlockMs: number = 35_000;
+  await configureFastEconomy(extPage, 1_000, unlockMs);
   const page = await context.newPage();
+  const otherPage = await context.newPage();
   const subdomainUrl: string = siteUrl('/plain.html').replace(
     'blocked.example',
     'm.blocked.example',
   );
+  const otherUrl: string = siteUrl('/plain.html').replace('blocked.example', 'other.example');
   await page.goto(subdomainUrl);
-  await startTestSession(extPage, { durationMin: 0.3 });
+  await otherPage.goto(otherUrl);
+  await startTestSession(extPage, { durationMin: 1.5 }, [
+    { kind: 'host', pattern: 'blocked.example' },
+    { kind: 'host', pattern: 'other.example' },
+  ]);
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
-  await waitForBank(extPage, 1_000);
+  await expect(otherPage.locator('focus-lock-overlay')).toBeAttached();
+  await waitForBank(extPage, unlockMs, 15_000);
 
   await expect
     .poll(async (): Promise<boolean> => {
@@ -222,6 +280,25 @@ test('overlay unlock normalizes a subdomain to its registrable host', async ({
     type: 'getSnapshot',
   });
   expect(snapshot.activeUnlocks[0]?.host).toBe('blocked.example');
+  const phaseAlarm: chrome.alarms.Alarm | undefined = await worker.evaluate(
+    async (): Promise<chrome.alarms.Alarm | undefined> => await chrome.alarms.get('phase'),
+  );
+  expect(phaseAlarm?.scheduledTime).toBe(snapshot.activeUnlocks[0]?.until);
   await expect(page.locator('focus-lock-overlay')).toHaveCount(0);
   await expect(page.locator('#marker')).toHaveText('plain page');
+  await expect(otherPage.locator('focus-lock-overlay')).toBeAttached();
+
+  await expect
+    .poll(
+      async (): Promise<number> => {
+        const current: SessionSnapshot = await sendExtensionRequest(extPage, {
+          type: 'getSnapshot',
+        });
+        return current.activeUnlocks.length;
+      },
+      { timeout: 50_000 },
+    )
+    .toBe(0);
+  await expect(page.locator('focus-lock-overlay')).toBeAttached();
+  await expect(otherPage.locator('focus-lock-overlay')).toBeAttached();
 });

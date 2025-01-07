@@ -1,5 +1,16 @@
 import type { SessionSnapshot, Settings } from '../../src/shared/types';
-import { expect, sendExtensionRequest, startTestSession, test } from './fixtures';
+import {
+  clearNotifications,
+  expect,
+  hasOffscreenAudioDocument,
+  notificationIds,
+  type ObservedSound,
+  observedSounds,
+  observeSoundMessages,
+  sendExtensionRequest,
+  startTestSession,
+  test,
+} from './fixtures';
 
 test('badge shows a countdown during focus and clears on completion', async ({
   extPage,
@@ -97,7 +108,9 @@ test('sync and local storage keep their documented split and quota', async ({
   expect(syncItems).not.toHaveProperty('runtime');
 });
 
-test('an active schedule window starts a scheduled focus session', async ({ extPage }) => {
+test('an active schedule window starts a scheduled focus session', async ({ extPage, worker }) => {
+  await clearNotifications(worker);
+  await observeSoundMessages(extPage);
   const settings: Settings = await sendExtensionRequest(extPage, { type: 'getSettings' });
   const today: number = new Date().getDay();
   expect(
@@ -105,6 +118,11 @@ test('an active schedule window starts a scheduled focus session', async ({ extP
       type: 'updateSettings',
       settings: {
         ...settings,
+        sounds: {
+          ...settings.sounds,
+          masterVolume: 0.1,
+          scheduleStart: true,
+        },
         schedule: [
           {
             id: 'e2e-active-window',
@@ -135,4 +153,16 @@ test('an active schedule window starts a scheduled focus session', async ({ extP
   });
   expect(snapshot.config?.source).toBe('schedule');
   expect(snapshot.config?.scheduleEntryId).toBe('e2e-active-window');
+  await expect
+    .poll(
+      async (): Promise<ObservedSound['sound'][]> =>
+        (await observedSounds(extPage)).map(
+          (message: ObservedSound): ObservedSound['sound'] => message.sound,
+        ),
+    )
+    .toContain('scheduleStart');
+  expect(await hasOffscreenAudioDocument(worker)).toBe(true);
+  await expect
+    .poll(async (): Promise<string[]> => await notificationIds(worker))
+    .not.toHaveLength(0);
 });

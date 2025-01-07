@@ -1047,7 +1047,13 @@ export class Engine {
     this.resolveAttemptDurability(attemptRevision);
     this.ports.broadcast(snap);
     this.ports.updateIcon(snap);
-    this.ports.scheduleWake(this.runtime.session?.phaseEndsAt ?? null);
+    const wakeCandidates: number[] = this.runtime.unlocks.map(
+      (unlock: SiteUnlock): number => unlock.until,
+    );
+    if (this.runtime.session?.phaseEndsAt !== undefined) {
+      wakeCandidates.push(this.runtime.session.phaseEndsAt);
+    }
+    this.ports.scheduleWake(wakeCandidates.length === 0 ? null : Math.min(...wakeCandidates));
     if (block) {
       this.applyingBlocking = true;
       try {

@@ -1097,6 +1097,9 @@ describe('Engine', () => {
         until: T0 + DEFAULT_SETTINGS.gate.delayMs + DEFAULT_SETTINGS.pause.unlockMs,
       },
     ]);
+    expect(h.ports.scheduleWake).toHaveBeenLastCalledWith(
+      T0 + DEFAULT_SETTINGS.gate.delayMs + DEFAULT_SETTINGS.pause.unlockMs,
+    );
     h.setNow(T0 + DEFAULT_SETTINGS.gate.delayMs + DEFAULT_SETTINGS.pause.unlockMs + 1);
     expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(true);
   });
