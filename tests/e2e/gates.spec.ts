@@ -87,12 +87,13 @@ test('pause gate rejects an early confirmation and unblocks after its delay', as
   extPage,
   siteUrl,
 }) => {
-  await configureFastEconomy(extPage);
+  const pauseMs: number = 10_000;
+  await configureFastEconomy(extPage, pauseMs);
   const page = await context.newPage();
   await page.goto(siteUrl('/plain.html'));
   await startTestSession(extPage, { durationMin: 0.3 });
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
-  await waitForBank(extPage, 1_000);
+  await waitForBank(extPage, pauseMs);
   await expect
     .poll(async (): Promise<string> => {
       const names: string[] = await closedShadowButtonNames(context, page);
