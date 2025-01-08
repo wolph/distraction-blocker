@@ -126,8 +126,12 @@ test('hard-session Options rejects weakening and saves a stronger rule', async (
   await startTestSession(extPage, { durationMin: 0.3, strictness: 'hard' });
   const optionsPage: Page = await context.newPage();
   await optionsPage.goto(`chrome-extension://${extensionId}/src/options/options.html`);
-  await expect(optionsPage.locator('.hard-banner')).toContainText(/Hard session until/);
-  await expect(optionsPage.locator('.hard-banner')).toContainText(/weaken blocking.*rejected/i);
+  await expect
+    .poll(async (): Promise<string> => {
+      const text: string | null = await optionsPage.locator('.hard-banner').textContent();
+      return text?.trim() ?? '';
+    })
+    .toMatch(/^Changes that weaken blocking will be rejected until \d{2}:\d{2}\.$/);
 
   await optionsPage.getByRole('button', { name: 'Remove blocked.example' }).click();
   await optionsPage.getByRole('button', { name: 'Save lists' }).click();
