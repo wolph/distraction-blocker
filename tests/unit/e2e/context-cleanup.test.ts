@@ -22,4 +22,25 @@ describe('closeContextOnSetupFailure', () => {
     ).resolves.toBe('ready');
     expect(close).not.toHaveBeenCalled();
   });
+
+  it('preserves setup and cleanup errors when closing also rejects', async () => {
+    const setupError: Error = new Error('popup setup failed');
+    const closeError: Error = new Error('context close failed');
+    const close: Mock<() => Promise<void>> = vi.fn().mockRejectedValue(closeError);
+    let caught: unknown;
+
+    try {
+      await closeContextOnSetupFailure({ close }, async (): Promise<never> => {
+        throw setupError;
+      });
+    } catch (error: unknown) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    const aggregate: AggregateError = caught as AggregateError;
+    expect(aggregate.errors).toEqual([setupError, closeError]);
+    expect(aggregate.cause).toBe(setupError);
+    expect(aggregate.message).toContain('setup and context cleanup failed');
+  });
 });

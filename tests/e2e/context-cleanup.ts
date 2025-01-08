@@ -8,8 +8,16 @@ export async function closeContextOnSetupFailure<T>(
 ): Promise<T> {
   try {
     return await setup();
-  } catch (error: unknown) {
-    await context.close();
-    throw error;
+  } catch (setupError: unknown) {
+    try {
+      await context.close();
+    } catch (closeError: unknown) {
+      throw new AggregateError(
+        [setupError, closeError],
+        'extension setup and context cleanup failed',
+        { cause: setupError },
+      );
+    }
+    throw setupError;
   }
 }
