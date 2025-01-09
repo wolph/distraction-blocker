@@ -38,14 +38,18 @@ export function listsChangeAllowed(
   incoming: ListsConfig,
 ): string | null {
   if (!isHard(session)) return null;
-  if (removedAny(current.custom, incoming.custom)) {
+  if (mode === 'blacklist' && removedAny(current.custom, incoming.custom)) {
     return 'a hard session is running: removing blocked sites unlocks when it ends';
   }
   if (mode === 'whitelist' && addedAny(current.whitelist, incoming.whitelist)) {
     return 'a hard session is running: new whitelist entries unlock when it ends';
   }
   for (const [id, enabled] of Object.entries(current.categories)) {
-    if (enabled && incoming.categories[id as keyof ListsConfig['categories']] === false) {
+    if (
+      mode === 'blacklist' &&
+      enabled &&
+      incoming.categories[id as keyof ListsConfig['categories']] === false
+    ) {
       return 'a hard session is running: disabling categories unlocks when it ends';
     }
   }
@@ -53,7 +57,7 @@ export function listsChangeAllowed(
     const before: Set<string> = new Set(
       current.exclusions[id as keyof ListsConfig['categories']] ?? [],
     );
-    if ((hosts ?? []).some((h: string): boolean => !before.has(h))) {
+    if (mode === 'blacklist' && (hosts ?? []).some((h: string): boolean => !before.has(h))) {
       return 'a hard session is running: new exclusions unlock when it ends';
     }
   }
@@ -74,7 +78,10 @@ function scheduleWeakened(
     (e: ScheduleEntry): boolean => e.id === sourceEntryId,
   );
   if (after === undefined) return true;
-  return JSON.stringify(before) !== JSON.stringify(after);
+  if (before.enabled && !after.enabled) return true;
+  if (before.days.some((day: number): boolean => !after.days.includes(day))) return true;
+  if (after.start > before.start || after.end < before.end) return true;
+  return before.strictness === 'hard' && after.strictness === 'friction';
 }
 
 export function settingsChangeAllowed(
@@ -98,10 +105,16 @@ export function settingsChangeAllowed(
   if (incoming.pause.capMs > current.pause.capMs) {
     return 'a hard session is running: raising the pause cap funds more escapes';
   }
+  if (incoming.pause.pauseMs < current.pause.pauseMs) {
+    return 'a hard session is running: shortening pauses lowers their cost';
+  }
+  if (incoming.pause.unlockMs < current.pause.unlockMs) {
+    return 'a hard session is running: shortening unlocks lowers their cost';
+  }
   if (
     scheduleWeakened(session?.config.scheduleEntryId ?? null, current.schedule, incoming.schedule)
   ) {
-    return 'a hard session is running: its schedule entry cannot change until it ends';
+    return 'a hard session is running: its schedule entry cannot be weakened until it ends';
   }
   return null;
 }

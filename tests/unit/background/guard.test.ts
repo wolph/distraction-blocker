@@ -77,6 +77,29 @@ describe('listsChangeAllowed', () => {
     expect(listsChangeAllowed(hardSession, 'blacklist', excl, catOn)).toBeNull();
   });
 
+  it('allows blacklist-only edits during a hard whitelist session', () => {
+    const current: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'x.com' }],
+      categories: { ...DEFAULT_LISTS.categories, social: true },
+    };
+    const incoming: ListsConfig = {
+      ...DEFAULT_LISTS,
+      exclusions: { social: ['facebook.com'] },
+    };
+
+    expect(listsChangeAllowed(hardSession, 'whitelist', current, incoming)).toBeNull();
+  });
+
+  it('allows whitelist edits during a hard blacklist session', () => {
+    const incoming: ListsConfig = {
+      ...DEFAULT_LISTS,
+      whitelist: [{ kind: 'host', pattern: 'github.com' }],
+    };
+
+    expect(listsChangeAllowed(hardSession, 'blacklist', DEFAULT_LISTS, incoming)).toBeNull();
+  });
+
   it('allows everything when idle or friction', () => {
     expect(listsChangeAllowed(null, null, withCustom, DEFAULT_LISTS)).toBeNull();
     expect(listsChangeAllowed(frictionSession, 'blacklist', withCustom, DEFAULT_LISTS)).toBeNull();
@@ -143,7 +166,30 @@ describe('settingsChangeAllowed', () => {
     expect(settingsChangeAllowed(hardSession, DEFAULT_SETTINGS, bigger)).toMatch(/hard/i);
   });
 
-  it('rejects editing or disabling the schedule entry the session came from', () => {
+  it('rejects lowering pause and unlock costs during hard and allows raising them', () => {
+    const lowerPause: Settings = {
+      ...DEFAULT_SETTINGS,
+      pause: { ...DEFAULT_SETTINGS.pause, pauseMs: DEFAULT_SETTINGS.pause.pauseMs - 1 },
+    };
+    const lowerUnlock: Settings = {
+      ...DEFAULT_SETTINGS,
+      pause: { ...DEFAULT_SETTINGS.pause, unlockMs: DEFAULT_SETTINGS.pause.unlockMs - 1 },
+    };
+    const higherCosts: Settings = {
+      ...DEFAULT_SETTINGS,
+      pause: {
+        ...DEFAULT_SETTINGS.pause,
+        pauseMs: DEFAULT_SETTINGS.pause.pauseMs + 1,
+        unlockMs: DEFAULT_SETTINGS.pause.unlockMs + 1,
+      },
+    };
+
+    expect(settingsChangeAllowed(hardSession, DEFAULT_SETTINGS, lowerPause)).toMatch(/hard/i);
+    expect(settingsChangeAllowed(hardSession, DEFAULT_SETTINGS, lowerUnlock)).toMatch(/hard/i);
+    expect(settingsChangeAllowed(hardSession, DEFAULT_SETTINGS, higherCosts)).toBeNull();
+  });
+
+  it('rejects disabling or shortening the schedule entry the session came from', () => {
     const fromSchedule: SessionState = {
       ...hardSession,
       config: { ...hardSession.config, source: 'schedule', scheduleEntryId: 'e1' },
@@ -161,6 +207,30 @@ describe('settingsChangeAllowed', () => {
     expect(settingsChangeAllowed(fromSchedule, current, disabled)).toMatch(/hard/i);
     expect(settingsChangeAllowed(fromSchedule, current, shortened)).toMatch(/hard/i);
     expect(settingsChangeAllowed(fromSchedule, current, removed)).toMatch(/hard/i);
+  });
+
+  it('allows strengthening or no-effect edits to the source schedule entry', () => {
+    const fromSchedule: SessionState = {
+      ...hardSession,
+      config: { ...hardSession.config, source: 'schedule', scheduleEntryId: 'e1' },
+    };
+    const frictionEntry: ScheduleEntry = { ...scheduleEntry, strictness: 'friction' };
+    const current: Settings = { ...DEFAULT_SETTINGS, schedule: [frictionEntry] };
+    const stronger: Settings = {
+      ...DEFAULT_SETTINGS,
+      schedule: [
+        {
+          ...frictionEntry,
+          days: [0, ...frictionEntry.days],
+          start: '08:00',
+          end: '13:00',
+          strictness: 'hard',
+          intention: 'updated copy',
+        },
+      ],
+    };
+
+    expect(settingsChangeAllowed(fromSchedule, current, stronger)).toBeNull();
   });
 
   it('allows new schedule entries during hard', () => {
