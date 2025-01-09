@@ -203,9 +203,24 @@ describe('settingsChangeAllowed', () => {
       ...DEFAULT_SETTINGS,
       schedule: [{ ...scheduleEntry, end: '10:00' }],
     };
+    const fewerDays: Settings = {
+      ...DEFAULT_SETTINGS,
+      schedule: [{ ...scheduleEntry, days: [1, 2] }],
+    };
+    const laterStart: Settings = {
+      ...DEFAULT_SETTINGS,
+      schedule: [{ ...scheduleEntry, start: '10:00' }],
+    };
+    const weakerStrictness: Settings = {
+      ...DEFAULT_SETTINGS,
+      schedule: [{ ...scheduleEntry, strictness: 'friction' }],
+    };
     const removed: Settings = { ...DEFAULT_SETTINGS, schedule: [] };
     expect(settingsChangeAllowed(fromSchedule, current, disabled)).toMatch(/hard/i);
     expect(settingsChangeAllowed(fromSchedule, current, shortened)).toMatch(/hard/i);
+    expect(settingsChangeAllowed(fromSchedule, current, fewerDays)).toMatch(/hard/i);
+    expect(settingsChangeAllowed(fromSchedule, current, laterStart)).toMatch(/hard/i);
+    expect(settingsChangeAllowed(fromSchedule, current, weakerStrictness)).toMatch(/hard/i);
     expect(settingsChangeAllowed(fromSchedule, current, removed)).toMatch(/hard/i);
   });
 
