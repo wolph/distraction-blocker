@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildMatcherCache,
   compileMatcher,
   evaluateUrl,
   registrableHost,
+  restoreMatcherCache,
   validateRule,
 } from '../../../src/core/matcher';
 import { DEFAULT_LISTS } from '../../../src/shared/constants';
@@ -157,4 +159,180 @@ describe('registrableHost', () => {
     expect(registrableHost('https://a.b.co.uk/')).toBe('b.co.uk');
     expect(registrableHost('http://127.0.0.1/')).toBeNull();
   });
+});
+
+describe('persisted matcher cache', () => {
+  const cacheLists: ListsConfig = lists({
+    custom: [
+      { kind: 'host', pattern: 'bücher.example' },
+      { kind: 'regex', pattern: 'youtube\\.com/shorts' },
+    ],
+    whitelist: [
+      { kind: 'host', pattern: 'github.com' },
+      { kind: 'regex', pattern: 'docs\\.example/allowed' },
+      { kind: 'regex', pattern: 'docs\\.example' },
+    ],
+    categories: { ...DEFAULT_LISTS.categories, social: true },
+    exclusions: { social: ['facebook.com'] },
+  });
+
+  it('round-trips both modes as plain data without changing verdicts or provenance', () => {
+    const built = buildMatcherCache(cacheLists, CATS);
+    const stored = JSON.parse(JSON.stringify(built.stored)) as unknown;
+    const restored = restoreMatcherCache(stored, cacheLists, CATS);
+
+    expect(restored).not.toBeNull();
+    expect(JSON.parse(JSON.stringify(built.stored))).toEqual(built.stored);
+    expect(Array.isArray(built.stored.modes.blacklist.hosts)).toBe(true);
+    expect(Array.isArray(built.stored.modes.blacklist.regexes)).toBe(true);
+    expect(Array.isArray(built.stored.modes.blacklist.excluded)).toBe(true);
+    expect(
+      built.stored.modes.whitelist.regexes.map(
+        (entry: { source: string; via: 'custom' | 'whitelist' }): string => entry.source,
+      ),
+    ).toEqual(['docs\\.example/allowed', 'docs\\.example']);
+    expect(
+      evaluateUrl(
+        restored?.blacklist as ReturnType<typeof compileMatcher>,
+        'https://x.com/home',
+        NONE,
+        NOW,
+      ),
+    ).toEqual({ blocked: true, reason: 'category', matchedPattern: 'x.com' });
+    expect(
+      evaluateUrl(
+        restored?.blacklist as ReturnType<typeof compileMatcher>,
+        'https://www.facebook.com/work',
+        NONE,
+        NOW,
+      ).reason,
+    ).toBe('excluded');
+    expect(
+      evaluateUrl(
+        restored?.blacklist as ReturnType<typeof compileMatcher>,
+        'https://xn--bcher-kva.example/catalog',
+        NONE,
+        NOW,
+      ),
+    ).toEqual({
+      blocked: true,
+      reason: 'custom',
+      matchedPattern: 'xn--bcher-kva.example',
+    });
+    expect(
+      evaluateUrl(
+        restored?.blacklist as ReturnType<typeof compileMatcher>,
+        'https://youtube.com/shorts/one',
+        NONE,
+        NOW,
+      ),
+    ).toEqual({
+      blocked: true,
+      reason: 'custom',
+      matchedPattern: 'youtube\\.com/shorts',
+    });
+    expect(
+      evaluateUrl(
+        restored?.whitelist as ReturnType<typeof compileMatcher>,
+        'https://docs.example/allowed/page',
+        NONE,
+        NOW,
+      ),
+    ).toEqual({
+      blocked: false,
+      reason: 'whitelist',
+      matchedPattern: 'docs\\.example/allowed',
+    });
+  });
+
+  it('uses a deterministic source signature and invalidates changed inputs', () => {
+    const reordered: ListsConfig = {
+      whitelist: cacheLists.whitelist,
+      custom: cacheLists.custom,
+      exclusions: { social: ['facebook.com'] },
+      categories: {
+        forums: false,
+        gaming: false,
+        shopping: false,
+        mail: false,
+        news: false,
+        video: false,
+        social: true,
+      },
+    };
+    const stored = buildMatcherCache(cacheLists, CATS).stored;
+
+    expect(buildMatcherCache(reordered, CATS).stored.sourceSignature).toBe(stored.sourceSignature);
+    expect(
+      restoreMatcherCache(
+        stored,
+        { ...cacheLists, custom: [...cacheLists.custom, { kind: 'host', pattern: 'new.example' }] },
+        CATS,
+      ),
+    ).toBeNull();
+    expect(
+      restoreMatcherCache(stored, cacheLists, [
+        { ...(CATS[0] as CategoryList), hosts: ['facebook.com', 'x.com', 'new.example'] },
+      ]),
+    ).toBeNull();
+  });
+
+  type CacheMutation = (value: Record<string, unknown>) => void;
+  const malformedCacheCases: Array<[string, CacheMutation]> = [
+    [
+      'wrong version',
+      (value: Record<string, unknown>): void => {
+        value.version = 2;
+      },
+    ],
+    [
+      'missing mode',
+      (value: Record<string, unknown>): void => {
+        const modes = value.modes as Record<string, unknown>;
+        delete modes.whitelist;
+      },
+    ],
+    [
+      'malformed host tuple',
+      (value: Record<string, unknown>): void => {
+        const modes = value.modes as { blacklist: { hosts: unknown[] } };
+        modes.blacklist.hosts = [['x.com', 'invalid']];
+      },
+    ],
+    [
+      'invalid regex',
+      (value: Record<string, unknown>): void => {
+        const modes = value.modes as { blacklist: { regexes: unknown[] } };
+        modes.blacklist.regexes = [{ source: '(', via: 'custom' }];
+      },
+    ],
+    [
+      'invalid regex provenance',
+      (value: Record<string, unknown>): void => {
+        const modes = value.modes as { blacklist: { regexes: unknown[] } };
+        modes.blacklist.regexes = [{ source: 'example', via: 'whitelist' }];
+      },
+    ],
+    [
+      'partial mode data',
+      (value: Record<string, unknown>): void => {
+        const modes = value.modes as { blacklist: Record<string, unknown> };
+        delete modes.blacklist.excluded;
+      },
+    ],
+  ];
+
+  it.each(malformedCacheCases)(
+    'returns null without throwing for %s',
+    (_name: string, mutate: CacheMutation): void => {
+      const raw = JSON.parse(JSON.stringify(buildMatcherCache(cacheLists, CATS).stored)) as Record<
+        string,
+        unknown
+      >;
+      mutate(raw);
+
+      expect(() => restoreMatcherCache(raw, cacheLists, CATS)).not.toThrow();
+      expect(restoreMatcherCache(raw, cacheLists, CATS)).toBeNull();
+    },
+  );
 });

@@ -23,6 +23,35 @@ export interface CompiledMatcher {
   excluded: ReadonlySet<string>;
 }
 
+type HostProvenance = 'category' | 'custom' | 'whitelist';
+type RegexProvenance = 'custom' | 'whitelist';
+
+export interface StoredCompiledMatcher {
+  mode: SessionMode;
+  hosts: Array<[string, HostProvenance]>;
+  regexes: Array<{ source: string; via: RegexProvenance }>;
+  excluded: string[];
+}
+
+export interface StoredMatcherCache {
+  version: 1;
+  sourceSignature: string;
+  modes: {
+    blacklist: StoredCompiledMatcher;
+    whitelist: StoredCompiledMatcher;
+  };
+}
+
+export interface CompiledMatcherSet {
+  blacklist: CompiledMatcher;
+  whitelist: CompiledMatcher;
+}
+
+export interface MatcherCacheBundle {
+  stored: StoredMatcherCache;
+  compiled: CompiledMatcherSet;
+}
+
 const HOST_RE: RegExp = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/i;
 
 function normalizeHost(pattern: string): string | null {
@@ -100,6 +129,155 @@ export function compileMatcher(
     addRules(lists.custom, 'custom');
   }
   return { mode, hosts, regexes, excluded };
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  const record: Record<string, unknown> = value as Record<string, unknown>;
+  const members: string[] = Object.keys(record)
+    .sort()
+    .map((key: string): string => `${JSON.stringify(key)}:${stableJson(record[key])}`);
+  return `{${members.join(',')}}`;
+}
+
+function sourceSignature(lists: ListsConfig, categories: CategoryList[]): string {
+  return stableJson({ categories, lists });
+}
+
+function storeMatcher(matcher: CompiledMatcher): StoredCompiledMatcher {
+  return {
+    mode: matcher.mode,
+    hosts: [...matcher.hosts.entries()],
+    regexes: matcher.regexes.map(
+      (entry: {
+        source: string;
+        via: RegexProvenance;
+      }): {
+        source: string;
+        via: RegexProvenance;
+      } => ({ source: entry.source, via: entry.via }),
+    ),
+    excluded: [...matcher.excluded],
+  };
+}
+
+export function buildMatcherCache(
+  lists: ListsConfig,
+  categories: CategoryList[],
+): MatcherCacheBundle {
+  const compiled: CompiledMatcherSet = {
+    blacklist: compileMatcher(lists, categories, 'blacklist'),
+    whitelist: compileMatcher(lists, categories, 'whitelist'),
+  };
+  return {
+    stored: {
+      version: 1,
+      sourceSignature: sourceSignature(lists, categories),
+      modes: {
+        blacklist: storeMatcher(compiled.blacklist),
+        whitelist: storeMatcher(compiled.whitelist),
+      },
+    },
+    compiled,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  const actual: string[] = Object.keys(value).sort();
+  const expected: string[] = [...keys].sort();
+  return (
+    actual.length === expected.length &&
+    actual.every((key: string, i: number): boolean => key === expected[i])
+  );
+}
+
+function isNormalizedHost(value: unknown): value is string {
+  return typeof value === 'string' && HOST_RE.test(value) && normalizeHost(value) === value;
+}
+
+function validHostProvenance(value: unknown, mode: SessionMode): value is HostProvenance {
+  return mode === 'blacklist' ? value === 'category' || value === 'custom' : value === 'whitelist';
+}
+
+function validRegexProvenance(value: unknown, mode: SessionMode): value is RegexProvenance {
+  return mode === 'blacklist' ? value === 'custom' : value === 'whitelist';
+}
+
+function restoreStoredMatcher(value: unknown, mode: SessionMode): CompiledMatcher | null {
+  if (!isRecord(value) || !hasExactKeys(value, ['mode', 'hosts', 'regexes', 'excluded'])) {
+    return null;
+  }
+  if (value.mode !== mode || !Array.isArray(value.hosts) || !Array.isArray(value.regexes)) {
+    return null;
+  }
+  if (!Array.isArray(value.excluded)) return null;
+
+  const hosts: Map<string, HostProvenance> = new Map();
+  for (const candidate of value.hosts) {
+    if (!Array.isArray(candidate) || candidate.length !== 2) return null;
+    const [host, provenance]: unknown[] = candidate;
+    if (!isNormalizedHost(host) || !validHostProvenance(provenance, mode) || hosts.has(host)) {
+      return null;
+    }
+    hosts.set(host, provenance);
+  }
+
+  const regexes: Array<{ source: string; re: RegExp; via: RegexProvenance }> = [];
+  for (const candidate of value.regexes) {
+    if (!isRecord(candidate) || !hasExactKeys(candidate, ['source', 'via'])) return null;
+    if (typeof candidate.source !== 'string' || !validRegexProvenance(candidate.via, mode)) {
+      return null;
+    }
+    try {
+      regexes.push({
+        source: candidate.source,
+        re: new RegExp(candidate.source, 'i'),
+        via: candidate.via,
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  const excluded: Set<string> = new Set();
+  for (const host of value.excluded) {
+    if (!isNormalizedHost(host) || excluded.has(host)) return null;
+    excluded.add(host);
+  }
+  if (mode === 'whitelist' && excluded.size !== 0) return null;
+  return { mode, hosts, regexes, excluded };
+}
+
+export function restoreMatcherCache(
+  value: unknown,
+  lists: ListsConfig,
+  categories: CategoryList[],
+): CompiledMatcherSet | null {
+  if (!isRecord(value) || !hasExactKeys(value, ['version', 'sourceSignature', 'modes'])) {
+    return null;
+  }
+  if (
+    value.version !== 1 ||
+    value.sourceSignature !== sourceSignature(lists, categories) ||
+    !isRecord(value.modes) ||
+    !hasExactKeys(value.modes, ['blacklist', 'whitelist'])
+  ) {
+    return null;
+  }
+  const blacklist: CompiledMatcher | null = restoreStoredMatcher(
+    value.modes.blacklist,
+    'blacklist',
+  );
+  const whitelist: CompiledMatcher | null = restoreStoredMatcher(
+    value.modes.whitelist,
+    'whitelist',
+  );
+  return blacklist === null || whitelist === null ? null : { blacklist, whitelist };
 }
 
 /** eTLD+1 via tldts, null for IPs and unparseable input (callers fall back to hostname). */

@@ -1,4 +1,4 @@
-import { validateRule } from '../core/matcher';
+import { type StoredMatcherCache, validateRule } from '../core/matcher';
 import { isDailyDate, parseDailyAgg } from '../core/stats';
 import {
   DEFAULT_LISTS,
@@ -7,6 +7,7 @@ import {
   MAX_FREEZE_TOKENS,
 } from '../shared/constants';
 import {
+  LOCAL_CACHES,
   LOCAL_DEVICE_ID,
   LOCAL_EVENTS,
   LOCAL_RUNTIME,
@@ -806,6 +807,14 @@ function parseTabStates(value: unknown): Record<number, RuntimeTabState> {
 
 export async function saveRuntime(r: RuntimeState): Promise<void> {
   await chrome.storage.local.set({ [LOCAL_RUNTIME]: r });
+}
+
+export async function loadMatcherCache(): Promise<unknown> {
+  return (await chrome.storage.local.get(LOCAL_CACHES))[LOCAL_CACHES];
+}
+
+export async function saveMatcherCache(cache: StoredMatcherCache): Promise<void> {
+  await chrome.storage.local.set({ [LOCAL_CACHES]: cache });
 }
 
 export async function getDeviceId(): Promise<string> {

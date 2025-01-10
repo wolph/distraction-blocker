@@ -3,6 +3,7 @@ import {
   appendEvents,
   loadBank,
   loadLists,
+  loadMatcherCache,
   loadRuntime,
   loadSettings,
   loadStreak,
@@ -10,9 +11,12 @@ import {
   mergeRuntime,
   mergeSettings,
   readEvents,
+  saveMatcherCache,
 } from '../../../src/background/stores';
+import type { StoredMatcherCache } from '../../../src/core/matcher';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import {
+  LOCAL_CACHES,
   LOCAL_EVENTS,
   LOCAL_RUNTIME,
   SYNC_BANK,
@@ -24,6 +28,47 @@ import type { EventRecord, StreakState } from '../../../src/shared/types';
 
 afterEach((): void => {
   vi.unstubAllGlobals();
+});
+
+describe('matcher cache storage', () => {
+  const cache: StoredMatcherCache = {
+    version: 1,
+    sourceSignature: '{"lists":{},"categories":[]}',
+    modes: {
+      blacklist: { mode: 'blacklist', hosts: [], regexes: [], excluded: [] },
+      whitelist: { mode: 'whitelist', hosts: [], regexes: [], excluded: [] },
+    },
+  };
+
+  it('loads the raw cache from local storage without permissive parsing', async () => {
+    const malformed = { version: 1, modes: { blacklist: null } };
+    const localGet = vi.fn().mockResolvedValue({ [LOCAL_CACHES]: malformed });
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: { get: localGet },
+        sync: { get: vi.fn() },
+      },
+    });
+
+    await expect(loadMatcherCache()).resolves.toBe(malformed);
+    expect(localGet).toHaveBeenCalledWith(LOCAL_CACHES);
+    expect(chrome.storage.sync.get).not.toHaveBeenCalled();
+  });
+
+  it('saves the typed cache only to local storage', async () => {
+    const localSet = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: { set: localSet },
+        sync: { set: vi.fn() },
+      },
+    });
+
+    await saveMatcherCache(cache);
+
+    expect(localSet).toHaveBeenCalledWith({ [LOCAL_CACHES]: cache });
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+  });
 });
 
 describe('storage default merging', () => {
