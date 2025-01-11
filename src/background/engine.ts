@@ -146,6 +146,7 @@ export class Engine {
       }
       this.dirty = true;
     }
+    this.setSettingsAndClampBank(this.settings);
     if (this.runtime.session !== null && this.runtime.session.sessionId === undefined) {
       this.runtime.session = { ...this.runtime.session, sessionId: this.ports.newId() };
       this.dirty = true;
@@ -624,7 +625,7 @@ export class Engine {
     this.catchUp(now);
     const reason: string | null = settingsChangeAllowed(this.runtime.session, this.settings, s);
     if (reason !== null) return this.fail(now, reason);
-    this.settings = s;
+    this.setSettingsAndClampBank(s);
     this.ports.queueSync(SYNC_SETTINGS, s);
     this.dirty = true;
     await this.commit(now);
@@ -659,7 +660,7 @@ export class Engine {
       settings,
     );
     if (reason !== null) return this.fail(now, reason);
-    this.settings = settings;
+    this.setSettingsAndClampBank(settings);
     this.dirty = true;
     await this.commit(now);
     return { ok: true };
@@ -711,6 +712,16 @@ export class Engine {
 
   getSettings(): Settings {
     return this.settings;
+  }
+
+  private setSettingsAndClampBank(settings: Settings): void {
+    const balanceMs: number = Math.min(this.bank.balanceMs, settings.pause.capMs);
+    this.settings = settings;
+    if (balanceMs === this.bank.balanceMs) return;
+    this.bank = { balanceMs };
+    this.bankDirty = true;
+    this.bankRevision += 1;
+    this.dirty = true;
   }
 
   getLists(): ListsConfig {

@@ -12,7 +12,7 @@ import {
   GATE_EXPIRY_MS,
 } from '../../../src/shared/constants';
 import type { Ack } from '../../../src/shared/messages';
-import { SYNC_BANK, SYNC_STREAK } from '../../../src/shared/storage-keys';
+import { SYNC_BANK, SYNC_SETTINGS, SYNC_STREAK } from '../../../src/shared/storage-keys';
 import { localDateStr } from '../../../src/shared/time';
 import type {
   DailyAgg,
@@ -265,6 +265,150 @@ describe('Engine', () => {
     await expect(h.engine.updateSettings(changed)).rejects.toThrow('local storage unavailable');
     await h.engine.snapshotPersisted();
     expect(h.ports.saveRuntime).toHaveBeenCalledTimes(3);
+  });
+
+  it('self-heals a stored bank above the loaded cap and persists the clamp', async () => {
+    const h: Harness = makeEngine({
+      bankMs: 120_000,
+      settings: { pause: { ...DEFAULT_SETTINGS.pause, capMs: 60_000 } },
+    });
+
+    await expect(h.engine.snapshotPersisted()).resolves.toMatchObject({ bankMs: 60_000 });
+    expect(h.ports.queueSync).toHaveBeenCalledWith(SYNC_BANK, { balanceMs: 60_000 });
+    expect(h.ports.persistSyncJournal).toHaveBeenCalled();
+  });
+
+  it('clamps and journals a lower local cap before acknowledging', async () => {
+    let durableBankMs: number = 120_000;
+    let durableSettings: Settings = DEFAULT_SETTINGS;
+    let pendingBankMs: number = durableBankMs;
+    let pendingSettings: Settings = durableSettings;
+    let releaseJournal: () => void = (): void => {
+      throw new Error('sync journal persistence did not start');
+    };
+    let signalJournalStarted: () => void = (): void => {
+      throw new Error('sync journal persistence did not start');
+    };
+    const journalStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalJournalStarted = resolve;
+    });
+    const journalBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseJournal = resolve;
+    });
+    const h: Harness = makeEngine({
+      bankMs: durableBankMs,
+      queueSync: (key: string, value: unknown): void => {
+        if (key === SYNC_BANK) pendingBankMs = (value as { balanceMs: number }).balanceMs;
+        if (key === SYNC_SETTINGS) pendingSettings = value as Settings;
+      },
+      persistSyncJournal: async (): Promise<void> => {
+        signalJournalStarted();
+        await journalBlocked;
+        durableBankMs = pendingBankMs;
+        durableSettings = pendingSettings;
+      },
+    });
+    const lowered: Settings = {
+      ...DEFAULT_SETTINGS,
+      pause: { ...DEFAULT_SETTINGS.pause, capMs: 60_000 },
+    };
+
+    const updating: Promise<Ack> = h.engine.updateSettings(lowered);
+    await journalStarted;
+    const beforePersistence: 'pending' | 'resolved' = await Promise.race([
+      updating.then((): 'resolved' => 'resolved'),
+      Promise.resolve('pending' as const),
+    ]);
+
+    expect(beforePersistence).toBe('pending');
+    expect(pendingBankMs).toBe(60_000);
+    expect(durableBankMs).toBe(120_000);
+    expect(durableSettings.pause.capMs).toBe(DEFAULT_SETTINGS.pause.capMs);
+
+    releaseJournal();
+    await expect(updating).resolves.toEqual({ ok: true });
+
+    expect(h.engine.snapshot().bankMs).toBe(60_000);
+    expect(durableBankMs).toBe(60_000);
+    expect(durableSettings.pause.capMs).toBe(60_000);
+    expect(h.ports.persistSyncJournal).toHaveBeenCalled();
+
+    const restarted: Harness = makeEngine({
+      bankMs: durableBankMs,
+      settings: durableSettings,
+    });
+    expect(restarted.engine.snapshot().bankMs).toBe(60_000);
+  });
+
+  it('clamps and persists the bank when live-synced settings lower the cap', async () => {
+    const h: Harness = makeEngine({ bankMs: 120_000 });
+    const lowered: Settings = {
+      ...DEFAULT_SETTINGS,
+      pause: { ...DEFAULT_SETTINGS.pause, capMs: 60_000 },
+    };
+
+    await expect(h.engine.applySyncedSettings(lowered)).resolves.toEqual({ ok: true });
+
+    expect(h.engine.snapshot().bankMs).toBe(60_000);
+    expect(h.ports.queueSync).toHaveBeenCalledWith(SYNC_BANK, { balanceMs: 60_000 });
+    expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_SETTINGS, expect.anything());
+    expect(h.ports.persistSyncJournal).toHaveBeenCalled();
+  });
+
+  it('does not rewrite the bank when a settings update raises the cap', async () => {
+    const h: Harness = makeEngine({
+      bankMs: 60_000,
+      settings: {
+        pause: { ...DEFAULT_SETTINGS.pause, capMs: 60_000 },
+      },
+    });
+    const raised: Settings = {
+      ...DEFAULT_SETTINGS,
+      pause: { ...DEFAULT_SETTINGS.pause, capMs: 120_000 },
+    };
+
+    await h.engine.updateSettings(raised);
+
+    expect(h.engine.snapshot().bankMs).toBe(60_000);
+    expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_BANK, expect.anything());
+  });
+
+  it('rejects a lower-cap acknowledgement until the clamped bank journal persists', async () => {
+    const h: Harness = makeEngine({ bankMs: 120_000 });
+    h.ports.persistSyncJournal.mockRejectedValueOnce(new Error('sync journal unavailable'));
+    const lowered: Settings = {
+      ...DEFAULT_SETTINGS,
+      pause: { ...DEFAULT_SETTINGS.pause, capMs: 60_000 },
+    };
+
+    await expect(h.engine.applySyncedSettings(lowered)).rejects.toThrow('sync journal unavailable');
+
+    expect(h.ports.saveRuntime.mock.calls[0]?.[0]).toMatchObject({
+      commitCheckpoint: { bank: { balanceMs: 60_000 }, syncBank: true },
+    });
+    expect(h.ports.queueSync).toHaveBeenCalledWith(SYNC_BANK, { balanceMs: 60_000 });
+
+    await expect(h.engine.snapshotPersisted()).resolves.toMatchObject({ bankMs: 60_000 });
+    expect(h.ports.persistSyncJournal).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves settings, bank, and queues unchanged when a hard-session edit is rejected', async () => {
+    const h: Harness = makeEngine({ bankMs: 120_000 });
+    await h.engine.startSession({ ...manualConfig, strictness: 'hard' });
+    h.ports.queueSync.mockClear();
+    h.ports.persistSyncJournal.mockClear();
+    const rejected: Settings = {
+      ...DEFAULT_SETTINGS,
+      gate: { ...DEFAULT_SETTINGS.gate, delayMs: 1_000 },
+      pause: { ...DEFAULT_SETTINGS.pause, capMs: 60_000 },
+    };
+
+    await expect(h.engine.updateSettings(rejected)).resolves.toMatchObject({ ok: false });
+
+    expect(h.engine.getSettings()).toEqual(DEFAULT_SETTINGS);
+    expect(h.engine.snapshot().bankMs).toBe(120_000);
+    expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_SETTINGS, expect.anything());
+    expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_BANK, expect.anything());
   });
 
   it('persists attempts discovered by the blocking sweep without commit deadlock', async () => {
