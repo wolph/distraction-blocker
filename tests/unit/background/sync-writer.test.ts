@@ -207,3 +207,114 @@ describe('SyncEchoes', () => {
     expect(echoes.consume('bank', { balanceMs: 10 })).toBe(false);
   });
 });
+
+describe('SyncWriter quota defense', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('rejects an oversized queue replacement before changing pending state', async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const persist = vi.fn().mockResolvedValue(undefined);
+    const writer = new SyncWriter(10_000, write, undefined, {
+      initial: { sets: {}, removes: [] },
+      persist,
+    });
+    writer.queue('k', 'valid');
+    await writer.whenJournalDurable();
+    persist.mockClear();
+
+    expect((): void => writer.queue('k', 'a'.repeat(8_190))).toThrow(
+      'Cannot sync item "k": 8193 bytes exceeds the 8192-byte limit.',
+    );
+    expect(persist).not.toHaveBeenCalled();
+
+    await writer.flushNow();
+    expect(write).toHaveBeenCalledWith({ k: 'valid' });
+  });
+
+  it('rejects an oversized supersede while preserving its valid pending value', async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const writer = new SyncWriter(10_000, write);
+    writer.queue('k', 'valid');
+
+    expect((): void => writer.supersede('k', 'a'.repeat(8_190))).toThrow(
+      'Cannot sync item "k": 8193 bytes exceeds the 8192-byte limit.',
+    );
+
+    await writer.flushNow();
+    expect(write).toHaveBeenCalledWith({ k: 'valid' });
+  });
+
+  it('rejects an unserializable queued value before journaling', async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const persist = vi.fn().mockResolvedValue(undefined);
+    const writer = new SyncWriter(10_000, write, undefined, {
+      initial: { sets: {}, removes: [] },
+      persist,
+    });
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+
+    expect((): void => writer.queue('settings', circular)).toThrow(
+      'Cannot sync item "settings": value cannot be serialized as JSON.',
+    );
+    expect(persist).not.toHaveBeenCalled();
+    await writer.flushNow();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('revalidates copied flush batches after a queued value mutates', async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const writer = new SyncWriter(10_000, write);
+    const value: { text: string } = { text: 'valid' };
+    writer.queue('settings', value);
+    value.text = 'a'.repeat(8_192);
+
+    await expect(writer.flushNow()).rejects.toThrow(
+      'Cannot sync item "settings": 8211 bytes exceeds the 8192-byte limit.',
+    );
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('revalidates pending values before persisting another journal snapshot', async () => {
+    const persisted: Array<{ sets: Record<string, unknown>; removes: string[] }> = [];
+    const write = vi.fn().mockResolvedValue(undefined);
+    const writer = new SyncWriter(10_000, write, undefined, {
+      initial: { sets: {}, removes: [] },
+      persist: async (journal): Promise<void> => {
+        persisted.push(structuredClone(journal));
+      },
+    });
+    const value: { text: string } = { text: 'valid' };
+    writer.queue('settings', value);
+    await writer.whenJournalDurable();
+    const persistedBeforeMutation: number = persisted.length;
+    value.text = 'a'.repeat(8_192);
+
+    await expect(writer.whenJournalDurable()).rejects.toThrow(
+      'Cannot sync item "settings": 8211 bytes exceeds the 8192-byte limit.',
+    );
+    expect(persisted).toHaveLength(persistedBeforeMutation);
+  });
+
+  it('sanitizes an initial pending journal before scheduling its flush', async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const persist = vi.fn().mockResolvedValue(undefined);
+    const writer = new SyncWriter(10_000, write, remove, {
+      initial: {
+        sets: {
+          valid: { enabled: true },
+          huge: 'a'.repeat(8_192),
+        },
+        removes: ['obsolete'],
+      },
+      persist,
+    });
+
+    await writer.flushNow();
+
+    expect(write).toHaveBeenCalledWith({ valid: { enabled: true } });
+    expect(write).not.toHaveBeenCalledWith(expect.objectContaining({ huge: expect.anything() }));
+  });
+});

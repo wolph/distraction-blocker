@@ -1,3 +1,5 @@
+import { assertSyncItemWithinQuota, sanitizeSyncJournal } from './sync-quota';
+
 export interface SyncJournal {
   sets: Record<string, unknown>;
   removes: string[];
@@ -27,12 +29,16 @@ export class SyncWriter {
     private readonly removeStored?: (keys: string[]) => Promise<void>,
     private readonly journal?: SyncWriterJournalOptions,
   ) {
-    this.pending = new Map(Object.entries(journal?.initial.sets ?? {}));
-    this.pendingRemovals = new Set(journal?.initial.removes ?? []);
+    const initial: SyncJournal = sanitizeSyncJournal(
+      journal?.initial ?? { sets: {}, removes: [] },
+    ).journal;
+    this.pending = new Map(Object.entries(initial.sets));
+    this.pendingRemovals = new Set(initial.removes);
     if (this.pending.size > 0 || this.pendingRemovals.size > 0) this.schedule();
   }
 
   queue(key: string, value: unknown): void {
+    assertSyncItemWithinQuota(key, value);
     this.pendingRemovals.delete(key);
     this.pending.set(key, value);
     this.persistPendingJournal();
@@ -41,6 +47,7 @@ export class SyncWriter {
 
   supersede(key: string, value: unknown): void {
     if (!this.pending.has(key)) return;
+    assertSyncItemWithinQuota(key, value);
     this.pending.set(key, value);
     this.persistPendingJournal();
   }
@@ -84,6 +91,7 @@ export class SyncWriter {
     const batch: Map<string, unknown> = new Map(this.pending);
     const removals: Set<string> = new Set(this.pendingRemovals);
     try {
+      for (const [key, value] of batch) assertSyncItemWithinQuota(key, value);
       if (batch.size > 0) await this.write(Object.fromEntries(batch));
       if (removals.size > 0) {
         if (this.removeStored === undefined) {
@@ -118,9 +126,12 @@ export class SyncWriter {
       sets: Object.fromEntries(this.pending),
       removes: [...this.pendingRemovals],
     };
-    const requested: Promise<void> = this.journalQueue.then(
-      (): Promise<void> => this.journal?.persist(snapshot) ?? Promise.resolve(),
-    );
+    const requested: Promise<void> = this.journalQueue.then((): Promise<void> => {
+      for (const [key, value] of Object.entries(snapshot.sets)) {
+        assertSyncItemWithinQuota(key, value);
+      }
+      return this.journal?.persist(snapshot) ?? Promise.resolve();
+    });
     this.journalQueue = requested.catch((): void => {});
     this.journalDurability = requested;
   }
