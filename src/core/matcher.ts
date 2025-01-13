@@ -269,6 +269,8 @@ export function restoreMatcherCache(
   ) {
     return null;
   }
+  const expected: StoredMatcherCache = buildMatcherCache(lists, categories).stored;
+  if (stableJson(value) !== stableJson(expected)) return null;
   const blacklist: CompiledMatcher | null = restoreStoredMatcher(
     value.modes.blacklist,
     'blacklist',

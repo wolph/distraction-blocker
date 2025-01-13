@@ -300,6 +300,23 @@ describe('persisted matcher cache', () => {
       },
     ],
     [
+      'added valid host',
+      (value: Record<string, unknown>): void => {
+        const modes = value.modes as { blacklist: { hosts: unknown[] } };
+        modes.blacklist.hosts.push(['extra.example', 'custom']);
+      },
+    ],
+    [
+      'changed valid host',
+      (value: Record<string, unknown>): void => {
+        const modes = value.modes as { blacklist: { hosts: unknown[][] } };
+        const customIndex: number = modes.blacklist.hosts.findIndex(
+          (entry: unknown[]): boolean => entry[1] === 'custom',
+        );
+        modes.blacklist.hosts[customIndex] = ['changed.example', 'custom'];
+      },
+    ],
+    [
       'invalid regex',
       (value: Record<string, unknown>): void => {
         const modes = value.modes as { blacklist: { regexes: unknown[] } };
@@ -311,6 +328,13 @@ describe('persisted matcher cache', () => {
       (value: Record<string, unknown>): void => {
         const modes = value.modes as { blacklist: { regexes: unknown[] } };
         modes.blacklist.regexes = [{ source: 'example', via: 'whitelist' }];
+      },
+    ],
+    [
+      'reordered valid regexes',
+      (value: Record<string, unknown>): void => {
+        const modes = value.modes as { whitelist: { regexes: unknown[] } };
+        modes.whitelist.regexes.reverse();
       },
     ],
     [
