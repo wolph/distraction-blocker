@@ -317,4 +317,20 @@ describe('SyncWriter quota defense', () => {
     expect(write).toHaveBeenCalledWith({ valid: { enabled: true } });
     expect(write).not.toHaveBeenCalledWith(expect.objectContaining({ huge: expect.anything() }));
   });
+
+  it('checkpoints an initial journal containing only rejected sets', async () => {
+    const persist = vi.fn().mockResolvedValue(undefined);
+    new SyncWriter(10_000, vi.fn().mockResolvedValue(undefined), undefined, {
+      initial: {
+        sets: { huge: 'a'.repeat(8_192) },
+        removes: [],
+      },
+      persist,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(persist).toHaveBeenCalledWith({ sets: {}, removes: [] });
+  });
 });

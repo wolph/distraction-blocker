@@ -1,4 +1,8 @@
-import { assertSyncItemWithinQuota, sanitizeSyncJournal } from './sync-quota';
+import {
+  assertSyncItemWithinQuota,
+  type SanitizedSyncJournal,
+  sanitizeSyncJournal,
+} from './sync-quota';
 
 export interface SyncJournal {
   sets: Record<string, unknown>;
@@ -29,11 +33,13 @@ export class SyncWriter {
     private readonly removeStored?: (keys: string[]) => Promise<void>,
     private readonly journal?: SyncWriterJournalOptions,
   ) {
-    const initial: SyncJournal = sanitizeSyncJournal(
+    const sanitized: SanitizedSyncJournal = sanitizeSyncJournal(
       journal?.initial ?? { sets: {}, removes: [] },
-    ).journal;
+    );
+    const initial: SyncJournal = sanitized.journal;
     this.pending = new Map(Object.entries(initial.sets));
     this.pendingRemovals = new Set(initial.removes);
+    if (sanitized.rejected.length > 0) this.persistPendingJournal();
     if (this.pending.size > 0 || this.pendingRemovals.size > 0) this.schedule();
   }
 
