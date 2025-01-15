@@ -25,20 +25,31 @@ export interface CompiledMatcher {
 
 type HostProvenance = 'category' | 'custom' | 'whitelist';
 type RegexProvenance = 'custom' | 'whitelist';
+type BlacklistHostProvenance = Exclude<HostProvenance, 'whitelist'>;
 
-export interface StoredCompiledMatcher {
-  mode: SessionMode;
-  hosts: Array<[string, HostProvenance]>;
-  regexes: Array<{ source: string; via: RegexProvenance }>;
+export interface StoredBlacklistMatcher {
+  mode: 'blacklist';
+  hosts: Array<[string, BlacklistHostProvenance]>;
+  regexes: Array<{ source: string; via: 'custom' }>;
   excluded: string[];
 }
 
+export interface StoredWhitelistMatcher {
+  mode: 'whitelist';
+  hosts: Array<[string, 'whitelist']>;
+  regexes: Array<{ source: string; via: 'whitelist' }>;
+  excluded: [];
+}
+
+export type StoredCompiledMatcher = StoredBlacklistMatcher | StoredWhitelistMatcher;
+
 export interface StoredMatcherCache {
-  version: 1;
+  version: 2;
   sourceSignature: string;
+  compiledSignature: string;
   modes: {
-    blacklist: StoredCompiledMatcher;
-    whitelist: StoredCompiledMatcher;
+    blacklist: StoredBlacklistMatcher;
+    whitelist: StoredWhitelistMatcher;
   };
 }
 
@@ -145,20 +156,44 @@ function sourceSignature(lists: ListsConfig, categories: CategoryList[]): string
   return stableJson({ categories, lists });
 }
 
-function storeMatcher(matcher: CompiledMatcher): StoredCompiledMatcher {
+function storeBlacklistMatcher(matcher: CompiledMatcher): StoredBlacklistMatcher {
+  const hosts: Array<[string, BlacklistHostProvenance]> = [];
+  for (const [host, provenance] of matcher.hosts) {
+    if (provenance === 'whitelist') throw new Error('blacklist matcher has whitelist provenance');
+    hosts.push([host, provenance]);
+  }
+  const regexes: Array<{ source: string; via: 'custom' }> = matcher.regexes.map(
+    (entry: { source: string; via: RegexProvenance }): { source: string; via: 'custom' } => {
+      if (entry.via !== 'custom') throw new Error('blacklist matcher has whitelist regex');
+      return { source: entry.source, via: 'custom' };
+    },
+  );
   return {
-    mode: matcher.mode,
-    hosts: [...matcher.hosts.entries()],
-    regexes: matcher.regexes.map(
-      (entry: {
-        source: string;
-        via: RegexProvenance;
-      }): {
-        source: string;
-        via: RegexProvenance;
-      } => ({ source: entry.source, via: entry.via }),
-    ),
+    mode: 'blacklist',
+    hosts,
+    regexes,
     excluded: [...matcher.excluded],
+  };
+}
+
+function storeWhitelistMatcher(matcher: CompiledMatcher): StoredWhitelistMatcher {
+  const hosts: Array<[string, 'whitelist']> = [];
+  for (const [host, provenance] of matcher.hosts) {
+    if (provenance !== 'whitelist') throw new Error('whitelist matcher has blacklist provenance');
+    hosts.push([host, provenance]);
+  }
+  const regexes: Array<{ source: string; via: 'whitelist' }> = matcher.regexes.map(
+    (entry: { source: string; via: RegexProvenance }): { source: string; via: 'whitelist' } => {
+      if (entry.via !== 'whitelist') throw new Error('whitelist matcher has custom regex');
+      return { source: entry.source, via: 'whitelist' };
+    },
+  );
+  if (matcher.excluded.size !== 0) throw new Error('whitelist matcher has exclusions');
+  return {
+    mode: 'whitelist',
+    hosts,
+    regexes,
+    excluded: [],
   };
 }
 
@@ -170,14 +205,16 @@ export function buildMatcherCache(
     blacklist: compileMatcher(lists, categories, 'blacklist'),
     whitelist: compileMatcher(lists, categories, 'whitelist'),
   };
+  const modes: StoredMatcherCache['modes'] = {
+    blacklist: storeBlacklistMatcher(compiled.blacklist),
+    whitelist: storeWhitelistMatcher(compiled.whitelist),
+  };
   return {
     stored: {
-      version: 1,
+      version: 2,
       sourceSignature: sourceSignature(lists, categories),
-      modes: {
-        blacklist: storeMatcher(compiled.blacklist),
-        whitelist: storeMatcher(compiled.whitelist),
-      },
+      compiledSignature: stableJson(modes),
+      modes,
     },
     compiled,
   };
@@ -258,19 +295,22 @@ export function restoreMatcherCache(
   lists: ListsConfig,
   categories: CategoryList[],
 ): CompiledMatcherSet | null {
-  if (!isRecord(value) || !hasExactKeys(value, ['version', 'sourceSignature', 'modes'])) {
-    return null;
-  }
   if (
-    value.version !== 1 ||
-    value.sourceSignature !== sourceSignature(lists, categories) ||
-    !isRecord(value.modes) ||
-    !hasExactKeys(value.modes, ['blacklist', 'whitelist'])
+    !isRecord(value) ||
+    !hasExactKeys(value, ['version', 'sourceSignature', 'compiledSignature', 'modes'])
   ) {
     return null;
   }
-  const expected: StoredMatcherCache = buildMatcherCache(lists, categories).stored;
-  if (stableJson(value) !== stableJson(expected)) return null;
+  if (
+    value.version !== 2 ||
+    value.sourceSignature !== sourceSignature(lists, categories) ||
+    typeof value.compiledSignature !== 'string' ||
+    !isRecord(value.modes) ||
+    !hasExactKeys(value.modes, ['blacklist', 'whitelist']) ||
+    value.compiledSignature !== stableJson(value.modes)
+  ) {
+    return null;
+  }
   const blacklist: CompiledMatcher | null = restoreStoredMatcher(
     value.modes.blacklist,
     'blacklist',

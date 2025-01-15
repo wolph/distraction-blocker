@@ -32,8 +32,9 @@ afterEach((): void => {
 
 describe('matcher cache storage', () => {
   const cache: StoredMatcherCache = {
-    version: 1,
+    version: 2,
     sourceSignature: '{"lists":{},"categories":[]}',
+    compiledSignature: '',
     modes: {
       blacklist: { mode: 'blacklist', hosts: [], regexes: [], excluded: [] },
       whitelist: { mode: 'whitelist', hosts: [], regexes: [], excluded: [] },

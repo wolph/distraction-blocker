@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildMatcherCache,
   compileMatcher,
@@ -277,12 +277,43 @@ describe('persisted matcher cache', () => {
     ).toBeNull();
   });
 
+  it('hydrates cached regexes without rebuilding matchers from source', () => {
+    const regexOnlyLists: ListsConfig = lists({
+      custom: [
+        { kind: 'regex', pattern: 'one' },
+        { kind: 'regex', pattern: 'two' },
+      ],
+      whitelist: [{ kind: 'regex', pattern: 'three' }],
+    });
+    const stored = buildMatcherCache(regexOnlyLists, []).stored;
+    const NativeRegExp: RegExpConstructor = RegExp;
+    let constructions: number = 0;
+    const CountingRegExp: RegExpConstructor = new Proxy(NativeRegExp, {
+      construct(
+        target: RegExpConstructor,
+        argumentsList: [pattern: string | RegExp, flags?: string],
+      ): RegExp {
+        constructions += 1;
+        return Reflect.construct(target, argumentsList) as RegExp;
+      },
+    });
+    vi.stubGlobal('RegExp', CountingRegExp);
+
+    try {
+      expect(restoreMatcherCache(stored, regexOnlyLists, [])).not.toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(constructions).toBe(3);
+  });
+
   type CacheMutation = (value: Record<string, unknown>) => void;
   const malformedCacheCases: Array<[string, CacheMutation]> = [
     [
       'wrong version',
       (value: Record<string, unknown>): void => {
-        value.version = 2;
+        value.version = 1;
       },
     ],
     [
