@@ -332,5 +332,116 @@ describe('SyncWriter quota defense', () => {
     await Promise.resolve();
 
     expect(persist).toHaveBeenCalledWith({ sets: {}, removes: [] });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a failed rejected-only journal checkpoint through the scheduler', async () => {
+    const persist = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('journal unavailable'))
+      .mockResolvedValue(undefined);
+    new SyncWriter(10_000, vi.fn().mockResolvedValue(undefined), undefined, {
+      initial: {
+        sets: { huge: 'a'.repeat(8_192) },
+        removes: [],
+      },
+      persist,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(persist).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(persist).toHaveBeenLastCalledWith({ sets: {}, removes: [] });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(persist).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('SyncWriter concurrency ordering', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('excludes writes queued after a flush starts awaiting its journal generation', async (): Promise<void> => {
+    let releaseFirstPersist: () => void = (): void => {};
+    const firstPersistBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseFirstPersist = resolve;
+    });
+    let releaseSecondPersist: () => void = (): void => {};
+    const secondPersistBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseSecondPersist = resolve;
+    });
+    let markFirstPersistStarted: () => void = (): void => {};
+    const firstPersistStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      markFirstPersistStarted = resolve;
+    });
+    let persistCalls: number = 0;
+    const persist = vi.fn(async (journal): Promise<void> => {
+      persistCalls += 1;
+      if (persistCalls === 1) {
+        markFirstPersistStarted();
+        await firstPersistBlocked;
+      }
+      if (Object.hasOwn(journal.sets, 'second')) await secondPersistBlocked;
+    });
+    let observeWrite: (items: Record<string, unknown>) => void = (): void => {};
+    const written: Promise<Record<string, unknown>> = new Promise(
+      (resolve: (items: Record<string, unknown>) => void): void => {
+        observeWrite = resolve;
+      },
+    );
+    const write = vi.fn((items: Record<string, unknown>): Promise<void> => {
+      observeWrite(structuredClone(items));
+      return Promise.resolve();
+    });
+    const writer = new SyncWriter(10_000, write, undefined, {
+      initial: { sets: {}, removes: [] },
+      persist,
+    });
+    writer.queue('first', 1);
+    const flush: Promise<void> = writer.flushNow();
+    await firstPersistStarted;
+
+    writer.queue('second', 2);
+    releaseFirstPersist();
+
+    expect(await written).toEqual({ first: 1 });
+    releaseSecondPersist();
+    await flush;
+  });
+
+  it('preserves a newer requeue of the same mutable object while a write is pending', async (): Promise<void> => {
+    let releaseFirstWrite: () => void = (): void => {};
+    const firstWriteBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseFirstWrite = resolve;
+    });
+    let markFirstWriteStarted: () => void = (): void => {};
+    const firstWriteStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      markFirstWriteStarted = resolve;
+    });
+    const writes: Array<Record<string, unknown>> = [];
+    const write = vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+      writes.push(structuredClone(items));
+      if (writes.length === 1) {
+        markFirstWriteStarted();
+        await firstWriteBlocked;
+      }
+    });
+    const writer = new SyncWriter(10_000, write);
+    const value: { text: string } = { text: 'first' };
+    writer.queue('settings', value);
+    const firstFlush: Promise<void> = writer.flushNow();
+    await firstWriteStarted;
+
+    value.text = 'second';
+    writer.queue('settings', value);
+    releaseFirstWrite();
+    await firstFlush;
+    await writer.flushNow();
+
+    expect(writes).toEqual([{ settings: { text: 'first' } }, { settings: { text: 'second' } }]);
   });
 });

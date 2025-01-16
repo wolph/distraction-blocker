@@ -22,6 +22,8 @@ export interface SyncWriterJournalOptions {
 export class SyncWriter {
   private pending: Map<string, unknown>;
   private pendingRemovals: Set<string>;
+  private readonly pendingRevisions: Map<string, number> = new Map();
+  private nextRevision: number = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private flushQueue: Promise<void> = Promise.resolve();
   private journalQueue: Promise<void> = Promise.resolve();
@@ -39,7 +41,12 @@ export class SyncWriter {
     const initial: SyncJournal = sanitized.journal;
     this.pending = new Map(Object.entries(initial.sets));
     this.pendingRemovals = new Set(initial.removes);
-    if (sanitized.rejected.length > 0) this.persistPendingJournal();
+    for (const key of this.pending.keys()) this.markChanged(key);
+    for (const key of this.pendingRemovals) this.markChanged(key);
+    if (sanitized.rejected.length > 0) {
+      this.persistPendingJournal();
+      void this.journalDurability.catch((): void => this.schedule());
+    }
     if (this.pending.size > 0 || this.pendingRemovals.size > 0) this.schedule();
   }
 
@@ -47,6 +54,7 @@ export class SyncWriter {
     assertSyncItemWithinQuota(key, value);
     this.pendingRemovals.delete(key);
     this.pending.set(key, value);
+    this.markChanged(key);
     this.persistPendingJournal();
     this.schedule();
   }
@@ -55,12 +63,14 @@ export class SyncWriter {
     if (!this.pending.has(key)) return;
     assertSyncItemWithinQuota(key, value);
     this.pending.set(key, value);
+    this.markChanged(key);
     this.persistPendingJournal();
   }
 
   remove(key: string): void {
     this.pending.delete(key);
     this.pendingRemovals.add(key);
+    this.markChanged(key);
     this.persistPendingJournal();
     this.schedule();
   }
@@ -92,10 +102,11 @@ export class SyncWriter {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    if (this.journal !== undefined) await this.persistJournalForFlush();
-    if (this.pending.size === 0 && this.pendingRemovals.size === 0) return;
     const batch: Map<string, unknown> = new Map(this.pending);
     const removals: Set<string> = new Set(this.pendingRemovals);
+    const revisions: Map<string, number> = new Map(this.pendingRevisions);
+    if (this.journal !== undefined) await this.persistJournalForFlush();
+    if (batch.size === 0 && removals.size === 0) return;
     try {
       for (const [key, value] of batch) assertSyncItemWithinQuota(key, value);
       if (batch.size > 0) await this.write(Object.fromEntries(batch));
@@ -109,10 +120,21 @@ export class SyncWriter {
       this.schedule();
       throw error;
     }
-    for (const [key, value] of batch) {
-      if (this.pending.get(key) === value) this.pending.delete(key);
+    for (const key of batch.keys()) {
+      if (this.pendingRevisions.get(key) === revisions.get(key)) this.pending.delete(key);
     }
-    for (const key of removals) this.pendingRemovals.delete(key);
+    for (const key of removals) {
+      if (this.pendingRevisions.get(key) === revisions.get(key)) this.pendingRemovals.delete(key);
+    }
+    for (const [key, revision] of revisions) {
+      if (
+        this.pendingRevisions.get(key) === revision &&
+        !this.pending.has(key) &&
+        !this.pendingRemovals.has(key)
+      ) {
+        this.pendingRevisions.delete(key);
+      }
+    }
     if (this.journal !== undefined) await this.persistJournalForFlush();
     if (this.pending.size > 0 || this.pendingRemovals.size > 0) this.schedule();
   }
@@ -140,6 +162,11 @@ export class SyncWriter {
     });
     this.journalQueue = requested.catch((): void => {});
     this.journalDurability = requested;
+  }
+
+  private markChanged(key: string): void {
+    this.nextRevision += 1;
+    this.pendingRevisions.set(key, this.nextRevision);
   }
 }
 
