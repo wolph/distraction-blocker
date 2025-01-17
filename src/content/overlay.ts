@@ -11,6 +11,19 @@ import type { GateKind, GateState, SessionSnapshot, Verdict } from '../shared/ty
 const RING_RADIUS: number = 28;
 const RING_CIRCUMFERENCE: number = 2 * Math.PI * RING_RADIUS;
 const TICK_MS: number = 250;
+const TRANSPORT_ERROR: string = 'Could not reach Focus Lock. Try again.';
+const SCROLL_KEYS: ReadonlySet<string> = new Set<string>([
+  ' ',
+  'Spacebar',
+  'PageUp',
+  'PageDown',
+  'Home',
+  'End',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+]);
 
 interface SpendRef {
   button: HTMLButtonElement;
@@ -39,6 +52,7 @@ interface Mounted {
   meterFill: HTMLElement | null;
   spends: SpendRef[];
   gate: GateRefs | null;
+  actionGeneration: number;
 }
 
 let mounted: Mounted | null = null;
@@ -140,6 +154,15 @@ button:disabled { cursor: default; }
   border: 1px solid rgba(148, 163, 184, 0.4);
   background: rgba(15, 23, 42, 0.6); color: #f8fafc; width: 22rem; max-width: 90vw;
 }
+.action-error {
+  max-width: 28rem;
+  padding: 0.65rem 0.9rem;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  border-radius: 0.5rem;
+  background: rgba(120, 53, 15, 0.35);
+  color: #fde68a;
+  font-size: 0.9rem;
+}
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.82; } }
 @media (prefers-reduced-motion: reduce) {
   .clock { animation: none; }
@@ -149,6 +172,7 @@ button:disabled { cursor: default; }
 
 export function showOverlay(verdict: Verdict, snapshot: SessionSnapshot, stopped?: boolean): void {
   if (mounted === null) mounted = mount();
+  mounted.actionGeneration += 1;
   mounted.verdict = verdict;
   mounted.snapshot = snapshot;
   mounted.stopped = stopped ?? false;
@@ -198,6 +222,7 @@ function mount(): Mounted {
     meterFill: null,
     spends: [],
     gate: null,
+    actionGeneration: 0,
   };
 }
 
@@ -218,8 +243,12 @@ function trapInteraction(host: HTMLElement, root: ShadowRoot): void {
   host.addEventListener('touchmove', (ev: TouchEvent): void => ev.preventDefault(), {
     passive: false,
   });
-  host.addEventListener('keydown', (ev: KeyboardEvent): void => {
-    if (ev.key !== 'Tab') return;
+  root.addEventListener('keydown', (event: Event): void => {
+    const ev: KeyboardEvent = event as KeyboardEvent;
+    if (ev.key !== 'Tab') {
+      if (shouldPreventKeyboardScroll(ev)) ev.preventDefault();
+      return;
+    }
     const focusables: HTMLElement[] = Array.from(
       root.querySelectorAll<HTMLElement>('button:not([disabled]):not([hidden]), input'),
     );
@@ -239,6 +268,22 @@ function trapInteraction(host: HTMLElement, root: ShadowRoot): void {
       first.focus();
     }
   });
+}
+
+function shouldPreventKeyboardScroll(event: KeyboardEvent): boolean {
+  if (!SCROLL_KEYS.has(event.key)) return false;
+  const path: EventTarget[] = event.composedPath();
+  const effectiveTarget: EventTarget | null = path[0] ?? event.target;
+  if (!(effectiveTarget instanceof Element)) return true;
+  if (
+    effectiveTarget.closest(
+      'input, textarea, select, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]',
+    ) !== null
+  ) {
+    return false;
+  }
+  const space: boolean = event.key === ' ' || event.key === 'Spacebar';
+  return !(space && effectiveTarget.closest('button') !== null);
 }
 
 function focusInitial(m: Mounted): void {
@@ -537,11 +582,39 @@ function requestConfirmGate(typedPhrase: string | null): void {
 async function sendAndRefresh(
   req: Extract<Request, { type: 'openGate' | 'confirmGate' | 'abandonGate' }>,
 ): Promise<void> {
+  const mount: Mounted | null = mounted;
+  if (mount === null) return;
+  const generation: number = mount.actionGeneration + 1;
+  mount.actionGeneration = generation;
+  clearActionError(mount);
   try {
-    await sendRequest(req);
+    const ack = await sendRequest(req);
+    if (!isCurrentAction(mount, generation)) return;
+    if (!ack.ok) {
+      showActionError(mount, ack.error);
+      return;
+    }
     const snapshot: SessionSnapshot = await sendRequest({ type: 'getSnapshot' });
-    if (mounted !== null) showOverlay(mounted.verdict, snapshot, mounted.stopped);
+    if (!isCurrentAction(mount, generation)) return;
+    showOverlay(mount.verdict, snapshot, mount.stopped);
   } catch {
-    // worker unavailable (shutdown race): keep the last render, the next push corrects us
+    if (isCurrentAction(mount, generation)) showActionError(mount, TRANSPORT_ERROR);
   }
+}
+
+function isCurrentAction(mount: Mounted, generation: number): boolean {
+  return mounted === mount && mount.actionGeneration === generation;
+}
+
+function clearActionError(mount: Mounted): void {
+  mount.root.querySelector('.action-error')?.remove();
+}
+
+function showActionError(mount: Mounted, message: string): void {
+  clearActionError(mount);
+  const alert: HTMLElement = document.createElement('div');
+  alert.className = 'action-error';
+  alert.setAttribute('role', 'alert');
+  alert.textContent = message;
+  mount.container.querySelector('.panel')?.appendChild(alert);
 }

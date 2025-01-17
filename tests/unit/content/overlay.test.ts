@@ -241,3 +241,197 @@ describe('overlay', () => {
     expect(dialog.getAttribute('aria-label')).toBe('Focus Lock');
   });
 });
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve: ((value: T) => void) | undefined;
+  const promise: Promise<T> = new Promise<T>((done: (value: T) => void): void => {
+    resolve = done;
+  });
+  if (resolve === undefined) throw new Error('deferred resolver was not initialized');
+  return { promise, resolve };
+}
+
+function frictionCancel(root: ShadowRoot): HTMLButtonElement {
+  const button: HTMLButtonElement | undefined = Array.from(
+    root.querySelectorAll<HTMLButtonElement>('button'),
+  ).find((candidate: HTMLButtonElement): boolean => candidate.textContent === 'End session');
+  if (button === undefined) throw new Error('friction cancel button was not rendered');
+  return button;
+}
+
+describe('overlay action failures', () => {
+  it('shows an exact worker rejection without rebuilding or losing stopped state and focus', async () => {
+    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+      async (): Promise<unknown> => ({ ok: false, error: 'The session changed. Try again.' }),
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    showOverlay(verdict, focusSnap(), true);
+    const root: ShadowRoot = shadowRoot();
+    const panel: Element = root.querySelector('.panel') as Element;
+    const cancel: HTMLButtonElement = frictionCancel(root);
+    cancel.focus();
+
+    cancel.click();
+
+    await vi.waitFor((): void => {
+      const alert: Element | null = root.querySelector('.action-error[role="alert"]');
+      expect(alert?.textContent).toBe('The session changed. Try again.');
+    });
+    expect(root.querySelector('.panel')).toBe(panel);
+    expect(root.activeElement).toBe(cancel);
+    expect(root.querySelector('.backdrop')?.classList.contains('opaque')).toBe(true);
+    expect(root.querySelector('.notloaded')?.textContent).toBe(
+      'This page did not load. It will load by itself when session ends.',
+    );
+  });
+
+  it('uses the transport fallback and preserves the typed gate phrase', async () => {
+    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+      async (): Promise<unknown> => {
+        throw new Error('Receiving end does not exist');
+      },
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const requiredPhrase: string = 'I choose to stop';
+    showOverlay(verdict, {
+      ...focusSnap(),
+      gate: {
+        kind: 'cancel',
+        host: null,
+        openedAt: Date.now() - 2_000,
+        readyAt: Date.now() - 1_000,
+        requiredPhrase,
+      },
+    });
+    const root: ShadowRoot = shadowRoot();
+    const phrase: HTMLInputElement = root.querySelector('.phrase') as HTMLInputElement;
+    const confirm: HTMLButtonElement = Array.from(
+      root.querySelectorAll<HTMLButtonElement>('button'),
+    ).find(
+      (button: HTMLButtonElement): boolean => button.textContent === 'End session',
+    ) as HTMLButtonElement;
+    phrase.value = requiredPhrase;
+    phrase.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    phrase.focus();
+
+    confirm.click();
+
+    await vi.waitFor((): void => {
+      expect(root.querySelector('.action-error[role="alert"]')?.textContent).toBe(
+        'Could not reach Focus Lock. Try again.',
+      );
+    });
+    expect(phrase.value).toBe(requiredPhrase);
+    expect(root.activeElement).toBe(phrase);
+  });
+
+  it('clears stale errors and ignores superseded and unmounted action responses', async () => {
+    const first: Deferred<unknown> = deferred<unknown>();
+    const second: Deferred<unknown> = deferred<unknown>();
+    const third: Deferred<unknown> = deferred<unknown>();
+    const replies: Promise<unknown>[] = [first.promise, second.promise, third.promise];
+    const sendMessage: Mock<() => Promise<unknown>> = vi.fn(
+      async (): Promise<unknown> => replies.shift() as Promise<unknown>,
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    showOverlay(verdict, focusSnap());
+    const firstRoot: ShadowRoot = shadowRoot();
+    const cancel: HTMLButtonElement = frictionCancel(firstRoot);
+
+    cancel.click();
+    cancel.click();
+    first.resolve({ ok: false, error: 'stale first failure' });
+    await Promise.resolve();
+    expect(firstRoot.querySelector('.action-error')).toBeNull();
+    second.resolve({ ok: false, error: 'current failure' });
+    await vi.waitFor((): void => {
+      expect(firstRoot.querySelector('.action-error')?.textContent).toBe('current failure');
+    });
+
+    cancel.click();
+    expect(firstRoot.querySelector('.action-error')).toBeNull();
+    hideOverlay(focusSnap());
+    showOverlay(verdict, focusSnap());
+    const secondRoot: ShadowRoot = shadowRoot();
+    third.resolve({ ok: false, error: 'unmounted failure' });
+    await Promise.resolve();
+    expect(secondRoot.querySelector('.action-error')).toBeNull();
+  });
+});
+
+describe('overlay keyboard scrolling', () => {
+  it.each([
+    ' ',
+    'Spacebar',
+    'PageUp',
+    'PageDown',
+    'Home',
+    'End',
+    'ArrowUp',
+    'ArrowDown',
+    'ArrowLeft',
+    'ArrowRight',
+  ])('prevents %s background scrolling without stopping propagation', (key: string): void => {
+    showOverlay(verdict, focusSnap());
+    const root: ShadowRoot = shadowRoot();
+    const dialog: HTMLElement = root.querySelector('[role="dialog"]') as HTMLElement;
+    const observed: Mock<(event: KeyboardEvent) => void> = vi.fn<(event: KeyboardEvent) => void>();
+    document.addEventListener('keydown', observed);
+    const event: KeyboardEvent = new KeyboardEvent('keydown', {
+      key,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    });
+
+    dialog.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(observed).toHaveBeenCalledOnce();
+    document.removeEventListener('keydown', observed);
+  });
+
+  it.each([
+    ['input', 'PageDown'],
+    ['textarea', 'ArrowDown'],
+    ['select', 'Home'],
+    ['contenteditable', 'End'],
+    ['button', ' '],
+    ['button', 'Spacebar'],
+    ['range', 'ArrowRight'],
+  ])('preserves native %s behavior for %s', (kind: string, key: string): void => {
+    showOverlay(verdict, focusSnap());
+    const root: ShadowRoot = shadowRoot();
+    let target: HTMLElement;
+    if (kind === 'textarea') {
+      target = document.createElement('textarea');
+    } else if (kind === 'select') {
+      target = document.createElement('select');
+    } else if (kind === 'button') {
+      target = document.createElement('button');
+    } else if (kind === 'contenteditable') {
+      target = document.createElement('div');
+    } else {
+      const input: HTMLInputElement = document.createElement('input');
+      if (kind === 'range') input.type = 'range';
+      target = input;
+    }
+    if (kind === 'contenteditable') target.setAttribute('contenteditable', 'true');
+    root.querySelector('.panel')?.appendChild(target);
+    const event: KeyboardEvent = new KeyboardEvent('keydown', {
+      key,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    });
+
+    target.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+  });
+});
