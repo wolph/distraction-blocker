@@ -265,6 +265,29 @@ function frictionCancel(root: ShadowRoot): HTMLButtonElement {
 }
 
 describe('overlay action failures', () => {
+  it('keeps an exact worker rejection across a later block-state render', async () => {
+    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+      async (): Promise<unknown> => ({ ok: false, error: 'Gate timing changed.' }),
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const snapshot: SessionSnapshot = focusSnap();
+    showOverlay(verdict, snapshot);
+    const root: ShadowRoot = shadowRoot();
+
+    frictionCancel(root).click();
+    await vi.waitFor((): void => {
+      expect(root.querySelector('.action-error[role="alert"]')?.textContent).toBe(
+        'Gate timing changed.',
+      );
+    });
+
+    showOverlay(verdict, { ...snapshot, attemptsToday: snapshot.attemptsToday + 1 });
+
+    expect(root.querySelector('.action-error[role="alert"]')?.textContent).toBe(
+      'Gate timing changed.',
+    );
+  });
+
   it('shows an exact worker rejection without rebuilding or losing stopped state and focus', async () => {
     const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
       async (): Promise<unknown> => ({ ok: false, error: 'The session changed. Try again.' }),

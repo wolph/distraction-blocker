@@ -53,6 +53,7 @@ interface Mounted {
   spends: SpendRef[];
   gate: GateRefs | null;
   actionGeneration: number;
+  actionError: string | null;
 }
 
 let mounted: Mounted | null = null;
@@ -223,6 +224,7 @@ function mount(): Mounted {
     spends: [],
     gate: null,
     actionGeneration: 0,
+    actionError: null,
   };
 }
 
@@ -311,6 +313,7 @@ function render(m: Mounted): void {
   appendBank(m, panel, snap, now);
   if (snap.gate === null) panel.appendChild(buildButtons(m, snap, now));
   else panel.appendChild(buildGate(m, snap.gate, snap, now));
+  if (m.actionError !== null) panel.appendChild(actionErrorElement(m.actionError));
   m.container.replaceChildren(panel);
 }
 
@@ -607,14 +610,20 @@ function isCurrentAction(mount: Mounted, generation: number): boolean {
 }
 
 function clearActionError(mount: Mounted): void {
+  mount.actionError = null;
   mount.root.querySelector('.action-error')?.remove();
 }
 
 function showActionError(mount: Mounted, message: string): void {
   clearActionError(mount);
+  mount.actionError = message;
+  mount.container.querySelector('.panel')?.appendChild(actionErrorElement(message));
+}
+
+function actionErrorElement(message: string): HTMLElement {
   const alert: HTMLElement = document.createElement('div');
   alert.className = 'action-error';
   alert.setAttribute('role', 'alert');
   alert.textContent = message;
-  mount.container.querySelector('.panel')?.appendChild(alert);
+  return alert;
 }
