@@ -420,7 +420,7 @@ describe('overlay keyboard scrolling', () => {
   });
 
   it.each([
-    ['input', 'PageDown'],
+    ['input', 'ArrowLeft'],
     ['textarea', 'ArrowDown'],
     ['select', 'Home'],
     ['contenteditable', 'End'],
@@ -457,4 +457,33 @@ describe('overlay keyboard scrolling', () => {
 
     expect(event.defaultPrevented).toBe(false);
   });
+
+  it.each(['PageUp', 'PageDown'])(
+    'prevents %s from scrolling the background when a text input is focused',
+    (key: string): void => {
+      showOverlay(verdict, {
+        ...focusSnap(),
+        gate: {
+          kind: 'cancel',
+          host: null,
+          openedAt: Date.now() - 2_000,
+          readyAt: Date.now() - 1_000,
+          requiredPhrase: 'I choose to stop',
+        },
+      });
+      const root: ShadowRoot = shadowRoot();
+      const input: HTMLInputElement = root.querySelector('.phrase') as HTMLInputElement;
+      input.focus();
+      const event: KeyboardEvent = new KeyboardEvent('keydown', {
+        key,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      });
+
+      input.dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+    },
+  );
 });

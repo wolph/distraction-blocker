@@ -1,6 +1,6 @@
 import { msUntilNextEarnedMinute } from '../core/budget';
 import { extrapolatedBank, remainingPhaseMs } from '../shared/live';
-import type { Request } from '../shared/messages';
+import type { Ack, Request } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import { formatClock } from '../shared/time';
 import type { GateKind, GateState, SessionSnapshot, Verdict } from '../shared/types';
@@ -277,13 +277,14 @@ function shouldPreventKeyboardScroll(event: KeyboardEvent): boolean {
   const path: EventTarget[] = event.composedPath();
   const effectiveTarget: EventTarget | null = path[0] ?? event.target;
   if (!(effectiveTarget instanceof Element)) return true;
-  if (
-    effectiveTarget.closest(
-      'input, textarea, select, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]',
-    ) !== null
-  ) {
-    return false;
+  const editable: Element | null = effectiveTarget.closest(
+    'input, textarea, select, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]',
+  );
+  if (editable instanceof HTMLInputElement) {
+    if (editable.type === 'range') return false;
+    return event.key === 'PageUp' || event.key === 'PageDown';
   }
+  if (editable !== null) return false;
   const space: boolean = event.key === ' ' || event.key === 'Spacebar';
   return !(space && effectiveTarget.closest('button') !== null);
 }
@@ -591,7 +592,7 @@ async function sendAndRefresh(
   mount.actionGeneration = generation;
   clearActionError(mount);
   try {
-    const ack = await sendRequest(req);
+    const ack: Ack = await sendRequest(req);
     if (!isCurrentAction(mount, generation)) return;
     if (!ack.ok) {
       showActionError(mount, ack.error);
