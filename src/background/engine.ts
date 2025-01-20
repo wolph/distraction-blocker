@@ -59,6 +59,7 @@ import {
 } from './rollover';
 import type { RuntimeCommitCheckpoint, RuntimeState, RuntimeTabState } from './stores';
 import { chooseNewerStreak, rebaseStreakForDate, streaksEqual } from './streak-sync';
+import { assertSyncItemWithinQuota, SyncQuotaError } from './sync-quota';
 
 export interface EnginePorts {
   now(): number;
@@ -625,6 +626,15 @@ export class Engine {
     this.catchUp(now);
     const reason: string | null = settingsChangeAllowed(this.runtime.session, this.settings, s);
     if (reason !== null) return this.fail(now, reason);
+    try {
+      assertSyncItemWithinQuota(SYNC_SETTINGS, s);
+    } catch (error: unknown) {
+      if (!(error instanceof SyncQuotaError)) throw error;
+      return this.fail(
+        now,
+        'Settings exceed the 8 KB Chrome Sync limit. Remove schedule entries or shorten intentions, then try again.',
+      );
+    }
     this.setSettingsAndClampBank(s);
     this.ports.queueSync(SYNC_SETTINGS, s);
     this.dirty = true;
@@ -642,6 +652,15 @@ export class Engine {
       l,
     );
     if (reason !== null) return this.fail(now, reason);
+    try {
+      assertSyncItemWithinQuota(SYNC_LISTS, l);
+    } catch (error: unknown) {
+      if (!(error instanceof SyncQuotaError)) throw error;
+      return this.fail(
+        now,
+        'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
+      );
+    }
     this.lists = l;
     this.matcher = null;
     this.ports.queueSync(SYNC_LISTS, l);

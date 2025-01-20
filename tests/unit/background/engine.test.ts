@@ -3,6 +3,7 @@ import type { EnginePorts } from '../../../src/background/engine';
 import { Engine } from '../../../src/background/engine';
 import { clockRebaseArchiveKey } from '../../../src/background/rollover';
 import { emptyRuntime, mergeRuntime, type RuntimeState } from '../../../src/background/stores';
+import { syncItemBytes } from '../../../src/background/sync-quota';
 import { SyncWriter } from '../../../src/background/sync-writer';
 import { beginPause, endPauseEarly, startSession } from '../../../src/core/session';
 import {
@@ -12,11 +13,17 @@ import {
   GATE_EXPIRY_MS,
 } from '../../../src/shared/constants';
 import type { Ack } from '../../../src/shared/messages';
-import { SYNC_BANK, SYNC_SETTINGS, SYNC_STREAK } from '../../../src/shared/storage-keys';
+import {
+  SYNC_BANK,
+  SYNC_LISTS,
+  SYNC_SETTINGS,
+  SYNC_STREAK,
+} from '../../../src/shared/storage-keys';
 import { localDateStr } from '../../../src/shared/time';
 import type {
   DailyAgg,
   EventRecord,
+  ListsConfig,
   ScheduleEntry,
   SessionConfig,
   SessionSnapshot,
@@ -46,6 +53,13 @@ function appendUnique(into: EventRecord[], events: EventRecord[]): void {
     seen.add(key);
     into.push(event);
   }
+}
+
+function oversizedHostRules(prefix: string): ListsConfig['custom'] {
+  return Array.from({ length: 600 }, (_value: unknown, index: number) => ({
+    kind: 'host' as const,
+    pattern: `${prefix}-${index}.example`,
+  }));
 }
 
 function hasCommitCheckpoint(runtime: RuntimeState): boolean {
@@ -409,6 +423,72 @@ describe('Engine', () => {
     expect(h.engine.snapshot().bankMs).toBe(120_000);
     expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_SETTINGS, expect.anything());
     expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_BANK, expect.anything());
+  });
+
+  it('rejects oversized local settings before mutating settings or clamping the bank', async () => {
+    const h: Harness = makeEngine({ bankMs: 120_000 });
+    const oversized: Settings = {
+      ...DEFAULT_SETTINGS,
+      pause: { ...DEFAULT_SETTINGS.pause, capMs: 60_000 },
+      schedule: [
+        {
+          ...scheduledEntry,
+          intention: 'x'.repeat(8_192),
+        },
+      ],
+    };
+
+    await expect(h.engine.updateSettings(oversized)).resolves.toEqual({
+      ok: false,
+      error:
+        'Settings exceed the 8 KB Chrome Sync limit. Remove schedule entries or shorten intentions, then try again.',
+    });
+
+    expect(h.engine.getSettings()).toEqual(DEFAULT_SETTINGS);
+    expect(h.engine.snapshot().bankMs).toBe(120_000);
+    expect(h.ports.queueSync).not.toHaveBeenCalled();
+  });
+
+  it('accepts local settings at the exact Chrome Sync item boundary', async () => {
+    const h: Harness = makeEngine();
+    const base: Settings = {
+      ...DEFAULT_SETTINGS,
+      schedule: [{ ...scheduledEntry, intention: '' }],
+    };
+    const fillerBytes: number = 8_192 - syncItemBytes(SYNC_SETTINGS, base);
+    const boundary: Settings = {
+      ...base,
+      schedule: [{ ...scheduledEntry, intention: 'x'.repeat(fillerBytes) }],
+    };
+
+    expect(syncItemBytes(SYNC_SETTINGS, boundary)).toBe(8_192);
+    await expect(h.engine.updateSettings(boundary)).resolves.toEqual({ ok: true });
+    expect(h.engine.getSettings()).toEqual(boundary);
+    expect(h.ports.queueSync).toHaveBeenCalledWith(SYNC_SETTINGS, boundary);
+  });
+
+  it('rejects oversized local lists without replacing the compiled matcher', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession(manualConfig);
+    const before = h.engine.verdictFor('https://facebook.com/feed');
+    h.ports.queueSync.mockClear();
+    const oversized: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: oversizedHostRules('custom'),
+    };
+
+    await expect(h.engine.updateLists(oversized)).resolves.toEqual({
+      ok: false,
+      error:
+        'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
+    });
+
+    expect(h.engine.getLists()).toEqual({
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'facebook.com' }],
+    });
+    expect(h.engine.verdictFor('https://facebook.com/feed')).toEqual(before);
+    expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_LISTS, expect.anything());
   });
 
   it('persists attempts discovered by the blocking sweep without commit deadlock', async () => {

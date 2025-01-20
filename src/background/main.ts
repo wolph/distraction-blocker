@@ -37,6 +37,7 @@ import {
   saveSyncJournal,
 } from './stores';
 import { chooseNewerStreak, rebaseStreakForDate, streaksEqual } from './streak-sync';
+import { type SanitizedSyncJournal, sanitizeSyncJournal } from './sync-quota';
 import { SyncEchoes, type SyncJournal, SyncWriter } from './sync-writer';
 import {
   applyBlockingFactory,
@@ -151,7 +152,9 @@ async function boot(): Promise<Engine> {
     SYNC_STREAK,
     ...pendingAggregateKeys,
   ]);
-  const journal: SyncJournal = validatedPendingJournal(rawJournal, storedSync, now);
+  const sanitized: SanitizedSyncJournal = sanitizeSyncJournal(rawJournal);
+  const journal: SyncJournal = validatedPendingJournal(sanitized.journal, storedSync, now);
+  if (sanitized.rejected.length > 0) await saveSyncJournal(journal);
   const [settings, lists, bank, syncedStreak, runtime, deviceId] = await Promise.all([
     loadSettings(journal),
     loadLists(journal),

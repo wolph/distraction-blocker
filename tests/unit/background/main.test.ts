@@ -147,6 +147,32 @@ function setScenario(journaledStreak: StreakState, syncedStreak: StreakState): v
   };
 }
 
+function oversizedHostRules(prefix: string): ListsConfig['custom'] {
+  return Array.from({ length: 600 }, (_value: unknown, index: number) => ({
+    kind: 'host' as const,
+    pattern: `${prefix}-${index}.example`,
+  }));
+}
+
+function oversizedSettings(id: string): Settings {
+  return {
+    ...DEFAULT_SETTINGS,
+    schedule: [
+      {
+        id,
+        days: [1],
+        start: '09:00',
+        end: '10:00',
+        mode: 'blacklist',
+        strictness: 'friction',
+        cycling: null,
+        intention: 'x'.repeat(8_192),
+        enabled: true,
+      },
+    ],
+  };
+}
+
 function stubChrome(): void {
   vi.stubGlobal('chrome', {
     alarms: {
@@ -415,6 +441,125 @@ describe('background boot state convergence', () => {
     expect(mocks.savedJournals).toContainEqual({ sets: pendingSets, removes: [] });
     await vi.advanceTimersByTimeAsync(10_000);
     expect(chrome.storage.sync.set).toHaveBeenCalledWith(pendingSets);
+  });
+
+  it('drops oversized pending settings and lists before selecting valid stored Sync', async () => {
+    const pendingSettings: Settings = oversizedSettings('pending');
+    const pendingLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: oversizedHostRules('pending'),
+    };
+    const syncedSettings: Settings = { ...DEFAULT_SETTINGS, retentionDays: 14 };
+    const syncedLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'synced.example' }],
+    };
+    mocks.scenario = {
+      journal: {
+        sets: {
+          [SYNC_SETTINGS]: pendingSettings,
+          [SYNC_LISTS]: pendingLists,
+        },
+        removes: [],
+      },
+      storedSync: {
+        [SYNC_SETTINGS]: syncedSettings,
+        [SYNC_LISTS]: syncedLists,
+      },
+    };
+
+    await finishBoot();
+
+    expect(engineSettings()).toEqual(syncedSettings);
+    expect(engineLists()).toEqual(syncedLists);
+    expect(mocks.savedJournals).toContainEqual({ sets: {}, removes: [] });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chrome.storage.sync.set).not.toHaveBeenCalledWith(
+      expect.objectContaining({ [SYNC_SETTINGS]: expect.anything() }),
+    );
+    expect(chrome.storage.sync.set).not.toHaveBeenCalledWith(
+      expect.objectContaining({ [SYNC_LISTS]: expect.anything() }),
+    );
+  });
+
+  it('replaces oversized pending settings and lists with bounded defaults when Sync is absent', async () => {
+    const pendingSettings: Settings = oversizedSettings('pending');
+    const pendingLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      whitelist: oversizedHostRules('pending'),
+    };
+    mocks.scenario = {
+      journal: {
+        sets: {
+          [SYNC_SETTINGS]: pendingSettings,
+          [SYNC_LISTS]: pendingLists,
+        },
+        removes: [],
+      },
+      storedSync: {},
+    };
+
+    await finishBoot();
+
+    expect(engineSettings()).toEqual(DEFAULT_SETTINGS);
+    expect(engineLists()).toEqual(DEFAULT_LISTS);
+    expect(mocks.savedJournals).toContainEqual({ sets: {}, removes: [] });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+  });
+
+  it('accepts oversized schema-valid values already stored in Sync without rewriting them', async () => {
+    const syncedSettings: Settings = oversizedSettings('synced');
+    const syncedLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: oversizedHostRules('synced'),
+    };
+    mocks.scenario = {
+      journal: { sets: {}, removes: [] },
+      storedSync: {
+        [SYNC_SETTINGS]: syncedSettings,
+        [SYNC_LISTS]: syncedLists,
+      },
+    };
+
+    await finishBoot();
+
+    expect(engineSettings()).toEqual(syncedSettings);
+    expect(engineLists()).toEqual(syncedLists);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+  });
+
+  it('drops oversized pending aggregate and archive values before boot flush', async () => {
+    const aggregateKey: string = 'agg:device-a:2026-08-28';
+    const archiveKey: string = 'archive:clock-rebase:device-a:2026-08-28:1:test';
+    const oversizedAggregate: DailyAgg = {
+      ...emptyDaily('2026-08-28'),
+      attempts: { [`${'x'.repeat(8_192)}.example`]: 1 },
+    };
+    const oversizedArchive: DailyAgg = {
+      ...emptyDaily('2026-08-28'),
+      attempts: { [`${'y'.repeat(8_192)}.example`]: 1 },
+    };
+    mocks.scenario = {
+      journal: {
+        sets: {
+          [aggregateKey]: oversizedAggregate,
+          [archiveKey]: oversizedArchive,
+        },
+        removes: [],
+      },
+      storedSync: {},
+    };
+
+    await finishBoot();
+
+    expect(mocks.savedJournals).toContainEqual({ sets: {}, removes: [] });
+    await vi.advanceTimersByTimeAsync(10_000);
+    for (const [items] of vi.mocked(chrome.storage.sync.set).mock.calls) {
+      expect(items).not.toHaveProperty(aggregateKey);
+      expect(items).not.toHaveProperty(archiveKey);
+    }
   });
 
   it('replaces a malformed pending daily aggregate with valid sync history', async () => {
