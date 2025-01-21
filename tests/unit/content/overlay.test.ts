@@ -423,10 +423,13 @@ describe('overlay keyboard scrolling', () => {
     ['input', 'ArrowLeft'],
     ['textarea', 'ArrowDown'],
     ['select', 'Home'],
+    ['select', 'ArrowDown'],
     ['contenteditable', 'End'],
     ['button', ' '],
     ['button', 'Spacebar'],
     ['range', 'ArrowRight'],
+    ['range', 'Home'],
+    ['range', 'End'],
   ])('preserves native %s behavior for %s', (kind: string, key: string): void => {
     showOverlay(verdict, focusSnap());
     const root: ShadowRoot = shadowRoot();
@@ -486,4 +489,41 @@ describe('overlay keyboard scrolling', () => {
       expect(event.defaultPrevented).toBe(true);
     },
   );
+
+  it.each([
+    ['range', ' '],
+    ['range', 'Spacebar'],
+    ['range', 'PageUp'],
+    ['range', 'PageDown'],
+    ['textarea', 'PageUp'],
+    ['textarea', 'PageDown'],
+    ['contenteditable', 'PageUp'],
+    ['contenteditable', 'PageDown'],
+  ])('prevents %s %s from leaking background scroll', (kind: string, key: string): void => {
+    showOverlay(verdict, focusSnap());
+    const root: ShadowRoot = shadowRoot();
+    let target: HTMLElement;
+    if (kind === 'range') {
+      const range: HTMLInputElement = document.createElement('input');
+      range.type = 'range';
+      target = range;
+    } else if (kind === 'textarea') {
+      target = document.createElement('textarea');
+    } else {
+      target = document.createElement('div');
+      target.setAttribute('contenteditable', 'true');
+    }
+    root.querySelector('.panel')?.appendChild(target);
+    target.focus();
+    const event: KeyboardEvent = new KeyboardEvent('keydown', {
+      key,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    });
+
+    target.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+  });
 });

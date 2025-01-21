@@ -24,6 +24,14 @@ const SCROLL_KEYS: ReadonlySet<string> = new Set<string>([
   'ArrowLeft',
   'ArrowRight',
 ]);
+const RANGE_KEYS: ReadonlySet<string> = new Set<string>([
+  'Home',
+  'End',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+]);
 
 interface SpendRef {
   button: HTMLButtonElement;
@@ -281,10 +289,11 @@ function shouldPreventKeyboardScroll(event: KeyboardEvent): boolean {
     'input, textarea, select, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]',
   );
   if (editable instanceof HTMLInputElement) {
-    if (editable.type === 'range') return false;
+    if (editable.type === 'range') return !RANGE_KEYS.has(event.key);
     return event.key === 'PageUp' || event.key === 'PageDown';
   }
-  if (editable !== null) return false;
+  if (editable instanceof HTMLSelectElement) return false;
+  if (editable !== null) return event.key === 'PageUp' || event.key === 'PageDown';
   const space: boolean = event.key === ' ' || event.key === 'Spacebar';
   return !(space && effectiveTarget.closest('button') !== null);
 }
