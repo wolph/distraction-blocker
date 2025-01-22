@@ -25,6 +25,8 @@ const SCROLL_KEYS: ReadonlySet<string> = new Set<string>([
   'ArrowRight',
 ]);
 const RANGE_KEYS: ReadonlySet<string> = new Set<string>([
+  'PageUp',
+  'PageDown',
   'Home',
   'End',
   'ArrowUp',

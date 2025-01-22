@@ -430,6 +430,8 @@ describe('overlay keyboard scrolling', () => {
     ['range', 'ArrowRight'],
     ['range', 'Home'],
     ['range', 'End'],
+    ['range', 'PageUp'],
+    ['range', 'PageDown'],
   ])('preserves native %s behavior for %s', (kind: string, key: string): void => {
     showOverlay(verdict, focusSnap());
     const root: ShadowRoot = shadowRoot();
@@ -493,8 +495,6 @@ describe('overlay keyboard scrolling', () => {
   it.each([
     ['range', ' '],
     ['range', 'Spacebar'],
-    ['range', 'PageUp'],
-    ['range', 'PageDown'],
     ['textarea', 'PageUp'],
     ['textarea', 'PageDown'],
     ['contenteditable', 'PageUp'],
