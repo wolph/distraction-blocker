@@ -622,19 +622,20 @@ export class Engine {
   }
 
   async updateSettings(s: Settings): Promise<Ack> {
-    const now: number = this.ports.now();
-    this.catchUp(now);
-    const reason: string | null = settingsChangeAllowed(this.runtime.session, this.settings, s);
-    if (reason !== null) return this.fail(now, reason);
     try {
       assertSyncItemWithinQuota(SYNC_SETTINGS, s);
     } catch (error: unknown) {
       if (!(error instanceof SyncQuotaError)) throw error;
-      return this.fail(
-        now,
-        'Settings exceed the 8 KB Chrome Sync limit. Remove schedule entries or shorten intentions, then try again.',
-      );
+      return {
+        ok: false,
+        error:
+          'Settings exceed the 8 KB Chrome Sync limit. Remove schedule entries or shorten intentions, then try again.',
+      };
     }
+    const now: number = this.ports.now();
+    this.catchUp(now);
+    const reason: string | null = settingsChangeAllowed(this.runtime.session, this.settings, s);
+    if (reason !== null) return this.fail(now, reason);
     this.setSettingsAndClampBank(s);
     this.ports.queueSync(SYNC_SETTINGS, s);
     this.dirty = true;
@@ -643,6 +644,16 @@ export class Engine {
   }
 
   async updateLists(l: ListsConfig): Promise<Ack> {
+    try {
+      assertSyncItemWithinQuota(SYNC_LISTS, l);
+    } catch (error: unknown) {
+      if (!(error instanceof SyncQuotaError)) throw error;
+      return {
+        ok: false,
+        error:
+          'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
+      };
+    }
     const now: number = this.ports.now();
     this.catchUp(now);
     const reason: string | null = listsChangeAllowed(
@@ -652,15 +663,6 @@ export class Engine {
       l,
     );
     if (reason !== null) return this.fail(now, reason);
-    try {
-      assertSyncItemWithinQuota(SYNC_LISTS, l);
-    } catch (error: unknown) {
-      if (!(error instanceof SyncQuotaError)) throw error;
-      return this.fail(
-        now,
-        'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
-      );
-    }
     this.lists = l;
     this.matcher = null;
     this.ports.queueSync(SYNC_LISTS, l);

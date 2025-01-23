@@ -62,6 +62,17 @@ function oversizedHostRules(prefix: string): ListsConfig['custom'] {
   }));
 }
 
+function clearMutationPorts(ports: Harness['ports']): void {
+  ports.now.mockClear();
+  ports.saveRuntime.mockClear();
+  ports.queueSync.mockClear();
+  ports.appendEvents.mockClear();
+  ports.broadcast.mockClear();
+  ports.applyBlocking.mockClear();
+  ports.updateIcon.mockClear();
+  ports.scheduleWake.mockClear();
+}
+
 function hasCommitCheckpoint(runtime: RuntimeState): boolean {
   return (runtime as RuntimeState & { commitCheckpoint?: unknown }).commitCheckpoint != null;
 }
@@ -142,6 +153,14 @@ const scheduledEntry: ScheduleEntry = {
   intention: 'scheduled work',
   enabled: true,
 };
+
+function oversizedSettings(overrides: Partial<Settings> = {}): Settings {
+  return {
+    ...DEFAULT_SETTINGS,
+    ...overrides,
+    schedule: [{ ...scheduledEntry, intention: 'x'.repeat(8_192) }],
+  };
+}
 
 describe('Engine', () => {
   it('forwards background errors to the configured port', () => {
@@ -489,6 +508,107 @@ describe('Engine', () => {
     });
     expect(h.engine.verdictFor('https://facebook.com/feed')).toEqual(before);
     expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_LISTS, expect.anything());
+  });
+
+  it('rejects oversized settings before time-advanced catch-up mutates state or queues writes', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession(manualConfig);
+    const before: SessionSnapshot = h.engine.snapshot();
+    await h.engine.snapshotPersisted();
+    clearMutationPorts(h.ports);
+    h.setNow(T0 + 60_000);
+
+    await expect(h.engine.updateSettings(oversizedSettings())).resolves.toEqual({
+      ok: false,
+      error:
+        'Settings exceed the 8 KB Chrome Sync limit. Remove schedule entries or shorten intentions, then try again.',
+    });
+
+    expect(h.ports.now).not.toHaveBeenCalled();
+    expect(h.ports.saveRuntime).not.toHaveBeenCalled();
+    expect(h.ports.queueSync).not.toHaveBeenCalled();
+    expect(h.ports.appendEvents).not.toHaveBeenCalled();
+    expect(h.ports.applyBlocking).not.toHaveBeenCalled();
+    h.setNow(T0);
+    expect(h.engine.snapshot()).toEqual(before);
+  });
+
+  it('rejects oversized lists before a schedule boundary starts a session or compiles its matcher', async () => {
+    const h: Harness = makeEngine({ settings: { schedule: [scheduledEntry] } });
+    const before: SessionSnapshot = h.engine.snapshot();
+    await h.engine.snapshotPersisted();
+    clearMutationPorts(h.ports);
+    h.setNow(T0 + 60_000);
+    const oversized: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: oversizedHostRules('scheduled'),
+    };
+
+    await expect(h.engine.updateLists(oversized)).resolves.toEqual({
+      ok: false,
+      error:
+        'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
+    });
+
+    expect(h.ports.now).not.toHaveBeenCalled();
+    expect(h.ports.saveRuntime).not.toHaveBeenCalled();
+    expect(h.ports.queueSync).not.toHaveBeenCalled();
+    expect(h.ports.appendEvents).not.toHaveBeenCalled();
+    expect(h.ports.applyBlocking).not.toHaveBeenCalled();
+    expect(h.engine.getLists()).toEqual({
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'facebook.com' }],
+    });
+    h.setNow(T0);
+    expect(h.engine.snapshot()).toEqual(before);
+  });
+
+  it('reports the quota error before hard-session settings weakening policy', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession({ ...manualConfig, strictness: 'hard' });
+    await h.engine.snapshotPersisted();
+    clearMutationPorts(h.ports);
+    const oversized: Settings = oversizedSettings({
+      gate: { ...DEFAULT_SETTINGS.gate, delayMs: 1_000 },
+    });
+
+    await expect(h.engine.updateSettings(oversized)).resolves.toEqual({
+      ok: false,
+      error:
+        'Settings exceed the 8 KB Chrome Sync limit. Remove schedule entries or shorten intentions, then try again.',
+    });
+
+    expect(h.engine.getSettings()).toEqual(DEFAULT_SETTINGS);
+    expect(h.ports.now).not.toHaveBeenCalled();
+    expect(h.ports.saveRuntime).not.toHaveBeenCalled();
+    expect(h.ports.queueSync).not.toHaveBeenCalled();
+  });
+
+  it('reports the quota error before hard-session list weakening policy', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession({ ...manualConfig, strictness: 'hard' });
+    const before = h.engine.verdictFor('https://facebook.com/feed');
+    await h.engine.snapshotPersisted();
+    clearMutationPorts(h.ports);
+    const oversized: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: oversizedHostRules('replacement'),
+    };
+
+    await expect(h.engine.updateLists(oversized)).resolves.toEqual({
+      ok: false,
+      error:
+        'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
+    });
+
+    expect(h.engine.getLists()).toEqual({
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'facebook.com' }],
+    });
+    expect(h.ports.now).not.toHaveBeenCalled();
+    expect(h.engine.verdictFor('https://facebook.com/feed')).toEqual(before);
+    expect(h.ports.saveRuntime).not.toHaveBeenCalled();
+    expect(h.ports.queueSync).not.toHaveBeenCalled();
   });
 
   it('persists attempts discovered by the blocking sweep without commit deadlock', async () => {
