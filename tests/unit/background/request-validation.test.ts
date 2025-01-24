@@ -25,6 +25,8 @@ const SESSION_CONFIG: SessionConfig = {
 
 const SETTINGS: Settings = structuredClone(DEFAULT_SETTINGS);
 const LISTS: ListsConfig = structuredClone(DEFAULT_LISTS);
+const DAY_MS: number = 86_400_000;
+const DATE_MAX_MS: number = 8_640_000_000_000_000;
 
 const VALID_REQUESTS: RequestByType = {
   getSnapshot: { type: 'getSnapshot' },
@@ -113,6 +115,29 @@ describe('parseRequest', (): void => {
   it('accepts null hosts for gates that do not target a site', (): void => {
     expect(parseRequest({ type: 'openGate', gate: 'pause', host: null })).not.toBeNull();
     expect(parseRequest({ type: 'openGate', gate: 'cancel', host: null })).not.toBeNull();
+  });
+
+  it.each(['localhost', 'intranet', '[::1]', '[2001:db8::1]'])(
+    'accepts the browser hostname %s for a site unlock',
+    (host: string): void => {
+      expect(parseRequest({ type: 'openGate', gate: 'unlockSite', host })).toEqual({
+        type: 'openGate',
+        gate: 'unlockSite',
+        host,
+      });
+    },
+  );
+
+  it.each([
+    'example.com:443',
+    'example.com/path',
+    ' example.com',
+    'example.com ',
+    'example .com',
+    '[::1',
+    '::1',
+  ])('rejects the non-hostname site unlock value %s', (host: string): void => {
+    expect(parseRequest({ type: 'openGate', gate: 'unlockSite', host })).toBeNull();
   });
 
   it.each([
@@ -251,6 +276,153 @@ describe('parseRequest', (): void => {
     ).toBeNull();
   });
 
+  it('rejects duplicate schedule IDs', (): void => {
+    const first: Record<string, unknown> = scheduleEntry({ id: 'duplicate', start: '09:00' });
+    const second: Record<string, unknown> = scheduleEntry({ id: 'duplicate', start: '13:00' });
+    expect(parseSettingsRequest({ schedule: [first, second] })).toBeNull();
+  });
+
+  it('rejects duplicate days within one schedule entry', (): void => {
+    expect(parseSettingsRequest({ schedule: [scheduleEntry({ days: [1, 1] })] })).toBeNull();
+  });
+
+  it('rejects overlapping enabled schedule entries on a shared day', (): void => {
+    const first: Record<string, unknown> = scheduleEntry({
+      id: 'first',
+      days: [1, 2],
+      start: '09:00',
+      end: '12:00',
+    });
+    const second: Record<string, unknown> = scheduleEntry({
+      id: 'second',
+      days: [2, 3],
+      start: '11:00',
+      end: '13:00',
+    });
+    expect(parseSettingsRequest({ schedule: [first, second] })).toBeNull();
+  });
+
+  it('accepts adjacent, disabled, and disjoint-day schedule windows', (): void => {
+    const base: Record<string, unknown> = scheduleEntry({
+      id: 'base',
+      days: [1],
+      start: '09:00',
+      end: '12:00',
+    });
+    const adjacent: Record<string, unknown> = scheduleEntry({
+      id: 'adjacent',
+      days: [1],
+      start: '12:00',
+      end: '13:00',
+    });
+    const disabled: Record<string, unknown> = scheduleEntry({
+      id: 'disabled',
+      days: [1],
+      start: '10:00',
+      end: '11:00',
+      enabled: false,
+    });
+    const disjoint: Record<string, unknown> = scheduleEntry({
+      id: 'disjoint',
+      days: [2],
+      start: '10:00',
+      end: '11:00',
+    });
+    expect(parseSettingsRequest({ schedule: [base, adjacent, disabled, disjoint] })).not.toBeNull();
+  });
+
+  it.each([
+    ['rules', { custom: sparseArray(1) }],
+    ['presets', { presetsMin: sparseArray(3, { 0: 15, 2: 50 }) }],
+    ['schedule', { schedule: sparseArray(1) }],
+    ['schedule days', { schedule: [scheduleEntry({ days: sparseArray(2, { 0: 1 }) })] }],
+  ])('rejects sparse %s arrays', (_label: string, update: Record<string, unknown>): void => {
+    expect(parseSettingsOrListsRequest(update)).toBeNull();
+  });
+
+  it('rejects sparse exclusion host arrays', (): void => {
+    expect(
+      parseRequest({
+        type: 'updateLists',
+        lists: { ...LISTS, exclusions: { social: sparseArray(1) } },
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
+    [
+      'zero session duration',
+      replaceNested(VALID_REQUESTS.startSession, 'config', { durationMin: 0 }),
+    ],
+    [
+      'sub-millisecond session duration',
+      replaceNested(VALID_REQUESTS.startSession, 'config', { durationMin: 0.000_001 }),
+    ],
+    [
+      'unsafe session duration',
+      replaceNested(VALID_REQUESTS.startSession, 'config', {
+        durationMin: Number.MAX_SAFE_INTEGER,
+      }),
+    ],
+    [
+      'zero focus cycle',
+      replaceNested(VALID_REQUESTS.startSession, 'config', {
+        cycling: { ...SESSION_CONFIG.cycling, focusMin: 0 },
+      }),
+    ],
+    [
+      'zero short break cycle',
+      replaceNested(VALID_REQUESTS.startSession, 'config', {
+        cycling: { ...SESSION_CONFIG.cycling, shortBreakMin: 0 },
+      }),
+    ],
+    [
+      'zero long break cycle',
+      replaceNested(VALID_REQUESTS.startSession, 'config', {
+        cycling: { ...SESSION_CONFIG.cycling, longBreakMin: 0 },
+      }),
+    ],
+    [
+      'unsafe cycle count',
+      replaceNested(VALID_REQUESTS.startSession, 'config', {
+        cycling: { ...SESSION_CONFIG.cycling, longEvery: Number.MAX_SAFE_INTEGER + 1 },
+      }),
+    ],
+  ])('rejects %s', (_label: string, request: unknown): void => {
+    expect(parseRequest(request)).toBeNull();
+  });
+
+  it.each([
+    ['zero preset', { presetsMin: [0, 25, 50] }],
+    ['unsafe preset', { presetsMin: [15, Number.MAX_SAFE_INTEGER, 50] }],
+    ['zero streak goal', { streakGoalMin: 0 }],
+    ['unsafe streak goal', { streakGoalMin: Number.MAX_SAFE_INTEGER }],
+    ['unsafe pause cap', { pause: { ...SETTINGS.pause, capMs: Number.MAX_SAFE_INTEGER + 1 } }],
+    ['unsafe pause length', { pause: { ...SETTINGS.pause, pauseMs: Number.MAX_SAFE_INTEGER + 1 } }],
+    [
+      'unsafe unlock length',
+      { pause: { ...SETTINGS.pause, unlockMs: Number.MAX_SAFE_INTEGER + 1 } },
+    ],
+    ['unsafe gate delay', { gate: { ...SETTINGS.gate, delayMs: Number.MAX_SAFE_INTEGER + 1 } }],
+    [
+      'unsafe retention date range',
+      { retentionDays: Math.floor(Number.MAX_SAFE_INTEGER / DAY_MS) + 1 },
+    ],
+  ])('rejects %s', (_label: string, update: Record<string, unknown>): void => {
+    expect(parseSettingsRequest(update)).toBeNull();
+  });
+
+  it('rejects a stats range whose date-day multiplication is unsafe', (): void => {
+    const days: number = Math.floor(Number.MAX_SAFE_INTEGER / DAY_MS) + 1;
+    expect(parseRequest({ type: 'getStats', days })).toBeNull();
+  });
+
+  it('rejects day counts beyond the JavaScript Date range', (): void => {
+    const days: number = Math.floor(DATE_MAX_MS / DAY_MS) + 1;
+    expect(parseRequest({ type: 'getStats', days })).toBeNull();
+    expect(parseSettingsRequest({ retentionDays: days })).toBeNull();
+  });
+
   it.each([
     { custom: [{ kind: 'host', pattern: '' }] },
     { custom: [{ kind: 'host', pattern: 'not a host' }] },
@@ -273,3 +445,36 @@ describe('parseRequest', (): void => {
     ).toBeNull();
   });
 });
+
+function scheduleEntry(update: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: 'weekday',
+    days: [1, 2, 3, 4, 5],
+    start: '09:00',
+    end: '17:00',
+    mode: 'blacklist',
+    strictness: 'hard',
+    cycling: null,
+    intention: '',
+    enabled: true,
+    ...update,
+  };
+}
+
+function sparseArray(length: number, values: Record<number, unknown> = {}): unknown[] {
+  const array: unknown[] = new Array<unknown>(length);
+  for (const [index, value] of Object.entries(values)) {
+    array[Number(index)] = value;
+  }
+  return array;
+}
+
+function parseSettingsRequest(update: Record<string, unknown>): Request | null {
+  return parseRequest({ type: 'updateSettings', settings: { ...SETTINGS, ...update } });
+}
+
+function parseSettingsOrListsRequest(update: Record<string, unknown>): Request | null {
+  return Object.hasOwn(update, 'custom')
+    ? parseRequest({ type: 'updateLists', lists: { ...LISTS, ...update } })
+    : parseSettingsRequest(update);
+}

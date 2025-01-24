@@ -20,9 +20,20 @@ const CATEGORY_IDS: readonly CategoryId[] = [
   'gaming',
   'forums',
 ];
+const MINUTE_MS: number = 60_000;
+const DAY_MS: number = 86_400_000;
+const DATE_MAX_MS: number = 8_640_000_000_000_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isDenseArray(value: unknown): value is unknown[] {
+  if (!Array.isArray(value)) return false;
+  for (let index: number = 0; index < value.length; index++) {
+    if (!Object.hasOwn(value, index)) return false;
+  }
+  return true;
 }
 
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
@@ -40,11 +51,23 @@ function isNonNegativeNumber(value: unknown): value is number {
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
-  return isNonNegativeNumber(value) && Number.isInteger(value);
+  return isNonNegativeNumber(value) && Number.isSafeInteger(value);
 }
 
 function isPositiveInteger(value: unknown): value is number {
   return isNonNegativeInteger(value) && value > 0;
+}
+
+function isPositiveMinuteValue(value: unknown): value is number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return false;
+  const milliseconds: number = Math.round(value * MINUTE_MS);
+  return milliseconds > 0 && Number.isSafeInteger(milliseconds);
+}
+
+function isSafeDayCount(value: unknown): value is number {
+  if (!isPositiveInteger(value)) return false;
+  const milliseconds: number = value * DAY_MS;
+  return Number.isSafeInteger(milliseconds) && milliseconds <= DATE_MAX_MS;
 }
 
 function isNonBlankString(value: unknown): value is string {
@@ -65,12 +88,22 @@ function isValidUrl(value: unknown): value is string {
   }
 }
 
-function isValidHost(value: unknown): value is string {
+function isValidRuleHost(value: unknown): value is string {
   return (
     isNonBlankString(value) &&
     value.trim() === value &&
     validateRule({ kind: 'host', pattern: value }) === null
   );
+}
+
+function isBrowserHostname(value: unknown): value is string {
+  if (!isNonBlankString(value) || value.trim() !== value) return false;
+  try {
+    const parsed: URL = new URL(`http://${value}/`);
+    return parsed.hostname === value;
+  } catch {
+    return false;
+  }
 }
 
 function isCycleConfig(value: unknown): value is CycleConfig {
@@ -81,9 +114,9 @@ function isCycleConfig(value: unknown): value is CycleConfig {
     return false;
   }
   return (
-    isNonNegativeNumber(value.focusMin) &&
-    isNonNegativeNumber(value.shortBreakMin) &&
-    isNonNegativeNumber(value.longBreakMin) &&
+    isPositiveMinuteValue(value.focusMin) &&
+    isPositiveMinuteValue(value.shortBreakMin) &&
+    isPositiveMinuteValue(value.longBreakMin) &&
     isPositiveInteger(value.longEvery)
   );
 }
@@ -106,7 +139,7 @@ function isSessionConfig(value: unknown): value is SessionConfig {
   if (
     (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
     (value.strictness !== 'hard' && value.strictness !== 'friction') ||
-    !isNonNegativeNumber(value.durationMin) ||
+    !isPositiveMinuteValue(value.durationMin) ||
     (value.cycling !== null && !isCycleConfig(value.cycling)) ||
     typeof value.intention !== 'string' ||
     (value.source !== 'manual' && value.source !== 'schedule') ||
@@ -179,9 +212,10 @@ function isScheduleEntry(value: unknown): value is ScheduleEntry {
       'enabled',
     ]) ||
     !isNonBlankString(value.id) ||
-    !Array.isArray(value.days) ||
+    !isDenseArray(value.days) ||
     value.days.length === 0 ||
     !value.days.every((day: unknown): day is number => isNonNegativeInteger(day) && day <= 6) ||
+    new Set(value.days).size !== value.days.length ||
     typeof value.start !== 'string' ||
     typeof value.end !== 'string' ||
     (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
@@ -206,6 +240,27 @@ function isScheduleEntry(value: unknown): value is ScheduleEntry {
   return validateEntry(entry) === null;
 }
 
+function scheduleEntriesOverlap(first: ScheduleEntry, second: ScheduleEntry): boolean {
+  if (!first.enabled || !second.enabled) return false;
+  const sharedDay: boolean = first.days.some((day: number): boolean => second.days.includes(day));
+  return sharedDay && first.start < second.end && second.start < first.end;
+}
+
+function isSchedule(value: unknown): value is ScheduleEntry[] {
+  if (!isDenseArray(value) || !value.every(isScheduleEntry)) return false;
+  const ids: Set<string> = new Set<string>();
+  for (let index: number = 0; index < value.length; index++) {
+    const entry: ScheduleEntry = value[index] as ScheduleEntry;
+    if (ids.has(entry.id)) return false;
+    ids.add(entry.id);
+    for (let previousIndex: number = 0; previousIndex < index; previousIndex++) {
+      const previous: ScheduleEntry = value[previousIndex] as ScheduleEntry;
+      if (scheduleEntriesOverlap(previous, entry)) return false;
+    }
+  }
+  return true;
+}
+
 function isSettings(value: unknown): value is Settings {
   if (
     !isRecord(value) ||
@@ -227,9 +282,9 @@ function isSettings(value: unknown): value is Settings {
     return false;
   }
   return (
-    Array.isArray(value.presetsMin) &&
+    isDenseArray(value.presetsMin) &&
     value.presetsMin.length === 3 &&
-    value.presetsMin.every(isNonNegativeNumber) &&
+    value.presetsMin.every(isPositiveMinuteValue) &&
     (value.defaultMode === 'blacklist' || value.defaultMode === 'whitelist') &&
     (value.defaultStrictness === 'hard' || value.defaultStrictness === 'friction') &&
     isCycleConfig(value.defaultCycling) &&
@@ -238,10 +293,9 @@ function isSettings(value: unknown): value is Settings {
     isGateSettings(value.gate) &&
     typeof value.badgeCountdown === 'boolean' &&
     isSoundSettings(value.sounds) &&
-    Array.isArray(value.schedule) &&
-    value.schedule.every(isScheduleEntry) &&
-    isNonNegativeNumber(value.streakGoalMin) &&
-    isNonNegativeInteger(value.retentionDays)
+    isSchedule(value.schedule) &&
+    isPositiveMinuteValue(value.streakGoalMin) &&
+    isSafeDayCount(value.retentionDays)
   );
 }
 
@@ -278,7 +332,7 @@ function isExclusions(value: unknown): value is ListsConfig['exclusions'] {
   }
   return keys.every((key: PropertyKey): boolean => {
     const hosts: unknown = value[key as string];
-    return Array.isArray(hosts) && hosts.every(isValidHost);
+    return isDenseArray(hosts) && hosts.every(isValidRuleHost);
   });
 }
 
@@ -286,9 +340,9 @@ function isListsConfig(value: unknown): value is ListsConfig {
   return (
     isRecord(value) &&
     hasExactKeys(value, ['custom', 'whitelist', 'categories', 'exclusions']) &&
-    Array.isArray(value.custom) &&
+    isDenseArray(value.custom) &&
     value.custom.every(isRule) &&
-    Array.isArray(value.whitelist) &&
+    isDenseArray(value.whitelist) &&
     value.whitelist.every(isRule) &&
     isCategories(value.categories) &&
     isExclusions(value.exclusions)
@@ -323,7 +377,7 @@ function parseRecord(value: Record<string, unknown>): Request | null {
         return null;
       }
       return value.gate === 'unlockSite'
-        ? isValidHost(value.host)
+        ? isBrowserHostname(value.host)
           ? (value as Request)
           : null
         : value.host === null
@@ -342,7 +396,7 @@ function parseRecord(value: Record<string, unknown>): Request | null {
         ? (value as Request)
         : null;
     case 'getStats':
-      return hasExactKeys(value, ['type', 'days']) && isPositiveInteger(value.days)
+      return hasExactKeys(value, ['type', 'days']) && isSafeDayCount(value.days)
         ? (value as Request)
         : null;
     case 'previewSound':
