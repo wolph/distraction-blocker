@@ -27,6 +27,7 @@ const SETTINGS: Settings = structuredClone(DEFAULT_SETTINGS);
 const LISTS: ListsConfig = structuredClone(DEFAULT_LISTS);
 const DAY_MS: number = 86_400_000;
 const DATE_MAX_MS: number = 8_640_000_000_000_000;
+const MINUTE_MS: number = 60_000;
 
 const VALID_REQUESTS: RequestByType = {
   getSnapshot: { type: 'getSnapshot' },
@@ -422,6 +423,54 @@ describe('parseRequest', (): void => {
     expect(parseRequest({ type: 'getStats', days })).toBeNull();
     expect(parseSettingsRequest({ retentionDays: days })).toBeNull();
   });
+
+  it.each([
+    [
+      'session duration',
+      replaceNested(VALID_REQUESTS.startSession, 'config', {
+        durationMin: DATE_MAX_MS / MINUTE_MS,
+      }),
+    ],
+    [
+      'focus duration',
+      replaceNested(VALID_REQUESTS.startSession, 'config', {
+        cycling: { ...SESSION_CONFIG.cycling, focusMin: DATE_MAX_MS / MINUTE_MS },
+      }),
+    ],
+    [
+      'short break duration',
+      replaceNested(VALID_REQUESTS.startSession, 'config', {
+        cycling: { ...SESSION_CONFIG.cycling, shortBreakMin: DATE_MAX_MS / MINUTE_MS },
+      }),
+    ],
+    [
+      'long break duration',
+      replaceNested(VALID_REQUESTS.startSession, 'config', {
+        cycling: { ...SESSION_CONFIG.cycling, longBreakMin: DATE_MAX_MS / MINUTE_MS },
+      }),
+    ],
+  ])(
+    'rejects a %s that cannot form a future timestamp',
+    (_label: string, request: unknown): void => {
+      const now: number = Date.now();
+      expect(now + DATE_MAX_MS).toBeGreaterThan(DATE_MAX_MS);
+      expect(parseRequest(request)).toBeNull();
+    },
+  );
+
+  it.each([
+    ['preset duration', { presetsMin: [15, DATE_MAX_MS / MINUTE_MS, 50] }],
+    ['gate delay', { gate: { ...SETTINGS.gate, delayMs: Number.MAX_SAFE_INTEGER } }],
+    ['pause duration', { pause: { ...SETTINGS.pause, pauseMs: Number.MAX_SAFE_INTEGER } }],
+    ['unlock duration', { pause: { ...SETTINGS.pause, unlockMs: Number.MAX_SAFE_INTEGER } }],
+  ])(
+    'rejects a %s that cannot form a future timestamp',
+    (_label: string, update: Record<string, unknown>): void => {
+      const now: number = Date.now();
+      expect(Number.isSafeInteger(now + Number.MAX_SAFE_INTEGER)).toBe(false);
+      expect(parseSettingsRequest(update)).toBeNull();
+    },
+  );
 
   it.each([
     { custom: [{ kind: 'host', pattern: '' }] },
