@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { parseRequest } from '../../../src/background/request-validation';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
@@ -128,6 +128,23 @@ describe('parseRequest', (): void => {
       });
     },
   );
+
+  it('rejects a near-boundary relative duration before and after the clock advances', (): void => {
+    const initialNow: number = MINUTE_MS;
+    const durationMin: number = (DATE_MAX_MS - initialNow) / MINUTE_MS;
+    const request: Record<string, unknown> = replaceNested(VALID_REQUESTS.startSession, 'config', {
+      durationMin,
+    });
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(initialNow);
+      expect(parseRequest(request)).toBeNull();
+      vi.setSystemTime(initialNow + MINUTE_MS);
+      expect(parseRequest(request)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it.each([
     'example.com:443',

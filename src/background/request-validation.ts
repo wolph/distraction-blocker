@@ -23,6 +23,7 @@ const CATEGORY_IDS: readonly CategoryId[] = [
 const MINUTE_MS: number = 60_000;
 const DAY_MS: number = 86_400_000;
 const DATE_MAX_MS: number = 8_640_000_000_000_000;
+const MAX_RELATIVE_DURATION_MS: number = DATE_MAX_MS / 2;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -64,15 +65,14 @@ function isPositiveMinuteValue(value: unknown): value is number {
   return milliseconds > 0 && Number.isSafeInteger(milliseconds);
 }
 
-function isFutureMillisecondDuration(value: unknown, allowZero: boolean): value is number {
+function isRelativeMillisecondDuration(value: unknown, allowZero: boolean): value is number {
   if (!isNonNegativeInteger(value) || (!allowZero && value === 0)) return false;
-  const futureTimestamp: number = Date.now() + value;
-  return Number.isSafeInteger(futureTimestamp) && futureTimestamp <= DATE_MAX_MS;
+  return value <= MAX_RELATIVE_DURATION_MS;
 }
 
-function isFutureMinuteDuration(value: unknown): value is number {
+function isRelativeMinuteDuration(value: unknown): value is number {
   if (!isPositiveMinuteValue(value)) return false;
-  return isFutureMillisecondDuration(Math.round(value * MINUTE_MS), false);
+  return isRelativeMillisecondDuration(Math.round(value * MINUTE_MS), false);
 }
 
 function isSafeDayCount(value: unknown): value is number {
@@ -125,9 +125,9 @@ function isCycleConfig(value: unknown): value is CycleConfig {
     return false;
   }
   return (
-    isFutureMinuteDuration(value.focusMin) &&
-    isFutureMinuteDuration(value.shortBreakMin) &&
-    isFutureMinuteDuration(value.longBreakMin) &&
+    isRelativeMinuteDuration(value.focusMin) &&
+    isRelativeMinuteDuration(value.shortBreakMin) &&
+    isRelativeMinuteDuration(value.longBreakMin) &&
     isPositiveInteger(value.longEvery)
   );
 }
@@ -150,7 +150,7 @@ function isSessionConfig(value: unknown): value is SessionConfig {
   if (
     (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
     (value.strictness !== 'hard' && value.strictness !== 'friction') ||
-    !isFutureMinuteDuration(value.durationMin) ||
+    !isRelativeMinuteDuration(value.durationMin) ||
     (value.cycling !== null && !isCycleConfig(value.cycling)) ||
     typeof value.intention !== 'string' ||
     (value.source !== 'manual' && value.source !== 'schedule') ||
@@ -171,8 +171,8 @@ function isPauseSettings(value: unknown): boolean {
   return (
     isNonNegativeNumber(value.earnRatio) &&
     isNonNegativeInteger(value.capMs) &&
-    isFutureMillisecondDuration(value.pauseMs, true) &&
-    isFutureMillisecondDuration(value.unlockMs, true)
+    isRelativeMillisecondDuration(value.pauseMs, true) &&
+    isRelativeMillisecondDuration(value.unlockMs, true)
   );
 }
 
@@ -180,7 +180,7 @@ function isGateSettings(value: unknown): boolean {
   return (
     isRecord(value) &&
     hasExactKeys(value, ['delayMs', 'requireTypedPhrase']) &&
-    isFutureMillisecondDuration(value.delayMs, true) &&
+    isRelativeMillisecondDuration(value.delayMs, true) &&
     typeof value.requireTypedPhrase === 'boolean'
   );
 }
@@ -295,7 +295,7 @@ function isSettings(value: unknown): value is Settings {
   return (
     isDenseArray(value.presetsMin) &&
     value.presetsMin.length === 3 &&
-    value.presetsMin.every(isFutureMinuteDuration) &&
+    value.presetsMin.every(isRelativeMinuteDuration) &&
     (value.defaultMode === 'blacklist' || value.defaultMode === 'whitelist') &&
     (value.defaultStrictness === 'hard' || value.defaultStrictness === 'friction') &&
     isCycleConfig(value.defaultCycling) &&
