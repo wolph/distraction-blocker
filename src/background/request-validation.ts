@@ -1,6 +1,8 @@
 import { validateRule } from '../core/matcher';
-import { validateEntry } from '../core/schedule';
+import { scheduleEntriesOverlap, validateEntry } from '../core/schedule';
+import { CATEGORY_IDS } from '../shared/constants';
 import type { Request } from '../shared/messages';
+import { SYNC_LISTS, SYNC_SETTINGS } from '../shared/storage-keys';
 import type {
   CategoryId,
   CycleConfig,
@@ -10,16 +12,8 @@ import type {
   SessionConfig,
   Settings,
 } from '../shared/types';
+import { assertSyncItemWithinQuota } from './sync-quota';
 
-const CATEGORY_IDS: readonly CategoryId[] = [
-  'social',
-  'video',
-  'news',
-  'mail',
-  'shopping',
-  'gaming',
-  'forums',
-];
 const MINUTE_MS: number = 60_000;
 const DAY_MS: number = 86_400_000;
 const DATE_MAX_MS: number = 8_640_000_000_000_000;
@@ -75,6 +69,15 @@ function isRelativeMinuteDuration(value: unknown): value is number {
   return isRelativeMillisecondDuration(Math.round(value * MINUTE_MS), false);
 }
 
+function isWithinSyncQuota(key: string, value: unknown): boolean {
+  try {
+    assertSyncItemWithinQuota(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isSafeDayCount(value: unknown): value is number {
   if (!isPositiveInteger(value)) return false;
   const milliseconds: number = value * DAY_MS;
@@ -125,8 +128,11 @@ function isCycleConfig(value: unknown): value is CycleConfig {
     return false;
   }
   return (
+    isPositiveInteger(value.focusMin) &&
     isRelativeMinuteDuration(value.focusMin) &&
+    isPositiveInteger(value.shortBreakMin) &&
     isRelativeMinuteDuration(value.shortBreakMin) &&
+    isPositiveInteger(value.longBreakMin) &&
     isRelativeMinuteDuration(value.longBreakMin) &&
     isPositiveInteger(value.longEvery)
   );
@@ -249,12 +255,6 @@ function isScheduleEntry(value: unknown): value is ScheduleEntry {
     enabled: value.enabled,
   };
   return validateEntry(entry) === null;
-}
-
-function scheduleEntriesOverlap(first: ScheduleEntry, second: ScheduleEntry): boolean {
-  if (!first.enabled || !second.enabled) return false;
-  const sharedDay: boolean = first.days.some((day: number): boolean => second.days.includes(day));
-  return sharedDay && first.start < second.end && second.start < first.end;
 }
 
 function isSchedule(value: unknown): value is ScheduleEntry[] {
@@ -399,11 +399,15 @@ function parseRecord(value: Record<string, unknown>): Request | null {
         ? (value as Request)
         : null;
     case 'updateSettings':
-      return hasExactKeys(value, ['type', 'settings']) && isSettings(value.settings)
+      return hasExactKeys(value, ['type', 'settings']) &&
+        isWithinSyncQuota(SYNC_SETTINGS, value.settings) &&
+        isSettings(value.settings)
         ? (value as Request)
         : null;
     case 'updateLists':
-      return hasExactKeys(value, ['type', 'lists']) && isListsConfig(value.lists)
+      return hasExactKeys(value, ['type', 'lists']) &&
+        isWithinSyncQuota(SYNC_LISTS, value.lists) &&
+        isListsConfig(value.lists)
         ? (value as Request)
         : null;
     case 'getStats':

@@ -1,4 +1,14 @@
-import type { ListsConfig, SessionSnapshot, Settings } from './types';
+import type { CategoryId, ListsConfig, SessionSnapshot, Settings } from './types';
+
+export const CATEGORY_IDS: readonly CategoryId[] = [
+  'social',
+  'video',
+  'news',
+  'mail',
+  'shopping',
+  'gaming',
+  'forums',
+];
 
 export const DEFAULT_SETTINGS: Settings = {
   presetsMin: [15, 25, 50],

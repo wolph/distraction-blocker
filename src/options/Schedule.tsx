@@ -1,6 +1,6 @@
 import type { VNode } from 'preact';
 import { useState } from 'preact/hooks';
-import { validateEntry } from '../core/schedule';
+import { scheduleEntriesOverlap, validateEntry } from '../core/schedule';
 import type { ScheduleEntry, Settings } from '../shared/types';
 
 export interface ScheduleProps {
@@ -29,16 +29,12 @@ function newEntry(defaults: Settings): ScheduleEntry {
 }
 
 function overlapError(candidate: ScheduleEntry, entries: ScheduleEntry[]): string | null {
-  if (!candidate.enabled) return null;
   for (const entry of entries) {
-    if (!entry.enabled || entry.id === candidate.id) continue;
+    if (!scheduleEntriesOverlap(candidate, entry)) continue;
     const day: number | undefined = DAY_ORDER.find(
       (value: number): boolean => candidate.days.includes(value) && entry.days.includes(value),
     );
-    if (day === undefined) continue;
-    if (candidate.start < entry.end && entry.start < candidate.end) {
-      return `Overlaps another enabled entry on ${DAY_LABELS[day]}.`;
-    }
+    if (day !== undefined) return `Overlaps another enabled entry on ${DAY_LABELS[day]}.`;
   }
   return null;
 }

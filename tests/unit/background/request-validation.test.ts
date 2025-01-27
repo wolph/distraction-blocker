@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { parseRequest } from '../../../src/background/request-validation';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
@@ -28,6 +28,7 @@ const LISTS: ListsConfig = structuredClone(DEFAULT_LISTS);
 const DAY_MS: number = 86_400_000;
 const DATE_MAX_MS: number = 8_640_000_000_000_000;
 const MINUTE_MS: number = 60_000;
+const MAX_RELATIVE_DURATION_MS: number = DATE_MAX_MS / 2;
 
 const VALID_REQUESTS: RequestByType = {
   getSnapshot: { type: 'getSnapshot' },
@@ -129,23 +130,6 @@ describe('parseRequest', (): void => {
     },
   );
 
-  it('rejects a near-boundary relative duration before and after the clock advances', (): void => {
-    const initialNow: number = MINUTE_MS;
-    const durationMin: number = (DATE_MAX_MS - initialNow) / MINUTE_MS;
-    const request: Record<string, unknown> = replaceNested(VALID_REQUESTS.startSession, 'config', {
-      durationMin,
-    });
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(initialNow);
-      expect(parseRequest(request)).toBeNull();
-      vi.setSystemTime(initialNow + MINUTE_MS);
-      expect(parseRequest(request)).toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it.each([
     'example.com:443',
     'example.com/path',
@@ -196,8 +180,11 @@ describe('parseRequest', (): void => {
 
   it.each([
     { focusMin: -1 },
+    { focusMin: 1.5 },
     { shortBreakMin: Number.NaN },
+    { shortBreakMin: 0.5 },
     { longBreakMin: Number.POSITIVE_INFINITY },
+    { longBreakMin: 1.25 },
     { longEvery: 0 },
     { longEvery: 1.5 },
     { extra: true },
@@ -367,6 +354,60 @@ describe('parseRequest', (): void => {
     ).toBeNull();
   });
 
+  it('rejects oversized settings before quadratic schedule overlap validation', (): void => {
+    let enabledReads: number = 0;
+    const entryCount: number = 120;
+    const schedule: Record<string, unknown>[] = Array.from(
+      { length: entryCount },
+      (_value: unknown, index: number): Record<string, unknown> => {
+        const entry: Record<string, unknown> = scheduleEntry({
+          id: `oversized-${index}`,
+          intention: 'x'.repeat(100),
+        });
+        Object.defineProperty(entry, 'enabled', {
+          configurable: true,
+          enumerable: true,
+          get: (): boolean => {
+            enabledReads += 1;
+            return false;
+          },
+        });
+        return entry;
+      },
+    );
+
+    expect(parseSettingsRequest({ schedule })).toBeNull();
+    expect(enabledReads).toBe(entryCount);
+  });
+
+  it('rejects oversized lists before compiling every custom rule', (): void => {
+    let patternReads: number = 0;
+    const ruleCount: number = 30;
+    const custom: Record<string, unknown>[] = Array.from(
+      { length: ruleCount },
+      (): Record<string, unknown> => {
+        const rule: Record<string, unknown> = { kind: 'regex' };
+        Object.defineProperty(rule, 'pattern', {
+          configurable: true,
+          enumerable: true,
+          get: (): string => {
+            patternReads += 1;
+            return 'a'.repeat(400);
+          },
+        });
+        return rule;
+      },
+    );
+
+    expect(
+      parseRequest({
+        type: 'updateLists',
+        lists: { ...LISTS, custom },
+      }),
+    ).toBeNull();
+    expect(patternReads).toBe(ruleCount);
+  });
+
   it.each([
     [
       'zero session duration',
@@ -441,50 +482,82 @@ describe('parseRequest', (): void => {
     expect(parseSettingsRequest({ retentionDays: days })).toBeNull();
   });
 
+  it('accepts the exact fixed half-Date-range relative-duration cap', (): void => {
+    const capMin: number = MAX_RELATIVE_DURATION_MS / MINUTE_MS;
+    const config: SessionConfig = {
+      ...SESSION_CONFIG,
+      durationMin: capMin,
+      cycling: {
+        focusMin: capMin,
+        shortBreakMin: capMin,
+        longBreakMin: capMin,
+        longEvery: 1,
+      },
+    };
+    expect(parseRequest({ type: 'startSession', config })).not.toBeNull();
+    expect(
+      parseSettingsRequest({
+        presetsMin: [15, capMin, 50],
+        defaultCycling: config.cycling,
+        gate: { ...SETTINGS.gate, delayMs: MAX_RELATIVE_DURATION_MS },
+        pause: {
+          ...SETTINGS.pause,
+          pauseMs: MAX_RELATIVE_DURATION_MS,
+          unlockMs: MAX_RELATIVE_DURATION_MS,
+        },
+      }),
+    ).not.toBeNull();
+  });
+
   it.each([
     [
       'session duration',
       replaceNested(VALID_REQUESTS.startSession, 'config', {
-        durationMin: DATE_MAX_MS / MINUTE_MS,
+        durationMin: (MAX_RELATIVE_DURATION_MS + 1) / MINUTE_MS,
       }),
     ],
     [
       'focus duration',
       replaceNested(VALID_REQUESTS.startSession, 'config', {
-        cycling: { ...SESSION_CONFIG.cycling, focusMin: DATE_MAX_MS / MINUTE_MS },
+        cycling: {
+          ...SESSION_CONFIG.cycling,
+          focusMin: (MAX_RELATIVE_DURATION_MS + MINUTE_MS) / MINUTE_MS,
+        },
       }),
     ],
     [
       'short break duration',
       replaceNested(VALID_REQUESTS.startSession, 'config', {
-        cycling: { ...SESSION_CONFIG.cycling, shortBreakMin: DATE_MAX_MS / MINUTE_MS },
+        cycling: {
+          ...SESSION_CONFIG.cycling,
+          shortBreakMin: (MAX_RELATIVE_DURATION_MS + MINUTE_MS) / MINUTE_MS,
+        },
       }),
     ],
     [
       'long break duration',
       replaceNested(VALID_REQUESTS.startSession, 'config', {
-        cycling: { ...SESSION_CONFIG.cycling, longBreakMin: DATE_MAX_MS / MINUTE_MS },
+        cycling: {
+          ...SESSION_CONFIG.cycling,
+          longBreakMin: (MAX_RELATIVE_DURATION_MS + MINUTE_MS) / MINUTE_MS,
+        },
       }),
     ],
   ])(
-    'rejects a %s that cannot form a future timestamp',
+    'rejects a %s above the fixed relative-duration cap',
     (_label: string, request: unknown): void => {
-      const now: number = Date.now();
-      expect(now + DATE_MAX_MS).toBeGreaterThan(DATE_MAX_MS);
       expect(parseRequest(request)).toBeNull();
     },
   );
 
   it.each([
-    ['preset duration', { presetsMin: [15, DATE_MAX_MS / MINUTE_MS, 50] }],
-    ['gate delay', { gate: { ...SETTINGS.gate, delayMs: Number.MAX_SAFE_INTEGER } }],
-    ['pause duration', { pause: { ...SETTINGS.pause, pauseMs: Number.MAX_SAFE_INTEGER } }],
-    ['unlock duration', { pause: { ...SETTINGS.pause, unlockMs: Number.MAX_SAFE_INTEGER } }],
+    ['preset duration', { presetsMin: [15, (MAX_RELATIVE_DURATION_MS + 1) / MINUTE_MS, 50] }],
+    ['gate delay', { gate: { ...SETTINGS.gate, delayMs: MAX_RELATIVE_DURATION_MS + 1 } }],
+    ['pause duration', { pause: { ...SETTINGS.pause, pauseMs: MAX_RELATIVE_DURATION_MS + 1 } }],
+    ['unlock duration', { pause: { ...SETTINGS.pause, unlockMs: MAX_RELATIVE_DURATION_MS + 1 } }],
   ])(
-    'rejects a %s that cannot form a future timestamp',
+    'rejects a %s above the fixed relative-duration cap',
     (_label: string, update: Record<string, unknown>): void => {
-      const now: number = Date.now();
-      expect(Number.isSafeInteger(now + Number.MAX_SAFE_INTEGER)).toBe(false);
       expect(parseSettingsRequest(update)).toBeNull();
     },
   );

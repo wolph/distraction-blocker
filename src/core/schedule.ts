@@ -19,6 +19,12 @@ export function validateEntry(entry: ScheduleEntry): string | null {
   return null;
 }
 
+export function scheduleEntriesOverlap(first: ScheduleEntry, second: ScheduleEntry): boolean {
+  if (!first.enabled || !second.enabled || first.id === second.id) return false;
+  const sharedDay: boolean = first.days.some((day: number): boolean => second.days.includes(day));
+  return sharedDay && first.start < second.end && second.start < first.end;
+}
+
 /** Entry whose window contains the local wall-clock time, null otherwise. */
 export function activeEntry(entries: ScheduleEntry[], at: Date): ScheduleEntry | null {
   const nowMin: number = at.getHours() * 60 + at.getMinutes();

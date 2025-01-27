@@ -1,6 +1,7 @@
 import { type StoredMatcherCache, validateRule } from '../core/matcher';
 import { isDailyDate, parseDailyAgg } from '../core/stats';
 import {
+  CATEGORY_IDS,
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
   EVENT_LOG_CAP,
@@ -20,7 +21,6 @@ import {
 import { localDateStr } from '../shared/time';
 import type {
   BankState,
-  CategoryId,
   CycleConfig,
   DailyAgg,
   EventRecord,
@@ -36,15 +36,6 @@ import type {
 } from '../shared/types';
 import type { SyncJournal } from './sync-writer';
 
-const CATEGORY_IDS: readonly CategoryId[] = [
-  'social',
-  'video',
-  'news',
-  'mail',
-  'shopping',
-  'gaming',
-  'forums',
-];
 const TIME_RE: RegExp = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 /**

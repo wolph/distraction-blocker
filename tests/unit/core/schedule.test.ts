@@ -1,7 +1,13 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { activeEntry, nextStart, validateEntry, windowEnd } from '../../../src/core/schedule';
+import {
+  activeEntry,
+  nextStart,
+  scheduleEntriesOverlap,
+  validateEntry,
+  windowEnd,
+} from '../../../src/core/schedule';
 import type { ScheduleEntry } from '../../../src/shared/types';
 
 const DST_CHILD_FLAG: string = 'FOCUS_LOCK_AMSTERDAM_DST_CHILD';
@@ -107,6 +113,37 @@ describe('validateEntry', () => {
     expect(validateEntry(entry({ start: '9am' }))).toMatch(/time/i);
     expect(validateEntry(entry({ start: '13:00', end: '09:00' }))).toMatch(/before/i);
     expect(validateEntry(entry({ days: [] }))).toMatch(/day/i);
+  });
+});
+
+describe('scheduleEntriesOverlap', (): void => {
+  it('matches enabled shared-day half-open schedule windows', (): void => {
+    const first: ScheduleEntry = entry({ id: 'first', days: [1], start: '09:00', end: '12:00' });
+    expect(
+      scheduleEntriesOverlap(
+        first,
+        entry({ id: 'overlap', days: [1], start: '11:00', end: '13:00' }),
+      ),
+    ).toBe(true);
+    expect(
+      scheduleEntriesOverlap(
+        first,
+        entry({ id: 'adjacent', days: [1], start: '12:00', end: '13:00' }),
+      ),
+    ).toBe(false);
+    expect(
+      scheduleEntriesOverlap(
+        first,
+        entry({ id: 'other-day', days: [2], start: '11:00', end: '13:00' }),
+      ),
+    ).toBe(false);
+    expect(
+      scheduleEntriesOverlap(
+        first,
+        entry({ id: 'disabled', days: [1], start: '11:00', end: '13:00', enabled: false }),
+      ),
+    ).toBe(false);
+    expect(scheduleEntriesOverlap(first, entry({ id: 'first' }))).toBe(false);
   });
 });
 

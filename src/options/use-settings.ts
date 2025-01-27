@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
+import { CATEGORY_IDS } from '../shared/constants';
 import type { Ack, Broadcast } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import type {
@@ -10,16 +11,6 @@ import type {
   SessionSnapshot,
   Settings,
 } from '../shared/types';
-
-const CATEGORY_IDS: readonly CategoryId[] = [
-  'social',
-  'video',
-  'news',
-  'mail',
-  'shopping',
-  'gaming',
-  'forums',
-];
 
 const LOAD_ERROR: string = 'Could not load settings. Reload the page to try again.';
 
