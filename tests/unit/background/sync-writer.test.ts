@@ -27,6 +27,33 @@ describe('SyncWriter', () => {
     expect(write).toHaveBeenCalledTimes(1);
   });
 
+  it('reports a key pending until its in-flight flush completes', async () => {
+    let releaseWrite: () => void = (): void => {};
+    let signalWriteStarted: () => void = (): void => {};
+    const writeBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseWrite = resolve;
+    });
+    const writeStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalWriteStarted = resolve;
+    });
+    const writer: SyncWriter = new SyncWriter(10_000, async (): Promise<void> => {
+      signalWriteStarted();
+      await writeBlocked;
+    });
+
+    expect(writer.hasPending('lists')).toBe(false);
+    writer.queue('lists', { custom: [] });
+    expect(writer.hasPending('lists')).toBe(true);
+
+    const flushing: Promise<void> = writer.flushNow();
+    await writeStarted;
+    expect(writer.hasPending('lists')).toBe(true);
+
+    releaseWrite();
+    await flushing;
+    expect(writer.hasPending('lists')).toBe(false);
+  });
+
   it('preserves a failed batch and retries it with later writes', async () => {
     const write = vi
       .fn()

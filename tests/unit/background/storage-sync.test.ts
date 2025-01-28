@@ -132,6 +132,25 @@ describe('handleSyncChanges', () => {
     expect(applySyncedLists).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards pending-at-event state with a live lists change', async () => {
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'live.example' }],
+    };
+    const applySyncedLists = vi.fn().mockResolvedValue({ ok: true });
+    const engine: SyncChangeEngine = makeEngine({ applySyncedLists });
+
+    await handleSyncChanges(
+      engine,
+      { [SYNC_LISTS]: { newValue: lists } },
+      new SyncEchoes(),
+      vi.fn(),
+      true,
+    );
+
+    expect(applySyncedLists).toHaveBeenCalledWith(lists, true);
+  });
+
   it('applies a remote streak and ignores its local echo', async () => {
     const streak: StreakState = {
       current: 4,

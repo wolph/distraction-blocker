@@ -1,6 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { EnginePorts } from '../../../src/background/engine';
 import { main } from '../../../src/background/main';
+import { handleSyncChanges } from '../../../src/background/storage-sync';
 import type { SyncJournal } from '../../../src/background/sync-writer';
+import { ALL_CATEGORIES } from '../../../src/core/categories';
+import {
+  buildMatcherCache,
+  type CompiledMatcherSet,
+  type MatcherCacheBundle,
+  type StoredMatcherCache,
+} from '../../../src/core/matcher';
 import { emptyDaily, rollupMonth } from '../../../src/core/stats';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import {
@@ -20,6 +29,7 @@ import type {
 
 interface BootScenario {
   journal: SyncJournal;
+  localCache?: unknown;
   storedSync: Record<string, unknown>;
 }
 
@@ -30,6 +40,10 @@ type RuntimeListener = (
 ) => boolean;
 type AlarmListener = (alarm: chrome.alarms.Alarm) => void;
 type RemovedListener = (tabId: number) => void;
+type StorageListener = (
+  changes: Record<string, chrome.storage.StorageChange>,
+  areaName: string,
+) => void;
 
 const mocks = vi.hoisted(
   (): {
@@ -40,9 +54,13 @@ const mocks = vi.hoisted(
     dropTabSignal: (() => void) | null;
     removedListener: RemovedListener | null;
     runtimeListener: RuntimeListener | null;
+    storageListener: StorageListener | null;
     savedJournals: SyncJournal[];
+    savedMatcherCaches: StoredMatcherCache[];
     scenario: BootScenario;
+    bootTrace: string[];
     tickCalls: number;
+    tickGate: Promise<void> | null;
     tickError: Error | null;
     dropTabError: Error | null;
     invalidationError: Error | null;
@@ -55,12 +73,16 @@ const mocks = vi.hoisted(
     dropTabSignal: null,
     removedListener: null,
     runtimeListener: null,
+    storageListener: null,
     savedJournals: [],
+    savedMatcherCaches: [],
     scenario: {
       journal: { sets: {}, removes: [] },
       storedSync: {},
     },
     tickCalls: 0,
+    tickGate: null,
+    bootTrace: [],
     tickError: null,
     dropTabError: null,
     invalidationError: null,
@@ -80,7 +102,9 @@ vi.mock('../../../src/background/engine', () => ({
     }
 
     async tick(): Promise<void> {
+      mocks.bootTrace.push('tick');
       mocks.tickCalls += 1;
+      if (mocks.tickCalls === 1 && mocks.tickGate !== null) await mocks.tickGate;
       if (mocks.tickCalls > 1 && mocks.tickError !== null) throw mocks.tickError;
     }
 
@@ -110,6 +134,9 @@ vi.mock('../../../src/background/stores', async () => {
     getDeviceId: vi.fn().mockResolvedValue('device-id'),
     loadBank: actual.loadBank,
     loadLists: actual.loadLists,
+    loadMatcherCache: vi.fn().mockImplementation(async (): Promise<unknown> => {
+      return structuredClone(mocks.scenario.localCache);
+    }),
     loadRuntime: vi.fn().mockResolvedValue({}),
     loadSettings: actual.loadSettings,
     loadStreak: actual.loadStreak,
@@ -124,6 +151,12 @@ vi.mock('../../../src/background/stores', async () => {
     parseLiveSettings: actual.parseLiveSettings,
     parseStreak: actual.parseStreak,
     saveRuntime: vi.fn(),
+    saveMatcherCache: vi
+      .fn()
+      .mockImplementation(async (cache: StoredMatcherCache): Promise<void> => {
+        mocks.bootTrace.push('saveMatcherCache');
+        mocks.savedMatcherCaches.push(structuredClone(cache));
+      }),
     saveSyncJournal: vi.fn().mockImplementation(async (journal: SyncJournal): Promise<void> => {
       mocks.savedJournals.push(structuredClone(journal));
     }),
@@ -194,7 +227,11 @@ function stubChrome(): void {
       sendMessage: vi.fn().mockResolvedValue(undefined),
     },
     storage: {
-      onChanged: { addListener: vi.fn() },
+      onChanged: {
+        addListener: vi.fn((listener: StorageListener): void => {
+          mocks.storageListener = listener;
+        }),
+      },
       sync: {
         get: vi
           .fn()
@@ -249,6 +286,16 @@ function engineBank(): BankState {
   return mocks.engineArguments[3] as BankState;
 }
 
+function engineMatcherSet(): CompiledMatcherSet {
+  if (mocks.engineArguments === null) throw new Error('engine was not constructed');
+  return mocks.engineArguments[7] as CompiledMatcherSet;
+}
+
+function enginePorts(): EnginePorts {
+  if (mocks.engineArguments === null) throw new Error('engine was not constructed');
+  return mocks.engineArguments[0] as EnginePorts;
+}
+
 function expectJournaled(streak: StreakState): void {
   expect(mocks.savedJournals).toContainEqual({
     sets: { [SYNC_STREAK]: streak },
@@ -266,9 +313,13 @@ beforeEach((): void => {
   mocks.dropTabSignal = null;
   mocks.removedListener = null;
   mocks.runtimeListener = null;
+  mocks.storageListener = null;
   mocks.savedJournals = [];
+  mocks.savedMatcherCaches = [];
   mocks.scenario = { journal: { sets: {}, removes: [] }, storedSync: {} };
   mocks.tickCalls = 0;
+  mocks.tickGate = null;
+  mocks.bootTrace = [];
   mocks.tickError = null;
   mocks.dropTabError = null;
   mocks.invalidationError = null;
@@ -281,6 +332,163 @@ afterEach((): void => {
   vi.clearAllTimers();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+describe('background matcher cache boot', () => {
+  it('passes a valid cache to the engine without rewriting it', async () => {
+    const valid: MatcherCacheBundle = buildMatcherCache(DEFAULT_LISTS, ALL_CATEGORIES);
+    mocks.scenario.localCache = valid.stored;
+
+    await finishBoot();
+
+    expect([...engineMatcherSet().blacklist.hosts]).toEqual([...valid.compiled.blacklist.hosts]);
+    expect([...engineMatcherSet().whitelist.hosts]).toEqual([...valid.compiled.whitelist.hosts]);
+    expect(mocks.savedMatcherCaches).toEqual([]);
+    expect(mocks.bootTrace).toEqual(['tick']);
+  });
+
+  it.each([
+    ['missing', undefined],
+    [
+      'list-stale',
+      buildMatcherCache(
+        {
+          ...DEFAULT_LISTS,
+          custom: [{ kind: 'host' as const, pattern: 'old.example' }],
+        },
+        ALL_CATEGORIES,
+      ).stored,
+    ],
+    ['category-stale', buildMatcherCache(DEFAULT_LISTS, []).stored],
+    [
+      'corrupt',
+      {
+        ...buildMatcherCache(DEFAULT_LISTS, ALL_CATEGORIES).stored,
+        compiledSignature: 'corrupt',
+      },
+    ],
+  ])(
+    'rebuilds and saves a %s cache before worker readiness and tick',
+    async (_label: string, raw: unknown): Promise<void> => {
+      const expected: MatcherCacheBundle = buildMatcherCache(DEFAULT_LISTS, ALL_CATEGORIES);
+      mocks.scenario.localCache = raw;
+
+      await finishBoot();
+
+      expect(mocks.savedMatcherCaches).toEqual([expected.stored]);
+      expect(mocks.bootTrace).toEqual(['saveMatcherCache', 'tick']);
+      expect([...engineMatcherSet().blacklist.hosts]).toEqual([
+        ...expected.compiled.blacklist.hosts,
+      ]);
+      expect([...engineMatcherSet().whitelist.hosts]).toEqual([
+        ...expected.compiled.whitelist.hosts,
+      ]);
+    },
+  );
+});
+
+describe('background pending lists tracking', () => {
+  it('reports a local lists write pending until SyncWriter flushes it', async () => {
+    await finishBoot();
+    const localLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'local.example' }],
+    };
+
+    enginePorts().queueSync(SYNC_LISTS, localLists);
+    expect(enginePorts().hasPendingSync(SYNC_LISTS)).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(enginePorts().hasPendingSync(SYNC_LISTS)).toBe(false);
+  });
+
+  it('tracks a replayed lists journal before the worker becomes ready', async () => {
+    const pendingLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'replayed.example' }],
+    };
+    mocks.scenario.journal = { sets: { [SYNC_LISTS]: pendingLists }, removes: [] };
+
+    await finishBoot();
+
+    expect(enginePorts().hasPendingSync(SYNC_LISTS)).toBe(true);
+  });
+
+  it('captures replayed lists pending state when a live event arrives during slow boot', async () => {
+    let releaseTick: () => void = (): void => {};
+    mocks.tickGate = new Promise((resolve: () => void): void => {
+      releaseTick = resolve;
+    });
+    const replayedLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'replayed.example' }],
+    };
+    const liveLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'live.example' }],
+    };
+    mocks.scenario.journal = { sets: { [SYNC_LISTS]: replayedLists }, removes: [] };
+
+    main();
+    await vi.waitFor((): void => expect(mocks.engineArguments).not.toBeNull());
+    const listener: StorageListener | null = mocks.storageListener;
+    if (listener === null) throw new Error('storage listener was not registered');
+    listener({ [SYNC_LISTS]: { newValue: liveLists } }, 'sync');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(enginePorts().hasPendingSync(SYNC_LISTS)).toBe(false);
+
+    releaseTick();
+    await vi.waitFor((): void => expect(handleSyncChanges).toHaveBeenCalled());
+    expect(vi.mocked(handleSyncChanges).mock.calls.at(-1)?.[4]).toBe(true);
+  });
+
+  it('captures replayed lists pending state when the event arrives before writer creation', async () => {
+    let releaseJournalLoad: () => void = (): void => {};
+    mocks.bootGate = new Promise((resolve: () => void): void => {
+      releaseJournalLoad = resolve;
+    });
+    const replayedLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'replayed.example' }],
+    };
+    const liveLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'live.example' }],
+    };
+    mocks.scenario.journal = { sets: { [SYNC_LISTS]: replayedLists }, removes: [] };
+
+    main();
+    const listener: StorageListener | null = mocks.storageListener;
+    if (listener === null) throw new Error('storage listener was not registered');
+    listener({ [SYNC_LISTS]: { newValue: liveLists } }, 'sync');
+    releaseJournalLoad();
+
+    await vi.waitFor((): void => expect(handleSyncChanges).toHaveBeenCalled());
+    expect(vi.mocked(handleSyncChanges).mock.calls.at(-1)?.[4]).toBe(true);
+  });
+
+  it('does not reconcile a pre-writer live event when the journal has no pending lists', async () => {
+    const priorHandleCalls: number = vi.mocked(handleSyncChanges).mock.calls.length;
+    let releaseJournalLoad: () => void = (): void => {};
+    mocks.bootGate = new Promise((resolve: () => void): void => {
+      releaseJournalLoad = resolve;
+    });
+    const liveLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'live.example' }],
+    };
+
+    main();
+    const listener: StorageListener | null = mocks.storageListener;
+    if (listener === null) throw new Error('storage listener was not registered');
+    listener({ [SYNC_LISTS]: { newValue: liveLists } }, 'sync');
+    releaseJournalLoad();
+
+    await vi.waitFor((): void => {
+      expect(vi.mocked(handleSyncChanges).mock.calls.length).toBeGreaterThan(priorHandleCalls);
+    });
+    expect(vi.mocked(handleSyncChanges).mock.calls[priorHandleCalls]?.[4]).toBe(false);
+  });
 });
 
 describe('background boot state convergence', () => {

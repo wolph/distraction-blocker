@@ -67,6 +67,10 @@ export class SyncWriter {
     this.persistPendingJournal();
   }
 
+  hasPending(key: string): boolean {
+    return this.pending.has(key) || this.pendingRemovals.has(key);
+  }
+
   remove(key: string): void {
     this.pending.delete(key);
     this.pendingRemovals.add(key);

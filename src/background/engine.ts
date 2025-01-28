@@ -1,10 +1,13 @@
 import { accrue, spend } from '../core/budget';
 import { ALL_CATEGORIES } from '../core/categories';
 import {
+  buildMatcherCache,
   type CompiledMatcher,
-  compileMatcher,
+  type CompiledMatcherSet,
   evaluateUrl,
+  type MatcherCacheBundle,
   registrableHost,
+  type StoredMatcherCache,
 } from '../core/matcher';
 import { activeEntry, nextStart, windowEnd } from '../core/schedule';
 import {
@@ -65,6 +68,8 @@ export interface EnginePorts {
   now(): number;
   newId(): string;
   saveRuntime(r: RuntimeState): Promise<void>;
+  saveMatcherCache(cache: StoredMatcherCache): Promise<void>;
+  hasPendingSync(key: string): boolean;
   queueSync(key: string, value: unknown): void;
   supersedeSync(key: string, value: unknown): void;
   removeSync(key: string): void;
@@ -111,7 +116,7 @@ const NO_SESSION_VERDICT: Verdict = { blocked: false, reason: 'no-session', matc
  * worker woken after missed alarms is consistent before it answers.
  */
 export class Engine {
-  private matcher: CompiledMatcher | null = null;
+  private matchers: CompiledMatcherSet;
   private pendingEvents: EventRecord[] = [];
   private dirty = false;
   private needsBlocking = false;
@@ -127,6 +132,8 @@ export class Engine {
   private bankRevision = 0;
   private runtimePersistRevision = 0;
   private ownedRuntimeSnapshot: RuntimeState;
+  private policyMutationQueue: Promise<void> = Promise.resolve();
+  private listCachePersistenceInFlight = false;
 
   constructor(
     private readonly ports: EnginePorts,
@@ -136,7 +143,9 @@ export class Engine {
     private streak: StreakState | null,
     private runtime: RuntimeState,
     private readonly deviceId: string,
+    matchers?: CompiledMatcherSet,
   ) {
+    this.matchers = matchers ?? buildMatcherCache(this.lists, ALL_CATEGORIES).compiled;
     const checkpoint: RuntimeCommitCheckpoint | null = this.runtime.commitCheckpoint;
     if (checkpoint !== null) {
       this.pendingEvents = [...checkpoint.events];
@@ -185,6 +194,10 @@ export class Engine {
   }
 
   async startSession(config: SessionConfig): Promise<Ack> {
+    return this.enqueuePolicyMutation((): Promise<Ack> => this.startSessionNow(config));
+  }
+
+  private async startSessionNow(config: SessionConfig): Promise<Ack> {
     const now: number = this.ports.now();
     this.catchUp(now);
     if (this.runtime.session !== null) return this.fail(now, 'a session is already running');
@@ -193,7 +206,6 @@ export class Engine {
     this.runtime.gate = null;
     this.runtime.unlocks = [];
     this.runtime.accruedFocusMs = 0;
-    this.matcher = compileMatcher(this.lists, ALL_CATEGORIES, config.mode);
     this.recordEvent({
       t: 'sessionStarted',
       at: now,
@@ -614,6 +626,10 @@ export class Engine {
 
   /** The 1-minute tick alarm and exact phase alarms both land here. */
   async tick(): Promise<void> {
+    return this.enqueuePolicyMutation((): Promise<void> => this.tickNow());
+  }
+
+  private async tickNow(): Promise<void> {
     const now: number = this.ports.now();
     this.catchUp(now);
     this.pruneDebounce(now);
@@ -654,6 +670,14 @@ export class Engine {
           'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
       };
     }
+    return this.enqueuePolicyMutation((): Promise<Ack> => this.updateListsNow(l, true, false));
+  }
+
+  private async updateListsNow(
+    l: ListsConfig,
+    queueForSync: boolean,
+    reconcilePendingSync: boolean,
+  ): Promise<Ack> {
     const now: number = this.ports.now();
     this.catchUp(now);
     const reason: string | null = listsChangeAllowed(
@@ -663,12 +687,21 @@ export class Engine {
       l,
     );
     if (reason !== null) return this.fail(now, reason);
+    const bundle: MatcherCacheBundle = buildMatcherCache(l, ALL_CATEGORIES);
+    this.listCachePersistenceInFlight = true;
+    try {
+      await this.ports.saveMatcherCache(bundle.stored);
+    } finally {
+      this.listCachePersistenceInFlight = false;
+    }
     this.lists = l;
-    this.matcher = null;
-    this.ports.queueSync(SYNC_LISTS, l);
+    this.matchers = bundle.compiled;
+    if (queueForSync || reconcilePendingSync) this.ports.queueSync(SYNC_LISTS, l);
     this.dirty = true;
     this.needsBlocking = this.runtime.session !== null;
-    await this.commit(now);
+    const committedAt: number = this.ports.now();
+    this.catchUp(committedAt);
+    await this.commit(committedAt);
     return { ok: true };
   }
 
@@ -687,22 +720,22 @@ export class Engine {
     return { ok: true };
   }
 
-  async applySyncedLists(lists: ListsConfig): Promise<Ack> {
-    const now: number = this.ports.now();
-    this.catchUp(now);
-    const reason: string | null = listsChangeAllowed(
-      this.runtime.session,
-      this.runtime.session?.config.mode ?? null,
-      this.lists,
-      lists,
+  async applySyncedLists(lists: ListsConfig, reconcilePendingSync?: boolean): Promise<Ack> {
+    try {
+      assertSyncItemWithinQuota(SYNC_LISTS, lists);
+    } catch (error: unknown) {
+      if (!(error instanceof SyncQuotaError)) throw error;
+      return {
+        ok: false,
+        error:
+          'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
+      };
+    }
+    const shouldReconcilePendingSync: boolean =
+      reconcilePendingSync ?? this.ports.hasPendingSync(SYNC_LISTS);
+    return this.enqueuePolicyMutation(
+      (): Promise<Ack> => this.updateListsNow(lists, false, shouldReconcilePendingSync),
     );
-    if (reason !== null) return this.fail(now, reason);
-    this.lists = lists;
-    this.matcher = null;
-    this.dirty = true;
-    this.needsBlocking = this.runtime.session !== null;
-    await this.commit(now);
-    return { ok: true };
   }
 
   async applySyncedBank(bank: BankState): Promise<Ack> {
@@ -784,7 +817,7 @@ export class Engine {
     this.settleSession(now);
     this.expireGate(now);
     this.expireUnlocks(now);
-    this.scheduleCheck(now);
+    if (!this.listCachePersistenceInFlight) this.scheduleCheck(now);
   }
 
   private rebaseDateBackward(today: string, now: number): void {
@@ -943,7 +976,6 @@ export class Engine {
     this.runtime.session = machineStart(config, now, sessionId);
     this.runtime.accruedFocusMs = 0;
     this.runtime.scheduleActiveEntryId = entry.id;
-    this.matcher = compileMatcher(this.lists, ALL_CATEGORIES, config.mode);
     this.recordEvent({
       t: 'sessionStarted',
       at: now,
@@ -1173,10 +1205,16 @@ export class Engine {
   }
 
   private ensureMatcher(mode: SessionConfig['mode']): CompiledMatcher {
-    if (this.matcher === null || this.matcher.mode !== mode) {
-      this.matcher = compileMatcher(this.lists, ALL_CATEGORIES, mode);
-    }
-    return this.matcher;
+    return this.matchers[mode];
+  }
+
+  private enqueuePolicyMutation<T>(mutation: () => Promise<T>): Promise<T> {
+    const requested: Promise<T> = this.policyMutationQueue.then(mutation, mutation);
+    this.policyMutationQueue = requested.then(
+      (): void => undefined,
+      (): void => undefined,
+    );
+    return requested;
   }
 
   private pruneDebounce(now: number): void {

@@ -6,7 +6,7 @@ import type { SyncEchoes } from './sync-writer';
 
 export interface SyncChangeEngine {
   applySyncedSettings(settings: Settings): Promise<Ack>;
-  applySyncedLists(lists: ListsConfig): Promise<Ack>;
+  applySyncedLists(lists: ListsConfig, reconcilePendingSync?: boolean): Promise<Ack>;
   applySyncedBank(bank: BankState): Promise<Ack>;
   applySyncedStreak(streak: StreakState): Promise<void>;
   getSettings(): Settings;
@@ -86,6 +86,7 @@ async function applyListsChange(
   changes: SyncStorageChanges,
   echoes: SyncEchoes,
   queueSync: SyncStorageQueue,
+  reconcilePendingSync: boolean | undefined,
 ): Promise<void> {
   const value: unknown = changes[SYNC_LISTS]?.newValue;
   if (value === undefined || echoes.consume(SYNC_LISTS, value)) return;
@@ -94,7 +95,10 @@ async function applyListsChange(
   await correctRejectedChange(
     SYNC_LISTS,
     lists,
-    (incoming: ListsConfig): Promise<Ack> => engine.applySyncedLists(incoming),
+    (incoming: ListsConfig): Promise<Ack> =>
+      reconcilePendingSync === undefined
+        ? engine.applySyncedLists(incoming)
+        : engine.applySyncedLists(incoming, reconcilePendingSync),
     (): ListsConfig => engine.getLists(),
     queueSync,
   );
@@ -127,6 +131,7 @@ export async function handleSyncChanges(
   changes: SyncStorageChanges,
   echoes: SyncEchoes,
   queueSync: SyncStorageQueue,
+  reconcilePendingLists?: boolean,
 ): Promise<void> {
   const errors: unknown[] = [];
   await captureSyncError(
@@ -135,7 +140,8 @@ export async function handleSyncChanges(
   );
   await captureSyncError(
     errors,
-    (): Promise<void> => applyListsChange(engine, changes, echoes, queueSync),
+    (): Promise<void> =>
+      applyListsChange(engine, changes, echoes, queueSync, reconcilePendingLists),
   );
   await captureSyncError(errors, (): Promise<void> => applyBankChange(engine, changes, echoes));
   await captureSyncError(errors, (): Promise<void> => applyStreakChange(engine, changes, echoes));

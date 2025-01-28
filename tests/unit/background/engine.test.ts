@@ -5,6 +5,12 @@ import { clockRebaseArchiveKey } from '../../../src/background/rollover';
 import { emptyRuntime, mergeRuntime, type RuntimeState } from '../../../src/background/stores';
 import { syncItemBytes } from '../../../src/background/sync-quota';
 import { SyncWriter } from '../../../src/background/sync-writer';
+import { ALL_CATEGORIES } from '../../../src/core/categories';
+import {
+  buildMatcherCache,
+  type CompiledMatcherSet,
+  type StoredMatcherCache,
+} from '../../../src/core/matcher';
 import { beginPause, endPauseEarly, startSession } from '../../../src/core/session';
 import {
   CANCEL_GATE_DELAY_MS,
@@ -29,12 +35,16 @@ import type {
   SessionSnapshot,
   Settings,
   StreakState,
+  Verdict,
 } from '../../../src/shared/types';
 
 interface Harness {
   engine: Engine;
   ports: {
     [K in keyof EnginePorts]: ReturnType<typeof vi.fn>;
+  } & {
+    hasPendingSync: ReturnType<typeof vi.fn>;
+    saveMatcherCache: ReturnType<typeof vi.fn>;
   };
   setNow(ms: number): void;
   loggedEvents(): EventRecord[];
@@ -71,6 +81,7 @@ function clearMutationPorts(ports: Harness['ports']): void {
   ports.applyBlocking.mockClear();
   ports.updateIcon.mockClear();
   ports.scheduleWake.mockClear();
+  ports.saveMatcherCache.mockClear();
 }
 
 function hasCommitCheckpoint(runtime: RuntimeState): boolean {
@@ -85,6 +96,9 @@ function makeEngine(opts?: {
   queueSync?: EnginePorts['queueSync'];
   supersedeSync?: EnginePorts['supersedeSync'];
   persistSyncJournal?: EnginePorts['persistSyncJournal'];
+  saveMatcherCache?: (cache: StoredMatcherCache) => Promise<void>;
+  matcherSet?: CompiledMatcherSet;
+  hasPendingSync?: (key: string) => boolean;
 }): Harness {
   let nowMs: number = T0;
   const ports: Harness['ports'] = {
@@ -107,6 +121,12 @@ function makeEngine(opts?: {
     scheduleWake: vi.fn(),
     prune: vi.fn().mockResolvedValue(undefined),
     reportError: vi.fn(),
+    hasPendingSync:
+      opts?.hasPendingSync === undefined ? vi.fn((): boolean => false) : vi.fn(opts.hasPendingSync),
+    saveMatcherCache:
+      opts?.saveMatcherCache === undefined
+        ? vi.fn().mockResolvedValue(undefined)
+        : vi.fn(opts.saveMatcherCache),
   };
   const settings: Settings = { ...DEFAULT_SETTINGS, ...opts?.settings };
   const engine: Engine = new Engine(
@@ -120,6 +140,7 @@ function makeEngine(opts?: {
     opts?.streak ?? null,
     opts?.runtime ?? emptyRuntime(T0),
     'dev-test',
+    opts?.matcherSet,
   );
   return {
     engine,
@@ -163,6 +184,28 @@ function oversizedSettings(overrides: Partial<Settings> = {}): Settings {
 }
 
 describe('Engine', () => {
+  it('uses an injected matcher bundle for both session modes', async () => {
+    const injectedLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'injected-block.example' }],
+      whitelist: [{ kind: 'host', pattern: 'injected-allow.example' }],
+    };
+    const h: Harness = makeEngine({
+      matcherSet: buildMatcherCache(injectedLists, ALL_CATEGORIES).compiled,
+    });
+
+    await h.engine.startSession(manualConfig);
+    expect(h.engine.verdictFor('https://injected-block.example/page').blocked).toBe(true);
+    expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(false);
+
+    const whitelist: Harness = makeEngine({
+      matcherSet: buildMatcherCache(injectedLists, ALL_CATEGORIES).compiled,
+    });
+    await whitelist.engine.startSession({ ...manualConfig, mode: 'whitelist' });
+    expect(whitelist.engine.verdictFor('https://injected-allow.example/page').blocked).toBe(false);
+    expect(whitelist.engine.verdictFor('https://github.com/openai').blocked).toBe(true);
+  });
+
   it('forwards background errors to the configured port', () => {
     const h: Harness = makeEngine();
     const error = new Error('transient tab read failure');
@@ -508,6 +551,287 @@ describe('Engine', () => {
     });
     expect(h.engine.verdictFor('https://facebook.com/feed')).toEqual(before);
     expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_LISTS, expect.anything());
+    expect(h.ports.saveMatcherCache).not.toHaveBeenCalled();
+  });
+
+  it('rejects oversized live lists before catch-up or matcher-cache persistence', async () => {
+    const h: Harness = makeEngine();
+    clearMutationPorts(h.ports);
+    const oversized: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: oversizedHostRules('live'),
+    };
+
+    await expect(h.engine.applySyncedLists(oversized)).resolves.toEqual({
+      ok: false,
+      error:
+        'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
+    });
+
+    expect(h.ports.now).not.toHaveBeenCalled();
+    expect(h.ports.saveMatcherCache).not.toHaveBeenCalled();
+    expect(h.engine.getLists()).toEqual({
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'facebook.com' }],
+    });
+  });
+
+  it('persists both matcher modes before installing accepted local lists', async () => {
+    const order: string[] = [];
+    const h: Harness = makeEngine({
+      saveMatcherCache: async (): Promise<void> => {
+        order.push('cache');
+      },
+      queueSync: (key: string): void => {
+        if (key === SYNC_LISTS) order.push('sync');
+      },
+    });
+    await h.engine.startSession(manualConfig);
+    clearMutationPorts(h.ports);
+    const updated: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'replacement.example' }],
+    };
+
+    await expect(h.engine.updateLists(updated)).resolves.toEqual({ ok: true });
+
+    expect(order).toEqual(['cache', 'sync']);
+    expect(h.ports.saveMatcherCache).toHaveBeenCalledWith(
+      buildMatcherCache(updated, ALL_CATEGORIES).stored,
+    );
+    expect(h.engine.getLists()).toEqual(updated);
+    expect(h.engine.verdictFor('https://replacement.example/page').blocked).toBe(true);
+    expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(false);
+  });
+
+  it('persists accepted live lists without echoing them and uses them for the next verdict', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession(manualConfig);
+    clearMutationPorts(h.ports);
+    const updated: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'live.example' }],
+    };
+
+    await expect(h.engine.applySyncedLists(updated)).resolves.toEqual({ ok: true });
+
+    expect(h.ports.saveMatcherCache).toHaveBeenCalledWith(
+      buildMatcherCache(updated, ALL_CATEGORIES).stored,
+    );
+    expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_LISTS, expect.anything());
+    expect(h.engine.verdictFor('https://live.example/page').blocked).toBe(true);
+    expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(false);
+  });
+
+  it('keeps active lists, matchers, and Sync queues when cache persistence fails', async () => {
+    const h: Harness = makeEngine({
+      saveMatcherCache: (): Promise<void> => Promise.reject(new Error('local cache unavailable')),
+    });
+    await h.engine.startSession(manualConfig);
+    const beforeLists: ListsConfig = h.engine.getLists();
+    const beforeVerdict: Verdict = h.engine.verdictFor('https://facebook.com/feed');
+    clearMutationPorts(h.ports);
+    const updated: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'replacement.example' }],
+    };
+
+    await expect(h.engine.updateLists(updated)).rejects.toThrow('local cache unavailable');
+
+    expect(h.engine.getLists()).toEqual(beforeLists);
+    expect(h.engine.verdictFor('https://facebook.com/feed')).toEqual(beforeVerdict);
+    expect(h.engine.verdictFor('https://replacement.example/page').blocked).toBe(false);
+    expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_LISTS, expect.anything());
+  });
+
+  it('serializes a hard-session start behind local matcher-cache persistence', async () => {
+    let releaseCache: () => void = (): void => {};
+    let signalCacheStarted: () => void = (): void => {};
+    const cacheBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseCache = resolve;
+    });
+    const cacheStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalCacheStarted = resolve;
+    });
+    const h: Harness = makeEngine({
+      saveMatcherCache: (): Promise<void> => {
+        signalCacheStarted();
+        return cacheBlocked;
+      },
+    });
+    const weaker: ListsConfig = { ...DEFAULT_LISTS, custom: [] };
+
+    const updating: Promise<Ack> = h.engine.updateLists(weaker);
+    await cacheStarted;
+    let sessionStarted: boolean = false;
+    const starting: Promise<Ack> = h.engine
+      .startSession({ ...manualConfig, strictness: 'hard' })
+      .then((ack: Ack): Ack => {
+        sessionStarted = true;
+        return ack;
+      });
+    await new Promise<void>((resolve: () => void): void => {
+      setTimeout(resolve, 0);
+    });
+
+    expect(sessionStarted).toBe(false);
+    releaseCache();
+    await expect(updating).resolves.toEqual({ ok: true });
+    await expect(starting).resolves.toEqual({ ok: true });
+    expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(false);
+  });
+
+  it('defers a scheduled hard-session start until matcher-cache persistence finishes', async () => {
+    let releaseCache: () => void = (): void => {};
+    let signalCacheStarted: () => void = (): void => {};
+    const cacheBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseCache = resolve;
+    });
+    const cacheStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalCacheStarted = resolve;
+    });
+    const h: Harness = makeEngine({
+      settings: { schedule: [scheduledEntry] },
+      saveMatcherCache: (): Promise<void> => {
+        signalCacheStarted();
+        return cacheBlocked;
+      },
+    });
+    const weaker: ListsConfig = { ...DEFAULT_LISTS, custom: [] };
+
+    const updating: Promise<Ack> = h.engine.updateLists(weaker);
+    await cacheStarted;
+    h.setNow(T0 + 2 * 60_000);
+
+    expect(h.engine.snapshot().phase).toBe('idle');
+    releaseCache();
+    await expect(updating).resolves.toEqual({ ok: true });
+    expect(h.ports.playSound).toHaveBeenCalledWith('scheduleStart');
+    expect(h.engine.snapshot().phase).toBe('focus');
+    expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(false);
+  });
+
+  it('serializes local and live list caches and reconciles a pending local Sync value', async () => {
+    let releaseFirstCache: () => void = (): void => {};
+    let signalFirstCacheStarted: () => void = (): void => {};
+    const firstCacheBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseFirstCache = resolve;
+    });
+    const firstCacheStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalFirstCacheStarted = resolve;
+    });
+    let cacheWrites: number = 0;
+    const h: Harness = makeEngine({
+      hasPendingSync: (key: string): boolean => key === SYNC_LISTS,
+      saveMatcherCache: (): Promise<void> => {
+        cacheWrites += 1;
+        if (cacheWrites !== 1) return Promise.resolve();
+        signalFirstCacheStarted();
+        return firstCacheBlocked;
+      },
+    });
+    const localLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'local.example' }],
+    };
+    const liveLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'live.example' }],
+    };
+
+    const localUpdate: Promise<Ack> = h.engine.updateLists(localLists);
+    await firstCacheStarted;
+    const liveUpdate: Promise<Ack> = h.engine.applySyncedLists(liveLists);
+    await Promise.resolve();
+
+    expect(h.ports.saveMatcherCache).toHaveBeenCalledTimes(1);
+    releaseFirstCache();
+    await expect(localUpdate).resolves.toEqual({ ok: true });
+    await expect(liveUpdate).resolves.toEqual({ ok: true });
+    expect(h.ports.saveMatcherCache).toHaveBeenCalledTimes(2);
+    expect(h.ports.queueSync).toHaveBeenCalledWith(SYNC_LISTS, localLists);
+    expect(h.ports.queueSync).toHaveBeenCalledWith(SYNC_LISTS, liveLists);
+    expect(h.ports.supersedeSync).not.toHaveBeenCalledWith(SYNC_LISTS, liveLists);
+    expect(h.engine.getLists()).toEqual(liveLists);
+    expect(h.engine.verdictFor('https://live.example/page').blocked).toBe(false);
+  });
+
+  it('keeps later live lists after a same-value event and pending local flush', async () => {
+    const syncWrites: Array<Record<string, unknown>> = [];
+    const writer: SyncWriter = new SyncWriter(
+      60_000,
+      async (items: Record<string, unknown>): Promise<void> => {
+        syncWrites.push(structuredClone(items));
+      },
+    );
+    const h: Harness = makeEngine({
+      hasPendingSync: (key: string): boolean => writer.hasPending(key),
+      queueSync: (key: string, value: unknown): void => writer.queue(key, value),
+    });
+    await h.engine.startSession(manualConfig);
+    await writer.flushNow();
+    syncWrites.length = 0;
+    clearMutationPorts(h.ports);
+    let releaseBlocking: () => void = (): void => {};
+    let signalBlockingStarted: () => void = (): void => {};
+    const blockingBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseBlocking = resolve;
+    });
+    const blockingStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalBlockingStarted = resolve;
+    });
+    h.ports.applyBlocking.mockImplementationOnce((): Promise<void> => {
+      signalBlockingStarted();
+      return blockingBlocked;
+    });
+    const localLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'local.example' }],
+    };
+    const liveLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'live.example' }],
+    };
+
+    const localUpdate: Promise<Ack> = h.engine.updateLists(localLists);
+    await blockingStarted;
+    const matchingLiveUpdate: Promise<Ack> = h.engine.applySyncedLists(localLists);
+    const liveUpdate: Promise<Ack> = h.engine.applySyncedLists(liveLists);
+    await writer.flushNow();
+    expect(syncWrites).toHaveLength(1);
+    expect(syncWrites[0]).toEqual(expect.objectContaining({ [SYNC_LISTS]: localLists }));
+    expect(writer.hasPending(SYNC_LISTS)).toBe(false);
+
+    releaseBlocking();
+    await expect(localUpdate).resolves.toEqual({ ok: true });
+    await expect(matchingLiveUpdate).resolves.toEqual({ ok: true });
+    await expect(liveUpdate).resolves.toEqual({ ok: true });
+    await writer.flushNow();
+
+    expect(syncWrites).toHaveLength(2);
+    expect(syncWrites[1]).toEqual(expect.objectContaining({ [SYNC_LISTS]: liveLists }));
+    expect(h.engine.getLists()).toEqual(liveLists);
+  });
+
+  it('does not rewrite the matcher cache when hard-session guards reject local or live lists', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession({ ...manualConfig, strictness: 'hard' });
+    clearMutationPorts(h.ports);
+    const weaker: ListsConfig = { ...DEFAULT_LISTS, custom: [] };
+
+    await expect(h.engine.updateLists(weaker)).resolves.toEqual(
+      expect.objectContaining({ ok: false }),
+    );
+    await expect(h.engine.applySyncedLists(weaker)).resolves.toEqual(
+      expect.objectContaining({ ok: false }),
+    );
+
+    expect(h.ports.saveMatcherCache).not.toHaveBeenCalled();
+    expect(h.engine.getLists()).toEqual({
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'facebook.com' }],
+    });
+    expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(true);
   });
 
   it('rejects oversized settings before time-advanced catch-up mutates state or queues writes', async () => {

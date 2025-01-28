@@ -1,3 +1,10 @@
+import { ALL_CATEGORIES } from '../core/categories';
+import {
+  buildMatcherCache,
+  type CompiledMatcherSet,
+  type MatcherCacheBundle,
+  restoreMatcherCache,
+} from '../core/matcher';
 import { parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { emptyStreak } from '../core/streak';
 import type { Request } from '../shared/messages';
@@ -23,6 +30,7 @@ import {
   getDeviceId,
   loadBank,
   loadLists,
+  loadMatcherCache,
   loadRuntime,
   loadSettings,
   loadStreak,
@@ -33,6 +41,7 @@ import {
   parseLiveLists,
   parseLiveSettings,
   parseStreak,
+  saveMatcherCache,
   saveRuntime,
   saveSyncJournal,
 } from './stores';
@@ -139,7 +148,7 @@ function validatedPendingJournal(
   return journal;
 }
 
-async function boot(): Promise<Engine> {
+async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<Engine> {
   const now: number = Date.now();
   const rawJournal: SyncJournal = await loadSyncJournal();
   const pendingAggregateKeys: string[] = Object.keys(rawJournal.sets).filter(
@@ -155,14 +164,26 @@ async function boot(): Promise<Engine> {
   const sanitized: SanitizedSyncJournal = sanitizeSyncJournal(rawJournal);
   const journal: SyncJournal = validatedPendingJournal(sanitized.journal, storedSync, now);
   if (sanitized.rejected.length > 0) await saveSyncJournal(journal);
-  const [settings, lists, bank, syncedStreak, runtime, deviceId] = await Promise.all([
-    loadSettings(journal),
-    loadLists(journal),
-    loadBank(journal),
-    loadStreak(),
-    loadRuntime(now),
-    getDeviceId(),
-  ]);
+  const [settings, lists, bank, syncedStreak, runtime, rawMatcherCache, deviceId] =
+    await Promise.all([
+      loadSettings(journal),
+      loadLists(journal),
+      loadBank(journal),
+      loadStreak(),
+      loadRuntime(now),
+      loadMatcherCache(),
+      getDeviceId(),
+    ]);
+  let matchers: CompiledMatcherSet | null = restoreMatcherCache(
+    rawMatcherCache,
+    lists,
+    ALL_CATEGORIES,
+  );
+  if (matchers === null) {
+    const rebuilt: MatcherCacheBundle = buildMatcherCache(lists, ALL_CATEGORIES);
+    await saveMatcherCache(rebuilt.stored);
+    matchers = rebuilt.compiled;
+  }
   const journalValue: unknown = journal.sets[SYNC_STREAK];
   const journalHasStreak: boolean =
     !journal.removes.includes(SYNC_STREAK) && Object.hasOwn(journal.sets, SYNC_STREAK);
@@ -218,11 +239,14 @@ async function boot(): Promise<Engine> {
     streak: persistedStreak,
   });
   for (const [key, value] of Object.entries(missingDefaults)) syncWriter.queue(key, value);
+  onSyncWriterReady(syncWriter);
   await syncWriter.whenJournalDurable();
   const ports: EnginePorts = {
     now: (): number => Date.now(),
     newId: (): string => crypto.randomUUID(),
     saveRuntime,
+    saveMatcherCache,
+    hasPendingSync: (key: string): boolean => syncWriter.hasPending(key),
     queueSync: (key: string, value: unknown): void => syncWriter.queue(key, value),
     supersedeSync: (key: string, value: unknown): void => syncWriter.supersede(key, value),
     removeSync: (key: string): void => syncWriter.remove(key),
@@ -249,7 +273,16 @@ async function boot(): Promise<Engine> {
     prune: runPrune,
     reportError: reportBackgroundError,
   };
-  const engine: Engine = new Engine(ports, settings, lists, bank, streak, runtime, deviceId);
+  const engine: Engine = new Engine(
+    ports,
+    settings,
+    lists,
+    bank,
+    streak,
+    runtime,
+    deviceId,
+    matchers,
+  );
   engineInstance = engine;
   await engine.tick();
   await ports.applyBlocking();
@@ -262,7 +295,19 @@ async function boot(): Promise<Engine> {
  * every listener awaits.
  */
 export function main(): void {
-  const ready: Promise<Engine> = boot();
+  engineInstance = null;
+  syncWriterInstance = null;
+  let syncWriterInitialized: boolean = false;
+  let resolveSyncWriterReady: (writer: SyncWriter) => void = (): void => undefined;
+  const syncWriterReady: Promise<SyncWriter> = new Promise(
+    (resolve: (writer: SyncWriter) => void): void => {
+      resolveSyncWriterReady = resolve;
+    },
+  );
+  const ready: Promise<Engine> = boot((writer: SyncWriter): void => {
+    syncWriterInitialized = true;
+    resolveSyncWriterReady(writer);
+  });
 
   chrome.runtime.onMessage.addListener(
     (
@@ -281,8 +326,14 @@ export function main(): void {
   chrome.storage.onChanged.addListener(
     (changes: Record<string, chrome.storage.StorageChange>, areaName: string): void => {
       if (areaName !== 'sync') return;
-      void ready
-        .then(async (engine: Engine): Promise<void> => {
+      const hasListsChange: boolean = changes[SYNC_LISTS]?.newValue !== undefined;
+      const reconcilePendingLists: Promise<boolean> = hasListsChange
+        ? !syncWriterInitialized || syncWriterInstance === null
+          ? syncWriterReady.then((writer: SyncWriter): boolean => writer.hasPending(SYNC_LISTS))
+          : Promise.resolve(syncWriterInstance.hasPending(SYNC_LISTS))
+        : Promise.resolve(false);
+      void Promise.all([ready, reconcilePendingLists])
+        .then(async ([engine, shouldReconcile]: [Engine, boolean]): Promise<void> => {
           await handleSyncChanges(
             engine,
             changes,
@@ -292,6 +343,7 @@ export function main(): void {
               writer.queue(key, value);
               await writer.whenJournalDurable();
             },
+            shouldReconcile,
           );
         })
         .catch(reportBackgroundError);
