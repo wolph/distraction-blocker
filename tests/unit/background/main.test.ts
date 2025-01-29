@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EnginePorts } from '../../../src/background/engine';
 import { main } from '../../../src/background/main';
+import { routeMessage } from '../../../src/background/router';
 import { handleSyncChanges } from '../../../src/background/storage-sync';
 import type { SyncJournal } from '../../../src/background/sync-writer';
 import { ALL_CATEGORIES } from '../../../src/core/categories';
@@ -12,6 +13,7 @@ import {
 } from '../../../src/core/matcher';
 import { emptyDaily, rollupMonth } from '../../../src/core/stats';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import type { Request } from '../../../src/shared/messages';
 import {
   SYNC_BANK,
   SYNC_LISTS,
@@ -262,7 +264,22 @@ async function finishBoot(): Promise<void> {
   const listener: RuntimeListener | null = mocks.runtimeListener;
   if (listener === null) throw new Error('runtime listener was not registered');
   await new Promise<void>((resolve: () => void): void => {
-    listener({}, {}, (): void => resolve());
+    listener({ type: 'getSnapshot' }, {}, (): void => resolve());
+  });
+}
+
+function runtimeListener(): RuntimeListener {
+  const listener: RuntimeListener | null = mocks.runtimeListener;
+  if (listener === null) throw new Error('runtime listener was not registered');
+  return listener;
+}
+
+async function dispatchRuntime(
+  request: unknown,
+  sender: chrome.runtime.MessageSender = {},
+): Promise<unknown> {
+  return new Promise<unknown>((resolve: (response: unknown) => void): void => {
+    expect(runtimeListener()(request, sender, resolve)).toBe(true);
   });
 }
 
@@ -332,6 +349,63 @@ afterEach((): void => {
   vi.clearAllTimers();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+describe('background runtime request boundary', () => {
+  it('rejects invalid input before the worker is ready', async () => {
+    let releaseBoot: () => void = (): void => undefined;
+    mocks.bootGate = new Promise<void>((resolve: () => void): void => {
+      releaseBoot = resolve;
+    });
+    vi.mocked(routeMessage).mockClear();
+    main();
+    const responses: unknown[] = [];
+    const sendResponse: (response: unknown) => void = (response: unknown): void => {
+      responses.push(response);
+    };
+
+    try {
+      expect(runtimeListener()({}, {}, sendResponse)).toBe(true);
+      await Promise.resolve();
+
+      expect(responses).toEqual([{ ok: false, error: 'invalid request' }]);
+      expect(routeMessage).not.toHaveBeenCalled();
+      expect(mocks.engineArguments).toBeNull();
+    } finally {
+      releaseBoot();
+      await Promise.resolve();
+    }
+  });
+
+  it('rejects invalid input after the worker is ready', async () => {
+    await finishBoot();
+    vi.mocked(routeMessage).mockClear();
+
+    await expect(dispatchRuntime({ type: 'unknown' })).resolves.toEqual({
+      ok: false,
+      error: 'invalid request',
+    });
+  });
+
+  it('does not route invalid input', async () => {
+    await finishBoot();
+    vi.mocked(routeMessage).mockClear();
+
+    await dispatchRuntime(null);
+
+    expect(routeMessage).not.toHaveBeenCalled();
+  });
+
+  it('dispatches one valid parsed request', async () => {
+    const request: Request = { type: 'getSnapshot' };
+    const sender: chrome.runtime.MessageSender = { id: 'extension-id' };
+    vi.mocked(routeMessage).mockClear();
+    main();
+
+    await expect(dispatchRuntime(request, sender)).resolves.toEqual({ ok: true });
+    expect(routeMessage).toHaveBeenCalledExactlyOnceWith(expect.anything(), request, sender);
+    expect(vi.mocked(routeMessage).mock.calls[0]?.[1]).toBe(request);
+  });
 });
 
 describe('background matcher cache boot', () => {

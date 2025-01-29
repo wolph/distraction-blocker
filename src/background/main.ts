@@ -22,6 +22,7 @@ import type {
 import { notify, playSound } from './audio';
 import { Engine, type EnginePorts } from './engine';
 import { updateIcon } from './icon';
+import { parseRequest } from './request-validation';
 import { routeMessage } from './router';
 import { runPrune } from './stats-service';
 import { handleSyncChanges, missingSyncDefaults } from './storage-sync';
@@ -315,8 +316,13 @@ export function main(): void {
       sender: chrome.runtime.MessageSender,
       sendResponse: (response: unknown) => void,
     ): boolean => {
+      const request: Request | null = parseRequest(msg);
+      if (request === null) {
+        sendResponse({ ok: false, error: 'invalid request' });
+        return true;
+      }
       ready
-        .then((engine: Engine): Promise<unknown> => routeMessage(engine, msg as Request, sender))
+        .then((engine: Engine): Promise<unknown> => routeMessage(engine, request, sender))
         .then((response: unknown): void => sendResponse(response))
         .catch((err: unknown): void => sendResponse({ ok: false, error: String(err) }));
       return true;
