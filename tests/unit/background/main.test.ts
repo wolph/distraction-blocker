@@ -352,7 +352,7 @@ afterEach((): void => {
 });
 
 describe('background runtime request boundary', () => {
-  it('rejects invalid input before the worker is ready', async () => {
+  it('rejects invalid input before the worker is ready', async (): Promise<void> => {
     let releaseBoot: () => void = (): void => undefined;
     mocks.bootGate = new Promise<void>((resolve: () => void): void => {
       releaseBoot = resolve;
@@ -373,11 +373,11 @@ describe('background runtime request boundary', () => {
       expect(mocks.engineArguments).toBeNull();
     } finally {
       releaseBoot();
-      await Promise.resolve();
+      await dispatchRuntime({ type: 'getSnapshot' });
     }
   });
 
-  it('rejects invalid input after the worker is ready', async () => {
+  it('rejects invalid input after the worker is ready', async (): Promise<void> => {
     await finishBoot();
     vi.mocked(routeMessage).mockClear();
 
@@ -387,7 +387,7 @@ describe('background runtime request boundary', () => {
     });
   });
 
-  it('does not route invalid input', async () => {
+  it('does not route invalid input', async (): Promise<void> => {
     await finishBoot();
     vi.mocked(routeMessage).mockClear();
 
@@ -396,7 +396,7 @@ describe('background runtime request boundary', () => {
     expect(routeMessage).not.toHaveBeenCalled();
   });
 
-  it('dispatches one valid parsed request', async () => {
+  it('dispatches one valid parsed request', async (): Promise<void> => {
     const request: Request = { type: 'getSnapshot' };
     const sender: chrome.runtime.MessageSender = { id: 'extension-id' };
     vi.mocked(routeMessage).mockClear();
