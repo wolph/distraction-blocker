@@ -731,10 +731,15 @@ export class Engine {
           'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
       };
     }
-    const shouldReconcilePendingSync: boolean =
+    const pendingSyncAtArrival: boolean =
       reconcilePendingSync ?? this.ports.hasPendingSync(SYNC_LISTS);
     return this.enqueuePolicyMutation(
-      (): Promise<Ack> => this.updateListsNow(lists, false, shouldReconcilePendingSync),
+      (): Promise<Ack> =>
+        this.updateListsNow(
+          lists,
+          false,
+          pendingSyncAtArrival || this.ports.hasPendingSync(SYNC_LISTS),
+        ),
     );
   }
 

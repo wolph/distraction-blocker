@@ -756,6 +756,57 @@ describe('Engine', () => {
     expect(h.engine.verdictFor('https://live.example/page').blocked).toBe(false);
   });
 
+  it('reconciles local Sync queued after a live event arrives during cache persistence', async () => {
+    let releaseFirstCache: () => void = (): void => {};
+    let signalFirstCacheStarted: () => void = (): void => {};
+    const firstCacheBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseFirstCache = resolve;
+    });
+    const firstCacheStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalFirstCacheStarted = resolve;
+    });
+    let cacheWrites: number = 0;
+    const syncWrites: Array<Record<string, unknown>> = [];
+    const writer: SyncWriter = new SyncWriter(
+      60_000,
+      async (items: Record<string, unknown>): Promise<void> => {
+        syncWrites.push(structuredClone(items));
+      },
+    );
+    const h: Harness = makeEngine({
+      hasPendingSync: (key: string): boolean => writer.hasPending(key),
+      queueSync: (key: string, value: unknown): void => writer.queue(key, value),
+      saveMatcherCache: (): Promise<void> => {
+        cacheWrites += 1;
+        if (cacheWrites !== 1) return Promise.resolve();
+        signalFirstCacheStarted();
+        return firstCacheBlocked;
+      },
+    });
+    const localLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'local.example' }],
+    };
+    const liveLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'live.example' }],
+    };
+
+    const localUpdate: Promise<Ack> = h.engine.updateLists(localLists);
+    await firstCacheStarted;
+    expect(writer.hasPending(SYNC_LISTS)).toBe(false);
+    const liveUpdate: Promise<Ack> = h.engine.applySyncedLists(liveLists, false);
+
+    releaseFirstCache();
+    await expect(localUpdate).resolves.toEqual({ ok: true });
+    await expect(liveUpdate).resolves.toEqual({ ok: true });
+    await writer.flushNow();
+
+    expect(syncWrites).toHaveLength(1);
+    expect(syncWrites[0]).toEqual(expect.objectContaining({ [SYNC_LISTS]: liveLists }));
+    expect(h.engine.getLists()).toEqual(liveLists);
+  });
+
   it('keeps later live lists after a same-value event and pending local flush', async () => {
     const syncWrites: Array<Record<string, unknown>> = [];
     const writer: SyncWriter = new SyncWriter(
