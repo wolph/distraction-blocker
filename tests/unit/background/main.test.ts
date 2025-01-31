@@ -8,6 +8,7 @@ import { ALL_CATEGORIES } from '../../../src/core/categories';
 import {
   buildMatcherCache,
   type CompiledMatcherSet,
+  evaluateUrl,
   type MatcherCacheBundle,
   type StoredMatcherCache,
 } from '../../../src/core/matcher';
@@ -59,6 +60,8 @@ const mocks = vi.hoisted(
     storageListener: StorageListener | null;
     savedJournals: SyncJournal[];
     savedMatcherCaches: StoredMatcherCache[];
+    matcherCacheSaveAttempts: number;
+    matcherCacheSaveError: Error | null;
     scenario: BootScenario;
     bootTrace: string[];
     tickCalls: number;
@@ -78,6 +81,8 @@ const mocks = vi.hoisted(
     storageListener: null,
     savedJournals: [],
     savedMatcherCaches: [],
+    matcherCacheSaveAttempts: 0,
+    matcherCacheSaveError: null,
     scenario: {
       journal: { sets: {}, removes: [] },
       storedSync: {},
@@ -157,6 +162,8 @@ vi.mock('../../../src/background/stores', async () => {
       .fn()
       .mockImplementation(async (cache: StoredMatcherCache): Promise<void> => {
         mocks.bootTrace.push('saveMatcherCache');
+        mocks.matcherCacheSaveAttempts += 1;
+        if (mocks.matcherCacheSaveError !== null) throw mocks.matcherCacheSaveError;
         mocks.savedMatcherCaches.push(structuredClone(cache));
       }),
     saveSyncJournal: vi.fn().mockImplementation(async (journal: SyncJournal): Promise<void> => {
@@ -333,6 +340,8 @@ beforeEach((): void => {
   mocks.storageListener = null;
   mocks.savedJournals = [];
   mocks.savedMatcherCaches = [];
+  mocks.matcherCacheSaveAttempts = 0;
+  mocks.matcherCacheSaveError = null;
   mocks.scenario = { journal: { sets: {}, removes: [] }, storedSync: {} };
   mocks.tickCalls = 0;
   mocks.tickGate = null;
@@ -459,6 +468,36 @@ describe('background matcher cache boot', () => {
       ]);
     },
   );
+
+  it('reports a rebuilt cache save failure, boots with rebuilt matchers, and retries next boot', async () => {
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'blocked.example' }],
+    };
+    const expected: MatcherCacheBundle = buildMatcherCache(lists, ALL_CATEGORIES);
+    const cacheError: Error = new Error('local cache unavailable');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+    mocks.scenario.storedSync = { [SYNC_LISTS]: lists };
+    mocks.matcherCacheSaveError = cacheError;
+
+    await finishBoot();
+
+    expect(mocks.tickCalls).toBe(1);
+    expect(mocks.matcherCacheSaveAttempts).toBe(1);
+    expect(mocks.savedMatcherCaches).toEqual([]);
+    expect(consoleError).toHaveBeenCalledWith('focus-lock background error', cacheError);
+    expect(
+      evaluateUrl(engineMatcherSet().blacklist, 'https://blocked.example/page', [], Date.now())
+        .blocked,
+    ).toBe(true);
+
+    mocks.matcherCacheSaveError = null;
+    await finishBoot();
+
+    expect(mocks.matcherCacheSaveAttempts).toBe(2);
+    expect(mocks.savedMatcherCaches).toEqual([expected.stored]);
+    expect(mocks.tickCalls).toBe(2);
+  });
 });
 
 describe('background pending lists tracking', () => {

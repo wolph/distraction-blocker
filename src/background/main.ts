@@ -182,8 +182,12 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
   );
   if (matchers === null) {
     const rebuilt: MatcherCacheBundle = buildMatcherCache(lists, ALL_CATEGORIES);
-    await saveMatcherCache(rebuilt.stored);
     matchers = rebuilt.compiled;
+    try {
+      await saveMatcherCache(rebuilt.stored);
+    } catch (error: unknown) {
+      reportBackgroundError(error);
+    }
   }
   const journalValue: unknown = journal.sets[SYNC_STREAK];
   const journalHasStreak: boolean =

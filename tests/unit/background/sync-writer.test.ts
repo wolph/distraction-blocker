@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SyncEchoes, SyncWriter } from '../../../src/background/sync-writer';
+import { SyncEchoes, type SyncJournal, SyncWriter } from '../../../src/background/sync-writer';
 
 describe('SyncWriter', () => {
   beforeEach(() => vi.useFakeTimers());
@@ -52,6 +52,73 @@ describe('SyncWriter', () => {
     releaseWrite();
     await flushing;
     expect(writer.hasPending('lists')).toBe(false);
+  });
+
+  it('reports a flushed key pending until cleanup journal persistence completes', async () => {
+    let releaseCleanup: () => void = (): void => {};
+    let signalCleanupStarted: () => void = (): void => {};
+    const cleanupBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseCleanup = resolve;
+    });
+    const cleanupStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalCleanupStarted = resolve;
+    });
+    const writer: SyncWriter = new SyncWriter(
+      10_000,
+      vi.fn().mockResolvedValue(undefined),
+      undefined,
+      {
+        initial: { sets: {}, removes: [] },
+        persist: async (journal): Promise<void> => {
+          if (Object.keys(journal.sets).length === 0) {
+            signalCleanupStarted();
+            await cleanupBlocked;
+          }
+        },
+      },
+    );
+    writer.queue('lists', { custom: [] });
+    await writer.whenJournalDurable();
+
+    const flushing: Promise<void> = writer.flushNow();
+    await cleanupStarted;
+
+    expect(writer.hasPending('lists')).toBe(true);
+    releaseCleanup();
+    await flushing;
+    expect(writer.hasPending('lists')).toBe(false);
+  });
+
+  it('keeps a flushed key pending when cleanup journal persistence fails', async () => {
+    let durableJournal: SyncJournal = { sets: {}, removes: [] };
+    let rejectCleanup: boolean = true;
+    const writer: SyncWriter = new SyncWriter(
+      10_000,
+      vi.fn().mockResolvedValue(undefined),
+      undefined,
+      {
+        initial: durableJournal,
+        persist: async (journal: SyncJournal): Promise<void> => {
+          if (Object.keys(journal.sets).length === 0 && rejectCleanup) {
+            rejectCleanup = false;
+            throw new Error('cleanup unavailable');
+          }
+          durableJournal = structuredClone(journal);
+        },
+      },
+    );
+    writer.queue('lists', { custom: [{ kind: 'host', pattern: 'local.example' }] });
+    await writer.whenJournalDurable();
+
+    await expect(writer.flushNow()).rejects.toThrow('cleanup unavailable');
+
+    expect(writer.hasPending('lists')).toBe(true);
+    expect(durableJournal.sets).toHaveProperty('lists');
+    const restarted: SyncWriter = new SyncWriter(10_000, vi.fn(), undefined, {
+      initial: durableJournal,
+      persist: vi.fn().mockResolvedValue(undefined),
+    });
+    expect(restarted.hasPending('lists')).toBe(true);
   });
 
   it('preserves a failed batch and retries it with later writes', async () => {

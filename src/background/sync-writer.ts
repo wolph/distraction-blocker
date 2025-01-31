@@ -23,6 +23,7 @@ export class SyncWriter {
   private pending: Map<string, unknown>;
   private pendingRemovals: Set<string>;
   private readonly pendingRevisions: Map<string, number> = new Map();
+  private readonly reconciliationPending: Set<string> = new Set();
   private nextRevision: number = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private flushQueue: Promise<void> = Promise.resolve();
@@ -68,7 +69,9 @@ export class SyncWriter {
   }
 
   hasPending(key: string): boolean {
-    return this.pending.has(key) || this.pendingRemovals.has(key);
+    return (
+      this.pending.has(key) || this.pendingRemovals.has(key) || this.reconciliationPending.has(key)
+    );
   }
 
   remove(key: string): void {
@@ -109,7 +112,10 @@ export class SyncWriter {
     const batch: Map<string, unknown> = new Map(this.pending);
     const removals: Set<string> = new Set(this.pendingRemovals);
     const revisions: Map<string, number> = new Map(this.pendingRevisions);
-    if (this.journal !== undefined) await this.persistJournalForFlush();
+    if (this.journal !== undefined) {
+      await this.persistJournalForFlush();
+      this.reconciliationPending.clear();
+    }
     if (batch.size === 0 && removals.size === 0) return;
     try {
       for (const [key, value] of batch) assertSyncItemWithinQuota(key, value);
@@ -125,10 +131,16 @@ export class SyncWriter {
       throw error;
     }
     for (const key of batch.keys()) {
-      if (this.pendingRevisions.get(key) === revisions.get(key)) this.pending.delete(key);
+      if (this.pendingRevisions.get(key) === revisions.get(key)) {
+        this.pending.delete(key);
+        if (this.journal !== undefined) this.reconciliationPending.add(key);
+      }
     }
     for (const key of removals) {
-      if (this.pendingRevisions.get(key) === revisions.get(key)) this.pendingRemovals.delete(key);
+      if (this.pendingRevisions.get(key) === revisions.get(key)) {
+        this.pendingRemovals.delete(key);
+        if (this.journal !== undefined) this.reconciliationPending.add(key);
+      }
     }
     for (const [key, revision] of revisions) {
       if (
@@ -139,7 +151,10 @@ export class SyncWriter {
         this.pendingRevisions.delete(key);
       }
     }
-    if (this.journal !== undefined) await this.persistJournalForFlush();
+    if (this.journal !== undefined) {
+      await this.persistJournalForFlush();
+      this.reconciliationPending.clear();
+    }
     if (this.pending.size > 0 || this.pendingRemovals.size > 0) this.schedule();
   }
 

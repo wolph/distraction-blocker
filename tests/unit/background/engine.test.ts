@@ -4,7 +4,7 @@ import { Engine } from '../../../src/background/engine';
 import { clockRebaseArchiveKey } from '../../../src/background/rollover';
 import { emptyRuntime, mergeRuntime, type RuntimeState } from '../../../src/background/stores';
 import { syncItemBytes } from '../../../src/background/sync-quota';
-import { SyncWriter } from '../../../src/background/sync-writer';
+import { type SyncJournal, SyncWriter } from '../../../src/background/sync-writer';
 import { ALL_CATEGORIES } from '../../../src/core/categories';
 import {
   buildMatcherCache,
@@ -805,6 +805,74 @@ describe('Engine', () => {
     expect(syncWrites).toHaveLength(1);
     expect(syncWrites[0]).toEqual(expect.objectContaining({ [SYNC_LISTS]: liveLists }));
     expect(h.engine.getLists()).toEqual(liveLists);
+  });
+
+  it('prevents stale journal replay after failed cleanup and later live lists', async () => {
+    let durableJournal: SyncJournal = { sets: {}, removes: [] };
+    let rejectCleanup: boolean = true;
+    const syncWrites: Array<Record<string, unknown>> = [];
+    const writer: SyncWriter = new SyncWriter(
+      60_000,
+      async (items: Record<string, unknown>): Promise<void> => {
+        syncWrites.push(structuredClone(items));
+      },
+      undefined,
+      {
+        initial: durableJournal,
+        persist: async (journal: SyncJournal): Promise<void> => {
+          if (Object.keys(journal.sets).length === 0 && rejectCleanup) {
+            rejectCleanup = false;
+            throw new Error('cleanup unavailable');
+          }
+          durableJournal = structuredClone(journal);
+        },
+      },
+    );
+    const h: Harness = makeEngine({
+      hasPendingSync: (key: string): boolean => writer.hasPending(key),
+      queueSync: (key: string, value: unknown): void => writer.queue(key, value),
+      persistSyncJournal: (): Promise<void> => writer.whenJournalDurable(),
+    });
+    const localLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'local.example' }],
+    };
+    const liveLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'live.example' }],
+    };
+
+    await expect(h.engine.updateLists(localLists)).resolves.toEqual({ ok: true });
+    await expect(writer.flushNow()).rejects.toThrow('cleanup unavailable');
+
+    expect(syncWrites).toEqual([expect.objectContaining({ [SYNC_LISTS]: localLists })]);
+    expect(writer.hasPending(SYNC_LISTS)).toBe(true);
+    expect(durableJournal.sets[SYNC_LISTS]).toEqual(localLists);
+
+    await expect(h.engine.applySyncedLists(liveLists)).resolves.toEqual({ ok: true });
+
+    expect(durableJournal.sets[SYNC_LISTS]).toEqual(liveLists);
+    const replayWrites: Array<Record<string, unknown>> = [];
+    const restarted: SyncWriter = new SyncWriter(
+      60_000,
+      async (items: Record<string, unknown>): Promise<void> => {
+        replayWrites.push(structuredClone(items));
+      },
+      undefined,
+      {
+        initial: durableJournal,
+        persist: vi.fn().mockResolvedValue(undefined),
+      },
+    );
+    await restarted.flushNow();
+    expect(replayWrites).toEqual([expect.objectContaining({ [SYNC_LISTS]: liveLists })]);
+
+    await writer.flushNow();
+    expect(syncWrites).toEqual([
+      expect.objectContaining({ [SYNC_LISTS]: localLists }),
+      expect.objectContaining({ [SYNC_LISTS]: liveLists }),
+    ]);
+    expect(durableJournal).toEqual({ sets: {}, removes: [] });
   });
 
   it('keeps later live lists after a same-value event and pending local flush', async () => {
