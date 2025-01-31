@@ -79,7 +79,7 @@ export function planTabAction(verdict: Verdict, tabState: TabState): TabAction {
 
 const tabTaskTails: Map<number, Promise<void>> = new Map();
 const tabTaskVersions: Map<number, number> = new Map();
-let tabTaskSequence = 0;
+let tabTaskSequence: number = 0;
 const tabOperationVersions: Map<number, number> = new Map();
 const tabOperationUrls: Map<number, string | null> = new Map();
 interface TabOperationLeaseState {
@@ -93,7 +93,7 @@ interface RemovedTabClaim {
 }
 
 const activeTabOperationLeases: Map<number, TabOperationLeaseState> = new Map();
-let tabOperationSequence = 0;
+let tabOperationSequence: number = 0;
 
 function acquireTabOperationLease(tabId: number): () => void {
   let leaseState: TabOperationLeaseState | undefined = activeTabOperationLeases.get(tabId);
@@ -102,7 +102,7 @@ function acquireTabOperationLease(tabId: number): () => void {
     activeTabOperationLeases.set(tabId, leaseState);
   }
   leaseState.count += 1;
-  let released = false;
+  let released: boolean = false;
   return (): void => {
     if (released) return;
     released = true;
@@ -310,7 +310,8 @@ async function queueResolvedTabApply(
   operationUrl: string | null = null,
 ): Promise<void> {
   if (!acceptTabOperation(tabId, operationVersion, operationUrl)) return;
-  const operationIsCurrent = (): boolean => tabOperationVersions.get(tabId) === operationVersion;
+  const operationIsCurrent: () => boolean = (): boolean =>
+    tabOperationVersions.get(tabId) === operationVersion;
   let recordedAttemptUrl: string | null = null;
   while (true) {
     const preparation: {
@@ -347,7 +348,7 @@ async function queueResolvedTabApply(
         if (options.requireCurrentTask && tabTaskVersions.get(tabId) !== taskVersion) return true;
         const verdict: Verdict = engine.verdictFor(input.url);
         if (verdict.blocked && recordedAttemptUrl !== input.url) return false;
-        let effectsAccepted = false;
+        let effectsAccepted: boolean = false;
         await applyTabEffectsNow(
           engine,
           tabId,
@@ -447,7 +448,7 @@ interface LiveTabIdentity {
   identity: TabIdentity;
 }
 
-const MUTE_CORRECTION_LIMIT = 3;
+const MUTE_CORRECTION_LIMIT: number = 3;
 
 interface MuteContinuation {
   cancelled: boolean;
@@ -615,7 +616,7 @@ async function readStableLiveTabIdentity(
 ): Promise<LiveTabIdentity | null> {
   let previous: LiveTabIdentity | null = await readLiveTabIdentity(engine, tabId);
   if (previous === null) return null;
-  for (let validation = 0; validation < 1; validation += 1) {
+  for (let validation: number = 0; validation < 1; validation += 1) {
     const current: LiveTabIdentity | null = await readLiveTabIdentity(engine, tabId);
     if (current === null) return null;
     if (
@@ -640,10 +641,10 @@ async function settleMuteUpdate(
   continuation: MuteContinuation | null = null,
   shouldContinue: () => boolean = (): boolean => true,
 ): Promise<void> {
-  const settlementCancelled = (): boolean =>
+  const settlementCancelled: () => boolean = (): boolean =>
     muteContinuationCancelled(continuation) || !shouldContinue();
-  let ownedClaimUrl = ownedUrl;
-  const releaseClaimIfCancelled = async (): Promise<boolean> => {
+  let ownedClaimUrl: string = ownedUrl;
+  const releaseClaimIfCancelled: () => Promise<boolean> = async (): Promise<boolean> => {
     if (!settlementCancelled()) return false;
     if (tabOperationUrls.get(tabId) === ownedClaimUrl) {
       retainInheritedMuteClaim(tabId, engine, ownedClaimUrl);
@@ -661,9 +662,9 @@ async function settleMuteUpdate(
   let updateIdentity: TabIdentity = sourceIdentity;
   let desiredBlocked: boolean = initiallyBlocked;
   let desiredMuted: boolean = initiallyBlocked ? true : priorMuted;
-  let correctionsRemaining = MUTE_CORRECTION_LIMIT;
+  let correctionsRemaining: number = MUTE_CORRECTION_LIMIT;
   let pendingLiveTab: LiveTabIdentity | null = initialLiveTab;
-  let lastUpdateRejected = false;
+  let lastUpdateRejected: boolean = false;
 
   while (true) {
     if (await releaseClaimIfCancelled()) return;
@@ -972,7 +973,7 @@ async function restoreMute(
  * commit would start a second sweep.
  */
 export function applyBlockingFactory(engine: () => Engine): () => Promise<void> {
-  let running = false;
+  let running: boolean = false;
   return async (): Promise<void> => {
     if (running) return;
     const sweepOperationVersion: number = nextTabOperationVersion();
@@ -994,7 +995,9 @@ export function applyBlockingFactory(engine: () => Engine): () => Promise<void> 
         ),
       );
       const observedTabIds: Set<number> = new Set(queriedTabIds);
-      const protectedTabIds = (currentTabId: number | null = null): Set<number> => {
+      const protectedTabIds: (currentTabId?: number | null) => Set<number> = (
+        currentTabId: number | null = null,
+      ): Set<number> => {
         const protectedIds: Set<number> = new Set([
           ...activeTabIdsAtStart,
           ...activeOperationTabIdsAtStart,
@@ -1071,7 +1074,10 @@ export function registerTabListeners(
   ready: () => Promise<Engine>,
   reportError: (error: unknown) => void,
 ): void {
-  const onNav = (
+  const onNav: (
+    details: { tabId: number; url: string; frameId: number; documentId?: string },
+    attemptKind: 'navigation' | 'existing',
+  ) => void = (
     details: { tabId: number; url: string; frameId: number; documentId?: string },
     attemptKind: 'navigation' | 'existing',
   ): void => {
