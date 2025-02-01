@@ -1,5 +1,5 @@
 import type { VNode } from 'preact';
-import { useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
 import { ALL_CATEGORIES } from '../core/categories';
 import type { CategoryId, CategoryList, ListsConfig } from '../shared/types';
 
@@ -15,16 +15,24 @@ export interface CategoriesProps {
  * blocks. Exclusions survive the category being toggled off.
  */
 export function Categories(props: CategoriesProps): VNode {
-  const [expanded, setExpanded] = useState<Set<CategoryId>>(new Set());
+  const [expanded, setExpanded]: [Set<CategoryId>, Dispatch<StateUpdater<Set<CategoryId>>>] =
+    useState<Set<CategoryId>>(new Set());
 
-  const toggleCategory = (id: CategoryId, on: boolean): void => {
+  const toggleCategory: (id: CategoryId, on: boolean) => void = (
+    id: CategoryId,
+    on: boolean,
+  ): void => {
     props.onChange({
       ...props.lists,
       categories: { ...props.lists.categories, [id]: on },
     });
   };
 
-  const toggleHost = (id: CategoryId, host: string, active: boolean): void => {
+  const toggleHost: (id: CategoryId, host: string, active: boolean) => void = (
+    id: CategoryId,
+    host: string,
+    active: boolean,
+  ): void => {
     const current: string[] = props.lists.exclusions[id] ?? [];
     const next: string[] = active
       ? current.filter((h: string): boolean => h !== host)
@@ -35,7 +43,7 @@ export function Categories(props: CategoriesProps): VNode {
     });
   };
 
-  const toggleExpanded = (id: CategoryId): void => {
+  const toggleExpanded: (id: CategoryId) => void = (id: CategoryId): void => {
     const next: Set<CategoryId> = new Set(expanded);
     if (next.has(id)) {
       next.delete(id);

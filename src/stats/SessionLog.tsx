@@ -2,7 +2,7 @@ import type { JSX } from 'preact';
 import type { EventRecord } from '../shared/types';
 import { formatDuration, formatTimeOfDay } from './format';
 
-const MAX_ROWS = 20;
+const MAX_ROWS: number = 20;
 
 export interface SessionRow {
   startedAt: number;

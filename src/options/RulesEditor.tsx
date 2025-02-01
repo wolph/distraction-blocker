@@ -1,5 +1,5 @@
 import type { VNode } from 'preact';
-import { useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
 import { validateRule } from '../core/matcher';
 import type { Rule, RuleKind } from '../shared/types';
 
@@ -32,11 +32,13 @@ function stripSlashes(raw: string): string {
  * never reaches onChange, so the worker only ever sees valid rules.
  */
 export function RulesEditor(props: RulesEditorProps): VNode {
-  const [kind, setKind] = useState<RuleKind>('host');
-  const [pattern, setPattern] = useState<string>('');
-  const [error, setError] = useState<string | null>(null);
+  const [kind, setKind]: [RuleKind, Dispatch<StateUpdater<RuleKind>>] = useState<RuleKind>('host');
+  const [pattern, setPattern]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
+  const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
+    string | null
+  >(null);
 
-  const add = (): void => {
+  const add: () => void = (): void => {
     const raw: string = pattern.trim();
     const source: string = kind === 'regex' ? stripSlashes(raw) : raw;
     const rule: Rule = { kind, pattern: source };
@@ -50,7 +52,7 @@ export function RulesEditor(props: RulesEditorProps): VNode {
     props.onChange([...props.rules, rule]);
   };
 
-  const remove = (index: number): void => {
+  const remove: (index: number) => void = (index: number): void => {
     props.onChange(props.rules.filter((_: Rule, i: number): boolean => i !== index));
   };
 

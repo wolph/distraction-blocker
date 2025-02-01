@@ -1,7 +1,7 @@
 import type { VNode } from 'preact';
 import { phaseProgress, remainingPhaseMs } from '../shared/live';
 import { formatClock } from '../shared/time';
-import type { SessionSnapshot } from '../shared/types';
+import type { CycleConfig, SessionSnapshot } from '../shared/types';
 
 const RING_SIZE: number = 140;
 const RING_RADIUS: number = 62;
@@ -26,7 +26,7 @@ function phaseLabel(snapshot: SessionSnapshot): string {
 }
 
 function cycleLabel(snapshot: SessionSnapshot): string | null {
-  const cycling = snapshot.config?.cycling ?? null;
+  const cycling: CycleConfig | null = snapshot.config?.cycling ?? null;
   if (cycling === null || snapshot.config === null) return null;
   const perCycleMin: number = cycling.focusMin + cycling.shortBreakMin;
   const estimate: number = Math.max(

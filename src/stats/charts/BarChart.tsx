@@ -1,5 +1,5 @@
 import type { JSX } from 'preact';
-import { useId, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useId, useState } from 'preact/hooks';
 
 export interface ChartDatum {
   label: string;
@@ -20,16 +20,16 @@ export interface BarChartProps {
 }
 
 /* Fixed internal geometry, scaled responsively via the viewBox. */
-const W = 560;
-const H = 220;
-const PAD_LEFT = 40;
-const PAD_RIGHT = 8;
-const PAD_TOP = 16;
-const LABEL_BAND = 22;
-const BASELINE_Y = H - LABEL_BAND;
-const PLOT_H = BASELINE_Y - PAD_TOP;
-const PLOT_W = W - PAD_LEFT - PAD_RIGHT;
-const CHART_DESCRIPTION =
+const W: number = 560;
+const H: number = 220;
+const PAD_LEFT: number = 40;
+const PAD_RIGHT: number = 8;
+const PAD_TOP: number = 16;
+const LABEL_BAND: number = 22;
+const BASELINE_Y: number = H - LABEL_BAND;
+const PLOT_H: number = BASELINE_Y - PAD_TOP;
+const PLOT_W: number = W - PAD_LEFT - PAD_RIGHT;
+const CHART_DESCRIPTION: string =
   'Bar chart. Use the keyboard to move through data points, or open View as table for the same values.';
 
 /** Smallest clean number at or above the max, for a calm axis. */
@@ -60,7 +60,9 @@ function barPath(x: number, w: number, h: number): string {
 }
 
 export function BarChart(props: BarChartProps): JSX.Element {
-  const [hovered, setHovered] = useState<number | null>(null);
+  const [hovered, setHovered]: [number | null, Dispatch<StateUpdater<number | null>>] = useState<
+    number | null
+  >(null);
   const titleId: string = useId();
   const descriptionId: string = useId();
   const data: ChartDatum[] = props.data;
@@ -80,8 +82,9 @@ export function BarChart(props: BarChartProps): JSX.Element {
     0,
   );
   const labelStep: number = Math.ceil(data.length / 7);
-  const barX = (i: number): number => PAD_LEFT + band * i + (band - barW) / 2;
-  const barH = (value: number): number => (value / max) * PLOT_H;
+  const barX: (i: number) => number = (i: number): number =>
+    PAD_LEFT + band * i + (band - barW) / 2;
+  const barH: (value: number) => number = (value: number): number => (value / max) * PLOT_H;
   const directLabelAnchor: 'middle' | 'end' = maxIndex === data.length - 1 ? 'end' : 'middle';
   const hoveredDatum: ChartDatum | null =
     hovered === null ? (null as ChartDatum | null) : (data[hovered] ?? null);

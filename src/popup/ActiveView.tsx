@@ -1,10 +1,10 @@
 import type { VNode } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import { getDomain } from 'tldts';
 import { msUntilNextEarnedMinute } from '../core/budget';
 import { MIN_BREAK_BEFORE_EARLY_MS } from '../shared/constants';
 import { extrapolatedBank } from '../shared/live';
-import type { StatsBundle } from '../shared/messages';
+import type { Ack, StatsBundle } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import { formatClock } from '../shared/time';
 import type { GateKind, SessionSnapshot } from '../shared/types';
@@ -12,7 +12,9 @@ import { GatePanel } from './GatePanel';
 import { Ring } from './Ring';
 
 function useActiveHost(): string | null {
-  const [host, setHost] = useState<string | null>(null);
+  const [host, setHost]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
+    string | null
+  >(null);
   useEffect((): void => {
     void chrome.tabs
       .query({ active: true, currentWindow: true })
@@ -31,7 +33,9 @@ function useActiveHost(): string | null {
 }
 
 function useFocusedTodayMs(): number | null {
-  const [ms, setMs] = useState<number | null>(null);
+  const [ms, setMs]: [number | null, Dispatch<StateUpdater<number | null>>] = useState<
+    number | null
+  >(null);
   useEffect((): void => {
     void sendRequest({ type: 'getStats', days: 1 }).then((bundle: StatsBundle): void =>
       setMs(bundle.totals.focusMsToday),
@@ -68,7 +72,9 @@ function SpendButton({
 }
 
 export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: number }): VNode {
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
+    string | null
+  >(null);
   const activeHost: string | null = useActiveHost();
   const focusedTodayMs: number | null = useFocusedTodayMs();
 
@@ -77,19 +83,26 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
   const intention: string = snapshot.config?.intention ?? '';
   const strictness: string = snapshot.config?.strictness ?? 'friction';
 
-  const openGate = (gate: GateKind, host: string | null): void => {
-    void sendRequest({ type: 'openGate', gate, host }).then((ack): void => {
+  const openGate: (gate: GateKind, host: string | null) => void = (
+    gate: GateKind,
+    host: string | null,
+  ): void => {
+    void sendRequest({ type: 'openGate', gate, host }).then((ack: Ack): void => {
       if (!ack.ok) setError(ack.error);
     });
   };
 
-  const act = (req: { type: 'resumeFromPause' } | { type: 'startNextFocusEarly' }): void => {
-    void sendRequest(req).then((ack): void => {
+  const act: (req: { type: 'resumeFromPause' } | { type: 'startNextFocusEarly' }) => void = (
+    req: { type: 'resumeFromPause' } | { type: 'startNextFocusEarly' },
+  ): void => {
+    void sendRequest(req).then((ack: Ack): void => {
       if (!ack.ok) setError(ack.error);
     });
   };
 
-  const affordability = (costMs: number): { affordable: boolean; countdown: string | null } => {
+  const affordability: (costMs: number) => { affordable: boolean; countdown: string | null } = (
+    costMs: number,
+  ): { affordable: boolean; countdown: string | null } => {
     if (bankMs >= costMs) return { affordable: true, countdown: null };
     const waitMs: number | null = msUntilNextEarnedMinute(
       bankMs,
@@ -102,9 +115,13 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
     };
   };
 
-  const unlockAfford = affordability(snapshot.unlockCostMs);
-  const pauseAfford = affordability(snapshot.pauseCostMs);
-  const costMin = (ms: number): number => Math.round(ms / 60_000);
+  const unlockAfford: { affordable: boolean; countdown: string | null } = affordability(
+    snapshot.unlockCostMs,
+  );
+  const pauseAfford: { affordable: boolean; countdown: string | null } = affordability(
+    snapshot.pauseCostMs,
+  );
+  const costMin: (ms: number) => number = (ms: number): number => Math.round(ms / 60_000);
   const breakEarlyVisible: boolean =
     snapshot.phase === 'break' &&
     snapshot.phaseStartedAt !== null &&

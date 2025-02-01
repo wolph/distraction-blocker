@@ -1,5 +1,5 @@
 import type { VNode } from 'preact';
-import { useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
 
 export interface SaveRowProps {
   label: string;
@@ -12,10 +12,12 @@ export interface SaveRowProps {
  * is how the hard-session guard reaches the user on every save path.
  */
 export function SaveRow(props: SaveRowProps): VNode {
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState<boolean>(false);
+  const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
+    string | null
+  >(null);
+  const [saved, setSaved]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
 
-  const save = async (): Promise<void> => {
+  const save: () => Promise<void> = async (): Promise<void> => {
     setSaved(false);
     setError(null);
     const result: string | null = await props.onSave();

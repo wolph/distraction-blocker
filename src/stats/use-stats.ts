@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import { DEFAULT_SETTINGS } from '../shared/constants';
 import { type StatsBundle, sendRequest } from '../shared/messages';
 import type { EventRecord, PauseEconomy, Settings } from '../shared/types';
 
 /** One getStats request on mount feeds the whole page. */
 export function useStats(): StatsBundle | null {
-  const [bundle, setBundle] = useState<StatsBundle | null>(null);
+  const [bundle, setBundle]: [StatsBundle | null, Dispatch<StateUpdater<StatsBundle | null>>] =
+    useState<StatsBundle | null>(null);
   useEffect((): void => {
     sendRequest({ type: 'getStats', days: 30 })
       .then((b: StatsBundle): void => setBundle(b))
@@ -32,7 +33,8 @@ function isEventRecord(value: unknown): value is EventRecord {
  * machine only, which the chart captions honestly.
  */
 export function useAttemptEvents(): EventRecord[] | null {
-  const [events, setEvents] = useState<EventRecord[] | null>(null);
+  const [events, setEvents]: [EventRecord[] | null, Dispatch<StateUpdater<EventRecord[] | null>>] =
+    useState<EventRecord[] | null>(null);
   useEffect((): void => {
     sendRequest({ type: 'exportEvents' })
       .then((res: { json: string }): void => {
@@ -54,7 +56,8 @@ export function useAttemptEvents(): EventRecord[] | null {
 }
 
 export function useEconomy(): PauseEconomy {
-  const [economy, setEconomy] = useState<PauseEconomy>(DEFAULT_SETTINGS.pause);
+  const [economy, setEconomy]: [PauseEconomy, Dispatch<StateUpdater<PauseEconomy>>] =
+    useState<PauseEconomy>(DEFAULT_SETTINGS.pause);
   useEffect((): void => {
     sendRequest({ type: 'getSettings' })
       .then((settings: Settings): void => setEconomy(settings.pause))

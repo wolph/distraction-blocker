@@ -1,5 +1,5 @@
 import type { VNode } from 'preact';
-import { useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
 import { minToMs } from '../shared/time';
 import type { Settings } from '../shared/types';
 
@@ -17,7 +17,9 @@ interface NumberFieldProps {
 }
 
 function NumberField(props: NumberFieldProps): VNode {
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
+    string | null
+  >(null);
   const allowZero: boolean = props.allowZero ?? false;
   const allowFraction: boolean = props.allowFraction ?? false;
   const errorMessage: string = allowFraction

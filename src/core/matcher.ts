@@ -92,7 +92,7 @@ function hostInSet(
   host: string,
   set: ReadonlyMap<string, string> | ReadonlySet<string>,
 ): string | null {
-  const has = (h: string): boolean =>
+  const has: (h: string) => boolean = (h: string): boolean =>
     set instanceof Map ? set.has(h) : (set as ReadonlySet<string>).has(h);
   let probe: string = host;
   for (;;) {
@@ -112,7 +112,10 @@ export function compileMatcher(
   const regexes: Array<{ source: string; re: RegExp; via: 'custom' | 'whitelist' }> = [];
   const excluded: Set<string> = new Set();
 
-  const addRules = (rules: Rule[], via: 'custom' | 'whitelist'): void => {
+  const addRules: (rules: Rule[], via: 'custom' | 'whitelist') => void = (
+    rules: Rule[],
+    via: 'custom' | 'whitelist',
+  ): void => {
     for (const rule of rules) {
       if (validateRule(rule) !== null) continue;
       if (rule.kind === 'host') {
@@ -334,7 +337,10 @@ export function evaluateUrl(
   unlocks: SiteUnlock[],
   now: number,
 ): Verdict {
-  const allow = (reason: Verdict['reason'], matchedPattern: string | null = null): Verdict => ({
+  const allow: (reason: Verdict['reason'], matchedPattern?: string | null) => Verdict = (
+    reason: Verdict['reason'],
+    matchedPattern: string | null = null,
+  ): Verdict => ({
     blocked: false,
     reason,
     matchedPattern,

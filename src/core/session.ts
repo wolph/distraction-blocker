@@ -1,7 +1,7 @@
 import { MIN_BREAK_BEFORE_EARLY_MS } from '../shared/constants';
 import { CoreError } from '../shared/errors';
 import { minToMs } from '../shared/time';
-import type { Phase, SessionConfig, SessionState } from '../shared/types';
+import type { CycleConfig, Phase, SessionConfig, SessionState } from '../shared/types';
 
 /*
  * Timing semantics, the contract plan 03 codes against:
@@ -43,7 +43,7 @@ export function startSession(config: SessionConfig, now: number, sessionId?: str
 }
 
 function breakLenMs(state: SessionState): number {
-  const c = state.config.cycling;
+  const c: CycleConfig | null = state.config.cycling;
   if (c === null) return 0;
   const isLong: boolean = (state.cycleIndex + 1) % c.longEvery === 0;
   return minToMs(isLong ? c.longBreakMin : c.shortBreakMin);
@@ -94,7 +94,7 @@ export function advance(
         pausedFrom: null,
       };
     } else if (s.phase === 'break') {
-      const c = s.config.cycling;
+      const c: CycleConfig | null = s.config.cycling;
       const focusLen: number = c === null ? 0 : minToMs(c.focusMin);
       events.push({ type: 'phaseChanged', from: 'break', to: 'focus', at: boundary });
       s = {
@@ -106,7 +106,7 @@ export function advance(
         pausedFrom: null,
       };
     } else {
-      const from = s.pausedFrom;
+      const from: { phase: 'focus' | 'break'; phaseEndsAt: number } | null = s.pausedFrom;
       if (from === null) throw new CoreError('not-cancelable', 'paused without pausedFrom');
       events.push({ type: 'phaseChanged', from: 'paused', to: from.phase, at: boundary });
       s = {
@@ -152,7 +152,7 @@ export function startNextFocusEarly(state: SessionState, now: number): SessionSt
   if (now - state.phaseStartedAt < MIN_BREAK_BEFORE_EARLY_MS) {
     throw new CoreError('break-too-short', 'give the break two minutes first');
   }
-  const c = state.config.cycling;
+  const c: CycleConfig | null = state.config.cycling;
   const focusLen: number = c === null ? 0 : minToMs(c.focusMin);
   return {
     ...state,

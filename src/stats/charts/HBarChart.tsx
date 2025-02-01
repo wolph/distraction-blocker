@@ -12,14 +12,14 @@ export interface HBarChartProps {
   emptyLine?: string;
 }
 
-const W = 560;
-const LABEL_W = 150;
-const VALUE_W = 52;
-const ROW_H = 22;
-const BAR_H = 12;
-const PAD_Y = 4;
-const BAR_MAX_W = W - LABEL_W - VALUE_W;
-const CHART_DESCRIPTION =
+const W: number = 560;
+const LABEL_W: number = 150;
+const VALUE_W: number = 52;
+const ROW_H: number = 22;
+const BAR_H: number = 12;
+const PAD_Y: number = 4;
+const BAR_MAX_W: number = W - LABEL_W - VALUE_W;
+const CHART_DESCRIPTION: string =
   'Horizontal bar chart. Use the keyboard to move through data points, or open View as table for the same values.';
 
 function truncate(label: string): string {

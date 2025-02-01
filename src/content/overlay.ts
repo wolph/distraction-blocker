@@ -486,7 +486,11 @@ function buildGate(m: Mounted, gate: GateState, snap: SessionSnapshot, now: numb
     said.textContent = `You said: ${intention}`;
     wrap.appendChild(said);
   }
-  const { waitWrap, ringFill, count } = buildRing();
+  const {
+    waitWrap,
+    ringFill,
+    count,
+  }: { waitWrap: HTMLElement; ringFill: SVGCircleElement; count: HTMLElement } = buildRing();
   wrap.appendChild(waitWrap);
   const primary: HTMLButtonElement = document.createElement('button');
   primary.className = 'primary';

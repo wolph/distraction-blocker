@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import { sendRequest } from '../shared/messages';
 import type { SessionSnapshot } from '../shared/types';
 
@@ -114,9 +114,12 @@ export function useSnapshot(): {
   now: number;
   error: boolean;
 } {
-  const [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null);
-  const [now, setNow] = useState<number>(Date.now());
-  const [error, setError] = useState<boolean>(false);
+  const [snapshot, setSnapshot]: [
+    SessionSnapshot | null,
+    Dispatch<StateUpdater<SessionSnapshot | null>>,
+  ] = useState<SessionSnapshot | null>(null);
+  const [now, setNow]: [number, Dispatch<StateUpdater<number>>] = useState<number>(Date.now());
+  const [error, setError]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
 
   useEffect((): (() => void) => {
     void sendRequest({ type: 'getSnapshot' })
@@ -133,7 +136,7 @@ export function useSnapshot(): {
         setSnapshot(null);
         setError(true);
       });
-    const onMsg = (msg: unknown): void => {
+    const onMsg: (msg: unknown) => void = (msg: unknown): void => {
       if (!isRecord(msg) || msg.type !== 'stateChanged') return;
       if (isSessionSnapshot(msg.snapshot)) {
         setSnapshot(msg.snapshot);

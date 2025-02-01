@@ -13,8 +13,8 @@ export interface ChartsProps {
   now: number;
 }
 
-const DAYS_SHOWN = 14;
-const TOP_SITES = 10;
+const DAYS_SHOWN: number = 14;
+const TOP_SITES: number = 10;
 
 /** A continuous day range ending today, gaps filled with zero. */
 function dailySeries(
@@ -27,7 +27,7 @@ function dailySeries(
   );
   const base: Date = new Date(now);
   const out: ChartDatum[] = [];
-  for (let i = DAYS_SHOWN - 1; i >= 0; i -= 1) {
+  for (let i: number = DAYS_SHOWN - 1; i >= 0; i -= 1) {
     const day: Date = new Date(base.getFullYear(), base.getMonth(), base.getDate() - i, 12);
     const agg: DailyAgg | undefined = byDate.get(localDateStr(day.getTime()));
     out.push({
@@ -49,7 +49,7 @@ function dayAttempts(d: DailyAgg): number {
 /** Attempts merged across the loaded days, top ten sites plus "other". */
 export function topSites(bundle: StatsBundle): ChartDatum[] {
   const merged: Map<string, number> = new Map();
-  let other = 0;
+  let other: number = 0;
   for (const d of bundle.days) {
     other += d.attemptsOther;
     for (const [host, count] of Object.entries(d.attempts)) {

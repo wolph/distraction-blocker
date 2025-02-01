@@ -1,5 +1,5 @@
 import type { VNode } from 'preact';
-import { useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
 import { scheduleEntriesOverlap, validateEntry } from '../core/schedule';
 import type { ScheduleEntry, Settings } from '../shared/types';
 
@@ -45,7 +45,7 @@ interface DayPickerProps {
 }
 
 function DayPicker(props: DayPickerProps): VNode {
-  const toggle = (day: number): void => {
+  const toggle: (day: number) => void = (day: number): void => {
     const next: number[] = props.days.includes(day)
       ? props.days.filter((d: number): boolean => d !== day)
       : [...props.days, day].sort((a: number, b: number): number => a - b);
@@ -209,10 +209,13 @@ function EntryForm(props: EntryFormProps): VNode {
  * save, so an invalid entry never reaches settings.schedule.
  */
 export function Schedule(props: ScheduleProps): VNode {
-  const [draft, setDraft] = useState<ScheduleEntry | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft]: [ScheduleEntry | null, Dispatch<StateUpdater<ScheduleEntry | null>>] =
+    useState<ScheduleEntry | null>(null);
+  const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
+    string | null
+  >(null);
 
-  const save = (): void => {
+  const save: () => void = (): void => {
     if (draft === null) return;
     const message: string | null = validateEntry(draft);
     if (message !== null) {
@@ -233,7 +236,10 @@ export function Schedule(props: ScheduleProps): VNode {
     props.onChange(next);
   };
 
-  const setEnabled = (id: string, enabled: boolean): void => {
+  const setEnabled: (id: string, enabled: boolean) => void = (
+    id: string,
+    enabled: boolean,
+  ): void => {
     const entry: ScheduleEntry | undefined = props.entries.find(
       (candidate: ScheduleEntry): boolean => candidate.id === id,
     );
@@ -252,7 +258,7 @@ export function Schedule(props: ScheduleProps): VNode {
     );
   };
 
-  const remove = (id: string): void => {
+  const remove: (id: string) => void = (id: string): void => {
     props.onChange(props.entries.filter((e: ScheduleEntry): boolean => e.id !== id));
   };
 

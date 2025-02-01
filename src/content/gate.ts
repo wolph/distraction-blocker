@@ -18,7 +18,7 @@ export function shouldStop(blocked: boolean, docState: 'fresh' | 'loaded'): bool
 }
 
 export function installPersistedPageShow(target: Window, reevaluate: () => void): () => void {
-  const onPageShow = (event: PageTransitionEvent): void => {
+  const onPageShow: (event: PageTransitionEvent) => void = (event: PageTransitionEvent): void => {
     if (event.persisted) reevaluate();
   };
   target.addEventListener('pageshow', onPageShow);

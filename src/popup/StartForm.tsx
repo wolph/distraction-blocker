@@ -1,9 +1,11 @@
 import type { VNode } from 'preact';
-import { useRef, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useRef, useState } from 'preact/hooks';
 import { ALL_CATEGORIES } from '../core/categories';
+import type { Ack } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import type {
   CategoryId,
+  CategoryList,
   CycleConfig,
   ListsConfig,
   SessionConfig,
@@ -36,23 +38,38 @@ interface PendingCategoryChange {
 }
 
 export function StartForm({ settings, lists }: { settings: Settings; lists: ListsConfig }): VNode {
-  const [selectedMin, setSelectedMin] = useState<number>(settings.presetsMin[1]);
-  const [customMin, setCustomMin] = useState<string>('');
-  const [intention, setIntention] = useState<string>('');
-  const [mode, setMode] = useState<SessionMode>(settings.defaultMode);
-  const [strictness, setStrictness] = useState<Strictness>(settings.defaultStrictness);
-  const [cyclingOn, setCyclingOn] = useState<boolean>(settings.cyclingOnByDefault);
-  const [localLists, setLocalLists] = useState<ListsConfig>(lists);
-  const [pendingCategories, setPendingCategories] = useState<ReadonlySet<CategoryId>>(new Set());
-  const localListsRef = useRef<ListsConfig>(lists);
-  const pendingCategoriesRef = useRef<Set<CategoryId>>(new Set());
-  const categoryQueueRef = useRef<PendingCategoryChange[]>([]);
-  const categoryUpdateInFlightRef = useRef<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
+  const [selectedMin, setSelectedMin]: [number, Dispatch<StateUpdater<number>>] = useState<number>(
+    settings.presetsMin[1],
+  );
+  const [customMin, setCustomMin]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
+  const [intention, setIntention]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
+  const [mode, setMode]: [SessionMode, Dispatch<StateUpdater<SessionMode>>] = useState<SessionMode>(
+    settings.defaultMode,
+  );
+  const [strictness, setStrictness]: [Strictness, Dispatch<StateUpdater<Strictness>>] =
+    useState<Strictness>(settings.defaultStrictness);
+  const [cyclingOn, setCyclingOn]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(
+    settings.cyclingOnByDefault,
+  );
+  const [localLists, setLocalLists]: [ListsConfig, Dispatch<StateUpdater<ListsConfig>>] =
+    useState<ListsConfig>(lists);
+  const [pendingCategories, setPendingCategories]: [
+    ReadonlySet<CategoryId>,
+    Dispatch<StateUpdater<ReadonlySet<CategoryId>>>,
+  ] = useState<ReadonlySet<CategoryId>>(new Set());
+  const localListsRef: { current: ListsConfig } = useRef<ListsConfig>(lists);
+  const pendingCategoriesRef: { current: Set<CategoryId> } = useRef<Set<CategoryId>>(new Set());
+  const categoryQueueRef: { current: PendingCategoryChange[] } = useRef<PendingCategoryChange[]>(
+    [],
+  );
+  const categoryUpdateInFlightRef: { current: boolean } = useRef<boolean>(false);
+  const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
+    string | null
+  >(null);
 
   const durationMin: number = customMin.trim() === '' ? selectedMin : Number(customMin);
 
-  const dispatchNextCategoryUpdate = async (): Promise<void> => {
+  const dispatchNextCategoryUpdate: () => Promise<void> = async (): Promise<void> => {
     if (categoryUpdateInFlightRef.current) return;
     const change: PendingCategoryChange | undefined = categoryQueueRef.current.shift();
     if (change === undefined) return;
@@ -62,7 +79,7 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
       categories: { ...localListsRef.current.categories, [change.id]: change.desired },
     };
     try {
-      const ack = await sendRequest({ type: 'updateLists', lists: next });
+      const ack: Ack = await sendRequest({ type: 'updateLists', lists: next });
       if (ack.ok) {
         const committed: ListsConfig = {
           ...localListsRef.current,
@@ -85,7 +102,7 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
     }
   };
 
-  const toggleCategory = (id: CategoryId): void => {
+  const toggleCategory: (id: CategoryId) => void = (id: CategoryId): void => {
     if (pendingCategoriesRef.current.has(id)) return;
     const desired: boolean = !localListsRef.current.categories[id];
     const nextPending: Set<CategoryId> = new Set(pendingCategoriesRef.current);
@@ -97,7 +114,7 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
     void dispatchNextCategoryUpdate();
   };
 
-  const start = async (): Promise<void> => {
+  const start: () => Promise<void> = async (): Promise<void> => {
     if (!Number.isFinite(durationMin) || durationMin <= 0) {
       setError('enter a session length in minutes');
       return;
@@ -112,7 +129,7 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
       source: 'manual',
       scheduleEntryId: null,
     };
-    const ack = await sendRequest({ type: 'startSession', config });
+    const ack: Ack = await sendRequest({ type: 'startSession', config });
     if (!ack.ok) setError(ack.error);
   };
 
@@ -162,7 +179,7 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
           aria-busy={pendingCategories.size > 0}
         >
           {ALL_CATEGORIES.map(
-            (cat): VNode => (
+            (cat: CategoryList): VNode => (
               <button
                 type="button"
                 key={cat.id}

@@ -1,5 +1,6 @@
 import type { ContentCommand } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
+import type { SessionSnapshot, Verdict } from '../shared/types';
 import {
   claimContentLifecycle,
   docStateFor,
@@ -33,11 +34,12 @@ function markStopped(): void {
 
 async function evaluate(docState: 'fresh' | 'loaded'): Promise<void> {
   try {
-    const { verdict, snapshot } = await sendRequest({
-      type: 'getBlockState',
-      url: location.href,
-      docState,
-    });
+    const { verdict, snapshot }: { verdict: Verdict; snapshot: SessionSnapshot } =
+      await sendRequest({
+        type: 'getBlockState',
+        url: location.href,
+        docState,
+      });
     if (verdict.blocked) {
       if (shouldStop(verdict.blocked, docState)) {
         window.stop();

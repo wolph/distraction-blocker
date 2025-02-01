@@ -1,5 +1,5 @@
 import type { VNode } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../shared/constants';
 import { sendRequest } from '../shared/messages';
 import type { ListsConfig, SessionSnapshot, Settings } from '../shared/types';
@@ -33,10 +33,10 @@ function PadlockGlyph(): VNode {
 }
 
 function Header(): VNode {
-  const openStats = (): void => {
+  const openStats: () => void = (): void => {
     void chrome.tabs.create({ url: chrome.runtime.getURL('src/stats/stats.html') });
   };
-  const openOptions = (): void => {
+  const openOptions: () => void = (): void => {
     void chrome.runtime.openOptionsPage();
   };
   return (
@@ -99,8 +99,10 @@ function isLists(value: unknown): value is ListsConfig {
 }
 
 function IdleView(): VNode {
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [lists, setLists] = useState<ListsConfig | null>(null);
+  const [settings, setSettings]: [Settings | null, Dispatch<StateUpdater<Settings | null>>] =
+    useState<Settings | null>(null);
+  const [lists, setLists]: [ListsConfig | null, Dispatch<StateUpdater<ListsConfig | null>>] =
+    useState<ListsConfig | null>(null);
   useEffect((): void => {
     // Boundary guard: a stub or restarting worker may answer with a
     // rejection object instead of the data. Fall back to defaults so the
@@ -126,7 +128,11 @@ function Body({ snapshot, now }: { snapshot: SessionSnapshot; now: number }): VN
 }
 
 export function App(): VNode {
-  const { error, snapshot, now } = useSnapshot();
+  const {
+    error,
+    snapshot,
+    now,
+  }: { snapshot: SessionSnapshot | null; now: number; error: boolean } = useSnapshot();
   return (
     <div class="app">
       <Header />

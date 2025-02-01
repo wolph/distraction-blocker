@@ -1,16 +1,17 @@
 import type { VNode } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import { sendRequest } from '../shared/messages';
 import { LOCAL_DEVICE_ID } from '../shared/storage-keys';
 import { localDateStr } from '../shared/time';
 
 /** Export of the local event log plus the device id behind cross-device stats. */
 export function Data(): VNode {
-  const [deviceId, setDeviceId] = useState<string>('');
-  const [exportError, setExportError] = useState<string | null>(null);
+  const [deviceId, setDeviceId]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
+  const [exportError, setExportError]: [string | null, Dispatch<StateUpdater<string | null>>] =
+    useState<string | null>(null);
 
   useEffect((): void => {
-    const load = async (): Promise<void> => {
+    const load: () => Promise<void> = async (): Promise<void> => {
       const stored: Record<string, unknown> = await chrome.storage.local.get(LOCAL_DEVICE_ID);
       const id: unknown = stored[LOCAL_DEVICE_ID];
       if (typeof id === 'string') setDeviceId(id);
@@ -18,7 +19,7 @@ export function Data(): VNode {
     void load();
   }, []);
 
-  const exportEvents = async (): Promise<void> => {
+  const exportEvents: () => Promise<void> = async (): Promise<void> => {
     setExportError(null);
     try {
       const response: unknown = await sendRequest({ type: 'exportEvents' });

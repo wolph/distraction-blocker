@@ -1,5 +1,6 @@
 import type { VNode } from 'preact';
-import { useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
+import type { Ack } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import type { GateKind, GateState } from '../shared/types';
 
@@ -22,20 +23,22 @@ export function GatePanel({
   now: number;
   intention: string;
 }): VNode {
-  const [typed, setTyped] = useState<string>('');
-  const [error, setError] = useState<string | null>(null);
+  const [typed, setTyped]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
+  const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
+    string | null
+  >(null);
 
   const totalS: number = Math.max(1, Math.round((gate.readyAt - gate.openedAt) / 1000));
   const elapsedS: number = Math.min(totalS, Math.max(0, Math.floor((now - gate.openedAt) / 1000)));
   const ready: boolean = now >= gate.readyAt;
   const phraseOk: boolean = gate.requiredPhrase === null || typed === gate.requiredPhrase;
 
-  const abandon = (): void => {
+  const abandon: () => void = (): void => {
     void sendRequest({ type: 'abandonGate' });
   };
 
-  const confirm = async (): Promise<void> => {
-    const ack = await sendRequest({
+  const confirm: () => Promise<void> = async (): Promise<void> => {
+    const ack: Ack = await sendRequest({
       type: 'confirmGate',
       typedPhrase: gate.requiredPhrase === null ? null : typed,
     });

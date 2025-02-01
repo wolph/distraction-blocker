@@ -1,5 +1,5 @@
 import type { VNode } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import type { ListsConfig, Rule, ScheduleEntry, SessionSnapshot, Settings } from '../shared/types';
 import { BehaviorDefaults, PauseEconomy } from './Behavior';
 import { Categories } from './Categories';
@@ -230,9 +230,16 @@ function SectionBody(props: SectionProps): VNode {
 
 export function App(): VNode {
   const store: SettingsStore = useSettingsStore();
-  const [section, setSection] = useState<SectionId>('lists');
-  const [draftSettings, setDraftSettings] = useState<Settings | null>(null);
-  const [draftLists, setDraftLists] = useState<ListsConfig | null>(null);
+  const [section, setSection]: [SectionId, Dispatch<StateUpdater<SectionId>>] =
+    useState<SectionId>('lists');
+  const [draftSettings, setDraftSettings]: [
+    Settings | null,
+    Dispatch<StateUpdater<Settings | null>>,
+  ] = useState<Settings | null>(null);
+  const [draftLists, setDraftLists]: [
+    ListsConfig | null,
+    Dispatch<StateUpdater<ListsConfig | null>>,
+  ] = useState<ListsConfig | null>(null);
 
   useEffect((): void => {
     const loaded: Settings | null = store.settings;

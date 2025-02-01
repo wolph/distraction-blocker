@@ -51,7 +51,7 @@ export function nextStart(
   for (const e of entries) {
     if (!e.enabled) continue;
     const startMin: number = toMinutes(e.start);
-    for (let d = 0; d < 8; d++) {
+    for (let d: number = 0; d < 8; d++) {
       const day: Date = new Date(at.getFullYear(), at.getMonth(), at.getDate() + d);
       if (!e.days.includes(day.getDay())) continue;
       const startsAt: Date = new Date(

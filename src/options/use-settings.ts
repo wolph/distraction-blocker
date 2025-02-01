@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import { CATEGORY_IDS } from '../shared/constants';
 import type { Ack, Broadcast } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
@@ -130,14 +130,20 @@ export interface SettingsStore {
  * update the store after the worker accepts the write.
  */
 export function useSettingsStore(): SettingsStore {
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [lists, setLists] = useState<ListsConfig | null>(null);
-  const [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [settings, setSettings]: [Settings | null, Dispatch<StateUpdater<Settings | null>>] =
+    useState<Settings | null>(null);
+  const [lists, setLists]: [ListsConfig | null, Dispatch<StateUpdater<ListsConfig | null>>] =
+    useState<ListsConfig | null>(null);
+  const [snapshot, setSnapshot]: [
+    SessionSnapshot | null,
+    Dispatch<StateUpdater<SessionSnapshot | null>>,
+  ] = useState<SessionSnapshot | null>(null);
+  const [loadError, setLoadError]: [string | null, Dispatch<StateUpdater<string | null>>] =
+    useState<string | null>(null);
 
   useEffect((): (() => void) => {
     let alive: boolean = true;
-    const load = async (): Promise<void> => {
+    const load: () => Promise<void> = async (): Promise<void> => {
       try {
         const [loadedSettings, loadedLists, loadedSnapshot]: [unknown, unknown, SessionSnapshot] =
           await Promise.all([
@@ -159,7 +165,7 @@ export function useSettingsStore(): SettingsStore {
       }
     };
     void load();
-    const onBroadcast = (message: Broadcast): void => {
+    const onBroadcast: (message: Broadcast) => void = (message: Broadcast): void => {
       if (message.type === 'stateChanged') setSnapshot(message.snapshot);
     };
     chrome.runtime.onMessage.addListener(onBroadcast);
@@ -169,14 +175,18 @@ export function useSettingsStore(): SettingsStore {
     };
   }, []);
 
-  const saveSettings = async (next: Settings): Promise<string | null> => {
+  const saveSettings: (next: Settings) => Promise<string | null> = async (
+    next: Settings,
+  ): Promise<string | null> => {
     const ack: Ack = await sendRequest({ type: 'updateSettings', settings: next });
     if (!ack.ok) return ack.error;
     setSettings(next);
     return null;
   };
 
-  const saveLists = async (next: ListsConfig): Promise<string | null> => {
+  const saveLists: (next: ListsConfig) => Promise<string | null> = async (
+    next: ListsConfig,
+  ): Promise<string | null> => {
     const ack: Ack = await sendRequest({ type: 'updateLists', lists: next });
     if (!ack.ok) return ack.error;
     setLists(next);

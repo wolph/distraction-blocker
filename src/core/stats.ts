@@ -158,7 +158,7 @@ function capCounters<T extends AggCounters>(agg: T, topN: number): T {
   );
   const kept: Record<string, number> = {};
   let folded: number = 0;
-  for (let i = 0; i < entries.length; i++) {
+  for (let i: number = 0; i < entries.length; i++) {
     const entry: [string, number] | undefined = entries[i];
     if (entry === undefined) continue;
     if (i < topN) kept[entry[0]] = entry[1];
