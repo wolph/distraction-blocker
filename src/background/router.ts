@@ -1,5 +1,5 @@
 import type { Request } from '../shared/messages';
-import type { Verdict } from '../shared/types';
+import type { SoundSettings, Verdict } from '../shared/types';
 import { playSound } from './audio';
 import type { Engine } from './engine';
 import { fetchStats } from './stats-service';
@@ -60,7 +60,7 @@ export async function routeMessage(
     case 'previewSound': {
       // Previews ignore the per-event toggle: the options page needs to
       // demo a sound the user is about to enable.
-      const sounds = engine.getSettings().sounds;
+      const sounds: SoundSettings = engine.getSettings().sounds;
       await playSound(msg.sound, { ...sounds, [msg.sound]: true });
       return { ok: true };
     }
