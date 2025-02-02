@@ -3,6 +3,7 @@ import type { EnginePorts } from '../../../src/background/engine';
 import { main } from '../../../src/background/main';
 import { routeMessage } from '../../../src/background/router';
 import { handleSyncChanges } from '../../../src/background/storage-sync';
+import { SYNC_QUOTA_BYTES_TOTAL, syncItemBytes } from '../../../src/background/sync-quota';
 import type { SyncJournal } from '../../../src/background/sync-writer';
 import { ALL_CATEGORIES } from '../../../src/core/categories';
 import {
@@ -244,16 +245,32 @@ function stubChrome(): void {
       sync: {
         get: vi
           .fn()
-          .mockImplementation(async (keys: string | string[]): Promise<Record<string, unknown>> => {
-            const requested: string[] = Array.isArray(keys) ? keys : [keys];
-            return Object.fromEntries(
-              requested
-                .filter((key: string): boolean => Object.hasOwn(mocks.scenario.storedSync, key))
-                .map((key: string): [string, unknown] => [key, mocks.scenario.storedSync[key]]),
-            );
-          }),
-        remove: vi.fn().mockResolvedValue(undefined),
-        set: vi.fn().mockResolvedValue(undefined),
+          .mockImplementation(
+            async (keys: string | string[] | null): Promise<Record<string, unknown>> => {
+              if (keys === null) return structuredClone(mocks.scenario.storedSync);
+              const requested: string[] = Array.isArray(keys) ? keys : [keys];
+              return Object.fromEntries(
+                requested
+                  .filter((key: string): boolean => Object.hasOwn(mocks.scenario.storedSync, key))
+                  .map((key: string): [string, unknown] => [key, mocks.scenario.storedSync[key]]),
+              );
+            },
+          ),
+        getBytesInUse: vi.fn(
+          async (): Promise<number> =>
+            Object.entries(mocks.scenario.storedSync).reduce(
+              (total: number, [key, value]: [string, unknown]): number =>
+                total + syncItemBytes(key, value),
+              0,
+            ),
+        ),
+        remove: vi.fn(async (keys: string | string[]): Promise<void> => {
+          const requested: string[] = typeof keys === 'string' ? [keys] : keys;
+          for (const key of requested) delete mocks.scenario.storedSync[key];
+        }),
+        set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+          Object.assign(mocks.scenario.storedSync, structuredClone(items));
+        }),
       },
     },
     tabs: {
@@ -605,6 +622,44 @@ describe('background pending lists tracking', () => {
 });
 
 describe('background boot state convergence', () => {
+  it('compacts oldest monthly history before a journal replay would exceed total quota', async () => {
+    const evictedMonthKey: string = 'aggm:old-device:2024-01';
+    const pendingSettings: Settings = { ...DEFAULT_SETTINGS, retentionDays: 14 };
+    const storedSync: Record<string, unknown> = {
+      [evictedMonthKey]: 'm'.repeat(4_000),
+    };
+    for (let index: number = 0; index < 12; index++) {
+      storedSync[`agg:old-device:2026-08-${String(index + 1).padStart(2, '0')}`] = 'd'.repeat(
+        7_600,
+      );
+    }
+    const bytesBeforePadding: number = Object.entries(storedSync).reduce(
+      (total: number, [key, value]: [string, unknown]): number => total + syncItemBytes(key, value),
+      0,
+    );
+    const paddingKey: string = 'plugin:padding';
+    const incomingBytes: number = syncItemBytes(SYNC_SETTINGS, pendingSettings);
+    const paddingLength: number =
+      SYNC_QUOTA_BYTES_TOTAL -
+      Math.floor(incomingBytes / 2) -
+      bytesBeforePadding -
+      syncItemBytes(paddingKey, '');
+    storedSync[paddingKey] = 'p'.repeat(paddingLength);
+    mocks.scenario = {
+      journal: { sets: { [SYNC_SETTINGS]: pendingSettings }, removes: [] },
+      storedSync,
+    };
+
+    await finishBoot();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(chrome.storage.sync.remove).toHaveBeenCalledWith([evictedMonthKey]);
+    expect(vi.mocked(chrome.storage.sync.remove).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(chrome.storage.sync.set).mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith({ [SYNC_SETTINGS]: pendingSettings });
+  });
+
   it('replaces malformed pending settings with valid sync state before boot and flush', async () => {
     const synced: Settings = {
       ...DEFAULT_SETTINGS,

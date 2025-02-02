@@ -12,6 +12,7 @@ import { localDateStr, localMonthStr } from '../shared/time';
 import type { DailyAgg, EventRecord, MonthlyAgg, StreakState } from '../shared/types';
 import { getDeviceId, parseStreak, readEvents } from './stores';
 import { chooseNewerStreak } from './streak-sync';
+import { removeSyncItems, setSyncItemsWithinQuota } from './sync-quota';
 
 const DAY_MS: number = 86_400_000;
 const DAILY_KEY_RE: RegExp = /^agg:[^:]+:(\d{4}-\d{2}-\d{2})$/;
@@ -234,20 +235,20 @@ export async function applyPrunePlan(deviceId: string, plan: PrunePlan): Promise
   const stored: unknown = (await chrome.storage.sync.get(checkpointKey))[checkpointKey];
   const checkpoint: PruneCheckpoint | null = pruneCheckpoint(stored);
   if (checkpoint !== null) {
-    if (checkpoint.remove.length > 0) await chrome.storage.sync.remove(checkpoint.remove);
-    await chrome.storage.sync.remove(checkpointKey);
+    if (checkpoint.remove.length > 0) await removeSyncItems(checkpoint.remove);
+    await removeSyncItems([checkpointKey]);
     return;
   }
   if (plan.remove.length === 0) {
-    if (Object.keys(plan.set).length > 0) await chrome.storage.sync.set(plan.set);
+    if (Object.keys(plan.set).length > 0) await setSyncItemsWithinQuota(plan.set);
     return;
   }
-  await chrome.storage.sync.set({
+  await setSyncItemsWithinQuota({
     ...plan.set,
     [checkpointKey]: { remove: plan.remove } satisfies PruneCheckpoint,
   });
-  await chrome.storage.sync.remove(plan.remove);
-  await chrome.storage.sync.remove(checkpointKey);
+  await removeSyncItems(plan.remove);
+  await removeSyncItems([checkpointKey]);
 }
 
 function pruneCheckpoint(value: unknown): PruneCheckpoint | null {

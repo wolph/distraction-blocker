@@ -6,6 +6,7 @@ import {
   type RolloverPlan,
 } from '../../../src/background/rollover';
 import { applyPrunePlan, buildStats, pruneAndRollup } from '../../../src/background/stats-service';
+import { SYNC_QUOTA_BYTES_TOTAL, syncItemBytes } from '../../../src/background/sync-quota';
 import type { StatsBundle } from '../../../src/shared/messages';
 import { SYNC_STREAK, syncAggKey } from '../../../src/shared/storage-keys';
 import { localDateStr } from '../../../src/shared/time';
@@ -481,8 +482,19 @@ describe('applyPrunePlan', () => {
       [oldKey]: daily('2026-05-01', { focusMs: 5 }),
       [monthKey]: monthly('2026-05', { focusMs: 10 }),
     };
-    const sync = {
-      get: vi.fn(async (key: string): Promise<Record<string, unknown>> => ({ [key]: state[key] })),
+    const sync: Record<string, unknown> = {
+      get: vi.fn(
+        async (key: string | null): Promise<Record<string, unknown>> =>
+          key === null ? structuredClone(state) : { [key]: state[key] },
+      ),
+      getBytesInUse: vi.fn(
+        async (): Promise<number> =>
+          Object.entries(state).reduce(
+            (total: number, [key, value]: [string, unknown]): number =>
+              total + syncItemBytes(key, value),
+            0,
+          ),
+      ),
       set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
         Object.assign(state, items);
       }),
@@ -504,5 +516,75 @@ describe('applyPrunePlan', () => {
     expect(Object.keys(state).filter((key: string): boolean => key.startsWith('prune:'))).toEqual(
       [],
     );
+  });
+
+  it('compacts oldest monthly history before the prune checkpoint would exceed total quota', async () => {
+    const oldKey: string = 'agg:devA:2026-05-01';
+    const monthKey: string = 'aggm:devA:2026-05';
+    const evictedMonthKey: string = 'aggm:devB:2024-01';
+    const state: Record<string, unknown> = {
+      [oldKey]: daily('2026-05-01', { focusMs: 5 }),
+      [evictedMonthKey]: 'm'.repeat(4_000),
+    };
+    for (let index: number = 0; index < 12; index++) {
+      state[`agg:devB:2026-08-${String(index + 1).padStart(2, '0')}`] = 'd'.repeat(7_600);
+    }
+    const bytesBeforePadding: number = Object.entries(state).reduce(
+      (total: number, [key, value]: [string, unknown]): number => total + syncItemBytes(key, value),
+      0,
+    );
+    const paddingKey: string = 'settings';
+    const paddingLength: number =
+      SYNC_QUOTA_BYTES_TOTAL - 100 - bytesBeforePadding - syncItemBytes(paddingKey, '');
+    state[paddingKey] = 'p'.repeat(paddingLength);
+    const trace: string[] = [];
+    const sync: Record<string, unknown> = {
+      get: vi.fn(async (keys: string | string[] | null): Promise<Record<string, unknown>> => {
+        if (keys === null) return structuredClone(state);
+        const requested: string[] = typeof keys === 'string' ? [keys] : keys;
+        return Object.fromEntries(
+          requested
+            .filter((key: string): boolean => Object.hasOwn(state, key))
+            .map((key: string): [string, unknown] => [key, structuredClone(state[key])]),
+        );
+      }),
+      getBytesInUse: vi.fn(
+        async (): Promise<number> =>
+          Object.entries(state).reduce(
+            (total: number, [key, value]: [string, unknown]): number =>
+              total + syncItemBytes(key, value),
+            0,
+          ),
+      ),
+      set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+        const projected: Record<string, unknown> = { ...state, ...structuredClone(items) };
+        const projectedBytes: number = Object.entries(projected).reduce(
+          (total: number, [key, value]: [string, unknown]): number =>
+            total + syncItemBytes(key, value),
+          0,
+        );
+        if (projectedBytes > SYNC_QUOTA_BYTES_TOTAL) throw new Error('QUOTA_BYTES exceeded');
+        trace.push(`set:${Object.keys(items).sort().join(',')}`);
+        Object.assign(state, structuredClone(items));
+      }),
+      remove: vi.fn(async (keys: string | string[]): Promise<void> => {
+        const requested: string[] = typeof keys === 'string' ? [keys] : keys;
+        trace.push(`remove:${requested.join(',')}`);
+        for (const key of requested) delete state[key];
+      }),
+    };
+    vi.stubGlobal('chrome', { storage: { sync } });
+    const plan: ReturnType<typeof pruneAndRollup> = pruneAndRollup('devA', state, 90, NOW);
+
+    await applyPrunePlan('devA', plan);
+
+    expect(trace).toEqual([
+      `remove:${evictedMonthKey}`,
+      `set:${monthKey},prune:devA`,
+      `remove:${oldKey}`,
+      'remove:prune:devA',
+    ]);
+    expect(state[monthKey]).toMatchObject({ focusMs: 5 });
+    expect(state[oldKey]).toBeUndefined();
   });
 });

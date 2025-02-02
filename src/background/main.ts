@@ -47,7 +47,12 @@ import {
   saveSyncJournal,
 } from './stores';
 import { chooseNewerStreak, rebaseStreakForDate, streaksEqual } from './streak-sync';
-import { type SanitizedSyncJournal, sanitizeSyncJournal } from './sync-quota';
+import {
+  removeSyncItems,
+  type SanitizedSyncJournal,
+  sanitizeSyncJournal,
+  setSyncItemsWithinQuota,
+} from './sync-quota';
 import { SyncEchoes, type SyncJournal, SyncWriter } from './sync-writer';
 import {
   applyBlockingFactory,
@@ -228,9 +233,9 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
           syncEchoes.remember(key, value);
         }
       }
-      await chrome.storage.sync.set(items);
+      await setSyncItemsWithinQuota(items);
     },
-    (keys: string[]): Promise<void> => chrome.storage.sync.remove(keys),
+    (keys: string[]): Promise<void> => removeSyncItems(keys),
     { initial: initialJournal, persist: saveSyncJournal },
   );
   syncWriterInstance = syncWriter;
