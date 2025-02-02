@@ -397,7 +397,7 @@ export class Engine {
 
   async recordAttempt(url: string, tabId: number, kind: 'navigation' | 'existing'): Promise<void> {
     const now: number = this.ports.now();
-    const key = `${tabId}:${url}`;
+    const key: string = `${tabId}:${url}`;
     const last: number | undefined = this.runtime.attemptDebounce[key];
     const persistenceFailed: boolean = this.failedAttemptPersistence.delete(key);
     const retryFailedPersistence: boolean =
@@ -827,7 +827,10 @@ export class Engine {
 
   private rebaseDateBackward(today: string, now: number): void {
     const futureDate: string = this.runtime.date;
-    const plan = planBackwardDateRebase(today, this.runtime.todayAgg ?? emptyDaily(futureDate));
+    const plan: ReturnType<typeof planBackwardDateRebase> = planBackwardDateRebase(
+      today,
+      this.runtime.todayAgg ?? emptyDaily(futureDate),
+    );
     this.ports.removeSync(syncAggKey(this.deviceId, futureDate));
     this.ports.queueSync(
       clockRebaseArchiveKey(this.deviceId, futureDate, now, this.ports.newId()),
@@ -851,7 +854,7 @@ export class Engine {
   private settleSession(now: number): void {
     const session: SessionState | null = this.runtime.session;
     if (session === null) return;
-    const { next, events } = advance(session, now);
+    const { next, events }: ReturnType<typeof advance> = advance(session, now);
     const completed: MachineEvent | undefined = events.find(
       (e: MachineEvent): boolean => e.type === 'completed',
     );

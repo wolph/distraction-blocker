@@ -7,7 +7,7 @@ import {
 } from '../core/matcher';
 import { parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { emptyStreak } from '../core/streak';
-import type { Request } from '../shared/messages';
+import type { Request, SoundId } from '../shared/messages';
 import { SYNC_BANK, SYNC_LISTS, SYNC_SETTINGS, SYNC_STREAK } from '../shared/storage-keys';
 import { localDateStr, localMonthStr } from '../shared/time';
 import type {
@@ -42,6 +42,7 @@ import {
   parseLiveLists,
   parseLiveSettings,
   parseStreak,
+  type RuntimeState,
   saveMatcherCache,
   saveRuntime,
   saveSyncJournal,
@@ -170,16 +171,23 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
   const sanitized: SanitizedSyncJournal = sanitizeSyncJournal(rawJournal);
   const journal: SyncJournal = validatedPendingJournal(sanitized.journal, storedSync, now);
   if (sanitized.rejected.length > 0) await saveSyncJournal(journal);
-  const [settings, lists, bank, syncedStreak, runtime, rawMatcherCache, deviceId] =
-    await Promise.all([
-      loadSettings(journal),
-      loadLists(journal),
-      loadBank(journal),
-      loadStreak(),
-      loadRuntime(now),
-      loadMatcherCache(),
-      getDeviceId(),
-    ]);
+  const [settings, lists, bank, syncedStreak, runtime, rawMatcherCache, deviceId]: [
+    Settings,
+    ListsConfig,
+    BankState,
+    StreakState | null,
+    RuntimeState,
+    unknown,
+    string,
+  ] = await Promise.all([
+    loadSettings(journal),
+    loadLists(journal),
+    loadBank(journal),
+    loadStreak(),
+    loadRuntime(now),
+    loadMatcherCache(),
+    getDeviceId(),
+  ]);
   let matchers: CompiledMatcherSet | null = restoreMatcherCache(
     rawMatcherCache,
     lists,
@@ -269,7 +277,7 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
       });
     },
     applyBlocking: applyBlockingFactory(currentEngine),
-    playSound: (sound): void => {
+    playSound: (sound: SoundId): void => {
       void playSound(sound, currentEngine().getSettings().sounds);
     },
     notify,

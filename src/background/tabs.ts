@@ -149,12 +149,13 @@ export function invalidateRemovedTab(tabId: number): Promise<void> {
   if (
     inherited !== undefined &&
     !claims.some(
-      (claim): boolean => claim.engine === inherited.engine && claim.url === inherited.url,
+      (claim: RemovedTabClaim): boolean =>
+        claim.engine === inherited.engine && claim.url === inherited.url,
     )
   ) {
     claims.push(inherited);
   }
-  const cleanups: Promise<void>[] = claims.map((claim): Promise<void> => {
+  const cleanups: Promise<void>[] = claims.map((claim: RemovedTabClaim): Promise<void> => {
     const cleanup: Promise<void> = releaseRemovedTabClaim(tabId, claim);
     if (continuation?.engine === claim.engine && continuation.ownedUrl === claim.url) {
       continuation.cleanupPromise = cleanup;
@@ -228,9 +229,9 @@ async function applyTabEffectsNow(
   verdict: Verdict,
   beforeEffects: () => void = (): void => undefined,
   shouldContinue: () => boolean = (): boolean => true,
-  validateDocument = false,
+  validateDocument: boolean = false,
 ): Promise<void> {
-  const { url, mutedNow, mutedByExtension, documentId } = input;
+  const { url, mutedNow, mutedByExtension, documentId }: TabApplyInput = input;
   if (!(await tabStillAt(tabId, url)) || !shouldContinue()) return;
   if (validateDocument && documentId !== null) {
     const liveDocumentId: string | null = await getDocumentId(tabId);
@@ -317,20 +318,25 @@ async function queueResolvedTabApply(
     const preparation: {
       input: TabApplyInput;
       persistence: Promise<void> | null;
-    } | null = await enqueueTabTask(tabId, async (taskVersion: number) => {
-      if (!operationIsCurrent()) return null;
-      await cancelMuteContinuation(tabId);
-      const input: TabApplyInput | null = await resolveInput(taskVersion);
-      if (input === null || !operationIsCurrent()) return null;
-      if (options.requireCurrentTask && tabTaskVersions.get(tabId) !== taskVersion) return null;
-      const verdict: Verdict = engine.verdictFor(input.url);
-      if (!verdict.blocked || recordedAttemptUrl === input.url) {
-        return { input, persistence: null };
-      }
-      const persistence: Promise<void> = engine.recordAttempt(input.url, tabId, attemptKind);
-      void persistence.catch((): void => undefined);
-      return { input, persistence };
-    });
+    } | null = await enqueueTabTask(
+      tabId,
+      async (
+        taskVersion: number,
+      ): Promise<{ input: TabApplyInput; persistence: Promise<void> | null } | null> => {
+        if (!operationIsCurrent()) return null;
+        await cancelMuteContinuation(tabId);
+        const input: TabApplyInput | null = await resolveInput(taskVersion);
+        if (input === null || !operationIsCurrent()) return null;
+        if (options.requireCurrentTask && tabTaskVersions.get(tabId) !== taskVersion) return null;
+        const verdict: Verdict = engine.verdictFor(input.url);
+        if (!verdict.blocked || recordedAttemptUrl === input.url) {
+          return { input, persistence: null };
+        }
+        const persistence: Promise<void> = engine.recordAttempt(input.url, tabId, attemptKind);
+        void persistence.catch((): void => undefined);
+        return { input, persistence };
+      },
+    );
     if (preparation === null) return;
     if (preparation.persistence !== null) {
       await preparation.persistence;
@@ -377,7 +383,7 @@ function queueTabApply(
   url: string,
   mutedNow: boolean,
   attemptKind: 'navigation' | 'existing' = 'existing',
-  mutedByExtension = false,
+  mutedByExtension: boolean = false,
   documentId: string | null = null,
   operationVersion: number = beginTabOperation(tabId, url),
 ): Promise<void> {
@@ -401,7 +407,7 @@ export function applyToTab(
   url: string,
   mutedNow: boolean,
   attemptKind: 'navigation' | 'existing' = 'existing',
-  mutedByExtension = false,
+  mutedByExtension: boolean = false,
   documentId: string | null = null,
 ): Promise<void> {
   const releaseOperationLease: () => void = acquireTabOperationLease(tabId);
@@ -1014,7 +1020,7 @@ export function applyBlockingFactory(engine: () => Engine): () => Promise<void> 
       };
       e.reconcileTabs(new Map(), protectedTabIds());
 
-      const applyTasks: Promise<void>[] = queriedTabIds.map((tabId): Promise<void> => {
+      const applyTasks: Promise<void>[] = queriedTabIds.map((tabId: number): Promise<void> => {
         const releaseOperationLease: () => void = acquireTabOperationLease(tabId);
         try {
           return queueResolvedTabApply(
@@ -1131,9 +1137,13 @@ export function registerTabListeners(
       .finally(releaseOperationLease);
   };
 
-  chrome.webNavigation.onCommitted.addListener((details): void => onNav(details, 'navigation'));
-  chrome.webNavigation.onHistoryStateUpdated.addListener((details): void =>
-    onNav(details, 'existing'),
+  chrome.webNavigation.onCommitted.addListener(
+    (details: chrome.webNavigation.WebNavigationTransitionCallbackDetails): void =>
+      onNav(details, 'navigation'),
+  );
+  chrome.webNavigation.onHistoryStateUpdated.addListener(
+    (details: chrome.webNavigation.WebNavigationTransitionCallbackDetails): void =>
+      onNav(details, 'existing'),
   );
 }
 

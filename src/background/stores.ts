@@ -278,7 +278,7 @@ function isUnitNumber(value: unknown): value is number {
 
 function parsePresets(value: unknown): [number, number, number] | null {
   if (!Array.isArray(value) || value.length !== 3) return null;
-  const [first, second, third] = value;
+  const [first, second, third]: unknown[] = value;
   if (!isNonNegativeNumber(first) || !isNonNegativeNumber(second) || !isNonNegativeNumber(third)) {
     return null;
   }
@@ -484,7 +484,7 @@ export function parseStreak(value: unknown): StreakState | null {
   ) {
     return null;
   }
-  const [yearText, monthText] = value.activeMonth.split('-');
+  const [yearText, monthText]: string[] = value.activeMonth.split('-');
   const daysInMonth: number = new Date(Number(yearText), Number(monthText), 0).getDate();
   const activeDays: number[] = [];
   const seen: Set<number> = new Set();
@@ -548,7 +548,9 @@ function parsePausedFrom(value: unknown): { phase: 'focus' | 'break'; phaseEndsA
 function parseSession(value: unknown): SessionState | null {
   if (!isRecord(value)) return null;
   const config: SessionConfig | null = parseSessionConfig(value.config);
-  const pausedFrom = parsePausedFrom(value.pausedFrom);
+  const pausedFrom: { phase: 'focus' | 'break'; phaseEndsAt: number } | null = parsePausedFrom(
+    value.pausedFrom,
+  );
   if (
     config === null ||
     (value.sessionId !== undefined && !isNonBlankString(value.sessionId)) ||
