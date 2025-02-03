@@ -180,11 +180,8 @@ describe('parseRequest', (): void => {
 
   it.each([
     { focusMin: -1 },
-    { focusMin: 1.5 },
     { shortBreakMin: Number.NaN },
-    { shortBreakMin: 0.5 },
     { longBreakMin: Number.POSITIVE_INFINITY },
-    { longBreakMin: 1.25 },
     { longEvery: 0 },
     { longEvery: 1.5 },
     { extra: true },
@@ -197,6 +194,23 @@ describe('parseRequest', (): void => {
       cycling,
     });
     expect(parseRequest(request)).toBeNull();
+  });
+
+  it('accepts positive fractional cycle durations', (): void => {
+    const config: SessionConfig = {
+      ...SESSION_CONFIG,
+      cycling: {
+        focusMin: 0.25,
+        shortBreakMin: 0.05,
+        longBreakMin: 1.25,
+        longEvery: 4,
+      },
+    };
+
+    expect(parseRequest({ type: 'startSession', config })).toEqual({
+      type: 'startSession',
+      config,
+    });
   });
 
   it.each([

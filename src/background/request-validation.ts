@@ -128,11 +128,8 @@ function isCycleConfig(value: unknown): value is CycleConfig {
     return false;
   }
   return (
-    isPositiveInteger(value.focusMin) &&
     isRelativeMinuteDuration(value.focusMin) &&
-    isPositiveInteger(value.shortBreakMin) &&
     isRelativeMinuteDuration(value.shortBreakMin) &&
-    isPositiveInteger(value.longBreakMin) &&
     isRelativeMinuteDuration(value.longBreakMin) &&
     isPositiveInteger(value.longEvery)
   );
