@@ -53,16 +53,12 @@ function queueSyncMutation<T>(mutation: () => Promise<T>): Promise<T> {
   return requested;
 }
 
-function monthlyQuotaCandidates(
-  stored: Record<string, unknown>,
-  incomingKeys: ReadonlySet<string>,
-): MonthlyQuotaCandidate[] {
+function monthlyQuotaCandidates(projected: Record<string, unknown>): MonthlyQuotaCandidate[] {
   const candidates: MonthlyQuotaCandidate[] = [];
-  const entries: Array<[string, unknown]> = Object.entries(stored);
+  const entries: Array<[string, unknown]> = Object.entries(projected);
   for (let index: number = 0; index < entries.length; index++) {
     const entry: [string, unknown] = entries[index] as [string, unknown];
     const key: string = entry[0];
-    if (incomingKeys.has(key)) continue;
     const month: string | undefined = MONTHLY_AGG_KEY_RE.exec(key)?.[1];
     if (month === undefined) continue;
     candidates.push({ bytes: syncItemBytes(key, entry[1]), key, month });
@@ -117,16 +113,16 @@ async function performQuotaCheckedSet(
     return;
   }
 
-  const incomingKeys: Set<string> = new Set(
-    incomingEntries.map(([key]: [string, unknown]): string => key),
-  );
-  const candidates: MonthlyQuotaCandidate[] = monthlyQuotaCandidates(stored, incomingKeys);
+  const projected: Record<string, unknown> = { ...stored, ...items };
+  const candidates: MonthlyQuotaCandidate[] = monthlyQuotaCandidates(projected);
   const evictions: string[] = [];
+  const compactedKeys: Set<string> = new Set();
   let compactedBytes: number = projectedBytes;
   for (let index: number = 0; index < candidates.length; index++) {
     const candidate: MonthlyQuotaCandidate = candidates[index] as MonthlyQuotaCandidate;
     if (compactedBytes <= SYNC_QUOTA_BYTES_TOTAL) break;
-    evictions.push(candidate.key);
+    compactedKeys.add(candidate.key);
+    if (Object.hasOwn(stored, candidate.key)) evictions.push(candidate.key);
     compactedBytes -= candidate.bytes;
   }
   if (compactedBytes > SYNC_QUOTA_BYTES_TOTAL) {
@@ -134,8 +130,11 @@ async function performQuotaCheckedSet(
       `Cannot sync batch: ${projectedBytes} bytes exceeds the ${SYNC_QUOTA_BYTES_TOTAL}-byte limit and cannot fit after compacting all monthly history.`,
     );
   }
-  await storage.remove(evictions);
-  await storage.set(items);
+  const retainedEntries: Array<[string, unknown]> = incomingEntries.filter(
+    ([key]: [string, unknown]): boolean => !compactedKeys.has(key),
+  );
+  if (evictions.length > 0) await storage.remove(evictions);
+  if (retainedEntries.length > 0) await storage.set(Object.fromEntries(retainedEntries));
 }
 
 /**

@@ -193,6 +193,33 @@ describe('sync total quota', () => {
     expect(fake.state['aggm:dev-c:2025-01']).toBe('b'.repeat(1_900));
   });
 
+  it('omits an incoming month older than stored history when quota requires compaction', async () => {
+    const initial: Record<string, unknown> = nearQuotaState();
+    const fake: FakeSyncStorage = fakeSyncStorage(initial);
+
+    await setSyncItemsWithinQuota({ 'aggm:dev-b:2024-12': 'o'.repeat(4_000) }, fake.area);
+
+    expect(fake.trace).toEqual([]);
+    expect(fake.state).toEqual(initial);
+  });
+
+  it('removes an incoming replacement when it is the oldest projected month', async () => {
+    const initial: Record<string, unknown> = nearQuotaState();
+    const fake: FakeSyncStorage = fakeSyncStorage(initial);
+
+    await setSyncItemsWithinQuota(
+      {
+        'aggm:dev-a:2025-01': 'r'.repeat(8_000),
+        settings: 's'.repeat(2_000),
+      },
+      fake.area,
+    );
+
+    expect(fake.trace).toEqual(['remove:aggm:dev-a:2025-01', 'set:settings']);
+    expect(fake.state['aggm:dev-a:2025-01']).toBeUndefined();
+    expect(fake.state.settings).toBe('s'.repeat(2_000));
+  });
+
   it('charges replacements only for their net increase', async () => {
     const initial: Record<string, unknown> = nearQuotaState(1_900);
     initial.settings = 's'.repeat(3_900);
