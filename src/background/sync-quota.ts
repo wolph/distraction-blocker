@@ -15,7 +15,12 @@ export class SyncQuotaError extends Error {
 function serializeSyncValue(key: string, value: unknown): string {
   try {
     const serialized: string | undefined = JSON.stringify(value);
-    if (serialized !== undefined) return serialized;
+    if (serialized !== undefined) {
+      return serialized
+        .replaceAll('<', '\\u003C')
+        .replaceAll('\u2028', '\\u2028')
+        .replaceAll('\u2029', '\\u2029');
+    }
   } catch (_error: unknown) {
     // Normalize JSON.stringify failures into one stable boundary error.
   }

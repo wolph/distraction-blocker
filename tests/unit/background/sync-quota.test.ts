@@ -15,9 +15,24 @@ interface FakeSyncStorage {
   trace: string[];
 }
 
+function chromiumSerializedValue(value: unknown): string {
+  const serialized: string | undefined = JSON.stringify(value);
+  if (serialized === undefined) throw new Error('Value is not JSON serializable');
+  return serialized
+    .replaceAll('<', '\\u003C')
+    .replaceAll('\u2028', '\\u2028')
+    .replaceAll('\u2029', '\\u2029');
+}
+
+function chromiumItemBytes(key: string, value: unknown): number {
+  const encoder: TextEncoder = new TextEncoder();
+  return encoder.encode(key).byteLength + encoder.encode(chromiumSerializedValue(value)).byteLength;
+}
+
 function storageBytes(items: Record<string, unknown>): number {
   return Object.entries(items).reduce(
-    (total: number, [key, value]: [string, unknown]): number => total + syncItemBytes(key, value),
+    (total: number, [key, value]: [string, unknown]): number =>
+      total + chromiumItemBytes(key, value),
     0,
   );
 }
@@ -46,7 +61,7 @@ function fakeSyncStorage(initial: Record<string, unknown>): FakeSyncStorage {
       const requested: string[] = typeof keys === 'string' ? [keys] : keys;
       return requested.reduce(
         (total: number, key: string): number =>
-          total + (Object.hasOwn(state, key) ? syncItemBytes(key, state[key]) : 0),
+          total + (Object.hasOwn(state, key) ? chromiumItemBytes(key, state[key]) : 0),
         0,
       );
     }) as unknown as chrome.storage.StorageArea['getBytesInUse'],
@@ -59,7 +74,10 @@ function fakeSyncStorage(initial: Record<string, unknown>): FakeSyncStorage {
     remove: vi.fn(async (keys: string | string[]): Promise<void> => {
       const requested: string[] = typeof keys === 'string' ? [keys] : keys;
       trace.push(`remove:${requested.join(',')}`);
-      for (const key of requested) delete state[key];
+      for (let index: number = 0; index < requested.length; index++) {
+        const key: string = requested[index] as string;
+        delete state[key];
+      }
     }) as chrome.storage.StorageArea['remove'],
     clear: vi.fn() as chrome.storage.StorageArea['clear'],
     setAccessLevel: vi.fn() as chrome.storage.StorageArea['setAccessLevel'],
@@ -100,6 +118,28 @@ describe('sync item quota', () => {
 
   it('counts UTF-8 bytes for multibyte keys and values', () => {
     expect(syncItemBytes('é', '🙂')).toBe(8);
+  });
+
+  it('matches Chromium escaping for less-than signs', () => {
+    expect(syncItemBytes('k', '<')).toBe(9);
+  });
+
+  it('matches Chromium escaping for Unicode line and paragraph separators', () => {
+    expect(syncItemBytes('k', '\u2028')).toBe(9);
+    expect(syncItemBytes('k', '\u2029')).toBe(9);
+  });
+
+  it('does not double-escape existing backslash escape sequences', () => {
+    expect(syncItemBytes('k', String.raw`\u003C`)).toBe(10);
+    expect(syncItemBytes('k', String.raw`\u2028`)).toBe(10);
+    expect(syncItemBytes('k', String.raw`\u2029`)).toBe(10);
+  });
+
+  it('rejects an escaped value that crosses the per-item limit', () => {
+    const value: string = `${'a'.repeat(8_184)}<`;
+
+    expect(syncItemBytes('k', value)).toBe(8_193);
+    expect((): void => assertSyncItemWithinQuota('k', value)).toThrow();
   });
 
   it('allows a value exactly at the byte limit', () => {
@@ -169,6 +209,27 @@ describe('sync total quota', () => {
     expect(fake.trace).toEqual(['set:bank']);
     expect(fake.state.bank).toEqual({ balanceMs: 1 });
     expect(fake.area.getBytesInUse).toHaveBeenCalledWith(null);
+  });
+
+  it('matches fake Chrome byte accounting for escaped values', async () => {
+    const value: string = `<\u2028\u2029${String.raw`\u003C`}`;
+    const fake: FakeSyncStorage = fakeSyncStorage({ escaped: value });
+
+    await expect(fake.area.getBytesInUse('escaped')).resolves.toBe(syncItemBytes('escaped', value));
+  });
+
+  it('evicts monthly history when Chromium escaping crosses the total limit', async () => {
+    const monthlyKey: string = 'aggm:dev-a:2025-01';
+    const initial: Record<string, unknown> = nearQuotaState(1);
+    initial.fillerA = 'f'.repeat(8_000);
+    initial.fillerB = 'f'.repeat(602);
+    const fake: FakeSyncStorage = fakeSyncStorage(initial);
+
+    await setSyncItemsWithinQuota({ settings: '<' }, fake.area);
+
+    expect(fake.trace).toEqual([`remove:${monthlyKey}`, 'set:settings']);
+    expect(fake.state[monthlyKey]).toBeUndefined();
+    expect(fake.state.settings).toBe('<');
   });
 
   it('evicts oldest monthly history before a write would exceed the total quota', async () => {
