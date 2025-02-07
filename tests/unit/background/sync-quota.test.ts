@@ -15,10 +15,52 @@ interface FakeSyncStorage {
   trace: string[];
 }
 
+function chromiumNumberTokens(serialized: string): string {
+  let output: string = '';
+  let index: number = 0;
+  let inString: boolean = false;
+  while (index < serialized.length) {
+    const character: string = serialized[index] as string;
+    if (inString && character === '\\') {
+      output += serialized.slice(index, index + 2);
+      index += 2;
+      continue;
+    }
+    if (character === '"') {
+      inString = !inString;
+      output += character;
+      index += 1;
+      continue;
+    }
+    const isNumberStart: boolean =
+      !inString && (character === '-' || (character >= '0' && character <= '9'));
+    if (!isNumberStart) {
+      output += character;
+      index += 1;
+      continue;
+    }
+    const match: RegExpMatchArray | null = serialized
+      .slice(index)
+      .match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/);
+    if (match === null) throw new Error('Invalid JSON number');
+    const token: string = match[0] as string;
+    const number: number = Number(token);
+    const needsDoubleSuffix: boolean =
+      Number.isInteger(number) &&
+      !token.includes('.') &&
+      !token.includes('e') &&
+      !token.includes('E') &&
+      (number < -2_147_483_648 || number > 2_147_483_647);
+    output += needsDoubleSuffix ? `${token}.0` : token;
+    index += token.length;
+  }
+  return output;
+}
+
 function chromiumSerializedValue(value: unknown): string {
   const serialized: string | undefined = JSON.stringify(value);
   if (serialized === undefined) throw new Error('Value is not JSON serializable');
-  return serialized
+  return chromiumNumberTokens(serialized)
     .replaceAll('<', '\\u003C')
     .replaceAll('\u2028', '\\u2028')
     .replaceAll('\u2029', '\\u2029');
@@ -135,6 +177,42 @@ describe('sync item quota', () => {
     expect(syncItemBytes('k', String.raw`\u2029`)).toBe(10);
   });
 
+  it('matches the live Chromium byte count for a non-Int32 integer', () => {
+    expect(syncItemBytes('large', 2_147_483_648)).toBe(17);
+  });
+
+  it('preserves signed Int32 boundaries and marks integers outside them as doubles', () => {
+    expect(syncItemBytes('k', 2_147_483_647)).toBe(11);
+    expect(syncItemBytes('k', 2_147_483_648)).toBe(13);
+    expect(syncItemBytes('k', -2_147_483_648)).toBe(12);
+    expect(syncItemBytes('k', -2_147_483_649)).toBe(14);
+  });
+
+  it('matches Chromium double serialization in nested arrays and objects', () => {
+    const value: Record<string, unknown> = {
+      values: [2_147_483_648, { '-2147483649': -2_147_483_649 }],
+    };
+    const chromiumJson: string = '{"values":[2147483648.0,{"-2147483649":-2147483649.0}]}';
+    const encoder: TextEncoder = new TextEncoder();
+    const expectedBytes: number =
+      encoder.encode('nested').byteLength + encoder.encode(chromiumJson).byteLength;
+
+    expect(syncItemBytes('nested', value)).toBe(expectedBytes);
+  });
+
+  it('rejects a nested non-Int32 integer when its double suffix crosses the item limit', () => {
+    const value: { large: number; padding: string } = {
+      large: 2_147_483_648,
+      padding: '',
+    };
+    const baseBytes: number = chromiumItemBytes('k', value);
+    value.padding = 'a'.repeat(SYNC_QUOTA_BYTES_PER_ITEM + 1 - baseBytes);
+
+    expect(chromiumItemBytes('k', value)).toBe(8_193);
+    expect(syncItemBytes('k', value)).toBe(8_193);
+    expect((): void => assertSyncItemWithinQuota('k', value)).toThrow();
+  });
+
   it('rejects an escaped value that crosses the per-item limit', () => {
     const value: string = `${'a'.repeat(8_184)}<`;
 
@@ -216,6 +294,29 @@ describe('sync total quota', () => {
     const fake: FakeSyncStorage = fakeSyncStorage({ escaped: value });
 
     await expect(fake.area.getBytesInUse('escaped')).resolves.toBe(syncItemBytes('escaped', value));
+  });
+
+  it('evicts monthly history when a nested double suffix crosses the total limit', async () => {
+    const monthlyKey: string = 'aggm:dev-a:2025-01';
+    const incoming: Record<string, unknown> = { large: 2_147_483_648 };
+    const initial: Record<string, unknown> = nearQuotaState(1);
+    initial.fillerA = 'f'.repeat(8_000);
+    const targetInitialBytes: number =
+      SYNC_QUOTA_BYTES_TOTAL - chromiumItemBytes('settings', incoming) + 1;
+    const fillerBLength: number =
+      targetInitialBytes - storageBytes(initial) - chromiumItemBytes('fillerB', '');
+    initial.fillerB = 'f'.repeat(fillerBLength);
+    const fake: FakeSyncStorage = fakeSyncStorage(initial);
+
+    expect(storageBytes(initial) + chromiumItemBytes('settings', incoming)).toBe(
+      SYNC_QUOTA_BYTES_TOTAL + 1,
+    );
+
+    await setSyncItemsWithinQuota({ settings: incoming }, fake.area);
+
+    expect(fake.trace).toEqual([`remove:${monthlyKey}`, 'set:settings']);
+    expect(fake.state[monthlyKey]).toBeUndefined();
+    expect(fake.state.settings).toEqual(incoming);
   });
 
   it('evicts monthly history when Chromium escaping crosses the total limit', async () => {

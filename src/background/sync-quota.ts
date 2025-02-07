@@ -12,11 +12,54 @@ export class SyncQuotaError extends Error {
   }
 }
 
+function serializeChromiumNumberTokens(serialized: string): string {
+  let output: string = '';
+  let index: number = 0;
+  let inString: boolean = false;
+  while (index < serialized.length) {
+    const character: string = serialized[index] as string;
+    if (inString && character === '\\') {
+      output += serialized.slice(index, index + 2);
+      index += 2;
+      continue;
+    }
+    if (character === '"') {
+      inString = !inString;
+      output += character;
+      index += 1;
+      continue;
+    }
+    const isNumberStart: boolean =
+      !inString && (character === '-' || (character >= '0' && character <= '9'));
+    if (!isNumberStart) {
+      output += character;
+      index += 1;
+      continue;
+    }
+    const match: RegExpMatchArray | null = serialized
+      .slice(index)
+      .match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/);
+    if (match === null) throw new SyncQuotaError('Cannot sync value: invalid JSON number.');
+    const token: string = match[0] as string;
+    const number: number = Number(token);
+    // V8 exposes exact integers outside Int32 to base::Value as doubles.
+    const needsDoubleSuffix: boolean =
+      Number.isInteger(number) &&
+      !token.includes('.') &&
+      !token.includes('e') &&
+      !token.includes('E') &&
+      (number < -2_147_483_648 || number > 2_147_483_647);
+    output += needsDoubleSuffix ? `${token}.0` : token;
+    index += token.length;
+  }
+  return output;
+}
+
 function serializeSyncValue(key: string, value: unknown): string {
   try {
     const serialized: string | undefined = JSON.stringify(value);
     if (serialized !== undefined) {
-      return serialized
+      return serializeChromiumNumberTokens(serialized)
         .replaceAll('<', '\\u003C')
         .replaceAll('\u2028', '\\u2028')
         .replaceAll('\u2029', '\\u2029');
