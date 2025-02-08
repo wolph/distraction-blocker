@@ -24,7 +24,7 @@ import {
   SYNC_SETTINGS,
   SYNC_STREAK,
 } from '../../../src/shared/storage-keys';
-import type { EventRecord, StreakState } from '../../../src/shared/types';
+import type { EventRecord, Settings, StreakState } from '../../../src/shared/types';
 
 afterEach((): void => {
   vi.unstubAllGlobals();
@@ -74,7 +74,7 @@ describe('matcher cache storage', () => {
 
 describe('storage default merging', () => {
   it('preserves nested settings defaults when stored objects are partial', () => {
-    const settings = mergeSettings({
+    const settings: Settings = mergeSettings({
       pause: { earnRatio: 0.25 },
       gate: { delayMs: 30_000 },
       sounds: { masterVolume: 0.2 },
@@ -83,6 +83,17 @@ describe('storage default merging', () => {
     expect(settings.pause).toEqual({ ...DEFAULT_SETTINGS.pause, earnRatio: 0.25 });
     expect(settings.gate).toEqual({ ...DEFAULT_SETTINGS.gate, delayMs: 30_000 });
     expect(settings.sounds).toEqual({ ...DEFAULT_SETTINGS.sounds, masterVolume: 0.2 });
+    expect(settings.streakFreezeIntervalDays).toBe(7);
+    expect(settings.sessionCompleteNotification).toBe(true);
+  });
+
+  it('migrates an unsafe freeze cadence to the seven-day default', () => {
+    const settings: Settings = mergeSettings({
+      ...DEFAULT_SETTINGS,
+      streakFreezeIntervalDays: Number.MAX_SAFE_INTEGER + 1,
+    });
+
+    expect(settings.streakFreezeIntervalDays).toBe(7);
   });
 
   it('loads pending journal values before their debounced sync flush', async () => {
@@ -178,6 +189,8 @@ describe('storage default merging', () => {
         },
         schedule: [validSchedule, { ...validSchedule, id: ' ', start: 'tomorrow' }],
         streakGoalMin: -1,
+        streakFreezeIntervalDays: 0,
+        sessionCompleteNotification: 'yes',
         retentionDays: 30,
         unknownField: 'discard me',
       },
@@ -235,6 +248,8 @@ describe('storage default merging', () => {
       },
       schedule: [validSchedule],
       streakGoalMin: DEFAULT_SETTINGS.streakGoalMin,
+      streakFreezeIntervalDays: 7,
+      sessionCompleteNotification: true,
       retentionDays: 30,
     });
     expect(settings).not.toHaveProperty('unknownField');

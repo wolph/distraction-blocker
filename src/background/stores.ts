@@ -137,6 +137,10 @@ export function mergeSettings(raw: unknown, base: Settings = DEFAULT_SETTINGS): 
     },
     badgeCountdown:
       typeof stored.badgeCountdown === 'boolean' ? stored.badgeCountdown : base.badgeCountdown,
+    sessionCompleteNotification:
+      typeof stored.sessionCompleteNotification === 'boolean'
+        ? stored.sessionCompleteNotification
+        : base.sessionCompleteNotification,
     sounds: {
       masterVolume: isUnitNumber(sounds.masterVolume)
         ? sounds.masterVolume
@@ -157,6 +161,10 @@ export function mergeSettings(raw: unknown, base: Settings = DEFAULT_SETTINGS): 
       ? parseSchedule(stored.schedule)
       : structuredClone(base.schedule),
     streakGoalMin: numberOrDefault(stored.streakGoalMin, base.streakGoalMin),
+    streakFreezeIntervalDays: positiveIntegerOrDefault(
+      stored.streakFreezeIntervalDays,
+      base.streakFreezeIntervalDays,
+    ),
     retentionDays: numberOrDefault(stored.retentionDays, base.retentionDays),
   };
 }
@@ -270,6 +278,10 @@ function isNonBlankString(value: unknown): value is string {
 
 function numberOrDefault(value: unknown, fallback: number): number {
   return isNonNegativeNumber(value) ? value : fallback;
+}
+
+function positiveIntegerOrDefault(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
 function isUnitNumber(value: unknown): value is number {

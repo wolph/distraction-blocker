@@ -281,9 +281,11 @@ function isSettings(value: unknown): value is Settings {
       'pause',
       'gate',
       'badgeCountdown',
+      'sessionCompleteNotification',
       'sounds',
       'schedule',
       'streakGoalMin',
+      'streakFreezeIntervalDays',
       'retentionDays',
     ])
   ) {
@@ -300,9 +302,11 @@ function isSettings(value: unknown): value is Settings {
     isPauseSettings(value.pause) &&
     isGateSettings(value.gate) &&
     typeof value.badgeCountdown === 'boolean' &&
+    typeof value.sessionCompleteNotification === 'boolean' &&
     isSoundSettings(value.sounds) &&
     isSchedule(value.schedule) &&
     isPositiveMinuteValue(value.streakGoalMin) &&
+    isSafeDayCount(value.streakFreezeIntervalDays) &&
     isSafeDayCount(value.retentionDays)
   );
 }

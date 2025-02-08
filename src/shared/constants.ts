@@ -24,6 +24,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   gate: { delayMs: 10_000, requireTypedPhrase: false },
   badgeCountdown: true,
+  sessionCompleteNotification: true,
   sounds: {
     masterVolume: 0.6,
     sessionComplete: true,
@@ -33,6 +34,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   schedule: [],
   streakGoalMin: 25,
+  streakFreezeIntervalDays: 7,
   retentionDays: 90,
 };
 

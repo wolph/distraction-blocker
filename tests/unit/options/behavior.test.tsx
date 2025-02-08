@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import { BehaviorDefaults, PauseEconomy } from '../../../src/options/Behavior';
 import { Data } from '../../../src/options/Data';
 import { SoundsBadge } from '../../../src/options/SoundsBadge';
@@ -23,9 +23,27 @@ afterEach((): void => {
 });
 
 describe('PauseEconomy', () => {
+  it('edits the freeze token interval in calendar days', (): void => {
+    const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
+    const settings: Settings = {
+      ...DEFAULT_SETTINGS,
+      streakFreezeIntervalDays: 7,
+    };
+    const { getByLabelText }: ReturnType<typeof render> = render(
+      <PauseEconomy settings={settings} onChange={onChange} />,
+    );
+
+    fireEvent.input(getByLabelText('Freeze token interval (days)'), {
+      target: { value: '10' },
+    });
+
+    const next: Settings = onChange.mock.calls[0]?.[0] as Settings;
+    expect(next.streakFreezeIntervalDays).toBe(10);
+  });
+
   it('maps the earn-rate input to earnRatio = value / 30', (): void => {
-    const onChange = vi.fn();
-    const { getByLabelText } = render(
+    const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
+    const { getByLabelText }: ReturnType<typeof render> = render(
       <PauseEconomy settings={DEFAULT_SETTINGS} onChange={onChange} />,
     );
     fireEvent.input(getByLabelText('Minutes of pause per 30 minutes of focus'), {
@@ -38,8 +56,8 @@ describe('PauseEconomy', () => {
   });
 
   it('ignores input that is not a non-negative number', (): void => {
-    const onChange = vi.fn();
-    const { getByLabelText } = render(
+    const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
+    const { getByLabelText }: ReturnType<typeof render> = render(
       <PauseEconomy settings={DEFAULT_SETTINGS} onChange={onChange} />,
     );
     fireEvent.input(getByLabelText('Minutes of pause per 30 minutes of focus'), {
@@ -61,8 +79,8 @@ describe('PauseEconomy', () => {
   });
 
   it('rejects a fractional pause length with a field-specific error', (): void => {
-    const onChange = vi.fn();
-    const { getByLabelText, getByText } = render(
+    const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
+    const { getByLabelText, getByText }: ReturnType<typeof render> = render(
       <PauseEconomy settings={DEFAULT_SETTINGS} onChange={onChange} />,
     );
     fireEvent.input(getByLabelText('Pause length (minutes)'), { target: { value: '1.5' } });
@@ -72,6 +90,46 @@ describe('PauseEconomy', () => {
 });
 
 describe('BehaviorDefaults', () => {
+  it('edits each positive session preset independently', (): void => {
+    const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
+    const { getByLabelText }: ReturnType<typeof render> = render(
+      <BehaviorDefaults settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
+
+    fireEvent.input(getByLabelText('Short session preset (minutes)'), {
+      target: { value: '10' },
+    });
+    fireEvent.input(getByLabelText('Default session preset (minutes)'), {
+      target: { value: '35' },
+    });
+    fireEvent.input(getByLabelText('Deep session preset (minutes)'), {
+      target: { value: '75' },
+    });
+
+    const shortPreset: Settings = onChange.mock.calls[0]?.[0] as Settings;
+    const defaultPreset: Settings = onChange.mock.calls[1]?.[0] as Settings;
+    const deepPreset: Settings = onChange.mock.calls[2]?.[0] as Settings;
+    expect(shortPreset.presetsMin).toEqual([10, 25, 50]);
+    expect(defaultPreset.presetsMin).toEqual([15, 35, 50]);
+    expect(deepPreset.presetsMin).toEqual([15, 25, 75]);
+  });
+
+  it('rejects a zero session preset with a field-specific error', (): void => {
+    const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
+    const { getByLabelText, getByText }: ReturnType<typeof render> = render(
+      <BehaviorDefaults settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
+
+    fireEvent.input(getByLabelText('Short session preset (minutes)'), {
+      target: { value: '0' },
+    });
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(
+      getByText('Short session preset (minutes) must be a positive whole number.'),
+    ).toBeTruthy();
+  });
+
   it('switches the gate delay to 30 seconds', (): void => {
     const onChange = vi.fn();
     const { getByLabelText } = render(
@@ -106,6 +164,23 @@ describe('BehaviorDefaults', () => {
 });
 
 describe('SoundsBadge', () => {
+  it('toggles the session-complete system notification independently of sounds', (): void => {
+    const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
+    const settings: Settings = {
+      ...DEFAULT_SETTINGS,
+      sessionCompleteNotification: true,
+    };
+    const { getByLabelText }: ReturnType<typeof render> = render(
+      <SoundsBadge settings={settings} onChange={onChange} />,
+    );
+
+    fireEvent.click(getByLabelText('Show a system notification when a session completes'));
+
+    const next: Settings = onChange.mock.calls[0]?.[0] as Settings;
+    expect(next.sessionCompleteNotification).toBe(false);
+    expect(next.sounds).toEqual(DEFAULT_SETTINGS.sounds);
+  });
+
   it('sends previewSound for the play button', (): void => {
     const onChange = vi.fn();
     const { getByRole } = render(<SoundsBadge settings={DEFAULT_SETTINGS} onChange={onChange} />);

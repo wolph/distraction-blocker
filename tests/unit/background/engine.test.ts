@@ -1173,6 +1173,31 @@ describe('Engine', () => {
     expect(savedRuntime.date).toBe(localDateStr(T0 + 2 * DAY_MS));
   });
 
+  it('uses the configured freeze cadence during rollover catch-up', async () => {
+    const previousDate: string = localDateStr(T0 - DAY_MS);
+    const streak: StreakState = {
+      current: 2,
+      freezeTokens: 0,
+      lastCountedDate: previousDate,
+      lastFreezeGrantDate: previousDate,
+      activeDays: [],
+      activeMonth: previousDate.slice(0, 7),
+    };
+    const h: Harness = makeEngine({
+      settings: { streakFreezeIntervalDays: 1 },
+      streak,
+    });
+    h.setNow(T0 + DAY_MS);
+
+    await h.engine.tick();
+
+    expect(h.engine.getStreak()).toMatchObject({
+      current: 2,
+      freezeTokens: 0,
+      lastFreezeGrantDate: localDateStr(T0),
+    });
+  });
+
   it('marks retention pruning only after storage operations succeed', async () => {
     const h: Harness = makeEngine();
     h.ports.prune.mockRejectedValueOnce(new Error('sync remove failed'));
@@ -1918,6 +1943,36 @@ describe('Engine', () => {
     expect(h.loggedEvents().some((e: EventRecord): boolean => e.t === 'sessionCompleted')).toBe(
       true,
     );
+  });
+
+  it('suppresses only the optional session-complete notification', async () => {
+    const h: Harness = makeEngine({
+      settings: { sessionCompleteNotification: false } as Partial<Settings>,
+    });
+    await h.engine.startSession(manualConfig);
+    h.setNow(T0 + 25 * 60_000 + 1);
+
+    await h.engine.tick();
+
+    expect(h.ports.playSound).toHaveBeenCalledWith('sessionComplete');
+    expect(h.ports.notify).not.toHaveBeenCalledWith(
+      'Focus session complete',
+      'The lock is off. Time for a real break.',
+    );
+  });
+
+  it('keeps schedule-start notifications unconditional', () => {
+    const h: Harness = makeEngine({
+      settings: {
+        schedule: [scheduledEntry],
+        sessionCompleteNotification: false,
+      } as Partial<Settings>,
+    });
+    h.setNow(T0 + 16 * 60_000);
+
+    h.engine.snapshot();
+
+    expect(h.ports.notify).toHaveBeenCalledWith('Focus schedule started', 'Locked until 10:00.');
   });
 
   it('resumeFromPause restores focus', async () => {

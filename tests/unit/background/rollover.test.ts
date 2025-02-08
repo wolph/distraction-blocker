@@ -67,7 +67,7 @@ describe('planRollover', () => {
     const attempts: Record<string, number> = {};
     for (let i = 0; i < 22; i++) attempts[`site${i}.com`] = i + 1;
     const agg: DailyAgg = daily(YESTERDAY, { focusMs: 30 * 60_000, attempts });
-    const plan: RolloverPlan = planRollover(YESTERDAY, NOW, agg, zeroStreak, 25);
+    const plan: RolloverPlan = planRollover(YESTERDAY, NOW, agg, zeroStreak, 25, 7);
     expect(Object.keys(plan.finished.attempts)).toHaveLength(20);
     expect(plan.finished.attemptsOther).toBe(1 + 2);
     expect(plan.streak.current).toBe(1);
@@ -77,7 +77,7 @@ describe('planRollover', () => {
 
   it('treats a day with no aggregation as zero focus, resetting the streak', () => {
     const started: StreakState = { ...zeroStreak, current: 4 };
-    const plan: RolloverPlan = planRollover(YESTERDAY, NOW, null, started, 25);
+    const plan: RolloverPlan = planRollover(YESTERDAY, NOW, null, started, 25, 7);
     expect(plan.finished).toEqual(daily(YESTERDAY, {}));
     expect(plan.streak.current).toBe(0);
   });
@@ -98,6 +98,7 @@ describe('planRollover', () => {
       daily('2026-09-30', { focusMs: 30 * 60_000 }),
       streak,
       25,
+      7,
     );
 
     expect(plan.streak).toMatchObject({
@@ -106,6 +107,27 @@ describe('planRollover', () => {
       activeDays: [],
       freezeTokens: 1,
       lastCountedDate: '2026-09-30',
+    });
+  });
+
+  it('forwards the configured freeze cadence into streak closing', () => {
+    const streak: StreakState = {
+      ...zeroStreak,
+      freezeTokens: 1,
+      lastFreezeGrantDate: '2026-08-25',
+    };
+    const plan: RolloverPlan = planRollover(
+      YESTERDAY,
+      NOW,
+      daily(YESTERDAY, { focusMs: 30 * 60_000 }),
+      streak,
+      25,
+      3,
+    );
+
+    expect(plan.streak).toMatchObject({
+      freezeTokens: 2,
+      lastFreezeGrantDate: YESTERDAY,
     });
   });
 });

@@ -22,6 +22,10 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
 function isRule(value: unknown): value is Rule {
   return (
     isRecord(value) &&
@@ -78,6 +82,7 @@ function isSettings(value: unknown): value is Settings {
     isFiniteNumber(gate.delayMs) &&
     typeof gate.requireTypedPhrase === 'boolean' &&
     typeof value.badgeCountdown === 'boolean' &&
+    typeof value.sessionCompleteNotification === 'boolean' &&
     isRecord(sounds) &&
     isFiniteNumber(sounds.masterVolume) &&
     typeof sounds.sessionComplete === 'boolean' &&
@@ -87,6 +92,7 @@ function isSettings(value: unknown): value is Settings {
     Array.isArray(value.schedule) &&
     value.schedule.every(isScheduleEntry) &&
     isFiniteNumber(value.streakGoalMin) &&
+    isPositiveInteger(value.streakFreezeIntervalDays) &&
     isFiniteNumber(value.retentionDays)
   );
 }

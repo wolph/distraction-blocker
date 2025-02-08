@@ -213,6 +213,16 @@ describe('parseRequest', (): void => {
     });
   });
 
+  it('accepts editable freeze cadence and completion-notification settings', (): void => {
+    const settings: Record<string, unknown> = {
+      ...SETTINGS,
+      streakFreezeIntervalDays: 7,
+      sessionCompleteNotification: false,
+    };
+
+    expect(parseSettingsRequest(settings)).not.toBeNull();
+  });
+
   it.each([
     { presetsMin: [15, 25] },
     { presetsMin: [15, -1, 50] },
@@ -230,6 +240,9 @@ describe('parseRequest', (): void => {
     { sounds: { ...SETTINGS.sounds, extra: true } },
     { schedule: [{}] },
     { streakGoalMin: -1 },
+    { streakFreezeIntervalDays: 0 },
+    { streakFreezeIntervalDays: 1.5 },
+    { sessionCompleteNotification: 'yes' },
     { retentionDays: 1.5 },
     { extra: true },
   ])('rejects malformed settings payload fields %#', (update: Record<string, unknown>): void => {

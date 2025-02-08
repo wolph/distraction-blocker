@@ -150,9 +150,11 @@ export interface Settings {
   pause: PauseEconomy;
   gate: GateSettings;
   badgeCountdown: boolean;
+  sessionCompleteNotification: boolean;
   sounds: SoundSettings;
   schedule: ScheduleEntry[];
   streakGoalMin: number;
+  streakFreezeIntervalDays: number;
   retentionDays: number;
 }
 

@@ -70,6 +70,27 @@ export function BehaviorDefaults(props: BehaviorProps): VNode {
         Mode and strictness are fixed when a session starts. These are the values the start form
         opens with.
       </p>
+      <NumberField
+        label="Short session preset (minutes)"
+        value={s.presetsMin[0]}
+        onValue={(value: number): void => {
+          props.onChange({ ...s, presetsMin: [value, s.presetsMin[1], s.presetsMin[2]] });
+        }}
+      />
+      <NumberField
+        label="Default session preset (minutes)"
+        value={s.presetsMin[1]}
+        onValue={(value: number): void => {
+          props.onChange({ ...s, presetsMin: [s.presetsMin[0], value, s.presetsMin[2]] });
+        }}
+      />
+      <NumberField
+        label="Deep session preset (minutes)"
+        value={s.presetsMin[2]}
+        onValue={(value: number): void => {
+          props.onChange({ ...s, presetsMin: [s.presetsMin[0], s.presetsMin[1], value] });
+        }}
+      />
       <div class="field">
         <label class="check">
           <input
@@ -252,13 +273,20 @@ export function PauseEconomy(props: BehaviorProps): VNode {
       <h3>Streak and retention</h3>
       <p class="help">
         The streak counts days that reach the goal. One default session keeps the chain alive, and a
-        weekly freeze token repairs a missed day.
+        freeze token repairs a missed day.
       </p>
       <NumberField
         label="Daily streak goal (focus minutes)"
         value={s.streakGoalMin}
         onValue={(value: number): void => {
           props.onChange({ ...s, streakGoalMin: value });
+        }}
+      />
+      <NumberField
+        label="Freeze token interval (days)"
+        value={s.streakFreezeIntervalDays}
+        onValue={(value: number): void => {
+          props.onChange({ ...s, streakFreezeIntervalDays: value });
         }}
       />
       <NumberField

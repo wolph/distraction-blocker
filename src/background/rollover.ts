@@ -28,10 +28,11 @@ export function planRollover(
   todayAgg: DailyAgg | null,
   streak: StreakState,
   goalMin: number,
+  freezeIntervalDays: number,
 ): RolloverPlan {
   const finished: DailyAgg = capAttempts(todayAgg ?? emptyDaily(prevDate), TOP_SITES_DAILY);
   const focusMin: number = finished.focusMs / 60_000;
-  const closed: StreakState = closeDay(streak, prevDate, focusMin, goalMin);
+  const closed: StreakState = closeDay(streak, prevDate, focusMin, goalMin, freezeIntervalDays);
   const currentMonth: string = localDateStr(now).slice(0, 7);
   return {
     finished,

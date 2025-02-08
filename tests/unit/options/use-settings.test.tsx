@@ -84,6 +84,16 @@ describe('useSettingsStore', () => {
     expect(store().lists).toBeNull();
   });
 
+  it('rejects a non-positive freeze cadence from the worker', async (): Promise<void> => {
+    fake.respond('getSettings', { ...DEFAULT_SETTINGS, streakFreezeIntervalDays: 0 });
+    render(<Harness />);
+
+    await waitFor((): void => {
+      expect(store().loadError).toBe('Could not load settings. Reload the page to try again.');
+    });
+    expect(store().settings).toBeNull();
+  });
+
   it('reports a rejected initial lists request without publishing partial state', async (): Promise<void> => {
     fake.respond('getLists', (): never => {
       throw new Error('worker unavailable');
@@ -240,7 +250,7 @@ describe('App frame', () => {
     const committed: Settings = { ...DEFAULT_SETTINGS, defaultStrictness: 'hard' };
     fake.respond('getSettings', committed);
     fake.respond('updateSettings', { ok: true });
-    const { getByLabelText, getByRole } = render(<App />);
+    const { getByLabelText, getByRole }: ReturnType<typeof render> = render(<App />);
     await waitFor((): void => {
       expect(getByRole('button', { name: 'Strictness and gate' })).toBeTruthy();
     });
@@ -264,5 +274,83 @@ describe('App frame', () => {
     );
     expect(update?.settings.streakGoalMin).toBe(30);
     expect(update?.settings.defaultStrictness).toBe('hard');
+  });
+
+  it('persists preset controls through the strictness section save', async (): Promise<void> => {
+    fake.respond('updateSettings', { ok: true });
+    const { getByLabelText, getByRole }: ReturnType<typeof render> = render(<App />);
+    await waitFor((): void => {
+      expect(getByRole('button', { name: 'Strictness and gate' })).toBeTruthy();
+    });
+    fireEvent.click(getByRole('button', { name: 'Strictness and gate' }));
+    fireEvent.input(getByLabelText('Short session preset (minutes)'), {
+      target: { value: '12' },
+    });
+    fireEvent.click(getByRole('button', { name: 'Save strictness and gate' }));
+
+    await waitFor((): void => {
+      expect(fake.sent.some((request: Request): boolean => request.type === 'updateSettings')).toBe(
+        true,
+      );
+    });
+    const update: Extract<Request, { type: 'updateSettings' }> | undefined = fake.sent.find(
+      (request: Request): request is Extract<Request, { type: 'updateSettings' }> =>
+        request.type === 'updateSettings',
+    );
+    expect(update?.settings.presetsMin).toEqual([12, 25, 50]);
+  });
+
+  it('persists freeze cadence through the pause section save', async (): Promise<void> => {
+    fake.respond('getSettings', {
+      ...DEFAULT_SETTINGS,
+      streakFreezeIntervalDays: 7,
+      sessionCompleteNotification: true,
+    });
+    fake.respond('updateSettings', { ok: true });
+    const { getByLabelText, getByRole }: ReturnType<typeof render> = render(<App />);
+    await waitFor((): void => {
+      expect(getByRole('button', { name: 'Pause economy' })).toBeTruthy();
+    });
+    fireEvent.click(getByRole('button', { name: 'Pause economy' }));
+    fireEvent.input(getByLabelText('Freeze token interval (days)'), { target: { value: '9' } });
+    fireEvent.click(getByRole('button', { name: 'Save pause economy' }));
+
+    await waitFor((): void => {
+      expect(fake.sent.some((request: Request): boolean => request.type === 'updateSettings')).toBe(
+        true,
+      );
+    });
+    const update: Extract<Request, { type: 'updateSettings' }> | undefined = fake.sent.find(
+      (request: Request): request is Extract<Request, { type: 'updateSettings' }> =>
+        request.type === 'updateSettings',
+    );
+    expect(update?.settings.streakFreezeIntervalDays).toBe(9);
+  });
+
+  it('persists notification preference through the sounds section save', async (): Promise<void> => {
+    fake.respond('getSettings', {
+      ...DEFAULT_SETTINGS,
+      streakFreezeIntervalDays: 7,
+      sessionCompleteNotification: true,
+    });
+    fake.respond('updateSettings', { ok: true });
+    const { getByLabelText, getByRole }: ReturnType<typeof render> = render(<App />);
+    await waitFor((): void => {
+      expect(getByRole('button', { name: 'Sounds and badge' })).toBeTruthy();
+    });
+    fireEvent.click(getByRole('button', { name: 'Sounds and badge' }));
+    fireEvent.click(getByLabelText('Show a system notification when a session completes'));
+    fireEvent.click(getByRole('button', { name: 'Save sounds and badge' }));
+
+    await waitFor((): void => {
+      expect(fake.sent.some((request: Request): boolean => request.type === 'updateSettings')).toBe(
+        true,
+      );
+    });
+    const update: Extract<Request, { type: 'updateSettings' }> | undefined = fake.sent.find(
+      (request: Request): request is Extract<Request, { type: 'updateSettings' }> =>
+        request.type === 'updateSettings',
+    );
+    expect(update?.settings.sessionCompleteNotification).toBe(false);
   });
 });

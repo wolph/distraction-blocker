@@ -63,6 +63,20 @@ export function SoundsBadge(props: SoundsBadgeProps): VNode {
           </div>
         ),
       )}
+      <h3>Notifications</h3>
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={s.sessionCompleteNotification}
+          onClick={(): void => {
+            props.onChange({
+              ...s,
+              sessionCompleteNotification: !s.sessionCompleteNotification,
+            });
+          }}
+        />
+        Show a system notification when a session completes
+      </label>
       <h3>Badge</h3>
       <label class="check">
         <input

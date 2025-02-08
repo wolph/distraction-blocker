@@ -906,7 +906,9 @@ export class Engine {
         ...sessionIdentity(session),
       });
       this.ports.playSound('sessionComplete');
-      this.ports.notify('Focus session complete', 'The lock is off. Time for a real break.');
+      if (this.settings.sessionCompleteNotification) {
+        this.ports.notify('Focus session complete', 'The lock is off. Time for a real break.');
+      }
       this.runtime.gate = null;
       this.runtime.unlocks = [];
       this.runtime.accruedFocusMs = 0;
@@ -1010,6 +1012,7 @@ export class Engine {
       this.runtime.todayAgg,
       streak,
       this.settings.streakGoalMin,
+      this.settings.streakFreezeIntervalDays,
     );
     this.ports.queueSync(syncAggKey(this.deviceId, plan.finished.date), plan.finished);
     this.streak = plan.streak;

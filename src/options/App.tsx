@@ -147,6 +147,7 @@ function StrictnessSection(props: SectionProps): VNode {
         onSave={(): Promise<string | null> =>
           props.store.saveSettings({
             ...committed,
+            presetsMin: props.settings.presetsMin,
             defaultMode: props.settings.defaultMode,
             defaultStrictness: props.settings.defaultStrictness,
             defaultCycling: props.settings.defaultCycling,
@@ -172,6 +173,7 @@ function PauseSection(props: SectionProps): VNode {
             ...committed,
             pause: props.settings.pause,
             streakGoalMin: props.settings.streakGoalMin,
+            streakFreezeIntervalDays: props.settings.streakFreezeIntervalDays,
             retentionDays: props.settings.retentionDays,
           })
         }
@@ -193,6 +195,7 @@ function SoundsSection(props: SectionProps): VNode {
             ...committed,
             sounds: props.settings.sounds,
             badgeCountdown: props.settings.badgeCountdown,
+            sessionCompleteNotification: props.settings.sessionCompleteNotification,
           })
         }
       />
