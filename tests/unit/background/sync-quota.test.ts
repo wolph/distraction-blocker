@@ -15,52 +15,10 @@ interface FakeSyncStorage {
   trace: string[];
 }
 
-function chromiumNumberTokens(serialized: string): string {
-  let output: string = '';
-  let index: number = 0;
-  let inString: boolean = false;
-  while (index < serialized.length) {
-    const character: string = serialized[index] as string;
-    if (inString && character === '\\') {
-      output += serialized.slice(index, index + 2);
-      index += 2;
-      continue;
-    }
-    if (character === '"') {
-      inString = !inString;
-      output += character;
-      index += 1;
-      continue;
-    }
-    const isNumberStart: boolean =
-      !inString && (character === '-' || (character >= '0' && character <= '9'));
-    if (!isNumberStart) {
-      output += character;
-      index += 1;
-      continue;
-    }
-    const match: RegExpMatchArray | null = serialized
-      .slice(index)
-      .match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/);
-    if (match === null) throw new Error('Invalid JSON number');
-    const token: string = match[0] as string;
-    const number: number = Number(token);
-    const needsDoubleSuffix: boolean =
-      Number.isInteger(number) &&
-      !token.includes('.') &&
-      !token.includes('e') &&
-      !token.includes('E') &&
-      (number < -2_147_483_648 || number > 2_147_483_647);
-    output += needsDoubleSuffix ? `${token}.0` : token;
-    index += token.length;
-  }
-  return output;
-}
-
 function chromiumSerializedValue(value: unknown): string {
   const serialized: string | undefined = JSON.stringify(value);
   if (serialized === undefined) throw new Error('Value is not JSON serializable');
-  return chromiumNumberTokens(serialized)
+  return serialized
     .replaceAll('<', '\\u003C')
     .replaceAll('\u2028', '\\u2028')
     .replaceAll('\u2029', '\\u2029');
@@ -71,15 +29,21 @@ function chromiumItemBytes(key: string, value: unknown): number {
   return encoder.encode(key).byteLength + encoder.encode(chromiumSerializedValue(value)).byteLength;
 }
 
-function storageBytes(items: Record<string, unknown>): number {
+function storageBytes(
+  items: Record<string, unknown>,
+  byteOverrides: Readonly<Record<string, number>> = {},
+): number {
   return Object.entries(items).reduce(
     (total: number, [key, value]: [string, unknown]): number =>
-      total + chromiumItemBytes(key, value),
+      total + (byteOverrides[key] ?? chromiumItemBytes(key, value)),
     0,
   );
 }
 
-function fakeSyncStorage(initial: Record<string, unknown>): FakeSyncStorage {
+function fakeSyncStorage(
+  initial: Record<string, unknown>,
+  byteOverrides: Readonly<Record<string, number>> = {},
+): FakeSyncStorage {
   const state: Record<string, unknown> = structuredClone(initial);
   const trace: string[] = [];
   const get: chrome.storage.StorageArea['get'] = vi.fn(
@@ -99,17 +63,22 @@ function fakeSyncStorage(initial: Record<string, unknown>): FakeSyncStorage {
   const area: chrome.storage.SyncStorageArea = {
     get,
     getBytesInUse: vi.fn(async (keys?: string | string[] | null): Promise<number> => {
-      if (keys === null || keys === undefined) return storageBytes(state);
+      if (keys === null || keys === undefined) return storageBytes(state, byteOverrides);
       const requested: string[] = typeof keys === 'string' ? [keys] : keys;
       return requested.reduce(
         (total: number, key: string): number =>
-          total + (Object.hasOwn(state, key) ? chromiumItemBytes(key, state[key]) : 0),
+          total +
+          (Object.hasOwn(state, key)
+            ? (byteOverrides[key] ?? chromiumItemBytes(key, state[key]))
+            : 0),
         0,
       );
     }) as unknown as chrome.storage.StorageArea['getBytesInUse'],
     set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
       const projected: Record<string, unknown> = { ...state, ...structuredClone(items) };
-      if (storageBytes(projected) > SYNC_QUOTA_BYTES_TOTAL) throw new Error('QUOTA_BYTES exceeded');
+      if (storageBytes(projected, byteOverrides) > SYNC_QUOTA_BYTES_TOTAL) {
+        throw new Error('QUOTA_BYTES exceeded');
+      }
       trace.push(`set:${Object.keys(items).sort().join(',')}`);
       Object.assign(state, structuredClone(items));
     }) as chrome.storage.StorageArea['set'],
@@ -188,6 +157,43 @@ describe('sync item quota', () => {
     expect(syncItemBytes('k', -2_147_483_649)).toBe(14);
   });
 
+  it('matches live Chromium byte counts at its fixed-to-exponential boundary', () => {
+    expect(syncItemBytes('k', -0)).toBe(2);
+    expect(syncItemBytes('k', 99_999_999_999)).toBe(14);
+    expect(syncItemBytes('k', 100_000_000_000)).toBe(15);
+    expect(syncItemBytes('k', 999_999_999_999)).toBe(15);
+    expect(syncItemBytes('k', 1_000_000_000_000)).toBe(6);
+    expect(syncItemBytes('k', -1_000_000_000_000)).toBe(7);
+    expect(syncItemBytes('k', 0.000_001)).toBe(9);
+    expect(syncItemBytes('k', 0.000_000_1)).toBe(5);
+  });
+
+  it('matches live Chromium shortest-double bytes for large values', () => {
+    expect(syncItemBytes('k', 100_000_000_000_000_000_000)).toBe(6);
+    expect(syncItemBytes('k', 1e21)).toBe(6);
+    expect(syncItemBytes('k', 9_007_199_254_740_991)).toBe(22);
+    expect(syncItemBytes('k', 9_007_199_254_740_992)).toBe(22);
+    expect(syncItemBytes('k', -9_007_199_254_740_991)).toBe(23);
+    expect(syncItemBytes('k', -9_007_199_254_740_992)).toBe(23);
+    expect(syncItemBytes('k', 1_000_000_000_000_000_100)).toBe(23);
+    expect(syncItemBytes('k', 1.234_567_890_123_456_7e19)).toBe(23);
+    expect(syncItemBytes('k', 0.1 + 0.2)).toBe(20);
+  });
+
+  it('does not reinterpret numeric-looking strings or object keys', () => {
+    const value: Record<string, unknown> = {
+      '1000000000000': ['9007199254740991', { escaped: '\\"1000000000000\\"' }],
+      actual: 1_000_000_000_000,
+    };
+    const chromiumJson: string =
+      '{"1000000000000":["9007199254740991",{"escaped":"\\\\\\"1000000000000\\\\\\""}],"actual":1e+12}';
+    const encoder: TextEncoder = new TextEncoder();
+    const expectedBytes: number =
+      encoder.encode('nested').byteLength + encoder.encode(chromiumJson).byteLength;
+
+    expect(syncItemBytes('nested', value)).toBe(expectedBytes);
+  });
+
   it('matches Chromium double serialization in nested arrays and objects', () => {
     const value: Record<string, unknown> = {
       values: [2_147_483_648, { '-2147483649': -2_147_483_649 }],
@@ -205,12 +211,44 @@ describe('sync item quota', () => {
       large: 2_147_483_648,
       padding: '',
     };
-    const baseBytes: number = chromiumItemBytes('k', value);
+    const chromiumJson: string = '{"large":2147483648.0,"padding":""}';
+    const encoder: TextEncoder = new TextEncoder();
+    const baseBytes: number =
+      encoder.encode('k').byteLength + encoder.encode(chromiumJson).byteLength;
     value.padding = 'a'.repeat(SYNC_QUOTA_BYTES_PER_ITEM + 1 - baseBytes);
 
-    expect(chromiumItemBytes('k', value)).toBe(8_193);
     expect(syncItemBytes('k', value)).toBe(8_193);
     expect((): void => assertSyncItemWithinQuota('k', value)).toThrow();
+  });
+
+  it('rejects an unsafe integer whose Chromium exponent crosses the item limit', () => {
+    const value: { large: number; padding: string } = {
+      large: 9_007_199_254_740_991,
+      padding: '',
+    };
+    const chromiumJson: string = '{"large":9.007199254740991e+15,"padding":""}';
+    const encoder: TextEncoder = new TextEncoder();
+    const baseBytes: number =
+      encoder.encode('k').byteLength + encoder.encode(chromiumJson).byteLength;
+    value.padding = 'a'.repeat(SYNC_QUOTA_BYTES_PER_ITEM + 1 - baseBytes);
+
+    expect(syncItemBytes('k', value)).toBe(8_193);
+    expect((): void => assertSyncItemWithinQuota('k', value)).toThrow();
+  });
+
+  it('accepts a large double exactly at the item limit using Chromium exponent bytes', () => {
+    const value: { large: number; padding: string } = {
+      large: 100_000_000_000_000_000_000,
+      padding: '',
+    };
+    const chromiumJson: string = '{"large":1e+20,"padding":""}';
+    const encoder: TextEncoder = new TextEncoder();
+    const baseBytes: number =
+      encoder.encode('k').byteLength + encoder.encode(chromiumJson).byteLength;
+    value.padding = 'a'.repeat(SYNC_QUOTA_BYTES_PER_ITEM - baseBytes);
+
+    expect(syncItemBytes('k', value)).toBe(8_192);
+    expect((): void => assertSyncItemWithinQuota('k', value)).not.toThrow();
   });
 
   it('rejects an escaped value that crosses the per-item limit', () => {
@@ -296,21 +334,24 @@ describe('sync total quota', () => {
     await expect(fake.area.getBytesInUse('escaped')).resolves.toBe(syncItemBytes('escaped', value));
   });
 
-  it('evicts monthly history when a nested double suffix crosses the total limit', async () => {
+  it('evicts monthly history when Chromium exponent bytes cross the total limit', async () => {
     const monthlyKey: string = 'aggm:dev-a:2025-01';
-    const incoming: Record<string, unknown> = { large: 2_147_483_648 };
+    const incoming: Record<string, unknown> = { large: 9_007_199_254_740_991 };
+    const encoder: TextEncoder = new TextEncoder();
+    const nativeIncomingBytes: number =
+      encoder.encode('settings').byteLength +
+      encoder.encode('{"large":9.007199254740991e+15}').byteLength;
     const initial: Record<string, unknown> = nearQuotaState(1);
     initial.fillerA = 'f'.repeat(8_000);
-    const targetInitialBytes: number =
-      SYNC_QUOTA_BYTES_TOTAL - chromiumItemBytes('settings', incoming) + 1;
+    const targetInitialBytes: number = SYNC_QUOTA_BYTES_TOTAL - nativeIncomingBytes + 1;
     const fillerBLength: number =
       targetInitialBytes - storageBytes(initial) - chromiumItemBytes('fillerB', '');
     initial.fillerB = 'f'.repeat(fillerBLength);
-    const fake: FakeSyncStorage = fakeSyncStorage(initial);
+    const fake: FakeSyncStorage = fakeSyncStorage(initial, {
+      settings: nativeIncomingBytes,
+    });
 
-    expect(storageBytes(initial) + chromiumItemBytes('settings', incoming)).toBe(
-      SYNC_QUOTA_BYTES_TOTAL + 1,
-    );
+    expect(storageBytes(initial) + nativeIncomingBytes).toBe(SYNC_QUOTA_BYTES_TOTAL + 1);
 
     await setSyncItemsWithinQuota({ settings: incoming }, fake.area);
 

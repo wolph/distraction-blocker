@@ -12,6 +12,16 @@ export class SyncQuotaError extends Error {
   }
 }
 
+function serializeChromiumDouble(value: number): string {
+  // Chromium and JavaScript produce the same shortest digits. Chromium uses
+  // exponential notation outside [-6, 12), while JavaScript's upper bound is 21.
+  const exponential: string = value.toExponential();
+  const exponentMarker: number = exponential.lastIndexOf('e');
+  const exponent: number = Number(exponential.slice(exponentMarker + 1));
+  const token: string = exponent >= -6 && exponent < 12 ? value.toString() : exponential;
+  return token.includes('.') || token.includes('e') || token.includes('E') ? token : `${token}.0`;
+}
+
 function serializeChromiumNumberTokens(serialized: string): string {
   let output: string = '';
   let index: number = 0;
@@ -42,14 +52,11 @@ function serializeChromiumNumberTokens(serialized: string): string {
     if (match === null) throw new SyncQuotaError('Cannot sync value: invalid JSON number.');
     const token: string = match[0] as string;
     const number: number = Number(token);
-    // V8 exposes exact integers outside Int32 to base::Value as doubles.
-    const needsDoubleSuffix: boolean =
-      Number.isInteger(number) &&
-      !token.includes('.') &&
-      !token.includes('e') &&
-      !token.includes('E') &&
-      (number < -2_147_483_648 || number > 2_147_483_647);
-    output += needsDoubleSuffix ? `${token}.0` : token;
+    // V8 exposes exact Int32 values to base::Value as integers and all other
+    // JavaScript numbers as doubles.
+    const isInt32: boolean =
+      Number.isInteger(number) && number >= -2_147_483_648 && number <= 2_147_483_647;
+    output += isInt32 ? token : serializeChromiumDouble(number);
     index += token.length;
   }
   return output;
