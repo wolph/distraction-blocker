@@ -1,61 +1,70 @@
 # Focus Lock QA checklist
 
-Last updated: 2026-08-30.
+Last updated: 2026-08-30. Automated browser evidence targets exact source commit `8fd376190e058352b73106e9160b178ac6a8912a`. The run started from a clean detached worktree and ended at the same commit. It used isolated headless Chrome-for-Testing 151.0.7922.34 profiles and did not touch the user's Chrome.
 
-Checked items were confirmed by automated tests or isolated Chrome-for-Testing profiles. Unchecked items require an external observation. The isolated profiles did not touch the user's Chrome. Browser and automated evidence targets source commit `de60068`. Curated screenshots were committed in `0ed0c27`.
+## Exact automated gates
 
-## Final automated gates
-
-- [x] `NO_COLOR=1 npm run check` passed 39 test files with 788 tests passed and 2 skipped. Biome, TypeScript, deterministic icon generation, and the production build passed.
-- [x] `NO_COLOR=1 npm run e2e` passed all 23 Playwright scenarios in isolated Chrome-for-Testing profiles.
-- [x] The restart scenario closed and relaunched the same isolated persistent profile. It preserved the active focus phase, timer fields, stopped document identity, locked overlay, and extension-owned mute state. Completion restored the requested page and prior mute state.
-- [x] Settings, lists, pause bank, streak, and aggregate data use `chrome.storage.sync`. Runtime state and events remain local.
-- [x] Every Sync item stays within Chrome's per-item quota. Projected writes also stay within the 100 KB total quota by removing or omitting the oldest monthly aggregate items first.
+- [x] `NO_COLOR=1 npm run check` passed 39 test files with 848 tests passed and 2 skipped. Biome, TypeScript, deterministic icon generation, and the production build passed.
+- [x] A separate `npm run build` completed successfully from the exact source commit.
+- [x] `NO_COLOR=1 npm run e2e` rebuilt the extension and passed all 23 Playwright scenarios in isolated Chrome-for-Testing profiles.
+- [x] The exact visual and behavior run recorded 190 artifacts. The generated review set contains 26 contact sheets.
+- [x] The report records `sameHead: true` and `cleanTrackedSourceAtStart: true`.
 
 ## Automated browser behavior
 
-- [x] The Manifest V3 worker loads and answers extension-page requests. Popup, Options, and Stats pages render.
-- [x] A local blockable page loads while no session is active.
-- [x] Fresh blocked navigation stops before page content renders. It shows an opaque overlay titled `Locked - Focus Lock`.
-- [x] A page opened before a session receives the overlay and extension-owned mute state without navigation or reload. Its form value, JavaScript heap state, and scroll position survive completion.
-- [x] A stopped navigation reloads its requested page when blocking ends.
-- [x] Single-page app navigation into a blocked URL receives the overlay without a reload.
-- [x] Pause confirmation is rejected before the worker timestamp. After the delay, pause and resume update the controlled page.
-- [x] Leaving a gate records a resisted temptation.
-- [x] Friction cancellation rejects the wrong phrase and accepts the exact intention-derived phrase after the worker delay.
-- [x] A subdomain unlock normalizes to its registrable host. It unlocks only that site, leaves a second site blocked, and reblocks after expiry.
-- [x] A hard session shows the Options lock banner, rejects a weakening change with readable text, and accepts a stricter rule.
-- [x] A short cycling session requests break-start, break-end, and session-complete sounds through the offscreen audio path.
-- [x] An active schedule requests the schedule-start sound and creates a notification visible through `chrome.notifications.getAll()`.
-- [x] The action badge shows the focus countdown and clears after completion.
+- [x] The Manifest V3 worker loaded and answered extension-page requests. Popup, Options, Stats, content overlay, stopped-document overlay, and gate surfaces rendered.
+- [x] Fresh blocked navigation stopped before page content rendered. Existing pages were overlaid and muted without reload. Session completion restored page state and cleared browser effects.
+- [x] Pause, unlock, abandon, and cancellation gates enforced their delays and phrases. A single-site unlock left another site blocked and reblocked after expiry.
+- [x] Hard sessions displayed the Options lock banner, rejected weakening changes with readable text, and accepted stronger rules.
+- [x] A stale popup category edit was rejected by the real worker. The popup restored the authoritative category value.
+- [x] Saved schedule rows rendered their selected day pills. An active schedule window started a scheduled focus session.
+- [x] The persistent-profile restart scenario restored the active focus phase, timer, stopped document, overlay, and extension-owned mute state.
+- [x] Sync data and local runtime data kept their documented storage split. Per-item and projected total Chrome Sync quota checks passed.
+- [x] Short, default, and deep presets saved through `Save strictness and gate` as `7.5`, `27`, and `62`. Reloaded DOM values and worker settings matched. Values `0` and `72000000001` produced field-specific errors and did not replace the saved values.
+- [x] Freeze token interval saved through `Save pause economy` as `5`. Reloaded DOM and worker settings matched. Values `0`, `1.5`, and `100000001` produced field-specific errors and did not replace the saved value.
+- [x] With `Show a system notification when a session completes` disabled, a completed short session created no notification. Enabling and saving the setting made the next completed short session create a notification.
+- [x] Schedule-start notification remained independent. It created a notification while the session-completion notification setting was disabled.
+- [x] The action badge showed a focus countdown and cleared on completion. The earlier isolated pinned-toolbar capture shows the break-state teal closed lock, progress-ring outline, and cup mark. `src/background/icon.ts`, `scripts/gen-icons.mjs`, and the icon assets did not change between capture commit `0ed0c27` and exact source commit `8fd3761`.
 
-## Visual interaction checks
+## Visual inspection
 
-- [x] Popup idle and active states were inspected in light and dark themes at 1280 px, 768 px, 375 px, and the native 340 px popup width where applicable.
-- [x] Existing-page and stopped-document overlays were inspected in light and dark themes at 1280 px, 768 px, and 375 px.
-- [x] The gate, Options, and Stats pages were inspected in light and dark themes at 1280 px, 768 px, and 375 px.
-- [x] Component crops cover rings, budget meters, actions, the hard-session banner and rejection, Options navigation, and the Stats Pause and Unlock columns.
-- [x] Hover, keyboard focus, text rendering, spacing, and overflow were checked. No inspected page had horizontal overflow.
-- [x] Options navigation and primary buttons meet the 4.5:1 contrast target. Measured ratios range from 4.824:1 to 7.135:1 across the inspected light and dark states.
-- [x] The exact visual pass produced 129 artifacts. It recorded zero console, page, worker, request, and blocked-request errors. Three expected shutdown-only worker messages were recorded separately.
-- [x] The extension was pinned in isolated Chrome-for-Testing 151.0.7922.34. During a seeded break with the countdown badge disabled, the browser toolbar showed a teal closed lock, a progress-ring outline, and a cup mark.
+- [x] Popup idle and active states were inspected in light and dark themes at 1280 px, 768 px, 375 px, and native 340 px popup width where applicable.
+- [x] Existing-page overlay, stopped-document overlay, gate, Options, and Stats surfaces were inspected in light and dark themes at 1280 px, 768 px, and 375 px.
+- [x] Options preset, freeze interval, and notification groups each have full-page and focused component captures at all three widths in both themes.
+- [x] Component captures cover rings, budget meters, actions, schedule day pills, hard-session rejection, Options controls, and the Stats Pause and Unlock columns.
+- [x] Hover, keyboard focus, text rendering, spacing, and responsive layout were inspected. The report records zero horizontal overflow.
+- [x] The 26 contact sheets and the new 375 px component captures were inspected. No Critical or Important visual defect remained.
 
-## Manual-only external checks
+## Diagnostics
 
-- [ ] Confirm settings and a prior-day aggregate propagate between two Chrome profiles signed into the same Google account with extension Sync enabled.
-- [ ] Listen to the session-complete, break-start, break-end, and schedule-start sounds and confirm them by human hearing.
+- [x] Console errors: 0.
+- [x] Page errors: 0.
+- [x] Worker errors: 0.
+- [x] Request failures: 0.
+- [x] Blocked requests: 0.
+- [x] Four shutdown-only worker messages were excluded from worker errors and classified as `intentional-browser-shutdown`. Two came from the Options profile and two came from the popup-rejection profile. Every message has the exact text `focus-lock background error Error: The browser is shutting down.`
+
+## Manual-only checks
+
+- [ ] Confirm Chrome Sync across two signed-in profiles.
+- [ ] Hear session-complete, break-start, break-end, and schedule-start sounds through real speakers.
 - [ ] Confirm operating-system-visible notifications outside the isolated browser environment.
-- [ ] Confirm blocking in an incognito tab when the per-extension permission can be enabled safely in an isolated profile.
+- [ ] Confirm blocking in an incognito tab after enabling the per-extension permission in a safe isolated profile.
 - [ ] Confirm the untracked `key.pem` has an external backup.
 
 ## QA artifacts
 
-The exact visual report is `.playwright-mcp/qa-final/master-de60068c-exact/qa-report.json`. The pinned-toolbar screenshot and crop are under `.playwright-mcp/qa-final/toolbar-break-0ed0c275-1788052452918/`. These full QA capture directories remain untracked.
+The exact evidence directory is `.playwright-mcp/qa-final/master-8fd37619-exact-1788056655784/`.
 
-Curated repository screenshots:
+- Report: `.playwright-mcp/qa-final/master-8fd37619-exact-1788056655784/qa-report.json`
+- Shutdown messages: `.playwright-mcp/qa-final/master-8fd37619-exact-1788056655784/shutdown-worker-messages.json`
+- Contact sheets: `.playwright-mcp/qa-final/master-8fd37619-exact-1788056655784/contact-*.png`
+- Pinned-toolbar capture: `.playwright-mcp/qa-final/toolbar-break-0ed0c275-1788052452918/toolbar-pinned-break-crop.png`
 
-- `docs/images/focus-lock/popup-active.png`
-- `docs/images/focus-lock/overlay.png`
-- `docs/images/focus-lock/gate.png`
-- `docs/images/focus-lock/options.png`
-- `docs/images/focus-lock/stats.png`
+Curated repository screenshots use these exact-run sources:
+
+- `docs/images/focus-lock/popup-active.png` from `popup-active-light-375-full.png`
+- `docs/images/focus-lock/overlay.png` from `overlay-existing-light-375-full.png`
+- `docs/images/focus-lock/gate.png` from `gate-light-1280-full.png`
+- `docs/images/focus-lock/options.png` from `options-light-1280-full.png`
+- `docs/images/focus-lock/stats.png` from `stats-dark-1280-curated.png`
