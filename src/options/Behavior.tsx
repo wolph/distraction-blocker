@@ -1,5 +1,12 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
+import {
+  isRelativeMinuteDuration,
+  isSafeDayCount,
+  MAX_RELATIVE_MINUTES,
+  MAX_SAFE_DAY_COUNT,
+  MIN_RELATIVE_MINUTES,
+} from '../shared/numeric-validation';
 import { minToMs } from '../shared/time';
 import type { Settings } from '../shared/types';
 
@@ -14,6 +21,10 @@ interface NumberFieldProps {
   onValue: (value: number) => void;
   allowZero?: boolean;
   allowFraction?: boolean;
+  errorMessage?: string;
+  isValid?: (value: number) => boolean;
+  max?: number;
+  min?: number;
 }
 
 function NumberField(props: NumberFieldProps): VNode {
@@ -22,17 +33,20 @@ function NumberField(props: NumberFieldProps): VNode {
   >(null);
   const allowZero: boolean = props.allowZero ?? false;
   const allowFraction: boolean = props.allowFraction ?? false;
-  const errorMessage: string = allowFraction
-    ? `${props.label} must be zero or greater.`
-    : allowZero
-      ? `${props.label} must be a whole number of zero or greater.`
-      : `${props.label} must be a positive whole number.`;
+  const errorMessage: string =
+    props.errorMessage ??
+    (allowFraction
+      ? `${props.label} must be zero or greater.`
+      : allowZero
+        ? `${props.label} must be a whole number of zero or greater.`
+        : `${props.label} must be a positive whole number.`);
   return (
     <label class="field">
       {props.label}
       <input
         type="number"
-        min={allowZero ? '0' : '1'}
+        min={String(props.min ?? (allowZero ? 0 : 1))}
+        max={props.max === undefined ? undefined : String(props.max)}
         step={allowFraction ? 'any' : '1'}
         value={props.value}
         onInput={(event: Event): void => {
@@ -42,7 +56,8 @@ function NumberField(props: NumberFieldProps): VNode {
             raw.trim() !== '' &&
             Number.isFinite(value) &&
             (allowZero ? value >= 0 : value > 0) &&
-            (allowFraction || Number.isInteger(value));
+            (allowFraction || Number.isInteger(value)) &&
+            (props.isValid?.(value) ?? true);
           if (!valid) {
             setError(errorMessage);
             return;
@@ -73,6 +88,11 @@ export function BehaviorDefaults(props: BehaviorProps): VNode {
       <NumberField
         label="Short session preset (minutes)"
         value={s.presetsMin[0]}
+        allowFraction
+        min={MIN_RELATIVE_MINUTES}
+        max={MAX_RELATIVE_MINUTES}
+        isValid={isRelativeMinuteDuration}
+        errorMessage="Short session preset (minutes) must be within the supported minute range."
         onValue={(value: number): void => {
           props.onChange({ ...s, presetsMin: [value, s.presetsMin[1], s.presetsMin[2]] });
         }}
@@ -80,6 +100,11 @@ export function BehaviorDefaults(props: BehaviorProps): VNode {
       <NumberField
         label="Default session preset (minutes)"
         value={s.presetsMin[1]}
+        allowFraction
+        min={MIN_RELATIVE_MINUTES}
+        max={MAX_RELATIVE_MINUTES}
+        isValid={isRelativeMinuteDuration}
+        errorMessage="Default session preset (minutes) must be within the supported minute range."
         onValue={(value: number): void => {
           props.onChange({ ...s, presetsMin: [s.presetsMin[0], value, s.presetsMin[2]] });
         }}
@@ -87,6 +112,11 @@ export function BehaviorDefaults(props: BehaviorProps): VNode {
       <NumberField
         label="Deep session preset (minutes)"
         value={s.presetsMin[2]}
+        allowFraction
+        min={MIN_RELATIVE_MINUTES}
+        max={MAX_RELATIVE_MINUTES}
+        isValid={isRelativeMinuteDuration}
+        errorMessage="Deep session preset (minutes) must be within the supported minute range."
         onValue={(value: number): void => {
           props.onChange({ ...s, presetsMin: [s.presetsMin[0], s.presetsMin[1], value] });
         }}
@@ -285,6 +315,9 @@ export function PauseEconomy(props: BehaviorProps): VNode {
       <NumberField
         label="Freeze token interval (days)"
         value={s.streakFreezeIntervalDays}
+        max={MAX_SAFE_DAY_COUNT}
+        isValid={isSafeDayCount}
+        errorMessage="Freeze token interval (days) must be within the supported day range."
         onValue={(value: number): void => {
           props.onChange({ ...s, streakFreezeIntervalDays: value });
         }}

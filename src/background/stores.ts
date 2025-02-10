@@ -7,6 +7,7 @@ import {
   EVENT_LOG_CAP,
   MAX_FREEZE_TOKENS,
 } from '../shared/constants';
+import { isRelativeMinuteDuration, isSafeDayCount } from '../shared/numeric-validation';
 import {
   LOCAL_CACHES,
   LOCAL_DEVICE_ID,
@@ -161,10 +162,9 @@ export function mergeSettings(raw: unknown, base: Settings = DEFAULT_SETTINGS): 
       ? parseSchedule(stored.schedule)
       : structuredClone(base.schedule),
     streakGoalMin: numberOrDefault(stored.streakGoalMin, base.streakGoalMin),
-    streakFreezeIntervalDays: positiveIntegerOrDefault(
-      stored.streakFreezeIntervalDays,
-      base.streakFreezeIntervalDays,
-    ),
+    streakFreezeIntervalDays: isSafeDayCount(stored.streakFreezeIntervalDays)
+      ? stored.streakFreezeIntervalDays
+      : base.streakFreezeIntervalDays,
     retentionDays: numberOrDefault(stored.retentionDays, base.retentionDays),
   };
 }
@@ -280,10 +280,6 @@ function numberOrDefault(value: unknown, fallback: number): number {
   return isNonNegativeNumber(value) ? value : fallback;
 }
 
-function positiveIntegerOrDefault(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
-}
-
 function isUnitNumber(value: unknown): value is number {
   return isNonNegativeNumber(value) && value <= 1;
 }
@@ -291,7 +287,11 @@ function isUnitNumber(value: unknown): value is number {
 function parsePresets(value: unknown): [number, number, number] | null {
   if (!Array.isArray(value) || value.length !== 3) return null;
   const [first, second, third]: unknown[] = value;
-  if (!isNonNegativeNumber(first) || !isNonNegativeNumber(second) || !isNonNegativeNumber(third)) {
+  if (
+    !isRelativeMinuteDuration(first) ||
+    !isRelativeMinuteDuration(second) ||
+    !isRelativeMinuteDuration(third)
+  ) {
     return null;
   }
   return [first, second, third];

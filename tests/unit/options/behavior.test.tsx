@@ -41,6 +41,39 @@ describe('PauseEconomy', () => {
     expect(next.streakFreezeIntervalDays).toBe(10);
   });
 
+  it('accepts the exact upper freeze cadence boundary', (): void => {
+    const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
+    const { getByLabelText }: ReturnType<typeof render> = render(
+      <PauseEconomy settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
+    const input: HTMLInputElement = getByLabelText(
+      'Freeze token interval (days)',
+    ) as HTMLInputElement;
+
+    expect(input.max).toBe('100000000');
+    fireEvent.input(input, { target: { value: '100000000' } });
+
+    const next: Settings = onChange.mock.calls[0]?.[0] as Settings;
+    expect(next.streakFreezeIntervalDays).toBe(100_000_000);
+  });
+
+  it.each([
+    ['maximum safe integer days', String(Number.MAX_SAFE_INTEGER)],
+    ['past the Date range', '100000001'],
+  ])('rejects %s for the freeze cadence', (_label: string, value: string): void => {
+    const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
+    const { getByLabelText, getByText }: ReturnType<typeof render> = render(
+      <PauseEconomy settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
+
+    fireEvent.input(getByLabelText('Freeze token interval (days)'), { target: { value } });
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(
+      getByText('Freeze token interval (days) must be within the supported day range.'),
+    ).toBeTruthy();
+  });
+
   it('maps the earn-rate input to earnRatio = value / 30', (): void => {
     const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
     const { getByLabelText }: ReturnType<typeof render> = render(
@@ -114,6 +147,54 @@ describe('BehaviorDefaults', () => {
     expect(deepPreset.presetsMin).toEqual([15, 25, 75]);
   });
 
+  it('accepts positive fractional session presets', (): void => {
+    const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
+    const { getByLabelText }: ReturnType<typeof render> = render(
+      <BehaviorDefaults settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
+
+    fireEvent.input(getByLabelText('Short session preset (minutes)'), {
+      target: { value: '0.1' },
+    });
+
+    const next: Settings = onChange.mock.calls[0]?.[0] as Settings;
+    expect(next.presetsMin).toEqual([0.1, 25, 50]);
+  });
+
+  it('accepts the exact upper session preset boundary', (): void => {
+    const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
+    const { getByLabelText }: ReturnType<typeof render> = render(
+      <BehaviorDefaults settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
+    const input: HTMLInputElement = getByLabelText(
+      'Short session preset (minutes)',
+    ) as HTMLInputElement;
+
+    expect(input.max).toBe('72000000000');
+    fireEvent.input(input, { target: { value: '72000000000' } });
+
+    const next: Settings = onChange.mock.calls[0]?.[0] as Settings;
+    expect(next.presetsMin).toEqual([72_000_000_000, 25, 50]);
+  });
+
+  it.each([
+    ['sub-millisecond', '0.000001'],
+    ['maximum safe integer', String(Number.MAX_SAFE_INTEGER)],
+    ['past the relative-duration cap', '72000000001'],
+  ])('rejects a %s session preset', (_label: string, value: string): void => {
+    const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
+    const { getByLabelText, getByText }: ReturnType<typeof render> = render(
+      <BehaviorDefaults settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
+
+    fireEvent.input(getByLabelText('Short session preset (minutes)'), { target: { value } });
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(
+      getByText('Short session preset (minutes) must be within the supported minute range.'),
+    ).toBeTruthy();
+  });
+
   it('rejects a zero session preset with a field-specific error', (): void => {
     const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
     const { getByLabelText, getByText }: ReturnType<typeof render> = render(
@@ -126,7 +207,7 @@ describe('BehaviorDefaults', () => {
 
     expect(onChange).not.toHaveBeenCalled();
     expect(
-      getByText('Short session preset (minutes) must be a positive whole number.'),
+      getByText('Short session preset (minutes) must be within the supported minute range.'),
     ).toBeTruthy();
   });
 

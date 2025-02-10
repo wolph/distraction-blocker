@@ -490,6 +490,7 @@ describe('parseRequest', (): void => {
       { pause: { ...SETTINGS.pause, unlockMs: Number.MAX_SAFE_INTEGER + 1 } },
     ],
     ['unsafe gate delay', { gate: { ...SETTINGS.gate, delayMs: Number.MAX_SAFE_INTEGER + 1 } }],
+    ['unsafe freeze cadence', { streakFreezeIntervalDays: Number.MAX_SAFE_INTEGER }],
     [
       'unsafe retention date range',
       { retentionDays: Math.floor(Number.MAX_SAFE_INTEGER / DAY_MS) + 1 },
@@ -506,7 +507,13 @@ describe('parseRequest', (): void => {
   it('rejects day counts beyond the JavaScript Date range', (): void => {
     const days: number = Math.floor(DATE_MAX_MS / DAY_MS) + 1;
     expect(parseRequest({ type: 'getStats', days })).toBeNull();
+    expect(parseSettingsRequest({ streakFreezeIntervalDays: days })).toBeNull();
     expect(parseSettingsRequest({ retentionDays: days })).toBeNull();
+  });
+
+  it('accepts the exact Date-range freeze cadence boundary', (): void => {
+    const days: number = DATE_MAX_MS / DAY_MS;
+    expect(parseSettingsRequest({ streakFreezeIntervalDays: days })).not.toBeNull();
   });
 
   it('accepts the exact fixed half-Date-range relative-duration cap', (): void => {

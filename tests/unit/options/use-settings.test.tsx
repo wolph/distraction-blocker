@@ -94,6 +94,38 @@ describe('useSettingsStore', () => {
     expect(store().settings).toBeNull();
   });
 
+  it.each([
+    ['zero preset', { presetsMin: [0, 25, 50] }],
+    ['sub-millisecond preset', { presetsMin: [0.000_001, 25, 50] }],
+    ['unsafe preset', { presetsMin: [15, Number.MAX_SAFE_INTEGER, 50] }],
+    ['preset past the relative-duration cap', { presetsMin: [15, 72_000_000_001, 50] }],
+    ['maximum safe integer freeze cadence', { streakFreezeIntervalDays: Number.MAX_SAFE_INTEGER }],
+    ['freeze cadence past the Date range', { streakFreezeIntervalDays: 100_000_001 }],
+  ])('rejects %s from the worker', async (_label: string, update: object): Promise<void> => {
+    fake.respond('getSettings', { ...DEFAULT_SETTINGS, ...update });
+    render(<Harness />);
+
+    await waitFor((): void => {
+      expect(store().loadError).toBe('Could not load settings. Reload the page to try again.');
+    });
+    expect(store().settings).toBeNull();
+  });
+
+  it('loads fractional and exact upper-bound settings from the worker', async (): Promise<void> => {
+    const settings: Settings = {
+      ...DEFAULT_SETTINGS,
+      presetsMin: [0.1, 25.5, 72_000_000_000],
+      streakFreezeIntervalDays: 100_000_000,
+    };
+    fake.respond('getSettings', settings);
+    render(<Harness />);
+
+    await waitFor((): void => {
+      expect(store().settings).toEqual(settings);
+    });
+    expect(store().loadError).toBeNull();
+  });
+
   it('reports a rejected initial lists request without publishing partial state', async (): Promise<void> => {
     fake.respond('getLists', (): never => {
       throw new Error('worker unavailable');

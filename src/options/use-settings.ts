@@ -2,6 +2,7 @@ import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/ho
 import { CATEGORY_IDS } from '../shared/constants';
 import type { Ack, Broadcast } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
+import { isRelativeMinuteDuration, isSafeDayCount } from '../shared/numeric-validation';
 import type {
   CategoryId,
   CycleConfig,
@@ -20,10 +21,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
-}
-
-function isPositiveInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
 function isRule(value: unknown): value is Rule {
@@ -68,7 +65,7 @@ function isSettings(value: unknown): value is Settings {
   return (
     Array.isArray(value.presetsMin) &&
     value.presetsMin.length === 3 &&
-    value.presetsMin.every(isFiniteNumber) &&
+    value.presetsMin.every(isRelativeMinuteDuration) &&
     (value.defaultMode === 'blacklist' || value.defaultMode === 'whitelist') &&
     (value.defaultStrictness === 'hard' || value.defaultStrictness === 'friction') &&
     isCycleConfig(value.defaultCycling) &&
@@ -92,7 +89,7 @@ function isSettings(value: unknown): value is Settings {
     Array.isArray(value.schedule) &&
     value.schedule.every(isScheduleEntry) &&
     isFiniteNumber(value.streakGoalMin) &&
-    isPositiveInteger(value.streakFreezeIntervalDays) &&
+    isSafeDayCount(value.streakFreezeIntervalDays) &&
     isFiniteNumber(value.retentionDays)
   );
 }

@@ -87,13 +87,46 @@ describe('storage default merging', () => {
     expect(settings.sessionCompleteNotification).toBe(true);
   });
 
-  it('migrates an unsafe freeze cadence to the seven-day default', () => {
+  it.each([
+    ['zero', 0],
+    ['maximum safe integer days', Number.MAX_SAFE_INTEGER],
+    ['past the Date range', 100_000_001],
+  ])('migrates a %s freeze cadence to the seven-day default', (_label: string, value: number) => {
     const settings: Settings = mergeSettings({
       ...DEFAULT_SETTINGS,
-      streakFreezeIntervalDays: Number.MAX_SAFE_INTEGER + 1,
+      streakFreezeIntervalDays: value,
     });
 
     expect(settings.streakFreezeIntervalDays).toBe(7);
+  });
+
+  it('preserves the exact upper freeze cadence boundary', () => {
+    const settings: Settings = mergeSettings({
+      ...DEFAULT_SETTINGS,
+      streakFreezeIntervalDays: 100_000_000,
+    });
+
+    expect(settings.streakFreezeIntervalDays).toBe(100_000_000);
+  });
+
+  it.each([
+    ['zero', [0, 25, 50]],
+    ['sub-millisecond', [0.000_001, 25, 50]],
+    ['unsafe', [15, Number.MAX_SAFE_INTEGER, 50]],
+    ['past the relative-duration cap', [15, 72_000_000_001, 50]],
+  ])('migrates %s presets to defaults', (_label: string, presetsMin: number[]) => {
+    const settings: Settings = mergeSettings({ ...DEFAULT_SETTINGS, presetsMin });
+
+    expect(settings.presetsMin).toEqual(DEFAULT_SETTINGS.presetsMin);
+  });
+
+  it('preserves fractional presets and the exact relative-duration cap', () => {
+    const settings: Settings = mergeSettings({
+      ...DEFAULT_SETTINGS,
+      presetsMin: [0.1, 25.5, 72_000_000_000],
+    });
+
+    expect(settings.presetsMin).toEqual([0.1, 25.5, 72_000_000_000]);
   });
 
   it('loads pending journal values before their debounced sync flush', async () => {

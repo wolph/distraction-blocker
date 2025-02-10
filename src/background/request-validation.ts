@@ -2,6 +2,12 @@ import { validateRule } from '../core/matcher';
 import { scheduleEntriesOverlap, validateEntry } from '../core/schedule';
 import { CATEGORY_IDS } from '../shared/constants';
 import type { Request } from '../shared/messages';
+import {
+  isPositiveMinuteValue,
+  isRelativeMillisecondDuration,
+  isRelativeMinuteDuration,
+  isSafeDayCount,
+} from '../shared/numeric-validation';
 import { SYNC_LISTS, SYNC_SETTINGS } from '../shared/storage-keys';
 import type {
   CategoryId,
@@ -13,11 +19,6 @@ import type {
   Settings,
 } from '../shared/types';
 import { assertSyncItemWithinQuota } from './sync-quota';
-
-const MINUTE_MS: number = 60_000;
-const DAY_MS: number = 86_400_000;
-const DATE_MAX_MS: number = 8_640_000_000_000_000;
-const MAX_RELATIVE_DURATION_MS: number = DATE_MAX_MS / 2;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -53,22 +54,6 @@ function isPositiveInteger(value: unknown): value is number {
   return isNonNegativeInteger(value) && value > 0;
 }
 
-function isPositiveMinuteValue(value: unknown): value is number {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return false;
-  const milliseconds: number = Math.round(value * MINUTE_MS);
-  return milliseconds > 0 && Number.isSafeInteger(milliseconds);
-}
-
-function isRelativeMillisecondDuration(value: unknown, allowZero: boolean): value is number {
-  if (!isNonNegativeInteger(value) || (!allowZero && value === 0)) return false;
-  return value <= MAX_RELATIVE_DURATION_MS;
-}
-
-function isRelativeMinuteDuration(value: unknown): value is number {
-  if (!isPositiveMinuteValue(value)) return false;
-  return isRelativeMillisecondDuration(Math.round(value * MINUTE_MS), false);
-}
-
 function isWithinSyncQuota(key: string, value: unknown): boolean {
   try {
     assertSyncItemWithinQuota(key, value);
@@ -76,12 +61,6 @@ function isWithinSyncQuota(key: string, value: unknown): boolean {
   } catch {
     return false;
   }
-}
-
-function isSafeDayCount(value: unknown): value is number {
-  if (!isPositiveInteger(value)) return false;
-  const milliseconds: number = value * DAY_MS;
-  return Number.isSafeInteger(milliseconds) && milliseconds <= DATE_MAX_MS;
 }
 
 function isNonBlankString(value: unknown): value is string {
