@@ -77,4 +77,17 @@ describe('closeDay', () => {
     const once: StreakState = closeDay(emptyStreak('2026-08'), '2026-08-25', 30, 25, 7);
     expect(closeDay(once, '2026-08-25', 30, 25, 7)).toEqual(once);
   });
+
+  it('ignores a stale date older than the synced last-counted date', () => {
+    const synced: StreakState = {
+      ...emptyStreak('2026-08'),
+      current: 12,
+      freezeTokens: 2,
+      lastCountedDate: '2026-08-25',
+      lastFreezeGrantDate: '2026-08-24',
+      activeDays: [23, 24, 25],
+    };
+
+    expect(closeDay(synced, '2026-08-20', 0, 25, 7)).toEqual(synced);
+  });
 });

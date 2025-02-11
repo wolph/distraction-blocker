@@ -39,7 +39,7 @@ export function closeDay(
   goalMin: number,
   freezeIntervalDays: number,
 ): StreakState {
-  if (streak.lastCountedDate === date) return streak;
+  if (streak.lastCountedDate !== null && date <= streak.lastCountedDate) return streak;
   const month: string = date.slice(0, 7);
   let s: StreakState = { ...streak, activeDays: [...streak.activeDays] };
   if (s.activeMonth !== month) s = { ...s, activeMonth: month, activeDays: [] };

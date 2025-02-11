@@ -1616,6 +1616,24 @@ describe('Engine', () => {
     expect(h.engine.getStreak()).toMatchObject({ current: 2 });
   });
 
+  it('does not regress a newer synced streak while replaying stale runtime dates', async () => {
+    const staleRuntime: RuntimeState = emptyRuntime(new Date(2026, 7, 20, 12, 0).getTime());
+    const syncedStreak: StreakState = {
+      current: 12,
+      freezeTokens: 2,
+      lastCountedDate: '2026-08-27',
+      lastFreezeGrantDate: '2026-08-24',
+      activeDays: [23, 24, 25, 26, 27],
+      activeMonth: '2026-08',
+    };
+    const h: Harness = makeEngine({ runtime: staleRuntime, streak: syncedStreak });
+    h.setNow(new Date(2026, 7, 28, 12, 0).getTime());
+
+    await h.engine.tick();
+
+    expect(h.engine.getStreak()).toEqual(syncedStreak);
+  });
+
   it('quarantines a future local aggregate and removes its daily key', async () => {
     const runtime: RuntimeState = emptyRuntime(T0);
     const futureDate: string = localDateStr(T0 + 3 * DAY_MS);
