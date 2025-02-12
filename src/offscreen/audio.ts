@@ -26,9 +26,18 @@ const TUNES: Record<PlayMsg['sound'], Array<{ f: number; t: number; d: number }>
   ],
 };
 
+let audioContext: AudioContext | null = null;
+
+function reusableAudioContext(): AudioContext {
+  if (audioContext === null || audioContext.state === 'closed') {
+    audioContext = new AudioContext();
+  }
+  return audioContext;
+}
+
 chrome.runtime.onMessage.addListener((msg: PlayMsg): undefined => {
   if (msg.type !== 'playSound') return;
-  const ctx: AudioContext = new AudioContext();
+  const ctx: AudioContext = reusableAudioContext();
   for (const note of TUNES[msg.sound]) {
     const osc: OscillatorNode = ctx.createOscillator();
     const gain: GainNode = ctx.createGain();

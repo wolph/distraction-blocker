@@ -106,10 +106,12 @@ export function updateIcon(snapshot: SessionSnapshot, badgeCountdown: boolean): 
       16: drawIcon(16, spec),
       32: drawIcon(32, spec),
     };
-    void chrome.action.setIcon({ imageData });
+    void chrome.action.setIcon({ imageData }).catch((): undefined => undefined);
     const badge: { text: string; color: string } = badgeFor(snapshot, badgeCountdown);
-    void chrome.action.setBadgeText({ text: badge.text });
-    void chrome.action.setBadgeBackgroundColor({ color: badge.color });
+    void chrome.action.setBadgeText({ text: badge.text }).catch((): undefined => undefined);
+    void chrome.action
+      .setBadgeBackgroundColor({ color: badge.color })
+      .catch((): undefined => undefined);
   } catch {
     // OffscreenCanvas or action API hiccups must not break the engine.
   }

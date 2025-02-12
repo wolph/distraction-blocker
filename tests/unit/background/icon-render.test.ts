@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { IconSpec } from '../../../src/background/icon';
-import { drawIcon, iconSpec } from '../../../src/background/icon';
+import { drawIcon, iconSpec, updateIcon } from '../../../src/background/icon';
 import { emptySnapshot } from '../../../src/shared/constants';
 
 interface DrawCall {
@@ -134,5 +134,29 @@ describe('break icon pixels', () => {
     expect(focusCalls).not.toContainEqual({ name: 'roundRect', args: [5, 8.4, 4.5, 3.2, 1] });
     expect(breakCalls).toContainEqual({ name: 'roundRect', args: [3.5, 7, 9, 7, 1.2] });
     expect(breakCalls).toContainEqual({ name: 'roundRect', args: [5, 8.4, 4.5, 3.2, 1] });
+  });
+
+  it('attaches rejection handlers to every action update', (): void => {
+    vi.stubGlobal('OffscreenCanvas', RecordingCanvas);
+    const iconCatch: ReturnType<typeof vi.fn> = vi.fn();
+    const badgeTextCatch: ReturnType<typeof vi.fn> = vi.fn();
+    const badgeColorCatch: ReturnType<typeof vi.fn> = vi.fn();
+    vi.stubGlobal('chrome', {
+      action: {
+        setIcon: vi.fn((): { catch: ReturnType<typeof vi.fn> } => ({ catch: iconCatch })),
+        setBadgeText: vi.fn((): { catch: ReturnType<typeof vi.fn> } => ({
+          catch: badgeTextCatch,
+        })),
+        setBadgeBackgroundColor: vi.fn((): { catch: ReturnType<typeof vi.fn> } => ({
+          catch: badgeColorCatch,
+        })),
+      },
+    });
+
+    updateIcon(emptySnapshot(0), true);
+
+    expect(iconCatch).toHaveBeenCalledOnce();
+    expect(badgeTextCatch).toHaveBeenCalledOnce();
+    expect(badgeColorCatch).toHaveBeenCalledOnce();
   });
 });
