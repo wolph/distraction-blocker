@@ -1,0 +1,240 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { buildStats, pruneAndRollup } from '../../../src/background/stats-service';
+import type { StatsBundle } from '../../../src/shared/messages';
+import type { DailyAgg, EventRecord } from '../../../src/shared/types';
+
+const ORIGINAL_TZ: string | undefined = process.env.TZ;
+
+function daily(date: string, focusMs: number = 0): DailyAgg {
+  return {
+    date,
+    focusMs,
+    sessionsStarted: 0,
+    sessionsCompleted: 0,
+    attempts: {},
+    attemptsOther: 0,
+    pausesTaken: 0,
+    pauseMsSpent: 0,
+    pauseMsEarned: 0,
+    unlocksTaken: 0,
+    unlockMsSpent: 0,
+    resisted: 0,
+  };
+}
+
+function calendarDates(from: string, count: number): string[] {
+  const cursor: Date = new Date(`${from}T00:00:00Z`);
+  const dates: string[] = [];
+  for (let index: number = 0; index < count; index++) {
+    dates.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return dates;
+}
+
+function previousCalendarDate(date: string): string {
+  const cursor: Date = new Date(`${date}T00:00:00Z`);
+  cursor.setUTCDate(cursor.getUTCDate() - 1);
+  return cursor.toISOString().slice(0, 10);
+}
+
+function syncDailies(dates: string[]): Record<string, unknown> {
+  return Object.fromEntries(
+    dates.map((date: string): [string, DailyAgg] => [`agg:devA:${date}`, daily(date, 1)]),
+  );
+}
+
+interface RangeCase {
+  label: string;
+  localNow: [number, number, number, number, number];
+  days: number;
+  from: string;
+}
+
+const RANGE_CASES: RangeCase[] = [
+  {
+    label: 'spring seven-day range',
+    localNow: [2026, 2, 30, 0, 30],
+    days: 7,
+    from: '2026-03-24',
+  },
+  {
+    label: 'spring thirty-day range',
+    localNow: [2026, 3, 1, 0, 30],
+    days: 30,
+    from: '2026-03-03',
+  },
+  {
+    label: 'autumn seven-day range',
+    localNow: [2026, 9, 25, 23, 30],
+    days: 7,
+    from: '2026-10-19',
+  },
+  {
+    label: 'autumn thirty-day range',
+    localNow: [2026, 9, 25, 23, 30],
+    days: 30,
+    from: '2026-09-26',
+  },
+];
+
+function started(at: number, sessionId?: string): EventRecord {
+  return {
+    t: 'sessionStarted',
+    at,
+    source: 'manual',
+    mode: 'blacklist',
+    strictness: 'friction',
+    durationMin: 25,
+    intention: `session ${at}`,
+    ...(sessionId === undefined ? {} : { sessionId }),
+  };
+}
+
+describe.sequential('stats-service local calendar ranges', (): void => {
+  beforeAll((): void => {
+    process.env.TZ = 'Europe/Amsterdam';
+  });
+
+  afterAll((): void => {
+    if (ORIGINAL_TZ === undefined) delete process.env.TZ;
+    else process.env.TZ = ORIGINAL_TZ;
+  });
+
+  it.each(RANGE_CASES)('keeps the exact $label', ({ localNow, days, from }: RangeCase): void => {
+    const expected: string[] = calendarDates(from, days);
+    const outside: string = previousCalendarDate(from);
+    const now: number = new Date(...localNow).getTime();
+    const bundle: StatsBundle = buildStats(
+      'devA',
+      syncDailies([outside, ...expected]),
+      [],
+      days,
+      now,
+    );
+
+    expect(bundle.days.map((aggregate: DailyAgg): string => aggregate.date)).toEqual(expected);
+    expect(bundle.totals.focusMsWeek).toBe(7);
+  });
+
+  it.each([
+    {
+      label: 'spring transition',
+      localNow: [2026, 2, 30, 0, 30] as RangeCase['localNow'],
+      cutoff: '2026-03-23',
+    },
+    {
+      label: 'autumn transition',
+      localNow: [2026, 9, 25, 23, 30] as RangeCase['localNow'],
+      cutoff: '2026-10-18',
+    },
+  ])('prunes before the exact local-date cutoff at the $label', ({ localNow, cutoff }): void => {
+    const outside: string = previousCalendarDate(cutoff);
+    const now: number = new Date(...localNow).getTime();
+    const plan: ReturnType<typeof pruneAndRollup> = pruneAndRollup(
+      'devA',
+      syncDailies([outside, cutoff]),
+      7,
+      now,
+    );
+
+    expect(plan.remove).toEqual([`agg:devA:${outside}`]);
+  });
+});
+
+describe('stats-service recent session cap', (): void => {
+  it('keeps every event needed for a retained long session', (): void => {
+    const events: EventRecord[] = [started(1, 'long-session')];
+    for (let index: number = 0; index < 30; index++) {
+      events.push({ t: 'pauseTaken', at: 2 + index, ms: 1_000, sessionId: 'long-session' });
+      events.push({
+        t: 'unlockTaken',
+        at: 32 + index,
+        host: 'example.com',
+        ms: 2_000,
+        sessionId: 'long-session',
+      });
+    }
+    events.push({
+      t: 'sessionCompleted',
+      at: 100,
+      focusedMs: 60_000,
+      sessionId: 'long-session',
+    });
+
+    const recent: EventRecord[] = buildStats('devA', {}, events, 7, Date.now()).recentSessions;
+
+    expect(recent).toHaveLength(62);
+    expect(recent.at(-1)).toMatchObject({ t: 'sessionStarted', sessionId: 'long-session' });
+    expect(
+      recent
+        .filter(
+          (event: EventRecord): event is Extract<EventRecord, { t: 'pauseTaken' }> =>
+            event.t === 'pauseTaken',
+        )
+        .reduce((total: number, event): number => total + event.ms, 0),
+    ).toBe(30_000);
+    expect(
+      recent
+        .filter(
+          (event: EventRecord): event is Extract<EventRecord, { t: 'unlockTaken' }> =>
+            event.t === 'unlockTaken',
+        )
+        .reduce((total: number, event): number => total + event.ms, 0),
+    ).toBe(60_000);
+  });
+
+  it('caps complete identified sessions after grouping their events', (): void => {
+    const events: EventRecord[] = [];
+    for (let index: number = 0; index < 51; index++) {
+      const sessionId: string = `session-${index}`;
+      const at: number = index * 10;
+      events.push(started(at, sessionId));
+      events.push({ t: 'pauseTaken', at: at + 1, ms: index + 1, sessionId });
+      events.push({ t: 'unlockTaken', at: at + 2, host: 'example.com', ms: index + 2, sessionId });
+      events.push({ t: 'sessionCompleted', at: at + 3, focusedMs: index + 3, sessionId });
+    }
+
+    const recent: EventRecord[] = buildStats('devA', {}, events, 7, Date.now()).recentSessions;
+    const retainedIds: Set<string> = new Set(
+      recent.flatMap((event: EventRecord): string[] =>
+        'sessionId' in event && event.sessionId !== undefined ? [event.sessionId] : [],
+      ),
+    );
+
+    expect(recent).toHaveLength(200);
+    expect(retainedIds.size).toBe(50);
+    expect(retainedIds.has('session-0')).toBe(false);
+    expect(retainedIds.has('session-1')).toBe(true);
+    expect(retainedIds.has('session-50')).toBe(true);
+  });
+
+  it('preserves complete legacy session groups while applying the row cap', (): void => {
+    const events: EventRecord[] = [];
+    for (let index: number = 0; index < 51; index++) {
+      const at: number = index * 10;
+      events.push(started(at));
+      events.push({ t: 'pauseTaken', at: at + 1, ms: index + 1 });
+      events.push({ t: 'sessionCompleted', at: at + 2, focusedMs: index + 2 });
+    }
+
+    const recent: EventRecord[] = buildStats('devA', {}, events, 7, Date.now()).recentSessions;
+
+    expect(recent).toHaveLength(150);
+    expect(recent.at(-1)).toMatchObject({ t: 'sessionStarted', at: 10 });
+    expect(recent[0]).toMatchObject({ t: 'sessionCompleted', at: 502 });
+  });
+
+  it('keeps a legacy open session when an identified session starts', (): void => {
+    const events: EventRecord[] = [
+      started(1),
+      started(2, 'identified'),
+      { t: 'sessionCompleted', at: 3, focusedMs: 30_000, sessionId: 'identified' },
+      { t: 'sessionCompleted', at: 4, focusedMs: 40_000 },
+    ];
+
+    const recent: EventRecord[] = buildStats('devA', {}, events, 7, Date.now()).recentSessions;
+
+    expect(recent).toEqual([...events].reverse());
+  });
+});

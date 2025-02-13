@@ -14,11 +14,22 @@ import { getDeviceId, parseStreak, readEvents } from './stores';
 import { chooseNewerStreak } from './streak-sync';
 import { removeSyncItems, setSyncItemsWithinQuota } from './sync-quota';
 
-const DAY_MS: number = 86_400_000;
 const DAILY_KEY_RE: RegExp = /^agg:[^:]+:(\d{4}-\d{2}-\d{2})$/;
 const MONTHLY_KEY_RE: RegExp = /^aggm:[^:]+:(\d{4}-\d{2})$/;
-const RECENT_SESSION_CAP: number = 50;
+const RECENT_SESSION_ROW_CAP: number = 50;
 const MAX_CLOCK_REBASE_ARCHIVES: number = 20;
+
+type RecentSessionEvent = Extract<
+  EventRecord,
+  {
+    t: 'sessionStarted' | 'sessionCompleted' | 'sessionCanceled' | 'pauseTaken' | 'unlockTaken';
+  }
+>;
+
+interface SessionEventGroup {
+  sessionId?: string;
+  events: RecentSessionEvent[];
+}
 
 interface PrunePlan {
   remove: string[];
@@ -47,6 +58,77 @@ function sumAttempts(agg: DailyAgg): number {
     Object.values(agg.attempts).reduce((a: number, b: number): number => a + b, 0) +
     agg.attemptsOther
   );
+}
+
+function localDateBefore(now: number, daysBefore: number): string {
+  const date: Date = new Date(now);
+  date.setDate(date.getDate() - daysBefore);
+  return localDateStr(date.getTime());
+}
+
+function isRecentSessionEvent(event: EventRecord): event is RecentSessionEvent {
+  return (
+    event.t === 'sessionStarted' ||
+    event.t === 'sessionCompleted' ||
+    event.t === 'sessionCanceled' ||
+    event.t === 'pauseTaken' ||
+    event.t === 'unlockTaken'
+  );
+}
+
+function matchingOpenGroupIndex(opens: SessionEventGroup[], event: RecentSessionEvent): number {
+  const sessionId: string | undefined = event.sessionId;
+  if (sessionId !== undefined) {
+    const exact: number = opens.findIndex(
+      (group: SessionEventGroup): boolean => group.sessionId === sessionId,
+    );
+    if (exact >= 0) return exact;
+    return opens.findIndex((group: SessionEventGroup): boolean => group.sessionId === undefined);
+  }
+  return opens.length - 1;
+}
+
+function recentSessionEvents(events: EventRecord[]): EventRecord[] {
+  const groups: SessionEventGroup[] = [];
+  const opens: SessionEventGroup[] = [];
+  for (const event of events) {
+    if (!isRecentSessionEvent(event)) continue;
+    if (event.t === 'sessionStarted') {
+      const displacedIndex: number =
+        event.sessionId === undefined
+          ? opens.length - 1
+          : opens.findIndex(
+              (group: SessionEventGroup): boolean => group.sessionId === event.sessionId,
+            );
+      if (displacedIndex >= 0) opens.splice(displacedIndex, 1);
+      const group: SessionEventGroup = {
+        ...(event.sessionId === undefined ? {} : { sessionId: event.sessionId }),
+        events: [event],
+      };
+      groups.push(group);
+      opens.push(group);
+      continue;
+    }
+    const openIndex: number = matchingOpenGroupIndex(opens, event);
+    if (openIndex < 0) continue;
+    const group: SessionEventGroup | undefined = opens[openIndex];
+    if (group === undefined) continue;
+    group.events.push(event);
+    if (event.t === 'sessionCompleted' || event.t === 'sessionCanceled') {
+      opens.splice(openIndex, 1);
+    }
+  }
+  const retained: Set<RecentSessionEvent> = new Set(
+    groups
+      .slice(-RECENT_SESSION_ROW_CAP)
+      .flatMap((group: SessionEventGroup): RecentSessionEvent[] => group.events),
+  );
+  return events
+    .filter(isRecentSessionEvent)
+    .filter((event: RecentSessionEvent): boolean => {
+      return retained.has(event);
+    })
+    .reverse();
 }
 
 /**
@@ -89,7 +171,7 @@ export function buildStats(
       if (monthly !== null) groupPush(monthlyByMonth, month, monthly);
     }
   }
-  const fromDate: string = localDateStr(now - (days - 1) * DAY_MS);
+  const fromDate: string = localDateBefore(now, days - 1);
   const daysMerged: DailyAgg[] = [...dailyByDate.entries()]
     .filter(([date]: [string, DailyAgg[]]): boolean => date >= fromDate)
     .sort(([a]: [string, DailyAgg[]], [b]: [string, DailyAgg[]]): number => a.localeCompare(b))
@@ -98,18 +180,8 @@ export function buildStats(
     .sort(([a]: [string, MonthlyAgg[]], [b]: [string, MonthlyAgg[]]): number => a.localeCompare(b))
     .map(([, aggs]: [string, MonthlyAgg[]]): MonthlyAgg => mergeMonthly(aggs));
   const streak: StreakState = parseStreak(items[SYNC_STREAK]) ?? emptyStreak(localMonthStr(now));
-  const recentSessions: EventRecord[] = allEvents
-    .filter(
-      (e: EventRecord): boolean =>
-        e.t === 'sessionStarted' ||
-        e.t === 'sessionCompleted' ||
-        e.t === 'sessionCanceled' ||
-        e.t === 'pauseTaken' ||
-        e.t === 'unlockTaken',
-    )
-    .slice(-RECENT_SESSION_CAP)
-    .reverse();
-  const weekFrom: string = localDateStr(now - 6 * DAY_MS);
+  const recentSessions: EventRecord[] = recentSessionEvents(allEvents);
+  const weekFrom: string = localDateBefore(now, 6);
   const todayAgg: DailyAgg | undefined = daysMerged.find(
     (d: DailyAgg): boolean => d.date === today,
   );
@@ -140,7 +212,7 @@ export function pruneAndRollup(
   retentionDays: number,
   now: number,
 ): PrunePlan {
-  const cutoff: string = localDateStr(now - retentionDays * DAY_MS);
+  const cutoff: string = localDateBefore(now, retentionDays);
   const mineRe: RegExp = new RegExp(`^agg:${deviceId}:(\\d{4}-\\d{2}-\\d{2})$`);
   const archiveRe: RegExp = new RegExp(
     `^archive:clock-rebase:${deviceId}:\\d{4}-\\d{2}-\\d{2}:(\\d+):[^:]+$`,
