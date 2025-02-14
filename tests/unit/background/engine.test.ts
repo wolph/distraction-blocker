@@ -1616,7 +1616,7 @@ describe('Engine', () => {
     expect(h.engine.getStreak()).toMatchObject({ current: 2 });
   });
 
-  it('does not regress a newer synced streak while replaying stale runtime dates', async () => {
+  it('does not regress a newer synced streak while replaying stale runtime dates', async (): Promise<void> => {
     const staleRuntime: RuntimeState = emptyRuntime(new Date(2026, 7, 20, 12, 0).getTime());
     const syncedStreak: StreakState = {
       current: 12,

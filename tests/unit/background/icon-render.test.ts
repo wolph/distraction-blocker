@@ -136,27 +136,39 @@ describe('break icon pixels', () => {
     expect(breakCalls).toContainEqual({ name: 'roundRect', args: [5, 8.4, 4.5, 3.2, 1] });
   });
 
-  it('attaches rejection handlers to every action update', (): void => {
+  it('attaches rejection handlers to every action update', async (): Promise<void> => {
     vi.stubGlobal('OffscreenCanvas', RecordingCanvas);
-    const iconCatch: ReturnType<typeof vi.fn> = vi.fn();
-    const badgeTextCatch: ReturnType<typeof vi.fn> = vi.fn();
-    const badgeColorCatch: ReturnType<typeof vi.fn> = vi.fn();
+    const rejections: Promise<void>[] = [
+      Promise.reject(new Error('icon unavailable')),
+      Promise.reject(new Error('badge text unavailable')),
+      Promise.reject(new Error('badge color unavailable')),
+    ];
+    const catches: Array<ReturnType<typeof vi.spyOn>> = rejections.map(
+      (rejection: Promise<void>): ReturnType<typeof vi.spyOn> => vi.spyOn(rejection, 'catch'),
+    );
     vi.stubGlobal('chrome', {
       action: {
-        setIcon: vi.fn((): { catch: ReturnType<typeof vi.fn> } => ({ catch: iconCatch })),
-        setBadgeText: vi.fn((): { catch: ReturnType<typeof vi.fn> } => ({
-          catch: badgeTextCatch,
-        })),
-        setBadgeBackgroundColor: vi.fn((): { catch: ReturnType<typeof vi.fn> } => ({
-          catch: badgeColorCatch,
-        })),
+        setIcon: vi.fn((): Promise<void> => rejections[0] as Promise<void>),
+        setBadgeText: vi.fn((): Promise<void> => rejections[1] as Promise<void>),
+        setBadgeBackgroundColor: vi.fn((): Promise<void> => rejections[2] as Promise<void>),
       },
     });
 
-    updateIcon(emptySnapshot(0), true);
-
-    expect(iconCatch).toHaveBeenCalledOnce();
-    expect(badgeTextCatch).toHaveBeenCalledOnce();
-    expect(badgeColorCatch).toHaveBeenCalledOnce();
+    try {
+      updateIcon(emptySnapshot(0), true);
+      expect(
+        catches.every(
+          (catchHandler: ReturnType<typeof vi.spyOn>): boolean =>
+            catchHandler.mock.calls.length === 1,
+        ),
+      ).toBe(true);
+      await Promise.resolve();
+    } finally {
+      await Promise.all(
+        rejections.map(
+          (rejection: Promise<void>): Promise<void> => rejection.catch((): undefined => undefined),
+        ),
+      );
+    }
   });
 });

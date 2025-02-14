@@ -78,7 +78,7 @@ describe('closeDay', () => {
     expect(closeDay(once, '2026-08-25', 30, 25, 7)).toEqual(once);
   });
 
-  it('ignores a stale date older than the synced last-counted date', () => {
+  it('ignores a stale date older than the synced last-counted date', (): void => {
     const synced: StreakState = {
       ...emptyStreak('2026-08'),
       current: 12,

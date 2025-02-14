@@ -24,10 +24,11 @@ describe('background audio boundaries', (): void => {
   });
 
   it('attaches a rejection handler to notification creation', async (): Promise<void> => {
-    const catchHandler: ReturnType<typeof vi.fn> = vi.fn();
+    const rejection: Promise<string> = Promise.reject(new Error('notifications unavailable'));
+    const catchHandler: ReturnType<typeof vi.spyOn> = vi.spyOn(rejection, 'catch');
     vi.stubGlobal('chrome', {
       notifications: {
-        create: vi.fn((): { catch: ReturnType<typeof vi.fn> } => ({ catch: catchHandler })),
+        create: vi.fn((): Promise<string> => rejection),
       },
       runtime: {
         getManifest: vi.fn((): { icons: Record<string, string> } => ({
@@ -40,8 +41,12 @@ describe('background audio boundaries', (): void => {
       '../../../src/background/audio'
     );
 
-    notify('Complete', 'Take a break.');
-
-    expect(catchHandler).toHaveBeenCalledOnce();
+    try {
+      notify('Complete', 'Take a break.');
+      expect(catchHandler).toHaveBeenCalledOnce();
+      await Promise.resolve();
+    } finally {
+      await rejection.catch((): undefined => undefined);
+    }
   });
 });
