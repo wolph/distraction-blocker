@@ -128,7 +128,10 @@ vi.mock('../../../src/background/icon', () => ({ updateIcon: vi.fn() }));
 vi.mock('../../../src/background/router', () => ({
   routeMessage: vi.fn().mockResolvedValue({ ok: true }),
 }));
-vi.mock('../../../src/background/stats-service', () => ({ runPrune: vi.fn() }));
+vi.mock('../../../src/background/stats-service', () => ({
+  pruneAndRollup: vi.fn(() => ({ remove: [], set: {} })),
+  runPrune: vi.fn(),
+}));
 vi.mock('../../../src/background/storage-sync', () => ({
   handleSyncChanges: vi.fn(),
   missingSyncDefaults: vi.fn((): Record<string, unknown> => ({})),

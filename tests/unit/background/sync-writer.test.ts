@@ -538,4 +538,77 @@ describe('SyncWriter concurrency ordering', () => {
 
     expect(writes).toEqual([{ settings: { text: 'first' } }, { settings: { text: 'second' } }]);
   });
+
+  it('atomically transforms pending work queued while preparation is in flight', async (): Promise<void> => {
+    let releasePreparation: () => void = (): void => {};
+    const preparationBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releasePreparation = resolve;
+    });
+    let markPreparationStarted: () => void = (): void => {};
+    const preparationStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      markPreparationStarted = resolve;
+    });
+    let releaseTransformedJournal: () => void = (): void => {};
+    const transformedJournalBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseTransformedJournal = resolve;
+    });
+    let transformedJournalStarted: () => void = (): void => {};
+    const transformedJournalPersisting: Promise<void> = new Promise((resolve: () => void): void => {
+      transformedJournalStarted = resolve;
+    });
+    const durable: SyncJournal[] = [];
+    const writer: SyncWriter = new SyncWriter(
+      10_000,
+      vi.fn().mockResolvedValue(undefined),
+      vi.fn().mockResolvedValue(undefined),
+      {
+        initial: { sets: {}, removes: [] },
+        persist: async (journal: SyncJournal): Promise<void> => {
+          if (Object.hasOwn(journal.sets, 'monthly')) {
+            transformedJournalStarted();
+            await transformedJournalBlocked;
+          }
+          durable.push(structuredClone(journal));
+        },
+      },
+    );
+    writer.queue('old-daily', { focusMs: 1 });
+    await writer.whenJournalDurable();
+
+    const transforming: Promise<void> = writer.transformPending(
+      async (): Promise<string> => {
+        markPreparationStarted();
+        await preparationBlocked;
+        return 'prepared';
+      },
+      (prepared: string, pending: SyncJournal): SyncJournal => ({
+        sets: {
+          ...pending.sets,
+          monthly: { focusMs: 1, prepared },
+        },
+        removes: [...pending.removes, 'old-daily'],
+      }),
+    );
+    await preparationStarted;
+    writer.queue('concurrent', { value: 2 });
+    releasePreparation();
+    await transformedJournalPersisting;
+
+    let acknowledged: boolean = false;
+    void transforming.then((): void => {
+      acknowledged = true;
+    });
+    await Promise.resolve();
+    expect(acknowledged).toBe(false);
+
+    releaseTransformedJournal();
+    await transforming;
+    expect(durable.at(-1)).toEqual({
+      sets: {
+        concurrent: { value: 2 },
+        monthly: { focusMs: 1, prepared: 'prepared' },
+      },
+      removes: ['old-daily'],
+    });
+  });
 });

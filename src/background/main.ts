@@ -24,7 +24,6 @@ import { Engine, type EnginePorts } from './engine';
 import { updateIcon } from './icon';
 import { parseRequest } from './request-validation';
 import { routeMessage } from './router';
-import { runPrune } from './stats-service';
 import { handleSyncChanges, missingSyncDefaults } from './storage-sync';
 import {
   appendEvents,
@@ -54,6 +53,7 @@ import {
   sanitizeSyncJournal,
   setSyncItemsWithinQuota,
 } from './sync-quota';
+import { compactPendingSyncRetention } from './sync-retention';
 import { SyncEchoes, type SyncJournal, SyncWriter } from './sync-writer';
 import {
   applyBlockingFactory,
@@ -288,7 +288,15 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
       if (atMs === null) void chrome.alarms.clear(PHASE_ALARM);
       else void chrome.alarms.create(PHASE_ALARM, { when: atMs });
     },
-    prune: runPrune,
+    prune: (retentionDays: number, pruneNow: number): Promise<void> =>
+      compactPendingSyncRetention(
+        syncWriter,
+        deviceId,
+        retentionDays,
+        pruneNow,
+        (): Promise<Record<string, unknown>> =>
+          chrome.storage.sync.get(null) as Promise<Record<string, unknown>>,
+      ),
     reportError: reportBackgroundError,
   };
   const engine: Engine = new Engine(

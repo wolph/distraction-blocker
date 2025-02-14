@@ -104,6 +104,53 @@ export class SyncWriter {
     return requested;
   }
 
+  /**
+   * Rewrites the complete pending journal while flushes are paused. Work
+   * queued during asynchronous preparation is included in the transform.
+   */
+  transformPending<T>(
+    prepare: () => Promise<T>,
+    transform: (prepared: T, pending: SyncJournal) => SyncJournal,
+  ): Promise<void> {
+    const requested: Promise<void> = this.flushQueue.then(async (): Promise<void> => {
+      const prepared: T = await prepare();
+      const current: SyncJournal = {
+        sets: Object.fromEntries(
+          [...this.pending.entries()].sort(
+            ([left]: [string, unknown], [right]: [string, unknown]): number =>
+              left.localeCompare(right),
+          ),
+        ),
+        removes: [...this.pendingRemovals].sort((left: string, right: string): number =>
+          left.localeCompare(right),
+        ),
+      };
+      const transformed: SyncJournal = transform(prepared, current);
+      const removals: Set<string> = new Set(transformed.removes);
+      const sets: Array<[string, unknown]> = Object.entries(transformed.sets)
+        .filter(([key]: [string, unknown]): boolean => !removals.has(key))
+        .sort(([left]: [string, unknown], [right]: [string, unknown]): number =>
+          left.localeCompare(right),
+        );
+      for (const [key, value] of sets) assertSyncItemWithinQuota(key, value);
+
+      this.pending = new Map(sets);
+      this.pendingRemovals = new Set(
+        [...removals].sort((left: string, right: string): number => left.localeCompare(right)),
+      );
+      this.reconciliationPending.clear();
+      this.pendingRevisions.clear();
+      for (const key of this.pending.keys()) this.markChanged(key);
+      for (const key of this.pendingRemovals) this.markChanged(key);
+      this.persistPendingJournal();
+      const durability: Promise<void> = this.journalDurability;
+      if (this.pending.size > 0 || this.pendingRemovals.size > 0) this.schedule();
+      await durability;
+    });
+    this.flushQueue = requested.catch((): void => {});
+    return requested;
+  }
+
   private async performFlush(): Promise<void> {
     if (this.timer !== null) {
       clearTimeout(this.timer);
