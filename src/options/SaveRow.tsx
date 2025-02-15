@@ -16,15 +16,23 @@ export function SaveRow(props: SaveRowProps): VNode {
     string | null
   >(null);
   const [saved, setSaved]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
+  const [saving, setSaving]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
 
   const save: () => Promise<void> = async (): Promise<void> => {
     setSaved(false);
     setError(null);
-    const result: string | null = await props.onSave();
-    if (result === null) {
-      setSaved(true);
-    } else {
-      setError(result);
+    setSaving(true);
+    try {
+      const result: string | null = await props.onSave();
+      if (result === null) {
+        setSaved(true);
+      } else {
+        setError(result);
+      }
+    } catch {
+      setError('Could not save. Try again.');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -33,6 +41,7 @@ export function SaveRow(props: SaveRowProps): VNode {
       <button
         type="button"
         class="primary"
+        disabled={saving}
         onClick={(): void => {
           void save();
         }}

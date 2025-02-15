@@ -32,16 +32,23 @@ function useActiveHost(): string | null {
   return host;
 }
 
-function useFocusedTodayMs(): number | null {
+function useFocusedTodayMs(): { ms: number | null; error: boolean } {
   const [ms, setMs]: [number | null, Dispatch<StateUpdater<number | null>>] = useState<
     number | null
   >(null);
+  const [error, setError]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
   useEffect((): void => {
-    void sendRequest({ type: 'getStats', days: 1 }).then((bundle: StatsBundle): void =>
-      setMs(bundle.totals.focusMsToday),
-    );
+    void sendRequest({ type: 'getStats', days: 1 })
+      .then((bundle: StatsBundle): void => {
+        setMs(bundle.totals.focusMsToday);
+        setError(false);
+      })
+      .catch((): void => {
+        setMs(null);
+        setError(true);
+      });
   }, []);
-  return ms;
+  return { ms, error };
 }
 
 function SpendButton({
@@ -49,16 +56,18 @@ function SpendButton({
   sub,
   affordable,
   countdown,
+  pending,
   onClick,
 }: {
   label: string;
   sub: string | null;
   affordable: boolean;
   countdown: string | null;
+  pending: boolean;
   onClick: () => void;
 }): VNode {
   return (
-    <button type="button" class="spend-button" disabled={!affordable} onClick={onClick}>
+    <button type="button" class="spend-button" disabled={!affordable || pending} onClick={onClick}>
       <span class="spend-label">{label}</span>
       {affordable ? (
         sub !== null ? (
@@ -75,30 +84,45 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
   const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
     string | null
   >(null);
+  const [actionPending, setActionPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
   const activeHost: string | null = useActiveHost();
-  const focusedTodayMs: number | null = useFocusedTodayMs();
+  const focusedToday: { ms: number | null; error: boolean } = useFocusedTodayMs();
 
   const bankMs: number = extrapolatedBank(snapshot, now);
   const bankFill: number = snapshot.bankCapMs > 0 ? Math.min(1, bankMs / snapshot.bankCapMs) : 0;
   const intention: string = snapshot.config?.intention ?? '';
   const strictness: string = snapshot.config?.strictness ?? 'friction';
 
-  const openGate: (gate: GateKind, host: string | null) => void = (
+  const openGate: (gate: GateKind, host: string | null) => Promise<void> = async (
     gate: GateKind,
     host: string | null,
-  ): void => {
-    void sendRequest({ type: 'openGate', gate, host }).then((ack: Ack): void => {
+  ): Promise<void> => {
+    setError(null);
+    setActionPending(true);
+    try {
+      const ack: Ack = await sendRequest({ type: 'openGate', gate, host });
       if (!ack.ok) setError(ack.error);
-    });
+    } catch {
+      setError('Could not request that action. Try again.');
+    } finally {
+      setActionPending(false);
+    }
   };
 
-  const act: (req: { type: 'resumeFromPause' } | { type: 'startNextFocusEarly' }) => void = (
-    req: { type: 'resumeFromPause' } | { type: 'startNextFocusEarly' },
-  ): void => {
-    void sendRequest(req).then((ack: Ack): void => {
-      if (!ack.ok) setError(ack.error);
-    });
-  };
+  const act: (req: { type: 'resumeFromPause' } | { type: 'startNextFocusEarly' }) => Promise<void> =
+    async (req: { type: 'resumeFromPause' } | { type: 'startNextFocusEarly' }): Promise<void> => {
+      setError(null);
+      setActionPending(true);
+      try {
+        const ack: Ack = await sendRequest(req);
+        if (!ack.ok) setError(ack.error);
+      } catch {
+        setError('Could not request that action. Try again.');
+      } finally {
+        setActionPending(false);
+      }
+    };
 
   const affordability: (costMs: number) => { affordable: boolean; countdown: string | null } = (
     costMs: number,
@@ -131,8 +155,12 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
     <section class="view active-view">
       <Ring snapshot={snapshot} now={now} />
       {intention !== '' ? <p class="intention-line">{intention}</p> : null}
-      {focusedTodayMs !== null ? (
-        <p class="today-line">{Math.floor(focusedTodayMs / 60_000)} min focused today</p>
+      {focusedToday.ms !== null ? (
+        <p class="today-line">{Math.floor(focusedToday.ms / 60_000)} min focused today</p>
+      ) : focusedToday.error ? (
+        <p class="form-error" role="alert">
+          Today's focus total is unavailable.
+        </p>
       ) : null}
 
       <div class="meter">
@@ -148,7 +176,8 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
         <button
           type="button"
           class="start-button"
-          onClick={(): void => act({ type: 'resumeFromPause' })}
+          disabled={actionPending}
+          onClick={(): void => void act({ type: 'resumeFromPause' })}
         >
           Resume now
         </button>
@@ -158,7 +187,8 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
             <button
               type="button"
               class="spend-button"
-              onClick={(): void => act({ type: 'startNextFocusEarly' })}
+              disabled={actionPending}
+              onClick={(): void => void act({ type: 'startNextFocusEarly' })}
             >
               Start next focus early
             </button>
@@ -171,20 +201,23 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
             sub={activeHost}
             affordable={unlockAfford.affordable && activeHost !== null}
             countdown={unlockAfford.countdown}
-            onClick={(): void => openGate('unlockSite', activeHost)}
+            pending={actionPending}
+            onClick={(): void => void openGate('unlockSite', activeHost)}
           />
           <SpendButton
             label={`Pause everything ${costMin(snapshot.pauseCostMs)} min`}
             sub={null}
             affordable={pauseAfford.affordable}
             countdown={pauseAfford.countdown}
-            onClick={(): void => openGate('pause', null)}
+            pending={actionPending}
+            onClick={(): void => void openGate('pause', null)}
           />
           {strictness === 'friction' ? (
             <button
               type="button"
               class="cancel-link"
-              onClick={(): void => openGate('cancel', null)}
+              disabled={actionPending}
+              onClick={(): void => void openGate('cancel', null)}
             >
               End session
             </button>

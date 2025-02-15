@@ -3,67 +3,87 @@ import { DEFAULT_SETTINGS } from '../shared/constants';
 import { type StatsBundle, sendRequest } from '../shared/messages';
 import type { EventRecord, PauseEconomy, Settings } from '../shared/types';
 
+export interface StatsLoadState {
+  bundle: StatsBundle | null;
+  error: boolean;
+}
+
 /** One getStats request on mount feeds the whole page. */
-export function useStats(): StatsBundle | null {
+export function useStats(): StatsLoadState {
   const [bundle, setBundle]: [StatsBundle | null, Dispatch<StateUpdater<StatsBundle | null>>] =
     useState<StatsBundle | null>(null);
+  const [error, setError]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
   useEffect((): void => {
     sendRequest({ type: 'getStats', days: 30 })
-      .then((b: StatsBundle): void => setBundle(b))
-      .catch((err: unknown): void => {
-        console.error('getStats failed', err);
+      .then((loaded: StatsBundle): void => {
+        setBundle(loaded);
+        setError(false);
+      })
+      .catch((): void => {
+        setBundle(null);
+        setError(true);
       });
   }, []);
-  return bundle;
+  return { bundle, error };
 }
 
-/**
- * The pause economy settings, for the spent-vs-earned tile. Falls back to the
- * defaults until the worker answers, which only skews the derived earned
- * figure when the user changed the earn ratio and the fetch fails.
- */
 function isEventRecord(value: unknown): value is EventRecord {
   if (typeof value !== 'object' || value === null) return false;
-  const rec: Record<string, unknown> = value as Record<string, unknown>;
-  return typeof rec.t === 'string' && typeof rec.at === 'number';
+  const record: Record<string, unknown> = value as Record<string, unknown>;
+  return typeof record.t === 'string' && typeof record.at === 'number';
 }
 
-/**
- * The local event log, for the attempts-by-hour chart. The export is this
- * machine only, which the chart captions honestly.
- */
-export function useAttemptEvents(): EventRecord[] | null {
+export interface AttemptEventsState {
+  events: EventRecord[] | null;
+  error: boolean;
+}
+
+/** Local event log for the attempts-by-hour chart. */
+export function useAttemptEvents(): AttemptEventsState {
   const [events, setEvents]: [EventRecord[] | null, Dispatch<StateUpdater<EventRecord[] | null>>] =
     useState<EventRecord[] | null>(null);
+  const [error, setError]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
   useEffect((): void => {
     sendRequest({ type: 'exportEvents' })
-      .then((res: { json: string }): void => {
+      .then((response: { json: string }): void => {
         try {
-          const parsed: unknown = JSON.parse(res.json);
+          const parsed: unknown = JSON.parse(response.json);
           const records: EventRecord[] = Array.isArray(parsed) ? parsed.filter(isEventRecord) : [];
-          setEvents(records.filter((e: EventRecord): boolean => e.t === 'attempt'));
-        } catch (err: unknown) {
-          console.error('exportEvents returned unparseable JSON', err);
+          setEvents(records.filter((event: EventRecord): boolean => event.t === 'attempt'));
+          setError(false);
+        } catch {
           setEvents([]);
+          setError(true);
         }
       })
-      .catch((err: unknown): void => {
-        console.error('exportEvents failed', err);
+      .catch((): void => {
         setEvents([]);
+        setError(true);
       });
   }, []);
-  return events;
+  return { events, error };
 }
 
-export function useEconomy(): PauseEconomy {
+export interface EconomyState {
+  economy: PauseEconomy;
+  error: boolean;
+}
+
+/** Pause settings for the spent-versus-earned tile. */
+export function useEconomy(): EconomyState {
   const [economy, setEconomy]: [PauseEconomy, Dispatch<StateUpdater<PauseEconomy>>] =
     useState<PauseEconomy>(DEFAULT_SETTINGS.pause);
+  const [error, setError]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
   useEffect((): void => {
     sendRequest({ type: 'getSettings' })
-      .then((settings: Settings): void => setEconomy(settings.pause))
-      .catch((err: unknown): void => {
-        console.error('getSettings failed', err);
+      .then((settings: Settings): void => {
+        setEconomy(settings.pause);
+        setError(false);
+      })
+      .catch((): void => {
+        setEconomy(DEFAULT_SETTINGS.pause);
+        setError(true);
       });
   }, []);
-  return economy;
+  return { economy, error };
 }

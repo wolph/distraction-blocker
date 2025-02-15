@@ -27,22 +27,40 @@ export function GatePanel({
   const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
     string | null
   >(null);
+  const [pending, setPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
 
   const totalS: number = Math.max(1, Math.round((gate.readyAt - gate.openedAt) / 1000));
   const elapsedS: number = Math.min(totalS, Math.max(0, Math.floor((now - gate.openedAt) / 1000)));
   const ready: boolean = now >= gate.readyAt;
   const phraseOk: boolean = gate.requiredPhrase === null || typed === gate.requiredPhrase;
 
-  const abandon: () => void = (): void => {
-    void sendRequest({ type: 'abandonGate' });
+  const requestGateUpdate: (
+    request: { type: 'abandonGate' } | { type: 'confirmGate'; typedPhrase: string | null },
+  ) => Promise<void> = async (
+    request: { type: 'abandonGate' } | { type: 'confirmGate'; typedPhrase: string | null },
+  ): Promise<void> => {
+    setError(null);
+    setPending(true);
+    try {
+      const ack: Ack = await sendRequest(request);
+      if (!ack.ok) setError(ack.error);
+    } catch {
+      setError('Could not update the gate. Try again.');
+    } finally {
+      setPending(false);
+    }
   };
 
-  const confirm: () => Promise<void> = async (): Promise<void> => {
-    const ack: Ack = await sendRequest({
+  const abandon: () => void = (): void => {
+    void requestGateUpdate({ type: 'abandonGate' });
+  };
+
+  const confirm: () => void = (): void => {
+    void requestGateUpdate({
       type: 'confirmGate',
       typedPhrase: gate.requiredPhrase === null ? null : typed,
     });
-    if (!ack.ok) setError(ack.error);
   };
 
   return (
@@ -51,7 +69,7 @@ export function GatePanel({
       <p class="gate-wait">
         A moment to decide: <span class="time">{elapsedS}</span> of {totalS} s
       </p>
-      <button type="button" class="start-button" onClick={abandon}>
+      <button type="button" class="start-button" disabled={pending} onClick={abandon}>
         Never mind, back to work
       </button>
       {gate.requiredPhrase !== null ? (
@@ -67,8 +85,8 @@ export function GatePanel({
       <button
         type="button"
         class="gate-confirm"
-        disabled={!ready || !phraseOk}
-        onClick={(): void => void confirm()}
+        disabled={pending || !ready || !phraseOk}
+        onClick={confirm}
       >
         {CONFIRM_LABELS[gate.kind]}
       </button>

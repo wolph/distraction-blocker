@@ -5,22 +5,49 @@ import { Charts } from './Charts';
 import { SessionLog } from './SessionLog';
 import { Streak } from './Streak';
 import { Tiles } from './Tiles';
-import { useAttemptEvents, useEconomy, useStats } from './use-stats';
+import {
+  type AttemptEventsState,
+  type EconomyState,
+  type StatsLoadState,
+  useAttemptEvents,
+  useEconomy,
+  useStats,
+} from './use-stats';
+
+function partialLoadError(attempts: boolean, economy: boolean): string | null {
+  if (attempts && economy) return 'Hourly attempts and pause settings are unavailable.';
+  if (attempts) return 'Hourly attempts are unavailable.';
+  if (economy) return 'Pause settings are unavailable.';
+  return null;
+}
 
 export function App(): JSX.Element {
-  const bundle: StatsBundle | null = useStats();
-  const economy: PauseEconomy = useEconomy();
-  const events: EventRecord[] | null = useAttemptEvents();
+  const stats: StatsLoadState = useStats();
+  const economyState: EconomyState = useEconomy();
+  const attempts: AttemptEventsState = useAttemptEvents();
+  const bundle: StatsBundle | null = stats.bundle;
+  const economy: PauseEconomy = economyState.economy;
+  const events: EventRecord[] | null = attempts.events;
+  const partialError: string | null = partialLoadError(attempts.error, economyState.error);
   const now: number = Date.now();
   return (
     <main class="stats-page">
       <header class="page-header">
         <h1>Your focus record</h1>
       </header>
-      {bundle === null ? (
+      {stats.error ? (
+        <p class="empty-line" role="alert">
+          Could not load stats. Reload to try again.
+        </p>
+      ) : bundle === null ? (
         <p class="empty-line">Loading your stats.</p>
       ) : (
         <>
+          {partialError === null ? null : (
+            <p class="empty-line" role="alert">
+              {partialError}
+            </p>
+          )}
           <Tiles bundle={bundle} economy={economy} now={now} />
           <Streak streak={bundle.streak} now={now} />
           <Charts bundle={bundle} events={events} now={now} />

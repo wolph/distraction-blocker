@@ -103,21 +103,46 @@ function IdleView(): VNode {
     useState<Settings | null>(null);
   const [lists, setLists]: [ListsConfig | null, Dispatch<StateUpdater<ListsConfig | null>>] =
     useState<ListsConfig | null>(null);
+  const [loadError, setLoadError]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
   useEffect((): void => {
     // Boundary guard: a stub or restarting worker may answer with a
     // rejection object instead of the data. Fall back to defaults so the
     // form still renders, the worker validates everything on start anyway.
-    void sendRequest({ type: 'getSettings' }).then((s: Settings): void => {
-      setSettings(isSettings(s) ? s : DEFAULT_SETTINGS);
-    });
-    void sendRequest({ type: 'getLists' }).then((l: ListsConfig): void => {
-      setLists(isLists(l) ? l : DEFAULT_LISTS);
-    });
+    void sendRequest({ type: 'getSettings' })
+      .then((s: Settings): void => {
+        const valid: boolean = isSettings(s);
+        setSettings(valid ? s : DEFAULT_SETTINGS);
+        if (!valid) setLoadError(true);
+      })
+      .catch((): void => {
+        setSettings(DEFAULT_SETTINGS);
+        setLoadError(true);
+      });
+    void sendRequest({ type: 'getLists' })
+      .then((l: ListsConfig): void => {
+        const valid: boolean = isLists(l);
+        setLists(valid ? l : DEFAULT_LISTS);
+        if (!valid) setLoadError(true);
+      })
+      .catch((): void => {
+        setLists(DEFAULT_LISTS);
+        setLoadError(true);
+      });
   }, []);
   if (settings === null || lists === null) {
     return <section class="view" aria-busy="true" />;
   }
-  return <StartForm settings={settings} lists={lists} />;
+  return (
+    <>
+      <StartForm settings={settings} lists={lists} />
+      {loadError ? (
+        <p class="form-error" role="alert">
+          Could not load session settings. Using defaults.
+        </p>
+      ) : null}
+    </>
+  );
 }
 
 function Body({ snapshot, now }: { snapshot: SessionSnapshot; now: number }): VNode {

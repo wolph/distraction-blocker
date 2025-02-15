@@ -1,5 +1,6 @@
 import type { VNode } from 'preact';
-import type { SoundId } from '../shared/messages';
+import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
+import type { Ack, SoundId } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import type { Settings, SoundSettings } from '../shared/types';
 
@@ -18,6 +19,23 @@ const SOUND_EVENTS: ReadonlyArray<{ id: SoundId; key: keyof SoundSettings; label
 /** Master volume, per-event sound toggles with previews, badge countdown. */
 export function SoundsBadge(props: SoundsBadgeProps): VNode {
   const s: Settings = props.settings;
+  const [pendingSound, setPendingSound]: [SoundId | null, Dispatch<StateUpdater<SoundId | null>>] =
+    useState<SoundId | null>(null);
+  const [previewError, setPreviewError]: [string | null, Dispatch<StateUpdater<string | null>>] =
+    useState<string | null>(null);
+
+  const preview: (sound: SoundId) => Promise<void> = async (sound: SoundId): Promise<void> => {
+    setPreviewError(null);
+    setPendingSound(sound);
+    try {
+      const ack: Ack = await sendRequest({ type: 'previewSound', sound });
+      if (!ack.ok) setPreviewError(ack.error);
+    } catch {
+      setPreviewError('Could not preview the sound. Try again.');
+    } finally {
+      setPendingSound(null);
+    }
+  };
   return (
     <div>
       <h3>Sounds</h3>
@@ -54,8 +72,9 @@ export function SoundsBadge(props: SoundsBadgeProps): VNode {
               type="button"
               class="ghost"
               aria-label={`Preview ${sound.label}`}
+              disabled={pendingSound !== null}
               onClick={(): void => {
-                void sendRequest({ type: 'previewSound', sound: sound.id });
+                void preview(sound.id);
               }}
             >
               Play
@@ -63,6 +82,11 @@ export function SoundsBadge(props: SoundsBadgeProps): VNode {
           </div>
         ),
       )}
+      {previewError !== null ? (
+        <p class="save-error" role="alert">
+          {previewError}
+        </p>
+      ) : null}
       <h3>Notifications</h3>
       <label class="check">
         <input

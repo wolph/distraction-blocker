@@ -66,6 +66,8 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
   const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
     string | null
   >(null);
+  const [starting, setStarting]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
 
   const durationMin: number = customMin.trim() === '' ? selectedMin : Number(customMin);
 
@@ -129,8 +131,15 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
       source: 'manual',
       scheduleEntryId: null,
     };
-    const ack: Ack = await sendRequest({ type: 'startSession', config });
-    if (!ack.ok) setError(ack.error);
+    setStarting(true);
+    try {
+      const ack: Ack = await sendRequest({ type: 'startSession', config });
+      if (!ack.ok) setError(ack.error);
+    } catch {
+      setError('Could not start the session. Try again.');
+    } finally {
+      setStarting(false);
+    }
   };
 
   const c: CycleConfig = settings.defaultCycling;
@@ -241,7 +250,12 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
         </label>
       </details>
 
-      <button type="button" class="start-button" onClick={(): void => void start()}>
+      <button
+        type="button"
+        class="start-button"
+        disabled={starting}
+        onClick={(): void => void start()}
+      >
         Start focusing
       </button>
       {error !== null ? (
