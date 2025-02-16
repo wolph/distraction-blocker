@@ -76,46 +76,55 @@ function isRecentSessionEvent(event: EventRecord): event is RecentSessionEvent {
   );
 }
 
-function matchingOpenGroupIndex(opens: SessionEventGroup[], event: RecentSessionEvent): number {
-  const sessionId: string | undefined = event.sessionId;
-  if (sessionId !== undefined) {
-    const exact: number = opens.findIndex(
-      (group: SessionEventGroup): boolean => group.sessionId === sessionId,
-    );
-    if (exact >= 0) return exact;
-    return opens.findIndex((group: SessionEventGroup): boolean => group.sessionId === undefined);
+function latestIdentifiedOpen(
+  identifiedOpens: Map<string, SessionEventGroup>,
+  identifiedOpenOrder: SessionEventGroup[],
+): SessionEventGroup | undefined {
+  let latest: SessionEventGroup | undefined = identifiedOpenOrder.at(-1);
+  while (
+    latest !== undefined &&
+    (latest.sessionId === undefined || identifiedOpens.get(latest.sessionId) !== latest)
+  ) {
+    identifiedOpenOrder.pop();
+    latest = identifiedOpenOrder.at(-1);
   }
-  return opens.length - 1;
+  return latest;
 }
 
 function recentSessionEvents(events: EventRecord[]): EventRecord[] {
   const groups: SessionEventGroup[] = [];
-  const opens: SessionEventGroup[] = [];
+  const identifiedOpens: Map<string, SessionEventGroup> = new Map();
+  const identifiedOpenOrder: SessionEventGroup[] = [];
+  let legacyOpen: SessionEventGroup | null = null;
   for (const event of events) {
     if (!isRecentSessionEvent(event)) continue;
+    const sessionId: string | undefined = event.sessionId;
     if (event.t === 'sessionStarted') {
-      const displacedIndex: number =
-        event.sessionId === undefined
-          ? opens.length - 1
-          : opens.findIndex(
-              (group: SessionEventGroup): boolean => group.sessionId === event.sessionId,
-            );
-      if (displacedIndex >= 0) opens.splice(displacedIndex, 1);
       const group: SessionEventGroup = {
-        ...(event.sessionId === undefined ? {} : { sessionId: event.sessionId }),
+        ...(sessionId === undefined ? {} : { sessionId }),
         events: [event],
       };
       groups.push(group);
-      opens.push(group);
+      if (sessionId === undefined) {
+        legacyOpen = group;
+      } else {
+        identifiedOpens.set(sessionId, group);
+        identifiedOpenOrder.push(group);
+      }
       continue;
     }
-    const openIndex: number = matchingOpenGroupIndex(opens, event);
-    if (openIndex < 0) continue;
-    const group: SessionEventGroup | undefined = opens[openIndex];
+    const group: SessionEventGroup | undefined =
+      sessionId === undefined
+        ? (legacyOpen ?? latestIdentifiedOpen(identifiedOpens, identifiedOpenOrder))
+        : identifiedOpens.get(sessionId);
     if (group === undefined) continue;
     group.events.push(event);
     if (event.t === 'sessionCompleted' || event.t === 'sessionCanceled') {
-      opens.splice(openIndex, 1);
+      if (sessionId === undefined && legacyOpen !== null) {
+        legacyOpen = null;
+      } else if (group.sessionId !== undefined) {
+        identifiedOpens.delete(group.sessionId);
+      }
     }
   }
   const retained: Set<RecentSessionEvent> = new Set(

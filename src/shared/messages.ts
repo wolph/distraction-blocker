@@ -42,7 +42,7 @@ export interface StatsBundle {
   days: DailyAgg[];
   months: MonthlyAgg[];
   streak: StreakState;
-  /** local machine only, newest first, max 50 session lifecycle events */
+  /** local machine only, newest first, events for at most 50 session rows */
   recentSessions: EventRecord[];
   totals: {
     focusMsToday: number;

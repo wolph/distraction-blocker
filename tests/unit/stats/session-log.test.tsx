@@ -185,6 +185,75 @@ describe('pairSessions', () => {
     expect(rows.length).toBe(20);
     expect(rows[0]?.intention).toBe('s24');
   });
+  it.each([true, false])(
+    'keeps mixed legacy and identified totals with legacyFirst=%s',
+    (legacyFirst: boolean): void => {
+      const chronological: EventRecord[] = [
+        ...(legacyFirst
+          ? [started(T9, 25, 'legacy', 'manual'), started(T11, 25, 'identified', 'manual', 'id')]
+          : [started(T9, 25, 'identified', 'manual', 'id'), started(T11, 25, 'legacy', 'manual')]),
+        { t: 'pauseTaken', at: T11 + 1_000, ms: 11 },
+        { t: 'pauseTaken', at: T11 + 2_000, ms: 101, sessionId: 'id' },
+        { t: 'unlockTaken', at: T11 + 3_000, host: 'legacy.example', ms: 13 },
+        { t: 'unlockTaken', at: T11 + 4_000, host: 'id.example', ms: 103, sessionId: 'id' },
+        {
+          t: 'sessionCompleted',
+          at: T11 + 5_000,
+          focusedMs: 999_000,
+          sessionId: 'unmatched',
+        },
+        { t: 'sessionCanceled', at: T11 + 6_000, focusedMs: 17 },
+        { t: 'sessionCompleted', at: T11 + 7_000, focusedMs: 107, sessionId: 'id' },
+      ];
+
+      const rows: SessionRow[] = pairSessions(chronological.reverse());
+      const legacy: SessionRow | undefined = rows.find(
+        (row: SessionRow): boolean => row.intention === 'legacy',
+      );
+      const identified: SessionRow | undefined = rows.find(
+        (row: SessionRow): boolean => row.intention === 'identified',
+      );
+
+      expect(legacy).toMatchObject({
+        outcome: 'ended early',
+        focusedMs: 17,
+        pauseMs: 11,
+        unlockMs: 13,
+      });
+      expect(identified).toMatchObject({
+        outcome: 'completed',
+        focusedMs: 107,
+        pauseMs: 101,
+        unlockMs: 103,
+      });
+    },
+  );
+
+  it('does not let an unmatched identified terminal close a legacy session', (): void => {
+    const events: EventRecord[] = [
+      { t: 'sessionCanceled', at: T11 + 2_000, focusedMs: 40_000 },
+      {
+        t: 'sessionCompleted',
+        at: T11 + 1_000,
+        focusedMs: 999_000,
+        sessionId: 'unmatched',
+      },
+      started(T11, 25, 'legacy', 'manual'),
+    ];
+
+    expect(pairSessions(events)).toEqual([
+      {
+        startedAt: T11,
+        plannedMin: 25,
+        intention: 'legacy',
+        source: 'manual',
+        outcome: 'ended early',
+        focusedMs: 40_000,
+        pauseMs: 0,
+        unlockMs: 0,
+      },
+    ]);
+  });
 });
 
 describe('SessionLog', () => {

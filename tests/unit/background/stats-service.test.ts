@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildStats, pruneAndRollup } from '../../../src/background/stats-service';
 import type { StatsBundle } from '../../../src/shared/messages';
 import type { DailyAgg, EventRecord } from '../../../src/shared/types';
+import { pairSessions, type SessionRow } from '../../../src/stats/SessionLog';
 
 const ORIGINAL_TZ: string | undefined = process.env.TZ;
 
@@ -49,6 +50,13 @@ interface RangeCase {
   localNow: [number, number, number, number, number];
   days: number;
   from: string;
+}
+
+interface MixedSessionCase {
+  legacyFirst: boolean;
+  retainedSessionId: string | undefined;
+  pauseMs: number;
+  unlockMs: number;
 }
 
 const RANGE_CASES: RangeCase[] = [
@@ -236,5 +244,103 @@ describe('stats-service recent session cap', (): void => {
     const recent: EventRecord[] = buildStats('devA', {}, events, 7, Date.now()).recentSessions;
 
     expect(recent).toEqual([...events].reverse());
+  });
+
+  it.each([
+    { legacyFirst: true, retainedSessionId: 'identified', pauseMs: 101, unlockMs: 103 },
+    { legacyFirst: false, retainedSessionId: undefined, pauseMs: 11, unlockMs: 13 },
+  ])(
+    'keeps mixed legacy and identified totals with legacyFirst=$legacyFirst',
+    ({ legacyFirst, retainedSessionId, pauseMs, unlockMs }: MixedSessionCase): void => {
+      const legacyStart: EventRecord = started(1);
+      const identifiedStart: EventRecord = started(2, 'identified');
+      const events: EventRecord[] = [
+        ...(legacyFirst ? [legacyStart, identifiedStart] : [identifiedStart, legacyStart]),
+        { t: 'pauseTaken', at: 3, ms: 11 },
+        { t: 'pauseTaken', at: 4, ms: 101, sessionId: 'identified' },
+        { t: 'unlockTaken', at: 5, host: 'legacy.example', ms: 13 },
+        {
+          t: 'unlockTaken',
+          at: 6,
+          host: 'identified.example',
+          ms: 103,
+          sessionId: 'identified',
+        },
+        { t: 'sessionCompleted', at: 7, focusedMs: 999, sessionId: 'unmatched' },
+        { t: 'sessionCanceled', at: 8, focusedMs: 17 },
+        { t: 'sessionCompleted', at: 9, focusedMs: 107, sessionId: 'identified' },
+        { t: 'sessionCanceled', at: 10, focusedMs: 999 },
+      ];
+      for (let index: number = 0; index < 49; index++) {
+        const sessionId: string = `filler-${index}`;
+        events.push(started(20 + index * 2, sessionId));
+        events.push({
+          t: 'sessionCompleted',
+          at: 21 + index * 2,
+          focusedMs: 1,
+          sessionId,
+        });
+      }
+
+      const recent: EventRecord[] = buildStats('devA', {}, events, 7, Date.now()).recentSessions;
+      const mixed: EventRecord[] = recent.filter((event: EventRecord): boolean => event.at < 20);
+      const retainedIdentity: Array<string | undefined> = mixed.map(
+        (event: EventRecord): string | undefined => event.sessionId,
+      );
+      const retainedPauseMs: number = mixed.reduce(
+        (total: number, event: EventRecord): number =>
+          event.t === 'pauseTaken' ? total + event.ms : total,
+        0,
+      );
+      const retainedUnlockMs: number = mixed.reduce(
+        (total: number, event: EventRecord): number =>
+          event.t === 'unlockTaken' ? total + event.ms : total,
+        0,
+      );
+      const retainedFocusedMs: number = mixed.reduce(
+        (total: number, event: EventRecord): number =>
+          event.t === 'sessionCompleted' || event.t === 'sessionCanceled'
+            ? total + event.focusedMs
+            : total,
+        0,
+      );
+      const pairedRows: SessionRow[] = pairSessions(mixed);
+
+      expect(new Set(retainedIdentity)).toEqual(new Set([retainedSessionId]));
+      expect(retainedPauseMs).toBe(pauseMs);
+      expect(retainedUnlockMs).toBe(unlockMs);
+      expect(retainedFocusedMs).toBe(legacyFirst ? 107 : 17);
+      expect(pairedRows).toHaveLength(1);
+      expect(pairedRows[0]).toMatchObject({
+        outcome: legacyFirst ? 'completed' : 'ended early',
+        focusedMs: legacyFirst ? 107 : 17,
+        pauseMs,
+        unlockMs,
+      });
+    },
+  );
+
+  it('groups 50,000 unmatched identified starts with linear identity access', (): void => {
+    let identityReads: number = 0;
+    const events: EventRecord[] = Array.from(
+      { length: 50_000 },
+      (_unused: unknown, index: number): EventRecord => {
+        const event: EventRecord = started(index);
+        Object.defineProperty(event, 'sessionId', {
+          enumerable: true,
+          get: (): string => {
+            identityReads += 1;
+            if (identityReads > 200_000) throw new Error('quadratic identity scan');
+            return `open-${index}`;
+          },
+        });
+        return event;
+      },
+    );
+
+    expect((): EventRecord[] => {
+      return buildStats('devA', {}, events, 7, Date.now()).recentSessions;
+    }).not.toThrow();
+    expect(identityReads).toBeLessThanOrEqual(200_000);
   });
 });

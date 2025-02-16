@@ -48,9 +48,10 @@ function matchingOpenIndex(opens: OpenRow[], event: EventRecord): number {
   const sessionId: string | undefined = 'sessionId' in event ? event.sessionId : undefined;
   if (sessionId !== undefined) {
     const exact: number = opens.findIndex((open: OpenRow): boolean => open.sessionId === sessionId);
-    if (exact >= 0) return exact;
-    return opens.findIndex((open: OpenRow): boolean => open.sessionId === undefined);
+    return exact;
   }
+  const legacy: number = opens.findIndex((open: OpenRow): boolean => open.sessionId === undefined);
+  if (legacy >= 0) return legacy;
   return opens.length - 1;
 }
 
@@ -69,7 +70,7 @@ export function pairSessions(events: EventRecord[]): SessionRow[] {
       for (const open of opens) open.superseded = true;
       const displacedIndex: number =
         event.sessionId === undefined
-          ? opens.length - 1
+          ? opens.findIndex((open: OpenRow): boolean => open.sessionId === undefined)
           : opens.findIndex((open: OpenRow): boolean => open.sessionId === event.sessionId);
       if (displacedIndex >= 0) {
         const displaced: OpenRow | undefined = opens.splice(displacedIndex, 1)[0];
