@@ -10,7 +10,13 @@ import { StartForm } from '../../../src/popup/StartForm';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, emptySnapshot } from '../../../src/shared/constants';
 import type { Ack, Request, StatsBundle } from '../../../src/shared/messages';
 import type { GateState, SessionConfig, SessionSnapshot } from '../../../src/shared/types';
-import { resetChromeFake, sendMessageMock, tabsQueryMock } from './chrome-fake';
+import {
+  openOptionsPageMock,
+  resetChromeFake,
+  sendMessageMock,
+  tabsCreateMock,
+  tabsQueryMock,
+} from './chrome-fake';
 
 const NOW: number = 1_700_000_000_000;
 
@@ -145,6 +151,68 @@ describe('popup request errors', (): void => {
 
     await waitFor((): void => {
       expect(getByRole('alert').textContent).toBe("Today's focus total is unavailable.");
+    });
+  });
+
+  it('reports a rejected active-tab request', async (): Promise<void> => {
+    tabsQueryMock.mockRejectedValue(new Error('tabs unavailable'));
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getStats') return statsBundle;
+      return { ok: true };
+    });
+
+    const { getByRole } = render(h(ActiveView, { snapshot: focusSnapshot(), now: NOW }));
+
+    await waitFor((): void => {
+      expect(getByRole('alert').textContent).toBe('Could not identify the active site.');
+    });
+  });
+
+  it('settles a rejected Statistics navigation request and allows retry', async (): Promise<void> => {
+    const pending: Deferred<unknown> = deferred<unknown>();
+    tabsCreateMock.mockReturnValue(pending.promise);
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getSnapshot') return emptySnapshot(NOW);
+      if (request.type === 'getSettings') return DEFAULT_SETTINGS;
+      if (request.type === 'getLists') return DEFAULT_LISTS;
+      return { ok: true };
+    });
+    const { getByRole } = render(h(App, null));
+    const statistics: HTMLButtonElement = getByRole('button', {
+      name: 'Statistics',
+    }) as HTMLButtonElement;
+
+    fireEvent.click(statistics);
+    expect(statistics.disabled).toBe(true);
+    pending.reject(new Error('tabs unavailable'));
+
+    await waitFor((): void => {
+      expect(getByRole('alert').textContent).toBe('Could not open Statistics. Try again.');
+      expect(statistics.disabled).toBe(false);
+    });
+  });
+
+  it('settles a rejected Options navigation request and allows retry', async (): Promise<void> => {
+    const pending: Deferred<void> = deferred<void>();
+    openOptionsPageMock.mockReturnValue(pending.promise);
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getSnapshot') return emptySnapshot(NOW);
+      if (request.type === 'getSettings') return DEFAULT_SETTINGS;
+      if (request.type === 'getLists') return DEFAULT_LISTS;
+      return { ok: true };
+    });
+    const { getByRole } = render(h(App, null));
+    const options: HTMLButtonElement = getByRole('button', {
+      name: 'Options',
+    }) as HTMLButtonElement;
+
+    fireEvent.click(options);
+    expect(options.disabled).toBe(true);
+    pending.reject(new Error('options unavailable'));
+
+    await waitFor((): void => {
+      expect(getByRole('alert').textContent).toBe('Could not open Options. Try again.');
+      expect(options.disabled).toBe(false);
     });
   });
 

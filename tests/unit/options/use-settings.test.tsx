@@ -84,6 +84,18 @@ describe('useSettingsStore', () => {
     expect(store().lists).toBeNull();
   });
 
+  it('rejects a worker rejection snapshot response without publishing it', async (): Promise<void> => {
+    fake.respond('getSnapshot', { ok: false, error: 'worker unavailable' });
+    render(<Harness />);
+
+    await waitFor((): void => {
+      expect(store().loadError).toBe('Could not load settings. Reload the page to try again.');
+    });
+    expect(store().settings).toBeNull();
+    expect(store().lists).toBeNull();
+    expect(store().snapshot).toBeNull();
+  });
+
   it('rejects a non-positive freeze cadence from the worker', async (): Promise<void> => {
     fake.respond('getSettings', { ...DEFAULT_SETTINGS, streakFreezeIntervalDays: 0 });
     render(<Harness />);

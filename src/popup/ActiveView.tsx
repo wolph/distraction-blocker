@@ -11,25 +11,37 @@ import type { GateKind, SessionSnapshot } from '../shared/types';
 import { GatePanel } from './GatePanel';
 import { Ring } from './Ring';
 
-function useActiveHost(): string | null {
+function useActiveHost(): { host: string | null; error: boolean } {
   const [host, setHost]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
     string | null
   >(null);
+  const [error, setError]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
   useEffect((): void => {
     void chrome.tabs
       .query({ active: true, currentWindow: true })
       .then((tabs: chrome.tabs.Tab[]): void => {
         const url: string | undefined = tabs[0]?.url;
-        if (url === undefined || !url.startsWith('http')) return;
+        if (url === undefined || !url.startsWith('http')) {
+          setHost(null);
+          setError(false);
+          return;
+        }
         try {
           const hostname: string = new URL(url).hostname;
           setHost(getDomain(hostname) ?? hostname);
+          setError(false);
         } catch {
           // Unparseable tab URL: leave the unlock button host-less.
+          setHost(null);
+          setError(false);
         }
+      })
+      .catch((): void => {
+        setHost(null);
+        setError(true);
       });
   }, []);
-  return host;
+  return { host, error };
 }
 
 function useFocusedTodayMs(): { ms: number | null; error: boolean } {
@@ -86,7 +98,8 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
   >(null);
   const [actionPending, setActionPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
     useState<boolean>(false);
-  const activeHost: string | null = useActiveHost();
+  const activeSite: { host: string | null; error: boolean } = useActiveHost();
+  const activeHost: string | null = activeSite.host;
   const focusedToday: { ms: number | null; error: boolean } = useFocusedTodayMs();
 
   const bankMs: number = extrapolatedBank(snapshot, now);
@@ -160,6 +173,11 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
       ) : focusedToday.error ? (
         <p class="form-error" role="alert">
           Today's focus total is unavailable.
+        </p>
+      ) : null}
+      {activeSite.error ? (
+        <p class="form-error" role="alert">
+          Could not identify the active site.
         </p>
       ) : null}
 

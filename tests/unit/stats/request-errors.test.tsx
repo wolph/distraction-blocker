@@ -32,13 +32,14 @@ describe('Stats request errors', (): void => {
 
   afterEach((): void => {
     cleanup();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
-  it('settles a rejected stats load with readable feedback', async (): Promise<void> => {
+  it('settles a worker rejection response with readable feedback', async (): Promise<void> => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => {});
     sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
-      if (request.type === 'getStats') throw new Error('worker disconnected');
+      if (request.type === 'getStats') return { ok: false, error: 'worker failed' };
       if (request.type === 'getSettings') return DEFAULT_SETTINGS;
       if (request.type === 'exportEvents') return { json: '[]' };
       return { ok: true };
@@ -48,15 +49,15 @@ describe('Stats request errors', (): void => {
     await waitFor((): void => {
       expect(getByRole('alert').textContent).toBe('Could not load stats. Reload to try again.');
     });
-    expect(queryByText('Loading stats.')).toBeNull();
+    expect(queryByText('Loading your stats.')).toBeNull();
     expect(consoleError).not.toHaveBeenCalled();
   });
 
   it('reports partial data failures while keeping loaded stats visible', async (): Promise<void> => {
     sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
       if (request.type === 'getStats') return bundle;
-      if (request.type === 'getSettings') throw new Error('worker disconnected');
-      if (request.type === 'exportEvents') throw new Error('worker disconnected');
+      if (request.type === 'getSettings') return { ok: false, error: 'worker failed' };
+      if (request.type === 'exportEvents') return { ok: false, error: 'worker failed' };
       return { ok: true };
     });
     const { getByRole, getByText } = render(<App />);

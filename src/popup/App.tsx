@@ -33,41 +33,78 @@ function PadlockGlyph(): VNode {
 }
 
 function Header(): VNode {
-  const openStats: () => void = (): void => {
-    void chrome.tabs.create({ url: chrome.runtime.getURL('src/stats/stats.html') });
-  };
-  const openOptions: () => void = (): void => {
-    void chrome.runtime.openOptionsPage();
+  const [pending, setPending]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
+    string | null
+  >(null);
+  const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
+    string | null
+  >(null);
+
+  const openPage: (destination: 'Statistics' | 'Options') => Promise<void> = async (
+    destination: 'Statistics' | 'Options',
+  ): Promise<void> => {
+    setError(null);
+    setPending(destination);
+    try {
+      if (destination === 'Statistics') {
+        await chrome.tabs.create({ url: chrome.runtime.getURL('src/stats/stats.html') });
+      } else {
+        await chrome.runtime.openOptionsPage();
+      }
+    } catch {
+      setError(`Could not open ${destination}. Try again.`);
+    } finally {
+      setPending(null);
+    }
   };
   return (
-    <header class="header">
-      <PadlockGlyph />
-      <h1 class="title">Focus Lock</h1>
-      <span class="spacer" />
-      <button type="button" class="icon-button" aria-label="Statistics" onClick={openStats}>
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-          <path
-            d="M4 20V10M10 20V4M16 20v-8M22 20H2"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-          />
-        </svg>
-      </button>
-      <button type="button" class="icon-button" aria-label="Options" onClick={openOptions}>
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-          <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2" />
-          <path
-            d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9l2.1 2.1m10 10 2.1 2.1M19.1 4.9 17 7m-10 10-2.1 2.1"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-          />
-        </svg>
-      </button>
-    </header>
+    <>
+      <header class="header">
+        <PadlockGlyph />
+        <h1 class="title">Focus Lock</h1>
+        <span class="spacer" />
+        <button
+          type="button"
+          class="icon-button"
+          aria-label="Statistics"
+          disabled={pending !== null}
+          onClick={(): void => void openPage('Statistics')}
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path
+              d="M4 20V10M10 20V4M16 20v-8M22 20H2"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="icon-button"
+          aria-label="Options"
+          disabled={pending !== null}
+          onClick={(): void => void openPage('Options')}
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2" />
+            <path
+              d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9l2.1 2.1m10 10 2.1 2.1M19.1 4.9 17 7m-10 10-2.1 2.1"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+            />
+          </svg>
+        </button>
+      </header>
+      {error !== null ? (
+        <p class="form-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </>
   );
 }
 

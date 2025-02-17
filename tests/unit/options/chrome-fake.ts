@@ -1,3 +1,4 @@
+import { type Mock, vi } from 'vitest';
 import type { Request } from '../../../src/shared/messages';
 
 type Responder = (req: Request) => unknown;
@@ -9,6 +10,8 @@ export interface ChromeFake {
   respond(type: Request['type'], value: unknown | Responder): void;
   /** deliver a broadcast to every onMessage listener */
   emit(message: unknown): void;
+  /** storage.local.get used by the Data section */
+  storageGet: Mock;
 }
 
 /**
@@ -19,6 +22,11 @@ export function installChromeFake(): ChromeFake {
   const sent: Request[] = [];
   const responders: Map<string, unknown | Responder> = new Map();
   const listeners: Set<(message: unknown) => void> = new Set();
+  const storageGet: Mock = vi.fn(
+    async (): Promise<Record<string, unknown>> => ({
+      deviceId: 'test-device-id',
+    }),
+  );
 
   const fake: unknown = {
     runtime: {
@@ -41,9 +49,7 @@ export function installChromeFake(): ChromeFake {
     },
     storage: {
       local: {
-        get: async (_key: string): Promise<Record<string, unknown>> => ({
-          deviceId: 'test-device-id',
-        }),
+        get: storageGet,
       },
     },
   };
@@ -58,5 +64,6 @@ export function installChromeFake(): ChromeFake {
     emit: (message: unknown): void => {
       for (const fn of listeners) fn(message);
     },
+    storageGet,
   };
 }

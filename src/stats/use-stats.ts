@@ -1,7 +1,37 @@
 import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import { DEFAULT_SETTINGS } from '../shared/constants';
 import { type StatsBundle, sendRequest } from '../shared/messages';
-import type { EventRecord, PauseEconomy, Settings } from '../shared/types';
+import type { EventRecord, PauseEconomy } from '../shared/types';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isStatsBundle(value: unknown): value is StatsBundle {
+  if (!isRecord(value)) return false;
+  const totals: unknown = value.totals;
+  return (
+    Array.isArray(value.days) &&
+    Array.isArray(value.months) &&
+    Array.isArray(value.recentSessions) &&
+    isRecord(value.streak) &&
+    isRecord(totals) &&
+    typeof totals.focusMsToday === 'number' &&
+    typeof totals.focusMsWeek === 'number' &&
+    typeof totals.attemptsToday === 'number' &&
+    typeof totals.resistedToday === 'number'
+  );
+}
+
+function isPauseEconomy(value: unknown): value is PauseEconomy {
+  return (
+    isRecord(value) &&
+    typeof value.earnRatio === 'number' &&
+    typeof value.capMs === 'number' &&
+    typeof value.pauseMs === 'number' &&
+    typeof value.unlockMs === 'number'
+  );
+}
 
 export interface StatsLoadState {
   bundle: StatsBundle | null;
@@ -15,9 +45,14 @@ export function useStats(): StatsLoadState {
   const [error, setError]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
   useEffect((): void => {
     sendRequest({ type: 'getStats', days: 30 })
-      .then((loaded: StatsBundle): void => {
-        setBundle(loaded);
-        setError(false);
+      .then((loaded: unknown): void => {
+        if (isStatsBundle(loaded)) {
+          setBundle(loaded);
+          setError(false);
+        } else {
+          setBundle(null);
+          setError(true);
+        }
       })
       .catch((): void => {
         setBundle(null);
@@ -45,8 +80,11 @@ export function useAttemptEvents(): AttemptEventsState {
   const [error, setError]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
   useEffect((): void => {
     sendRequest({ type: 'exportEvents' })
-      .then((response: { json: string }): void => {
+      .then((response: unknown): void => {
         try {
+          if (!isRecord(response) || typeof response.json !== 'string') {
+            throw new TypeError('Invalid event export response');
+          }
           const parsed: unknown = JSON.parse(response.json);
           const records: EventRecord[] = Array.isArray(parsed) ? parsed.filter(isEventRecord) : [];
           setEvents(records.filter((event: EventRecord): boolean => event.t === 'attempt'));
@@ -76,9 +114,15 @@ export function useEconomy(): EconomyState {
   const [error, setError]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
   useEffect((): void => {
     sendRequest({ type: 'getSettings' })
-      .then((settings: Settings): void => {
-        setEconomy(settings.pause);
-        setError(false);
+      .then((settings: unknown): void => {
+        const pause: unknown = isRecord(settings) ? settings.pause : undefined;
+        if (isPauseEconomy(pause)) {
+          setEconomy(pause);
+          setError(false);
+        } else {
+          setEconomy(DEFAULT_SETTINGS.pause);
+          setError(true);
+        }
       })
       .catch((): void => {
         setEconomy(DEFAULT_SETTINGS.pause);

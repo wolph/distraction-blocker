@@ -7,16 +7,37 @@ import { localDateStr } from '../shared/time';
 /** Export of the local event log plus the device id behind cross-device stats. */
 export function Data(): VNode {
   const [deviceId, setDeviceId]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
+  const [deviceLoading, setDeviceLoading]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(true);
+  const [deviceError, setDeviceError]: [string | null, Dispatch<StateUpdater<string | null>>] =
+    useState<string | null>(null);
   const [exportError, setExportError]: [string | null, Dispatch<StateUpdater<string | null>>] =
     useState<string | null>(null);
 
-  useEffect((): void => {
+  useEffect((): (() => void) => {
+    let alive: boolean = true;
     const load: () => Promise<void> = async (): Promise<void> => {
-      const stored: Record<string, unknown> = await chrome.storage.local.get(LOCAL_DEVICE_ID);
-      const id: unknown = stored[LOCAL_DEVICE_ID];
-      if (typeof id === 'string') setDeviceId(id);
+      try {
+        const stored: Record<string, unknown> = await chrome.storage.local.get(LOCAL_DEVICE_ID);
+        const id: unknown = stored[LOCAL_DEVICE_ID];
+        if (typeof id !== 'string') throw new TypeError('Invalid device id');
+        if (alive) {
+          setDeviceId(id);
+          setDeviceError(null);
+        }
+      } catch {
+        if (alive) {
+          setDeviceId('');
+          setDeviceError('Could not load this device id.');
+        }
+      } finally {
+        if (alive) setDeviceLoading(false);
+      }
     };
     void load();
+    return (): void => {
+      alive = false;
+    };
   }, []);
 
   const exportEvents: () => Promise<void> = async (): Promise<void> => {
@@ -72,7 +93,15 @@ export function Data(): VNode {
         Aggregate stats merge across your Chrome instances through Chrome sync. This id keys this
         machine's share of them.
       </p>
-      <p class="mono">{deviceId}</p>
+      {deviceLoading ? (
+        <p class="mono">Loading device id.</p>
+      ) : deviceError !== null ? (
+        <p class="save-error" role="alert">
+          {deviceError}
+        </p>
+      ) : (
+        <p class="mono">{deviceId}</p>
+      )}
     </div>
   );
 }

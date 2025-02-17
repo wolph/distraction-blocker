@@ -116,6 +116,21 @@ function isListsConfig(value: unknown): value is ListsConfig {
   );
 }
 
+function isSessionSnapshot(value: unknown): value is SessionSnapshot {
+  if (!isRecord(value)) return false;
+  const config: unknown = value.config;
+  return (
+    isFiniteNumber(value.at) &&
+    (value.phase === 'idle' ||
+      value.phase === 'focus' ||
+      value.phase === 'break' ||
+      value.phase === 'paused') &&
+    (config === null ||
+      (isRecord(config) && (config.strictness === 'hard' || config.strictness === 'friction'))) &&
+    (value.sessionEndsAt === null || isFiniteNumber(value.sessionEndsAt))
+  );
+}
+
 export interface SettingsStore {
   /** null until the initial load resolves */
   settings: Settings | null;
@@ -148,14 +163,18 @@ export function useSettingsStore(): SettingsStore {
     let alive: boolean = true;
     const load: () => Promise<void> = async (): Promise<void> => {
       try {
-        const [loadedSettings, loadedLists, loadedSnapshot]: [unknown, unknown, SessionSnapshot] =
+        const [loadedSettings, loadedLists, loadedSnapshot]: [unknown, unknown, unknown] =
           await Promise.all([
             sendRequest({ type: 'getSettings' }),
             sendRequest({ type: 'getLists' }),
             sendRequest({ type: 'getSnapshot' }),
           ]);
         if (!alive) return;
-        if (!isSettings(loadedSettings) || !isListsConfig(loadedLists)) {
+        if (
+          !isSettings(loadedSettings) ||
+          !isListsConfig(loadedLists) ||
+          !isSessionSnapshot(loadedSnapshot)
+        ) {
           setLoadError(LOAD_ERROR);
           return;
         }
@@ -169,7 +188,9 @@ export function useSettingsStore(): SettingsStore {
     };
     void load();
     const onBroadcast: (message: Broadcast) => void = (message: Broadcast): void => {
-      if (message.type === 'stateChanged') setSnapshot(message.snapshot);
+      if (message.type === 'stateChanged' && isSessionSnapshot(message.snapshot)) {
+        setSnapshot(message.snapshot);
+      }
     };
     chrome.runtime.onMessage.addListener(onBroadcast);
     return (): void => {

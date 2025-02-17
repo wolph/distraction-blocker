@@ -281,6 +281,16 @@ describe('SoundsBadge', () => {
 });
 
 describe('Data', () => {
+  it('settles rejected device id loading with readable feedback', async (): Promise<void> => {
+    fake.storageGet.mockRejectedValue(new Error('storage unavailable'));
+    const { getByRole, queryByText } = render(<Data />);
+
+    await waitFor((): void => {
+      expect(getByRole('alert').textContent).toBe('Could not load this device id.');
+    });
+    expect(queryByText('Loading device id.')).toBeNull();
+  });
+
   it('shows the local device id and exports the event log', async (): Promise<void> => {
     const createObjectURL = vi.fn((): string => 'blob:fake');
     const revokeObjectURL = vi.fn();
