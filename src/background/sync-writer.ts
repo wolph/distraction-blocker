@@ -166,13 +166,9 @@ export class SyncWriter {
     if (batch.size === 0 && removals.size === 0) return;
     try {
       for (const [key, value] of batch) assertSyncItemWithinQuota(key, value);
+      if (this.journal !== undefined) await this.removeBatch(removals);
       if (batch.size > 0) await this.write(Object.fromEntries(batch));
-      if (removals.size > 0) {
-        if (this.removeStored === undefined) {
-          throw new Error('sync removal requested without a remove callback');
-        }
-        await this.removeStored([...removals]);
-      }
+      if (this.journal === undefined) await this.removeBatch(removals);
     } catch (error: unknown) {
       this.schedule();
       throw error;
@@ -203,6 +199,14 @@ export class SyncWriter {
       this.reconciliationPending.clear();
     }
     if (this.pending.size > 0 || this.pendingRemovals.size > 0) this.schedule();
+  }
+
+  private async removeBatch(removals: Set<string>): Promise<void> {
+    if (removals.size === 0) return;
+    if (this.removeStored === undefined) {
+      throw new Error('sync removal requested without a remove callback');
+    }
+    await this.removeStored([...removals]);
   }
 
   private async persistJournalForFlush(): Promise<void> {

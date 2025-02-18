@@ -220,7 +220,7 @@ describe('SyncWriter', () => {
     expect(write).toHaveBeenCalledWith(queuedSets);
   });
 
-  it('persists a move replacement before removing its source', async () => {
+  it('removes a move source before writing its durable replacement', async () => {
     const write = vi
       .fn()
       .mockRejectedValueOnce(new Error('sync unavailable'))
@@ -242,7 +242,8 @@ describe('SyncWriter', () => {
 
     await expect(writer.flushNow()).rejects.toThrow('sync unavailable');
 
-    expect(remove).not.toHaveBeenCalled();
+    expect(remove).toHaveBeenCalledWith(['agg:dev:2026-08-30']);
+    expect(remove.mock.invocationCallOrder[0]).toBeLessThan(write.mock.invocationCallOrder[0] ?? 0);
     expect(durableJournal).toEqual({
       sets: { 'archive:clock-rebase:dev:2026-08-30:1': { focusMs: 60_000 } },
       removes: ['agg:dev:2026-08-30'],
@@ -250,8 +251,26 @@ describe('SyncWriter', () => {
 
     await writer.flushNow();
 
-    expect(write.mock.invocationCallOrder[1]).toBeLessThan(remove.mock.invocationCallOrder[0] ?? 0);
     expect(durableJournal).toEqual({ sets: {}, removes: [] });
+  });
+
+  it('writes a replacement before removing its source without a journal', async () => {
+    const write = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('sync unavailable'))
+      .mockResolvedValueOnce(undefined);
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const writer = new SyncWriter(10_000, write, remove);
+    writer.queue('archive:clock-rebase:dev:2026-08-30:1', { focusMs: 60_000 });
+    writer.remove('agg:dev:2026-08-30');
+
+    await expect(writer.flushNow()).rejects.toThrow('sync unavailable');
+
+    expect(remove).not.toHaveBeenCalled();
+
+    await writer.flushNow();
+
+    expect(write.mock.invocationCallOrder[1]).toBeLessThan(remove.mock.invocationCallOrder[0] ?? 0);
   });
 
   it('retries a failed cleanup checkpoint through the debounce scheduler', async () => {

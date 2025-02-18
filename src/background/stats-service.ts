@@ -221,7 +221,7 @@ export function pruneAndRollup(
   retentionDays: number,
   now: number,
 ): PrunePlan {
-  const cutoff: string = localDateBefore(now, retentionDays);
+  const cutoff: string = localDateBefore(now, retentionDays - 1);
   const mineRe: RegExp = new RegExp(`^agg:${deviceId}:(\\d{4}-\\d{2}-\\d{2})$`);
   const archiveRe: RegExp = new RegExp(
     `^archive:clock-rebase:${deviceId}:\\d{4}-\\d{2}-\\d{2}:(\\d+):[^:]+$`,

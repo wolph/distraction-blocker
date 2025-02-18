@@ -437,6 +437,53 @@ describe('buildStats', () => {
 });
 
 describe('pruneAndRollup', () => {
+  it.each([1, 90])(
+    'keeps exactly %i local-calendar daily keys including today',
+    (retentionDays: number) => {
+      const now: number = new Date(2026, 2, 30, 0, 30).getTime();
+      const dateBefore = (daysBefore: number): string => {
+        const date: Date = new Date(now);
+        date.setDate(date.getDate() - daysBefore);
+        return localDateStr(date.getTime());
+      };
+      const syncItems: Record<string, unknown> = {};
+      for (let index: number = 0; index <= retentionDays + 1; index++) {
+        const date: string = dateBefore(index);
+        syncItems[`agg:devA:${date}`] = daily(date, {
+          focusMs: index + 1,
+          pauseMsEarned: (index + 1) * 10,
+          unlockMsSpent: (index + 1) * 100,
+        });
+      }
+
+      const plan: ReturnType<typeof pruneAndRollup> = pruneAndRollup(
+        'devA',
+        syncItems,
+        retentionDays,
+        now,
+      );
+      const removedDates: string[] = plan.remove.map((key: string): string => key.slice(-10));
+      const rolled: MonthlyAgg[] = Object.values(plan.set) as MonthlyAgg[];
+
+      expect(removedDates).toEqual([dateBefore(retentionDays), dateBefore(retentionDays + 1)]);
+      expect(
+        rolled.reduce((total: number, value: MonthlyAgg): number => total + value.focusMs, 0),
+      ).toBe(retentionDays + 1 + retentionDays + 2);
+      expect(
+        rolled.reduce(
+          (total: number, value: MonthlyAgg): number => total + (value.pauseMsEarned ?? 0),
+          0,
+        ),
+      ).toBe((retentionDays + 1 + retentionDays + 2) * 10);
+      expect(
+        rolled.reduce(
+          (total: number, value: MonthlyAgg): number => total + (value.unlockMsSpent ?? 0),
+          0,
+        ),
+      ).toBe((retentionDays + 1 + retentionDays + 2) * 100);
+    },
+  );
+
   it('bounds retained clock-rebase archives per device', () => {
     const syncItems: Record<string, unknown> = {};
     for (let index: number = 0; index < 22; index++) {
