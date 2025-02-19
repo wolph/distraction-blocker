@@ -59,6 +59,15 @@ interface MixedSessionCase {
   unlockMs: number;
 }
 
+function identityAssigned(at: number, startedAt: number, sessionId: string): EventRecord {
+  return {
+    t: 'sessionIdentityAssigned',
+    at,
+    startedAt,
+    sessionId,
+  } as unknown as EventRecord;
+}
+
 const RANGE_CASES: RangeCase[] = [
   {
     label: 'spring seven-day range',
@@ -125,16 +134,74 @@ describe.sequential('stats-service local calendar ranges', (): void => {
     expect(bundle.totals.focusMsWeek).toBe(7);
   });
 
+  it('promotes a legacy start through an explicit persisted identity marker', (): void => {
+    const migratedEvents: EventRecord[] = [
+      started(1),
+      identityAssigned(2, 1, 'migrated'),
+      { t: 'pauseTaken', at: 3, ms: 11, sessionId: 'migrated' },
+      { t: 'unlockTaken', at: 4, host: 'example.com', ms: 13, sessionId: 'migrated' },
+      { t: 'sessionCompleted', at: 5, focusedMs: 17, sessionId: 'migrated' },
+    ];
+    const events: EventRecord[] = [...migratedEvents];
+    for (let index: number = 0; index < 49; index++) {
+      const sessionId: string = `filler-${index}`;
+      events.push(started(10 + index * 2, sessionId));
+      events.push({
+        t: 'sessionCompleted',
+        at: 11 + index * 2,
+        focusedMs: 1,
+        sessionId,
+      });
+    }
+
+    const recent: EventRecord[] = buildStats('devA', {}, events, 7, Date.now()).recentSessions;
+    const retainedMigration: EventRecord[] = recent.filter(
+      (event: EventRecord): boolean => event.at <= 5,
+    );
+
+    expect(retainedMigration).toEqual([...migratedEvents].reverse());
+    expect(
+      recent.filter((event: EventRecord): boolean => event.t === 'sessionStarted'),
+    ).toHaveLength(50);
+    expect(pairSessions(retainedMigration)).toEqual([
+      expect.objectContaining({
+        outcome: 'completed',
+        focusedMs: 17,
+        pauseMs: 11,
+        unlockMs: 13,
+      }),
+    ]);
+  });
+
+  it('ignores duplicate id-less terminals after the legacy row closes', (): void => {
+    const events: EventRecord[] = [
+      started(1, 'identified'),
+      started(2),
+      { t: 'sessionCanceled', at: 3, focusedMs: 3 },
+      { t: 'sessionCompleted', at: 4, focusedMs: 999 },
+      { t: 'sessionCompleted', at: 5, focusedMs: 5, sessionId: 'identified' },
+    ];
+
+    const recent: EventRecord[] = buildStats('devA', {}, events, 7, Date.now()).recentSessions;
+    const rows: SessionRow[] = pairSessions(recent);
+
+    expect(recent).not.toContainEqual(events[3]);
+    expect(rows).toEqual([
+      expect.objectContaining({ outcome: 'ended early', focusedMs: 3 }),
+      expect.objectContaining({ outcome: 'completed', focusedMs: 5 }),
+    ]);
+  });
+
   it.each([
     {
       label: 'spring transition',
       localNow: [2026, 2, 30, 0, 30] as RangeCase['localNow'],
-      cutoff: '2026-03-23',
+      cutoff: '2026-03-24',
     },
     {
       label: 'autumn transition',
       localNow: [2026, 9, 25, 23, 30] as RangeCase['localNow'],
-      cutoff: '2026-10-18',
+      cutoff: '2026-10-19',
     },
   ])('prunes before the exact local-date cutoff at the $label', ({ localNow, cutoff }): void => {
     const outside: string = previousCalendarDate(cutoff);

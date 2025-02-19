@@ -22,7 +22,13 @@ const MAX_CLOCK_REBASE_ARCHIVES: number = 20;
 type RecentSessionEvent = Extract<
   EventRecord,
   {
-    t: 'sessionStarted' | 'sessionCompleted' | 'sessionCanceled' | 'pauseTaken' | 'unlockTaken';
+    t:
+      | 'sessionStarted'
+      | 'sessionCompleted'
+      | 'sessionCanceled'
+      | 'sessionIdentityAssigned'
+      | 'pauseTaken'
+      | 'unlockTaken';
   }
 >;
 
@@ -71,6 +77,7 @@ function isRecentSessionEvent(event: EventRecord): event is RecentSessionEvent {
     event.t === 'sessionStarted' ||
     event.t === 'sessionCompleted' ||
     event.t === 'sessionCanceled' ||
+    event.t === 'sessionIdentityAssigned' ||
     event.t === 'pauseTaken' ||
     event.t === 'unlockTaken'
   );
@@ -99,6 +106,23 @@ function recentSessionEvents(events: EventRecord[]): EventRecord[] {
   for (const event of events) {
     if (!isRecentSessionEvent(event)) continue;
     const sessionId: string | undefined = event.sessionId;
+    if (event.t === 'sessionIdentityAssigned') {
+      const started: RecentSessionEvent | undefined = legacyOpen?.events[0];
+      if (
+        legacyOpen === null ||
+        started?.t !== 'sessionStarted' ||
+        started.at !== event.startedAt ||
+        identifiedOpens.has(event.sessionId)
+      ) {
+        continue;
+      }
+      legacyOpen.sessionId = event.sessionId;
+      legacyOpen.events.push(event);
+      identifiedOpens.set(event.sessionId, legacyOpen);
+      identifiedOpenOrder.push(legacyOpen);
+      legacyOpen = null;
+      continue;
+    }
     if (event.t === 'sessionStarted') {
       const group: SessionEventGroup = {
         ...(sessionId === undefined ? {} : { sessionId }),
@@ -115,7 +139,10 @@ function recentSessionEvents(events: EventRecord[]): EventRecord[] {
     }
     const group: SessionEventGroup | undefined =
       sessionId === undefined
-        ? (legacyOpen ?? latestIdentifiedOpen(identifiedOpens, identifiedOpenOrder))
+        ? (legacyOpen ??
+          (event.t === 'pauseTaken' || event.t === 'unlockTaken'
+            ? latestIdentifiedOpen(identifiedOpens, identifiedOpenOrder)
+            : undefined))
         : identifiedOpens.get(sessionId);
     if (group === undefined) continue;
     group.events.push(event);

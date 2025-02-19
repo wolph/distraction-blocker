@@ -158,7 +158,20 @@ export class Engine {
     }
     this.setSettingsAndClampBank(this.settings);
     if (this.runtime.session !== null && this.runtime.session.sessionId === undefined) {
-      this.runtime.session = { ...this.runtime.session, sessionId: this.ports.newId() };
+      const startedAt: number = this.runtime.session.startedAt;
+      const sessionId: string = this.ports.newId();
+      this.runtime.session = { ...this.runtime.session, sessionId };
+      this.pendingEvents.push({
+        t: 'sessionIdentityAssigned',
+        at: this.ports.now(),
+        startedAt,
+        sessionId,
+      });
+      this.runtime.commitCheckpoint = {
+        bank: structuredClone(this.bank),
+        events: [...this.pendingEvents],
+        syncBank: this.bankDirty,
+      };
       this.dirty = true;
     }
     this.ownedRuntimeSnapshot = structuredClone(this.runtime);

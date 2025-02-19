@@ -285,6 +285,13 @@ describe('Engine', () => {
     expect(migrated.ports.saveRuntime.mock.calls.at(-1)?.[0]).toMatchObject({
       session: { sessionId: 'archive-id' },
     });
+    expect(migrated.loggedEvents()).toContainEqual(
+      expect.objectContaining({
+        t: 'sessionIdentityAssigned',
+        sessionId: 'archive-id',
+        startedAt: legacy.session?.startedAt,
+      }),
+    );
   });
 
   it('preserves a migrated session identity during direct tab persistence', async () => {
@@ -300,6 +307,15 @@ describe('Engine', () => {
 
     expect(migrated.ports.saveRuntime.mock.calls.at(-1)?.[0]).toMatchObject({
       session: { sessionId: 'archive-id' },
+      commitCheckpoint: {
+        events: [
+          expect.objectContaining({
+            t: 'sessionIdentityAssigned',
+            sessionId: 'archive-id',
+            startedAt: legacy.session?.startedAt,
+          }),
+        ],
+      },
     });
   });
 

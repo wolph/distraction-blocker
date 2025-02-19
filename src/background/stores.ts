@@ -716,6 +716,14 @@ function parseEventRecord(value: unknown): EventRecord | null {
     case 'sessionCanceled':
       if (!isNonNegativeNumber(value.focusedMs)) return null;
       return { t: value.t, at: value.at, focusedMs: value.focusedMs, ...identity };
+    case 'sessionIdentityAssigned':
+      if (!isNonNegativeNumber(value.startedAt) || identity.sessionId === undefined) return null;
+      return {
+        t: value.t,
+        at: value.at,
+        startedAt: value.startedAt,
+        sessionId: identity.sessionId,
+      };
     case 'phase':
       if (!isPhase(value.from) || !isPhase(value.to)) return null;
       return { t: value.t, at: value.at, from: value.from, to: value.to, ...identity };

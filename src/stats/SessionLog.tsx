@@ -52,7 +52,7 @@ function matchingOpenIndex(opens: OpenRow[], event: EventRecord): number {
   }
   const legacy: number = opens.findIndex((open: OpenRow): boolean => open.sessionId === undefined);
   if (legacy >= 0) return legacy;
-  return opens.length - 1;
+  return event.t === 'pauseTaken' || event.t === 'unlockTaken' ? opens.length - 1 : -1;
 }
 
 /**
@@ -66,6 +66,19 @@ export function pairSessions(events: EventRecord[]): SessionRow[] {
   const rows: SessionRow[] = [];
   const opens: OpenRow[] = [];
   for (const event of chronological) {
+    if (event.t === 'sessionIdentityAssigned') {
+      const open: OpenRow | undefined = opens.find(
+        (candidate: OpenRow): boolean =>
+          candidate.sessionId === undefined && candidate.startedAt === event.startedAt,
+      );
+      if (
+        open !== undefined &&
+        !opens.some((candidate: OpenRow): boolean => candidate.sessionId === event.sessionId)
+      ) {
+        open.sessionId = event.sessionId;
+      }
+      continue;
+    }
     if (event.t === 'sessionStarted') {
       for (const open of opens) open.superseded = true;
       const displacedIndex: number =

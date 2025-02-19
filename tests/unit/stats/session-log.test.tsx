@@ -25,6 +25,15 @@ function started(
   };
 }
 
+function identityAssigned(at: number, startedAt: number, sessionId: string): EventRecord {
+  return {
+    t: 'sessionIdentityAssigned',
+    at,
+    startedAt,
+    sessionId,
+  } as unknown as EventRecord;
+}
+
 const T9: number = new Date(2026, 7, 28, 9, 0, 0).getTime();
 const T925: number = new Date(2026, 7, 28, 9, 25, 0).getTime();
 const T11: number = new Date(2026, 7, 28, 11, 0, 0).getTime();
@@ -252,6 +261,43 @@ describe('pairSessions', () => {
         pauseMs: 0,
         unlockMs: 0,
       },
+    ]);
+  });
+
+  it('pairs an upgraded legacy start after its explicit identity marker', (): void => {
+    const events: EventRecord[] = [
+      { t: 'sessionCompleted', at: T11 + 3_000, focusedMs: 17, sessionId: 'migrated' },
+      { t: 'pauseTaken', at: T11 + 2_000, ms: 11, sessionId: 'migrated' },
+      identityAssigned(T11 + 1_000, T11, 'migrated'),
+      started(T11, 25, 'legacy', 'manual'),
+    ];
+
+    expect(pairSessions(events)).toEqual([
+      {
+        startedAt: T11,
+        plannedMin: 25,
+        intention: 'legacy',
+        source: 'manual',
+        outcome: 'completed',
+        focusedMs: 17,
+        pauseMs: 11,
+        unlockMs: 0,
+      },
+    ]);
+  });
+
+  it('does not let a duplicate legacy terminal close an identified row', (): void => {
+    const events: EventRecord[] = [
+      { t: 'sessionCompleted', at: T11 + 4_000, focusedMs: 5, sessionId: 'identified' },
+      { t: 'sessionCompleted', at: T11 + 3_000, focusedMs: 999 },
+      { t: 'sessionCanceled', at: T11 + 2_000, focusedMs: 3 },
+      started(T11 + 1_000, 25, 'legacy', 'manual'),
+      started(T11, 25, 'identified', 'manual', 'identified'),
+    ];
+
+    expect(pairSessions(events)).toEqual([
+      expect.objectContaining({ intention: 'legacy', focusedMs: 3 }),
+      expect.objectContaining({ intention: 'identified', focusedMs: 5 }),
     ]);
   });
 });

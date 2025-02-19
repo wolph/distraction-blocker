@@ -666,11 +666,21 @@ describe('event storage replay', () => {
       ms: 500,
       sessionId: 'session-one',
     };
+    const identityAssigned: EventRecord = {
+      t: 'sessionIdentityAssigned',
+      at: 2,
+      startedAt: 0,
+      sessionId: 'session-one',
+    } as unknown as EventRecord;
     const state: Record<string, unknown> = {
       [LOCAL_EVENTS]: [
         valid,
+        identityAssigned,
         null,
         { t: 'budgetEarned', at: Number.NaN, ms: 500 },
+        { t: 'sessionIdentityAssigned', at: 2, startedAt: 0 },
+        { t: 'sessionIdentityAssigned', at: 2, startedAt: -1, sessionId: 'session-one' },
+        { t: 'sessionIdentityAssigned', at: 2, startedAt: 0, sessionId: ' ' },
         { t: 'unknown', at: 2 },
       ],
     };
@@ -685,10 +695,11 @@ describe('event storage replay', () => {
       },
     });
 
-    await expect(readEvents()).resolves.toEqual([valid]);
+    await expect(readEvents()).resolves.toEqual([valid, identityAssigned]);
     await appendEvents([{ t: 'pauseTaken', at: 2, ms: 100, sessionId: 'session-one' }]);
     expect(state[LOCAL_EVENTS]).toEqual([
       valid,
+      identityAssigned,
       { t: 'pauseTaken', at: 2, ms: 100, sessionId: 'session-one' },
     ]);
   });

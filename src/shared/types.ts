@@ -222,6 +222,7 @@ export type EventRecord =
     }
   | { t: 'sessionCompleted'; at: number; focusedMs: number; sessionId?: string }
   | { t: 'sessionCanceled'; at: number; focusedMs: number; sessionId?: string }
+  | { t: 'sessionIdentityAssigned'; at: number; startedAt: number; sessionId: string }
   | { t: 'phase'; at: number; from: Phase; to: Phase; sessionId?: string }
   | {
       t: 'attempt';
