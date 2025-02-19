@@ -259,6 +259,9 @@ describe('pending Sync retention', () => {
     const deviceId: string = 'dev-test';
     const existingMonthKey: string = `aggm:${deviceId}:2026-01`;
     const existingFocusMs: number = 42_000;
+    const existingPauseMsEarned: number = 4_200;
+    const existingUnlockMsSpent: number = 420;
+    const initialBankMs: number = DEFAULT_SETTINGS.pause.unlockMs;
     const sync: FakeSync = fakeSync({
       [existingMonthKey]: rollupMonth('2026-01', [
         {
@@ -270,9 +273,9 @@ describe('pending Sync retention', () => {
           attemptsOther: 0,
           pausesTaken: 0,
           pauseMsSpent: 0,
-          pauseMsEarned: 0,
+          pauseMsEarned: existingPauseMsEarned,
           unlocksTaken: 0,
-          unlockMsSpent: 0,
+          unlockMsSpent: existingUnlockMsSpent,
           resisted: 0,
         },
       ]),
@@ -322,7 +325,7 @@ describe('pending Sync retention', () => {
       ports,
       DEFAULT_SETTINGS,
       DEFAULT_LISTS,
-      { balanceMs: 0 },
+      { balanceMs: initialBankMs },
       null,
       emptyRuntime(T0),
       deviceId,
@@ -337,6 +340,9 @@ describe('pending Sync retention', () => {
       scheduleEntryId: null,
     };
     await engine.startSession(session);
+    await engine.openGate('unlockSite', 'example.com');
+    now = T0 + DEFAULT_SETTINGS.gate.delayMs;
+    expect(await engine.confirmGate(null)).toEqual({ ok: true });
     now = T0 + 399 * DAY_MS;
 
     await engine.tick();
@@ -350,11 +356,7 @@ describe('pending Sync retention', () => {
       (total: number, [key, value]: [string, unknown]): number => total + syncItemBytes(key, value),
       0,
     );
-    const totalFocusMs: number = aggregateEntries.reduce(
-      (total: number, [, value]: [string, unknown]): number =>
-        total + (value as { focusMs: number }).focusMs,
-      0,
-    );
+    const totals: ReturnType<typeof aggregateTotals> = aggregateTotals(sync.state, deviceId);
     const dailyCount: number = aggregateEntries.filter(([key]: [string, unknown]): boolean =>
       key.startsWith(`agg:${deviceId}:`),
     ).length;
@@ -365,6 +367,10 @@ describe('pending Sync retention', () => {
       focusMs: expect.any(Number),
       sessionsStarted: 2,
     });
-    expect(totalFocusMs).toBe(399 * DAY_MS + existingFocusMs);
+    expect(totals).toEqual({
+      focusMs: 399 * DAY_MS + existingFocusMs,
+      pauseMsEarned: DEFAULT_SETTINGS.pause.capMs + existingPauseMsEarned,
+      unlockMsSpent: DEFAULT_SETTINGS.pause.unlockMs + existingUnlockMsSpent,
+    });
   });
 });
