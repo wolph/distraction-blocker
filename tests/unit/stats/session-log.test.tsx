@@ -31,7 +31,7 @@ function identityAssigned(at: number, startedAt: number, sessionId: string): Eve
     at,
     startedAt,
     sessionId,
-  } as unknown as EventRecord;
+  };
 }
 
 const T9: number = new Date(2026, 7, 28, 9, 0, 0).getTime();

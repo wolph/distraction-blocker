@@ -671,7 +671,7 @@ describe('event storage replay', () => {
       at: 2,
       startedAt: 0,
       sessionId: 'session-one',
-    } as unknown as EventRecord;
+    };
     const state: Record<string, unknown> = {
       [LOCAL_EVENTS]: [
         valid,

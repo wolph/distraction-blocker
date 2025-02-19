@@ -65,7 +65,7 @@ function identityAssigned(at: number, startedAt: number, sessionId: string): Eve
     at,
     startedAt,
     sessionId,
-  } as unknown as EventRecord;
+  };
 }
 
 const RANGE_CASES: RangeCase[] = [
