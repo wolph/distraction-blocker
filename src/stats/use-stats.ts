@@ -1,37 +1,12 @@
 import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import { DEFAULT_SETTINGS } from '../shared/constants';
 import { type StatsBundle, sendRequest } from '../shared/messages';
+import {
+  isPauseEconomy,
+  isStatsBundle,
+  parseEventExportResponse,
+} from '../shared/runtime-validation';
 import type { EventRecord, PauseEconomy } from '../shared/types';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function isStatsBundle(value: unknown): value is StatsBundle {
-  if (!isRecord(value)) return false;
-  const totals: unknown = value.totals;
-  return (
-    Array.isArray(value.days) &&
-    Array.isArray(value.months) &&
-    Array.isArray(value.recentSessions) &&
-    isRecord(value.streak) &&
-    isRecord(totals) &&
-    typeof totals.focusMsToday === 'number' &&
-    typeof totals.focusMsWeek === 'number' &&
-    typeof totals.attemptsToday === 'number' &&
-    typeof totals.resistedToday === 'number'
-  );
-}
-
-function isPauseEconomy(value: unknown): value is PauseEconomy {
-  return (
-    isRecord(value) &&
-    typeof value.earnRatio === 'number' &&
-    typeof value.capMs === 'number' &&
-    typeof value.pauseMs === 'number' &&
-    typeof value.unlockMs === 'number'
-  );
-}
 
 export interface StatsLoadState {
   bundle: StatsBundle | null;
@@ -62,12 +37,6 @@ export function useStats(): StatsLoadState {
   return { bundle, error };
 }
 
-function isEventRecord(value: unknown): value is EventRecord {
-  if (typeof value !== 'object' || value === null) return false;
-  const record: Record<string, unknown> = value as Record<string, unknown>;
-  return typeof record.t === 'string' && typeof record.at === 'number';
-}
-
 export interface AttemptEventsState {
   events: EventRecord[] | null;
   error: boolean;
@@ -82,11 +51,8 @@ export function useAttemptEvents(): AttemptEventsState {
     sendRequest({ type: 'exportEvents' })
       .then((response: unknown): void => {
         try {
-          if (!isRecord(response) || typeof response.json !== 'string') {
-            throw new TypeError('Invalid event export response');
-          }
-          const parsed: unknown = JSON.parse(response.json);
-          const records: EventRecord[] = Array.isArray(parsed) ? parsed.filter(isEventRecord) : [];
+          const records: EventRecord[] | null = parseEventExportResponse(response);
+          if (records === null) throw new TypeError('Invalid event export response');
           setEvents(records.filter((event: EventRecord): boolean => event.t === 'attempt'));
           setError(false);
         } catch {
@@ -115,7 +81,10 @@ export function useEconomy(): EconomyState {
   useEffect((): void => {
     sendRequest({ type: 'getSettings' })
       .then((settings: unknown): void => {
-        const pause: unknown = isRecord(settings) ? settings.pause : undefined;
+        const pause: unknown =
+          typeof settings === 'object' && settings !== null && 'pause' in settings
+            ? settings.pause
+            : undefined;
         if (isPauseEconomy(pause)) {
           setEconomy(pause);
           setError(false);

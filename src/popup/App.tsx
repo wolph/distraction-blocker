@@ -2,6 +2,7 @@ import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../shared/constants';
 import { sendRequest } from '../shared/messages';
+import { isListsConfig, isSettings } from '../shared/runtime-validation';
 import type { ListsConfig, SessionSnapshot, Settings } from '../shared/types';
 import { ActiveView } from './ActiveView';
 import { StartForm } from './StartForm';
@@ -119,28 +120,14 @@ function Footer({ snapshot }: { snapshot: SessionSnapshot }): VNode {
   );
 }
 
-function isSettings(value: unknown): value is Settings {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    Array.isArray((value as { presetsMin?: unknown }).presetsMin)
-  );
-}
-
-function isLists(value: unknown): value is ListsConfig {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { categories?: unknown }).categories === 'object'
-  );
-}
-
 function IdleView(): VNode {
   const [settings, setSettings]: [Settings | null, Dispatch<StateUpdater<Settings | null>>] =
     useState<Settings | null>(null);
   const [lists, setLists]: [ListsConfig | null, Dispatch<StateUpdater<ListsConfig | null>>] =
     useState<ListsConfig | null>(null);
   const [loadError, setLoadError]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
+  const [listsEditable, setListsEditable]: [boolean, Dispatch<StateUpdater<boolean>>] =
     useState<boolean>(false);
   useEffect((): void => {
     // Boundary guard: a stub or restarting worker may answer with a
@@ -158,12 +145,14 @@ function IdleView(): VNode {
       });
     void sendRequest({ type: 'getLists' })
       .then((l: ListsConfig): void => {
-        const valid: boolean = isLists(l);
+        const valid: boolean = isListsConfig(l);
         setLists(valid ? l : DEFAULT_LISTS);
+        setListsEditable(valid);
         if (!valid) setLoadError(true);
       })
       .catch((): void => {
         setLists(DEFAULT_LISTS);
+        setListsEditable(false);
         setLoadError(true);
       });
   }, []);
@@ -172,10 +161,11 @@ function IdleView(): VNode {
   }
   return (
     <>
-      <StartForm settings={settings} lists={lists} />
+      <StartForm settings={settings} lists={lists} categoriesEditable={listsEditable} />
       {loadError ? (
         <p class="form-error" role="alert">
-          Could not load session settings. Using defaults.
+          Could not load session settings. Reload the popup to try again. Defaults are shown.
+          {!listsEditable ? ' Category editing is disabled until blocked-site lists reload.' : ''}
         </p>
       ) : null}
     </>

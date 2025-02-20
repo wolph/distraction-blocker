@@ -15,7 +15,7 @@ beforeEach((): void => {
   const fake = installChromeFake();
   fake.respond('getSettings', DEFAULT_SETTINGS);
   fake.respond('getLists', DEFAULT_LISTS);
-  fake.respond('getSnapshot', { phase: 'idle' });
+  fake.respond('getSnapshot', emptySnapshot(0));
 });
 
 const entry: ScheduleEntry = {
@@ -65,6 +65,9 @@ describe('Options navigation', () => {
         source: 'manual',
         scheduleEntryId: null,
       },
+      startedAt: endsAt - 15 * 60_000,
+      phaseStartedAt: endsAt - 15 * 60_000,
+      phaseEndsAt: endsAt,
       sessionEndsAt: endsAt,
     };
     const fake = installChromeFake();

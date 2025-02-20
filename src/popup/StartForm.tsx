@@ -3,6 +3,7 @@ import { type Dispatch, type StateUpdater, useRef, useState } from 'preact/hooks
 import { ALL_CATEGORIES } from '../core/categories';
 import type { Ack } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
+import { ackError } from '../shared/runtime-validation';
 import type {
   CategoryId,
   CategoryList,
@@ -37,7 +38,15 @@ interface PendingCategoryChange {
   desired: boolean;
 }
 
-export function StartForm({ settings, lists }: { settings: Settings; lists: ListsConfig }): VNode {
+export function StartForm({
+  settings,
+  lists,
+  categoriesEditable = true,
+}: {
+  settings: Settings;
+  lists: ListsConfig;
+  categoriesEditable?: boolean;
+}): VNode {
   const [selectedMin, setSelectedMin]: [number, Dispatch<StateUpdater<number>>] = useState<number>(
     settings.presetsMin[1],
   );
@@ -82,16 +91,15 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
     };
     try {
       const ack: Ack = await sendRequest({ type: 'updateLists', lists: next });
-      if (ack.ok) {
+      const responseError: string | null = ackError(ack, 'Could not update categories. Try again.');
+      if (responseError === null) {
         const committed: ListsConfig = {
           ...localListsRef.current,
           categories: { ...localListsRef.current.categories, [change.id]: change.desired },
         };
         localListsRef.current = committed;
         setLocalLists(committed);
-      } else {
-        setError(ack.error);
-      }
+      } else setError(responseError);
     } catch {
       setError('Could not update categories. Try again.');
     } finally {
@@ -105,7 +113,7 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
   };
 
   const toggleCategory: (id: CategoryId) => void = (id: CategoryId): void => {
-    if (pendingCategoriesRef.current.has(id)) return;
+    if (!categoriesEditable || pendingCategoriesRef.current.has(id)) return;
     const desired: boolean = !localListsRef.current.categories[id];
     const nextPending: Set<CategoryId> = new Set(pendingCategoriesRef.current);
     nextPending.add(id);
@@ -134,7 +142,8 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
     setStarting(true);
     try {
       const ack: Ack = await sendRequest({ type: 'startSession', config });
-      if (!ack.ok) setError(ack.error);
+      const responseError: string | null = ackError(ack, 'Could not start session. Try again.');
+      if (responseError !== null) setError(responseError);
     } catch {
       setError('Could not start the session. Try again.');
     } finally {
@@ -194,7 +203,7 @@ export function StartForm({ settings, lists }: { settings: Settings; lists: List
                 key={cat.id}
                 class={localLists.categories[cat.id] ? 'chip chip-selected' : 'chip'}
                 aria-pressed={localLists.categories[cat.id]}
-                disabled={pendingCategories.has(cat.id)}
+                disabled={!categoriesEditable || pendingCategories.has(cat.id)}
                 onClick={(): void => {
                   toggleCategory(cat.id);
                 }}

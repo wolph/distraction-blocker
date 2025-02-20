@@ -114,7 +114,7 @@ describe('popup request errors', (): void => {
     await waitFor((): void => {
       expect(getByRole('button', { name: 'Start focusing' })).toBeTruthy();
       expect(getByRole('alert').textContent).toBe(
-        'Could not load session settings. Using defaults.',
+        'Could not load session settings. Reload the popup to try again. Defaults are shown.',
       );
     });
   });

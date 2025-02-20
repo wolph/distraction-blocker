@@ -2,6 +2,7 @@ import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
 import type { Ack } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
+import { ackError } from '../shared/runtime-validation';
 import type { GateKind, GateState } from '../shared/types';
 
 const CONFIRM_LABELS: Record<GateKind, string> = {
@@ -44,7 +45,8 @@ export function GatePanel({
     setPending(true);
     try {
       const ack: Ack = await sendRequest(request);
-      if (!ack.ok) setError(ack.error);
+      const responseError: string | null = ackError(ack, 'Could not update the gate. Try again.');
+      if (responseError !== null) setError(responseError);
     } catch {
       setError('Could not update the gate. Try again.');
     } finally {

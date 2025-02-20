@@ -6,6 +6,7 @@ import { MIN_BREAK_BEFORE_EARLY_MS } from '../shared/constants';
 import { extrapolatedBank } from '../shared/live';
 import type { Ack, StatsBundle } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
+import { ackError, isStatsBundle } from '../shared/runtime-validation';
 import { formatClock } from '../shared/time';
 import type { GateKind, SessionSnapshot } from '../shared/types';
 import { GatePanel } from './GatePanel';
@@ -52,8 +53,13 @@ function useFocusedTodayMs(): { ms: number | null; error: boolean } {
   useEffect((): void => {
     void sendRequest({ type: 'getStats', days: 1 })
       .then((bundle: StatsBundle): void => {
-        setMs(bundle.totals.focusMsToday);
-        setError(false);
+        if (isStatsBundle(bundle)) {
+          setMs(bundle.totals.focusMsToday);
+          setError(false);
+        } else {
+          setMs(null);
+          setError(true);
+        }
       })
       .catch((): void => {
         setMs(null);
@@ -115,7 +121,8 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
     setActionPending(true);
     try {
       const ack: Ack = await sendRequest({ type: 'openGate', gate, host });
-      if (!ack.ok) setError(ack.error);
+      const responseError: string | null = ackError(ack, 'Could not request action. Try again.');
+      if (responseError !== null) setError(responseError);
     } catch {
       setError('Could not request that action. Try again.');
     } finally {
@@ -129,7 +136,8 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
       setActionPending(true);
       try {
         const ack: Ack = await sendRequest(req);
-        if (!ack.ok) setError(ack.error);
+        const responseError: string | null = ackError(ack, 'Could not request action. Try again.');
+        if (responseError !== null) setError(responseError);
       } catch {
         setError('Could not request that action. Try again.');
       } finally {

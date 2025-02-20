@@ -2,6 +2,7 @@ import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
 import type { Ack, SoundId } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
+import { ackError } from '../shared/runtime-validation';
 import type { Settings, SoundSettings } from '../shared/types';
 
 export interface SoundsBadgeProps {
@@ -29,7 +30,8 @@ export function SoundsBadge(props: SoundsBadgeProps): VNode {
     setPendingSound(sound);
     try {
       const ack: Ack = await sendRequest({ type: 'previewSound', sound });
-      if (!ack.ok) setPreviewError(ack.error);
+      const responseError: string | null = ackError(ack, 'Could not preview the sound. Try again.');
+      if (responseError !== null) setPreviewError(responseError);
     } catch {
       setPreviewError('Could not preview the sound. Try again.');
     } finally {

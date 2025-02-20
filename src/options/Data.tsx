@@ -1,6 +1,7 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import { sendRequest } from '../shared/messages';
+import { isDeviceId, parseEventExportResponse } from '../shared/runtime-validation';
 import { LOCAL_DEVICE_ID } from '../shared/storage-keys';
 import { localDateStr } from '../shared/time';
 
@@ -20,7 +21,7 @@ export function Data(): VNode {
       try {
         const stored: Record<string, unknown> = await chrome.storage.local.get(LOCAL_DEVICE_ID);
         const id: unknown = stored[LOCAL_DEVICE_ID];
-        if (typeof id !== 'string') throw new TypeError('Invalid device id');
+        if (!isDeviceId(id)) throw new TypeError('Invalid device id');
         if (alive) {
           setDeviceId(id);
           setDeviceError(null);
@@ -28,7 +29,7 @@ export function Data(): VNode {
       } catch {
         if (alive) {
           setDeviceId('');
-          setDeviceError('Could not load this device id.');
+          setDeviceError('Could not load this device id. Reload the page to try again.');
         }
       } finally {
         if (alive) setDeviceLoading(false);
@@ -44,16 +45,9 @@ export function Data(): VNode {
     setExportError(null);
     try {
       const response: unknown = await sendRequest({ type: 'exportEvents' });
-      if (
-        typeof response !== 'object' ||
-        response === null ||
-        !('json' in response) ||
-        typeof response.json !== 'string'
-      ) {
-        throw new Error('invalid export response');
-      }
-      JSON.parse(response.json);
-      const blob: Blob = new Blob([response.json], { type: 'application/json' });
+      if (parseEventExportResponse(response) === null) throw new Error('invalid export response');
+      const exportResponse: { json: string } = response as { json: string };
+      const blob: Blob = new Blob([exportResponse.json], { type: 'application/json' });
       const url: string = URL.createObjectURL(blob);
       const anchor: HTMLAnchorElement = document.createElement('a');
       anchor.href = url;

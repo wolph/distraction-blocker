@@ -286,7 +286,9 @@ describe('Data', () => {
     const { getByRole, queryByText } = render(<Data />);
 
     await waitFor((): void => {
-      expect(getByRole('alert').textContent).toBe('Could not load this device id.');
+      expect(getByRole('alert').textContent).toBe(
+        'Could not load this device id. Reload the page to try again.',
+      );
     });
     expect(queryByText('Loading device id.')).toBeNull();
   });
@@ -299,7 +301,7 @@ describe('Data', () => {
 
     const { getByText, getByRole } = render(<Data />);
     await waitFor((): void => {
-      expect(getByText('test-device-id')).toBeTruthy();
+      expect(getByText('123e4567-e89b-42d3-a456-426614174000')).toBeTruthy();
     });
     fireEvent.click(getByRole('button', { name: 'Export event log' }));
     await waitFor((): void => {
