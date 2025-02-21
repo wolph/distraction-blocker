@@ -215,6 +215,19 @@ describe.sequential('stats-service local calendar ranges', (): void => {
 
     expect(plan.remove).toEqual([`agg:devA:${outside}`]);
   });
+
+  it.each([0, 1.5, 100_000_001, Number.MAX_SAFE_INTEGER])(
+    'rejects an unsafe retention boundary %s before planning removals',
+    (retentionDays: number): void => {
+      const now: number = new Date(2026, 2, 30, 0, 30).getTime();
+      const today: string = '2026-03-30';
+
+      expect(
+        (): ReturnType<typeof pruneAndRollup> =>
+          pruneAndRollup('devA', syncDailies([today]), retentionDays, now),
+      ).toThrow('retentionDays');
+    },
+  );
 });
 
 describe('stats-service recent session cap', (): void => {

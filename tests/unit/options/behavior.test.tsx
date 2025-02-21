@@ -74,6 +74,37 @@ describe('PauseEconomy', () => {
     ).toBeTruthy();
   });
 
+  it('accepts the exact upper retention boundary', (): void => {
+    const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
+    const { getByLabelText }: ReturnType<typeof render> = render(
+      <PauseEconomy settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
+    const input: HTMLInputElement = getByLabelText('Keep daily stats (days)') as HTMLInputElement;
+
+    expect(input.max).toBe('100000000');
+    fireEvent.input(input, { target: { value: '100000000' } });
+
+    const next: Settings = onChange.mock.calls[0]?.[0] as Settings;
+    expect(next.retentionDays).toBe(100_000_000);
+  });
+
+  it.each([['0'], ['1.5'], [String(Number.MAX_SAFE_INTEGER)], ['100000001']])(
+    'rejects unsafe retention %s with a field-specific error',
+    (value: string): void => {
+      const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
+      const { getByLabelText, getByText }: ReturnType<typeof render> = render(
+        <PauseEconomy settings={DEFAULT_SETTINGS} onChange={onChange} />,
+      );
+
+      fireEvent.input(getByLabelText('Keep daily stats (days)'), { target: { value } });
+
+      expect(onChange).not.toHaveBeenCalled();
+      expect(
+        getByText('Keep daily stats (days) must be within the supported day range.'),
+      ).toBeTruthy();
+    },
+  );
+
   it('maps the earn-rate input to earnRatio = value / 30', (): void => {
     const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
     const { getByLabelText }: ReturnType<typeof render> = render(

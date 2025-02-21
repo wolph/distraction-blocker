@@ -325,6 +325,9 @@ export function PauseEconomy(props: BehaviorProps): VNode {
       <NumberField
         label="Keep daily stats (days)"
         value={s.retentionDays}
+        max={MAX_SAFE_DAY_COUNT}
+        isValid={isSafeDayCount}
+        errorMessage="Keep daily stats (days) must be within the supported day range."
         onValue={(value: number): void => {
           props.onChange({ ...s, retentionDays: value });
         }}

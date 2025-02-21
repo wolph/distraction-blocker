@@ -110,6 +110,29 @@ describe('storage default merging', () => {
   });
 
   it.each([
+    ['zero', 0],
+    ['fractional', 1.5],
+    ['maximum safe integer days', Number.MAX_SAFE_INTEGER],
+    ['past the Date range', 100_000_001],
+  ])('migrates %s retention to the default', (_label: string, value: number): void => {
+    const settings: Settings = mergeSettings({
+      ...DEFAULT_SETTINGS,
+      retentionDays: value,
+    });
+
+    expect(settings.retentionDays).toBe(DEFAULT_SETTINGS.retentionDays);
+  });
+
+  it('preserves the exact upper retention boundary', (): void => {
+    const settings: Settings = mergeSettings({
+      ...DEFAULT_SETTINGS,
+      retentionDays: 100_000_000,
+    });
+
+    expect(settings.retentionDays).toBe(100_000_000);
+  });
+
+  it.each([
     ['zero', [0, 25, 50]],
     ['sub-millisecond', [0.000_001, 25, 50]],
     ['unsafe', [15, Number.MAX_SAFE_INTEGER, 50]],

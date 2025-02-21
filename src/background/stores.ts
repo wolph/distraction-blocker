@@ -165,7 +165,7 @@ export function mergeSettings(raw: unknown, base: Settings = DEFAULT_SETTINGS): 
     streakFreezeIntervalDays: isSafeDayCount(stored.streakFreezeIntervalDays)
       ? stored.streakFreezeIntervalDays
       : base.streakFreezeIntervalDays,
-    retentionDays: numberOrDefault(stored.retentionDays, base.retentionDays),
+    retentionDays: isSafeDayCount(stored.retentionDays) ? stored.retentionDays : base.retentionDays,
   };
 }
 

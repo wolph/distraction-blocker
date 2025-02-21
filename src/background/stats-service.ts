@@ -7,6 +7,7 @@ import {
 } from '../core/stats';
 import { emptyStreak } from '../core/streak';
 import type { StatsBundle } from '../shared/messages';
+import { isSafeDayCount } from '../shared/numeric-validation';
 import { SYNC_STREAK, syncAggKey, syncMonthKey } from '../shared/storage-keys';
 import { localDateStr, localMonthStr } from '../shared/time';
 import type { DailyAgg, EventRecord, MonthlyAgg, StreakState } from '../shared/types';
@@ -248,6 +249,9 @@ export function pruneAndRollup(
   retentionDays: number,
   now: number,
 ): PrunePlan {
+  if (!isSafeDayCount(retentionDays)) {
+    throw new RangeError('retentionDays must be within the supported day range.');
+  }
   const cutoff: string = localDateBefore(now, retentionDays - 1);
   const mineRe: RegExp = new RegExp(`^agg:${deviceId}:(\\d{4}-\\d{2}-\\d{2})$`);
   const archiveRe: RegExp = new RegExp(
