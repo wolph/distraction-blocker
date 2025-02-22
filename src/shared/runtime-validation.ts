@@ -1,4 +1,5 @@
 import { validateRule } from '../core/matcher';
+import { scheduleEntriesOverlap } from '../core/schedule';
 import { isDailyDate, parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { CATEGORY_IDS, MAX_FREEZE_TOKENS } from './constants';
 import type { Ack, StatsBundle } from './messages';
@@ -84,11 +85,8 @@ function isRule(value: unknown): value is Rule {
 export function isCycleConfig(value: unknown): value is CycleConfig {
   return (
     isRecord(value) &&
-    isPositiveInteger(value.focusMin) &&
     isRelativeMinuteDuration(value.focusMin) &&
-    isPositiveInteger(value.shortBreakMin) &&
     isRelativeMinuteDuration(value.shortBreakMin) &&
-    isPositiveInteger(value.longBreakMin) &&
     isRelativeMinuteDuration(value.longBreakMin) &&
     isPositiveInteger(value.longEvery)
   );
@@ -112,6 +110,24 @@ function isScheduleEntry(value: unknown): value is ScheduleEntry {
     typeof value.intention === 'string' &&
     typeof value.enabled === 'boolean'
   );
+}
+
+function isSchedule(value: unknown): value is ScheduleEntry[] {
+  if (!Array.isArray(value)) return false;
+  const ids: Set<string> = new Set<string>();
+  for (let index: number = 0; index < value.length; index++) {
+    if (!Object.hasOwn(value, index)) return false;
+    const candidate: unknown = value[index];
+    if (!isScheduleEntry(candidate)) return false;
+    const entry: ScheduleEntry = candidate;
+    if (ids.has(entry.id)) return false;
+    ids.add(entry.id);
+    for (let previousIndex: number = 0; previousIndex < index; previousIndex++) {
+      const previous: ScheduleEntry = value[previousIndex] as ScheduleEntry;
+      if (scheduleEntriesOverlap(previous, entry)) return false;
+    }
+  }
+  return true;
 }
 
 export function isPauseEconomy(value: unknown): value is PauseEconomy {
@@ -150,8 +166,7 @@ export function isSettings(value: unknown): value is Settings {
     typeof sounds.breakStart === 'boolean' &&
     typeof sounds.breakEnd === 'boolean' &&
     typeof sounds.scheduleStart === 'boolean' &&
-    Array.isArray(value.schedule) &&
-    value.schedule.every(isScheduleEntry) &&
+    isSchedule(value.schedule) &&
     isPositiveInteger(value.streakGoalMin) &&
     isRelativeMinuteDuration(value.streakGoalMin) &&
     isSafeDayCount(value.streakFreezeIntervalDays) &&

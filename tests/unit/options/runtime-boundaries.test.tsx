@@ -7,7 +7,7 @@ import { Data } from '../../../src/options/Data';
 import { SoundsBadge } from '../../../src/options/SoundsBadge';
 import { type SettingsStore, useSettingsStore } from '../../../src/options/use-settings';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, emptySnapshot } from '../../../src/shared/constants';
-import type { ListsConfig, Settings } from '../../../src/shared/types';
+import type { ListsConfig, ScheduleEntry, Settings } from '../../../src/shared/types';
 import { type ChromeFake, installChromeFake } from './chrome-fake';
 
 let fake: ChromeFake;
@@ -21,6 +21,20 @@ function Harness(): VNode {
 function store(): SettingsStore {
   if (captured === null) throw new Error('store not mounted');
   return captured;
+}
+
+function scheduleEntry(id: string, start: string, end: string): ScheduleEntry {
+  return {
+    id,
+    days: [1],
+    start,
+    end,
+    mode: 'blacklist',
+    strictness: 'friction',
+    cycling: null,
+    intention: '',
+    enabled: true,
+  };
 }
 
 describe('Options runtime response boundaries', (): void => {
@@ -52,6 +66,49 @@ describe('Options runtime response boundaries', (): void => {
     });
     expect(store().settings).toBeNull();
   });
+
+  it.each([
+    [
+      'duplicate schedule ids',
+      [scheduleEntry('same', '09:00', '10:00'), scheduleEntry('same', '11:00', '12:00')],
+    ],
+    [
+      'overlapping enabled schedules',
+      [scheduleEntry('first', '09:00', '11:00'), scheduleEntry('second', '10:00', '12:00')],
+    ],
+  ])(
+    'does not publish settings with %s',
+    async (_label: string, schedule: ScheduleEntry[]): Promise<void> => {
+      fake.respond('getSettings', { ...DEFAULT_SETTINGS, schedule });
+      render(<Harness />);
+
+      await waitFor((): void => {
+        expect(store().loadError).toBe('Could not load settings. Reload the page to try again.');
+      });
+      expect(store().settings).toBeNull();
+    },
+  );
+
+  it.each([
+    ['null', null],
+    ['primitive', 42],
+    ['malformed', { type: 'stateChanged' }],
+  ])(
+    'ignores a %s broadcast envelope without losing the current snapshot',
+    async (_label: string, message: unknown): Promise<void> => {
+      const expectedSnapshot = emptySnapshot(0);
+      render(<Harness />);
+      await waitFor((): void => {
+        expect(store().snapshot).toEqual(expectedSnapshot);
+      });
+
+      await act(async (): Promise<void> => {
+        expect((): void => fake.emit(message)).not.toThrow();
+      });
+
+      expect(store().snapshot).toEqual(expectedSnapshot);
+    },
+  );
 
   it('preserves a hard-session banner after a malformed snapshot broadcast', async (): Promise<void> => {
     const sessionEndsAt: number = new Date(2026, 7, 28, 16, 45).getTime();

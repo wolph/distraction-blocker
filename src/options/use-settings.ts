@@ -1,5 +1,5 @@
 import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
-import type { Ack, Broadcast } from '../shared/messages';
+import type { Ack } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import {
   ackError,
@@ -10,6 +10,10 @@ import {
 import type { ListsConfig, SessionSnapshot, Settings } from '../shared/types';
 
 const LOAD_ERROR: string = 'Could not load settings. Reload the page to try again.';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 export interface SettingsStore {
   /** null until the initial load resolves */
@@ -67,8 +71,12 @@ export function useSettingsStore(): SettingsStore {
       }
     };
     void load();
-    const onBroadcast: (message: Broadcast) => void = (message: Broadcast): void => {
-      if (message.type === 'stateChanged' && isSessionSnapshot(message.snapshot)) {
+    const onBroadcast: (message: unknown) => void = (message: unknown): void => {
+      if (
+        isRecord(message) &&
+        message.type === 'stateChanged' &&
+        isSessionSnapshot(message.snapshot)
+      ) {
         setSnapshot(message.snapshot);
       }
     };

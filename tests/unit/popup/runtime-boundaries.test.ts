@@ -10,7 +10,16 @@ import { GatePanel } from '../../../src/popup/GatePanel';
 import { StartForm } from '../../../src/popup/StartForm';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, emptySnapshot } from '../../../src/shared/constants';
 import type { Request, StatsBundle } from '../../../src/shared/messages';
-import type { GateState, SessionConfig, SessionSnapshot } from '../../../src/shared/types';
+import { MAX_RELATIVE_MINUTES } from '../../../src/shared/numeric-validation';
+import { isSessionSnapshot, isSettings } from '../../../src/shared/runtime-validation';
+import type {
+  CycleConfig,
+  GateState,
+  ScheduleEntry,
+  SessionConfig,
+  SessionSnapshot,
+  Settings,
+} from '../../../src/shared/types';
 import { resetChromeFake, sendMessageMock, tabsQueryMock } from './chrome-fake';
 
 const NOW: number = 1_700_000_000_000;
@@ -106,6 +115,37 @@ describe('popup runtime response boundaries', (): void => {
       expect(getByRole('button', { name: 'Start focusing' })).toBeTruthy();
       expect(getByRole('alert').textContent).toMatch(/reload the popup/i);
     });
+  });
+
+  it('accepts worker-valid fractional and maximum cycle durations', (): void => {
+    const cycles: CycleConfig[] = [
+      { focusMin: 0.25, shortBreakMin: 0.05, longBreakMin: 1.25, longEvery: 4 },
+      {
+        focusMin: MAX_RELATIVE_MINUTES,
+        shortBreakMin: MAX_RELATIVE_MINUTES,
+        longBreakMin: MAX_RELATIVE_MINUTES,
+        longEvery: 4,
+      },
+    ];
+
+    for (const cycling of cycles) {
+      const settings: Settings = { ...DEFAULT_SETTINGS, defaultCycling: cycling };
+      const snapshot: SessionSnapshot = {
+        ...activeSnapshot('focus'),
+        config: { ...CONFIG, cycling },
+      };
+
+      expect(isSettings(settings)).toBe(true);
+      expect(isSessionSnapshot(snapshot)).toBe(true);
+    }
+  });
+
+  it('rejects a sparse schedule without throwing', (): void => {
+    const schedule: ScheduleEntry[] = new Array<ScheduleEntry>(1);
+    const settings: Settings = { ...DEFAULT_SETTINGS, schedule };
+
+    expect((): boolean => isSettings(settings)).not.toThrow();
+    expect(isSettings(settings)).toBe(false);
   });
 
   it('treats a malformed start acknowledgement as an error', async (): Promise<void> => {
