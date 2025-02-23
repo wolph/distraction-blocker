@@ -1,12 +1,9 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useRef, useState } from 'preact/hooks';
-import { ALL_CATEGORIES } from '../core/categories';
+import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
 import type { Ack } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import { ackError } from '../shared/runtime-validation';
 import type {
-  CategoryId,
-  CategoryList,
   CycleConfig,
   ListsConfig,
   SessionConfig,
@@ -14,6 +11,7 @@ import type {
   Settings,
   Strictness,
 } from '../shared/types';
+import { CategoryControls } from './category-controls';
 import { Chip, RadioRow } from './form-controls';
 
 /** Positional labels for the three presets, per the weak-evidence ledger. */
@@ -32,11 +30,6 @@ const MODE_HINTS: Record<SessionMode, string> = {
   blacklist: 'block the listed sites, allow the rest',
   whitelist: 'allow the listed sites, block the rest',
 };
-
-interface PendingCategoryChange {
-  id: CategoryId;
-  desired: boolean;
-}
 
 export function StartForm({
   settings,
@@ -60,18 +53,6 @@ export function StartForm({
   const [cyclingOn, setCyclingOn]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(
     settings.cyclingOnByDefault,
   );
-  const [localLists, setLocalLists]: [ListsConfig, Dispatch<StateUpdater<ListsConfig>>] =
-    useState<ListsConfig>(lists);
-  const [pendingCategories, setPendingCategories]: [
-    ReadonlySet<CategoryId>,
-    Dispatch<StateUpdater<ReadonlySet<CategoryId>>>,
-  ] = useState<ReadonlySet<CategoryId>>(new Set());
-  const localListsRef: { current: ListsConfig } = useRef<ListsConfig>(lists);
-  const pendingCategoriesRef: { current: Set<CategoryId> } = useRef<Set<CategoryId>>(new Set());
-  const categoryQueueRef: { current: PendingCategoryChange[] } = useRef<PendingCategoryChange[]>(
-    [],
-  );
-  const categoryUpdateInFlightRef: { current: boolean } = useRef<boolean>(false);
   const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
     string | null
   >(null);
@@ -79,50 +60,6 @@ export function StartForm({
     useState<boolean>(false);
 
   const durationMin: number = customMin.trim() === '' ? selectedMin : Number(customMin);
-
-  const dispatchNextCategoryUpdate: () => Promise<void> = async (): Promise<void> => {
-    if (categoryUpdateInFlightRef.current) return;
-    const change: PendingCategoryChange | undefined = categoryQueueRef.current.shift();
-    if (change === undefined) return;
-    categoryUpdateInFlightRef.current = true;
-    const next: ListsConfig = {
-      ...localListsRef.current,
-      categories: { ...localListsRef.current.categories, [change.id]: change.desired },
-    };
-    try {
-      const ack: Ack = await sendRequest({ type: 'updateLists', lists: next });
-      const responseError: string | null = ackError(ack, 'Could not update categories. Try again.');
-      if (responseError === null) {
-        const committed: ListsConfig = {
-          ...localListsRef.current,
-          categories: { ...localListsRef.current.categories, [change.id]: change.desired },
-        };
-        localListsRef.current = committed;
-        setLocalLists(committed);
-      } else setError(responseError);
-    } catch {
-      setError('Could not update categories. Try again.');
-    } finally {
-      const remainingPending: Set<CategoryId> = new Set(pendingCategoriesRef.current);
-      remainingPending.delete(change.id);
-      pendingCategoriesRef.current = remainingPending;
-      setPendingCategories(remainingPending);
-      categoryUpdateInFlightRef.current = false;
-      void dispatchNextCategoryUpdate();
-    }
-  };
-
-  const toggleCategory: (id: CategoryId) => void = (id: CategoryId): void => {
-    if (!categoriesEditable || pendingCategoriesRef.current.has(id)) return;
-    const desired: boolean = !localListsRef.current.categories[id];
-    const nextPending: Set<CategoryId> = new Set(pendingCategoriesRef.current);
-    nextPending.add(id);
-    pendingCategoriesRef.current = nextPending;
-    setPendingCategories(nextPending);
-    categoryQueueRef.current.push({ id, desired });
-    setError(null);
-    void dispatchNextCategoryUpdate();
-  };
 
   const start: () => Promise<void> = async (): Promise<void> => {
     if (!Number.isFinite(durationMin) || durationMin <= 0) {
@@ -190,30 +127,7 @@ export function StartForm({
         onInput={(e: Event): void => setIntention((e.currentTarget as HTMLInputElement).value)}
       />
 
-      {ALL_CATEGORIES.length > 0 ? (
-        <fieldset
-          class="pill-row"
-          aria-label="Blocked categories"
-          aria-busy={pendingCategories.size > 0}
-        >
-          {ALL_CATEGORIES.map(
-            (cat: CategoryList): VNode => (
-              <button
-                type="button"
-                key={cat.id}
-                class={localLists.categories[cat.id] ? 'chip chip-selected' : 'chip'}
-                aria-pressed={localLists.categories[cat.id]}
-                disabled={!categoriesEditable || pendingCategories.has(cat.id)}
-                onClick={(): void => {
-                  toggleCategory(cat.id);
-                }}
-              >
-                {cat.title}
-              </button>
-            ),
-          )}
-        </fieldset>
-      ) : null}
+      <CategoryControls lists={lists} editable={categoriesEditable} onError={setError} />
 
       <details class="options">
         <summary>Session options</summary>

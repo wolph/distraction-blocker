@@ -43,6 +43,15 @@ describe('StartForm', () => {
     expect(getByRole('button', { name: '50 deep work (preference, not science)' })).toBeTruthy();
   });
 
+  it('renders the prescribed strictness hints exactly', (): void => {
+    const { getByText } = render(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
+    );
+
+    expect(getByText('can end early after a 30 s wait and typing a sentence')).toBeTruthy();
+    expect(getByText('no way out until the timer ends, pauses excepted')).toBeTruthy();
+  });
+
   it('starts a session from the chosen preset and typed intention', async (): Promise<void> => {
     const { getByRole, getByPlaceholderText } = render(
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
