@@ -1,9 +1,10 @@
 import { validateRule } from '../core/matcher';
-import { scheduleEntriesOverlap } from '../core/schedule';
+import { scheduleEntriesOverlap, validateEntry } from '../core/schedule';
 import { isDailyDate, parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { CATEGORY_IDS, MAX_FREEZE_TOKENS } from './constants';
 import type { Ack, StatsBundle } from './messages';
 import {
+  isPositiveMinuteValue,
   isRelativeMillisecondDuration,
   isRelativeMinuteDuration,
   isSafeDayCount,
@@ -26,7 +27,6 @@ import type {
 
 type UnknownRecord = Record<string, unknown>;
 
-const CLOCK_RE: RegExp = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const MONTH_RE: RegExp = /^(\d{4})-(0[1-9]|1[0-2])$/;
 const UUID_RE: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -34,10 +34,19 @@ function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function hasOnlyKeys(value: UnknownRecord, keys: readonly string[]): boolean {
-  const actual: string[] = Object.keys(value);
+function isDenseArray(value: unknown): value is unknown[] {
+  if (!Array.isArray(value)) return false;
+  for (let index: number = 0; index < value.length; index++) {
+    if (!Object.hasOwn(value, index)) return false;
+  }
+  return true;
+}
+
+function hasExactKeys(value: UnknownRecord, keys: readonly string[]): boolean {
+  const actual: PropertyKey[] = Reflect.ownKeys(value);
   return (
-    actual.length === keys.length && keys.every((key: string): boolean => actual.includes(key))
+    actual.length === keys.length &&
+    actual.every((key: PropertyKey): boolean => typeof key === 'string' && keys.includes(key))
   );
 }
 
@@ -65,12 +74,6 @@ function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === 'string';
 }
 
-function clockMinutes(value: unknown): number | null {
-  if (typeof value !== 'string') return null;
-  const match: RegExpExecArray | null = CLOCK_RE.exec(value);
-  return match === null ? null : Number(match[1]) * 60 + Number(match[2]);
-}
-
 function isRule(value: unknown): value is Rule {
   if (
     !isRecord(value) ||
@@ -85,6 +88,7 @@ function isRule(value: unknown): value is Rule {
 export function isCycleConfig(value: unknown): value is CycleConfig {
   return (
     isRecord(value) &&
+    hasExactKeys(value, ['focusMin', 'shortBreakMin', 'longBreakMin', 'longEvery']) &&
     isRelativeMinuteDuration(value.focusMin) &&
     isRelativeMinuteDuration(value.shortBreakMin) &&
     isRelativeMinuteDuration(value.longBreakMin) &&
@@ -93,27 +97,50 @@ export function isCycleConfig(value: unknown): value is CycleConfig {
 }
 
 function isScheduleEntry(value: unknown): value is ScheduleEntry {
-  if (!isRecord(value) || !isNonBlankString(value.id) || !Array.isArray(value.days)) return false;
-  const days: unknown[] = value.days;
-  const startsAt: number | null = clockMinutes(value.start);
-  const endsAt: number | null = clockMinutes(value.end);
-  return (
-    days.length > 0 &&
-    days.every((day: unknown): boolean => isNonNegativeInteger(day) && day <= 6) &&
-    new Set<unknown>(days).size === days.length &&
-    startsAt !== null &&
-    endsAt !== null &&
-    startsAt < endsAt &&
-    (value.mode === 'blacklist' || value.mode === 'whitelist') &&
-    (value.strictness === 'hard' || value.strictness === 'friction') &&
-    (value.cycling === null || isCycleConfig(value.cycling)) &&
-    typeof value.intention === 'string' &&
-    typeof value.enabled === 'boolean'
-  );
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'id',
+      'days',
+      'start',
+      'end',
+      'mode',
+      'strictness',
+      'cycling',
+      'intention',
+      'enabled',
+    ]) ||
+    !isNonBlankString(value.id) ||
+    !isDenseArray(value.days) ||
+    value.days.length === 0 ||
+    !value.days.every((day: unknown): day is number => isNonNegativeInteger(day) && day <= 6) ||
+    new Set(value.days).size !== value.days.length ||
+    typeof value.start !== 'string' ||
+    typeof value.end !== 'string' ||
+    (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
+    (value.strictness !== 'hard' && value.strictness !== 'friction') ||
+    (value.cycling !== null && !isCycleConfig(value.cycling)) ||
+    typeof value.intention !== 'string' ||
+    typeof value.enabled !== 'boolean'
+  ) {
+    return false;
+  }
+  const entry: ScheduleEntry = {
+    id: value.id,
+    days: value.days,
+    start: value.start,
+    end: value.end,
+    mode: value.mode,
+    strictness: value.strictness,
+    cycling: value.cycling,
+    intention: value.intention,
+    enabled: value.enabled,
+  };
+  return validateEntry(entry) === null;
 }
 
 function isSchedule(value: unknown): value is ScheduleEntry[] {
-  if (!Array.isArray(value)) return false;
+  if (!isDenseArray(value)) return false;
   const ids: Set<string> = new Set<string>();
   for (let index: number = 0; index < value.length; index++) {
     if (!Object.hasOwn(value, index)) return false;
@@ -133,19 +160,70 @@ function isSchedule(value: unknown): value is ScheduleEntry[] {
 export function isPauseEconomy(value: unknown): value is PauseEconomy {
   return (
     isRecord(value) &&
+    hasExactKeys(value, ['earnRatio', 'capMs', 'pauseMs', 'unlockMs']) &&
     isNonNegativeNumber(value.earnRatio) &&
-    isRelativeMillisecondDuration(value.capMs, true) &&
-    isRelativeMillisecondDuration(value.pauseMs, false) &&
-    isRelativeMillisecondDuration(value.unlockMs, false)
+    isNonNegativeInteger(value.capMs) &&
+    isRelativeMillisecondDuration(value.pauseMs, true) &&
+    isRelativeMillisecondDuration(value.unlockMs, true)
+  );
+}
+
+function isGateSettings(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['delayMs', 'requireTypedPhrase']) &&
+    isRelativeMillisecondDuration(value.delayMs, true) &&
+    typeof value.requireTypedPhrase === 'boolean'
+  );
+}
+
+function isSoundSettings(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'masterVolume',
+      'sessionComplete',
+      'breakStart',
+      'breakEnd',
+      'scheduleStart',
+    ])
+  ) {
+    return false;
+  }
+  return (
+    isNonNegativeNumber(value.masterVolume) &&
+    value.masterVolume <= 1 &&
+    typeof value.sessionComplete === 'boolean' &&
+    typeof value.breakStart === 'boolean' &&
+    typeof value.breakEnd === 'boolean' &&
+    typeof value.scheduleStart === 'boolean'
   );
 }
 
 export function isSettings(value: unknown): value is Settings {
-  if (!isRecord(value)) return false;
-  const gate: unknown = value.gate;
-  const sounds: unknown = value.sounds;
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'presetsMin',
+      'defaultMode',
+      'defaultStrictness',
+      'defaultCycling',
+      'cyclingOnByDefault',
+      'pause',
+      'gate',
+      'badgeCountdown',
+      'sessionCompleteNotification',
+      'sounds',
+      'schedule',
+      'streakGoalMin',
+      'streakFreezeIntervalDays',
+      'retentionDays',
+    ])
+  ) {
+    return false;
+  }
   return (
-    Array.isArray(value.presetsMin) &&
+    isDenseArray(value.presetsMin) &&
     value.presetsMin.length === 3 &&
     value.presetsMin.every(isRelativeMinuteDuration) &&
     (value.defaultMode === 'blacklist' || value.defaultMode === 'whitelist') &&
@@ -153,22 +231,12 @@ export function isSettings(value: unknown): value is Settings {
     isCycleConfig(value.defaultCycling) &&
     typeof value.cyclingOnByDefault === 'boolean' &&
     isPauseEconomy(value.pause) &&
-    isRecord(gate) &&
-    isRelativeMillisecondDuration(gate.delayMs, true) &&
-    typeof gate.requireTypedPhrase === 'boolean' &&
+    isGateSettings(value.gate) &&
     typeof value.badgeCountdown === 'boolean' &&
     typeof value.sessionCompleteNotification === 'boolean' &&
-    isRecord(sounds) &&
-    isFiniteNumber(sounds.masterVolume) &&
-    sounds.masterVolume >= 0 &&
-    sounds.masterVolume <= 1 &&
-    typeof sounds.sessionComplete === 'boolean' &&
-    typeof sounds.breakStart === 'boolean' &&
-    typeof sounds.breakEnd === 'boolean' &&
-    typeof sounds.scheduleStart === 'boolean' &&
+    isSoundSettings(value.sounds) &&
     isSchedule(value.schedule) &&
-    isPositiveInteger(value.streakGoalMin) &&
-    isRelativeMinuteDuration(value.streakGoalMin) &&
+    isPositiveMinuteValue(value.streakGoalMin) &&
     isSafeDayCount(value.streakFreezeIntervalDays) &&
     isSafeDayCount(value.retentionDays)
   );
@@ -246,9 +314,9 @@ export function isSessionSnapshot(value: unknown): value is SessionSnapshot {
     !isNonNegativeInteger(value.cycleIndex) ||
     !isNonNegativeNumber(value.bankMs) ||
     !isNonNegativeNumber(value.bankAccrualPerMs) ||
-    !isRelativeMillisecondDuration(value.bankCapMs, true) ||
-    !isRelativeMillisecondDuration(value.pauseCostMs, false) ||
-    !isRelativeMillisecondDuration(value.unlockCostMs, false) ||
+    !isNonNegativeInteger(value.bankCapMs) ||
+    !isRelativeMillisecondDuration(value.pauseCostMs, true) ||
+    !isRelativeMillisecondDuration(value.unlockCostMs, true) ||
     !Array.isArray(value.activeUnlocks) ||
     !value.activeUnlocks.every(isSiteUnlock) ||
     (value.gate !== null && !isGate(value.gate)) ||
@@ -387,12 +455,12 @@ export function isStatsBundle(value: unknown): value is StatsBundle {
 }
 
 export function ackError(value: unknown, malformedError: string): string | null {
-  if (isRecord(value) && value.ok === true && hasOnlyKeys(value, ['ok'])) return null;
+  if (isRecord(value) && value.ok === true && hasExactKeys(value, ['ok'])) return null;
   if (
     isRecord(value) &&
     value.ok === false &&
     isNonBlankString(value.error) &&
-    hasOnlyKeys(value, ['ok', 'error'])
+    hasExactKeys(value, ['ok', 'error'])
   ) {
     const rejection: Ack = { ok: false, error: value.error };
     return rejection.error;

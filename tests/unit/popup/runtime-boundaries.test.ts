@@ -10,7 +10,10 @@ import { GatePanel } from '../../../src/popup/GatePanel';
 import { StartForm } from '../../../src/popup/StartForm';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, emptySnapshot } from '../../../src/shared/constants';
 import type { Request, StatsBundle } from '../../../src/shared/messages';
-import { MAX_RELATIVE_MINUTES } from '../../../src/shared/numeric-validation';
+import {
+  MAX_RELATIVE_DURATION_MS,
+  MAX_RELATIVE_MINUTES,
+} from '../../../src/shared/numeric-validation';
 import { isSessionSnapshot, isSettings } from '../../../src/shared/runtime-validation';
 import type {
   CycleConfig,
@@ -31,6 +34,17 @@ const CONFIG: SessionConfig = {
   intention: 'write report',
   source: 'manual',
   scheduleEntryId: null,
+};
+const SCHEDULE_ENTRY: ScheduleEntry = {
+  id: 'schedule-entry',
+  days: [1],
+  start: '09:00',
+  end: '10:00',
+  mode: 'blacklist',
+  strictness: 'friction',
+  cycling: null,
+  intention: '',
+  enabled: true,
 };
 const STATS: StatsBundle = {
   days: [],
@@ -145,6 +159,85 @@ describe('popup runtime response boundaries', (): void => {
     const settings: Settings = { ...DEFAULT_SETTINGS, schedule };
 
     expect((): boolean => isSettings(settings)).not.toThrow();
+    expect(isSettings(settings)).toBe(false);
+  });
+
+  it.each([
+    ['fractional streak goal', { ...DEFAULT_SETTINGS, streakGoalMin: 0.5 }],
+    [
+      'pause cap above relative-duration range',
+      {
+        ...DEFAULT_SETTINGS,
+        pause: { ...DEFAULT_SETTINGS.pause, capMs: MAX_RELATIVE_DURATION_MS + 1 },
+      },
+    ],
+    [
+      'maximum safe pause cap',
+      {
+        ...DEFAULT_SETTINGS,
+        pause: { ...DEFAULT_SETTINGS.pause, capMs: Number.MAX_SAFE_INTEGER },
+      },
+    ],
+    [
+      'zero pause length',
+      { ...DEFAULT_SETTINGS, pause: { ...DEFAULT_SETTINGS.pause, pauseMs: 0 } },
+    ],
+    [
+      'zero unlock length',
+      { ...DEFAULT_SETTINGS, pause: { ...DEFAULT_SETTINGS.pause, unlockMs: 0 } },
+    ],
+  ])('accepts worker-valid settings with %s', (_label: string, settings: Settings): void => {
+    expect(isSettings(settings)).toBe(true);
+  });
+
+  it.each([
+    ['bank cap above relative-duration range', { bankCapMs: MAX_RELATIVE_DURATION_MS + 1 }],
+    ['maximum safe bank cap', { bankCapMs: Number.MAX_SAFE_INTEGER }],
+    ['zero pause cost', { pauseCostMs: 0 }],
+    ['zero unlock cost', { unlockCostMs: 0 }],
+  ])(
+    'accepts a worker-authoritative snapshot with %s',
+    (_label: string, override: Partial<SessionSnapshot>): void => {
+      expect(isSessionSnapshot({ ...activeSnapshot('focus'), ...override })).toBe(true);
+    },
+  );
+
+  it('rejects sparse preset minutes without throwing', (): void => {
+    const presetsMin: Settings['presetsMin'] = new Array<number>(3) as Settings['presetsMin'];
+    presetsMin[0] = 15;
+    presetsMin[2] = 50;
+    const settings: Settings = { ...DEFAULT_SETTINGS, presetsMin };
+
+    expect((): boolean => isSettings(settings)).not.toThrow();
+    expect(isSettings(settings)).toBe(false);
+  });
+
+  it('rejects sparse schedule days without throwing', (): void => {
+    const days: number[] = new Array<number>(2);
+    days[0] = 1;
+    const settings: Settings = {
+      ...DEFAULT_SETTINGS,
+      schedule: [{ ...SCHEDULE_ENTRY, days }],
+    };
+
+    expect((): boolean => isSettings(settings)).not.toThrow();
+    expect(isSettings(settings)).toBe(false);
+  });
+
+  it.each([
+    ['top-level settings', { ...DEFAULT_SETTINGS, extra: true }],
+    [
+      'cycle config',
+      { ...DEFAULT_SETTINGS, defaultCycling: { ...DEFAULT_SETTINGS.defaultCycling, extra: true } },
+    ],
+    ['pause settings', { ...DEFAULT_SETTINGS, pause: { ...DEFAULT_SETTINGS.pause, extra: true } }],
+    ['gate settings', { ...DEFAULT_SETTINGS, gate: { ...DEFAULT_SETTINGS.gate, extra: true } }],
+    [
+      'sound settings',
+      { ...DEFAULT_SETTINGS, sounds: { ...DEFAULT_SETTINGS.sounds, extra: true } },
+    ],
+    ['schedule entry', { ...DEFAULT_SETTINGS, schedule: [{ ...SCHEDULE_ENTRY, extra: true }] }],
+  ])('rejects extra keys in %s', (_label: string, settings: unknown): void => {
     expect(isSettings(settings)).toBe(false);
   });
 
