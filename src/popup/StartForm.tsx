@@ -22,8 +22,8 @@ const PRESET_LABELS: readonly [string, string, string] = [
 ];
 
 const STRICTNESS_HINTS: Record<Strictness, string> = {
-  friction: 'can end early after a 30 s wait and typing a sentence',
-  hard: 'no way out until the timer ends, pauses excepted',
+  friction: 'can end early after 30 s wait typing sentence',
+  hard: 'no way out until timer ends, pauses excepted',
 };
 
 const MODE_HINTS: Record<SessionMode, string> = {
@@ -122,7 +122,7 @@ export function StartForm({
       <input
         class="intention-input"
         type="text"
-        placeholder="What are you working on?"
+        placeholder="What you working on?"
         value={intention}
         onInput={(e: Event): void => setIntention((e.currentTarget as HTMLInputElement).value)}
       />

@@ -44,12 +44,13 @@ describe('StartForm', () => {
   });
 
   it('renders the prescribed strictness hints exactly', (): void => {
-    const { getByText } = render(
+    const { getByPlaceholderText, getByText } = render(
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
 
-    expect(getByText('can end early after a 30 s wait and typing a sentence')).toBeTruthy();
-    expect(getByText('no way out until the timer ends, pauses excepted')).toBeTruthy();
+    expect(getByPlaceholderText('What you working on?')).toBeTruthy();
+    expect(getByText('can end early after 30 s wait typing sentence')).toBeTruthy();
+    expect(getByText('no way out until timer ends, pauses excepted')).toBeTruthy();
   });
 
   it('starts a session from the chosen preset and typed intention', async (): Promise<void> => {
@@ -58,7 +59,7 @@ describe('StartForm', () => {
     );
 
     fireEvent.click(getByRole('button', { name: '25 focus' }));
-    fireEvent.input(getByPlaceholderText('What are you working on?'), {
+    fireEvent.input(getByPlaceholderText('What you working on?'), {
       target: { value: 'write the report' },
     });
     fireEvent.click(getByRole('button', { name: 'Start focusing' }));
