@@ -5,6 +5,7 @@ import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
+import type { ListsConfig } from '../../../src/shared/types';
 import { resetChromeFake, sendMessageMock } from './chrome-fake';
 
 vi.mock('../../../src/core/categories', () => ({
@@ -64,6 +65,85 @@ describe('StartForm category acknowledgement', () => {
     await waitFor((): void => {
       expect((getByRole('button', { name: 'Social' }) as HTMLButtonElement).disabled).toBe(false);
     });
+  });
+
+  it('uses an idle authoritative list refresh for state and the next update', async (): Promise<void> => {
+    sendMessageMock.mockResolvedValue({ ok: true });
+    const refreshed: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'refreshed.example' }],
+      categories: { ...DEFAULT_LISTS.categories, video: true },
+      exclusions: { social: ['work.example'] },
+    };
+    const { getByRole, rerender } = render(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
+    );
+
+    rerender(h(StartForm, { settings: DEFAULT_SETTINGS, lists: refreshed }));
+
+    await waitFor((): void => {
+      expect(
+        getByRole('button', { name: 'Video and streaming' }).getAttribute('aria-pressed'),
+      ).toBe('true');
+    });
+    fireEvent.click(getByRole('button', { name: 'Social' }));
+
+    await waitFor((): void => {
+      expect(updateRequests()).toHaveLength(1);
+    });
+    expect(updateRequests()[0]?.lists).toEqual({
+      ...refreshed,
+      categories: { ...refreshed.categories, social: true },
+    });
+  });
+
+  it('reconciles a refresh after queued acknowledgements drain', async (): Promise<void> => {
+    const resolvers: ResolveAck[] = deferredUpdates();
+    const refreshed: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'refreshed.example' }],
+      categories: { ...DEFAULT_LISTS.categories, news: true },
+      exclusions: { social: ['work.example'] },
+    };
+    const { getByRole, rerender } = render(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
+    );
+
+    fireEvent.click(getByRole('button', { name: 'Social' }));
+    fireEvent.click(getByRole('button', { name: 'Video and streaming' }));
+    await waitFor((): void => {
+      expect(resolvers).toHaveLength(1);
+    });
+    rerender(h(StartForm, { settings: DEFAULT_SETTINGS, lists: refreshed }));
+
+    resolvers[0]?.({ ok: true });
+    await waitFor((): void => {
+      expect(resolvers).toHaveLength(2);
+    });
+    resolvers[1]?.({ ok: true });
+
+    await waitFor((): void => {
+      expect(getByRole('button', { name: 'Social' }).getAttribute('aria-pressed')).toBe('true');
+      expect(
+        getByRole('button', { name: 'Video and streaming' }).getAttribute('aria-pressed'),
+      ).toBe('true');
+      expect(getByRole('button', { name: 'News' }).getAttribute('aria-pressed')).toBe('true');
+    });
+    fireEvent.click(getByRole('button', { name: 'News' }));
+
+    await waitFor((): void => {
+      expect(resolvers).toHaveLength(3);
+    });
+    expect(updateRequests()[2]?.lists).toEqual({
+      ...refreshed,
+      categories: {
+        ...refreshed.categories,
+        social: true,
+        video: true,
+        news: false,
+      },
+    });
+    resolvers[2]?.({ ok: true });
   });
 
   it('queues B after rejected A and excludes A from B worker payload', async (): Promise<void> => {

@@ -1,5 +1,5 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useRef, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'preact/hooks';
 import { ALL_CATEGORIES } from '../core/categories';
 import type { Ack } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
@@ -41,6 +41,33 @@ export function CategoryControls({
     [],
   );
   const updateInFlightRef: { current: boolean } = useRef<boolean>(false);
+  const deferredListsRef: { current: ListsConfig | null } = useRef<ListsConfig | null>(null);
+  const acceptedChangesRef: { current: Map<CategoryId, boolean> } = useRef<
+    Map<CategoryId, boolean>
+  >(new Map());
+
+  useEffect((): void => {
+    if (updateInFlightRef.current || categoryQueueRef.current.length > 0) {
+      deferredListsRef.current = lists;
+      return;
+    }
+    localListsRef.current = lists;
+    setLocalLists(lists);
+    acceptedChangesRef.current.clear();
+  }, [lists]);
+
+  const reconcileDeferredLists: () => void = (): void => {
+    const deferred: ListsConfig | null = deferredListsRef.current;
+    if (deferred === null) return;
+    let reconciled: ListsConfig = deferred;
+    for (const [id, desired] of acceptedChangesRef.current) {
+      reconciled = updateCategory(reconciled, id, desired);
+    }
+    deferredListsRef.current = null;
+    acceptedChangesRef.current.clear();
+    localListsRef.current = reconciled;
+    setLocalLists(reconciled);
+  };
 
   const dispatchNextUpdate: () => Promise<void> = async (): Promise<void> => {
     if (updateInFlightRef.current) return;
@@ -59,6 +86,7 @@ export function CategoryControls({
         );
         localListsRef.current = committed;
         setLocalLists(committed);
+        acceptedChangesRef.current.set(change.id, change.desired);
       } else onError(responseError);
     } catch {
       onError('Could not update categories. Try again.');
@@ -68,12 +96,16 @@ export function CategoryControls({
       pendingCategoriesRef.current = remainingPending;
       setPendingCategories(remainingPending);
       updateInFlightRef.current = false;
-      void dispatchNextUpdate();
+      if (categoryQueueRef.current.length === 0) reconcileDeferredLists();
+      else void dispatchNextUpdate();
     }
   };
 
   const toggleCategory: (id: CategoryId) => void = (id: CategoryId): void => {
     if (!editable || pendingCategoriesRef.current.has(id)) return;
+    if (!updateInFlightRef.current && categoryQueueRef.current.length === 0) {
+      acceptedChangesRef.current.clear();
+    }
     const desired: boolean = !localListsRef.current.categories[id];
     const nextPending: Set<CategoryId> = new Set(pendingCategoriesRef.current);
     nextPending.add(id);
