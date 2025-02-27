@@ -49,6 +49,7 @@ import {
 import { chooseNewerStreak, rebaseStreakForDate, streaksEqual } from './streak-sync';
 import {
   removeSyncItems,
+  replaySyncQuotaEvictionCheckpoint,
   type SanitizedSyncJournal,
   sanitizeSyncJournal,
   setSyncItemsWithinQuota,
@@ -157,6 +158,7 @@ function validatedPendingJournal(
 
 async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<Engine> {
   const now: number = Date.now();
+  await replaySyncQuotaEvictionCheckpoint();
   const rawJournal: SyncJournal = await loadSyncJournal();
   const pendingAggregateKeys: string[] = Object.keys(rawJournal.sets).filter(
     (key: string): boolean => aggregateKeyIdentity(key) !== null,

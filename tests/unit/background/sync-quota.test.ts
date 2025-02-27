@@ -1,19 +1,52 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   assertSyncItemWithinQuota,
   removeSyncItems,
+  replaySyncQuotaEvictionCheckpoint,
   SYNC_QUOTA_BYTES_PER_ITEM,
   SYNC_QUOTA_BYTES_TOTAL,
   sanitizeSyncJournal,
   setSyncItemsWithinQuota,
   syncItemBytes,
 } from '../../../src/background/sync-quota';
+import { type SyncJournal, SyncWriter } from '../../../src/background/sync-writer';
+import { LOCAL_SYNC_QUOTA_EVICTION } from '../../../src/shared/storage-keys';
 
 interface FakeSyncStorage {
   area: chrome.storage.SyncStorageArea;
   state: Record<string, unknown>;
   trace: string[];
 }
+
+interface FakeLocalStorage {
+  area: chrome.storage.StorageArea;
+  state: Record<string, unknown>;
+}
+
+function fakeLocalStorage(initial: Record<string, unknown> = {}): FakeLocalStorage {
+  const state: Record<string, unknown> = structuredClone(initial);
+  const area: chrome.storage.StorageArea = {
+    get: vi.fn(async (key: string): Promise<Record<string, unknown>> => {
+      return Object.hasOwn(state, key) ? { [key]: structuredClone(state[key]) } : {};
+    }),
+    set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+      Object.assign(state, structuredClone(items));
+    }),
+    remove: vi.fn(async (key: string): Promise<void> => {
+      delete state[key];
+    }),
+  } as unknown as chrome.storage.StorageArea;
+  return { area, state };
+}
+
+beforeEach(() => {
+  vi.stubGlobal('chrome', { storage: { local: fakeLocalStorage().area } });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 function chromiumSerializedValue(value: unknown): string {
   const serialized: string | undefined = JSON.stringify(value);
@@ -382,6 +415,160 @@ describe('sync total quota', () => {
     expect(fake.trace).toEqual(['remove:aggm:dev-a:2025-01', 'set:settings']);
     expect(fake.state['aggm:dev-a:2025-01']).toBeUndefined();
     expect(fake.state.settings).toBe('s'.repeat(4_000));
+  });
+
+  it('checkpoints evicted monthly history across a failed write and worker restart', async () => {
+    vi.useFakeTimers();
+    const monthlyKey: string = 'aggm:dev-a:2025-01';
+    const monthlyValue: string = 'm'.repeat(5_900);
+    const incoming: Record<string, unknown> = { settings: 's'.repeat(4_000) };
+    const fakeSync: FakeSyncStorage = fakeSyncStorage(nearQuotaState());
+    const fakeLocal: FakeLocalStorage = fakeLocalStorage();
+    vi.stubGlobal('chrome', { storage: { local: fakeLocal.area } });
+    vi.mocked(fakeSync.area.set)
+      .mockRejectedValueOnce(new Error('transient sync write failure'))
+      .mockImplementation(async (items: Record<string, unknown>): Promise<void> => {
+        fakeSync.trace.push(`set:${Object.keys(items).sort().join(',')}`);
+        Object.assign(fakeSync.state, structuredClone(items));
+      });
+    let durableJournal: SyncJournal = { sets: {}, removes: [] };
+    const persistJournal = async (journal: SyncJournal): Promise<void> => {
+      durableJournal = structuredClone(journal);
+    };
+    const write = async (items: Record<string, unknown>): Promise<void> => {
+      await setSyncItemsWithinQuota(items, fakeSync.area);
+    };
+    const firstWriter: SyncWriter = new SyncWriter(10_000, write, undefined, {
+      initial: durableJournal,
+      persist: persistJournal,
+    });
+
+    firstWriter.queue('settings', incoming.settings);
+    await firstWriter.whenJournalDurable();
+    await expect(firstWriter.flushNow()).rejects.toThrow('transient sync write failure');
+
+    expect(fakeSync.state[monthlyKey]).toBeUndefined();
+    expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toEqual({
+      evicted: { [monthlyKey]: monthlyValue },
+      retained: incoming,
+    });
+
+    const restartedWriter: SyncWriter = new SyncWriter(10_000, write, undefined, {
+      initial: durableJournal,
+      persist: persistJournal,
+    });
+    await restartedWriter.flushNow();
+
+    expect(fakeSync.state.settings).toBe(incoming.settings);
+    expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toBeUndefined();
+    expect(durableJournal).toEqual({ sets: {}, removes: [] });
+  });
+
+  it('leaves sync storage untouched when the eviction checkpoint write fails', async () => {
+    const initial: Record<string, unknown> = nearQuotaState();
+    const fakeSync: FakeSyncStorage = fakeSyncStorage(initial);
+    const fakeLocal: FakeLocalStorage = fakeLocalStorage();
+    vi.mocked(fakeLocal.area.set).mockRejectedValueOnce(new Error('local checkpoint unavailable'));
+
+    await expect(
+      setSyncItemsWithinQuota({ settings: 's'.repeat(4_000) }, fakeSync.area, fakeLocal.area),
+    ).rejects.toThrow('local checkpoint unavailable');
+
+    expect(fakeSync.trace).toEqual([]);
+    expect(fakeSync.state).toEqual(initial);
+    expect(fakeLocal.state).toEqual({});
+  });
+
+  it('retains the eviction checkpoint across repeated replacement failures', async () => {
+    const monthlyKey: string = 'aggm:dev-a:2025-01';
+    const monthlyValue: string = 'm'.repeat(5_900);
+    const incoming: Record<string, unknown> = { settings: 's'.repeat(4_000) };
+    const fakeSync: FakeSyncStorage = fakeSyncStorage(nearQuotaState());
+    const fakeLocal: FakeLocalStorage = fakeLocalStorage();
+    vi.mocked(fakeSync.area.set)
+      .mockRejectedValueOnce(new Error('first replacement failure'))
+      .mockRejectedValueOnce(new Error('second replacement failure'));
+
+    await expect(setSyncItemsWithinQuota(incoming, fakeSync.area, fakeLocal.area)).rejects.toThrow(
+      'first replacement failure',
+    );
+    await expect(setSyncItemsWithinQuota(incoming, fakeSync.area, fakeLocal.area)).rejects.toThrow(
+      'second replacement failure',
+    );
+
+    expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toEqual({
+      evicted: { [monthlyKey]: monthlyValue },
+      retained: incoming,
+    });
+    await replaySyncQuotaEvictionCheckpoint(fakeSync.area, fakeLocal.area);
+    expect(fakeSync.state.settings).toBe(incoming.settings);
+    expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toBeUndefined();
+  });
+
+  it('retains the eviction checkpoint when monthly removal fails', async () => {
+    const monthlyKey: string = 'aggm:dev-a:2025-01';
+    const monthlyValue: string = 'm'.repeat(5_900);
+    const incoming: Record<string, unknown> = { settings: 's'.repeat(4_000) };
+    const fakeSync: FakeSyncStorage = fakeSyncStorage(nearQuotaState());
+    const fakeLocal: FakeLocalStorage = fakeLocalStorage();
+    vi.mocked(fakeSync.area.remove).mockRejectedValueOnce(new Error('sync removal failed'));
+
+    await expect(setSyncItemsWithinQuota(incoming, fakeSync.area, fakeLocal.area)).rejects.toThrow(
+      'sync removal failed',
+    );
+
+    expect(fakeSync.state[monthlyKey]).toBe(monthlyValue);
+    expect(fakeSync.state.settings).toBeUndefined();
+    expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toEqual({
+      evicted: { [monthlyKey]: monthlyValue },
+      retained: incoming,
+    });
+  });
+
+  it('retains the eviction checkpoint when checkpoint cleanup fails', async () => {
+    const monthlyKey: string = 'aggm:dev-a:2025-01';
+    const monthlyValue: string = 'm'.repeat(5_900);
+    const incoming: Record<string, unknown> = { settings: 's'.repeat(4_000) };
+    const fakeSync: FakeSyncStorage = fakeSyncStorage(nearQuotaState());
+    const fakeLocal: FakeLocalStorage = fakeLocalStorage();
+    vi.mocked(fakeLocal.area.remove).mockRejectedValueOnce(
+      new Error('local checkpoint cleanup failed'),
+    );
+
+    await expect(setSyncItemsWithinQuota(incoming, fakeSync.area, fakeLocal.area)).rejects.toThrow(
+      'local checkpoint cleanup failed',
+    );
+
+    expect(fakeSync.state[monthlyKey]).toBeUndefined();
+    expect(fakeSync.state.settings).toBe(incoming.settings);
+    expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toEqual({
+      evicted: { [monthlyKey]: monthlyValue },
+      retained: incoming,
+    });
+
+    await replaySyncQuotaEvictionCheckpoint(fakeSync.area, fakeLocal.area);
+    expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toBeUndefined();
+  });
+
+  it('replays an eviction checkpoint without a SyncWriter journal', async () => {
+    const monthlyKey: string = 'aggm:dev-a:2025-01';
+    const monthlyValue: string = 'm'.repeat(5_900);
+    const incoming: Record<string, unknown> = { settings: 's'.repeat(4_000) };
+    const initialSync: Record<string, unknown> = nearQuotaState();
+    delete initialSync[monthlyKey];
+    const fakeSync: FakeSyncStorage = fakeSyncStorage(initialSync);
+    const fakeLocal: FakeLocalStorage = fakeLocalStorage({
+      [LOCAL_SYNC_QUOTA_EVICTION]: {
+        evicted: { [monthlyKey]: monthlyValue },
+        retained: incoming,
+      },
+    });
+
+    await replaySyncQuotaEvictionCheckpoint(fakeSync.area, fakeLocal.area);
+
+    expect(fakeSync.trace).toEqual([`remove:${monthlyKey}`, 'set:settings']);
+    expect(fakeSync.state.settings).toBe(incoming.settings);
+    expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toBeUndefined();
   });
 
   it('evicts monthly history in chronological order across devices', async () => {

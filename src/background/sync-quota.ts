@@ -1,3 +1,5 @@
+import { LOCAL_SYNC_QUOTA_EVICTION } from '../shared/storage-keys';
+
 export const SYNC_QUOTA_BYTES_PER_ITEM: number = 8_192;
 export const SYNC_QUOTA_BYTES_TOTAL: number = 102_400;
 
@@ -99,6 +101,38 @@ interface MonthlyQuotaCandidate {
   month: string;
 }
 
+interface SyncQuotaEvictionCheckpoint {
+  evicted: Record<string, unknown>;
+  retained: Record<string, unknown>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseEvictionCheckpoint(value: unknown): SyncQuotaEvictionCheckpoint {
+  if (!isRecord(value) || !isRecord(value.evicted) || !isRecord(value.retained)) {
+    throw new SyncQuotaError('Cannot replay invalid sync quota eviction checkpoint.');
+  }
+  return { evicted: value.evicted, retained: value.retained };
+}
+
+async function replayEvictionCheckpoint(
+  storage: chrome.storage.SyncStorageArea,
+  checkpointStorage: chrome.storage.StorageArea,
+): Promise<void> {
+  const loaded: Record<string, unknown> = await checkpointStorage.get(LOCAL_SYNC_QUOTA_EVICTION);
+  if (!Object.hasOwn(loaded, LOCAL_SYNC_QUOTA_EVICTION)) return;
+  const checkpoint: SyncQuotaEvictionCheckpoint = parseEvictionCheckpoint(
+    loaded[LOCAL_SYNC_QUOTA_EVICTION],
+  );
+  // Redo the committed compaction. Restoring evicted values would recreate the quota overflow.
+  const evictions: string[] = Object.keys(checkpoint.evicted);
+  if (evictions.length > 0) await storage.remove(evictions);
+  if (Object.keys(checkpoint.retained).length > 0) await storage.set(checkpoint.retained);
+  await checkpointStorage.remove(LOCAL_SYNC_QUOTA_EVICTION);
+}
+
 function queueSyncMutation<T>(mutation: () => Promise<T>): Promise<T> {
   const requested: Promise<T> = syncMutationQueue.then(mutation);
   syncMutationQueue = requested.then(
@@ -145,6 +179,7 @@ function incomingBytes(incomingEntries: Array<[string, unknown]>): number {
 async function performQuotaCheckedSet(
   items: Record<string, unknown>,
   storage: chrome.storage.SyncStorageArea,
+  checkpointStorage: chrome.storage.StorageArea,
 ): Promise<void> {
   const incomingEntries: Array<[string, unknown]> = Object.entries(items);
   if (incomingEntries.length === 0) return;
@@ -154,6 +189,8 @@ async function performQuotaCheckedSet(
     const value: unknown = entry[1];
     assertSyncItemWithinQuota(key, value);
   }
+
+  await replayEvictionCheckpoint(storage, checkpointStorage);
 
   const loaded: [Record<string, unknown>, number] = await Promise.all([
     storage.get(null) as Promise<Record<string, unknown>>,
@@ -188,8 +225,18 @@ async function performQuotaCheckedSet(
   const retainedEntries: Array<[string, unknown]> = incomingEntries.filter(
     ([key]: [string, unknown]): boolean => !compactedKeys.has(key),
   );
-  if (evictions.length > 0) await storage.remove(evictions);
+  if (evictions.length > 0) {
+    const checkpoint: SyncQuotaEvictionCheckpoint = {
+      evicted: Object.fromEntries(
+        evictions.map((key: string): [string, unknown] => [key, stored[key]]),
+      ),
+      retained: Object.fromEntries(retainedEntries),
+    };
+    await checkpointStorage.set({ [LOCAL_SYNC_QUOTA_EVICTION]: checkpoint });
+    await storage.remove(evictions);
+  }
   if (retainedEntries.length > 0) await storage.set(Object.fromEntries(retainedEntries));
+  if (evictions.length > 0) await checkpointStorage.remove(LOCAL_SYNC_QUOTA_EVICTION);
 }
 
 /**
@@ -199,8 +246,21 @@ async function performQuotaCheckedSet(
 export function setSyncItemsWithinQuota(
   items: Record<string, unknown>,
   storage: chrome.storage.SyncStorageArea = chrome.storage.sync,
+  checkpointStorage: chrome.storage.StorageArea = chrome.storage.local,
 ): Promise<void> {
-  return queueSyncMutation((): Promise<void> => performQuotaCheckedSet(items, storage));
+  return queueSyncMutation(
+    (): Promise<void> => performQuotaCheckedSet(items, storage, checkpointStorage),
+  );
+}
+
+/** Replays a durable compaction checkpoint independently of the SyncWriter journal. */
+export function replaySyncQuotaEvictionCheckpoint(
+  storage: chrome.storage.SyncStorageArea = chrome.storage.sync,
+  checkpointStorage: chrome.storage.StorageArea = chrome.storage.local,
+): Promise<void> {
+  return queueSyncMutation(
+    (): Promise<void> => replayEvictionCheckpoint(storage, checkpointStorage),
+  );
 }
 
 /** Serializes removals with quota preflight and writes. */

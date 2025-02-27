@@ -17,6 +17,7 @@ import { emptyDaily, rollupMonth } from '../../../src/core/stats';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
 import {
+  LOCAL_SYNC_QUOTA_EVICTION,
   SYNC_BANK,
   SYNC_LISTS,
   SYNC_SETTINGS,
@@ -71,6 +72,7 @@ const mocks = vi.hoisted(
     dropTabError: Error | null;
     invalidationError: Error | null;
     invalidatedTabIds: number[];
+    localState: Record<string, unknown>;
   } => ({
     engineArguments: null,
     alarmListener: null,
@@ -95,6 +97,7 @@ const mocks = vi.hoisted(
     dropTabError: null,
     invalidationError: null,
     invalidatedTabIds: [],
+    localState: {},
   }),
 );
 
@@ -245,6 +248,23 @@ function stubChrome(): void {
           mocks.storageListener = listener;
         }),
       },
+      local: {
+        get: vi.fn(async (keys: string | string[]): Promise<Record<string, unknown>> => {
+          const requested: string[] = Array.isArray(keys) ? keys : [keys];
+          return Object.fromEntries(
+            requested
+              .filter((key: string): boolean => Object.hasOwn(mocks.localState, key))
+              .map((key: string): [string, unknown] => [key, mocks.localState[key]]),
+          );
+        }),
+        set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+          Object.assign(mocks.localState, structuredClone(items));
+        }),
+        remove: vi.fn(async (keys: string | string[]): Promise<void> => {
+          const requested: string[] = typeof keys === 'string' ? [keys] : keys;
+          for (const key of requested) delete mocks.localState[key];
+        }),
+      },
       sync: {
         get: vi
           .fn()
@@ -370,6 +390,7 @@ beforeEach((): void => {
   mocks.dropTabError = null;
   mocks.invalidationError = null;
   mocks.invalidatedTabIds = [];
+  mocks.localState = {};
   stubChrome();
 });
 
@@ -625,6 +646,23 @@ describe('background pending lists tracking', () => {
 });
 
 describe('background boot state convergence', () => {
+  it('replays a quota eviction checkpoint when the SyncWriter journal is empty', async () => {
+    const evictedMonthKey: string = 'aggm:old-device:2024-01';
+    const retainedSettings: Settings = { ...DEFAULT_SETTINGS, retentionDays: 14 };
+    mocks.localState[LOCAL_SYNC_QUOTA_EVICTION] = {
+      evicted: { [evictedMonthKey]: { month: '2024-01', focusMs: 60_000 } },
+      retained: { [SYNC_SETTINGS]: retainedSettings },
+    };
+
+    await finishBoot();
+
+    expect(chrome.storage.sync.remove).toHaveBeenCalledWith([evictedMonthKey]);
+    expect(chrome.storage.sync.set).toHaveBeenCalledWith({
+      [SYNC_SETTINGS]: retainedSettings,
+    });
+    expect(mocks.localState[LOCAL_SYNC_QUOTA_EVICTION]).toBeUndefined();
+  });
+
   it('compacts oldest monthly history before a journal replay would exceed total quota', async () => {
     const evictedMonthKey: string = 'aggm:old-device:2024-01';
     const pendingSettings: Settings = { ...DEFAULT_SETTINGS, retentionDays: 14 };
