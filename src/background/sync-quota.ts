@@ -106,15 +106,56 @@ interface SyncQuotaEvictionCheckpoint {
   retained: Record<string, unknown>;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+function isDensePlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const prototype: object | null = Object.getPrototypeOf(value) as object | null;
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  return Reflect.ownKeys(value).every((key: string | symbol): boolean => {
+    if (typeof key !== 'string') return false;
+    const descriptor: PropertyDescriptor | undefined = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor?.enumerable === true && Object.hasOwn(descriptor, 'value');
+  });
+}
+
+function invalidEvictionCheckpoint(): never {
+  throw new SyncQuotaError('Cannot replay invalid sync quota eviction checkpoint.');
+}
+
+function validateCheckpointItem(key: string, value: unknown): void {
+  try {
+    assertSyncItemWithinQuota(key, value);
+  } catch (_error: unknown) {
+    invalidEvictionCheckpoint();
+  }
 }
 
 function parseEvictionCheckpoint(value: unknown): SyncQuotaEvictionCheckpoint {
-  if (!isRecord(value) || !isRecord(value.evicted) || !isRecord(value.retained)) {
-    throw new SyncQuotaError('Cannot replay invalid sync quota eviction checkpoint.');
+  if (!isDensePlainRecord(value)) invalidEvictionCheckpoint();
+  const checkpointKeys: string[] = Object.keys(value).sort();
+  if (
+    checkpointKeys.length !== 2 ||
+    checkpointKeys[0] !== 'evicted' ||
+    checkpointKeys[1] !== 'retained'
+  ) {
+    invalidEvictionCheckpoint();
   }
-  return { evicted: value.evicted, retained: value.retained };
+  const evicted: unknown = value.evicted;
+  const retained: unknown = value.retained;
+  if (!isDensePlainRecord(evicted) || !isDensePlainRecord(retained)) {
+    invalidEvictionCheckpoint();
+  }
+  const evictedEntries: Array<[string, unknown]> = Object.entries(evicted);
+  if (evictedEntries.length === 0) invalidEvictionCheckpoint();
+  for (const [key, itemValue] of evictedEntries) {
+    if (!MONTHLY_AGG_KEY_RE.test(key) || Object.hasOwn(retained, key)) {
+      invalidEvictionCheckpoint();
+    }
+    validateCheckpointItem(key, itemValue);
+  }
+  for (const [key, itemValue] of Object.entries(retained)) {
+    validateCheckpointItem(key, itemValue);
+  }
+  return { evicted, retained };
 }
 
 async function replayEvictionCheckpoint(

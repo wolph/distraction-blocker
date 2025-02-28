@@ -571,6 +571,27 @@ describe('sync total quota', () => {
     expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toBeUndefined();
   });
 
+  it('rejects a malformed eviction checkpoint before mutating sync storage', async () => {
+    const initialSync: Record<string, unknown> = {
+      settings: { enabled: true },
+    };
+    const fakeSync: FakeSyncStorage = fakeSyncStorage(initialSync);
+    const fakeLocal: FakeLocalStorage = fakeLocalStorage({
+      [LOCAL_SYNC_QUOTA_EVICTION]: {
+        evicted: { settings: initialSync.settings },
+        retained: {},
+      },
+    });
+
+    await expect(replaySyncQuotaEvictionCheckpoint(fakeSync.area, fakeLocal.area)).rejects.toThrow(
+      'invalid sync quota eviction checkpoint',
+    );
+
+    expect(fakeSync.trace).toEqual([]);
+    expect(fakeSync.state).toEqual(initialSync);
+    expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toBeDefined();
+  });
+
   it('evicts monthly history in chronological order across devices', async () => {
     const initial: Record<string, unknown> = nearQuotaState(2_900);
     initial['aggm:dev-b:2024-12'] = 'a'.repeat(1_900);
