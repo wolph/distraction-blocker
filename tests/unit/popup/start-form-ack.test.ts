@@ -120,6 +120,14 @@ describe('StartForm category acknowledgement', () => {
     await waitFor((): void => {
       expect(resolvers).toHaveLength(2);
     });
+    expect(updateRequests()[1]?.lists).toEqual({
+      ...refreshed,
+      categories: {
+        ...refreshed.categories,
+        social: true,
+        video: true,
+      },
+    });
     resolvers[1]?.({ ok: true });
 
     await waitFor((): void => {
@@ -144,6 +152,44 @@ describe('StartForm category acknowledgement', () => {
       },
     });
     resolvers[2]?.({ ok: true });
+  });
+
+  it('rebases queued B on a refresh without applying rejected A', async (): Promise<void> => {
+    const resolvers: ResolveAck[] = deferredUpdates();
+    const refreshed: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'refreshed.example' }],
+      categories: { ...DEFAULT_LISTS.categories, news: true },
+      exclusions: { social: ['work.example'] },
+    };
+    const { getByRole, rerender } = render(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
+    );
+
+    fireEvent.click(getByRole('button', { name: 'Social' }));
+    fireEvent.click(getByRole('button', { name: 'Video and streaming' }));
+    await waitFor((): void => {
+      expect(resolvers).toHaveLength(1);
+    });
+    rerender(h(StartForm, { settings: DEFAULT_SETTINGS, lists: refreshed }));
+
+    resolvers[0]?.({ ok: false, error: 'Social was rejected.' });
+    await waitFor((): void => {
+      expect(resolvers).toHaveLength(2);
+    });
+    expect(updateRequests()[1]?.lists).toEqual({
+      ...refreshed,
+      categories: { ...refreshed.categories, video: true },
+    });
+    resolvers[1]?.({ ok: true });
+
+    await waitFor((): void => {
+      expect(getByRole('button', { name: 'Social' }).getAttribute('aria-pressed')).toBe('false');
+      expect(
+        getByRole('button', { name: 'Video and streaming' }).getAttribute('aria-pressed'),
+      ).toBe('true');
+      expect(getByRole('button', { name: 'News' }).getAttribute('aria-pressed')).toBe('true');
+    });
   });
 
   it('queues B after rejected A and excludes A from B worker payload', async (): Promise<void> => {

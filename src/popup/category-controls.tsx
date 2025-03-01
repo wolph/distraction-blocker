@@ -64,7 +64,6 @@ export function CategoryControls({
       reconciled = updateCategory(reconciled, id, desired);
     }
     deferredListsRef.current = null;
-    acceptedChangesRef.current.clear();
     localListsRef.current = reconciled;
     setLocalLists(reconciled);
   };
@@ -96,7 +95,8 @@ export function CategoryControls({
       pendingCategoriesRef.current = remainingPending;
       setPendingCategories(remainingPending);
       updateInFlightRef.current = false;
-      if (categoryQueueRef.current.length === 0) reconcileDeferredLists();
+      reconcileDeferredLists();
+      if (categoryQueueRef.current.length === 0) acceptedChangesRef.current.clear();
       else void dispatchNextUpdate();
     }
   };
