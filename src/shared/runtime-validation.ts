@@ -31,23 +31,43 @@ const MONTH_RE: RegExp = /^(\d{4})-(0[1-9]|1[0-2])$/;
 const UUID_RE: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  try {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  } catch {
+    return false;
+  }
 }
 
 function isDenseArray(value: unknown): value is unknown[] {
-  if (!Array.isArray(value)) return false;
-  for (let index: number = 0; index < value.length; index++) {
-    if (!Object.hasOwn(value, index)) return false;
+  try {
+    if (!Array.isArray(value)) return false;
+    for (let index: number = 0; index < value.length; index++) {
+      if (!Object.hasOwn(value, index)) return false;
+    }
+    return true;
+  } catch {
+    return false;
   }
-  return true;
 }
 
 function hasExactKeys(value: UnknownRecord, keys: readonly string[]): boolean {
-  const actual: PropertyKey[] = Reflect.ownKeys(value);
-  return (
-    actual.length === keys.length &&
-    actual.every((key: PropertyKey): boolean => typeof key === 'string' && keys.includes(key))
-  );
+  try {
+    const actual: PropertyKey[] = Reflect.ownKeys(value);
+    return (
+      actual.length === keys.length &&
+      actual.every((key: PropertyKey): boolean => typeof key === 'string' && keys.includes(key))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function safelyValidate(validate: () => boolean): boolean {
+  try {
+    return validate();
+  } catch {
+    return false;
+  }
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -77,6 +97,7 @@ function isNullableString(value: unknown): value is string | null {
 function isRule(value: unknown): value is Rule {
   if (
     !isRecord(value) ||
+    !hasExactKeys(value, ['kind', 'pattern']) ||
     (value.kind !== 'host' && value.kind !== 'regex') ||
     typeof value.pattern !== 'string'
   ) {
@@ -85,7 +106,7 @@ function isRule(value: unknown): value is Rule {
   return validateRule({ kind: value.kind, pattern: value.pattern }) === null;
 }
 
-export function isCycleConfig(value: unknown): value is CycleConfig {
+function isCycleConfigValue(value: unknown): value is CycleConfig {
   return (
     isRecord(value) &&
     hasExactKeys(value, ['focusMin', 'shortBreakMin', 'longBreakMin', 'longEvery']) &&
@@ -94,6 +115,10 @@ export function isCycleConfig(value: unknown): value is CycleConfig {
     isRelativeMinuteDuration(value.longBreakMin) &&
     isPositiveInteger(value.longEvery)
   );
+}
+
+export function isCycleConfig(value: unknown): value is CycleConfig {
+  return safelyValidate((): boolean => isCycleConfigValue(value));
 }
 
 function isScheduleEntry(value: unknown): value is ScheduleEntry {
@@ -157,7 +182,7 @@ function isSchedule(value: unknown): value is ScheduleEntry[] {
   return true;
 }
 
-export function isPauseEconomy(value: unknown): value is PauseEconomy {
+function isPauseEconomyValue(value: unknown): value is PauseEconomy {
   return (
     isRecord(value) &&
     hasExactKeys(value, ['earnRatio', 'capMs', 'pauseMs', 'unlockMs']) &&
@@ -166,6 +191,10 @@ export function isPauseEconomy(value: unknown): value is PauseEconomy {
     isRelativeMillisecondDuration(value.pauseMs, true) &&
     isRelativeMillisecondDuration(value.unlockMs, true)
   );
+}
+
+export function isPauseEconomy(value: unknown): value is PauseEconomy {
+  return safelyValidate((): boolean => isPauseEconomyValue(value));
 }
 
 function isGateSettings(value: unknown): boolean {
@@ -200,7 +229,7 @@ function isSoundSettings(value: unknown): boolean {
   );
 }
 
-export function isSettings(value: unknown): value is Settings {
+function isSettingsValue(value: unknown): value is Settings {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, [
@@ -242,25 +271,75 @@ export function isSettings(value: unknown): value is Settings {
   );
 }
 
-export function isListsConfig(value: unknown): value is ListsConfig {
-  if (!isRecord(value) || !isRecord(value.categories) || !isRecord(value.exclusions)) return false;
-  if (!Array.isArray(value.custom) || !value.custom.every(isRule)) return false;
-  if (!Array.isArray(value.whitelist) || !value.whitelist.every(isRule)) return false;
-  const categories: UnknownRecord = value.categories;
-  const exclusions: UnknownRecord = value.exclusions;
-  return CATEGORY_IDS.every((id: CategoryId): boolean => {
-    const excluded: unknown = exclusions[id];
-    return (
-      typeof categories[id] === 'boolean' &&
-      (excluded === undefined ||
-        (Array.isArray(excluded) &&
-          excluded.every((host: unknown): boolean => isRule({ kind: 'host', pattern: host }))))
-    );
+export function isSettings(value: unknown): value is Settings {
+  return safelyValidate((): boolean => isSettingsValue(value));
+}
+
+function isValidRuleHost(value: unknown): value is string {
+  return (
+    isNonBlankString(value) &&
+    value.trim() === value &&
+    validateRule({ kind: 'host', pattern: value }) === null
+  );
+}
+
+function isCategories(value: unknown): value is ListsConfig['categories'] {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, CATEGORY_IDS) &&
+    CATEGORY_IDS.every((id: CategoryId): boolean => typeof value[id] === 'boolean')
+  );
+}
+
+function isExclusions(value: unknown): value is ListsConfig['exclusions'] {
+  if (!isRecord(value)) return false;
+  const keys: PropertyKey[] = Reflect.ownKeys(value);
+  if (
+    !keys.every(
+      (key: PropertyKey): boolean =>
+        typeof key === 'string' && CATEGORY_IDS.includes(key as CategoryId),
+    )
+  ) {
+    return false;
+  }
+  return keys.every((key: PropertyKey): boolean => {
+    const hosts: unknown = value[key as string];
+    return isDenseArray(hosts) && hosts.every(isValidRuleHost);
   });
 }
 
+function isListsConfigValue(value: unknown): value is ListsConfig {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['custom', 'whitelist', 'categories', 'exclusions']) &&
+    isDenseArray(value.custom) &&
+    value.custom.every(isRule) &&
+    isDenseArray(value.whitelist) &&
+    value.whitelist.every(isRule) &&
+    isCategories(value.categories) &&
+    isExclusions(value.exclusions)
+  );
+}
+
+export function isListsConfig(value: unknown): value is ListsConfig {
+  return safelyValidate((): boolean => isListsConfigValue(value));
+}
+
 function isSessionConfig(value: unknown): value is SessionConfig {
-  if (!isRecord(value)) return false;
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'mode',
+      'strictness',
+      'durationMin',
+      'cycling',
+      'intention',
+      'source',
+      'scheduleEntryId',
+    ])
+  ) {
+    return false;
+  }
   if (
     (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
     (value.strictness !== 'hard' && value.strictness !== 'friction') ||
@@ -301,7 +380,7 @@ function isNextSchedule(value: unknown): boolean {
   return isRecord(value) && isNonBlankString(value.entryId) && isNonNegativeNumber(value.startsAt);
 }
 
-export function isSessionSnapshot(value: unknown): value is SessionSnapshot {
+function isSessionSnapshotValue(value: unknown): value is SessionSnapshot {
   if (!isRecord(value)) return false;
   const phaseValid: boolean =
     value.phase === 'idle' ||
@@ -317,7 +396,7 @@ export function isSessionSnapshot(value: unknown): value is SessionSnapshot {
     !isNonNegativeInteger(value.bankCapMs) ||
     !isRelativeMillisecondDuration(value.pauseCostMs, true) ||
     !isRelativeMillisecondDuration(value.unlockCostMs, true) ||
-    !Array.isArray(value.activeUnlocks) ||
+    !isDenseArray(value.activeUnlocks) ||
     !value.activeUnlocks.every(isSiteUnlock) ||
     (value.gate !== null && !isGate(value.gate)) ||
     !isNonNegativeInteger(value.attemptsToday) ||
@@ -352,6 +431,10 @@ export function isSessionSnapshot(value: unknown): value is SessionSnapshot {
   return value.phase !== 'break' || value.config.cycling !== null;
 }
 
+export function isSessionSnapshot(value: unknown): value is SessionSnapshot {
+  return safelyValidate((): boolean => isSessionSnapshotValue(value));
+}
+
 function isNullableDailyDate(value: unknown): value is string | null {
   return value === null || isDailyDate(value);
 }
@@ -364,7 +447,7 @@ function isStreak(value: unknown): value is StreakState {
     value.freezeTokens > MAX_FREEZE_TOKENS ||
     !isNullableDailyDate(value.lastCountedDate) ||
     !isNullableDailyDate(value.lastFreezeGrantDate) ||
-    !Array.isArray(value.activeDays) ||
+    !isDenseArray(value.activeDays) ||
     typeof value.activeMonth !== 'string' ||
     !MONTH_RE.test(value.activeMonth)
   ) {
@@ -383,7 +466,7 @@ function hasValidSessionIdentity(value: UnknownRecord): boolean {
   return value.sessionId === undefined || isNonBlankString(value.sessionId);
 }
 
-export function isEventRecord(value: unknown): value is EventRecord {
+function isEventRecordValue(value: unknown): value is EventRecord {
   if (!isRecord(value) || !isNonNegativeNumber(value.at) || !hasValidSessionIdentity(value)) {
     return false;
   }
@@ -432,15 +515,19 @@ export function isEventRecord(value: unknown): value is EventRecord {
   }
 }
 
-export function isStatsBundle(value: unknown): value is StatsBundle {
+export function isEventRecord(value: unknown): value is EventRecord {
+  return safelyValidate((): boolean => isEventRecordValue(value));
+}
+
+function isStatsBundleValue(value: unknown): value is StatsBundle {
   if (
     !isRecord(value) ||
-    !Array.isArray(value.days) ||
+    !isDenseArray(value.days) ||
     !value.days.every((day: unknown): boolean => parseDailyAgg(day) !== null) ||
-    !Array.isArray(value.months) ||
+    !isDenseArray(value.months) ||
     !value.months.every((month: unknown): boolean => parseMonthlyAgg(month) !== null) ||
     !isStreak(value.streak) ||
-    !Array.isArray(value.recentSessions) ||
+    !isDenseArray(value.recentSessions) ||
     !value.recentSessions.every(isEventRecord) ||
     !isRecord(value.totals)
   ) {
@@ -454,25 +541,33 @@ export function isStatsBundle(value: unknown): value is StatsBundle {
   );
 }
 
+export function isStatsBundle(value: unknown): value is StatsBundle {
+  return safelyValidate((): boolean => isStatsBundleValue(value));
+}
+
 export function ackError(value: unknown, malformedError: string): string | null {
-  if (isRecord(value) && value.ok === true && hasExactKeys(value, ['ok'])) return null;
-  if (
-    isRecord(value) &&
-    value.ok === false &&
-    isNonBlankString(value.error) &&
-    hasExactKeys(value, ['ok', 'error'])
-  ) {
-    const rejection: Ack = { ok: false, error: value.error };
-    return rejection.error;
+  try {
+    if (isRecord(value) && value.ok === true && hasExactKeys(value, ['ok'])) return null;
+    if (
+      isRecord(value) &&
+      value.ok === false &&
+      isNonBlankString(value.error) &&
+      hasExactKeys(value, ['ok', 'error'])
+    ) {
+      const rejection: Ack = { ok: false, error: value.error };
+      return rejection.error;
+    }
+    return malformedError;
+  } catch {
+    return malformedError;
   }
-  return malformedError;
 }
 
 export function parseEventExportResponse(value: unknown): EventRecord[] | null {
-  if (!isRecord(value) || typeof value.json !== 'string') return null;
   try {
+    if (!isRecord(value) || typeof value.json !== 'string') return null;
     const parsed: unknown = JSON.parse(value.json);
-    return Array.isArray(parsed) && parsed.every(isEventRecord) ? parsed : null;
+    return isDenseArray(parsed) && parsed.every(isEventRecord) ? parsed : null;
   } catch {
     return null;
   }
