@@ -58,10 +58,15 @@ export function StartForm({
   >(null);
   const [starting, setStarting]: [boolean, Dispatch<StateUpdater<boolean>>] =
     useState<boolean>(false);
+  const [categoryUpdatePending, setCategoryUpdatePending]: [
+    boolean,
+    Dispatch<StateUpdater<boolean>>,
+  ] = useState<boolean>(false);
 
   const durationMin: number = customMin.trim() === '' ? selectedMin : Number(customMin);
 
   const start: () => Promise<void> = async (): Promise<void> => {
+    if (starting || categoryUpdatePending) return;
     if (!Number.isFinite(durationMin) || durationMin <= 0) {
       setError('enter a session length in minutes');
       return;
@@ -127,7 +132,12 @@ export function StartForm({
         onInput={(e: Event): void => setIntention((e.currentTarget as HTMLInputElement).value)}
       />
 
-      <CategoryControls lists={lists} editable={categoriesEditable} onError={setError} />
+      <CategoryControls
+        lists={lists}
+        editable={categoriesEditable}
+        onError={setError}
+        onPendingChange={setCategoryUpdatePending}
+      />
 
       <details class="options">
         <summary>Session options</summary>
@@ -176,7 +186,7 @@ export function StartForm({
       <button
         type="button"
         class="start-button"
-        disabled={starting}
+        disabled={starting || categoryUpdatePending}
         onClick={(): void => void start()}
       >
         Start focusing

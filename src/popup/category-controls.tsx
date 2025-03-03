@@ -1,5 +1,5 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { ALL_CATEGORIES } from '../core/categories';
 import type { Ack } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
@@ -15,6 +15,7 @@ interface CategoryControlsProps {
   lists: ListsConfig;
   editable: boolean;
   onError: (message: string | null) => void;
+  onPendingChange: (pending: boolean) => void;
 }
 
 function updateCategory(lists: ListsConfig, id: CategoryId, desired: boolean): ListsConfig {
@@ -28,6 +29,7 @@ export function CategoryControls({
   lists,
   editable,
   onError,
+  onPendingChange,
 }: CategoryControlsProps): VNode | null {
   const [localLists, setLocalLists]: [ListsConfig, Dispatch<StateUpdater<ListsConfig>>] =
     useState<ListsConfig>(lists);
@@ -46,7 +48,7 @@ export function CategoryControls({
     Map<CategoryId, boolean>
   >(new Map());
 
-  useEffect((): void => {
+  useLayoutEffect((): void => {
     if (updateInFlightRef.current || categoryQueueRef.current.length > 0) {
       deferredListsRef.current = lists;
       return;
@@ -96,8 +98,10 @@ export function CategoryControls({
       setPendingCategories(remainingPending);
       updateInFlightRef.current = false;
       reconcileDeferredLists();
-      if (categoryQueueRef.current.length === 0) acceptedChangesRef.current.clear();
-      else void dispatchNextUpdate();
+      if (categoryQueueRef.current.length === 0) {
+        acceptedChangesRef.current.clear();
+        onPendingChange(false);
+      } else void dispatchNextUpdate();
     }
   };
 
@@ -112,6 +116,7 @@ export function CategoryControls({
     pendingCategoriesRef.current = nextPending;
     setPendingCategories(nextPending);
     categoryQueueRef.current.push({ id, desired });
+    onPendingChange(true);
     onError(null);
     void dispatchNextUpdate();
   };

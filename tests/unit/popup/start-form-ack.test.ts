@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import './chrome-fake';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
-import { h } from 'preact';
+import { h, render as renderPreact } from 'preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
@@ -64,6 +64,52 @@ describe('StartForm category acknowledgement', () => {
     resolvers[0]?.({ ok: true });
     await waitFor((): void => {
       expect((getByRole('button', { name: 'Social' }) as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
+
+  it('keeps Start disabled until queued category updates drain', async (): Promise<void> => {
+    const resolvers: ResolveAck[] = deferredUpdates();
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      categories: { ...DEFAULT_LISTS.categories, video: true },
+    };
+    const settings = { ...DEFAULT_SETTINGS, defaultStrictness: 'hard' as const };
+    const { getByRole } = render(h(StartForm, { settings, lists }));
+    const start: HTMLButtonElement = getByRole('button', {
+      name: 'Start focusing',
+    }) as HTMLButtonElement;
+
+    fireEvent.click(getByRole('button', { name: 'Social' }));
+    fireEvent.click(getByRole('button', { name: 'Video and streaming' }));
+
+    expect(start.disabled).toBe(true);
+    await waitFor((): void => {
+      expect(resolvers).toHaveLength(1);
+    });
+    resolvers[0]?.({ ok: true });
+    await waitFor((): void => {
+      expect(resolvers).toHaveLength(2);
+    });
+
+    expect(start.disabled).toBe(true);
+    fireEvent.click(start);
+    expect(
+      sendMessageMock.mock.calls.some(
+        ([request]: unknown[]): boolean => (request as Request).type === 'startSession',
+      ),
+    ).toBe(false);
+
+    resolvers[1]?.({ ok: true });
+    await waitFor((): void => {
+      expect(start.disabled).toBe(false);
+    });
+    fireEvent.click(start);
+    await waitFor((): void => {
+      expect(
+        sendMessageMock.mock.calls.some(
+          ([request]: unknown[]): boolean => (request as Request).type === 'startSession',
+        ),
+      ).toBe(true);
     });
   });
 
@@ -152,6 +198,43 @@ describe('StartForm category acknowledgement', () => {
       },
     });
     resolvers[2]?.({ ok: true });
+  });
+
+  it('captures refreshed props before an acknowledgement dispatches the next update', async (): Promise<void> => {
+    const resolvers: ResolveAck[] = deferredUpdates();
+    const refreshed: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'refreshed.example' }],
+      categories: { ...DEFAULT_LISTS.categories, news: true },
+      exclusions: { social: ['work.example'] },
+    };
+    const rendered = render(h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }));
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Social' }));
+    fireEvent.click(rendered.getByRole('button', { name: 'Video and streaming' }));
+    await waitFor((): void => {
+      expect(resolvers).toHaveLength(1);
+    });
+
+    renderPreact(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists: refreshed }),
+      rendered.container,
+    );
+    resolvers[0]?.({ ok: true });
+
+    await waitFor((): void => {
+      expect(resolvers).toHaveLength(2);
+    });
+    expect(updateRequests()[1]?.lists).toEqual({
+      ...refreshed,
+      categories: {
+        ...refreshed.categories,
+        social: true,
+        video: true,
+      },
+    });
+
+    resolvers[1]?.({ ok: true });
   });
 
   it('rebases queued B on a refresh without applying rejected A', async (): Promise<void> => {
