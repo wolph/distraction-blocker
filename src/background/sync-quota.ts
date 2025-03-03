@@ -1,4 +1,5 @@
 import { LOCAL_SYNC_QUOTA_EVICTION } from '../shared/storage-keys';
+import { isAuthoritativeSyncItem, isSupportedSyncItemKey } from './sync-item-validation';
 
 export const SYNC_QUOTA_BYTES_PER_ITEM: number = 8_192;
 export const SYNC_QUOTA_BYTES_TOTAL: number = 102_400;
@@ -103,7 +104,7 @@ interface MonthlyQuotaCandidate {
 
 interface SyncQuotaEvictionCheckpoint {
   evicted: Record<string, unknown>;
-  retained: Record<string, unknown>;
+  setKeys: string[];
 }
 
 function isDensePlainRecord(value: unknown): value is Record<string, unknown> {
@@ -129,49 +130,156 @@ function validateCheckpointItem(key: string, value: unknown): void {
   }
 }
 
+function validateEvictedEntries(evicted: Record<string, unknown>): Array<[string, unknown]> {
+  const entries: Array<[string, unknown]> = Object.entries(evicted);
+  if (entries.length === 0) invalidEvictionCheckpoint();
+  for (const [key, value] of entries) {
+    if (!MONTHLY_AGG_KEY_RE.test(key) || !isAuthoritativeSyncItem(key, value)) {
+      invalidEvictionCheckpoint();
+    }
+    validateCheckpointItem(key, value);
+  }
+  return entries;
+}
+
+function validateSetKeys(value: unknown, evicted: Record<string, unknown>): string[] {
+  if (!Array.isArray(value) || Object.keys(value).length !== value.length) {
+    invalidEvictionCheckpoint();
+  }
+  const setKeys: string[] = [];
+  const seen: Set<string> = new Set();
+  for (const key of value) {
+    if (
+      typeof key !== 'string' ||
+      seen.has(key) ||
+      Object.hasOwn(evicted, key) ||
+      !isSupportedSyncItemKey(key)
+    ) {
+      invalidEvictionCheckpoint();
+    }
+    seen.add(key);
+    setKeys.push(key);
+  }
+  return setKeys;
+}
+
 function parseEvictionCheckpoint(value: unknown): SyncQuotaEvictionCheckpoint {
   if (!isDensePlainRecord(value)) invalidEvictionCheckpoint();
   const checkpointKeys: string[] = Object.keys(value).sort();
+  const evicted: unknown = value.evicted;
+  if (!isDensePlainRecord(evicted)) invalidEvictionCheckpoint();
+  validateEvictedEntries(evicted);
+  if (
+    checkpointKeys.length === 2 &&
+    checkpointKeys[0] === 'evicted' &&
+    checkpointKeys[1] === 'setKeys'
+  ) {
+    return { evicted, setKeys: validateSetKeys(value.setKeys, evicted) };
+  }
   if (
     checkpointKeys.length !== 2 ||
     checkpointKeys[0] !== 'evicted' ||
-    checkpointKeys[1] !== 'retained'
+    checkpointKeys[1] !== 'retained' ||
+    !isDensePlainRecord(value.retained)
   ) {
     invalidEvictionCheckpoint();
   }
-  const evicted: unknown = value.evicted;
-  const retained: unknown = value.retained;
-  if (!isDensePlainRecord(evicted) || !isDensePlainRecord(retained)) {
-    invalidEvictionCheckpoint();
-  }
-  const evictedEntries: Array<[string, unknown]> = Object.entries(evicted);
-  if (evictedEntries.length === 0) invalidEvictionCheckpoint();
-  for (const [key, itemValue] of evictedEntries) {
-    if (!MONTHLY_AGG_KEY_RE.test(key) || Object.hasOwn(retained, key)) {
+  const retainedEntries: Array<[string, unknown]> = Object.entries(value.retained);
+  let retainedBytes: number = 0;
+  for (const [key, retainedValue] of retainedEntries) {
+    if (Object.hasOwn(evicted, key) || !isAuthoritativeSyncItem(key, retainedValue)) {
       invalidEvictionCheckpoint();
     }
-    validateCheckpointItem(key, itemValue);
+    validateCheckpointItem(key, retainedValue);
+    retainedBytes += syncItemBytes(key, retainedValue);
   }
-  for (const [key, itemValue] of Object.entries(retained)) {
-    validateCheckpointItem(key, itemValue);
-  }
-  return { evicted, retained };
+  if (retainedBytes > SYNC_QUOTA_BYTES_TOTAL) invalidEvictionCheckpoint();
+  return { evicted, setKeys: retainedEntries.map(([key]: [string, unknown]): string => key) };
 }
 
-async function replayEvictionCheckpoint(
+async function loadEvictionCheckpoint(
+  checkpointStorage: chrome.storage.StorageArea,
+): Promise<SyncQuotaEvictionCheckpoint | null> {
+  const loaded: Record<string, unknown> = await checkpointStorage.get(LOCAL_SYNC_QUOTA_EVICTION);
+  if (!Object.hasOwn(loaded, LOCAL_SYNC_QUOTA_EVICTION)) return null;
+  return parseEvictionCheckpoint(loaded[LOCAL_SYNC_QUOTA_EVICTION]);
+}
+
+function syncValuesEqual(left: unknown, right: unknown): boolean {
+  try {
+    return serializeSyncValue('checkpoint', left) === serializeSyncValue('checkpoint', right);
+  } catch (_error: unknown) {
+    return false;
+  }
+}
+
+async function supersedeCheckpointKeys(
+  checkpoint: SyncQuotaEvictionCheckpoint,
+  keys: readonly string[],
+  checkpointStorage: chrome.storage.StorageArea,
+): Promise<SyncQuotaEvictionCheckpoint | null> {
+  if (keys.length === 0) return checkpoint;
+  const superseded: Set<string> = new Set(keys);
+  const evicted: Record<string, unknown> = Object.fromEntries(
+    Object.entries(checkpoint.evicted).filter(
+      ([key]: [string, unknown]): boolean => !superseded.has(key),
+    ),
+  );
+  if (Object.keys(evicted).length === 0) {
+    await checkpointStorage.remove(LOCAL_SYNC_QUOTA_EVICTION);
+    return null;
+  }
+  const updated: SyncQuotaEvictionCheckpoint = {
+    evicted,
+    setKeys: checkpoint.setKeys.filter((key: string): boolean => !superseded.has(key)),
+  };
+  await checkpointStorage.set({ [LOCAL_SYNC_QUOTA_EVICTION]: updated });
+  return updated;
+}
+
+async function recoverEvictionCheckpoint(
   storage: chrome.storage.SyncStorageArea,
   checkpointStorage: chrome.storage.StorageArea,
-): Promise<void> {
-  const loaded: Record<string, unknown> = await checkpointStorage.get(LOCAL_SYNC_QUOTA_EVICTION);
-  if (!Object.hasOwn(loaded, LOCAL_SYNC_QUOTA_EVICTION)) return;
-  const checkpoint: SyncQuotaEvictionCheckpoint = parseEvictionCheckpoint(
-    loaded[LOCAL_SYNC_QUOTA_EVICTION],
+  intended: Record<string, unknown> | null = null,
+  supersedingRemovals: readonly string[] = [],
+): Promise<boolean> {
+  let checkpoint: SyncQuotaEvictionCheckpoint | null =
+    await loadEvictionCheckpoint(checkpointStorage);
+  if (checkpoint === null) return false;
+  checkpoint = await supersedeCheckpointKeys(checkpoint, supersedingRemovals, checkpointStorage);
+  if (checkpoint === null) return false;
+  const loaded: [Record<string, unknown>, number] = await Promise.all([
+    storage.get(null) as Promise<Record<string, unknown>>,
+    storage.getBytesInUse(null),
+  ]);
+  const stored: Record<string, unknown> = loaded[0];
+  if (
+    intended !== null &&
+    checkpoint.setKeys.length > 0 &&
+    checkpoint.setKeys.every(
+      (key: string): boolean =>
+        Object.hasOwn(intended, key) &&
+        Object.hasOwn(stored, key) &&
+        syncValuesEqual(intended[key], stored[key]),
+    )
+  ) {
+    await checkpointStorage.remove(LOCAL_SYNC_QUOTA_EVICTION);
+    return false;
+  }
+  const restoreEntries: Array<[string, unknown]> = Object.entries(checkpoint.evicted).filter(
+    ([key]: [string, unknown]): boolean =>
+      !Object.hasOwn(stored, key) || !isAuthoritativeSyncItem(key, stored[key]),
   );
-  // Redo the committed compaction. Restoring evicted values would recreate the quota overflow.
-  const evictions: string[] = Object.keys(checkpoint.evicted);
-  if (evictions.length > 0) await storage.remove(evictions);
-  if (Object.keys(checkpoint.retained).length > 0) await storage.set(checkpoint.retained);
+  if (restoreEntries.length === 0) {
+    await checkpointStorage.remove(LOCAL_SYNC_QUOTA_EVICTION);
+    return false;
+  }
+  const projectedBytes: number =
+    loaded[1] - replacementBytes(stored, restoreEntries) + incomingBytes(restoreEntries);
+  if (projectedBytes > SYNC_QUOTA_BYTES_TOTAL) return true;
+  await storage.set(Object.fromEntries(restoreEntries));
   await checkpointStorage.remove(LOCAL_SYNC_QUOTA_EVICTION);
+  return false;
 }
 
 function queueSyncMutation<T>(mutation: () => Promise<T>): Promise<T> {
@@ -220,7 +328,7 @@ function incomingBytes(incomingEntries: Array<[string, unknown]>): number {
 async function performQuotaCheckedSet(
   items: Record<string, unknown>,
   storage: chrome.storage.SyncStorageArea,
-  checkpointStorage: chrome.storage.StorageArea,
+  checkpointStorage: chrome.storage.StorageArea | undefined,
 ): Promise<void> {
   const incomingEntries: Array<[string, unknown]> = Object.entries(items);
   if (incomingEntries.length === 0) return;
@@ -231,7 +339,12 @@ async function performQuotaCheckedSet(
     assertSyncItemWithinQuota(key, value);
   }
 
-  await replayEvictionCheckpoint(storage, checkpointStorage);
+  if (checkpointStorage !== undefined) {
+    const deferred: boolean = await recoverEvictionCheckpoint(storage, checkpointStorage, items);
+    if (deferred) {
+      throw new SyncQuotaError('Cannot sync batch until quota eviction rollback can be restored.');
+    }
+  }
 
   const loaded: [Record<string, unknown>, number] = await Promise.all([
     storage.get(null) as Promise<Record<string, unknown>>,
@@ -267,17 +380,27 @@ async function performQuotaCheckedSet(
     ([key]: [string, unknown]): boolean => !compactedKeys.has(key),
   );
   if (evictions.length > 0) {
+    if (checkpointStorage === undefined) {
+      throw new SyncQuotaError('Cannot compact Sync without durable checkpoint storage.');
+    }
+    const evicted: Record<string, unknown> = Object.fromEntries(
+      evictions.map((key: string): [string, unknown] => [key, stored[key]]),
+    );
+    validateEvictedEntries(evicted);
     const checkpoint: SyncQuotaEvictionCheckpoint = {
-      evicted: Object.fromEntries(
-        evictions.map((key: string): [string, unknown] => [key, stored[key]]),
+      evicted,
+      setKeys: validateSetKeys(
+        retainedEntries.map(([key]: [string, unknown]): string => key),
+        evicted,
       ),
-      retained: Object.fromEntries(retainedEntries),
     };
     await checkpointStorage.set({ [LOCAL_SYNC_QUOTA_EVICTION]: checkpoint });
     await storage.remove(evictions);
   }
   if (retainedEntries.length > 0) await storage.set(Object.fromEntries(retainedEntries));
-  if (evictions.length > 0) await checkpointStorage.remove(LOCAL_SYNC_QUOTA_EVICTION);
+  if (evictions.length > 0 && checkpointStorage !== undefined) {
+    await checkpointStorage.remove(LOCAL_SYNC_QUOTA_EVICTION);
+  }
 }
 
 /**
@@ -286,31 +409,56 @@ async function performQuotaCheckedSet(
  */
 export function setSyncItemsWithinQuota(
   items: Record<string, unknown>,
-  storage: chrome.storage.SyncStorageArea = chrome.storage.sync,
-  checkpointStorage: chrome.storage.StorageArea = chrome.storage.local,
+  storage?: chrome.storage.SyncStorageArea,
+  checkpointStorage?: chrome.storage.StorageArea,
 ): Promise<void> {
+  const resolvedStorage: chrome.storage.SyncStorageArea = storage ?? chrome.storage.sync;
+  const resolvedCheckpointStorage: chrome.storage.StorageArea | undefined =
+    checkpointStorage ?? (storage === undefined ? chrome.storage.local : undefined);
   return queueSyncMutation(
-    (): Promise<void> => performQuotaCheckedSet(items, storage, checkpointStorage),
+    (): Promise<void> => performQuotaCheckedSet(items, resolvedStorage, resolvedCheckpointStorage),
   );
 }
 
-/** Replays a durable compaction checkpoint independently of the SyncWriter journal. */
+/** Restores a durable compaction rollback without trusting its prior set payload. */
 export function replaySyncQuotaEvictionCheckpoint(
-  storage: chrome.storage.SyncStorageArea = chrome.storage.sync,
-  checkpointStorage: chrome.storage.StorageArea = chrome.storage.local,
+  storage?: chrome.storage.SyncStorageArea,
+  checkpointStorage?: chrome.storage.StorageArea,
+  supersedingRemovals: readonly string[] = [],
 ): Promise<void> {
-  return queueSyncMutation(
-    (): Promise<void> => replayEvictionCheckpoint(storage, checkpointStorage),
-  );
+  const resolvedStorage: chrome.storage.SyncStorageArea = storage ?? chrome.storage.sync;
+  const resolvedCheckpointStorage: chrome.storage.StorageArea | undefined =
+    checkpointStorage ?? (storage === undefined ? chrome.storage.local : undefined);
+  if (resolvedCheckpointStorage === undefined) return Promise.resolve();
+  return queueSyncMutation(async (): Promise<void> => {
+    await recoverEvictionCheckpoint(
+      resolvedStorage,
+      resolvedCheckpointStorage,
+      null,
+      supersedingRemovals,
+    );
+  });
 }
 
 /** Serializes removals with quota preflight and writes. */
 export function removeSyncItems(
   keys: string[],
-  storage: chrome.storage.SyncStorageArea = chrome.storage.sync,
+  storage?: chrome.storage.SyncStorageArea,
+  checkpointStorage?: chrome.storage.StorageArea,
 ): Promise<void> {
+  const resolvedStorage: chrome.storage.SyncStorageArea = storage ?? chrome.storage.sync;
+  const resolvedCheckpointStorage: chrome.storage.StorageArea | undefined =
+    checkpointStorage ?? (storage === undefined ? chrome.storage.local : undefined);
   return queueSyncMutation(async (): Promise<void> => {
-    if (keys.length > 0) await storage.remove(keys);
+    if (keys.length === 0) return;
+    if (resolvedCheckpointStorage !== undefined) {
+      const checkpoint: SyncQuotaEvictionCheckpoint | null =
+        await loadEvictionCheckpoint(resolvedCheckpointStorage);
+      if (checkpoint !== null) {
+        await supersedeCheckpointKeys(checkpoint, keys, resolvedCheckpointStorage);
+      }
+    }
+    await resolvedStorage.remove(keys);
   });
 }
 

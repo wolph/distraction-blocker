@@ -53,6 +53,22 @@ function monthly(month: string, over: Partial<MonthlyAgg>): MonthlyAgg {
   };
 }
 
+function fakeLocalStorageArea(): chrome.storage.StorageArea {
+  const state: Record<string, unknown> = {};
+  return {
+    get: vi.fn(
+      async (key: string): Promise<Record<string, unknown>> =>
+        Object.hasOwn(state, key) ? { [key]: structuredClone(state[key]) } : {},
+    ),
+    set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+      Object.assign(state, structuredClone(items));
+    }),
+    remove: vi.fn(async (key: string): Promise<void> => {
+      delete state[key];
+    }),
+  } as unknown as chrome.storage.StorageArea;
+}
+
 const zeroStreak: StreakState = {
   current: 0,
   freezeTokens: 0,
@@ -574,7 +590,7 @@ describe('applyPrunePlan', () => {
           for (const key of typeof keys === 'string' ? [keys] : keys) delete state[key];
         }),
     };
-    vi.stubGlobal('chrome', { storage: { sync } });
+    vi.stubGlobal('chrome', { storage: { local: fakeLocalStorageArea(), sync } });
     const plan = pruneAndRollup('devA', state, 90, NOW);
 
     await expect(applyPrunePlan('devA', plan)).rejects.toThrow('remove failed');
@@ -591,9 +607,11 @@ describe('applyPrunePlan', () => {
     const oldKey: string = 'agg:devA:2026-05-01';
     const monthKey: string = 'aggm:devA:2026-05';
     const evictedMonthKey: string = 'aggm:devB:2024-01';
+    const evictedMonth: MonthlyAgg = monthly('2024-01', {});
+    evictedMonth.attempts = { ['m'.repeat(3_750)]: 1 };
     const state: Record<string, unknown> = {
       [oldKey]: daily('2026-05-01', { focusMs: 5 }),
-      [evictedMonthKey]: 'm'.repeat(4_000),
+      [evictedMonthKey]: evictedMonth,
     };
     for (let index: number = 0; index < 12; index++) {
       state[`agg:devB:2026-08-${String(index + 1).padStart(2, '0')}`] = 'd'.repeat(7_600);
@@ -642,7 +660,7 @@ describe('applyPrunePlan', () => {
         for (const key of requested) delete state[key];
       }),
     };
-    vi.stubGlobal('chrome', { storage: { sync } });
+    vi.stubGlobal('chrome', { storage: { local: fakeLocalStorageArea(), sync } });
     const plan: ReturnType<typeof pruneAndRollup> = pruneAndRollup('devA', state, 90, NOW);
 
     await applyPrunePlan('devA', plan);

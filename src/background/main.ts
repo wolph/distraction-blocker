@@ -158,8 +158,12 @@ function validatedPendingJournal(
 
 async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<Engine> {
   const now: number = Date.now();
-  await replaySyncQuotaEvictionCheckpoint();
   const rawJournal: SyncJournal = await loadSyncJournal();
+  try {
+    await replaySyncQuotaEvictionCheckpoint(undefined, undefined, rawJournal.removes);
+  } catch (error: unknown) {
+    reportBackgroundError(error);
+  }
   const pendingAggregateKeys: string[] = Object.keys(rawJournal.sets).filter(
     (key: string): boolean => aggregateKeyIdentity(key) !== null,
   );

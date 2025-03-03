@@ -646,19 +646,18 @@ describe('background pending lists tracking', () => {
 });
 
 describe('background boot state convergence', () => {
-  it('replays a quota eviction checkpoint when the SyncWriter journal is empty', async () => {
+  it('rolls back a quota eviction checkpoint when the SyncWriter journal is empty', async () => {
     const evictedMonthKey: string = 'aggm:old-device:2024-01';
-    const retainedSettings: Settings = { ...DEFAULT_SETTINGS, retentionDays: 14 };
+    const evictedMonth = rollupMonth('2024-01', []);
     mocks.localState[LOCAL_SYNC_QUOTA_EVICTION] = {
-      evicted: { [evictedMonthKey]: { month: '2024-01', focusMs: 60_000 } },
-      retained: { [SYNC_SETTINGS]: retainedSettings },
+      evicted: { [evictedMonthKey]: evictedMonth },
+      setKeys: [SYNC_SETTINGS],
     };
 
     await finishBoot();
 
-    expect(chrome.storage.sync.remove).toHaveBeenCalledWith([evictedMonthKey]);
     expect(chrome.storage.sync.set).toHaveBeenCalledWith({
-      [SYNC_SETTINGS]: retainedSettings,
+      [evictedMonthKey]: evictedMonth,
     });
     expect(mocks.localState[LOCAL_SYNC_QUOTA_EVICTION]).toBeUndefined();
   });
@@ -666,8 +665,10 @@ describe('background boot state convergence', () => {
   it('compacts oldest monthly history before a journal replay would exceed total quota', async () => {
     const evictedMonthKey: string = 'aggm:old-device:2024-01';
     const pendingSettings: Settings = { ...DEFAULT_SETTINGS, retentionDays: 14 };
+    const evictedMonth = rollupMonth('2024-01', []);
+    evictedMonth.attempts = { ['m'.repeat(3_750)]: 1 };
     const storedSync: Record<string, unknown> = {
-      [evictedMonthKey]: 'm'.repeat(4_000),
+      [evictedMonthKey]: evictedMonth,
     };
     for (let index: number = 0; index < 12; index++) {
       storedSync[`agg:old-device:2026-08-${String(index + 1).padStart(2, '0')}`] = 'd'.repeat(

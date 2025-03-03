@@ -10,10 +10,12 @@ import {
   syncItemBytes,
 } from '../../../src/background/sync-quota';
 import { type SyncJournal, SyncWriter } from '../../../src/background/sync-writer';
+import { emptyDaily, rollupMonth } from '../../../src/core/stats';
 import { LOCAL_SYNC_QUOTA_EVICTION } from '../../../src/shared/storage-keys';
 
 interface FakeSyncStorage {
   area: chrome.storage.SyncStorageArea;
+  checkpoint: FakeLocalStorage;
   state: Record<string, unknown>;
   trace: string[];
 }
@@ -79,6 +81,7 @@ function fakeSyncStorage(
 ): FakeSyncStorage {
   const state: Record<string, unknown> = structuredClone(initial);
   const trace: string[] = [];
+  const checkpoint: FakeLocalStorage = fakeLocalStorage();
   const get: chrome.storage.StorageArea['get'] = vi.fn(
     async (
       keys?: string | string[] | Record<string, unknown> | null,
@@ -136,12 +139,14 @@ function fakeSyncStorage(
     MAX_WRITE_OPERATIONS_PER_MINUTE: 120,
     MAX_SUSTAINED_WRITE_OPERATIONS_PER_MINUTE: 1_000_000,
   };
-  return { area, state, trace };
+  return { area, checkpoint, state, trace };
 }
 
 function nearQuotaState(monthlyValueLength: number = 5_900): Record<string, unknown> {
+  const monthlyValue = rollupMonth('2025-01', []);
+  monthlyValue.attempts = { ['m'.repeat(monthlyValueLength)]: 1 };
   const state: Record<string, unknown> = {
-    'aggm:dev-a:2025-01': 'm'.repeat(monthlyValueLength),
+    'aggm:dev-a:2025-01': monthlyValue,
   };
   for (let index: number = 0; index < 12; index++) {
     state[`agg:dev-a:2026-08-${String(index + 1).padStart(2, '0')}`] = 'd'.repeat(7_790);
@@ -353,11 +358,20 @@ describe('sync total quota', () => {
   it('writes without deleting history when the projected total fits', async () => {
     const fake: FakeSyncStorage = fakeSyncStorage({ settings: { enabled: true } });
 
-    await setSyncItemsWithinQuota({ bank: { balanceMs: 1 } }, fake.area);
+    await setSyncItemsWithinQuota({ bank: { balanceMs: 1 } }, fake.area, fake.checkpoint.area);
 
     expect(fake.trace).toEqual(['set:bank']);
     expect(fake.state.bank).toEqual({ balanceMs: 1 });
     expect(fake.area.getBytesInUse).toHaveBeenCalledWith(null);
+  });
+
+  it('does not evaluate global local storage when Sync storage is injected', async () => {
+    const fake: FakeSyncStorage = fakeSyncStorage({});
+    vi.unstubAllGlobals();
+
+    await setSyncItemsWithinQuota({ bank: { balanceMs: 1 } }, fake.area);
+
+    expect(fake.state.bank).toEqual({ balanceMs: 1 });
   });
 
   it('matches fake Chrome byte accounting for escaped values', async () => {
@@ -386,7 +400,7 @@ describe('sync total quota', () => {
 
     expect(storageBytes(initial) + nativeIncomingBytes).toBe(SYNC_QUOTA_BYTES_TOTAL + 1);
 
-    await setSyncItemsWithinQuota({ settings: incoming }, fake.area);
+    await setSyncItemsWithinQuota({ settings: incoming }, fake.area, fake.checkpoint.area);
 
     expect(fake.trace).toEqual([`remove:${monthlyKey}`, 'set:settings']);
     expect(fake.state[monthlyKey]).toBeUndefined();
@@ -400,7 +414,7 @@ describe('sync total quota', () => {
     initial.fillerB = 'f'.repeat(602);
     const fake: FakeSyncStorage = fakeSyncStorage(initial);
 
-    await setSyncItemsWithinQuota({ settings: '<' }, fake.area);
+    await setSyncItemsWithinQuota({ settings: '<' }, fake.area, fake.checkpoint.area);
 
     expect(fake.trace).toEqual([`remove:${monthlyKey}`, 'set:settings']);
     expect(fake.state[monthlyKey]).toBeUndefined();
@@ -410,7 +424,7 @@ describe('sync total quota', () => {
   it('evicts oldest monthly history before a write would exceed the total quota', async () => {
     const fake: FakeSyncStorage = fakeSyncStorage(nearQuotaState());
 
-    await setSyncItemsWithinQuota({ settings: 's'.repeat(4_000) }, fake.area);
+    await setSyncItemsWithinQuota({ settings: 's'.repeat(4_000) }, fake.area, fake.checkpoint.area);
 
     expect(fake.trace).toEqual(['remove:aggm:dev-a:2025-01', 'set:settings']);
     expect(fake.state['aggm:dev-a:2025-01']).toBeUndefined();
@@ -420,9 +434,10 @@ describe('sync total quota', () => {
   it('checkpoints evicted monthly history across a failed write and worker restart', async () => {
     vi.useFakeTimers();
     const monthlyKey: string = 'aggm:dev-a:2025-01';
-    const monthlyValue: string = 'm'.repeat(5_900);
     const incoming: Record<string, unknown> = { settings: 's'.repeat(4_000) };
-    const fakeSync: FakeSyncStorage = fakeSyncStorage(nearQuotaState());
+    const initialSync: Record<string, unknown> = nearQuotaState();
+    const monthlyValue: unknown = initialSync[monthlyKey];
+    const fakeSync: FakeSyncStorage = fakeSyncStorage(initialSync);
     const fakeLocal: FakeLocalStorage = fakeLocalStorage();
     vi.stubGlobal('chrome', { storage: { local: fakeLocal.area } });
     vi.mocked(fakeSync.area.set)
@@ -436,7 +451,7 @@ describe('sync total quota', () => {
       durableJournal = structuredClone(journal);
     };
     const write = async (items: Record<string, unknown>): Promise<void> => {
-      await setSyncItemsWithinQuota(items, fakeSync.area);
+      await setSyncItemsWithinQuota(items, fakeSync.area, fakeLocal.area);
     };
     const firstWriter: SyncWriter = new SyncWriter(10_000, write, undefined, {
       initial: durableJournal,
@@ -450,7 +465,7 @@ describe('sync total quota', () => {
     expect(fakeSync.state[monthlyKey]).toBeUndefined();
     expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toEqual({
       evicted: { [monthlyKey]: monthlyValue },
-      retained: incoming,
+      setKeys: ['settings'],
     });
 
     const restartedWriter: SyncWriter = new SyncWriter(10_000, write, undefined, {
@@ -481,9 +496,10 @@ describe('sync total quota', () => {
 
   it('retains the eviction checkpoint across repeated replacement failures', async () => {
     const monthlyKey: string = 'aggm:dev-a:2025-01';
-    const monthlyValue: string = 'm'.repeat(5_900);
     const incoming: Record<string, unknown> = { settings: 's'.repeat(4_000) };
-    const fakeSync: FakeSyncStorage = fakeSyncStorage(nearQuotaState());
+    const initialSync: Record<string, unknown> = nearQuotaState();
+    const monthlyValue: unknown = initialSync[monthlyKey];
+    const fakeSync: FakeSyncStorage = fakeSyncStorage(initialSync);
     const fakeLocal: FakeLocalStorage = fakeLocalStorage();
     vi.mocked(fakeSync.area.set)
       .mockRejectedValueOnce(new Error('first replacement failure'))
@@ -498,18 +514,58 @@ describe('sync total quota', () => {
 
     expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toEqual({
       evicted: { [monthlyKey]: monthlyValue },
-      retained: incoming,
+      setKeys: ['settings'],
     });
     await replaySyncQuotaEvictionCheckpoint(fakeSync.area, fakeLocal.area);
-    expect(fakeSync.state.settings).toBe(incoming.settings);
+    expect(fakeSync.state[monthlyKey]).toEqual(monthlyValue);
+    expect(fakeSync.state.settings).toBeUndefined();
     expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toBeUndefined();
+  });
+
+  it('does not resurrect a failed set superseded by a durable removal', async () => {
+    const incoming: Record<string, unknown> = { settings: 's'.repeat(4_000) };
+    const fakeSync: FakeSyncStorage = fakeSyncStorage(nearQuotaState());
+    const fakeLocal: FakeLocalStorage = fakeLocalStorage();
+    vi.stubGlobal('chrome', { storage: { local: fakeLocal.area } });
+    vi.mocked(fakeSync.area.set).mockRejectedValueOnce(new Error('replacement failed'));
+
+    await expect(setSyncItemsWithinQuota(incoming, fakeSync.area, fakeLocal.area)).rejects.toThrow(
+      'replacement failed',
+    );
+    await removeSyncItems(['settings'], fakeSync.area, fakeLocal.area);
+    await replaySyncQuotaEvictionCheckpoint(fakeSync.area, fakeLocal.area);
+
+    expect(fakeSync.state.settings).toBeUndefined();
+    expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toBeUndefined();
+  });
+
+  it('defers recovery without mutation when live Sync growth consumes rollback space', async () => {
+    const incoming: Record<string, unknown> = { settings: 's'.repeat(4_000) };
+    const fakeSync: FakeSyncStorage = fakeSyncStorage(nearQuotaState());
+    const fakeLocal: FakeLocalStorage = fakeLocalStorage();
+    vi.mocked(fakeSync.area.set).mockRejectedValueOnce(new Error('replacement failed'));
+
+    await expect(setSyncItemsWithinQuota(incoming, fakeSync.area, fakeLocal.area)).rejects.toThrow(
+      'replacement failed',
+    );
+    fakeSync.state.live = 'l'.repeat(5_000);
+    fakeSync.trace.length = 0;
+
+    await expect(
+      replaySyncQuotaEvictionCheckpoint(fakeSync.area, fakeLocal.area),
+    ).resolves.toBeUndefined();
+
+    expect(fakeSync.trace).toEqual([]);
+    expect(fakeSync.state.settings).toBeUndefined();
+    expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toBeDefined();
   });
 
   it('retains the eviction checkpoint when monthly removal fails', async () => {
     const monthlyKey: string = 'aggm:dev-a:2025-01';
-    const monthlyValue: string = 'm'.repeat(5_900);
     const incoming: Record<string, unknown> = { settings: 's'.repeat(4_000) };
-    const fakeSync: FakeSyncStorage = fakeSyncStorage(nearQuotaState());
+    const initialSync: Record<string, unknown> = nearQuotaState();
+    const monthlyValue: unknown = initialSync[monthlyKey];
+    const fakeSync: FakeSyncStorage = fakeSyncStorage(initialSync);
     const fakeLocal: FakeLocalStorage = fakeLocalStorage();
     vi.mocked(fakeSync.area.remove).mockRejectedValueOnce(new Error('sync removal failed'));
 
@@ -517,19 +573,20 @@ describe('sync total quota', () => {
       'sync removal failed',
     );
 
-    expect(fakeSync.state[monthlyKey]).toBe(monthlyValue);
+    expect(fakeSync.state[monthlyKey]).toEqual(monthlyValue);
     expect(fakeSync.state.settings).toBeUndefined();
     expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toEqual({
       evicted: { [monthlyKey]: monthlyValue },
-      retained: incoming,
+      setKeys: ['settings'],
     });
   });
 
   it('retains the eviction checkpoint when checkpoint cleanup fails', async () => {
     const monthlyKey: string = 'aggm:dev-a:2025-01';
-    const monthlyValue: string = 'm'.repeat(5_900);
     const incoming: Record<string, unknown> = { settings: 's'.repeat(4_000) };
-    const fakeSync: FakeSyncStorage = fakeSyncStorage(nearQuotaState());
+    const initialSync: Record<string, unknown> = nearQuotaState();
+    const monthlyValue: unknown = initialSync[monthlyKey];
+    const fakeSync: FakeSyncStorage = fakeSyncStorage(initialSync);
     const fakeLocal: FakeLocalStorage = fakeLocalStorage();
     vi.mocked(fakeLocal.area.remove).mockRejectedValueOnce(
       new Error('local checkpoint cleanup failed'),
@@ -543,31 +600,30 @@ describe('sync total quota', () => {
     expect(fakeSync.state.settings).toBe(incoming.settings);
     expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toEqual({
       evicted: { [monthlyKey]: monthlyValue },
-      retained: incoming,
+      setKeys: ['settings'],
     });
 
-    await replaySyncQuotaEvictionCheckpoint(fakeSync.area, fakeLocal.area);
+    await setSyncItemsWithinQuota(incoming, fakeSync.area, fakeLocal.area);
     expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toBeUndefined();
   });
 
   it('replays an eviction checkpoint without a SyncWriter journal', async () => {
     const monthlyKey: string = 'aggm:dev-a:2025-01';
-    const monthlyValue: string = 'm'.repeat(5_900);
-    const incoming: Record<string, unknown> = { settings: 's'.repeat(4_000) };
     const initialSync: Record<string, unknown> = nearQuotaState();
+    const monthlyValue: unknown = initialSync[monthlyKey];
     delete initialSync[monthlyKey];
     const fakeSync: FakeSyncStorage = fakeSyncStorage(initialSync);
     const fakeLocal: FakeLocalStorage = fakeLocalStorage({
       [LOCAL_SYNC_QUOTA_EVICTION]: {
         evicted: { [monthlyKey]: monthlyValue },
-        retained: incoming,
+        setKeys: ['settings'],
       },
     });
 
     await replaySyncQuotaEvictionCheckpoint(fakeSync.area, fakeLocal.area);
 
-    expect(fakeSync.trace).toEqual([`remove:${monthlyKey}`, 'set:settings']);
-    expect(fakeSync.state.settings).toBe(incoming.settings);
+    expect(fakeSync.trace).toEqual([`set:${monthlyKey}`]);
+    expect(fakeSync.state[monthlyKey]).toEqual(monthlyValue);
     expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toBeUndefined();
   });
 
@@ -592,23 +648,86 @@ describe('sync total quota', () => {
     expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toBeDefined();
   });
 
+  it.each([
+    ['settings', { retentionDays: 'invalid' }],
+    ['lists', { custom: 'invalid' }],
+    ['bank', { balanceMs: -1 }],
+    ['agg:dev-a:2026-08-01', { date: '2026-08-01', focusMs: -1 }],
+    ['aggm:dev-a:2026-08', { month: '2026-08', focusMs: -1 }],
+    ['prune:dev-a', { remove: ['settings'] }],
+  ])('rejects schema-invalid retained %s before mutating sync storage', async (key, value) => {
+    const monthlyKey: string = 'aggm:dev-a:2025-01';
+    const monthlyValue = rollupMonth('2025-01', []);
+    const initialSync: Record<string, unknown> = { [monthlyKey]: monthlyValue };
+    const fakeSync: FakeSyncStorage = fakeSyncStorage(initialSync);
+    const fakeLocal: FakeLocalStorage = fakeLocalStorage({
+      [LOCAL_SYNC_QUOTA_EVICTION]: {
+        evicted: { [monthlyKey]: monthlyValue },
+        retained: { [key]: value },
+      },
+    });
+
+    await expect(replaySyncQuotaEvictionCheckpoint(fakeSync.area, fakeLocal.area)).rejects.toThrow(
+      'invalid sync quota eviction checkpoint',
+    );
+
+    expect(fakeSync.trace).toEqual([]);
+    expect(fakeSync.state).toEqual(initialSync);
+  });
+
+  it('rejects a retained batch whose valid items exceed total quota before mutation', async () => {
+    const monthlyKey: string = 'aggm:dev-a:2025-01';
+    const monthlyValue = rollupMonth('2025-01', []);
+    const retained: Record<string, unknown> = {};
+    for (let index: number = 0; index < 14; index++) {
+      const date: string = `2026-01-${String(index + 1).padStart(2, '0')}`;
+      const aggregate = emptyDaily(date);
+      aggregate.attempts = { [`${'h'.repeat(7_500)}-${index}`]: 1 };
+      retained[`agg:dev-a:${date}`] = aggregate;
+    }
+    expect(storageBytes(retained)).toBeGreaterThan(SYNC_QUOTA_BYTES_TOTAL);
+    const initialSync: Record<string, unknown> = { [monthlyKey]: monthlyValue };
+    const fakeSync: FakeSyncStorage = fakeSyncStorage(initialSync);
+    const fakeLocal: FakeLocalStorage = fakeLocalStorage({
+      [LOCAL_SYNC_QUOTA_EVICTION]: {
+        evicted: { [monthlyKey]: monthlyValue },
+        retained,
+      },
+    });
+
+    await expect(replaySyncQuotaEvictionCheckpoint(fakeSync.area, fakeLocal.area)).rejects.toThrow(
+      'invalid sync quota eviction checkpoint',
+    );
+
+    expect(fakeSync.trace).toEqual([]);
+    expect(fakeSync.state).toEqual(initialSync);
+  });
+
   it('evicts monthly history in chronological order across devices', async () => {
     const initial: Record<string, unknown> = nearQuotaState(2_900);
-    initial['aggm:dev-b:2024-12'] = 'a'.repeat(1_900);
-    initial['aggm:dev-c:2025-01'] = 'b'.repeat(1_900);
+    const oldest = rollupMonth('2024-12', []);
+    oldest.attempts = { ['a'.repeat(1_700)]: 1 };
+    const retained = rollupMonth('2025-01', []);
+    retained.attempts = { ['b'.repeat(1_700)]: 1 };
+    initial['aggm:dev-b:2024-12'] = oldest;
+    initial['aggm:dev-c:2025-01'] = retained;
     const fake: FakeSyncStorage = fakeSyncStorage(initial);
 
-    await setSyncItemsWithinQuota({ settings: 's'.repeat(5_000) }, fake.area);
+    await setSyncItemsWithinQuota({ settings: 's'.repeat(5_000) }, fake.area, fake.checkpoint.area);
 
     expect(fake.trace[0]).toBe('remove:aggm:dev-b:2024-12,aggm:dev-a:2025-01');
-    expect(fake.state['aggm:dev-c:2025-01']).toBe('b'.repeat(1_900));
+    expect(fake.state['aggm:dev-c:2025-01']).toEqual(retained);
   });
 
   it('omits an incoming month older than stored history when quota requires compaction', async () => {
     const initial: Record<string, unknown> = nearQuotaState();
     const fake: FakeSyncStorage = fakeSyncStorage(initial);
 
-    await setSyncItemsWithinQuota({ 'aggm:dev-b:2024-12': 'o'.repeat(4_000) }, fake.area);
+    await setSyncItemsWithinQuota(
+      { 'aggm:dev-b:2024-12': 'o'.repeat(4_000) },
+      fake.area,
+      fake.checkpoint.area,
+    );
 
     expect(fake.trace).toEqual([]);
     expect(fake.state).toEqual(initial);
@@ -624,6 +743,7 @@ describe('sync total quota', () => {
         settings: 's'.repeat(2_000),
       },
       fake.area,
+      fake.checkpoint.area,
     );
 
     expect(fake.trace).toEqual(['remove:aggm:dev-a:2025-01', 'set:settings']);
@@ -636,7 +756,7 @@ describe('sync total quota', () => {
     initial.settings = 's'.repeat(3_900);
     const fake: FakeSyncStorage = fakeSyncStorage(initial);
 
-    await setSyncItemsWithinQuota({ settings: 'r'.repeat(4_000) }, fake.area);
+    await setSyncItemsWithinQuota({ settings: 'r'.repeat(4_000) }, fake.area, fake.checkpoint.area);
 
     expect(fake.trace).toEqual(['set:settings']);
     expect(fake.state['aggm:dev-a:2025-01']).toBeDefined();
@@ -652,7 +772,7 @@ describe('sync total quota', () => {
     const fake: FakeSyncStorage = fakeSyncStorage(initial);
 
     await expect(
-      setSyncItemsWithinQuota({ settings: 's'.repeat(8_000) }, fake.area),
+      setSyncItemsWithinQuota({ settings: 's'.repeat(8_000) }, fake.area, fake.checkpoint.area),
     ).rejects.toThrow('cannot fit after compacting all monthly history');
 
     expect(fake.trace).toEqual([]);
@@ -663,7 +783,7 @@ describe('sync total quota', () => {
     const fake: FakeSyncStorage = fakeSyncStorage(nearQuotaState());
 
     await Promise.all([
-      setSyncItemsWithinQuota({ settings: 's'.repeat(4_000) }, fake.area),
+      setSyncItemsWithinQuota({ settings: 's'.repeat(4_000) }, fake.area, fake.checkpoint.area),
       removeSyncItems(['agg:dev-a:2026-08-01'], fake.area),
     ]);
 
