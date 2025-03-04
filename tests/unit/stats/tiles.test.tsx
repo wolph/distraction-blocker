@@ -128,6 +128,45 @@ describe('Tiles', () => {
     expect(container.textContent).toContain('Stats appear after your first session.');
     expect(container.querySelectorAll('.tile').length).toBe(0);
   });
+
+  it('treats the worker live zero aggregate as first-run history', () => {
+    const liveFirstRun: StatsBundle = {
+      ...EMPTY,
+      days: [day('2026-08-28', {})],
+    };
+
+    const { container } = render(<Tiles bundle={liveFirstRun} economy={ECONOMY} now={NOW} />);
+
+    expect(container.textContent).toContain('Stats appear after your first session.');
+    expect(container.querySelectorAll('.tile')).toHaveLength(0);
+  });
+
+  it('renders tiles when only retained monthly history remains', () => {
+    const monthlyHistory: StatsBundle = {
+      ...EMPTY,
+      months: [
+        {
+          month: '2026-07',
+          focusMs: 60_000,
+          sessionsStarted: 1,
+          sessionsCompleted: 1,
+          attempts: {},
+          attemptsOther: 0,
+          pausesTaken: 0,
+          pauseMsSpent: 0,
+          pauseMsEarned: 0,
+          unlocksTaken: 0,
+          unlockMsSpent: 0,
+          resisted: 0,
+        },
+      ],
+    };
+
+    const { container } = render(<Tiles bundle={monthlyHistory} economy={ECONOMY} now={NOW} />);
+
+    expect(container.querySelectorAll('.tile')).toHaveLength(6);
+    expect(container.textContent).not.toContain('Stats appear after your first session.');
+  });
 });
 
 describe('Streak', () => {

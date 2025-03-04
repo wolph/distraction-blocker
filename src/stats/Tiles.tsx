@@ -1,7 +1,7 @@
 import type { JSX } from 'preact';
 import type { StatsBundle } from '../shared/messages';
 import { localDateStr } from '../shared/time';
-import type { DailyAgg, PauseEconomy } from '../shared/types';
+import type { DailyAgg, MonthlyAgg, PauseEconomy } from '../shared/types';
 import { formatDuration } from './format';
 
 export interface TilesProps {
@@ -16,8 +16,28 @@ interface TileSpec {
   subline: string | null;
 }
 
+function aggregateHasActivity(aggregate: DailyAgg | MonthlyAgg): boolean {
+  return (
+    aggregate.focusMs > 0 ||
+    aggregate.sessionsStarted > 0 ||
+    aggregate.sessionsCompleted > 0 ||
+    Object.values(aggregate.attempts).some((attempts: number): boolean => attempts > 0) ||
+    aggregate.attemptsOther > 0 ||
+    aggregate.pausesTaken > 0 ||
+    aggregate.pauseMsSpent > 0 ||
+    (aggregate.pauseMsEarned ?? 0) > 0 ||
+    aggregate.unlocksTaken > 0 ||
+    (aggregate.unlockMsSpent ?? 0) > 0 ||
+    aggregate.resisted > 0
+  );
+}
+
 export function isEmptyBundle(bundle: StatsBundle): boolean {
-  return bundle.days.length === 0 && bundle.recentSessions.length === 0;
+  return (
+    bundle.recentSessions.length === 0 &&
+    !bundle.days.some(aggregateHasActivity) &&
+    !bundle.months.some(aggregateHasActivity)
+  );
 }
 
 function todayAgg(bundle: StatsBundle, now: number): DailyAgg | null {
