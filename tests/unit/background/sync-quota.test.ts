@@ -627,6 +627,26 @@ describe('sync total quota', () => {
     expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toBeUndefined();
   });
 
+  it('rolls back a valid legacy checkpoint without writing its retained payload', async () => {
+    const monthlyKey: string = 'aggm:dev-a:2025-01';
+    const monthlyValue = rollupMonth('2025-01', []);
+    const currentBank: Record<string, unknown> = { balanceMs: 7 };
+    const fakeSync: FakeSyncStorage = fakeSyncStorage({ bank: currentBank });
+    const fakeLocal: FakeLocalStorage = fakeLocalStorage({
+      [LOCAL_SYNC_QUOTA_EVICTION]: {
+        evicted: { [monthlyKey]: monthlyValue },
+        retained: { bank: { balanceMs: 42 } },
+      },
+    });
+
+    await replaySyncQuotaEvictionCheckpoint(fakeSync.area, fakeLocal.area);
+
+    expect(fakeSync.trace).toEqual([`set:${monthlyKey}`]);
+    expect(fakeSync.state[monthlyKey]).toEqual(monthlyValue);
+    expect(fakeSync.state.bank).toEqual(currentBank);
+    expect(fakeLocal.state[LOCAL_SYNC_QUOTA_EVICTION]).toBeUndefined();
+  });
+
   it('rejects a malformed eviction checkpoint before mutating sync storage', async () => {
     const initialSync: Record<string, unknown> = {
       settings: { enabled: true },
