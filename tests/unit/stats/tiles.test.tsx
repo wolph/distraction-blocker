@@ -2,7 +2,7 @@
 import { cleanup, render } from '@testing-library/preact';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { StatsBundle } from '../../../src/shared/messages';
-import type { DailyAgg, PauseEconomy, StreakState } from '../../../src/shared/types';
+import type { DailyAgg, MonthlyAgg, PauseEconomy, StreakState } from '../../../src/shared/types';
 import { formatDuration } from '../../../src/stats/format';
 import { Streak } from '../../../src/stats/Streak';
 import { Tiles } from '../../../src/stats/Tiles';
@@ -16,23 +16,58 @@ const ECONOMY: PauseEconomy = {
   unlockMs: 5 * 60_000,
 };
 
-function day(date: string, overrides: Partial<DailyAgg>): DailyAgg {
-  return {
-    date,
-    focusMs: 0,
-    sessionsStarted: 0,
-    sessionsCompleted: 0,
-    attempts: {},
-    attemptsOther: 0,
-    pausesTaken: 0,
-    pauseMsSpent: 0,
-    pauseMsEarned: 0,
-    unlocksTaken: 0,
-    unlockMsSpent: 0,
-    resisted: 0,
-    ...overrides,
-  };
+type AggregateActivity = Omit<DailyAgg, 'date'>;
+type AggregateRepresentation = 'daily' | 'monthly';
+
+interface AggregateActivityCase {
+  name: string;
+  representation: AggregateRepresentation;
+  activity: Partial<AggregateActivity>;
 }
+
+const EMPTY_ACTIVITY: AggregateActivity = {
+  focusMs: 0,
+  sessionsStarted: 0,
+  sessionsCompleted: 0,
+  attempts: {},
+  attemptsOther: 0,
+  pausesTaken: 0,
+  pauseMsSpent: 0,
+  pauseMsEarned: 0,
+  unlocksTaken: 0,
+  unlockMsSpent: 0,
+  resisted: 0,
+};
+
+function day(date: string, overrides: Partial<AggregateActivity>): DailyAgg {
+  return { date, ...EMPTY_ACTIVITY, ...overrides };
+}
+
+function month(month: string, overrides: Partial<AggregateActivity>): MonthlyAgg {
+  return { month, ...EMPTY_ACTIVITY, ...overrides };
+}
+
+const ACTIVITY_CASES: readonly AggregateActivityCase[] = [
+  { name: 'focus duration', representation: 'daily', activity: { focusMs: 1 } },
+  { name: 'session start', representation: 'monthly', activity: { sessionsStarted: 1 } },
+  { name: 'session completion', representation: 'daily', activity: { sessionsCompleted: 1 } },
+  {
+    name: 'mapped attempt',
+    representation: 'monthly',
+    activity: { attempts: { 'example.com': 1 } },
+  },
+  { name: 'other attempt', representation: 'daily', activity: { attemptsOther: 1 } },
+  { name: 'pause count', representation: 'monthly', activity: { pausesTaken: 1 } },
+  { name: 'pause spend', representation: 'daily', activity: { pauseMsSpent: 1 } },
+  { name: 'optional pause earning', representation: 'monthly', activity: { pauseMsEarned: 1 } },
+  { name: 'unlock count', representation: 'daily', activity: { unlocksTaken: 1 } },
+  {
+    name: 'optional unlock spend',
+    representation: 'monthly',
+    activity: { unlockMsSpent: 1 },
+  },
+  { name: 'resisted temptation', representation: 'daily', activity: { resisted: 1 } },
+];
 
 const STREAK: StreakState = {
   current: 4,
@@ -141,32 +176,21 @@ describe('Tiles', () => {
     expect(container.querySelectorAll('.tile')).toHaveLength(0);
   });
 
-  it('renders tiles when only retained monthly history remains', () => {
-    const monthlyHistory: StatsBundle = {
-      ...EMPTY,
-      months: [
-        {
-          month: '2026-07',
-          focusMs: 60_000,
-          sessionsStarted: 1,
-          sessionsCompleted: 1,
-          attempts: {},
-          attemptsOther: 0,
-          pausesTaken: 0,
-          pauseMsSpent: 0,
-          pauseMsEarned: 0,
-          unlocksTaken: 0,
-          unlockMsSpent: 0,
-          resisted: 0,
-        },
-      ],
-    };
+  it.each(ACTIVITY_CASES)(
+    'renders tiles for $name in a $representation aggregate',
+    ({ representation, activity }: AggregateActivityCase): void => {
+      const bundle: StatsBundle = {
+        ...EMPTY,
+        days: representation === 'daily' ? [day('2026-08-28', activity)] : [],
+        months: representation === 'monthly' ? [month('2026-07', activity)] : [],
+      };
 
-    const { container } = render(<Tiles bundle={monthlyHistory} economy={ECONOMY} now={NOW} />);
+      const { container } = render(<Tiles bundle={bundle} economy={ECONOMY} now={NOW} />);
 
-    expect(container.querySelectorAll('.tile')).toHaveLength(6);
-    expect(container.textContent).not.toContain('Stats appear after your first session.');
-  });
+      expect(container.querySelectorAll('.tile')).toHaveLength(6);
+      expect(container.textContent).not.toContain('Stats appear after your first session.');
+    },
+  );
 });
 
 describe('Streak', () => {
