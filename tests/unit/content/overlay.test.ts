@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { Mock } from 'vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { hideOverlay, showOverlay } from '../../../src/content/overlay';
@@ -42,6 +44,24 @@ afterEach((): void => {
 });
 
 describe('overlay', () => {
+  it('ships distinct light and dark color schemes', () => {
+    showOverlay(verdict, focusSnap());
+    const styles: string = shadowRoot().querySelector('style')?.textContent ?? '';
+
+    expect(styles).toContain('--overlay-bg: rgba(248, 250, 252, 0.98);');
+    expect(styles).toContain('--overlay-text: #0f172a;');
+    expect(styles).toMatch(
+      /@media \(prefers-color-scheme: dark\)[\s\S]*--overlay-bg: rgba\(15, 23, 42, 0\.97\);/,
+    );
+    expect(styles).toMatch(/@media \(prefers-color-scheme: dark\)[\s\S]*--overlay-text: #f8fafc;/);
+  });
+
+  it('depends only on shared application modules', () => {
+    const source: string = readFileSync(resolve('src/content/overlay.ts'), 'utf8');
+
+    expect(source).not.toMatch(/from ['"]\.\.\/core\//);
+  });
+
   it('mounts once, shows intention and attempt count, and unmounts', () => {
     showOverlay(verdict, focusSnap());
     showOverlay(verdict, focusSnap());
@@ -97,14 +117,14 @@ describe('overlay', () => {
       expect(sendMessage).toHaveBeenCalledTimes(2);
       expect(root.querySelector('.backdrop')?.classList.contains('opaque')).toBe(true);
       expect(root.querySelector('.notloaded')?.textContent).toBe(
-        'This page did not load. It will load by itself when session ends.',
+        'This page did not load. It will load by itself when the session ends.',
       );
     });
   });
 
   it.each([
-    { kind: 'pause' as const, label: 'Take pause' },
-    { kind: 'unlockSite' as const, label: 'Unlock this site' },
+    { kind: 'pause' as const, label: 'Take the break' },
+    { kind: 'unlockSite' as const, label: 'Unlock it' },
     { kind: 'cancel' as const, label: 'End session' },
   ])('uses the shared $kind confirmation label', ({ kind, label }): void => {
     const snap: SessionSnapshot = focusSnap();
@@ -309,7 +329,7 @@ describe('overlay action failures', () => {
     expect(root.activeElement).toBe(cancel);
     expect(root.querySelector('.backdrop')?.classList.contains('opaque')).toBe(true);
     expect(root.querySelector('.notloaded')?.textContent).toBe(
-      'This page did not load. It will load by itself when session ends.',
+      'This page did not load. It will load by itself when the session ends.',
     );
   });
 
