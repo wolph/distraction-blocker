@@ -20,51 +20,51 @@ describe('closeDay', () => {
     const base: StreakState = { ...emptyStreak('2026-08'), current: 9, freezeTokens: 0 };
     expect(closeDay(base, '2026-08-25', 0, 25, 7).current).toBe(0);
   });
-  it('anchors a missing grant date without granting, then follows the calendar-day cadence', () => {
+  it('keeps a fresh streak unanchored until the next Monday grant', () => {
     const base: StreakState = { ...emptyStreak('2026-08'), freezeTokens: 0 };
-    const anchored: StreakState = closeDay(base, '2026-08-26', 30, 25, 7);
-    const early: StreakState = closeDay(anchored, '2026-09-01', 30, 25, 7);
-    const due: StreakState = closeDay(early, '2026-09-02', 30, 25, 7);
+    const beforeMonday: StreakState = closeDay(base, '2026-08-26', 30, 25, 7);
+    const monday: StreakState = closeDay(beforeMonday, '2026-08-31', 30, 25, 7);
 
-    expect(anchored).toMatchObject({ freezeTokens: 0, lastFreezeGrantDate: '2026-08-26' });
-    expect(early).toMatchObject({ freezeTokens: 0, lastFreezeGrantDate: '2026-08-26' });
-    expect(due).toMatchObject({ freezeTokens: 1, lastFreezeGrantDate: '2026-09-02' });
+    expect(beforeMonday).toMatchObject({ freezeTokens: 0, lastFreezeGrantDate: null });
+    expect(monday).toMatchObject({ freezeTokens: 1, lastFreezeGrantDate: '2026-08-31' });
   });
 
-  it('uses UTC calendar dates across DST and honors a custom interval', () => {
+  it('uses calendar dates across DST and honors a custom minimum interval on Mondays', () => {
     const base: StreakState = {
       ...emptyStreak('2026-03'),
       freezeTokens: 0,
-      lastFreezeGrantDate: '2026-03-22',
+      lastFreezeGrantDate: '2026-03-23',
     };
 
-    const due: StreakState = closeDay(base, '2026-03-29', 30, 25, 7);
+    const due: StreakState = closeDay(base, '2026-03-30', 30, 25, 7);
     const custom: StreakState = closeDay(
       { ...base, lastFreezeGrantDate: '2026-03-26' },
-      '2026-03-29',
+      '2026-03-30',
       30,
       25,
       3,
     );
 
-    expect(due).toMatchObject({ freezeTokens: 1, lastFreezeGrantDate: '2026-03-29' });
-    expect(custom).toMatchObject({ freezeTokens: 1, lastFreezeGrantDate: '2026-03-29' });
+    expect(due).toMatchObject({ freezeTokens: 1, lastFreezeGrantDate: '2026-03-30' });
+    expect(custom).toMatchObject({ freezeTokens: 1, lastFreezeGrantDate: '2026-03-30' });
   });
 
-  it('grants at most once per closed day during sequential catch-up', () => {
+  it('grants at most once per Monday during sequential catch-up', () => {
     const base: StreakState = {
       ...emptyStreak('2026-08'),
       lastFreezeGrantDate: '2026-08-24',
     };
-    const first: StreakState = closeDay(base, '2026-08-25', 30, 25, 1);
-    const repeated: StreakState = closeDay(first, '2026-08-25', 30, 25, 1);
-    const second: StreakState = closeDay(repeated, '2026-08-26', 30, 25, 1);
-    const capped: StreakState = closeDay(second, '2026-08-27', 30, 25, 1);
+    const first: StreakState = closeDay(base, '2026-08-31', 30, 25, 1);
+    const repeated: StreakState = closeDay(first, '2026-08-31', 30, 25, 1);
+    const tuesday: StreakState = closeDay(repeated, '2026-09-01', 30, 25, 1);
+    const second: StreakState = closeDay(tuesday, '2026-09-07', 30, 25, 1);
+    const capped: StreakState = closeDay(second, '2026-09-14', 30, 25, 1);
 
     expect(first.freezeTokens).toBe(1);
     expect(repeated).toEqual(first);
+    expect(tuesday).toMatchObject({ freezeTokens: 1, lastFreezeGrantDate: '2026-08-31' });
     expect(second.freezeTokens).toBe(2);
-    expect(capped).toMatchObject({ freezeTokens: 2, lastFreezeGrantDate: '2026-08-27' });
+    expect(capped).toMatchObject({ freezeTokens: 2, lastFreezeGrantDate: '2026-09-14' });
   });
   it('a new month resets activeDays, not the chain', () => {
     const base: StreakState = { ...emptyStreak('2026-08'), current: 5, activeDays: [25, 26] };

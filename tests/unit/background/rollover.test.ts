@@ -127,15 +127,17 @@ describe('planRollover', () => {
   });
 
   it('forwards the configured freeze cadence into streak closing', () => {
+    const monday: string = '2026-08-31';
+    const tuesday: number = new Date(2026, 8, 1, 12, 0, 0).getTime();
     const streak: StreakState = {
       ...zeroStreak,
       freezeTokens: 1,
-      lastFreezeGrantDate: '2026-08-25',
+      lastFreezeGrantDate: '2026-08-28',
     };
     const plan: RolloverPlan = planRollover(
-      YESTERDAY,
-      NOW,
-      daily(YESTERDAY, { focusMs: 30 * 60_000 }),
+      monday,
+      tuesday,
+      daily(monday, { focusMs: 30 * 60_000 }),
       streak,
       25,
       3,
@@ -143,7 +145,7 @@ describe('planRollover', () => {
 
     expect(plan.streak).toMatchObject({
       freezeTokens: 2,
-      lastFreezeGrantDate: YESTERDAY,
+      lastFreezeGrantDate: monday,
     });
   });
 });

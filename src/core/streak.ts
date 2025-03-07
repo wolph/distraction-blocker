@@ -25,11 +25,15 @@ function freezeGrantDue(lastGrantDate: string, date: string, intervalDays: numbe
   return utcCalendarDay(date) - utcCalendarDay(lastGrantDate) >= intervalDays;
 }
 
+function isMonday(date: string): boolean {
+  return new Date(`${date}T12:00:00`).getDay() === 1;
+}
+
 /**
  * Called once per local-day rollover with the finished day's focus
  * minutes. Handles: goal met (streak +1, active day recorded), goal
  * missed with a freeze token (token spent, streak kept), goal missed
- * without one (streak reset), elapsed-day token grant (max 2), month change
+ * without one (streak reset), Monday token grant (max 2), month change
  * (activeDays reset to the new month).
  */
 export function closeDay(
@@ -43,11 +47,12 @@ export function closeDay(
   const month: string = date.slice(0, 7);
   let s: StreakState = { ...streak, activeDays: [...streak.activeDays] };
   if (s.activeMonth !== month) s = { ...s, activeMonth: month, activeDays: [] };
-  // Legacy and fresh streaks have no grant marker. Anchor the cadence on
-  // the first closed date without minting an early token.
-  if (s.lastFreezeGrantDate === null) {
-    s = { ...s, lastFreezeGrantDate: date };
-  } else if (freezeGrantDue(s.lastFreezeGrantDate, date, freezeIntervalDays)) {
+  // Fresh and legacy streaks wait for a Monday before minting a token.
+  const grantDue: boolean =
+    isMonday(date) &&
+    (s.lastFreezeGrantDate === null ||
+      freezeGrantDue(s.lastFreezeGrantDate, date, freezeIntervalDays));
+  if (grantDue) {
     s = {
       ...s,
       freezeTokens: Math.min(MAX_FREEZE_TOKENS, s.freezeTokens + 1),
