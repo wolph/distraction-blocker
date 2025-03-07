@@ -112,7 +112,15 @@ test('an active schedule window starts a scheduled focus session', async ({ extP
   await clearNotifications(worker);
   await observeSoundMessages(extPage);
   const settings: Settings = await sendExtensionRequest(extPage, { type: 'getSettings' });
-  const today: number = new Date().getDay();
+  const scheduleClock: { at: number; day: number } = await worker.evaluate(
+    (): { at: number; day: number } => {
+      const fixed: Date = new Date();
+      fixed.setHours(12, 0, 0, 0);
+      const at: number = fixed.getTime();
+      Date.now = (): number => at;
+      return { at, day: fixed.getDay() };
+    },
+  );
   expect(
     await sendExtensionRequest(extPage, {
       type: 'updateSettings',
@@ -126,9 +134,9 @@ test('an active schedule window starts a scheduled focus session', async ({ extP
         schedule: [
           {
             id: 'e2e-active-window',
-            days: [today],
-            start: '00:00',
-            end: '23:59',
+            days: [scheduleClock.day],
+            start: '11:59',
+            end: '12:01',
             mode: 'blacklist',
             strictness: 'friction',
             cycling: null,
@@ -153,6 +161,7 @@ test('an active schedule window starts a scheduled focus session', async ({ extP
   });
   expect(snapshot.config?.source).toBe('schedule');
   expect(snapshot.config?.scheduleEntryId).toBe('e2e-active-window');
+  expect(snapshot.phaseStartedAt).toBe(scheduleClock.at);
   await expect
     .poll(
       async (): Promise<ObservedSound['sound'][]> =>

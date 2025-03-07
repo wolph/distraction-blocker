@@ -122,7 +122,7 @@ export class Engine {
   private needsBlocking = false;
   private commitQueue: Promise<void> = Promise.resolve();
   private blockingMutationPersistQueue: Promise<void> = Promise.resolve();
-  private domainPersistQueue: Promise<void> = Promise.resolve();
+  private domainPersistRevision: number = 0;
   private attemptRevision = 0;
   private attemptPersistInFlight: Map<string, Set<AttemptDurability>> = new Map();
   private failedAttemptPersistence: Set<string> = new Set();
@@ -1161,17 +1161,9 @@ export class Engine {
     }
   }
 
-  private persistDomainState(): Promise<void> {
-    const queued: Promise<void> = this.domainPersistQueue.then(
-      (): Promise<void> => this.performDomainPersist(),
-    );
-    this.domainPersistQueue = queued.catch((): void => {
-      // Keep later domain persistence usable. The caller still receives the rejection.
-    });
-    return queued;
-  }
-
-  private async performDomainPersist(): Promise<void> {
+  private async persistDomainState(): Promise<void> {
+    this.domainPersistRevision += 1;
+    const domainPersistRevision: number = this.domainPersistRevision;
     const bank: BankState = structuredClone(this.bank);
     const events: EventRecord[] = [...this.pendingEvents];
     const aggregate: DailyAgg | null = structuredClone(this.runtime.todayAgg);
@@ -1191,11 +1183,13 @@ export class Engine {
       if (index >= 0) this.pendingEvents.splice(index, 1);
     }
     if (this.bankRevision === bankRevision) this.bankDirty = false;
-    this.runtime.commitCheckpoint = null;
-    if (this.runtimePersistRevision === runtimePersistRevision) {
-      checkpointRuntime.commitCheckpoint = null;
-      this.ownedRuntimeSnapshot = structuredClone(checkpointRuntime);
-      await this.persistRuntime(checkpointRuntime);
+    if (this.domainPersistRevision === domainPersistRevision) {
+      this.runtime.commitCheckpoint = null;
+      if (this.runtimePersistRevision === runtimePersistRevision) {
+        checkpointRuntime.commitCheckpoint = null;
+        this.ownedRuntimeSnapshot = structuredClone(checkpointRuntime);
+        await this.persistRuntime(checkpointRuntime);
+      }
     }
   }
 

@@ -59,7 +59,7 @@ test('extension loads and the worker answers getSnapshot', async ({ context, ext
 test('popup page renders', async ({ context, extensionId }) => {
   const page = await context.newPage();
   await page.goto(`chrome-extension://${extensionId}/src/popup/popup.html`);
-  await expect(page.locator('#app')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Focus Lock' })).toBeVisible();
 });
 
 test('blockable test site loads without a session', async ({ context, siteUrl }) => {

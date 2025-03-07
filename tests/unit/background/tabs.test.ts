@@ -4372,19 +4372,11 @@ describe('applyBlockingFactory', () => {
 
     const sweep: Promise<void> = applyBlockingFactory((): Engine => harness.engine)();
     await bounded(Promise.all([tabAFrameStarted, tabBFrameRead]), 'barrier sweep identities');
-    let timeout: ReturnType<typeof setTimeout> | null = null;
-    const beforeTabARelease: 'completed' | 'blocked' = await Promise.race([
-      tabBEffectCompleted.then((): 'completed' => 'completed'),
-      new Promise((resolve: (result: 'blocked') => void): void => {
-        timeout = setTimeout((): void => resolve('blocked'), 25);
-      }),
-    ]);
-    if (timeout !== null) clearTimeout(timeout);
+    await tabBEffectCompleted;
 
     releaseTabAFrame({ documentId: 'document-a' });
     await bounded(sweep, 'barrier cleanup');
 
-    expect(beforeTabARelease).toBe('completed');
     expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
       8,
       expect.objectContaining({ type: 'applyBlock' }),
@@ -4681,22 +4673,25 @@ describe('applyBlockingFactory', () => {
       },
     });
     const runSweep: () => Promise<void> = applyBlockingFactory((): Engine => engine);
-    applyBlocking.mockImplementation(runSweep);
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const outcome: 'completed' | 'deadlocked' = await Promise.race([
-      applyToTab(engine, 7, url, false, 'navigation').then((): 'completed' => 'completed'),
-      new Promise((resolve: (result: 'deadlocked') => void): void => {
-        timer = setTimeout((): void => resolve('deadlocked'), 50);
-      }),
-    ]);
-    if (timer !== null) clearTimeout(timer);
+    let signalNestedSweep: () => void = (): void => {
+      throw new Error('nested sweep signal was not initialized');
+    };
+    const nestedSweepStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalNestedSweep = resolve;
+    });
+    applyBlocking.mockImplementation(async (): Promise<void> => {
+      signalNestedSweep();
+      await runSweep();
+    });
+    const pendingApply: Promise<void> = applyToTab(engine, 7, url, false, 'navigation');
+    await nestedSweepStarted;
+    await pendingApply;
     const attemptEvents: EventRecord[] = appendEvents.mock.calls
       .flatMap((call: unknown[]): EventRecord[] => call[0] as EventRecord[])
       .filter((event: EventRecord): boolean => event.t === 'attempt');
 
     expect(attemptEvents).toHaveLength(1);
     expect(reportError).not.toHaveBeenCalled();
-    expect(outcome).toBe('completed');
   });
 
   it('releases the tab queue after persistence starts a nested same-tab sweep', async () => {
@@ -4783,14 +4778,7 @@ describe('applyBlockingFactory', () => {
 
     const outerApply: Promise<void> = applyToTab(engine, 7, url, false, 'navigation');
     await bounded(nestedSweepStarted, 'nested same-tab sweep start');
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const outcome: 'completed' | 'deadlocked' = await Promise.race([
-      outerApply.then((): 'completed' => 'completed'),
-      new Promise((resolve: (result: 'deadlocked') => void): void => {
-        timer = setTimeout((): void => resolve('deadlocked'), 50);
-      }),
-    ]);
-    if (timer !== null) clearTimeout(timer);
+    await outerApply;
 
     expect(persistAttempt).toHaveBeenCalledOnce();
     expect(recordAttempt).toHaveBeenCalledOnce();
@@ -4800,6 +4788,5 @@ describe('applyBlockingFactory', () => {
       persistenceOrder.indexOf('effect'),
     );
     expect(reportError).not.toHaveBeenCalled();
-    expect(outcome).toBe('completed');
   });
 });

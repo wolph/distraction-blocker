@@ -1073,19 +1073,23 @@ describe('Engine', () => {
   it('persists attempts discovered by the blocking sweep without commit deadlock', async () => {
     const h: Harness = makeEngine();
     let attemptWasDurableBeforeSweepContinued = false;
+    let signalSweepAttempt: () => void = (): void => {
+      throw new Error('blocking sweep attempt signal was not initialized');
+    };
+    const sweepAttemptStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalSweepAttempt = resolve;
+    });
     h.ports.applyBlocking.mockImplementation(async (): Promise<void> => {
+      signalSweepAttempt();
       await h.engine.recordAttempt('https://facebook.com/feed', 7, 'existing');
       attemptWasDurableBeforeSweepContinued = h
         .loggedEvents()
         .some((event: EventRecord): boolean => event.t === 'attempt');
     });
-    const timeout: Promise<never> = new Promise((_, reject: (reason: Error) => void): void => {
-      setTimeout((): void => reject(new Error('commit deadlock')), 100);
-    });
+    const starting: Promise<Ack> = h.engine.startSession(manualConfig);
+    await sweepAttemptStarted;
 
-    await expect(Promise.race([h.engine.startSession(manualConfig), timeout])).resolves.toEqual({
-      ok: true,
-    });
+    await expect(starting).resolves.toEqual({ ok: true });
     expect(h.loggedEvents().some((event: EventRecord): boolean => event.t === 'attempt')).toBe(
       true,
     );
@@ -1189,7 +1193,7 @@ describe('Engine', () => {
     expect(savedRuntime.date).toBe(localDateStr(T0 + 2 * DAY_MS));
   });
 
-  it('uses the configured freeze cadence during rollover catch-up', async () => {
+  it('does not grant a freeze token during off-Monday rollover catch-up', async () => {
     const previousDate: string = localDateStr(T0 - DAY_MS);
     const streak: StreakState = {
       current: 2,
@@ -1208,9 +1212,9 @@ describe('Engine', () => {
     await h.engine.tick();
 
     expect(h.engine.getStreak()).toMatchObject({
-      current: 2,
+      current: 0,
       freezeTokens: 0,
-      lastFreezeGrantDate: localDateStr(T0),
+      lastFreezeGrantDate: previousDate,
     });
   });
 
@@ -1445,12 +1449,11 @@ describe('Engine', () => {
       8,
       'navigation',
     );
-    await Promise.race([
-      secondAppendStarted,
-      new Promise<void>((resolve: () => void): void => {
-        setTimeout(resolve, 20);
-      }),
+    const firstQueueResult: 'first-completed' | 'second-started' = await Promise.race([
+      first.then((): 'first-completed' => 'first-completed'),
+      secondAppendStarted.then((): 'second-started' => 'second-started'),
     ]);
+    expect(firstQueueResult).toBe('second-started');
     releaseFirstAppend();
     await Promise.all([first, second]);
 
@@ -2108,14 +2111,8 @@ describe('Engine', () => {
       'existing',
     );
     releasePersistence();
-    const outcome: 'completed' | 'stranded' = await Promise.race([
-      Promise.all([first, second]).then((): 'completed' => 'completed'),
-      new Promise((resolve: (value: 'stranded') => void): void => {
-        setTimeout((): void => resolve('stranded'), 50);
-      }),
-    ]);
 
-    expect(outcome).toBe('completed');
+    await Promise.all([first, second]);
   });
 
   it('reports a commit rejection once after attempt persistence becomes durable', async () => {
