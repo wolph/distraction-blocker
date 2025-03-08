@@ -1218,6 +1218,102 @@ describe('Engine', () => {
     });
   });
 
+  it('grants and spends Monday exactly once after a Sunday-to-Tuesday wake', async () => {
+    const sundayAtNoon: number = new Date(2026, 7, 30, 12, 0).getTime();
+    const monday: string = '2026-08-31';
+    const runtime: RuntimeState = emptyRuntime(sundayAtNoon);
+    runtime.todayAgg = {
+      date: '2026-08-30',
+      focusMs: 30 * 60_000,
+      sessionsStarted: 1,
+      sessionsCompleted: 1,
+      attempts: {},
+      attemptsOther: 0,
+      pausesTaken: 0,
+      pauseMsSpent: 0,
+      pauseMsEarned: 0,
+      unlocksTaken: 0,
+      unlockMsSpent: 0,
+      resisted: 0,
+    };
+    const h: Harness = makeEngine({ runtime });
+    h.setNow(new Date(2026, 8, 1, 12, 0).getTime());
+
+    await h.engine.tick();
+
+    expect(h.engine.getStreak()).toMatchObject({
+      current: 1,
+      freezeTokens: 0,
+      lastCountedDate: monday,
+      lastFreezeGrantDate: monday,
+    });
+    expect(
+      h.ports.queueSync.mock.calls.filter(
+        (call: unknown[]): boolean => call[0] === `agg:dev-test:${monday}`,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('applies custom Monday cadence and token cap during multi-week catch-up', async () => {
+    const sundayAtNoon: number = new Date(2026, 7, 23, 12, 0).getTime();
+    const runtime: RuntimeState = emptyRuntime(sundayAtNoon);
+    runtime.todayAgg = {
+      date: '2026-08-23',
+      focusMs: 30 * 60_000,
+      sessionsStarted: 1,
+      sessionsCompleted: 1,
+      attempts: {},
+      attemptsOther: 0,
+      pausesTaken: 0,
+      pauseMsSpent: 0,
+      pauseMsEarned: 0,
+      unlocksTaken: 0,
+      unlockMsSpent: 0,
+      resisted: 0,
+    };
+    const streak: StreakState = {
+      current: 5,
+      freezeTokens: 2,
+      lastCountedDate: '2026-08-22',
+      lastFreezeGrantDate: '2026-08-10',
+      activeDays: [18, 19, 20, 21, 22],
+      activeMonth: '2026-08',
+    };
+    const h: Harness = makeEngine({
+      runtime,
+      streak,
+      settings: { streakFreezeIntervalDays: 14 },
+    });
+    h.setNow(new Date(2026, 8, 15, 12, 0).getTime());
+
+    await h.engine.tick();
+
+    expect(h.engine.getStreak()).toMatchObject({
+      current: 0,
+      freezeTokens: 0,
+      lastCountedDate: '2026-09-14',
+      lastFreezeGrantDate: '2026-09-07',
+    });
+    const firstGrantWrite: unknown[] | undefined = h.ports.queueSync.mock.calls.find(
+      (call: unknown[]): boolean => {
+        const value: Partial<StreakState> | undefined = call[1] as Partial<StreakState> | undefined;
+        return call[0] === SYNC_STREAK && value?.lastCountedDate === '2026-08-24';
+      },
+    );
+    expect(firstGrantWrite?.[1]).toMatchObject({
+      current: 6,
+      freezeTokens: 1,
+      lastFreezeGrantDate: '2026-08-24',
+    });
+    for (const monday of ['2026-08-24', '2026-08-31', '2026-09-07', '2026-09-14']) {
+      expect(
+        h.ports.queueSync.mock.calls.filter(
+          (call: unknown[]): boolean => call[0] === `agg:dev-test:${monday}`,
+        ),
+      ).toHaveLength(1);
+    }
+  });
+
   it('marks retention pruning only after storage operations succeed', async () => {
     const h: Harness = makeEngine();
     h.ports.prune.mockRejectedValueOnce(new Error('sync remove failed'));
