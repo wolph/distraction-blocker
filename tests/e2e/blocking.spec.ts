@@ -10,6 +10,7 @@ test('fresh navigation to a blocked site is stopped and overlaid', async ({
 }) => {
   await startTestSession(extPage);
   const page = await context.newPage();
+  await page.emulateMedia({ colorScheme: 'light' });
   await page.goto(siteUrl('/plain.html'), { waitUntil: 'commit' });
 
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
@@ -23,7 +24,7 @@ test('fresh navigation to a blocked site is stopped and overlaid', async ({
       const green: number = image.data[offset + 1] ?? 255;
       const blue: number = image.data[offset + 2] ?? 255;
       const alpha: number = image.data[offset + 3] ?? 0;
-      return red === 15 && green === 23 && blue === 42 && alpha === 255;
+      return red === 248 && green === 250 && blue === 252 && alpha === 255;
     })
     .toBe(true);
   await expect(page.locator('#marker')).toHaveCount(0);
