@@ -54,6 +54,9 @@ describe('overlay', () => {
       /@media \(prefers-color-scheme: dark\)[\s\S]*--overlay-bg: rgba\(15, 23, 42, 0\.97\);/,
     );
     expect(styles).toMatch(/@media \(prefers-color-scheme: dark\)[\s\S]*--overlay-text: #f8fafc;/);
+    expect(styles).toMatch(
+      /@media \(prefers-color-scheme: dark\)[\s\S]*--overlay-subtle: #94a3b8;/,
+    );
   });
 
   it('depends only on shared application modules', () => {

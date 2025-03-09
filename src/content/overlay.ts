@@ -114,7 +114,7 @@ const OVERLAY_CSS: string = `
     --overlay-opaque: #0f172a;
     --overlay-text: #f8fafc;
     --overlay-muted: #94a3b8;
-    --overlay-subtle: #64748b;
+    --overlay-subtle: #94a3b8;
     --overlay-intention: #e2e8f0;
     --overlay-meter: rgba(148, 163, 184, 0.25);
     --overlay-pill: rgba(148, 163, 184, 0.18);
