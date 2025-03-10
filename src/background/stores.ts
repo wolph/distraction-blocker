@@ -12,10 +12,10 @@ import {
   LOCAL_CACHES,
   LOCAL_DEVICE_ID,
   LOCAL_EVENTS,
+  LOCAL_LISTS_SNAPSHOT,
   LOCAL_RUNTIME,
   LOCAL_SYNC_JOURNAL,
   SYNC_BANK,
-  SYNC_LISTS,
   SYNC_SETTINGS,
   SYNC_STREAK,
 } from '../shared/storage-keys';
@@ -35,9 +35,17 @@ import type {
   SiteUnlock,
   StreakState,
 } from '../shared/types';
+import {
+  canonicalListsConfig,
+  type DecodedListsSyncSnapshot,
+  decodeListsSyncSnapshot,
+  isListSyncKey,
+  LIST_SYNC_KEYS,
+} from './list-sync-codec';
 import type { SyncJournal } from './sync-writer';
 
 const TIME_RE: RegExp = /^([01]\d|2[0-3]):([0-5]\d)$/;
+let eventAppendQueue: Promise<void> = Promise.resolve();
 
 /**
  * Background-internal persisted state. Not part of the shared contract:
@@ -98,9 +106,30 @@ export async function loadSettings(journal?: SyncJournal): Promise<Settings> {
   return mergeSettings(journalValue(journal, SYNC_SETTINGS, raw));
 }
 
-export async function loadLists(journal?: SyncJournal): Promise<ListsConfig> {
-  const raw: unknown = (await chrome.storage.sync.get(SYNC_LISTS))[SYNC_LISTS];
-  return mergeLists(journalValue(journal, SYNC_LISTS, raw));
+export async function loadLists(
+  journal?: SyncJournal,
+  storedSnapshot?: Readonly<Record<string, unknown>>,
+): Promise<ListsConfig> {
+  const stored: Readonly<Record<string, unknown>> =
+    storedSnapshot ?? (await chrome.storage.sync.get([...LIST_SYNC_KEYS]));
+  const localArea: chrome.storage.StorageArea | undefined = chrome.storage.local;
+  const local: Record<string, unknown> =
+    localArea === undefined ? {} : await localArea.get(LOCAL_LISTS_SNAPSHOT);
+  const fallback: ListsConfig = mergeLists(local[LOCAL_LISTS_SNAPSHOT]);
+  const effective: Record<string, unknown> = Object.fromEntries(
+    Object.entries(stored).filter(([key]: [string, unknown]): boolean => isListSyncKey(key)),
+  );
+  if (journal !== undefined) {
+    for (const key of journal.removes) {
+      if (isListSyncKey(key)) delete effective[key];
+    }
+    for (const [key, value] of Object.entries(journal.sets)) {
+      if (isListSyncKey(key) && !journal.removes.includes(key)) effective[key] = value;
+    }
+  }
+  const decoded: DecodedListsSyncSnapshot = decodeListsSyncSnapshot(effective);
+  if (decoded.kind === 'complete') return decoded.lists;
+  return decoded.kind === 'legacy' ? mergeLists(decoded.value, fallback) : fallback;
 }
 
 export function mergeSettings(raw: unknown, base: Settings = DEFAULT_SETTINGS): Settings {
@@ -826,8 +855,13 @@ export async function loadMatcherCache(): Promise<unknown> {
   return (await chrome.storage.local.get(LOCAL_CACHES))[LOCAL_CACHES];
 }
 
-export async function saveMatcherCache(cache: StoredMatcherCache): Promise<void> {
-  await chrome.storage.local.set({ [LOCAL_CACHES]: cache });
+export async function saveMatcherCache(
+  cache: StoredMatcherCache,
+  lists?: ListsConfig,
+): Promise<void> {
+  const items: Record<string, unknown> = { [LOCAL_CACHES]: cache };
+  if (lists !== undefined) items[LOCAL_LISTS_SNAPSHOT] = canonicalListsConfig(lists);
+  await chrome.storage.local.set(items);
 }
 
 export async function getDeviceId(): Promise<string> {
@@ -848,8 +882,7 @@ function parseEventLog(value: unknown): EventRecord[] {
   return events;
 }
 
-export async function appendEvents(evs: EventRecord[]): Promise<void> {
-  if (evs.length === 0) return;
+async function performAppendEvents(evs: EventRecord[]): Promise<void> {
   const raw: unknown = (await chrome.storage.local.get(LOCAL_EVENTS))[LOCAL_EVENTS];
   const log: EventRecord[] = parseEventLog(raw);
   const incoming: EventRecord[] = parseEventLog(evs);
@@ -863,6 +896,15 @@ export async function appendEvents(evs: EventRecord[]): Promise<void> {
   }
   const next: EventRecord[] = [...log, ...unique].slice(-EVENT_LOG_CAP);
   await chrome.storage.local.set({ [LOCAL_EVENTS]: next });
+}
+
+export function appendEvents(evs: EventRecord[]): Promise<void> {
+  if (evs.length === 0) return Promise.resolve();
+  const requested: Promise<void> = eventAppendQueue.then(
+    (): Promise<void> => performAppendEvents(evs),
+  );
+  eventAppendQueue = requested.catch((): void => {});
+  return requested;
 }
 
 export async function readEvents(): Promise<EventRecord[]> {

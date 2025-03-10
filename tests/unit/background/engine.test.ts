@@ -1,25 +1,30 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EnginePorts } from '../../../src/background/engine';
 import { Engine } from '../../../src/background/engine';
+import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/background/list-sync-codec';
 import { clockRebaseArchiveKey } from '../../../src/background/rollover';
-import { emptyRuntime, mergeRuntime, type RuntimeState } from '../../../src/background/stores';
+import {
+  appendEvents,
+  emptyRuntime,
+  mergeRuntime,
+  type RuntimeState,
+  readEvents,
+} from '../../../src/background/stores';
 import { syncItemBytes } from '../../../src/background/sync-quota';
 import { type SyncJournal, SyncWriter } from '../../../src/background/sync-writer';
 import { ALL_CATEGORIES } from '../../../src/core/categories';
-import {
-  buildMatcherCache,
-  type CompiledMatcherSet,
-  type StoredMatcherCache,
-} from '../../../src/core/matcher';
+import { buildMatcherCache, type CompiledMatcherSet } from '../../../src/core/matcher';
 import { beginPause, endPauseEarly, startSession } from '../../../src/core/session';
 import {
   CANCEL_GATE_DELAY_MS,
+  CATEGORY_IDS,
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
   GATE_EXPIRY_MS,
 } from '../../../src/shared/constants';
 import type { Ack } from '../../../src/shared/messages';
 import {
+  LOCAL_EVENTS,
   SYNC_BANK,
   SYNC_LISTS,
   SYNC_SETTINGS,
@@ -72,10 +77,27 @@ function oversizedHostRules(prefix: string): ListsConfig['custom'] {
   }));
 }
 
+function splittableLists(custom: ListsConfig['custom'] = []): ListsConfig {
+  const exclusions: ListsConfig['exclusions'] = {};
+  for (const categoryId of CATEGORY_IDS) {
+    exclusions[categoryId] = Array.from(
+      { length: 60 },
+      (_value: unknown, index: number): string => `${categoryId}-${index}.example`,
+    );
+  }
+  return {
+    ...DEFAULT_LISTS,
+    custom,
+    categories: { ...DEFAULT_LISTS.categories, social: true },
+    exclusions,
+  };
+}
+
 function clearMutationPorts(ports: Harness['ports']): void {
   ports.now.mockClear();
   ports.saveRuntime.mockClear();
   ports.queueSync.mockClear();
+  ports.removeSync.mockClear();
   ports.appendEvents.mockClear();
   ports.broadcast.mockClear();
   ports.applyBlocking.mockClear();
@@ -96,7 +118,7 @@ function makeEngine(opts?: {
   queueSync?: EnginePorts['queueSync'];
   supersedeSync?: EnginePorts['supersedeSync'];
   persistSyncJournal?: EnginePorts['persistSyncJournal'];
-  saveMatcherCache?: (cache: StoredMatcherCache) => Promise<void>;
+  saveMatcherCache?: EnginePorts['saveMatcherCache'];
   matcherSet?: CompiledMatcherSet;
   hasPendingSync?: (key: string) => boolean;
 }): Harness {
@@ -570,6 +592,73 @@ describe('Engine', () => {
     expect(h.ports.saveMatcherCache).not.toHaveBeenCalled();
   });
 
+  it('queues a complete sharded encoding and durably replays it after restart', async () => {
+    let durableJournal: SyncJournal = { sets: {}, removes: [] };
+    const writer: SyncWriter = new SyncWriter(
+      60_000,
+      vi.fn().mockResolvedValue(undefined),
+      vi.fn().mockResolvedValue(undefined),
+      {
+        initial: durableJournal,
+        persist: async (journal: SyncJournal): Promise<void> => {
+          durableJournal = structuredClone(journal);
+        },
+      },
+    );
+    const h: Harness = makeEngine({
+      hasPendingSync: (key: string): boolean => writer.hasPending(key),
+      queueSync: (key: string, value: unknown): void => writer.queue(key, value),
+      persistSyncJournal: (): Promise<void> => writer.whenJournalDurable(),
+    });
+    const lists: ListsConfig = splittableLists([{ kind: 'host', pattern: 'sharded.example' }]);
+
+    await expect(h.engine.updateLists(lists)).resolves.toEqual({ ok: true });
+
+    const expected = await encodeListsForSync(lists);
+    expect(durableJournal).toEqual({ sets: expected.sets, removes: [] });
+    const replayWrites: Array<Record<string, unknown>> = [];
+    const restarted: SyncWriter = new SyncWriter(
+      60_000,
+      async (items: Record<string, unknown>): Promise<void> => {
+        replayWrites.push(structuredClone(items));
+      },
+      vi.fn().mockResolvedValue(undefined),
+      { initial: durableJournal, persist: vi.fn().mockResolvedValue(undefined) },
+    );
+    await restarted.flushNow();
+    expect(replayWrites).toEqual([expected.sets]);
+  });
+
+  it('removes stale category shards when lists return to the unsplit representation', async () => {
+    const h: Harness = makeEngine();
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'unsplit.example' }],
+    };
+
+    await expect(h.engine.updateLists(lists)).resolves.toEqual({ ok: true });
+
+    for (const key of LIST_SYNC_SHARD_KEYS) {
+      expect(h.ports.removeSync).toHaveBeenCalledWith(key);
+    }
+  });
+
+  it('keeps the hard-session guard authoritative before queuing sharded lists', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession({ ...manualConfig, strictness: 'hard' });
+    clearMutationPorts(h.ports);
+
+    await expect(h.engine.updateLists(splittableLists())).resolves.toEqual(
+      expect.objectContaining({ ok: false }),
+    );
+
+    expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_LISTS, expect.anything());
+    for (const key of LIST_SYNC_SHARD_KEYS) {
+      expect(h.ports.queueSync).not.toHaveBeenCalledWith(key, expect.anything());
+    }
+    expect(h.ports.removeSync).not.toHaveBeenCalled();
+  });
+
   it('rejects oversized live lists before catch-up or matcher-cache persistence', async () => {
     const h: Harness = makeEngine();
     clearMutationPorts(h.ports);
@@ -614,6 +703,7 @@ describe('Engine', () => {
     expect(order).toEqual(['cache', 'sync']);
     expect(h.ports.saveMatcherCache).toHaveBeenCalledWith(
       buildMatcherCache(updated, ALL_CATEGORIES).stored,
+      updated,
     );
     expect(h.engine.getLists()).toEqual(updated);
     expect(h.engine.verdictFor('https://replacement.example/page').blocked).toBe(true);
@@ -633,6 +723,7 @@ describe('Engine', () => {
 
     expect(h.ports.saveMatcherCache).toHaveBeenCalledWith(
       buildMatcherCache(updated, ALL_CATEGORIES).stored,
+      updated,
     );
     expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_LISTS, expect.anything());
     expect(h.engine.verdictFor('https://live.example/page').blocked).toBe(true);
@@ -1504,6 +1595,82 @@ describe('Engine', () => {
     });
     restarted.setNow(T0 + 1_000);
     expect(restarted.engine.snapshot().bankMs).toBe(250);
+  });
+
+  it('does not lose a cross-queue attempt when event-log writes finish out of order', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession(manualConfig);
+    h.ports.appendEvents.mockReset();
+    h.ports.appendEvents.mockImplementation(appendEvents);
+    h.ports.saveRuntime.mockClear();
+
+    const localState: Record<string, unknown> = { [LOCAL_EVENTS]: [] };
+    let releaseFirstSet: () => void = (): void => {
+      throw new Error('first event-log write did not start');
+    };
+    let signalFirstSet: () => void = (): void => {
+      throw new Error('first event-log signal was not initialized');
+    };
+    const firstSetStarted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalFirstSet = resolve;
+    });
+    let signalSecondSet: () => void = (): void => {
+      throw new Error('second event-log signal was not initialized');
+    };
+    const secondSetCompleted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalSecondSet = resolve;
+    });
+    const getLocal = vi.fn(
+      async (): Promise<Record<string, unknown>> => structuredClone(localState),
+    );
+    let setCalls: number = 0;
+    const setLocal = vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+      setCalls += 1;
+      if (setCalls === 1) {
+        signalFirstSet();
+        await new Promise<void>((resolve: () => void): void => {
+          releaseFirstSet = resolve;
+        });
+        Object.assign(localState, structuredClone(items));
+        return;
+      }
+      Object.assign(localState, structuredClone(items));
+      signalSecondSet();
+    });
+    vi.stubGlobal('chrome', { storage: { local: { get: getLocal, set: setLocal } } });
+
+    Reflect.set(h.engine, 'applyingBlocking', true);
+    const first: Promise<void> = h.engine.recordAttempt(
+      'https://facebook.com/first',
+      7,
+      'existing',
+    );
+    await firstSetStarted;
+
+    Reflect.set(h.engine, 'applyingBlocking', false);
+    const second: Promise<void> = h.engine.recordAttempt(
+      'https://facebook.com/second',
+      8,
+      'navigation',
+    );
+    await vi.waitFor((): void => expect(h.ports.appendEvents).toHaveBeenCalledTimes(2));
+
+    if (getLocal.mock.calls.length === 2) await secondSetCompleted;
+    releaseFirstSet();
+    await Promise.all([first, second]);
+
+    const attempts: EventRecord[] = (await readEvents()).filter(
+      (event: EventRecord): boolean => event.t === 'attempt',
+    );
+    expect(attempts.map((event: EventRecord): string => ('url' in event ? event.url : ''))).toEqual(
+      ['https://facebook.com/first', 'https://facebook.com/second'],
+    );
+    const storedRuntime: RuntimeState = structuredClone(
+      h.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+    );
+    expect(storedRuntime.commitCheckpoint).toBeNull();
+    const restarted: Harness = makeEngine({ runtime: storedRuntime });
+    expect(restarted.engine.snapshot().attemptsToday).toBe(2);
   });
 
   it('keeps cross-queue attempt revisions when the first event append is blocked', async () => {

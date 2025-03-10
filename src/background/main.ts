@@ -8,7 +8,13 @@ import {
 import { parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { emptyStreak } from '../core/streak';
 import type { Request, SoundId } from '../shared/messages';
-import { SYNC_BANK, SYNC_LISTS, SYNC_SETTINGS, SYNC_STREAK } from '../shared/storage-keys';
+import {
+  LOCAL_LISTS_SNAPSHOT,
+  SYNC_BANK,
+  SYNC_LISTS,
+  SYNC_SETTINGS,
+  SYNC_STREAK,
+} from '../shared/storage-keys';
 import { localDateStr, localMonthStr } from '../shared/time';
 import type {
   BankState,
@@ -22,6 +28,14 @@ import type {
 import { notify, playSound } from './audio';
 import { Engine, type EnginePorts } from './engine';
 import { updateIcon } from './icon';
+import {
+  canonicalListsConfig,
+  decodeListsSyncSnapshot,
+  encodeListsForSync,
+  isListSyncKey,
+  LIST_SYNC_KEYS,
+  type ListsSyncEncoding,
+} from './list-sync-codec';
 import { parseRequest } from './request-validation';
 import { routeMessage } from './router';
 import { handleSyncChanges, missingSyncDefaults } from './storage-sync';
@@ -35,10 +49,8 @@ import {
   loadSettings,
   loadStreak,
   loadSyncJournal,
-  mergeLists,
   mergeSettings,
   parseBank,
-  parseLiveLists,
   parseLiveSettings,
   parseStreak,
   type RuntimeState,
@@ -94,6 +106,41 @@ function hasPendingSet(journal: SyncJournal, key: string): boolean {
   return !journal.removes.includes(key) && Object.hasOwn(journal.sets, key);
 }
 
+function hasPendingLists(journal: SyncJournal): boolean {
+  return (
+    Object.keys(journal.sets).some((key: string): boolean => isListSyncKey(key)) ||
+    journal.removes.some((key: string): boolean => isListSyncKey(key))
+  );
+}
+
+function replacePendingLists(journal: SyncJournal, encoding: ListsSyncEncoding): void {
+  for (const key of LIST_SYNC_KEYS) delete journal.sets[key];
+  journal.removes = journal.removes.filter((key: string): boolean => !isListSyncKey(key));
+  Object.assign(journal.sets, encoding.sets);
+  journal.removes.push(...encoding.removes);
+}
+
+function queueListsEncoding(writer: SyncWriter, encoding: ListsSyncEncoding): void {
+  for (const [key, value] of Object.entries(encoding.sets)) writer.queue(key, value);
+  for (const key of encoding.removes) writer.remove(key);
+}
+
+function effectiveListsSnapshot(
+  storedSync: Readonly<Record<string, unknown>>,
+  journal: SyncJournal,
+): Record<string, unknown> {
+  const snapshot: Record<string, unknown> = Object.fromEntries(
+    Object.entries(storedSync).filter(([key]: [string, unknown]): boolean => isListSyncKey(key)),
+  );
+  for (const key of journal.removes) {
+    if (isListSyncKey(key)) delete snapshot[key];
+  }
+  for (const [key, value] of Object.entries(journal.sets)) {
+    if (isListSyncKey(key) && !journal.removes.includes(key)) snapshot[key] = value;
+  }
+  return snapshot;
+}
+
 function aggregateKeyIdentity(key: string): AggregateKeyIdentity | null {
   const dailyDate: string | undefined = DAILY_AGG_KEY_RE.exec(key)?.[1];
   if (dailyDate !== undefined) return { kind: 'daily', period: dailyDate };
@@ -139,10 +186,6 @@ function validatedPendingJournal(
     const synced: Settings = mergeSettings(storedSync[SYNC_SETTINGS]);
     journal.sets[SYNC_SETTINGS] = parseLiveSettings(journal.sets[SYNC_SETTINGS], synced) ?? synced;
   }
-  if (hasPendingSet(journal, SYNC_LISTS)) {
-    const synced: ListsConfig = mergeLists(storedSync[SYNC_LISTS]);
-    journal.sets[SYNC_LISTS] = parseLiveLists(journal.sets[SYNC_LISTS], synced) ?? synced;
-  }
   if (hasPendingSet(journal, SYNC_BANK)) {
     const synced: BankState = parseBank(storedSync[SYNC_BANK]) ?? { balanceMs: 0 };
     journal.sets[SYNC_BANK] = parseBank(journal.sets[SYNC_BANK]) ?? synced;
@@ -169,17 +212,28 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
   );
   const storedSync: Record<string, unknown> = await chrome.storage.sync.get([
     SYNC_SETTINGS,
-    SYNC_LISTS,
+    ...LIST_SYNC_KEYS,
     SYNC_BANK,
     SYNC_STREAK,
     ...pendingAggregateKeys,
   ]);
   const sanitized: SanitizedSyncJournal = sanitizeSyncJournal(rawJournal);
   const journal: SyncJournal = validatedPendingJournal(sanitized.journal, storedSync, now);
+  const journalHadLists: boolean = hasPendingLists(journal);
   if (sanitized.rejected.length > 0) await saveSyncJournal(journal);
-  const [settings, lists, bank, syncedStreak, runtime, rawMatcherCache, deviceId]: [
+  const [storedLists, journalFallbackLists]: [ListsConfig, ListsConfig] = await Promise.all([
+    loadLists(undefined, storedSync),
+    loadLists(journal, storedSync),
+  ]);
+  const decodedLists = decodeListsSyncSnapshot(effectiveListsSnapshot(storedSync, journal));
+  const lists: ListsConfig =
+    !journalHadLists || decodedLists.kind === 'legacy'
+      ? storedLists
+      : decodedLists.kind === 'complete'
+        ? decodedLists.lists
+        : journalFallbackLists;
+  const [settings, bank, syncedStreak, runtime, rawMatcherCache, deviceId]: [
     Settings,
-    ListsConfig,
     BankState,
     StreakState | null,
     RuntimeState,
@@ -187,13 +241,14 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
     string,
   ] = await Promise.all([
     loadSettings(journal),
-    loadLists(journal),
     loadBank(journal),
     loadStreak(),
     loadRuntime(now),
     loadMatcherCache(),
     getDeviceId(),
   ]);
+  if (journalHadLists) replacePendingLists(journal, await encodeListsForSync(lists));
+  await chrome.storage.local.set({ [LOCAL_LISTS_SNAPSHOT]: canonicalListsConfig(lists) });
   let matchers: CompiledMatcherSet | null = restoreMatcherCache(
     rawMatcherCache,
     lists,
@@ -240,7 +295,7 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
       for (const [key, value] of Object.entries(items)) {
         if (
           key === SYNC_SETTINGS ||
-          key === SYNC_LISTS ||
+          isListSyncKey(key) ||
           key === SYNC_BANK ||
           key === SYNC_STREAK
         ) {
@@ -262,7 +317,12 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
     bank,
     streak: persistedStreak,
   });
+  const listsWereMissing: boolean = Object.hasOwn(missingDefaults, SYNC_LISTS);
+  delete missingDefaults[SYNC_LISTS];
   for (const [key, value] of Object.entries(missingDefaults)) syncWriter.queue(key, value);
+  if (listsWereMissing) {
+    queueListsEncoding(syncWriter, await encodeListsForSync(lists));
+  }
   onSyncWriterReady(syncWriter);
   await syncWriter.whenJournalDurable();
   const ports: EnginePorts = {
@@ -329,15 +389,15 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
 export function main(): void {
   engineInstance = null;
   syncWriterInstance = null;
-  let syncWriterInitialized: boolean = false;
   let resolveSyncWriterReady: (writer: SyncWriter) => void = (): void => undefined;
   const syncWriterReady: Promise<SyncWriter> = new Promise(
     (resolve: (writer: SyncWriter) => void): void => {
       resolveSyncWriterReady = resolve;
     },
   );
+  let listenerSyncWriter: SyncWriter | null = null;
   const ready: Promise<Engine> = boot((writer: SyncWriter): void => {
-    syncWriterInitialized = true;
+    listenerSyncWriter = writer;
     resolveSyncWriterReady(writer);
   });
 
@@ -363,24 +423,40 @@ export function main(): void {
   chrome.storage.onChanged.addListener(
     (changes: Record<string, chrome.storage.StorageChange>, areaName: string): void => {
       if (areaName !== 'sync') return;
-      const hasListsChange: boolean = changes[SYNC_LISTS]?.newValue !== undefined;
+      const hasListsChange: boolean = Object.keys(changes).some((key: string): boolean =>
+        isListSyncKey(key),
+      );
       const reconcilePendingLists: Promise<boolean> = hasListsChange
-        ? !syncWriterInitialized || syncWriterInstance === null
-          ? syncWriterReady.then((writer: SyncWriter): boolean => writer.hasPending(SYNC_LISTS))
-          : Promise.resolve(syncWriterInstance.hasPending(SYNC_LISTS))
+        ? listenerSyncWriter === null
+          ? syncWriterReady.then((writer: SyncWriter): boolean =>
+              LIST_SYNC_KEYS.some((key: string): boolean => writer.hasPending(key)),
+            )
+          : Promise.resolve(
+              LIST_SYNC_KEYS.some((key: string): boolean =>
+                (listenerSyncWriter as SyncWriter).hasPending(key),
+              ),
+            )
         : Promise.resolve(false);
-      void Promise.all([ready, reconcilePendingLists])
-        .then(async ([engine, shouldReconcile]: [Engine, boolean]): Promise<void> => {
+      const listSnapshot: Promise<Record<string, unknown> | undefined> = hasListsChange
+        ? chrome.storage.sync.get([...LIST_SYNC_KEYS])
+        : Promise.resolve(undefined);
+      void Promise.all([ready, reconcilePendingLists, listSnapshot])
+        .then(async ([engine, shouldReconcile, snapshot]): Promise<void> => {
           await handleSyncChanges(
             engine,
             changes,
             syncEchoes,
             async (key: string, value: unknown): Promise<void> => {
               const writer: SyncWriter = currentSyncWriter();
-              writer.queue(key, value);
+              if (key === SYNC_LISTS) {
+                queueListsEncoding(writer, await encodeListsForSync(value as ListsConfig));
+              } else {
+                writer.queue(key, value);
+              }
               await writer.whenJournalDurable();
             },
             shouldReconcile,
+            snapshot,
           );
         })
         .catch(reportBackgroundError);

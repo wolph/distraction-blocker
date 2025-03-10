@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EnginePorts } from '../../../src/background/engine';
+import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/background/list-sync-codec';
 import { main } from '../../../src/background/main';
 import { routeMessage } from '../../../src/background/router';
-import { handleSyncChanges } from '../../../src/background/storage-sync';
+import { handleSyncChanges, missingSyncDefaults } from '../../../src/background/storage-sync';
 import { SYNC_QUOTA_BYTES_TOTAL, syncItemBytes } from '../../../src/background/sync-quota';
 import type { SyncJournal } from '../../../src/background/sync-writer';
 import { ALL_CATEGORIES } from '../../../src/core/categories';
@@ -14,9 +15,10 @@ import {
   type StoredMatcherCache,
 } from '../../../src/core/matcher';
 import { emptyDaily, rollupMonth } from '../../../src/core/stats';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import { CATEGORY_IDS, DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
 import {
+  LOCAL_LISTS_SNAPSHOT,
   LOCAL_SYNC_QUOTA_EVICTION,
   SYNC_BANK,
   SYNC_LISTS,
@@ -542,6 +544,29 @@ describe('background matcher cache boot', () => {
 });
 
 describe('background pending lists tracking', () => {
+  it('reads the complete list snapshot when a category shard changes', async () => {
+    const exclusions: ListsConfig['exclusions'] = {};
+    for (const categoryId of CATEGORY_IDS) {
+      exclusions[categoryId] = Array.from(
+        { length: 60 },
+        (_value: unknown, index: number): string => `${categoryId}-${index}.example`,
+      );
+    }
+    const lists: ListsConfig = { ...DEFAULT_LISTS, exclusions };
+    const encoding = await encodeListsForSync(lists);
+    mocks.scenario.storedSync = structuredClone(encoding.sets);
+    await finishBoot();
+    vi.mocked(handleSyncChanges).mockClear();
+    const shardKey: string = LIST_SYNC_SHARD_KEYS[0] as string;
+    const listener: StorageListener | null = mocks.storageListener;
+    if (listener === null) throw new Error('storage listener was not registered');
+
+    listener({ [shardKey]: { newValue: encoding.sets[shardKey] } }, 'sync');
+
+    await vi.waitFor((): void => expect(handleSyncChanges).toHaveBeenCalled());
+    expect(vi.mocked(handleSyncChanges).mock.calls.at(-1)?.[5]).toEqual(encoding.sets);
+  });
+
   it('reports a local lists write pending until SyncWriter flushes it', async () => {
     await finishBoot();
     const localLists: ListsConfig = {
@@ -569,6 +594,7 @@ describe('background pending lists tracking', () => {
   });
 
   it('captures replayed lists pending state when a live event arrives during slow boot', async () => {
+    vi.mocked(handleSyncChanges).mockClear();
     let releaseTick: () => void = (): void => {};
     mocks.tickGate = new Promise((resolve: () => void): void => {
       releaseTick = resolve;
@@ -587,6 +613,7 @@ describe('background pending lists tracking', () => {
     await vi.waitFor((): void => expect(mocks.engineArguments).not.toBeNull());
     const listener: StorageListener | null = mocks.storageListener;
     if (listener === null) throw new Error('storage listener was not registered');
+    expect(enginePorts().hasPendingSync(SYNC_LISTS)).toBe(true);
     listener({ [SYNC_LISTS]: { newValue: liveLists } }, 'sync');
     await vi.advanceTimersByTimeAsync(10_000);
     expect(enginePorts().hasPendingSync(SYNC_LISTS)).toBe(false);
@@ -646,6 +673,56 @@ describe('background pending lists tracking', () => {
 });
 
 describe('background boot state convergence', () => {
+  it('repairs an incomplete sharded journal from the local canonical snapshot', async () => {
+    const localLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'local-canonical.example' }],
+    };
+    const exclusions: ListsConfig['exclusions'] = {};
+    for (const categoryId of CATEGORY_IDS) {
+      exclusions[categoryId] = Array.from(
+        { length: 60 },
+        (_value: unknown, index: number): string => `${categoryId}-${index}.example`,
+      );
+    }
+    const incomplete = await encodeListsForSync({ ...DEFAULT_LISTS, exclusions });
+    delete incomplete.sets[LIST_SYNC_SHARD_KEYS[0] as string];
+    mocks.scenario.journal = { sets: incomplete.sets, removes: [] };
+    mocks.localState[LOCAL_LISTS_SNAPSHOT] = localLists;
+
+    await finishBoot();
+
+    expect(engineLists()).toEqual(localLists);
+    const expected = await encodeListsForSync(localLists);
+    expect(mocks.savedJournals.at(-1)).toEqual({
+      sets: expected.sets,
+      removes: expected.removes,
+    });
+  });
+
+  it('removes stale list shards when a missing base is restored as unsplit', async () => {
+    const exclusions: ListsConfig['exclusions'] = {};
+    for (const categoryId of CATEGORY_IDS) {
+      exclusions[categoryId] = Array.from(
+        { length: 60 },
+        (_value: unknown, index: number): string => `${categoryId}-${index}.example`,
+      );
+    }
+    const encoding = await encodeListsForSync({ ...DEFAULT_LISTS, exclusions });
+    const staleShards: Record<string, unknown> = { ...encoding.sets };
+    delete staleShards[SYNC_LISTS];
+    mocks.scenario.storedSync = staleShards;
+    vi.mocked(missingSyncDefaults).mockReturnValueOnce({ [SYNC_LISTS]: DEFAULT_LISTS });
+
+    await finishBoot();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(mocks.scenario.storedSync[SYNC_LISTS]).toEqual(DEFAULT_LISTS);
+    for (const key of LIST_SYNC_SHARD_KEYS) {
+      expect(mocks.scenario.storedSync).not.toHaveProperty(key);
+    }
+  });
+
   it('rolls back a quota eviction checkpoint when the SyncWriter journal is empty', async () => {
     const evictedMonthKey: string = 'aggm:old-device:2024-01';
     const evictedMonth = rollupMonth('2024-01', []);
@@ -739,7 +816,7 @@ describe('background boot state convergence', () => {
     expect(engineLists()).toEqual(synced);
     expect(mocks.savedJournals).toContainEqual({
       sets: { [SYNC_LISTS]: synced },
-      removes: [],
+      removes: [...LIST_SYNC_SHARD_KEYS],
     });
     await vi.advanceTimersByTimeAsync(10_000);
     expect(chrome.storage.sync.set).toHaveBeenCalledWith({ [SYNC_LISTS]: synced });
@@ -802,7 +879,10 @@ describe('background boot state convergence', () => {
     expect(engineLists()).toEqual(DEFAULT_LISTS);
     expect(engineBank()).toEqual({ balanceMs: 0 });
     expect(engineStreak()).toEqual(fallbackStreak);
-    expect(mocks.savedJournals).toContainEqual({ sets: expectedSets, removes: [] });
+    expect(mocks.savedJournals).toContainEqual({
+      sets: expectedSets,
+      removes: [...LIST_SYNC_SHARD_KEYS],
+    });
     await vi.advanceTimersByTimeAsync(10_000);
     expect(chrome.storage.sync.set).toHaveBeenCalledWith(expectedSets);
   });
@@ -856,7 +936,10 @@ describe('background boot state convergence', () => {
     expect(engineLists()).toEqual(pendingLists);
     expect(engineBank()).toEqual(pendingBank);
     expect(engineStreak()).toEqual(pendingStreak);
-    expect(mocks.savedJournals).toContainEqual({ sets: pendingSets, removes: [] });
+    expect(mocks.savedJournals).toContainEqual({
+      sets: pendingSets,
+      removes: [...LIST_SYNC_SHARD_KEYS],
+    });
     await vi.advanceTimersByTimeAsync(10_000);
     expect(chrome.storage.sync.set).toHaveBeenCalledWith(pendingSets);
   });

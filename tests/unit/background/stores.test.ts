@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/background/list-sync-codec';
 import {
   appendEvents,
   loadBank,
@@ -14,20 +15,74 @@ import {
   saveMatcherCache,
 } from '../../../src/background/stores';
 import type { StoredMatcherCache } from '../../../src/core/matcher';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import { CATEGORY_IDS, DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import {
   LOCAL_CACHES,
   LOCAL_EVENTS,
+  LOCAL_LISTS_SNAPSHOT,
   LOCAL_RUNTIME,
   SYNC_BANK,
   SYNC_LISTS,
   SYNC_SETTINGS,
   SYNC_STREAK,
 } from '../../../src/shared/storage-keys';
-import type { EventRecord, Settings, StreakState } from '../../../src/shared/types';
+import type { EventRecord, ListsConfig, Settings, StreakState } from '../../../src/shared/types';
 
 afterEach((): void => {
   vi.unstubAllGlobals();
+});
+
+describe('list Sync storage', () => {
+  it('loads a complete sharded representation', async () => {
+    const exclusions: ListsConfig['exclusions'] = {};
+    for (const categoryId of CATEGORY_IDS) {
+      exclusions[categoryId] = Array.from(
+        { length: 60 },
+        (_value: unknown, index: number): string => `${categoryId}-${index}.example`,
+      );
+    }
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      categories: { ...DEFAULT_LISTS.categories, social: true },
+      exclusions,
+    };
+    const encoded = await encodeListsForSync(lists);
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: { get: vi.fn().mockResolvedValue({}) },
+        sync: { get: vi.fn().mockResolvedValue(encoded.sets) },
+      },
+    });
+
+    await expect(loadLists()).resolves.toEqual(lists);
+  });
+
+  it('keeps the local canonical snapshot while sharded Sync is incomplete', async () => {
+    const localLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'keep-local.example' }],
+    };
+    const exclusions: ListsConfig['exclusions'] = {};
+    for (const categoryId of CATEGORY_IDS) {
+      exclusions[categoryId] = Array.from(
+        { length: 60 },
+        (_value: unknown, index: number): string => `${categoryId}-${index}.example`,
+      );
+    }
+    const encoded = await encodeListsForSync({ ...DEFAULT_LISTS, exclusions });
+    const incomplete: Record<string, unknown> = { ...encoded.sets };
+    delete incomplete[LIST_SYNC_SHARD_KEYS[0] as string];
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: vi.fn().mockResolvedValue({ [LOCAL_LISTS_SNAPSHOT]: localLists }),
+        },
+        sync: { get: vi.fn().mockResolvedValue(incomplete) },
+      },
+    });
+
+    await expect(loadLists()).resolves.toEqual(localLists);
+  });
 });
 
 describe('matcher cache storage', () => {
@@ -270,11 +325,12 @@ describe('storage default merging', () => {
     vi.stubGlobal('chrome', {
       storage: {
         sync: {
-          get: vi.fn(
-            async (key: string): Promise<Record<string, unknown>> => ({
-              [key]: stored[key],
-            }),
-          ),
+          get: vi.fn(async (keys: string | string[]): Promise<Record<string, unknown>> => {
+            const requested: string[] = Array.isArray(keys) ? keys : [keys];
+            return Object.fromEntries(
+              requested.map((key: string): [string, unknown] => [key, stored[key]]),
+            );
+          }),
         },
       },
     });
@@ -768,5 +824,30 @@ describe('event storage replay', () => {
     await appendEvents([event]);
 
     expect(state[LOCAL_EVENTS]).toEqual([event]);
+  });
+
+  it('continues appending after an event-log write rejects', async () => {
+    const state: Record<string, unknown> = { [LOCAL_EVENTS]: [] };
+    const first: EventRecord = { t: 'budgetEarned', at: 1, ms: 500 };
+    const second: EventRecord = { t: 'pauseTaken', at: 2, ms: 100 };
+    const setLocal = vi
+      .fn<(items: Record<string, unknown>) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('event storage unavailable'))
+      .mockImplementation(async (items: Record<string, unknown>): Promise<void> => {
+        Object.assign(state, items);
+      });
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: vi.fn(async (): Promise<Record<string, unknown>> => structuredClone(state)),
+          set: setLocal,
+        },
+      },
+    });
+
+    await expect(appendEvents([first])).rejects.toThrow('event storage unavailable');
+    await expect(appendEvents([second])).resolves.toBeUndefined();
+
+    expect(state[LOCAL_EVENTS]).toEqual([second]);
   });
 });

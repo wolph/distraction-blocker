@@ -1,19 +1,13 @@
 import { LOCAL_SYNC_QUOTA_EVICTION } from '../shared/storage-keys';
 import { isAuthoritativeSyncItem, isSupportedSyncItemKey } from './sync-item-validation';
+import { SYNC_QUOTA_BYTES_PER_ITEM, SyncQuotaError } from './sync-quota-shared';
 
-export const SYNC_QUOTA_BYTES_PER_ITEM: number = 8_192;
+export { SYNC_QUOTA_BYTES_PER_ITEM, SyncQuotaError } from './sync-quota-shared';
 export const SYNC_QUOTA_BYTES_TOTAL: number = 102_400;
 
 const MONTHLY_AGG_KEY_RE: RegExp = /^aggm:[^:]+:(\d{4}-\d{2})$/;
 
 let syncMutationQueue: Promise<void> = Promise.resolve();
-
-export class SyncQuotaError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'SyncQuotaError';
-  }
-}
 
 function serializeChromiumDouble(value: number): string {
   // Chromium and JavaScript produce the same shortest digits. Chromium uses

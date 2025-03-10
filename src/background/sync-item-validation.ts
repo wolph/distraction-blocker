@@ -1,6 +1,7 @@
 import { isDailyDate, parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { isListsConfig, isSettings } from '../shared/runtime-validation';
 import { SYNC_BANK, SYNC_LISTS, SYNC_SETTINGS, SYNC_STREAK } from '../shared/storage-keys';
+import { isListSyncKey, isListsCategoryShardValue, isSplitListsBaseValue } from './list-sync-codec';
 import { parseBank, parseStreak } from './stores';
 
 const DAILY_KEY_RE: RegExp = /^agg:([^:]+):(\d{4}-\d{2}-\d{2})$/;
@@ -73,7 +74,7 @@ function isPruneCheckpoint(key: string, value: unknown): boolean {
 export function isSupportedSyncItemKey(key: string): boolean {
   return (
     key === SYNC_SETTINGS ||
-    key === SYNC_LISTS ||
+    isListSyncKey(key) ||
     key === SYNC_BANK ||
     key === SYNC_STREAK ||
     DAILY_KEY_RE.test(key) ||
@@ -84,7 +85,8 @@ export function isSupportedSyncItemKey(key: string): boolean {
 
 export function isAuthoritativeSyncItem(key: string, value: unknown): boolean {
   if (key === SYNC_SETTINGS) return isSettings(value);
-  if (key === SYNC_LISTS) return isListsConfig(value);
+  if (key === SYNC_LISTS) return isListsConfig(value) || isSplitListsBaseValue(value);
+  if (isListSyncKey(key)) return isListsCategoryShardValue(key, value);
   if (key === SYNC_BANK) {
     return (
       isDensePlainRecord(value) && hasExactKeys(value, ['balanceMs']) && parseBank(value) !== null

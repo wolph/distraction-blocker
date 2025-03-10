@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { LISTS_SPLIT_THRESHOLD_BYTES } from '../../../src/background/list-sync-codec';
 import { parseRequest } from '../../../src/background/request-validation';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import { syncItemBytes } from '../../../src/background/sync-quota';
+import { CATEGORY_IDS, DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
+import { SYNC_LISTS } from '../../../src/shared/storage-keys';
 import type { ListsConfig, SessionConfig, Settings } from '../../../src/shared/types';
 
 type RequestByType = {
@@ -65,6 +68,24 @@ function replaceNested(
 }
 
 describe('parseRequest', (): void => {
+  it('accepts lists above the unsplit threshold when category sharding fits', (): void => {
+    const exclusions: ListsConfig['exclusions'] = {};
+    for (const categoryId of CATEGORY_IDS) {
+      exclusions[categoryId] = Array.from(
+        { length: 60 },
+        (_value: unknown, index: number): string => `${categoryId}-${index}.example`,
+      );
+    }
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      categories: { ...DEFAULT_LISTS.categories, social: true },
+      exclusions,
+    };
+
+    expect(syncItemBytes(SYNC_LISTS, lists)).toBeGreaterThan(LISTS_SPLIT_THRESHOLD_BYTES);
+    expect(parseRequest({ type: 'updateLists', lists })).toEqual({ type: 'updateLists', lists });
+  });
+
   it.each(Object.entries(VALID_REQUESTS))(
     'accepts the %s request',
     (_type: string, request: Request): void => {

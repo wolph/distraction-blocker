@@ -29,13 +29,7 @@ import {
 } from '../shared/constants';
 import { CoreError } from '../shared/errors';
 import type { Ack, SoundId } from '../shared/messages';
-import {
-  SYNC_BANK,
-  SYNC_LISTS,
-  SYNC_SETTINGS,
-  SYNC_STREAK,
-  syncAggKey,
-} from '../shared/storage-keys';
+import { SYNC_BANK, SYNC_SETTINGS, SYNC_STREAK, syncAggKey } from '../shared/storage-keys';
 import { localDateStr, localMonthStr } from '../shared/time';
 import type {
   BankState,
@@ -54,6 +48,7 @@ import type {
   Verdict,
 } from '../shared/types';
 import { listsChangeAllowed, settingsChangeAllowed } from './guard';
+import { encodeListsForSync, LIST_SYNC_KEYS, type ListsSyncEncoding } from './list-sync-codec';
 import {
   clockRebaseArchiveKey,
   planBackwardDateRebase,
@@ -68,7 +63,7 @@ export interface EnginePorts {
   now(): number;
   newId(): string;
   saveRuntime(r: RuntimeState): Promise<void>;
-  saveMatcherCache(cache: StoredMatcherCache): Promise<void>;
+  saveMatcherCache(cache: StoredMatcherCache, lists: ListsConfig): Promise<void>;
   hasPendingSync(key: string): boolean;
   queueSync(key: string, value: unknown): void;
   supersedeSync(key: string, value: unknown): void;
@@ -673,8 +668,9 @@ export class Engine {
   }
 
   async updateLists(l: ListsConfig): Promise<Ack> {
+    let encoding: ListsSyncEncoding;
     try {
-      assertSyncItemWithinQuota(SYNC_LISTS, l);
+      encoding = await encodeListsForSync(l);
     } catch (error: unknown) {
       if (!(error instanceof SyncQuotaError)) throw error;
       return {
@@ -683,11 +679,14 @@ export class Engine {
           'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
       };
     }
-    return this.enqueuePolicyMutation((): Promise<Ack> => this.updateListsNow(l, true, false));
+    return this.enqueuePolicyMutation(
+      (): Promise<Ack> => this.updateListsNow(l, encoding, true, false),
+    );
   }
 
   private async updateListsNow(
     l: ListsConfig,
+    encoding: ListsSyncEncoding,
     queueForSync: boolean,
     reconcilePendingSync: boolean,
   ): Promise<Ack> {
@@ -703,13 +702,13 @@ export class Engine {
     const bundle: MatcherCacheBundle = buildMatcherCache(l, ALL_CATEGORIES);
     this.listCachePersistenceInFlight = true;
     try {
-      await this.ports.saveMatcherCache(bundle.stored);
+      await this.ports.saveMatcherCache(bundle.stored, l);
     } finally {
       this.listCachePersistenceInFlight = false;
     }
     this.lists = l;
     this.matchers = bundle.compiled;
-    if (queueForSync || reconcilePendingSync) this.ports.queueSync(SYNC_LISTS, l);
+    if (queueForSync || reconcilePendingSync) this.queueListsEncoding(encoding);
     this.dirty = true;
     this.needsBlocking = this.runtime.session !== null;
     const committedAt: number = this.ports.now();
@@ -734,8 +733,10 @@ export class Engine {
   }
 
   async applySyncedLists(lists: ListsConfig, reconcilePendingSync?: boolean): Promise<Ack> {
+    const pendingSyncAtArrival: boolean = reconcilePendingSync ?? this.hasPendingListsSync();
+    let encoding: ListsSyncEncoding;
     try {
-      assertSyncItemWithinQuota(SYNC_LISTS, lists);
+      encoding = await encodeListsForSync(lists);
     } catch (error: unknown) {
       if (!(error instanceof SyncQuotaError)) throw error;
       return {
@@ -744,16 +745,26 @@ export class Engine {
           'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
       };
     }
-    const pendingSyncAtArrival: boolean =
-      reconcilePendingSync ?? this.ports.hasPendingSync(SYNC_LISTS);
     return this.enqueuePolicyMutation(
       (): Promise<Ack> =>
         this.updateListsNow(
           lists,
+          encoding,
           false,
-          pendingSyncAtArrival || this.ports.hasPendingSync(SYNC_LISTS),
+          pendingSyncAtArrival || this.hasPendingListsSync(),
         ),
     );
+  }
+
+  private hasPendingListsSync(): boolean {
+    return LIST_SYNC_KEYS.some((key: string): boolean => this.ports.hasPendingSync(key));
+  }
+
+  private queueListsEncoding(encoding: ListsSyncEncoding): void {
+    for (const [key, value] of Object.entries(encoding.sets)) {
+      this.ports.queueSync(key, value);
+    }
+    for (const key of encoding.removes) this.ports.removeSync(key);
   }
 
   async applySyncedBank(bank: BankState): Promise<Ack> {

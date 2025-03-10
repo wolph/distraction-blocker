@@ -8,7 +8,7 @@ import {
   isRelativeMinuteDuration,
   isSafeDayCount,
 } from '../shared/numeric-validation';
-import { SYNC_LISTS, SYNC_SETTINGS } from '../shared/storage-keys';
+import { SYNC_SETTINGS } from '../shared/storage-keys';
 import type {
   CategoryId,
   CycleConfig,
@@ -18,6 +18,7 @@ import type {
   SessionConfig,
   Settings,
 } from '../shared/types';
+import { canEncodeListsForSync } from './list-sync-codec';
 import { assertSyncItemWithinQuota } from './sync-quota';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -340,6 +341,18 @@ function isListsConfig(value: unknown): value is ListsConfig {
   );
 }
 
+function parseListsConfigForSync(value: unknown): ListsConfig | null {
+  let snapshot: unknown;
+  try {
+    const serialized: string | undefined = JSON.stringify(value);
+    if (serialized === undefined) return null;
+    snapshot = JSON.parse(serialized) as unknown;
+  } catch (_error: unknown) {
+    return null;
+  }
+  return isListsConfig(snapshot) && canEncodeListsForSync(snapshot) ? snapshot : null;
+}
+
 function parseRecord(value: Record<string, unknown>): Request | null {
   switch (value.type) {
     case 'getSnapshot':
@@ -384,12 +397,11 @@ function parseRecord(value: Record<string, unknown>): Request | null {
         isSettings(value.settings)
         ? (value as Request)
         : null;
-    case 'updateLists':
-      return hasExactKeys(value, ['type', 'lists']) &&
-        isWithinSyncQuota(SYNC_LISTS, value.lists) &&
-        isListsConfig(value.lists)
-        ? (value as Request)
-        : null;
+    case 'updateLists': {
+      if (!hasExactKeys(value, ['type', 'lists'])) return null;
+      const lists: ListsConfig | null = parseListsConfigForSync(value.lists);
+      return lists === null ? null : { type: 'updateLists', lists };
+    }
     case 'getStats':
       return hasExactKeys(value, ['type', 'days']) && isSafeDayCount(value.days)
         ? (value as Request)

@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
+import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/background/list-sync-codec';
 import {
   handleSyncChanges,
   missingSyncDefaults,
   type SyncChangeEngine,
 } from '../../../src/background/storage-sync';
 import { SyncEchoes, SyncWriter } from '../../../src/background/sync-writer';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import { CATEGORY_IDS, DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import {
   SYNC_BANK,
   SYNC_LISTS,
@@ -28,6 +29,51 @@ function makeEngine(overrides: Partial<SyncChangeEngine> = {}): SyncChangeEngine
 }
 
 describe('handleSyncChanges', () => {
+  it('waits for a complete single-revision sharded lists snapshot', async () => {
+    const exclusions: ListsConfig['exclusions'] = {};
+    for (const categoryId of CATEGORY_IDS) {
+      exclusions[categoryId] = Array.from(
+        { length: 60 },
+        (_value: unknown, index: number): string => `${categoryId}-${index}.example`,
+      );
+    }
+    const remote: ListsConfig = {
+      ...DEFAULT_LISTS,
+      categories: { ...DEFAULT_LISTS.categories, social: true },
+      exclusions,
+    };
+    const encoded = await encodeListsForSync(remote);
+    const applySyncedLists = vi.fn().mockResolvedValue({ ok: true });
+    const engine: SyncChangeEngine = makeEngine({ applySyncedLists });
+    const incomplete: Record<string, unknown> = { ...encoded.sets };
+    delete incomplete[LIST_SYNC_SHARD_KEYS[0] as string];
+
+    await handleSyncChanges(
+      engine,
+      { [SYNC_LISTS]: { newValue: encoded.sets[SYNC_LISTS] } },
+      new SyncEchoes(),
+      vi.fn(),
+      false,
+      incomplete,
+    );
+    expect(applySyncedLists).not.toHaveBeenCalled();
+
+    await handleSyncChanges(
+      engine,
+      {
+        [LIST_SYNC_SHARD_KEYS[0] as string]: {
+          newValue: encoded.sets[LIST_SYNC_SHARD_KEYS[0] as string],
+        },
+      },
+      new SyncEchoes(),
+      vi.fn(),
+      false,
+      encoded.sets,
+    );
+    expect(applySyncedLists).toHaveBeenCalledOnce();
+    expect(applySyncedLists).toHaveBeenCalledWith(remote, false);
+  });
+
   it('initializes only missing base sync items', () => {
     const bank: BankState = { balanceMs: 0 };
     const streak: StreakState = {

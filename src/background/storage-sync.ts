@@ -1,6 +1,11 @@
 import type { Ack } from '../shared/messages';
 import { SYNC_BANK, SYNC_LISTS, SYNC_SETTINGS, SYNC_STREAK } from '../shared/storage-keys';
 import type { BankState, ListsConfig, Settings, StreakState } from '../shared/types';
+import {
+  type DecodedListsSyncSnapshot,
+  decodeListsSyncSnapshot,
+  isListSyncKey,
+} from './list-sync-codec';
 import { parseBank, parseLiveLists, parseLiveSettings, parseStreak } from './stores';
 import type { SyncEchoes } from './sync-writer';
 
@@ -87,9 +92,29 @@ async function applyListsChange(
   echoes: SyncEchoes,
   queueSync: SyncStorageQueue,
   reconcilePendingSync: boolean | undefined,
+  listSnapshot: Readonly<Record<string, unknown>> | undefined,
 ): Promise<void> {
-  const value: unknown = changes[SYNC_LISTS]?.newValue;
-  if (value === undefined || echoes.consume(SYNC_LISTS, value)) return;
+  const changedEntries: Array<[string, SyncStorageChange]> = Object.entries(changes).flatMap(
+    ([key, change]: [string, SyncStorageChange | undefined]): Array<[string, SyncStorageChange]> =>
+      isListSyncKey(key) && change !== undefined ? [[key, change]] : [],
+  );
+  if (changedEntries.length === 0) return;
+  let allEchoes: boolean = true;
+  const changedSnapshot: Record<string, unknown> = {};
+  for (const [key, change] of changedEntries) {
+    if (change.newValue === undefined) {
+      allEchoes = false;
+      continue;
+    }
+    changedSnapshot[key] = change.newValue;
+    if (!echoes.consume(key, change.newValue)) allEchoes = false;
+  }
+  if (allEchoes) return;
+  const decoded: DecodedListsSyncSnapshot = decodeListsSyncSnapshot(
+    listSnapshot ?? changedSnapshot,
+  );
+  if (decoded.kind === 'incomplete') return;
+  const value: unknown = decoded.kind === 'complete' ? decoded.lists : decoded.value;
   const lists: ListsConfig | null = parseLiveLists(value, engine.getLists());
   if (lists === null) return;
   await correctRejectedChange(
@@ -132,6 +157,7 @@ export async function handleSyncChanges(
   echoes: SyncEchoes,
   queueSync: SyncStorageQueue,
   reconcilePendingLists?: boolean,
+  listSnapshot?: Readonly<Record<string, unknown>>,
 ): Promise<void> {
   const errors: unknown[] = [];
   await captureSyncError(
@@ -141,7 +167,7 @@ export async function handleSyncChanges(
   await captureSyncError(
     errors,
     (): Promise<void> =>
-      applyListsChange(engine, changes, echoes, queueSync, reconcilePendingLists),
+      applyListsChange(engine, changes, echoes, queueSync, reconcilePendingLists, listSnapshot),
   );
   await captureSyncError(errors, (): Promise<void> => applyBankChange(engine, changes, echoes));
   await captureSyncError(errors, (): Promise<void> => applyStreakChange(engine, changes, echoes));
