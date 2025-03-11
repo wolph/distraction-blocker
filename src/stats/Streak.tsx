@@ -19,6 +19,15 @@ function monthTitle(activeMonth: string): string {
   return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
 }
 
+function activeDatesLabel(activeMonth: string, activeDays: number[]): string {
+  const month: string = monthTitle(activeMonth);
+  const days: number[] = [...new Set(activeDays)].sort(
+    (left: number, right: number): number => left - right,
+  );
+  if (days.length === 0) return `No active dates in ${month}.`;
+  return `Active dates in ${month}: ${days.join(', ')}.`;
+}
+
 function SnowflakeGlyph(): JSX.Element {
   return (
     <svg class="glyph snowflake" viewBox="0 0 16 16" aria-hidden="true">
@@ -80,7 +89,11 @@ export function Streak(props: StreakProps): JSX.Element {
         <p class="cal-title">
           {streak.activeDays.length} active days this month ({monthTitle(streak.activeMonth)})
         </p>
-        <div class="cal-grid" role="img" aria-label="Active days this month">
+        <div
+          class="cal-grid"
+          role="img"
+          aria-label={activeDatesLabel(streak.activeMonth, streak.activeDays)}
+        >
           {dayCells.map(
             (dayNum: number): JSX.Element => (
               <span

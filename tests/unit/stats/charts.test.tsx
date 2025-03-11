@@ -1,4 +1,6 @@
 /** @vitest-environment jsdom */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { cleanup, render } from '@testing-library/preact';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { StatsBundle } from '../../../src/shared/messages';
@@ -10,6 +12,25 @@ import { HBarChart } from '../../../src/stats/charts/HBarChart';
 afterEach(cleanup);
 
 const NOW: number = new Date(2026, 7, 28, 14, 0, 0).getTime();
+
+function cssHexTokens(css: string, token: string): string[] {
+  const pattern: RegExp = new RegExp(`${token}:\\s*(#[0-9a-f]{6})`, 'gi');
+  return Array.from(css.matchAll(pattern), (match: RegExpMatchArray): string => match[1] ?? '');
+}
+
+function relativeLuminance(hex: string): number {
+  const channels: number[] = [1, 3, 5].map((offset: number): number => {
+    const channel: number = Number.parseInt(hex.slice(offset, offset + 2), 16) / 255;
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * (channels[0] ?? 0) + 0.7152 * (channels[1] ?? 0) + 0.0722 * (channels[2] ?? 0);
+}
+
+function contrastRatio(first: string, second: string): number {
+  const lighter: number = Math.max(relativeLuminance(first), relativeLuminance(second));
+  const darker: number = Math.min(relativeLuminance(first), relativeLuminance(second));
+  return (lighter + 0.05) / (darker + 0.05);
+}
 
 function day(date: string, overrides: Partial<DailyAgg>): DailyAgg {
   return {
@@ -177,6 +198,31 @@ describe('HBarChart', () => {
 
     expect(container.querySelectorAll('.chart-table thead th[scope="col"]')).toHaveLength(2);
     expect(container.querySelectorAll('.chart-table tbody th[scope="row"]')).toHaveLength(2);
+  });
+
+  it('renders a contrast-safe focus-visible ring around every keyboard row', () => {
+    const { container } = render(
+      <HBarChart
+        data={[
+          { label: 'facebook.com', value: 12 },
+          { label: 'youtube.com', value: 4 },
+        ]}
+        format={(value: number): string => String(value)}
+      />,
+    );
+    const rings: Element[] = Array.from(container.querySelectorAll('.hbar-focus-ring'));
+    expect(rings).toHaveLength(2);
+
+    const css: string = readFileSync(resolve(process.cwd(), 'src/stats/stats.css'), 'utf8');
+    expect(css).toMatch(
+      /\.hbar-row:focus-visible \.hbar-focus-ring\s*\{[^}]*stroke:\s*var\(--chart-focus\)/s,
+    );
+    const focusColors: string[] = cssHexTokens(css, '--chart-focus');
+    const surfaceColors: string[] = cssHexTokens(css, '--surface');
+    expect(focusColors).toHaveLength(2);
+    expect(surfaceColors).toHaveLength(2);
+    expect(contrastRatio(focusColors[0] ?? '', surfaceColors[0] ?? '')).toBeGreaterThanOrEqual(3);
+    expect(contrastRatio(focusColors[1] ?? '', surfaceColors[1] ?? '')).toBeGreaterThanOrEqual(3);
   });
 });
 

@@ -195,13 +195,27 @@ describe('Tiles', () => {
 
 describe('Streak', () => {
   it('renders the chain, freeze chips, and one calendar dot per active day', () => {
-    const { container } = render(<Streak streak={STREAK} now={NOW} />);
+    const { container } = render(
+      <Streak streak={{ ...STREAK, activeDays: [28, 25, 27, 26] }} now={NOW} />,
+    );
     expect(container.querySelector('.streak-chain')?.textContent).toContain('4');
     expect(container.querySelectorAll('.freeze-chip').length).toBe(2);
     expect(container.querySelectorAll('.cal-day.active').length).toBe(4);
     // August has 31 day cells regardless of activity
     expect(container.querySelectorAll('.cal-day').length).toBe(31);
     expect(container.textContent).toContain('4 active days this month');
+    expect(container.querySelector('.cal-grid')?.getAttribute('aria-label')).toBe(
+      'Active dates in August 2026: 25, 26, 27, 28.',
+    );
+  });
+
+  it('names an empty current-month calendar without exposing every day', () => {
+    const { container } = render(<Streak streak={{ ...STREAK, activeDays: [] }} now={NOW} />);
+
+    expect(container.querySelector('.cal-grid')?.getAttribute('aria-label')).toBe(
+      'No active dates in August 2026.',
+    );
+    expect(container.querySelectorAll('.cal-day[aria-label]')).toHaveLength(0);
   });
 
   it('renders a quiet first-run line when there is no streak yet', () => {

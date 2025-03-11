@@ -17,6 +17,7 @@
   --focus-series: #008300;
   --attempts-series: #2a78d6;
   --good-text: #006300;
+  --chart-focus: #0b0b0b;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -32,6 +33,7 @@
     --focus-series: #008300;
     --attempts-series: #3987e5;
     --good-text: #0ca30c;
+    --chart-focus: #ffffff;
   }
 }
 
@@ -237,6 +239,18 @@ h2 {
 .hbar-row:hover .hbar-mark,
 .hbar-row:focus .hbar-mark {
   filter: brightness(1.15);
+}
+
+.hbar-focus-ring {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.hbar-row:focus-visible .hbar-focus-ring {
+  stroke: var(--chart-focus);
 }
 
 .bar-hit,

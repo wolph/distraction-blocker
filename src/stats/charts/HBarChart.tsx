@@ -76,6 +76,14 @@ export function HBarChart(props: HBarChartProps): JSX.Element {
               aria-label={`${d.label}: ${props.format(d.value)}`}
             >
               <title>{`${d.label}: ${props.format(d.value)}`}</title>
+              <rect
+                class="hbar-focus-ring"
+                x={1}
+                y={rowY + 1}
+                width={W - 2}
+                height={ROW_H - 2}
+                rx={3}
+              />
               <text class="axis-text" x={LABEL_W - 8} y={rowY + ROW_H / 2 + 3} text-anchor="end">
                 {truncate(d.label)}
               </text>
