@@ -74,6 +74,36 @@ describe('handleSyncChanges', () => {
     expect(applySyncedLists).toHaveBeenCalledWith(remote, false);
   });
 
+  it('does not partially apply a recognizable invalid split base live', async () => {
+    const current: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'keep-current.example' }],
+    };
+    const invalidBase: Record<string, unknown> = {
+      format: 'category-shards-v1',
+      revision: '0'.repeat(64),
+      custom: [{ kind: 'host', pattern: 'must-not-apply.example' }],
+      whitelist: [],
+      unexpected: true,
+    };
+    const applySyncedLists = vi.fn().mockResolvedValue({ ok: true });
+    const engine: SyncChangeEngine = makeEngine({
+      applySyncedLists,
+      getLists: vi.fn((): ListsConfig => current),
+    });
+
+    await handleSyncChanges(
+      engine,
+      { [SYNC_LISTS]: { newValue: invalidBase } },
+      new SyncEchoes(),
+      vi.fn(),
+      false,
+      { [SYNC_LISTS]: invalidBase },
+    );
+
+    expect(applySyncedLists).not.toHaveBeenCalled();
+  });
+
   it('initializes only missing base sync items', () => {
     const bank: BankState = { balanceMs: 0 };
     const streak: StreakState = {

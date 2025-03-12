@@ -94,4 +94,28 @@ describe('list Sync codec', () => {
     await expect(encodeListsForSync(oversizedBase)).rejects.toThrow(/lists/i);
     await expect(encodeListsForSync(oversizedShard)).rejects.toThrow(/social/i);
   });
+
+  it('uses Chromium escaping when enforcing the encoded item quota', async () => {
+    const escapedBase: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'regex', pattern: '<\u2028\u2029'.repeat(500) }],
+    };
+
+    expect(syncItemBytes(SYNC_LISTS, escapedBase)).toBeGreaterThan(8_192);
+    await expect(encodeListsForSync(escapedBase)).rejects.toThrow(/lists/i);
+  });
+
+  it('treats a recognizable but invalid split base as incomplete', () => {
+    const invalidBase: Record<string, unknown> = {
+      format: 'category-shards-v1',
+      revision: '0'.repeat(64),
+      custom: [{ kind: 'host', pattern: 'must-not-apply.example' }],
+      whitelist: [],
+      unexpected: true,
+    };
+
+    expect(decodeListsSyncSnapshot({ [SYNC_LISTS]: invalidBase })).toEqual({
+      kind: 'incomplete',
+    });
+  });
 });

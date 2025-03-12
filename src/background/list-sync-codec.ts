@@ -2,7 +2,8 @@ import { CATEGORY_IDS, DEFAULT_LISTS } from '../shared/constants';
 import { isListsConfig } from '../shared/runtime-validation';
 import { SYNC_LISTS, syncListCategoryKey } from '../shared/storage-keys';
 import type { CategoryId, ListsConfig, Rule } from '../shared/types';
-import { SYNC_QUOTA_BYTES_PER_ITEM, SyncQuotaError } from './sync-quota-shared';
+import { assertSyncItemWithinQuota, syncItemBytes } from './sync-item-size';
+import { SyncQuotaError } from './sync-quota-shared';
 
 export const LISTS_SPLIT_THRESHOLD_BYTES: number = 7_500;
 const LISTS_SYNC_FORMAT: string = 'category-shards-v1';
@@ -32,25 +33,6 @@ export interface ListsSyncEncoding {
   split: boolean;
   sets: Record<string, unknown>;
   removes: string[];
-}
-
-function listSyncItemBytes(key: string, value: unknown): number {
-  const serialized: string | undefined = JSON.stringify(value);
-  if (serialized === undefined) {
-    throw new SyncQuotaError(
-      `Cannot sync item ${JSON.stringify(key)}: value cannot be serialized as JSON.`,
-    );
-  }
-  const encoder: TextEncoder = new TextEncoder();
-  return encoder.encode(key).byteLength + encoder.encode(serialized).byteLength;
-}
-
-function assertListSyncItemWithinQuota(key: string, value: unknown): void {
-  const bytes: number = listSyncItemBytes(key, value);
-  if (bytes <= SYNC_QUOTA_BYTES_PER_ITEM) return;
-  throw new SyncQuotaError(
-    `Cannot sync item ${JSON.stringify(key)}: ${bytes} bytes exceeds ${SYNC_QUOTA_BYTES_PER_ITEM}-byte limit.`,
-  );
 }
 
 export type DecodedListsSyncSnapshot =
@@ -116,8 +98,8 @@ function categoryShard(
 
 function encodingWithRevision(lists: ListsConfig, revision: string): ListsSyncEncoding {
   const canonical: ListsConfig = canonicalListsConfig(lists);
-  if (listSyncItemBytes(SYNC_LISTS, canonical) <= LISTS_SPLIT_THRESHOLD_BYTES) {
-    assertListSyncItemWithinQuota(SYNC_LISTS, canonical);
+  if (syncItemBytes(SYNC_LISTS, canonical) <= LISTS_SPLIT_THRESHOLD_BYTES) {
+    assertSyncItemWithinQuota(SYNC_LISTS, canonical);
     return {
       split: false,
       sets: { [SYNC_LISTS]: canonical },
@@ -130,7 +112,7 @@ function encodingWithRevision(lists: ListsConfig, revision: string): ListsSyncEn
   for (const categoryId of CATEGORY_IDS) {
     sets[syncListCategoryKey(categoryId)] = categoryShard(canonical, categoryId, revision);
   }
-  for (const [key, value] of Object.entries(sets)) assertListSyncItemWithinQuota(key, value);
+  for (const [key, value] of Object.entries(sets)) assertSyncItemWithinQuota(key, value);
   return { split: true, sets, removes: [] };
 }
 
@@ -242,6 +224,9 @@ export function decodeListsSyncSnapshot(
   const baseValue: unknown = snapshot[SYNC_LISTS];
   const base: SplitListsBase | null = parseSplitBase(baseValue);
   if (base === null) {
+    if (isRecord(baseValue) && baseValue.format === LISTS_SYNC_FORMAT) {
+      return { kind: 'incomplete' };
+    }
     return isListsConfig(baseValue)
       ? { kind: 'complete', lists: canonicalListsConfig(baseValue) }
       : { kind: 'legacy', value: baseValue };

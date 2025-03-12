@@ -396,6 +396,7 @@ export function main(): void {
     },
   );
   let listenerSyncWriter: SyncWriter | null = null;
+  let listChangeApplyQueue: Promise<void> = Promise.resolve();
   const ready: Promise<Engine> = boot((writer: SyncWriter): void => {
     listenerSyncWriter = writer;
     resolveSyncWriterReady(writer);
@@ -440,26 +441,36 @@ export function main(): void {
       const listSnapshot: Promise<Record<string, unknown> | undefined> = hasListsChange
         ? chrome.storage.sync.get([...LIST_SYNC_KEYS])
         : Promise.resolve(undefined);
-      void Promise.all([ready, reconcilePendingLists, listSnapshot])
-        .then(async ([engine, shouldReconcile, snapshot]): Promise<void> => {
-          await handleSyncChanges(
-            engine,
-            changes,
-            syncEchoes,
-            async (key: string, value: unknown): Promise<void> => {
-              const writer: SyncWriter = currentSyncWriter();
-              if (key === SYNC_LISTS) {
-                queueListsEncoding(writer, await encodeListsForSync(value as ListsConfig));
-              } else {
-                writer.queue(key, value);
-              }
-              await writer.whenJournalDurable();
-            },
-            shouldReconcile,
-            snapshot,
-          );
-        })
-        .catch(reportBackgroundError);
+      const applyChanges = async (): Promise<void> => {
+        const [engine, shouldReconcile, snapshot] = await Promise.all([
+          ready,
+          reconcilePendingLists,
+          listSnapshot,
+        ]);
+        await handleSyncChanges(
+          engine,
+          changes,
+          syncEchoes,
+          async (key: string, value: unknown): Promise<void> => {
+            const writer: SyncWriter = currentSyncWriter();
+            if (key === SYNC_LISTS) {
+              queueListsEncoding(writer, await encodeListsForSync(value as ListsConfig));
+            } else {
+              writer.queue(key, value);
+            }
+            await writer.whenJournalDurable();
+          },
+          shouldReconcile,
+          snapshot,
+        );
+      };
+      if (hasListsChange) {
+        const requested: Promise<void> = listChangeApplyQueue.then(applyChanges);
+        listChangeApplyQueue = requested.catch((): void => {});
+        void requested.catch(reportBackgroundError);
+      } else {
+        void applyChanges().catch(reportBackgroundError);
+      }
     },
   );
 

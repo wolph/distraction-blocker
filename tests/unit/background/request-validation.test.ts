@@ -456,6 +456,18 @@ describe('parseRequest', (): void => {
     expect(patternReads).toBe(ruleCount);
   });
 
+  it('rejects list items oversized only after Chromium escaping', (): void => {
+    expect(
+      parseRequest({
+        type: 'updateLists',
+        lists: {
+          ...LISTS,
+          custom: [{ kind: 'regex', pattern: '<\u2028\u2029'.repeat(500) }],
+        },
+      }),
+    ).toBeNull();
+  });
+
   it.each([
     [
       'zero session duration',

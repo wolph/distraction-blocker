@@ -592,6 +592,25 @@ describe('Engine', () => {
     expect(h.ports.saveMatcherCache).not.toHaveBeenCalled();
   });
 
+  it('rejects Chromium-escaped list overflow before cache or state mutation', async () => {
+    const h: Harness = makeEngine();
+    const before: ListsConfig = h.engine.getLists();
+    const escapedBase: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'regex', pattern: '<\u2028\u2029'.repeat(500) }],
+    };
+    clearMutationPorts(h.ports);
+
+    await expect(h.engine.updateLists(escapedBase)).resolves.toEqual(
+      expect.objectContaining({ ok: false }),
+    );
+
+    expect(h.ports.saveMatcherCache).not.toHaveBeenCalled();
+    expect(h.ports.queueSync).not.toHaveBeenCalled();
+    expect(h.ports.removeSync).not.toHaveBeenCalled();
+    expect(h.engine.getLists()).toEqual(before);
+  });
+
   it('queues a complete sharded encoding and durably replays it after restart', async () => {
     let durableJournal: SyncJournal = { sets: {}, removes: [] };
     const writer: SyncWriter = new SyncWriter(

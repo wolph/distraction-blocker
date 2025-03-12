@@ -544,6 +544,69 @@ describe('background matcher cache boot', () => {
 });
 
 describe('background pending lists tracking', () => {
+  it('applies complete live list snapshots in listener arrival order', async () => {
+    await finishBoot();
+    vi.mocked(handleSyncChanges).mockClear();
+    const first = await encodeListsForSync({
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'first.example' }],
+    });
+    const second = await encodeListsForSync({
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'second.example' }],
+    });
+    let releaseFirstRead: () => void = (): void => {
+      throw new Error('first list snapshot read did not start');
+    };
+    let signalFirstRead: () => void = (): void => {
+      throw new Error('first list snapshot signal was not initialized');
+    };
+    const firstReadStarted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalFirstRead = resolve;
+    });
+    let listReads: number = 0;
+    const syncGetMock = vi.mocked(chrome.storage.sync.get) as unknown as {
+      mockImplementation: (
+        implementation: (
+          keys: string | string[] | Record<string, unknown> | null | undefined,
+        ) => Promise<Record<string, unknown>>,
+      ) => void;
+    };
+    syncGetMock.mockImplementation(
+      async (
+        keys: string | string[] | Record<string, unknown> | null | undefined,
+      ): Promise<Record<string, unknown>> => {
+        if (Array.isArray(keys) && keys.includes(SYNC_LISTS)) {
+          listReads += 1;
+          if (listReads === 1) {
+            signalFirstRead();
+            await new Promise<void>((resolve: () => void): void => {
+              releaseFirstRead = resolve;
+            });
+            return structuredClone(first.sets);
+          }
+          return structuredClone(second.sets);
+        }
+        return {};
+      },
+    );
+    const listener: StorageListener | null = mocks.storageListener;
+    if (listener === null) throw new Error('storage listener was not registered');
+
+    listener({ [SYNC_LISTS]: { newValue: first.sets[SYNC_LISTS] } }, 'sync');
+    await firstReadStarted;
+    listener({ [SYNC_LISTS]: { newValue: second.sets[SYNC_LISTS] } }, 'sync');
+    await vi.waitFor((): void => expect(listReads).toBe(2));
+    await Promise.resolve();
+    await Promise.resolve();
+    releaseFirstRead();
+    await vi.waitFor((): void => expect(handleSyncChanges).toHaveBeenCalledTimes(2));
+
+    expect(
+      vi.mocked(handleSyncChanges).mock.calls.map((call: unknown[]): unknown => call[5]),
+    ).toEqual([first.sets, second.sets]);
+  });
+
   it('reads the complete list snapshot when a category shard changes', async () => {
     const exclusions: ListsConfig['exclusions'] = {};
     for (const categoryId of CATEGORY_IDS) {
@@ -673,6 +736,27 @@ describe('background pending lists tracking', () => {
 });
 
 describe('background boot state convergence', () => {
+  it('keeps the local snapshot when a recognizable split base is invalid at boot', async () => {
+    const localLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'keep-local.example' }],
+    };
+    mocks.localState[LOCAL_LISTS_SNAPSHOT] = localLists;
+    mocks.scenario.storedSync = {
+      [SYNC_LISTS]: {
+        format: 'category-shards-v1',
+        revision: '0'.repeat(64),
+        custom: [{ kind: 'host', pattern: 'must-not-apply.example' }],
+        whitelist: [],
+        unexpected: true,
+      },
+    };
+
+    await finishBoot();
+
+    expect(engineLists()).toEqual(localLists);
+  });
+
   it('repairs an incomplete sharded journal from the local canonical snapshot', async () => {
     const localLists: ListsConfig = {
       ...DEFAULT_LISTS,
