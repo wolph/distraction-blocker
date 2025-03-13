@@ -3,5 +3,6 @@ dist/
 key.pem
 test-results/
 playwright-report/
+.playwright-mcp/
 .remember/
 .worktrees/
