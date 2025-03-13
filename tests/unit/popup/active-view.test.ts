@@ -184,14 +184,14 @@ describe('ActiveView', () => {
   it('enables the gate confirm once readyAt has passed', (): void => {
     const { getByRole } = render(h(ActiveView, { snapshot: gateSnap(), now: NOW + 9_000 }));
     const confirm: HTMLButtonElement = getByRole('button', {
-      name: 'Take pause',
+      name: 'Take the pause',
     }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(false);
   });
 
   it.each([
     { kind: 'unlockSite' as const, label: 'Unlock this site' },
-    { kind: 'cancel' as const, label: 'End session' },
+    { kind: 'cancel' as const, label: 'End the session' },
   ])('uses the overlay confirmation label for $kind', ({ kind, label }): void => {
     const gateSnapshot: SessionSnapshot = gateSnap();
     if (gateSnapshot.gate === null) throw new Error('gate fixture must contain a gate');

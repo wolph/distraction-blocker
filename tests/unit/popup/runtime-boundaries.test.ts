@@ -300,7 +300,7 @@ describe('popup runtime response boundaries', (): void => {
 
   it.each([
     ['abandonGate' as const, 'Never mind, back to work'],
-    ['confirmGate' as const, 'Take pause'],
+    ['confirmGate' as const, 'Take the pause'],
   ])(
     'treats a malformed %s acknowledgement as an error',
     async (requestType: 'abandonGate' | 'confirmGate', buttonName: string): Promise<void> => {

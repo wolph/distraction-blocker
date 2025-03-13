@@ -146,7 +146,7 @@ test('pause gate supports back to work, taking a pause, and resuming now', async
   await expect(pauseButton).toBeEnabled();
 
   await pauseButton.click();
-  const takePause = extPage.getByRole('button', { name: 'Take pause' });
+  const takePause = extPage.getByRole('button', { name: 'Take the pause' });
   await expect(takePause).toBeEnabled();
   await takePause.click();
   await expect(extPage.getByRole('button', { name: 'Resume now' })).toBeVisible();

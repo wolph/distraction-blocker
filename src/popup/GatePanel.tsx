@@ -6,9 +6,9 @@ import { ackError } from '../shared/runtime-validation';
 import type { GateKind, GateState } from '../shared/types';
 
 const CONFIRM_LABELS: Record<GateKind, string> = {
-  pause: 'Take pause',
+  pause: 'Take the pause',
   unlockSite: 'Unlock this site',
-  cancel: 'End session',
+  cancel: 'End the session',
 };
 
 /**

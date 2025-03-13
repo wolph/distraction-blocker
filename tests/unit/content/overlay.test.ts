@@ -126,9 +126,9 @@ describe('overlay', () => {
   });
 
   it.each([
-    { kind: 'pause' as const, label: 'Take the break' },
-    { kind: 'unlockSite' as const, label: 'Unlock it' },
-    { kind: 'cancel' as const, label: 'End session' },
+    { kind: 'pause' as const, label: 'Take the pause' },
+    { kind: 'unlockSite' as const, label: 'Unlock this site' },
+    { kind: 'cancel' as const, label: 'End the session' },
   ])('uses the shared $kind confirmation label', ({ kind, label }): void => {
     const snap: SessionSnapshot = focusSnap();
     showOverlay(verdict, {
@@ -359,7 +359,7 @@ describe('overlay action failures', () => {
     const confirm: HTMLButtonElement = Array.from(
       root.querySelectorAll<HTMLButtonElement>('button'),
     ).find(
-      (button: HTMLButtonElement): boolean => button.textContent === 'End session',
+      (button: HTMLButtonElement): boolean => button.textContent === 'End the session',
     ) as HTMLButtonElement;
     phrase.value = requiredPhrase;
     phrase.dispatchEvent(new Event('input', { bubbles: true, composed: true }));

@@ -505,9 +505,9 @@ function gateTitle(gate: GateState, snap: SessionSnapshot): string {
 }
 
 function gateConfirmLabel(kind: GateKind): string {
-  if (kind === 'pause') return 'Take the break';
-  if (kind === 'unlockSite') return 'Unlock it';
-  return 'End session';
+  if (kind === 'pause') return 'Take the pause';
+  if (kind === 'unlockSite') return 'Unlock this site';
+  return 'End the session';
 }
 
 function buildGate(m: Mounted, gate: GateState, snap: SessionSnapshot, now: number): HTMLElement {

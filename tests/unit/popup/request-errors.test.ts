@@ -248,7 +248,7 @@ describe('popup request errors', (): void => {
 
   it.each([
     ['abandonGate' as const, 'Never mind, back to work'],
-    ['confirmGate' as const, 'Take pause'],
+    ['confirmGate' as const, 'Take the pause'],
   ])(
     'settles a rejected %s request and allows retry',
     async (requestType: 'abandonGate' | 'confirmGate', buttonName: string): Promise<void> => {
