@@ -28,6 +28,14 @@ export function Categories(props: CategoriesProps): VNode {
     });
   };
 
+  const setAllCategories: (enabled: boolean) => void = (enabled: boolean): void => {
+    const categories: Record<CategoryId, boolean> = { ...props.lists.categories };
+    ALL_CATEGORIES.forEach((category: CategoryList): void => {
+      categories[category.id] = enabled;
+    });
+    props.onChange({ ...props.lists, categories });
+  };
+
   const toggleHost: (id: CategoryId, host: string, active: boolean) => void = (
     id: CategoryId,
     host: string,
@@ -43,6 +51,21 @@ export function Categories(props: CategoriesProps): VNode {
     });
   };
 
+  const setAllHosts: (category: CategoryList, active: boolean) => void = (
+    category: CategoryList,
+    active: boolean,
+  ): void => {
+    const current: string[] = props.lists.exclusions[category.id] ?? [];
+    const bundledHosts: Set<string> = new Set(category.hosts);
+    const next: string[] = active
+      ? [...new Set(current.filter((host: string): boolean => !bundledHosts.has(host)))]
+      : [...new Set([...current, ...category.hosts])];
+    props.onChange({
+      ...props.lists,
+      exclusions: { ...props.lists.exclusions, [category.id]: next },
+    });
+  };
+
   const toggleExpanded: (id: CategoryId) => void = (id: CategoryId): void => {
     const next: Set<CategoryId> = new Set(expanded);
     if (next.has(id)) {
@@ -53,12 +76,50 @@ export function Categories(props: CategoriesProps): VNode {
     setExpanded(next);
   };
 
+  const allCategoriesSelected: boolean = ALL_CATEGORIES.every(
+    (category: CategoryList): boolean => props.lists.categories[category.id],
+  );
+  const allCategoriesDeselected: boolean = ALL_CATEGORIES.every(
+    (category: CategoryList): boolean => !props.lists.categories[category.id],
+  );
+
   return (
     <div class="categories">
+      <fieldset class="cat-bulk-actions" aria-label="Category bulk actions">
+        <button
+          type="button"
+          class="ghost"
+          aria-label="Select all categories"
+          disabled={allCategoriesSelected}
+          onClick={(): void => {
+            setAllCategories(true);
+          }}
+        >
+          Select all
+        </button>
+        <button
+          type="button"
+          class="ghost"
+          aria-label="Deselect all categories"
+          disabled={allCategoriesDeselected}
+          onClick={(): void => {
+            setAllCategories(false);
+          }}
+        >
+          Deselect all
+        </button>
+      </fieldset>
+
       {ALL_CATEGORIES.map((category: CategoryList): VNode => {
         const enabled: boolean = props.lists.categories[category.id];
         const excluded: string[] = props.lists.exclusions[category.id] ?? [];
         const open: boolean = expanded.has(category.id);
+        const allHostsSelected: boolean = category.hosts.every(
+          (host: string): boolean => !excluded.includes(host),
+        );
+        const allHostsDeselected: boolean = category.hosts.every((host: string): boolean =>
+          excluded.includes(host),
+        );
         return (
           <div key={category.id}>
             <div class="cat-row">
@@ -90,6 +151,33 @@ export function Categories(props: CategoriesProps): VNode {
                 <p class="help">
                   Uncheck a site to keep it available while the rest of the category is blocked.
                 </p>
+                <fieldset
+                  class="cat-bulk-actions cat-site-actions"
+                  aria-label={`${category.title} site bulk actions`}
+                >
+                  <button
+                    type="button"
+                    class="ghost"
+                    aria-label={`Select all ${category.title} sites`}
+                    disabled={allHostsSelected}
+                    onClick={(): void => {
+                      setAllHosts(category, true);
+                    }}
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    class="ghost"
+                    aria-label={`Deselect all ${category.title} sites`}
+                    disabled={allHostsDeselected}
+                    onClick={(): void => {
+                      setAllHosts(category, false);
+                    }}
+                  >
+                    Deselect all
+                  </button>
+                </fieldset>
                 <ul class="cat-hosts">
                   {category.hosts.map((host: string): VNode => {
                     const active: boolean = !excluded.includes(host);

@@ -1,9 +1,10 @@
 /** @vitest-environment jsdom */
 import { cleanup, fireEvent, render } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ALL_CATEGORIES } from '../../../src/core/categories';
 import { Categories } from '../../../src/options/Categories';
 import { DEFAULT_LISTS } from '../../../src/shared/constants';
-import type { ListsConfig } from '../../../src/shared/types';
+import type { CategoryList, ListsConfig } from '../../../src/shared/types';
 
 afterEach((): void => {
   cleanup();
@@ -60,5 +61,179 @@ describe('Categories', () => {
     const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
     expect(next.categories.social).toBe(false);
     expect(next.exclusions.social).toEqual(['facebook.com']);
+  });
+
+  it('selects every category without changing exclusions', (): void => {
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      categories: { ...DEFAULT_LISTS.categories, social: true },
+      exclusions: { social: ['facebook.com'], video: ['youtube.com'] },
+    };
+    const onChange = vi.fn();
+    const { getByRole } = render(<Categories lists={lists} onChange={onChange} />);
+
+    fireEvent.click(getByRole('button', { name: 'Select all categories' }));
+
+    const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
+    expect(next.categories).toEqual({
+      social: true,
+      video: true,
+      news: true,
+      mail: true,
+      shopping: true,
+      gaming: true,
+      forums: true,
+    });
+    expect(next.exclusions).toEqual(lists.exclusions);
+  });
+
+  it('deselects every category without changing exclusions', (): void => {
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      categories: {
+        social: true,
+        video: true,
+        news: true,
+        mail: true,
+        shopping: true,
+        gaming: true,
+        forums: true,
+      },
+      exclusions: { social: ['facebook.com'], video: ['youtube.com'] },
+    };
+    const onChange = vi.fn();
+    const { getByRole } = render(<Categories lists={lists} onChange={onChange} />);
+
+    fireEvent.click(getByRole('button', { name: 'Deselect all categories' }));
+
+    const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
+    expect(next.categories).toEqual({
+      social: false,
+      video: false,
+      news: false,
+      mail: false,
+      shopping: false,
+      gaming: false,
+      forums: false,
+    });
+    expect(next.exclusions).toEqual(lists.exclusions);
+  });
+
+  it('disables a global bulk action when every category already has that state', (): void => {
+    const allSelected: ListsConfig = {
+      ...DEFAULT_LISTS,
+      categories: {
+        social: true,
+        video: true,
+        news: true,
+        mail: true,
+        shopping: true,
+        gaming: true,
+        forums: true,
+      },
+    };
+    const onChange = vi.fn();
+    const { getByRole, rerender } = render(
+      <Categories lists={DEFAULT_LISTS} onChange={onChange} />,
+    );
+
+    expect(
+      (getByRole('button', { name: 'Select all categories' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(
+      (getByRole('button', { name: 'Deselect all categories' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+
+    rerender(<Categories lists={allSelected} onChange={onChange} />);
+
+    expect(
+      (getByRole('button', { name: 'Select all categories' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (getByRole('button', { name: 'Deselect all categories' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+
+  it('selects every known site while preserving stale exclusions and the parent state', (): void => {
+    const social: CategoryList = ALL_CATEGORIES.find(
+      (category: CategoryList): boolean => category.id === 'social',
+    ) as CategoryList;
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      categories: { ...DEFAULT_LISTS.categories, social: true, news: true },
+      exclusions: {
+        social: [social.hosts[0] as string, social.hosts[1] as string, 'retired.example'],
+      },
+    };
+    const onChange = vi.fn();
+    const { getByRole } = render(<Categories lists={lists} onChange={onChange} />);
+    fireEvent.click(getByRole('button', { name: 'Show Social media sites' }));
+
+    fireEvent.click(getByRole('button', { name: 'Select all Social media sites' }));
+
+    const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
+    expect(next.categories).toEqual(lists.categories);
+    expect(next.exclusions.social).toEqual(['retired.example']);
+  });
+
+  it('deselects every known site without duplicates while preserving stale exclusions and parent state', (): void => {
+    const social: CategoryList = ALL_CATEGORIES.find(
+      (category: CategoryList): boolean => category.id === 'social',
+    ) as CategoryList;
+    const firstHost: string = social.hosts[0] as string;
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      categories: { ...DEFAULT_LISTS.categories, social: false, news: true },
+      exclusions: { social: [firstHost, 'retired.example', firstHost] },
+    };
+    const onChange = vi.fn();
+    const { getByRole } = render(<Categories lists={lists} onChange={onChange} />);
+    fireEvent.click(getByRole('button', { name: 'Show Social media sites' }));
+
+    fireEvent.click(getByRole('button', { name: 'Deselect all Social media sites' }));
+
+    const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
+    expect(next.categories).toEqual(lists.categories);
+    expect(next.exclusions.social).toEqual([
+      firstHost,
+      'retired.example',
+      ...social.hosts.slice(1),
+    ]);
+    expect(new Set(next.exclusions.social).size).toBe(next.exclusions.social?.length);
+  });
+
+  it('disables a site bulk action when every known site already has that state', (): void => {
+    const social: CategoryList = ALL_CATEGORIES.find(
+      (category: CategoryList): boolean => category.id === 'social',
+    ) as CategoryList;
+    const allDeselected: ListsConfig = {
+      ...DEFAULT_LISTS,
+      exclusions: { social: [...social.hosts, 'retired.example'] },
+    };
+    const onChange = vi.fn();
+    const { getByRole, rerender } = render(
+      <Categories lists={DEFAULT_LISTS} onChange={onChange} />,
+    );
+    fireEvent.click(getByRole('button', { name: 'Show Social media sites' }));
+
+    expect(
+      (getByRole('button', { name: 'Select all Social media sites' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (getByRole('button', { name: 'Deselect all Social media sites' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+
+    rerender(<Categories lists={allDeselected} onChange={onChange} />);
+
+    expect(
+      (getByRole('button', { name: 'Select all Social media sites' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+    expect(
+      (getByRole('button', { name: 'Deselect all Social media sites' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
   });
 });

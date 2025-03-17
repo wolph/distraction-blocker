@@ -259,6 +259,31 @@ table.rules th {
   border-bottom: 1px solid var(--border);
 }
 
+.cat-bulk-actions {
+  border: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 8px;
+  min-width: 0;
+  padding: 0;
+}
+
+.cat-bulk-actions button.ghost {
+  border-color: var(--border);
+  font-size: 13px;
+  padding: 4px 10px;
+}
+
+.cat-bulk-actions button.ghost:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.cat-site-actions {
+  margin-left: 28px;
+}
+
 .cat-count {
   color: var(--muted);
   font-size: 13px;
