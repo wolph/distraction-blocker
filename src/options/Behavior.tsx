@@ -155,7 +155,7 @@ export function BehaviorDefaults(props: BehaviorProps): VNode {
               props.onChange({ ...s, defaultStrictness: 'friction' });
             }}
           />
-          Friction: cancel costs a 30 second wait and a typed sentence
+          Friction: stopping early uses the configured deliberation gate
         </label>
         <label class="check">
           <input

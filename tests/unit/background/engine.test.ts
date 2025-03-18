@@ -16,7 +16,6 @@ import { ALL_CATEGORIES } from '../../../src/core/categories';
 import { buildMatcherCache, type CompiledMatcherSet } from '../../../src/core/matcher';
 import { beginPause, endPauseEarly, startSession } from '../../../src/core/session';
 import {
-  CANCEL_GATE_DELAY_MS,
   CATEGORY_IDS,
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
@@ -467,6 +466,26 @@ describe('Engine', () => {
     expect(h.ports.queueSync).toHaveBeenCalledWith(SYNC_BANK, { balanceMs: 60_000 });
     expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_SETTINGS, expect.anything());
     expect(h.ports.persistSyncJournal).toHaveBeenCalled();
+  });
+
+  it('reapplies blocking only when synced settings change the theme', async () => {
+    const h: Harness = makeEngine();
+    h.ports.applyBlocking.mockClear();
+
+    await expect(
+      h.engine.applySyncedSettings({ ...DEFAULT_SETTINGS, theme: 'dark' }),
+    ).resolves.toEqual({ ok: true });
+    expect(h.ports.applyBlocking).toHaveBeenCalledTimes(1);
+
+    h.ports.applyBlocking.mockClear();
+    await expect(
+      h.engine.applySyncedSettings({
+        ...DEFAULT_SETTINGS,
+        theme: 'dark',
+        retentionDays: 30,
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(h.ports.applyBlocking).not.toHaveBeenCalled();
   });
 
   it('does not rewrite the bank when a settings update raises the cap', async () => {
@@ -1887,15 +1906,18 @@ describe('Engine', () => {
     const h: Harness = makeEngine();
     await h.engine.startSession(manualConfig);
     await h.engine.openGate('cancel', null);
-    h.setNow(T0 + CANCEL_GATE_DELAY_MS);
+    h.setNow(T0 + DEFAULT_SETTINGS.gate.delayMs);
 
-    const ack = await h.engine.confirmGate('I choose distraction over: write the report');
+    const ack = await h.engine.confirmGate(null);
 
     expect(ack).toEqual({ ok: true });
     const canceled: EventRecord | undefined = h
       .loggedEvents()
       .find((event: EventRecord): boolean => event.t === 'sessionCanceled');
-    expect(canceled).toMatchObject({ t: 'sessionCanceled', focusedMs: CANCEL_GATE_DELAY_MS });
+    expect(canceled).toMatchObject({
+      t: 'sessionCanceled',
+      focusedMs: DEFAULT_SETTINGS.gate.delayMs,
+    });
   });
 
   it('splits focus and closes every missed day after a multi-day wake', async () => {
@@ -2048,6 +2070,76 @@ describe('Engine', () => {
     expect(h.loggedEvents().some((e: EventRecord): boolean => e.t === 'gateOpened')).toBe(true);
   });
 
+  it('uses the configured delay and typing requirement for the cancel gate', async () => {
+    const h: Harness = makeEngine({
+      settings: { gate: { delayMs: 10_000, requireTypedPhrase: false } },
+    });
+    await h.engine.startSession(manualConfig);
+    await h.engine.openGate('cancel', null);
+
+    expect(h.engine.snapshot().gate).toMatchObject({
+      readyAt: T0 + 10_000,
+      requiredPhrase: null,
+    });
+    expect(await h.engine.confirmGate(null)).toEqual({
+      ok: false,
+      error: 'the deliberation delay has not finished',
+    });
+    h.setNow(T0 + 10_000);
+    expect(await h.engine.confirmGate(null)).toEqual({ ok: true });
+  });
+
+  it('persists a theme update and reapplies blocking to mounted overlays', async () => {
+    const h: Harness = makeEngine();
+    h.ports.applyBlocking.mockClear();
+
+    await expect(h.engine.updateTheme('dark')).resolves.toEqual({ ok: true });
+
+    expect(h.engine.getSettings().theme).toBe('dark');
+    expect(h.engine.snapshot().theme).toBe('dark');
+    expect(h.ports.queueSync).toHaveBeenCalledWith(
+      SYNC_SETTINGS,
+      expect.objectContaining({ theme: 'dark' }),
+    );
+    expect(h.ports.applyBlocking).toHaveBeenCalledTimes(1);
+
+    h.ports.applyBlocking.mockClear();
+    await expect(h.engine.updateTheme('dark')).resolves.toEqual({ ok: true });
+    expect(h.ports.applyBlocking).not.toHaveBeenCalled();
+  });
+
+  it('reapplies blocking only when a full settings update changes the theme', async () => {
+    const h: Harness = makeEngine();
+    h.ports.applyBlocking.mockClear();
+
+    await expect(h.engine.updateSettings({ ...DEFAULT_SETTINGS, theme: 'dark' })).resolves.toEqual({
+      ok: true,
+    });
+    expect(h.ports.applyBlocking).toHaveBeenCalledTimes(1);
+
+    h.ports.applyBlocking.mockClear();
+    await expect(
+      h.engine.updateSettings({ ...DEFAULT_SETTINGS, theme: 'dark', retentionDays: 30 }),
+    ).resolves.toEqual({ ok: true });
+    expect(h.ports.applyBlocking).not.toHaveBeenCalled();
+  });
+
+  it.each(['pause', 'unlockSite', 'cancel'] as const)(
+    'uses the configured intention phrase for the %s gate',
+    async (gate: 'pause' | 'unlockSite' | 'cancel'): Promise<void> => {
+      const h: Harness = makeEngine({
+        bankMs: 600_000,
+        settings: { gate: { delayMs: 10_000, requireTypedPhrase: true } },
+      });
+      await h.engine.startSession(manualConfig);
+      await h.engine.openGate(gate, gate === 'unlockSite' ? 'facebook.com' : null);
+
+      expect(h.engine.snapshot().gate?.requiredPhrase).toBe(
+        'I choose distraction over: write the report',
+      );
+    },
+  );
+
   it('rejects a pause gate the budget cannot afford', async () => {
     const h: Harness = makeEngine({
       bankMs: 0,
@@ -2188,11 +2280,13 @@ describe('Engine', () => {
   });
 
   it('cancel gate demands the exact phrase and ends the session', async () => {
-    const h: Harness = makeEngine();
+    const h: Harness = makeEngine({
+      settings: { gate: { ...DEFAULT_SETTINGS.gate, requireTypedPhrase: true } },
+    });
     await h.engine.startSession(manualConfig);
     const opened = await h.engine.openGate('cancel', null);
     expect(opened).toEqual({ ok: true });
-    h.setNow(T0 + CANCEL_GATE_DELAY_MS);
+    h.setNow(T0 + DEFAULT_SETTINGS.gate.delayMs);
     const wrong = await h.engine.confirmGate('let me out');
     expect(wrong.ok).toBe(false);
     const right = await h.engine.confirmGate('I choose distraction over: write the report');

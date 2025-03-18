@@ -154,6 +154,17 @@ describe('PauseEconomy', () => {
 });
 
 describe('BehaviorDefaults', () => {
+  it('explains that friction cancellation uses the configured gate', (): void => {
+    const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
+    const { getByLabelText }: ReturnType<typeof render> = render(
+      <BehaviorDefaults settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
+
+    expect(
+      getByLabelText('Friction: stopping early uses the configured deliberation gate'),
+    ).toBeTruthy();
+  });
+
   it('edits each positive session preset independently', (): void => {
     const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
     const { getByLabelText }: ReturnType<typeof render> = render(

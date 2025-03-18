@@ -146,7 +146,7 @@ function EntryForm(props: EntryFormProps): VNode {
               props.onDraft({ ...draft, strictness: 'friction' });
             }}
           />
-          Friction: cancel costs a wait and a typed sentence
+          Friction: stopping early uses the configured deliberation gate
         </label>
         <label class="check">
           <input

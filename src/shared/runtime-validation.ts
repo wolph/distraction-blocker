@@ -206,6 +206,10 @@ function isGateSettings(value: unknown): boolean {
   );
 }
 
+function isThemeMode(value: unknown): boolean {
+  return value === 'auto' || value === 'light' || value === 'dark';
+}
+
 function isSoundSettings(value: unknown): boolean {
   if (
     !isRecord(value) ||
@@ -233,6 +237,7 @@ function isSettingsValue(value: unknown): value is Settings {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, [
+      'theme',
       'presetsMin',
       'defaultMode',
       'defaultStrictness',
@@ -252,6 +257,7 @@ function isSettingsValue(value: unknown): value is Settings {
     return false;
   }
   return (
+    isThemeMode(value.theme) &&
     isDenseArray(value.presetsMin) &&
     value.presetsMin.length === 3 &&
     value.presetsMin.every(isRelativeMinuteDuration) &&
@@ -389,6 +395,7 @@ function isSessionSnapshotValue(value: unknown): value is SessionSnapshot {
     value.phase === 'paused';
   if (
     !isNonNegativeNumber(value.at) ||
+    !isThemeMode(value.theme) ||
     !phaseValid ||
     !isNonNegativeInteger(value.cycleIndex) ||
     !isNonNegativeNumber(value.bankMs) ||

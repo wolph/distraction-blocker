@@ -11,6 +11,7 @@ export const CATEGORY_IDS: readonly CategoryId[] = [
 ];
 
 export const DEFAULT_SETTINGS: Settings = {
+  theme: 'auto',
   presetsMin: [15, 25, 50],
   defaultMode: 'blacklist',
   defaultStrictness: 'friction',
@@ -66,7 +67,6 @@ export const ALWAYS_ALLOW_HOSTS: readonly string[] = ['localhost', '127.0.0.1', 
 
 export const ALWAYS_ALLOW_HOST_SUFFIXES: readonly string[] = ['.localhost', '.local', '.test'];
 
-export const CANCEL_GATE_DELAY_MS: number = 30_000;
 export const GATE_EXPIRY_MS: number = 60_000;
 export const MIN_BREAK_BEFORE_EARLY_MS: number = 2 * 60_000;
 export const ATTEMPT_DEBOUNCE_MS: number = 30_000;
@@ -83,6 +83,7 @@ export function cancelPhrase(intention: string): string {
 export function emptySnapshot(at: number): SessionSnapshot {
   return {
     at,
+    theme: DEFAULT_SETTINGS.theme,
     phase: 'idle',
     config: null,
     startedAt: null,

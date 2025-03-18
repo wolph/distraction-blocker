@@ -47,6 +47,7 @@ const VALID_REQUESTS: RequestByType = {
   resumeFromPause: { type: 'resumeFromPause' },
   startNextFocusEarly: { type: 'startNextFocusEarly' },
   updateSettings: { type: 'updateSettings', settings: SETTINGS },
+  updateTheme: { type: 'updateTheme', theme: 'auto' },
   updateLists: { type: 'updateLists', lists: LISTS },
   getSettings: { type: 'getSettings' },
   getLists: { type: 'getLists' },
@@ -68,6 +69,17 @@ function replaceNested(
 }
 
 describe('parseRequest', (): void => {
+  it.each(['auto', 'light', 'dark'])('accepts the %s theme mode', (theme: string): void => {
+    expect(parseRequest({ type: 'updateTheme', theme })).toEqual({
+      type: 'updateTheme',
+      theme,
+    });
+  });
+
+  it('rejects an unknown theme mode', (): void => {
+    expect(parseRequest({ type: 'updateTheme', theme: 'sepia' })).toBeNull();
+  });
+
   it('accepts lists above the unsplit threshold when category sharding fits', (): void => {
     const exclusions: ListsConfig['exclusions'] = {};
     for (const categoryId of CATEGORY_IDS) {

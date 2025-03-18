@@ -198,6 +198,39 @@ describe('useSettingsStore', () => {
     expect(result).toBe(rejection);
     expect(store().settings).toEqual(DEFAULT_SETTINGS);
   });
+
+  it('saveTheme updates the committed theme after the worker accepts it', async (): Promise<void> => {
+    fake.respond('updateTheme', { ok: true });
+    render(<Harness />);
+    await waitFor((): void => {
+      expect(store().settings).not.toBeNull();
+    });
+
+    let result: string | null = 'unset';
+    await act(async (): Promise<void> => {
+      result = await store().saveTheme('dark');
+    });
+
+    expect(result).toBeNull();
+    expect(fake.sent).toContainEqual({ type: 'updateTheme', theme: 'dark' });
+    expect(store().settings?.theme).toBe('dark');
+  });
+
+  it('saveTheme keeps the committed theme after the worker rejects it', async (): Promise<void> => {
+    fake.respond('updateTheme', { ok: false, error: 'theme write rejected' });
+    render(<Harness />);
+    await waitFor((): void => {
+      expect(store().settings).not.toBeNull();
+    });
+
+    let result: string | null = null;
+    await act(async (): Promise<void> => {
+      result = await store().saveTheme('dark');
+    });
+
+    expect(result).toBe('theme write rejected');
+    expect(store().settings?.theme).toBe('auto');
+  });
 });
 
 describe('App frame', () => {
@@ -300,7 +333,9 @@ describe('App frame', () => {
     });
 
     fireEvent.click(getByRole('button', { name: 'Strictness and gate' }));
-    fireEvent.click(getByLabelText('Friction: cancel costs a 30 second wait and a typed sentence'));
+    fireEvent.click(
+      getByLabelText('Friction: stopping early uses the configured deliberation gate'),
+    );
     fireEvent.click(getByRole('button', { name: 'Pause economy' }));
     fireEvent.input(getByLabelText('Daily streak goal (focus minutes)'), {
       target: { value: '30' },

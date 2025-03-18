@@ -47,6 +47,8 @@ export async function routeMessage(
       return engine.startNextFocusEarly();
     case 'updateSettings':
       return engine.updateSettings(msg.settings);
+    case 'updateTheme':
+      return engine.updateTheme(msg.theme);
     case 'updateLists':
       return engine.updateLists(msg.lists);
     case 'getSettings':

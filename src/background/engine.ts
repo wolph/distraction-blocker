@@ -22,7 +22,6 @@ import { addEvent, capAttempts, emptyDaily } from '../core/stats';
 import { emptyStreak } from '../core/streak';
 import {
   ATTEMPT_DEBOUNCE_MS,
-  CANCEL_GATE_DELAY_MS,
   cancelPhrase,
   GATE_EXPIRY_MS,
   TOP_SITES_DAILY,
@@ -45,6 +44,7 @@ import type {
   Settings,
   SiteUnlock,
   StreakState,
+  ThemeMode,
   Verdict,
 } from '../shared/types';
 import { listsChangeAllowed, settingsChangeAllowed } from './guard';
@@ -246,14 +246,14 @@ export class Engine {
         gate === 'pause' ? this.settings.pause.pauseMs : this.settings.pause.unlockMs;
       if (this.bank.balanceMs < cost) return this.fail(now, 'not enough pause budget yet');
     }
-    const needsPhrase: boolean = gate === 'cancel' || this.settings.gate.requireTypedPhrase;
+    const needsPhrase: boolean = this.settings.gate.requireTypedPhrase;
     const unlockHost: string | null =
       gate === 'unlockSite' && host !== null ? (registrableHost(host) ?? host) : null;
     this.runtime.gate = {
       kind: gate,
       host: unlockHost,
       openedAt: now,
-      readyAt: now + (gate === 'cancel' ? CANCEL_GATE_DELAY_MS : this.settings.gate.delayMs),
+      readyAt: now + this.settings.gate.delayMs,
       requiredPhrase: needsPhrase ? cancelPhrase(session.config.intention) : null,
     };
     this.recordEvent({ t: 'gateOpened', at: now, gate, ...sessionIdentity(session) });
@@ -646,6 +646,10 @@ export class Engine {
   }
 
   async updateSettings(s: Settings): Promise<Ack> {
+    return this.updateSettingsNow(s);
+  }
+
+  private async updateSettingsNow(s: Settings): Promise<Ack> {
     try {
       assertSyncItemWithinQuota(SYNC_SETTINGS, s);
     } catch (error: unknown) {
@@ -665,6 +669,10 @@ export class Engine {
     this.dirty = true;
     await this.commit(now);
     return { ok: true };
+  }
+
+  async updateTheme(theme: ThemeMode): Promise<Ack> {
+    return this.updateSettingsNow({ ...this.settings, theme });
   }
 
   async updateLists(l: ListsConfig): Promise<Ack> {
@@ -799,6 +807,7 @@ export class Engine {
 
   private setSettingsAndClampBank(settings: Settings): void {
     const balanceMs: number = Math.min(this.bank.balanceMs, settings.pause.capMs);
+    if (this.settings.theme !== settings.theme) this.needsBlocking = true;
     this.settings = settings;
     if (balanceMs === this.bank.balanceMs) return;
     this.bank = { balanceMs };
@@ -1265,6 +1274,7 @@ export class Engine {
           agg.attemptsOther;
     return {
       at: now,
+      theme: this.settings.theme,
       phase: s === null ? 'idle' : s.phase,
       config: s?.config ?? null,
       startedAt: s?.startedAt ?? null,

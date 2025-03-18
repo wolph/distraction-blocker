@@ -24,6 +24,7 @@ export interface ListsConfig {
 
 export type SessionMode = 'blacklist' | 'whitelist';
 export type Strictness = 'hard' | 'friction';
+export type ThemeMode = 'auto' | 'light' | 'dark';
 export type Phase = 'idle' | 'focus' | 'break' | 'paused';
 
 export interface CycleConfig {
@@ -83,6 +84,7 @@ export interface SiteUnlock {
 /** Read model broadcast to every UI surface. The worker is the only writer. */
 export interface SessionSnapshot {
   at: number;
+  theme: ThemeMode;
   phase: Phase;
   config: SessionConfig | null;
   startedAt: number | null;
@@ -142,6 +144,7 @@ export interface ScheduleEntry {
 }
 
 export interface Settings {
+  theme: ThemeMode;
   presetsMin: [number, number, number];
   defaultMode: SessionMode;
   defaultStrictness: Strictness;

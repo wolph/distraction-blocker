@@ -168,6 +168,10 @@ function isGateSettings(value: unknown): boolean {
   );
 }
 
+function isThemeMode(value: unknown): boolean {
+  return value === 'auto' || value === 'light' || value === 'dark';
+}
+
 function isSoundSettings(value: unknown): boolean {
   if (
     !isRecord(value) ||
@@ -253,6 +257,7 @@ function isSettings(value: unknown): value is Settings {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, [
+      'theme',
       'presetsMin',
       'defaultMode',
       'defaultStrictness',
@@ -272,6 +277,7 @@ function isSettings(value: unknown): value is Settings {
     return false;
   }
   return (
+    isThemeMode(value.theme) &&
     isDenseArray(value.presetsMin) &&
     value.presetsMin.length === 3 &&
     value.presetsMin.every(isRelativeMinuteDuration) &&
@@ -395,6 +401,10 @@ function parseRecord(value: Record<string, unknown>): Request | null {
       return hasExactKeys(value, ['type', 'settings']) &&
         isWithinSyncQuota(SYNC_SETTINGS, value.settings) &&
         isSettings(value.settings)
+        ? (value as Request)
+        : null;
+    case 'updateTheme':
+      return hasExactKeys(value, ['type', 'theme']) && isThemeMode(value.theme)
         ? (value as Request)
         : null;
     case 'updateLists': {

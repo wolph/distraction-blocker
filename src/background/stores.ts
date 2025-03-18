@@ -138,6 +138,10 @@ export function mergeSettings(raw: unknown, base: Settings = DEFAULT_SETTINGS): 
   const gate: Record<string, unknown> = isRecord(stored.gate) ? stored.gate : {};
   const sounds: Record<string, unknown> = isRecord(stored.sounds) ? stored.sounds : {};
   return {
+    theme:
+      stored.theme === 'auto' || stored.theme === 'light' || stored.theme === 'dark'
+        ? stored.theme
+        : base.theme,
     presetsMin: parsePresets(stored.presetsMin) ?? [...base.presetsMin],
     defaultMode:
       stored.defaultMode === 'blacklist' || stored.defaultMode === 'whitelist'

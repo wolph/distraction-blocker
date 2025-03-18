@@ -139,8 +139,16 @@ describe('runtime validation dense array boundaries', (): void => {
 });
 
 describe('runtime and worker request validation parity', (): void => {
+  it('defines Auto as the default theme', (): void => {
+    expect(DEFAULT_SETTINGS).toHaveProperty('theme', 'auto');
+  });
+
   it.each([
     ['valid settings', DEFAULT_SETTINGS, true],
+    ['Auto theme', { ...DEFAULT_SETTINGS, theme: 'auto' }, true],
+    ['Light theme', { ...DEFAULT_SETTINGS, theme: 'light' }, true],
+    ['Dark theme', { ...DEFAULT_SETTINGS, theme: 'dark' }, true],
+    ['unknown theme', { ...DEFAULT_SETTINGS, theme: 'sepia' }, false],
     ['top-level extra settings key', { ...DEFAULT_SETTINGS, extra: true }, false],
     [
       'nested extra pause key',
@@ -162,6 +170,19 @@ describe('runtime and worker request validation parity', (): void => {
       expect(isSettings(value)).toBe(workerAccepted);
     },
   );
+
+  it.each(['auto', 'light', 'dark'])(
+    'accepts the %s theme in session snapshots',
+    (theme: string): void => {
+      expect(isSessionSnapshot({ ...(activeSnapshot() as SessionSnapshot), theme })).toBe(true);
+    },
+  );
+
+  it('rejects an unknown session snapshot theme', (): void => {
+    expect(isSessionSnapshot({ ...(activeSnapshot() as SessionSnapshot), theme: 'sepia' })).toBe(
+      false,
+    );
+  });
 
   it.each([
     ['valid lists', DEFAULT_LISTS, true],

@@ -7,7 +7,7 @@ import {
   isSessionSnapshot,
   isSettings,
 } from '../shared/runtime-validation';
-import type { ListsConfig, SessionSnapshot, Settings } from '../shared/types';
+import type { ListsConfig, SessionSnapshot, Settings, ThemeMode } from '../shared/types';
 
 const LOAD_ERROR: string = 'Could not load settings. Reload the page to try again.';
 
@@ -23,6 +23,7 @@ export interface SettingsStore {
   loadError: string | null;
   /** resolves null on success, the worker's rejection string verbatim otherwise */
   saveSettings(next: Settings): Promise<string | null>;
+  saveTheme(next: ThemeMode): Promise<string | null>;
   saveLists(next: ListsConfig): Promise<string | null>;
 }
 
@@ -113,5 +114,20 @@ export function useSettingsStore(): SettingsStore {
     return null;
   };
 
-  return { settings, lists, snapshot, loadError, saveSettings, saveLists };
+  const saveTheme: (next: ThemeMode) => Promise<string | null> = async (
+    next: ThemeMode,
+  ): Promise<string | null> => {
+    const ack: Ack = await sendRequest({ type: 'updateTheme', theme: next });
+    const responseError: string | null = ackError(
+      ack,
+      'Could not save theme. Reload the page and try again.',
+    );
+    if (responseError !== null) return responseError;
+    setSettings((current: Settings | null): Settings | null =>
+      current === null ? null : { ...current, theme: next },
+    );
+    return null;
+  };
+
+  return { settings, lists, snapshot, loadError, saveSettings, saveTheme, saveLists };
 }

@@ -128,6 +128,20 @@ describe('matcher cache storage', () => {
 });
 
 describe('storage default merging', () => {
+  it.each([
+    ['auto', 'auto'],
+    ['light', 'light'],
+    ['dark', 'dark'],
+    ['unknown', 'sepia'],
+  ] as const)('merges the %s stored theme safely', (label: string, storedTheme: string): void => {
+    const settings: Settings = mergeSettings({ ...DEFAULT_SETTINGS, theme: storedTheme });
+
+    expect(settings).toHaveProperty(
+      'theme',
+      label === 'unknown' ? DEFAULT_SETTINGS.theme : storedTheme,
+    );
+  });
+
   it('preserves nested settings defaults when stored objects are partial', () => {
     const settings: Settings = mergeSettings({
       pause: { earnRatio: 0.25 },
@@ -136,6 +150,7 @@ describe('storage default merging', () => {
     });
 
     expect(settings.pause).toEqual({ ...DEFAULT_SETTINGS.pause, earnRatio: 0.25 });
+    expect(settings.theme).toBe('auto');
     expect(settings.gate).toEqual({ ...DEFAULT_SETTINGS.gate, delayMs: 30_000 });
     expect(settings.sounds).toEqual({ ...DEFAULT_SETTINGS.sounds, masterVolume: 0.2 });
     expect(settings.streakFreezeIntervalDays).toBe(7);

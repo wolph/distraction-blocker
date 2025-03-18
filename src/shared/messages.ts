@@ -8,6 +8,7 @@ import type {
   SessionSnapshot,
   Settings,
   StreakState,
+  ThemeMode,
   Verdict,
 } from './types';
 
@@ -24,6 +25,7 @@ export type Request =
   | { type: 'resumeFromPause' }
   | { type: 'startNextFocusEarly' }
   | { type: 'updateSettings'; settings: Settings }
+  | { type: 'updateTheme'; theme: ThemeMode }
   | { type: 'updateLists'; lists: ListsConfig }
   | { type: 'getSettings' }
   | { type: 'getLists' }
@@ -62,6 +64,7 @@ export interface ResponseMap {
   resumeFromPause: Ack;
   startNextFocusEarly: Ack;
   updateSettings: Ack;
+  updateTheme: Ack;
   updateLists: Ack;
   getSettings: Settings;
   getLists: ListsConfig;
