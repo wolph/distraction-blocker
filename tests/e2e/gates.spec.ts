@@ -3,11 +3,19 @@ import { cancelPhrase } from '../../src/shared/constants';
 import type { SessionSnapshot, Settings } from '../../src/shared/types';
 import { expect, sendExtensionRequest, startTestSession, test } from './fixtures';
 
+interface FastEconomyOptions {
+  pauseMs?: number;
+  unlockMs?: number;
+  gateDelayMs?: number;
+  requireTypedPhrase?: boolean;
+}
+
 async function configureFastEconomy(
   extPage: Page,
-  pauseMs: number = 1_000,
-  unlockMs: number = 1_000,
+  options: FastEconomyOptions = {},
 ): Promise<void> {
+  const pauseMs: number = options.pauseMs ?? 1_000;
+  const unlockMs: number = options.unlockMs ?? 1_000;
   const settings: Settings = await sendExtensionRequest(extPage, { type: 'getSettings' });
   const ack = await sendExtensionRequest(extPage, {
     type: 'updateSettings',
@@ -19,7 +27,10 @@ async function configureFastEconomy(
         pauseMs,
         unlockMs,
       },
-      gate: { delayMs: 500, requireTypedPhrase: false },
+      gate: {
+        delayMs: options.gateDelayMs ?? 500,
+        requireTypedPhrase: options.requireTypedPhrase ?? false,
+      },
     },
   });
   if (!ack.ok) throw new Error(ack.error);
@@ -88,7 +99,7 @@ test('pause gate rejects an early confirmation and unblocks after its delay', as
   siteUrl,
 }) => {
   const pauseMs: number = 10_000;
-  await configureFastEconomy(extPage, pauseMs);
+  await configureFastEconomy(extPage, { pauseMs });
   const page = await context.newPage();
   await page.goto(siteUrl('/plain.html'));
   await startTestSession(extPage, { durationMin: 0.3 });
@@ -132,7 +143,7 @@ test('pause gate supports back to work, taking a pause, and resuming now', async
   siteUrl,
 }) => {
   const pauseMs: number = 10_000;
-  await configureFastEconomy(extPage, pauseMs);
+  await configureFastEconomy(extPage, { pauseMs });
   const page: Page = await context.newPage();
   await page.goto(siteUrl('/plain.html'));
   await startTestSession(extPage, { durationMin: 0.3 });
@@ -193,11 +204,24 @@ test('hard sessions reject weakening list changes', async ({ extPage }) => {
   if (!ack.ok) expect(ack.error).toMatch(/hard/i);
 });
 
-test('friction cancellation requires the delay and exact phrase', async ({ extPage }) => {
-  await startTestSession(extPage, { durationMin: 0.8 });
+test('friction cancellation without typing uses the configured delay', async ({ extPage }) => {
+  const gateDelayMs: number = 3_000;
+  await configureFastEconomy(extPage, { gateDelayMs, requireTypedPhrase: false });
+  await startTestSession(extPage, { durationMin: 0.3 });
   expect(
     await sendExtensionRequest(extPage, { type: 'openGate', gate: 'cancel', host: null }),
   ).toEqual({ ok: true });
+
+  const early = await sendExtensionRequest(extPage, {
+    type: 'confirmGate',
+    typedPhrase: null,
+  });
+  expect(early.ok).toBe(false);
+
+  const opened: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+  expect(opened.gate?.readyAt).toBe((opened.gate?.openedAt ?? 0) + gateDelayMs);
+  expect(opened.gate?.requiredPhrase).toBeNull();
+
   await expect
     .poll(
       async (): Promise<boolean> => {
@@ -206,31 +230,88 @@ test('friction cancellation requires the delay and exact phrase', async ({ extPa
         });
         return snapshot.gate !== null && snapshot.at >= snapshot.gate.readyAt;
       },
-      { timeout: 40_000, intervals: [1_000] },
+      { timeout: 6_000, intervals: [100] },
     )
     .toBe(true);
+
+  expect(
+    await sendExtensionRequest(extPage, {
+      type: 'confirmGate',
+      typedPhrase: null,
+    }),
+  ).toEqual({ ok: true });
+  const ended: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+  expect(ended.phase).toBe('idle');
+});
+
+test('friction cancellation with typing requires the configured phrase after its delay', async ({
+  extPage,
+}) => {
+  const gateDelayMs: number = 3_000;
+  const requiredPhrase: string = cancelPhrase('e2e test run');
+  await configureFastEconomy(extPage, { gateDelayMs, requireTypedPhrase: true });
+  await startTestSession(extPage, { durationMin: 0.3 });
+  expect(
+    await sendExtensionRequest(extPage, { type: 'openGate', gate: 'cancel', host: null }),
+  ).toEqual({ ok: true });
+
+  const early = await sendExtensionRequest(extPage, {
+    type: 'confirmGate',
+    typedPhrase: requiredPhrase,
+  });
+  expect(early.ok).toBe(false);
+
+  const opened: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+  expect(opened.gate?.readyAt).toBe((opened.gate?.openedAt ?? 0) + gateDelayMs);
+  expect(opened.gate?.requiredPhrase).toBe(requiredPhrase);
+
+  await expect
+    .poll(
+      async (): Promise<number> => {
+        const snapshot: SessionSnapshot = await sendExtensionRequest(extPage, {
+          type: 'getSnapshot',
+        });
+        return snapshot.at;
+      },
+      { timeout: 6_000, intervals: [100] },
+    )
+    .toBeGreaterThanOrEqual(opened.gate?.readyAt ?? Number.POSITIVE_INFINITY);
+
+  const missing = await sendExtensionRequest(extPage, {
+    type: 'confirmGate',
+    typedPhrase: null,
+  });
+  expect(missing.ok).toBe(false);
   const wrong = await sendExtensionRequest(extPage, {
     type: 'confirmGate',
     typedPhrase: 'let me out',
   });
   expect(wrong.ok).toBe(false);
+  expect(
+    await sendExtensionRequest(extPage, {
+      type: 'confirmGate',
+      typedPhrase: requiredPhrase,
+    }),
+  ).toEqual({ ok: true });
 
-  await expect
-    .poll(
-      async (): Promise<boolean> => {
-        const ack = await sendExtensionRequest(extPage, {
-          type: 'confirmGate',
-          typedPhrase: cancelPhrase('e2e test run'),
-        });
-        return ack.ok;
-      },
-      { timeout: 5_000 },
-    )
-    .toBe(true);
-  const snapshot: SessionSnapshot = await sendExtensionRequest(extPage, {
-    type: 'getSnapshot',
+  const ended: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+  expect(ended.phase).toBe('idle');
+});
+
+test('hard sessions reject cancellation gates', async ({ extPage }) => {
+  await startTestSession(extPage, { durationMin: 0.3, strictness: 'hard' });
+
+  const ack = await sendExtensionRequest(extPage, {
+    type: 'openGate',
+    gate: 'cancel',
+    host: null,
   });
-  expect(snapshot.phase).toBe('idle');
+
+  expect(ack.ok).toBe(false);
+  if (!ack.ok) expect(ack.error).toMatch(/hard sessions cannot be canceled/i);
+  const snapshot: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+  expect(snapshot.phase).toBe('focus');
+  expect(snapshot.gate).toBeNull();
 });
 
 test('overlay unlock isolates another site and reblocks after expiry', async ({
@@ -240,7 +321,7 @@ test('overlay unlock isolates another site and reblocks after expiry', async ({
   worker,
 }) => {
   const unlockMs: number = 35_000;
-  await configureFastEconomy(extPage, 1_000, unlockMs);
+  await configureFastEconomy(extPage, { pauseMs: 1_000, unlockMs });
   const page = await context.newPage();
   const otherPage = await context.newPage();
   const subdomainUrl: string = siteUrl('/plain.html').replace(

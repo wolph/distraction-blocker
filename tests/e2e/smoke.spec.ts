@@ -62,6 +62,56 @@ test('popup page renders', async ({ context, extensionId }) => {
   await expect(page.getByRole('heading', { level: 1, name: 'Focus Lock' })).toBeVisible();
 });
 
+test('Stats navigation round-trips through an Options section', async ({
+  context,
+  extensionId,
+}) => {
+  const page: Page = await context.newPage();
+  await page.goto(`chrome-extension://${extensionId}/src/stats/stats.html`);
+
+  const statsNavigation = page.getByRole('navigation', { name: 'Settings sections' });
+  await expect(statsNavigation).toBeVisible();
+  await expect(statsNavigation.getByRole('link', { name: 'Stats' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+
+  const optionsDestinations: ReadonlyArray<{ name: string; id: string }> = [
+    { name: 'Lists', id: 'lists' },
+    { name: 'Categories', id: 'categories' },
+    { name: 'Schedule', id: 'schedule' },
+    { name: 'Strictness and gate', id: 'strictness' },
+    { name: 'Pause economy', id: 'pause' },
+    { name: 'Sounds and badge', id: 'sounds' },
+    { name: 'Data', id: 'data' },
+  ];
+  for (const destination of optionsDestinations) {
+    await expect(statsNavigation.getByRole('link', { name: destination.name })).toHaveAttribute(
+      'href',
+      `../options/options.html#${destination.id}`,
+    );
+  }
+
+  await statsNavigation.getByRole('link', { name: 'Pause economy' }).click();
+  await expect(page).toHaveURL(`chrome-extension://${extensionId}/src/options/options.html#pause`);
+  const optionsNavigation = page.getByRole('navigation', { name: 'Settings sections' });
+  await expect(optionsNavigation).toBeVisible();
+  await expect(optionsNavigation.getByRole('link', { name: 'Pause economy' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+  await expect(page.getByRole('heading', { level: 2, name: 'Pause economy' })).toBeVisible();
+
+  await optionsNavigation.getByRole('link', { name: 'Stats' }).click();
+  await expect(page).toHaveURL(`chrome-extension://${extensionId}/src/stats/stats.html`);
+  const returnedNavigation = page.getByRole('navigation', { name: 'Settings sections' });
+  await expect(returnedNavigation.getByRole('link', { name: 'Stats' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+  await expect(page.getByRole('heading', { level: 1, name: 'Your focus record' })).toBeVisible();
+});
+
 test('blockable test site loads without a session', async ({ context, siteUrl }) => {
   const page = await context.newPage();
   await page.goto(siteUrl('/plain.html'));
@@ -85,7 +135,7 @@ test('options current navigation meets light text contrast', async ({ context, e
   await page.emulateMedia({ colorScheme: 'light' });
   await page.goto(`chrome-extension://${extensionId}/src/options/options.html`);
   await expect(page.getByRole('heading', { level: 2 })).toBeVisible();
-  expect(await elementContrast(page, '.nav-item.current')).toBeGreaterThanOrEqual(4.5);
+  expect(await elementContrast(page, '.settings-nav-item.current')).toBeGreaterThanOrEqual(4.5);
 });
 
 test('options primary button meets dark text contrast', async ({ context, extensionId }) => {
