@@ -1,5 +1,8 @@
 import type { JSX } from 'preact';
+import { useEffect } from 'preact/hooks';
 import type { StatsBundle } from '../shared/messages';
+import { SettingsNav } from '../shared/SettingsNav';
+import { applyTheme } from '../shared/theme';
 import type { EventRecord, PauseEconomy } from '../shared/types';
 import { Charts } from './Charts';
 import { SessionLog } from './SessionLog';
@@ -30,30 +33,38 @@ export function App(): JSX.Element {
   const events: EventRecord[] | null = attempts.events;
   const partialError: string | null = partialLoadError(attempts.error, economyState.error);
   const now: number = Date.now();
+
+  useEffect((): void => {
+    if (economyState.theme !== null) applyTheme(document.documentElement, economyState.theme);
+  }, [economyState.theme]);
+
   return (
-    <main class="stats-page">
-      <header class="page-header">
-        <h1>Your focus record</h1>
-      </header>
-      {stats.error ? (
-        <p class="empty-line" role="alert">
-          Could not load stats. Reload to try again.
-        </p>
-      ) : bundle === null ? (
-        <p class="empty-line">Loading your stats.</p>
-      ) : (
-        <>
-          {partialError === null ? null : (
-            <p class="empty-line" role="alert">
-              {partialError}
-            </p>
-          )}
-          <Tiles bundle={bundle} economy={economy} now={now} />
-          <Streak streak={bundle.streak} now={now} />
-          <Charts bundle={bundle} events={events} now={now} />
-          <SessionLog events={bundle.recentSessions} />
-        </>
-      )}
-    </main>
+    <div class="stats-shell">
+      <SettingsNav page="stats" theme={economyState.theme} onThemeChange={economyState.saveTheme} />
+      <main class="stats-page">
+        <header class="page-header">
+          <h1>Your focus record</h1>
+        </header>
+        {stats.error ? (
+          <p class="empty-line" role="alert">
+            Could not load stats. Reload to try again.
+          </p>
+        ) : bundle === null ? (
+          <p class="empty-line">Loading your stats.</p>
+        ) : (
+          <>
+            {partialError === null ? null : (
+              <p class="empty-line" role="alert">
+                {partialError}
+              </p>
+            )}
+            <Tiles bundle={bundle} economy={economy} now={now} />
+            <Streak streak={bundle.streak} now={now} />
+            <Charts bundle={bundle} events={events} now={now} />
+            <SessionLog events={bundle.recentSessions} />
+          </>
+        )}
+      </main>
+    </div>
   );
 }

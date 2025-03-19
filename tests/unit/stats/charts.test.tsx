@@ -219,10 +219,13 @@ describe('HBarChart', () => {
     );
     const focusColors: string[] = cssHexTokens(css, '--chart-focus');
     const surfaceColors: string[] = cssHexTokens(css, '--surface');
-    expect(focusColors).toHaveLength(2);
-    expect(surfaceColors).toHaveLength(2);
-    expect(contrastRatio(focusColors[0] ?? '', surfaceColors[0] ?? '')).toBeGreaterThanOrEqual(3);
-    expect(contrastRatio(focusColors[1] ?? '', surfaceColors[1] ?? '')).toBeGreaterThanOrEqual(3);
+    expect(focusColors.length).toBeGreaterThan(0);
+    expect(focusColors).toHaveLength(surfaceColors.length);
+    for (let index: number = 0; index < focusColors.length; index += 1) {
+      expect(
+        contrastRatio(focusColors[index] ?? '', surfaceColors[index] ?? ''),
+      ).toBeGreaterThanOrEqual(3);
+    }
   });
 });
 

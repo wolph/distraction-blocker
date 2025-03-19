@@ -44,12 +44,30 @@ afterEach((): void => {
 });
 
 describe('overlay', () => {
+  it.each(['auto', 'light', 'dark'] as const)(
+    'applies the %s theme to normal and stopped overlays without remounting',
+    (theme): void => {
+      const normal: SessionSnapshot = { ...focusSnap(), theme };
+      showOverlay(verdict, normal);
+      const host: HTMLElement = document.querySelector('focus-lock-overlay') as HTMLElement;
+      expect(host.dataset.theme).toBe(theme);
+      expect(host.style.colorScheme).toBe(theme === 'auto' ? 'light dark' : theme);
+      expect(host.style.getPropertyPriority('color-scheme')).toBe('important');
+      showOverlay(verdict, { ...normal, theme: theme === 'dark' ? 'light' : 'dark' }, true);
+      expect(document.querySelector('focus-lock-overlay')).toBe(host);
+      expect(host.dataset.theme).toBe(theme === 'dark' ? 'light' : 'dark');
+      expect(shadowRoot().querySelector('.backdrop')?.classList.contains('opaque')).toBe(true);
+    },
+  );
+
   it('ships distinct light and dark color schemes', () => {
     showOverlay(verdict, focusSnap());
     const styles: string = shadowRoot().querySelector('style')?.textContent ?? '';
 
     expect(styles).toContain('--overlay-bg: rgba(248, 250, 252, 0.98);');
     expect(styles).toContain('--overlay-text: #0f172a;');
+    expect(styles).toContain(':host([data-theme="dark"])');
+    expect(styles).toContain(':host([data-theme="auto"])');
     expect(styles).toMatch(
       /@media \(prefers-color-scheme: dark\)[\s\S]*--overlay-bg: rgba\(15, 23, 42, 0\.97\);/,
     );

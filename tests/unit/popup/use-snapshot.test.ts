@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import './chrome-fake';
 
-import { cleanup, render, waitFor } from '@testing-library/preact';
+import { act, cleanup, render, waitFor } from '@testing-library/preact';
 import { h, type VNode } from 'preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from '../../../src/popup/App';
@@ -10,9 +10,27 @@ import { DEFAULT_SETTINGS, emptySnapshot } from '../../../src/shared/constants';
 import type { SessionSnapshot } from '../../../src/shared/types';
 import { emitMessage, resetChromeFake, sendMessageMock } from './chrome-fake';
 
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve: (value: T) => void = (): void => {};
+  const promise: Promise<T> = new Promise<T>((done: (value: T) => void): void => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function Probe(): VNode {
   const { error, snapshot } = useSnapshot();
   return h('output', null, error ? 'unavailable' : snapshot === null ? 'loading' : snapshot.phase);
+}
+
+function SnapshotProbe(): VNode {
+  const { snapshot } = useSnapshot();
+  return h('output', null, snapshot === null ? 'loading' : `${snapshot.phase}:${snapshot.theme}`);
 }
 
 function focusSnapshot(at: number): SessionSnapshot {
@@ -66,6 +84,27 @@ describe('useSnapshot', () => {
     await waitFor((): void => {
       expect(getByRole('status').textContent).toBe('focus');
     });
+  });
+
+  it('does not let a stale initial response overwrite a newer broadcast', async (): Promise<void> => {
+    const initial: Deferred<SessionSnapshot> = deferred<SessionSnapshot>();
+    sendMessageMock.mockReturnValue(initial.promise);
+    const { getByRole } = render(h(SnapshotProbe, null));
+    await waitFor((): void =>
+      expect(sendMessageMock).toHaveBeenCalledWith({ type: 'getSnapshot' }),
+    );
+    emitMessage({
+      type: 'stateChanged',
+      snapshot: { ...focusSnapshot(Date.now()), theme: 'dark' },
+    });
+    await waitFor((): void => expect(getByRole('status').textContent).toBe('focus:dark'));
+    await act(async (): Promise<void> => {
+      initial.resolve(emptySnapshot(Date.now()));
+      await initial.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(getByRole('status').textContent).toBe('focus:dark');
   });
 
   it('unsubscribes the broadcast listener on unmount', async (): Promise<void> => {

@@ -1,5 +1,12 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
+import {
+  parseSettingsSectionHash,
+  SETTINGS_SECTIONS,
+  SettingsNav,
+  type SettingsSectionId,
+} from '../shared/SettingsNav';
+import { applyTheme } from '../shared/theme';
 import type { ListsConfig, Rule, ScheduleEntry, SessionSnapshot, Settings } from '../shared/types';
 import { BehaviorDefaults, PauseEconomy } from './Behavior';
 import { Categories } from './Categories';
@@ -10,18 +17,6 @@ import { Schedule } from './Schedule';
 import { SoundsBadge } from './SoundsBadge';
 import type { SettingsStore } from './use-settings';
 import { useSettingsStore } from './use-settings';
-
-type SectionId = 'lists' | 'categories' | 'schedule' | 'strictness' | 'pause' | 'sounds' | 'data';
-
-const SECTIONS: ReadonlyArray<{ id: SectionId; label: string }> = [
-  { id: 'lists', label: 'Lists' },
-  { id: 'categories', label: 'Categories' },
-  { id: 'schedule', label: 'Schedule' },
-  { id: 'strictness', label: 'Strictness and gate' },
-  { id: 'pause', label: 'Pause economy' },
-  { id: 'sounds', label: 'Sounds and badge' },
-  { id: 'data', label: 'Data' },
-];
 
 function formatWallTime(atMs: number): string {
   const d: Date = new Date(atMs);
@@ -41,7 +36,7 @@ function hardBanner(snapshot: SessionSnapshot | null): VNode | null {
 }
 
 interface SectionProps {
-  section: SectionId;
+  section: SettingsSectionId;
   settings: Settings;
   lists: ListsConfig;
   onSettings: (next: Settings) => void;
@@ -231,10 +226,26 @@ function SectionBody(props: SectionProps): VNode {
   }
 }
 
+function SectionPanels(props: SectionProps): VNode {
+  return (
+    <>
+      {SETTINGS_SECTIONS.map(
+        ({ id }: { id: SettingsSectionId }): VNode => (
+          <div key={id} data-settings-section={id} hidden={props.section !== id}>
+            <SectionBody {...props} section={id} />
+          </div>
+        ),
+      )}
+    </>
+  );
+}
+
 export function App(): VNode {
   const store: SettingsStore = useSettingsStore();
-  const [section, setSection]: [SectionId, Dispatch<StateUpdater<SectionId>>] =
-    useState<SectionId>('lists');
+  const [section, setSection]: [SettingsSectionId, Dispatch<StateUpdater<SettingsSectionId>>] =
+    useState<SettingsSectionId>(
+      (): SettingsSectionId => parseSettingsSectionHash(window.location.hash),
+    );
   const [draftSettings, setDraftSettings]: [
     Settings | null,
     Dispatch<StateUpdater<Settings | null>>,
@@ -247,8 +258,21 @@ export function App(): VNode {
   useEffect((): void => {
     const loaded: Settings | null = store.settings;
     if (loaded !== null) {
-      setDraftSettings((current: Settings | null): Settings => current ?? loaded);
+      setDraftSettings(
+        (current: Settings | null): Settings =>
+          current === null ? loaded : { ...current, theme: loaded.theme },
+      );
     }
+  }, [store.settings]);
+  useEffect((): (() => void) => {
+    const onHashChange: () => void = (): void => {
+      setSection(parseSettingsSectionHash(window.location.hash));
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return (): void => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+  useEffect((): void => {
+    if (store.settings !== null) applyTheme(document.documentElement, store.settings.theme);
   }, [store.settings]);
   useEffect((): void => {
     const loaded: ListsConfig | null = store.lists;
@@ -259,27 +283,13 @@ export function App(): VNode {
 
   return (
     <div class="options">
-      <nav class="nav" aria-label="Settings sections">
-        <h1>Focus Lock</h1>
-        <a class="nav-item stats-link" href="../stats/stats.html">
-          Stats
-        </a>
-        {SECTIONS.map(
-          (s: { id: SectionId; label: string }): VNode => (
-            <button
-              type="button"
-              key={s.id}
-              class={section === s.id ? 'nav-item current' : 'nav-item'}
-              aria-current={section === s.id ? 'true' : undefined}
-              onClick={(): void => {
-                setSection(s.id);
-              }}
-            >
-              {s.label}
-            </button>
-          ),
-        )}
-      </nav>
+      <SettingsNav
+        page="options"
+        section={section}
+        theme={store.settings?.theme ?? null}
+        onThemeChange={store.saveTheme}
+        onSectionChange={setSection}
+      />
       <main class="content">
         {hardBanner(store.snapshot)}
         {store.loadError !== null ? (
@@ -289,7 +299,7 @@ export function App(): VNode {
         ) : draftSettings === null || draftLists === null ? (
           <p>Loading settings</p>
         ) : (
-          <SectionBody
+          <SectionPanels
             section={section}
             settings={draftSettings}
             lists={draftLists}

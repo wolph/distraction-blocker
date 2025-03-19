@@ -3,7 +3,9 @@ import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/ho
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../shared/constants';
 import { sendRequest } from '../shared/messages';
 import { isListsConfig, isSettings } from '../shared/runtime-validation';
-import type { ListsConfig, SessionSnapshot, Settings } from '../shared/types';
+import { ThemeControl } from '../shared/ThemeControl';
+import { applyTheme, updateTheme } from '../shared/theme';
+import type { ListsConfig, SessionSnapshot, Settings, ThemeMode } from '../shared/types';
 import { ActiveView } from './ActiveView';
 import { StartForm } from './StartForm';
 import { useSnapshot } from './use-snapshot';
@@ -33,7 +35,10 @@ function PadlockGlyph(): VNode {
   );
 }
 
-function Header(): VNode {
+function Header(props: {
+  theme: ThemeMode | null;
+  onThemeChange: (next: ThemeMode) => Promise<string | null>;
+}): VNode {
   const [pending, setPending]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
     string | null
   >(null);
@@ -81,6 +86,7 @@ function Header(): VNode {
             />
           </svg>
         </button>
+        <ThemeControl mode={props.theme} onChange={props.onThemeChange} className="popup-theme" />
         <button
           type="button"
           class="icon-button"
@@ -88,10 +94,10 @@ function Header(): VNode {
           disabled={pending !== null}
           onClick={(): void => void openPage('Options')}
         >
-          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <svg data-icon="settings" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
             <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2" />
             <path
-              d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9l2.1 2.1m10 10 2.1 2.1M19.1 4.9 17 7m-10 10-2.1 2.1"
+              d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"
               fill="none"
               stroke="currentColor"
               stroke-width="2"
@@ -185,9 +191,28 @@ export function App(): VNode {
     snapshot,
     now,
   }: { snapshot: SessionSnapshot | null; now: number; error: boolean } = useSnapshot();
+  const [theme, setTheme]: [ThemeMode | null, Dispatch<StateUpdater<ThemeMode | null>>] =
+    useState<ThemeMode | null>(null);
+
+  useEffect((): void => {
+    if (snapshot !== null) setTheme(snapshot.theme);
+  }, [snapshot]);
+
+  useEffect((): void => {
+    if (theme !== null) applyTheme(document.documentElement, theme);
+  }, [theme]);
+
+  const saveTheme: (next: ThemeMode) => Promise<string | null> = async (
+    next: ThemeMode,
+  ): Promise<string | null> => {
+    const saveError: string | null = await updateTheme(next);
+    if (saveError === null) setTheme(next);
+    return saveError;
+  };
+
   return (
     <div class="app">
-      <Header />
+      <Header theme={theme} onThemeChange={saveTheme} />
       {error ? (
         <section class="view snapshot-status" role="status">
           Focus status unavailable

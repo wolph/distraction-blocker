@@ -27,8 +27,10 @@ export function useSnapshot(): {
   const [error, setError]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
 
   useEffect((): (() => void) => {
+    let receivedBroadcast: boolean = false;
     void sendRequest({ type: 'getSnapshot' })
       .then((value: unknown): void => {
+        if (receivedBroadcast) return;
         if (isSessionSnapshot(value)) {
           setSnapshot(value);
           setError(false);
@@ -38,11 +40,13 @@ export function useSnapshot(): {
         setError(true);
       })
       .catch((): void => {
+        if (receivedBroadcast) return;
         setSnapshot(null);
         setError(true);
       });
     const onMsg: (msg: unknown) => void = (msg: unknown): void => {
       if (!isRecord(msg) || msg.type !== 'stateChanged') return;
+      receivedBroadcast = true;
       if (isSessionSnapshot(msg.snapshot)) {
         setSnapshot(msg.snapshot);
         setError(false);

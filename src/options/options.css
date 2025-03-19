@@ -1,7 +1,9 @@
 /* Focus Lock options. Calm, high contrast, green is the locked-and-winning
    state, no red anywhere. Light and dark via prefers-color-scheme. */
 
-:root {
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
   --bg: #fafaf8;
   --surface: #ffffff;
   --text: #1c2321;
@@ -15,7 +17,8 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root[data-theme="auto"] {
+    color-scheme: dark;
     --bg: #161a18;
     --surface: #1f2523;
     --text: #e8ece9;
@@ -27,6 +30,20 @@
     --warn: #e3b25e;
     --warn-soft: #33290f;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #161a18;
+  --surface: #1f2523;
+  --text: #e8ece9;
+  --muted: #9aa5a0;
+  --border: #37403c;
+  --accent: #5fc78f;
+  --accent-soft: #23352b;
+  --primary-text: #052e16;
+  --warn: #e3b25e;
+  --warn-soft: #33290f;
 }
 
 * {
@@ -47,45 +64,6 @@ body {
   min-height: 100vh;
   max-width: 960px;
   margin: 0 auto;
-}
-
-.nav {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 24px 16px;
-  min-width: 190px;
-}
-
-.nav h1 {
-  font-size: 18px;
-  margin: 0 8px 16px;
-  color: var(--accent);
-}
-
-.nav-item {
-  text-align: left;
-  padding: 8px 10px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text);
-  font-size: 15px;
-  cursor: pointer;
-}
-
-.stats-link {
-  text-decoration: none;
-}
-
-.nav-item:hover {
-  background: var(--accent-soft);
-}
-
-.nav-item.current {
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 600;
 }
 
 .content {
@@ -364,18 +342,6 @@ table.rules th {
 @media (max-width: 600px) {
   .options {
     flex-direction: column;
-  }
-
-  .nav {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    min-width: 0;
-    padding: 16px;
-  }
-
-  .nav h1 {
-    grid-column: 1 / -1;
-    margin-bottom: 8px;
   }
 
   .content {

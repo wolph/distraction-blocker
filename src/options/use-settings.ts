@@ -7,6 +7,7 @@ import {
   isSessionSnapshot,
   isSettings,
 } from '../shared/runtime-validation';
+import { updateTheme } from '../shared/theme';
 import type { ListsConfig, SessionSnapshot, Settings, ThemeMode } from '../shared/types';
 
 const LOAD_ERROR: string = 'Could not load settings. Reload the page to try again.';
@@ -46,6 +47,7 @@ export function useSettingsStore(): SettingsStore {
 
   useEffect((): (() => void) => {
     let alive: boolean = true;
+    let latestBroadcast: SessionSnapshot | null = null;
     const load: () => Promise<void> = async (): Promise<void> => {
       try {
         const [loadedSettings, loadedLists, loadedSnapshot]: [unknown, unknown, unknown] =
@@ -63,9 +65,10 @@ export function useSettingsStore(): SettingsStore {
           setLoadError(LOAD_ERROR);
           return;
         }
-        setSettings(loadedSettings);
+        const currentSnapshot: SessionSnapshot = latestBroadcast ?? loadedSnapshot;
+        setSettings({ ...loadedSettings, theme: currentSnapshot.theme });
         setLists(loadedLists);
-        setSnapshot(loadedSnapshot);
+        setSnapshot(currentSnapshot);
         setLoadError(null);
       } catch {
         if (alive) setLoadError(LOAD_ERROR);
@@ -78,7 +81,12 @@ export function useSettingsStore(): SettingsStore {
         message.type === 'stateChanged' &&
         isSessionSnapshot(message.snapshot)
       ) {
+        latestBroadcast = message.snapshot;
         setSnapshot(message.snapshot);
+        const theme: ThemeMode = message.snapshot.theme;
+        setSettings((current: Settings | null): Settings | null =>
+          current === null ? null : { ...current, theme },
+        );
       }
     };
     chrome.runtime.onMessage.addListener(onBroadcast);
@@ -117,11 +125,7 @@ export function useSettingsStore(): SettingsStore {
   const saveTheme: (next: ThemeMode) => Promise<string | null> = async (
     next: ThemeMode,
   ): Promise<string | null> => {
-    const ack: Ack = await sendRequest({ type: 'updateTheme', theme: next });
-    const responseError: string | null = ackError(
-      ack,
-      'Could not save theme. Reload the page and try again.',
-    );
+    const responseError: string | null = await updateTheme(next);
     if (responseError !== null) return responseError;
     setSettings((current: Settings | null): Settings | null =>
       current === null ? null : { ...current, theme: next },

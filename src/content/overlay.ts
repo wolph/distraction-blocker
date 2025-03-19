@@ -2,6 +2,7 @@ import { msUntilNextEarnedMinute } from '../shared/budget-display';
 import { extrapolatedBank, remainingPhaseMs } from '../shared/live';
 import type { Ack, Request } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
+import { applyTheme } from '../shared/theme';
 import { formatClock } from '../shared/time';
 import type { GateKind, GateState, SessionSnapshot, Verdict } from '../shared/types';
 
@@ -89,7 +90,8 @@ function padlockSvg(): SVGSVGElement {
 }
 
 const OVERLAY_CSS: string = `
-:host {
+:host,
+:host([data-theme="light"]) {
   color-scheme: light;
   --overlay-bg: rgba(248, 250, 252, 0.98);
   --overlay-opaque: #f8fafc;
@@ -108,7 +110,7 @@ const OVERLAY_CSS: string = `
   --overlay-error-text: #78350f;
 }
 @media (prefers-color-scheme: dark) {
-  :host {
+  :host([data-theme="auto"]) {
     color-scheme: dark;
     --overlay-bg: rgba(15, 23, 42, 0.97);
     --overlay-opaque: #0f172a;
@@ -126,6 +128,24 @@ const OVERLAY_CSS: string = `
     --overlay-error-bg: rgba(120, 53, 15, 0.35);
     --overlay-error-text: #fde68a;
   }
+}
+:host([data-theme="dark"]) {
+  color-scheme: dark;
+  --overlay-bg: rgba(15, 23, 42, 0.97);
+  --overlay-opaque: #0f172a;
+  --overlay-text: #f8fafc;
+  --overlay-muted: #94a3b8;
+  --overlay-subtle: #94a3b8;
+  --overlay-intention: #e2e8f0;
+  --overlay-meter: rgba(148, 163, 184, 0.25);
+  --overlay-pill: rgba(148, 163, 184, 0.18);
+  --overlay-pill-hover: rgba(148, 163, 184, 0.3);
+  --overlay-bank: #86efac;
+  --overlay-input-bg: rgba(15, 23, 42, 0.6);
+  --overlay-input-border: rgba(148, 163, 184, 0.4);
+  --overlay-error-border: rgba(251, 191, 36, 0.45);
+  --overlay-error-bg: rgba(120, 53, 15, 0.35);
+  --overlay-error-text: #fde68a;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 .backdrop {
@@ -221,6 +241,7 @@ button:disabled { cursor: default; }
 
 export function showOverlay(verdict: Verdict, snapshot: SessionSnapshot, stopped?: boolean): void {
   if (mounted === null) mounted = mount();
+  applyTheme(mounted.host, snapshot.theme);
   mounted.actionGeneration += 1;
   mounted.verdict = verdict;
   mounted.snapshot = snapshot;

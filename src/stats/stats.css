@@ -4,8 +4,9 @@
  * documented green, blocked attempts the documented blue). Green is the
  * locked-and-winning color across Focus Lock. No red anywhere on this page.
  */
-:root {
-  color-scheme: light dark;
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
   --page: #f9f9f7;
   --surface: #fcfcfb;
   --ink: #0b0b0b;
@@ -21,7 +22,8 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root[data-theme="auto"] {
+    color-scheme: dark;
     --page: #0d0d0d;
     --surface: #1a1a19;
     --ink: #ffffff;
@@ -37,6 +39,22 @@
   }
 }
 
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --ink: #ffffff;
+  --ink-2: #c3c2b7;
+  --muted: #898781;
+  --grid: #2c2c2a;
+  --baseline: #383835;
+  --border: rgba(255, 255, 255, 0.1);
+  --focus-series: #008300;
+  --attempts-series: #3987e5;
+  --good-text: #0ca30c;
+  --chart-focus: #ffffff;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -50,13 +68,27 @@ body {
   line-height: 1.45;
 }
 
+.stats-shell {
+  display: flex;
+  margin: 0 auto;
+  max-width: 1120px;
+  min-height: 100vh;
+}
+
 .stats-page {
+  flex: 1;
   max-width: 880px;
   margin: 0 auto;
   padding: 24px 20px 48px;
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+@media (max-width: 600px) {
+  .stats-shell {
+    flex-direction: column;
+  }
 }
 
 .page-header h1 {

@@ -1,4 +1,6 @@
-:root {
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
   --bg: #f7faf8;
   --surface: #ffffff;
   --border: #dbe4de;
@@ -18,7 +20,8 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root[data-theme="auto"] {
+    color-scheme: dark;
     --bg: #121a15;
     --surface: #1a241e;
     --border: #2c3a31;
@@ -36,6 +39,26 @@
     --primary-text: #052e16;
     --accent-soft: #1e3327;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121a15;
+  --surface: #1a241e;
+  --border: #2c3a31;
+  --text: #e7efe9;
+  --text-soft: #9db2a4;
+  --focus-color: #22c55e;
+  --focus-strong: #4ade80;
+  --focus-text: #4ade80;
+  --break-color: #2dd4bf;
+  --break-text: #2dd4bf;
+  --paused-color: #fbbf24;
+  --paused-text: #fbbf24;
+  --primary-bg: #22c55e;
+  --primary-bg-hover: #4ade80;
+  --primary-text: #052e16;
+  --accent-soft: #1e3327;
 }
 
 * {
@@ -83,7 +106,8 @@ body {
   flex: 1;
 }
 
-.icon-button {
+.icon-button,
+.header .theme-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -97,9 +121,16 @@ body {
   cursor: pointer;
 }
 
-.icon-button:hover {
+.icon-button:hover,
+.header .theme-button:hover:not(:disabled) {
   background: var(--accent-soft);
   color: var(--focus-strong);
+}
+
+.popup-theme .theme-error {
+  left: auto;
+  right: 0;
+  top: 32px;
 }
 
 .view {

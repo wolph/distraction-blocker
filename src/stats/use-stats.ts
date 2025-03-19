@@ -3,10 +3,13 @@ import { DEFAULT_SETTINGS } from '../shared/constants';
 import { type StatsBundle, sendRequest } from '../shared/messages';
 import {
   isPauseEconomy,
+  isSessionSnapshot,
+  isSettings,
   isStatsBundle,
   parseEventExportResponse,
 } from '../shared/runtime-validation';
-import type { EventRecord, PauseEconomy } from '../shared/types';
+import { updateTheme } from '../shared/theme';
+import type { EventRecord, PauseEconomy, Settings, ThemeMode } from '../shared/types';
 
 export interface StatsLoadState {
   bundle: StatsBundle | null;
@@ -70,33 +73,69 @@ export function useAttemptEvents(): AttemptEventsState {
 
 export interface EconomyState {
   economy: PauseEconomy;
+  theme: ThemeMode | null;
   error: boolean;
+  saveTheme(next: ThemeMode): Promise<string | null>;
 }
 
 /** Pause settings for the spent-versus-earned tile. */
 export function useEconomy(): EconomyState {
   const [economy, setEconomy]: [PauseEconomy, Dispatch<StateUpdater<PauseEconomy>>] =
     useState<PauseEconomy>(DEFAULT_SETTINGS.pause);
+  const [settings, setSettings]: [Settings | null, Dispatch<StateUpdater<Settings | null>>] =
+    useState<Settings | null>(null);
   const [error, setError]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
-  useEffect((): void => {
-    sendRequest({ type: 'getSettings' })
-      .then((settings: unknown): void => {
-        const pause: unknown =
-          typeof settings === 'object' && settings !== null && 'pause' in settings
-            ? settings.pause
-            : undefined;
-        if (isPauseEconomy(pause)) {
-          setEconomy(pause);
+  useEffect((): (() => void) => {
+    let latestTheme: ThemeMode | null = null;
+    void sendRequest({ type: 'getSettings' })
+      .then((loaded: unknown): void => {
+        if (isSettings(loaded) && isPauseEconomy(loaded.pause)) {
+          setSettings({ ...loaded, theme: latestTheme ?? loaded.theme });
+          setEconomy(loaded.pause);
           setError(false);
         } else {
+          setSettings(null);
           setEconomy(DEFAULT_SETTINGS.pause);
           setError(true);
         }
       })
       .catch((): void => {
+        setSettings(null);
         setEconomy(DEFAULT_SETTINGS.pause);
         setError(true);
       });
+
+    const onBroadcast: (message: unknown) => void = (message: unknown): void => {
+      if (
+        typeof message === 'object' &&
+        message !== null &&
+        'type' in message &&
+        message.type === 'stateChanged' &&
+        'snapshot' in message &&
+        isSessionSnapshot(message.snapshot)
+      ) {
+        const theme: ThemeMode = message.snapshot.theme;
+        latestTheme = theme;
+        setSettings((current: Settings | null): Settings | null =>
+          current === null ? null : { ...current, theme },
+        );
+      }
+    };
+    chrome.runtime.onMessage?.addListener(onBroadcast);
+    return (): void => chrome.runtime.onMessage?.removeListener(onBroadcast);
   }, []);
-  return { economy, error };
+
+  const saveTheme: (next: ThemeMode) => Promise<string | null> = async (
+    next: ThemeMode,
+  ): Promise<string | null> => {
+    const saveError: string | null = await updateTheme(next);
+    if (saveError === null) {
+      setSettings((current: Settings | null): Settings | null =>
+        current === null ? null : { ...current, theme: next },
+      );
+    }
+    return saveError;
+  };
+
+  return { economy, theme: settings?.theme ?? null, error, saveTheme };
 }
