@@ -6,6 +6,21 @@ interface CssColors {
   color: string;
 }
 
+interface ElementBounds {
+  label: string;
+  left: number;
+  right: number;
+}
+
+interface StatsLayoutMetrics {
+  documentWidth: number;
+  viewportWidth: number;
+  elements: ElementBounds[];
+  horizontalScrollers: string[];
+  tableClientWidth: number;
+  tableScrollWidth: number;
+}
+
 function relativeLuminance(channel: number): number {
   const normalized: number = channel / 255;
   return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
@@ -110,6 +125,133 @@ test('Stats navigation round-trips through an Options section', async ({
     'page',
   );
   await expect(page.getByRole('heading', { level: 1, name: 'Your focus record' })).toBeVisible();
+});
+
+test('Stats content stays inside responsive viewports', async ({
+  context,
+  extensionId,
+  extPage,
+}) => {
+  await extPage.evaluate(async (): Promise<void> => {
+    const seedDate: Date = new Date();
+    seedDate.setDate(seedDate.getDate() - 1);
+    const year: string = String(seedDate.getFullYear());
+    const month: string = String(seedDate.getMonth() + 1).padStart(2, '0');
+    const day: string = String(seedDate.getDate()).padStart(2, '0');
+    const date: string = `${year}-${month}-${day}`;
+    const now: number = Date.now();
+
+    await chrome.storage.sync.set({
+      [`agg:e2e-responsive:${date}`]: {
+        date,
+        focusMs: 30 * 60_000,
+        sessionsStarted: 1,
+        sessionsCompleted: 1,
+        attempts: { 'blocked.example': 2 },
+        attemptsOther: 0,
+        pausesTaken: 1,
+        pauseMsSpent: 2 * 60_000,
+        pauseMsEarned: 6 * 60_000,
+        unlocksTaken: 1,
+        unlockMsSpent: 60_000,
+        resisted: 1,
+      },
+    });
+    await chrome.storage.local.set({
+      events: [
+        {
+          t: 'sessionStarted',
+          at: now - 30 * 60_000,
+          source: 'manual',
+          mode: 'blacklist',
+          strictness: 'friction',
+          durationMin: 25,
+          intention: 'Responsive layout regression with a deliberately long session intention',
+          sessionId: 'responsive-layout',
+        },
+        {
+          t: 'sessionCompleted',
+          at: now,
+          focusedMs: 25 * 60_000,
+          sessionId: 'responsive-layout',
+        },
+      ],
+    });
+  });
+
+  const page: Page = await context.newPage();
+  await page.goto(`chrome-extension://${extensionId}/src/stats/stats.html`);
+  await expect(page.locator('.tile-row')).toBeVisible();
+  await expect(page.locator('.chart')).toHaveCount(3);
+  await expect(page.locator('.session-table')).toBeVisible();
+
+  const viewports: ReadonlyArray<{ width: number; height: number }> = [
+    { width: 375, height: 812 },
+    { width: 768, height: 900 },
+    { width: 1280, height: 850 },
+  ];
+  for (const viewport of viewports) {
+    await page.setViewportSize(viewport);
+    const metrics: StatsLayoutMetrics = await page.evaluate((): StatsLayoutMetrics => {
+      function bounds(selector: string): ElementBounds[] {
+        const elements: Element[] = Array.from(document.querySelectorAll(selector));
+        if (elements.length === 0) throw new Error(`Missing Stats element: ${selector}`);
+        return elements.map((element: Element, index: number): ElementBounds => {
+          const rect: DOMRect = element.getBoundingClientRect();
+          return { label: `${selector}[${index}]`, left: rect.left, right: rect.right };
+        });
+      }
+
+      const tableScroll: HTMLElement | null = document.querySelector('.table-scroll');
+      if (tableScroll === null) throw new Error('Missing Stats session table scroller');
+      return {
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: document.documentElement.clientWidth,
+        elements: [
+          ...bounds('.stats-page'),
+          ...bounds('.tile'),
+          ...bounds('.card'),
+          ...bounds('.chart'),
+          ...bounds('.table-scroll'),
+        ],
+        horizontalScrollers: Array.from(document.querySelectorAll<HTMLElement>('*'))
+          .filter((element: HTMLElement): boolean => {
+            const overflowX: string = getComputedStyle(element).overflowX;
+            return (
+              (overflowX === 'auto' || overflowX === 'scroll') &&
+              element.scrollWidth > element.clientWidth
+            );
+          })
+          .map((element: HTMLElement): string => {
+            const classes: string = Array.from(element.classList)
+              .map((className: string): string => `.${className}`)
+              .join('');
+            return `${element.tagName.toLowerCase()}${classes}`;
+          }),
+        tableClientWidth: tableScroll.clientWidth,
+        tableScrollWidth: tableScroll.scrollWidth,
+      };
+    });
+
+    expect(metrics.documentWidth, JSON.stringify({ viewport, metrics })).toBeLessThanOrEqual(
+      metrics.viewportWidth,
+    );
+    for (const element of metrics.elements) {
+      const evidence: string = JSON.stringify({ viewport, element });
+      expect(element.left, evidence).toBeGreaterThanOrEqual(0);
+      expect(element.right, evidence).toBeLessThanOrEqual(metrics.viewportWidth);
+    }
+    expect(
+      metrics.horizontalScrollers.every(
+        (selector: string): boolean => selector === 'div.table-scroll',
+      ),
+      JSON.stringify({ viewport, horizontalScrollers: metrics.horizontalScrollers }),
+    ).toBe(true);
+    if (viewport.width === 375) {
+      expect(metrics.tableScrollWidth).toBeGreaterThan(metrics.tableClientWidth);
+      expect(metrics.horizontalScrollers).toContain('div.table-scroll');
+    }
+  }
 });
 
 test('blockable test site loads without a session', async ({ context, siteUrl }) => {

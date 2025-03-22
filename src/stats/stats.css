@@ -77,6 +77,8 @@ body {
 
 .stats-page {
   flex: 1;
+  width: 100%;
+  min-width: 0;
   max-width: 880px;
   margin: 0 auto;
   padding: 24px 20px 48px;
