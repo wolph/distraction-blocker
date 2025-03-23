@@ -72,7 +72,7 @@ describe('popup theme control', (): void => {
       expect(button.disabled).toBe(false);
       return button;
     });
-    expect(container.querySelector('[data-icon="settings"]')).toBeTruthy();
+    expect(container.querySelector('svg.settings-cog[data-icon="settings"]')).toBeTruthy();
     fireEvent.click(theme);
     await waitFor((): void =>
       expect(sendMessageMock).toHaveBeenCalledWith({ type: 'updateTheme', theme: 'light' }),
