@@ -21,11 +21,11 @@ export interface BarChartProps {
 
 /* Fixed internal geometry, scaled responsively via the viewBox. */
 const W: number = 560;
-const H: number = 220;
-const PAD_LEFT: number = 40;
-const PAD_RIGHT: number = 8;
-const PAD_TOP: number = 16;
-const LABEL_BAND: number = 22;
+const H: number = 236;
+const PAD_LEFT: number = 94;
+const PAD_RIGHT: number = 90;
+const PAD_TOP: number = 32;
+const LABEL_BAND: number = 28;
 const BASELINE_Y: number = H - LABEL_BAND;
 const PLOT_H: number = BASELINE_Y - PAD_TOP;
 const PLOT_W: number = W - PAD_LEFT - PAD_RIGHT;
@@ -81,11 +81,12 @@ export function BarChart(props: BarChartProps): JSX.Element {
       d.value > (data[best]?.value ?? 0) ? i : best,
     0,
   );
-  const labelStep: number = Math.ceil(data.length / 7);
+  const labelStep: number = Math.ceil(data.length / 5);
   const barX: (i: number) => number = (i: number): number =>
     PAD_LEFT + band * i + (band - barW) / 2;
   const barH: (value: number) => number = (value: number): number => (value / max) * PLOT_H;
-  const directLabelAnchor: 'middle' | 'end' = maxIndex === data.length - 1 ? 'end' : 'middle';
+  const directLabelAnchor: 'start' | 'middle' | 'end' =
+    maxIndex === 0 ? 'start' : maxIndex === data.length - 1 ? 'end' : 'middle';
   const hoveredDatum: ChartDatum | null =
     hovered === null ? (null as ChartDatum | null) : (data[hovered] ?? null);
   return (

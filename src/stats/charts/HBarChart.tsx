@@ -13,8 +13,8 @@ export interface HBarChartProps {
 }
 
 const W: number = 560;
-const LABEL_W: number = 150;
-const VALUE_W: number = 52;
+const LABEL_W: number = 190;
+const VALUE_W: number = 90;
 const ROW_H: number = 22;
 const BAR_H: number = 12;
 const PAD_Y: number = 4;
@@ -23,7 +23,7 @@ const CHART_DESCRIPTION: string =
   'Horizontal bar chart. Use the keyboard to move through data points, or open View as table for the same values.';
 
 function truncate(label: string): string {
-  return label.length > 24 ? `${label.slice(0, 21)}...` : label;
+  return label.length > 18 ? `${label.slice(0, 15)}...` : label;
 }
 
 /** Rounded data-end on the right, square at the left baseline. */

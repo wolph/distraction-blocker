@@ -12,10 +12,47 @@ interface ElementBounds {
   right: number;
 }
 
+interface ChartTextBounds {
+  bottom: number;
+  label: string;
+  left: number;
+  right: number;
+  top: number;
+  viewBoxHeight: number;
+  viewBoxWidth: number;
+}
+
+interface ChartTextGap {
+  first: string;
+  gap: number;
+  second: string;
+}
+
+interface ChartTextSeparation {
+  direct: string;
+  separation: number;
+  tick: string;
+}
+
+interface HbarRowGeometry {
+  barLeft: number;
+  barRight: number;
+  domainRight: number;
+  label: string;
+  valueLeft: number;
+  valueRight: number;
+  viewBoxWidth: number;
+}
+
 interface StatsLayoutMetrics {
+  chartLabelScreenFontSizes: number[];
+  chartTextBounds: ChartTextBounds[];
+  chartTextGaps: ChartTextGap[];
+  chartTextSeparations: ChartTextSeparation[];
   documentWidth: number;
   viewportWidth: number;
   elements: ElementBounds[];
+  hbarRows: HbarRowGeometry[];
   horizontalScrollers: string[];
   tableClientWidth: number;
   tableScrollWidth: number;
@@ -139,15 +176,38 @@ test('Stats content stays inside responsive viewports', async ({
     const month: string = String(seedDate.getMonth() + 1).padStart(2, '0');
     const day: string = String(seedDate.getDate()).padStart(2, '0');
     const date: string = `${year}-${month}-${day}`;
+    const firstSeedDate: Date = new Date();
+    firstSeedDate.setDate(firstSeedDate.getDate() - 13);
+    const firstYear: string = String(firstSeedDate.getFullYear());
+    const firstMonth: string = String(firstSeedDate.getMonth() + 1).padStart(2, '0');
+    const firstDay: string = String(firstSeedDate.getDate()).padStart(2, '0');
+    const firstDate: string = `${firstYear}-${firstMonth}-${firstDay}`;
     const now: number = Date.now();
 
     await chrome.storage.sync.set({
-      [`agg:e2e-responsive:${date}`]: {
-        date,
-        focusMs: 30 * 60_000,
+      [`agg:e2e-responsive-first:${firstDate}`]: {
+        date: firstDate,
+        focusMs: 60 * 60_000,
         sessionsStarted: 1,
         sessionsCompleted: 1,
-        attempts: { 'blocked.example': 2 },
+        attempts: {},
+        attemptsOther: 0,
+        pausesTaken: 0,
+        pauseMsSpent: 0,
+        pauseMsEarned: 0,
+        unlocksTaken: 0,
+        unlockMsSpent: 0,
+        resisted: 0,
+      },
+      [`agg:e2e-responsive:${date}`]: {
+        date,
+        focusMs: 40 * 60_000,
+        sessionsStarted: 1,
+        sessionsCompleted: 1,
+        attempts: {
+          'blocked.example': 2,
+          'representative-long-domain.example': 9_999_999,
+        },
         attemptsOther: 0,
         pausesTaken: 1,
         pauseMsSpent: 2 * 60_000,
@@ -187,6 +247,11 @@ test('Stats content stays inside responsive viewports', async ({
 
   const viewports: ReadonlyArray<{ width: number; height: number }> = [
     { width: 375, height: 812 },
+    { width: 480, height: 812 },
+    { width: 481, height: 812 },
+    { width: 600, height: 812 },
+    { width: 601, height: 812 },
+    { width: 767, height: 900 },
     { width: 768, height: 900 },
     { width: 1280, height: 850 },
   ];
@@ -204,7 +269,90 @@ test('Stats content stays inside responsive viewports', async ({
 
       const tableScroll: HTMLElement | null = document.querySelector('.table-scroll');
       if (tableScroll === null) throw new Error('Missing Stats session table scroller');
+      const chartLabels: SVGTextElement[] = Array.from(
+        document.querySelectorAll<SVGTextElement>(
+          '.chart .axis-text, .chart .value-label, .chart .direct-label',
+        ),
+      );
       return {
+        chartLabelScreenFontSizes: chartLabels.map((label: SVGTextElement): number => {
+          const matrix: DOMMatrix | null = label.getScreenCTM();
+          if (matrix === null) throw new Error('Missing Stats chart screen transform');
+          const screenScaleY: number = Math.hypot(matrix.c, matrix.d);
+          return Number.parseFloat(getComputedStyle(label).fontSize) * screenScaleY;
+        }),
+        chartTextBounds: chartLabels.map((label: SVGTextElement): ChartTextBounds => {
+          const box: DOMRect = label.getBBox();
+          const svg: SVGSVGElement | null = label.ownerSVGElement;
+          if (svg === null) throw new Error('Missing Stats chart owner SVG');
+          return {
+            bottom: box.y + box.height,
+            label: label.textContent ?? '',
+            left: box.x,
+            right: box.x + box.width,
+            top: box.y,
+            viewBoxHeight: svg.viewBox.baseVal.height,
+            viewBoxWidth: svg.viewBox.baseVal.width,
+          };
+        }),
+        chartTextGaps: Array.from(
+          document.querySelectorAll<SVGSVGElement>('.chart:not(.hbar)'),
+        ).flatMap((chart: SVGSVGElement): ChartTextGap[] => {
+          const labels: Array<{ box: DOMRect; text: string }> = Array.from(
+            chart.querySelectorAll<SVGTextElement>('.axis-text'),
+          )
+            .map((label: SVGTextElement): { box: DOMRect; text: string } => ({
+              box: label.getBBox(),
+              text: label.textContent ?? '',
+            }))
+            .filter(
+              ({ box }: { box: DOMRect; text: string }): boolean =>
+                box.y > chart.viewBox.baseVal.height * 0.8,
+            )
+            .sort(
+              (
+                first: { box: DOMRect; text: string },
+                second: { box: DOMRect; text: string },
+              ): number => first.box.x - second.box.x,
+            );
+          return labels
+            .slice(1)
+            .map((label: { box: DOMRect; text: string }, index: number): ChartTextGap => {
+              const previous: { box: DOMRect; text: string } | undefined = labels[index];
+              if (previous === undefined) throw new Error('Missing previous Stats chart label');
+              return {
+                first: previous.text,
+                gap: label.box.x - (previous.box.x + previous.box.width),
+                second: label.text,
+              };
+            });
+        }),
+        chartTextSeparations: Array.from(
+          document.querySelectorAll<SVGSVGElement>('.chart:not(.hbar)'),
+        ).flatMap((chart: SVGSVGElement): ChartTextSeparation[] => {
+          const direct: SVGTextElement | null = chart.querySelector('.direct-label');
+          if (direct === null) throw new Error('Missing Stats direct chart label');
+          const directBox: DOMRect = direct.getBBox();
+          const ticks: SVGTextElement[] = Array.from(
+            chart.querySelectorAll<SVGTextElement>('.axis-text'),
+          ).filter(
+            (tick: SVGTextElement): boolean =>
+              tick.getBBox().y <= chart.viewBox.baseVal.height * 0.8,
+          );
+          return ticks.map((tick: SVGTextElement): ChartTextSeparation => {
+            const tickBox: DOMRect = tick.getBBox();
+            return {
+              direct: direct.textContent ?? '',
+              separation: Math.max(
+                tickBox.x - (directBox.x + directBox.width),
+                directBox.x - (tickBox.x + tickBox.width),
+                tickBox.y - (directBox.y + directBox.height),
+                directBox.y - (tickBox.y + tickBox.height),
+              ),
+              tick: tick.textContent ?? '',
+            };
+          });
+        }),
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: document.documentElement.clientWidth,
         elements: [
@@ -228,6 +376,29 @@ test('Stats content stays inside responsive viewports', async ({
               .join('');
             return `${element.tagName.toLowerCase()}${classes}`;
           }),
+        hbarRows: Array.from(document.querySelectorAll<SVGGElement>('.hbar-row')).map(
+          (row: SVGGElement): HbarRowGeometry => {
+            const domain: SVGTextElement | null = row.querySelector('.axis-text');
+            const bar: SVGGraphicsElement | null = row.querySelector('.hbar-mark');
+            const value: SVGTextElement | null = row.querySelector('.value-label');
+            const svg: SVGSVGElement | null = row.ownerSVGElement;
+            if (domain === null || bar === null || value === null || svg === null) {
+              throw new Error('Incomplete Stats horizontal chart row');
+            }
+            const domainBox: DOMRect = domain.getBBox();
+            const barBox: DOMRect = bar.getBBox();
+            const valueBox: DOMRect = value.getBBox();
+            return {
+              barLeft: barBox.x,
+              barRight: barBox.x + barBox.width,
+              domainRight: domainBox.x + domainBox.width,
+              label: domain.textContent ?? '',
+              valueLeft: valueBox.x,
+              valueRight: valueBox.x + valueBox.width,
+              viewBoxWidth: svg.viewBox.baseVal.width,
+            };
+          },
+        ),
         tableClientWidth: tableScroll.clientWidth,
         tableScrollWidth: tableScroll.scrollWidth,
       };
@@ -247,10 +418,81 @@ test('Stats content stays inside responsive viewports', async ({
       ),
       JSON.stringify({ viewport, horizontalScrollers: metrics.horizontalScrollers }),
     ).toBe(true);
+    expect(metrics.chartLabelScreenFontSizes.length).toBeGreaterThan(0);
+    expect
+      .soft(
+        Math.min(...metrics.chartLabelScreenFontSizes),
+        JSON.stringify({ viewport, chartLabelScreenFontSizes: metrics.chartLabelScreenFontSizes }),
+      )
+      .toBeGreaterThanOrEqual(9);
+    for (const label of metrics.chartTextBounds) {
+      const evidence: string = JSON.stringify({ viewport, label });
+      expect.soft(label.left, evidence).toBeGreaterThanOrEqual(0);
+      expect.soft(label.top, evidence).toBeGreaterThanOrEqual(0);
+      expect.soft(label.right, evidence).toBeLessThanOrEqual(label.viewBoxWidth);
+      expect.soft(label.bottom, evidence).toBeLessThanOrEqual(label.viewBoxHeight);
+    }
+    for (const gap of metrics.chartTextGaps) {
+      expect.soft(gap.gap, JSON.stringify({ viewport, gap })).toBeGreaterThanOrEqual(2);
+    }
+    for (const separation of metrics.chartTextSeparations) {
+      expect
+        .soft(separation.separation, JSON.stringify({ viewport, separation }))
+        .toBeGreaterThanOrEqual(2);
+    }
+    for (const row of metrics.hbarRows) {
+      const evidence: string = JSON.stringify({ viewport, row });
+      expect.soft(row.domainRight, evidence).toBeLessThanOrEqual(row.barLeft);
+      expect.soft(row.barRight, evidence).toBeLessThanOrEqual(row.valueLeft);
+      expect.soft(row.valueRight, evidence).toBeLessThanOrEqual(row.viewBoxWidth);
+    }
     if (viewport.width === 375) {
       expect(metrics.tableScrollWidth).toBeGreaterThan(metrics.tableClientWidth);
       expect(metrics.horizontalScrollers).toContain('div.table-scroll');
     }
+  }
+
+  const containerCases: ReadonlyArray<{ expectedFontSize: number; width: number }> = [
+    { width: 334, expectedFontSize: 18 },
+    { width: 335, expectedFontSize: 18 },
+    { width: 336, expectedFontSize: 15.1 },
+    { width: 390, expectedFontSize: 15.1 },
+    { width: 391, expectedFontSize: 15.1 },
+    { width: 392, expectedFontSize: 13 },
+    { width: 446, expectedFontSize: 13 },
+    { width: 447, expectedFontSize: 13 },
+    { width: 448, expectedFontSize: 12 },
+    { width: 502, expectedFontSize: 12 },
+    { width: 503, expectedFontSize: 12 },
+    { width: 504, expectedFontSize: 10.1 },
+  ];
+  await page.setViewportSize({ width: 1280, height: 850 });
+  for (const containerCase of containerCases) {
+    const labelSize: { containerWidth: number; internal: number; screen: number } = await page
+      .locator('.chart-wrap')
+      .first()
+      .evaluate(
+        (
+          chartWrap: HTMLElement,
+          width: number,
+        ): { containerWidth: number; internal: number; screen: number } => {
+          chartWrap.style.width = `${width}px`;
+          const label: SVGTextElement | null = chartWrap.querySelector('.axis-text');
+          if (label === null) throw new Error('Missing Stats chart threshold label');
+          const matrix: DOMMatrix | null = label.getScreenCTM();
+          if (matrix === null) throw new Error('Missing Stats chart threshold transform');
+          const internal: number = Number.parseFloat(getComputedStyle(label).fontSize);
+          return {
+            containerWidth: chartWrap.getBoundingClientRect().width,
+            internal,
+            screen: internal * Math.hypot(matrix.c, matrix.d),
+          };
+        },
+        containerCase.width,
+      );
+    expect(labelSize.containerWidth).toBe(containerCase.width);
+    expect(labelSize.internal).toBe(containerCase.expectedFontSize);
+    expect(labelSize.screen).toBeGreaterThanOrEqual(9);
   }
 });
 
