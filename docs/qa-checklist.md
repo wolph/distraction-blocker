@@ -1,6 +1,6 @@
 # Focus Lock QA checklist
 
-Last updated: 2026-08-30. Automated browser evidence targets exact source commit `940ce16fd49fd3bd70f877325ceb8e7127fadcd1`. The run started from a clean `master` worktree and ended on the same commit. It used isolated headless Chrome-for-Testing 151.0.7922.34 profiles and did not touch the user's Chrome.
+Last updated: 2026-08-30. Automated browser evidence targets exact source commit `8de7043e7f2ad6bea5bc6b2cdd0f1fd9a86a8cc6`. The run started from a clean `master` worktree and ended on the same commit. It used isolated headless Chrome-for-Testing 151.0.7922.34 profiles and did not touch the user's Chrome.
 
 ## Exact automated gates
 
@@ -39,6 +39,7 @@ Last updated: 2026-08-30. Automated browser evidence targets exact source commit
 - [x] Component captures cover rings, budget meters, actions, schedule day pills, hard-session rejection, Options controls, Stats pause and unlock columns, and chart focus states.
 - [x] Hover and keyboard focus artifacts cover the popup cog and theme control, both settings menus, all four category bulk actions, typed and untyped gate confirmation, overlay actions, and Stats chart controls in all four theme and media cases.
 - [x] Text rendering, spacing, responsive layout, full-page captures, component captures, and all 38 contact sheets were inspected. No Critical or Important visual defect remained.
+- [x] Stats chart labels remain at least 9 rendered px across 375 through 1280 px. Boundary tests cover all container-query transitions. SVG labels remain inside their view boxes without date, tick, bar, domain, or value collisions, including first-bin maxima, long domains, and seven-digit values.
 - [x] The report records zero viewport overflow or unrelated horizontal scrollers. The wide Recent sessions table remains contained in its intentional in-viewport `.table-scroll` region at 375 px and 768 px.
 
 ## Diagnostics
@@ -48,7 +49,7 @@ Last updated: 2026-08-30. Automated browser evidence targets exact source commit
 - [x] Worker errors: 0.
 - [x] Request failures: 0.
 - [x] Blocked requests: 0.
-- [x] Six shutdown-only worker messages were excluded from worker errors and classified as `intentional-browser-shutdown`. Every message had the exact text `focus-lock background error Error: The browser is shutting down.`
+- [x] Three shutdown-only worker messages were excluded from worker errors and classified as `intentional-browser-shutdown`. Every message had the exact text `focus-lock background error Error: The browser is shutting down.`
 
 ## Manual-only checks
 
@@ -60,11 +61,11 @@ Last updated: 2026-08-30. Automated browser evidence targets exact source commit
 
 ## QA artifacts
 
-The exact evidence directory is `.playwright-mcp/qa-final/master-940ce16f-exact-1788106159542/`.
+The exact evidence directory is `.playwright-mcp/qa-final/master-8de7043e-exact/`.
 
-- Report: `.playwright-mcp/qa-final/master-940ce16f-exact-1788106159542/qa-report.json`
-- Shutdown messages: `.playwright-mcp/qa-final/master-940ce16f-exact-1788106159542/shutdown-worker-messages.json`
-- Contact sheets: `.playwright-mcp/qa-final/master-940ce16f-exact-1788106159542/contact-*.png`
+- Report: `.playwright-mcp/qa-final/master-8de7043e-exact/qa-report.json`
+- Shutdown messages: `.playwright-mcp/qa-final/master-8de7043e-exact/shutdown-worker-messages.json`
+- Contact sheets: `.playwright-mcp/qa-final/master-8de7043e-exact/contact-*.png`
 - Pinned-toolbar capture: `.playwright-mcp/qa-final/toolbar-break-0ed0c275-1788052452918/toolbar-pinned-break-crop.png`
 - Fresh-toolbar prepared profile: `.playwright-mcp/qa-final/toolbar-break-9f453d64-1788070444526/`
 
