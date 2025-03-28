@@ -1,5 +1,4 @@
-/* Focus Lock options. Calm, high contrast, green is the locked-and-winning
-   state, no red anywhere. Light and dark via prefers-color-scheme. */
+/* Focus Lock options. Calm, high contrast, with explicit selection state. */
 
 :root,
 :root[data-theme="light"] {
@@ -14,6 +13,8 @@
   --primary-text: #ffffff;
   --warn: #8a5a00;
   --warn-soft: #fdf3df;
+  --negative: #a4251b;
+  --negative-soft: #fce8e6;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -29,6 +30,8 @@
     --primary-text: #052e16;
     --warn: #e3b25e;
     --warn-soft: #33290f;
+    --negative: #ff8a80;
+    --negative-soft: #3d2422;
   }
 }
 
@@ -44,6 +47,8 @@
   --primary-text: #052e16;
   --warn: #e3b25e;
   --warn-soft: #33290f;
+  --negative: #ff8a80;
+  --negative-soft: #3d2422;
 }
 
 * {
@@ -229,6 +234,12 @@ table.rules th {
   min-width: 200px;
 }
 
+.lists-categories-section {
+  border-top: 1px solid var(--border);
+  margin-top: 24px;
+  padding-top: 1px;
+}
+
 .cat-row {
   display: flex;
   align-items: center;
@@ -258,13 +269,27 @@ table.rules th {
   opacity: 0.5;
 }
 
-.cat-site-actions {
-  margin-left: 28px;
+.selection-count {
+  border-radius: 999px;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 650;
+  padding: 2px 8px;
+  white-space: nowrap;
 }
 
-.cat-count {
-  color: var(--muted);
-  font-size: 13px;
+.selection-count.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.selection-count.deselected {
+  background: var(--negative-soft);
+  color: var(--negative);
+}
+
+.cat-site-actions {
+  margin-left: 28px;
 }
 
 .cat-hosts {
@@ -351,5 +376,14 @@ table.rules th {
 
   .cat-hosts {
     columns: 1;
+  }
+
+  .cat-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .cat-row .spacer {
+    display: none;
   }
 }

@@ -21,6 +21,7 @@ export type Request =
   | { type: 'startSession'; config: SessionConfig }
   | { type: 'openGate'; gate: GateKind; host: string | null }
   | { type: 'confirmGate'; typedPhrase: string | null }
+  | { type: 'forceEndGate' }
   | { type: 'abandonGate' }
   | { type: 'resumeFromPause' }
   | { type: 'startNextFocusEarly' }
@@ -60,6 +61,7 @@ export interface ResponseMap {
   startSession: Ack;
   openGate: Ack;
   confirmGate: Ack;
+  forceEndGate: Ack;
   abandonGate: Ack;
   resumeFromPause: Ack;
   startNextFocusEarly: Ack;

@@ -3,6 +3,7 @@ import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
 import {
   isRelativeMinuteDuration,
   isSafeDayCount,
+  MAX_RELATIVE_DURATION_MS,
   MAX_RELATIVE_MINUTES,
   MAX_SAFE_DAY_COUNT,
   MIN_RELATIVE_MINUTES,
@@ -78,6 +79,10 @@ function NumberField(props: NumberFieldProps): VNode {
 /** Default mode, strictness, cycling numbers, and the deliberation gate. */
 export function BehaviorDefaults(props: BehaviorProps): VNode {
   const s: Settings = props.settings;
+  const delayIsPreset: boolean =
+    s.gate.delayMs === 0 || s.gate.delayMs === 10_000 || s.gate.delayMs === 30_000;
+  const [customDelaySeconds, setCustomDelaySeconds]: [number, Dispatch<StateUpdater<number>>] =
+    useState<number>(delayIsPreset ? 60 : s.gate.delayMs / 1_000);
   return (
     <div>
       <h3>Session defaults</h3>
@@ -223,6 +228,17 @@ export function BehaviorDefaults(props: BehaviorProps): VNode {
           <input
             type="radio"
             name="gate-delay"
+            checked={s.gate.delayMs === 0}
+            onClick={(): void => {
+              props.onChange({ ...s, gate: { ...s.gate, delayMs: 0 } });
+            }}
+          />
+          Wait 0 seconds
+        </label>
+        <label class="check">
+          <input
+            type="radio"
+            name="gate-delay"
             checked={s.gate.delayMs === 10_000}
             onClick={(): void => {
               props.onChange({ ...s, gate: { ...s.gate, delayMs: 10_000 } });
@@ -241,7 +257,32 @@ export function BehaviorDefaults(props: BehaviorProps): VNode {
           />
           Wait 30 seconds
         </label>
+        <label class="check">
+          <input
+            type="radio"
+            name="gate-delay"
+            checked={!delayIsPreset}
+            onClick={(): void => {
+              props.onChange({
+                ...s,
+                gate: { ...s.gate, delayMs: customDelaySeconds * 1_000 },
+              });
+            }}
+          />
+          Custom
+        </label>
       </div>
+      <NumberField
+        label="Custom delay (seconds)"
+        value={customDelaySeconds}
+        max={MAX_RELATIVE_DURATION_MS / 1_000}
+        isValid={(value: number): boolean => Number.isSafeInteger(value * 1_000)}
+        errorMessage="Custom delay must be a positive whole number of seconds."
+        onValue={(value: number): void => {
+          setCustomDelaySeconds(value);
+          props.onChange({ ...s, gate: { ...s.gate, delayMs: value * 1_000 } });
+        }}
+      />
       <label class="check">
         <input
           type="checkbox"
@@ -254,6 +295,19 @@ export function BehaviorDefaults(props: BehaviorProps): VNode {
           }}
         />
         Also require typing a sentence
+      </label>
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={s.gate.allowForceEnd}
+          onClick={(): void => {
+            props.onChange({
+              ...s,
+              gate: { ...s.gate, allowForceEnd: !s.gate.allowForceEnd },
+            });
+          }}
+        />
+        Enable "Ignore timeout and end anyway" button
       </label>
     </div>
   );

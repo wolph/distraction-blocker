@@ -263,6 +263,54 @@ describe('BehaviorDefaults', () => {
     expect(next.gate.delayMs).toBe(30_000);
   });
 
+  it('offers a zero-second gate delay', (): void => {
+    const onChange = vi.fn();
+    const { getByLabelText } = render(
+      <BehaviorDefaults settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
+
+    fireEvent.click(getByLabelText('Wait 0 seconds'));
+
+    const next: Settings = onChange.mock.calls[0]?.[0] as Settings;
+    expect(next.gate.delayMs).toBe(0);
+  });
+
+  it('converts a custom whole-second delay to milliseconds', (): void => {
+    const onChange = vi.fn();
+    const { getByLabelText } = render(
+      <BehaviorDefaults settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
+
+    fireEvent.input(getByLabelText('Custom delay (seconds)'), { target: { value: '7' } });
+
+    const next: Settings = onChange.mock.calls[0]?.[0] as Settings;
+    expect(next.gate.delayMs).toBe(7_000);
+  });
+
+  it('rejects a fractional custom delay', (): void => {
+    const onChange = vi.fn();
+    const { getByLabelText, getByText } = render(
+      <BehaviorDefaults settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
+
+    fireEvent.input(getByLabelText('Custom delay (seconds)'), { target: { value: '1.5' } });
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(getByText('Custom delay must be a positive whole number of seconds.')).toBeTruthy();
+  });
+
+  it('toggles the force-end button setting', (): void => {
+    const onChange = vi.fn();
+    const { getByLabelText } = render(
+      <BehaviorDefaults settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
+
+    fireEvent.click(getByLabelText('Enable "Ignore timeout and end anyway" button'));
+
+    const next: Settings = onChange.mock.calls[0]?.[0] as Settings;
+    expect(next.gate.allowForceEnd).toBe(true);
+  });
+
   it('rejects zero focus minutes with a field-specific error', (): void => {
     const onChange = vi.fn();
     const { getByLabelText, getByText } = render(

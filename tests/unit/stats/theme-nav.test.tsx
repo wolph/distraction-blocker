@@ -83,7 +83,7 @@ describe('Stats theme and navigation', (): void => {
     const { getByRole } = render(<App />);
     await waitFor((): void => expect(getByRole('link', { name: 'Stats' })).toBeTruthy());
     expect(getByRole('link', { name: 'Stats' }).getAttribute('aria-current')).toBe('page');
-    expect(getByRole('link', { name: 'Lists' }).getAttribute('href')).toBe(
+    expect(getByRole('link', { name: 'Lists and categories' }).getAttribute('href')).toBe(
       '../options/options.html#lists',
     );
     expect(sent.filter((request: Request): boolean => request.type === 'getSettings')).toHaveLength(

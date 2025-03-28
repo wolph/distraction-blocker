@@ -2072,7 +2072,9 @@ describe('Engine', () => {
 
   it('uses the configured delay and typing requirement for the cancel gate', async () => {
     const h: Harness = makeEngine({
-      settings: { gate: { delayMs: 10_000, requireTypedPhrase: false } },
+      settings: {
+        gate: { delayMs: 10_000, requireTypedPhrase: false, allowForceEnd: false },
+      },
     });
     await h.engine.startSession(manualConfig);
     await h.engine.openGate('cancel', null);
@@ -2087,6 +2089,47 @@ describe('Engine', () => {
     });
     h.setNow(T0 + 10_000);
     expect(await h.engine.confirmGate(null)).toEqual({ ok: true });
+  });
+
+  it('force ends an eligible friction cancellation before the timer and phrase complete', async () => {
+    const h: Harness = makeEngine({
+      settings: {
+        gate: {
+          ...DEFAULT_SETTINGS.gate,
+          delayMs: 30_000,
+          requireTypedPhrase: true,
+          allowForceEnd: true,
+        },
+      },
+    });
+    await h.engine.startSession(manualConfig);
+    await h.engine.openGate('cancel', null);
+
+    expect(h.engine.snapshot().gate?.forceEndAvailable).toBe(true);
+    expect(await h.engine.forceEndGate()).toEqual({ ok: true });
+    expect(h.engine.snapshot().phase).toBe('idle');
+  });
+
+  it('rejects force end when the setting is disabled or the gate is not cancellation', async () => {
+    const disabled: Harness = makeEngine();
+    await disabled.engine.startSession(manualConfig);
+    await disabled.engine.openGate('cancel', null);
+    expect(disabled.engine.snapshot().gate?.forceEndAvailable).toBe(false);
+    expect(await disabled.engine.forceEndGate()).toEqual({
+      ok: false,
+      error: 'force end is not enabled',
+    });
+
+    const pause: Harness = makeEngine({
+      bankMs: 300_000,
+      settings: { gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: true } },
+    });
+    await pause.engine.startSession(manualConfig);
+    await pause.engine.openGate('pause', null);
+    expect(await pause.engine.forceEndGate()).toEqual({
+      ok: false,
+      error: 'force end only applies when ending a session',
+    });
   });
 
   it('persists a theme update and reapplies blocking to mounted overlays', async () => {
@@ -2129,7 +2172,9 @@ describe('Engine', () => {
     async (gate: 'pause' | 'unlockSite' | 'cancel'): Promise<void> => {
       const h: Harness = makeEngine({
         bankMs: 600_000,
-        settings: { gate: { delayMs: 10_000, requireTypedPhrase: true } },
+        settings: {
+          gate: { delayMs: 10_000, requireTypedPhrase: true, allowForceEnd: false },
+        },
       });
       await h.engine.startSession(manualConfig);
       await h.engine.openGate(gate, gate === 'unlockSite' ? 'facebook.com' : null);

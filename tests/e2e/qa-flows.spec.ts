@@ -182,7 +182,7 @@ test('hard-session Options rejects weakening and saves a stronger rule', async (
     .toMatch(/^Changes that weaken blocking will be rejected until \d{2}:\d{2}\.$/);
 
   await optionsPage.getByRole('button', { name: 'Remove blocked.example' }).click();
-  await optionsPage.getByRole('button', { name: 'Save lists' }).click();
+  await optionsPage.getByRole('button', { name: 'Save lists and categories' }).click();
   await expect(optionsPage.getByRole('alert')).toContainText(
     /hard session.*removing blocked sites.*unlocks when it ends/i,
   );
@@ -191,7 +191,7 @@ test('hard-session Options rejects weakening and saves a stronger rule', async (
   const customEditor = optionsPage.locator('.rules-editor').filter({ hasText: 'Custom blacklist' });
   await customEditor.getByLabel('Pattern').fill('extra.example');
   await customEditor.getByRole('button', { name: 'Add rule' }).click();
-  await optionsPage.getByRole('button', { name: 'Save lists' }).click();
+  await optionsPage.getByRole('button', { name: 'Save lists and categories' }).click();
   await expect(optionsPage.locator('.save-ok')).toHaveText('Saved.');
 
   const lists: ListsConfig = await sendExtensionRequest(extPage, { type: 'getLists' });

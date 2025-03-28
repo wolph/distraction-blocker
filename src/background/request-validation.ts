@@ -162,9 +162,10 @@ function isPauseSettings(value: unknown): boolean {
 function isGateSettings(value: unknown): boolean {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['delayMs', 'requireTypedPhrase']) &&
+    hasExactKeys(value, ['delayMs', 'requireTypedPhrase', 'allowForceEnd']) &&
     isRelativeMillisecondDuration(value.delayMs, true) &&
-    typeof value.requireTypedPhrase === 'boolean'
+    typeof value.requireTypedPhrase === 'boolean' &&
+    typeof value.allowForceEnd === 'boolean'
   );
 }
 
@@ -363,6 +364,7 @@ function parseRecord(value: Record<string, unknown>): Request | null {
   switch (value.type) {
     case 'getSnapshot':
     case 'abandonGate':
+    case 'forceEndGate':
     case 'resumeFromPause':
     case 'startNextFocusEarly':
     case 'getSettings':

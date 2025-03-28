@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import './chrome-fake';
 
-import { cleanup, render, waitFor } from '@testing-library/preact';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ActiveView } from '../../../src/popup/ActiveView';
@@ -45,6 +45,7 @@ function gateSnap(): SessionSnapshot {
     openedAt: NOW - 2_000,
     readyAt: NOW + 8_000,
     requiredPhrase: null,
+    forceEndAvailable: false,
   };
   return { ...focusSnap(), gate };
 }
@@ -187,6 +188,28 @@ describe('ActiveView', () => {
       name: 'Take the pause',
     }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(false);
+  });
+
+  it('offers force end before timeout and sends the dedicated request', async (): Promise<void> => {
+    const snapshot: SessionSnapshot = gateSnap();
+    if (snapshot.gate === null) throw new Error('gate fixture must contain a gate');
+    snapshot.gate = {
+      ...snapshot.gate,
+      kind: 'cancel',
+      requiredPhrase: 'I choose to stop',
+      forceEndAvailable: true,
+    };
+    const { getByRole } = render(h(ActiveView, { snapshot, now: NOW }));
+
+    const forceEnd: HTMLButtonElement = getByRole('button', {
+      name: 'Ignore timeout and end anyway',
+    }) as HTMLButtonElement;
+    expect(forceEnd.disabled).toBe(false);
+    fireEvent.click(forceEnd);
+
+    await waitFor((): void => {
+      expect(sendMessageMock).toHaveBeenCalledWith({ type: 'forceEndGate' });
+    });
   });
 
   it.each([

@@ -2,18 +2,10 @@ import type { VNode } from 'preact';
 import { ThemeControl } from './ThemeControl';
 import type { ThemeMode } from './types';
 
-export type SettingsSectionId =
-  | 'lists'
-  | 'categories'
-  | 'schedule'
-  | 'strictness'
-  | 'pause'
-  | 'sounds'
-  | 'data';
+export type SettingsSectionId = 'lists' | 'schedule' | 'strictness' | 'pause' | 'sounds' | 'data';
 
 export const SETTINGS_SECTIONS: ReadonlyArray<{ id: SettingsSectionId; label: string }> = [
-  { id: 'lists', label: 'Lists' },
-  { id: 'categories', label: 'Categories' },
+  { id: 'lists', label: 'Lists and categories' },
   { id: 'schedule', label: 'Schedule' },
   { id: 'strictness', label: 'Strictness and gate' },
   { id: 'pause', label: 'Pause economy' },
@@ -23,6 +15,7 @@ export const SETTINGS_SECTIONS: ReadonlyArray<{ id: SettingsSectionId; label: st
 
 export function parseSettingsSectionHash(hash: string): SettingsSectionId {
   const candidate: string = hash.startsWith('#') ? hash.slice(1) : hash;
+  if (candidate === 'categories') return 'lists';
   return SETTINGS_SECTIONS.some(({ id }: { id: SettingsSectionId }): boolean => id === candidate)
     ? (candidate as SettingsSectionId)
     : 'lists';

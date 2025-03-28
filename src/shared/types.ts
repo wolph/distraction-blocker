@@ -74,6 +74,8 @@ export interface GateState {
   readyAt: number;
   /** exact phrase the user must type, null when typing is not required */
   requiredPhrase: string | null;
+  /** worker-approved escape for a friction cancellation gate */
+  forceEndAvailable: boolean;
 }
 
 export interface SiteUnlock {
@@ -119,6 +121,7 @@ export interface PauseEconomy {
 export interface GateSettings {
   delayMs: number;
   requireTypedPhrase: boolean;
+  allowForceEnd: boolean;
 }
 
 export interface SoundSettings {

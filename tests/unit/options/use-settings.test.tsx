@@ -276,14 +276,13 @@ describe('useSettingsStore', () => {
 });
 
 describe('App frame', () => {
-  it('renders the seven nav sections', async (): Promise<void> => {
+  it('renders the six merged nav sections', async (): Promise<void> => {
     const { getByRole } = render(<App />);
     await waitFor((): void => {
-      expect(getByRole('link', { name: 'Lists' })).toBeTruthy();
+      expect(getByRole('link', { name: 'Lists and categories' })).toBeTruthy();
     });
     for (const label of [
-      'Lists',
-      'Categories',
+      'Lists and categories',
       'Schedule',
       'Strictness and gate',
       'Pause economy',
@@ -302,21 +301,27 @@ describe('App frame', () => {
 
     window.location.hash = '#categories';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
-    await waitFor((): void => expect(getByRole('heading', { name: 'Categories' })).toBeTruthy());
+    await waitFor((): void =>
+      expect(getByRole('heading', { name: 'Lists and categories' })).toBeTruthy(),
+    );
 
     window.location.hash = '#invalid';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
-    await waitFor((): void => expect(getByRole('heading', { name: 'Lists' })).toBeTruthy());
+    await waitFor((): void =>
+      expect(getByRole('heading', { name: 'Lists and categories' })).toBeTruthy(),
+    );
   });
 
   it('keeps unfinished local rule input across section navigation', async (): Promise<void> => {
     const { getAllByLabelText, getByRole } = render(<App />);
-    await waitFor((): void => expect(getByRole('heading', { name: 'Lists' })).toBeTruthy());
+    await waitFor((): void =>
+      expect(getByRole('heading', { name: 'Lists and categories' })).toBeTruthy(),
+    );
     const pattern: HTMLInputElement = getAllByLabelText('Pattern')[0] as HTMLInputElement;
     fireEvent.input(pattern, { target: { value: 'unfinished.example' } });
-    fireEvent.click(getByRole('link', { name: 'Categories' }));
-    expect(getByRole('heading', { name: 'Categories' })).toBeTruthy();
-    fireEvent.click(getByRole('link', { name: 'Lists' }));
+    fireEvent.click(getByRole('link', { name: 'Schedule' }));
+    expect(getByRole('heading', { name: 'Schedule' })).toBeTruthy();
+    fireEvent.click(getByRole('link', { name: 'Lists and categories' }));
     expect((getAllByLabelText('Pattern')[0] as HTMLInputElement).value).toBe('unfinished.example');
   });
 
@@ -370,7 +375,7 @@ describe('App frame', () => {
   it('shows no banner while idle and picks up a stateChanged broadcast', async (): Promise<void> => {
     const { getByText, queryByText } = render(<App />);
     await waitFor((): void => {
-      expect(getByText('Lists')).toBeTruthy();
+      expect(getByText('Lists and categories')).toBeTruthy();
     });
     const bannerText: string = 'Changes that weaken blocking will be rejected until 09:30.';
     expect(queryByText(bannerText)).toBeNull();
@@ -392,7 +397,7 @@ describe('App frame', () => {
     expect(queryByText('Loading settings')).toBeNull();
   });
 
-  it('saves only list fields and keeps an unsaved category weakening in the draft', async (): Promise<void> => {
+  it('saves list and category draft changes together', async (): Promise<void> => {
     const committed: ListsConfig = {
       ...DEFAULT_LISTS,
       categories: { ...DEFAULT_LISTS.categories, social: true },
@@ -401,17 +406,15 @@ describe('App frame', () => {
     fake.respond('updateLists', { ok: true });
     const { getAllByLabelText, getAllByRole, getByLabelText, getByRole } = render(<App />);
     await waitFor((): void => {
-      expect(getByRole('link', { name: 'Categories' })).toBeTruthy();
+      expect(getByLabelText('Social media')).toBeTruthy();
     });
 
-    fireEvent.click(getByRole('link', { name: 'Categories' }));
     fireEvent.click(getByLabelText('Social media'));
-    fireEvent.click(getByRole('link', { name: 'Lists' }));
     fireEvent.input(getAllByLabelText('Pattern')[0] as HTMLElement, {
       target: { value: 'nu.nl' },
     });
     fireEvent.click(getAllByRole('button', { name: 'Add rule' })[0] as HTMLElement);
-    fireEvent.click(getByRole('button', { name: 'Save lists' }));
+    fireEvent.click(getByRole('button', { name: 'Save lists and categories' }));
 
     await waitFor((): void => {
       expect(fake.sent.some((request: Request): boolean => request.type === 'updateLists')).toBe(
@@ -423,10 +426,7 @@ describe('App frame', () => {
         request.type === 'updateLists',
     );
     expect(update?.lists.custom).toEqual([{ kind: 'host', pattern: 'nu.nl' }]);
-    expect(update?.lists.categories.social).toBe(true);
-
-    fireEvent.click(getByRole('link', { name: 'Categories' }));
-    expect((getByLabelText('Social media') as HTMLInputElement).checked).toBe(false);
+    expect(update?.lists.categories.social).toBe(false);
   });
 
   it('does not include an unsaved strictness weakening in a pause save', async (): Promise<void> => {

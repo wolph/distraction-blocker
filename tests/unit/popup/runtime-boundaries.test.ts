@@ -310,6 +310,7 @@ describe('popup runtime response boundaries', (): void => {
         openedAt: NOW - 10_000,
         readyAt: NOW - 1,
         requiredPhrase: null,
+        forceEndAvailable: false,
       };
       sendMessageMock.mockImplementation(
         async (request: Request): Promise<unknown> =>

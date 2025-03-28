@@ -255,6 +255,7 @@ export class Engine {
       openedAt: now,
       readyAt: now + this.settings.gate.delayMs,
       requiredPhrase: needsPhrase ? cancelPhrase(session.config.intention) : null,
+      forceEndAvailable: gate === 'cancel' && this.settings.gate.allowForceEnd,
     };
     this.recordEvent({ t: 'gateOpened', at: now, gate, ...sessionIdentity(session) });
     this.dirty = true;
@@ -283,6 +284,34 @@ export class Engine {
       if (err instanceof CoreError) return this.fail(now, err.message);
       throw err;
     }
+    this.runtime.gate = null;
+    this.dirty = true;
+    this.needsBlocking = true;
+    await this.commit(now);
+    return { ok: true };
+  }
+
+  async forceEndGate(): Promise<Ack> {
+    const now: number = this.ports.now();
+    this.catchUp(now);
+    const gate: GateState | null = this.runtime.gate;
+    const session: SessionState | null = this.runtime.session;
+    if (gate === null) return this.fail(now, 'no gate is open');
+    if (gate.kind !== 'cancel') {
+      return this.fail(now, 'force end only applies when ending a session');
+    }
+    if (session === null) {
+      this.runtime.gate = null;
+      this.dirty = true;
+      return this.fail(now, 'the session already ended');
+    }
+    if (session.config.strictness !== 'friction') {
+      return this.fail(now, 'hard sessions cannot be canceled');
+    }
+    if (!this.settings.gate.allowForceEnd || !gate.forceEndAvailable) {
+      return this.fail(now, 'force end is not enabled');
+    }
+    this.executeGate(gate, session, now);
     this.runtime.gate = null;
     this.dirty = true;
     this.needsBlocking = true;

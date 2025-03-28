@@ -168,6 +168,8 @@ export function mergeSettings(raw: unknown, base: Settings = DEFAULT_SETTINGS): 
         typeof gate.requireTypedPhrase === 'boolean'
           ? gate.requireTypedPhrase
           : base.gate.requireTypedPhrase,
+      allowForceEnd:
+        typeof gate.allowForceEnd === 'boolean' ? gate.allowForceEnd : base.gate.allowForceEnd,
     },
     badgeCountdown:
       typeof stored.badgeCountdown === 'boolean' ? stored.badgeCountdown : base.badgeCountdown,
@@ -669,6 +671,8 @@ function parseGate(value: unknown): GateState | null {
     openedAt: value.openedAt,
     readyAt: value.readyAt,
     requiredPhrase: value.requiredPhrase,
+    forceEndAvailable:
+      typeof value.forceEndAvailable === 'boolean' ? value.forceEndAvailable : false,
   };
 }
 

@@ -108,6 +108,8 @@ const OVERLAY_CSS: string = `
   --overlay-error-border: #d97706;
   --overlay-error-bg: #fffbeb;
   --overlay-error-text: #78350f;
+  --overlay-danger: #a4251b;
+  --overlay-danger-soft: #fce8e6;
 }
 @media (prefers-color-scheme: dark) {
   :host([data-theme="auto"]) {
@@ -127,6 +129,8 @@ const OVERLAY_CSS: string = `
     --overlay-error-border: rgba(251, 191, 36, 0.45);
     --overlay-error-bg: rgba(120, 53, 15, 0.35);
     --overlay-error-text: #fde68a;
+    --overlay-danger: #ff8a80;
+    --overlay-danger-soft: #3d2422;
   }
 }
 :host([data-theme="dark"]) {
@@ -146,6 +150,8 @@ const OVERLAY_CSS: string = `
   --overlay-error-border: rgba(251, 191, 36, 0.45);
   --overlay-error-bg: rgba(120, 53, 15, 0.35);
   --overlay-error-text: #fde68a;
+  --overlay-danger: #ff8a80;
+  --overlay-danger-soft: #3d2422;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 .backdrop {
@@ -191,6 +197,11 @@ button:disabled { cursor: default; }
 }
 .pill:hover:not(:disabled) { background: var(--overlay-pill-hover); }
 .pill:disabled { opacity: 0.55; }
+.force-end {
+  border: 1px solid var(--overlay-danger); border-radius: 999px; padding: 0.55rem 1.2rem;
+  background: var(--overlay-danger-soft); color: var(--overlay-danger); font-size: 0.9rem;
+}
+.force-end:hover { filter: brightness(0.96); }
 .ready { display: block; font-size: 0.75rem; color: var(--overlay-muted); }
 .ready[hidden] { display: none; }
 .linkish {
@@ -565,6 +576,14 @@ function buildGate(m: Mounted, gate: GateState, snap: SessionSnapshot, now: numb
   confirm.hidden = true;
   confirm.addEventListener('click', (): void => requestConfirmGate(phrase?.value ?? null));
   wrap.appendChild(confirm);
+  if (gate.forceEndAvailable) {
+    const forceEnd: HTMLButtonElement = document.createElement('button');
+    forceEnd.className = 'force-end';
+    forceEnd.type = 'button';
+    forceEnd.textContent = 'Ignore timeout and end anyway';
+    forceEnd.addEventListener('click', (): void => requestForceEndGate());
+    wrap.appendChild(forceEnd);
+  }
   m.gate = { ringFill, count, waitWrap, confirm, phrase };
   updateGate(m, snap, now);
   return wrap;
@@ -657,8 +676,12 @@ function requestConfirmGate(typedPhrase: string | null): void {
   void sendAndRefresh({ type: 'confirmGate', typedPhrase });
 }
 
+function requestForceEndGate(): void {
+  void sendAndRefresh({ type: 'forceEndGate' });
+}
+
 async function sendAndRefresh(
-  req: Extract<Request, { type: 'openGate' | 'confirmGate' | 'abandonGate' }>,
+  req: Extract<Request, { type: 'openGate' | 'confirmGate' | 'forceEndGate' | 'abandonGate' }>,
 ): Promise<void> {
   const mount: Mounted | null = mounted;
   if (mount === null) return;

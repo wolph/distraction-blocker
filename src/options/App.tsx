@@ -45,13 +45,12 @@ interface SectionProps {
 }
 
 function ListsSection(props: SectionProps): VNode {
-  const committed: ListsConfig = props.store.lists ?? props.lists;
   return (
     <section>
-      <h2>Lists</h2>
+      <h2>Lists and categories</h2>
       <p class="help">
         Custom rules block during blacklist sessions. The whitelist is what stays reachable during
-        whitelist sessions.
+        whitelist sessions. Bundled categories block common time sinks.
       </p>
       <RulesEditor
         title="Custom blacklist"
@@ -67,39 +66,17 @@ function ListsSection(props: SectionProps): VNode {
           props.onLists({ ...props.lists, whitelist: next });
         }}
       />
+      <div class="lists-categories-section">
+        <h3>Bundled categories</h3>
+        <p class="help">
+          Bundled lists of common time sinks. Toggle a whole category, then open it to keep single
+          sites available.
+        </p>
+        <Categories lists={props.lists} onChange={props.onLists} />
+      </div>
       <SaveRow
-        label="Save lists"
-        onSave={(): Promise<string | null> =>
-          props.store.saveLists({
-            ...committed,
-            custom: props.lists.custom,
-            whitelist: props.lists.whitelist,
-          })
-        }
-      />
-    </section>
-  );
-}
-
-function CategoriesSection(props: SectionProps): VNode {
-  const committed: ListsConfig = props.store.lists ?? props.lists;
-  return (
-    <section>
-      <h2>Categories</h2>
-      <p class="help">
-        Bundled lists of common time sinks. Toggle a whole category, then open it to keep single
-        sites available.
-      </p>
-      <Categories lists={props.lists} onChange={props.onLists} />
-      <SaveRow
-        label="Save categories"
-        onSave={(): Promise<string | null> =>
-          props.store.saveLists({
-            ...committed,
-            categories: props.lists.categories,
-            exclusions: props.lists.exclusions,
-          })
-        }
+        label="Save lists and categories"
+        onSave={(): Promise<string | null> => props.store.saveLists(props.lists)}
       />
     </section>
   );
@@ -211,8 +188,6 @@ function SectionBody(props: SectionProps): VNode {
   switch (props.section) {
     case 'lists':
       return <ListsSection {...props} />;
-    case 'categories':
-      return <CategoriesSection {...props} />;
     case 'schedule':
       return <ScheduleSection {...props} />;
     case 'strictness':

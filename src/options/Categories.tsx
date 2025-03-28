@@ -8,6 +8,14 @@ export interface CategoriesProps {
   onChange: (next: ListsConfig) => void;
 }
 
+function siteCountLabel(count: number): string {
+  return count === 1 ? '1 site' : `${count} sites`;
+}
+
+function categoryCountLabel(count: number): string {
+  return count === 1 ? '1 category' : `${count} categories`;
+}
+
 /**
  * One row per bundled category: toggle, title, entry count, expander.
  * Expanded rows list every host with a checkbox. Unchecked hosts land in
@@ -82,10 +90,29 @@ export function Categories(props: CategoriesProps): VNode {
   const allCategoriesDeselected: boolean = ALL_CATEGORIES.every(
     (category: CategoryList): boolean => !props.lists.categories[category.id],
   );
+  const selectedCategoryCount: number = ALL_CATEGORIES.filter(
+    (category: CategoryList): boolean => props.lists.categories[category.id],
+  ).length;
+  const deselectedCategoryCount: number = ALL_CATEGORIES.length - selectedCategoryCount;
 
   return (
     <div class="categories">
       <fieldset class="cat-bulk-actions" aria-label="Category bulk actions">
+        <span
+          class="selection-count selected"
+          role="status"
+          aria-label={`Selected ${categoryCountLabel(selectedCategoryCount)}`}
+        >
+          Selected {selectedCategoryCount}
+        </span>
+        <span
+          class="selection-count deselected"
+          role="status"
+          aria-label={`Deselected ${categoryCountLabel(deselectedCategoryCount)}`}
+        >
+          Deselected {deselectedCategoryCount}
+        </span>
+        <span class="spacer" />
         <button
           type="button"
           class="ghost"
@@ -113,7 +140,13 @@ export function Categories(props: CategoriesProps): VNode {
       {ALL_CATEGORIES.map((category: CategoryList): VNode => {
         const enabled: boolean = props.lists.categories[category.id];
         const excluded: string[] = props.lists.exclusions[category.id] ?? [];
-        const open: boolean = expanded.has(category.id);
+        const excludedHosts: Set<string> = new Set(excluded);
+        const deselectedHostCount: number = category.hosts.filter((host: string): boolean =>
+          excludedHosts.has(host),
+        ).length;
+        const selectedHostCount: number = category.hosts.length - deselectedHostCount;
+        const partial: boolean = selectedHostCount > 0 && deselectedHostCount > 0;
+        const open: boolean = partial || expanded.has(category.id);
         const allHostsSelected: boolean = category.hosts.every(
           (host: string): boolean => !excluded.includes(host),
         );
@@ -133,17 +166,40 @@ export function Categories(props: CategoriesProps): VNode {
                 />
                 {category.title}
               </label>
-              <span class="cat-count">{category.hosts.length} sites</span>
+              <span
+                class="selection-count selected"
+                role="status"
+                aria-label={`${category.title}: selected ${siteCountLabel(selectedHostCount)}`}
+              >
+                Selected {selectedHostCount}
+              </span>
+              <span
+                class="selection-count deselected"
+                role="status"
+                aria-label={`${category.title}: deselected ${siteCountLabel(deselectedHostCount)}`}
+              >
+                Deselected {deselectedHostCount}
+              </span>
               <span class="spacer" />
               <button
                 type="button"
                 class="ghost"
                 aria-expanded={open}
+                aria-label={
+                  partial
+                    ? `${category.title} sites are shown because the category is partially selected`
+                    : undefined
+                }
+                disabled={partial}
                 onClick={(): void => {
                   toggleExpanded(category.id);
                 }}
               >
-                {open ? `Hide ${category.title} sites` : `Show ${category.title} sites`}
+                {partial
+                  ? 'Partially selected'
+                  : open
+                    ? `Hide ${category.title} sites`
+                    : `Show ${category.title} sites`}
               </button>
             </div>
             {open ? (

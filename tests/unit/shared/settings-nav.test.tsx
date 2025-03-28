@@ -21,24 +21,22 @@ describe('settings navigation', (): void => {
 
   it('parses known hashes and falls back to Lists', (): void => {
     expect(parseSettingsSectionHash('#schedule')).toBe('schedule');
+    expect(parseSettingsSectionHash('#categories')).toBe('lists');
     expect(parseSettingsSectionHash('#not-a-section')).toBe('lists');
     expect(parseSettingsSectionHash('')).toBe('lists');
   });
 
-  it('renders Stats and all seven Options links on Options', (): void => {
+  it('renders Stats and all six Options links on Options', (): void => {
     const { getAllByRole, getByRole } = render(
-      <SettingsNav
-        page="options"
-        section="categories"
-        theme="auto"
-        onThemeChange={async () => null}
-      />,
+      <SettingsNav page="options" section="lists" theme="auto" onThemeChange={async () => null} />,
     );
-    expect(SETTINGS_SECTIONS).toHaveLength(7);
-    expect(getAllByRole('link')).toHaveLength(8);
+    expect(SETTINGS_SECTIONS).toHaveLength(6);
+    expect(getAllByRole('link')).toHaveLength(7);
     expect(getByRole('link', { name: 'Stats' }).getAttribute('href')).toBe('../stats/stats.html');
-    expect(getByRole('link', { name: 'Categories' }).getAttribute('href')).toBe('#categories');
-    expect(getByRole('link', { name: 'Categories' }).getAttribute('aria-current')).toBe('page');
+    expect(getByRole('link', { name: 'Lists and categories' }).getAttribute('href')).toBe('#lists');
+    expect(getByRole('link', { name: 'Lists and categories' }).getAttribute('aria-current')).toBe(
+      'page',
+    );
   });
 
   it('renders exact Options hashes and marks Stats current on Stats', (): void => {

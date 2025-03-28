@@ -39,6 +39,8 @@ export async function routeMessage(
       return engine.openGate(msg.gate, msg.host);
     case 'confirmGate':
       return engine.confirmGate(msg.typedPhrase);
+    case 'forceEndGate':
+      return engine.forceEndGate();
     case 'abandonGate':
       return engine.abandonGate();
     case 'resumeFromPause':

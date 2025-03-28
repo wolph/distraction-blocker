@@ -43,6 +43,7 @@ const VALID_REQUESTS: RequestByType = {
   startSession: { type: 'startSession', config: SESSION_CONFIG },
   openGate: { type: 'openGate', gate: 'unlockSite', host: 'news.example' },
   confirmGate: { type: 'confirmGate', typedPhrase: null },
+  forceEndGate: { type: 'forceEndGate' },
   abandonGate: { type: 'abandonGate' },
   resumeFromPause: { type: 'resumeFromPause' },
   startNextFocusEarly: { type: 'startNextFocusEarly' },
@@ -267,6 +268,7 @@ describe('parseRequest', (): void => {
     { pause: { ...SETTINGS.pause, earnRatio: Number.NaN } },
     { pause: { ...SETTINGS.pause, extra: true } },
     { gate: { ...SETTINGS.gate, delayMs: 1.5 } },
+    { gate: { ...SETTINGS.gate, allowForceEnd: 'yes' } },
     { gate: { ...SETTINGS.gate, extra: true } },
     { badgeCountdown: 1 },
     { sounds: { ...SETTINGS.sounds, masterVolume: 1.1 } },
@@ -285,6 +287,11 @@ describe('parseRequest', (): void => {
         settings: { ...SETTINGS, ...update },
       }),
     ).toBeNull();
+  });
+
+  it('accepts the force-end gate request without payload fields', (): void => {
+    expect(parseRequest({ type: 'forceEndGate' })).toEqual({ type: 'forceEndGate' });
+    expect(parseRequest({ type: 'forceEndGate', extra: true })).toBeNull();
   });
 
   it.each([

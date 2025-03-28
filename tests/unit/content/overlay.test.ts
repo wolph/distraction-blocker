@@ -157,6 +157,7 @@ describe('overlay', () => {
         openedAt: Date.now() - 2_000,
         readyAt: Date.now() - 1_000,
         requiredPhrase: null,
+        forceEndAvailable: false,
       },
     });
 
@@ -165,6 +166,37 @@ describe('overlay', () => {
         (button: HTMLButtonElement): boolean => button.textContent === label,
       ),
     ).toBe(true);
+  });
+
+  it('offers force end before timeout and sends the dedicated request', async (): Promise<void> => {
+    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+      async (): Promise<unknown> => ({ ok: true }),
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    showOverlay(verdict, {
+      ...focusSnap(),
+      gate: {
+        kind: 'cancel',
+        host: null,
+        openedAt: Date.now(),
+        readyAt: Date.now() + 30_000,
+        requiredPhrase: 'I choose to stop',
+        forceEndAvailable: true,
+      },
+    });
+
+    const forceEnd: HTMLButtonElement = Array.from(
+      shadowRoot().querySelectorAll<HTMLButtonElement>('button'),
+    ).find(
+      (button: HTMLButtonElement): boolean =>
+        button.textContent === 'Ignore timeout and end anyway',
+    ) as HTMLButtonElement;
+    expect(forceEnd.disabled).toBe(false);
+    forceEnd.click();
+
+    await vi.waitFor((): void => {
+      expect(sendMessage).toHaveBeenCalledWith({ type: 'forceEndGate' });
+    });
   });
 
   it('owns focus and traps Tab when hard mode has no enabled controls', () => {
@@ -370,6 +402,7 @@ describe('overlay action failures', () => {
         openedAt: Date.now() - 2_000,
         readyAt: Date.now() - 1_000,
         requiredPhrase,
+        forceEndAvailable: false,
       },
     });
     const root: ShadowRoot = shadowRoot();
@@ -515,6 +548,7 @@ describe('overlay keyboard scrolling', () => {
           openedAt: Date.now() - 2_000,
           readyAt: Date.now() - 1_000,
           requiredPhrase: 'I choose to stop',
+          forceEndAvailable: false,
         },
       });
       const root: ShadowRoot = shadowRoot();

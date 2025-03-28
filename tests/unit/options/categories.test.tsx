@@ -11,6 +11,67 @@ afterEach((): void => {
 });
 
 describe('Categories', () => {
+  it('shows overall category counts and per-category bundled-site counts', (): void => {
+    const social: CategoryList = ALL_CATEGORIES.find(
+      (category: CategoryList): boolean => category.id === 'social',
+    ) as CategoryList;
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      categories: { ...DEFAULT_LISTS.categories, social: true, video: true },
+      exclusions: { social: [social.hosts[0] as string, 'retired.example'] },
+    };
+
+    const { getByLabelText } = render(<Categories lists={lists} onChange={vi.fn()} />);
+
+    expect(getByLabelText('Selected 2 categories').textContent).toBe('Selected 2');
+    expect(getByLabelText('Deselected 5 categories').textContent).toBe('Deselected 5');
+    expect(
+      getByLabelText(`Social media: selected ${social.hosts.length - 1} sites`).textContent,
+    ).toBe(`Selected ${social.hosts.length - 1}`);
+    expect(getByLabelText('Social media: deselected 1 site').textContent).toBe('Deselected 1');
+  });
+
+  it('keeps a partially selected category expanded and refuses to collapse it', (): void => {
+    const social: CategoryList = ALL_CATEGORIES.find(
+      (category: CategoryList): boolean => category.id === 'social',
+    ) as CategoryList;
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      exclusions: { social: [social.hosts[0] as string] },
+    };
+    const { getByLabelText, getByRole } = render(<Categories lists={lists} onChange={vi.fn()} />);
+
+    const toggle: HTMLButtonElement = getByRole('button', {
+      name: 'Social media sites are shown because the category is partially selected',
+    }) as HTMLButtonElement;
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle.disabled).toBe(true);
+    expect(getByLabelText(social.hosts[0] as string)).toBeTruthy();
+  });
+
+  it('opens a category when a prop update makes it partially selected', (): void => {
+    const social: CategoryList = ALL_CATEGORIES.find(
+      (category: CategoryList): boolean => category.id === 'social',
+    ) as CategoryList;
+    const { getByRole, rerender } = render(<Categories lists={DEFAULT_LISTS} onChange={vi.fn()} />);
+    expect(
+      getByRole('button', { name: 'Show Social media sites' }).getAttribute('aria-expanded'),
+    ).toBe('false');
+
+    rerender(
+      <Categories
+        lists={{ ...DEFAULT_LISTS, exclusions: { social: [social.hosts[0] as string] } }}
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      getByRole('button', {
+        name: 'Social media sites are shown because the category is partially selected',
+      }).getAttribute('aria-expanded'),
+    ).toBe('true');
+  });
+
   it('toggling a category on fires onChange with the toggle set', (): void => {
     const onChange = vi.fn();
     const { getByLabelText } = render(<Categories lists={DEFAULT_LISTS} onChange={onChange} />);
@@ -42,8 +103,7 @@ describe('Categories', () => {
       exclusions: { social: ['facebook.com', 'x.com'] },
     };
     const onChange = vi.fn();
-    const { getByLabelText, getByRole } = render(<Categories lists={lists} onChange={onChange} />);
-    fireEvent.click(getByRole('button', { name: 'Show Social media sites' }));
+    const { getByLabelText } = render(<Categories lists={lists} onChange={onChange} />);
     fireEvent.click(getByLabelText('facebook.com'));
     const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
     expect(next.exclusions.social).toEqual(['x.com']);
@@ -167,7 +227,6 @@ describe('Categories', () => {
     };
     const onChange = vi.fn();
     const { getByRole } = render(<Categories lists={lists} onChange={onChange} />);
-    fireEvent.click(getByRole('button', { name: 'Show Social media sites' }));
 
     fireEvent.click(getByRole('button', { name: 'Select all Social media sites' }));
 
@@ -188,7 +247,6 @@ describe('Categories', () => {
     };
     const onChange = vi.fn();
     const { getByRole } = render(<Categories lists={lists} onChange={onChange} />);
-    fireEvent.click(getByRole('button', { name: 'Show Social media sites' }));
 
     fireEvent.click(getByRole('button', { name: 'Deselect all Social media sites' }));
 

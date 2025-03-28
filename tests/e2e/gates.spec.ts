@@ -8,6 +8,7 @@ interface FastEconomyOptions {
   unlockMs?: number;
   gateDelayMs?: number;
   requireTypedPhrase?: boolean;
+  allowForceEnd?: boolean;
 }
 
 async function configureFastEconomy(
@@ -30,6 +31,7 @@ async function configureFastEconomy(
       gate: {
         delayMs: options.gateDelayMs ?? 500,
         requireTypedPhrase: options.requireTypedPhrase ?? false,
+        allowForceEnd: options.allowForceEnd ?? false,
       },
     },
   });
@@ -240,6 +242,44 @@ test('friction cancellation without typing uses the configured delay', async ({ 
       typedPhrase: null,
     }),
   ).toEqual({ ok: true });
+  const ended: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+  expect(ended.phase).toBe('idle');
+});
+
+test('zero delay removes the wait but still honors the typing setting', async ({ extPage }) => {
+  const requiredPhrase: string = cancelPhrase('e2e test run');
+  await configureFastEconomy(extPage, { gateDelayMs: 0, requireTypedPhrase: true });
+  await startTestSession(extPage, { durationMin: 0.3 });
+  expect(
+    await sendExtensionRequest(extPage, { type: 'openGate', gate: 'cancel', host: null }),
+  ).toEqual({ ok: true });
+
+  const opened: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+  expect(opened.gate?.readyAt).toBe(opened.gate?.openedAt);
+  expect(
+    await sendExtensionRequest(extPage, { type: 'confirmGate', typedPhrase: null }),
+  ).toMatchObject({ ok: false });
+  expect(
+    await sendExtensionRequest(extPage, { type: 'confirmGate', typedPhrase: requiredPhrase }),
+  ).toEqual({ ok: true });
+});
+
+test('enabled force end bypasses timeout and typing for friction cancellation', async ({
+  extPage,
+}) => {
+  await configureFastEconomy(extPage, {
+    gateDelayMs: 30_000,
+    requireTypedPhrase: true,
+    allowForceEnd: true,
+  });
+  await startTestSession(extPage, { durationMin: 0.3 });
+  expect(
+    await sendExtensionRequest(extPage, { type: 'openGate', gate: 'cancel', host: null }),
+  ).toEqual({ ok: true });
+
+  const opened: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+  expect(opened.gate?.forceEndAvailable).toBe(true);
+  expect(await sendExtensionRequest(extPage, { type: 'forceEndGate' })).toEqual({ ok: true });
   const ended: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
   expect(ended.phase).toBe('idle');
 });

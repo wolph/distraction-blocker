@@ -129,8 +129,7 @@ test('Stats navigation round-trips through an Options section', async ({
   );
 
   const optionsDestinations: ReadonlyArray<{ name: string; id: string }> = [
-    { name: 'Lists', id: 'lists' },
-    { name: 'Categories', id: 'categories' },
+    { name: 'Lists and categories', id: 'lists' },
     { name: 'Schedule', id: 'schedule' },
     { name: 'Strictness and gate', id: 'strictness' },
     { name: 'Pause economy', id: 'pause' },

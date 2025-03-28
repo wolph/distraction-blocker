@@ -17,6 +17,8 @@
   --primary-bg-hover: #166534;
   --primary-text: #ffffff;
   --accent-soft: #e5f6ea;
+  --danger: #a4251b;
+  --danger-soft: #fce8e6;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -38,6 +40,8 @@
     --primary-bg-hover: #4ade80;
     --primary-text: #052e16;
     --accent-soft: #1e3327;
+    --danger: #ff8a80;
+    --danger-soft: #3d2422;
   }
 }
 
@@ -59,6 +63,8 @@
   --primary-bg-hover: #4ade80;
   --primary-text: #052e16;
   --accent-soft: #1e3327;
+  --danger: #ff8a80;
+  --danger-soft: #3d2422;
 }
 
 * {
@@ -493,4 +499,20 @@ body {
 
 .gate-confirm:disabled {
   cursor: default;
+}
+
+.gate-force-end {
+  padding: 8px 12px;
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.gate-force-end:disabled {
+  cursor: default;
+  opacity: 0.55;
 }

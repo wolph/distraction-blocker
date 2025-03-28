@@ -5,6 +5,11 @@ import { sendRequest } from '../shared/messages';
 import { ackError } from '../shared/runtime-validation';
 import type { GateKind, GateState } from '../shared/types';
 
+type GateRequest =
+  | { type: 'abandonGate' }
+  | { type: 'confirmGate'; typedPhrase: string | null }
+  | { type: 'forceEndGate' };
+
 const CONFIRM_LABELS: Record<GateKind, string> = {
   pause: 'Take the pause',
   unlockSite: 'Unlock this site',
@@ -36,10 +41,8 @@ export function GatePanel({
   const ready: boolean = now >= gate.readyAt;
   const phraseOk: boolean = gate.requiredPhrase === null || typed === gate.requiredPhrase;
 
-  const requestGateUpdate: (
-    request: { type: 'abandonGate' } | { type: 'confirmGate'; typedPhrase: string | null },
-  ) => Promise<void> = async (
-    request: { type: 'abandonGate' } | { type: 'confirmGate'; typedPhrase: string | null },
+  const requestGateUpdate: (request: GateRequest) => Promise<void> = async (
+    request: GateRequest,
   ): Promise<void> => {
     setError(null);
     setPending(true);
@@ -63,6 +66,10 @@ export function GatePanel({
       type: 'confirmGate',
       typedPhrase: gate.requiredPhrase === null ? null : typed,
     });
+  };
+
+  const forceEnd: () => void = (): void => {
+    void requestGateUpdate({ type: 'forceEndGate' });
   };
 
   return (
@@ -92,6 +99,11 @@ export function GatePanel({
       >
         {CONFIRM_LABELS[gate.kind]}
       </button>
+      {gate.forceEndAvailable ? (
+        <button type="button" class="gate-force-end" disabled={pending} onClick={forceEnd}>
+          Ignore timeout and end anyway
+        </button>
+      ) : null}
       {error !== null ? (
         <p class="form-error" role="alert">
           {error}

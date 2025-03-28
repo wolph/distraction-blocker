@@ -42,6 +42,24 @@ describe('theme helpers', (): void => {
 });
 
 describe('ThemeControl', (): void => {
+  it('uses the approved dial, sun, and constellation artwork', (): void => {
+    const onChange = async (): Promise<null> => null;
+    const auto = render(<ThemeControl mode="auto" onChange={onChange} />);
+    expect(auto.container.querySelector('[data-icon="theme-auto"] circle')).toBeTruthy();
+    expect(
+      auto.container.querySelector('[data-icon="theme-auto"] path[d="M12 4a8 8 0 0 0 0 16Z"]'),
+    ).toBeTruthy();
+    auto.unmount();
+
+    const light = render(<ThemeControl mode="light" onChange={onChange} />);
+    expect(light.container.querySelector('[data-icon="theme-light"] circle[r="3.5"]')).toBeTruthy();
+    light.unmount();
+
+    const dark = render(<ThemeControl mode="dark" onChange={onChange} />);
+    expect(dark.container.querySelectorAll('[data-icon="theme-dark"] path')).toHaveLength(2);
+    expect(dark.container.querySelector('[data-icon="theme-dark"] path[d*="A8.5"]')).toBeNull();
+  });
+
   it.each([
     ['auto' as const, 'light' as const, 'theme-auto'],
     ['light' as const, 'dark' as const, 'theme-light'],
