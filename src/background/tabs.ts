@@ -304,7 +304,7 @@ async function applyTabEffectsNow(
 async function queueResolvedTabApply(
   engine: Engine,
   tabId: number,
-  attemptKind: 'navigation' | 'existing',
+  attemptKind: 'navigation' | 'existing' | null,
   resolveInput: (taskVersion: number) => Promise<TabApplyInput | null>,
   options: ResolvedTabApplyOptions = {},
   operationVersion: number = beginTabOperation(tabId),
@@ -329,7 +329,7 @@ async function queueResolvedTabApply(
         if (input === null || !operationIsCurrent()) return null;
         if (options.requireCurrentTask && tabTaskVersions.get(tabId) !== taskVersion) return null;
         const verdict: Verdict = engine.verdictFor(input.url);
-        if (!verdict.blocked || recordedAttemptUrl === input.url) {
+        if (!verdict.blocked || attemptKind === null || recordedAttemptUrl === input.url) {
           return { input, persistence: null };
         }
         const persistence: Promise<void> = engine.recordAttempt(input.url, tabId, attemptKind);
@@ -353,7 +353,9 @@ async function queueResolvedTabApply(
         if (input === null || !operationIsCurrent()) return true;
         if (options.requireCurrentTask && tabTaskVersions.get(tabId) !== taskVersion) return true;
         const verdict: Verdict = engine.verdictFor(input.url);
-        if (verdict.blocked && recordedAttemptUrl !== input.url) return false;
+        if (attemptKind !== null && verdict.blocked && recordedAttemptUrl !== input.url) {
+          return false;
+        }
         let effectsAccepted: boolean = false;
         await applyTabEffectsNow(
           engine,
@@ -1020,43 +1022,45 @@ export function applyBlockingFactory(engine: () => Engine): () => Promise<void> 
       };
       e.reconcileTabs(new Map(), protectedTabIds());
 
-      const applyTasks: Promise<void>[] = queriedTabIds.map((tabId: number): Promise<void> => {
-        const releaseOperationLease: () => void = acquireTabOperationLease(tabId);
-        try {
-          return queueResolvedTabApply(
-            e,
-            tabId,
-            'existing',
-            async (taskVersion: number): Promise<TabApplyInput | null> => {
-              const liveTab: LiveTabIdentity | null = await readStableLiveTabIdentity(e, tabId);
-              if (liveTab === null || tabTaskVersions.get(tabId) !== taskVersion) return null;
-              return {
-                url: liveTab.identity.url,
-                mutedNow: liveTab.tab.mutedInfo?.muted ?? false,
-                mutedByExtension: liveTab.tab.mutedInfo?.extensionId === chrome.runtime.id,
-                documentId: liveTab.identity.documentId,
-              };
-            },
-            {
-              beforeEffects: (input: TabApplyInput): void => {
-                const liveState: LiveTabState = {
-                  url: input.url,
-                  mutedByExtension: input.mutedByExtension,
-                  documentId: input.documentId,
+      const applyTasks: Promise<void>[] = queriedTabIds
+        .filter((tabId: number): boolean => !activeOperationTabIdsAtStart.has(tabId))
+        .map((tabId: number): Promise<void> => {
+          const releaseOperationLease: () => void = acquireTabOperationLease(tabId);
+          try {
+            return queueResolvedTabApply(
+              e,
+              tabId,
+              null,
+              async (taskVersion: number): Promise<TabApplyInput | null> => {
+                const liveTab: LiveTabIdentity | null = await readStableLiveTabIdentity(e, tabId);
+                if (liveTab === null || tabTaskVersions.get(tabId) !== taskVersion) return null;
+                return {
+                  url: liveTab.identity.url,
+                  mutedNow: liveTab.tab.mutedInfo?.muted ?? false,
+                  mutedByExtension: liveTab.tab.mutedInfo?.extensionId === chrome.runtime.id,
+                  documentId: liveTab.identity.documentId,
                 };
-                e.reconcileTabs(new Map([[tabId, liveState]]), protectedTabIds(tabId));
               },
-              requireCurrentTask: true,
-              validateDocument: true,
-            },
-            sweepOperationVersion,
-            queriedTabUrls.get(tabId) ?? null,
-          ).finally(releaseOperationLease);
-        } catch (error: unknown) {
-          releaseOperationLease();
-          throw error;
-        }
-      });
+              {
+                beforeEffects: (input: TabApplyInput): void => {
+                  const liveState: LiveTabState = {
+                    url: input.url,
+                    mutedByExtension: input.mutedByExtension,
+                    documentId: input.documentId,
+                  };
+                  e.reconcileTabs(new Map([[tabId, liveState]]), protectedTabIds(tabId));
+                },
+                requireCurrentTask: true,
+                validateDocument: true,
+              },
+              sweepOperationVersion,
+              queriedTabUrls.get(tabId) ?? null,
+            ).finally(releaseOperationLease);
+          } catch (error: unknown) {
+            releaseOperationLease();
+            throw error;
+          }
+        });
       await Promise.all(applyTasks);
       const cleanupVersions: Map<number, number> = new Map(tabTaskVersions);
       await e.flushRuntime();
