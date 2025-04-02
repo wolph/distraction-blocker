@@ -93,6 +93,7 @@ interface RemovedTabClaim {
 }
 
 const activeTabOperationLeases: Map<number, TabOperationLeaseState> = new Map();
+const pendingTabReadinessLeases: Map<number, TabOperationLeaseState> = new Map();
 let tabOperationSequence: number = 0;
 
 function acquireTabOperationLease(tabId: number): () => void {
@@ -109,6 +110,24 @@ function acquireTabOperationLease(tabId: number): () => void {
     leaseState.count -= 1;
     if (leaseState.count === 0 && activeTabOperationLeases.get(tabId) === leaseState) {
       activeTabOperationLeases.delete(tabId);
+    }
+  };
+}
+
+function acquireTabReadinessLease(tabId: number): () => void {
+  let leaseState: TabOperationLeaseState | undefined = pendingTabReadinessLeases.get(tabId);
+  if (leaseState === undefined) {
+    leaseState = { count: 0 };
+    pendingTabReadinessLeases.set(tabId, leaseState);
+  }
+  leaseState.count += 1;
+  let released: boolean = false;
+  return (): void => {
+    if (released) return;
+    released = true;
+    leaseState.count -= 1;
+    if (leaseState.count === 0 && pendingTabReadinessLeases.get(tabId) === leaseState) {
+      pendingTabReadinessLeases.delete(tabId);
     }
   };
 }
@@ -137,6 +156,7 @@ export function invalidateRemovedTab(tabId: number): Promise<void> {
   const inherited: InheritedMuteClaim | undefined = inheritedMuteClaims.get(tabId);
   inheritedMuteClaims.delete(tabId);
   activeTabOperationLeases.delete(tabId);
+  pendingTabReadinessLeases.delete(tabId);
 
   const claims: RemovedTabClaim[] = [];
   if (continuation !== undefined) {
@@ -991,6 +1011,7 @@ export function applyBlockingFactory(engine: () => Engine): () => Promise<void> 
       const sweepStartTaskSequence: number = tabTaskSequence;
       const activeTabIdsAtStart: Set<number> = new Set(tabTaskTails.keys());
       const activeOperationTabIdsAtStart: Set<number> = new Set(activeTabOperationLeases.keys());
+      const pendingReadinessTabIdsAtStart: Set<number> = new Set(pendingTabReadinessLeases.keys());
       const tabs: chrome.tabs.Tab[] = await chrome.tabs.query({});
       const queriedTabIds: number[] = [
         ...new Set(
@@ -1023,7 +1044,7 @@ export function applyBlockingFactory(engine: () => Engine): () => Promise<void> 
       e.reconcileTabs(new Map(), protectedTabIds());
 
       const applyTasks: Promise<void>[] = queriedTabIds
-        .filter((tabId: number): boolean => !activeOperationTabIdsAtStart.has(tabId))
+        .filter((tabId: number): boolean => !pendingReadinessTabIdsAtStart.has(tabId))
         .map((tabId: number): Promise<void> => {
           const releaseOperationLease: () => void = acquireTabOperationLease(tabId);
           try {
@@ -1093,18 +1114,21 @@ export function registerTabListeners(
   ): void => {
     if (details.frameId !== 0) return;
     const releaseOperationLease: () => void = acquireTabOperationLease(details.tabId);
+    const releaseReadinessLease: () => void = acquireTabReadinessLease(details.tabId);
     const operationVersion: number = beginTabOperation(details.tabId, details.url);
     void cancelMuteContinuation(details.tabId);
     let readiness: Promise<Engine>;
     try {
       readiness = ready();
     } catch (error: unknown) {
+      releaseReadinessLease();
       releaseOperationLease();
       reportError(error);
       return;
     }
     void readiness
       .then(async (engine: Engine): Promise<void> => {
+        releaseReadinessLease();
         await queueResolvedTabApply(
           engine,
           details.tabId,
@@ -1138,7 +1162,10 @@ export function registerTabListeners(
         );
       })
       .catch(reportError)
-      .finally(releaseOperationLease);
+      .finally((): void => {
+        releaseReadinessLease();
+        releaseOperationLease();
+      });
   };
 
   chrome.webNavigation.onCommitted.addListener(
