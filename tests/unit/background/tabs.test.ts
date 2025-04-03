@@ -4174,9 +4174,17 @@ describe('applyBlockingFactory', () => {
   });
 
   it('lets a policy sweep supersede after-ready navigation waiting for persistence', async () => {
+    type NavigationDetails = {
+      tabId: number;
+      url: string;
+      frameId: number;
+      documentId?: string;
+    };
     const url = 'https://facebook.com/pending-navigation-policy-change';
     const documentId = 'pending-navigation-document';
     const harness = omittedClaimEngine(url);
+    const reportError = vi.fn();
+    let committedListener: ((details: NavigationDetails) => void) | undefined;
     let currentVerdict: Verdict = blocked;
     let releasePersistence: () => void = (): void => {
       throw new Error('persistence release was not initialized');
@@ -4207,18 +4215,23 @@ describe('applyBlockingFactory', () => {
       },
       webNavigation: {
         getFrame: vi.fn().mockResolvedValue({ documentId }),
+        onCommitted: {
+          addListener: vi.fn((listener: (details: NavigationDetails) => void): void => {
+            committedListener = listener;
+          }),
+        },
+        onHistoryStateUpdated: { addListener: vi.fn() },
       },
     });
+    registerTabListeners((): Promise<Engine> => Promise.resolve(harness.engine), reportError);
+    if (committedListener === undefined) throw new Error('committed listener was not registered');
 
-    const navigationApply: Promise<void> = applyToTab(
-      harness.engine,
-      7,
+    committedListener({
+      tabId: 7,
       url,
-      false,
-      'navigation',
-      false,
       documentId,
-    );
+      frameId: 0,
+    });
     await bounded(persistenceStarted, 'pending navigation persistence');
     currentVerdict = allowed;
 
@@ -4231,13 +4244,19 @@ describe('applyBlockingFactory', () => {
       .soft(sendMessage)
       .toHaveBeenCalledWith(7, expect.objectContaining({ type: 'clearBlock' }), { documentId });
     releasePersistence();
-    await bounded(navigationApply, 'superseded navigation completion');
+    await bounded(
+      new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 0);
+      }),
+      'superseded navigation completion',
+    );
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(sendMessage).not.toHaveBeenCalledWith(
       7,
       expect.objectContaining({ type: 'applyBlock' }),
       { documentId },
     );
+    expect(reportError).not.toHaveBeenCalled();
   });
 
   it('preserves omitted-tab work completed while the sweep query is pending', async () => {
