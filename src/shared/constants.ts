@@ -1,4 +1,13 @@
-import type { CategoryId, ListsConfig, SessionSnapshot, Settings } from './types';
+import { normalizeHost } from './host-normalization';
+import type {
+  CategoryId,
+  ListsConfig,
+  Rule,
+  SessionRuleSnapshot,
+  SessionSnapshot,
+  Settings,
+  SetupState,
+} from './types';
 
 export const CATEGORY_IDS: readonly CategoryId[] = [
   'social',
@@ -53,6 +62,83 @@ export const DEFAULT_LISTS: ListsConfig = {
   },
   exclusions: {},
 };
+
+export const DEFAULT_SETUP: SetupState = {
+  version: 1,
+  completed: false,
+  websiteAccess: 'pending',
+  blockingRegistration: 'unavailable',
+  websiteAccessNotice: null,
+  storageMode: null,
+  syncWriteStatus: 'idle',
+  legacyImported: false,
+};
+
+function canonicalRule(rule: Rule): Rule {
+  return {
+    kind: rule.kind,
+    pattern: rule.kind === 'host' ? canonicalHost(rule.pattern) : rule.pattern,
+  };
+}
+
+function canonicalHost(host: string): string {
+  return normalizeHost(host) ?? host.trim().toLowerCase();
+}
+
+function canonicalRules(rules: Rule[]): Rule[] {
+  const keyed: Map<string, Rule> = new Map<string, Rule>();
+  for (const rule of rules) {
+    const canonical: Rule = canonicalRule(rule);
+    keyed.set(`${canonical.kind}\u0000${canonical.pattern}`, canonical);
+  }
+  return [...keyed.entries()]
+    .sort(([left]: [string, Rule], [right]: [string, Rule]): number =>
+      left < right ? -1 : left > right ? 1 : 0,
+    )
+    .map(([, rule]: [string, Rule]): Rule => rule);
+}
+
+function canonicalHosts(hosts: string[]): string[] {
+  return [...new Set(hosts.map(canonicalHost))].sort();
+}
+
+function canonicalPolicy(lists: ListsConfig): unknown {
+  const categories: Array<[CategoryId, boolean]> = CATEGORY_IDS.map(
+    (id: CategoryId): [CategoryId, boolean] => [id, lists.categories[id]],
+  );
+  const exclusions: Array<[CategoryId, string[]]> = CATEGORY_IDS.flatMap(
+    (id: CategoryId): Array<[CategoryId, string[]]> => {
+      const hosts: string[] | undefined = lists.exclusions[id];
+      if (hosts === undefined) return [];
+      const canonical: string[] = canonicalHosts(hosts);
+      return canonical.length === 0 ? [] : [[id, canonical]];
+    },
+  );
+  return {
+    categories,
+    exclusions,
+    custom: canonicalRules(lists.custom),
+    whitelist: canonicalRules(lists.whitelist),
+  };
+}
+
+/** Deterministic freshness token for list policy. This is not a security hash. */
+export function policyRevision(lists: ListsConfig): string {
+  const canonical: string = JSON.stringify(canonicalPolicy(lists));
+  return `lists-v1:${canonical}`;
+}
+
+export function rulesFromLists(lists: ListsConfig): SessionRuleSnapshot {
+  return {
+    baselineRevision: policyRevision(lists),
+    categories: { ...lists.categories },
+    exclusions: structuredClone(lists.exclusions),
+    permanentBlacklist: structuredClone(lists.custom),
+    permanentAllowlist: structuredClone(lists.whitelist),
+    sessionBlacklist: [],
+    sessionAllowlist: [],
+  };
+}
 
 export const ALWAYS_ALLOW_SCHEMES: readonly string[] = [
   'chrome:',

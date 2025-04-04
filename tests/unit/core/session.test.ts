@@ -6,21 +6,32 @@ import {
   startNextFocusEarly,
   startSession,
 } from '../../../src/core/session';
+import { DEFAULT_LISTS } from '../../../src/shared/constants';
 import { CoreError } from '../../../src/shared/errors';
-import type { SessionConfig, SessionState } from '../../../src/shared/types';
+import type { SessionConfig, SessionRuleSnapshot, SessionState } from '../../../src/shared/types';
 
 const T0 = 1_000_000_000;
 const MIN = 60_000;
+const SESSION_RULES: SessionRuleSnapshot = {
+  baselineRevision: 'lists-v1-example',
+  categories: { ...DEFAULT_LISTS.categories },
+  exclusions: {},
+  permanentBlacklist: [{ kind: 'host', pattern: 'reddit.com' }],
+  permanentAllowlist: [{ kind: 'host', pattern: 'github.com' }],
+  sessionBlacklist: [],
+  sessionAllowlist: [],
+};
 
 function cfg(partial: Partial<SessionConfig> = {}): SessionConfig {
   return {
     mode: 'blacklist',
-    strictness: 'friction',
+    strictness: 'flexible',
     durationMin: 60,
     cycling: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 },
     intention: 'write the report',
     source: 'manual',
     scheduleEntryId: null,
+    rules: SESSION_RULES,
     ...partial,
   };
 }

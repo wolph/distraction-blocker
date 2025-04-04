@@ -143,7 +143,9 @@ function isScheduleEntry(value: unknown): value is ScheduleEntry {
     typeof value.start !== 'string' ||
     typeof value.end !== 'string' ||
     (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
-    (value.strictness !== 'hard' && value.strictness !== 'friction') ||
+    (value.strictness !== 'flexible' &&
+      value.strictness !== 'hard' &&
+      value.strictness !== 'friction') ||
     (value.cycling !== null && !isCycleConfig(value.cycling)) ||
     typeof value.intention !== 'string' ||
     typeof value.enabled !== 'boolean'

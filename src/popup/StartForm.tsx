@@ -21,7 +21,9 @@ const PRESET_LABELS: readonly [string, string, string] = [
   'deep work (preference, not science)',
 ];
 
-const STRICTNESS_HINTS: Record<Strictness, string> = {
+type VisibleStrictness = Exclude<Strictness, 'flexible'>;
+
+const STRICTNESS_HINTS: Record<VisibleStrictness, string> = {
   friction: 'can end early after 30 s wait typing sentence',
   hard: 'no way out until timer ends, pauses excepted',
 };
@@ -159,7 +161,7 @@ export function StartForm({
         <fieldset>
           <legend>Strictness</legend>
           {(['friction', 'hard'] as const).map(
-            (s: Strictness): VNode => (
+            (s: VisibleStrictness): VNode => (
               <RadioRow
                 key={s}
                 name="strictness"

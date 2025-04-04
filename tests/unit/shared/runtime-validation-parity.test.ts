@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseRequest } from '../../../src/background/request-validation';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS, emptySnapshot } from '../../../src/shared/constants';
+import {
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  DEFAULT_SETUP,
+  emptySnapshot,
+  policyRevision,
+  rulesFromLists,
+} from '../../../src/shared/constants';
 import type { StatsBundle } from '../../../src/shared/messages';
 import {
   ackError,
@@ -14,6 +21,15 @@ import {
   isStatsBundle,
   parseEventExportResponse,
 } from '../../../src/shared/runtime-validation';
+import {
+  LOCAL_BANK,
+  LOCAL_INSTALL_MARKER,
+  LOCAL_LISTS,
+  LOCAL_ONBOARDING_DRAFT,
+  LOCAL_SETTINGS,
+  LOCAL_SETUP,
+  LOCAL_STREAK,
+} from '../../../src/shared/storage-keys';
 import type {
   DailyAgg,
   EventRecord,
@@ -21,7 +37,9 @@ import type {
   MonthlyAgg,
   Rule,
   SessionConfig,
+  SessionRuleSnapshot,
   SessionSnapshot,
+  SetupState,
   SiteUnlock,
 } from '../../../src/shared/types';
 
@@ -30,17 +48,46 @@ afterEach((): void => {
 });
 
 const NOW: number = 1_700_000_000_000;
+const SESSION_RULES: SessionRuleSnapshot = {
+  baselineRevision: 'lists-v1-example',
+  categories: { ...DEFAULT_LISTS.categories },
+  exclusions: {},
+  permanentBlacklist: [{ kind: 'host', pattern: 'reddit.com' }],
+  permanentAllowlist: [{ kind: 'host', pattern: 'github.com' }],
+  sessionBlacklist: [],
+  sessionAllowlist: [],
+};
 const CONFIG: SessionConfig = {
+  mode: 'blacklist',
+  strictness: 'flexible',
+  durationMin: 25,
+  cycling: null,
+  intention: 'Review the release',
+  source: 'manual',
+  scheduleEntryId: null,
+  rules: SESSION_RULES,
+};
+const LEGACY_CONFIG: SessionConfig = {
   mode: 'blacklist',
   strictness: 'friction',
   durationMin: 25,
-  cycling: DEFAULT_SETTINGS.defaultCycling,
-  intention: 'write report',
+  cycling: null,
+  intention: 'Review the release',
   source: 'manual',
   scheduleEntryId: null,
 };
+const SETUP: SetupState = {
+  version: 1,
+  completed: false,
+  websiteAccess: 'pending',
+  blockingRegistration: 'unavailable',
+  websiteAccessNotice: null,
+  storageMode: null,
+  syncWriteStatus: 'idle',
+  legacyImported: false,
+};
 
-function activeSnapshot(config: unknown = CONFIG): unknown {
+function activeSnapshot(config: unknown = LEGACY_CONFIG): unknown {
   return {
     ...emptySnapshot(NOW),
     phase: 'focus',
@@ -139,6 +186,127 @@ describe('runtime validation dense array boundaries', (): void => {
 });
 
 describe('runtime and worker request validation parity', (): void => {
+  it('defines the initial setup contract', (): void => {
+    expect(DEFAULT_SETUP).toEqual(SETUP);
+  });
+
+  it('defines a Flexible session with a complete rules snapshot', (): void => {
+    expect(CONFIG.strictness).toBe('flexible');
+    expect(CONFIG.rules).toEqual(SESSION_RULES);
+  });
+
+  it('defines the public launch local storage keys', (): void => {
+    expect({
+      LOCAL_SETUP,
+      LOCAL_INSTALL_MARKER,
+      LOCAL_ONBOARDING_DRAFT,
+      LOCAL_SETTINGS,
+      LOCAL_LISTS,
+      LOCAL_BANK,
+      LOCAL_STREAK,
+    }).toEqual({
+      LOCAL_SETUP: 'setup',
+      LOCAL_INSTALL_MARKER: 'installMarker',
+      LOCAL_ONBOARDING_DRAFT: 'onboardingDraft',
+      LOCAL_SETTINGS: 'settings',
+      LOCAL_LISTS: 'lists',
+      LOCAL_BANK: 'bank',
+      LOCAL_STREAK: 'streak',
+    });
+  });
+
+  it('builds an isolated session rules snapshot from lists', (): void => {
+    const lists: ListsConfig = {
+      custom: [{ kind: 'host', pattern: 'reddit.com' }],
+      whitelist: [{ kind: 'host', pattern: 'github.com' }],
+      categories: { ...DEFAULT_LISTS.categories, social: true },
+      exclusions: { social: ['workplace.com'] },
+    };
+    const snapshot: SessionRuleSnapshot = rulesFromLists(lists);
+
+    expect(snapshot).toEqual({
+      baselineRevision: policyRevision(lists),
+      categories: lists.categories,
+      exclusions: lists.exclusions,
+      permanentBlacklist: lists.custom,
+      permanentAllowlist: lists.whitelist,
+      sessionBlacklist: [],
+      sessionAllowlist: [],
+    });
+
+    lists.categories.social = false;
+    (lists.exclusions.social as string[]).push('calendar.example');
+    const customRule: Rule | undefined = lists.custom[0];
+    const allowRule: Rule | undefined = lists.whitelist[0];
+    if (customRule === undefined || allowRule === undefined) throw new Error('missing test rules');
+    customRule.pattern = 'changed.example';
+    allowRule.pattern = 'changed.example';
+
+    expect(snapshot.categories.social).toBe(true);
+    expect(snapshot.exclusions.social).toEqual(['workplace.com']);
+    expect(snapshot.permanentBlacklist).toEqual([{ kind: 'host', pattern: 'reddit.com' }]);
+    expect(snapshot.permanentAllowlist).toEqual([{ kind: 'host', pattern: 'github.com' }]);
+  });
+
+  it('computes policy revisions independently of object insertion order', (): void => {
+    const first: ListsConfig = {
+      custom: [{ kind: 'host', pattern: 'reddit.com' }],
+      whitelist: [{ kind: 'host', pattern: 'github.com' }],
+      categories: { ...DEFAULT_LISTS.categories, social: true, news: true },
+      exclusions: { social: ['workplace.com'], news: ['news.example'] },
+    };
+    const second: ListsConfig = {
+      whitelist: [{ pattern: 'github.com', kind: 'host' }],
+      custom: [{ pattern: 'reddit.com', kind: 'host' }],
+      exclusions: { news: ['news.example'], social: ['workplace.com'] },
+      categories: {
+        forums: false,
+        gaming: false,
+        shopping: false,
+        mail: false,
+        news: true,
+        video: false,
+        social: true,
+      },
+    };
+    const explicitEmptyExclusion: ListsConfig = {
+      ...first,
+      exclusions: { video: [], news: ['news.example'], social: ['workplace.com'] },
+    };
+    const changed: ListsConfig = {
+      ...first,
+      categories: { ...first.categories, social: false },
+    };
+
+    expect(policyRevision(second)).toBe(policyRevision(first));
+    expect(policyRevision(explicitEmptyExclusion)).toBe(policyRevision(first));
+    expect(policyRevision(changed)).not.toBe(policyRevision(first));
+    expect(policyRevision(first)).toMatch(/^lists-v1:/);
+  });
+
+  it('normalizes equivalent host spellings in policy revisions', (): void => {
+    const withHost: (host: string) => ListsConfig = (host: string): ListsConfig => ({
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: host }],
+      exclusions: { social: [host] },
+    });
+    const unicode: string = policyRevision(withHost('BÜCHER.EXAMPLE'));
+
+    expect(policyRevision(withHost('xn--bcher-kva.example'))).toBe(unicode);
+    expect(policyRevision(withHost('xn--bcher-kva.example.'))).toBe(unicode);
+  });
+
+  it('does not collapse distinct policies with the former FNV collision', (): void => {
+    const withRegex: (pattern: string) => ListsConfig = (pattern: string): ListsConfig => ({
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'regex', pattern }],
+    });
+
+    expect(policyRevision(withRegex('collision-57429'))).not.toBe(
+      policyRevision(withRegex('collision-244702')),
+    );
+  });
+
   it('defines Auto as the default theme', (): void => {
     expect(DEFAULT_SETTINGS).toHaveProperty('theme', 'auto');
   });
@@ -170,6 +338,27 @@ describe('runtime and worker request validation parity', (): void => {
       expect(isSettings(value)).toBe(workerAccepted);
     },
   );
+
+  it('accepts Flexible schedule entries at the shared runtime boundary', (): void => {
+    expect(
+      isSettings({
+        ...DEFAULT_SETTINGS,
+        schedule: [
+          {
+            id: 'flexible-entry',
+            days: [1],
+            start: '09:00',
+            end: '10:00',
+            mode: 'blacklist',
+            strictness: 'flexible',
+            cycling: null,
+            intention: 'Review the release',
+            enabled: true,
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
 
   it.each(['auto', 'light', 'dark'])(
     'accepts the %s theme in session snapshots',
@@ -218,14 +407,14 @@ describe('runtime and worker request validation parity', (): void => {
   );
 
   it.each([
-    ['valid session config', CONFIG, true],
-    ['extra session config key', { ...CONFIG, extra: true }, false],
+    ['valid session config', LEGACY_CONFIG, true],
+    ['extra session config key', { ...LEGACY_CONFIG, extra: true }, false],
     [
       'extra cycle config key',
-      { ...CONFIG, cycling: { ...DEFAULT_SETTINGS.defaultCycling, extra: true } },
+      { ...LEGACY_CONFIG, cycling: { ...DEFAULT_SETTINGS.defaultCycling, extra: true } },
       false,
     ],
-    ['manual config with schedule id', { ...CONFIG, scheduleEntryId: 'unexpected' }, false],
+    ['manual config with schedule id', { ...LEGACY_CONFIG, scheduleEntryId: 'unexpected' }, false],
   ])(
     'matches worker session validation for %s',
     (_label: string, value: unknown, accepted: boolean): void => {

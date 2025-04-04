@@ -75,6 +75,23 @@ describe('host rules', () => {
     expect(evaluateUrl(idn, 'https://notbücher.example/', NONE, NOW).blocked).toBe(false);
     expect(evaluateUrl(idn, 'https://bӵcher.example/', NONE, NOW).blocked).toBe(false);
   });
+
+  it.each(['BÜCHER.EXAMPLE', 'xn--bcher-kva.example', 'xn--bcher-kva.example.'])(
+    'normalizes the %s spelling before matching',
+    (pattern: string): void => {
+      const idn: ReturnType<typeof compileMatcher> = compileMatcher(
+        lists({ custom: [{ kind: 'host', pattern }] }),
+        [],
+        'blacklist',
+      );
+
+      expect(evaluateUrl(idn, 'https://bücher.example./catalog', NONE, NOW)).toEqual({
+        blocked: true,
+        reason: 'custom',
+        matchedPattern: 'xn--bcher-kva.example',
+      });
+    },
+  );
 });
 
 describe('regex rules', () => {
@@ -105,6 +122,27 @@ describe('categories and exclusions', () => {
   it('excluded entries are allowed, subdomains included', () => {
     expect(evaluateUrl(m, 'https://www.facebook.com/work', NONE, NOW).reason).toBe('excluded');
   });
+
+  it.each(['BÜCHER.EXAMPLE', 'xn--bcher-kva.example', 'xn--bcher-kva.example.'])(
+    'normalizes the %s spelling before applying category exclusions',
+    (excludedHost: string): void => {
+      const idnCategories: CategoryList[] = [
+        { id: 'social', title: 'Social', hosts: ['bücher.example'] },
+      ];
+      const matcher: ReturnType<typeof compileMatcher> = compileMatcher(
+        lists({
+          categories: { ...DEFAULT_LISTS.categories, social: true },
+          exclusions: { social: [excludedHost] },
+        }),
+        idnCategories,
+        'blacklist',
+      );
+
+      expect(evaluateUrl(matcher, 'https://xn--bcher-kva.example./work', NONE, NOW).reason).toBe(
+        'excluded',
+      );
+    },
+  );
 });
 
 describe('always-allow and unlocks', () => {

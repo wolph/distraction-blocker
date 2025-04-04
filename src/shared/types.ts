@@ -22,10 +22,35 @@ export interface ListsConfig {
   exclusions: Partial<Record<CategoryId, string[]>>;
 }
 
+export type HostRule = { kind: 'host'; pattern: string };
+
+export interface SessionRuleSnapshot {
+  baselineRevision: string;
+  categories: Record<CategoryId, boolean>;
+  exclusions: Partial<Record<CategoryId, string[]>>;
+  permanentBlacklist: Rule[];
+  permanentAllowlist: Rule[];
+  sessionBlacklist: HostRule[];
+  sessionAllowlist: HostRule[];
+}
+
 export type SessionMode = 'blacklist' | 'whitelist';
-export type Strictness = 'hard' | 'friction';
+export type Strictness = 'flexible' | 'friction' | 'hard';
+export type StorageMode = 'local' | 'sync';
+export type BlockingRegistrationStatus = 'unavailable' | 'ready' | 'error';
 export type ThemeMode = 'auto' | 'light' | 'dark';
 export type Phase = 'idle' | 'focus' | 'break' | 'paused';
+
+export interface SetupState {
+  version: 1;
+  completed: boolean;
+  websiteAccess: 'pending' | 'granted' | 'denied';
+  blockingRegistration: BlockingRegistrationStatus;
+  websiteAccessNotice: 'revoked-during-session' | 'registration-failed-during-session' | null;
+  storageMode: StorageMode | null;
+  syncWriteStatus: 'idle' | 'pending' | 'error';
+  legacyImported: boolean;
+}
 
 export interface CycleConfig {
   focusMin: number;
@@ -44,6 +69,7 @@ export interface SessionConfig {
   intention: string;
   source: 'manual' | 'schedule';
   scheduleEntryId: string | null;
+  rules?: SessionRuleSnapshot;
 }
 
 /** Persisted machine state. Pure functions in src/core/session.ts own all transitions. */
@@ -74,7 +100,7 @@ export interface GateState {
   readyAt: number;
   /** exact phrase the user must type, null when typing is not required */
   requiredPhrase: string | null;
-  /** worker-approved escape for a friction cancellation gate */
+  /** @deprecated Kept temporarily for persisted snapshot compatibility. */
   forceEndAvailable: boolean;
 }
 
@@ -121,6 +147,7 @@ export interface PauseEconomy {
 export interface GateSettings {
   delayMs: number;
   requireTypedPhrase: boolean;
+  /** @deprecated Kept temporarily for stored settings compatibility. */
   allowForceEnd: boolean;
 }
 

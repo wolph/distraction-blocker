@@ -4,6 +4,7 @@ import {
   ALWAYS_ALLOW_HOSTS,
   ALWAYS_ALLOW_SCHEMES,
 } from '../shared/constants';
+import { normalizeHost } from '../shared/host-normalization';
 import type {
   CategoryList,
   ListsConfig,
@@ -65,14 +66,6 @@ export interface MatcherCacheBundle {
 
 const HOST_RE: RegExp = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/i;
 
-function normalizeHost(pattern: string): string | null {
-  try {
-    return new URL(`http://${pattern.trim().toLowerCase()}`).hostname;
-  } catch {
-    return null;
-  }
-}
-
 /** Returns an error message for an invalid rule, null when valid. */
 export function validateRule(rule: Rule): string | null {
   if (rule.kind === 'host') {
@@ -132,11 +125,15 @@ export function compileMatcher(
   } else {
     for (const cat of categories) {
       if (!lists.categories[cat.id]) continue;
-      const excludedHere: string[] = lists.exclusions[cat.id] ?? [];
+      const excludedHere: Set<string> = new Set<string>();
+      for (const raw of lists.exclusions[cat.id] ?? []) {
+        const host: string | null = normalizeHost(raw);
+        if (host !== null) excludedHere.add(host);
+      }
       for (const raw of cat.hosts) {
         const host: string | null = normalizeHost(raw);
         if (host === null) continue;
-        if (excludedHere.includes(raw)) excluded.add(host);
+        if (excludedHere.has(host)) excluded.add(host);
         else if (!hosts.has(host)) hosts.set(host, 'category');
       }
     }
@@ -352,7 +349,7 @@ export function evaluateUrl(
     return allow('default');
   }
   if (ALWAYS_ALLOW_SCHEMES.includes(parsed.protocol)) return allow('always-allow');
-  const host: string = parsed.hostname;
+  const host: string = normalizeHost(parsed.hostname) ?? parsed.hostname;
   if (
     ALWAYS_ALLOW_HOSTS.includes(host) ||
     ALWAYS_ALLOW_HOST_SUFFIXES.some((s: string): boolean => host.endsWith(s))

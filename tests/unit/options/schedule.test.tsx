@@ -16,7 +16,7 @@ function existingEntry(): ScheduleEntry {
     start: '09:00',
     end: '12:30',
     mode: 'blacklist',
-    strictness: 'hard',
+    strictness: 'flexible',
     cycling: null,
     intention: 'morning deep work',
     enabled: true,
@@ -24,6 +24,14 @@ function existingEntry(): ScheduleEntry {
 }
 
 describe('Schedule', () => {
+  it('renders a flexible schedule entry', (): void => {
+    const { getByText } = render(
+      <Schedule entries={[existingEntry()]} defaults={DEFAULT_SETTINGS} onChange={vi.fn()} />,
+    );
+
+    expect(getByText('flexible')).toBeTruthy();
+  });
+
   it('creates an entry with the defaults: weekdays, 09:00 to 12:00', (): void => {
     const onChange = vi.fn();
     const { getByRole } = render(
