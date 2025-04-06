@@ -6,8 +6,9 @@ import {
   type Page,
   type Worker,
 } from '@playwright/test';
+import { rulesFromLists } from '../../src/shared/constants';
 import type { Request, ResponseMap, SoundId } from '../../src/shared/messages';
-import type { Rule, SessionConfig } from '../../src/shared/types';
+import type { ListsConfig, Rule, SessionConfig } from '../../src/shared/types';
 import { closeContextOnSetupFailure } from './context-cleanup';
 import { startServer, type TestServer } from './server';
 
@@ -195,6 +196,20 @@ export async function startTestSession(
   overrides: Partial<SessionConfig> = {},
   customRules: Rule[] = [{ kind: 'host', pattern: 'blocked.example' }],
 ): Promise<void> {
+  const lists: ListsConfig = {
+    custom: customRules,
+    whitelist: [],
+    categories: {
+      social: false,
+      video: false,
+      news: false,
+      mail: false,
+      shopping: false,
+      gaming: false,
+      forums: false,
+    },
+    exclusions: {},
+  };
   const config: SessionConfig = {
     mode: 'blacklist',
     strictness: 'friction',
@@ -204,6 +219,7 @@ export async function startTestSession(
     source: 'manual',
     scheduleEntryId: null,
     ...overrides,
+    rules: overrides.rules ?? rulesFromLists(lists),
   };
 
   await extPage.evaluate(

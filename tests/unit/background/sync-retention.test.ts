@@ -9,7 +9,7 @@ import {
 import { compactPendingSyncRetention } from '../../../src/background/sync-retention';
 import { SyncWriter } from '../../../src/background/sync-writer';
 import { rollupMonth } from '../../../src/core/stats';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import { DEFAULT_LISTS, DEFAULT_SETTINGS, rulesFromLists } from '../../../src/shared/constants';
 import { localDateStr } from '../../../src/shared/time';
 import type { DailyAgg, MonthlyAgg, SessionConfig } from '../../../src/shared/types';
 
@@ -338,6 +338,7 @@ describe('pending Sync retention', () => {
       intention: 'long offline session',
       source: 'manual',
       scheduleEntryId: null,
+      rules: rulesFromLists(DEFAULT_LISTS),
     };
     await engine.startSession(session);
     await engine.openGate('unlockSite', 'example.com');

@@ -2,13 +2,21 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildMatcherCache,
   compileMatcher,
+  compileSessionMatcher,
   evaluateUrl,
+  listsFromSessionRules,
+  normalizeSessionHostInput,
   registrableHost,
   restoreMatcherCache,
   validateRule,
 } from '../../../src/core/matcher';
-import { DEFAULT_LISTS } from '../../../src/shared/constants';
-import type { CategoryList, ListsConfig, SiteUnlock } from '../../../src/shared/types';
+import { DEFAULT_LISTS, rulesFromLists } from '../../../src/shared/constants';
+import type {
+  CategoryList,
+  ListsConfig,
+  SessionRuleSnapshot,
+  SiteUnlock,
+} from '../../../src/shared/types';
 
 const CATS: CategoryList[] = [{ id: 'social', title: 'Social', hosts: ['facebook.com', 'x.com'] }];
 
@@ -143,6 +151,69 @@ describe('categories and exclusions', () => {
       );
     },
   );
+});
+
+describe('session-local rule snapshots', (): void => {
+  it.each(['\n', '\t', '\r', '\v', '\f'])(
+    'rejects leading and trailing %j controls before trimming',
+    (control: string): void => {
+      expect(normalizeSessionHostInput(`${control}docs.python.org`)).toBeNull();
+      expect(normalizeSessionHostInput(`docs.python.org${control}`)).toBeNull();
+    },
+  );
+
+  it('converts an isolated snapshot into permanent and session list rules', (): void => {
+    const rules: SessionRuleSnapshot = {
+      ...rulesFromLists({
+        ...DEFAULT_LISTS,
+        custom: [{ kind: 'host', pattern: 'permanent-block.example' }],
+        whitelist: [{ kind: 'host', pattern: 'permanent-allow.example' }],
+      }),
+      sessionBlacklist: [{ kind: 'host', pattern: 'session-block.example' }],
+      sessionAllowlist: [{ kind: 'host', pattern: 'session-allow.example' }],
+    };
+
+    expect(listsFromSessionRules(rules)).toEqual({
+      custom: [
+        { kind: 'host', pattern: 'permanent-block.example' },
+        { kind: 'host', pattern: 'session-block.example' },
+      ],
+      whitelist: [
+        { kind: 'host', pattern: 'permanent-allow.example' },
+        { kind: 'host', pattern: 'session-allow.example' },
+      ],
+      categories: DEFAULT_LISTS.categories,
+      exclusions: {},
+    });
+  });
+
+  it('compiles category exceptions from the session snapshot', (): void => {
+    const rules: SessionRuleSnapshot = {
+      ...rulesFromLists({
+        ...DEFAULT_LISTS,
+        categories: { ...DEFAULT_LISTS.categories, social: true },
+        exclusions: { social: ['facebook.com'] },
+      }),
+      sessionBlacklist: [],
+    };
+    const matcher = compileSessionMatcher(rules, CATS, 'blacklist');
+
+    expect(evaluateUrl(matcher, 'https://facebook.com/work', NONE, NOW).reason).toBe('excluded');
+    expect(evaluateUrl(matcher, 'https://x.com/home', NONE, NOW).reason).toBe('category');
+  });
+
+  it('compiles a session-added whitelist host without mutating the snapshot', (): void => {
+    const rules: SessionRuleSnapshot = {
+      ...rulesFromLists(DEFAULT_LISTS),
+      sessionAllowlist: [{ kind: 'host', pattern: 'docs.python.org' }],
+    };
+    const before: SessionRuleSnapshot = structuredClone(rules);
+    const matcher = compileSessionMatcher(rules, CATS, 'whitelist');
+
+    expect(matcher.hosts.has('docs.python.org')).toBe(true);
+    expect(evaluateUrl(matcher, 'https://docs.python.org/3/', NONE, NOW).blocked).toBe(false);
+    expect(rules).toEqual(before);
+  });
 });
 
 describe('always-allow and unlocks', () => {

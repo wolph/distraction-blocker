@@ -3,13 +3,19 @@ import {
   ALWAYS_ALLOW_HOST_SUFFIXES,
   ALWAYS_ALLOW_HOSTS,
   ALWAYS_ALLOW_SCHEMES,
+  CATEGORY_IDS,
+  policyRevision,
+  rulesFromLists,
 } from '../shared/constants';
 import { normalizeHost } from '../shared/host-normalization';
 import type {
+  CategoryId,
   CategoryList,
+  HostRule,
   ListsConfig,
   Rule,
   SessionMode,
+  SessionRuleSnapshot,
   SiteUnlock,
   Verdict,
 } from '../shared/types';
@@ -65,6 +71,25 @@ export interface MatcherCacheBundle {
 }
 
 const HOST_RE: RegExp = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/i;
+const SCHEME_RE: RegExp = /^([a-z][a-z0-9+.-]*):\/\//i;
+const ANY_SCHEME_RE: RegExp = /^[a-z][a-z0-9+.-]*:/i;
+const NUMERIC_HOST_RE: RegExp = /^\d+(?:\.\d+)+$/;
+
+function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const codePoint: number = character.codePointAt(0) ?? 0;
+    if (codePoint < 0x20 || codePoint === 0x7f) return true;
+  }
+  return false;
+}
+
+function hasUnsafeHostCharacter(value: string): boolean {
+  for (const character of value) {
+    const codePoint: number = character.codePointAt(0) ?? 0;
+    if (codePoint <= 0x20 || codePoint === 0x7f || character === '\\') return true;
+  }
+  return false;
+}
 
 /** Returns an error message for an invalid rule, null when valid. */
 export function validateRule(rule: Rule): string | null {
@@ -79,6 +104,227 @@ export function validateRule(rule: Rule): string | null {
   } catch (e: unknown) {
     return `not a valid regex: ${e instanceof Error ? e.message : String(e)}`;
   }
+}
+
+/** Parses popup host input without silently discarding authority details. */
+export function normalizeSessionHostInput(value: string): string | null {
+  if (hasControlCharacter(value)) return null;
+  const input: string = value.trim();
+  if (input.length === 0 || hasUnsafeHostCharacter(input) || input.startsWith('//')) return null;
+  const schemeMatch: RegExpExecArray | null = SCHEME_RE.exec(input);
+  if (schemeMatch !== null) {
+    const scheme: string = (schemeMatch[1] ?? '').toLowerCase();
+    if (scheme !== 'http' && scheme !== 'https') return null;
+  } else if (ANY_SCHEME_RE.test(input)) {
+    return null;
+  }
+
+  const urlText: string = schemeMatch === null ? `http://${input}` : input;
+  const authorityStart: number = urlText.indexOf('//') + 2;
+  const authorityEndCandidate: number = urlText.slice(authorityStart).search(/[/?#]/);
+  const authorityEnd: number =
+    authorityEndCandidate === -1 ? urlText.length : authorityStart + authorityEndCandidate;
+  const authority: string = urlText.slice(authorityStart, authorityEnd);
+  if (authority.length === 0 || authority.includes('@') || authority.includes(':')) return null;
+
+  try {
+    const parsed: URL = new URL(urlText);
+    if (parsed.username !== '' || parsed.password !== '' || parsed.port !== '') return null;
+    const host: string | null = normalizeHost(parsed.hostname);
+    if (host === null || !HOST_RE.test(host) || NUMERIC_HOST_RE.test(host)) return null;
+    return host;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  try {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  } catch {
+    return false;
+  }
+}
+
+function hasExactOwnKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  try {
+    const ownKeys: PropertyKey[] = Reflect.ownKeys(value);
+    return (
+      ownKeys.length === keys.length &&
+      ownKeys.every((key: PropertyKey): boolean => typeof key === 'string' && keys.includes(key))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isDenseArray(value: unknown): value is unknown[] {
+  if (!Array.isArray(value)) return false;
+  for (let index: number = 0; index < value.length; index++) {
+    if (!Object.hasOwn(value, index)) return false;
+  }
+  return true;
+}
+
+function normalizePermanentRule(value: unknown): Rule | null {
+  if (!isRecord(value) || !hasExactOwnKeys(value, ['kind', 'pattern'])) return null;
+  if (value.kind !== 'host' && value.kind !== 'regex') return null;
+  if (typeof value.pattern !== 'string') return null;
+  if (value.kind === 'regex') {
+    const rule: Rule = { kind: 'regex', pattern: value.pattern };
+    return validateRule(rule) === null ? rule : null;
+  }
+  const host: string | null = normalizeHost(value.pattern);
+  if (host === null || !HOST_RE.test(host)) return null;
+  return { kind: 'host', pattern: host };
+}
+
+function normalizePermanentRules(value: unknown): Rule[] | null {
+  if (!isDenseArray(value)) return null;
+  const result: Rule[] = [];
+  for (const candidate of value) {
+    const rule: Rule | null = normalizePermanentRule(candidate);
+    if (rule === null) return null;
+    result.push(rule);
+  }
+  return result;
+}
+
+function normalizeHostRules(value: unknown): HostRule[] | null {
+  if (!isDenseArray(value)) return null;
+  const result: HostRule[] = [];
+  const seen: Set<string> = new Set<string>();
+  for (const candidate of value) {
+    if (
+      !isRecord(candidate) ||
+      !hasExactOwnKeys(candidate, ['kind', 'pattern']) ||
+      candidate.kind !== 'host' ||
+      typeof candidate.pattern !== 'string'
+    ) {
+      return null;
+    }
+    const host: string | null = normalizeSessionHostInput(candidate.pattern);
+    if (host === null) return null;
+    if (!seen.has(host)) result.push({ kind: 'host', pattern: host });
+    seen.add(host);
+  }
+  return result;
+}
+
+function normalizeCategories(value: unknown): Record<CategoryId, boolean> | null {
+  if (!isRecord(value) || !hasExactOwnKeys(value, CATEGORY_IDS)) return null;
+  const categories: Record<CategoryId, boolean> = {} as Record<CategoryId, boolean>;
+  for (const id of CATEGORY_IDS) {
+    if (typeof value[id] !== 'boolean') return null;
+    categories[id] = value[id];
+  }
+  return categories;
+}
+
+function normalizeExclusions(value: unknown): Partial<Record<CategoryId, string[]>> | null {
+  if (!isRecord(value)) return null;
+  const exclusions: Partial<Record<CategoryId, string[]>> = {};
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string' || !CATEGORY_IDS.includes(key as CategoryId)) return null;
+  }
+  for (const key of CATEGORY_IDS) {
+    if (!Object.hasOwn(value, key)) continue;
+    const candidates: unknown = value[key];
+    if (!isDenseArray(candidates)) return null;
+    const hosts: string[] = [];
+    const seen: Set<string> = new Set<string>();
+    for (const candidate of candidates) {
+      if (typeof candidate !== 'string') return null;
+      const host: string | null = normalizeHost(candidate);
+      if (host === null || !HOST_RE.test(host)) return null;
+      if (!seen.has(host)) hosts.push(host);
+      seen.add(host);
+    }
+    exclusions[key] = hosts;
+  }
+  return exclusions;
+}
+
+/** Validates exact nested keys and returns a newly allocated canonical snapshot. */
+export function normalizeSessionRules(value: unknown): SessionRuleSnapshot | null {
+  if (
+    !isRecord(value) ||
+    !hasExactOwnKeys(value, [
+      'baselineRevision',
+      'categories',
+      'exclusions',
+      'permanentBlacklist',
+      'permanentAllowlist',
+      'sessionBlacklist',
+      'sessionAllowlist',
+    ]) ||
+    typeof value.baselineRevision !== 'string' ||
+    value.baselineRevision.trim() === ''
+  ) {
+    return null;
+  }
+  const categories: Record<CategoryId, boolean> | null = normalizeCategories(value.categories);
+  const exclusions: Partial<Record<CategoryId, string[]>> | null = normalizeExclusions(
+    value.exclusions,
+  );
+  const permanentBlacklist: Rule[] | null = normalizePermanentRules(value.permanentBlacklist);
+  const permanentAllowlist: Rule[] | null = normalizePermanentRules(value.permanentAllowlist);
+  const sessionBlacklist: HostRule[] | null = normalizeHostRules(value.sessionBlacklist);
+  const sessionAllowlist: HostRule[] | null = normalizeHostRules(value.sessionAllowlist);
+  if (
+    categories === null ||
+    exclusions === null ||
+    permanentBlacklist === null ||
+    permanentAllowlist === null ||
+    sessionBlacklist === null ||
+    sessionAllowlist === null
+  ) {
+    return null;
+  }
+  return {
+    baselineRevision: value.baselineRevision,
+    categories,
+    exclusions,
+    permanentBlacklist,
+    permanentAllowlist,
+    sessionBlacklist,
+    sessionAllowlist,
+  };
+}
+
+function sameValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** Checks every worker-owned permanent field, not only the freshness token. */
+export function sessionRulesMatchLists(rules: SessionRuleSnapshot, lists: ListsConfig): boolean {
+  const actual: SessionRuleSnapshot | null = normalizeSessionRules(rules);
+  const expected: SessionRuleSnapshot | null = normalizeSessionRules(rulesFromLists(lists));
+  if (actual === null || expected === null) return false;
+  return (
+    actual.baselineRevision === policyRevision(lists) &&
+    sameValue(actual.categories, expected.categories) &&
+    sameValue(actual.exclusions, expected.exclusions) &&
+    sameValue(actual.permanentBlacklist, expected.permanentBlacklist) &&
+    sameValue(actual.permanentAllowlist, expected.permanentAllowlist)
+  );
+}
+
+export function listsFromSessionRules(rules: SessionRuleSnapshot): ListsConfig {
+  return {
+    custom: structuredClone([...rules.permanentBlacklist, ...rules.sessionBlacklist]),
+    whitelist: structuredClone([...rules.permanentAllowlist, ...rules.sessionAllowlist]),
+    categories: { ...rules.categories },
+    exclusions: structuredClone(rules.exclusions),
+  };
+}
+
+export function compileSessionMatcher(
+  rules: SessionRuleSnapshot,
+  categories: CategoryList[],
+  mode: SessionMode,
+): CompiledMatcher {
+  return compileMatcher(listsFromSessionRules(rules), categories, mode);
 }
 
 function hostInSet(
@@ -218,10 +464,6 @@ export function buildMatcherCache(
     },
     compiled,
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {

@@ -4,18 +4,17 @@ import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/backgroun
 import { main } from '../../../src/background/main';
 import { routeMessage } from '../../../src/background/router';
 import { handleSyncChanges, missingSyncDefaults } from '../../../src/background/storage-sync';
+import type { ParsedRuntimeState, RuntimeState } from '../../../src/background/stores';
 import { SYNC_QUOTA_BYTES_TOTAL, syncItemBytes } from '../../../src/background/sync-quota';
 import type { SyncJournal } from '../../../src/background/sync-writer';
-import { ALL_CATEGORIES } from '../../../src/core/categories';
-import {
-  buildMatcherCache,
-  type CompiledMatcherSet,
-  evaluateUrl,
-  type MatcherCacheBundle,
-  type StoredMatcherCache,
-} from '../../../src/core/matcher';
+import type { StoredMatcherCache } from '../../../src/core/matcher';
 import { emptyDaily, rollupMonth } from '../../../src/core/stats';
-import { CATEGORY_IDS, DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import {
+  CATEGORY_IDS,
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  rulesFromLists,
+} from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
 import {
   LOCAL_LISTS_SNAPSHOT,
@@ -37,6 +36,7 @@ import type {
 interface BootScenario {
   journal: SyncJournal;
   localCache?: unknown;
+  runtime?: ParsedRuntimeState;
   storedSync: Record<string, unknown>;
 }
 
@@ -64,6 +64,7 @@ const mocks = vi.hoisted(
     storageListener: StorageListener | null;
     savedJournals: SyncJournal[];
     savedMatcherCaches: StoredMatcherCache[];
+    savedRuntimes: RuntimeState[];
     matcherCacheSaveAttempts: number;
     matcherCacheSaveError: Error | null;
     scenario: BootScenario;
@@ -86,6 +87,7 @@ const mocks = vi.hoisted(
     storageListener: null,
     savedJournals: [],
     savedMatcherCaches: [],
+    savedRuntimes: [],
     matcherCacheSaveAttempts: 0,
     matcherCacheSaveError: null,
     scenario: {
@@ -153,7 +155,9 @@ vi.mock('../../../src/background/stores', async () => {
     loadMatcherCache: vi.fn().mockImplementation(async (): Promise<unknown> => {
       return structuredClone(mocks.scenario.localCache);
     }),
-    loadRuntime: vi.fn().mockResolvedValue({}),
+    loadRuntime: vi.fn().mockImplementation(async (): Promise<ParsedRuntimeState> => {
+      return structuredClone(mocks.scenario.runtime ?? actual.emptyRuntime(Date.now()));
+    }),
     loadSettings: actual.loadSettings,
     loadStreak: actual.loadStreak,
     loadSyncJournal: vi.fn().mockImplementation(async (): Promise<SyncJournal> => {
@@ -162,11 +166,14 @@ vi.mock('../../../src/background/stores', async () => {
     }),
     mergeLists: actual.mergeLists,
     mergeSettings: actual.mergeSettings,
+    migrateRuntimeRules: actual.migrateRuntimeRules,
     parseBank: actual.parseBank,
     parseLiveLists: actual.parseLiveLists,
     parseLiveSettings: actual.parseLiveSettings,
     parseStreak: actual.parseStreak,
-    saveRuntime: vi.fn(),
+    saveRuntime: vi.fn().mockImplementation(async (runtime: RuntimeState): Promise<void> => {
+      mocks.savedRuntimes.push(structuredClone(runtime));
+    }),
     saveMatcherCache: vi
       .fn()
       .mockImplementation(async (cache: StoredMatcherCache): Promise<void> => {
@@ -352,9 +359,9 @@ function engineBank(): BankState {
   return mocks.engineArguments[3] as BankState;
 }
 
-function engineMatcherSet(): CompiledMatcherSet {
+function engineRuntime(): RuntimeState {
   if (mocks.engineArguments === null) throw new Error('engine was not constructed');
-  return mocks.engineArguments[7] as CompiledMatcherSet;
+  return mocks.engineArguments[5] as RuntimeState;
 }
 
 function enginePorts(): EnginePorts {
@@ -382,6 +389,7 @@ beforeEach((): void => {
   mocks.storageListener = null;
   mocks.savedJournals = [];
   mocks.savedMatcherCaches = [];
+  mocks.savedRuntimes = [];
   mocks.matcherCacheSaveAttempts = 0;
   mocks.matcherCacheSaveError = null;
   mocks.scenario = { journal: { sets: {}, removes: [] }, storedSync: {} };
@@ -460,86 +468,61 @@ describe('background runtime request boundary', () => {
   });
 });
 
-describe('background matcher cache boot', () => {
-  it('passes a valid cache to the engine without rewriting it', async () => {
-    const valid: MatcherCacheBundle = buildMatcherCache(DEFAULT_LISTS, ALL_CATEGORIES);
-    mocks.scenario.localCache = valid.stored;
-
-    await finishBoot();
-
-    expect([...engineMatcherSet().blacklist.hosts]).toEqual([...valid.compiled.blacklist.hosts]);
-    expect([...engineMatcherSet().whitelist.hosts]).toEqual([...valid.compiled.whitelist.hosts]);
-    expect(mocks.savedMatcherCaches).toEqual([]);
-    expect(mocks.bootTrace).toEqual(['tick']);
-  });
-
-  it.each([
-    ['missing', undefined],
-    [
-      'list-stale',
-      buildMatcherCache(
-        {
-          ...DEFAULT_LISTS,
-          custom: [{ kind: 'host' as const, pattern: 'old.example' }],
-        },
-        ALL_CATEGORIES,
-      ).stored,
-    ],
-    ['category-stale', buildMatcherCache(DEFAULT_LISTS, []).stored],
-    [
-      'corrupt',
-      {
-        ...buildMatcherCache(DEFAULT_LISTS, ALL_CATEGORIES).stored,
-        compiledSignature: 'corrupt',
-      },
-    ],
-  ])(
-    'rebuilds and saves a %s cache before worker readiness and tick',
-    async (_label: string, raw: unknown): Promise<void> => {
-      const expected: MatcherCacheBundle = buildMatcherCache(DEFAULT_LISTS, ALL_CATEGORIES);
-      mocks.scenario.localCache = raw;
-
-      await finishBoot();
-
-      expect(mocks.savedMatcherCaches).toEqual([expected.stored]);
-      expect(mocks.bootTrace).toEqual(['saveMatcherCache', 'tick']);
-      expect([...engineMatcherSet().blacklist.hosts]).toEqual([
-        ...expected.compiled.blacklist.hosts,
-      ]);
-      expect([...engineMatcherSet().whitelist.hosts]).toEqual([
-        ...expected.compiled.whitelist.hosts,
-      ]);
-    },
-  );
-
-  it('reports a rebuilt cache save failure, boots with rebuilt matchers, and retries next boot', async () => {
+describe('background session policy boot', () => {
+  it('migrates a legacy active session with the loaded lists before engine construction', async (): Promise<void> => {
+    const now: number = Date.now();
     const lists: ListsConfig = {
       ...DEFAULT_LISTS,
-      custom: [{ kind: 'host', pattern: 'blocked.example' }],
+      custom: [{ kind: 'host', pattern: 'boot-current.example' }],
     };
-    const expected: MatcherCacheBundle = buildMatcherCache(lists, ALL_CATEGORIES);
-    const cacheError: Error = new Error('local cache unavailable');
-    const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
     mocks.scenario.storedSync = { [SYNC_LISTS]: lists };
-    mocks.matcherCacheSaveError = cacheError;
+    mocks.scenario.runtime = {
+      session: {
+        config: {
+          mode: 'blacklist',
+          strictness: 'friction',
+          durationMin: 25,
+          cycling: null,
+          intention: '',
+          source: 'manual',
+          scheduleEntryId: null,
+        },
+        startedAt: now,
+        sessionEndsAt: now + 25 * 60_000,
+        phase: 'focus',
+        phaseStartedAt: now,
+        phaseEndsAt: now + 25 * 60_000,
+        cycleIndex: 0,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+      gate: null,
+      unlocks: [],
+      tabStates: {},
+      accruedFocusMs: 0,
+      attemptDebounce: {},
+      scheduleActiveEntryId: null,
+      date: '2026-08-31',
+      todayAgg: null,
+      lastPruneDate: null,
+      commitCheckpoint: null,
+    };
 
     await finishBoot();
 
-    expect(mocks.tickCalls).toBe(1);
-    expect(mocks.matcherCacheSaveAttempts).toBe(1);
+    expect(engineRuntime().session?.config.rules).toEqual(rulesFromLists(lists));
+    expect(mocks.savedRuntimes.at(-1)?.session?.config.rules).toEqual(rulesFromLists(lists));
+  });
+
+  it('does not restore or rebuild the obsolete permanent-list matcher cache', async (): Promise<void> => {
+    mocks.scenario.localCache = { version: 2, modes: {} };
+
+    await finishBoot();
+
     expect(mocks.savedMatcherCaches).toEqual([]);
-    expect(consoleError).toHaveBeenCalledWith('focus-lock background error', cacheError);
-    expect(
-      evaluateUrl(engineMatcherSet().blacklist, 'https://blocked.example/page', [], Date.now())
-        .blocked,
-    ).toBe(true);
-
-    mocks.matcherCacheSaveError = null;
-    await finishBoot();
-
-    expect(mocks.matcherCacheSaveAttempts).toBe(2);
-    expect(mocks.savedMatcherCaches).toEqual([expected.stored]);
-    expect(mocks.tickCalls).toBe(2);
+    expect(mocks.matcherCacheSaveAttempts).toBe(0);
+    expect(mocks.engineArguments).toHaveLength(7);
+    expect(mocks.bootTrace).toEqual(['tick']);
   });
 });
 

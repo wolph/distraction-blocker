@@ -6,7 +6,12 @@ import { h, type VNode } from 'preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from '../../../src/popup/App';
 import { useSnapshot } from '../../../src/popup/use-snapshot';
-import { DEFAULT_SETTINGS, emptySnapshot } from '../../../src/shared/constants';
+import {
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  emptySnapshot,
+  rulesFromLists,
+} from '../../../src/shared/constants';
 import type { SessionSnapshot } from '../../../src/shared/types';
 import { emitMessage, resetChromeFake, sendMessageMock } from './chrome-fake';
 
@@ -45,6 +50,7 @@ function focusSnapshot(at: number): SessionSnapshot {
       intention: '',
       source: 'manual',
       scheduleEntryId: null,
+      rules: rulesFromLists(DEFAULT_LISTS),
     },
     startedAt: at,
     phaseStartedAt: at,

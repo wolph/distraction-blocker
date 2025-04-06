@@ -8,7 +8,12 @@ import { ActiveView } from '../../../src/popup/ActiveView';
 import { App } from '../../../src/popup/App';
 import { GatePanel } from '../../../src/popup/GatePanel';
 import { StartForm } from '../../../src/popup/StartForm';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS, emptySnapshot } from '../../../src/shared/constants';
+import {
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  emptySnapshot,
+  rulesFromLists,
+} from '../../../src/shared/constants';
 import type { Request, StatsBundle } from '../../../src/shared/messages';
 import {
   MAX_RELATIVE_DURATION_MS,
@@ -34,6 +39,7 @@ const CONFIG: SessionConfig = {
   intention: 'write report',
   source: 'manual',
   scheduleEntryId: null,
+  rules: rulesFromLists(DEFAULT_LISTS),
 };
 const SCHEDULE_ENTRY: ScheduleEntry = {
   id: 'schedule-entry',

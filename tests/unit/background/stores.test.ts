@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/background/list-sync-codec';
+import type { ParsedRuntimeState, RuntimeState } from '../../../src/background/stores';
 import {
   appendEvents,
   loadBank,
@@ -11,11 +12,17 @@ import {
   mergeLists,
   mergeRuntime,
   mergeSettings,
+  migrateRuntimeRules,
   readEvents,
   saveMatcherCache,
 } from '../../../src/background/stores';
 import type { StoredMatcherCache } from '../../../src/core/matcher';
-import { CATEGORY_IDS, DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import {
+  CATEGORY_IDS,
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  rulesFromLists,
+} from '../../../src/shared/constants';
 import {
   LOCAL_CACHES,
   LOCAL_EVENTS,
@@ -653,6 +660,43 @@ describe('runtime storage migration', () => {
 
     expect(runtime.session).toEqual(session);
     expect(runtime).not.toHaveProperty('unknownField');
+  });
+
+  it('migrates a legacy persisted session to the currently loaded lists', (): void => {
+    const now: number = new Date(2026, 7, 29, 12, 0).getTime();
+    const currentLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'current.example' }],
+    };
+    const runtime = mergeRuntime(
+      {
+        session: {
+          config: {
+            mode: 'blacklist',
+            strictness: 'friction',
+            durationMin: 25,
+            cycling: null,
+            intention: '',
+            source: 'manual',
+            scheduleEntryId: null,
+          },
+          startedAt: now,
+          sessionEndsAt: now + 25 * 60_000,
+          phase: 'focus',
+          phaseStartedAt: now,
+          phaseEndsAt: now + 25 * 60_000,
+          cycleIndex: 0,
+          pausedFrom: null,
+          focusedMs: 0,
+        },
+      },
+      now,
+    );
+
+    expectTypeOf(runtime).toEqualTypeOf<ParsedRuntimeState>();
+    const normalized: RuntimeState = migrateRuntimeRules(runtime, currentLists);
+    expectTypeOf(normalized).toEqualTypeOf<RuntimeState>();
+    expect(normalized.session?.config.rules).toEqual(rulesFromLists(currentLists));
   });
 
   it.each([

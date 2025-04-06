@@ -5,7 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from '../../../src/options/App';
 import type { SettingsStore } from '../../../src/options/use-settings';
 import { useSettingsStore } from '../../../src/options/use-settings';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS, emptySnapshot } from '../../../src/shared/constants';
+import {
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  emptySnapshot,
+  rulesFromLists,
+} from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
 import type {
   ListsConfig,
@@ -51,6 +56,7 @@ function hardSnapshot(sessionEndsAt: number): SessionSnapshot {
     intention: 'write the report',
     source: 'manual',
     scheduleEntryId: null,
+    rules: rulesFromLists(DEFAULT_LISTS),
   };
   return {
     ...emptySnapshot(sessionEndsAt - 10 * 60_000),

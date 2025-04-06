@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, type Mock, vi } from 'vitest';
 import type { EnginePorts } from '../../../src/background/engine';
 import { Engine } from '../../../src/background/engine';
 import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/background/list-sync-codec';
@@ -7,19 +7,21 @@ import {
   appendEvents,
   emptyRuntime,
   mergeRuntime,
+  migrateRuntimeRules,
   type RuntimeState,
   readEvents,
 } from '../../../src/background/stores';
 import { syncItemBytes } from '../../../src/background/sync-quota';
 import { type SyncJournal, SyncWriter } from '../../../src/background/sync-writer';
 import { ALL_CATEGORIES } from '../../../src/core/categories';
-import { buildMatcherCache, type CompiledMatcherSet } from '../../../src/core/matcher';
+import { buildMatcherCache, compileSessionMatcher } from '../../../src/core/matcher';
 import { beginPause, endPauseEarly, startSession } from '../../../src/core/session';
 import {
   CATEGORY_IDS,
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
   GATE_EXPIRY_MS,
+  rulesFromLists,
 } from '../../../src/shared/constants';
 import type { Ack } from '../../../src/shared/messages';
 import {
@@ -36,6 +38,7 @@ import type {
   ListsConfig,
   ScheduleEntry,
   SessionConfig,
+  SessionRuleSnapshot,
   SessionSnapshot,
   Settings,
   StreakState,
@@ -118,8 +121,9 @@ function makeEngine(opts?: {
   supersedeSync?: EnginePorts['supersedeSync'];
   persistSyncJournal?: EnginePorts['persistSyncJournal'];
   saveMatcherCache?: EnginePorts['saveMatcherCache'];
-  matcherSet?: CompiledMatcherSet;
+  sessionCompiler?: typeof compileSessionMatcher;
   hasPendingSync?: (key: string) => boolean;
+  lists?: ListsConfig;
 }): Harness {
   let nowMs: number = T0;
   const ports: Harness['ports'] = {
@@ -150,18 +154,21 @@ function makeEngine(opts?: {
         : vi.fn(opts.saveMatcherCache),
   };
   const settings: Settings = { ...DEFAULT_SETTINGS, ...opts?.settings };
+  const lists: ListsConfig =
+    opts?.lists ??
+    ({
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'facebook.com' }],
+    } satisfies ListsConfig);
   const engine: Engine = new Engine(
     ports as unknown as EnginePorts,
     settings,
-    {
-      ...DEFAULT_LISTS,
-      custom: [{ kind: 'host', pattern: 'facebook.com' }],
-    },
+    lists,
     { balanceMs: opts?.bankMs ?? 0 },
     opts?.streak ?? null,
     opts?.runtime ?? emptyRuntime(T0),
     'dev-test',
-    opts?.matcherSet,
+    opts?.sessionCompiler,
   );
   return {
     engine,
@@ -174,6 +181,11 @@ function makeEngine(opts?: {
   };
 }
 
+const ENGINE_LISTS: ListsConfig = {
+  ...DEFAULT_LISTS,
+  custom: [{ kind: 'host', pattern: 'facebook.com' }],
+};
+
 const manualConfig: SessionConfig = {
   mode: 'blacklist',
   strictness: 'friction',
@@ -182,6 +194,7 @@ const manualConfig: SessionConfig = {
   intention: 'write the report',
   source: 'manual',
   scheduleEntryId: null,
+  rules: rulesFromLists(ENGINE_LISTS),
 };
 
 const scheduledEntry: ScheduleEntry = {
@@ -205,26 +218,195 @@ function oversizedSettings(overrides: Partial<Settings> = {}): Settings {
 }
 
 describe('Engine', () => {
-  it('uses an injected matcher bundle for both session modes', async () => {
-    const injectedLists: ListsConfig = {
-      ...DEFAULT_LISTS,
-      custom: [{ kind: 'host', pattern: 'injected-block.example' }],
-      whitelist: [{ kind: 'host', pattern: 'injected-allow.example' }],
-    };
-    const h: Harness = makeEngine({
-      matcherSet: buildMatcherCache(injectedLists, ALL_CATEGORIES).compiled,
-    });
+  it('compiles one matcher when a manual session starts and reuses it for verdicts', async (): Promise<void> => {
+    const sessionCompiler: Mock<typeof compileSessionMatcher> = vi.fn(compileSessionMatcher);
+    const h: Harness = makeEngine({ sessionCompiler });
 
     await h.engine.startSession(manualConfig);
-    expect(h.engine.verdictFor('https://injected-block.example/page').blocked).toBe(true);
-    expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(false);
+    h.engine.verdictFor('https://facebook.com/feed');
+    h.engine.verdictFor('https://facebook.com/messages');
 
-    const whitelist: Harness = makeEngine({
-      matcherSet: buildMatcherCache(injectedLists, ALL_CATEGORIES).compiled,
+    expect(sessionCompiler).toHaveBeenCalledTimes(1);
+    expect(sessionCompiler).toHaveBeenCalledWith(
+      manualConfig.rules,
+      ALL_CATEGORIES,
+      manualConfig.mode,
+    );
+  });
+
+  it('compiles one matcher from persisted rules at worker restart and reuses it', async (): Promise<void> => {
+    const first: Harness = makeEngine();
+    await first.engine.startSession(manualConfig);
+    const persisted: RuntimeState = structuredClone(
+      first.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+    );
+    const sessionCompiler: Mock<typeof compileSessionMatcher> = vi.fn(compileSessionMatcher);
+
+    const restarted: Harness = makeEngine({ runtime: persisted, sessionCompiler });
+    restarted.engine.verdictFor('https://facebook.com/feed');
+    restarted.engine.verdictFor('https://facebook.com/messages');
+
+    expect(sessionCompiler).toHaveBeenCalledTimes(1);
+    expect(sessionCompiler).toHaveBeenCalledWith(
+      persisted.session?.config.rules,
+      ALL_CATEGORIES,
+      persisted.session?.config.mode,
+    );
+  });
+
+  it('replaces the compiled matcher when an ended session is followed by a new session', async (): Promise<void> => {
+    const sessionCompiler: Mock<typeof compileSessionMatcher> = vi.fn(compileSessionMatcher);
+    const h: Harness = makeEngine({ sessionCompiler });
+    await h.engine.startSession(manualConfig);
+    h.setNow(T0 + 25 * 60_000);
+
+    expect(h.engine.verdictFor('https://facebook.com/feed').reason).toBe('no-session');
+
+    const nextConfig: SessionConfig = {
+      ...manualConfig,
+      rules: {
+        ...manualConfig.rules,
+        sessionBlacklist: [{ kind: 'host', pattern: 'next-session.example' }],
+      },
+    };
+    await h.engine.startSession(nextConfig);
+
+    expect(sessionCompiler).toHaveBeenCalledTimes(2);
+    expect(h.engine.verdictFor('https://next-session.example/page').blocked).toBe(true);
+  });
+
+  it('does not expose mutable session config or rules through snapshots', async (): Promise<void> => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession(manualConfig);
+    const expectedRules: SessionRuleSnapshot = structuredClone(manualConfig.rules);
+    const outbound: SessionSnapshot = h.engine.snapshot();
+    if (outbound.config === null) throw new Error('expected an active config');
+
+    outbound.config.rules.permanentBlacklist[0] = {
+      kind: 'host',
+      pattern: 'mutated.example',
+    };
+    outbound.config.rules.sessionBlacklist.push({ kind: 'host', pattern: 'injected.example' });
+    outbound.config.rules.categories.social = true;
+    outbound.config.rules.exclusions.social = ['mutated.example'];
+
+    expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(true);
+    expect(h.engine.verdictFor('https://mutated.example/page').blocked).toBe(false);
+    expect(h.engine.verdictFor('https://injected.example/page').blocked).toBe(false);
+    expect(h.engine.snapshot().config?.rules).toEqual(expectedRules);
+    await h.engine.snapshotPersisted();
+    const saved: RuntimeState | undefined = h.ports.saveRuntime.mock.calls.at(-1)?.[0] as
+      | RuntimeState
+      | undefined;
+    expect(saved?.session?.config.rules).toEqual(expectedRules);
+  });
+
+  it('uses the session snapshot for both session modes', async () => {
+    const h: Harness = makeEngine();
+
+    await h.engine.startSession(manualConfig);
+    expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(true);
+
+    const whitelist: Harness = makeEngine();
+    await whitelist.engine.startSession({
+      ...manualConfig,
+      mode: 'whitelist',
+      rules: {
+        ...manualConfig.rules,
+        sessionAllowlist: [{ kind: 'host', pattern: 'github.com' }],
+      },
     });
-    await whitelist.engine.startSession({ ...manualConfig, mode: 'whitelist' });
-    expect(whitelist.engine.verdictFor('https://injected-allow.example/page').blocked).toBe(false);
-    expect(whitelist.engine.verdictFor('https://github.com/openai').blocked).toBe(true);
+    expect(whitelist.engine.verdictFor('https://github.com/openai').blocked).toBe(false);
+  });
+
+  it.each([
+    ['stale revision', { ...manualConfig.rules, baselineRevision: 'lists-v1:stale' }],
+    [
+      'forged permanent provenance',
+      {
+        ...manualConfig.rules,
+        permanentBlacklist: [{ kind: 'host' as const, pattern: 'forged.example' }],
+      },
+    ],
+    [
+      'forged category baseline',
+      {
+        ...manualConfig.rules,
+        categories: { ...manualConfig.rules.categories, social: true },
+      },
+    ],
+    [
+      'forged exclusion baseline',
+      {
+        ...manualConfig.rules,
+        exclusions: { social: ['facebook.com'] },
+      },
+    ],
+    [
+      'forged permanent allowlist',
+      {
+        ...manualConfig.rules,
+        permanentAllowlist: [{ kind: 'regex' as const, pattern: 'trusted\\.example' }],
+      },
+    ],
+  ])('rejects a %s before starting', async (_case: string, rules): Promise<void> => {
+    const h: Harness = makeEngine();
+
+    await expect(h.engine.startSession({ ...manualConfig, rules })).resolves.toEqual({
+      ok: false,
+      error: 'Your default blocking lists changed. Review this session and start again.',
+    });
+    expect(h.engine.snapshot().phase).toBe('idle');
+  });
+
+  it('normalizes and persists session-added hosts at the worker boundary', async (): Promise<void> => {
+    const h: Harness = makeEngine();
+    const config: SessionConfig = {
+      ...manualConfig,
+      mode: 'whitelist',
+      rules: {
+        ...manualConfig.rules,
+        sessionAllowlist: [{ kind: 'host', pattern: '  HTTPS://Docs.Python.org/3/library/  ' }],
+      },
+    };
+
+    await expect(h.engine.startSession(config)).resolves.toEqual({ ok: true });
+
+    expect(h.engine.snapshot().config?.rules.sessionAllowlist).toEqual([
+      { kind: 'host', pattern: 'docs.python.org' },
+    ]);
+    expect(h.engine.verdictFor('https://docs.python.org/3/').blocked).toBe(false);
+  });
+
+  it('keeps the active policy immutable across list changes and worker restart', async (): Promise<void> => {
+    const first: Harness = makeEngine();
+    await first.engine.startSession(manualConfig);
+    const replacementLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'replacement.example' }],
+    };
+
+    await expect(first.engine.updateLists(replacementLists)).resolves.toEqual({ ok: true });
+    expect(first.engine.verdictFor('https://facebook.com/feed').blocked).toBe(true);
+    expect(first.engine.verdictFor('https://replacement.example/page').blocked).toBe(false);
+
+    const persisted: RuntimeState = structuredClone(
+      first.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+    );
+    const restarted: Harness = makeEngine({ runtime: persisted, lists: replacementLists });
+    expect(restarted.engine.verdictFor('https://facebook.com/feed').blocked).toBe(true);
+    expect(restarted.engine.verdictFor('https://replacement.example/page').blocked).toBe(false);
+  });
+
+  it('keeps the active policy immutable across a settings change', async (): Promise<void> => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession(manualConfig);
+
+    await expect(
+      h.engine.updateSettings({ ...DEFAULT_SETTINGS, defaultMode: 'whitelist' }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(true);
   });
 
   it('forwards background errors to the configured port', () => {
@@ -719,7 +901,7 @@ describe('Engine', () => {
     });
   });
 
-  it('persists both matcher modes before installing accepted local lists', async () => {
+  it('persists both matcher modes without changing the active session policy', async () => {
     const order: string[] = [];
     const h: Harness = makeEngine({
       saveMatcherCache: async (): Promise<void> => {
@@ -744,11 +926,11 @@ describe('Engine', () => {
       updated,
     );
     expect(h.engine.getLists()).toEqual(updated);
-    expect(h.engine.verdictFor('https://replacement.example/page').blocked).toBe(true);
-    expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(false);
+    expect(h.engine.verdictFor('https://replacement.example/page').blocked).toBe(false);
+    expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(true);
   });
 
-  it('persists accepted live lists without echoing them and uses them for the next verdict', async () => {
+  it('persists accepted live lists without echoing them or changing the active policy', async () => {
     const h: Harness = makeEngine();
     await h.engine.startSession(manualConfig);
     clearMutationPorts(h.ports);
@@ -764,8 +946,8 @@ describe('Engine', () => {
       updated,
     );
     expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_LISTS, expect.anything());
-    expect(h.engine.verdictFor('https://live.example/page').blocked).toBe(true);
-    expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(false);
+    expect(h.engine.verdictFor('https://live.example/page').blocked).toBe(false);
+    expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(true);
   });
 
   it('keeps active lists, matchers, and Sync queues when cache persistence fails', async () => {
@@ -789,7 +971,7 @@ describe('Engine', () => {
     expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_LISTS, expect.anything());
   });
 
-  it('serializes a hard-session start behind local matcher-cache persistence', async () => {
+  it('rejects a queued hard-session start after list persistence makes its baseline stale', async () => {
     let releaseCache: () => void = (): void => {};
     let signalCacheStarted: () => void = (): void => {};
     const cacheBlocked: Promise<void> = new Promise((resolve: () => void): void => {
@@ -822,7 +1004,10 @@ describe('Engine', () => {
     expect(sessionStarted).toBe(false);
     releaseCache();
     await expect(updating).resolves.toEqual({ ok: true });
-    await expect(starting).resolves.toEqual({ ok: true });
+    await expect(starting).resolves.toEqual({
+      ok: false,
+      error: 'Your default blocking lists changed. Review this session and start again.',
+    });
     expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(false);
   });
 
@@ -1276,6 +1461,23 @@ describe('Engine', () => {
     expect(h.ports.notify).toHaveBeenCalledWith('Focus schedule started', 'Locked until 10:00.');
   });
 
+  it('derives a fresh rules snapshot when a schedule starts', (): void => {
+    const currentLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'scheduled-current.example' }],
+    };
+    const h: Harness = makeEngine({
+      settings: { schedule: [scheduledEntry] },
+      lists: currentLists,
+    });
+    h.setNow(new Date(2026, 7, 29, 9, 0).getTime());
+
+    const snapshot: SessionSnapshot = h.engine.snapshot();
+
+    expect(snapshot.config?.rules).toEqual(rulesFromLists(currentLists));
+    expect(h.engine.verdictFor('https://scheduled-current.example/page').blocked).toBe(true);
+  });
+
   it('uses the injected identity for a scheduled session and its start event', async () => {
     const h: Harness = makeEngine({ settings: { schedule: [scheduledEntry] } });
     h.setNow(new Date(2026, 7, 29, 9, 1).getTime());
@@ -1291,13 +1493,20 @@ describe('Engine', () => {
   });
 
   it('upgrades a running friction session when a hard schedule opens', async () => {
-    const h: Harness = makeEngine({ settings: { schedule: [scheduledEntry] } });
+    const sessionCompiler: Mock<typeof compileSessionMatcher> = vi.fn(compileSessionMatcher);
+    const h: Harness = makeEngine({
+      settings: { schedule: [scheduledEntry] },
+      sessionCompiler,
+    });
     await h.engine.startSession(manualConfig);
     h.setNow(T0 + 16 * 60_000);
 
     const snapshot: SessionSnapshot = h.engine.snapshot();
+    h.engine.verdictFor('https://facebook.com/feed');
+    h.engine.verdictFor('https://facebook.com/messages');
 
     expect(snapshot.config?.strictness).toBe('hard');
+    expect(sessionCompiler).toHaveBeenCalledTimes(1);
     expect(h.ports.playSound).not.toHaveBeenCalledWith('scheduleStart');
   });
 
@@ -1789,7 +1998,9 @@ describe('Engine', () => {
     const storedRuntime: RuntimeState = structuredClone(
       h.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
     );
-    const restarted: Harness = makeEngine({ runtime: mergeRuntime(storedRuntime, T0) });
+    const restarted: Harness = makeEngine({
+      runtime: migrateRuntimeRules(mergeRuntime(storedRuntime, T0), ENGINE_LISTS),
+    });
     expect(
       restarted.engine.tabFacts(7, 'https://facebook.com/feed', 'durable-document').wasStopped,
     ).toBe(true);
@@ -1827,7 +2038,7 @@ describe('Engine', () => {
       h.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
     );
     const restarted: Harness = makeEngine({
-      runtime: mergeRuntime(crashRuntime, T0 + 2_000),
+      runtime: migrateRuntimeRules(mergeRuntime(crashRuntime, T0 + 2_000), ENGINE_LISTS),
       settings: { pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0.5 } },
     });
     restarted.setNow(T0 + 2_000);
@@ -1863,13 +2074,16 @@ describe('Engine', () => {
     const paused = beginPause(started, T0 + 4 * 60_000, 5 * 60_000);
     const resumed = endPauseEarly(paused, T0 + 6 * 60_000);
     expect(resumed.phaseStartedAt).toBeGreaterThan(resumed.phaseEndsAt);
-    const runtime: RuntimeState = mergeRuntime(
-      {
-        ...emptyRuntime(T0 + 6 * 60_000),
-        session: resumed,
-        accruedFocusMs: resumed.focusedMs,
-      },
-      T0 + 6 * 60_000,
+    const runtime: RuntimeState = migrateRuntimeRules(
+      mergeRuntime(
+        {
+          ...emptyRuntime(T0 + 6 * 60_000),
+          session: resumed,
+          accruedFocusMs: resumed.focusedMs,
+        },
+        T0 + 6 * 60_000,
+      ),
+      ENGINE_LISTS,
     );
 
     const h: Harness = makeEngine({ runtime });

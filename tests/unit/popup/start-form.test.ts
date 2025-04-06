@@ -4,7 +4,7 @@ import './chrome-fake';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import { DEFAULT_LISTS, DEFAULT_SETTINGS, rulesFromLists } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
 import { resetChromeFake, sendMessageMock } from './chrome-fake';
 
@@ -75,6 +75,7 @@ describe('StartForm', () => {
           intention: 'write the report',
           source: 'manual',
           scheduleEntryId: null,
+          rules: rulesFromLists(DEFAULT_LISTS),
         },
       });
     });
@@ -91,6 +92,41 @@ describe('StartForm', () => {
       expect(sendMessageMock).toHaveBeenCalledWith({
         type: 'updateLists',
         lists: { ...DEFAULT_LISTS, categories: { ...DEFAULT_LISTS.categories, social: true } },
+      });
+    });
+  });
+
+  it('starts from the worker-confirmed lists after a category update', async (): Promise<void> => {
+    let currentLists = structuredClone(DEFAULT_LISTS);
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'updateLists') {
+        currentLists = request.lists;
+        return { ok: true };
+      }
+      if (request.type === 'getLists') return currentLists;
+      if (request.type === 'startSession') return { ok: true };
+      return undefined;
+    });
+    const { getByRole } = render(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
+    );
+
+    fireEvent.click(getByRole('button', { name: 'Social' }));
+    await waitFor((): void => {
+      expect(sendMessageMock).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'updateLists' }),
+      );
+    });
+    fireEvent.click(getByRole('button', { name: 'Start focusing' }));
+
+    await waitFor((): void => {
+      expect(sendMessageMock).toHaveBeenCalledWith({
+        type: 'startSession',
+        config: expect.objectContaining({
+          rules: expect.objectContaining({
+            categories: { ...DEFAULT_LISTS.categories, social: true },
+          }),
+        }),
       });
     });
   });

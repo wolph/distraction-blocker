@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { LISTS_SPLIT_THRESHOLD_BYTES } from '../../../src/background/list-sync-codec';
 import { parseRequest } from '../../../src/background/request-validation';
 import { syncItemBytes } from '../../../src/background/sync-quota';
-import { CATEGORY_IDS, DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import {
+  CATEGORY_IDS,
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  rulesFromLists,
+} from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
 import { SYNC_LISTS } from '../../../src/shared/storage-keys';
 import type { ListsConfig, SessionConfig, Settings } from '../../../src/shared/types';
@@ -24,6 +29,7 @@ const SESSION_CONFIG: SessionConfig = {
   intention: 'Ship the parser',
   source: 'manual',
   scheduleEntryId: null,
+  rules: rulesFromLists(DEFAULT_LISTS),
 };
 
 const SETTINGS: Settings = structuredClone(DEFAULT_SETTINGS);
@@ -200,16 +206,123 @@ describe('parseRequest', (): void => {
     expect(parseRequest(request)).toBeNull();
   });
 
-  it('accepts a scheduled session with a nonblank entry ID', (): void => {
+  it('requires a complete rules snapshot for manual starts', (): void => {
+    const config: Record<string, unknown> = structuredClone(SESSION_CONFIG) as unknown as Record<
+      string,
+      unknown
+    >;
+    delete config.rules;
+
+    expect(parseRequest({ type: 'startSession', config })).toBeNull();
+  });
+
+  it('normalizes session host additions at the request boundary', (): void => {
+    const request: Record<string, unknown> = replaceNested(VALID_REQUESTS.startSession, 'config', {
+      rules: {
+        ...SESSION_CONFIG.rules,
+        sessionAllowlist: [{ kind: 'host', pattern: '  HTTPS://Docs.Python.org/3/library/  ' }],
+      },
+    });
+
+    expect(parseRequest(request)).toMatchObject({
+      config: {
+        rules: {
+          sessionAllowlist: [{ kind: 'host', pattern: 'docs.python.org' }],
+        },
+      },
+    });
+  });
+
+  it.each(['\n', '\t', '\r', '\v', '\f'])(
+    'rejects session hosts with leading or trailing %j controls',
+    (control: string): void => {
+      for (const pattern of [`${control}docs.python.org`, `docs.python.org${control}`]) {
+        const request: Record<string, unknown> = replaceNested(
+          VALID_REQUESTS.startSession,
+          'config',
+          {
+            rules: {
+              ...SESSION_CONFIG.rules,
+              sessionAllowlist: [{ kind: 'host', pattern }],
+            },
+          },
+        );
+
+        expect(parseRequest(request)).toBeNull();
+      }
+    },
+  );
+
+  it('deduplicates equivalent Unicode, punycode, and trailing-dot session hosts', (): void => {
+    const request: Record<string, unknown> = replaceNested(VALID_REQUESTS.startSession, 'config', {
+      rules: {
+        ...SESSION_CONFIG.rules,
+        sessionBlacklist: [
+          { kind: 'host', pattern: 'BÜCHER.EXAMPLE' },
+          { kind: 'host', pattern: 'xn--bcher-kva.example.' },
+        ],
+      },
+    });
+
+    expect(parseRequest(request)).toMatchObject({
+      config: {
+        rules: {
+          sessionBlacklist: [{ kind: 'host', pattern: 'xn--bcher-kva.example' }],
+        },
+      },
+    });
+  });
+
+  it.each([
+    { sessionAllowlist: [{ kind: 'regex', pattern: '.*' }] },
+    { sessionBlacklist: [{ kind: 'host', pattern: 'ftp://example.com/' }] },
+    { sessionBlacklist: [{ kind: 'host', pattern: 'https://user@example.com/' }] },
+    { sessionBlacklist: [{ kind: 'host', pattern: 'https://example.com:8443/' }] },
+    { sessionBlacklist: [{ kind: 'host', pattern: 'https://example.com:443/' }] },
+    { sessionBlacklist: [{ kind: 'host', pattern: '//example.com/path' }] },
+    { sessionBlacklist: [{ kind: 'host', pattern: 'https:\\example.com' }] },
+    { sessionBlacklist: [{ kind: 'host', pattern: 'mailto:user@example.com' }] },
+    { sessionBlacklist: [{ kind: 'host', pattern: 'example.com\u007f' }] },
+    { sessionBlacklist: [{ kind: 'host', pattern: '127.0.0.1' }] },
+    { sessionBlacklist: [{ kind: 'host', pattern: '0127.0.0.1' }] },
+    { sessionBlacklist: [{ kind: 'host', pattern: '[2001:db8::1]' }] },
+    { sessionBlacklist: [{ kind: 'host', pattern: 'localhost' }] },
+    { sessionBlacklist: [{ kind: 'host', pattern: 'intranet' }] },
+    { sessionBlacklist: [{ kind: 'host', pattern: 'not a host/path' }] },
+    { categories: { ...DEFAULT_LISTS.categories, unknown: true } },
+    { permanentBlacklist: [{ kind: 'regex', pattern: '(' }] },
+  ])('rejects malformed nested session rules %#', (rulesUpdate: Record<string, unknown>): void => {
+    const request: Record<string, unknown> = replaceNested(VALID_REQUESTS.startSession, 'config', {
+      rules: { ...SESSION_CONFIG.rules, ...rulesUpdate },
+    });
+
+    expect(parseRequest(request)).toBeNull();
+  });
+
+  it('rejects sparse session rule arrays', (): void => {
+    const sparse: Array<{ kind: 'host'; pattern: string }> = new Array(1);
+    const request: Record<string, unknown> = replaceNested(VALID_REQUESTS.startSession, 'config', {
+      rules: { ...SESSION_CONFIG.rules, sessionBlacklist: sparse },
+    });
+
+    expect(parseRequest(request)).toBeNull();
+  });
+
+  it('rejects extra session snapshot keys', (): void => {
+    const request: Record<string, unknown> = replaceNested(VALID_REQUESTS.startSession, 'config', {
+      rules: { ...SESSION_CONFIG.rules, extra: true },
+    });
+
+    expect(parseRequest(request)).toBeNull();
+  });
+
+  it('rejects popup-originated scheduled session requests', (): void => {
     const config: SessionConfig = {
       ...SESSION_CONFIG,
       source: 'schedule',
       scheduleEntryId: 'weekday-morning',
     };
-    expect(parseRequest({ type: 'startSession', config })).toEqual({
-      type: 'startSession',
-      config,
-    });
+    expect(parseRequest({ type: 'startSession', config })).toBeNull();
   });
 
   it.each([

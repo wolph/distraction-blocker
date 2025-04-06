@@ -69,7 +69,7 @@ export interface SessionConfig {
   intention: string;
   source: 'manual' | 'schedule';
   scheduleEntryId: string | null;
-  rules?: SessionRuleSnapshot;
+  rules: SessionRuleSnapshot;
 }
 
 /** Persisted machine state. Pure functions in src/core/session.ts own all transitions. */

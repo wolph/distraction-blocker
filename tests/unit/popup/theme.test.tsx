@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from '../../../src/popup/App';
-import { emptySnapshot } from '../../../src/shared/constants';
+import { DEFAULT_LISTS, emptySnapshot, rulesFromLists } from '../../../src/shared/constants';
 import type { Request, StatsBundle } from '../../../src/shared/messages';
 import type { SessionSnapshot } from '../../../src/shared/types';
 import { emitMessage, resetChromeFake, sendMessageMock } from './chrome-fake';
@@ -42,6 +42,7 @@ function activeSnapshot(theme: SessionSnapshot['theme'] = 'auto'): SessionSnapsh
       intention: 'work',
       source: 'manual',
       scheduleEntryId: null,
+      rules: rulesFromLists(DEFAULT_LISTS),
     },
   };
 }

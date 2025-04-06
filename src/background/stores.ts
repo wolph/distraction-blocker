@@ -1,4 +1,4 @@
-import { type StoredMatcherCache, validateRule } from '../core/matcher';
+import { normalizeSessionRules, type StoredMatcherCache, validateRule } from '../core/matcher';
 import { isDailyDate, parseDailyAgg } from '../core/stats';
 import {
   CATEGORY_IDS,
@@ -6,6 +6,7 @@ import {
   DEFAULT_SETTINGS,
   EVENT_LOG_CAP,
   MAX_FREEZE_TOKENS,
+  rulesFromLists,
 } from '../shared/constants';
 import { isRelativeMinuteDuration, isSafeDayCount } from '../shared/numeric-validation';
 import {
@@ -30,6 +31,7 @@ import type {
   Rule,
   ScheduleEntry,
   SessionConfig,
+  SessionRuleSnapshot,
   SessionState,
   Settings,
   SiteUnlock,
@@ -48,8 +50,8 @@ const TIME_RE: RegExp = /^([01]\d|2[0-3]):([0-5]\d)$/;
 let eventAppendQueue: Promise<void> = Promise.resolve();
 
 /**
- * Background-internal persisted state. Not part of the shared contract:
- * only the worker reads or writes it.
+ * Normalized background-internal state. Not part of the shared contract:
+ * only the worker reads or writes it. Live sessions always carry rules.
  *
  * todayAgg stays null until the first event of the day folds in. Minting
  * an empty DailyAgg is core's job, so the boot path does not depend on it.
@@ -72,6 +74,19 @@ export interface RuntimeState {
   /** Durable recovery record cleared after events, sync journal, and runtime agree. */
   commitCheckpoint: RuntimeCommitCheckpoint | null;
 }
+
+export type LegacySessionConfig = Omit<SessionConfig, 'rules'>;
+
+export type ParsedSessionConfig = SessionConfig | LegacySessionConfig;
+
+export type ParsedSessionState = Omit<SessionState, 'config'> & {
+  config: ParsedSessionConfig;
+};
+
+/** Storage-boundary state. A legacy parsed session may omit rules until boot migration. */
+export type ParsedRuntimeState = Omit<RuntimeState, 'session'> & {
+  session: ParsedSessionState | null;
+};
 
 export interface RuntimeCommitCheckpoint {
   bank: BankState;
@@ -265,12 +280,12 @@ function journalValue(journal: SyncJournal | undefined, key: string, stored: unk
   return Object.hasOwn(journal.sets, key) ? journal.sets[key] : stored;
 }
 
-export async function loadRuntime(now: number): Promise<RuntimeState> {
+export async function loadRuntime(now: number): Promise<ParsedRuntimeState> {
   const raw: unknown = (await chrome.storage.local.get(LOCAL_RUNTIME))[LOCAL_RUNTIME];
   return mergeRuntime(raw, now);
 }
 
-export function mergeRuntime(raw: unknown, now: number): RuntimeState {
+export function mergeRuntime(raw: unknown, now: number): ParsedRuntimeState {
   const empty: RuntimeState = emptyRuntime(now);
   if (!isRecord(raw)) return empty;
   const date: string = isDailyDate(raw.date) ? raw.date : empty.date;
@@ -291,8 +306,42 @@ export function mergeRuntime(raw: unknown, now: number): RuntimeState {
   };
 }
 
+/** Completes the only accepted legacy SessionConfig shape at worker boot. */
+export function migrateRuntimeRules(runtime: ParsedRuntimeState, lists: ListsConfig): RuntimeState {
+  if (isNormalizedRuntimeState(runtime)) return runtime;
+  const session: ParsedSessionState | null = runtime.session;
+  if (session === null || hasSessionRules(session.config)) {
+    throw new Error('parsed runtime normalization invariant failed');
+  }
+  const rules: SessionRuleSnapshot | null = normalizeSessionRules(rulesFromLists(lists));
+  if (rules === null) throw new Error('cannot migrate runtime from invalid blocking lists');
+  return {
+    ...runtime,
+    session: {
+      ...session,
+      config: { ...session.config, rules },
+    },
+  };
+}
+
+function hasSessionRules(config: ParsedSessionConfig): config is SessionConfig {
+  return Object.hasOwn(config, 'rules');
+}
+
+function isNormalizedRuntimeState(runtime: ParsedRuntimeState): runtime is RuntimeState {
+  return runtime.session === null || hasSessionRules(runtime.session.config);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const ownKeys: PropertyKey[] = Reflect.ownKeys(value);
+  return (
+    ownKeys.length === keys.length &&
+    ownKeys.every((key: PropertyKey): boolean => typeof key === 'string' && keys.includes(key))
+  );
 }
 
 function isNonNegativeNumber(value: unknown): value is number {
@@ -374,7 +423,9 @@ function parseScheduleEntry(value: unknown): ScheduleEntry | null {
     endsAt === null ||
     startsAt >= endsAt ||
     (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
-    (value.strictness !== 'hard' && value.strictness !== 'friction') ||
+    (value.strictness !== 'flexible' &&
+      value.strictness !== 'hard' &&
+      value.strictness !== 'friction') ||
     (value.cycling !== null && cycling === null) ||
     typeof value.intention !== 'string' ||
     typeof value.enabled !== 'boolean'
@@ -550,17 +601,32 @@ export function parseStreak(value: unknown): StreakState | null {
   };
 }
 
-function parseSessionConfig(value: unknown): SessionConfig | null {
+function parseSessionConfig(value: unknown): ParsedSessionConfig | null {
   if (!isRecord(value)) return null;
+  const baseKeys: readonly string[] = [
+    'mode',
+    'strictness',
+    'durationMin',
+    'cycling',
+    'intention',
+    'source',
+    'scheduleEntryId',
+  ];
+  const hasRules: boolean = Object.hasOwn(value, 'rules');
+  if (!hasExactKeys(value, hasRules ? [...baseKeys, 'rules'] : baseKeys)) return null;
   const cycling: CycleConfig | null = parseCycleConfig(value.cycling);
+  const rules: SessionRuleSnapshot | null = hasRules ? normalizeSessionRules(value.rules) : null;
   if (
     (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
-    (value.strictness !== 'hard' && value.strictness !== 'friction') ||
-    !isNonNegativeNumber(value.durationMin) ||
+    (value.strictness !== 'flexible' &&
+      value.strictness !== 'hard' &&
+      value.strictness !== 'friction') ||
+    !isRelativeMinuteDuration(value.durationMin) ||
     (value.cycling !== null && cycling === null) ||
     typeof value.intention !== 'string' ||
     (value.source !== 'manual' && value.source !== 'schedule') ||
-    !isNullableString(value.scheduleEntryId)
+    !isNullableString(value.scheduleEntryId) ||
+    (hasRules && rules === null)
   ) {
     return null;
   }
@@ -570,7 +636,7 @@ function parseSessionConfig(value: unknown): SessionConfig | null {
   ) {
     return null;
   }
-  return {
+  const config: Omit<SessionConfig, 'rules'> = {
     mode: value.mode,
     strictness: value.strictness,
     durationMin: value.durationMin,
@@ -579,6 +645,8 @@ function parseSessionConfig(value: unknown): SessionConfig | null {
     source: value.source,
     scheduleEntryId: value.scheduleEntryId,
   };
+  if (rules !== null) return { ...config, rules };
+  return config;
 }
 
 function parsePausedFrom(value: unknown): { phase: 'focus' | 'break'; phaseEndsAt: number } | null {
@@ -592,9 +660,9 @@ function parsePausedFrom(value: unknown): { phase: 'focus' | 'break'; phaseEndsA
   return { phase: value.phase, phaseEndsAt: value.phaseEndsAt };
 }
 
-function parseSession(value: unknown): SessionState | null {
+function parseSession(value: unknown): ParsedSessionState | null {
   if (!isRecord(value)) return null;
-  const config: SessionConfig | null = parseSessionConfig(value.config);
+  const config: ParsedSessionConfig | null = parseSessionConfig(value.config);
   const pausedFrom: { phase: 'focus' | 'break'; phaseEndsAt: number } | null = parsePausedFrom(
     value.pausedFrom,
   );
@@ -632,7 +700,7 @@ function parseSession(value: unknown): SessionState | null {
   } else if (value.pausedFrom !== null && value.pausedFrom !== undefined) {
     return null;
   }
-  const session: SessionState = {
+  const session: ParsedSessionState = {
     config,
     startedAt: value.startedAt,
     sessionEndsAt: value.sessionEndsAt,
@@ -733,7 +801,9 @@ function parseEventRecord(value: unknown): EventRecord | null {
       if (
         (value.source !== 'manual' && value.source !== 'schedule') ||
         (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
-        (value.strictness !== 'hard' && value.strictness !== 'friction') ||
+        (value.strictness !== 'flexible' &&
+          value.strictness !== 'hard' &&
+          value.strictness !== 'friction') ||
         !isNonNegativeNumber(value.durationMin) ||
         typeof value.intention !== 'string'
       ) {

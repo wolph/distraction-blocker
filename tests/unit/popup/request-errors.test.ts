@@ -7,7 +7,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ActiveView } from '../../../src/popup/ActiveView';
 import { App } from '../../../src/popup/App';
 import { StartForm } from '../../../src/popup/StartForm';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS, emptySnapshot } from '../../../src/shared/constants';
+import {
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  emptySnapshot,
+  rulesFromLists,
+} from '../../../src/shared/constants';
 import type { Ack, Request, StatsBundle } from '../../../src/shared/messages';
 import type { GateState, SessionConfig, SessionSnapshot } from '../../../src/shared/types';
 import {
@@ -41,6 +46,7 @@ const config: SessionConfig = {
   intention: 'write the report',
   source: 'manual',
   scheduleEntryId: null,
+  rules: rulesFromLists(DEFAULT_LISTS),
 };
 
 function focusSnapshot(): SessionSnapshot {

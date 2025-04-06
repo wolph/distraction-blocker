@@ -1,10 +1,3 @@
-import { ALL_CATEGORIES } from '../core/categories';
-import {
-  buildMatcherCache,
-  type CompiledMatcherSet,
-  type MatcherCacheBundle,
-  restoreMatcherCache,
-} from '../core/matcher';
 import { parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { emptyStreak } from '../core/streak';
 import type { Request, SoundId } from '../shared/messages';
@@ -44,12 +37,13 @@ import {
   getDeviceId,
   loadBank,
   loadLists,
-  loadMatcherCache,
   loadRuntime,
   loadSettings,
   loadStreak,
   loadSyncJournal,
   mergeSettings,
+  migrateRuntimeRules,
+  type ParsedRuntimeState,
   parseBank,
   parseLiveSettings,
   parseStreak,
@@ -232,37 +226,23 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
       : decodedLists.kind === 'complete'
         ? decodedLists.lists
         : journalFallbackLists;
-  const [settings, bank, syncedStreak, runtime, rawMatcherCache, deviceId]: [
+  const [settings, bank, syncedStreak, loadedRuntime, deviceId]: [
     Settings,
     BankState,
     StreakState | null,
-    RuntimeState,
-    unknown,
+    ParsedRuntimeState,
     string,
   ] = await Promise.all([
     loadSettings(journal),
     loadBank(journal),
     loadStreak(),
     loadRuntime(now),
-    loadMatcherCache(),
     getDeviceId(),
   ]);
+  const runtime: RuntimeState = migrateRuntimeRules(loadedRuntime, lists);
+  if (runtime !== loadedRuntime) await saveRuntime(runtime);
   if (journalHadLists) replacePendingLists(journal, await encodeListsForSync(lists));
   await chrome.storage.local.set({ [LOCAL_LISTS_SNAPSHOT]: canonicalListsConfig(lists) });
-  let matchers: CompiledMatcherSet | null = restoreMatcherCache(
-    rawMatcherCache,
-    lists,
-    ALL_CATEGORIES,
-  );
-  if (matchers === null) {
-    const rebuilt: MatcherCacheBundle = buildMatcherCache(lists, ALL_CATEGORIES);
-    matchers = rebuilt.compiled;
-    try {
-      await saveMatcherCache(rebuilt.stored);
-    } catch (error: unknown) {
-      reportBackgroundError(error);
-    }
-  }
   const journalValue: unknown = journal.sets[SYNC_STREAK];
   const journalHasStreak: boolean =
     !journal.removes.includes(SYNC_STREAK) && Object.hasOwn(journal.sets, SYNC_STREAK);
@@ -365,16 +345,7 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
       ),
     reportError: reportBackgroundError,
   };
-  const engine: Engine = new Engine(
-    ports,
-    settings,
-    lists,
-    bank,
-    streak,
-    runtime,
-    deviceId,
-    matchers,
-  );
+  const engine: Engine = new Engine(ports, settings, lists, bank, streak, runtime, deviceId);
   engineInstance = engine;
   await engine.tick();
   await ports.applyBlocking();

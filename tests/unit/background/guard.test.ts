@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { listsChangeAllowed, settingsChangeAllowed } from '../../../src/background/guard';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import { DEFAULT_LISTS, DEFAULT_SETTINGS, rulesFromLists } from '../../../src/shared/constants';
 import type { ListsConfig, ScheduleEntry, SessionState, Settings } from '../../../src/shared/types';
 
 const hardSession: SessionState = {
@@ -12,6 +12,7 @@ const hardSession: SessionState = {
     intention: '',
     source: 'manual',
     scheduleEntryId: null,
+    rules: rulesFromLists(DEFAULT_LISTS),
   },
   startedAt: 0,
   sessionEndsAt: 1,

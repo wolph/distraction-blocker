@@ -3,7 +3,12 @@ import { cleanup, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../../../src/options/App';
 import { Schedule } from '../../../src/options/Schedule';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS, emptySnapshot } from '../../../src/shared/constants';
+import {
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  emptySnapshot,
+  rulesFromLists,
+} from '../../../src/shared/constants';
 import type { ScheduleEntry, SessionSnapshot } from '../../../src/shared/types';
 import { installChromeFake } from './chrome-fake';
 
@@ -64,6 +69,7 @@ describe('Options navigation', () => {
         intention: '',
         source: 'manual',
         scheduleEntryId: null,
+        rules: rulesFromLists(DEFAULT_LISTS),
       },
       startedAt: endsAt - 15 * 60_000,
       phaseStartedAt: endsAt - 15 * 60_000,

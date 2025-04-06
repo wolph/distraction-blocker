@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import type { Mock } from 'vitest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { hideOverlay, showOverlay } from '../../../src/content/overlay';
-import { emptySnapshot } from '../../../src/shared/constants';
+import { DEFAULT_LISTS, emptySnapshot, rulesFromLists } from '../../../src/shared/constants';
 import type { SessionSnapshot, Verdict } from '../../../src/shared/types';
 
 const verdict: Verdict = { blocked: true, reason: 'category', matchedPattern: 'x.com' };
@@ -24,6 +24,7 @@ function focusSnap(): SessionSnapshot {
       intention: 'finish the report',
       source: 'manual',
       scheduleEntryId: null,
+      rules: rulesFromLists(DEFAULT_LISTS),
     },
     attemptsToday: 3,
   };

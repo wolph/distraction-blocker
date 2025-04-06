@@ -1,4 +1,4 @@
-import { validateRule } from '../core/matcher';
+import { normalizeSessionRules, validateRule } from '../core/matcher';
 import { scheduleEntriesOverlap, validateEntry } from '../core/schedule';
 import { CATEGORY_IDS } from '../shared/constants';
 import type { Request } from '../shared/messages';
@@ -16,6 +16,7 @@ import type {
   Rule,
   ScheduleEntry,
   SessionConfig,
+  SessionRuleSnapshot,
   Settings,
 } from '../shared/types';
 import { canEncodeListsForSync } from './list-sync-codec';
@@ -115,7 +116,7 @@ function isCycleConfig(value: unknown): value is CycleConfig {
   );
 }
 
-function isSessionConfig(value: unknown): value is SessionConfig {
+function parseSessionConfig(value: unknown): SessionConfig | null {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, [
@@ -126,25 +127,36 @@ function isSessionConfig(value: unknown): value is SessionConfig {
       'intention',
       'source',
       'scheduleEntryId',
+      'rules',
     ])
   ) {
-    return false;
+    return null;
   }
+  const rules: SessionRuleSnapshot | null = normalizeSessionRules(value.rules);
   if (
     (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
-    (value.strictness !== 'hard' && value.strictness !== 'friction') ||
+    (value.strictness !== 'flexible' &&
+      value.strictness !== 'hard' &&
+      value.strictness !== 'friction') ||
     !isRelativeMinuteDuration(value.durationMin) ||
     (value.cycling !== null && !isCycleConfig(value.cycling)) ||
     typeof value.intention !== 'string' ||
-    (value.source !== 'manual' && value.source !== 'schedule') ||
-    !isNullableString(value.scheduleEntryId)
+    value.source !== 'manual' ||
+    value.scheduleEntryId !== null ||
+    rules === null
   ) {
-    return false;
+    return null;
   }
-  return (
-    (value.source === 'manual' && value.scheduleEntryId === null) ||
-    (value.source === 'schedule' && isNonBlankString(value.scheduleEntryId))
-  );
+  return {
+    mode: value.mode,
+    strictness: value.strictness,
+    durationMin: value.durationMin,
+    cycling: value.cycling === null ? null : { ...value.cycling },
+    intention: value.intention,
+    source: 'manual',
+    scheduleEntryId: null,
+    rules,
+  };
 }
 
 function isPauseSettings(value: unknown): boolean {
@@ -218,7 +230,9 @@ function isScheduleEntry(value: unknown): value is ScheduleEntry {
     typeof value.start !== 'string' ||
     typeof value.end !== 'string' ||
     (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
-    (value.strictness !== 'hard' && value.strictness !== 'friction') ||
+    (value.strictness !== 'flexible' &&
+      value.strictness !== 'hard' &&
+      value.strictness !== 'friction') ||
     (value.cycling !== null && !isCycleConfig(value.cycling)) ||
     typeof value.intention !== 'string' ||
     typeof value.enabled !== 'boolean'
@@ -378,9 +392,11 @@ function parseRecord(value: Record<string, unknown>): Request | null {
         ? (value as Request)
         : null;
     case 'startSession':
-      return hasExactKeys(value, ['type', 'config']) && isSessionConfig(value.config)
-        ? (value as Request)
-        : null;
+      if (!hasExactKeys(value, ['type', 'config'])) return null;
+      {
+        const config: SessionConfig | null = parseSessionConfig(value.config);
+        return config === null ? null : { type: 'startSession', config };
+      }
     case 'openGate':
       if (
         !hasExactKeys(value, ['type', 'gate', 'host']) ||

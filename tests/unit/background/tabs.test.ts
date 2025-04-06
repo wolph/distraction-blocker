@@ -8,7 +8,12 @@ import {
   planTabAction,
   registerTabListeners,
 } from '../../../src/background/tabs';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS, emptySnapshot } from '../../../src/shared/constants';
+import {
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  emptySnapshot,
+  rulesFromLists,
+} from '../../../src/shared/constants';
 import type { EventRecord, Verdict } from '../../../src/shared/types';
 
 const blocked: Verdict = { blocked: true, reason: 'custom', matchedPattern: 'facebook.com' };
@@ -4639,6 +4644,10 @@ describe('applyBlockingFactory', () => {
       intention: 'test nested sweep',
       source: 'manual',
       scheduleEntryId: null,
+      rules: rulesFromLists({
+        ...DEFAULT_LISTS,
+        custom: [...DEFAULT_LISTS.custom, { kind: 'host', pattern: 'facebook.com' }],
+      }),
     });
     now += 5 * 60_000 + 1;
     await engine.tick();

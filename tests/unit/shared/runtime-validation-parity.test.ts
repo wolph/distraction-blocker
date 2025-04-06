@@ -67,7 +67,7 @@ const CONFIG: SessionConfig = {
   scheduleEntryId: null,
   rules: SESSION_RULES,
 };
-const LEGACY_CONFIG: SessionConfig = {
+const LEGACY_CONFIG: Omit<SessionConfig, 'rules'> = {
   mode: 'blacklist',
   strictness: 'friction',
   durationMin: 25,
@@ -87,7 +87,7 @@ const SETUP: SetupState = {
   legacyImported: false,
 };
 
-function activeSnapshot(config: unknown = LEGACY_CONFIG): unknown {
+function activeSnapshot(config: unknown = CONFIG): unknown {
   return {
     ...emptySnapshot(NOW),
     phase: 'focus',
@@ -407,14 +407,15 @@ describe('runtime and worker request validation parity', (): void => {
   );
 
   it.each([
-    ['valid session config', LEGACY_CONFIG, true],
-    ['extra session config key', { ...LEGACY_CONFIG, extra: true }, false],
+    ['valid session config', CONFIG, true],
+    ['legacy session config without rules', LEGACY_CONFIG, false],
+    ['extra session config key', { ...CONFIG, extra: true }, false],
     [
       'extra cycle config key',
-      { ...LEGACY_CONFIG, cycling: { ...DEFAULT_SETTINGS.defaultCycling, extra: true } },
+      { ...CONFIG, cycling: { ...DEFAULT_SETTINGS.defaultCycling, extra: true } },
       false,
     ],
-    ['manual config with schedule id', { ...LEGACY_CONFIG, scheduleEntryId: 'unexpected' }, false],
+    ['manual config with schedule id', { ...CONFIG, scheduleEntryId: 'unexpected' }, false],
   ])(
     'matches worker session validation for %s',
     (_label: string, value: unknown, accepted: boolean): void => {

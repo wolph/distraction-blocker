@@ -7,7 +7,12 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ActiveView } from '../../../src/popup/ActiveView';
-import { DEFAULT_SETTINGS, emptySnapshot } from '../../../src/shared/constants';
+import {
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  emptySnapshot,
+  rulesFromLists,
+} from '../../../src/shared/constants';
 import type { Request, StatsBundle } from '../../../src/shared/messages';
 import type { GateState, SessionConfig, SessionSnapshot } from '../../../src/shared/types';
 import { resetChromeFake, sendMessageMock, tabsQueryMock } from './chrome-fake';
@@ -22,6 +27,7 @@ const config: SessionConfig = {
   intention: 'write the report',
   source: 'manual',
   scheduleEntryId: null,
+  rules: rulesFromLists(DEFAULT_LISTS),
 };
 
 function focusSnap(): SessionSnapshot {

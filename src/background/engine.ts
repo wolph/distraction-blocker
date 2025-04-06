@@ -3,11 +3,13 @@ import { ALL_CATEGORIES } from '../core/categories';
 import {
   buildMatcherCache,
   type CompiledMatcher,
-  type CompiledMatcherSet,
+  compileSessionMatcher,
   evaluateUrl,
   type MatcherCacheBundle,
+  normalizeSessionRules,
   registrableHost,
   type StoredMatcherCache,
+  sessionRulesMatchLists,
 } from '../core/matcher';
 import { activeEntry, nextStart, windowEnd } from '../core/schedule';
 import {
@@ -24,6 +26,7 @@ import {
   ATTEMPT_DEBOUNCE_MS,
   cancelPhrase,
   GATE_EXPIRY_MS,
+  rulesFromLists,
   TOP_SITES_DAILY,
 } from '../shared/constants';
 import { CoreError } from '../shared/errors';
@@ -39,6 +42,7 @@ import type {
   ListsConfig,
   ScheduleEntry,
   SessionConfig,
+  SessionRuleSnapshot,
   SessionSnapshot,
   SessionState,
   Settings,
@@ -94,6 +98,12 @@ export interface EngineStatsOverlay {
   pendingEvents: EventRecord[];
 }
 
+export type SessionMatcherCompiler = (
+  rules: SessionRuleSnapshot,
+  categories: typeof ALL_CATEGORIES,
+  mode: SessionConfig['mode'],
+) => CompiledMatcher;
+
 interface AttemptDurability {
   revision: number;
   durable: boolean;
@@ -111,7 +121,10 @@ const NO_SESSION_VERDICT: Verdict = { blocked: false, reason: 'no-session', matc
  * worker woken after missed alarms is consistent before it answers.
  */
 export class Engine {
-  private matchers: CompiledMatcherSet;
+  private activeMatcher: CompiledMatcher | null = null;
+  private activeMatcherSessionIdentity: string | null = null;
+  private activeMatcherRules: SessionRuleSnapshot | null = null;
+  private activeMatcherMode: SessionConfig['mode'] | null = null;
   private pendingEvents: EventRecord[] = [];
   private dirty = false;
   private needsBlocking = false;
@@ -138,9 +151,8 @@ export class Engine {
     private streak: StreakState | null,
     private runtime: RuntimeState,
     private readonly deviceId: string,
-    matchers?: CompiledMatcherSet,
+    private readonly compileSessionPolicy: SessionMatcherCompiler = compileSessionMatcher,
   ) {
-    this.matchers = matchers ?? buildMatcherCache(this.lists, ALL_CATEGORIES).compiled;
     const checkpoint: RuntimeCommitCheckpoint | null = this.runtime.commitCheckpoint;
     if (checkpoint !== null) {
       this.pendingEvents = [...checkpoint.events];
@@ -169,6 +181,7 @@ export class Engine {
       };
       this.dirty = true;
     }
+    this.activateMatcher(this.runtime.session);
     this.ownedRuntimeSnapshot = structuredClone(this.runtime);
   }
 
@@ -198,7 +211,7 @@ export class Engine {
     if (this.dirty) this.commitInBackground(now);
     const session: SessionState | null = this.runtime.session;
     if (session === null || session.phase !== 'focus') return NO_SESSION_VERDICT;
-    return evaluateUrl(this.ensureMatcher(session.config.mode), url, this.runtime.unlocks, now);
+    return evaluateUrl(this.ensureMatcher(session), url, this.runtime.unlocks, now);
   }
 
   async startSession(config: SessionConfig): Promise<Ack> {
@@ -209,19 +222,32 @@ export class Engine {
     const now: number = this.ports.now();
     this.catchUp(now);
     if (this.runtime.session !== null) return this.fail(now, 'a session is already running');
+    if (config.source !== 'manual' || config.scheduleEntryId !== null) {
+      return this.fail(now, 'invalid manual session');
+    }
+    const rules: SessionRuleSnapshot | null = normalizeSessionRules(config.rules);
+    if (rules === null) return this.fail(now, 'invalid session rules');
+    if (!sessionRulesMatchLists(rules, this.lists)) {
+      return this.fail(
+        now,
+        'Your default blocking lists changed. Review this session and start again.',
+      );
+    }
+    const normalizedConfig: SessionConfig = { ...config, rules };
     const sessionId: string = this.ports.newId();
-    this.runtime.session = machineStart(config, now, sessionId);
+    this.runtime.session = machineStart(normalizedConfig, now, sessionId);
+    this.activateMatcher(this.runtime.session);
     this.runtime.gate = null;
     this.runtime.unlocks = [];
     this.runtime.accruedFocusMs = 0;
     this.recordEvent({
       t: 'sessionStarted',
       at: now,
-      source: config.source,
-      mode: config.mode,
-      strictness: config.strictness,
-      durationMin: config.durationMin,
-      intention: config.intention,
+      source: normalizedConfig.source,
+      mode: normalizedConfig.mode,
+      strictness: normalizedConfig.strictness,
+      durationMin: normalizedConfig.durationMin,
+      intention: normalizedConfig.intention,
       sessionId,
     });
     this.dirty = true;
@@ -362,6 +388,7 @@ export class Engine {
         ...sessionIdentity(session),
       });
       this.runtime.session = null;
+      this.activateMatcher(null);
       this.runtime.gate = null;
       this.runtime.unlocks = [];
       this.runtime.accruedFocusMs = 0;
@@ -744,7 +771,6 @@ export class Engine {
       this.listCachePersistenceInFlight = false;
     }
     this.lists = l;
-    this.matchers = bundle.compiled;
     if (queueForSync || reconcilePendingSync) this.queueListsEncoding(encoding);
     this.dirty = true;
     this.needsBlocking = this.runtime.session !== null;
@@ -944,6 +970,7 @@ export class Engine {
     }
     if (next !== session) {
       this.runtime.session = next;
+      if (next === null) this.activateMatcher(null);
       this.dirty = true;
     }
     for (const ev of events) this.routeMachineEvent(ev, session);
@@ -1035,6 +1062,11 @@ export class Engine {
 
   private startFromScheduleEntry(entry: ScheduleEntry, now: number): void {
     const endsAt: number = windowEnd(entry, new Date(now)).getTime();
+    const rules: SessionRuleSnapshot | null = normalizeSessionRules(rulesFromLists(this.lists));
+    if (rules === null) {
+      this.ports.reportError(new Error('cannot start schedule from invalid blocking lists'));
+      return;
+    }
     const config: SessionConfig = {
       mode: entry.mode,
       strictness: entry.strictness,
@@ -1043,9 +1075,11 @@ export class Engine {
       intention: entry.intention,
       source: 'schedule',
       scheduleEntryId: entry.id,
+      rules,
     };
     const sessionId: string = this.ports.newId();
     this.runtime.session = machineStart(config, now, sessionId);
+    this.activateMatcher(this.runtime.session);
     this.runtime.accruedFocusMs = 0;
     this.runtime.scheduleActiveEntryId = entry.id;
     this.recordEvent({
@@ -1271,8 +1305,39 @@ export class Engine {
     });
   }
 
-  private ensureMatcher(mode: SessionConfig['mode']): CompiledMatcher {
-    return this.matchers[mode];
+  private sessionIdentityKey(session: SessionState): string {
+    return session.sessionId ?? `legacy:${session.startedAt}`;
+  }
+
+  private activateMatcher(session: SessionState | null): void {
+    if (session === null) {
+      this.activeMatcher = null;
+      this.activeMatcherSessionIdentity = null;
+      this.activeMatcherRules = null;
+      this.activeMatcherMode = null;
+      return;
+    }
+    this.activeMatcher = this.compileSessionPolicy(
+      session.config.rules,
+      ALL_CATEGORIES,
+      session.config.mode,
+    );
+    this.activeMatcherSessionIdentity = this.sessionIdentityKey(session);
+    this.activeMatcherRules = session.config.rules;
+    this.activeMatcherMode = session.config.mode;
+  }
+
+  private ensureMatcher(session: SessionState): CompiledMatcher {
+    if (
+      this.activeMatcher === null ||
+      this.activeMatcherSessionIdentity !== this.sessionIdentityKey(session) ||
+      this.activeMatcherRules !== session.config.rules ||
+      this.activeMatcherMode !== session.config.mode
+    ) {
+      this.activateMatcher(session);
+    }
+    if (this.activeMatcher === null) throw new Error('active session matcher was not compiled');
+    return this.activeMatcher;
   }
 
   private enqueuePolicyMutation<T>(mutation: () => Promise<T>): Promise<T> {
@@ -1305,7 +1370,7 @@ export class Engine {
       at: now,
       theme: this.settings.theme,
       phase: s === null ? 'idle' : s.phase,
-      config: s?.config ?? null,
+      config: s === null ? null : structuredClone(s.config),
       startedAt: s?.startedAt ?? null,
       phaseStartedAt: s?.phaseStartedAt ?? null,
       phaseEndsAt: s?.phaseEndsAt ?? null,
@@ -1316,8 +1381,8 @@ export class Engine {
       bankCapMs: this.settings.pause.capMs,
       pauseCostMs: this.settings.pause.pauseMs,
       unlockCostMs: this.settings.pause.unlockMs,
-      activeUnlocks: this.runtime.unlocks,
-      gate: this.runtime.gate,
+      activeUnlocks: structuredClone(this.runtime.unlocks),
+      gate: structuredClone(this.runtime.gate),
       attemptsToday,
       scheduleActive: this.runtime.scheduleActiveEntryId !== null,
       nextSchedule: this.nextScheduleInfo(now),

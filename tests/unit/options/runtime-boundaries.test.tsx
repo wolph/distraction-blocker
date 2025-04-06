@@ -6,7 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Data } from '../../../src/options/Data';
 import { SoundsBadge } from '../../../src/options/SoundsBadge';
 import { type SettingsStore, useSettingsStore } from '../../../src/options/use-settings';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS, emptySnapshot } from '../../../src/shared/constants';
+import {
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  emptySnapshot,
+  rulesFromLists,
+} from '../../../src/shared/constants';
 import type { ListsConfig, ScheduleEntry, Settings } from '../../../src/shared/types';
 import { type ChromeFake, installChromeFake } from './chrome-fake';
 
@@ -123,6 +128,7 @@ describe('Options runtime response boundaries', (): void => {
         intention: 'report',
         source: 'manual' as const,
         scheduleEntryId: null,
+        rules: rulesFromLists(DEFAULT_LISTS),
       },
       startedAt: sessionEndsAt - 15 * 60_000,
       phaseStartedAt: sessionEndsAt - 15 * 60_000,

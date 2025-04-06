@@ -1,8 +1,9 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
+import { rulesFromLists } from '../shared/constants';
 import type { Ack } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
-import { ackError } from '../shared/runtime-validation';
+import { ackError, isListsConfig } from '../shared/runtime-validation';
 import type {
   CycleConfig,
   ListsConfig,
@@ -74,17 +75,25 @@ export function StartForm({
       return;
     }
     setError(null);
-    const config: SessionConfig = {
-      mode,
-      strictness,
-      durationMin,
-      cycling: cyclingOn ? settings.defaultCycling : null,
-      intention: intention.trim(),
-      source: 'manual',
-      scheduleEntryId: null,
-    };
     setStarting(true);
     try {
+      let currentLists: ListsConfig = lists;
+      try {
+        const loadedLists: ListsConfig = await sendRequest({ type: 'getLists' });
+        if (isListsConfig(loadedLists)) currentLists = loadedLists;
+      } catch {
+        // The worker validates the fallback freshness token before starting.
+      }
+      const config: SessionConfig = {
+        mode,
+        strictness,
+        durationMin,
+        cycling: cyclingOn ? settings.defaultCycling : null,
+        intention: intention.trim(),
+        source: 'manual',
+        scheduleEntryId: null,
+        rules: rulesFromLists(currentLists),
+      };
       const ack: Ack = await sendRequest({ type: 'startSession', config });
       const responseError: string | null = ackError(ack, 'Could not start session. Try again.');
       if (responseError !== null) setError(responseError);

@@ -1,4 +1,4 @@
-import { validateRule } from '../core/matcher';
+import { normalizeSessionRules, validateRule } from '../core/matcher';
 import { scheduleEntriesOverlap, validateEntry } from '../core/schedule';
 import { isDailyDate, parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { CATEGORY_IDS, MAX_FREEZE_TOKENS } from './constants';
@@ -345,18 +345,22 @@ function isSessionConfig(value: unknown): value is SessionConfig {
       'intention',
       'source',
       'scheduleEntryId',
+      'rules',
     ])
   ) {
     return false;
   }
   if (
     (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
-    (value.strictness !== 'hard' && value.strictness !== 'friction') ||
+    (value.strictness !== 'flexible' &&
+      value.strictness !== 'hard' &&
+      value.strictness !== 'friction') ||
     !isRelativeMinuteDuration(value.durationMin) ||
     (value.cycling !== null && !isCycleConfig(value.cycling)) ||
     typeof value.intention !== 'string' ||
     (value.source !== 'manual' && value.source !== 'schedule') ||
-    !isNullableString(value.scheduleEntryId)
+    !isNullableString(value.scheduleEntryId) ||
+    normalizeSessionRules(value.rules) === null
   ) {
     return false;
   }
@@ -488,7 +492,9 @@ function isEventRecordValue(value: unknown): value is EventRecord {
       return (
         (value.source === 'manual' || value.source === 'schedule') &&
         (value.mode === 'blacklist' || value.mode === 'whitelist') &&
-        (value.strictness === 'hard' || value.strictness === 'friction') &&
+        (value.strictness === 'flexible' ||
+          value.strictness === 'hard' ||
+          value.strictness === 'friction') &&
         isRelativeMinuteDuration(value.durationMin) &&
         typeof value.intention === 'string'
       );
