@@ -1510,6 +1510,167 @@ describe('Engine', () => {
     expect(h.ports.playSound).not.toHaveBeenCalledWith('scheduleStart');
   });
 
+  it.each([
+    ['flexible', 'friction', 'friction'],
+    ['flexible', 'hard', 'hard'],
+    ['friction', 'hard', 'hard'],
+    ['friction', 'flexible', 'friction'],
+    ['hard', 'flexible', 'hard'],
+    ['hard', 'friction', 'hard'],
+  ] as const)(
+    'keeps the stronger strictness when a %s session meets a %s schedule',
+    async (running, scheduled, expected): Promise<void> => {
+      const entry: ScheduleEntry = { ...scheduledEntry, strictness: scheduled };
+      const h: Harness = makeEngine({ settings: { schedule: [entry] } });
+      await h.engine.startSession({ ...manualConfig, strictness: running });
+      h.setNow(new Date(2026, 7, 29, 9, 0).getTime());
+
+      expect(h.engine.snapshot().config?.strictness).toBe(expected);
+    },
+  );
+
+  it('invalidates a Friction cancel gate when a Hard schedule starts', async () => {
+    const h: Harness = makeEngine({ settings: { schedule: [scheduledEntry] } });
+    await h.engine.startSession(manualConfig);
+    expect(await h.engine.requestSessionEnd()).toEqual({ ok: true });
+    expect(h.engine.snapshot().gate?.kind).toBe('cancel');
+    h.setNow(new Date(2026, 7, 29, 9, 0).getTime());
+
+    const confirmation: Ack = await h.engine.confirmGate(null);
+
+    expect(confirmation.ok).toBe(false);
+    expect(h.engine.snapshot()).toMatchObject({
+      phase: 'focus',
+      config: { strictness: 'hard' },
+      gate: null,
+    });
+  });
+
+  it('rejects a persisted cancel gate when the current session is Hard', async () => {
+    const first: Harness = makeEngine();
+    await first.engine.startSession(manualConfig);
+    await first.engine.requestSessionEnd();
+    const runtime: RuntimeState = structuredClone(
+      first.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+    );
+    if (runtime.session === null) throw new Error('expected a persisted session');
+    runtime.session.config.strictness = 'hard';
+    const restarted: Harness = makeEngine({ runtime });
+    restarted.setNow(T0 + DEFAULT_SETTINGS.gate.delayMs);
+
+    expect(await restarted.engine.confirmGate(null)).toEqual({
+      ok: false,
+      error: 'hard sessions cannot be canceled',
+    });
+    expect(restarted.engine.snapshot()).toMatchObject({ phase: 'focus', gate: null });
+  });
+
+  it.each(['flexible', 'friction'] as const)(
+    'does not restart a canceled scheduled %s session in the same window',
+    async (strictness): Promise<void> => {
+      const entry: ScheduleEntry = { ...scheduledEntry, strictness };
+      const h: Harness = makeEngine({ settings: { schedule: [entry] } });
+      const insideWindow: number = new Date(2026, 7, 29, 9, 1).getTime();
+      h.setNow(insideWindow);
+      expect(h.engine.snapshot().config?.source).toBe('schedule');
+
+      expect(await h.engine.requestSessionEnd()).toEqual({ ok: true });
+      if (strictness === 'friction') {
+        h.setNow(insideWindow + DEFAULT_SETTINGS.gate.delayMs);
+        expect(await h.engine.confirmGate(null)).toEqual({ ok: true });
+      }
+
+      expect(h.engine.snapshot()).toMatchObject({ phase: 'idle', scheduleActive: true });
+      expect(
+        h.loggedEvents().filter((event: EventRecord): boolean => event.t === 'sessionStarted'),
+      ).toHaveLength(1);
+
+      h.setNow(new Date(2026, 7, 29, 10, 1).getTime());
+      expect(h.engine.snapshot()).toMatchObject({ phase: 'idle', scheduleActive: false });
+      h.setNow(new Date(2026, 7, 30, 9, 1).getTime());
+      expect(h.engine.snapshot().config?.source).toBe('schedule');
+    },
+  );
+
+  it('starts a later occurrence after jumping over the inactive gap', async (): Promise<void> => {
+    const entry: ScheduleEntry = { ...scheduledEntry, strictness: 'flexible' };
+    const h: Harness = makeEngine({ settings: { schedule: [entry] } });
+    h.setNow(new Date(2026, 7, 29, 9, 1).getTime());
+    expect(h.engine.snapshot().config?.source).toBe('schedule');
+    expect(await h.engine.requestSessionEnd()).toEqual({ ok: true });
+    expect(h.engine.snapshot()).toMatchObject({ phase: 'idle', scheduleActive: true });
+
+    h.setNow(new Date(2026, 7, 30, 9, 1).getTime());
+    const later: SessionSnapshot = await h.engine.snapshotPersisted();
+
+    expect(later).toMatchObject({
+      phase: 'focus',
+      scheduleActive: true,
+      config: { source: 'schedule', scheduleEntryId: entry.id },
+    });
+    expect(
+      h.loggedEvents().filter((event: EventRecord): boolean => event.t === 'sessionStarted'),
+    ).toHaveLength(2);
+  });
+
+  it('starts a later occurrence after restart with persisted suppression', async (): Promise<void> => {
+    const entry: ScheduleEntry = { ...scheduledEntry, strictness: 'flexible' };
+    const first: Harness = makeEngine({ settings: { schedule: [entry] } });
+    first.setNow(new Date(2026, 7, 29, 9, 1).getTime());
+    first.engine.snapshot();
+    expect(await first.engine.requestSessionEnd()).toEqual({ ok: true });
+    const suppressed: RuntimeState = structuredClone(
+      first.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+    );
+    expect(suppressed.scheduleActiveEntryId).not.toBe(entry.id);
+
+    const restarted: Harness = makeEngine({ runtime: suppressed, settings: { schedule: [entry] } });
+    restarted.setNow(new Date(2026, 7, 30, 9, 1).getTime());
+
+    expect(restarted.engine.snapshot()).toMatchObject({
+      phase: 'focus',
+      scheduleActive: true,
+      config: { source: 'schedule', scheduleEntryId: entry.id },
+    });
+  });
+
+  it('persists scheduleActive for the current absolute occurrence', async (): Promise<void> => {
+    const entry: ScheduleEntry = { ...scheduledEntry, strictness: 'flexible' };
+    const h: Harness = makeEngine({ settings: { schedule: [entry] } });
+    const now: number = new Date(2026, 7, 29, 9, 1).getTime();
+    const occurrenceEnd: number = new Date(2026, 7, 29, 10, 0).getTime();
+    h.setNow(now);
+
+    const snapshot: SessionSnapshot = await h.engine.snapshotPersisted();
+    const saved: RuntimeState = h.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState;
+
+    expect(snapshot.scheduleActive).toBe(true);
+    expect(saved.scheduleActiveEntryId).toContain(entry.id);
+    expect(saved.scheduleActiveEntryId).toContain(String(occurrenceEnd));
+  });
+
+  it('conservatively suppresses one occurrence for a legacy entry-ID marker', async (): Promise<void> => {
+    const entry: ScheduleEntry = { ...scheduledEntry, strictness: 'flexible' };
+    const runtime: RuntimeState = {
+      ...emptyRuntime(T0),
+      scheduleActiveEntryId: entry.id,
+    };
+    const h: Harness = makeEngine({ runtime, settings: { schedule: [entry] } });
+    h.setNow(new Date(2026, 7, 29, 9, 1).getTime());
+
+    expect(await h.engine.snapshotPersisted()).toMatchObject({
+      phase: 'idle',
+      scheduleActive: true,
+    });
+
+    h.setNow(new Date(2026, 7, 30, 9, 1).getTime());
+    expect(h.engine.snapshot()).toMatchObject({
+      phase: 'focus',
+      scheduleActive: true,
+      config: { source: 'schedule', scheduleEntryId: entry.id },
+    });
+  });
+
   it('rolls the local day and runs retention pruning at most weekly', async () => {
     const h: Harness = makeEngine();
     h.setNow(T0 + DAY_MS);
@@ -2284,28 +2445,165 @@ describe('Engine', () => {
     expect(h.loggedEvents().some((e: EventRecord): boolean => e.t === 'gateOpened')).toBe(true);
   });
 
-  it('uses the configured delay and typing requirement for the cancel gate', async () => {
+  it('ends a Flexible session immediately, persists cancellation, and clears blocking state', async () => {
+    const sessionCompiler: Mock<typeof compileSessionMatcher> = vi.fn(compileSessionMatcher);
+    const h: Harness = makeEngine({ bankMs: 600_000, sessionCompiler });
+    await h.engine.startSession({ ...manualConfig, strictness: 'flexible' });
+    expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(true);
+    await h.engine.openGate('unlockSite', 'facebook.com');
+    h.setNow(T0 + DEFAULT_SETTINGS.gate.delayMs);
+    await h.engine.confirmGate(null);
+    await h.engine.openGate('pause', null);
+    expect(h.engine.snapshot()).toMatchObject({
+      gate: { kind: 'pause' },
+      activeUnlocks: [{ host: 'facebook.com' }],
+    });
+    h.ports.saveRuntime.mockClear();
+    h.ports.applyBlocking.mockClear();
+
+    expect(await h.engine.requestSessionEnd()).toEqual({ ok: true });
+
+    expect(h.engine.snapshot()).toMatchObject({ phase: 'idle', gate: null, activeUnlocks: [] });
+    expect(h.engine.verdictFor('https://facebook.com/feed').reason).toBe('no-session');
+    expect(h.loggedEvents()).toContainEqual(
+      expect.objectContaining({
+        t: 'sessionCanceled',
+        at: T0 + DEFAULT_SETTINGS.gate.delayMs,
+        sessionId: 'archive-id',
+      }),
+    );
+    expect(h.ports.saveRuntime).toHaveBeenCalled();
+    expect(h.ports.applyBlocking).toHaveBeenCalledTimes(1);
+    expect(sessionCompiler).toHaveBeenCalledTimes(1);
+
+    expect(await h.engine.startSession({ ...manualConfig, strictness: 'flexible' })).toEqual({
+      ok: true,
+    });
+    expect(sessionCompiler).toHaveBeenCalledTimes(2);
+    expect(
+      h.loggedEvents().filter((event: EventRecord): boolean => event.t === 'sessionCanceled'),
+    ).toHaveLength(1);
+  });
+
+  it('returns the existing idle error after a Flexible session already ended', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession({ ...manualConfig, strictness: 'flexible' });
+    expect(await h.engine.requestSessionEnd()).toEqual({ ok: true });
+    const cancellationCount: number = h
+      .loggedEvents()
+      .filter((event: EventRecord): boolean => event.t === 'sessionCanceled').length;
+
+    expect(await h.engine.requestSessionEnd()).toEqual({
+      ok: false,
+      error: 'no session is running',
+    });
+    expect(
+      h.loggedEvents().filter((event: EventRecord): boolean => event.t === 'sessionCanceled'),
+    ).toHaveLength(cancellationCount);
+  });
+
+  it('awaits durable cancellation persistence before acknowledging Flexible ending', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession({ ...manualConfig, strictness: 'flexible' });
+    let releaseEvents: () => void = (): void => {
+      throw new Error('event persistence did not start');
+    };
+    h.ports.appendEvents.mockClear();
+    h.ports.appendEvents.mockImplementationOnce(
+      (): Promise<void> =>
+        new Promise((resolve: () => void): void => {
+          releaseEvents = resolve;
+        }),
+    );
+
+    const ending: Promise<Ack> = h.engine.requestSessionEnd();
+    await vi.waitFor((): void => expect(h.ports.appendEvents).toHaveBeenCalledTimes(1));
+    let acknowledged = false;
+    void ending.then((): void => {
+      acknowledged = true;
+    });
+    await Promise.resolve();
+    expect(acknowledged).toBe(false);
+
+    releaseEvents();
+    await expect(ending).resolves.toEqual({ ok: true });
+    expect(h.ports.appendEvents.mock.calls[0]?.[0]).toContainEqual(
+      expect.objectContaining({ t: 'sessionCanceled' }),
+    );
+  });
+
+  it('lets natural expiry win before a repeated end request', async () => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession({ ...manualConfig, durationMin: 0.1, strictness: 'flexible' });
+    h.ports.applyBlocking.mockClear();
+    h.setNow(T0 + 7_000);
+
+    const expected: Ack = { ok: false, error: 'no session is running' };
+    expect(await h.engine.requestSessionEnd()).toEqual(expected);
+    expect(await h.engine.requestSessionEnd()).toEqual(expected);
+
+    expect(
+      h.loggedEvents().filter((event: EventRecord): boolean => event.t === 'sessionCompleted'),
+    ).toHaveLength(1);
+    expect(
+      h.loggedEvents().filter((event: EventRecord): boolean => event.t === 'sessionCanceled'),
+    ).toHaveLength(0);
+    expect(h.ports.applyBlocking).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['flexible', 'idle', null, true],
+    ['friction', 'focus', 'cancel', true],
+    ['hard', 'focus', null, false],
+  ] as const)(
+    'keeps legacy cancel requests worker-owned for %s sessions',
+    async (strictness, phase, gate, ok): Promise<void> => {
+      const h: Harness = makeEngine();
+      await h.engine.startSession({ ...manualConfig, strictness });
+
+      expect((await h.engine.openGate('cancel', null)).ok).toBe(ok);
+      expect(h.engine.snapshot()).toMatchObject({
+        phase,
+        gate: gate === null ? null : { kind: gate },
+      });
+    },
+  );
+
+  it('opens one stable cancel gate for repeated Friction end requests', async () => {
     const h: Harness = makeEngine({
       settings: {
         gate: { delayMs: 10_000, requireTypedPhrase: false, allowForceEnd: false },
       },
     });
     await h.engine.startSession(manualConfig);
-    await h.engine.openGate('cancel', null);
+
+    expect(await h.engine.requestSessionEnd()).toEqual({ ok: true });
 
     expect(h.engine.snapshot().gate).toMatchObject({
+      kind: 'cancel',
       readyAt: T0 + 10_000,
       requiredPhrase: null,
+      forceEndAvailable: false,
     });
+    const firstGate = structuredClone(h.engine.snapshot().gate);
+    h.ports.applyBlocking.mockClear();
+    h.setNow(T0 + 1_000);
+    expect(await h.engine.requestSessionEnd()).toEqual({ ok: true });
+    expect(h.engine.snapshot().gate).toEqual(firstGate);
+    expect(
+      h.loggedEvents().filter((event: EventRecord): boolean => event.t === 'gateOpened'),
+    ).toHaveLength(1);
+    expect(h.ports.applyBlocking).not.toHaveBeenCalled();
     expect(await h.engine.confirmGate(null)).toEqual({
       ok: false,
       error: 'the deliberation delay has not finished',
     });
     h.setNow(T0 + 10_000);
     expect(await h.engine.confirmGate(null)).toEqual({ ok: true });
+    expect(h.engine.snapshot().gate).toBeNull();
   });
 
-  it('force ends an eligible friction cancellation before the timer and phrase complete', async () => {
+  it('never exposes force end even when the deprecated setting is enabled', async () => {
     const h: Harness = makeEngine({
       settings: {
         gate: {
@@ -2317,33 +2615,55 @@ describe('Engine', () => {
       },
     });
     await h.engine.startSession(manualConfig);
-    await h.engine.openGate('cancel', null);
+    await h.engine.requestSessionEnd();
 
-    expect(h.engine.snapshot().gate?.forceEndAvailable).toBe(true);
-    expect(await h.engine.forceEndGate()).toEqual({ ok: true });
-    expect(h.engine.snapshot().phase).toBe('idle');
+    expect(h.engine.snapshot().gate?.forceEndAvailable).toBe(false);
   });
 
-  it('rejects force end when the setting is disabled or the gate is not cancellation', async () => {
-    const disabled: Harness = makeEngine();
-    await disabled.engine.startSession(manualConfig);
-    await disabled.engine.openGate('cancel', null);
-    expect(disabled.engine.snapshot().gate?.forceEndAvailable).toBe(false);
-    expect(await disabled.engine.forceEndGate()).toEqual({
-      ok: false,
-      error: 'force end is not enabled',
-    });
-
-    const pause: Harness = makeEngine({
-      bankMs: 300_000,
+  it('cannot restore force end from a persisted legacy gate', async () => {
+    const first: Harness = makeEngine({
       settings: { gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: true } },
     });
-    await pause.engine.startSession(manualConfig);
-    await pause.engine.openGate('pause', null);
-    expect(await pause.engine.forceEndGate()).toEqual({
-      ok: false,
-      error: 'force end only applies when ending a session',
+    await first.engine.startSession(manualConfig);
+    await first.engine.requestSessionEnd();
+    const runtime: RuntimeState = structuredClone(
+      first.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+    );
+    if (runtime.gate === null) throw new Error('expected a persisted cancel gate');
+    runtime.gate.forceEndAvailable = true;
+    const restarted: Harness = makeEngine({
+      runtime,
+      settings: { gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: true } },
     });
+    const before: SessionSnapshot = restarted.engine.snapshot();
+    restarted.ports.saveRuntime.mockClear();
+
+    expect(before.gate?.forceEndAvailable).toBe(false);
+    expect(await restarted.engine.forceEndGate()).toEqual({
+      ok: false,
+      error: 'Force end is no longer available. Choose a Flexible session before starting.',
+    });
+    expect(restarted.engine.snapshot()).toEqual(before);
+    expect(restarted.ports.saveRuntime).not.toHaveBeenCalled();
+  });
+
+  it('rejects ending a Hard session without opening or changing a gate', async () => {
+    const h: Harness = makeEngine({ bankMs: 300_000 });
+    await h.engine.startSession({ ...manualConfig, strictness: 'hard' });
+    await h.engine.openGate('pause', null);
+    const before: SessionSnapshot = h.engine.snapshot();
+    h.ports.applyBlocking.mockClear();
+
+    expect(await h.engine.requestSessionEnd()).toEqual({
+      ok: false,
+      error: 'hard sessions cannot be canceled',
+    });
+    expect(await h.engine.requestSessionEnd()).toEqual({
+      ok: false,
+      error: 'hard sessions cannot be canceled',
+    });
+    expect(h.engine.snapshot()).toMatchObject({ phase: before.phase, gate: before.gate });
+    expect(h.ports.applyBlocking).not.toHaveBeenCalled();
   });
 
   it('persists a theme update and reapplies blocking to mounted overlays', async () => {

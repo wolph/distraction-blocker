@@ -293,6 +293,10 @@ describe('storage default merging', () => {
     expect(lists.custom).toEqual(DEFAULT_LISTS.custom);
   });
 
+  it('preserves Flexible as the stored default strictness', (): void => {
+    expect(mergeSettings({ defaultStrictness: 'flexible' }).defaultStrictness).toBe('flexible');
+  });
+
   it('sanitizes malformed settings and list fields from sync storage', async () => {
     const validSchedule = {
       id: 'weekday-focus',

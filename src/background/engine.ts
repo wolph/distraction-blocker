@@ -48,6 +48,7 @@ import type {
   Settings,
   SiteUnlock,
   StreakState,
+  Strictness,
   ThemeMode,
   Verdict,
 } from '../shared/types';
@@ -113,6 +114,17 @@ interface AttemptDurability {
 }
 
 const NO_SESSION_VERDICT: Verdict = { blocked: false, reason: 'no-session', matchedPattern: null };
+
+function strictnessStrength(strictness: Strictness): number {
+  if (strictness === 'flexible') return 0;
+  if (strictness === 'friction') return 1;
+  return 2;
+}
+
+function scheduleOccurrenceToken(entry: ScheduleEntry, now: number): string {
+  const endsAt: number = windowEnd(entry, new Date(now)).getTime();
+  return `${entry.id}@${endsAt}`;
+}
 
 /**
  * Authoritative session engine. Pure src/core modules make every domain
@@ -262,16 +274,13 @@ export class Engine {
     const session: SessionState | null = this.runtime.session;
     if (session === null) return this.fail(now, 'no session is running');
     if (gate === 'cancel') {
-      if (session.config.strictness === 'hard') {
-        return this.fail(now, 'hard sessions cannot be canceled');
-      }
-    } else {
-      if (session.phase !== 'focus') return this.fail(now, 'pauses only apply during focus');
-      if (gate === 'unlockSite' && host === null) return this.fail(now, 'no site given to unlock');
-      const cost: number =
-        gate === 'pause' ? this.settings.pause.pauseMs : this.settings.pause.unlockMs;
-      if (this.bank.balanceMs < cost) return this.fail(now, 'not enough pause budget yet');
+      return this.endSessionByStrictness(session, now);
     }
+    if (session.phase !== 'focus') return this.fail(now, 'pauses only apply during focus');
+    if (gate === 'unlockSite' && host === null) return this.fail(now, 'no site given to unlock');
+    const cost: number =
+      gate === 'pause' ? this.settings.pause.pauseMs : this.settings.pause.unlockMs;
+    if (this.bank.balanceMs < cost) return this.fail(now, 'not enough pause budget yet');
     const needsPhrase: boolean = this.settings.gate.requireTypedPhrase;
     const unlockHost: string | null =
       gate === 'unlockSite' && host !== null ? (registrableHost(host) ?? host) : null;
@@ -281,12 +290,62 @@ export class Engine {
       openedAt: now,
       readyAt: now + this.settings.gate.delayMs,
       requiredPhrase: needsPhrase ? cancelPhrase(session.config.intention) : null,
-      forceEndAvailable: gate === 'cancel' && this.settings.gate.allowForceEnd,
+      forceEndAvailable: false,
     };
     this.recordEvent({ t: 'gateOpened', at: now, gate, ...sessionIdentity(session) });
     this.dirty = true;
     await this.commit(now);
     return { ok: true };
+  }
+
+  async requestSessionEnd(): Promise<Ack> {
+    const now: number = this.ports.now();
+    this.catchUp(now);
+    const session: SessionState | null = this.runtime.session;
+    if (session === null) return this.fail(now, 'no session is running');
+    return this.endSessionByStrictness(session, now);
+  }
+
+  private async endSessionByStrictness(session: SessionState, now: number): Promise<Ack> {
+    if (session.config.strictness === 'hard') {
+      return this.fail(now, 'hard sessions cannot be canceled');
+    }
+    if (session.config.strictness === 'flexible') {
+      this.cancelSession(session, now);
+      this.dirty = true;
+      this.needsBlocking = true;
+      await this.commit(now);
+      return { ok: true };
+    }
+    return this.openCancelGate(session, now);
+  }
+
+  private async openCancelGate(session: SessionState, now: number): Promise<Ack> {
+    if (this.runtime.gate?.kind === 'cancel') {
+      if (this.dirty) await this.commit(now);
+      return { ok: true };
+    }
+    this.runtime.gate = {
+      kind: 'cancel',
+      host: null,
+      openedAt: now,
+      readyAt: now + this.settings.gate.delayMs,
+      requiredPhrase: this.settings.gate.requireTypedPhrase
+        ? cancelPhrase(session.config.intention)
+        : null,
+      forceEndAvailable: false,
+    };
+    this.recordEvent({ t: 'gateOpened', at: now, gate: 'cancel', ...sessionIdentity(session) });
+    this.dirty = true;
+    await this.commit(now);
+    return { ok: true };
+  }
+
+  async forceEndGate(): Promise<Ack> {
+    return {
+      ok: false,
+      error: 'Force end is no longer available. Choose a Flexible session before starting.',
+    };
   }
 
   async confirmGate(typedPhrase: string | null): Promise<Ack> {
@@ -300,6 +359,11 @@ export class Engine {
       this.dirty = true;
       return this.fail(now, 'the session already ended');
     }
+    if (gate.kind === 'cancel' && session.config.strictness === 'hard') {
+      this.runtime.gate = null;
+      this.dirty = true;
+      return this.fail(now, 'hard sessions cannot be canceled');
+    }
     if (now < gate.readyAt) return this.fail(now, 'the deliberation delay has not finished');
     if (gate.requiredPhrase !== null && typedPhrase !== gate.requiredPhrase) {
       return this.fail(now, 'that is not the exact phrase');
@@ -310,34 +374,6 @@ export class Engine {
       if (err instanceof CoreError) return this.fail(now, err.message);
       throw err;
     }
-    this.runtime.gate = null;
-    this.dirty = true;
-    this.needsBlocking = true;
-    await this.commit(now);
-    return { ok: true };
-  }
-
-  async forceEndGate(): Promise<Ack> {
-    const now: number = this.ports.now();
-    this.catchUp(now);
-    const gate: GateState | null = this.runtime.gate;
-    const session: SessionState | null = this.runtime.session;
-    if (gate === null) return this.fail(now, 'no gate is open');
-    if (gate.kind !== 'cancel') {
-      return this.fail(now, 'force end only applies when ending a session');
-    }
-    if (session === null) {
-      this.runtime.gate = null;
-      this.dirty = true;
-      return this.fail(now, 'the session already ended');
-    }
-    if (session.config.strictness !== 'friction') {
-      return this.fail(now, 'hard sessions cannot be canceled');
-    }
-    if (!this.settings.gate.allowForceEnd || !gate.forceEndAvailable) {
-      return this.fail(now, 'force end is not enabled');
-    }
-    this.executeGate(gate, session, now);
     this.runtime.gate = null;
     this.dirty = true;
     this.needsBlocking = true;
@@ -380,20 +416,33 @@ export class Engine {
         ms: this.settings.pause.unlockMs,
         ...sessionIdentity(session),
       });
-    } else {
-      this.recordEvent({
-        t: 'sessionCanceled',
-        at: now,
-        focusedMs: focusedMsAt(session, now),
-        ...sessionIdentity(session),
-      });
-      this.runtime.session = null;
-      this.activateMatcher(null);
-      this.runtime.gate = null;
-      this.runtime.unlocks = [];
-      this.runtime.accruedFocusMs = 0;
+    } else this.cancelSession(session, now);
+  }
+
+  private cancelSession(session: SessionState, now: number): void {
+    this.recordEvent({
+      t: 'sessionCanceled',
+      at: now,
+      focusedMs: focusedMsAt(session, now),
+      ...sessionIdentity(session),
+    });
+    this.runtime.session = null;
+    this.activateMatcher(null);
+    this.runtime.gate = null;
+    this.runtime.unlocks = [];
+    this.runtime.accruedFocusMs = 0;
+    if (session.config.source !== 'schedule') {
       this.runtime.scheduleActiveEntryId = null;
+      return;
     }
+    const entryId: string | null = session.config.scheduleEntryId;
+    const existingMarker: string | null = this.runtime.scheduleActiveEntryId;
+    if (entryId === null || (existingMarker !== null && existingMarker !== entryId)) return;
+    const sourceEntry: ScheduleEntry | undefined = this.settings.schedule.find(
+      (entry: ScheduleEntry): boolean => entry.id === entryId,
+    );
+    this.runtime.scheduleActiveEntryId =
+      sourceEntry === undefined ? entryId : scheduleOccurrenceToken(sourceEntry, now);
   }
 
   async abandonGate(): Promise<Ack> {
@@ -1046,16 +1095,36 @@ export class Engine {
       return;
     }
     if (session === null) {
+      const occurrenceToken: string = scheduleOccurrenceToken(active, now);
+      if (this.runtime.scheduleActiveEntryId === occurrenceToken) return;
+      if (this.runtime.scheduleActiveEntryId === active.id) {
+        // Legacy markers did not identify an occurrence. Suppress the current
+        // window once, then the absolute token allows later occurrences.
+        this.runtime.scheduleActiveEntryId = occurrenceToken;
+        this.dirty = true;
+        return;
+      }
       this.startFromScheduleEntry(active, now);
       return;
     }
-    // One session at a time. A hard window upgrades a running friction
-    // session, never the other way around (spec section 5).
-    if (active.strictness === 'hard' && session.config.strictness === 'friction') {
+    if (
+      session.config.source === 'schedule' &&
+      session.config.scheduleEntryId === active.id &&
+      this.runtime.scheduleActiveEntryId !== scheduleOccurrenceToken(active, now)
+    ) {
+      this.runtime.scheduleActiveEntryId = scheduleOccurrenceToken(active, now);
+      this.dirty = true;
+    }
+    // One session at a time. An active schedule may strengthen the running
+    // session, never weaken it.
+    if (strictnessStrength(active.strictness) > strictnessStrength(session.config.strictness)) {
       this.runtime.session = {
         ...session,
-        config: { ...session.config, strictness: 'hard' },
+        config: { ...session.config, strictness: active.strictness },
       };
+      if (active.strictness === 'hard' && this.runtime.gate?.kind === 'cancel') {
+        this.runtime.gate = null;
+      }
       this.dirty = true;
     }
   }
@@ -1081,7 +1150,7 @@ export class Engine {
     this.runtime.session = machineStart(config, now, sessionId);
     this.activateMatcher(this.runtime.session);
     this.runtime.accruedFocusMs = 0;
-    this.runtime.scheduleActiveEntryId = entry.id;
+    this.runtime.scheduleActiveEntryId = scheduleOccurrenceToken(entry, now);
     this.recordEvent({
       t: 'sessionStarted',
       at: now,
@@ -1382,7 +1451,10 @@ export class Engine {
       pauseCostMs: this.settings.pause.pauseMs,
       unlockCostMs: this.settings.pause.unlockMs,
       activeUnlocks: structuredClone(this.runtime.unlocks),
-      gate: structuredClone(this.runtime.gate),
+      gate:
+        this.runtime.gate === null
+          ? null
+          : { ...structuredClone(this.runtime.gate), forceEndAvailable: false },
       attemptsToday,
       scheduleActive: this.runtime.scheduleActiveEntryId !== null,
       nextSchedule: this.nextScheduleInfo(now),

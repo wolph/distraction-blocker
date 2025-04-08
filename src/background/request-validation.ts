@@ -297,7 +297,9 @@ function isSettings(value: unknown): value is Settings {
     value.presetsMin.length === 3 &&
     value.presetsMin.every(isRelativeMinuteDuration) &&
     (value.defaultMode === 'blacklist' || value.defaultMode === 'whitelist') &&
-    (value.defaultStrictness === 'hard' || value.defaultStrictness === 'friction') &&
+    (value.defaultStrictness === 'hard' ||
+      value.defaultStrictness === 'friction' ||
+      value.defaultStrictness === 'flexible') &&
     isCycleConfig(value.defaultCycling) &&
     typeof value.cyclingOnByDefault === 'boolean' &&
     isPauseSettings(value.pause) &&
@@ -378,6 +380,7 @@ function parseRecord(value: Record<string, unknown>): Request | null {
   switch (value.type) {
     case 'getSnapshot':
     case 'abandonGate':
+    case 'requestSessionEnd':
     case 'forceEndGate':
     case 'resumeFromPause':
     case 'startNextFocusEarly':

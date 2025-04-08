@@ -49,6 +49,7 @@ const VALID_REQUESTS: RequestByType = {
   startSession: { type: 'startSession', config: SESSION_CONFIG },
   openGate: { type: 'openGate', gate: 'unlockSite', host: 'news.example' },
   confirmGate: { type: 'confirmGate', typedPhrase: null },
+  requestSessionEnd: { type: 'requestSessionEnd' },
   forceEndGate: { type: 'forceEndGate' },
   abandonGate: { type: 'abandonGate' },
   resumeFromPause: { type: 'resumeFromPause' },
@@ -76,6 +77,11 @@ function replaceNested(
 }
 
 describe('parseRequest', (): void => {
+  it('accepts only the exact requestSessionEnd shape', (): void => {
+    expect(parseRequest({ type: 'requestSessionEnd' })).toEqual({ type: 'requestSessionEnd' });
+    expect(parseRequest({ type: 'requestSessionEnd', extra: true })).toBeNull();
+  });
+
   it.each(['auto', 'light', 'dark'])('accepts the %s theme mode', (theme: string): void => {
     expect(parseRequest({ type: 'updateTheme', theme })).toEqual({
       type: 'updateTheme',
@@ -368,6 +374,10 @@ describe('parseRequest', (): void => {
     };
 
     expect(parseSettingsRequest(settings)).not.toBeNull();
+  });
+
+  it('accepts Flexible as the default strictness', (): void => {
+    expect(parseSettingsRequest({ ...SETTINGS, defaultStrictness: 'flexible' })).not.toBeNull();
   });
 
   it.each([

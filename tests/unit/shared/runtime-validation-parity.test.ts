@@ -316,6 +316,7 @@ describe('runtime and worker request validation parity', (): void => {
     ['Auto theme', { ...DEFAULT_SETTINGS, theme: 'auto' }, true],
     ['Light theme', { ...DEFAULT_SETTINGS, theme: 'light' }, true],
     ['Dark theme', { ...DEFAULT_SETTINGS, theme: 'dark' }, true],
+    ['Flexible default', { ...DEFAULT_SETTINGS, defaultStrictness: 'flexible' }, true],
     ['unknown theme', { ...DEFAULT_SETTINGS, theme: 'sepia' }, false],
     ['top-level extra settings key', { ...DEFAULT_SETTINGS, extra: true }, false],
     [

@@ -5,6 +5,7 @@ import type {
   SessionMode,
   SessionState,
   Settings,
+  Strictness,
 } from '../shared/types';
 
 /**
@@ -29,6 +30,16 @@ function addedAny(current: Rule[], incoming: Rule[]): boolean {
 
 function isHard(session: SessionState | null): boolean {
   return session !== null && session.config.strictness === 'hard';
+}
+
+const STRICTNESS_STRENGTH: Record<Strictness, number> = {
+  flexible: 0,
+  friction: 1,
+  hard: 2,
+};
+
+function strictnessWeakened(current: Strictness, incoming: Strictness): boolean {
+  return STRICTNESS_STRENGTH[incoming] < STRICTNESS_STRENGTH[current];
 }
 
 export function listsChangeAllowed(
@@ -81,7 +92,7 @@ function scheduleWeakened(
   if (before.enabled && !after.enabled) return true;
   if (before.days.some((day: number): boolean => !after.days.includes(day))) return true;
   if (after.start > before.start || after.end < before.end) return true;
-  return before.strictness === 'hard' && after.strictness === 'friction';
+  return strictnessWeakened(before.strictness, after.strictness);
 }
 
 export function settingsChangeAllowed(
@@ -90,7 +101,7 @@ export function settingsChangeAllowed(
   incoming: Settings,
 ): string | null {
   if (!isHard(session)) return null;
-  if (current.defaultStrictness === 'hard' && incoming.defaultStrictness === 'friction') {
+  if (strictnessWeakened(current.defaultStrictness, incoming.defaultStrictness)) {
     return 'a hard session is running: weakening the default strictness waits until it ends';
   }
   if (incoming.gate.delayMs < current.gate.delayMs) {

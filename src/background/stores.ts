@@ -163,7 +163,9 @@ export function mergeSettings(raw: unknown, base: Settings = DEFAULT_SETTINGS): 
         ? stored.defaultMode
         : base.defaultMode,
     defaultStrictness:
-      stored.defaultStrictness === 'hard' || stored.defaultStrictness === 'friction'
+      stored.defaultStrictness === 'hard' ||
+      stored.defaultStrictness === 'friction' ||
+      stored.defaultStrictness === 'flexible'
         ? stored.defaultStrictness
         : base.defaultStrictness,
     defaultCycling: parseCycleConfig(stored.defaultCycling) ?? { ...base.defaultCycling },

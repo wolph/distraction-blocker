@@ -29,6 +29,11 @@ const frictionSession: SessionState = {
   config: { ...hardSession.config, strictness: 'friction' },
 };
 
+const flexibleSession: SessionState = {
+  ...hardSession,
+  config: { ...hardSession.config, strictness: 'flexible' },
+};
+
 const withCustom: ListsConfig = {
   ...DEFAULT_LISTS,
   custom: [{ kind: 'host', pattern: 'x.com' }],
@@ -120,13 +125,27 @@ const scheduleEntry: ScheduleEntry = {
 };
 
 describe('settingsChangeAllowed', () => {
-  it('rejects weakening the default strictness during a hard session', () => {
-    const hardDefault: Settings = { ...DEFAULT_SETTINGS, defaultStrictness: 'hard' };
-    const frictionDefault: Settings = { ...DEFAULT_SETTINGS, defaultStrictness: 'friction' };
+  it.each([
+    ['flexible', 'friction', false],
+    ['flexible', 'hard', false],
+    ['friction', 'flexible', true],
+    ['friction', 'hard', false],
+    ['hard', 'flexible', true],
+    ['hard', 'friction', true],
+  ] as const)(
+    'classifies default strictness %s -> %s as weakened=%s',
+    (current, incoming, weakened): void => {
+      const currentSettings: Settings = { ...DEFAULT_SETTINGS, defaultStrictness: current };
+      const incomingSettings: Settings = { ...DEFAULT_SETTINGS, defaultStrictness: incoming };
+      const reason: string | null = settingsChangeAllowed(
+        hardSession,
+        currentSettings,
+        incomingSettings,
+      );
 
-    expect(settingsChangeAllowed(hardSession, hardDefault, frictionDefault)).toMatch(/hard/i);
-    expect(settingsChangeAllowed(hardSession, frictionDefault, hardDefault)).toBeNull();
-  });
+      expect(reason !== null).toBe(weakened);
+    },
+  );
 
   it('rejects lowering the gate delay during hard, allows raising it', () => {
     const weaker: Settings = {
@@ -216,12 +235,17 @@ describe('settingsChangeAllowed', () => {
       ...DEFAULT_SETTINGS,
       schedule: [{ ...scheduleEntry, strictness: 'friction' }],
     };
+    const weakestStrictness: Settings = {
+      ...DEFAULT_SETTINGS,
+      schedule: [{ ...scheduleEntry, strictness: 'flexible' }],
+    };
     const removed: Settings = { ...DEFAULT_SETTINGS, schedule: [] };
     expect(settingsChangeAllowed(fromSchedule, current, disabled)).toMatch(/hard/i);
     expect(settingsChangeAllowed(fromSchedule, current, shortened)).toMatch(/hard/i);
     expect(settingsChangeAllowed(fromSchedule, current, fewerDays)).toMatch(/hard/i);
     expect(settingsChangeAllowed(fromSchedule, current, laterStart)).toMatch(/hard/i);
     expect(settingsChangeAllowed(fromSchedule, current, weakerStrictness)).toMatch(/hard/i);
+    expect(settingsChangeAllowed(fromSchedule, current, weakestStrictness)).toMatch(/hard/i);
     expect(settingsChangeAllowed(fromSchedule, current, removed)).toMatch(/hard/i);
   });
 
@@ -261,5 +285,6 @@ describe('settingsChangeAllowed', () => {
     };
     expect(settingsChangeAllowed(null, DEFAULT_SETTINGS, richer)).toBeNull();
     expect(settingsChangeAllowed(frictionSession, DEFAULT_SETTINGS, richer)).toBeNull();
+    expect(settingsChangeAllowed(flexibleSession, DEFAULT_SETTINGS, richer)).toBeNull();
   });
 });

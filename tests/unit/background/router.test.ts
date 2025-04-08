@@ -86,6 +86,29 @@ describe('routeMessage stats wiring', () => {
   });
 });
 
+describe('routeMessage session ending wiring', () => {
+  it('delegates the honest session-end request to the engine', async (): Promise<void> => {
+    const requestSessionEnd = vi.fn().mockResolvedValue({ ok: true });
+    const endingEngine: Engine = { requestSessionEnd } as unknown as Engine;
+
+    expect(await routeMessage(endingEngine, { type: 'requestSessionEnd' }, sender)).toEqual({
+      ok: true,
+    });
+    expect(requestSessionEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects deprecated force end without invoking the engine', async (): Promise<void> => {
+    const forceEndGate = vi.fn().mockResolvedValue({ ok: true });
+    const endingEngine: Engine = { forceEndGate } as unknown as Engine;
+
+    expect(await routeMessage(endingEngine, { type: 'forceEndGate' }, sender)).toEqual({
+      ok: false,
+      error: 'Force end is no longer available. Choose a Flexible session before starting.',
+    });
+    expect(forceEndGate).not.toHaveBeenCalled();
+  });
+});
+
 describe('routeMessage tab identity wiring', () => {
   it('binds a stopped fresh document to its URL', async () => {
     const url: string = 'https://blocked.example/page';

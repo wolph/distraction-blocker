@@ -39,8 +39,13 @@ export async function routeMessage(
       return engine.openGate(msg.gate, msg.host);
     case 'confirmGate':
       return engine.confirmGate(msg.typedPhrase);
+    case 'requestSessionEnd':
+      return engine.requestSessionEnd();
     case 'forceEndGate':
-      return engine.forceEndGate();
+      return {
+        ok: false,
+        error: 'Force end is no longer available. Choose a Flexible session before starting.',
+      };
     case 'abandonGate':
       return engine.abandonGate();
     case 'resumeFromPause':
