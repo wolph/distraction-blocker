@@ -781,20 +781,20 @@ export class Engine {
   }
 
   async updateLists(l: ListsConfig): Promise<Ack> {
-    let encoding: ListsSyncEncoding;
-    try {
-      encoding = await encodeListsForSync(l);
-    } catch (error: unknown) {
-      if (!(error instanceof SyncQuotaError)) throw error;
-      return {
-        ok: false,
-        error:
-          'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
-      };
-    }
-    return this.enqueuePolicyMutation(
-      (): Promise<Ack> => this.updateListsNow(l, encoding, true, false),
-    );
+    return this.enqueuePolicyMutation(async (): Promise<Ack> => {
+      let encoding: ListsSyncEncoding;
+      try {
+        encoding = await encodeListsForSync(l);
+      } catch (error: unknown) {
+        if (!(error instanceof SyncQuotaError)) throw error;
+        return {
+          ok: false,
+          error:
+            'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
+        };
+      }
+      return this.updateListsNow(l, encoding, true, false);
+    });
   }
 
   private async updateListsNow(
@@ -846,26 +846,25 @@ export class Engine {
 
   async applySyncedLists(lists: ListsConfig, reconcilePendingSync?: boolean): Promise<Ack> {
     const pendingSyncAtArrival: boolean = reconcilePendingSync ?? this.hasPendingListsSync();
-    let encoding: ListsSyncEncoding;
-    try {
-      encoding = await encodeListsForSync(lists);
-    } catch (error: unknown) {
-      if (!(error instanceof SyncQuotaError)) throw error;
-      return {
-        ok: false,
-        error:
-          'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
-      };
-    }
-    return this.enqueuePolicyMutation(
-      (): Promise<Ack> =>
-        this.updateListsNow(
-          lists,
-          encoding,
-          false,
-          pendingSyncAtArrival || this.hasPendingListsSync(),
-        ),
-    );
+    return this.enqueuePolicyMutation(async (): Promise<Ack> => {
+      let encoding: ListsSyncEncoding;
+      try {
+        encoding = await encodeListsForSync(lists);
+      } catch (error: unknown) {
+        if (!(error instanceof SyncQuotaError)) throw error;
+        return {
+          ok: false,
+          error:
+            'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
+        };
+      }
+      return this.updateListsNow(
+        lists,
+        encoding,
+        false,
+        pendingSyncAtArrival || this.hasPendingListsSync(),
+      );
+    });
   }
 
   private hasPendingListsSync(): boolean {

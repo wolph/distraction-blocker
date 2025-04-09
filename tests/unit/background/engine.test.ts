@@ -1262,6 +1262,78 @@ describe('Engine', () => {
     expect(h.engine.getLists()).toEqual(liveLists);
   });
 
+  it('serializes list encoding and mutations in invocation order', async () => {
+    const syncWrites: Array<Record<string, unknown>> = [];
+    const writer: SyncWriter = new SyncWriter(
+      60_000,
+      async (items: Record<string, unknown>): Promise<void> => {
+        syncWrites.push(structuredClone(items));
+      },
+    );
+    const h: Harness = makeEngine({
+      hasPendingSync: (key: string): boolean => writer.hasPending(key),
+      queueSync: (key: string, value: unknown): void => writer.queue(key, value),
+    });
+    const localLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'local.example' }],
+    };
+    const liveLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'live.example' }],
+    };
+    let releaseFirstDigest: () => void = (): void => {};
+    const firstDigestBlocked: Promise<ArrayBuffer> = new Promise(
+      (resolve: (value: ArrayBuffer) => void): void => {
+        releaseFirstDigest = (): void => resolve(new ArrayBuffer(32));
+      },
+    );
+    let signalFirstDigestStarted: () => void = (): void => {};
+    const firstDigestStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalFirstDigestStarted = resolve;
+    });
+    let digestCalls: number = 0;
+    const digestSpy = vi
+      .spyOn(crypto.subtle, 'digest')
+      .mockImplementation((): Promise<ArrayBuffer> => {
+        digestCalls += 1;
+        if (digestCalls === 1) signalFirstDigestStarted();
+        return digestCalls === 1 ? firstDigestBlocked : Promise.resolve(new ArrayBuffer(32));
+      });
+    const listUpdates: Array<Promise<Ack>> = [];
+
+    try {
+      const localUpdate: Promise<Ack> = h.engine.updateLists(localLists);
+      const matchingLiveUpdate: Promise<Ack> = h.engine.applySyncedLists(localLists);
+      const liveUpdate: Promise<Ack> = h.engine.applySyncedLists(liveLists);
+      listUpdates.push(localUpdate, matchingLiveUpdate, liveUpdate);
+      await firstDigestStarted;
+
+      expect(digestCalls).toBe(1);
+      releaseFirstDigest();
+
+      await expect(Promise.all(listUpdates)).resolves.toEqual([
+        { ok: true },
+        { ok: true },
+        { ok: true },
+      ]);
+    } finally {
+      releaseFirstDigest();
+      await Promise.allSettled(listUpdates);
+      digestSpy.mockRestore();
+    }
+
+    await writer.flushNow();
+
+    expect(
+      h.ports.saveMatcherCache.mock.calls.map(
+        (call: unknown[]): ListsConfig => call[1] as ListsConfig,
+      ),
+    ).toEqual([localLists, localLists, liveLists]);
+    expect(syncWrites).toEqual([expect.objectContaining({ [SYNC_LISTS]: liveLists })]);
+    expect(h.engine.getLists()).toEqual(liveLists);
+  });
+
   it('does not rewrite the matcher cache when hard-session guards reject local or live lists', async () => {
     const h: Harness = makeEngine();
     await h.engine.startSession({ ...manualConfig, strictness: 'hard' });
