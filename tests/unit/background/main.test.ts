@@ -17,7 +17,14 @@ import {
 } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
 import {
+  LOCAL_CACHES,
+  LOCAL_DEVICE_ID,
+  LOCAL_EVENTS,
+  LOCAL_INSTALL_MARKER,
   LOCAL_LISTS_SNAPSHOT,
+  LOCAL_RUNTIME,
+  LOCAL_SETUP,
+  LOCAL_SYNC_JOURNAL,
   LOCAL_SYNC_QUOTA_EVICTION,
   SYNC_BANK,
   SYNC_LISTS,
@@ -205,6 +212,22 @@ function setScenario(journaledStreak: StreakState, syncedStreak: StreakState): v
   };
 }
 
+function setCompleteSyncedPolicy(): void {
+  mocks.scenario.storedSync = {
+    [SYNC_SETTINGS]: DEFAULT_SETTINGS,
+    [SYNC_LISTS]: DEFAULT_LISTS,
+    [SYNC_BANK]: { balanceMs: 0 },
+    [SYNC_STREAK]: {
+      current: 0,
+      freezeTokens: 0,
+      lastCountedDate: null,
+      lastFreezeGrantDate: null,
+      activeDays: [],
+      activeMonth: '2026-08',
+    },
+  };
+}
+
 function oversizedHostRules(prefix: string): ListsConfig['custom'] {
   return Array.from({ length: 600 }, (_value: unknown, index: number) => ({
     kind: 'host' as const,
@@ -268,6 +291,9 @@ function stubChrome(): void {
         }),
         set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
           Object.assign(mocks.localState, structuredClone(items));
+          if (Object.hasOwn(items, LOCAL_SYNC_JOURNAL)) {
+            mocks.savedJournals.push(structuredClone(items[LOCAL_SYNC_JOURNAL]) as SyncJournal);
+          }
         }),
         remove: vi.fn(async (keys: string | string[]): Promise<void> => {
           const requested: string[] = typeof keys === 'string' ? [keys] : keys;
@@ -379,6 +405,7 @@ function expectJournaled(streak: StreakState): void {
 beforeEach((): void => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date(2026, 7, 29, 12, 0));
+  vi.mocked(handleSyncChanges).mockClear();
   mocks.engineArguments = null;
   mocks.alarmListener = null;
   mocks.bootGate = null;
@@ -400,7 +427,7 @@ beforeEach((): void => {
   mocks.dropTabError = null;
   mocks.invalidationError = null;
   mocks.invalidatedTabIds = [];
-  mocks.localState = {};
+  mocks.localState = { [LOCAL_RUNTIME]: {} };
   stubChrome();
 });
 
@@ -412,6 +439,64 @@ afterEach((): void => {
 });
 
 describe('background runtime request boundary', () => {
+  it('classifies a clean install before boot and performs zero Sync calls', async (): Promise<void> => {
+    mocks.localState = {};
+    mocks.scenario.storedSync = { [SYNC_SETTINGS]: { ...DEFAULT_SETTINGS, retentionDays: 30 } };
+
+    await finishBoot();
+
+    expect(mocks.localState[LOCAL_INSTALL_MARKER]).toMatchObject({ profile: 'clean' });
+    expect(chrome.storage.sync.get).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.getBytesInUse).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
+    expect(
+      vi.mocked(chrome.runtime.onInstalled.addListener).mock.invocationCallOrder[0],
+    ).toBeLessThan(vi.mocked(chrome.storage.local.get).mock.invocationCallOrder[0] ?? 0);
+  });
+
+  it.each([
+    LOCAL_RUNTIME,
+    LOCAL_LISTS_SNAPSHOT,
+    LOCAL_EVENTS,
+    LOCAL_DEVICE_ID,
+    LOCAL_SYNC_JOURNAL,
+    LOCAL_SYNC_QUOTA_EVICTION,
+    LOCAL_CACHES,
+  ])('classifies recognized legacy evidence %s before migration', async (key: string) => {
+    const evidence: unknown =
+      key === LOCAL_SYNC_QUOTA_EVICTION
+        ? {
+            evicted: { 'aggm:legacy:2026-07': rollupMonth('2026-07', []) },
+            setKeys: [],
+          }
+        : {};
+    mocks.localState = { [key]: evidence };
+
+    await finishBoot();
+
+    expect(mocks.localState[LOCAL_INSTALL_MARKER]).toMatchObject({ profile: 'legacy' });
+    expect(chrome.storage.sync.get).toHaveBeenCalledWith(null);
+  });
+
+  it('keeps a persisted clean profile clean after a later update', async (): Promise<void> => {
+    mocks.localState = {
+      [LOCAL_INSTALL_MARKER]: {
+        version: 1,
+        profile: 'clean',
+        latestReason: 'update',
+        extensionVersion: '0.2.0',
+      },
+    };
+    mocks.scenario.storedSync = { [SYNC_SETTINGS]: { ...DEFAULT_SETTINGS, retentionDays: 30 } };
+
+    await finishBoot();
+
+    expect(mocks.localState[LOCAL_INSTALL_MARKER]).toMatchObject({ profile: 'clean' });
+    expect(chrome.storage.sync.get).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+  });
+
   it('rejects invalid input before the worker is ready', async (): Promise<void> => {
     let releaseBoot: () => void = (): void => undefined;
     mocks.bootGate = new Promise<void>((resolve: () => void): void => {
@@ -528,6 +613,7 @@ describe('background session policy boot', () => {
 
 describe('background pending lists tracking', () => {
   it('applies complete live list snapshots in listener arrival order', async () => {
+    setCompleteSyncedPolicy();
     await finishBoot();
     vi.mocked(handleSyncChanges).mockClear();
     const first = await encodeListsForSync({
@@ -614,13 +700,14 @@ describe('background pending lists tracking', () => {
   });
 
   it('reports a local lists write pending until SyncWriter flushes it', async () => {
+    setCompleteSyncedPolicy();
     await finishBoot();
     const localLists: ListsConfig = {
       ...DEFAULT_LISTS,
       custom: [{ kind: 'host', pattern: 'local.example' }],
     };
 
-    enginePorts().queueSync(SYNC_LISTS, localLists);
+    await enginePorts().savePolicy?.('lists', localLists);
     expect(enginePorts().hasPendingSync(SYNC_LISTS)).toBe(true);
 
     await vi.advanceTimersByTimeAsync(10_000);
@@ -695,6 +782,7 @@ describe('background pending lists tracking', () => {
   });
 
   it('does not reconcile a pre-writer live event when the journal has no pending lists', async () => {
+    setCompleteSyncedPolicy();
     const priorHandleCalls: number = vi.mocked(handleSyncChanges).mock.calls.length;
     let releaseJournalLoad: () => void = (): void => {};
     mocks.bootGate = new Promise((resolve: () => void): void => {
@@ -738,6 +826,11 @@ describe('background boot state convergence', () => {
     await finishBoot();
 
     expect(engineLists()).toEqual(localLists);
+    const expected = await encodeListsForSync(localLists);
+    expect(mocks.savedJournals).toContainEqual({
+      sets: expected.sets,
+      removes: expected.removes,
+    });
   });
 
   it('repairs an incomplete sharded journal from the local canonical snapshot', async () => {
@@ -907,7 +1000,7 @@ describe('background boot state convergence', () => {
     expect(chrome.storage.sync.set).toHaveBeenCalledWith({ [SYNC_BANK]: synced });
   });
 
-  it('defaults malformed pending base state when sync has no valid fallback', async () => {
+  it('sanitizes malformed transient pending base state when no remote policy exists', async () => {
     const fallbackStreak: StreakState = {
       current: 0,
       freezeTokens: 0,
@@ -932,12 +1025,7 @@ describe('background boot state convergence', () => {
         },
         removes: [],
       },
-      storedSync: {
-        [SYNC_SETTINGS]: 'invalid',
-        [SYNC_LISTS]: 42,
-        [SYNC_BANK]: { balanceMs: -2 },
-        [SYNC_STREAK]: { current: -1 },
-      },
+      storedSync: {},
     };
 
     await finishBoot();
@@ -952,6 +1040,28 @@ describe('background boot state convergence', () => {
     });
     await vi.advanceTimersByTimeAsync(10_000);
     expect(chrome.storage.sync.set).toHaveBeenCalledWith(expectedSets);
+  });
+
+  it('fails an invalid authoritative remote policy without mutating remote data', async () => {
+    const invalidRemote: Record<string, unknown> = {
+      [SYNC_SETTINGS]: 'invalid',
+      [SYNC_BANK]: { balanceMs: -2 },
+    };
+    mocks.scenario = {
+      journal: { sets: {}, removes: [] },
+      storedSync: invalidRemote,
+    };
+
+    await finishBoot();
+
+    expect(mocks.engineArguments).toBeNull();
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      legacyImported: false,
+      storageError: 'legacy-migration-failed',
+    });
+    expect(mocks.scenario.storedSync).toEqual(invalidRemote);
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
   });
 
   it('preserves valid pending base state over older sync state', async () => {

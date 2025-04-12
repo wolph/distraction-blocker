@@ -14,6 +14,8 @@ import {
   LOCAL_DEVICE_ID,
   LOCAL_EVENTS,
   LOCAL_LISTS_SNAPSHOT,
+  LOCAL_POLICY_COMMIT,
+  LOCAL_POLICY_GENERATION_PREFIX,
   LOCAL_RUNTIME,
   LOCAL_SYNC_JOURNAL,
   SYNC_BANK,
@@ -38,7 +40,6 @@ import type {
   StreakState,
 } from '../shared/types';
 import {
-  canonicalListsConfig,
   type DecodedListsSyncSnapshot,
   decodeListsSyncSnapshot,
   isListSyncKey,
@@ -283,7 +284,30 @@ function journalValue(journal: SyncJournal | undefined, key: string, stored: unk
 }
 
 export async function loadRuntime(now: number): Promise<ParsedRuntimeState> {
-  const raw: unknown = (await chrome.storage.local.get(LOCAL_RUNTIME))[LOCAL_RUNTIME];
+  const pointerStored: Record<string, unknown> =
+    await chrome.storage.local.get(LOCAL_POLICY_COMMIT);
+  const pointer: unknown = pointerStored[LOCAL_POLICY_COMMIT];
+  let raw: unknown;
+  if (
+    isRecord(pointer) &&
+    pointer.source === 'generation' &&
+    typeof pointer.id === 'string' &&
+    typeof pointer.revision === 'string'
+  ) {
+    const generationKey: string = `${LOCAL_POLICY_GENERATION_PREFIX}${pointer.id}`;
+    const stored: Record<string, unknown> = await chrome.storage.local.get(generationKey);
+    const generation: unknown = stored[generationKey];
+    if (
+      !isRecord(generation) ||
+      generation.id !== pointer.id ||
+      generation.revision !== pointer.revision
+    ) {
+      throw new Error('committed runtime generation is missing or invalid');
+    }
+    raw = generation.runtime;
+  } else {
+    raw = (await chrome.storage.local.get(LOCAL_RUNTIME))[LOCAL_RUNTIME];
+  }
   return mergeRuntime(raw, now);
 }
 
@@ -937,11 +961,9 @@ export async function loadMatcherCache(): Promise<unknown> {
 
 export async function saveMatcherCache(
   cache: StoredMatcherCache,
-  lists?: ListsConfig,
+  _lists?: ListsConfig,
 ): Promise<void> {
-  const items: Record<string, unknown> = { [LOCAL_CACHES]: cache };
-  if (lists !== undefined) items[LOCAL_LISTS_SNAPSHOT] = canonicalListsConfig(lists);
-  await chrome.storage.local.set(items);
+  await chrome.storage.local.set({ [LOCAL_CACHES]: cache });
 }
 
 export async function getDeviceId(): Promise<string> {

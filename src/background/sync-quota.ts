@@ -377,6 +377,50 @@ export function removeSyncItems(
   });
 }
 
+export interface SyncDeletionPassOptions {
+  initialKeys: readonly string[];
+  matches(key: string): boolean;
+  persistInventory(keys: string[]): Promise<void>;
+}
+
+/**
+ * Removes a durable target inventory and repeats authoritative scans
+ * while holding the same mutation queue used by Sync sets and removals.
+ */
+export function removeSyncItemsUntilClear(
+  options: SyncDeletionPassOptions,
+  storage?: chrome.storage.SyncStorageArea,
+  checkpointStorage?: chrome.storage.StorageArea,
+): Promise<void> {
+  const resolvedStorage: chrome.storage.SyncStorageArea = storage ?? chrome.storage.sync;
+  const resolvedCheckpointStorage: chrome.storage.StorageArea | undefined =
+    checkpointStorage ?? (storage === undefined ? chrome.storage.local : undefined);
+  return queueSyncMutation(async (): Promise<void> => {
+    let carried: string[] = options.initialKeys.filter(options.matches);
+    for (;;) {
+      const checkpoint: SyncQuotaEvictionCheckpoint | null =
+        resolvedCheckpointStorage === undefined
+          ? null
+          : await loadEvictionCheckpoint(resolvedCheckpointStorage);
+      const remote: Record<string, unknown> = await resolvedStorage.get(null);
+      const inventory: string[] = [
+        ...new Set(
+          [...carried, ...Object.keys(remote), ...Object.keys(checkpoint?.evicted ?? {})].filter(
+            options.matches,
+          ),
+        ),
+      ].sort();
+      await options.persistInventory(inventory);
+      if (inventory.length === 0) return;
+      if (checkpoint !== null && resolvedCheckpointStorage !== undefined) {
+        await supersedeCheckpointKeys(checkpoint, inventory, resolvedCheckpointStorage);
+      }
+      await resolvedStorage.remove(inventory);
+      carried = [];
+    }
+  });
+}
+
 export interface SyncJournalInput {
   sets: Readonly<Record<string, unknown>>;
   removes: readonly string[];

@@ -7,6 +7,8 @@ import { parseBank, parseStreak } from './stores';
 const DAILY_KEY_RE: RegExp = /^agg:([^:]+):(\d{4}-\d{2}-\d{2})$/;
 const MONTHLY_KEY_RE: RegExp = /^aggm:([^:]+):(\d{4}-\d{2})$/;
 const PRUNE_KEY_RE: RegExp = /^prune:([^:]+)$/;
+const CLOCK_REBASE_ARCHIVE_KEY_RE: RegExp =
+  /^archive:clock-rebase:([^:]+):(\d{4}-\d{2}-\d{2}):(\d+):([^:]+)$/;
 const AGGREGATE_COUNTER_KEYS: readonly string[] = [
   'focusMs',
   'sessionsStarted',
@@ -79,7 +81,26 @@ export function isSupportedSyncItemKey(key: string): boolean {
     key === SYNC_STREAK ||
     DAILY_KEY_RE.test(key) ||
     MONTHLY_KEY_RE.test(key) ||
-    PRUNE_KEY_RE.test(key)
+    PRUNE_KEY_RE.test(key) ||
+    CLOCK_REBASE_ARCHIVE_KEY_RE.test(key)
+  );
+}
+
+export function isFocusLockSyncKey(key: string): boolean {
+  return isSupportedSyncItemKey(key) || CLOCK_REBASE_ARCHIVE_KEY_RE.test(key);
+}
+
+export function isFocusLockDeletionKey(key: string): boolean {
+  return (
+    key === SYNC_SETTINGS ||
+    key === SYNC_LISTS ||
+    key === SYNC_BANK ||
+    key === SYNC_STREAK ||
+    key.startsWith('lists:category:') ||
+    key.startsWith('agg:') ||
+    key.startsWith('aggm:') ||
+    key.startsWith('prune:') ||
+    key.startsWith('archive:clock-rebase:')
   );
 }
 
@@ -113,6 +134,10 @@ export function isAuthoritativeSyncItem(key: string, value: unknown): boolean {
   const monthlyMatch: RegExpExecArray | null = MONTHLY_KEY_RE.exec(key);
   if (monthlyMatch !== null) {
     return hasAggregateKeys(value, 'month') && parseMonthlyAgg(value, monthlyMatch[2]) !== null;
+  }
+  const archiveMatch: RegExpExecArray | null = CLOCK_REBASE_ARCHIVE_KEY_RE.exec(key);
+  if (archiveMatch !== null) {
+    return hasAggregateKeys(value, 'date') && parseDailyAgg(value, archiveMatch[2]) !== null;
   }
   return isPruneCheckpoint(key, value);
 }

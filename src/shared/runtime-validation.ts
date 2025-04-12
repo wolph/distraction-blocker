@@ -14,6 +14,7 @@ import type {
   CycleConfig,
   EventRecord,
   GateState,
+  InstallMarker,
   ListsConfig,
   PauseEconomy,
   Rule,
@@ -21,6 +22,7 @@ import type {
   SessionConfig,
   SessionSnapshot,
   Settings,
+  SetupState,
   SiteUnlock,
   StreakState,
 } from './types';
@@ -60,6 +62,68 @@ function hasExactKeys(value: UnknownRecord, keys: readonly string[]): boolean {
   } catch {
     return false;
   }
+}
+
+export function isSetupState(value: unknown): value is SetupState {
+  return safelyValidate(
+    (): boolean =>
+      isRecord(value) &&
+      hasExactKeys(value, [
+        'version',
+        'completed',
+        'websiteAccess',
+        'blockingRegistration',
+        'websiteAccessNotice',
+        'storageMode',
+        'syncWriteStatus',
+        'storageError',
+        'dataClear',
+        'legacyImported',
+      ]) &&
+      value.version === 1 &&
+      typeof value.completed === 'boolean' &&
+      (value.websiteAccess === 'pending' ||
+        value.websiteAccess === 'granted' ||
+        value.websiteAccess === 'denied') &&
+      (value.blockingRegistration === 'unavailable' ||
+        value.blockingRegistration === 'ready' ||
+        value.blockingRegistration === 'error') &&
+      (value.websiteAccessNotice === null ||
+        value.websiteAccessNotice === 'revoked-during-session' ||
+        value.websiteAccessNotice === 'registration-failed-during-session') &&
+      (value.storageMode === null ||
+        value.storageMode === 'local' ||
+        value.storageMode === 'sync') &&
+      (value.syncWriteStatus === 'idle' ||
+        value.syncWriteStatus === 'pending' ||
+        value.syncWriteStatus === 'error') &&
+      (value.storageError === null ||
+        value.storageError === 'legacy-migration-failed' ||
+        value.storageError === 'sync-publish-failed' ||
+        value.storageError === 'remote-deletion-failed' ||
+        value.storageError === 'local-clear-failed') &&
+      isRecord(value.dataClear) &&
+      hasExactKeys(value.dataClear, ['status', 'scope', 'phase']) &&
+      ((value.dataClear.status === 'idle' &&
+        value.dataClear.scope === null &&
+        value.dataClear.phase === null) ||
+        ((value.dataClear.status === 'pending' || value.dataClear.status === 'error') &&
+          (value.dataClear.scope === 'synced-policy' || value.dataClear.scope === 'all') &&
+          (value.dataClear.phase === 'remote' || value.dataClear.phase === 'local'))) &&
+      typeof value.legacyImported === 'boolean',
+  );
+}
+
+export function isInstallMarker(value: unknown): value is InstallMarker {
+  return safelyValidate(
+    (): boolean =>
+      isRecord(value) &&
+      hasExactKeys(value, ['version', 'profile', 'latestReason', 'extensionVersion']) &&
+      value.version === 1 &&
+      (value.profile === 'clean' || value.profile === 'legacy') &&
+      (value.latestReason === 'install' || value.latestReason === 'update') &&
+      isNonBlankString(value.extensionVersion),
+  );
 }
 
 function safelyValidate(validate: () => boolean): boolean {

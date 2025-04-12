@@ -6,8 +6,11 @@ import {
   decodeListsSyncSnapshot,
   isListSyncKey,
 } from './list-sync-codec';
+import type { PolicySnapshot, PolicyValueByKey } from './policy-storage';
 import { parseBank, parseLiveLists, parseLiveSettings, parseStreak } from './stores';
-import type { SyncEchoes } from './sync-writer';
+export interface SyncEchoConsumer {
+  consume(key: string, value: unknown): boolean;
+}
 
 export interface SyncChangeEngine {
   applySyncedSettings(settings: Settings): Promise<Ack>;
@@ -16,14 +19,204 @@ export interface SyncChangeEngine {
   applySyncedStreak(streak: StreakState): Promise<void>;
   getSettings(): Settings;
   getLists(): ListsConfig;
+  previewSyncedPolicy?(
+    changes: Partial<PolicyValueByKey>,
+    reconcilePendingLists: boolean,
+  ): Promise<Ack & { accepted?: Partial<PolicyValueByKey> }>;
+  commitSyncedPolicy?(changes: Partial<PolicyValueByKey>): Promise<void>;
+  transactSyncedPolicy?(
+    changes: Partial<PolicyValueByKey>,
+    reconcilePendingLists: boolean,
+    mirror: (accepted: Partial<PolicyValueByKey>) => Promise<void>,
+  ): Promise<Ack>;
+}
+
+export interface SyncPolicyTransaction {
+  inboundSyncAllowed(): Promise<boolean>;
+  loadSnapshot(): Promise<PolicySnapshot>;
+  mirrorAcceptedRemotePolicy(
+    changes: Record<string, unknown>,
+    pendingRemoteKeys?: readonly string[],
+  ): Promise<void>;
 }
 
 export interface SyncStorageChange {
+  oldValue?: unknown;
   newValue?: unknown;
 }
 
 export type SyncStorageChanges = Record<string, SyncStorageChange | undefined>;
 export type SyncStorageQueue = (key: string, value: unknown) => void | Promise<void>;
+export type SyncListSnapshotLoader = () => Promise<Readonly<Record<string, unknown>>>;
+
+function remoteKeyForPolicy(key: keyof PolicyValueByKey): string {
+  if (key === 'settings') return SYNC_SETTINGS;
+  if (key === 'lists') return SYNC_LISTS;
+  if (key === 'bank') return SYNC_BANK;
+  return SYNC_STREAK;
+}
+
+async function correctRemotePolicyRemovals(
+  changes: SyncStorageChanges,
+  echoes: SyncEchoConsumer,
+  queueSync: SyncStorageQueue,
+  transaction: SyncPolicyTransaction,
+): Promise<SyncStorageChanges> {
+  const corrections: Set<keyof PolicyValueByKey> = new Set();
+  const remaining: SyncStorageChanges = { ...changes };
+  for (const [key, change] of Object.entries(changes)) {
+    if (change === undefined || change.newValue !== undefined) continue;
+    if (echoes.consume(key, undefined)) {
+      delete remaining[key];
+      continue;
+    }
+    if (key === SYNC_SETTINGS) corrections.add('settings');
+    else if (isListSyncKey(key)) corrections.add('lists');
+    else if (key === SYNC_BANK) corrections.add('bank');
+    else if (key === SYNC_STREAK) corrections.add('streak');
+    if (isListSyncKey(key)) delete remaining[key];
+  }
+  if (corrections.size === 0) return remaining;
+  const local: PolicySnapshot = await transaction.loadSnapshot();
+  for (const key of corrections) {
+    const value: PolicyValueByKey[typeof key] = local[key];
+    if (key === 'streak' && value === null) continue;
+    await queueSync(remoteKeyForPolicy(key), value);
+  }
+  return remaining;
+}
+
+async function transactionalPolicyChanges(
+  engine: SyncChangeEngine,
+  changes: SyncStorageChanges,
+  echoes: SyncEchoConsumer,
+  reconcilePendingLists: boolean,
+  listSnapshot: Readonly<Record<string, unknown>> | undefined,
+  loadListSnapshot: SyncListSnapshotLoader | undefined,
+): Promise<Partial<PolicyValueByKey>> {
+  const candidate: Partial<PolicyValueByKey> = {};
+  const settingsValue: unknown = changes[SYNC_SETTINGS]?.newValue;
+  if (settingsValue !== undefined && !echoes.consume(SYNC_SETTINGS, settingsValue)) {
+    const settings: Settings | null = parseLiveSettings(settingsValue, engine.getSettings());
+    if (settings !== null) candidate.settings = settings;
+  }
+
+  const changedListEntries: Array<[string, SyncStorageChange]> = Object.entries(changes).flatMap(
+    ([key, change]: [string, SyncStorageChange | undefined]): Array<[string, SyncStorageChange]> =>
+      isListSyncKey(key) && change !== undefined ? [[key, change]] : [],
+  );
+  if (changedListEntries.length > 0) {
+    let allEchoes: boolean = true;
+    const changedSnapshot: Record<string, unknown> = {};
+    for (const [key, change] of changedListEntries) {
+      if (change.newValue === undefined) {
+        allEchoes = false;
+      } else {
+        changedSnapshot[key] = change.newValue;
+        if (!echoes.consume(key, change.newValue)) allEchoes = false;
+      }
+    }
+    if (!allEchoes) {
+      const completeSnapshot: Readonly<Record<string, unknown>> =
+        listSnapshot ??
+        (loadListSnapshot === undefined ? changedSnapshot : await loadListSnapshot());
+      const decoded: DecodedListsSyncSnapshot = decodeListsSyncSnapshot(completeSnapshot);
+      if (decoded.kind !== 'incomplete') {
+        const value: unknown = decoded.kind === 'complete' ? decoded.lists : decoded.value;
+        const lists: ListsConfig | null = parseLiveLists(value, engine.getLists());
+        if (lists !== null) candidate.lists = lists;
+      }
+    }
+  }
+
+  const bankValue: unknown = changes[SYNC_BANK]?.newValue;
+  if (bankValue !== undefined && !echoes.consume(SYNC_BANK, bankValue)) {
+    const bank: BankState | null = parseBank(bankValue);
+    if (bank !== null) candidate.bank = bank;
+  }
+  const streakValue: unknown = changes[SYNC_STREAK]?.newValue;
+  if (streakValue !== undefined && !echoes.consume(SYNC_STREAK, streakValue)) {
+    const streak: StreakState | null = parseStreak(streakValue);
+    if (streak !== null) candidate.streak = streak;
+  }
+  void reconcilePendingLists;
+  return candidate;
+}
+
+async function handleTransactionalSyncChanges(
+  engine: SyncChangeEngine,
+  changes: SyncStorageChanges,
+  echoes: SyncEchoConsumer,
+  queueSync: SyncStorageQueue,
+  reconcilePendingLists: boolean,
+  listSnapshot: Readonly<Record<string, unknown>> | undefined,
+  transaction: SyncPolicyTransaction,
+  loadListSnapshot: SyncListSnapshotLoader | undefined,
+  pendingRemoteKeys: readonly string[],
+): Promise<void> {
+  if (!(await transaction.inboundSyncAllowed())) return;
+  const candidateChanges: SyncStorageChanges = await correctRemotePolicyRemovals(
+    changes,
+    echoes,
+    queueSync,
+    transaction,
+  );
+  const candidate: Partial<PolicyValueByKey> = await transactionalPolicyChanges(
+    engine,
+    candidateChanges,
+    echoes,
+    reconcilePendingLists,
+    listSnapshot,
+    loadListSnapshot,
+  );
+  const candidateKeys: Array<keyof PolicyValueByKey> = [];
+  if (candidate.settings !== undefined) candidateKeys.push('settings');
+  if (candidate.lists !== undefined) candidateKeys.push('lists');
+  if (candidate.bank !== undefined) candidateKeys.push('bank');
+  if (candidate.streak !== undefined) candidateKeys.push('streak');
+  if (candidateKeys.length === 0) return;
+  if (engine.transactSyncedPolicy !== undefined) {
+    const result: Ack = await engine.transactSyncedPolicy(
+      candidate,
+      reconcilePendingLists,
+      async (accepted: Partial<PolicyValueByKey>): Promise<void> => {
+        const mirrored: Record<string, unknown> = {};
+        if (accepted.settings !== undefined) mirrored.settings = accepted.settings;
+        if (accepted.lists !== undefined) mirrored.lists = accepted.lists;
+        if (accepted.bank !== undefined) mirrored.bank = accepted.bank;
+        if (accepted.streak !== undefined) mirrored.streak = accepted.streak;
+        await transaction.mirrorAcceptedRemotePolicy(mirrored, pendingRemoteKeys);
+      },
+    );
+    if (!result.ok) {
+      const local: PolicySnapshot = await transaction.loadSnapshot();
+      for (const key of candidateKeys) await queueSync(remoteKeyForPolicy(key), local[key]);
+    }
+    return;
+  }
+  const previewSyncedPolicy = engine.previewSyncedPolicy?.bind(engine);
+  const commitSyncedPolicy = engine.commitSyncedPolicy?.bind(engine);
+  if (previewSyncedPolicy === undefined || commitSyncedPolicy === undefined) {
+    throw new Error('transactional sync engine methods are unavailable');
+  }
+  const preview: Ack & { accepted?: Partial<PolicyValueByKey> } = await previewSyncedPolicy(
+    candidate,
+    reconcilePendingLists,
+  );
+  if (!preview.ok) {
+    const local: PolicySnapshot = await transaction.loadSnapshot();
+    for (const key of candidateKeys) await queueSync(remoteKeyForPolicy(key), local[key]);
+    return;
+  }
+  const accepted: Partial<PolicyValueByKey> = preview.accepted ?? candidate;
+  const mirrored: Record<string, unknown> = {};
+  if (accepted.settings !== undefined) mirrored.settings = accepted.settings;
+  if (accepted.lists !== undefined) mirrored.lists = accepted.lists;
+  if (accepted.bank !== undefined) mirrored.bank = accepted.bank;
+  if (accepted.streak !== undefined) mirrored.streak = accepted.streak;
+  await transaction.mirrorAcceptedRemotePolicy(mirrored, pendingRemoteKeys);
+  await commitSyncedPolicy(accepted);
+}
 
 export function missingSyncDefaults(
   stored: Record<string, unknown>,
@@ -70,7 +263,7 @@ async function captureSyncError(
 async function applySettingsChange(
   engine: SyncChangeEngine,
   changes: SyncStorageChanges,
-  echoes: SyncEchoes,
+  echoes: SyncEchoConsumer,
   queueSync: SyncStorageQueue,
 ): Promise<void> {
   const value: unknown = changes[SYNC_SETTINGS]?.newValue;
@@ -89,7 +282,7 @@ async function applySettingsChange(
 async function applyListsChange(
   engine: SyncChangeEngine,
   changes: SyncStorageChanges,
-  echoes: SyncEchoes,
+  echoes: SyncEchoConsumer,
   queueSync: SyncStorageQueue,
   reconcilePendingSync: boolean | undefined,
   listSnapshot: Readonly<Record<string, unknown>> | undefined,
@@ -132,7 +325,7 @@ async function applyListsChange(
 async function applyBankChange(
   engine: SyncChangeEngine,
   changes: SyncStorageChanges,
-  echoes: SyncEchoes,
+  echoes: SyncEchoConsumer,
 ): Promise<void> {
   const value: unknown = changes[SYNC_BANK]?.newValue;
   if (value === undefined || echoes.consume(SYNC_BANK, value)) return;
@@ -143,7 +336,7 @@ async function applyBankChange(
 async function applyStreakChange(
   engine: SyncChangeEngine,
   changes: SyncStorageChanges,
-  echoes: SyncEchoes,
+  echoes: SyncEchoConsumer,
 ): Promise<void> {
   const value: unknown = changes[SYNC_STREAK]?.newValue;
   if (value === undefined || echoes.consume(SYNC_STREAK, value)) return;
@@ -154,11 +347,28 @@ async function applyStreakChange(
 export async function handleSyncChanges(
   engine: SyncChangeEngine,
   changes: SyncStorageChanges,
-  echoes: SyncEchoes,
+  echoes: SyncEchoConsumer,
   queueSync: SyncStorageQueue,
   reconcilePendingLists?: boolean,
   listSnapshot?: Readonly<Record<string, unknown>>,
+  transaction?: SyncPolicyTransaction,
+  loadListSnapshot?: SyncListSnapshotLoader,
+  pendingRemoteKeys: readonly string[] = [],
 ): Promise<void> {
+  if (transaction !== undefined) {
+    await handleTransactionalSyncChanges(
+      engine,
+      changes,
+      echoes,
+      queueSync,
+      reconcilePendingLists ?? false,
+      listSnapshot,
+      transaction,
+      loadListSnapshot,
+      pendingRemoteKeys,
+    );
+    return;
+  }
   const errors: unknown[] = [];
   await captureSyncError(
     errors,

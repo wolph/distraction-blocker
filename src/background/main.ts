@@ -1,8 +1,17 @@
 import { parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { emptyStreak } from '../core/streak';
+import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../shared/constants';
 import type { Request, SoundId } from '../shared/messages';
+import { isInstallMarker, isListsConfig, isSettings } from '../shared/runtime-validation';
 import {
+  LOCAL_CACHES,
+  LOCAL_DEVICE_ID,
+  LOCAL_EVENTS,
+  LOCAL_INSTALL_MARKER,
   LOCAL_LISTS_SNAPSHOT,
+  LOCAL_RUNTIME,
+  LOCAL_SYNC_JOURNAL,
+  LOCAL_SYNC_QUOTA_EVICTION,
   SYNC_BANK,
   SYNC_LISTS,
   SYNC_SETTINGS,
@@ -12,6 +21,7 @@ import { localDateStr, localMonthStr } from '../shared/time';
 import type {
   BankState,
   DailyAgg,
+  InstallMarker,
   ListsConfig,
   MonthlyAgg,
   SessionSnapshot,
@@ -22,29 +32,27 @@ import { notify, playSound } from './audio';
 import { Engine, type EnginePorts } from './engine';
 import { updateIcon } from './icon';
 import {
-  canonicalListsConfig,
   decodeListsSyncSnapshot,
   encodeListsForSync,
   isListSyncKey,
   LIST_SYNC_KEYS,
   type ListsSyncEncoding,
 } from './list-sync-codec';
+import { createPolicyStorage, type PolicySnapshot, type PolicyStorage } from './policy-storage';
 import { parseRequest } from './request-validation';
 import { routeMessage } from './router';
 import { handleSyncChanges, missingSyncDefaults } from './storage-sync';
 import {
   appendEvents,
   getDeviceId,
-  loadBank,
   loadLists,
   loadRuntime,
-  loadSettings,
-  loadStreak,
   loadSyncJournal,
   mergeSettings,
   migrateRuntimeRules,
   type ParsedRuntimeState,
   parseBank,
+  parseLiveLists,
   parseLiveSettings,
   parseStreak,
   type RuntimeState,
@@ -53,15 +61,13 @@ import {
   saveSyncJournal,
 } from './stores';
 import { chooseNewerStreak, rebaseStreakForDate, streaksEqual } from './streak-sync';
+import { isFocusLockSyncKey } from './sync-item-validation';
 import {
-  removeSyncItems,
   replaySyncQuotaEvictionCheckpoint,
   type SanitizedSyncJournal,
   sanitizeSyncJournal,
-  setSyncItemsWithinQuota,
 } from './sync-quota';
-import { compactPendingSyncRetention } from './sync-retention';
-import { SyncEchoes, type SyncJournal, SyncWriter } from './sync-writer';
+import type { SyncJournal } from './sync-writer';
 import {
   applyBlockingFactory,
   injectIntoExistingTabs,
@@ -69,7 +75,6 @@ import {
   registerTabListeners,
 } from './tabs';
 
-const SYNC_FLUSH_MS: number = 10_000;
 const TICK_ALARM: string = 'tick';
 const PHASE_ALARM: string = 'phase';
 const DAILY_AGG_KEY_RE: RegExp = /^agg:[^:]+:(\d{4}-\d{2}-\d{2})$/;
@@ -79,17 +84,10 @@ type AggregateKeyIdentity = { kind: 'daily'; period: string } | { kind: 'monthly
 type StoredAggregate = DailyAgg | MonthlyAgg;
 
 let engineInstance: Engine | null = null;
-let syncWriterInstance: SyncWriter | null = null;
-const syncEchoes: SyncEchoes = new SyncEchoes();
 
 function currentEngine(): Engine {
   if (engineInstance === null) throw new Error('engine used before boot finished');
   return engineInstance;
-}
-
-function currentSyncWriter(): SyncWriter {
-  if (syncWriterInstance === null) throw new Error('sync writer used before boot finished');
-  return syncWriterInstance;
 }
 
 function reportBackgroundError(error: unknown): void {
@@ -112,11 +110,6 @@ function replacePendingLists(journal: SyncJournal, encoding: ListsSyncEncoding):
   journal.removes = journal.removes.filter((key: string): boolean => !isListSyncKey(key));
   Object.assign(journal.sets, encoding.sets);
   journal.removes.push(...encoding.removes);
-}
-
-function queueListsEncoding(writer: SyncWriter, encoding: ListsSyncEncoding): void {
-  for (const [key, value] of Object.entries(encoding.sets)) writer.queue(key, value);
-  for (const key of encoding.removes) writer.remove(key);
 }
 
 function effectiveListsSnapshot(
@@ -172,6 +165,9 @@ function validatedPendingJournal(
   storedSync: Record<string, unknown>,
   now: number,
 ): SyncJournal {
+  // The journal is replay transport, not independent policy authority. A malformed
+  // pending value may fall back only to validated remote or default policy here.
+  // The complete resolved snapshot is validated again by PolicyStorage.importLegacy.
   const journal: SyncJournal = {
     sets: { ...rawJournal.sets },
     removes: [...rawJournal.removes],
@@ -193,128 +189,247 @@ function validatedPendingJournal(
   return journal;
 }
 
-async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<Engine> {
-  const now: number = Date.now();
-  const rawJournal: SyncJournal = await loadSyncJournal();
-  try {
-    await replaySyncQuotaEvictionCheckpoint(undefined, undefined, rawJournal.removes);
-  } catch (error: unknown) {
-    reportBackgroundError(error);
+function assertValidAuthoritativeRemotePolicy(
+  storedSync: Record<string, unknown>,
+  journal: SyncJournal,
+): void {
+  const pendingSettings: Settings | null = hasPendingSet(journal, SYNC_SETTINGS)
+    ? isSettings(journal.sets[SYNC_SETTINGS])
+      ? journal.sets[SYNC_SETTINGS]
+      : parseLiveSettings(journal.sets[SYNC_SETTINGS], DEFAULT_SETTINGS)
+    : null;
+  if (
+    pendingSettings === null &&
+    Object.hasOwn(storedSync, SYNC_SETTINGS) &&
+    !isSettings(storedSync[SYNC_SETTINGS]) &&
+    parseLiveSettings(storedSync[SYNC_SETTINGS], DEFAULT_SETTINGS) === null
+  ) {
+    throw new Error('invalid authoritative legacy settings');
   }
-  const pendingAggregateKeys: string[] = Object.keys(rawJournal.sets).filter(
-    (key: string): boolean => aggregateKeyIdentity(key) !== null,
-  );
-  const storedSync: Record<string, unknown> = await chrome.storage.sync.get([
-    SYNC_SETTINGS,
-    ...LIST_SYNC_KEYS,
-    SYNC_BANK,
-    SYNC_STREAK,
-    ...pendingAggregateKeys,
-  ]);
-  const sanitized: SanitizedSyncJournal = sanitizeSyncJournal(rawJournal);
-  const journal: SyncJournal = validatedPendingJournal(sanitized.journal, storedSync, now);
-  const journalHadLists: boolean = hasPendingLists(journal);
-  if (sanitized.rejected.length > 0) await saveSyncJournal(journal);
-  const [storedLists, journalFallbackLists]: [ListsConfig, ListsConfig] = await Promise.all([
-    loadLists(undefined, storedSync),
-    loadLists(journal, storedSync),
-  ]);
-  const decodedLists = decodeListsSyncSnapshot(effectiveListsSnapshot(storedSync, journal));
-  const lists: ListsConfig =
-    !journalHadLists || decodedLists.kind === 'legacy'
-      ? storedLists
-      : decodedLists.kind === 'complete'
-        ? decodedLists.lists
-        : journalFallbackLists;
-  const [settings, bank, syncedStreak, loadedRuntime, deviceId]: [
-    Settings,
-    BankState,
-    StreakState | null,
-    ParsedRuntimeState,
-    string,
-  ] = await Promise.all([
-    loadSettings(journal),
-    loadBank(journal),
-    loadStreak(),
+  const pendingBank: BankState | null = hasPendingSet(journal, SYNC_BANK)
+    ? parseBank(journal.sets[SYNC_BANK])
+    : null;
+  if (
+    pendingBank === null &&
+    Object.hasOwn(storedSync, SYNC_BANK) &&
+    parseBank(storedSync[SYNC_BANK]) === null
+  ) {
+    throw new Error('invalid authoritative legacy bank');
+  }
+  const pendingStreak: StreakState | null = hasPendingSet(journal, SYNC_STREAK)
+    ? parseStreak(journal.sets[SYNC_STREAK])
+    : null;
+  if (
+    pendingStreak === null &&
+    Object.hasOwn(storedSync, SYNC_STREAK) &&
+    parseStreak(storedSync[SYNC_STREAK]) === null
+  ) {
+    throw new Error('invalid authoritative legacy streak');
+  }
+  const remoteHasLists: boolean = Object.keys(storedSync).some(isListSyncKey);
+  if (!remoteHasLists || hasPendingLists(journal)) return;
+  const decoded = decodeListsSyncSnapshot(storedSync);
+  if (
+    decoded.kind === 'legacy' &&
+    !isListsConfig(decoded.value) &&
+    parseLiveLists(decoded.value, DEFAULT_LISTS) === null
+  ) {
+    throw new Error('invalid authoritative legacy lists');
+  }
+}
+
+const LEGACY_EVIDENCE_KEYS: readonly string[] = [
+  LOCAL_RUNTIME,
+  LOCAL_LISTS_SNAPSHOT,
+  LOCAL_EVENTS,
+  LOCAL_DEVICE_ID,
+  LOCAL_SYNC_JOURNAL,
+  LOCAL_SYNC_QUOTA_EVICTION,
+  LOCAL_CACHES,
+];
+
+async function classifyInstallProfile(): Promise<InstallMarker> {
+  const keys: string[] = [LOCAL_INSTALL_MARKER, ...LEGACY_EVIDENCE_KEYS];
+  const stored: Record<string, unknown> = await chrome.storage.local.get(keys);
+  const existing: unknown = stored[LOCAL_INSTALL_MARKER];
+  if (isInstallMarker(existing)) return existing;
+  const profile: InstallMarker['profile'] = LEGACY_EVIDENCE_KEYS.some((key: string): boolean =>
+    Object.hasOwn(stored, key),
+  )
+    ? 'legacy'
+    : 'clean';
+  const marker: InstallMarker = {
+    version: 1,
+    profile,
+    latestReason: 'install',
+    extensionVersion: chrome.runtime.getManifest?.().version ?? 'unknown',
+  };
+  await chrome.storage.local.set({ [LOCAL_INSTALL_MARKER]: marker });
+  const verified: unknown = (await chrome.storage.local.get(LOCAL_INSTALL_MARKER))[
+    LOCAL_INSTALL_MARKER
+  ];
+  if (!isInstallMarker(verified) || verified.profile !== profile) {
+    throw new Error('could not persist install profile classification');
+  }
+  return verified;
+}
+
+async function updateInstallMarker(details: chrome.runtime.InstalledDetails): Promise<void> {
+  const marker: InstallMarker = await classifyInstallProfile();
+  const next: InstallMarker = {
+    ...marker,
+    latestReason: details.reason === 'update' ? 'update' : 'install',
+    extensionVersion: chrome.runtime.getManifest?.().version ?? marker.extensionVersion,
+  };
+  await chrome.storage.local.set({ [LOCAL_INSTALL_MARKER]: next });
+}
+
+function effectiveLegacyValue(
+  journal: SyncJournal,
+  stored: Record<string, unknown>,
+  key: string,
+): unknown {
+  if (journal.removes.includes(key)) return undefined;
+  return Object.hasOwn(journal.sets, key) ? journal.sets[key] : stored[key];
+}
+
+async function preparePolicyStorage(): Promise<PolicyStorage> {
+  const marker: InstallMarker = await classifyInstallProfile();
+  const storage: PolicyStorage = createPolicyStorage(chrome.storage.local, chrome.storage.sync, {
+    loadAggregateItems: (): Promise<Record<string, unknown>> =>
+      Promise.reject(new Error('local aggregate checkpoint is unavailable until Task 5')),
+  });
+  await storage.initialize();
+  if (marker.profile === 'clean') {
+    return storage;
+  }
+  const markerAfterRecovery: InstallMarker = await classifyInstallProfile();
+  if (markerAfterRecovery.profile === 'clean') return storage;
+  const currentSetup = await storage.loadSetup();
+  if (currentSetup.legacyImported) {
+    return storage;
+  }
+  try {
+    const now: number = Date.now();
+    const rawJournal: SyncJournal = await loadSyncJournal();
+    await replaySyncQuotaEvictionCheckpoint(undefined, undefined, rawJournal.removes);
+    const sanitized: SanitizedSyncJournal = sanitizeSyncJournal(rawJournal);
+    const storedSync: Record<string, unknown> = await chrome.storage.sync.get(null);
+    assertValidAuthoritativeRemotePolicy(storedSync, sanitized.journal);
+    const journal: SyncJournal = validatedPendingJournal(sanitized.journal, storedSync, now);
+    const hasRemotePolicy: boolean = Object.keys(storedSync).some((key: string): boolean =>
+      isFocusLockSyncKey(key),
+    );
+    const hasLegacySyncIntent: boolean =
+      hasRemotePolicy || Object.keys(journal.sets).length > 0 || journal.removes.length > 0;
+    if (sanitized.rejected.length > 0) await saveSyncJournal(journal);
+    const journalHadLists: boolean = hasPendingLists(journal);
+    const [storedLists, journalFallbackLists]: [ListsConfig, ListsConfig] = await Promise.all([
+      loadLists(undefined, storedSync),
+      loadLists(journal, storedSync),
+    ]);
+    const remoteListsIncomplete: boolean =
+      Object.keys(storedSync).some(isListSyncKey) &&
+      decodeListsSyncSnapshot(storedSync).kind === 'incomplete';
+    const decodedLists = decodeListsSyncSnapshot(effectiveListsSnapshot(storedSync, journal));
+    const lists: ListsConfig =
+      !journalHadLists || decodedLists.kind === 'legacy'
+        ? storedLists
+        : decodedLists.kind === 'complete'
+          ? decodedLists.lists
+          : journalFallbackLists;
+    if (journalHadLists || remoteListsIncomplete) {
+      replacePendingLists(journal, await encodeListsForSync(lists));
+    }
+    const settings: Settings = mergeSettings(
+      effectiveLegacyValue(journal, storedSync, SYNC_SETTINGS),
+      DEFAULT_SETTINGS,
+    );
+    const bank: BankState = parseBank(effectiveLegacyValue(journal, storedSync, SYNC_BANK)) ?? {
+      balanceMs: 0,
+    };
+    const syncedStreak: StreakState | null = parseStreak(storedSync[SYNC_STREAK]);
+    const journalHasStreak: boolean = hasPendingSet(journal, SYNC_STREAK);
+    const journaledStreak: StreakState | null = journalHasStreak
+      ? parseStreak(journal.sets[SYNC_STREAK])
+      : null;
+    const today: string = localDateStr(now);
+    const rebasedSyncedStreak: StreakState | null =
+      syncedStreak === null ? null : rebaseStreakForDate(syncedStreak, today);
+    const rebasedJournaledStreak: StreakState | null =
+      journaledStreak === null ? null : rebaseStreakForDate(journaledStreak, today);
+    const streak: StreakState | null = chooseNewerStreak(
+      rebasedSyncedStreak,
+      rebasedJournaledStreak,
+    );
+    const persistedStreak: StreakState = streak ?? emptyStreak(localMonthStr(now));
+    if (
+      journalHasStreak &&
+      (journaledStreak === null ||
+        (streak !== null &&
+          (!streaksEqual(streak, journaledStreak) ||
+            (syncedStreak !== null && !streaksEqual(streak, syncedStreak)))))
+    ) {
+      journal.sets[SYNC_STREAK] = persistedStreak;
+      journal.removes = journal.removes.filter((key: string): boolean => key !== SYNC_STREAK);
+    }
+    if (hasLegacySyncIntent) {
+      const effectiveStoredSync: Record<string, unknown> = { ...storedSync, ...journal.sets };
+      for (const key of journal.removes) delete effectiveStoredSync[key];
+      const missingDefaults: Record<string, unknown> = missingSyncDefaults(effectiveStoredSync, {
+        settings,
+        lists,
+        bank,
+        streak: persistedStreak,
+      });
+      const listsWereMissing: boolean = Object.hasOwn(missingDefaults, SYNC_LISTS);
+      delete missingDefaults[SYNC_LISTS];
+      Object.assign(journal.sets, missingDefaults);
+      if (listsWereMissing) replacePendingLists(journal, await encodeListsForSync(lists));
+    }
+    const loadedRuntime: ParsedRuntimeState = await loadRuntime(now);
+    const runtime: RuntimeState = migrateRuntimeRules(loadedRuntime, lists);
+    await storage.importLegacy(
+      { settings, lists, bank, streak: persistedStreak },
+      runtime,
+      hasLegacySyncIntent ? 'sync' : null,
+      journal,
+    );
+    return storage;
+  } catch (error: unknown) {
+    await storage.markLegacyMigrationFailed();
+    throw error;
+  }
+}
+
+async function boot(policyStorage: PolicyStorage): Promise<Engine> {
+  const now: number = Date.now();
+  await policyStorage.initialize();
+  const snapshot: PolicySnapshot = await policyStorage.loadSnapshot();
+  const [loadedRuntime, deviceId]: [ParsedRuntimeState, string] = await Promise.all([
     loadRuntime(now),
     getDeviceId(),
   ]);
-  const runtime: RuntimeState = migrateRuntimeRules(loadedRuntime, lists);
+  const runtime: RuntimeState = migrateRuntimeRules(loadedRuntime, snapshot.lists);
   if (runtime !== loadedRuntime) await saveRuntime(runtime);
-  if (journalHadLists) replacePendingLists(journal, await encodeListsForSync(lists));
-  await chrome.storage.local.set({ [LOCAL_LISTS_SNAPSHOT]: canonicalListsConfig(lists) });
-  const journalValue: unknown = journal.sets[SYNC_STREAK];
-  const journalHasStreak: boolean =
-    !journal.removes.includes(SYNC_STREAK) && Object.hasOwn(journal.sets, SYNC_STREAK);
-  const journaledStreak: StreakState | null = journalHasStreak ? parseStreak(journalValue) : null;
-  const today: string = localDateStr(now);
-  const rebasedSyncedStreak: StreakState | null =
-    syncedStreak === null ? null : rebaseStreakForDate(syncedStreak, today);
-  const rebasedJournaledStreak: StreakState | null =
-    journaledStreak === null ? null : rebaseStreakForDate(journaledStreak, today);
-  const streak: StreakState | null = chooseNewerStreak(rebasedSyncedStreak, rebasedJournaledStreak);
-  const persistedStreak: StreakState = streak ?? emptyStreak(localMonthStr(now));
-  const journalNeedsStreak: boolean =
-    (journalHasStreak && journaledStreak === null) ||
-    (streak !== null &&
-      ((syncedStreak !== null && !streaksEqual(streak, syncedStreak)) ||
-        (journaledStreak !== null && !streaksEqual(streak, journaledStreak))));
-  const initialJournal: SyncJournal = {
-    sets: { ...journal.sets },
-    removes: [...journal.removes],
-  };
-  if (journalNeedsStreak) {
-    initialJournal.sets[SYNC_STREAK] = persistedStreak;
-    initialJournal.removes = initialJournal.removes.filter(
-      (key: string): boolean => key !== SYNC_STREAK,
-    );
-  }
-  const syncWriter: SyncWriter = new SyncWriter(
-    SYNC_FLUSH_MS,
-    async (items: Record<string, unknown>): Promise<void> => {
-      for (const [key, value] of Object.entries(items)) {
-        if (
-          key === SYNC_SETTINGS ||
-          isListSyncKey(key) ||
-          key === SYNC_BANK ||
-          key === SYNC_STREAK
-        ) {
-          syncEchoes.remember(key, value);
-        }
-      }
-      await setSyncItemsWithinQuota(items);
-    },
-    (keys: string[]): Promise<void> => removeSyncItems(keys),
-    { initial: initialJournal, persist: saveSyncJournal },
-  );
-  syncWriterInstance = syncWriter;
-  if (journalNeedsStreak) syncWriter.queue(SYNC_STREAK, persistedStreak);
-  const effectiveStoredSync: Record<string, unknown> = { ...storedSync, ...initialJournal.sets };
-  for (const key of initialJournal.removes) delete effectiveStoredSync[key];
-  const missingDefaults: Record<string, unknown> = missingSyncDefaults(effectiveStoredSync, {
-    settings,
-    lists,
-    bank,
-    streak: persistedStreak,
-  });
-  const listsWereMissing: boolean = Object.hasOwn(missingDefaults, SYNC_LISTS);
-  delete missingDefaults[SYNC_LISTS];
-  for (const [key, value] of Object.entries(missingDefaults)) syncWriter.queue(key, value);
-  if (listsWereMissing) {
-    queueListsEncoding(syncWriter, await encodeListsForSync(lists));
-  }
-  onSyncWriterReady(syncWriter);
-  await syncWriter.whenJournalDurable();
+  const streak: StreakState = snapshot.streak ?? emptyStreak(localMonthStr(now));
   const ports: EnginePorts = {
     now: (): number => Date.now(),
     newId: (): string => crypto.randomUUID(),
     saveRuntime,
     saveMatcherCache,
-    hasPendingSync: (key: string): boolean => syncWriter.hasPending(key),
-    queueSync: (key: string, value: unknown): void => syncWriter.queue(key, value),
-    supersedeSync: (key: string, value: unknown): void => syncWriter.supersede(key, value),
-    removeSync: (key: string): void => syncWriter.remove(key),
-    persistSyncJournal: (): Promise<void> => syncWriter.whenJournalDurable(),
+    savePolicy: (key, value): Promise<void> => policyStorage.setPolicy(key, value),
+    hasPendingSync: (key: string): boolean => policyStorage.hasPendingRemote(key),
+    queueSync: (key: string, value: unknown): void => {
+      void policyStorage.publishRemoteItem(key, value).catch(reportBackgroundError);
+    },
+    supersedeSync: (key: string, value: unknown): void => {
+      void policyStorage.publishRemoteItem(key, value).catch(reportBackgroundError);
+    },
+    removeSync: (key: string): void => {
+      void policyStorage.removeRemoteItem(key).catch(reportBackgroundError);
+    },
+    persistSyncJournal: (): Promise<void> => policyStorage.remoteJournalDurable(),
     appendEvents,
     broadcast: (snapshot: SessionSnapshot): void => {
       // Rejects when no extension page is open to hear it, which is fine.
@@ -335,17 +450,18 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
       else void chrome.alarms.create(PHASE_ALARM, { when: atMs });
     },
     prune: (retentionDays: number, pruneNow: number): Promise<void> =>
-      compactPendingSyncRetention(
-        syncWriter,
-        deviceId,
-        retentionDays,
-        pruneNow,
-        (): Promise<Record<string, unknown>> =>
-          chrome.storage.sync.get(null) as Promise<Record<string, unknown>>,
-      ),
+      policyStorage.pruneRemoteHistory(deviceId, retentionDays, pruneNow),
     reportError: reportBackgroundError,
   };
-  const engine: Engine = new Engine(ports, settings, lists, bank, streak, runtime, deviceId);
+  const engine: Engine = new Engine(
+    ports,
+    snapshot.settings,
+    snapshot.lists,
+    snapshot.bank,
+    streak,
+    runtime,
+    deviceId,
+  );
   engineInstance = engine;
   await engine.tick();
   await ports.applyBlocking();
@@ -359,19 +475,14 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
  */
 export function main(): void {
   engineInstance = null;
-  syncWriterInstance = null;
-  let resolveSyncWriterReady: (writer: SyncWriter) => void = (): void => undefined;
-  const syncWriterReady: Promise<SyncWriter> = new Promise(
-    (resolve: (writer: SyncWriter) => void): void => {
-      resolveSyncWriterReady = resolve;
-    },
-  );
-  let listenerSyncWriter: SyncWriter | null = null;
   let listChangeApplyQueue: Promise<void> = Promise.resolve();
-  const ready: Promise<Engine> = boot((writer: SyncWriter): void => {
-    listenerSyncWriter = writer;
-    resolveSyncWriterReady(writer);
+  chrome.runtime.onInstalled.addListener((details: chrome.runtime.InstalledDetails): void => {
+    void updateInstallMarker(details).catch(reportBackgroundError);
+    void chrome.alarms.create(TICK_ALARM, { periodInMinutes: 1 }).catch(reportBackgroundError);
+    void injectIntoExistingTabs().catch(reportBackgroundError);
   });
+  const policyStorageReady: Promise<PolicyStorage> = preparePolicyStorage();
+  const ready: Promise<Engine> = policyStorageReady.then(boot);
 
   chrome.runtime.onMessage.addListener(
     (
@@ -398,50 +509,80 @@ export function main(): void {
       const hasListsChange: boolean = Object.keys(changes).some((key: string): boolean =>
         isListSyncKey(key),
       );
-      const reconcilePendingLists: Promise<boolean> = hasListsChange
-        ? listenerSyncWriter === null
-          ? syncWriterReady.then((writer: SyncWriter): boolean =>
-              LIST_SYNC_KEYS.some((key: string): boolean => writer.hasPending(key)),
-            )
-          : Promise.resolve(
-              LIST_SYNC_KEYS.some((key: string): boolean =>
-                (listenerSyncWriter as SyncWriter).hasPending(key),
-              ),
-            )
-        : Promise.resolve(false);
-      const listSnapshot: Promise<Record<string, unknown> | undefined> = hasListsChange
-        ? chrome.storage.sync.get([...LIST_SYNC_KEYS])
-        : Promise.resolve(undefined);
+      const prepared: Promise<{
+        pendingRemoteKeys: string[];
+        storage: PolicyStorage;
+        shouldReconcile: boolean;
+        snapshot: Record<string, unknown> | undefined;
+      } | null> = policyStorageReady.then(
+        async (
+          storage: PolicyStorage,
+        ): Promise<{
+          pendingRemoteKeys: string[];
+          storage: PolicyStorage;
+          shouldReconcile: boolean;
+          snapshot: Record<string, unknown> | undefined;
+        } | null> => {
+          if (!(await storage.inboundSyncAllowed())) return null;
+          const shouldReconcile: boolean = hasListsChange
+            ? LIST_SYNC_KEYS.some((key: string): boolean => storage.hasPendingRemote(key))
+            : false;
+          const eventKeys: string[] = [
+            ...Object.keys(changes),
+            ...(hasListsChange ? LIST_SYNC_KEYS : []),
+          ];
+          const pendingRemoteKeys: string[] = [
+            ...new Set(eventKeys.filter((key: string): boolean => storage.hasPendingRemote(key))),
+          ];
+          const snapshot: Record<string, unknown> | undefined = hasListsChange
+            ? await chrome.storage.sync.get([...LIST_SYNC_KEYS])
+            : undefined;
+          return { pendingRemoteKeys, storage, shouldReconcile, snapshot };
+        },
+      );
       const applyChanges = async (): Promise<void> => {
-        const [engine, shouldReconcile, snapshot] = await Promise.all([
-          ready,
-          reconcilePendingLists,
-          listSnapshot,
-        ]);
+        const inbound = await prepared;
+        if (inbound === null) return;
+        const engine: Engine = await ready;
+        const { pendingRemoteKeys, storage, shouldReconcile, snapshot } = inbound;
         await handleSyncChanges(
           engine,
           changes,
-          syncEchoes,
+          {
+            consume: (key: string, value: unknown): boolean =>
+              storage.consumeRemoteEcho(key, value),
+          },
           async (key: string, value: unknown): Promise<void> => {
-            const writer: SyncWriter = currentSyncWriter();
             if (key === SYNC_LISTS) {
-              queueListsEncoding(writer, await encodeListsForSync(value as ListsConfig));
+              if (!isListsConfig(value)) throw new Error('invalid corrective lists policy');
+              await storage.setPolicy('lists', value);
+            } else if (key === SYNC_SETTINGS) {
+              if (!isSettings(value)) throw new Error('invalid corrective settings policy');
+              await storage.setPolicy('settings', value);
+            } else if (key === SYNC_BANK) {
+              const bank: BankState | null = parseBank(value);
+              if (bank === null) throw new Error('invalid corrective bank policy');
+              await storage.setPolicy('bank', bank);
+            } else if (key === SYNC_STREAK) {
+              const streak: StreakState | null = value === null ? null : parseStreak(value);
+              if (value !== null && streak === null) {
+                throw new Error('invalid corrective streak policy');
+              }
+              await storage.setPolicy('streak', streak);
             } else {
-              writer.queue(key, value);
+              await storage.publishRemoteItem(key, value);
             }
-            await writer.whenJournalDurable();
           },
           shouldReconcile,
           snapshot,
+          storage,
+          undefined,
+          pendingRemoteKeys,
         );
       };
-      if (hasListsChange) {
-        const requested: Promise<void> = listChangeApplyQueue.then(applyChanges);
-        listChangeApplyQueue = requested.catch((): void => {});
-        void requested.catch(reportBackgroundError);
-      } else {
-        void applyChanges().catch(reportBackgroundError);
-      }
+      const requested: Promise<void> = listChangeApplyQueue.then(applyChanges);
+      listChangeApplyQueue = requested.catch((): void => {});
+      void requested.catch(reportBackgroundError);
     },
   );
 
@@ -450,11 +591,6 @@ export function main(): void {
   });
 
   registerTabListeners((): Promise<Engine> => ready, reportBackgroundError);
-
-  chrome.runtime.onInstalled.addListener((): void => {
-    void chrome.alarms.create(TICK_ALARM, { periodInMinutes: 1 }).catch(reportBackgroundError);
-    void injectIntoExistingTabs().catch(reportBackgroundError);
-  });
 
   chrome.tabs.onRemoved.addListener((tabId: number): void => {
     const invalidationCleanup: Promise<void> = invalidateRemovedTab(tabId);

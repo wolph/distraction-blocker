@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/background/list-sync-codec';
 import {
   isAuthoritativeSyncItem,
+  isFocusLockDeletionKey,
+  isFocusLockSyncKey,
   isSupportedSyncItemKey,
 } from '../../../src/background/sync-item-validation';
 import { CATEGORY_IDS, DEFAULT_LISTS } from '../../../src/shared/constants';
@@ -20,6 +22,17 @@ function shardedLists(): ListsConfig {
 }
 
 describe('list Sync item validation', () => {
+  it('identifies the exact remote deletion inventory without matching unrelated keys', (): void => {
+    expect(isFocusLockDeletionKey('settings')).toBe(true);
+    expect(isFocusLockDeletionKey('agg:device:malformed')).toBe(true);
+    expect(isFocusLockDeletionKey('aggm:device:malformed')).toBe(true);
+    expect(isFocusLockDeletionKey('prune:')).toBe(true);
+    expect(isFocusLockDeletionKey('archive:clock-rebase:stale')).toBe(true);
+    expect(isFocusLockDeletionKey('lists:category:unknown')).toBe(true);
+    expect(isFocusLockDeletionKey('plugin:settings')).toBe(false);
+    expect(isFocusLockDeletionKey('aggregate:device:2026-08-30')).toBe(false);
+    expect(isFocusLockSyncKey('agg:device:malformed')).toBe(false);
+  });
   it('accepts only the fixed list base and category shard keys', () => {
     expect(isSupportedSyncItemKey(SYNC_LISTS)).toBe(true);
     for (const key of LIST_SYNC_SHARD_KEYS) expect(isSupportedSyncItemKey(key)).toBe(true);

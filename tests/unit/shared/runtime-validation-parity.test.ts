@@ -14,18 +14,23 @@ import {
   isCycleConfig,
   isDeviceId,
   isEventRecord,
+  isInstallMarker,
   isListsConfig,
   isPauseEconomy,
   isSessionSnapshot,
   isSettings,
+  isSetupState,
   isStatsBundle,
   parseEventExportResponse,
 } from '../../../src/shared/runtime-validation';
 import {
   LOCAL_BANK,
+  LOCAL_DATA_CLEAR_JOURNAL,
   LOCAL_INSTALL_MARKER,
   LOCAL_LISTS,
   LOCAL_ONBOARDING_DRAFT,
+  LOCAL_POLICY_COMMIT,
+  LOCAL_POLICY_GENERATION_PREFIX,
   LOCAL_SETTINGS,
   LOCAL_SETUP,
   LOCAL_STREAK,
@@ -33,6 +38,7 @@ import {
 import type {
   DailyAgg,
   EventRecord,
+  InstallMarker,
   ListsConfig,
   MonthlyAgg,
   Rule,
@@ -84,7 +90,16 @@ const SETUP: SetupState = {
   websiteAccessNotice: null,
   storageMode: null,
   syncWriteStatus: 'idle',
+  storageError: null,
+  dataClear: { status: 'idle', scope: null, phase: null },
   legacyImported: false,
+};
+
+const INSTALL_MARKER: InstallMarker = {
+  version: 1,
+  profile: 'clean',
+  latestReason: 'install',
+  extensionVersion: '0.1.0',
 };
 
 function activeSnapshot(config: unknown = CONFIG): unknown {
@@ -188,6 +203,16 @@ describe('runtime validation dense array boundaries', (): void => {
 describe('runtime and worker request validation parity', (): void => {
   it('defines the initial setup contract', (): void => {
     expect(DEFAULT_SETUP).toEqual(SETUP);
+    expect(INSTALL_MARKER).toEqual({
+      version: 1,
+      profile: 'clean',
+      latestReason: 'install',
+      extensionVersion: '0.1.0',
+    });
+    expect(isSetupState(SETUP)).toBe(true);
+    expect(isSetupState({ ...SETUP, storageError: 'unknown' })).toBe(false);
+    expect(isInstallMarker(INSTALL_MARKER)).toBe(true);
+    expect(isInstallMarker({ ...INSTALL_MARKER, latestReason: 'startup' })).toBe(false);
   });
 
   it('defines a Flexible session with a complete rules snapshot', (): void => {
@@ -200,6 +225,9 @@ describe('runtime and worker request validation parity', (): void => {
       LOCAL_SETUP,
       LOCAL_INSTALL_MARKER,
       LOCAL_ONBOARDING_DRAFT,
+      LOCAL_POLICY_GENERATION_PREFIX,
+      LOCAL_POLICY_COMMIT,
+      LOCAL_DATA_CLEAR_JOURNAL,
       LOCAL_SETTINGS,
       LOCAL_LISTS,
       LOCAL_BANK,
@@ -208,6 +236,9 @@ describe('runtime and worker request validation parity', (): void => {
       LOCAL_SETUP: 'setup',
       LOCAL_INSTALL_MARKER: 'installMarker',
       LOCAL_ONBOARDING_DRAFT: 'onboardingDraft',
+      LOCAL_POLICY_GENERATION_PREFIX: 'policyGeneration:',
+      LOCAL_POLICY_COMMIT: 'policyCommit',
+      LOCAL_DATA_CLEAR_JOURNAL: 'dataClearJournal',
       LOCAL_SETTINGS: 'settings',
       LOCAL_LISTS: 'lists',
       LOCAL_BANK: 'bank',

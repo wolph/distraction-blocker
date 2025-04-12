@@ -31,7 +31,8 @@ import {
 } from '../shared/constants';
 import { CoreError } from '../shared/errors';
 import type { Ack, SoundId } from '../shared/messages';
-import { SYNC_BANK, SYNC_SETTINGS, SYNC_STREAK, syncAggKey } from '../shared/storage-keys';
+import { isListsConfig } from '../shared/runtime-validation';
+import { syncAggKey } from '../shared/storage-keys';
 import { localDateStr, localMonthStr } from '../shared/time';
 import type {
   BankState,
@@ -54,6 +55,7 @@ import type {
 } from '../shared/types';
 import { listsChangeAllowed, settingsChangeAllowed } from './guard';
 import { encodeListsForSync, LIST_SYNC_KEYS, type ListsSyncEncoding } from './list-sync-codec';
+import type { PolicyValueByKey } from './policy-storage';
 import {
   clockRebaseArchiveKey,
   planBackwardDateRebase,
@@ -61,7 +63,7 @@ import {
   type RolloverPlan,
 } from './rollover';
 import type { RuntimeCommitCheckpoint, RuntimeState, RuntimeTabState } from './stores';
-import { chooseNewerStreak, rebaseStreakForDate, streaksEqual } from './streak-sync';
+import { chooseNewerStreak, rebaseStreakForDate } from './streak-sync';
 import { assertSyncItemWithinQuota, SyncQuotaError } from './sync-quota';
 
 export interface EnginePorts {
@@ -69,6 +71,7 @@ export interface EnginePorts {
   newId(): string;
   saveRuntime(r: RuntimeState): Promise<void>;
   saveMatcherCache(cache: StoredMatcherCache, lists: ListsConfig): Promise<void>;
+  savePolicy?<K extends keyof PolicyValueByKey>(key: K, value: PolicyValueByKey[K]): Promise<void>;
   hasPendingSync(key: string): boolean;
   queueSync(key: string, value: unknown): void;
   supersedeSync(key: string, value: unknown): void;
@@ -149,11 +152,13 @@ export class Engine {
   private runtimePersistQueue: Promise<void> = Promise.resolve();
   private applyingBlocking = false;
   private bankDirty = false;
+  private streakDirty = false;
   private bankRevision = 0;
   private runtimePersistRevision = 0;
   private ownedRuntimeSnapshot: RuntimeState;
   private policyMutationQueue: Promise<void> = Promise.resolve();
   private listCachePersistenceInFlight = false;
+  private suppressPolicyPublication = false;
 
   constructor(
     private readonly ports: EnginePorts,
@@ -751,12 +756,28 @@ export class Engine {
   }
 
   async updateSettings(s: Settings): Promise<Ack> {
-    return this.updateSettingsNow(s);
+    return this.enqueuePolicyMutation((): Promise<Ack> => this.updateSettingsNow(s));
   }
 
   private async updateSettingsNow(s: Settings): Promise<Ack> {
+    if (this.ports.savePolicy === undefined) {
+      try {
+        assertSyncItemWithinQuota('settings', s);
+      } catch (error: unknown) {
+        if (!(error instanceof SyncQuotaError)) throw error;
+        return {
+          ok: false,
+          error:
+            'Settings exceed the 8 KB Chrome Sync limit. Remove schedule entries or shorten intentions, then try again.',
+        };
+      }
+    }
+    const now: number = this.ports.now();
+    this.catchUp(now);
+    const reason: string | null = settingsChangeAllowed(this.runtime.session, this.settings, s);
+    if (reason !== null) return this.fail(now, reason);
     try {
-      assertSyncItemWithinQuota(SYNC_SETTINGS, s);
+      await this.savePolicy('settings', s);
     } catch (error: unknown) {
       if (!(error instanceof SyncQuotaError)) throw error;
       return {
@@ -765,41 +786,39 @@ export class Engine {
           'Settings exceed the 8 KB Chrome Sync limit. Remove schedule entries or shorten intentions, then try again.',
       };
     }
-    const now: number = this.ports.now();
-    this.catchUp(now);
-    const reason: string | null = settingsChangeAllowed(this.runtime.session, this.settings, s);
-    if (reason !== null) return this.fail(now, reason);
     this.setSettingsAndClampBank(s);
-    this.ports.queueSync(SYNC_SETTINGS, s);
     this.dirty = true;
     await this.commit(now);
     return { ok: true };
   }
 
   async updateTheme(theme: ThemeMode): Promise<Ack> {
-    return this.updateSettingsNow({ ...this.settings, theme });
+    return this.enqueuePolicyMutation(
+      (): Promise<Ack> => this.updateSettingsNow({ ...this.settings, theme }),
+    );
   }
 
   async updateLists(l: ListsConfig): Promise<Ack> {
     return this.enqueuePolicyMutation(async (): Promise<Ack> => {
-      let encoding: ListsSyncEncoding;
-      try {
-        encoding = await encodeListsForSync(l);
-      } catch (error: unknown) {
-        if (!(error instanceof SyncQuotaError)) throw error;
-        return {
-          ok: false,
-          error:
-            'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
-        };
+      if (this.ports.savePolicy === undefined) {
+        try {
+          await encodeListsForSync(l);
+        } catch (error: unknown) {
+          if (!(error instanceof SyncQuotaError)) throw error;
+          return {
+            ok: false,
+            error:
+              'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
+          };
+        }
       }
-      return this.updateListsNow(l, encoding, true, false);
+      return this.updateListsNow(l, null, true, false);
     });
   }
 
   private async updateListsNow(
     l: ListsConfig,
-    encoding: ListsSyncEncoding,
+    encoding: ListsSyncEncoding | null,
     queueForSync: boolean,
     reconcilePendingSync: boolean,
   ): Promise<Ack> {
@@ -819,8 +838,20 @@ export class Engine {
     } finally {
       this.listCachePersistenceInFlight = false;
     }
+    if (queueForSync) {
+      try {
+        await this.savePolicy('lists', l);
+      } catch (error: unknown) {
+        if (!(error instanceof SyncQuotaError)) throw error;
+        return {
+          ok: false,
+          error:
+            'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
+        };
+      }
+    }
     this.lists = l;
-    if (queueForSync || reconcilePendingSync) this.queueListsEncoding(encoding);
+    if (reconcilePendingSync && encoding !== null) this.queueListsEncoding(encoding);
     this.dirty = true;
     this.needsBlocking = this.runtime.session !== null;
     const committedAt: number = this.ports.now();
@@ -896,12 +927,151 @@ export class Engine {
     const chosen: StreakState | null = chooseNewerStreak(sanitized, this.streak);
     this.streak = chosen;
     if (chosen === null) return;
-    if (streaksEqual(chosen, streak)) {
-      this.ports.supersedeSync(SYNC_STREAK, chosen);
-    } else {
-      this.ports.queueSync(SYNC_STREAK, chosen);
+  }
+
+  async previewSyncedPolicy(
+    changes: Partial<PolicyValueByKey>,
+    reconcilePendingLists: boolean,
+  ): Promise<Ack & { accepted?: Partial<PolicyValueByKey> }> {
+    return this.enqueuePolicyMutation(
+      (): Promise<Ack & { accepted?: Partial<PolicyValueByKey> }> =>
+        this.previewSyncedPolicyNow(changes, reconcilePendingLists),
+    );
+  }
+
+  private async previewSyncedPolicyNow(
+    changes: Partial<PolicyValueByKey>,
+    _reconcilePendingLists: boolean,
+  ): Promise<Ack & { accepted?: Partial<PolicyValueByKey> }> {
+    if (changes.settings !== undefined) {
+      const reason: string | null = settingsChangeAllowed(
+        this.runtime.session,
+        this.settings,
+        changes.settings,
+      );
+      if (reason !== null) return { ok: false, error: reason };
     }
-    await this.ports.persistSyncJournal();
+    if (changes.lists !== undefined) {
+      const reason: string | null = listsChangeAllowed(
+        this.runtime.session,
+        this.runtime.session?.config.mode ?? null,
+        this.lists,
+        changes.lists,
+      );
+      if (reason !== null) return { ok: false, error: reason };
+      try {
+        await encodeListsForSync(changes.lists);
+      } catch (error: unknown) {
+        if (!(error instanceof SyncQuotaError)) throw error;
+        return {
+          ok: false,
+          error:
+            'Lists exceed the 8 KB Chrome Sync limit. Remove custom or whitelist rules, then try again.',
+        };
+      }
+    }
+    if (
+      changes.bank !== undefined &&
+      (!Number.isFinite(changes.bank.balanceMs) || changes.bank.balanceMs < 0)
+    ) {
+      return { ok: false, error: 'invalid synced pause bank' };
+    }
+    const accepted: Partial<PolicyValueByKey> = { ...changes };
+    const effectiveSettings: Settings = changes.settings ?? this.settings;
+    if (changes.bank !== undefined) {
+      accepted.bank = {
+        balanceMs: Math.min(changes.bank.balanceMs, effectiveSettings.pause.capMs),
+      };
+    } else if (
+      changes.settings !== undefined &&
+      this.bank.balanceMs > effectiveSettings.pause.capMs
+    ) {
+      accepted.bank = { balanceMs: effectiveSettings.pause.capMs };
+    }
+    if (changes.streak !== undefined && changes.streak !== null) {
+      const sanitized: StreakState = rebaseStreakForDate(
+        changes.streak,
+        localDateStr(this.ports.now()),
+      );
+      accepted.streak = chooseNewerStreak(sanitized, this.streak);
+    }
+    return { ok: true, accepted };
+  }
+
+  async commitSyncedPolicy(changes: Partial<PolicyValueByKey>): Promise<void> {
+    return this.enqueuePolicyMutation((): Promise<void> => this.commitSyncedPolicyNow(changes));
+  }
+
+  async transactSyncedPolicy(
+    changes: Partial<PolicyValueByKey>,
+    reconcilePendingLists: boolean,
+    mirror: (accepted: Partial<PolicyValueByKey>) => Promise<void>,
+  ): Promise<Ack> {
+    return this.enqueuePolicyMutation(async (): Promise<Ack> => {
+      const preview: Ack & { accepted?: Partial<PolicyValueByKey> } =
+        await this.previewSyncedPolicyNow(changes, reconcilePendingLists);
+      if (!preview.ok) return preview;
+      const accepted: Partial<PolicyValueByKey> = preview.accepted ?? changes;
+      const listBundle: MatcherCacheBundle | undefined =
+        accepted.lists === undefined
+          ? undefined
+          : await this.prepareSyncedListBundle(accepted.lists);
+      await mirror(accepted);
+      await this.commitSyncedPolicyNow(accepted, listBundle);
+      return { ok: true };
+    });
+  }
+
+  private async prepareSyncedListBundle(lists: ListsConfig): Promise<MatcherCacheBundle> {
+    const bundle: MatcherCacheBundle = buildMatcherCache(lists, ALL_CATEGORIES);
+    this.listCachePersistenceInFlight = true;
+    try {
+      await this.ports.saveMatcherCache(bundle.stored, lists);
+    } finally {
+      this.listCachePersistenceInFlight = false;
+    }
+    return bundle;
+  }
+
+  private async commitSyncedPolicyNow(
+    changes: Partial<PolicyValueByKey>,
+    preparedListBundle?: MatcherCacheBundle,
+  ): Promise<void> {
+    const listBundle: MatcherCacheBundle | null =
+      changes.lists === undefined
+        ? null
+        : (preparedListBundle ?? (await this.prepareSyncedListBundle(changes.lists)));
+    const now: number = this.ports.now();
+    this.catchUp(now);
+    this.suppressPolicyPublication = true;
+    try {
+      if (changes.settings !== undefined) this.setSettingsAndClampBank(changes.settings);
+      if (changes.lists !== undefined && listBundle !== null) {
+        this.lists = changes.lists;
+        this.needsBlocking = this.runtime.session !== null;
+        this.dirty = true;
+      }
+      if (changes.bank !== undefined) {
+        this.bank = {
+          balanceMs: Math.min(changes.bank.balanceMs, this.settings.pause.capMs),
+        };
+        this.bankRevision += 1;
+        this.bankDirty = true;
+        this.dirty = true;
+      }
+      if (changes.streak !== undefined) {
+        const sanitized: StreakState | null =
+          changes.streak === null
+            ? null
+            : rebaseStreakForDate(changes.streak, localDateStr(this.ports.now()));
+        this.streak = sanitized === null ? null : chooseNewerStreak(sanitized, this.streak);
+        this.streakDirty = this.streak !== null;
+        this.dirty = true;
+      }
+      await this.commit(now);
+    } finally {
+      this.suppressPolicyPublication = false;
+    }
   }
 
   getSettings(): Settings {
@@ -984,7 +1154,7 @@ export class Engine {
   private rebaseStreakBackward(today: string): void {
     if (this.streak === null) return;
     this.streak = rebaseStreakForDate(this.streak, today);
-    this.ports.queueSync(SYNC_STREAK, this.streak);
+    this.streakDirty = true;
   }
 
   private settleSession(now: number): void {
@@ -1180,7 +1350,7 @@ export class Engine {
     );
     this.ports.queueSync(syncAggKey(this.deviceId, plan.finished.date), plan.finished);
     this.streak = plan.streak;
-    this.ports.queueSync(SYNC_STREAK, plan.streak);
+    this.streakDirty = true;
     this.runtime.todayAgg = plan.newAgg;
     this.runtime.date = today;
     this.dirty = true;
@@ -1326,7 +1496,11 @@ export class Engine {
     const checkpointRuntime: RuntimeState = structuredClone(this.runtime);
     this.ownedRuntimeSnapshot = structuredClone(checkpointRuntime);
     await this.persistRuntime(checkpointRuntime);
-    if (syncBank) this.ports.queueSync(SYNC_BANK, bank);
+    if (syncBank) await this.savePolicy('bank', bank);
+    if (this.streakDirty && this.streak !== null) {
+      await this.savePolicy('streak', this.streak);
+      this.streakDirty = false;
+    }
     await this.flushEvents(aggregate, date, events);
     await this.ports.persistSyncJournal();
     for (const event of events) {
@@ -1342,6 +1516,29 @@ export class Engine {
         await this.persistRuntime(checkpointRuntime);
       }
     }
+  }
+
+  private async savePolicy<K extends keyof PolicyValueByKey>(
+    key: K,
+    value: PolicyValueByKey[K],
+  ): Promise<void> {
+    if (this.suppressPolicyPublication) return;
+    if (this.ports.savePolicy !== undefined) {
+      await this.ports.savePolicy(key, value);
+      return;
+    }
+    if (key === 'lists') {
+      if (!isListsConfig(value)) throw new Error('invalid lists policy');
+      this.queueListsEncoding(await encodeListsForSync(value));
+    } else if (key === 'settings') {
+      assertSyncItemWithinQuota('settings', value);
+      this.ports.queueSync('settings', value);
+    } else if (key === 'bank') {
+      this.ports.queueSync('bank', value);
+    } else {
+      this.ports.queueSync('streak', value);
+    }
+    await this.ports.persistSyncJournal();
   }
 
   private persistRuntime(snapshot?: RuntimeState): Promise<void> {

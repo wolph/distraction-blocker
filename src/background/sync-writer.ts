@@ -12,6 +12,7 @@ export interface SyncJournal {
 export interface SyncWriterJournalOptions {
   initial: SyncJournal;
   persist(journal: SyncJournal): Promise<void>;
+  onFlushError?(error: unknown): Promise<void>;
 }
 
 /**
@@ -29,6 +30,7 @@ export class SyncWriter {
   private flushQueue: Promise<void> = Promise.resolve();
   private journalQueue: Promise<void> = Promise.resolve();
   private journalDurability: Promise<void> = Promise.resolve();
+  private paused: boolean = false;
 
   constructor(
     private readonly flushMs: number,
@@ -88,7 +90,7 @@ export class SyncWriter {
   }
 
   private schedule(): void {
-    if (this.timer === null) {
+    if (!this.paused && this.timer === null) {
       this.timer = setTimeout((): void => {
         this.timer = null;
         void this.flushNow().catch((): void => {
@@ -102,6 +104,26 @@ export class SyncWriter {
     const requested: Promise<void> = this.flushQueue.then((): Promise<void> => this.performFlush());
     this.flushQueue = requested.catch((): void => {});
     return requested;
+  }
+
+  async pause(): Promise<void> {
+    this.paused = true;
+    if (this.timer !== null) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    await this.flushQueue;
+    await this.journalDurability;
+  }
+
+  async drain(): Promise<void> {
+    await this.flushQueue;
+    await this.journalDurability;
+  }
+
+  resume(): void {
+    this.paused = false;
+    if (this.pending.size > 0 || this.pendingRemovals.size > 0) this.schedule();
   }
 
   /**
@@ -134,6 +156,12 @@ export class SyncWriter {
         );
       for (const [key, value] of sets) assertSyncItemWithinQuota(key, value);
 
+      const priorPending: Map<string, unknown> = this.pending;
+      const priorRemovals: Set<string> = this.pendingRemovals;
+      const priorReconciliation: Set<string> = new Set(this.reconciliationPending);
+      const priorRevisions: Map<string, number> = new Map(this.pendingRevisions);
+      const priorNextRevision: number = this.nextRevision;
+      const timerExisted: boolean = this.timer !== null;
       this.pending = new Map(sets);
       this.pendingRemovals = new Set(
         [...removals].sort((left: string, right: string): number => left.localeCompare(right)),
@@ -145,7 +173,26 @@ export class SyncWriter {
       this.persistPendingJournal();
       const durability: Promise<void> = this.journalDurability;
       if (this.pending.size > 0 || this.pendingRemovals.size > 0) this.schedule();
-      await durability;
+      try {
+        await durability;
+      } catch (error: unknown) {
+        this.pending = priorPending;
+        this.pendingRemovals = priorRemovals;
+        this.reconciliationPending.clear();
+        for (const key of priorReconciliation) this.reconciliationPending.add(key);
+        this.pendingRevisions.clear();
+        for (const [key, revision] of priorRevisions) {
+          this.pendingRevisions.set(key, revision);
+        }
+        this.nextRevision = priorNextRevision;
+        this.journalDurability = Promise.resolve();
+        if (!timerExisted && this.timer !== null) {
+          clearTimeout(this.timer);
+          this.timer = null;
+        }
+        if (this.pending.size > 0 || this.pendingRemovals.size > 0) this.schedule();
+        throw error;
+      }
     });
     this.flushQueue = requested.catch((): void => {});
     return requested;
@@ -156,49 +203,58 @@ export class SyncWriter {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    const batch: Map<string, unknown> = new Map(this.pending);
-    const removals: Set<string> = new Set(this.pendingRemovals);
-    const revisions: Map<string, number> = new Map(this.pendingRevisions);
-    if (this.journal !== undefined) {
-      await this.persistJournalForFlush();
-      this.reconciliationPending.clear();
-    }
-    if (batch.size === 0 && removals.size === 0) return;
     try {
+      const batch: Map<string, unknown> = new Map(this.pending);
+      const removals: Set<string> = new Set(this.pendingRemovals);
+      const revisions: Map<string, number> = new Map(this.pendingRevisions);
+      if (this.journal !== undefined) {
+        await this.persistJournalForFlush();
+        this.reconciliationPending.clear();
+      }
+      if (batch.size === 0 && removals.size === 0) return;
       for (const [key, value] of batch) assertSyncItemWithinQuota(key, value);
       if (this.journal !== undefined) await this.removeBatch(removals);
       if (batch.size > 0) await this.write(Object.fromEntries(batch));
       if (this.journal === undefined) await this.removeBatch(removals);
+      for (const key of batch.keys()) {
+        if (this.pendingRevisions.get(key) === revisions.get(key)) {
+          this.pending.delete(key);
+          if (this.journal !== undefined) this.reconciliationPending.add(key);
+        }
+      }
+      for (const key of removals) {
+        if (this.pendingRevisions.get(key) === revisions.get(key)) {
+          this.pendingRemovals.delete(key);
+          if (this.journal !== undefined) this.reconciliationPending.add(key);
+        }
+      }
+      for (const [key, revision] of revisions) {
+        if (
+          this.pendingRevisions.get(key) === revision &&
+          !this.pending.has(key) &&
+          !this.pendingRemovals.has(key)
+        ) {
+          this.pendingRevisions.delete(key);
+        }
+      }
+      if (this.journal !== undefined) {
+        await this.persistJournalForFlush();
+        this.reconciliationPending.clear();
+      }
+      if (this.pending.size > 0 || this.pendingRemovals.size > 0) this.schedule();
     } catch (error: unknown) {
+      let statusError: unknown = null;
+      try {
+        await this.journal?.onFlushError?.(error);
+      } catch (caught: unknown) {
+        statusError = caught;
+      }
       this.schedule();
+      if (statusError !== null) {
+        throw new AggregateError([error, statusError], 'sync flush and error status update failed');
+      }
       throw error;
     }
-    for (const key of batch.keys()) {
-      if (this.pendingRevisions.get(key) === revisions.get(key)) {
-        this.pending.delete(key);
-        if (this.journal !== undefined) this.reconciliationPending.add(key);
-      }
-    }
-    for (const key of removals) {
-      if (this.pendingRevisions.get(key) === revisions.get(key)) {
-        this.pendingRemovals.delete(key);
-        if (this.journal !== undefined) this.reconciliationPending.add(key);
-      }
-    }
-    for (const [key, revision] of revisions) {
-      if (
-        this.pendingRevisions.get(key) === revision &&
-        !this.pending.has(key) &&
-        !this.pendingRemovals.has(key)
-      ) {
-        this.pendingRevisions.delete(key);
-      }
-    }
-    if (this.journal !== undefined) {
-      await this.persistJournalForFlush();
-      this.reconciliationPending.clear();
-    }
-    if (this.pending.size > 0 || this.pendingRemovals.size > 0) this.schedule();
   }
 
   private async removeBatch(removals: Set<string>): Promise<void> {
@@ -242,13 +298,18 @@ export class SyncWriter {
 
 export class SyncEchoes {
   private readonly expected: Map<string, string> = new Map();
+  private static readonly REMOVAL: string = '__focus_lock_removed__';
 
   remember(key: string, value: unknown): void {
     this.expected.set(key, JSON.stringify(value));
   }
 
+  rememberRemoval(key: string): void {
+    this.expected.set(key, SyncEchoes.REMOVAL);
+  }
+
   consume(key: string, value: unknown): boolean {
-    const serialized: string = JSON.stringify(value);
+    const serialized: string = value === undefined ? SyncEchoes.REMOVAL : JSON.stringify(value);
     if (this.expected.get(key) !== serialized) return false;
     this.expected.delete(key);
     return true;

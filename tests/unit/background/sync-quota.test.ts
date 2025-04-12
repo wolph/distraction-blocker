@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   assertSyncItemWithinQuota,
   removeSyncItems,
+  removeSyncItemsUntilClear,
   replaySyncQuotaEvictionCheckpoint,
   SYNC_QUOTA_BYTES_PER_ITEM,
   SYNC_QUOTA_BYTES_TOTAL,
@@ -11,6 +12,7 @@ import {
 } from '../../../src/background/sync-quota';
 import { type SyncJournal, SyncWriter } from '../../../src/background/sync-writer';
 import { emptyDaily, rollupMonth } from '../../../src/core/stats';
+import { DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import { LOCAL_SYNC_QUOTA_EVICTION } from '../../../src/shared/storage-keys';
 
 interface FakeSyncStorage {
@@ -155,6 +157,31 @@ function nearQuotaState(monthlyValueLength: number = 5_900): Record<string, unkn
 }
 
 describe('sync item quota', () => {
+  it('deletes a rescanned target inventory under the mutation queue', async () => {
+    const sync: FakeSyncStorage = fakeSyncStorage({ settings: DEFAULT_SETTINGS });
+    const persistInventory = vi.fn().mockResolvedValue(undefined);
+    const remove = vi.mocked(sync.area.remove);
+    remove.mockImplementationOnce(async (keys: string | string[]): Promise<void> => {
+      const requested: string[] = typeof keys === 'string' ? [keys] : keys;
+      for (const key of requested) delete sync.state[key];
+      sync.state['agg:device:2026-08-30'] = emptyDaily('2026-08-30');
+    });
+
+    await removeSyncItemsUntilClear(
+      {
+        initialKeys: ['settings'],
+        matches: (key: string): boolean => key === 'settings' || key.startsWith('agg:'),
+        persistInventory,
+      },
+      sync.area,
+      sync.checkpoint.area,
+    );
+
+    expect(sync.state).toEqual({});
+    expect(remove).toHaveBeenCalledTimes(2);
+    expect(persistInventory).toHaveBeenLastCalledWith([]);
+  });
+
   it('uses Chrome storage.sync per-item byte limit', () => {
     expect(SYNC_QUOTA_BYTES_PER_ITEM).toBe(8_192);
   });

@@ -121,6 +121,24 @@ describe('SyncWriter', () => {
     expect(restarted.hasPending('lists')).toBe(true);
   });
 
+  it('reports journal failures without replacing them when the error hook also fails', async () => {
+    const journalFailure: Error = new Error('journal unavailable');
+    const statusFailure: Error = new Error('status unavailable');
+    const onFlushError = vi.fn().mockRejectedValue(statusFailure);
+    const writer: SyncWriter = new SyncWriter(10_000, vi.fn(), undefined, {
+      initial: { sets: { settings: { enabled: true } }, removes: [] },
+      persist: vi.fn().mockRejectedValue(journalFailure),
+      onFlushError,
+    });
+
+    const failure: unknown = await writer.flushNow().catch((error: unknown): unknown => error);
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([journalFailure, statusFailure]);
+    expect(onFlushError).toHaveBeenCalledWith(journalFailure);
+    expect(writer.hasPending('settings')).toBe(true);
+  });
+
   it('preserves a failed batch and retries it with later writes', async () => {
     const write = vi
       .fn()
@@ -629,5 +647,110 @@ describe('SyncWriter concurrency ordering', () => {
       },
       removes: ['old-daily'],
     });
+  });
+
+  it('pause cancels a scheduled flush until resume', async (): Promise<void> => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const writer: SyncWriter = new SyncWriter(10_000, write);
+    writer.queue('settings', { enabled: true });
+
+    await writer.pause();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(write).not.toHaveBeenCalled();
+
+    writer.resume();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(write).toHaveBeenCalledOnce();
+  });
+
+  it('pause and drain wait for an in-flight write and its durable journal cleanup', async (): Promise<void> => {
+    let releaseWrite: () => void = (): void => undefined;
+    const writeBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseWrite = resolve;
+    });
+    let signalWrite: () => void = (): void => undefined;
+    const writeStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalWrite = resolve;
+    });
+    const writer: SyncWriter = new SyncWriter(
+      10_000,
+      async (): Promise<void> => {
+        signalWrite();
+        await writeBlocked;
+      },
+      vi.fn().mockResolvedValue(undefined),
+      {
+        initial: { sets: {}, removes: [] },
+        persist: vi.fn().mockResolvedValue(undefined),
+      },
+    );
+    writer.queue('settings', { enabled: true });
+    const flush: Promise<void> = writer.flushNow();
+    await writeStarted;
+
+    let paused: boolean = false;
+    const pause: Promise<void> = writer.pause().then((): void => {
+      paused = true;
+    });
+    await Promise.resolve();
+    expect(paused).toBe(false);
+
+    releaseWrite();
+    await Promise.all([flush, pause, writer.drain()]);
+    expect(paused).toBe(true);
+  });
+
+  it('durably replaces pending work while paused without a later timer overtaking it', async (): Promise<void> => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const durable: SyncJournal[] = [];
+    const writer: SyncWriter = new SyncWriter(10_000, write, vi.fn().mockResolvedValue(undefined), {
+      initial: { sets: {}, removes: [] },
+      persist: async (journal: SyncJournal): Promise<void> => {
+        durable.push(structuredClone(journal));
+      },
+    });
+    writer.queue('settings', { enabled: true });
+    await writer.whenJournalDurable();
+    await writer.pause();
+
+    await writer.transformPending(
+      (): Promise<void> => Promise.resolve(),
+      (): SyncJournal => ({ sets: {}, removes: [] }),
+    );
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(durable.at(-1)).toEqual({ sets: {}, removes: [] });
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('restores the prior in-memory work when transformed journal persistence fails', async (): Promise<void> => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    let failReplacement: boolean = false;
+    const writer: SyncWriter = new SyncWriter(10_000, write, undefined, {
+      initial: { sets: {}, removes: [] },
+      persist: async (journal: SyncJournal): Promise<void> => {
+        if (failReplacement && Object.hasOwn(journal.sets, 'replacement')) {
+          failReplacement = false;
+          throw new Error('replacement journal unavailable');
+        }
+      },
+    });
+    writer.queue('original', { value: 1 });
+    await writer.whenJournalDurable();
+    await writer.pause();
+    failReplacement = true;
+
+    await expect(
+      writer.transformPending(
+        (): Promise<undefined> => Promise.resolve(undefined),
+        (): SyncJournal => ({ sets: { replacement: { value: 2 } }, removes: [] }),
+      ),
+    ).rejects.toThrow('replacement journal unavailable');
+
+    expect(writer.hasPending('original')).toBe(true);
+    expect(writer.hasPending('replacement')).toBe(false);
+    writer.resume();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(write).toHaveBeenCalledWith({ original: { value: 1 } });
   });
 });

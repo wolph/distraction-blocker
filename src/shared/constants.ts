@@ -71,6 +71,8 @@ export const DEFAULT_SETUP: SetupState = {
   websiteAccessNotice: null,
   storageMode: null,
   syncWriteStatus: 'idle',
+  storageError: null,
+  dataClear: { status: 'idle', scope: null, phase: null },
   legacyImported: false,
 };
 

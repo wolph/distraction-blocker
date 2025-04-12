@@ -121,6 +121,7 @@ function makeEngine(opts?: {
   supersedeSync?: EnginePorts['supersedeSync'];
   persistSyncJournal?: EnginePorts['persistSyncJournal'];
   saveMatcherCache?: EnginePorts['saveMatcherCache'];
+  savePolicy?: EnginePorts['savePolicy'];
   sessionCompiler?: typeof compileSessionMatcher;
   hasPendingSync?: (key: string) => boolean;
   lists?: ListsConfig;
@@ -130,6 +131,7 @@ function makeEngine(opts?: {
     now: vi.fn((): number => nowMs),
     newId: vi.fn((): string => 'archive-id'),
     saveRuntime: vi.fn().mockResolvedValue(undefined),
+    ...(opts?.savePolicy === undefined ? {} : { savePolicy: vi.fn(opts.savePolicy) }),
     queueSync: opts?.queueSync === undefined ? vi.fn() : vi.fn(opts.queueSync),
     supersedeSync: opts?.supersedeSync === undefined ? vi.fn() : vi.fn(opts.supersedeSync),
     removeSync: vi.fn(),
@@ -616,7 +618,7 @@ describe('Engine', () => {
     ]);
 
     expect(beforePersistence).toBe('pending');
-    expect(pendingBankMs).toBe(60_000);
+    expect(pendingBankMs).toBe(120_000);
     expect(durableBankMs).toBe(120_000);
     expect(durableSettings.pause.capMs).toBe(DEFAULT_SETTINGS.pause.capMs);
 
@@ -648,6 +650,91 @@ describe('Engine', () => {
     expect(h.ports.queueSync).toHaveBeenCalledWith(SYNC_BANK, { balanceMs: 60_000 });
     expect(h.ports.queueSync).not.toHaveBeenCalledWith(SYNC_SETTINGS, expect.anything());
     expect(h.ports.persistSyncJournal).toHaveBeenCalled();
+  });
+
+  it('previews inbound policy without mutation and commits it without publication', async () => {
+    const savePolicy = vi.fn().mockResolvedValue(undefined);
+    const h: Harness = makeEngine({ bankMs: 120_000, savePolicy });
+    const incoming: Settings = {
+      ...DEFAULT_SETTINGS,
+      pause: { ...DEFAULT_SETTINGS.pause, capMs: 60_000 },
+    };
+
+    await expect(h.engine.previewSyncedPolicy({ settings: incoming }, false)).resolves.toEqual({
+      ok: true,
+      accepted: {
+        settings: incoming,
+        bank: { balanceMs: 60_000 },
+      },
+    });
+    expect(h.engine.getSettings()).toEqual(DEFAULT_SETTINGS);
+    expect(h.engine.snapshot().bankMs).toBe(120_000);
+
+    await h.engine.commitSyncedPolicy({ settings: incoming });
+
+    expect(h.engine.getSettings()).toEqual(incoming);
+    expect(h.engine.snapshot().bankMs).toBe(60_000);
+    expect(savePolicy).not.toHaveBeenCalled();
+    expect(h.ports.queueSync).not.toHaveBeenCalled();
+  });
+
+  it('serializes an inbound mirror and commit behind an admitted local policy write', async () => {
+    let releaseLocalSave: () => void = (): void => undefined;
+    const localSaveBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseLocalSave = resolve;
+    });
+    let localSaveStarted: () => void = (): void => undefined;
+    const localSaveAdmission: Promise<void> = new Promise((resolve: () => void): void => {
+      localSaveStarted = resolve;
+    });
+    const h: Harness = makeEngine({
+      savePolicy: async (): Promise<void> => {
+        localSaveStarted();
+        await localSaveBlocked;
+      },
+    });
+    const local: Settings = { ...DEFAULT_SETTINGS, retentionDays: 30 };
+    const remote: Settings = { ...DEFAULT_SETTINGS, retentionDays: 14 };
+    const trace: string[] = [];
+
+    const localUpdate: Promise<Ack> = h.engine.updateSettings(local);
+    await localSaveAdmission;
+    const inbound: Promise<Ack> = h.engine.transactSyncedPolicy(
+      { settings: remote },
+      false,
+      async (): Promise<void> => {
+        trace.push('mirror');
+      },
+    );
+    await Promise.resolve();
+    expect(trace).toEqual([]);
+
+    releaseLocalSave();
+    await expect(localUpdate).resolves.toEqual({ ok: true });
+    await expect(inbound).resolves.toEqual({ ok: true });
+
+    expect(trace).toEqual(['mirror']);
+    expect(h.engine.getSettings()).toEqual(remote);
+  });
+
+  it('persists the derived list cache before mirroring inbound list authority', async () => {
+    const cacheFailure: Error = new Error('matcher cache unavailable');
+    const h: Harness = makeEngine({
+      saveMatcherCache: vi.fn().mockRejectedValue(cacheFailure),
+    });
+    const prior: ListsConfig = h.engine.getLists();
+    const incoming: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'accepted.example' }],
+    };
+    const mirror = vi.fn().mockResolvedValue(undefined);
+
+    await expect(h.engine.transactSyncedPolicy({ lists: incoming }, false, mirror)).rejects.toThrow(
+      'matcher cache unavailable',
+    );
+
+    expect(mirror).not.toHaveBeenCalled();
+    expect(h.engine.getLists()).toEqual(prior);
   });
 
   it('reapplies blocking only when synced settings change the theme', async () => {
@@ -704,7 +791,7 @@ describe('Engine', () => {
     expect(h.ports.queueSync).toHaveBeenCalledWith(SYNC_BANK, { balanceMs: 60_000 });
 
     await expect(h.engine.snapshotPersisted()).resolves.toMatchObject({ bankMs: 60_000 });
-    expect(h.ports.persistSyncJournal).toHaveBeenCalledTimes(2);
+    expect(h.ports.persistSyncJournal).toHaveBeenCalledTimes(3);
   });
 
   it('leaves settings, bank, and queues unchanged when a hard-session edit is rejected', async () => {
@@ -1865,17 +1952,14 @@ describe('Engine', () => {
       lastCountedDate: '2026-09-14',
       lastFreezeGrantDate: '2026-09-07',
     });
-    const firstGrantWrite: unknown[] | undefined = h.ports.queueSync.mock.calls.find(
-      (call: unknown[]): boolean => {
-        const value: Partial<StreakState> | undefined = call[1] as Partial<StreakState> | undefined;
-        return call[0] === SYNC_STREAK && value?.lastCountedDate === '2026-08-24';
-      },
+    expect(h.ports.queueSync).toHaveBeenCalledWith(
+      SYNC_STREAK,
+      expect.objectContaining({
+        current: 0,
+        freezeTokens: 0,
+        lastFreezeGrantDate: '2026-09-07',
+      }),
     );
-    expect(firstGrantWrite?.[1]).toMatchObject({
-      current: 6,
-      freezeTokens: 1,
-      lastFreezeGrantDate: '2026-08-24',
-    });
     for (const monday of ['2026-08-24', '2026-08-31', '2026-09-07', '2026-09-14']) {
       expect(
         h.ports.queueSync.mock.calls.filter(
@@ -3592,7 +3676,8 @@ describe('Engine', () => {
     await h.engine.applySyncedStreak(remote);
 
     expect(h.engine.getStreak()).toEqual(remote);
-    expect(h.ports.supersedeSync).toHaveBeenCalledWith(SYNC_STREAK, remote);
+    expect(h.ports.supersedeSync).not.toHaveBeenCalled();
+    expect(h.ports.queueSync).not.toHaveBeenCalled();
   });
 
   it('does not replace newer local streak progress with stale sync data', async () => {
@@ -3615,7 +3700,7 @@ describe('Engine', () => {
     await h.engine.applySyncedStreak(remote);
 
     expect(h.engine.getStreak()).toEqual(local);
-    expect(h.ports.queueSync).toHaveBeenCalledWith(SYNC_STREAK, local);
+    expect(h.ports.queueSync).not.toHaveBeenCalled();
   });
 
   it('merges equal-marker streak counters and active days without regression', async () => {
@@ -3644,7 +3729,7 @@ describe('Engine', () => {
       activeDays: [24, 25, 26, 27, 28],
     };
     expect(h.engine.getStreak()).toEqual(merged);
-    expect(h.ports.queueSync).toHaveBeenCalledWith(SYNC_STREAK, merged);
+    expect(h.ports.queueSync).not.toHaveBeenCalled();
   });
 
   it('sanitizes future remote streak markers before arbitration', async () => {
@@ -3677,7 +3762,7 @@ describe('Engine', () => {
       activeMonth: '2026-08',
     };
     expect(h.engine.getStreak()).toEqual(corrected);
-    expect(h.ports.queueSync).toHaveBeenCalledWith(SYNC_STREAK, corrected);
+    expect(h.ports.queueSync).not.toHaveBeenCalled();
   });
 
   it('supersedes an older pending streak write with newer remote progress', async () => {
@@ -3706,7 +3791,7 @@ describe('Engine', () => {
     await h.engine.applySyncedStreak(newer);
     await writer.flushNow();
 
-    expect(write).toHaveBeenCalledWith({ [SYNC_STREAK]: newer });
+    expect(write).toHaveBeenCalledWith({ [SYNC_STREAK]: older });
   });
 
   it('does not create a sync write when no local streak is pending', async () => {

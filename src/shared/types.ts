@@ -49,7 +49,27 @@ export interface SetupState {
   websiteAccessNotice: 'revoked-during-session' | 'registration-failed-during-session' | null;
   storageMode: StorageMode | null;
   syncWriteStatus: 'idle' | 'pending' | 'error';
+  storageError:
+    | 'legacy-migration-failed'
+    | 'sync-publish-failed'
+    | 'remote-deletion-failed'
+    | 'local-clear-failed'
+    | null;
+  dataClear:
+    | { status: 'idle'; scope: null; phase: null }
+    | {
+        status: 'pending' | 'error';
+        scope: 'synced-policy' | 'all';
+        phase: 'remote' | 'local';
+      };
   legacyImported: boolean;
+}
+
+export interface InstallMarker {
+  version: 1;
+  profile: 'clean' | 'legacy';
+  latestReason: 'install' | 'update';
+  extensionVersion: string;
 }
 
 export interface CycleConfig {
