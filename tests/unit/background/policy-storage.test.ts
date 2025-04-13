@@ -5,7 +5,7 @@ import {
   type PolicySnapshot,
   type PolicyStorage,
 } from '../../../src/background/policy-storage';
-import { emptyRuntime } from '../../../src/background/stores';
+import { emptyRuntime, type RuntimeState } from '../../../src/background/stores';
 import type { SyncJournal } from '../../../src/background/sync-writer';
 import { emptyDaily, rollupMonth } from '../../../src/core/stats';
 import {
@@ -13,6 +13,7 @@ import {
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
   DEFAULT_SETUP,
+  rulesFromLists,
 } from '../../../src/shared/constants';
 import {
   LOCAL_BANK,
@@ -22,6 +23,7 @@ import {
   LOCAL_LISTS,
   LOCAL_POLICY_COMMIT,
   LOCAL_POLICY_GENERATION_PREFIX,
+  LOCAL_RUNTIME,
   LOCAL_SETTINGS,
   LOCAL_SETUP,
   LOCAL_STREAK,
@@ -32,7 +34,14 @@ import {
   SYNC_SETTINGS,
   SYNC_STREAK,
 } from '../../../src/shared/storage-keys';
-import type { ListsConfig, Settings, SetupState, StreakState } from '../../../src/shared/types';
+import type {
+  BankState,
+  ListsConfig,
+  SessionState,
+  Settings,
+  SetupState,
+  StreakState,
+} from '../../../src/shared/types';
 
 interface FakeAreaState {
   values: Record<string, unknown>;
@@ -126,6 +135,31 @@ function localPolicy(setup: SetupState): Record<string, unknown> {
   };
 }
 
+function runtimeWithActiveSession(now: number): RuntimeState {
+  const activeSession: SessionState = {
+    sessionId: 'active-session',
+    config: {
+      mode: 'blacklist',
+      strictness: 'friction',
+      durationMin: 25,
+      cycling: null,
+      intention: 'finish the launch',
+      source: 'manual',
+      scheduleEntryId: null,
+      rules: rulesFromLists(DEFAULT_LISTS),
+    },
+    startedAt: now,
+    sessionEndsAt: now + 25 * 60_000,
+    phase: 'focus',
+    phaseStartedAt: now,
+    phaseEndsAt: now + 25 * 60_000,
+    cycleIndex: 0,
+    pausedFrom: null,
+    focusedMs: 0,
+  };
+  return { ...emptyRuntime(now), session: activeSession };
+}
+
 const EMPTY_CHECKPOINT = {
   loadAggregateItems: async (): Promise<Record<string, unknown>> => ({}),
 };
@@ -167,6 +201,163 @@ describe('PolicyStorage', (): void => {
     expect(sync.area.getBytesInUse).not.toHaveBeenCalled();
     expect(sync.area.set).not.toHaveBeenCalled();
     expect(sync.area.remove).not.toHaveBeenCalled();
+  });
+
+  it('keeps imported legacy Sync intent paused until explicit consent', async (): Promise<void> => {
+    const local: FakeStorage = fakeStorage();
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    const journal: SyncJournal = {
+      sets: { [SYNC_SETTINGS]: SNAPSHOT.settings, [SYNC_BANK]: SNAPSHOT.bank },
+      removes: [],
+    };
+
+    await storage.importLegacy(SNAPSHOT, emptyRuntime(Date.now()), journal);
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(await storage.storageMode()).toBeNull();
+    expect(await storage.loadSetup()).toMatchObject({
+      storageMode: null,
+      syncWriteStatus: 'pending',
+      legacyImported: true,
+    });
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual(journal);
+    expect(sync.area.set).not.toHaveBeenCalled();
+    expect(sync.area.remove).not.toHaveBeenCalled();
+  });
+
+  it('limits setup updates to onboarding-owned fields', async (): Promise<void> => {
+    const local: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    await storage.initialize();
+
+    await storage.updateSetup({
+      websiteAccess: 'granted',
+      blockingRegistration: 'ready',
+      websiteAccessNotice: 'revoked-during-session',
+    });
+    await expect(
+      Reflect.apply(storage.updateSetup, storage, [{ storageMode: 'sync' }]),
+    ).rejects.toThrow('invalid setup update');
+    await expect(
+      Reflect.apply(storage.updateSetup, storage, [{ websiteAccess: 'invalid' }]),
+    ).rejects.toThrow('invalid setup update');
+
+    expect(await storage.loadSetup()).toEqual({
+      ...DEFAULT_SETUP,
+      websiteAccess: 'granted',
+      blockingRegistration: 'ready',
+      websiteAccessNotice: 'revoked-during-session',
+    });
+
+    local.state.suppressNextSet = true;
+    await expect(storage.updateSetup({ websiteAccess: 'denied' })).rejects.toThrow(
+      'could not verify local setup state',
+    );
+    expect((await storage.loadSetup()).websiteAccess).toBe('granted');
+  });
+
+  it('marks setup complete only after a storage mode is durable', async (): Promise<void> => {
+    const local: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    await storage.initialize();
+
+    await expect(storage.markSetupCompleted()).rejects.toThrow(
+      'cannot complete setup before storage is ready',
+    );
+    await storage.selectLocalMode();
+    await storage.markSetupCompleted();
+
+    expect(await storage.loadSetup()).toMatchObject({ storageMode: 'local', completed: true });
+  });
+
+  it('does not complete setup while data clearing is pending', async (): Promise<void> => {
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      storageMode: 'local',
+      dataClear: { status: 'pending', scope: 'all', phase: 'remote' },
+    };
+    const storage: PolicyStorage = policyStorage(
+      fakeStorage({ [LOCAL_SETUP]: setup }),
+      fakeStorage(),
+    );
+
+    await expect(storage.markSetupCompleted()).rejects.toThrow(
+      'cannot complete setup before storage is ready',
+    );
+  });
+
+  it('abandons a failed first-publish outbox when local mode is selected again', async (): Promise<void> => {
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      storageMode: 'local',
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_SYNC_JOURNAL]: {
+        sets: { [SYNC_SETTINGS]: SNAPSHOT.settings },
+        removes: [SYNC_BANK],
+      },
+    });
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+
+    await storage.selectLocalMode();
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(await storage.loadSetup()).toMatchObject({
+      storageMode: 'local',
+      syncWriteStatus: 'idle',
+      storageError: null,
+    });
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
+    expect(sync.area.set).not.toHaveBeenCalled();
+    expect(sync.area.remove).not.toHaveBeenCalled();
+  });
+
+  it('does not treat local mode as selected while a publication journal remains', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_SYNC_JOURNAL]: {
+        sets: { [SYNC_BANK]: SNAPSHOT.bank },
+        removes: [],
+      },
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    await storage.initialize();
+
+    await storage.selectLocalMode();
+
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
+  });
+
+  it('clears a failed first-publish status before a publisher exists', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = createPolicyStorage(local.area, sync.area, {
+      loadAggregateItems: (): Promise<Record<string, unknown>> =>
+        Promise.reject(new Error('local aggregate checkpoint is unavailable')),
+    });
+    await storage.initialize();
+
+    await expect(storage.enableSync()).rejects.toThrow('local aggregate checkpoint is unavailable');
+    await storage.selectLocalMode();
+
+    expect(await storage.loadSetup()).toMatchObject({
+      storageMode: 'local',
+      syncWriteStatus: 'idle',
+      storageError: null,
+    });
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({
+      sets: {},
+      removes: [],
+    });
+    expect(sync.area.set).not.toHaveBeenCalled();
   });
 
   it('writes explicit local keys without applying Sync quotas in local mode', async (): Promise<void> => {
@@ -256,6 +447,141 @@ describe('PolicyStorage', (): void => {
     expect(local.state.values[LOCAL_SETTINGS]).toEqual(second);
   });
 
+  it('serializes a policy write before a concurrent local-mode transition', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    const next: BankState = { balanceMs: 84_000 };
+
+    const saved: Promise<void> = storage.setPolicy('bank', next);
+    const selected: Promise<void> = storage.selectLocalMode();
+    await Promise.all([saved, selected]);
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(local.state.values[LOCAL_BANK]).toEqual(next);
+    expect(await storage.storageMode()).toBe('local');
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
+    expect(sync.area.set).not.toHaveBeenCalled();
+  });
+
+  it('queues a correction from current authority after a concurrent policy save', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    const next: BankState = { balanceMs: 96_000 };
+
+    const saved: Promise<void> = storage.setPolicy('bank', next);
+    const corrected: Promise<void> = storage.queueVerifiedRemoteCorrections(['bank']);
+    await Promise.all([saved, corrected]);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(local.state.values[LOCAL_BANK]).toEqual(next);
+    expect(sync.state.values[SYNC_BANK]).toEqual(next);
+  });
+
+  it('reconstructs a failed corrective journal checkpoint on restart', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    let failCorrectionJournal: boolean = true;
+    vi.mocked(local.area.set).mockImplementation(
+      async (items: Record<string, unknown>): Promise<void> => {
+        if (failCorrectionJournal && Object.hasOwn(items, LOCAL_SYNC_JOURNAL)) {
+          throw new Error('correction journal unavailable');
+        }
+        Object.assign(local.state.values, structuredClone(items));
+      },
+    );
+
+    await expect(storage.queueVerifiedRemoteCorrections(['bank'])).rejects.toThrow(
+      'correction journal unavailable',
+    );
+    expect(await storage.loadSetup()).toMatchObject({
+      storageMode: 'sync',
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    });
+
+    failCorrectionJournal = false;
+    const restarted: PolicyStorage = policyStorage(local, sync);
+    await restarted.initialize();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(sync.state.values[SYNC_BANK]).toEqual(SNAPSHOT.bank);
+    expect((await restarted.loadSetup()).syncWriteStatus).toBe('idle');
+  });
+
+  it('applies a policy write after a concurrent local-mode transition', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    const next: BankState = { balanceMs: 97_000 };
+
+    const selected: Promise<void> = storage.selectLocalMode();
+    const saved: Promise<void> = storage.setPolicy('bank', next);
+    await Promise.all([selected, saved]);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(await storage.storageMode()).toBe('local');
+    expect(local.state.values[LOCAL_BANK]).toEqual(next);
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
+    expect(sync.area.set).not.toHaveBeenCalled();
+  });
+
+  it('preserves direct authority when the generation pointer write fails', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, storageMode: 'local' };
+    const prior: Settings = { ...DEFAULT_SETTINGS, retentionDays: 30 };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_SETTINGS]: prior,
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    vi.mocked(local.area.set).mockImplementation(
+      async (items: Record<string, unknown>): Promise<void> => {
+        if (Object.hasOwn(items, LOCAL_POLICY_COMMIT)) throw new Error('pointer unavailable');
+        Object.assign(local.state.values, structuredClone(items));
+      },
+    );
+
+    await expect(
+      storage.importLegacy(SNAPSHOT, emptyRuntime(Date.now()), { sets: {}, removes: [] }),
+    ).rejects.toThrow('pointer unavailable');
+
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(prior);
+    expect(local.state.values[LOCAL_POLICY_COMMIT]).toBeUndefined();
+    expect((await setupState(local)).legacyImported).toBe(false);
+    expect((await setupState(local)).storageError).toBe('legacy-migration-failed');
+  });
+
+  it('preserves direct authority when generation staging cannot be verified', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, storageMode: 'local' };
+    const prior: Settings = { ...DEFAULT_SETTINGS, retentionDays: 30 };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_SETTINGS]: prior,
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    await storage.initialize();
+    local.state.suppressNextSet = true;
+
+    await expect(
+      storage.importLegacy(SNAPSHOT, emptyRuntime(Date.now()), { sets: {}, removes: [] }),
+    ).rejects.toThrow('could not verify local legacy policy generation');
+
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(prior);
+    expect(local.state.values[LOCAL_POLICY_COMMIT]).toBeUndefined();
+    expect((await setupState(local)).legacyImported).toBe(false);
+    expect((await setupState(local)).storageError).toBe('legacy-migration-failed');
+  });
+
   it('retries named-generation cleanup after a migration crash', async (): Promise<void> => {
     const local: FakeStorage = fakeStorage();
     const sync: FakeStorage = fakeStorage();
@@ -271,7 +597,7 @@ describe('PolicyStorage', (): void => {
     );
 
     await expect(
-      first.importLegacy(SNAPSHOT, emptyRuntime(Date.now()), null, { sets: {}, removes: [] }),
+      first.importLegacy(SNAPSHOT, emptyRuntime(Date.now()), { sets: {}, removes: [] }),
     ).rejects.toThrow('materialization interrupted');
     expect(local.state.values[LOCAL_POLICY_COMMIT]).toMatchObject({ source: 'generation' });
 
@@ -304,7 +630,6 @@ describe('PolicyStorage', (): void => {
       Reflect.apply(storage.importLegacy, storage, [
         invalidSnapshot,
         emptyRuntime(Date.now()),
-        'sync',
         { sets: {}, removes: [] },
       ]),
     ).rejects.toThrow('invalid settings policy');
@@ -336,7 +661,7 @@ describe('PolicyStorage', (): void => {
     );
 
     await expect(
-      first.importLegacy(SNAPSHOT, emptyRuntime(Date.now()), 'sync', {
+      first.importLegacy(SNAPSHOT, emptyRuntime(Date.now()), {
         sets: { [SYNC_BANK]: SNAPSHOT.bank },
         removes: [],
       }),
@@ -348,7 +673,7 @@ describe('PolicyStorage', (): void => {
     await restarted.initialize();
 
     expect((await setupState(local)).legacyImported).toBe(true);
-    expect((await setupState(local)).storageMode).toBe('sync');
+    expect((await setupState(local)).storageMode).toBeNull();
     expect(await restarted.loadSnapshot()).toEqual(SNAPSHOT);
     expect(sync.area.get).not.toHaveBeenCalled();
   });
@@ -371,7 +696,7 @@ describe('PolicyStorage', (): void => {
     );
 
     await expect(
-      first.importLegacy(SNAPSHOT, emptyRuntime(Date.now()), null, { sets: {}, removes: [] }),
+      first.importLegacy(SNAPSHOT, emptyRuntime(Date.now()), { sets: {}, removes: [] }),
     ).rejects.toThrow('generation cleanup interrupted');
     expect(local.state.values[LOCAL_POLICY_COMMIT]).toMatchObject({ source: 'direct' });
     expect(
@@ -764,6 +1089,8 @@ describe('PolicyStorage', (): void => {
     await vi.advanceTimersByTimeAsync(20_000);
 
     expect((await setupState(local)).storageMode).toBe('local');
+    expect(await storage.storageMode()).toBe('local');
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
     expect(sync.state.values[SYNC_SETTINGS]).toEqual(SNAPSHOT.settings);
     expect(sync.state.values[SYNC_BANK]).toBeUndefined();
   });
@@ -859,8 +1186,10 @@ describe('PolicyStorage', (): void => {
 
   it('clears every Focus Lock local key only after remote all-data deletion succeeds', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const now: number = Date.now();
     const local: FakeStorage = fakeStorage({
       ...localPolicy(setup),
+      [LOCAL_RUNTIME]: runtimeWithActiveSession(now),
       [LOCAL_CACHES]: { matcher: true },
       [LOCAL_DEVICE_ID]: 'device-id',
       unrelated: 'keep',
@@ -877,9 +1206,46 @@ describe('PolicyStorage', (): void => {
     expect(sync.state.values).toEqual({ unrelated: 'keep' });
     expect(local.state.values.unrelated).toBe('keep');
     expect(local.state.values[LOCAL_SETTINGS]).toBeUndefined();
+    expect(local.state.values[LOCAL_RUNTIME]).toBeUndefined();
     expect(local.state.values[LOCAL_CACHES]).toBeUndefined();
     expect(local.state.values[LOCAL_DEVICE_ID]).toBeUndefined();
     expect(await storage.loadSetup()).toEqual(DEFAULT_SETUP);
+  });
+
+  it('ends an active session and clears blocking cache before remote all-data deletion', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const now: number = Date.now();
+    const activeRuntime: RuntimeState = runtimeWithActiveSession(now);
+    activeRuntime.commitCheckpoint = {
+      bank: SNAPSHOT.bank,
+      events: [],
+      syncBank: true,
+    };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_RUNTIME]: activeRuntime,
+      [LOCAL_CACHES]: { matcher: true },
+    });
+    const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
+    sync.state.failRemove = new Error('remote removal unavailable');
+    const storage: PolicyStorage = policyStorage(local, sync);
+
+    await expect(storage.deleteRemoteData('all')).rejects.toThrow('remote removal unavailable');
+
+    expect(local.state.values[LOCAL_RUNTIME]).toMatchObject({
+      session: null,
+      gate: null,
+      unlocks: [],
+      tabStates: {},
+      commitCheckpoint: activeRuntime.commitCheckpoint,
+    });
+    expect(local.state.values[LOCAL_CACHES]).toBeUndefined();
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(SNAPSHOT.settings);
+    expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toMatchObject({
+      scope: 'all',
+      phase: 'remote',
+    });
+    expect(await storage.inboundSyncAllowed()).toBe(false);
   });
 
   it('retains a durable removal journal and error status after remote deletion fails', async (): Promise<void> => {

@@ -8,6 +8,7 @@ import {
 } from './list-sync-codec';
 import type { PolicySnapshot, PolicyValueByKey } from './policy-storage';
 import { parseBank, parseLiveLists, parseLiveSettings, parseStreak } from './stores';
+import { isAuthoritativeSyncItem } from './sync-item-validation';
 export interface SyncEchoConsumer {
   consume(key: string, value: unknown): boolean;
 }
@@ -34,6 +35,7 @@ export interface SyncChangeEngine {
 export interface SyncPolicyTransaction {
   inboundSyncAllowed(): Promise<boolean>;
   loadSnapshot(): Promise<PolicySnapshot>;
+  queueVerifiedRemoteCorrections?(keys: readonly (keyof PolicyValueByKey)[]): Promise<void>;
   mirrorAcceptedRemotePolicy(
     changes: Record<string, unknown>,
     pendingRemoteKeys?: readonly string[],
@@ -49,17 +51,9 @@ export type SyncStorageChanges = Record<string, SyncStorageChange | undefined>;
 export type SyncStorageQueue = (key: string, value: unknown) => void | Promise<void>;
 export type SyncListSnapshotLoader = () => Promise<Readonly<Record<string, unknown>>>;
 
-function remoteKeyForPolicy(key: keyof PolicyValueByKey): string {
-  if (key === 'settings') return SYNC_SETTINGS;
-  if (key === 'lists') return SYNC_LISTS;
-  if (key === 'bank') return SYNC_BANK;
-  return SYNC_STREAK;
-}
-
 async function correctRemotePolicyRemovals(
   changes: SyncStorageChanges,
   echoes: SyncEchoConsumer,
-  queueSync: SyncStorageQueue,
   transaction: SyncPolicyTransaction,
 ): Promise<SyncStorageChanges> {
   const corrections: Set<keyof PolicyValueByKey> = new Set();
@@ -77,12 +71,7 @@ async function correctRemotePolicyRemovals(
     if (isListSyncKey(key)) delete remaining[key];
   }
   if (corrections.size === 0) return remaining;
-  const local: PolicySnapshot = await transaction.loadSnapshot();
-  for (const key of corrections) {
-    const value: PolicyValueByKey[typeof key] = local[key];
-    if (key === 'streak' && value === null) continue;
-    await queueSync(remoteKeyForPolicy(key), value);
-  }
+  await queueVerifiedPolicyCorrections(corrections, transaction);
   return remaining;
 }
 
@@ -93,12 +82,20 @@ async function transactionalPolicyChanges(
   reconcilePendingLists: boolean,
   listSnapshot: Readonly<Record<string, unknown>> | undefined,
   loadListSnapshot: SyncListSnapshotLoader | undefined,
-): Promise<Partial<PolicyValueByKey>> {
+): Promise<{
+  candidate: Partial<PolicyValueByKey>;
+  malformed: Set<keyof PolicyValueByKey>;
+}> {
   const candidate: Partial<PolicyValueByKey> = {};
+  const malformed: Set<keyof PolicyValueByKey> = new Set();
   const settingsValue: unknown = changes[SYNC_SETTINGS]?.newValue;
   if (settingsValue !== undefined && !echoes.consume(SYNC_SETTINGS, settingsValue)) {
-    const settings: Settings | null = parseLiveSettings(settingsValue, engine.getSettings());
-    if (settings !== null) candidate.settings = settings;
+    if (isAuthoritativeSyncItem(SYNC_SETTINGS, settingsValue)) {
+      const settings: Settings | null = parseLiveSettings(settingsValue, engine.getSettings());
+      if (settings !== null) candidate.settings = settings;
+    } else {
+      malformed.add('settings');
+    }
   }
 
   const changedListEntries: Array<[string, SyncStorageChange]> = Object.entries(changes).flatMap(
@@ -121,33 +118,58 @@ async function transactionalPolicyChanges(
         listSnapshot ??
         (loadListSnapshot === undefined ? changedSnapshot : await loadListSnapshot());
       const decoded: DecodedListsSyncSnapshot = decodeListsSyncSnapshot(completeSnapshot);
-      if (decoded.kind !== 'incomplete') {
+      if (decoded.kind === 'incomplete') {
+        malformed.add('lists');
+      } else {
         const value: unknown = decoded.kind === 'complete' ? decoded.lists : decoded.value;
-        const lists: ListsConfig | null = parseLiveLists(value, engine.getLists());
-        if (lists !== null) candidate.lists = lists;
+        if (decoded.kind === 'complete' || isAuthoritativeSyncItem(SYNC_LISTS, value)) {
+          const lists: ListsConfig | null = parseLiveLists(value, engine.getLists());
+          if (lists !== null) candidate.lists = lists;
+          else malformed.add('lists');
+        } else {
+          malformed.add('lists');
+        }
       }
     }
   }
 
   const bankValue: unknown = changes[SYNC_BANK]?.newValue;
   if (bankValue !== undefined && !echoes.consume(SYNC_BANK, bankValue)) {
-    const bank: BankState | null = parseBank(bankValue);
-    if (bank !== null) candidate.bank = bank;
+    if (isAuthoritativeSyncItem(SYNC_BANK, bankValue)) {
+      const bank: BankState | null = parseBank(bankValue);
+      if (bank !== null) candidate.bank = bank;
+    } else {
+      malformed.add('bank');
+    }
   }
   const streakValue: unknown = changes[SYNC_STREAK]?.newValue;
   if (streakValue !== undefined && !echoes.consume(SYNC_STREAK, streakValue)) {
-    const streak: StreakState | null = parseStreak(streakValue);
-    if (streak !== null) candidate.streak = streak;
+    if (isAuthoritativeSyncItem(SYNC_STREAK, streakValue)) {
+      const streak: StreakState | null = parseStreak(streakValue);
+      if (streak !== null) candidate.streak = streak;
+    } else {
+      malformed.add('streak');
+    }
   }
   void reconcilePendingLists;
-  return candidate;
+  return { candidate, malformed };
+}
+
+async function queueVerifiedPolicyCorrections(
+  keys: ReadonlySet<keyof PolicyValueByKey>,
+  transaction: SyncPolicyTransaction,
+): Promise<void> {
+  if (keys.size === 0) return;
+  if (transaction.queueVerifiedRemoteCorrections === undefined) {
+    throw new Error('serialized corrective policy operation is unavailable');
+  }
+  await transaction.queueVerifiedRemoteCorrections([...keys]);
 }
 
 async function handleTransactionalSyncChanges(
   engine: SyncChangeEngine,
   changes: SyncStorageChanges,
   echoes: SyncEchoConsumer,
-  queueSync: SyncStorageQueue,
   reconcilePendingLists: boolean,
   listSnapshot: Readonly<Record<string, unknown>> | undefined,
   transaction: SyncPolicyTransaction,
@@ -158,10 +180,12 @@ async function handleTransactionalSyncChanges(
   const candidateChanges: SyncStorageChanges = await correctRemotePolicyRemovals(
     changes,
     echoes,
-    queueSync,
     transaction,
   );
-  const candidate: Partial<PolicyValueByKey> = await transactionalPolicyChanges(
+  const parsed: {
+    candidate: Partial<PolicyValueByKey>;
+    malformed: Set<keyof PolicyValueByKey>;
+  } = await transactionalPolicyChanges(
     engine,
     candidateChanges,
     echoes,
@@ -169,6 +193,8 @@ async function handleTransactionalSyncChanges(
     listSnapshot,
     loadListSnapshot,
   );
+  await queueVerifiedPolicyCorrections(parsed.malformed, transaction);
+  const candidate: Partial<PolicyValueByKey> = parsed.candidate;
   const candidateKeys: Array<keyof PolicyValueByKey> = [];
   if (candidate.settings !== undefined) candidateKeys.push('settings');
   if (candidate.lists !== undefined) candidateKeys.push('lists');
@@ -189,8 +215,7 @@ async function handleTransactionalSyncChanges(
       },
     );
     if (!result.ok) {
-      const local: PolicySnapshot = await transaction.loadSnapshot();
-      for (const key of candidateKeys) await queueSync(remoteKeyForPolicy(key), local[key]);
+      await queueVerifiedPolicyCorrections(new Set(candidateKeys), transaction);
     }
     return;
   }
@@ -204,8 +229,7 @@ async function handleTransactionalSyncChanges(
     reconcilePendingLists,
   );
   if (!preview.ok) {
-    const local: PolicySnapshot = await transaction.loadSnapshot();
-    for (const key of candidateKeys) await queueSync(remoteKeyForPolicy(key), local[key]);
+    await queueVerifiedPolicyCorrections(new Set(candidateKeys), transaction);
     return;
   }
   const accepted: Partial<PolicyValueByKey> = preview.accepted ?? candidate;
@@ -360,7 +384,6 @@ export async function handleSyncChanges(
       engine,
       changes,
       echoes,
-      queueSync,
       reconcilePendingLists ?? false,
       listSnapshot,
       transaction,

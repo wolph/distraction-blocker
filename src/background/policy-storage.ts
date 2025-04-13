@@ -104,6 +104,7 @@ export interface PolicyStorage {
     changes: Record<string, unknown>,
     pendingRemoteKeys?: readonly string[],
   ): Promise<void>;
+  queueVerifiedRemoteCorrections(keys: readonly (keyof PolicyValueByKey)[]): Promise<void>;
   deleteRemoteData(scope: 'synced-policy' | 'all'): Promise<void>;
   storageMode(): Promise<StorageMode | null>;
   inboundSyncAllowed(): Promise<boolean>;
@@ -117,7 +118,6 @@ export interface PolicyStorage {
   importLegacy(
     snapshot: PolicySnapshot,
     runtime: RuntimeState,
-    legacyMode: StorageMode | null,
     journal: SyncJournal,
   ): Promise<void>;
 }
@@ -138,7 +138,6 @@ interface PolicyGenerationRecord {
   revision: string;
   policy: PolicySnapshot;
   runtime: RuntimeState;
-  legacyMode: StorageMode | null;
   journal: SyncJournal;
 }
 
@@ -582,7 +581,7 @@ export function createPolicyStorage(
       if (!setup.legacyImported) {
         setup = {
           ...setup,
-          storageMode: record.legacyMode,
+          storageMode: null,
           syncWriteStatus: journalEmpty(record.journal) ? 'idle' : 'pending',
           legacyImported: true,
           storageError: null,
@@ -594,7 +593,7 @@ export function createPolicyStorage(
           },
           'repaired committed legacy migration',
         );
-        mode = record.legacyMode;
+        mode = null;
       }
       await cleanupGeneration(record);
       await cleanupStaleGenerations();
@@ -633,6 +632,33 @@ export function createPolicyStorage(
     if (value === null) writer.remove(remoteKey);
     else writer.queue(remoteKey, value);
     await writer.whenJournalDurable();
+  }
+
+  async function queueVerifiedRemoteCorrectionsInternal(
+    keys: readonly (keyof PolicyValueByKey)[],
+  ): Promise<void> {
+    await ensureInitialized();
+    const setup: SetupState = await loadSetupInternal();
+    if (mode !== 'sync' || setup.dataClear.status !== 'idle') return;
+    const unique: Set<keyof PolicyValueByKey> = new Set();
+    for (const key of keys) {
+      if (!isPolicyKey(key)) throw new Error('invalid corrective policy key');
+      unique.add(key);
+    }
+    if (unique.size === 0) return;
+    const snapshot: PolicySnapshot = await loadSnapshotInternal();
+    try {
+      await saveSetupInternal({ ...setup, syncWriteStatus: 'pending' });
+      for (const key of unique) await queuePolicyInternal(key, snapshot[key]);
+    } catch (error: unknown) {
+      const current: SetupState = await loadSetupInternal();
+      await saveSetupInternal({
+        ...current,
+        syncWriteStatus: 'error',
+        storageError: 'sync-publish-failed',
+      });
+      throw error;
+    }
   }
 
   async function setPolicyInternal(key: unknown, value: unknown): Promise<void> {
@@ -757,23 +783,37 @@ export function createPolicyStorage(
   async function selectLocalModeInternal(): Promise<void> {
     await ensureInitialized();
     const setup: SetupState = await loadSetupInternal();
+    let hasPublicationIntent: boolean = true;
+    try {
+      hasPublicationIntent = !journalEmpty(await loadedJournal(LOCAL_SYNC_JOURNAL, false));
+    } catch (_error: unknown) {
+      // Explicit local selection also abandons a malformed failed-publish journal.
+    }
     if (
       mode === 'local' &&
       setup.syncWriteStatus === 'idle' &&
-      setup.storageError !== 'sync-publish-failed'
+      setup.storageError !== 'sync-publish-failed' &&
+      !hasPublicationIntent
     ) {
       return;
     }
     await disableSyncInternal();
-    if (mode !== 'local') {
-      const current: SetupState = await loadSetupInternal();
-      await saveSetupInternal({
-        ...current,
-        storageMode: 'local',
-        syncWriteStatus: 'idle',
-        storageError: null,
-      });
-    }
+    const current: SetupState = await loadSetupInternal();
+    await verifiedWrite(
+      {
+        [LOCAL_SYNC_JOURNAL]: { sets: {}, removes: [] },
+        [LOCAL_SETUP]: {
+          ...current,
+          storageMode: 'local',
+          syncWriteStatus: 'idle',
+          storageError:
+            current.storageError === 'sync-publish-failed' ? null : current.storageError,
+        },
+      },
+      'local storage selection',
+    );
+    mode = 'local';
+    firstCheckpointComplete = false;
   }
 
   async function updateSetupInternal(next: Partial<SetupUpdate>): Promise<void> {
@@ -902,11 +942,10 @@ export function createPolicyStorage(
     const value: unknown = stored[key];
     if (
       !isRecord(value) ||
-      !hasExactKeys(value, ['id', 'revision', 'policy', 'runtime', 'legacyMode', 'journal']) ||
+      !hasExactKeys(value, ['id', 'revision', 'policy', 'runtime', 'journal']) ||
       value.id !== pointer.id ||
       value.revision !== pointer.revision ||
-      !isRecord(value.runtime) ||
-      (value.legacyMode !== null && value.legacyMode !== 'local' && value.legacyMode !== 'sync')
+      !isRecord(value.runtime)
     ) {
       throw new Error('committed policy generation is missing or invalid');
     }
@@ -933,7 +972,6 @@ export function createPolicyStorage(
       revision: pointer.revision,
       policy,
       runtime,
-      legacyMode: value.legacyMode,
       journal,
     };
   }
@@ -965,7 +1003,6 @@ export function createPolicyStorage(
   async function importLegacyInternal(
     snapshot: PolicySnapshot,
     runtime: RuntimeState,
-    legacyMode: StorageMode | null,
     journal: SyncJournal,
   ): Promise<void> {
     await ensureInitialized();
@@ -983,7 +1020,7 @@ export function createPolicyStorage(
         if (!setup.legacyImported || setup.storageError !== null) {
           const repairedSetup: SetupState = {
             ...setup,
-            storageMode: legacyMode,
+            storageMode: null,
             syncWriteStatus: journalEmpty(journal) ? 'idle' : 'pending',
             legacyImported: true,
             storageError: null,
@@ -995,10 +1032,9 @@ export function createPolicyStorage(
             },
             'repaired legacy setup and publication journal',
           );
-          mode = legacyMode;
+          mode = null;
         }
         await cleanupStaleGenerations();
-        if (legacyMode === 'sync') await ensurePublisher(journal);
         return;
       } else {
         assertPolicyValue('settings', snapshot.settings);
@@ -1012,7 +1048,6 @@ export function createPolicyStorage(
           revision,
           policy: structuredClone(snapshot),
           runtime: structuredClone(runtime),
-          legacyMode,
           journal: structuredClone(journal),
         };
         const generationKey: string = `${LOCAL_POLICY_GENERATION_PREFIX}${id}`;
@@ -1025,7 +1060,7 @@ export function createPolicyStorage(
       if (!setup.legacyImported || setup.storageError !== null) {
         const migratedSetup: SetupState = {
           ...setup,
-          storageMode: legacyMode,
+          storageMode: null,
           syncWriteStatus: journalEmpty(journal) ? 'idle' : 'pending',
           legacyImported: true,
           storageError: null,
@@ -1037,11 +1072,10 @@ export function createPolicyStorage(
           },
           'legacy setup and publication journal',
         );
-        mode = legacyMode;
+        mode = null;
       }
       await cleanupGeneration(record);
       await cleanupStaleGenerations();
-      if (legacyMode === 'sync') await ensurePublisher(journal);
     } catch (error: unknown) {
       if (!authorityCommitted) {
         const setup: SetupState = await loadSetupInternal();
@@ -1142,10 +1176,40 @@ export function createPolicyStorage(
     await finishDataClear(journal);
   }
 
+  async function stopBlockingBeforeAllDataClear(): Promise<void> {
+    const stored: Record<string, unknown> = await local.get([LOCAL_RUNTIME, LOCAL_CACHES]);
+    if (Object.hasOwn(stored, LOCAL_RUNTIME)) {
+      const snapshot: PolicySnapshot = await loadSnapshotInternal();
+      const runtime: RuntimeState = migrateRuntimeRules(
+        mergeRuntime(stored[LOCAL_RUNTIME], Date.now()),
+        snapshot.lists,
+      );
+      const stopped: RuntimeState = {
+        ...runtime,
+        session: null,
+        gate: null,
+        unlocks: [],
+        tabStates: {},
+        accruedFocusMs: 0,
+        attemptDebounce: {},
+        scheduleActiveEntryId: null,
+      };
+      await verifiedWrite({ [LOCAL_RUNTIME]: stopped }, 'stopped runtime before all-data clear');
+    }
+    if (Object.hasOwn(stored, LOCAL_CACHES)) {
+      await local.remove(LOCAL_CACHES);
+      const verified: Record<string, unknown> = await local.get(LOCAL_CACHES);
+      if (Object.hasOwn(verified, LOCAL_CACHES)) {
+        throw new Error('could not clear blocking cache before all-data clear');
+      }
+    }
+  }
+
   async function resumeDataClear(journal: DataClearJournal): Promise<void> {
     try {
       let current: DataClearJournal = journal;
       if (current.phase === 'remote') {
+        if (current.scope === 'all') await stopBlockingBeforeAllDataClear();
         current = await clearRemotePhase(current);
         if (current.scope === 'synced-policy') {
           await finishDataClear(current);
@@ -1242,6 +1306,8 @@ export function createPolicyStorage(
       pendingRemoteKeys: readonly string[] = [],
     ): Promise<void> =>
       enqueue((): Promise<void> => mirrorAcceptedRemotePolicyInternal(changes, pendingRemoteKeys)),
+    queueVerifiedRemoteCorrections: (keys: readonly (keyof PolicyValueByKey)[]): Promise<void> =>
+      enqueue((): Promise<void> => queueVerifiedRemoteCorrectionsInternal(keys)),
     deleteRemoteData: (scope: 'synced-policy' | 'all'): Promise<void> =>
       enqueue((): Promise<void> => deleteRemoteDataInternal(scope)),
     storageMode: (): Promise<StorageMode | null> =>
@@ -1272,9 +1338,8 @@ export function createPolicyStorage(
     importLegacy: (
       snapshot: PolicySnapshot,
       runtime: RuntimeState,
-      legacyMode: StorageMode | null,
       journal: SyncJournal,
     ): Promise<void> =>
-      enqueue((): Promise<void> => importLegacyInternal(snapshot, runtime, legacyMode, journal)),
+      enqueue((): Promise<void> => importLegacyInternal(snapshot, runtime, journal)),
   };
 }

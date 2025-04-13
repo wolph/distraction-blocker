@@ -1,6 +1,6 @@
 import { parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { emptyStreak } from '../core/streak';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../shared/constants';
+import { DEFAULT_SETTINGS } from '../shared/constants';
 import type { Request, SoundId } from '../shared/messages';
 import { isInstallMarker, isListsConfig, isSettings } from '../shared/runtime-validation';
 import {
@@ -52,21 +52,15 @@ import {
   migrateRuntimeRules,
   type ParsedRuntimeState,
   parseBank,
-  parseLiveLists,
   parseLiveSettings,
   parseStreak,
   type RuntimeState,
   saveMatcherCache,
   saveRuntime,
-  saveSyncJournal,
 } from './stores';
 import { chooseNewerStreak, rebaseStreakForDate, streaksEqual } from './streak-sync';
 import { isFocusLockSyncKey } from './sync-item-validation';
-import {
-  replaySyncQuotaEvictionCheckpoint,
-  type SanitizedSyncJournal,
-  sanitizeSyncJournal,
-} from './sync-quota';
+import { type SanitizedSyncJournal, sanitizeSyncJournal } from './sync-quota';
 import type { SyncJournal } from './sync-writer';
 import {
   applyBlockingFactory,
@@ -227,14 +221,25 @@ function assertValidAuthoritativeRemotePolicy(
     throw new Error('invalid authoritative legacy streak');
   }
   const remoteHasLists: boolean = Object.keys(storedSync).some(isListSyncKey);
-  if (!remoteHasLists || hasPendingLists(journal)) return;
+  const journalHasLists: boolean = hasPendingLists(journal);
+  // The pending journal is replay transport. It is repaired from validated remote
+  // or local compatibility authority later. Remote list authority must be coherent.
+  if (!remoteHasLists || journalHasLists) return;
   const decoded = decodeListsSyncSnapshot(storedSync);
-  if (
-    decoded.kind === 'legacy' &&
-    !isListsConfig(decoded.value) &&
-    parseLiveLists(decoded.value, DEFAULT_LISTS) === null
-  ) {
+  if (decoded.kind === 'incomplete') {
+    throw new Error('incomplete authoritative legacy lists');
+  }
+  if (decoded.kind === 'legacy' && !isListsConfig(decoded.value)) {
     throw new Error('invalid authoritative legacy lists');
+  }
+}
+
+function assertValidResolvedLegacyPolicy(snapshot: PolicySnapshot): void {
+  if (!isSettings(snapshot.settings)) throw new Error('invalid resolved legacy settings');
+  if (!isListsConfig(snapshot.lists)) throw new Error('invalid resolved legacy lists');
+  if (parseBank(snapshot.bank) === null) throw new Error('invalid resolved legacy bank');
+  if (snapshot.streak !== null && parseStreak(snapshot.streak) === null) {
+    throw new Error('invalid resolved legacy streak');
   }
 }
 
@@ -312,7 +317,6 @@ async function preparePolicyStorage(): Promise<PolicyStorage> {
   try {
     const now: number = Date.now();
     const rawJournal: SyncJournal = await loadSyncJournal();
-    await replaySyncQuotaEvictionCheckpoint(undefined, undefined, rawJournal.removes);
     const sanitized: SanitizedSyncJournal = sanitizeSyncJournal(rawJournal);
     const storedSync: Record<string, unknown> = await chrome.storage.sync.get(null);
     assertValidAuthoritativeRemotePolicy(storedSync, sanitized.journal);
@@ -322,7 +326,6 @@ async function preparePolicyStorage(): Promise<PolicyStorage> {
     );
     const hasLegacySyncIntent: boolean =
       hasRemotePolicy || Object.keys(journal.sets).length > 0 || journal.removes.length > 0;
-    if (sanitized.rejected.length > 0) await saveSyncJournal(journal);
     const journalHadLists: boolean = hasPendingLists(journal);
     const [storedLists, journalFallbackLists]: [ListsConfig, ListsConfig] = await Promise.all([
       loadLists(undefined, storedSync),
@@ -389,12 +392,9 @@ async function preparePolicyStorage(): Promise<PolicyStorage> {
     }
     const loadedRuntime: ParsedRuntimeState = await loadRuntime(now);
     const runtime: RuntimeState = migrateRuntimeRules(loadedRuntime, lists);
-    await storage.importLegacy(
-      { settings, lists, bank, streak: persistedStreak },
-      runtime,
-      hasLegacySyncIntent ? 'sync' : null,
-      journal,
-    );
+    const snapshot: PolicySnapshot = { settings, lists, bank, streak: persistedStreak };
+    assertValidResolvedLegacyPolicy(snapshot);
+    await storage.importLegacy(snapshot, runtime, journal);
     return storage;
   } catch (error: unknown) {
     await storage.markLegacyMigrationFailed();

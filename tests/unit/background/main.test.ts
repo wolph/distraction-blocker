@@ -13,17 +13,22 @@ import {
   CATEGORY_IDS,
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
+  DEFAULT_SETUP,
   rulesFromLists,
 } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
 import {
+  LOCAL_BANK,
   LOCAL_CACHES,
   LOCAL_DEVICE_ID,
   LOCAL_EVENTS,
   LOCAL_INSTALL_MARKER,
+  LOCAL_LISTS,
   LOCAL_LISTS_SNAPSHOT,
   LOCAL_RUNTIME,
+  LOCAL_SETTINGS,
   LOCAL_SETUP,
+  LOCAL_STREAK,
   LOCAL_SYNC_JOURNAL,
   LOCAL_SYNC_QUOTA_EVICTION,
   SYNC_BANK,
@@ -213,19 +218,33 @@ function setScenario(journaledStreak: StreakState, syncedStreak: StreakState): v
 }
 
 function setCompleteSyncedPolicy(): void {
-  mocks.scenario.storedSync = {
+  const streak: StreakState = {
+    current: 0,
+    freezeTokens: 0,
+    lastCountedDate: null,
+    lastFreezeGrantDate: null,
+    activeDays: [],
+    activeMonth: '2026-08',
+  };
+  const policy: Record<string, unknown> = {
     [SYNC_SETTINGS]: DEFAULT_SETTINGS,
     [SYNC_LISTS]: DEFAULT_LISTS,
     [SYNC_BANK]: { balanceMs: 0 },
-    [SYNC_STREAK]: {
-      current: 0,
-      freezeTokens: 0,
-      lastCountedDate: null,
-      lastFreezeGrantDate: null,
-      activeDays: [],
-      activeMonth: '2026-08',
-    },
+    [SYNC_STREAK]: streak,
   };
+  mocks.scenario.storedSync = policy;
+  Object.assign(mocks.localState, {
+    [LOCAL_SETUP]: {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'sync',
+      legacyImported: true,
+    },
+    [LOCAL_SETTINGS]: DEFAULT_SETTINGS,
+    [LOCAL_LISTS]: DEFAULT_LISTS,
+    [LOCAL_BANK]: { balanceMs: 0 },
+    [LOCAL_STREAK]: streak,
+  });
 }
 
 function oversizedHostRules(prefix: string): ListsConfig['custom'] {
@@ -476,7 +495,11 @@ describe('background runtime request boundary', () => {
     await finishBoot();
 
     expect(mocks.localState[LOCAL_INSTALL_MARKER]).toMatchObject({ profile: 'legacy' });
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({ storageMode: null });
     expect(chrome.storage.sync.get).toHaveBeenCalledWith(null);
+    expect(chrome.storage.sync.getBytesInUse).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
   });
 
   it('keeps a persisted clean profile clean after a later update', async (): Promise<void> => {
@@ -677,6 +700,7 @@ describe('background pending lists tracking', () => {
   });
 
   it('reads the complete list snapshot when a category shard changes', async () => {
+    setCompleteSyncedPolicy();
     const exclusions: ListsConfig['exclusions'] = {};
     for (const categoryId of CATEGORY_IDS) {
       exclusions[categoryId] = Array.from(
@@ -715,11 +739,13 @@ describe('background pending lists tracking', () => {
   });
 
   it('tracks a replayed lists journal before the worker becomes ready', async () => {
+    setCompleteSyncedPolicy();
     const pendingLists: ListsConfig = {
       ...DEFAULT_LISTS,
       custom: [{ kind: 'host', pattern: 'replayed.example' }],
     };
     mocks.scenario.journal = { sets: { [SYNC_LISTS]: pendingLists }, removes: [] };
+    mocks.localState[LOCAL_SYNC_JOURNAL] = mocks.scenario.journal;
 
     await finishBoot();
 
@@ -727,6 +753,7 @@ describe('background pending lists tracking', () => {
   });
 
   it('captures replayed lists pending state when a live event arrives during slow boot', async () => {
+    setCompleteSyncedPolicy();
     vi.mocked(handleSyncChanges).mockClear();
     let releaseTick: () => void = (): void => {};
     mocks.tickGate = new Promise((resolve: () => void): void => {
@@ -741,6 +768,7 @@ describe('background pending lists tracking', () => {
       custom: [{ kind: 'host', pattern: 'live.example' }],
     };
     mocks.scenario.journal = { sets: { [SYNC_LISTS]: replayedLists }, removes: [] };
+    mocks.localState[LOCAL_SYNC_JOURNAL] = mocks.scenario.journal;
 
     main();
     await vi.waitFor((): void => expect(mocks.engineArguments).not.toBeNull());
@@ -756,7 +784,7 @@ describe('background pending lists tracking', () => {
     expect(vi.mocked(handleSyncChanges).mock.calls.at(-1)?.[4]).toBe(true);
   });
 
-  it('captures replayed lists pending state when the event arrives before writer creation', async () => {
+  it('ignores a pre-consent Sync event that arrives during legacy import', async () => {
     let releaseJournalLoad: () => void = (): void => {};
     mocks.bootGate = new Promise((resolve: () => void): void => {
       releaseJournalLoad = resolve;
@@ -777,8 +805,8 @@ describe('background pending lists tracking', () => {
     listener({ [SYNC_LISTS]: { newValue: liveLists } }, 'sync');
     releaseJournalLoad();
 
-    await vi.waitFor((): void => expect(handleSyncChanges).toHaveBeenCalled());
-    expect(vi.mocked(handleSyncChanges).mock.calls.at(-1)?.[4]).toBe(true);
+    await vi.waitFor((): void => expect(mocks.engineArguments).not.toBeNull());
+    expect(handleSyncChanges).not.toHaveBeenCalled();
   });
 
   it('does not reconcile a pre-writer live event when the journal has no pending lists', async () => {
@@ -807,7 +835,7 @@ describe('background pending lists tracking', () => {
 });
 
 describe('background boot state convergence', () => {
-  it('keeps the local snapshot when a recognizable split base is invalid at boot', async () => {
+  it('fails closed when remote split-list authority is invalid', async () => {
     const localLists: ListsConfig = {
       ...DEFAULT_LISTS,
       custom: [{ kind: 'host', pattern: 'keep-local.example' }],
@@ -825,12 +853,14 @@ describe('background boot state convergence', () => {
 
     await finishBoot();
 
-    expect(engineLists()).toEqual(localLists);
-    const expected = await encodeListsForSync(localLists);
-    expect(mocks.savedJournals).toContainEqual({
-      sets: expected.sets,
-      removes: expected.removes,
+    expect(mocks.engineArguments).toBeNull();
+    expect(mocks.localState[LOCAL_LISTS_SNAPSHOT]).toEqual(localLists);
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      legacyImported: false,
+      storageError: 'legacy-migration-failed',
     });
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
   });
 
   it('repairs an incomplete sharded journal from the local canonical snapshot', async () => {
@@ -860,7 +890,7 @@ describe('background boot state convergence', () => {
     });
   });
 
-  it('removes stale list shards when a missing base is restored as unsplit', async () => {
+  it('fails closed when remote split-list shards are incomplete', async () => {
     const exclusions: ListsConfig['exclusions'] = {};
     for (const categoryId of CATEGORY_IDS) {
       exclusions[categoryId] = Array.from(
@@ -877,13 +907,17 @@ describe('background boot state convergence', () => {
     await finishBoot();
     await vi.advanceTimersByTimeAsync(10_000);
 
-    expect(mocks.scenario.storedSync[SYNC_LISTS]).toEqual(DEFAULT_LISTS);
-    for (const key of LIST_SYNC_SHARD_KEYS) {
-      expect(mocks.scenario.storedSync).not.toHaveProperty(key);
-    }
+    expect(mocks.engineArguments).toBeNull();
+    expect(mocks.scenario.storedSync).toEqual(staleShards);
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      legacyImported: false,
+      storageError: 'legacy-migration-failed',
+    });
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
   });
 
-  it('rolls back a quota eviction checkpoint when the SyncWriter journal is empty', async () => {
+  it('preserves a quota eviction checkpoint until explicit Sync consent', async () => {
     const evictedMonthKey: string = 'aggm:old-device:2024-01';
     const evictedMonth = rollupMonth('2024-01', []);
     mocks.localState[LOCAL_SYNC_QUOTA_EVICTION] = {
@@ -893,13 +927,14 @@ describe('background boot state convergence', () => {
 
     await finishBoot();
 
-    expect(chrome.storage.sync.set).toHaveBeenCalledWith({
-      [evictedMonthKey]: evictedMonth,
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+    expect(mocks.localState[LOCAL_SYNC_QUOTA_EVICTION]).toEqual({
+      evicted: { [evictedMonthKey]: evictedMonth },
+      setKeys: [SYNC_SETTINGS],
     });
-    expect(mocks.localState[LOCAL_SYNC_QUOTA_EVICTION]).toBeUndefined();
   });
 
-  it('compacts oldest monthly history before a journal replay would exceed total quota', async () => {
+  it('keeps an oversized legacy replay paused before explicit consent', async () => {
     const evictedMonthKey: string = 'aggm:old-device:2024-01';
     const pendingSettings: Settings = { ...DEFAULT_SETTINGS, retentionDays: 14 };
     const evictedMonth = rollupMonth('2024-01', []);
@@ -932,14 +967,13 @@ describe('background boot state convergence', () => {
     await finishBoot();
     await vi.advanceTimersByTimeAsync(10_000);
 
-    expect(chrome.storage.sync.remove).toHaveBeenCalledWith([evictedMonthKey]);
-    expect(vi.mocked(chrome.storage.sync.remove).mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(chrome.storage.sync.set).mock.invocationCallOrder[0] ?? 0,
-    );
-    expect(chrome.storage.sync.set).toHaveBeenCalledWith({ [SYNC_SETTINGS]: pendingSettings });
+    expect(mocks.scenario.storedSync[evictedMonthKey]).toEqual(evictedMonth);
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({ storageMode: null });
+    expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
   });
 
-  it('replaces malformed pending settings with valid sync state before boot and flush', async () => {
+  it('stages valid Sync settings over malformed pending state without publishing', async () => {
     const synced: Settings = {
       ...DEFAULT_SETTINGS,
       defaultMode: 'whitelist',
@@ -958,10 +992,10 @@ describe('background boot state convergence', () => {
       removes: [],
     });
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(chrome.storage.sync.set).toHaveBeenCalledWith({ [SYNC_SETTINGS]: synced });
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
   });
 
-  it('replaces malformed pending lists with valid sync state before boot and flush', async () => {
+  it('stages valid Sync lists over malformed pending state without publishing', async () => {
     const synced: ListsConfig = {
       ...DEFAULT_LISTS,
       custom: [{ kind: 'host', pattern: 'synced.example' }],
@@ -979,10 +1013,10 @@ describe('background boot state convergence', () => {
       removes: [...LIST_SYNC_SHARD_KEYS],
     });
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(chrome.storage.sync.set).toHaveBeenCalledWith({ [SYNC_LISTS]: synced });
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
   });
 
-  it('replaces malformed pending bank with valid sync state before boot and flush', async () => {
+  it('stages valid Sync bank over malformed pending state without publishing', async () => {
     const synced: BankState = { balanceMs: 42_000 };
     mocks.scenario = {
       journal: { sets: { [SYNC_BANK]: { balanceMs: -1 } }, removes: [] },
@@ -997,7 +1031,7 @@ describe('background boot state convergence', () => {
       removes: [],
     });
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(chrome.storage.sync.set).toHaveBeenCalledWith({ [SYNC_BANK]: synced });
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
   });
 
   it('sanitizes malformed transient pending base state when no remote policy exists', async () => {
@@ -1039,16 +1073,28 @@ describe('background boot state convergence', () => {
       removes: [...LIST_SYNC_SHARD_KEYS],
     });
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(chrome.storage.sync.set).toHaveBeenCalledWith(expectedSets);
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
   });
 
   it('fails an invalid authoritative remote policy without mutating remote data', async () => {
+    const evictedKey: string = 'aggm:legacy-device:2026-07';
+    const evictedMonth = rollupMonth('2026-07', []);
     const invalidRemote: Record<string, unknown> = {
       [SYNC_SETTINGS]: 'invalid',
       [SYNC_BANK]: { balanceMs: -2 },
     };
+    const checkpoint = {
+      evicted: { [evictedKey]: evictedMonth },
+      setKeys: [SYNC_SETTINGS],
+    };
+    const originalJournal: SyncJournal = {
+      sets: { [SYNC_SETTINGS]: null },
+      removes: [],
+    };
+    mocks.localState[LOCAL_SYNC_QUOTA_EVICTION] = checkpoint;
+    mocks.localState[LOCAL_SYNC_JOURNAL] = originalJournal;
     mocks.scenario = {
-      journal: { sets: {}, removes: [] },
+      journal: originalJournal,
       storedSync: invalidRemote,
     };
 
@@ -1060,6 +1106,8 @@ describe('background boot state convergence', () => {
       storageError: 'legacy-migration-failed',
     });
     expect(mocks.scenario.storedSync).toEqual(invalidRemote);
+    expect(mocks.localState[LOCAL_SYNC_QUOTA_EVICTION]).toEqual(checkpoint);
+    expect(mocks.localState[LOCAL_SYNC_JOURNAL]).toEqual(originalJournal);
     expect(chrome.storage.sync.set).not.toHaveBeenCalled();
     expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
   });
@@ -1118,7 +1166,7 @@ describe('background boot state convergence', () => {
       removes: [...LIST_SYNC_SHARD_KEYS],
     });
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(chrome.storage.sync.set).toHaveBeenCalledWith(pendingSets);
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
   });
 
   it('drops oversized pending settings and lists before selecting valid stored Sync', async () => {
@@ -1208,7 +1256,7 @@ describe('background boot state convergence', () => {
     expect(chrome.storage.sync.set).not.toHaveBeenCalled();
   });
 
-  it('drops oversized pending aggregate and archive values before boot flush', async () => {
+  it('drops oversized pending aggregate and archive values before local import', async () => {
     const aggregateKey: string = 'agg:device-a:2026-08-28';
     const archiveKey: string = 'archive:clock-rebase:device-a:2026-08-28:1:test';
     const oversizedAggregate: DailyAgg = {
@@ -1255,7 +1303,7 @@ describe('background boot state convergence', () => {
 
     expect(mocks.savedJournals).toContainEqual({ sets: { [key]: synced }, removes: [] });
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(chrome.storage.sync.set).toHaveBeenCalledWith({ [key]: synced });
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
   });
 
   it('replaces a malformed pending monthly aggregate with valid sync history', async () => {
@@ -1275,7 +1323,7 @@ describe('background boot state convergence', () => {
 
     expect(mocks.savedJournals).toContainEqual({ sets: { [key]: synced }, removes: [] });
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(chrome.storage.sync.set).toHaveBeenCalledWith({ [key]: synced });
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
   });
 
   it('drops malformed pending aggregates when sync has no valid history', async () => {
@@ -1329,7 +1377,7 @@ describe('background boot state convergence', () => {
 
     expect(mocks.savedJournals).toContainEqual({ sets: expectedSets, removes: [] });
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(chrome.storage.sync.set).toHaveBeenCalledWith(expectedSets);
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
   });
 
   it('preserves valid pending aggregates with matching key periods', async () => {
@@ -1355,7 +1403,7 @@ describe('background boot state convergence', () => {
 
     expect(mocks.savedJournals).toContainEqual({ sets: pendingSets, removes: [] });
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(chrome.storage.sync.set).toHaveBeenCalledWith(pendingSets);
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
   });
 
   it('preserves unknown pending keys and aggregate removals', async () => {
@@ -1377,8 +1425,8 @@ describe('background boot state convergence', () => {
       removes: [removedKey],
     });
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(chrome.storage.sync.set).toHaveBeenCalledWith({ [unknownKey]: unknownValue });
-    expect(chrome.storage.sync.remove).toHaveBeenCalledWith([removedKey]);
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
   });
 
   it('replaces an older journal streak with newer sync progress before engine creation', async () => {

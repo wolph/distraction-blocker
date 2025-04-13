@@ -140,20 +140,16 @@ describe('handleSyncChanges', () => {
   });
 
   it('corrects a rejected transaction from verified local authority', async () => {
-    const localSettings: Settings = { ...DEFAULT_SETTINGS, retentionDays: 14 };
     const queueSync = vi.fn().mockResolvedValue(undefined);
+    const queueVerifiedRemoteCorrections = vi.fn().mockResolvedValue(undefined);
     const engine: SyncChangeEngine = makeEngine({
       previewSyncedPolicy: vi.fn().mockResolvedValue({ ok: false, error: 'hard session' }),
       commitSyncedPolicy: vi.fn(),
     });
     const transaction: SyncPolicyTransaction = {
       inboundSyncAllowed: vi.fn().mockResolvedValue(true),
-      loadSnapshot: vi.fn().mockResolvedValue({
-        settings: localSettings,
-        lists: DEFAULT_LISTS,
-        bank: { balanceMs: 0 },
-        streak: null,
-      }),
+      loadSnapshot: vi.fn(),
+      queueVerifiedRemoteCorrections,
       mirrorAcceptedRemotePolicy: vi.fn(),
     };
 
@@ -167,8 +163,108 @@ describe('handleSyncChanges', () => {
       transaction,
     );
 
-    expect(queueSync).toHaveBeenCalledWith(SYNC_SETTINGS, localSettings);
+    expect(queueVerifiedRemoteCorrections).toHaveBeenCalledWith(['settings']);
+    expect(queueSync).not.toHaveBeenCalled();
     expect(transaction.mirrorAcceptedRemotePolicy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [SYNC_SETTINGS, null, 'settings'],
+    [SYNC_LISTS, null, 'lists'],
+    [SYNC_BANK, { balanceMs: -1 }, 'bank'],
+    [SYNC_STREAK, { current: 4 }, 'streak'],
+  ] as const)(
+    'corrects malformed inbound %s from verified local authority',
+    async (remoteKey: string, malformed: unknown, policyKey: keyof PolicyValueByKey): Promise<void> => {
+      const queueSync = vi.fn().mockResolvedValue(undefined);
+      const transactSyncedPolicy = vi.fn();
+      const queueVerifiedRemoteCorrections = vi.fn().mockResolvedValue(undefined);
+      const transaction: SyncPolicyTransaction = {
+        inboundSyncAllowed: vi.fn().mockResolvedValue(true),
+        loadSnapshot: vi.fn().mockResolvedValue({
+          settings: DEFAULT_SETTINGS,
+          lists: DEFAULT_LISTS,
+          bank: { balanceMs: 42_000 },
+          streak: null,
+        }),
+        queueVerifiedRemoteCorrections,
+        mirrorAcceptedRemotePolicy: vi.fn(),
+      };
+      const listSnapshot: Record<string, unknown> | undefined =
+        remoteKey === SYNC_LISTS ? { [SYNC_LISTS]: malformed } : undefined;
+
+      await handleSyncChanges(
+        makeEngine({ transactSyncedPolicy }),
+        { [remoteKey]: { newValue: malformed } },
+        new SyncEchoes(),
+        queueSync,
+        false,
+        listSnapshot,
+        transaction,
+      );
+
+      expect(queueVerifiedRemoteCorrections).toHaveBeenCalledWith([policyKey]);
+      expect(queueSync).not.toHaveBeenCalled();
+      expect(transaction.loadSnapshot).not.toHaveBeenCalled();
+      expect(transactSyncedPolicy).not.toHaveBeenCalled();
+      expect(transaction.mirrorAcceptedRemotePolicy).not.toHaveBeenCalled();
+    },
+  );
+
+  it('corrects incomplete inbound list shards through the serialized adapter operation', async (): Promise<void> => {
+    const exclusions: ListsConfig['exclusions'] = {};
+    for (const categoryId of CATEGORY_IDS) {
+      exclusions[categoryId] = Array.from(
+        { length: 60 },
+        (_value: unknown, index: number): string => `${categoryId}-${index}.example`,
+      );
+    }
+    const encoded = await encodeListsForSync({ ...DEFAULT_LISTS, exclusions });
+    const incomplete: Record<string, unknown> = { ...encoded.sets };
+    const missingShard: string = LIST_SYNC_SHARD_KEYS[0] as string;
+    delete incomplete[missingShard];
+    const queueVerifiedRemoteCorrections = vi.fn().mockResolvedValue(undefined);
+    const transaction: SyncPolicyTransaction = {
+      inboundSyncAllowed: vi.fn().mockResolvedValue(true),
+      loadSnapshot: vi.fn(),
+      queueVerifiedRemoteCorrections,
+      mirrorAcceptedRemotePolicy: vi.fn(),
+    };
+
+    await handleSyncChanges(
+      makeEngine({ transactSyncedPolicy: vi.fn() }),
+      { [SYNC_LISTS]: { newValue: incomplete[SYNC_LISTS] } },
+      new SyncEchoes(),
+      vi.fn(),
+      false,
+      incomplete,
+      transaction,
+    );
+
+    expect(queueVerifiedRemoteCorrections).toHaveBeenCalledWith(['lists']);
+    expect(transaction.loadSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('suppresses inbound correction while deletion is pending', async (): Promise<void> => {
+    const queueSync = vi.fn();
+    const transaction: SyncPolicyTransaction = {
+      inboundSyncAllowed: vi.fn().mockResolvedValue(false),
+      loadSnapshot: vi.fn(),
+      mirrorAcceptedRemotePolicy: vi.fn(),
+    };
+
+    await handleSyncChanges(
+      makeEngine({ transactSyncedPolicy: vi.fn() }),
+      { [SYNC_SETTINGS]: { newValue: null } },
+      new SyncEchoes(),
+      queueSync,
+      false,
+      undefined,
+      transaction,
+    );
+
+    expect(transaction.loadSnapshot).not.toHaveBeenCalled();
+    expect(queueSync).not.toHaveBeenCalled();
   });
 
   it('rejects inbound handling before loading list shards outside sync mode', async () => {
@@ -198,16 +294,12 @@ describe('handleSyncChanges', () => {
   });
 
   it('republishes verified local policy after an external Sync removal', async () => {
-    const localSettings: Settings = { ...DEFAULT_SETTINGS, retentionDays: 14 };
     const queueSync = vi.fn().mockResolvedValue(undefined);
+    const queueVerifiedRemoteCorrections = vi.fn().mockResolvedValue(undefined);
     const transaction: SyncPolicyTransaction = {
       inboundSyncAllowed: vi.fn().mockResolvedValue(true),
-      loadSnapshot: vi.fn().mockResolvedValue({
-        settings: localSettings,
-        lists: DEFAULT_LISTS,
-        bank: { balanceMs: 0 },
-        streak: null,
-      }),
+      loadSnapshot: vi.fn(),
+      queueVerifiedRemoteCorrections,
       mirrorAcceptedRemotePolicy: vi.fn(),
     };
 
@@ -221,23 +313,17 @@ describe('handleSyncChanges', () => {
       transaction,
     );
 
-    expect(queueSync).toHaveBeenCalledWith(SYNC_SETTINGS, localSettings);
+    expect(queueVerifiedRemoteCorrections).toHaveBeenCalledWith(['settings']);
+    expect(queueSync).not.toHaveBeenCalled();
   });
 
   it('republishes the complete local lists after an external shard removal', async () => {
-    const localLists: ListsConfig = {
-      ...DEFAULT_LISTS,
-      custom: [{ kind: 'host', pattern: 'local.example' }],
-    };
     const queueSync = vi.fn().mockResolvedValue(undefined);
+    const queueVerifiedRemoteCorrections = vi.fn().mockResolvedValue(undefined);
     const transaction: SyncPolicyTransaction = {
       inboundSyncAllowed: vi.fn().mockResolvedValue(true),
-      loadSnapshot: vi.fn().mockResolvedValue({
-        settings: DEFAULT_SETTINGS,
-        lists: localLists,
-        bank: { balanceMs: 0 },
-        streak: null,
-      }),
+      loadSnapshot: vi.fn(),
+      queueVerifiedRemoteCorrections,
       mirrorAcceptedRemotePolicy: vi.fn(),
     };
 
@@ -251,7 +337,8 @@ describe('handleSyncChanges', () => {
       transaction,
     );
 
-    expect(queueSync).toHaveBeenCalledWith(SYNC_LISTS, localLists);
+    expect(queueVerifiedRemoteCorrections).toHaveBeenCalledWith(['lists']);
+    expect(queueSync).not.toHaveBeenCalled();
   });
 
   it('consumes an expected local Sync removal without republishing it', async () => {
