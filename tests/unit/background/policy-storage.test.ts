@@ -20,6 +20,7 @@ import {
   LOCAL_CACHES,
   LOCAL_DATA_CLEAR_JOURNAL,
   LOCAL_DEVICE_ID,
+  LOCAL_EVENTS,
   LOCAL_LISTS,
   LOCAL_POLICY_COMMIT,
   LOCAL_POLICY_GENERATION_PREFIX,
@@ -1189,7 +1190,7 @@ describe('PolicyStorage', (): void => {
     const now: number = Date.now();
     const local: FakeStorage = fakeStorage({
       ...localPolicy(setup),
-      [LOCAL_RUNTIME]: runtimeWithActiveSession(now),
+      [LOCAL_RUNTIME]: emptyRuntime(now),
       [LOCAL_CACHES]: { matcher: true },
       [LOCAL_DEVICE_ID]: 'device-id',
       unrelated: 'keep',
@@ -1212,7 +1213,7 @@ describe('PolicyStorage', (): void => {
     expect(await storage.loadSetup()).toEqual(DEFAULT_SETUP);
   });
 
-  it('ends an active session and clears blocking cache before remote all-data deletion', async (): Promise<void> => {
+  it('rejects all-data deletion without mutating storage while durable runtime is active', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
     const now: number = Date.now();
     const activeRuntime: RuntimeState = runtimeWithActiveSession(now);
@@ -1227,25 +1228,125 @@ describe('PolicyStorage', (): void => {
       [LOCAL_CACHES]: { matcher: true },
     });
     const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
+    const storage: PolicyStorage = policyStorage(local, sync);
+    const priorLocal: Record<string, unknown> = structuredClone(local.state.values);
+    const priorSync: Record<string, unknown> = structuredClone(sync.state.values);
+
+    await expect(storage.deleteRemoteData('all')).rejects.toThrow(
+      'stop the active session and blocking state before deleting all data',
+    );
+
+    expect(local.state.values).toEqual(priorLocal);
+    expect(sync.state.values).toEqual(priorSync);
+    expect(local.area.set).not.toHaveBeenCalled();
+    expect(local.area.remove).not.toHaveBeenCalled();
+    expect(sync.area.set).not.toHaveBeenCalled();
+    expect(sync.area.remove).not.toHaveBeenCalled();
+    expect(await storage.inboundSyncAllowed()).toBe(false);
+  });
+
+  it.each(['gate', 'unlocks', 'tabStates'] as const)(
+    'rejects all-data deletion while durable runtime retains %s blocking state',
+    async (field: 'gate' | 'unlocks' | 'tabStates'): Promise<void> => {
+      const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+      const now: number = Date.now();
+      const runtime: RuntimeState = emptyRuntime(now);
+      if (field === 'gate') {
+        runtime.gate = {
+          kind: 'cancel',
+          host: null,
+          openedAt: now,
+          readyAt: now + 10_000,
+          requiredPhrase: null,
+          forceEndAvailable: false,
+        };
+      } else if (field === 'unlocks') {
+        runtime.unlocks = [{ host: 'allowed.example', until: now + 60_000 }];
+      } else {
+        runtime.tabStates = {
+          1: { muteUrl: null, priorMuted: false, stoppedDocumentId: 'document-id' },
+        };
+      }
+      const local: FakeStorage = fakeStorage({
+        ...localPolicy(setup),
+        [LOCAL_RUNTIME]: runtime,
+      });
+      const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
+      const storage: PolicyStorage = policyStorage(local, sync);
+
+      await expect(storage.deleteRemoteData('all')).rejects.toThrow(
+        'stop the active session and blocking state before deleting all data',
+      );
+
+      expect(local.state.values[LOCAL_RUNTIME]).toEqual(runtime);
+      expect(sync.state.values[SYNC_SETTINGS]).toEqual(SNAPSHOT.settings);
+      expect(local.area.set).not.toHaveBeenCalled();
+      expect(local.area.remove).not.toHaveBeenCalled();
+      expect(sync.area.set).not.toHaveBeenCalled();
+      expect(sync.area.remove).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not resume an all-data journal until durable runtime is stopped', async (): Promise<void> => {
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      dataClear: { status: 'pending', scope: 'all', phase: 'remote' },
+    };
+    const runtime: RuntimeState = runtimeWithActiveSession(Date.now());
+    const journal = { scope: 'all', phase: 'remote', inventory: [SYNC_SETTINGS] };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_RUNTIME]: runtime,
+      [LOCAL_DATA_CLEAR_JOURNAL]: journal,
+    });
+    const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
+    const storage: PolicyStorage = policyStorage(local, sync);
+
+    await expect(storage.initialize()).rejects.toThrow(
+      'stop the active session and blocking state before deleting all data',
+    );
+
+    expect(local.state.values[LOCAL_RUNTIME]).toEqual(runtime);
+    expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toEqual(journal);
+    expect(sync.state.values[SYNC_SETTINGS]).toEqual(SNAPSHOT.settings);
+    expect(local.area.set).not.toHaveBeenCalled();
+    expect(local.area.remove).not.toHaveBeenCalled();
+    expect(sync.area.set).not.toHaveBeenCalled();
+    expect(sync.area.remove).not.toHaveBeenCalled();
+  });
+
+  it('preserves stopped runtime and matcher cache when remote all-data deletion fails', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const runtime: RuntimeState = emptyRuntime(Date.now());
+    runtime.commitCheckpoint = {
+      bank: SNAPSHOT.bank,
+      events: [],
+      syncBank: true,
+    };
+    const cache = { matcher: true };
+    const history: Record<string, unknown>[] = [{ id: 'event-1', type: 'attempt', at: Date.now() }];
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_RUNTIME]: runtime,
+      [LOCAL_CACHES]: cache,
+      [LOCAL_EVENTS]: history,
+    });
+    const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
     sync.state.failRemove = new Error('remote removal unavailable');
     const storage: PolicyStorage = policyStorage(local, sync);
 
     await expect(storage.deleteRemoteData('all')).rejects.toThrow('remote removal unavailable');
 
-    expect(local.state.values[LOCAL_RUNTIME]).toMatchObject({
-      session: null,
-      gate: null,
-      unlocks: [],
-      tabStates: {},
-      commitCheckpoint: activeRuntime.commitCheckpoint,
-    });
-    expect(local.state.values[LOCAL_CACHES]).toBeUndefined();
+    expect(local.state.values[LOCAL_RUNTIME]).toEqual(runtime);
+    expect(local.state.values[LOCAL_CACHES]).toEqual(cache);
+    expect(local.state.values[LOCAL_EVENTS]).toEqual(history);
     expect(local.state.values[LOCAL_SETTINGS]).toEqual(SNAPSHOT.settings);
     expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toMatchObject({
       scope: 'all',
       phase: 'remote',
     });
-    expect(await storage.inboundSyncAllowed()).toBe(false);
   });
 
   it('retains a durable removal journal and error status after remote deletion fails', async (): Promise<void> => {

@@ -1176,40 +1176,48 @@ export function createPolicyStorage(
     await finishDataClear(journal);
   }
 
-  async function stopBlockingBeforeAllDataClear(): Promise<void> {
-    const stored: Record<string, unknown> = await local.get([LOCAL_RUNTIME, LOCAL_CACHES]);
-    if (Object.hasOwn(stored, LOCAL_RUNTIME)) {
-      const snapshot: PolicySnapshot = await loadSnapshotInternal();
-      const runtime: RuntimeState = migrateRuntimeRules(
-        mergeRuntime(stored[LOCAL_RUNTIME], Date.now()),
-        snapshot.lists,
-      );
-      const stopped: RuntimeState = {
-        ...runtime,
-        session: null,
-        gate: null,
-        unlocks: [],
-        tabStates: {},
-        accruedFocusMs: 0,
-        attemptDebounce: {},
-        scheduleActiveEntryId: null,
-      };
-      await verifiedWrite({ [LOCAL_RUNTIME]: stopped }, 'stopped runtime before all-data clear');
+  async function assertStoppedRuntimeForAllDataClear(): Promise<void> {
+    const stored: Record<string, unknown> = await local.get(LOCAL_RUNTIME);
+    if (!Object.hasOwn(stored, LOCAL_RUNTIME)) return;
+    const value: unknown = stored[LOCAL_RUNTIME];
+    if (!isRecord(value) || typeof value.date !== 'string') {
+      throw new Error('persisted runtime is not valid for all-data deletion');
     }
-    if (Object.hasOwn(stored, LOCAL_CACHES)) {
-      await local.remove(LOCAL_CACHES);
-      const verified: Record<string, unknown> = await local.get(LOCAL_CACHES);
-      if (Object.hasOwn(verified, LOCAL_CACHES)) {
-        throw new Error('could not clear blocking cache before all-data clear');
-      }
+    if (
+      value.session !== null ||
+      value.gate !== null ||
+      (Array.isArray(value.unlocks) && value.unlocks.length > 0) ||
+      (isRecord(value.tabStates) && Object.keys(value.tabStates).length > 0)
+    ) {
+      throw new Error('stop the active session and blocking state before deleting all data');
+    }
+    const runtimeNow: number = new Date(`${value.date}T12:00:00`).getTime();
+    if (!Number.isFinite(runtimeNow)) {
+      throw new Error('persisted runtime is not valid for all-data deletion');
+    }
+    const snapshot: PolicySnapshot = await loadSnapshotInternal();
+    const runtime: RuntimeState = migrateRuntimeRules(
+      mergeRuntime(value, runtimeNow),
+      snapshot.lists,
+    );
+    if (!valuesEqual(runtime, value)) {
+      throw new Error('persisted runtime is not valid for all-data deletion');
+    }
+    if (
+      runtime.session !== null ||
+      runtime.gate !== null ||
+      runtime.unlocks.length > 0 ||
+      Object.keys(runtime.tabStates).length > 0
+    ) {
+      throw new Error('stop the active session and blocking state before deleting all data');
     }
   }
 
   async function resumeDataClear(journal: DataClearJournal): Promise<void> {
+    if (journal.scope === 'all') await assertStoppedRuntimeForAllDataClear();
     try {
       let current: DataClearJournal = journal;
       if (current.phase === 'remote') {
-        if (current.scope === 'all') await stopBlockingBeforeAllDataClear();
         current = await clearRemotePhase(current);
         if (current.scope === 'synced-policy') {
           await finishDataClear(current);
@@ -1238,6 +1246,7 @@ export function createPolicyStorage(
     }
     const journal: DataClearJournal =
       existing ?? ({ scope, phase: 'remote', inventory: [] } satisfies DataClearJournal);
+    if (scope === 'all') await assertStoppedRuntimeForAllDataClear();
     await persistDataClearJournal(journal, 'pending', null);
     await resumeDataClear(journal);
   }
