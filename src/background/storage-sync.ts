@@ -20,11 +20,6 @@ export interface SyncChangeEngine {
   applySyncedStreak(streak: StreakState): Promise<void>;
   getSettings(): Settings;
   getLists(): ListsConfig;
-  previewSyncedPolicy?(
-    changes: Partial<PolicyValueByKey>,
-    reconcilePendingLists: boolean,
-  ): Promise<Ack & { accepted?: Partial<PolicyValueByKey> }>;
-  commitSyncedPolicy?(changes: Partial<PolicyValueByKey>): Promise<void>;
   transactSyncedPolicy?(
     changes: Partial<PolicyValueByKey>,
     reconcilePendingLists: boolean,
@@ -219,27 +214,7 @@ async function handleTransactionalSyncChanges(
     }
     return;
   }
-  const previewSyncedPolicy = engine.previewSyncedPolicy?.bind(engine);
-  const commitSyncedPolicy = engine.commitSyncedPolicy?.bind(engine);
-  if (previewSyncedPolicy === undefined || commitSyncedPolicy === undefined) {
-    throw new Error('transactional sync engine methods are unavailable');
-  }
-  const preview: Ack & { accepted?: Partial<PolicyValueByKey> } = await previewSyncedPolicy(
-    candidate,
-    reconcilePendingLists,
-  );
-  if (!preview.ok) {
-    await queueVerifiedPolicyCorrections(new Set(candidateKeys), transaction);
-    return;
-  }
-  const accepted: Partial<PolicyValueByKey> = preview.accepted ?? candidate;
-  const mirrored: Record<string, unknown> = {};
-  if (accepted.settings !== undefined) mirrored.settings = accepted.settings;
-  if (accepted.lists !== undefined) mirrored.lists = accepted.lists;
-  if (accepted.bank !== undefined) mirrored.bank = accepted.bank;
-  if (accepted.streak !== undefined) mirrored.streak = accepted.streak;
-  await transaction.mirrorAcceptedRemotePolicy(mirrored, pendingRemoteKeys);
-  await commitSyncedPolicy(accepted);
+  throw new Error('transactional sync engine method is unavailable');
 }
 
 export function missingSyncDefaults(

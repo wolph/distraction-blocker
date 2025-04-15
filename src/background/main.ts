@@ -44,6 +44,7 @@ import { routeMessage } from './router';
 import { handleSyncChanges, missingSyncDefaults } from './storage-sync';
 import {
   appendEvents,
+  emptyRuntime,
   getDeviceId,
   loadLists,
   loadRuntime,
@@ -300,10 +301,23 @@ function effectiveLegacyValue(
 
 async function preparePolicyStorage(): Promise<PolicyStorage> {
   const marker: InstallMarker = await classifyInstallProfile();
-  const storage: PolicyStorage = createPolicyStorage(chrome.storage.local, chrome.storage.sync, {
-    loadAggregateItems: (): Promise<Record<string, unknown>> =>
-      Promise.reject(new Error('local aggregate checkpoint is unavailable until Task 5')),
-  });
+  const storage: PolicyStorage = createPolicyStorage(
+    chrome.storage.local,
+    chrome.storage.sync,
+    {
+      loadAggregateItems: (): Promise<Record<string, unknown>> =>
+        Promise.reject(new Error('local aggregate checkpoint is unavailable until Task 5')),
+    },
+    {
+      runExclusive: <T>(
+        operation: () => Promise<T>,
+        retainQuiescence: () => boolean,
+      ): Promise<T> =>
+        engineInstance === null
+          ? operation()
+          : engineInstance.runWithDataClearBarrier(operation, retainQuiescence),
+    },
+  );
   await storage.initialize();
   if (marker.profile === 'clean') {
     return storage;
@@ -406,12 +420,12 @@ async function boot(policyStorage: PolicyStorage): Promise<Engine> {
   const now: number = Date.now();
   await policyStorage.initialize();
   const snapshot: PolicySnapshot = await policyStorage.loadSnapshot();
-  const [loadedRuntime, deviceId]: [ParsedRuntimeState, string] = await Promise.all([
-    loadRuntime(now),
-    getDeviceId(),
-  ]);
+  const completedAllDataClear: boolean = policyStorage.allDataClearCompleted();
+  const [loadedRuntime, deviceId]: [ParsedRuntimeState, string] = completedAllDataClear
+    ? [emptyRuntime(now), '']
+    : await Promise.all([loadRuntime(now), getDeviceId()]);
   const runtime: RuntimeState = migrateRuntimeRules(loadedRuntime, snapshot.lists);
-  if (runtime !== loadedRuntime) await saveRuntime(runtime);
+  if (!completedAllDataClear && runtime !== loadedRuntime) await saveRuntime(runtime);
   const streak: StreakState = snapshot.streak ?? emptyStreak(localMonthStr(now));
   const ports: EnginePorts = {
     now: (): number => Date.now(),
@@ -463,6 +477,13 @@ async function boot(policyStorage: PolicyStorage): Promise<Engine> {
     deviceId,
   );
   engineInstance = engine;
+  if (completedAllDataClear) {
+    await engine.runWithDataClearBarrier(
+      (): Promise<void> => Promise.resolve(),
+      (): boolean => true,
+    );
+    return engine;
+  }
   await engine.tick();
   await ports.applyBlocking();
   return engine;

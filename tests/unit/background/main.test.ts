@@ -4,7 +4,11 @@ import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/backgroun
 import { main } from '../../../src/background/main';
 import { routeMessage } from '../../../src/background/router';
 import { handleSyncChanges, missingSyncDefaults } from '../../../src/background/storage-sync';
-import type { ParsedRuntimeState, RuntimeState } from '../../../src/background/stores';
+import {
+  emptyRuntime,
+  type ParsedRuntimeState,
+  type RuntimeState,
+} from '../../../src/background/stores';
 import { SYNC_QUOTA_BYTES_TOTAL, syncItemBytes } from '../../../src/background/sync-quota';
 import type { SyncJournal } from '../../../src/background/sync-writer';
 import type { StoredMatcherCache } from '../../../src/core/matcher';
@@ -20,6 +24,7 @@ import type { Request } from '../../../src/shared/messages';
 import {
   LOCAL_BANK,
   LOCAL_CACHES,
+  LOCAL_DATA_CLEAR_JOURNAL,
   LOCAL_DEVICE_ID,
   LOCAL_EVENTS,
   LOCAL_INSTALL_MARKER,
@@ -140,6 +145,13 @@ vi.mock('../../../src/background/engine', () => ({
       mocks.dropTabSignal?.();
       if (mocks.dropTabError !== null) throw mocks.dropTabError;
     }
+
+    async runWithDataClearBarrier<T>(
+      operation: () => Promise<T>,
+      _retainQuiescence?: () => boolean,
+    ): Promise<T> {
+      return operation();
+    }
   },
 }));
 
@@ -161,6 +173,7 @@ vi.mock('../../../src/background/stores', async () => {
   );
   return {
     appendEvents: vi.fn(),
+    emptyRuntime: actual.emptyRuntime,
     getDeviceId: vi.fn().mockResolvedValue('device-id'),
     loadBank: actual.loadBank,
     loadLists: actual.loadLists,
@@ -177,6 +190,7 @@ vi.mock('../../../src/background/stores', async () => {
       return structuredClone(mocks.scenario.journal);
     }),
     mergeLists: actual.mergeLists,
+    mergeRuntime: actual.mergeRuntime,
     mergeSettings: actual.mergeSettings,
     migrateRuntimeRules: actual.migrateRuntimeRules,
     parseBank: actual.parseBank,
@@ -300,7 +314,8 @@ function stubChrome(): void {
         }),
       },
       local: {
-        get: vi.fn(async (keys: string | string[]): Promise<Record<string, unknown>> => {
+        get: vi.fn(async (keys: string | string[] | null): Promise<Record<string, unknown>> => {
+          if (keys === null) return structuredClone(mocks.localState);
           const requested: string[] = Array.isArray(keys) ? keys : [keys];
           return Object.fromEntries(
             requested
@@ -462,7 +477,8 @@ describe('background runtime request boundary', () => {
     mocks.localState = {};
     mocks.scenario.storedSync = { [SYNC_SETTINGS]: { ...DEFAULT_SETTINGS, retentionDays: 30 } };
 
-    await finishBoot();
+    main();
+    await expect(dispatchRuntime({ type: 'getSnapshot' })).resolves.toEqual({ ok: true });
 
     expect(mocks.localState[LOCAL_INSTALL_MARKER]).toMatchObject({ profile: 'clean' });
     expect(chrome.storage.sync.get).not.toHaveBeenCalled();
@@ -472,6 +488,39 @@ describe('background runtime request boundary', () => {
     expect(
       vi.mocked(chrome.runtime.onInstalled.addListener).mock.invocationCallOrder[0],
     ).toBeLessThan(vi.mocked(chrome.storage.local.get).mock.invocationCallOrder[0] ?? 0);
+  });
+
+  it('keeps boot quiesced after resuming a successful all-data clear journal', async (): Promise<void> => {
+    const now: number = Date.now();
+    mocks.localState = {
+      [LOCAL_SETUP]: {
+        ...DEFAULT_SETUP,
+        completed: true,
+        storageMode: 'local',
+        dataClear: { status: 'pending', scope: 'all', phase: 'remote' },
+      },
+      [LOCAL_RUNTIME]: emptyRuntime(now),
+      [LOCAL_DATA_CLEAR_JOURNAL]: {
+        scope: 'all',
+        phase: 'remote',
+        inventory: [SYNC_SETTINGS],
+      },
+    };
+    mocks.scenario.storedSync = { [SYNC_SETTINGS]: DEFAULT_SETTINGS };
+
+    main();
+    await expect(dispatchRuntime({ type: 'getSnapshot' })).resolves.toEqual({ ok: true });
+
+    expect(mocks.tickCalls).toBe(0);
+    expect(mocks.savedRuntimes).toEqual([]);
+    expect(chrome.storage.local.remove).toHaveBeenCalledWith(
+      expect.arrayContaining([LOCAL_RUNTIME]),
+    );
+    expect(mocks.localState[LOCAL_RUNTIME]).toBeUndefined();
+    expect(mocks.localState[LOCAL_DEVICE_ID]).toBeUndefined();
+    expect(mocks.scenario.storedSync[SYNC_SETTINGS]).toBeUndefined();
+    expect(mocks.localState[LOCAL_DATA_CLEAR_JOURNAL]).toBeUndefined();
+    expect(mocks.localState[LOCAL_SETUP]).toEqual(DEFAULT_SETUP);
   });
 
   it.each([

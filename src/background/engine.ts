@@ -25,6 +25,8 @@ import { emptyStreak } from '../core/streak';
 import {
   ATTEMPT_DEBOUNCE_MS,
   cancelPhrase,
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
   GATE_EXPIRY_MS,
   rulesFromLists,
   TOP_SITES_DAILY,
@@ -62,7 +64,12 @@ import {
   planRollover,
   type RolloverPlan,
 } from './rollover';
-import type { RuntimeCommitCheckpoint, RuntimeState, RuntimeTabState } from './stores';
+import {
+  emptyRuntime,
+  type RuntimeCommitCheckpoint,
+  type RuntimeState,
+  type RuntimeTabState,
+} from './stores';
 import { chooseNewerStreak, rebaseStreakForDate } from './streak-sync';
 import { assertSyncItemWithinQuota, SyncQuotaError } from './sync-quota';
 
@@ -158,7 +165,10 @@ export class Engine {
   private ownedRuntimeSnapshot: RuntimeState;
   private policyMutationQueue: Promise<void> = Promise.resolve();
   private listCachePersistenceInFlight = false;
+  private inboundPolicyTransactionActive = false;
   private suppressPolicyPublication = false;
+  private dataClearBarrierState: 'open' | 'draining' | 'quiesced' = 'open';
+  private dataClearOperationRunning = false;
 
   constructor(
     private readonly ports: EnginePorts,
@@ -167,7 +177,7 @@ export class Engine {
     private bank: BankState,
     private streak: StreakState | null,
     private runtime: RuntimeState,
-    private readonly deviceId: string,
+    private deviceId: string,
     private readonly compileSessionPolicy: SessionMatcherCompiler = compileSessionMatcher,
   ) {
     const checkpoint: RuntimeCommitCheckpoint | null = this.runtime.commitCheckpoint;
@@ -206,15 +216,38 @@ export class Engine {
     this.ports.reportError(error);
   }
 
+  async runWithDataClearBarrier<T>(
+    operation: () => Promise<T>,
+    retainQuiescence: () => boolean = (): boolean => false,
+  ): Promise<T> {
+    if (this.dataClearOperationRunning) throw new Error('all-data clear is already in progress');
+    const startingOpen: boolean = this.dataClearBarrierState === 'open';
+    this.dataClearOperationRunning = true;
+    if (startingOpen) this.dataClearBarrierState = 'draining';
+    try {
+      if (startingOpen) await this.drainRuntimeMutations();
+      this.dataClearBarrierState = 'quiesced';
+      const result: T = await operation();
+      this.resetAfterAllDataClear();
+      return result;
+    } catch (error: unknown) {
+      if (startingOpen && !retainQuiescence()) this.dataClearBarrierState = 'open';
+      throw error;
+    } finally {
+      this.dataClearOperationRunning = false;
+    }
+  }
+
   snapshot(): SessionSnapshot {
     const now: number = this.ports.now();
     this.catchUp(now);
     const snap: SessionSnapshot = this.buildSnapshot(now);
-    if (this.dirty) this.commitInBackground(now);
+    if (this.dataClearBarrierState !== 'quiesced' && this.dirty) this.commitInBackground(now);
     return snap;
   }
 
   async snapshotPersisted(): Promise<SessionSnapshot> {
+    this.assertRuntimeMutationAllowed();
     const now: number = this.ports.now();
     this.catchUp(now);
     if (this.dirty) await this.commit(now);
@@ -225,7 +258,7 @@ export class Engine {
   verdictFor(url: string): Verdict {
     const now: number = this.ports.now();
     this.catchUp(now);
-    if (this.dirty) this.commitInBackground(now);
+    if (this.dataClearBarrierState !== 'quiesced' && this.dirty) this.commitInBackground(now);
     const session: SessionState | null = this.runtime.session;
     if (session === null || session.phase !== 'focus') return NO_SESSION_VERDICT;
     return evaluateUrl(this.ensureMatcher(session), url, this.runtime.unlocks, now);
@@ -274,6 +307,7 @@ export class Engine {
   }
 
   async openGate(gate: GateKind, host: string | null): Promise<Ack> {
+    this.assertRuntimeMutationAllowed();
     const now: number = this.ports.now();
     this.catchUp(now);
     const session: SessionState | null = this.runtime.session;
@@ -304,6 +338,7 @@ export class Engine {
   }
 
   async requestSessionEnd(): Promise<Ack> {
+    this.assertRuntimeMutationAllowed();
     const now: number = this.ports.now();
     this.catchUp(now);
     const session: SessionState | null = this.runtime.session;
@@ -354,6 +389,7 @@ export class Engine {
   }
 
   async confirmGate(typedPhrase: string | null): Promise<Ack> {
+    this.assertRuntimeMutationAllowed();
     const now: number = this.ports.now();
     this.catchUp(now);
     const gate: GateState | null = this.runtime.gate;
@@ -451,6 +487,7 @@ export class Engine {
   }
 
   async abandonGate(): Promise<Ack> {
+    this.assertRuntimeMutationAllowed();
     const now: number = this.ports.now();
     this.catchUp(now);
     if (this.runtime.gate !== null) {
@@ -468,6 +505,7 @@ export class Engine {
   }
 
   async resumeFromPause(): Promise<Ack> {
+    this.assertRuntimeMutationAllowed();
     const now: number = this.ports.now();
     this.catchUp(now);
     const session: SessionState | null = this.runtime.session;
@@ -490,6 +528,7 @@ export class Engine {
   }
 
   async startNextFocusEarly(): Promise<Ack> {
+    this.assertRuntimeMutationAllowed();
     const now: number = this.ports.now();
     this.catchUp(now);
     const session: SessionState | null = this.runtime.session;
@@ -514,6 +553,7 @@ export class Engine {
   }
 
   async recordAttempt(url: string, tabId: number, kind: 'navigation' | 'existing'): Promise<void> {
+    this.assertRuntimeMutationAllowed();
     const now: number = this.ports.now();
     const key: string = `${tabId}:${url}`;
     const last: number | undefined = this.runtime.attemptDebounce[key];
@@ -588,6 +628,7 @@ export class Engine {
   }
 
   async markStopped(tabId: number, _url: string, documentId?: string): Promise<void> {
+    this.assertRuntimeMutationAllowed();
     if (typeof documentId !== 'string' || documentId === '') return;
     const state: RuntimeTabState = this.ensureTabState(tabId);
     state.stoppedDocumentId = documentId;
@@ -616,6 +657,7 @@ export class Engine {
   }
 
   async claimMute(tabId: number, url: string, priorMuted: boolean): Promise<boolean> {
+    this.assertRuntimeMutationAllowed();
     const existing: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (existing !== undefined && existing.priorMuted !== null && existing.muteUrl !== url) {
       return false;
@@ -628,6 +670,7 @@ export class Engine {
   }
 
   async releaseMuteClaim(tabId: number, url: string): Promise<void> {
+    this.assertRuntimeMutationAllowed();
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (state === undefined || state.muteUrl !== url) return;
     state.muteUrl = null;
@@ -637,6 +680,7 @@ export class Engine {
   }
 
   async transferMuteClaim(tabId: number, fromUrl: string, toUrl: string): Promise<void> {
+    this.assertRuntimeMutationAllowed();
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (state === undefined) return;
     if (state.muteUrl === fromUrl) state.muteUrl = toUrl;
@@ -645,6 +689,7 @@ export class Engine {
   }
 
   async settleMuteClaim(tabId: number, finalUrl: string | null): Promise<void> {
+    this.assertRuntimeMutationAllowed();
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (state === undefined || state.priorMuted === null) return;
     if (finalUrl === null) {
@@ -659,6 +704,7 @@ export class Engine {
 
   /** In-memory bookkeeping mutators for tabs.ts, persisted by flushRuntime. */
   noteMuteRestored(tabId: number, url: string): void {
+    if (this.dataClearBarrierState === 'quiesced') return;
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (state === undefined || state.muteUrl !== url) return;
     state.muteUrl = null;
@@ -667,6 +713,7 @@ export class Engine {
   }
 
   noteReloaded(tabId: number, documentId: string): void {
+    if (this.dataClearBarrierState === 'quiesced') return;
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (state === undefined || state.stoppedDocumentId !== documentId) return;
     state.stoppedDocumentId = null;
@@ -677,6 +724,7 @@ export class Engine {
     liveTabs: ReadonlyMap<number, LiveTabState>,
     protectedTabIds: ReadonlySet<number> = new Set(),
   ): void {
+    if (this.dataClearBarrierState === 'quiesced') return;
     for (const [tabIdText, state] of Object.entries(this.runtime.tabStates)) {
       const tabId: number = Number(tabIdText);
       const live: LiveTabState | undefined = liveTabs.get(tabId);
@@ -704,16 +752,19 @@ export class Engine {
   }
 
   rebindTab(tabId: number, url: string): void {
+    if (this.dataClearBarrierState === 'quiesced') return;
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (state !== undefined && state.priorMuted !== null) state.muteUrl = url;
   }
 
   flushRuntime(): Promise<void> {
+    this.assertRuntimeMutationAllowed();
     return this.persistRuntime();
   }
 
   /** Purges a closed tab from mute, stopped, and debounce bookkeeping. */
   async dropTab(tabId: number): Promise<void> {
+    this.assertRuntimeMutationAllowed();
     delete this.runtime.tabStates[tabId];
     for (const key of Object.keys(this.runtime.attemptDebounce)) {
       if (key.startsWith(`${tabId}:`)) {
@@ -861,6 +912,7 @@ export class Engine {
   }
 
   async applySyncedSettings(settings: Settings): Promise<Ack> {
+    this.assertRuntimeMutationAllowed();
     const now: number = this.ports.now();
     this.catchUp(now);
     const reason: string | null = settingsChangeAllowed(
@@ -910,6 +962,7 @@ export class Engine {
   }
 
   async applySyncedBank(bank: BankState): Promise<Ack> {
+    this.assertRuntimeMutationAllowed();
     const now: number = this.ports.now();
     if (!Number.isFinite(bank.balanceMs) || bank.balanceMs < 0) {
       return this.fail(now, 'invalid synced pause bank');
@@ -923,20 +976,11 @@ export class Engine {
   }
 
   async applySyncedStreak(streak: StreakState): Promise<void> {
+    this.assertRuntimeMutationAllowed();
     const sanitized: StreakState = rebaseStreakForDate(streak, localDateStr(this.ports.now()));
     const chosen: StreakState | null = chooseNewerStreak(sanitized, this.streak);
     this.streak = chosen;
     if (chosen === null) return;
-  }
-
-  async previewSyncedPolicy(
-    changes: Partial<PolicyValueByKey>,
-    reconcilePendingLists: boolean,
-  ): Promise<Ack & { accepted?: Partial<PolicyValueByKey> }> {
-    return this.enqueuePolicyMutation(
-      (): Promise<Ack & { accepted?: Partial<PolicyValueByKey> }> =>
-        this.previewSyncedPolicyNow(changes, reconcilePendingLists),
-    );
   }
 
   private async previewSyncedPolicyNow(
@@ -998,27 +1042,34 @@ export class Engine {
     return { ok: true, accepted };
   }
 
-  async commitSyncedPolicy(changes: Partial<PolicyValueByKey>): Promise<void> {
-    return this.enqueuePolicyMutation((): Promise<void> => this.commitSyncedPolicyNow(changes));
-  }
-
   async transactSyncedPolicy(
     changes: Partial<PolicyValueByKey>,
     reconcilePendingLists: boolean,
     mirror: (accepted: Partial<PolicyValueByKey>) => Promise<void>,
   ): Promise<Ack> {
     return this.enqueuePolicyMutation(async (): Promise<Ack> => {
-      const preview: Ack & { accepted?: Partial<PolicyValueByKey> } =
-        await this.previewSyncedPolicyNow(changes, reconcilePendingLists);
-      if (!preview.ok) return preview;
-      const accepted: Partial<PolicyValueByKey> = preview.accepted ?? changes;
-      const listBundle: MatcherCacheBundle | undefined =
-        accepted.lists === undefined
-          ? undefined
-          : await this.prepareSyncedListBundle(accepted.lists);
-      await mirror(accepted);
-      await this.commitSyncedPolicyNow(accepted, listBundle);
-      return { ok: true };
+      const admittedAt: number = this.ports.now();
+      this.catchUp(admittedAt);
+      this.inboundPolicyTransactionActive = true;
+      try {
+        if (this.dirty) await this.commit(admittedAt);
+        const preview: Ack & { accepted?: Partial<PolicyValueByKey> } =
+          await this.previewSyncedPolicyNow(changes, reconcilePendingLists);
+        if (!preview.ok) return preview;
+        const accepted: Partial<PolicyValueByKey> = preview.accepted ?? changes;
+        const listBundle: MatcherCacheBundle | undefined =
+          accepted.lists === undefined
+            ? undefined
+            : await this.prepareSyncedListBundle(accepted.lists);
+        await mirror(accepted);
+        await this.commitSyncedPolicyNow(accepted, listBundle);
+        return { ok: true };
+      } finally {
+        this.inboundPolicyTransactionActive = false;
+        const completedAt: number = this.ports.now();
+        this.catchUp(completedAt);
+        if (this.dirty) await this.commit(completedAt);
+      }
     });
   }
 
@@ -1101,7 +1152,7 @@ export class Engine {
   statsOverlay(): EngineStatsOverlay {
     const now: number = this.ports.now();
     this.catchUp(now);
-    if (this.dirty) this.commitInBackground(now);
+    if (this.dataClearBarrierState !== 'quiesced' && this.dirty) this.commitInBackground(now);
     return {
       deviceId: this.deviceId,
       todayAgg: capAttempts(
@@ -1116,6 +1167,7 @@ export class Engine {
   // --- catch-up: settle accrual, advance the machine, expire gates and unlocks ---
 
   private catchUp(now: number): void {
+    if (this.dataClearBarrierState === 'quiesced') return;
     const today: string = localDateStr(now);
     if (this.runtime.date > today) this.rebaseDateBackward(today, now);
     while (this.runtime.date !== today) {
@@ -1128,7 +1180,9 @@ export class Engine {
     this.settleSession(now);
     this.expireGate(now);
     this.expireUnlocks(now);
-    if (!this.listCachePersistenceInFlight) this.scheduleCheck(now);
+    if (!this.listCachePersistenceInFlight && !this.inboundPolicyTransactionActive) {
+      this.scheduleCheck(now);
+    }
   }
 
   private rebaseDateBackward(today: string, now: number): void {
@@ -1606,12 +1660,73 @@ export class Engine {
   }
 
   private enqueuePolicyMutation<T>(mutation: () => Promise<T>): Promise<T> {
+    if (this.dataClearBarrierState !== 'open') {
+      return Promise.reject(
+        new Error('runtime mutation rejected while all-data clear is in progress'),
+      );
+    }
     const requested: Promise<T> = this.policyMutationQueue.then(mutation, mutation);
     this.policyMutationQueue = requested.then(
       (): void => undefined,
       (): void => undefined,
     );
     return requested;
+  }
+
+  private assertRuntimeMutationAllowed(): void {
+    if (this.dataClearBarrierState === 'quiesced') {
+      throw new Error('runtime mutation rejected while all-data clear is in progress');
+    }
+  }
+
+  private resetAfterAllDataClear(): void {
+    const now: number = this.ports.now();
+    this.settings = structuredClone(DEFAULT_SETTINGS);
+    this.lists = structuredClone(DEFAULT_LISTS);
+    this.bank = { balanceMs: 0 };
+    this.streak = null;
+    this.runtime = emptyRuntime(now);
+    this.deviceId = '';
+    this.pendingEvents = [];
+    this.dirty = false;
+    this.needsBlocking = false;
+    this.bankDirty = false;
+    this.streakDirty = false;
+    this.bankRevision = 0;
+    this.runtimePersistRevision = 0;
+    this.attemptRevision = 0;
+    this.attemptPersistInFlight.clear();
+    this.failedAttemptPersistence.clear();
+    this.activeMatcher = null;
+    this.activeMatcherSessionIdentity = null;
+    this.activeMatcherRules = null;
+    this.activeMatcherMode = null;
+    this.ownedRuntimeSnapshot = structuredClone(this.runtime);
+  }
+
+  private async drainRuntimeMutations(): Promise<void> {
+    while (true) {
+      const policy: Promise<void> = this.policyMutationQueue;
+      const commits: Promise<void> = this.commitQueue;
+      const blocking: Promise<void> = this.blockingMutationPersistQueue;
+      const runtime: Promise<void> = this.runtimePersistQueue;
+      const attempts: Promise<void>[] = [...this.attemptPersistInFlight.values()].flatMap(
+        (durabilities: Set<AttemptDurability>): Promise<void>[] =>
+          [...durabilities].map(
+            (durability: AttemptDurability): Promise<void> => durability.promise,
+          ),
+      );
+      await Promise.all([policy, commits, blocking, runtime, ...attempts]);
+      if (
+        policy === this.policyMutationQueue &&
+        commits === this.commitQueue &&
+        blocking === this.blockingMutationPersistQueue &&
+        runtime === this.runtimePersistQueue &&
+        this.attemptPersistInFlight.size === 0
+      ) {
+        return;
+      }
+    }
   }
 
   private pruneDebounce(now: number): void {

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { decodeListsSyncSnapshot } from '../../../src/background/list-sync-codec';
 import {
+  type AllDataClearBarrier,
   createPolicyStorage,
   type PolicySnapshot,
   type PolicyStorage,
@@ -165,8 +166,17 @@ const EMPTY_CHECKPOINT = {
   loadAggregateItems: async (): Promise<Record<string, unknown>> => ({}),
 };
 
+const DIRECT_ALL_DATA_CLEAR_BARRIER: AllDataClearBarrier = {
+  runExclusive: <T>(operation: () => Promise<T>): Promise<T> => operation(),
+};
+
 function policyStorage(local: FakeStorage, sync: FakeStorage): PolicyStorage {
-  return createPolicyStorage(local.area, sync.area, EMPTY_CHECKPOINT);
+  return createPolicyStorage(
+    local.area,
+    sync.area,
+    EMPTY_CHECKPOINT,
+    DIRECT_ALL_DATA_CLEAR_BARRIER,
+  );
 }
 
 async function setupState(local: FakeStorage): Promise<SetupState> {
@@ -340,10 +350,15 @@ describe('PolicyStorage', (): void => {
     const setup: SetupState = { ...DEFAULT_SETUP, storageMode: 'local' };
     const local: FakeStorage = fakeStorage(localPolicy(setup));
     const sync: FakeStorage = fakeStorage();
-    const storage: PolicyStorage = createPolicyStorage(local.area, sync.area, {
-      loadAggregateItems: (): Promise<Record<string, unknown>> =>
-        Promise.reject(new Error('local aggregate checkpoint is unavailable')),
-    });
+    const storage: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      {
+        loadAggregateItems: (): Promise<Record<string, unknown>> =>
+          Promise.reject(new Error('local aggregate checkpoint is unavailable')),
+      },
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
     await storage.initialize();
 
     await expect(storage.enableSync()).rejects.toThrow('local aggregate checkpoint is unavailable');
@@ -761,10 +776,15 @@ describe('PolicyStorage', (): void => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
     const local: FakeStorage = fakeStorage(localPolicy(setup));
     const sync: FakeStorage = fakeStorage();
-    const storage: PolicyStorage = createPolicyStorage(local.area, sync.area, {
-      loadAggregateItems: (): Promise<Record<string, unknown>> =>
-        Promise.reject(new Error('aggregate checkpoint unavailable')),
-    });
+    const storage: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      {
+        loadAggregateItems: (): Promise<Record<string, unknown>> =>
+          Promise.reject(new Error('aggregate checkpoint unavailable')),
+      },
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
     await storage.initialize();
 
     await expect(storage.enableSync()).rejects.toThrow('aggregate checkpoint unavailable');
@@ -780,11 +800,16 @@ describe('PolicyStorage', (): void => {
       const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
       const local: FakeStorage = fakeStorage(localPolicy(setup));
       const sync: FakeStorage = fakeStorage();
-      const storage: PolicyStorage = createPolicyStorage(local.area, sync.area, {
-        loadAggregateItems: async (): Promise<Record<string, unknown>> => ({
-          [key]: key === SYNC_BANK ? { balanceMs: 7 } : SNAPSHOT.settings,
-        }),
-      });
+      const storage: PolicyStorage = createPolicyStorage(
+        local.area,
+        sync.area,
+        {
+          loadAggregateItems: async (): Promise<Record<string, unknown>> => ({
+            [key]: key === SYNC_BANK ? { balanceMs: 7 } : SNAPSHOT.settings,
+          }),
+        },
+        DIRECT_ALL_DATA_CLEAR_BARRIER,
+      );
 
       await expect(storage.enableSync()).rejects.toThrow('collides with policy');
 
@@ -1213,6 +1238,72 @@ describe('PolicyStorage', (): void => {
     expect(await storage.loadSetup()).toEqual(DEFAULT_SETUP);
   });
 
+  it('re-scans local authority when a writer recreates Focus Lock data after removal', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_RUNTIME]: emptyRuntime(Date.now()),
+    });
+    const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
+    let recreated: boolean = false;
+    vi.mocked(local.area.remove).mockImplementation(
+      async (keys: string | string[]): Promise<void> => {
+        const requested: string[] = typeof keys === 'string' ? [keys] : keys;
+        for (const key of requested) delete local.state.values[key];
+        if (!recreated && requested.includes(LOCAL_SETTINGS)) {
+          recreated = true;
+          local.state.values[LOCAL_EVENTS] = [
+            { id: 'late-event', type: 'attempt', at: Date.now() },
+          ];
+        }
+      },
+    );
+    const storage: PolicyStorage = policyStorage(local, sync);
+
+    await storage.deleteRemoteData('all');
+
+    expect(recreated).toBe(true);
+    expect(local.state.values[LOCAL_EVENTS]).toBeUndefined();
+    expect(await storage.loadSetup()).toEqual(DEFAULT_SETUP);
+  });
+
+  it('acquires the runtime barrier before entering the adapter mutation queue', async (): Promise<void> => {
+    let releaseBarrier: () => void = (): void => undefined;
+    let signalBarrierEntered: () => void = (): void => undefined;
+    const barrierBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseBarrier = resolve;
+    });
+    const barrierEntered: Promise<void> = new Promise((resolve: () => void): void => {
+      signalBarrierEntered = resolve;
+    });
+    const barrier: AllDataClearBarrier = {
+      runExclusive: async <T>(operation: () => Promise<T>): Promise<T> => {
+        signalBarrierEntered();
+        await barrierBlocked;
+        return operation();
+      },
+    };
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_RUNTIME]: emptyRuntime(Date.now()),
+    });
+    const storage: PolicyStorage = createPolicyStorage(
+      local.area,
+      fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings }).area,
+      EMPTY_CHECKPOINT,
+      barrier,
+    );
+
+    const clearing: Promise<void> = storage.deleteRemoteData('all');
+    await barrierEntered;
+    await expect(storage.setPolicy('bank', { balanceMs: 77_000 })).resolves.toBeUndefined();
+
+    releaseBarrier();
+    await clearing;
+    expect(local.state.values[LOCAL_BANK]).toBeUndefined();
+  });
+
   it('rejects all-data deletion without mutating storage while durable runtime is active', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
     const now: number = Date.now();
@@ -1335,10 +1426,24 @@ describe('PolicyStorage', (): void => {
     });
     const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
     sync.state.failRemove = new Error('remote removal unavailable');
-    const storage: PolicyStorage = policyStorage(local, sync);
+    let retainedQuiescence: boolean = false;
+    const storage: PolicyStorage = createPolicyStorage(local.area, sync.area, EMPTY_CHECKPOINT, {
+      runExclusive: async <T>(
+        operation: () => Promise<T>,
+        retainQuiescence: () => boolean,
+      ): Promise<T> => {
+        try {
+          return await operation();
+        } catch (error: unknown) {
+          retainedQuiescence = retainQuiescence();
+          throw error;
+        }
+      },
+    });
 
     await expect(storage.deleteRemoteData('all')).rejects.toThrow('remote removal unavailable');
 
+    expect(retainedQuiescence).toBe(true);
     expect(local.state.values[LOCAL_RUNTIME]).toEqual(runtime);
     expect(local.state.values[LOCAL_CACHES]).toEqual(cache);
     expect(local.state.values[LOCAL_EVENTS]).toEqual(history);
@@ -1426,7 +1531,20 @@ describe('PolicyStorage', (): void => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
     const local: FakeStorage = fakeStorage({ ...localPolicy(setup), unrelated: 'keep' });
     const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
-    const storage: PolicyStorage = policyStorage(local, sync);
+    let retainedQuiescence: boolean = false;
+    const storage: PolicyStorage = createPolicyStorage(local.area, sync.area, EMPTY_CHECKPOINT, {
+      runExclusive: async <T>(
+        operation: () => Promise<T>,
+        retainQuiescence: () => boolean,
+      ): Promise<T> => {
+        try {
+          return await operation();
+        } catch (error: unknown) {
+          retainedQuiescence = retainQuiescence();
+          throw error;
+        }
+      },
+    });
     let failLocalClear: boolean = true;
     vi.mocked(local.area.remove).mockImplementation(
       async (keys: string | string[]): Promise<void> => {
@@ -1440,6 +1558,7 @@ describe('PolicyStorage', (): void => {
 
     await expect(storage.deleteRemoteData('all')).rejects.toThrow('local clear interrupted');
 
+    expect(retainedQuiescence).toBe(true);
     expect(sync.state.values[SYNC_SETTINGS]).toBeUndefined();
     expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toMatchObject({
       scope: 'all',
@@ -1448,9 +1567,16 @@ describe('PolicyStorage', (): void => {
     expect((await setupState(local)).storageError).toBe('local-clear-failed');
 
     failLocalClear = false;
-    const restarted: PolicyStorage = policyStorage(local, sync);
+    let barrierRuns: number = 0;
+    const restarted: PolicyStorage = createPolicyStorage(local.area, sync.area, EMPTY_CHECKPOINT, {
+      runExclusive: async <T>(operation: () => Promise<T>): Promise<T> => {
+        barrierRuns += 1;
+        return operation();
+      },
+    });
     await restarted.initialize();
 
+    expect(barrierRuns).toBe(1);
     expect(local.state.values.unrelated).toBe('keep');
     expect(await restarted.loadSetup()).toEqual(DEFAULT_SETUP);
   });

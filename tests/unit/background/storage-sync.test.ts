@@ -72,17 +72,44 @@ describe('handleSyncChanges', () => {
     ]);
   });
 
+  it('rejects split preview and commit methods for a durable inbound transaction', async (): Promise<void> => {
+    const transaction: SyncPolicyTransaction = {
+      inboundSyncAllowed: vi.fn().mockResolvedValue(true),
+      loadSnapshot: vi.fn(),
+      mirrorAcceptedRemotePolicy: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await expect(
+      handleSyncChanges(
+        makeEngine(),
+        { [SYNC_SETTINGS]: { newValue: { ...DEFAULT_SETTINGS, retentionDays: 30 } } },
+        new SyncEchoes(),
+        vi.fn(),
+        false,
+        undefined,
+        transaction,
+      ),
+    ).rejects.toThrow('transactional sync engine method');
+
+    expect(transaction.mirrorAcceptedRemotePolicy).not.toHaveBeenCalled();
+  });
+
   it('previews, mirrors, and commits accepted policy as one inbound transaction', async () => {
     const trace: string[] = [];
     const incoming: Settings = { ...DEFAULT_SETTINGS, retentionDays: 30 };
-    const previewSyncedPolicy = vi.fn(async (): Promise<{ ok: true }> => {
-      trace.push('preview');
-      return { ok: true };
-    });
-    const commitSyncedPolicy = vi.fn(async (): Promise<void> => {
-      trace.push('commit');
-    });
-    const engine: SyncChangeEngine = makeEngine({ previewSyncedPolicy, commitSyncedPolicy });
+    const transactSyncedPolicy = vi.fn(
+      async (
+        changes: Partial<PolicyValueByKey>,
+        _reconcilePendingLists: boolean,
+        mirror: (accepted: Partial<PolicyValueByKey>) => Promise<void>,
+      ): Promise<{ ok: true }> => {
+        trace.push('preview');
+        await mirror(changes);
+        trace.push('commit');
+        return { ok: true };
+      },
+    );
+    const engine: SyncChangeEngine = makeEngine({ transactSyncedPolicy });
     const transaction: SyncPolicyTransaction = {
       inboundSyncAllowed: vi.fn().mockResolvedValue(true),
       loadSnapshot: vi.fn().mockResolvedValue({
@@ -107,18 +134,29 @@ describe('handleSyncChanges', () => {
     );
 
     expect(trace).toEqual(['preview', 'mirror', 'commit']);
-    expect(previewSyncedPolicy).toHaveBeenCalledWith({ settings: incoming }, false);
+    expect(transactSyncedPolicy).toHaveBeenCalledWith(
+      { settings: incoming },
+      false,
+      expect.any(Function),
+    );
     expect(transaction.mirrorAcceptedRemotePolicy).toHaveBeenCalledWith({ settings: incoming }, []);
-    expect(commitSyncedPolicy).toHaveBeenCalledWith({ settings: incoming });
   });
 
   it('leaves the engine unchanged when the durable mirror fails', async () => {
     const failure: Error = new Error('local mirror unavailable');
-    const commitSyncedPolicy = vi.fn().mockResolvedValue(undefined);
-    const engine: SyncChangeEngine = makeEngine({
-      previewSyncedPolicy: vi.fn().mockResolvedValue({ ok: true }),
-      commitSyncedPolicy,
-    });
+    const commitSyncedPolicy = vi.fn();
+    const transactSyncedPolicy = vi.fn(
+      async (
+        changes: Partial<PolicyValueByKey>,
+        _reconcilePendingLists: boolean,
+        mirror: (accepted: Partial<PolicyValueByKey>) => Promise<void>,
+      ): Promise<{ ok: true }> => {
+        await mirror(changes);
+        commitSyncedPolicy();
+        return { ok: true };
+      },
+    );
+    const engine: SyncChangeEngine = makeEngine({ transactSyncedPolicy });
     const transaction: SyncPolicyTransaction = {
       inboundSyncAllowed: vi.fn().mockResolvedValue(true),
       loadSnapshot: vi.fn(),
@@ -143,8 +181,7 @@ describe('handleSyncChanges', () => {
     const queueSync = vi.fn().mockResolvedValue(undefined);
     const queueVerifiedRemoteCorrections = vi.fn().mockResolvedValue(undefined);
     const engine: SyncChangeEngine = makeEngine({
-      previewSyncedPolicy: vi.fn().mockResolvedValue({ ok: false, error: 'hard session' }),
-      commitSyncedPolicy: vi.fn(),
+      transactSyncedPolicy: vi.fn().mockResolvedValue({ ok: false, error: 'hard session' }),
     });
     const transaction: SyncPolicyTransaction = {
       inboundSyncAllowed: vi.fn().mockResolvedValue(true),
@@ -269,10 +306,7 @@ describe('handleSyncChanges', () => {
 
   it('rejects inbound handling before loading list shards outside sync mode', async () => {
     const loadListSnapshot = vi.fn().mockResolvedValue({});
-    const engine: SyncChangeEngine = makeEngine({
-      previewSyncedPolicy: vi.fn(),
-      commitSyncedPolicy: vi.fn(),
-    });
+    const engine: SyncChangeEngine = makeEngine();
     const transaction: SyncPolicyTransaction = {
       inboundSyncAllowed: vi.fn().mockResolvedValue(false),
       loadSnapshot: vi.fn(),

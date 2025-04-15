@@ -90,6 +90,10 @@ export interface FirstSyncCheckpointSource {
   loadAggregateItems(): Promise<Record<string, unknown>>;
 }
 
+export interface AllDataClearBarrier {
+  runExclusive<T>(operation: () => Promise<T>, retainQuiescence: () => boolean): Promise<T>;
+}
+
 export interface PolicyStorage {
   initialize(): Promise<void>;
   loadSetup(): Promise<SetupState>;
@@ -106,6 +110,7 @@ export interface PolicyStorage {
   ): Promise<void>;
   queueVerifiedRemoteCorrections(keys: readonly (keyof PolicyValueByKey)[]): Promise<void>;
   deleteRemoteData(scope: 'synced-policy' | 'all'): Promise<void>;
+  allDataClearCompleted(): boolean;
   storageMode(): Promise<StorageMode | null>;
   inboundSyncAllowed(): Promise<boolean>;
   consumeRemoteEcho(key: string, value: unknown): boolean;
@@ -318,12 +323,16 @@ export function createPolicyStorage(
   local: chrome.storage.StorageArea,
   sync: chrome.storage.SyncStorageArea,
   firstSyncCheckpoint: FirstSyncCheckpointSource,
+  allDataClearBarrier: AllDataClearBarrier,
 ): PolicyStorage {
   let initialized: boolean = false;
   let mode: StorageMode | null = null;
   let operationQueue: Promise<void> = Promise.resolve();
   let publisher: SyncWriter | null = null;
   let firstCheckpointComplete: boolean = false;
+  let allDataClearBarrierHeld = false;
+  let allDataClearQuiescenceRequired = false;
+  let completedAllDataClear = false;
   const echoes: SyncEchoes = new SyncEchoes();
 
   function enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -333,6 +342,20 @@ export function createPolicyStorage(
       (): void => undefined,
     );
     return requested;
+  }
+
+  function runAllDataClearExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    return allDataClearBarrier.runExclusive(
+      async (): Promise<T> => {
+        allDataClearBarrierHeld = true;
+        try {
+          return await operation();
+        } finally {
+          allDataClearBarrierHeld = false;
+        }
+      },
+      (): boolean => allDataClearQuiescenceRequired,
+    );
   }
 
   async function previousValues(keys: readonly string[]): Promise<PreviousValues> {
@@ -570,6 +593,12 @@ export function createPolicyStorage(
     mode = setup.storageMode;
     const dataClearJournal: DataClearJournal | null = await loadDataClearJournal();
     if (dataClearJournal !== null) {
+      if (dataClearJournal.scope === 'all') {
+        if (!allDataClearBarrierHeld) {
+          throw new Error('all-data clear recovery requires the runtime mutation barrier');
+        }
+        allDataClearQuiescenceRequired = true;
+      }
       await resumeDataClear(dataClearJournal);
       initialized = true;
       return;
@@ -1156,17 +1185,37 @@ export function createPolicyStorage(
     if (Object.hasOwn(verified, LOCAL_DATA_CLEAR_JOURNAL)) {
       throw new Error(`could not finish ${journal.scope} data clear`);
     }
+    if (journal.scope === 'all') {
+      allDataClearQuiescenceRequired = true;
+      completedAllDataClear = true;
+    }
   }
 
   async function clearLocalPhase(journal: DataClearJournal): Promise<void> {
-    const allLocal: Record<string, unknown> = await local.get(null);
-    const keys: string[] = Object.keys(allLocal).filter(
-      (key: string): boolean =>
-        key !== LOCAL_SETUP && key !== LOCAL_DATA_CLEAR_JOURNAL && isFocusLockLocalKey(key),
-    );
-    if (keys.length > 0) await local.remove(keys);
-    const remaining: Record<string, unknown> = await local.get(keys);
-    if (Object.keys(remaining).length > 0) throw new Error('could not verify local data clear');
+    let previousRemainingSignature: string | null = null;
+    while (true) {
+      const allLocal: Record<string, unknown> = await local.get(null);
+      const keys: string[] = Object.keys(allLocal).filter(
+        (key: string): boolean =>
+          key !== LOCAL_SETUP && key !== LOCAL_DATA_CLEAR_JOURNAL && isFocusLockLocalKey(key),
+      );
+      if (keys.length === 0) break;
+      await local.remove(keys);
+      const remaining: Record<string, unknown> = await local.get(null);
+      const remainingFocusLockKeys: string[] = Object.keys(remaining).filter(
+        (key: string): boolean =>
+          key !== LOCAL_SETUP && key !== LOCAL_DATA_CLEAR_JOURNAL && isFocusLockLocalKey(key),
+      );
+      if (remainingFocusLockKeys.length === 0) break;
+      const remainingValues: Record<string, unknown> = Object.fromEntries(
+        remainingFocusLockKeys.map((key: string): [string, unknown] => [key, remaining[key]]),
+      );
+      const signature: string = serialized(remainingValues);
+      if (signature === previousRemainingSignature) {
+        throw new Error('could not verify local data clear');
+      }
+      previousRemainingSignature = signature;
+    }
     const incomplete: SetupState = {
       ...DEFAULT_SETUP,
       dataClear: { status: 'pending', scope: 'all', phase: 'local' },
@@ -1246,8 +1295,10 @@ export function createPolicyStorage(
     }
     const journal: DataClearJournal =
       existing ?? ({ scope, phase: 'remote', inventory: [] } satisfies DataClearJournal);
+    if (scope === 'all' && existing !== null) allDataClearQuiescenceRequired = true;
     if (scope === 'all') await assertStoppedRuntimeForAllDataClear();
     await persistDataClearJournal(journal, 'pending', null);
+    if (scope === 'all') allDataClearQuiescenceRequired = true;
     await resumeDataClear(journal);
   }
 
@@ -1289,7 +1340,15 @@ export function createPolicyStorage(
   }
 
   return {
-    initialize: (): Promise<void> => enqueue(initializeInternal),
+    initialize: async (): Promise<void> => {
+      const stored: Record<string, unknown> = await local.get(LOCAL_DATA_CLEAR_JOURNAL);
+      const journal: DataClearJournal | null = parseDataClearJournal(
+        stored[LOCAL_DATA_CLEAR_JOURNAL],
+      );
+      if (journal?.scope !== 'all') return enqueue(initializeInternal);
+      allDataClearQuiescenceRequired = true;
+      return runAllDataClearExclusive((): Promise<void> => enqueue(initializeInternal));
+    },
     loadSetup: (): Promise<SetupState> =>
       enqueue(async (): Promise<SetupState> => {
         await ensureInitialized();
@@ -1318,7 +1377,12 @@ export function createPolicyStorage(
     queueVerifiedRemoteCorrections: (keys: readonly (keyof PolicyValueByKey)[]): Promise<void> =>
       enqueue((): Promise<void> => queueVerifiedRemoteCorrectionsInternal(keys)),
     deleteRemoteData: (scope: 'synced-policy' | 'all'): Promise<void> =>
-      enqueue((): Promise<void> => deleteRemoteDataInternal(scope)),
+      scope === 'all'
+        ? runAllDataClearExclusive(
+            (): Promise<void> => enqueue((): Promise<void> => deleteRemoteDataInternal(scope)),
+          )
+        : enqueue((): Promise<void> => deleteRemoteDataInternal(scope)),
+    allDataClearCompleted: (): boolean => completedAllDataClear,
     storageMode: (): Promise<StorageMode | null> =>
       enqueue(async (): Promise<StorageMode | null> => {
         await ensureInitialized();

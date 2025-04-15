@@ -122,6 +122,7 @@ function makeEngine(opts?: {
   persistSyncJournal?: EnginePorts['persistSyncJournal'];
   saveMatcherCache?: EnginePorts['saveMatcherCache'];
   savePolicy?: EnginePorts['savePolicy'];
+  applyBlocking?: EnginePorts['applyBlocking'];
   sessionCompiler?: typeof compileSessionMatcher;
   hasPendingSync?: (key: string) => boolean;
   lists?: ListsConfig;
@@ -141,7 +142,10 @@ function makeEngine(opts?: {
         : vi.fn(opts.persistSyncJournal),
     appendEvents: vi.fn().mockResolvedValue(undefined),
     broadcast: vi.fn(),
-    applyBlocking: vi.fn().mockResolvedValue(undefined),
+    applyBlocking:
+      opts?.applyBlocking === undefined
+        ? vi.fn().mockResolvedValue(undefined)
+        : vi.fn(opts.applyBlocking),
     playSound: vi.fn(),
     notify: vi.fn(),
     updateIcon: vi.fn(),
@@ -652,7 +656,7 @@ describe('Engine', () => {
     expect(h.ports.persistSyncJournal).toHaveBeenCalled();
   });
 
-  it('previews inbound policy without mutation and commits it without publication', async () => {
+  it('mirrors inbound policy without early mutation and commits it without publication', async () => {
     const savePolicy = vi.fn().mockResolvedValue(undefined);
     const h: Harness = makeEngine({ bankMs: 120_000, savePolicy });
     const incoming: Settings = {
@@ -660,18 +664,16 @@ describe('Engine', () => {
       pause: { ...DEFAULT_SETTINGS.pause, capMs: 60_000 },
     };
 
-    await expect(h.engine.previewSyncedPolicy({ settings: incoming }, false)).resolves.toEqual({
-      ok: true,
-      accepted: {
-        settings: incoming,
-        bank: { balanceMs: 60_000 },
-      },
+    const mirror = vi.fn(async (): Promise<void> => {
+      expect(h.engine.getSettings()).toEqual(DEFAULT_SETTINGS);
+      expect(h.engine.snapshot().bankMs).toBe(120_000);
     });
-    expect(h.engine.getSettings()).toEqual(DEFAULT_SETTINGS);
-    expect(h.engine.snapshot().bankMs).toBe(120_000);
 
-    await h.engine.commitSyncedPolicy({ settings: incoming });
+    await expect(
+      h.engine.transactSyncedPolicy({ settings: incoming }, false, mirror),
+    ).resolves.toEqual({ ok: true });
 
+    expect(mirror).toHaveBeenCalledWith({ settings: incoming, bank: { balanceMs: 60_000 } });
     expect(h.engine.getSettings()).toEqual(incoming);
     expect(h.engine.snapshot().bankMs).toBe(60_000);
     expect(savePolicy).not.toHaveBeenCalled();
@@ -715,6 +717,62 @@ describe('Engine', () => {
 
     expect(trace).toEqual(['mirror']);
     expect(h.engine.getSettings()).toEqual(remote);
+  });
+
+  it('holds a scheduled Hard start behind inbound mirror I/O across its clock boundary', async (): Promise<void> => {
+    let releaseMirror: () => void = (): void => undefined;
+    let signalMirrorStarted: () => void = (): void => undefined;
+    const mirrorBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseMirror = resolve;
+    });
+    const mirrorStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalMirrorStarted = resolve;
+    });
+    const h: Harness = makeEngine({ settings: { schedule: [scheduledEntry] } });
+    const incoming: Settings = {
+      ...h.engine.getSettings(),
+      gate: { ...h.engine.getSettings().gate, delayMs: 1_000 },
+    };
+
+    const inbound: Promise<Ack> = h.engine.transactSyncedPolicy(
+      { settings: incoming },
+      false,
+      async (): Promise<void> => {
+        signalMirrorStarted();
+        await mirrorBlocked;
+      },
+    );
+    await mirrorStarted;
+    h.setNow(T0 + 2 * 60_000);
+
+    expect(h.engine.snapshot().phase).toBe('idle');
+    expect(h.engine.getSettings().gate.delayMs).not.toBe(1_000);
+
+    releaseMirror();
+    await expect(inbound).resolves.toEqual({ ok: true });
+    expect(h.engine.getSettings()).toEqual(incoming);
+    expect(h.engine.snapshot().phase).toBe('focus');
+  });
+
+  it('catches up a scheduled Hard start before previewing an already-due inbound weakening', async (): Promise<void> => {
+    const h: Harness = makeEngine({ settings: { schedule: [scheduledEntry] } });
+    const incoming: Settings = {
+      ...h.engine.getSettings(),
+      gate: { ...h.engine.getSettings().gate, delayMs: 1_000 },
+    };
+    const mirror = vi.fn().mockResolvedValue(undefined);
+    h.setNow(T0 + 2 * 60_000);
+
+    await expect(
+      h.engine.transactSyncedPolicy({ settings: incoming }, false, mirror),
+    ).resolves.toEqual({
+      ok: false,
+      error: 'a hard session is running: shortening the deliberation delay weakens the gate',
+    });
+
+    expect(mirror).not.toHaveBeenCalled();
+    expect(h.engine.getSettings().gate.delayMs).not.toBe(1_000);
+    expect(h.engine.snapshot().phase).toBe('focus');
   });
 
   it('persists the derived list cache before mirroring inbound list authority', async () => {
@@ -1126,6 +1184,98 @@ describe('Engine', () => {
     expect(h.ports.playSound).toHaveBeenCalledWith('scheduleStart');
     expect(h.engine.snapshot().phase).toBe('focus');
     expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(false);
+  });
+
+  it('quiesces manual and scheduled session starts for the complete all-data clear barrier', async (): Promise<void> => {
+    let releaseRemote: () => void = (): void => undefined;
+    let signalRemoteStarted: () => void = (): void => undefined;
+    const remoteBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseRemote = resolve;
+    });
+    const remoteStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalRemoteStarted = resolve;
+    });
+    const h: Harness = makeEngine({ settings: { schedule: [scheduledEntry] } });
+
+    const clearing: Promise<void> = h.engine.runWithDataClearBarrier(async (): Promise<void> => {
+      signalRemoteStarted();
+      await remoteBlocked;
+    });
+    await remoteStarted;
+    h.setNow(T0 + 2 * 60_000);
+
+    await expect(h.engine.tick()).rejects.toThrow('data clear');
+    await expect(h.engine.startSession(manualConfig)).rejects.toThrow('data clear');
+    await expect(
+      h.engine.recordAttempt('https://facebook.com/feed', 1, 'navigation'),
+    ).rejects.toThrow('data clear');
+    await expect(
+      h.engine.markStopped(1, 'https://facebook.com/feed', 'document-id'),
+    ).rejects.toThrow('data clear');
+    await expect(h.engine.updateLists(DEFAULT_LISTS)).rejects.toThrow('data clear');
+    expect(h.engine.snapshot().phase).toBe('idle');
+    expect(h.ports.saveRuntime).not.toHaveBeenCalled();
+    expect(h.ports.appendEvents).not.toHaveBeenCalled();
+    expect(h.ports.saveMatcherCache).not.toHaveBeenCalled();
+
+    releaseRemote();
+    await clearing;
+
+    await expect(h.engine.tick()).rejects.toThrow('data clear');
+    await expect(h.engine.startSession(manualConfig)).rejects.toThrow('data clear');
+    await expect(h.engine.snapshotPersisted()).rejects.toThrow('data clear');
+    await expect(h.engine.updateLists(DEFAULT_LISTS)).rejects.toThrow('data clear');
+    expect(h.engine.getSettings()).toEqual(DEFAULT_SETTINGS);
+    expect(h.engine.getLists()).toEqual(DEFAULT_LISTS);
+    expect(h.engine.snapshot()).toMatchObject({ phase: 'idle', bankMs: 0 });
+    expect(h.engine.statsOverlay().pendingEvents).toEqual([]);
+    expect(h.ports.saveRuntime).not.toHaveBeenCalled();
+  });
+
+  it('lets an admitted mutation finish its applyBlocking persistence before closing the barrier', async (): Promise<void> => {
+    let releaseBlocking: () => void = (): void => undefined;
+    let signalBlockingStarted: () => void = (): void => undefined;
+    let h: Harness;
+    const blockingPaused: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseBlocking = resolve;
+    });
+    const blockingStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalBlockingStarted = resolve;
+    });
+    h = makeEngine({
+      applyBlocking: async (): Promise<void> => {
+        signalBlockingStarted();
+        await blockingPaused;
+        await h.engine.flushRuntime();
+      },
+    });
+
+    const starting: Promise<Ack> = h.engine.startSession(manualConfig);
+    await blockingStarted;
+    const clearing: Promise<void> = h.engine.runWithDataClearBarrier(
+      (): Promise<void> => Promise.resolve(),
+    );
+    releaseBlocking();
+
+    await expect(starting).resolves.toEqual({ ok: true });
+    await clearing;
+  });
+
+  it('keeps mutation admission quiesced after a durable all-data clear journal fails', async (): Promise<void> => {
+    const h: Harness = makeEngine();
+    await expect(
+      h.engine.runWithDataClearBarrier(
+        (): Promise<void> => Promise.reject(new Error('remote deletion unavailable')),
+        (): boolean => true,
+      ),
+    ).rejects.toThrow('remote deletion unavailable');
+    await expect(h.engine.startSession(manualConfig)).rejects.toThrow('data clear');
+    await expect(
+      h.engine.runWithDataClearBarrier(
+        (): Promise<void> => Promise.resolve(),
+        (): boolean => true,
+      ),
+    ).resolves.toBeUndefined();
   });
 
   it('serializes local and live list caches and reconciles a pending local Sync value', async () => {
