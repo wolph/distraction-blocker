@@ -17,6 +17,8 @@ import {
   rulesFromLists,
 } from '../../../src/shared/constants';
 import {
+  LOCAL_AGGREGATE_PRUNE,
+  LOCAL_AGGREGATE_TOMBSTONES,
   LOCAL_BANK,
   LOCAL_CACHES,
   LOCAL_DATA_CLEAR_JOURNAL,
@@ -35,6 +37,7 @@ import {
   SYNC_LISTS,
   SYNC_SETTINGS,
   SYNC_STREAK,
+  syncAggKey,
 } from '../../../src/shared/storage-keys';
 import type {
   BankState,
@@ -752,6 +755,229 @@ describe('PolicyStorage', (): void => {
     expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
   });
 
+  it('persists an aggregate locally without touching Sync in local mode', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    const key: string = syncAggKey('device-a', '2026-08-31');
+    const aggregate = { ...emptyDaily('2026-08-31'), focusMs: 42_000 };
+
+    await storage.saveAggregate(key, aggregate);
+
+    expect(local.state.values[key]).toEqual(aggregate);
+    expect(sync.area.get).not.toHaveBeenCalled();
+    expect(sync.area.set).not.toHaveBeenCalled();
+    expect((await setupState(local)).syncWriteStatus).toBe('idle');
+  });
+
+  it('includes local aggregate history in the first complete Sync checkpoint', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const key: string = syncAggKey('device-a', '2026-08-31');
+    const aggregate = { ...emptyDaily('2026-08-31'), focusMs: 42_000 };
+    const monthKey: string = 'aggm:device-a:2026-07';
+    const monthly = rollupMonth('2026-07', [{ ...emptyDaily('2026-07-31'), focusMs: 21_000 }]);
+    const archiveKey: string = 'archive:clock-rebase:device-a:2026-09-01:1:nonce';
+    const archive = { ...emptyDaily('2026-09-01'), focusMs: 7_000 };
+    const aggregates: Record<string, unknown> = {
+      [key]: aggregate,
+      [monthKey]: monthly,
+      [archiveKey]: archive,
+    };
+    const local: FakeStorage = fakeStorage({ ...localPolicy(setup), ...aggregates });
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      { loadAggregateItems: async (): Promise<Record<string, unknown>> => aggregates },
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+
+    await storage.enableSync();
+
+    expect(sync.state.values[key]).toEqual(aggregate);
+    expect(sync.state.values[monthKey]).toEqual(monthly);
+    expect(sync.state.values[archiveKey]).toEqual(archive);
+    expect(local.state.values[key]).toEqual(aggregate);
+    expect(local.state.values[monthKey]).toEqual(monthly);
+    expect(local.state.values[archiveKey]).toEqual(archive);
+    expect((await setupState(local)).storageMode).toBe('sync');
+  });
+
+  it('reconstructs a missing aggregate journal entry from local authority after restart', async (): Promise<void> => {
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'sync',
+      syncWriteStatus: 'pending',
+    };
+    const key: string = syncAggKey('device-a', '2026-08-31');
+    const aggregate = { ...emptyDaily('2026-08-31'), focusMs: 42_000 };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [key]: aggregate,
+      [LOCAL_SYNC_JOURNAL]: { sets: {}, removes: [] },
+    });
+    const sync: FakeStorage = fakeStorage();
+    const restarted: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      { loadAggregateItems: async (): Promise<Record<string, unknown>> => ({ [key]: aggregate }) },
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+
+    await restarted.initialize();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(sync.state.values[key]).toEqual(aggregate);
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
+    expect((await setupState(local)).syncWriteStatus).toBe('idle');
+  });
+
+  it('keeps a failed Sync aggregate publish durable in local storage and the journal', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    const key: string = syncAggKey('device-a', '2026-08-31');
+    const aggregate = { ...emptyDaily('2026-08-31'), focusMs: 42_000 };
+    await storage.initialize();
+    sync.state.failSet = new Error('sync unavailable');
+
+    await storage.saveAggregate(key, aggregate);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(local.state.values[key]).toEqual(aggregate);
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toMatchObject({
+      sets: { [key]: aggregate },
+    });
+    expect((await setupState(local)).syncWriteStatus).toBe('error');
+  });
+
+  it('removes stale aggregates from this device on first Sync without touching another device', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const currentKey: string = syncAggKey('device-a', '2026-08-31');
+    const staleKey: string = syncAggKey('device-a', '2026-08-30');
+    const otherKey: string = syncAggKey('device-b', '2026-08-30');
+    const current = { ...emptyDaily('2026-08-31'), focusMs: 42_000 };
+    const stale = { ...emptyDaily('2026-08-30'), focusMs: 21_000 };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_DEVICE_ID]: 'device-a',
+      [currentKey]: current,
+    });
+    const sync: FakeStorage = fakeStorage({ [staleKey]: stale, [otherKey]: stale });
+    const storage: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      {
+        loadAggregateItems: async (): Promise<Record<string, unknown>> => ({
+          [currentKey]: current,
+        }),
+      },
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+
+    await storage.enableSync();
+
+    expect(sync.state.values[currentKey]).toEqual(current);
+    expect(sync.state.values[staleKey]).toBeUndefined();
+    expect(sync.state.values[otherKey]).toEqual(stale);
+  });
+
+  it('serializes an aggregate save before a concurrently requested Sync enable', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const key: string = syncAggKey('device-a', '2026-08-31');
+    const aggregate = { ...emptyDaily('2026-08-31'), focusMs: 42_000 };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_DEVICE_ID]: 'device-a',
+    });
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      {
+        loadAggregateItems: async (): Promise<Record<string, unknown>> => {
+          const stored: Record<string, unknown> = await local.area.get(null);
+          return Object.hasOwn(stored, key) ? { [key]: stored[key] } : {};
+        },
+      },
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+
+    const saving: Promise<void> = storage.saveAggregate(key, aggregate);
+    const enabling: Promise<void> = storage.enableSync();
+    await Promise.all([saving, enabling]);
+
+    expect(sync.state.values[key]).toEqual(aggregate);
+    expect((await setupState(local)).storageMode).toBe('sync');
+  });
+
+  it('keeps an aggregate save requested after disable local-only', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const key: string = syncAggKey('device-a', '2026-08-31');
+    const aggregate = { ...emptyDaily('2026-08-31'), focusMs: 42_000 };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+
+    const disabling: Promise<void> = storage.disableSync();
+    const saving: Promise<void> = storage.saveAggregate(key, aggregate);
+    await Promise.all([disabling, saving]);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(local.state.values[key]).toEqual(aggregate);
+    expect(sync.state.values[key]).toBeUndefined();
+    expect((await setupState(local)).storageMode).toBe('local');
+  });
+
+  it('prunes local aggregate authority without making a Sync call in local mode', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const oldDate: string = '2026-05-01';
+    const oldKey: string = syncAggKey('device-a', oldDate);
+    const monthKey: string = 'aggm:device-a:2026-05';
+    const aggregate = { ...emptyDaily(oldDate), focusMs: 42_000 };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_DEVICE_ID]: 'device-a',
+      [oldKey]: aggregate,
+    });
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+
+    await storage.pruneRemoteHistory('device-a', 90, new Date(2026, 7, 31, 12, 0).getTime());
+
+    expect(local.state.values[oldKey]).toBeUndefined();
+    expect(local.state.values[monthKey]).toMatchObject({ focusMs: 42_000 });
+    expect(local.state.values[LOCAL_AGGREGATE_PRUNE]).toBeUndefined();
+    expect(sync.area.get).not.toHaveBeenCalled();
+    expect(sync.area.set).not.toHaveBeenCalled();
+  });
+
+  it('recovers an interrupted local prune from its exact desired checkpoint', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const oldDate: string = '2026-05-01';
+    const oldKey: string = syncAggKey('device-a', oldDate);
+    const monthKey: string = 'aggm:device-a:2026-05';
+    const aggregate = { ...emptyDaily(oldDate), focusMs: 42_000 };
+    const monthly = rollupMonth('2026-05', [aggregate]);
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [oldKey]: aggregate,
+      [monthKey]: monthly,
+      [LOCAL_AGGREGATE_PRUNE]: { set: { [monthKey]: monthly }, remove: [oldKey] },
+    });
+    const restarted: PolicyStorage = policyStorage(local, fakeStorage());
+
+    await restarted.initialize();
+
+    expect(local.state.values[oldKey]).toBeUndefined();
+    expect(local.state.values[monthKey]).toEqual(monthly);
+    expect(local.state.values[LOCAL_AGGREGATE_PRUNE]).toBeUndefined();
+  });
+
   it('leaves local mode and a retryable outbox when initial publish fails', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
     const local: FakeStorage = fakeStorage(localPolicy(setup));
@@ -791,6 +1017,28 @@ describe('PolicyStorage', (): void => {
 
     expect((await setupState(local)).storageMode).toBe('local');
     expect((await setupState(local)).storageError).toBe('sync-publish-failed');
+    expect(sync.area.set).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed aggregate before the first Sync mode flip', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const key: string = syncAggKey('device-a', '2026-08-31');
+    const storage: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      {
+        loadAggregateItems: async (): Promise<Record<string, unknown>> => ({
+          [key]: { ...emptyDaily('2026-08-31'), sessionsStarted: 0.5 },
+        }),
+      },
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+
+    await expect(storage.enableSync()).rejects.toThrow('invalid first sync checkpoint item');
+
+    expect((await setupState(local)).storageMode).toBe('local');
     expect(sync.area.set).not.toHaveBeenCalled();
   });
 
@@ -1218,6 +1466,8 @@ describe('PolicyStorage', (): void => {
       [LOCAL_RUNTIME]: emptyRuntime(now),
       [LOCAL_CACHES]: { matcher: true },
       [LOCAL_DEVICE_ID]: 'device-id',
+      'agg:device-id:2026-08-31': emptyDaily('2026-08-31'),
+      [LOCAL_AGGREGATE_TOMBSTONES]: ['agg:device-id:2026-08-30'],
       unrelated: 'keep',
     });
     const sync: FakeStorage = fakeStorage({
@@ -1235,6 +1485,8 @@ describe('PolicyStorage', (): void => {
     expect(local.state.values[LOCAL_RUNTIME]).toBeUndefined();
     expect(local.state.values[LOCAL_CACHES]).toBeUndefined();
     expect(local.state.values[LOCAL_DEVICE_ID]).toBeUndefined();
+    expect(local.state.values['agg:device-id:2026-08-31']).toBeUndefined();
+    expect(local.state.values[LOCAL_AGGREGATE_TOMBSTONES]).toBeUndefined();
     expect(await storage.loadSetup()).toEqual(DEFAULT_SETUP);
   });
 

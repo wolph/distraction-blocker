@@ -8,7 +8,13 @@ import {
 import { emptyStreak } from '../core/streak';
 import type { StatsBundle } from '../shared/messages';
 import { isSafeDayCount } from '../shared/numeric-validation';
-import { SYNC_STREAK, syncAggKey, syncMonthKey } from '../shared/storage-keys';
+import {
+  LOCAL_AGGREGATE_PRUNE,
+  LOCAL_AGGREGATE_TOMBSTONES,
+  SYNC_STREAK,
+  syncAggKey,
+  syncMonthKey,
+} from '../shared/storage-keys';
 import { localDateStr, localMonthStr } from '../shared/time';
 import type { DailyAgg, EventRecord, MonthlyAgg, StreakState } from '../shared/types';
 import { getDeviceId, parseStreak, readEvents } from './stores';
@@ -47,11 +53,80 @@ interface PruneCheckpoint {
   remove: string[];
 }
 
+export interface AggregateStorage {
+  local: chrome.storage.StorageArea;
+  sync: chrome.storage.SyncStorageArea | null;
+}
+
+export interface LocalAggregatePruneCheckpoint {
+  set: Record<string, unknown>;
+  remove: string[];
+}
+
 export interface StatsOverlay {
   deviceId: string;
   todayAgg: DailyAgg;
   streak: StreakState | null;
   pendingEvents: EventRecord[];
+}
+
+function isAggregateStatsKey(key: string): boolean {
+  return DAILY_KEY_RE.test(key) || MONTHLY_KEY_RE.test(key);
+}
+
+function isOwnedAggregateStatsKey(key: string, deviceId: string): boolean {
+  return key.startsWith(`agg:${deviceId}:`) || key.startsWith(`aggm:${deviceId}:`);
+}
+
+function parseAggregateTombstones(value: unknown): Set<string> {
+  if (!Array.isArray(value)) return new Set();
+  return new Set(
+    value.filter(
+      (key: unknown): key is string => typeof key === 'string' && isAggregateStatsKey(key),
+    ),
+  );
+}
+
+function parseLocalPruneCheckpoint(value: unknown): LocalAggregatePruneCheckpoint | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const candidate = value as { set?: unknown; remove?: unknown };
+  if (
+    typeof candidate.set !== 'object' ||
+    candidate.set === null ||
+    Array.isArray(candidate.set) ||
+    !Array.isArray(candidate.remove)
+  ) {
+    return null;
+  }
+  const set: Record<string, unknown> = candidate.set as Record<string, unknown>;
+  if (!Object.keys(set).every(isAggregateStatsKey)) return null;
+  if (
+    !candidate.remove.every(
+      (key: unknown): key is string => typeof key === 'string' && isAggregateStatsKey(key),
+    )
+  ) {
+    return null;
+  }
+  return { set: structuredClone(set), remove: [...candidate.remove] };
+}
+
+export function projectedLocalAggregateItems(
+  items: Record<string, unknown>,
+): Record<string, unknown> {
+  const projected: Record<string, unknown> = Object.fromEntries(
+    Object.entries(items).filter(([key]: [string, unknown]): boolean => isAggregateStatsKey(key)),
+  );
+  const checkpoint: LocalAggregatePruneCheckpoint | null = parseLocalPruneCheckpoint(
+    items[LOCAL_AGGREGATE_PRUNE],
+  );
+  if (checkpoint !== null) {
+    for (const key of checkpoint.remove) delete projected[key];
+    Object.assign(projected, checkpoint.set);
+  }
+  for (const key of parseAggregateTombstones(items[LOCAL_AGGREGATE_TOMBSTONES])) {
+    delete projected[key];
+  }
+  return projected;
 }
 
 function groupPush<T>(map: Map<string, T[]>, key: string, value: T): void {
@@ -304,16 +379,38 @@ export async function fetchStats(
   days: number,
   now: number,
   live: StatsOverlay | null = null,
+  storage: AggregateStorage = { local: chrome.storage.local, sync: chrome.storage.sync },
 ): Promise<StatsBundle> {
-  const loaded: [string, Record<string, unknown>, EventRecord[]] = await Promise.all([
-    getDeviceId(),
-    chrome.storage.sync.get(null) as Promise<Record<string, unknown>>,
-    readEvents(),
-  ]);
+  const loaded: [string, Record<string, unknown>, Record<string, unknown>, EventRecord[]] =
+    await Promise.all([
+      getDeviceId(),
+      storage.local.get(null) as Promise<Record<string, unknown>>,
+      storage.sync === null
+        ? Promise.resolve({})
+        : (storage.sync.get(null) as Promise<Record<string, unknown>>),
+      readEvents(),
+    ]);
   const deviceId: string = loaded[0];
-  const syncItems: Record<string, unknown> = loaded[1];
-  const events: EventRecord[] = loaded[2];
-  return buildStats(deviceId, syncItems, events, days, now, live);
+  const localItems: Record<string, unknown> = projectedLocalAggregateItems(loaded[1]);
+  const remoteItems: Record<string, unknown> = loaded[2];
+  const events: EventRecord[] = loaded[3];
+  const aggregateItems: Record<string, unknown> =
+    storage.sync === null
+      ? localItems
+      : {
+          ...remoteItems,
+          ...Object.fromEntries(
+            Object.entries(localItems).filter(([key]: [string, unknown]): boolean =>
+              isOwnedAggregateStatsKey(key, deviceId),
+            ),
+          ),
+        };
+  if (storage.sync !== null) {
+    for (const key of parseAggregateTombstones(loaded[1][LOCAL_AGGREGATE_TOMBSTONES])) {
+      delete aggregateItems[key];
+    }
+  }
+  return buildStats(deviceId, aggregateItems, events, days, now, live);
 }
 
 function mergeEvents(stored: EventRecord[], pending: EventRecord[]): EventRecord[] {
@@ -331,36 +428,55 @@ function mergeEvents(stored: EventRecord[], pending: EventRecord[]): EventRecord
 }
 
 /** Applies a prune plan to sync storage. Called weekly from the engine. */
-export async function runPrune(retentionDays: number, now: number): Promise<void> {
+export async function runPrune(
+  retentionDays: number,
+  now: number,
+  storage: AggregateStorage = { local: chrome.storage.local, sync: chrome.storage.sync },
+): Promise<void> {
   const loaded: [string, Record<string, unknown>] = await Promise.all([
     getDeviceId(),
-    chrome.storage.sync.get(null) as Promise<Record<string, unknown>>,
+    storage.local.get(null) as Promise<Record<string, unknown>>,
   ]);
   const deviceId: string = loaded[0];
-  const syncItems: Record<string, unknown> = loaded[1];
-  const plan: PrunePlan = pruneAndRollup(deviceId, syncItems, retentionDays, now);
-  await applyPrunePlan(deviceId, plan);
+  const localItems: Record<string, unknown> = projectedLocalAggregateItems(loaded[1]);
+  const plan: PrunePlan = pruneAndRollup(deviceId, localItems, retentionDays, now);
+  await storage.local.set({
+    [LOCAL_AGGREGATE_PRUNE]: { set: plan.set, remove: plan.remove },
+    ...plan.set,
+  });
+  if (plan.remove.length > 0) await storage.local.remove(plan.remove);
+  await storage.local.remove(LOCAL_AGGREGATE_PRUNE);
+  if (storage.sync !== null) await applyPrunePlan(deviceId, plan, storage.sync, storage.local);
 }
 
-export async function applyPrunePlan(deviceId: string, plan: PrunePlan): Promise<void> {
+export async function applyPrunePlan(
+  deviceId: string,
+  plan: PrunePlan,
+  sync: chrome.storage.SyncStorageArea = chrome.storage.sync,
+  local: chrome.storage.StorageArea = chrome.storage.local,
+): Promise<void> {
   const checkpointKey: string = `prune:${deviceId}`;
-  const stored: unknown = (await chrome.storage.sync.get(checkpointKey))[checkpointKey];
+  const stored: unknown = (await sync.get(checkpointKey))[checkpointKey];
   const checkpoint: PruneCheckpoint | null = pruneCheckpoint(stored);
   if (checkpoint !== null) {
-    if (checkpoint.remove.length > 0) await removeSyncItems(checkpoint.remove);
-    await removeSyncItems([checkpointKey]);
+    if (checkpoint.remove.length > 0) await removeSyncItems(checkpoint.remove, sync, local);
+    await removeSyncItems([checkpointKey], sync, local);
     return;
   }
   if (plan.remove.length === 0) {
-    if (Object.keys(plan.set).length > 0) await setSyncItemsWithinQuota(plan.set);
+    if (Object.keys(plan.set).length > 0) await setSyncItemsWithinQuota(plan.set, sync, local);
     return;
   }
-  await setSyncItemsWithinQuota({
-    ...plan.set,
-    [checkpointKey]: { remove: plan.remove } satisfies PruneCheckpoint,
-  });
-  await removeSyncItems(plan.remove);
-  await removeSyncItems([checkpointKey]);
+  await setSyncItemsWithinQuota(
+    {
+      ...plan.set,
+      [checkpointKey]: { remove: plan.remove } satisfies PruneCheckpoint,
+    },
+    sync,
+    local,
+  );
+  await removeSyncItems(plan.remove, sync, local);
+  await removeSyncItems([checkpointKey], sync, local);
 }
 
 function pruneCheckpoint(value: unknown): PruneCheckpoint | null {

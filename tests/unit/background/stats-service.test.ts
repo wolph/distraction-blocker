@@ -1,6 +1,18 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildStats, pruneAndRollup } from '../../../src/background/stats-service';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  type AggregateStorage,
+  buildStats,
+  fetchStats,
+  pruneAndRollup,
+} from '../../../src/background/stats-service';
+import { rollupMonth } from '../../../src/core/stats';
 import type { StatsBundle } from '../../../src/shared/messages';
+import {
+  LOCAL_AGGREGATE_PRUNE,
+  LOCAL_AGGREGATE_TOMBSTONES,
+  LOCAL_DEVICE_ID,
+  LOCAL_EVENTS,
+} from '../../../src/shared/storage-keys';
 import type { DailyAgg, EventRecord } from '../../../src/shared/types';
 import { pairSessions, type SessionRow } from '../../../src/stats/SessionLog';
 
@@ -43,6 +55,38 @@ function syncDailies(dates: string[]): Record<string, unknown> {
   return Object.fromEntries(
     dates.map((date: string): [string, DailyAgg] => [`agg:devA:${date}`, daily(date, 1)]),
   );
+}
+
+interface FakeArea {
+  area: chrome.storage.SyncStorageArea;
+  state: Record<string, unknown>;
+}
+
+function fakeArea(initial: Record<string, unknown>): FakeArea {
+  const state: Record<string, unknown> = structuredClone(initial);
+  const area: chrome.storage.SyncStorageArea = {
+    get: vi.fn(
+      async (
+        keys?: string | string[] | Record<string, unknown> | null,
+      ): Promise<Record<string, unknown>> => {
+        if (keys === null || keys === undefined) return structuredClone(state);
+        const requested: string[] =
+          typeof keys === 'string' ? [keys] : Array.isArray(keys) ? keys : Object.keys(keys);
+        return Object.fromEntries(
+          requested
+            .filter((key: string): boolean => Object.hasOwn(state, key))
+            .map((key: string): [string, unknown] => [key, structuredClone(state[key])]),
+        );
+      },
+    ),
+    set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+      Object.assign(state, structuredClone(items));
+    }),
+    remove: vi.fn(async (keys: string | string[]): Promise<void> => {
+      for (const key of typeof keys === 'string' ? [keys] : keys) delete state[key];
+    }),
+  } as unknown as chrome.storage.SyncStorageArea;
+  return { area, state };
 }
 
 interface RangeCase {
@@ -94,6 +138,100 @@ const RANGE_CASES: RangeCase[] = [
     from: '2026-09-26',
   },
 ];
+
+describe('stats-service storage modes', (): void => {
+  afterEach((): void => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reads only local aggregates when Sync is disabled', async (): Promise<void> => {
+    const now: number = new Date(2026, 7, 31, 12, 0).getTime();
+    const date: string = '2026-08-31';
+    const local: FakeArea = fakeArea({
+      [LOCAL_DEVICE_ID]: 'devA',
+      [LOCAL_EVENTS]: [],
+      [`agg:devA:${date}`]: daily(date, 10),
+    });
+    const sync: FakeArea = fakeArea({ [`agg:devB:${date}`]: daily(date, 1_000) });
+    vi.stubGlobal('chrome', { storage: { local: local.area, sync: sync.area } });
+    const storage: AggregateStorage = { local: local.area, sync: null };
+
+    const bundle: StatsBundle = await fetchStats(7, now, null, storage);
+
+    expect(bundle.totals.focusMsToday).toBe(10);
+    expect(sync.area.get).not.toHaveBeenCalled();
+  });
+
+  it('merges remote devices while overlaying this device local value once', async (): Promise<void> => {
+    const now: number = new Date(2026, 7, 31, 12, 0).getTime();
+    const date: string = '2026-08-31';
+    const local: FakeArea = fakeArea({
+      [LOCAL_DEVICE_ID]: 'devA',
+      [LOCAL_EVENTS]: [],
+      [`agg:devA:${date}`]: daily(date, 20),
+    });
+    const sync: FakeArea = fakeArea({
+      [`agg:devA:${date}`]: daily(date, 10),
+      [`agg:devB:${date}`]: daily(date, 30),
+    });
+    vi.stubGlobal('chrome', { storage: { local: local.area, sync: sync.area } });
+    const storage: AggregateStorage = { local: local.area, sync: sync.area };
+
+    const bundle: StatsBundle = await fetchStats(7, now, null, storage);
+
+    expect(bundle.totals.focusMsToday).toBe(50);
+    expect(bundle.days).toEqual([expect.objectContaining({ date, focusMs: 50 })]);
+  });
+
+  it('applies a pending remote tombstone before merging a local monthly rollup', async (): Promise<void> => {
+    const now: number = new Date(2026, 7, 31, 12, 0).getTime();
+    const oldDate: string = '2026-08-01';
+    const oldKey: string = `agg:devA:${oldDate}`;
+    const monthKey: string = 'aggm:devA:2026-08';
+    const aggregate: DailyAgg = daily(oldDate, 10);
+    const local: FakeArea = fakeArea({
+      [LOCAL_DEVICE_ID]: 'devA',
+      [LOCAL_EVENTS]: [],
+      [monthKey]: rollupMonth('2026-08', [aggregate]),
+      [LOCAL_AGGREGATE_TOMBSTONES]: [oldKey],
+    });
+    const sync: FakeArea = fakeArea({ [oldKey]: aggregate });
+    vi.stubGlobal('chrome', { storage: { local: local.area, sync: sync.area } });
+
+    const bundle: StatsBundle = await fetchStats(31, now, null, {
+      local: local.area,
+      sync: sync.area,
+    });
+
+    expect(bundle.days).toEqual([]);
+    expect(bundle.months).toEqual([expect.objectContaining({ month: '2026-08', focusMs: 10 })]);
+  });
+
+  it('projects an interrupted local prune without counting its daily twice', async (): Promise<void> => {
+    const now: number = new Date(2026, 7, 31, 12, 0).getTime();
+    const oldDate: string = '2026-08-01';
+    const oldKey: string = `agg:devA:${oldDate}`;
+    const monthKey: string = 'aggm:devA:2026-08';
+    const aggregate: DailyAgg = daily(oldDate, 10);
+    const monthly = rollupMonth('2026-08', [aggregate]);
+    const local: FakeArea = fakeArea({
+      [LOCAL_DEVICE_ID]: 'devA',
+      [LOCAL_EVENTS]: [],
+      [oldKey]: aggregate,
+      [monthKey]: monthly,
+      [LOCAL_AGGREGATE_PRUNE]: { set: { [monthKey]: monthly }, remove: [oldKey] },
+    });
+    vi.stubGlobal('chrome', { storage: { local: local.area, sync: fakeArea({}).area } });
+
+    const bundle: StatsBundle = await fetchStats(31, now, null, {
+      local: local.area,
+      sync: null,
+    });
+
+    expect(bundle.days).toEqual([]);
+    expect(bundle.months).toEqual([expect.objectContaining({ month: '2026-08', focusMs: 10 })]);
+  });
+});
 
 function started(at: number, sessionId?: string): EventRecord {
   return {

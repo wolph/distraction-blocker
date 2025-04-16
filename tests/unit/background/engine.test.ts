@@ -30,6 +30,7 @@ import {
   SYNC_LISTS,
   SYNC_SETTINGS,
   SYNC_STREAK,
+  syncAggKey,
 } from '../../../src/shared/storage-keys';
 import { localDateStr } from '../../../src/shared/time';
 import type {
@@ -122,6 +123,8 @@ function makeEngine(opts?: {
   persistSyncJournal?: EnginePorts['persistSyncJournal'];
   saveMatcherCache?: EnginePorts['saveMatcherCache'];
   savePolicy?: EnginePorts['savePolicy'];
+  saveAggregate?: EnginePorts['saveAggregate'];
+  removeAggregate?: EnginePorts['removeAggregate'];
   applyBlocking?: EnginePorts['applyBlocking'];
   sessionCompiler?: typeof compileSessionMatcher;
   hasPendingSync?: (key: string) => boolean;
@@ -133,6 +136,10 @@ function makeEngine(opts?: {
     newId: vi.fn((): string => 'archive-id'),
     saveRuntime: vi.fn().mockResolvedValue(undefined),
     ...(opts?.savePolicy === undefined ? {} : { savePolicy: vi.fn(opts.savePolicy) }),
+    ...(opts?.saveAggregate === undefined ? {} : { saveAggregate: vi.fn(opts.saveAggregate) }),
+    ...(opts?.removeAggregate === undefined
+      ? {}
+      : { removeAggregate: vi.fn(opts.removeAggregate) }),
     queueSync: opts?.queueSync === undefined ? vi.fn() : vi.fn(opts.queueSync),
     supersedeSync: opts?.supersedeSync === undefined ? vi.fn() : vi.fn(opts.supersedeSync),
     removeSync: vi.fn(),
@@ -2001,6 +2008,41 @@ describe('Engine', () => {
     expect(savedRuntime.date).toBe(localDateStr(T0 + 2 * DAY_MS));
   });
 
+  it('retains a finished aggregate checkpoint until local durability succeeds', async (): Promise<void> => {
+    const saveAggregate = vi
+      .fn<NonNullable<EnginePorts['saveAggregate']>>()
+      .mockRejectedValueOnce(new Error('local aggregate unavailable'));
+    const first: Harness = makeEngine({ saveAggregate });
+    first.setNow(T0 + DAY_MS);
+
+    await expect(first.engine.tick()).rejects.toThrow('local aggregate unavailable');
+
+    const checkpointRuntime: RuntimeState = structuredClone(
+      first.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+    );
+    const finishedKey: string = `agg:dev-test:${localDateStr(T0)}`;
+    expect(checkpointRuntime.commitCheckpoint?.aggregateSets).toMatchObject({
+      [finishedKey]: expect.objectContaining({ date: localDateStr(T0) }),
+    });
+
+    const recoveredSave = vi
+      .fn<NonNullable<EnginePorts['saveAggregate']>>()
+      .mockResolvedValue(undefined);
+    const restarted: Harness = makeEngine({
+      runtime: checkpointRuntime,
+      saveAggregate: recoveredSave,
+    });
+    restarted.setNow(T0 + DAY_MS);
+    await restarted.engine.tick();
+
+    expect(recoveredSave).toHaveBeenCalledWith(
+      finishedKey,
+      expect.objectContaining({ date: localDateStr(T0) }),
+    );
+    const recoveredRuntime: RuntimeState = restarted.ports.saveRuntime.mock.calls.at(-1)?.[0];
+    expect(recoveredRuntime.commitCheckpoint).toBeNull();
+  });
+
   it('does not grant a freeze token during off-Monday rollover catch-up', async () => {
     const previousDate: string = localDateStr(T0 - DAY_MS);
     const streak: StreakState = {
@@ -2692,6 +2734,43 @@ describe('Engine', () => {
       activeDays: [],
       activeMonth: localDateStr(T0).slice(0, 7),
     });
+  });
+
+  it('makes a backward-date archive durable before removing the future daily', async (): Promise<void> => {
+    const runtime: RuntimeState = emptyRuntime(T0);
+    const futureDate: string = localDateStr(T0 + 3 * DAY_MS);
+    runtime.date = futureDate;
+    runtime.todayAgg = {
+      date: futureDate,
+      focusMs: 60_000,
+      sessionsStarted: 1,
+      sessionsCompleted: 0,
+      attempts: {},
+      attemptsOther: 0,
+      pausesTaken: 0,
+      pauseMsSpent: 0,
+      pauseMsEarned: 0,
+      unlocksTaken: 0,
+      unlockMsSpent: 0,
+      resisted: 0,
+    };
+    const trace: string[] = [];
+    const h: Harness = makeEngine({
+      runtime,
+      saveAggregate: async (key: string): Promise<void> => {
+        trace.push(`set:${key}`);
+      },
+      removeAggregate: async (key: string): Promise<void> => {
+        trace.push(`remove:${key}`);
+      },
+    });
+
+    await h.engine.tick();
+
+    expect(trace).toEqual([
+      `set:${clockRebaseArchiveKey('dev-test', futureDate, T0, 'archive-id')}`,
+      `remove:${syncAggKey('dev-test', futureDate)}`,
+    ]);
   });
 
   it('clears future streak markers during a same-month clock rebase', async () => {

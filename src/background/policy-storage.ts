@@ -1,6 +1,8 @@
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, DEFAULT_SETUP } from '../shared/constants';
 import { isListsConfig, isSettings, isSetupState } from '../shared/runtime-validation';
 import {
+  LOCAL_AGGREGATE_PRUNE,
+  LOCAL_AGGREGATE_TOMBSTONES,
   LOCAL_BANK,
   LOCAL_CACHES,
   LOCAL_DATA_CLEAR_JOURNAL,
@@ -32,6 +34,11 @@ import type {
 } from '../shared/types';
 import { encodeListsForSync, LIST_SYNC_KEYS, type ListsSyncEncoding } from './list-sync-codec';
 import {
+  type AggregateStorage,
+  type LocalAggregatePruneCheckpoint,
+  pruneAndRollup,
+} from './stats-service';
+import {
   mergeRuntime,
   migrateRuntimeRules,
   parseBank,
@@ -40,6 +47,8 @@ import {
 } from './stores';
 import { assertSyncItemWithinQuota } from './sync-item-size';
 import {
+  aggregateHistoryDeviceId,
+  isAggregateHistoryKey,
   isAuthoritativeSyncItem,
   isFocusLockDeletionKey,
   isFocusLockSyncKey,
@@ -50,7 +59,6 @@ import {
   sanitizeSyncJournal,
   setSyncItemsWithinQuota,
 } from './sync-quota';
-import { compactPendingSyncRetention } from './sync-retention';
 import { SyncEchoes, type SyncJournal, SyncWriter } from './sync-writer';
 
 const SYNC_FLUSH_MS: number = 10_000;
@@ -119,6 +127,10 @@ export interface PolicyStorage {
   removeRemoteItem(key: string): Promise<void>;
   remoteJournalDurable(): Promise<void>;
   pruneRemoteHistory(deviceId: string, retentionDays: number, now: number): Promise<void>;
+  saveAggregate(key: string, value: unknown): Promise<void>;
+  removeAggregate(key: string): Promise<void>;
+  withAggregateStorage<T>(operation: (storage: AggregateStorage) => Promise<T>): Promise<T>;
+  importLegacyAggregates(items: Record<string, unknown>): Promise<void>;
   markLegacyMigrationFailed(): Promise<void>;
   importLegacy(
     snapshot: PolicySnapshot,
@@ -158,6 +170,8 @@ const FOCUS_LOCK_LOCAL_EXACT_KEYS: readonly string[] = [
   LOCAL_LISTS_SNAPSHOT,
   LOCAL_SYNC_JOURNAL,
   LOCAL_SYNC_QUOTA_EVICTION,
+  LOCAL_AGGREGATE_TOMBSTONES,
+  LOCAL_AGGREGATE_PRUNE,
   LOCAL_INSTALL_MARKER,
   LOCAL_ONBOARDING_DRAFT,
   LOCAL_POLICY_COMMIT,
@@ -186,6 +200,36 @@ function serialized(value: unknown): string {
 
 function valuesEqual(left: unknown, right: unknown): boolean {
   return serialized(left) === serialized(right);
+}
+
+function parseAggregateTombstones(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const keys: string[] = [];
+  for (const candidate of value) {
+    if (typeof candidate !== 'string' || !isAggregateHistoryKey(candidate)) continue;
+    if (!keys.includes(candidate)) keys.push(candidate);
+  }
+  return keys;
+}
+
+function parseAggregatePrune(value: unknown): LocalAggregatePruneCheckpoint | null {
+  if (!isRecord(value) || !isRecord(value.set) || !Array.isArray(value.remove)) return null;
+  if (
+    !Object.entries(value.set).every(
+      ([key, candidate]: [string, unknown]): boolean =>
+        isAggregateHistoryKey(key) && isAuthoritativeSyncItem(key, candidate),
+    )
+  ) {
+    return null;
+  }
+  if (
+    !value.remove.every(
+      (key: unknown): key is string => typeof key === 'string' && isAggregateHistoryKey(key),
+    )
+  ) {
+    return null;
+  }
+  return { set: structuredClone(value.set), remove: [...value.remove] };
 }
 
 function isPolicyKey(value: unknown): value is keyof PolicyValueByKey {
@@ -388,6 +432,23 @@ export function createPolicyStorage(
     }
   }
 
+  async function verifiedRemove(keys: readonly string[], label: string): Promise<void> {
+    if (keys.length === 0) return;
+    const previous: PreviousValues = await previousValues(keys);
+    try {
+      await local.remove([...keys]);
+      const verified: Record<string, unknown> = await local.get([...keys]);
+      if (Object.keys(verified).length > 0) throw new Error(`could not verify local ${label}`);
+    } catch (error: unknown) {
+      try {
+        await restore(previous);
+      } catch (rollbackError: unknown) {
+        throw new AggregateError([error, rollbackError], `could not roll back local ${label}`);
+      }
+      throw error;
+    }
+  }
+
   async function loadSetupInternal(): Promise<SetupState> {
     const stored: Record<string, unknown> = await local.get(LOCAL_SETUP);
     if (!Object.hasOwn(stored, LOCAL_SETUP)) return structuredClone(DEFAULT_SETUP);
@@ -408,6 +469,7 @@ export function createPolicyStorage(
     await verifiedWrite(
       {
         [LOCAL_SYNC_JOURNAL]: journal,
+        ...(empty ? { [LOCAL_AGGREGATE_TOMBSTONES]: [] } : {}),
         [LOCAL_SETUP]: {
           ...setup,
           syncWriteStatus: empty ? 'idle' : 'pending',
@@ -490,6 +552,11 @@ export function createPolicyStorage(
       }
       assertSyncItemWithinQuota(key, value);
     }
+    const tombstoneStored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
+    const aggregateRemoves: string[] = parseAggregateTombstones(
+      tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES],
+    );
+    for (const key of aggregateRemoves) delete aggregateItems[key];
     return {
       sets: {
         [SYNC_SETTINGS]: snapshot.settings,
@@ -498,7 +565,11 @@ export function createPolicyStorage(
         ...(snapshot.streak === null ? {} : { [SYNC_STREAK]: snapshot.streak }),
         ...aggregateItems,
       },
-      removes: [...lists.removes, ...(snapshot.streak === null ? [SYNC_STREAK] : [])],
+      removes: [
+        ...lists.removes,
+        ...(snapshot.streak === null ? [SYNC_STREAK] : []),
+        ...aggregateRemoves,
+      ],
     };
   }
 
@@ -555,7 +626,12 @@ export function createPolicyStorage(
       const persisted: SyncJournal = sanitizeSyncJournal(
         await loadedJournal(LOCAL_SYNC_JOURNAL, false),
       ).journal;
-      const complete: SyncJournal = await fullPublication(await loadSnapshotInternal());
+      const aggregateItems: Record<string, unknown> =
+        await firstSyncCheckpoint.loadAggregateItems();
+      const complete: SyncJournal = await fullPublication(
+        await loadSnapshotInternal(),
+        aggregateItems,
+      );
       for (const [key, value] of Object.entries(persisted.sets)) {
         if (!POLICY_SYNC_KEYS.includes(key) && isAuthoritativeSyncItem(key, value)) {
           complete.sets[key] = value;
@@ -587,8 +663,50 @@ export function createPolicyStorage(
     return parseDataClearJournal(stored[LOCAL_DATA_CLEAR_JOURNAL]);
   }
 
+  async function recoverLocalAggregatePrune(): Promise<void> {
+    const stored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_PRUNE);
+    if (!Object.hasOwn(stored, LOCAL_AGGREGATE_PRUNE)) return;
+    const checkpoint: LocalAggregatePruneCheckpoint | null = parseAggregatePrune(
+      stored[LOCAL_AGGREGATE_PRUNE],
+    );
+    if (checkpoint === null) throw new Error('invalid local aggregate prune checkpoint');
+    if (Object.keys(checkpoint.set).length > 0) {
+      await verifiedWrite(checkpoint.set, 'aggregate prune rollup');
+    }
+    await verifiedRemove(checkpoint.remove, 'aggregate prune removals');
+    await verifiedRemove([LOCAL_AGGREGATE_PRUNE], 'aggregate prune checkpoint cleanup');
+  }
+
+  async function recoverAggregateTombstones(): Promise<void> {
+    const stored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
+    const tombstones: string[] = parseAggregateTombstones(stored[LOCAL_AGGREGATE_TOMBSTONES]);
+    await verifiedRemove(tombstones, 'aggregate tombstones');
+  }
+
+  async function localAggregateHistoryItems(): Promise<Record<string, unknown>> {
+    const stored: Record<string, unknown> = await local.get(null);
+    const projected: Record<string, unknown> = Object.fromEntries(
+      Object.entries(stored).filter(([key]: [string, unknown]): boolean =>
+        isAggregateHistoryKey(key),
+      ),
+    );
+    const checkpoint: LocalAggregatePruneCheckpoint | null = parseAggregatePrune(
+      stored[LOCAL_AGGREGATE_PRUNE],
+    );
+    if (checkpoint !== null) {
+      for (const key of checkpoint.remove) delete projected[key];
+      Object.assign(projected, checkpoint.set);
+    }
+    for (const key of parseAggregateTombstones(stored[LOCAL_AGGREGATE_TOMBSTONES])) {
+      delete projected[key];
+    }
+    return projected;
+  }
+
   async function initializeInternal(): Promise<void> {
     if (initialized) return;
+    await recoverLocalAggregatePrune();
+    await recoverAggregateTombstones();
     let setup: SetupState = await loadSetupInternal();
     mode = setup.storageMode;
     const dataClearJournal: DataClearJournal | null = await loadDataClearJournal();
@@ -728,6 +846,20 @@ export function createPolicyStorage(
       const aggregateItems: Record<string, unknown> =
         await firstSyncCheckpoint.loadAggregateItems();
       complete = await fullPublication(await loadSnapshotInternal(), aggregateItems);
+      const deviceStored: Record<string, unknown> = await local.get(LOCAL_DEVICE_ID);
+      const deviceId: unknown = deviceStored[LOCAL_DEVICE_ID];
+      if (typeof deviceId === 'string' && deviceId !== '') {
+        const remote: Record<string, unknown> = await sync.get(null);
+        for (const key of Object.keys(remote)) {
+          if (
+            aggregateHistoryDeviceId(key) === deviceId &&
+            !Object.hasOwn(complete.sets, key) &&
+            !complete.removes.includes(key)
+          ) {
+            complete.removes.push(key);
+          }
+        }
+      }
     } catch (error: unknown) {
       const current: SetupState = await loadSetupInternal();
       await saveSetupInternal({
@@ -1168,7 +1300,11 @@ export function createPolicyStorage(
 
   function isFocusLockLocalKey(key: string): boolean {
     return (
-      FOCUS_LOCK_LOCAL_EXACT_KEYS.includes(key) || key.startsWith(LOCAL_POLICY_GENERATION_PREFIX)
+      FOCUS_LOCK_LOCAL_EXACT_KEYS.includes(key) ||
+      key.startsWith(LOCAL_POLICY_GENERATION_PREFIX) ||
+      key.startsWith('agg:') ||
+      key.startsWith('aggm:') ||
+      key.startsWith('archive:clock-rebase:')
     );
   }
 
@@ -1302,8 +1438,100 @@ export function createPolicyStorage(
     await resumeDataClear(journal);
   }
 
+  async function saveAggregateInternal(key: string, value: unknown): Promise<void> {
+    await ensureInitialized();
+    if (!isAggregateHistoryKey(key) || !isAuthoritativeSyncItem(key, value)) {
+      throw new Error('invalid aggregate item');
+    }
+    const tombstoneStored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
+    const tombstones: string[] = parseAggregateTombstones(
+      tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES],
+    ).filter((candidate: string): boolean => candidate !== key);
+    if (mode !== 'sync') {
+      await verifiedWrite(
+        { [key]: value, [LOCAL_AGGREGATE_TOMBSTONES]: tombstones },
+        'aggregate item',
+      );
+      return;
+    }
+    const setup: SetupState = await loadSetupInternal();
+    await verifiedWrite(
+      {
+        [key]: value,
+        [LOCAL_AGGREGATE_TOMBSTONES]: tombstones,
+        [LOCAL_SETUP]: { ...setup, syncWriteStatus: 'pending' },
+      },
+      'aggregate item and pending sync status',
+    );
+    try {
+      const writer: SyncWriter = await ensurePublisher();
+      writer.queue(key, value);
+      await writer.whenJournalDurable();
+    } catch (error: unknown) {
+      const current: SetupState = await loadSetupInternal();
+      await saveSetupInternal({
+        ...current,
+        syncWriteStatus: 'error',
+        storageError: 'sync-publish-failed',
+      });
+      throw error;
+    }
+  }
+
+  async function removeAggregateInternal(key: string): Promise<void> {
+    await ensureInitialized();
+    if (!isAggregateHistoryKey(key)) throw new Error('invalid aggregate key');
+    if (mode !== 'sync') {
+      await verifiedRemove([key], 'aggregate item');
+      return;
+    }
+    const setup: SetupState = await loadSetupInternal();
+    const tombstoneStored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
+    const tombstones: string[] = [
+      ...new Set([...parseAggregateTombstones(tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES]), key]),
+    ];
+    await verifiedWrite(
+      {
+        [LOCAL_AGGREGATE_TOMBSTONES]: tombstones,
+        [LOCAL_SETUP]: { ...setup, syncWriteStatus: 'pending' },
+      },
+      'aggregate tombstone and pending sync status',
+    );
+    await verifiedRemove([key], 'aggregate item');
+    try {
+      const writer: SyncWriter = await ensurePublisher();
+      writer.remove(key);
+      await writer.whenJournalDurable();
+    } catch (error: unknown) {
+      const current: SetupState = await loadSetupInternal();
+      await saveSetupInternal({
+        ...current,
+        syncWriteStatus: 'error',
+        storageError: 'sync-publish-failed',
+      });
+      throw error;
+    }
+  }
+
+  async function importLegacyAggregatesInternal(items: Record<string, unknown>): Promise<void> {
+    await ensureInitialized();
+    const aggregates: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(items)) {
+      if (!isAggregateHistoryKey(key)) continue;
+      if (!isAuthoritativeSyncItem(key, value)) continue;
+      aggregates[key] = value;
+    }
+    if (Object.keys(aggregates).length > 0) {
+      await verifiedWrite(aggregates, 'legacy aggregate history');
+    }
+  }
+
   async function publishRemoteItemInternal(key: string, value: unknown): Promise<void> {
     await ensureInitialized();
+    if (isAggregateHistoryKey(key)) {
+      await saveAggregateInternal(key, value);
+      return;
+    }
     if (mode !== 'sync') return;
     if (POLICY_SYNC_KEYS.includes(key)) throw new Error('policy items require typed setPolicy');
     if (!isAuthoritativeSyncItem(key, value)) throw new Error('invalid remote publication item');
@@ -1314,6 +1542,10 @@ export function createPolicyStorage(
 
   async function removeRemoteItemInternal(key: string): Promise<void> {
     await ensureInitialized();
+    if (isAggregateHistoryKey(key)) {
+      await removeAggregateInternal(key);
+      return;
+    }
     if (mode !== 'sync') return;
     if (POLICY_SYNC_KEYS.includes(key)) throw new Error('policy items require typed setPolicy');
     if (!isFocusLockSyncKey(key)) throw new Error('invalid remote removal key');
@@ -1328,15 +1560,50 @@ export function createPolicyStorage(
     now: number,
   ): Promise<void> {
     await ensureInitialized();
-    if (mode !== 'sync') return;
-    const writer: SyncWriter = await ensurePublisher();
-    await compactPendingSyncRetention(
-      writer,
+    const plan: ReturnType<typeof pruneAndRollup> = pruneAndRollup(
       deviceId,
+      await localAggregateHistoryItems(),
       retentionDays,
       now,
-      (): Promise<Record<string, unknown>> => sync.get(null),
     );
+    if (Object.keys(plan.set).length === 0 && plan.remove.length === 0) return;
+    const checkpoint: LocalAggregatePruneCheckpoint = {
+      set: structuredClone(plan.set),
+      remove: [...plan.remove],
+    };
+    const setup: SetupState = await loadSetupInternal();
+    const tombstoneStored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
+    const tombstones: string[] =
+      mode === 'sync'
+        ? [
+            ...new Set([
+              ...parseAggregateTombstones(tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES]),
+              ...plan.remove,
+            ]),
+          ]
+        : parseAggregateTombstones(tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES]);
+    await verifiedWrite(
+      {
+        [LOCAL_AGGREGATE_PRUNE]: checkpoint,
+        ...(mode === 'sync'
+          ? {
+              [LOCAL_AGGREGATE_TOMBSTONES]: tombstones,
+              [LOCAL_SETUP]: { ...setup, syncWriteStatus: 'pending' },
+            }
+          : {}),
+      },
+      'aggregate prune checkpoint',
+    );
+    if (Object.keys(plan.set).length > 0) {
+      await verifiedWrite(plan.set, 'aggregate prune rollup');
+    }
+    await verifiedRemove(plan.remove, 'aggregate prune removals');
+    await verifiedRemove([LOCAL_AGGREGATE_PRUNE], 'aggregate prune checkpoint cleanup');
+    if (mode !== 'sync') return;
+    const writer: SyncWriter = await ensurePublisher();
+    for (const [key, value] of Object.entries(plan.set)) writer.queue(key, value);
+    for (const key of plan.remove) writer.remove(key);
+    await writer.whenJournalDurable();
   }
 
   return {
@@ -1407,6 +1674,17 @@ export function createPolicyStorage(
       }),
     pruneRemoteHistory: (deviceId: string, retentionDays: number, now: number): Promise<void> =>
       enqueue((): Promise<void> => pruneRemoteHistoryInternal(deviceId, retentionDays, now)),
+    saveAggregate: (key: string, value: unknown): Promise<void> =>
+      enqueue((): Promise<void> => saveAggregateInternal(key, value)),
+    removeAggregate: (key: string): Promise<void> =>
+      enqueue((): Promise<void> => removeAggregateInternal(key)),
+    withAggregateStorage: <T>(operation: (storage: AggregateStorage) => Promise<T>): Promise<T> =>
+      enqueue(async (): Promise<T> => {
+        await ensureInitialized();
+        return operation({ local, sync: mode === 'sync' ? sync : null });
+      }),
+    importLegacyAggregates: (items: Record<string, unknown>): Promise<void> =>
+      enqueue((): Promise<void> => importLegacyAggregatesInternal(items)),
     markLegacyMigrationFailed: (): Promise<void> => enqueue(markLegacyMigrationFailedInternal),
     importLegacy: (
       snapshot: PolicySnapshot,

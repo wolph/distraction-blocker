@@ -60,7 +60,12 @@ import {
   saveRuntime,
 } from './stores';
 import { chooseNewerStreak, rebaseStreakForDate, streaksEqual } from './streak-sync';
-import { isFocusLockSyncKey } from './sync-item-validation';
+import {
+  aggregateHistoryDeviceId,
+  isAggregateHistoryKey,
+  isAuthoritativeSyncItem,
+  isFocusLockSyncKey,
+} from './sync-item-validation';
 import { type SanitizedSyncJournal, sanitizeSyncJournal } from './sync-quota';
 import type { SyncJournal } from './sync-writer';
 import {
@@ -305,8 +310,31 @@ async function preparePolicyStorage(): Promise<PolicyStorage> {
     chrome.storage.local,
     chrome.storage.sync,
     {
-      loadAggregateItems: (): Promise<Record<string, unknown>> =>
-        Promise.reject(new Error('local aggregate checkpoint is unavailable until Task 5')),
+      loadAggregateItems: async (): Promise<Record<string, unknown>> => {
+        const deviceId: string = await getDeviceId();
+        const stored: Record<string, unknown> = await chrome.storage.local.get(null);
+        const aggregates: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(stored)) {
+          const looksOwned: boolean =
+            key.startsWith(`agg:${deviceId}:`) ||
+            key.startsWith(`aggm:${deviceId}:`) ||
+            key.startsWith(`archive:clock-rebase:${deviceId}:`);
+          if (!looksOwned) continue;
+          if (
+            aggregateHistoryDeviceId(key) !== deviceId ||
+            !isAggregateHistoryKey(key) ||
+            !isAuthoritativeSyncItem(key, value)
+          ) {
+            throw new Error(`invalid local aggregate checkpoint item ${JSON.stringify(key)}`);
+          }
+          aggregates[key] = value;
+        }
+        if (engineInstance !== null) {
+          const overlay = engineInstance.statsOverlay();
+          aggregates[`agg:${deviceId}:${overlay.todayAgg.date}`] = overlay.todayAgg;
+        }
+        return aggregates;
+      },
     },
     {
       runExclusive: <T>(
@@ -408,6 +436,7 @@ async function preparePolicyStorage(): Promise<PolicyStorage> {
     const runtime: RuntimeState = migrateRuntimeRules(loadedRuntime, lists);
     const snapshot: PolicySnapshot = { settings, lists, bank, streak: persistedStreak };
     assertValidResolvedLegacyPolicy(snapshot);
+    await storage.importLegacyAggregates(storedSync);
     await storage.importLegacy(snapshot, runtime, journal);
     return storage;
   } catch (error: unknown) {
@@ -433,6 +462,9 @@ async function boot(policyStorage: PolicyStorage): Promise<Engine> {
     saveRuntime,
     saveMatcherCache,
     savePolicy: (key, value): Promise<void> => policyStorage.setPolicy(key, value),
+    saveAggregate: (key: string, value: DailyAgg): Promise<void> =>
+      policyStorage.saveAggregate(key, value),
+    removeAggregate: (key: string): Promise<void> => policyStorage.removeAggregate(key),
     hasPendingSync: (key: string): boolean => policyStorage.hasPendingRemote(key),
     queueSync: (key: string, value: unknown): void => {
       void policyStorage.publishRemoteItem(key, value).catch(reportBackgroundError);
@@ -517,7 +549,10 @@ export function main(): void {
         return true;
       }
       ready
-        .then((engine: Engine): Promise<unknown> => routeMessage(engine, request, sender))
+        .then(
+          async (engine: Engine): Promise<unknown> =>
+            routeMessage(engine, request, sender, await policyStorageReady),
+        )
         .then((response: unknown): void => sendResponse(response))
         .catch((err: unknown): void => sendResponse({ ok: false, error: String(err) }));
       return true;

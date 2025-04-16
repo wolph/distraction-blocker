@@ -2,6 +2,7 @@ import type { Request } from '../shared/messages';
 import type { SoundSettings, Verdict } from '../shared/types';
 import { playSound } from './audio';
 import type { Engine } from './engine';
+import type { PolicyStorage } from './policy-storage';
 import { fetchStats } from './stats-service';
 import { readEvents } from './stores';
 
@@ -13,6 +14,7 @@ export async function routeMessage(
   engine: Engine,
   msg: Request,
   sender: chrome.runtime.MessageSender,
+  policyStorage?: Pick<PolicyStorage, 'withAggregateStorage'>,
 ): Promise<unknown> {
   switch (msg.type) {
     case 'getSnapshot':
@@ -63,7 +65,11 @@ export async function routeMessage(
     case 'getLists':
       return engine.getLists();
     case 'getStats':
-      return fetchStats(msg.days, Date.now(), engine.statsOverlay());
+      return policyStorage === undefined
+        ? fetchStats(msg.days, Date.now(), engine.statsOverlay())
+        : policyStorage.withAggregateStorage((storage) =>
+            fetchStats(msg.days, Date.now(), engine.statsOverlay(), storage),
+          );
     case 'exportEvents':
       return { json: JSON.stringify(await readEvents(), null, 2) };
     case 'previewSound': {

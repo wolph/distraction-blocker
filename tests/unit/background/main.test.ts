@@ -620,7 +620,12 @@ describe('background runtime request boundary', () => {
     main();
 
     await expect(dispatchRuntime(request, sender)).resolves.toEqual({ ok: true });
-    expect(routeMessage).toHaveBeenCalledExactlyOnceWith(expect.anything(), request, sender);
+    expect(routeMessage).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      request,
+      sender,
+      expect.anything(),
+    );
     expect(vi.mocked(routeMessage).mock.calls[0]?.[1]).toBe(request);
   });
 });

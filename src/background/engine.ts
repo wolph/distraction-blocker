@@ -79,6 +79,8 @@ export interface EnginePorts {
   saveRuntime(r: RuntimeState): Promise<void>;
   saveMatcherCache(cache: StoredMatcherCache, lists: ListsConfig): Promise<void>;
   savePolicy?<K extends keyof PolicyValueByKey>(key: K, value: PolicyValueByKey[K]): Promise<void>;
+  saveAggregate?(key: string, value: DailyAgg): Promise<void>;
+  removeAggregate?(key: string): Promise<void>;
   hasPendingSync(key: string): boolean;
   queueSync(key: string, value: unknown): void;
   supersedeSync(key: string, value: unknown): void;
@@ -167,6 +169,8 @@ export class Engine {
   private listCachePersistenceInFlight = false;
   private inboundPolicyTransactionActive = false;
   private suppressPolicyPublication = false;
+  private pendingAggregateSets: Map<string, DailyAgg> = new Map();
+  private pendingAggregateRemoves: Set<string> = new Set();
   private dataClearBarrierState: 'open' | 'draining' | 'quiesced' = 'open';
   private dataClearOperationRunning = false;
 
@@ -183,6 +187,10 @@ export class Engine {
     const checkpoint: RuntimeCommitCheckpoint | null = this.runtime.commitCheckpoint;
     if (checkpoint !== null) {
       this.pendingEvents = [...checkpoint.events];
+      for (const [key, value] of Object.entries(checkpoint.aggregateSets ?? {})) {
+        this.pendingAggregateSets.set(key, structuredClone(value));
+      }
+      for (const key of checkpoint.aggregateRemoves ?? []) this.pendingAggregateRemoves.add(key);
       if (checkpoint.syncBank) {
         this.bank = checkpoint.bank;
         this.bankDirty = true;
@@ -205,6 +213,12 @@ export class Engine {
         bank: structuredClone(this.bank),
         events: [...this.pendingEvents],
         syncBank: this.bankDirty,
+        ...(this.pendingAggregateSets.size === 0
+          ? {}
+          : { aggregateSets: Object.fromEntries(this.pendingAggregateSets) }),
+        ...(this.pendingAggregateRemoves.size === 0
+          ? {}
+          : { aggregateRemoves: [...this.pendingAggregateRemoves] }),
       };
       this.dirty = true;
     }
@@ -802,8 +816,9 @@ export class Engine {
     const now: number = this.ports.now();
     this.catchUp(now);
     this.pruneDebounce(now);
-    await this.maybePrune(now);
     await this.commit(now);
+    await this.maybePrune(now);
+    if (this.dirty) await this.commit(now);
   }
 
   async updateSettings(s: Settings): Promise<Ack> {
@@ -1191,8 +1206,8 @@ export class Engine {
       today,
       this.runtime.todayAgg ?? emptyDaily(futureDate),
     );
-    this.ports.removeSync(syncAggKey(this.deviceId, futureDate));
-    this.ports.queueSync(
+    this.recordAggregateRemoval(syncAggKey(this.deviceId, futureDate));
+    this.recordAggregateSet(
       clockRebaseArchiveKey(this.deviceId, futureDate, now, this.ports.newId()),
       plan.archive,
     );
@@ -1402,7 +1417,7 @@ export class Engine {
       this.settings.streakGoalMin,
       this.settings.streakFreezeIntervalDays,
     );
-    this.ports.queueSync(syncAggKey(this.deviceId, plan.finished.date), plan.finished);
+    this.recordAggregateSet(syncAggKey(this.deviceId, plan.finished.date), plan.finished);
     this.streak = plan.streak;
     this.streakDirty = true;
     this.runtime.todayAgg = plan.newAgg;
@@ -1447,17 +1462,33 @@ export class Engine {
     this.dirty = true;
   }
 
-  private async flushEvents(
-    aggregate: DailyAgg | null,
-    date: string,
-    batch: EventRecord[],
-  ): Promise<void> {
-    if (aggregate !== null) {
-      this.ports.queueSync(
-        syncAggKey(this.deviceId, date),
-        capAttempts(aggregate, TOP_SITES_DAILY),
-      );
+  private recordAggregateSet(key: string, value: DailyAgg): void {
+    this.pendingAggregateRemoves.delete(key);
+    this.pendingAggregateSets.set(key, structuredClone(value));
+  }
+
+  private recordAggregateRemoval(key: string): void {
+    this.pendingAggregateSets.delete(key);
+    this.pendingAggregateRemoves.add(key);
+  }
+
+  private async saveAggregate(key: string, value: DailyAgg): Promise<void> {
+    if (this.ports.saveAggregate !== undefined) {
+      await this.ports.saveAggregate(key, value);
+      return;
     }
+    this.ports.queueSync(key, value);
+  }
+
+  private async removeAggregate(key: string): Promise<void> {
+    if (this.ports.removeAggregate !== undefined) {
+      await this.ports.removeAggregate(key);
+      return;
+    }
+    this.ports.removeSync(key);
+  }
+
+  private async flushEvents(batch: EventRecord[]): Promise<void> {
     if (batch.length === 0) return;
     await this.ports.appendEvents(batch);
   }
@@ -1546,7 +1577,22 @@ export class Engine {
     const syncBank: boolean = this.bankDirty;
     const bankRevision: number = this.bankRevision;
     const runtimePersistRevision: number = this.runtimePersistRevision;
-    this.runtime.commitCheckpoint = { bank, events, syncBank };
+    const aggregateSets: Record<string, DailyAgg> = Object.fromEntries(
+      [...this.pendingAggregateSets.entries()].map(
+        ([key, value]: [string, DailyAgg]): [string, DailyAgg] => [key, structuredClone(value)],
+      ),
+    );
+    if (aggregate !== null) {
+      aggregateSets[syncAggKey(this.deviceId, date)] = capAttempts(aggregate, TOP_SITES_DAILY);
+    }
+    const aggregateRemoves: string[] = [...this.pendingAggregateRemoves];
+    this.runtime.commitCheckpoint = {
+      bank,
+      events,
+      syncBank,
+      ...(Object.keys(aggregateSets).length === 0 ? {} : { aggregateSets }),
+      ...(aggregateRemoves.length === 0 ? {} : { aggregateRemoves }),
+    };
     const checkpointRuntime: RuntimeState = structuredClone(this.runtime);
     this.ownedRuntimeSnapshot = structuredClone(checkpointRuntime);
     await this.persistRuntime(checkpointRuntime);
@@ -1555,13 +1601,24 @@ export class Engine {
       await this.savePolicy('streak', this.streak);
       this.streakDirty = false;
     }
-    await this.flushEvents(aggregate, date, events);
+    for (const [key, value] of Object.entries(aggregateSets)) {
+      await this.saveAggregate(key, value);
+    }
+    for (const key of aggregateRemoves) await this.removeAggregate(key);
+    await this.flushEvents(events);
     await this.ports.persistSyncJournal();
     for (const event of events) {
       const index: number = this.pendingEvents.indexOf(event);
       if (index >= 0) this.pendingEvents.splice(index, 1);
     }
     if (this.bankRevision === bankRevision) this.bankDirty = false;
+    for (const [key, value] of Object.entries(aggregateSets)) {
+      const pending: DailyAgg | undefined = this.pendingAggregateSets.get(key);
+      if (pending !== undefined && JSON.stringify(pending) === JSON.stringify(value)) {
+        this.pendingAggregateSets.delete(key);
+      }
+    }
+    for (const key of aggregateRemoves) this.pendingAggregateRemoves.delete(key);
     if (this.domainPersistRevision === domainPersistRevision) {
       this.runtime.commitCheckpoint = null;
       if (this.runtimePersistRevision === runtimePersistRevision) {

@@ -86,6 +86,21 @@ export function isSupportedSyncItemKey(key: string): boolean {
   );
 }
 
+export function isAggregateHistoryKey(key: string): boolean {
+  return (
+    DAILY_KEY_RE.test(key) || MONTHLY_KEY_RE.test(key) || CLOCK_REBASE_ARCHIVE_KEY_RE.test(key)
+  );
+}
+
+export function aggregateHistoryDeviceId(key: string): string | null {
+  return (
+    DAILY_KEY_RE.exec(key)?.[1] ??
+    MONTHLY_KEY_RE.exec(key)?.[1] ??
+    CLOCK_REBASE_ARCHIVE_KEY_RE.exec(key)?.[1] ??
+    null
+  );
+}
+
 export function isFocusLockSyncKey(key: string): boolean {
   return isSupportedSyncItemKey(key) || CLOCK_REBASE_ARCHIVE_KEY_RE.test(key);
 }

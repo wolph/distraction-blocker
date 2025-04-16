@@ -93,6 +93,8 @@ export interface RuntimeCommitCheckpoint {
   bank: BankState;
   events: EventRecord[];
   syncBank: boolean;
+  aggregateSets?: Record<string, DailyAgg>;
+  aggregateRemoves?: string[];
 }
 
 export interface RuntimeTabState {
@@ -907,7 +909,34 @@ function parseCommitCheckpoint(value: unknown): RuntimeCommitCheckpoint | null {
     if (event === null) return null;
     events.push(event);
   }
-  return { bank: { balanceMs: value.bank.balanceMs }, events, syncBank: value.syncBank };
+  const aggregateSets: Record<string, DailyAgg> = {};
+  if (value.aggregateSets !== undefined) {
+    if (!isRecord(value.aggregateSets)) return null;
+    for (const [key, candidate] of Object.entries(value.aggregateSets)) {
+      const date: string | undefined =
+        /^agg:[^:]+:(\d{4}-\d{2}-\d{2})$/.exec(key)?.[1] ??
+        /^archive:clock-rebase:[^:]+:(\d{4}-\d{2}-\d{2}):\d+:[^:]+$/.exec(key)?.[1];
+      if (date === undefined) return null;
+      const aggregate: DailyAgg | null = parseDailyAgg(candidate, date);
+      if (aggregate === null) return null;
+      aggregateSets[key] = aggregate;
+    }
+  }
+  const aggregateRemoves: string[] = [];
+  if (value.aggregateRemoves !== undefined) {
+    if (!Array.isArray(value.aggregateRemoves)) return null;
+    for (const key of value.aggregateRemoves) {
+      if (typeof key !== 'string' || !/^agg:[^:]+:\d{4}-\d{2}-\d{2}$/.test(key)) return null;
+      aggregateRemoves.push(key);
+    }
+  }
+  return {
+    bank: { balanceMs: value.bank.balanceMs },
+    events,
+    syncBank: value.syncBank,
+    ...(Object.keys(aggregateSets).length === 0 ? {} : { aggregateSets }),
+    ...(aggregateRemoves.length === 0 ? {} : { aggregateRemoves }),
+  };
 }
 
 function parseTabStates(value: unknown): Record<number, RuntimeTabState> {

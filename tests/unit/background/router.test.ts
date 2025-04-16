@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Engine } from '../../../src/background/engine';
+import type { PolicyStorage } from '../../../src/background/policy-storage';
 import { routeMessage } from '../../../src/background/router';
-import { fetchStats } from '../../../src/background/stats-service';
+import { type AggregateStorage, fetchStats } from '../../../src/background/stats-service';
 import { readEvents } from '../../../src/background/stores';
 import { emptySnapshot } from '../../../src/shared/constants';
 import type { StatsBundle } from '../../../src/shared/messages';
@@ -64,10 +65,26 @@ describe('routeMessage stats wiring', () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
     vi.mocked(fetchStats).mockResolvedValue(stats);
 
-    const result: unknown = await routeMessage(engine, { type: 'getStats', days: 14 }, sender);
+    const local = {} as chrome.storage.StorageArea;
+    const aggregateStorage: AggregateStorage = { local, sync: null };
+    const withAggregateStorage = vi.fn(
+      async (operation: (storage: AggregateStorage) => Promise<unknown>): Promise<unknown> =>
+        operation(aggregateStorage),
+    );
+    const policyStorage = {
+      withAggregateStorage:
+        withAggregateStorage as unknown as PolicyStorage['withAggregateStorage'],
+    } satisfies Pick<PolicyStorage, 'withAggregateStorage'>;
+    const result: unknown = await routeMessage(
+      engine,
+      { type: 'getStats', days: 14 },
+      sender,
+      policyStorage,
+    );
 
     expect(result).toBe(stats);
-    expect(fetchStats).toHaveBeenCalledWith(14, now, overlay);
+    expect(withAggregateStorage).toHaveBeenCalledOnce();
+    expect(fetchStats).toHaveBeenCalledWith(14, now, overlay, aggregateStorage);
   });
 
   it('exports the local event log as formatted JSON', async () => {
