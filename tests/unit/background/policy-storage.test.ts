@@ -914,6 +914,52 @@ describe('PolicyStorage', (): void => {
     expect((await setupState(local)).storageMode).toBe('sync');
   });
 
+  it('drains rollover and clock-rebase aggregate intents before the first Sync checkpoint', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const finishedKey: string = syncAggKey('device-a', '2026-08-30');
+    const futureKey: string = syncAggKey('device-a', '2026-09-02');
+    const archiveKey: string = 'archive:clock-rebase:device-a:2026-09-02:1:nonce';
+    const finished = { ...emptyDaily('2026-08-30'), focusMs: 2_000 };
+    const future = { ...emptyDaily('2026-09-02'), focusMs: 3_000 };
+    const archive = { ...future };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_DEVICE_ID]: 'device-a',
+      [futureKey]: future,
+    });
+    const sync: FakeStorage = fakeStorage({ [futureKey]: future });
+    let storage: PolicyStorage;
+    storage = createPolicyStorage(
+      local.area,
+      sync.area,
+      {
+        runExclusive: async <T>(operation: () => Promise<T>): Promise<T> => {
+          await storage.saveAggregate(finishedKey, finished);
+          await storage.saveAggregate(archiveKey, archive);
+          await storage.removeAggregate(futureKey);
+          return operation();
+        },
+        loadAggregateItems: async (): Promise<Record<string, unknown>> =>
+          Object.fromEntries(
+            Object.entries(local.state.values).filter(
+              ([key]: [string, unknown]): boolean =>
+                key.startsWith('agg:device-a:') ||
+                key.startsWith('aggm:device-a:') ||
+                key.startsWith('archive:clock-rebase:device-a:'),
+            ),
+          ),
+      },
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+
+    await storage.enableSync();
+
+    expect(sync.state.values[finishedKey]).toEqual(finished);
+    expect(sync.state.values[archiveKey]).toEqual(archive);
+    expect(sync.state.values[futureKey]).toBeUndefined();
+    expect((await setupState(local)).storageMode).toBe('sync');
+  });
+
   it('keeps an aggregate save requested after disable local-only', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
     const key: string = syncAggKey('device-a', '2026-08-31');
@@ -931,6 +977,120 @@ describe('PolicyStorage', (): void => {
     expect(local.state.values[key]).toEqual(aggregate);
     expect(sync.state.values[key]).toBeUndefined();
     expect((await setupState(local)).storageMode).toBe('local');
+  });
+
+  it('does not let an old flush cleanup erase newer save, remove, and prune intents', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const oldKey: string = syncAggKey('device-a', '2026-08-30');
+    const saveKey: string = syncAggKey('device-a', '2026-08-31');
+    const removeKey: string = syncAggKey('device-a', '2026-09-01');
+    const pruneDate: string = '2026-05-01';
+    const pruneKey: string = syncAggKey('device-a', pruneDate);
+    const monthKey: string = 'aggm:device-a:2026-05';
+    const oldAggregate = { ...emptyDaily('2026-08-30'), focusMs: 1_000 };
+    const savedAggregate = { ...emptyDaily('2026-08-31'), focusMs: 2_000 };
+    const removedAggregate = { ...emptyDaily('2026-09-01'), focusMs: 3_000 };
+    const prunedAggregate = { ...emptyDaily(pruneDate), focusMs: 4_000 };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_DEVICE_ID]: 'device-a',
+      [removeKey]: removedAggregate,
+      [pruneKey]: prunedAggregate,
+    });
+    const sync: FakeStorage = fakeStorage({
+      [removeKey]: removedAggregate,
+      [pruneKey]: prunedAggregate,
+    });
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    await storage.saveAggregate(oldKey, oldAggregate);
+
+    let signalCleanup: () => void = (): void => {
+      throw new Error('cleanup signal was not initialized');
+    };
+    const cleanupStarted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalCleanup = resolve;
+    });
+    let releaseCleanup: () => void = (): void => {
+      throw new Error('cleanup release was not initialized');
+    };
+    let holdCleanup: boolean = true;
+    vi.mocked(local.area.set).mockImplementation(
+      async (items: Record<string, unknown>): Promise<void> => {
+        const journal: unknown = items[LOCAL_SYNC_JOURNAL];
+        if (
+          holdCleanup &&
+          typeof journal === 'object' &&
+          journal !== null &&
+          'sets' in journal &&
+          'removes' in journal &&
+          Object.keys((journal as SyncJournal).sets).length === 0 &&
+          (journal as SyncJournal).removes.length === 0
+        ) {
+          holdCleanup = false;
+          signalCleanup();
+          await new Promise<void>((resolve: () => void): void => {
+            releaseCleanup = resolve;
+          });
+        }
+        Object.assign(local.state.values, structuredClone(items));
+      },
+    );
+    const oldFlush: Promise<unknown> = vi.advanceTimersByTimeAsync(10_000);
+    await cleanupStarted;
+
+    let newerCompleted: boolean = false;
+    const newer: Promise<void> = Promise.all([
+      storage.saveAggregate(saveKey, savedAggregate),
+      storage.removeAggregate(removeKey),
+      storage.pruneRemoteHistory('device-a', 90, new Date(2026, 7, 31, 12, 0).getTime()),
+    ]).then((): void => {
+      newerCompleted = true;
+    });
+    await Promise.resolve();
+    expect(newerCompleted).toBe(false);
+
+    releaseCleanup();
+    await Promise.all([oldFlush, newer]);
+
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toMatchObject({
+      sets: {
+        [saveKey]: savedAggregate,
+        [monthKey]: expect.objectContaining({ focusMs: 4_000 }),
+      },
+      removes: expect.arrayContaining([removeKey, pruneKey]),
+    });
+    expect(local.state.values[LOCAL_AGGREGATE_TOMBSTONES]).toEqual(
+      expect.arrayContaining([removeKey, pruneKey]),
+    );
+
+    vi.clearAllTimers();
+    const restarted: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      {
+        loadAggregateItems: async (): Promise<Record<string, unknown>> =>
+          Object.fromEntries(
+            Object.entries(local.state.values).filter(
+              ([key]: [string, unknown]): boolean =>
+                key.startsWith('agg:device-a:') ||
+                key.startsWith('aggm:device-a:') ||
+                key.startsWith('archive:clock-rebase:device-a:'),
+            ),
+          ),
+      },
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+    await restarted.initialize();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(sync.state.values[oldKey]).toEqual(oldAggregate);
+    expect(sync.state.values[saveKey]).toEqual(savedAggregate);
+    expect(sync.state.values[removeKey]).toBeUndefined();
+    expect(sync.state.values[pruneKey]).toBeUndefined();
+    expect(sync.state.values[monthKey]).toMatchObject({ focusMs: 4_000 });
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
+    expect(local.state.values[LOCAL_AGGREGATE_TOMBSTONES]).toEqual([]);
   });
 
   it('prunes local aggregate authority without making a Sync call in local mode', async (): Promise<void> => {
@@ -976,6 +1136,65 @@ describe('PolicyStorage', (): void => {
     expect(local.state.values[oldKey]).toBeUndefined();
     expect(local.state.values[monthKey]).toEqual(monthly);
     expect(local.state.values[LOCAL_AGGREGATE_PRUNE]).toBeUndefined();
+  });
+
+  it('marks a failed aggregate prune journal durable error and recovers it after restart', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const oldDate: string = '2026-05-01';
+    const oldKey: string = syncAggKey('device-a', oldDate);
+    const monthKey: string = 'aggm:device-a:2026-05';
+    const aggregate = { ...emptyDaily(oldDate), focusMs: 42_000 };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_DEVICE_ID]: 'device-a',
+      [oldKey]: aggregate,
+    });
+    const sync: FakeStorage = fakeStorage({ [oldKey]: aggregate });
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    let rejectJournal: boolean = true;
+    vi.mocked(local.area.set).mockImplementation(
+      async (items: Record<string, unknown>): Promise<void> => {
+        const journal: unknown = items[LOCAL_SYNC_JOURNAL];
+        if (
+          rejectJournal &&
+          typeof journal === 'object' &&
+          journal !== null &&
+          'sets' in journal &&
+          Object.hasOwn((journal as SyncJournal).sets, monthKey)
+        ) {
+          throw new Error('aggregate prune journal unavailable');
+        }
+        Object.assign(local.state.values, structuredClone(items));
+      },
+    );
+
+    await expect(
+      storage.pruneRemoteHistory('device-a', 90, new Date(2026, 7, 31, 12, 0).getTime()),
+    ).rejects.toThrow('aggregate prune journal unavailable');
+
+    expect((await setupState(local)).syncWriteStatus).toBe('error');
+    expect((await setupState(local)).storageError).toBe('sync-publish-failed');
+    expect(local.state.values[monthKey]).toMatchObject({ focusMs: 42_000 });
+    expect(local.state.values[LOCAL_AGGREGATE_TOMBSTONES]).toContain(oldKey);
+
+    rejectJournal = false;
+    const restarted: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      {
+        loadAggregateItems: async (): Promise<Record<string, unknown>> => ({
+          [monthKey]: local.state.values[monthKey],
+        }),
+      },
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+    await restarted.initialize();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(sync.state.values[oldKey]).toBeUndefined();
+    expect(sync.state.values[monthKey]).toMatchObject({ focusMs: 42_000 });
+    expect((await setupState(local)).syncWriteStatus).toBe('idle');
   });
 
   it('leaves local mode and a retryable outbox when initial publish fails', async (): Promise<void> => {

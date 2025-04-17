@@ -310,6 +310,10 @@ async function preparePolicyStorage(): Promise<PolicyStorage> {
     chrome.storage.local,
     chrome.storage.sync,
     {
+      runExclusive: <T>(operation: () => Promise<T>): Promise<T> =>
+        engineInstance === null
+          ? operation()
+          : engineInstance.runWithAggregateStorageBarrier(operation),
       loadAggregateItems: async (): Promise<Record<string, unknown>> => {
         const deviceId: string = await getDeviceId();
         const stored: Record<string, unknown> = await chrome.storage.local.get(null);
@@ -328,10 +332,6 @@ async function preparePolicyStorage(): Promise<PolicyStorage> {
             throw new Error(`invalid local aggregate checkpoint item ${JSON.stringify(key)}`);
           }
           aggregates[key] = value;
-        }
-        if (engineInstance !== null) {
-          const overlay = engineInstance.statsOverlay();
-          aggregates[`agg:${deviceId}:${overlay.todayAgg.date}`] = overlay.todayAgg;
         }
         return aggregates;
       },

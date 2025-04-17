@@ -252,6 +252,27 @@ export class Engine {
     }
   }
 
+  async runWithAggregateStorageBarrier<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.dataClearOperationRunning) {
+      throw new Error('another storage transition is already in progress');
+    }
+    if (this.dataClearBarrierState !== 'open') {
+      throw new Error('another storage transition is already in progress');
+    }
+    this.dataClearOperationRunning = true;
+    this.dataClearBarrierState = 'draining';
+    try {
+      await this.drainRuntimeMutations();
+      if (this.dirty) await this.commit(this.ports.now());
+      await this.drainRuntimeMutations();
+      this.dataClearBarrierState = 'quiesced';
+      return await operation();
+    } finally {
+      this.dataClearBarrierState = 'open';
+      this.dataClearOperationRunning = false;
+    }
+  }
+
   snapshot(): SessionSnapshot {
     const now: number = this.ports.now();
     this.catchUp(now);
@@ -1719,7 +1740,9 @@ export class Engine {
   private enqueuePolicyMutation<T>(mutation: () => Promise<T>): Promise<T> {
     if (this.dataClearBarrierState !== 'open') {
       return Promise.reject(
-        new Error('runtime mutation rejected while all-data clear is in progress'),
+        new Error(
+          'runtime mutation rejected while storage transition or data clear is in progress',
+        ),
       );
     }
     const requested: Promise<T> = this.policyMutationQueue.then(mutation, mutation);
@@ -1732,7 +1755,9 @@ export class Engine {
 
   private assertRuntimeMutationAllowed(): void {
     if (this.dataClearBarrierState === 'quiesced') {
-      throw new Error('runtime mutation rejected while all-data clear is in progress');
+      throw new Error(
+        'runtime mutation rejected while storage transition or data clear is in progress',
+      );
     }
   }
 

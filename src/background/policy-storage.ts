@@ -96,6 +96,7 @@ export type SetupUpdate = Pick<
 
 export interface FirstSyncCheckpointSource {
   loadAggregateItems(): Promise<Record<string, unknown>>;
+  runExclusive?<T>(operation: () => Promise<T>): Promise<T>;
 }
 
 export interface AllDataClearBarrier {
@@ -1443,28 +1444,33 @@ export function createPolicyStorage(
     if (!isAggregateHistoryKey(key) || !isAuthoritativeSyncItem(key, value)) {
       throw new Error('invalid aggregate item');
     }
-    const tombstoneStored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
-    const tombstones: string[] = parseAggregateTombstones(
-      tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES],
-    ).filter((candidate: string): boolean => candidate !== key);
     if (mode !== 'sync') {
+      const tombstoneStored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
+      const tombstones: string[] = parseAggregateTombstones(
+        tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES],
+      ).filter((candidate: string): boolean => candidate !== key);
       await verifiedWrite(
         { [key]: value, [LOCAL_AGGREGATE_TOMBSTONES]: tombstones },
         'aggregate item',
       );
       return;
     }
-    const setup: SetupState = await loadSetupInternal();
-    await verifiedWrite(
-      {
-        [key]: value,
-        [LOCAL_AGGREGATE_TOMBSTONES]: tombstones,
-        [LOCAL_SETUP]: { ...setup, syncWriteStatus: 'pending' },
-      },
-      'aggregate item and pending sync status',
-    );
+    const writer: SyncWriter = await ensurePublisher();
     try {
-      const writer: SyncWriter = await ensurePublisher();
+      await writer.pause();
+      const setup: SetupState = await loadSetupInternal();
+      const tombstoneStored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
+      const tombstones: string[] = parseAggregateTombstones(
+        tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES],
+      ).filter((candidate: string): boolean => candidate !== key);
+      await verifiedWrite(
+        {
+          [key]: value,
+          [LOCAL_AGGREGATE_TOMBSTONES]: tombstones,
+          [LOCAL_SETUP]: { ...setup, syncWriteStatus: 'pending' },
+        },
+        'aggregate item and pending sync status',
+      );
       writer.queue(key, value);
       await writer.whenJournalDurable();
     } catch (error: unknown) {
@@ -1475,6 +1481,8 @@ export function createPolicyStorage(
         storageError: 'sync-publish-failed',
       });
       throw error;
+    } finally {
+      writer.resume();
     }
   }
 
@@ -1485,21 +1493,22 @@ export function createPolicyStorage(
       await verifiedRemove([key], 'aggregate item');
       return;
     }
-    const setup: SetupState = await loadSetupInternal();
-    const tombstoneStored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
-    const tombstones: string[] = [
-      ...new Set([...parseAggregateTombstones(tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES]), key]),
-    ];
-    await verifiedWrite(
-      {
-        [LOCAL_AGGREGATE_TOMBSTONES]: tombstones,
-        [LOCAL_SETUP]: { ...setup, syncWriteStatus: 'pending' },
-      },
-      'aggregate tombstone and pending sync status',
-    );
-    await verifiedRemove([key], 'aggregate item');
+    const writer: SyncWriter = await ensurePublisher();
     try {
-      const writer: SyncWriter = await ensurePublisher();
+      await writer.pause();
+      const setup: SetupState = await loadSetupInternal();
+      const tombstoneStored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
+      const tombstones: string[] = [
+        ...new Set([...parseAggregateTombstones(tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES]), key]),
+      ];
+      await verifiedWrite(
+        {
+          [LOCAL_AGGREGATE_TOMBSTONES]: tombstones,
+          [LOCAL_SETUP]: { ...setup, syncWriteStatus: 'pending' },
+        },
+        'aggregate tombstone and pending sync status',
+      );
+      await verifiedRemove([key], 'aggregate item');
       writer.remove(key);
       await writer.whenJournalDurable();
     } catch (error: unknown) {
@@ -1510,6 +1519,8 @@ export function createPolicyStorage(
         storageError: 'sync-publish-failed',
       });
       throw error;
+    } finally {
+      writer.resume();
     }
   }
 
@@ -1571,39 +1582,54 @@ export function createPolicyStorage(
       set: structuredClone(plan.set),
       remove: [...plan.remove],
     };
-    const setup: SetupState = await loadSetupInternal();
-    const tombstoneStored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
-    const tombstones: string[] =
-      mode === 'sync'
-        ? [
-            ...new Set([
-              ...parseAggregateTombstones(tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES]),
-              ...plan.remove,
-            ]),
-          ]
-        : parseAggregateTombstones(tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES]);
-    await verifiedWrite(
-      {
-        [LOCAL_AGGREGATE_PRUNE]: checkpoint,
-        ...(mode === 'sync'
-          ? {
-              [LOCAL_AGGREGATE_TOMBSTONES]: tombstones,
-              [LOCAL_SETUP]: { ...setup, syncWriteStatus: 'pending' },
-            }
-          : {}),
-      },
-      'aggregate prune checkpoint',
-    );
-    if (Object.keys(plan.set).length > 0) {
-      await verifiedWrite(plan.set, 'aggregate prune rollup');
+    const writer: SyncWriter | null = mode === 'sync' ? await ensurePublisher() : null;
+    try {
+      if (writer !== null) await writer.pause();
+      const setup: SetupState = await loadSetupInternal();
+      const tombstoneStored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
+      const tombstones: string[] =
+        writer === null
+          ? parseAggregateTombstones(tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES])
+          : [
+              ...new Set([
+                ...parseAggregateTombstones(tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES]),
+                ...plan.remove,
+              ]),
+            ];
+      await verifiedWrite(
+        {
+          [LOCAL_AGGREGATE_PRUNE]: checkpoint,
+          ...(writer === null
+            ? {}
+            : {
+                [LOCAL_AGGREGATE_TOMBSTONES]: tombstones,
+                [LOCAL_SETUP]: { ...setup, syncWriteStatus: 'pending' },
+              }),
+        },
+        'aggregate prune checkpoint',
+      );
+      if (Object.keys(plan.set).length > 0) {
+        await verifiedWrite(plan.set, 'aggregate prune rollup');
+      }
+      await verifiedRemove(plan.remove, 'aggregate prune removals');
+      await verifiedRemove([LOCAL_AGGREGATE_PRUNE], 'aggregate prune checkpoint cleanup');
+      if (writer === null) return;
+      for (const [key, value] of Object.entries(plan.set)) writer.queue(key, value);
+      for (const key of plan.remove) writer.remove(key);
+      await writer.whenJournalDurable();
+    } catch (error: unknown) {
+      if (writer !== null) {
+        const current: SetupState = await loadSetupInternal();
+        await saveSetupInternal({
+          ...current,
+          syncWriteStatus: 'error',
+          storageError: 'sync-publish-failed',
+        });
+      }
+      throw error;
+    } finally {
+      writer?.resume();
     }
-    await verifiedRemove(plan.remove, 'aggregate prune removals');
-    await verifiedRemove([LOCAL_AGGREGATE_PRUNE], 'aggregate prune checkpoint cleanup');
-    if (mode !== 'sync') return;
-    const writer: SyncWriter = await ensurePublisher();
-    for (const [key, value] of Object.entries(plan.set)) writer.queue(key, value);
-    for (const key of plan.remove) writer.remove(key);
-    await writer.whenJournalDurable();
   }
 
   return {
@@ -1634,7 +1660,10 @@ export function createPolicyStorage(
       value: PolicyValueByKey[K],
     ): Promise<void> => enqueue((): Promise<void> => setPolicyInternal(key, value)),
     selectLocalMode: (): Promise<void> => enqueue(selectLocalModeInternal),
-    enableSync: (): Promise<void> => enqueue(enableSyncInternal),
+    enableSync: (): Promise<void> =>
+      firstSyncCheckpoint.runExclusive === undefined
+        ? enqueue(enableSyncInternal)
+        : firstSyncCheckpoint.runExclusive((): Promise<void> => enqueue(enableSyncInternal)),
     disableSync: (): Promise<void> => enqueue(disableSyncInternal),
     mirrorAcceptedRemotePolicy: (
       changes: Record<string, unknown>,

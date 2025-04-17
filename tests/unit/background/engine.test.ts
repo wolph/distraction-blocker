@@ -2043,6 +2043,49 @@ describe('Engine', () => {
     expect(recoveredRuntime.commitCheckpoint).toBeNull();
   });
 
+  it('drains aggregate commits before entering a storage-mode transition', async (): Promise<void> => {
+    let releaseSave: () => void = (): void => {
+      throw new Error('aggregate save did not start');
+    };
+    const saveStarted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseSave = resolve;
+    });
+    let unblockSave: () => void = (): void => {
+      throw new Error('aggregate save release was not initialized');
+    };
+    let saveCalls: number = 0;
+    const h: Harness = makeEngine({
+      saveAggregate: async (): Promise<void> => {
+        saveCalls += 1;
+        if (saveCalls > 1) return;
+        releaseSave();
+        await new Promise<void>((resolve: () => void): void => {
+          unblockSave = resolve;
+        });
+      },
+    });
+    h.setNow(T0 + DAY_MS);
+    const ticking: Promise<void> = h.engine.tick();
+    await saveStarted;
+    let entered: boolean = false;
+
+    const transitioning: Promise<void> = h.engine.runWithAggregateStorageBarrier(
+      async (): Promise<void> => {
+        entered = true;
+        await expect(h.engine.startSession(manualConfig)).rejects.toThrow('storage transition');
+      },
+    );
+    await Promise.resolve();
+    expect(entered).toBe(false);
+
+    unblockSave();
+    await Promise.all([ticking, transitioning]);
+
+    expect(entered).toBe(true);
+    const savedRuntime: RuntimeState = h.ports.saveRuntime.mock.calls.at(-1)?.[0];
+    expect(savedRuntime.commitCheckpoint).toBeNull();
+  });
+
   it('does not grant a freeze token during off-Monday rollover catch-up', async () => {
     const previousDate: string = localDateStr(T0 - DAY_MS);
     const streak: StreakState = {
