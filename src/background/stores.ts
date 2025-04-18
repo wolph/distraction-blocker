@@ -1,5 +1,5 @@
 import { normalizeSessionRules, type StoredMatcherCache, validateRule } from '../core/matcher';
-import { isDailyDate, parseDailyAgg } from '../core/stats';
+import { capAttempts, isDailyDate, parseDailyAgg } from '../core/stats';
 import {
   CATEGORY_IDS,
   DEFAULT_LISTS,
@@ -7,6 +7,7 @@ import {
   EVENT_LOG_CAP,
   MAX_FREEZE_TOKENS,
   rulesFromLists,
+  TOP_SITES_DAILY,
 } from '../shared/constants';
 import { isRelativeMinuteDuration, isSafeDayCount } from '../shared/numeric-validation';
 import {
@@ -919,7 +920,7 @@ function parseCommitCheckpoint(value: unknown): RuntimeCommitCheckpoint | null {
       if (date === undefined) return null;
       const aggregate: DailyAgg | null = parseDailyAgg(candidate, date);
       if (aggregate === null) return null;
-      aggregateSets[key] = aggregate;
+      aggregateSets[key] = capAttempts(aggregate, TOP_SITES_DAILY);
     }
   }
   const aggregateRemoves: string[] = [];

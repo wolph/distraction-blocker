@@ -22,6 +22,7 @@ import {
   DEFAULT_SETTINGS,
   GATE_EXPIRY_MS,
   rulesFromLists,
+  TOP_SITES_DAILY,
 } from '../../../src/shared/constants';
 import type { Ack } from '../../../src/shared/messages';
 import {
@@ -78,6 +79,28 @@ function oversizedHostRules(prefix: string): ListsConfig['custom'] {
     kind: 'host' as const,
     pattern: `${prefix}-${index}.example`,
   }));
+}
+
+function highCardinalityDaily(date: string, count: number): DailyAgg {
+  return {
+    date,
+    focusMs: 0,
+    sessionsStarted: 0,
+    sessionsCompleted: 0,
+    attempts: Object.fromEntries(
+      Array.from({ length: count }, (_value: unknown, index: number): [string, number] => [
+        `site-${String(index).padStart(4, '0')}.example`,
+        count - index,
+      ]),
+    ),
+    attemptsOther: 0,
+    pausesTaken: 0,
+    pauseMsSpent: 0,
+    pauseMsEarned: 0,
+    unlocksTaken: 0,
+    unlockMsSpent: 0,
+    resisted: 0,
+  };
 }
 
 function splittableLists(custom: ListsConfig['custom'] = []): ListsConfig {
@@ -2043,6 +2066,55 @@ describe('Engine', () => {
     expect(recoveredRuntime.commitCheckpoint).toBeNull();
   });
 
+  it('caps rollover and recovered checkpoint aggregates before durability', async (): Promise<void> => {
+    const date: string = localDateStr(T0);
+    const runtime: RuntimeState = {
+      ...emptyRuntime(T0),
+      todayAgg: highCardinalityDaily(date, 30),
+    };
+    const firstSave = vi
+      .fn<NonNullable<EnginePorts['saveAggregate']>>()
+      .mockResolvedValue(undefined);
+    const first: Harness = makeEngine({ runtime, saveAggregate: firstSave });
+    first.setNow(T0 + DAY_MS);
+
+    await first.engine.tick();
+
+    const rollover = firstSave.mock.calls.find(
+      ([key]: [string, DailyAgg]): boolean => key === syncAggKey('dev-test', date),
+    )?.[1];
+    expect(Object.keys(rollover?.attempts ?? {})).toHaveLength(TOP_SITES_DAILY);
+    expect(rollover?.attemptsOther).toBe(55);
+
+    const recoveredRuntime: RuntimeState = {
+      ...emptyRuntime(T0 + DAY_MS),
+      commitCheckpoint: {
+        bank: { balanceMs: 0 },
+        events: [],
+        syncBank: false,
+        aggregateSets: {
+          [syncAggKey('dev-test', date)]: highCardinalityDaily(date, 30),
+        },
+      },
+    };
+    const recoveredSave = vi
+      .fn<NonNullable<EnginePorts['saveAggregate']>>()
+      .mockResolvedValue(undefined);
+    const restarted: Harness = makeEngine({
+      runtime: recoveredRuntime,
+      saveAggregate: recoveredSave,
+    });
+    restarted.setNow(T0 + DAY_MS);
+
+    await restarted.engine.tick();
+
+    const recovered = recoveredSave.mock.calls.find(
+      ([key]: [string, DailyAgg]): boolean => key === syncAggKey('dev-test', date),
+    )?.[1];
+    expect(Object.keys(recovered?.attempts ?? {})).toHaveLength(TOP_SITES_DAILY);
+    expect(recovered?.attemptsOther).toBe(55);
+  });
+
   it('drains aggregate commits before entering a storage-mode transition', async (): Promise<void> => {
     let releaseSave: () => void = (): void => {
       throw new Error('aggregate save did not start');
@@ -2814,6 +2886,35 @@ describe('Engine', () => {
       `set:${clockRebaseArchiveKey('dev-test', futureDate, T0, 'archive-id')}`,
       `remove:${syncAggKey('dev-test', futureDate)}`,
     ]);
+  });
+
+  it('caps a backward-date archive before checkpoint and storage persistence', async (): Promise<void> => {
+    const futureDate: string = localDateStr(T0 + 3 * DAY_MS);
+    const runtime: RuntimeState = {
+      ...emptyRuntime(T0),
+      date: futureDate,
+      todayAgg: highCardinalityDaily(futureDate, 30),
+    };
+    const saveAggregate = vi
+      .fn<NonNullable<EnginePorts['saveAggregate']>>()
+      .mockRejectedValue(new Error('archive persistence interrupted'));
+    const h: Harness = makeEngine({ runtime, saveAggregate });
+
+    await expect(h.engine.tick()).rejects.toThrow('archive persistence interrupted');
+
+    const archive = saveAggregate.mock.calls.find(([key]: [string, DailyAgg]): boolean =>
+      key.startsWith('archive:clock-rebase:'),
+    )?.[1];
+    expect(Object.keys(archive?.attempts ?? {})).toHaveLength(TOP_SITES_DAILY);
+    expect(archive?.attemptsOther).toBe(55);
+    const checkpointRuntime = h.ports.saveRuntime.mock.calls.find(
+      (call: unknown[]): boolean => (call[0] as RuntimeState).commitCheckpoint !== null,
+    )?.[0] as RuntimeState;
+    const checkpointArchive: DailyAgg | undefined = Object.values(
+      checkpointRuntime.commitCheckpoint?.aggregateSets ?? {},
+    ).find((candidate: DailyAgg): boolean => candidate.date === futureDate);
+    expect(Object.keys(checkpointArchive?.attempts ?? {})).toHaveLength(TOP_SITES_DAILY);
+    expect(checkpointArchive?.attemptsOther).toBe(55);
   });
 
   it('clears future streak markers during a same-month clock rebase', async () => {

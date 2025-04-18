@@ -15,6 +15,7 @@ import {
   DEFAULT_SETTINGS,
   DEFAULT_SETUP,
   rulesFromLists,
+  TOP_SITES_DAILY,
 } from '../../../src/shared/constants';
 import {
   LOCAL_AGGREGATE_PRUNE,
@@ -41,7 +42,9 @@ import {
 } from '../../../src/shared/storage-keys';
 import type {
   BankState,
+  DailyAgg,
   ListsConfig,
+  MonthlyAgg,
   SessionState,
   Settings,
   SetupState,
@@ -188,6 +191,18 @@ async function setupState(local: FakeStorage): Promise<SetupState> {
   return value as SetupState;
 }
 
+function highCardinalityDaily(date: string, count: number): ReturnType<typeof emptyDaily> {
+  return {
+    ...emptyDaily(date),
+    attempts: Object.fromEntries(
+      Array.from({ length: count }, (_value: unknown, index: number): [string, number] => [
+        `site-${String(index).padStart(4, '0')}.example`,
+        count - index,
+      ]),
+    ),
+  };
+}
+
 describe('PolicyStorage', (): void => {
   beforeEach((): void => {
     vi.useFakeTimers();
@@ -238,6 +253,55 @@ describe('PolicyStorage', (): void => {
     expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual(journal);
     expect(sync.area.set).not.toHaveBeenCalled();
     expect(sync.area.remove).not.toHaveBeenCalled();
+  });
+
+  it('materializes effective legacy aggregate sets and removals across local selection and restart', async (): Promise<void> => {
+    const setKey: string = syncAggKey('legacy-device', '2026-08-30');
+    const removeKey: string = syncAggKey('legacy-device', '2026-08-29');
+    const storedSet: DailyAgg = { ...emptyDaily('2026-08-30'), focusMs: 1_000 };
+    const pendingSet: DailyAgg = highCardinalityDaily('2026-08-30', 30);
+    const removed: DailyAgg = { ...emptyDaily('2026-08-29'), focusMs: 5_000 };
+    const storedSync: Record<string, unknown> = {
+      [setKey]: storedSet,
+      [removeKey]: removed,
+    };
+    const journal: SyncJournal = {
+      sets: { [setKey]: pendingSet },
+      removes: [removeKey],
+    };
+    const local: FakeStorage = fakeStorage();
+    const sync: FakeStorage = fakeStorage(storedSync);
+    const first: PolicyStorage = policyStorage(local, sync);
+
+    await first.importLegacy(SNAPSHOT, emptyRuntime(Date.now()), journal, storedSync);
+
+    const recoveredSet = local.state.values[setKey] as ReturnType<typeof emptyDaily>;
+    expect(Object.keys(recoveredSet.attempts)).toHaveLength(TOP_SITES_DAILY);
+    expect(recoveredSet.attemptsOther).toBe(55);
+    expect(local.state.values[removeKey]).toBeUndefined();
+    expect(local.state.values[LOCAL_AGGREGATE_TOMBSTONES]).toEqual([removeKey]);
+
+    const restarted: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      {
+        loadAggregateItems: async (): Promise<Record<string, unknown>> => ({
+          [setKey]: structuredClone(local.state.values[setKey]),
+        }),
+      },
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+    await restarted.initialize();
+    await restarted.selectLocalMode();
+
+    expect(local.state.values[setKey]).toEqual(recoveredSet);
+    expect(local.state.values[removeKey]).toBeUndefined();
+    expect(local.state.values[LOCAL_AGGREGATE_TOMBSTONES]).toEqual([removeKey]);
+
+    await restarted.enableSync();
+
+    expect(sync.state.values[setKey]).toEqual(recoveredSet);
+    expect(sync.state.values[removeKey]).toBeUndefined();
   });
 
   it('limits setup updates to onboarding-owned fields', async (): Promise<void> => {
@@ -633,6 +697,45 @@ describe('PolicyStorage', (): void => {
     expect(await restarted.loadSnapshot()).toEqual(SNAPSHOT);
   });
 
+  it('recovers effective legacy aggregate authority from a committed migration generation', async (): Promise<void> => {
+    const setKey: string = syncAggKey('legacy-device', '2026-08-30');
+    const removeKey: string = syncAggKey('legacy-device', '2026-08-29');
+    const pendingSet: DailyAgg = { ...emptyDaily('2026-08-30'), focusMs: 9_000 };
+    const removed: DailyAgg = { ...emptyDaily('2026-08-29'), focusMs: 5_000 };
+    const local: FakeStorage = fakeStorage({ [removeKey]: removed });
+    const first: PolicyStorage = policyStorage(local, fakeStorage());
+    let interruptMaterialization: boolean = true;
+    vi.mocked(local.area.set).mockImplementation(
+      async (items: Record<string, unknown>): Promise<void> => {
+        if (interruptMaterialization && Object.hasOwn(items, LOCAL_SETTINGS)) {
+          interruptMaterialization = false;
+          throw new Error('aggregate materialization interrupted');
+        }
+        Object.assign(local.state.values, structuredClone(items));
+      },
+    );
+
+    await expect(
+      first.importLegacy(
+        SNAPSHOT,
+        emptyRuntime(Date.now()),
+        { sets: { [setKey]: pendingSet }, removes: [removeKey] },
+        { [removeKey]: removed },
+      ),
+    ).rejects.toThrow('aggregate materialization interrupted');
+
+    expect(local.state.values[LOCAL_POLICY_COMMIT]).toMatchObject({ source: 'generation' });
+    expect(local.state.values[setKey]).toBeUndefined();
+
+    const restarted: PolicyStorage = policyStorage(local, fakeStorage());
+    await restarted.initialize();
+
+    expect(local.state.values[setKey]).toEqual(pendingSet);
+    expect(local.state.values[removeKey]).toBeUndefined();
+    expect(local.state.values[LOCAL_AGGREGATE_TOMBSTONES]).toEqual([removeKey]);
+    expect(local.state.values[LOCAL_POLICY_COMMIT]).toMatchObject({ source: 'direct' });
+  });
+
   it('rejects an invalid authoritative legacy snapshot without changing either authority', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, storageMode: 'local' };
     const prior: Settings = { ...DEFAULT_SETTINGS, retentionDays: 30 };
@@ -769,6 +872,61 @@ describe('PolicyStorage', (): void => {
     expect(sync.area.get).not.toHaveBeenCalled();
     expect(sync.area.set).not.toHaveBeenCalled();
     expect((await setupState(local)).syncWriteStatus).toBe('idle');
+  });
+
+  it('caps daily aggregates before local persistence', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const date: string = '2026-08-31';
+    const key: string = syncAggKey('device-a', date);
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+
+    await storage.saveAggregate(key, highCardinalityDaily(date, 30));
+
+    const stored = local.state.values[key] as ReturnType<typeof emptyDaily>;
+    expect(Object.keys(stored.attempts)).toHaveLength(TOP_SITES_DAILY);
+    expect(stored.attemptsOther).toBe(55);
+  });
+
+  it('normalizes oversized daily authority before first Sync checkpoint persistence', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const date: string = '2026-08-31';
+    const key: string = syncAggKey('device-a', date);
+    const oversized: DailyAgg = highCardinalityDaily(date, 600);
+    const local: FakeStorage = fakeStorage({ ...localPolicy(setup), [key]: oversized });
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      { loadAggregateItems: async (): Promise<Record<string, unknown>> => ({ [key]: oversized }) },
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+
+    await storage.enableSync();
+
+    const localAggregate = local.state.values[key] as ReturnType<typeof emptyDaily>;
+    const remoteAggregate = sync.state.values[key] as ReturnType<typeof emptyDaily>;
+    expect(Object.keys(localAggregate.attempts)).toHaveLength(TOP_SITES_DAILY);
+    expect(Object.keys(remoteAggregate.attempts)).toHaveLength(TOP_SITES_DAILY);
+    expect(remoteAggregate.attemptsOther).toBe(168_490);
+  });
+
+  it('preflights aggregate quota before persisting pending Sync state', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const key: string = 'aggm:device-a:2026-08';
+    const oversizedMonthly: MonthlyAgg = {
+      ...rollupMonth('2026-08', []),
+      attempts: { ['x'.repeat(20_000)]: 1 },
+    };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    await storage.initialize();
+
+    await expect(storage.saveAggregate(key, oversizedMonthly)).rejects.toThrow('Cannot sync item');
+
+    expect(local.state.values[key]).toBeUndefined();
+    expect((await setupState(local)).syncWriteStatus).toBe('idle');
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toBeUndefined();
   });
 
   it('includes local aggregate history in the first complete Sync checkpoint', async (): Promise<void> => {

@@ -1,4 +1,10 @@
-import { DEFAULT_LISTS, DEFAULT_SETTINGS, DEFAULT_SETUP } from '../shared/constants';
+import { capAttempts } from '../core/stats';
+import {
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  DEFAULT_SETUP,
+  TOP_SITES_DAILY,
+} from '../shared/constants';
 import { isListsConfig, isSettings, isSetupState } from '../shared/runtime-validation';
 import {
   LOCAL_AGGREGATE_PRUNE,
@@ -26,6 +32,7 @@ import {
 } from '../shared/storage-keys';
 import type {
   BankState,
+  DailyAgg,
   ListsConfig,
   Settings,
   SetupState,
@@ -131,12 +138,12 @@ export interface PolicyStorage {
   saveAggregate(key: string, value: unknown): Promise<void>;
   removeAggregate(key: string): Promise<void>;
   withAggregateStorage<T>(operation: (storage: AggregateStorage) => Promise<T>): Promise<T>;
-  importLegacyAggregates(items: Record<string, unknown>): Promise<void>;
   markLegacyMigrationFailed(): Promise<void>;
   importLegacy(
     snapshot: PolicySnapshot,
     runtime: RuntimeState,
     journal: SyncJournal,
+    storedSync?: Record<string, unknown>,
   ): Promise<void>;
 }
 
@@ -157,6 +164,8 @@ interface PolicyGenerationRecord {
   policy: PolicySnapshot;
   runtime: RuntimeState;
   journal: SyncJournal;
+  aggregates: Record<string, unknown>;
+  aggregateTombstones: string[];
 }
 
 type PolicyCommit =
@@ -211,6 +220,67 @@ function parseAggregateTombstones(value: unknown): string[] {
     if (!keys.includes(candidate)) keys.push(candidate);
   }
   return keys;
+}
+
+function isDailyAggregateHistoryKey(key: string): boolean {
+  return (
+    /^agg:[^:]+:\d{4}-\d{2}-\d{2}$/.test(key) ||
+    /^archive:clock-rebase:[^:]+:\d{4}-\d{2}-\d{2}:\d+:[^:]+$/.test(key)
+  );
+}
+
+function normalizeAggregateItem(key: string, value: unknown): unknown {
+  if (!isAggregateHistoryKey(key) || !isAuthoritativeSyncItem(key, value)) {
+    throw new Error('invalid aggregate item');
+  }
+  return isDailyAggregateHistoryKey(key)
+    ? capAttempts(value as DailyAgg, TOP_SITES_DAILY)
+    : structuredClone(value);
+}
+
+function normalizedAggregateItems(items: Record<string, unknown>): Record<string, unknown> {
+  const normalized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(items)) {
+    if (!isAggregateHistoryKey(key)) continue;
+    normalized[key] = normalizeAggregateItem(key, value);
+  }
+  return normalized;
+}
+
+interface LegacyAggregateAuthority {
+  aggregates: Record<string, unknown>;
+  tombstones: string[];
+  journal: SyncJournal;
+}
+
+function effectiveLegacyAggregateAuthority(
+  storedSync: Record<string, unknown>,
+  journal: SyncJournal,
+): LegacyAggregateAuthority {
+  const aggregates: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(storedSync)) {
+    if (!isAggregateHistoryKey(key) || !isAuthoritativeSyncItem(key, value)) continue;
+    aggregates[key] = normalizeAggregateItem(key, value);
+  }
+  const normalizedJournal: SyncJournal = structuredClone(journal);
+  for (const [key, value] of Object.entries(journal.sets)) {
+    if (!isAggregateHistoryKey(key)) continue;
+    if (!isAuthoritativeSyncItem(key, value)) {
+      delete normalizedJournal.sets[key];
+      continue;
+    }
+    const normalized: unknown = normalizeAggregateItem(key, value);
+    assertSyncItemWithinQuota(key, normalized);
+    normalizedJournal.sets[key] = normalized;
+    aggregates[key] = normalized;
+  }
+  const tombstones: string[] = [];
+  for (const key of journal.removes) {
+    if (!isAggregateHistoryKey(key)) continue;
+    delete aggregates[key];
+    if (!tombstones.includes(key)) tombstones.push(key);
+  }
+  return { aggregates, tombstones, journal: normalizedJournal };
 }
 
 function parseAggregatePrune(value: unknown): LocalAggregatePruneCheckpoint | null {
@@ -470,7 +540,7 @@ export function createPolicyStorage(
     await verifiedWrite(
       {
         [LOCAL_SYNC_JOURNAL]: journal,
-        ...(empty ? { [LOCAL_AGGREGATE_TOMBSTONES]: [] } : {}),
+        ...(empty && mode === 'sync' ? { [LOCAL_AGGREGATE_TOMBSTONES]: [] } : {}),
         [LOCAL_SETUP]: {
           ...setup,
           syncWriteStatus: empty ? 'idle' : 'pending',
@@ -544,6 +614,7 @@ export function createPolicyStorage(
     assertSyncItemWithinQuota(SYNC_BANK, snapshot.bank);
     if (snapshot.streak !== null) assertSyncItemWithinQuota(SYNC_STREAK, snapshot.streak);
     const lists: ListsSyncEncoding = await encodeListsForSync(snapshot.lists);
+    const normalizedAggregates: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(aggregateItems)) {
       if (POLICY_SYNC_KEYS.includes(key)) {
         throw new Error(`first sync checkpoint item ${JSON.stringify(key)} collides with policy`);
@@ -551,20 +622,24 @@ export function createPolicyStorage(
       if (!isAuthoritativeSyncItem(key, value)) {
         throw new Error(`invalid first sync checkpoint item ${JSON.stringify(key)}`);
       }
-      assertSyncItemWithinQuota(key, value);
+      const normalized: unknown = isAggregateHistoryKey(key)
+        ? normalizeAggregateItem(key, value)
+        : structuredClone(value);
+      assertSyncItemWithinQuota(key, normalized);
+      normalizedAggregates[key] = normalized;
     }
     const tombstoneStored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
     const aggregateRemoves: string[] = parseAggregateTombstones(
       tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES],
     );
-    for (const key of aggregateRemoves) delete aggregateItems[key];
+    for (const key of aggregateRemoves) delete normalizedAggregates[key];
     return {
       sets: {
         [SYNC_SETTINGS]: snapshot.settings,
         ...lists.sets,
         [SYNC_BANK]: snapshot.bank,
         ...(snapshot.streak === null ? {} : { [SYNC_STREAK]: snapshot.streak }),
-        ...aggregateItems,
+        ...normalizedAggregates,
       },
       removes: [
         ...lists.removes,
@@ -635,7 +710,11 @@ export function createPolicyStorage(
       );
       for (const [key, value] of Object.entries(persisted.sets)) {
         if (!POLICY_SYNC_KEYS.includes(key) && isAuthoritativeSyncItem(key, value)) {
-          complete.sets[key] = value;
+          const normalized: unknown = isAggregateHistoryKey(key)
+            ? normalizeAggregateItem(key, value)
+            : structuredClone(value);
+          assertSyncItemWithinQuota(key, normalized);
+          complete.sets[key] = normalized;
         }
       }
       for (const key of persisted.removes) {
@@ -645,6 +724,10 @@ export function createPolicyStorage(
         }
       }
       complete.removes = [...new Set(complete.removes)];
+      const normalizedLocal: Record<string, unknown> = normalizedAggregateItems(complete.sets);
+      if (Object.keys(normalizedLocal).length > 0) {
+        await verifiedWrite(normalizedLocal, 'normalized pending aggregate authority');
+      }
       await persistPublicationJournal(complete);
       const writer: SyncWriter = await ensurePublisher(complete);
       if (setup.storageMode === 'sync') writer.resume();
@@ -861,6 +944,10 @@ export function createPolicyStorage(
           }
         }
       }
+      const normalizedLocal: Record<string, unknown> = normalizedAggregateItems(complete.sets);
+      if (Object.keys(normalizedLocal).length > 0) {
+        await verifiedWrite(normalizedLocal, 'normalized first sync aggregate authority');
+      }
     } catch (error: unknown) {
       const current: SetupState = await loadSetupInternal();
       await saveSetupInternal({
@@ -893,12 +980,21 @@ export function createPolicyStorage(
       writer.resume();
       await writer.flushNow();
       const completedSetup: SetupState = await loadSetupInternal();
-      await saveSetupInternal({
+      const syncedSetup: SetupState = {
         ...completedSetup,
         storageMode: 'sync',
         syncWriteStatus: 'idle',
         storageError: null,
-      });
+      };
+      if (!isSetupState(syncedSetup)) throw new Error('invalid setup state');
+      await verifiedWrite(
+        {
+          [LOCAL_SETUP]: syncedSetup,
+          [LOCAL_AGGREGATE_TOMBSTONES]: [],
+        },
+        'sync mode and published aggregate tombstones',
+      );
+      mode = 'sync';
       firstCheckpointComplete = true;
       publisher = writer;
     } catch (error: unknown) {
@@ -1102,9 +1198,15 @@ export function createPolicyStorage(
     const key: string = `${LOCAL_POLICY_GENERATION_PREFIX}${pointer.id}`;
     const stored: Record<string, unknown> = await local.get(key);
     const value: unknown = stored[key];
+    const oldRecordKeys: readonly string[] = ['id', 'revision', 'policy', 'runtime', 'journal'];
+    const aggregateRecordKeys: readonly string[] = [
+      ...oldRecordKeys,
+      'aggregates',
+      'aggregateTombstones',
+    ];
     if (
       !isRecord(value) ||
-      !hasExactKeys(value, ['id', 'revision', 'policy', 'runtime', 'journal']) ||
+      (!hasExactKeys(value, oldRecordKeys) && !hasExactKeys(value, aggregateRecordKeys)) ||
       value.id !== pointer.id ||
       value.revision !== pointer.revision ||
       !isRecord(value.runtime)
@@ -1129,12 +1231,39 @@ export function createPolicyStorage(
       throw new Error('committed runtime generation is invalid');
     }
     const journal: SyncJournal = parseJournal(value.journal, false);
+    const hasAggregateAuthority: boolean = value.aggregates !== undefined;
+    if (hasAggregateAuthority !== (value.aggregateTombstones !== undefined)) {
+      throw new Error('committed aggregate generation is invalid');
+    }
+    if (hasAggregateAuthority && !isRecord(value.aggregates)) {
+      throw new Error('committed aggregate generation is invalid');
+    }
+    const rawAggregates: Record<string, unknown> = isRecord(value.aggregates)
+      ? value.aggregates
+      : {};
+    const aggregates: Record<string, unknown> = normalizedAggregateItems(rawAggregates);
+    if (Object.keys(aggregates).length !== Object.keys(rawAggregates).length) {
+      throw new Error('committed aggregate generation is invalid');
+    }
+    const aggregateTombstones: string[] =
+      value.aggregateTombstones === undefined
+        ? []
+        : parseAggregateTombstones(value.aggregateTombstones);
+    if (
+      value.aggregateTombstones !== undefined &&
+      (!Array.isArray(value.aggregateTombstones) ||
+        aggregateTombstones.length !== value.aggregateTombstones.length)
+    ) {
+      throw new Error('committed aggregate generation is invalid');
+    }
     return {
       id: pointer.id,
       revision: pointer.revision,
       policy,
       runtime,
       journal,
+      aggregates,
+      aggregateTombstones,
     };
   }
 
@@ -1146,9 +1275,12 @@ export function createPolicyStorage(
         [LOCAL_BANK]: record.policy.bank,
         [LOCAL_STREAK]: record.policy.streak,
         [LOCAL_RUNTIME]: record.runtime,
+        ...record.aggregates,
+        [LOCAL_AGGREGATE_TOMBSTONES]: record.aggregateTombstones,
       },
-      'materialized policy generation',
+      'materialized policy and aggregate generation',
     );
+    await verifiedRemove(record.aggregateTombstones, 'legacy aggregate removals');
     const direct: PolicyCommit = { source: 'direct', revision: record.revision };
     await verifiedWrite({ [LOCAL_POLICY_COMMIT]: direct }, 'direct policy authority');
     await local.remove(`${LOCAL_POLICY_GENERATION_PREFIX}${record.id}`);
@@ -1166,6 +1298,7 @@ export function createPolicyStorage(
     snapshot: PolicySnapshot,
     runtime: RuntimeState,
     journal: SyncJournal,
+    storedSync: Record<string, unknown>,
   ): Promise<void> {
     await ensureInitialized();
     const pointerStored: Record<string, unknown> = await local.get(LOCAL_POLICY_COMMIT);
@@ -1203,6 +1336,10 @@ export function createPolicyStorage(
         assertPolicyValue('lists', snapshot.lists);
         assertPolicyValue('bank', snapshot.bank);
         assertPolicyValue('streak', snapshot.streak);
+        const aggregateAuthority: LegacyAggregateAuthority = effectiveLegacyAggregateAuthority(
+          storedSync,
+          journal,
+        );
         const id: string = crypto.randomUUID();
         const revision: string = policyRevision(snapshot);
         record = {
@@ -1210,7 +1347,9 @@ export function createPolicyStorage(
           revision,
           policy: structuredClone(snapshot),
           runtime: structuredClone(runtime),
-          journal: structuredClone(journal),
+          journal: aggregateAuthority.journal,
+          aggregates: aggregateAuthority.aggregates,
+          aggregateTombstones: aggregateAuthority.tombstones,
         };
         const generationKey: string = `${LOCAL_POLICY_GENERATION_PREFIX}${id}`;
         await verifiedWrite({ [generationKey]: record }, 'legacy policy generation');
@@ -1220,16 +1359,17 @@ export function createPolicyStorage(
       }
       const setup: SetupState = await loadSetupInternal();
       if (!setup.legacyImported || setup.storageError !== null) {
+        const committedJournal: SyncJournal = record.journal;
         const migratedSetup: SetupState = {
           ...setup,
           storageMode: null,
-          syncWriteStatus: journalEmpty(journal) ? 'idle' : 'pending',
+          syncWriteStatus: journalEmpty(committedJournal) ? 'idle' : 'pending',
           legacyImported: true,
           storageError: null,
         };
         await verifiedWrite(
           {
-            [LOCAL_SYNC_JOURNAL]: journal,
+            [LOCAL_SYNC_JOURNAL]: committedJournal,
             [LOCAL_SETUP]: migratedSetup,
           },
           'legacy setup and publication journal',
@@ -1441,20 +1581,19 @@ export function createPolicyStorage(
 
   async function saveAggregateInternal(key: string, value: unknown): Promise<void> {
     await ensureInitialized();
-    if (!isAggregateHistoryKey(key) || !isAuthoritativeSyncItem(key, value)) {
-      throw new Error('invalid aggregate item');
-    }
+    const normalized: unknown = normalizeAggregateItem(key, value);
     if (mode !== 'sync') {
       const tombstoneStored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
       const tombstones: string[] = parseAggregateTombstones(
         tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES],
       ).filter((candidate: string): boolean => candidate !== key);
       await verifiedWrite(
-        { [key]: value, [LOCAL_AGGREGATE_TOMBSTONES]: tombstones },
+        { [key]: normalized, [LOCAL_AGGREGATE_TOMBSTONES]: tombstones },
         'aggregate item',
       );
       return;
     }
+    assertSyncItemWithinQuota(key, normalized);
     const writer: SyncWriter = await ensurePublisher();
     try {
       await writer.pause();
@@ -1465,13 +1604,13 @@ export function createPolicyStorage(
       ).filter((candidate: string): boolean => candidate !== key);
       await verifiedWrite(
         {
-          [key]: value,
+          [key]: normalized,
           [LOCAL_AGGREGATE_TOMBSTONES]: tombstones,
           [LOCAL_SETUP]: { ...setup, syncWriteStatus: 'pending' },
         },
         'aggregate item and pending sync status',
       );
-      writer.queue(key, value);
+      writer.queue(key, normalized);
       await writer.whenJournalDurable();
     } catch (error: unknown) {
       const current: SetupState = await loadSetupInternal();
@@ -1521,19 +1660,6 @@ export function createPolicyStorage(
       throw error;
     } finally {
       writer.resume();
-    }
-  }
-
-  async function importLegacyAggregatesInternal(items: Record<string, unknown>): Promise<void> {
-    await ensureInitialized();
-    const aggregates: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(items)) {
-      if (!isAggregateHistoryKey(key)) continue;
-      if (!isAuthoritativeSyncItem(key, value)) continue;
-      aggregates[key] = value;
-    }
-    if (Object.keys(aggregates).length > 0) {
-      await verifiedWrite(aggregates, 'legacy aggregate history');
     }
   }
 
@@ -1712,14 +1838,13 @@ export function createPolicyStorage(
         await ensureInitialized();
         return operation({ local, sync: mode === 'sync' ? sync : null });
       }),
-    importLegacyAggregates: (items: Record<string, unknown>): Promise<void> =>
-      enqueue((): Promise<void> => importLegacyAggregatesInternal(items)),
     markLegacyMigrationFailed: (): Promise<void> => enqueue(markLegacyMigrationFailedInternal),
     importLegacy: (
       snapshot: PolicySnapshot,
       runtime: RuntimeState,
       journal: SyncJournal,
+      storedSync: Record<string, unknown> = {},
     ): Promise<void> =>
-      enqueue((): Promise<void> => importLegacyInternal(snapshot, runtime, journal)),
+      enqueue((): Promise<void> => importLegacyInternal(snapshot, runtime, journal, storedSync)),
   };
 }

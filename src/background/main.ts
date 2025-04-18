@@ -436,8 +436,7 @@ async function preparePolicyStorage(): Promise<PolicyStorage> {
     const runtime: RuntimeState = migrateRuntimeRules(loadedRuntime, lists);
     const snapshot: PolicySnapshot = { settings, lists, bank, streak: persistedStreak };
     assertValidResolvedLegacyPolicy(snapshot);
-    await storage.importLegacyAggregates(storedSync);
-    await storage.importLegacy(snapshot, runtime, journal);
+    await storage.importLegacy(snapshot, runtime, journal, storedSync);
     return storage;
   } catch (error: unknown) {
     await storage.markLegacyMigrationFailed();

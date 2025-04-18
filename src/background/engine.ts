@@ -188,7 +188,7 @@ export class Engine {
     if (checkpoint !== null) {
       this.pendingEvents = [...checkpoint.events];
       for (const [key, value] of Object.entries(checkpoint.aggregateSets ?? {})) {
-        this.pendingAggregateSets.set(key, structuredClone(value));
+        this.pendingAggregateSets.set(key, capAttempts(value, TOP_SITES_DAILY));
       }
       for (const key of checkpoint.aggregateRemoves ?? []) this.pendingAggregateRemoves.add(key);
       if (checkpoint.syncBank) {
@@ -1485,7 +1485,7 @@ export class Engine {
 
   private recordAggregateSet(key: string, value: DailyAgg): void {
     this.pendingAggregateRemoves.delete(key);
-    this.pendingAggregateSets.set(key, structuredClone(value));
+    this.pendingAggregateSets.set(key, capAttempts(value, TOP_SITES_DAILY));
   }
 
   private recordAggregateRemoval(key: string): void {

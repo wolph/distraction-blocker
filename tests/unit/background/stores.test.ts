@@ -33,7 +33,13 @@ import {
   SYNC_SETTINGS,
   SYNC_STREAK,
 } from '../../../src/shared/storage-keys';
-import type { EventRecord, ListsConfig, Settings, StreakState } from '../../../src/shared/types';
+import type {
+  DailyAgg,
+  EventRecord,
+  ListsConfig,
+  Settings,
+  StreakState,
+} from '../../../src/shared/types';
 
 afterEach((): void => {
   vi.unstubAllGlobals();
@@ -720,6 +726,47 @@ describe('runtime storage migration', () => {
     );
 
     expect(runtime.commitCheckpoint).toBeNull();
+  });
+
+  it('caps recovered checkpoint daily attempts at the storage boundary', (): void => {
+    const now: number = new Date(2026, 7, 29, 12, 0).getTime();
+    const date: string = '2026-08-28';
+    const runtime = mergeRuntime(
+      {
+        commitCheckpoint: {
+          bank: { balanceMs: 0 },
+          events: [],
+          syncBank: false,
+          aggregateSets: {
+            [`agg:device-a:${date}`]: {
+              date,
+              focusMs: 0,
+              sessionsStarted: 0,
+              sessionsCompleted: 0,
+              attempts: Object.fromEntries(
+                Array.from({ length: 30 }, (_value: unknown, index: number): [string, number] => [
+                  `site-${String(index).padStart(2, '0')}.example`,
+                  30 - index,
+                ]),
+              ),
+              attemptsOther: 0,
+              pausesTaken: 0,
+              pauseMsSpent: 0,
+              pauseMsEarned: 0,
+              unlocksTaken: 0,
+              unlockMsSpent: 0,
+              resisted: 0,
+            },
+          },
+        },
+      },
+      now,
+    );
+
+    const aggregate: DailyAgg | undefined =
+      runtime.commitCheckpoint?.aggregateSets?.[`agg:device-a:${date}`];
+    expect(Object.keys(aggregate?.attempts ?? {})).toHaveLength(20);
+    expect(aggregate?.attemptsOther).toBe(55);
   });
 
   it('drops legacy tab-id-only mute and stopped records', async () => {
