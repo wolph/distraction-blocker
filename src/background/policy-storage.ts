@@ -66,6 +66,7 @@ import {
   sanitizeSyncJournal,
   setSyncItemsWithinQuota,
 } from './sync-quota';
+import { SyncQuotaError } from './sync-quota-shared';
 import { SyncEchoes, type SyncJournal, SyncWriter } from './sync-writer';
 
 const SYNC_FLUSH_MS: number = 10_000;
@@ -738,7 +739,7 @@ export function createPolicyStorage(
         syncWriteStatus: 'error',
         storageError: 'sync-publish-failed',
       });
-      if (setup.storageMode === 'sync') throw error;
+      if (setup.storageMode === 'sync' && !(error instanceof SyncQuotaError)) throw error;
     }
   }
 
@@ -1593,7 +1594,6 @@ export function createPolicyStorage(
       );
       return;
     }
-    assertSyncItemWithinQuota(key, normalized);
     const writer: SyncWriter = await ensurePublisher();
     try {
       await writer.pause();
@@ -1610,6 +1610,7 @@ export function createPolicyStorage(
         },
         'aggregate item and pending sync status',
       );
+      assertSyncItemWithinQuota(key, normalized);
       writer.queue(key, normalized);
       await writer.whenJournalDurable();
     } catch (error: unknown) {
@@ -1619,6 +1620,7 @@ export function createPolicyStorage(
         syncWriteStatus: 'error',
         storageError: 'sync-publish-failed',
       });
+      if (error instanceof SyncQuotaError) return;
       throw error;
     } finally {
       writer.resume();

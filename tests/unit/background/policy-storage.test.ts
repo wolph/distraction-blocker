@@ -3,12 +3,13 @@ import { decodeListsSyncSnapshot } from '../../../src/background/list-sync-codec
 import {
   type AllDataClearBarrier,
   createPolicyStorage,
+  type FirstSyncCheckpointSource,
   type PolicySnapshot,
   type PolicyStorage,
 } from '../../../src/background/policy-storage';
 import { emptyRuntime, type RuntimeState } from '../../../src/background/stores';
 import type { SyncJournal } from '../../../src/background/sync-writer';
-import { emptyDaily, rollupMonth } from '../../../src/core/stats';
+import { capAttempts, emptyDaily, rollupMonth } from '../../../src/core/stats';
 import {
   CATEGORY_IDS,
   DEFAULT_LISTS,
@@ -911,22 +912,70 @@ describe('PolicyStorage', (): void => {
     expect(remoteAggregate.attemptsOther).toBe(168_490);
   });
 
-  it('preflights aggregate quota before persisting pending Sync state', async (): Promise<void> => {
+  it('keeps an unsyncable aggregate locally with explicit retry state across restart', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const date: string = '2026-08-31';
+    const key: string = syncAggKey('device-a', date);
+    const unsyncableDaily: DailyAgg = highCardinalityDaily(date, 30);
+    delete unsyncableDaily.attempts['site-0000.example'];
+    unsyncableDaily.attempts[`${'x'.repeat(20_000)}.example`] = 30;
+    const normalized: DailyAgg = capAttempts(unsyncableDaily, TOP_SITES_DAILY);
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const checkpoint: FirstSyncCheckpointSource = {
+      loadAggregateItems: async (): Promise<Record<string, unknown>> =>
+        Object.hasOwn(local.state.values, key) ? { [key]: local.state.values[key] } : {},
+    };
+    const storage: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      checkpoint,
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+    await storage.initialize();
+
+    await expect(storage.saveAggregate(key, unsyncableDaily)).resolves.toBeUndefined();
+
+    expect(local.state.values[key]).toEqual(normalized);
+    expect(await storage.loadSetup()).toMatchObject({
+      storageMode: 'sync',
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    });
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toBeUndefined();
+
+    const restarted: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      checkpoint,
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+    await expect(restarted.initialize()).resolves.toBeUndefined();
+
+    expect(local.state.values[key]).toEqual(normalized);
+    expect(await restarted.loadSetup()).toMatchObject({
+      storageMode: 'sync',
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    });
+    expect(sync.area.set).not.toHaveBeenCalled();
+  });
+
+  it('does not apply Sync item quota to local aggregate storage', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
     const key: string = 'aggm:device-a:2026-08';
     const oversizedMonthly: MonthlyAgg = {
       ...rollupMonth('2026-08', []),
       attempts: { ['x'.repeat(20_000)]: 1 },
     };
     const local: FakeStorage = fakeStorage(localPolicy(setup));
-    const storage: PolicyStorage = policyStorage(local, fakeStorage());
-    await storage.initialize();
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
 
-    await expect(storage.saveAggregate(key, oversizedMonthly)).rejects.toThrow('Cannot sync item');
+    await storage.saveAggregate(key, oversizedMonthly);
 
-    expect(local.state.values[key]).toBeUndefined();
-    expect((await setupState(local)).syncWriteStatus).toBe('idle');
-    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toBeUndefined();
+    expect(local.state.values[key]).toEqual(oversizedMonthly);
+    expect(sync.area.set).not.toHaveBeenCalled();
   });
 
   it('includes local aggregate history in the first complete Sync checkpoint', async (): Promise<void> => {
