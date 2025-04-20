@@ -17,6 +17,33 @@ describe('SyncWriter', () => {
     expect(write).toHaveBeenCalledWith({ bank: { balanceMs: 2 }, streak: { current: 3 } });
   });
 
+  it.each(['set', 'removal'] as const)(
+    'cancels a pending %s without publishing a remote change',
+    async (intent: 'set' | 'removal'): Promise<void> => {
+      const write = vi.fn().mockResolvedValue(undefined);
+      const removeStored = vi.fn().mockResolvedValue(undefined);
+      const persisted: SyncJournal[] = [];
+      const writer: SyncWriter = new SyncWriter(10_000, write, removeStored, {
+        initial: { sets: {}, removes: [] },
+        persist: async (journal: SyncJournal): Promise<void> => {
+          persisted.push(structuredClone(journal));
+        },
+      });
+      if (intent === 'set') writer.queue('aggregate', { focusMs: 42_000 });
+      else writer.remove('aggregate');
+      await writer.whenJournalDurable();
+
+      writer.cancelPending('aggregate');
+      await writer.whenJournalDurable();
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(persisted.at(-1)).toEqual({ sets: {}, removes: [] });
+      expect(write).not.toHaveBeenCalled();
+      expect(removeStored).not.toHaveBeenCalled();
+      expect(writer.hasPending('aggregate')).toBe(false);
+    },
+  );
+
   it('flushNow writes immediately and cancels the timer', async () => {
     const write = vi.fn().mockResolvedValue(undefined);
     const w = new SyncWriter(10_000, write);

@@ -10,6 +10,7 @@ import {
   LOCAL_AGGREGATE_PRUNE,
   LOCAL_AGGREGATE_TOMBSTONES,
   LOCAL_BANK,
+  LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS,
   LOCAL_CACHES,
   LOCAL_DATA_CLEAR_JOURNAL,
   LOCAL_DEVICE_ID,
@@ -183,6 +184,7 @@ const FOCUS_LOCK_LOCAL_EXACT_KEYS: readonly string[] = [
   LOCAL_SYNC_QUOTA_EVICTION,
   LOCAL_AGGREGATE_TOMBSTONES,
   LOCAL_AGGREGATE_PRUNE,
+  LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS,
   LOCAL_INSTALL_MARKER,
   LOCAL_ONBOARDING_DRAFT,
   LOCAL_POLICY_COMMIT,
@@ -252,6 +254,44 @@ interface LegacyAggregateAuthority {
   aggregates: Record<string, unknown>;
   tombstones: string[];
   journal: SyncJournal;
+}
+
+interface BlockedAggregatePublications {
+  version: 1;
+  items: Record<string, unknown>;
+}
+
+function emptyBlockedAggregatePublications(): BlockedAggregatePublications {
+  return { version: 1, items: {} };
+}
+
+function parseBlockedAggregatePublications(value: unknown): BlockedAggregatePublications {
+  if (value === undefined) return emptyBlockedAggregatePublications();
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['version', 'items']) ||
+    value.version !== 1 ||
+    !isRecord(value.items)
+  ) {
+    throw new Error('invalid blocked aggregate publication registry');
+  }
+  const items: Record<string, unknown> = {};
+  for (const [key, candidate] of Object.entries(value.items)) {
+    try {
+      const normalized: unknown = normalizeAggregateItem(key, candidate);
+      if (!valuesEqual(normalized, candidate)) {
+        throw new Error('blocked aggregate publication is not normalized');
+      }
+      items[key] = normalized;
+    } catch (_error: unknown) {
+      throw new Error('invalid blocked aggregate publication registry');
+    }
+  }
+  return { version: 1, items };
+}
+
+function blockedAggregatePublicationsEmpty(registry: BlockedAggregatePublications): boolean {
+  return Object.keys(registry.items).length === 0;
 }
 
 function effectiveLegacyAggregateAuthority(
@@ -535,8 +575,15 @@ export function createPolicyStorage(
     mode = next.storageMode;
   }
 
+  async function loadBlockedAggregatePublications(): Promise<BlockedAggregatePublications> {
+    const stored: Record<string, unknown> = await local.get(LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS);
+    return parseBlockedAggregatePublications(stored[LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]);
+  }
+
   async function persistPublicationJournal(journal: SyncJournal): Promise<void> {
     const setup: SetupState = await loadSetupInternal();
+    const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
+    const hasBlocked: boolean = !blockedAggregatePublicationsEmpty(blocked);
     const empty: boolean = journalEmpty(journal);
     await verifiedWrite(
       {
@@ -544,9 +591,12 @@ export function createPolicyStorage(
         ...(empty && mode === 'sync' ? { [LOCAL_AGGREGATE_TOMBSTONES]: [] } : {}),
         [LOCAL_SETUP]: {
           ...setup,
-          syncWriteStatus: empty ? 'idle' : 'pending',
-          storageError:
-            empty && setup.storageError === 'sync-publish-failed' ? null : setup.storageError,
+          syncWriteStatus: hasBlocked ? 'error' : empty ? 'idle' : 'pending',
+          storageError: hasBlocked
+            ? 'sync-publish-failed'
+            : empty && setup.storageError === 'sync-publish-failed'
+              ? null
+              : setup.storageError,
         },
       },
       'sync publication journal',
@@ -703,13 +753,68 @@ export function createPolicyStorage(
       const persisted: SyncJournal = sanitizeSyncJournal(
         await loadedJournal(LOCAL_SYNC_JOURNAL, false),
       ).journal;
+      const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
       const aggregateItems: Record<string, unknown> =
         await firstSyncCheckpoint.loadAggregateItems();
+      let blockedChanged: boolean = false;
+      for (const key of Object.keys(blocked.items)) {
+        if (!Object.hasOwn(aggregateItems, key)) {
+          delete blocked.items[key];
+          blockedChanged = true;
+          continue;
+        }
+        const current: unknown = normalizeAggregateItem(key, aggregateItems[key]);
+        if (!valuesEqual(current, blocked.items[key])) {
+          delete blocked.items[key];
+          blockedChanged = true;
+          continue;
+        }
+        try {
+          assertSyncItemWithinQuota(key, current);
+          delete blocked.items[key];
+          blockedChanged = true;
+        } catch (error: unknown) {
+          if (!(error instanceof SyncQuotaError)) throw error;
+          delete aggregateItems[key];
+        }
+      }
+      for (const [key, value] of Object.entries(aggregateItems)) {
+        if (!isAggregateHistoryKey(key)) continue;
+        const normalized: unknown = normalizeAggregateItem(key, value);
+        try {
+          assertSyncItemWithinQuota(key, normalized);
+        } catch (error: unknown) {
+          if (!(error instanceof SyncQuotaError)) throw error;
+          blocked.items[key] = normalized;
+          delete aggregateItems[key];
+          blockedChanged = true;
+        }
+      }
+      if (blockedChanged) {
+        const current: SetupState = await loadSetupInternal();
+        const hasBlocked: boolean = !blockedAggregatePublicationsEmpty(blocked);
+        await verifiedWrite(
+          {
+            [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: blocked,
+            ...(hasBlocked
+              ? {
+                  [LOCAL_SETUP]: {
+                    ...current,
+                    syncWriteStatus: 'error',
+                    storageError: 'sync-publish-failed',
+                  },
+                }
+              : {}),
+          },
+          'reconstructed blocked aggregate publications',
+        );
+      }
       const complete: SyncJournal = await fullPublication(
         await loadSnapshotInternal(),
         aggregateItems,
       );
       for (const [key, value] of Object.entries(persisted.sets)) {
+        if (Object.hasOwn(blocked.items, key)) continue;
         if (!POLICY_SYNC_KEYS.includes(key) && isAuthoritativeSyncItem(key, value)) {
           const normalized: unknown = isAggregateHistoryKey(key)
             ? normalizeAggregateItem(key, value)
@@ -792,6 +897,7 @@ export function createPolicyStorage(
     if (initialized) return;
     await recoverLocalAggregatePrune();
     await recoverAggregateTombstones();
+    const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
     let setup: SetupState = await loadSetupInternal();
     mode = setup.storageMode;
     const dataClearJournal: DataClearJournal | null = await loadDataClearJournal();
@@ -805,6 +911,18 @@ export function createPolicyStorage(
       await resumeDataClear(dataClearJournal);
       initialized = true;
       return;
+    }
+    if (
+      setup.storageMode === 'sync' &&
+      setup.syncWriteStatus === 'idle' &&
+      !blockedAggregatePublicationsEmpty(blocked)
+    ) {
+      setup = {
+        ...setup,
+        syncWriteStatus: 'error',
+        storageError: 'sync-publish-failed',
+      };
+      await saveSetupInternal(setup);
     }
     const pointerStored: Record<string, unknown> = await local.get(LOCAL_POLICY_COMMIT);
     const pointer: PolicyCommit | null = parsePolicyCommit(pointerStored[LOCAL_POLICY_COMMIT]);
@@ -1013,7 +1131,25 @@ export function createPolicyStorage(
 
   async function disableSyncInternal(): Promise<void> {
     await ensureInitialized();
-    if (mode !== 'sync' && publisher === null) return;
+    if (mode !== 'sync' && publisher === null) {
+      const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
+      if (blockedAggregatePublicationsEmpty(blocked)) return;
+      const setup: SetupState = await loadSetupInternal();
+      await verifiedWrite(
+        {
+          [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: emptyBlockedAggregatePublications(),
+          [LOCAL_SETUP]: {
+            ...setup,
+            storageMode: 'local',
+            syncWriteStatus: 'idle',
+            storageError: setup.storageError === 'sync-publish-failed' ? null : setup.storageError,
+          },
+        },
+        'abandoned local aggregate publications',
+      );
+      mode = 'local';
+      return;
+    }
     const setup: SetupState = await loadSetupInternal();
     try {
       if (publisher !== null) {
@@ -1026,12 +1162,20 @@ export function createPolicyStorage(
       } else {
         await persistPublicationJournal({ sets: {}, removes: [] });
       }
-      await saveSetupInternal({
+      const localSetup: SetupState = {
         ...setup,
         storageMode: 'local',
         syncWriteStatus: 'idle',
         storageError: null,
-      });
+      };
+      await verifiedWrite(
+        {
+          [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: emptyBlockedAggregatePublications(),
+          [LOCAL_SETUP]: localSetup,
+        },
+        'local mode and abandoned aggregate publications',
+      );
+      mode = 'local';
     } catch (error: unknown) {
       if (mode === 'sync' && publisher !== null) publisher.resume();
       throw error;
@@ -1042,6 +1186,7 @@ export function createPolicyStorage(
   async function selectLocalModeInternal(): Promise<void> {
     await ensureInitialized();
     const setup: SetupState = await loadSetupInternal();
+    const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
     let hasPublicationIntent: boolean = true;
     try {
       hasPublicationIntent = !journalEmpty(await loadedJournal(LOCAL_SYNC_JOURNAL, false));
@@ -1052,6 +1197,7 @@ export function createPolicyStorage(
       mode === 'local' &&
       setup.syncWriteStatus === 'idle' &&
       setup.storageError !== 'sync-publish-failed' &&
+      blockedAggregatePublicationsEmpty(blocked) &&
       !hasPublicationIntent
     ) {
       return;
@@ -1060,6 +1206,7 @@ export function createPolicyStorage(
     const current: SetupState = await loadSetupInternal();
     await verifiedWrite(
       {
+        [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: emptyBlockedAggregatePublications(),
         [LOCAL_SYNC_JOURNAL]: { sets: {}, removes: [] },
         [LOCAL_SETUP]: {
           ...current,
@@ -1584,12 +1731,18 @@ export function createPolicyStorage(
     await ensureInitialized();
     const normalized: unknown = normalizeAggregateItem(key, value);
     if (mode !== 'sync') {
+      const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
+      delete blocked.items[key];
       const tombstoneStored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
       const tombstones: string[] = parseAggregateTombstones(
         tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES],
       ).filter((candidate: string): boolean => candidate !== key);
       await verifiedWrite(
-        { [key]: normalized, [LOCAL_AGGREGATE_TOMBSTONES]: tombstones },
+        {
+          [key]: normalized,
+          [LOCAL_AGGREGATE_TOMBSTONES]: tombstones,
+          [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: blocked,
+        },
         'aggregate item',
       );
       return;
@@ -1598,6 +1751,7 @@ export function createPolicyStorage(
     try {
       await writer.pause();
       const setup: SetupState = await loadSetupInternal();
+      const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
       const tombstoneStored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
       const tombstones: string[] = parseAggregateTombstones(
         tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES],
@@ -1610,7 +1764,39 @@ export function createPolicyStorage(
         },
         'aggregate item and pending sync status',
       );
-      assertSyncItemWithinQuota(key, normalized);
+      try {
+        assertSyncItemWithinQuota(key, normalized);
+      } catch (error: unknown) {
+        if (!(error instanceof SyncQuotaError)) throw error;
+        blocked.items[key] = normalized;
+        await verifiedWrite(
+          {
+            [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: blocked,
+            [LOCAL_SETUP]: {
+              ...setup,
+              syncWriteStatus: 'error',
+              storageError: 'sync-publish-failed',
+            },
+          },
+          'blocked aggregate publication',
+        );
+        writer.cancelPending(key);
+        await writer.whenJournalDurable();
+        return;
+      }
+      delete blocked.items[key];
+      const hasBlocked: boolean = !blockedAggregatePublicationsEmpty(blocked);
+      await verifiedWrite(
+        {
+          [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: blocked,
+          [LOCAL_SETUP]: {
+            ...setup,
+            syncWriteStatus: hasBlocked ? 'error' : 'pending',
+            storageError: hasBlocked ? 'sync-publish-failed' : setup.storageError,
+          },
+        },
+        'superseded blocked aggregate publication',
+      );
       writer.queue(key, normalized);
       await writer.whenJournalDurable();
     } catch (error: unknown) {
@@ -1620,7 +1806,6 @@ export function createPolicyStorage(
         syncWriteStatus: 'error',
         storageError: 'sync-publish-failed',
       });
-      if (error instanceof SyncQuotaError) return;
       throw error;
     } finally {
       writer.resume();
@@ -1631,6 +1816,12 @@ export function createPolicyStorage(
     await ensureInitialized();
     if (!isAggregateHistoryKey(key)) throw new Error('invalid aggregate key');
     if (mode !== 'sync') {
+      const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
+      delete blocked.items[key];
+      await verifiedWrite(
+        { [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: blocked },
+        'superseded local blocked aggregate publication',
+      );
       await verifiedRemove([key], 'aggregate item');
       return;
     }
@@ -1638,6 +1829,9 @@ export function createPolicyStorage(
     try {
       await writer.pause();
       const setup: SetupState = await loadSetupInternal();
+      const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
+      delete blocked.items[key];
+      const hasBlocked: boolean = !blockedAggregatePublicationsEmpty(blocked);
       const tombstoneStored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_TOMBSTONES);
       const tombstones: string[] = [
         ...new Set([...parseAggregateTombstones(tombstoneStored[LOCAL_AGGREGATE_TOMBSTONES]), key]),
@@ -1645,7 +1839,12 @@ export function createPolicyStorage(
       await verifiedWrite(
         {
           [LOCAL_AGGREGATE_TOMBSTONES]: tombstones,
-          [LOCAL_SETUP]: { ...setup, syncWriteStatus: 'pending' },
+          [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: blocked,
+          [LOCAL_SETUP]: {
+            ...setup,
+            syncWriteStatus: hasBlocked ? 'error' : 'pending',
+            storageError: hasBlocked ? 'sync-publish-failed' : setup.storageError,
+          },
         },
         'aggregate tombstone and pending sync status',
       );
@@ -1742,7 +1941,35 @@ export function createPolicyStorage(
       await verifiedRemove(plan.remove, 'aggregate prune removals');
       await verifiedRemove([LOCAL_AGGREGATE_PRUNE], 'aggregate prune checkpoint cleanup');
       if (writer === null) return;
-      for (const [key, value] of Object.entries(plan.set)) writer.queue(key, value);
+      const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
+      const publishableSets: Record<string, unknown> = {};
+      const blockedKeys: string[] = [];
+      for (const [key, value] of Object.entries(plan.set)) {
+        try {
+          assertSyncItemWithinQuota(key, value);
+          delete blocked.items[key];
+          publishableSets[key] = value;
+        } catch (error: unknown) {
+          if (!(error instanceof SyncQuotaError)) throw error;
+          blocked.items[key] = value;
+          blockedKeys.push(key);
+        }
+      }
+      for (const key of plan.remove) delete blocked.items[key];
+      const hasBlocked: boolean = !blockedAggregatePublicationsEmpty(blocked);
+      await verifiedWrite(
+        {
+          [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: blocked,
+          [LOCAL_SETUP]: {
+            ...setup,
+            syncWriteStatus: hasBlocked ? 'error' : 'pending',
+            storageError: hasBlocked ? 'sync-publish-failed' : setup.storageError,
+          },
+        },
+        'aggregate prune publication state',
+      );
+      for (const key of blockedKeys) writer.cancelPending(key);
+      for (const [key, value] of Object.entries(publishableSets)) writer.queue(key, value);
       for (const key of plan.remove) writer.remove(key);
       await writer.whenJournalDurable();
     } catch (error: unknown) {

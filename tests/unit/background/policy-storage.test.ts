@@ -22,6 +22,7 @@ import {
   LOCAL_AGGREGATE_PRUNE,
   LOCAL_AGGREGATE_TOMBSTONES,
   LOCAL_BANK,
+  LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS,
   LOCAL_CACHES,
   LOCAL_DATA_CLEAR_JOURNAL,
   LOCAL_DEVICE_ID,
@@ -80,6 +81,8 @@ const SNAPSHOT: PolicySnapshot = {
   bank: { balanceMs: 42_000 },
   streak: STREAK,
 };
+
+const BLOCKED_AGGREGATE_PUBLICATIONS_KEY: string = LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS;
 
 function selectedValues(
   values: Record<string, unknown>,
@@ -942,7 +945,11 @@ describe('PolicyStorage', (): void => {
       syncWriteStatus: 'error',
       storageError: 'sync-publish-failed',
     });
-    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toBeUndefined();
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
+    expect(local.state.values[BLOCKED_AGGREGATE_PUBLICATIONS_KEY]).toEqual({
+      version: 1,
+      items: { [key]: normalized },
+    });
 
     const restarted: PolicyStorage = createPolicyStorage(
       local.area,
@@ -958,7 +965,269 @@ describe('PolicyStorage', (): void => {
       syncWriteStatus: 'error',
       storageError: 'sync-publish-failed',
     });
+    expect(local.state.values[BLOCKED_AGGREGATE_PUBLICATIONS_KEY]).toEqual({
+      version: 1,
+      items: { [key]: normalized },
+    });
     expect(sync.area.set).not.toHaveBeenCalled();
+  });
+
+  it('keeps Sync error after an ordinary journal flush while a blocked aggregate remains', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const normalKey: string = syncAggKey('device-a', '2026-08-30');
+    const blockedKey: string = syncAggKey('device-a', '2026-08-31');
+    const normal: DailyAgg = { ...emptyDaily('2026-08-30'), focusMs: 1_000 };
+    const blocked: DailyAgg = {
+      ...emptyDaily('2026-08-31'),
+      attempts: { [`${'x'.repeat(20_000)}.example`]: 1 },
+    };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+
+    await storage.saveAggregate(normalKey, normal);
+    await storage.saveAggregate(blockedKey, blocked);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(sync.state.values[normalKey]).toEqual(normal);
+    expect(sync.state.values[blockedKey]).toBeUndefined();
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
+    expect(await storage.loadSetup()).toMatchObject({
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    });
+    expect(local.state.values[BLOCKED_AGGREGATE_PUBLICATIONS_KEY]).toEqual({
+      version: 1,
+      items: { [blockedKey]: blocked },
+    });
+  });
+
+  it('cancels a pending aggregate set superseded by an unsyncable local value', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const key: string = syncAggKey('device-a', '2026-08-31');
+    const pending: DailyAgg = { ...emptyDaily('2026-08-31'), focusMs: 42_000 };
+    const blocked: DailyAgg = {
+      ...emptyDaily('2026-08-31'),
+      attempts: { [`${'x'.repeat(20_000)}.example`]: 1 },
+    };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+
+    await storage.saveAggregate(key, pending);
+    await storage.saveAggregate(key, blocked);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(local.state.values[key]).toEqual(blocked);
+    expect(sync.state.values[key]).toBeUndefined();
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
+    expect(local.state.values[LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]).toEqual({
+      version: 1,
+      items: { [key]: blocked },
+    });
+  });
+
+  it('cancels a pending aggregate removal superseded by an unsyncable local value', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const key: string = syncAggKey('device-a', '2026-08-31');
+    const remote: DailyAgg = { ...emptyDaily('2026-08-31'), focusMs: 42_000 };
+    const blocked: DailyAgg = {
+      ...emptyDaily('2026-08-31'),
+      attempts: { [`${'x'.repeat(20_000)}.example`]: 1 },
+    };
+    const local: FakeStorage = fakeStorage({ ...localPolicy(setup), [key]: remote });
+    const sync: FakeStorage = fakeStorage({ [key]: remote });
+    const storage: PolicyStorage = policyStorage(local, sync);
+
+    await storage.removeAggregate(key);
+    await storage.saveAggregate(key, blocked);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(local.state.values[key]).toEqual(blocked);
+    expect(sync.state.values[key]).toEqual(remote);
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
+    expect(local.state.values[LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]).toEqual({
+      version: 1,
+      items: { [key]: blocked },
+    });
+  });
+
+  it('clears a blocked aggregate after a syncable superseding save', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const key: string = syncAggKey('device-a', '2026-08-31');
+    const blocked: DailyAgg = {
+      ...emptyDaily('2026-08-31'),
+      attempts: { [`${'x'.repeat(20_000)}.example`]: 1 },
+    };
+    const replacement: DailyAgg = { ...emptyDaily('2026-08-31'), focusMs: 42_000 };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+
+    await storage.saveAggregate(key, blocked);
+    await storage.saveAggregate(key, replacement);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(local.state.values[key]).toEqual(replacement);
+    expect(sync.state.values[key]).toEqual(replacement);
+    expect(local.state.values[BLOCKED_AGGREGATE_PUBLICATIONS_KEY]).toEqual({
+      version: 1,
+      items: {},
+    });
+    expect(await storage.loadSetup()).toMatchObject({
+      syncWriteStatus: 'idle',
+      storageError: null,
+    });
+  });
+
+  it('retries a blocked aggregate that now fits Sync quota after restart', async (): Promise<void> => {
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'sync',
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    };
+    const key: string = syncAggKey('device-a', '2026-08-31');
+    const aggregate: DailyAgg = { ...emptyDaily('2026-08-31'), focusMs: 42_000 };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [key]: aggregate,
+      [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: {
+        version: 1,
+        items: { [key]: aggregate },
+      },
+    });
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      { loadAggregateItems: async (): Promise<Record<string, unknown>> => ({ [key]: aggregate }) },
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+
+    await storage.initialize();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(sync.state.values[key]).toEqual(aggregate);
+    expect(local.state.values[LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]).toEqual({
+      version: 1,
+      items: {},
+    });
+    expect(await storage.loadSetup()).toMatchObject({
+      syncWriteStatus: 'idle',
+      storageError: null,
+    });
+  });
+
+  it('clears a blocked aggregate after a superseding removal', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const key: string = syncAggKey('device-a', '2026-08-31');
+    const blocked: DailyAgg = {
+      ...emptyDaily('2026-08-31'),
+      attempts: { [`${'x'.repeat(20_000)}.example`]: 1 },
+    };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage({ [key]: emptyDaily('2026-08-31') });
+    const storage: PolicyStorage = policyStorage(local, sync);
+
+    await storage.saveAggregate(key, blocked);
+    await storage.removeAggregate(key);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(local.state.values[key]).toBeUndefined();
+    expect(sync.state.values[key]).toBeUndefined();
+    expect(local.state.values[BLOCKED_AGGREGATE_PUBLICATIONS_KEY]).toEqual({
+      version: 1,
+      items: {},
+    });
+    expect(await storage.loadSetup()).toMatchObject({
+      syncWriteStatus: 'idle',
+      storageError: null,
+    });
+  });
+
+  it.each(['disableSync', 'selectLocalMode'] as const)(
+    'abandons blocked aggregate publications through %s',
+    async (action: 'disableSync' | 'selectLocalMode'): Promise<void> => {
+      const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+      const key: string = syncAggKey('device-a', '2026-08-31');
+      const blocked: DailyAgg = {
+        ...emptyDaily('2026-08-31'),
+        attempts: { [`${'x'.repeat(20_000)}.example`]: 1 },
+      };
+      const local: FakeStorage = fakeStorage(localPolicy(setup));
+      const sync: FakeStorage = fakeStorage();
+      const storage: PolicyStorage = policyStorage(local, sync);
+
+      await storage.saveAggregate(key, blocked);
+      await storage[action]();
+
+      expect(local.state.values[key]).toEqual(blocked);
+      expect(local.state.values[BLOCKED_AGGREGATE_PUBLICATIONS_KEY]).toEqual({
+        version: 1,
+        items: {},
+      });
+      expect(await storage.loadSetup()).toMatchObject({
+        storageMode: 'local',
+        syncWriteStatus: 'idle',
+        storageError: null,
+      });
+    },
+  );
+
+  it('abandons a blocked aggregate registry when local mode is selected again', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const key: string = syncAggKey('device-a', '2026-08-31');
+    const blocked: DailyAgg = {
+      ...emptyDaily('2026-08-31'),
+      attempts: { [`${'x'.repeat(20_000)}.example`]: 1 },
+    };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [key]: blocked,
+      [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: {
+        version: 1,
+        items: { [key]: blocked },
+      },
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+
+    await storage.selectLocalMode();
+
+    expect(local.state.values[key]).toEqual(blocked);
+    expect(local.state.values[LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]).toEqual({
+      version: 1,
+      items: {},
+    });
+    expect(await storage.loadSetup()).toMatchObject({
+      storageMode: 'local',
+      syncWriteStatus: 'idle',
+      storageError: null,
+    });
+  });
+
+  it('rejects a malformed blocked aggregate publication registry', async (): Promise<void> => {
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'sync',
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [BLOCKED_AGGREGATE_PUBLICATIONS_KEY]: {
+        version: 1,
+        items: { invalid: emptyDaily('2026-08-31') },
+      },
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+
+    await expect(storage.initialize()).rejects.toThrow(
+      'invalid blocked aggregate publication registry',
+    );
   });
 
   it('does not apply Sync item quota to local aggregate storage', async (): Promise<void> => {
@@ -1402,6 +1671,135 @@ describe('PolicyStorage', (): void => {
     expect(sync.state.values[oldKey]).toBeUndefined();
     expect(sync.state.values[monthKey]).toMatchObject({ focusMs: 42_000 });
     expect((await setupState(local)).syncWriteStatus).toBe('idle');
+  });
+
+  it('keeps an unsyncable monthly prune rollup locally and publishes its removals', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const oldDate: string = '2026-05-01';
+    const oldKey: string = syncAggKey('device-a', oldDate);
+    const monthKey: string = 'aggm:device-a:2026-05';
+    const aggregate: DailyAgg = {
+      ...emptyDaily(oldDate),
+      attempts: { [`${'x'.repeat(20_000)}.example`]: 1 },
+    };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_DEVICE_ID]: 'device-a',
+      [oldKey]: aggregate,
+    });
+    const sync: FakeStorage = fakeStorage({ [oldKey]: aggregate });
+    const storage: PolicyStorage = policyStorage(local, sync);
+
+    await storage.pruneRemoteHistory('device-a', 90, new Date(2026, 7, 31, 12, 0).getTime());
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(local.state.values[oldKey]).toBeUndefined();
+    expect(local.state.values[monthKey]).toMatchObject({ attempts: aggregate.attempts });
+    expect(sync.state.values[oldKey]).toBeUndefined();
+    expect(sync.state.values[monthKey]).toBeUndefined();
+    expect(local.state.values[BLOCKED_AGGREGATE_PUBLICATIONS_KEY]).toMatchObject({
+      version: 1,
+      items: { [monthKey]: expect.objectContaining({ attempts: aggregate.attempts }) },
+    });
+    expect(await storage.loadSetup()).toMatchObject({
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    });
+  });
+
+  it('cancels a pending monthly set superseded by an unsyncable prune rollup', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const oldDate: string = '2026-05-01';
+    const oldKey: string = syncAggKey('device-a', oldDate);
+    const monthKey: string = 'aggm:device-a:2026-05';
+    const daily: DailyAgg = {
+      ...emptyDaily(oldDate),
+      attempts: { [`${'x'.repeat(20_000)}.example`]: 1 },
+    };
+    const pendingMonth = rollupMonth('2026-05', [{ ...emptyDaily('2026-05-02'), focusMs: 42_000 }]);
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_DEVICE_ID]: 'device-a',
+      [oldKey]: daily,
+    });
+    const sync: FakeStorage = fakeStorage({ [oldKey]: daily });
+    const storage: PolicyStorage = policyStorage(local, sync);
+
+    await storage.saveAggregate(monthKey, pendingMonth);
+    await storage.pruneRemoteHistory('device-a', 90, new Date(2026, 7, 31, 12, 0).getTime());
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(local.state.values[oldKey]).toBeUndefined();
+    expect(local.state.values[monthKey]).toMatchObject({
+      focusMs: 42_000,
+      attempts: daily.attempts,
+    });
+    expect(sync.state.values[oldKey]).toBeUndefined();
+    expect(sync.state.values[monthKey]).toBeUndefined();
+    expect(local.state.values[LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]).toMatchObject({
+      version: 1,
+      items: { [monthKey]: expect.objectContaining({ attempts: daily.attempts }) },
+    });
+  });
+
+  it('reconstructs a blocked prune rollup after interruption before registry persistence', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const oldDate: string = '2026-05-01';
+    const oldKey: string = syncAggKey('device-a', oldDate);
+    const monthKey: string = 'aggm:device-a:2026-05';
+    const aggregate: DailyAgg = {
+      ...emptyDaily(oldDate),
+      attempts: { [`${'x'.repeat(20_000)}.example`]: 1 },
+    };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_DEVICE_ID]: 'device-a',
+      [oldKey]: aggregate,
+    });
+    const sync: FakeStorage = fakeStorage({ [oldKey]: aggregate });
+    const first: PolicyStorage = policyStorage(local, sync);
+    let interruptRemoval: boolean = true;
+    vi.mocked(local.area.remove).mockImplementation(
+      async (keys: string | string[]): Promise<void> => {
+        const requested: string[] = typeof keys === 'string' ? [keys] : keys;
+        if (interruptRemoval && requested.includes(oldKey)) {
+          interruptRemoval = false;
+          throw new Error('prune removal interrupted');
+        }
+        for (const key of requested) delete local.state.values[key];
+      },
+    );
+
+    await expect(
+      first.pruneRemoteHistory('device-a', 90, new Date(2026, 7, 31, 12, 0).getTime()),
+    ).rejects.toThrow('prune removal interrupted');
+
+    expect(local.state.values[monthKey]).toBeDefined();
+    expect(local.state.values[BLOCKED_AGGREGATE_PUBLICATIONS_KEY]).toBeUndefined();
+
+    const restarted: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      {
+        loadAggregateItems: async (): Promise<Record<string, unknown>> => ({
+          [monthKey]: local.state.values[monthKey],
+        }),
+      },
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+    await restarted.initialize();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(local.state.values[oldKey]).toBeUndefined();
+    expect(sync.state.values[oldKey]).toBeUndefined();
+    expect(local.state.values[BLOCKED_AGGREGATE_PUBLICATIONS_KEY]).toMatchObject({
+      version: 1,
+      items: { [monthKey]: expect.objectContaining({ attempts: aggregate.attempts }) },
+    });
+    expect(await restarted.loadSetup()).toMatchObject({
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    });
   });
 
   it('leaves local mode and a retryable outbox when initial publish fails', async (): Promise<void> => {
@@ -1894,6 +2292,10 @@ describe('PolicyStorage', (): void => {
       [LOCAL_DEVICE_ID]: 'device-id',
       'agg:device-id:2026-08-31': emptyDaily('2026-08-31'),
       [LOCAL_AGGREGATE_TOMBSTONES]: ['agg:device-id:2026-08-30'],
+      [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: {
+        version: 1,
+        items: {},
+      },
       unrelated: 'keep',
     });
     const sync: FakeStorage = fakeStorage({
@@ -1913,6 +2315,7 @@ describe('PolicyStorage', (): void => {
     expect(local.state.values[LOCAL_DEVICE_ID]).toBeUndefined();
     expect(local.state.values['agg:device-id:2026-08-31']).toBeUndefined();
     expect(local.state.values[LOCAL_AGGREGATE_TOMBSTONES]).toBeUndefined();
+    expect(local.state.values[LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]).toBeUndefined();
     expect(await storage.loadSetup()).toEqual(DEFAULT_SETUP);
   });
 

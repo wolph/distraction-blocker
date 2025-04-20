@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS } from '../shared/constants';
 import type { Request, SoundId } from '../shared/messages';
 import { isInstallMarker, isListsConfig, isSettings } from '../shared/runtime-validation';
 import {
+  LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS,
   LOCAL_CACHES,
   LOCAL_DEVICE_ID,
   LOCAL_EVENTS,
@@ -256,6 +257,7 @@ const LEGACY_EVIDENCE_KEYS: readonly string[] = [
   LOCAL_DEVICE_ID,
   LOCAL_SYNC_JOURNAL,
   LOCAL_SYNC_QUOTA_EVICTION,
+  LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS,
   LOCAL_CACHES,
 ];
 

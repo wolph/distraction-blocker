@@ -26,6 +26,7 @@ export const LOCAL_POLICY_COMMIT: string = 'policyCommit';
 export const LOCAL_DATA_CLEAR_JOURNAL: string = 'dataClearJournal';
 export const LOCAL_AGGREGATE_TOMBSTONES: string = 'aggregateTombstones';
 export const LOCAL_AGGREGATE_PRUNE: string = 'aggregatePrune';
+export const LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS: string = 'blockedAggregatePublications';
 export const LOCAL_SETTINGS: string = 'settings';
 export const LOCAL_LISTS: string = 'lists';
 export const LOCAL_BANK: string = 'bank';

@@ -23,6 +23,7 @@ import {
 import type { Request } from '../../../src/shared/messages';
 import {
   LOCAL_BANK,
+  LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS,
   LOCAL_CACHES,
   LOCAL_DATA_CLEAR_JOURNAL,
   LOCAL_DEVICE_ID,
@@ -530,15 +531,18 @@ describe('background runtime request boundary', () => {
     LOCAL_DEVICE_ID,
     LOCAL_SYNC_JOURNAL,
     LOCAL_SYNC_QUOTA_EVICTION,
+    LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS,
     LOCAL_CACHES,
   ])('classifies recognized legacy evidence %s before migration', async (key: string) => {
     const evidence: unknown =
-      key === LOCAL_SYNC_QUOTA_EVICTION
-        ? {
-            evicted: { 'aggm:legacy:2026-07': rollupMonth('2026-07', []) },
-            setKeys: [],
-          }
-        : {};
+      key === LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS
+        ? { version: 1, items: {} }
+        : key === LOCAL_SYNC_QUOTA_EVICTION
+          ? {
+              evicted: { 'aggm:legacy:2026-07': rollupMonth('2026-07', []) },
+              setKeys: [],
+            }
+          : {};
     mocks.localState = { [key]: evidence };
 
     await finishBoot();

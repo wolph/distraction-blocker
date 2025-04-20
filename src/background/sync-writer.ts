@@ -84,6 +84,19 @@ export class SyncWriter {
     this.schedule();
   }
 
+  cancelPending(key: string): void {
+    const deletedSet: boolean = this.pending.delete(key);
+    const deletedRemoval: boolean = this.pendingRemovals.delete(key);
+    const deletedReconciliation: boolean = this.reconciliationPending.delete(key);
+    if (!deletedSet && !deletedRemoval && !deletedReconciliation) return;
+    this.pendingRevisions.delete(key);
+    this.persistPendingJournal();
+    if (this.pending.size === 0 && this.pendingRemovals.size === 0 && this.timer !== null) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+  }
+
   whenJournalDurable(): Promise<void> {
     this.persistPendingJournal();
     return this.journalDurability;
