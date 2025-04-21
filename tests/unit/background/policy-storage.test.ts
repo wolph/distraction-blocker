@@ -1121,6 +1121,52 @@ describe('PolicyStorage', (): void => {
     });
   });
 
+  it('does not replay a stale pending removal for a blocked aggregate after restart', async (): Promise<void> => {
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'sync',
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    };
+    const key: string = syncAggKey('device-a', '2026-08-31');
+    const remote: DailyAgg = { ...emptyDaily('2026-08-31'), focusMs: 42_000 };
+    const blocked: DailyAgg = {
+      ...emptyDaily('2026-08-31'),
+      attempts: { [`${'x'.repeat(20_000)}.example`]: 1 },
+    };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [key]: blocked,
+      [LOCAL_SYNC_JOURNAL]: { sets: {}, removes: [key] },
+      [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: {
+        version: 1,
+        items: { [key]: blocked },
+      },
+    });
+    const sync: FakeStorage = fakeStorage({ [key]: remote });
+    const storage: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      { loadAggregateItems: async (): Promise<Record<string, unknown>> => ({ [key]: blocked }) },
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+
+    await storage.initialize();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(sync.state.values[key]).toEqual(remote);
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
+    expect(local.state.values[LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]).toEqual({
+      version: 1,
+      items: { [key]: blocked },
+    });
+    expect(await storage.loadSetup()).toMatchObject({
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    });
+  });
+
   it('clears a blocked aggregate after a superseding removal', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
     const key: string = syncAggKey('device-a', '2026-08-31');

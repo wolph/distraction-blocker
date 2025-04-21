@@ -824,12 +824,16 @@ export function createPolicyStorage(
         }
       }
       for (const key of persisted.removes) {
+        if (Object.hasOwn(blocked.items, key)) continue;
         if (!POLICY_SYNC_KEYS.includes(key) && isFocusLockSyncKey(key)) {
           complete.removes.push(key);
           delete complete.sets[key];
         }
       }
-      complete.removes = [...new Set(complete.removes)];
+      for (const key of Object.keys(blocked.items)) delete complete.sets[key];
+      complete.removes = [...new Set(complete.removes)].filter(
+        (key: string): boolean => !Object.hasOwn(blocked.items, key),
+      );
       const normalizedLocal: Record<string, unknown> = normalizedAggregateItems(complete.sets);
       if (Object.keys(normalizedLocal).length > 0) {
         await verifiedWrite(normalizedLocal, 'normalized pending aggregate authority');
