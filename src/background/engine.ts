@@ -96,6 +96,8 @@ export interface EnginePorts {
   /** run the weekly sync-storage retention prune */
   prune(retentionDays: number, now: number): Promise<void>;
   reportError(error: unknown): void;
+  /** Live website-blocking capability. */
+  websiteBlockingReady(): boolean;
 }
 
 export interface LiveTabState {
@@ -136,6 +138,14 @@ function strictnessStrength(strictness: Strictness): number {
 function scheduleOccurrenceToken(entry: ScheduleEntry, now: number): string {
   const endsAt: number = windowEnd(entry, new Date(now)).getTime();
   return `${entry.id}@${endsAt}`;
+}
+
+function scheduleUnavailableNoticeToken(entry: ScheduleEntry, now: number): string {
+  const [hour, minute]: number[] = entry.start.split(':').map(Number);
+  const occurrenceStart: Date = new Date(now);
+  occurrenceStart.setHours(hour ?? 0, minute ?? 0, 0, 0);
+  if (occurrenceStart.getTime() > now) occurrenceStart.setDate(occurrenceStart.getDate() - 1);
+  return `${entry.id}@${occurrenceStart.getTime()}`;
 }
 
 /**
@@ -307,6 +317,7 @@ export class Engine {
     const now: number = this.ports.now();
     this.catchUp(now);
     if (this.runtime.session !== null) return this.fail(now, 'a session is already running');
+    if (!this.websiteBlockingReady()) return this.websiteBlockingUnavailable(now);
     if (config.source !== 'manual' || config.scheduleEntryId !== null) {
       return this.fail(now, 'invalid manual session');
     }
@@ -339,6 +350,44 @@ export class Engine {
     this.needsBlocking = true;
     await this.commit(now);
     return { ok: true };
+  }
+
+  hasActiveSession(): boolean {
+    return this.runtime.session !== null;
+  }
+
+  async endSessionForWebsiteBlockingLoss(): Promise<boolean> {
+    return this.enqueuePolicyMutation(async (): Promise<boolean> => {
+      const now: number = this.ports.now();
+      this.catchUp(now);
+      const session: SessionState | null = this.runtime.session;
+      if (session === null) return false;
+      this.cancelSession(session, now);
+      this.dirty = true;
+      this.needsBlocking = true;
+      try {
+        await this.commit(now);
+      } catch (error: unknown) {
+        try {
+          await this.ports.applyBlocking();
+        } catch (clearError: unknown) {
+          this.ports.reportError(clearError);
+        }
+        throw error;
+      }
+      return true;
+    });
+  }
+
+  private websiteBlockingReady(): boolean {
+    return this.ports.websiteBlockingReady();
+  }
+
+  private websiteBlockingUnavailable(now: number): Promise<Ack> {
+    return this.fail(
+      now,
+      'Website blocking is not enabled. Finish setup or grant website access, then try again.',
+    );
   }
 
   async openGate(gate: GateKind, host: string | null): Promise<Ack> {
@@ -1351,6 +1400,10 @@ export class Engine {
         this.runtime.scheduleActiveEntryId = null;
         this.dirty = true;
       }
+      if (this.runtime.scheduleUnavailableNoticeToken !== null) {
+        this.runtime.scheduleUnavailableNoticeToken = null;
+        this.dirty = true;
+      }
       return;
     }
     if (session === null) {
@@ -1389,6 +1442,18 @@ export class Engine {
   }
 
   private startFromScheduleEntry(entry: ScheduleEntry, now: number): void {
+    if (!this.websiteBlockingReady()) {
+      const noticeToken: string = scheduleUnavailableNoticeToken(entry, now);
+      if (this.runtime.scheduleUnavailableNoticeToken !== noticeToken) {
+        this.runtime.scheduleUnavailableNoticeToken = noticeToken;
+        this.ports.notify(
+          'Focus schedule could not start',
+          'Website blocking is not enabled. Finish setup or grant website access, then try again.',
+        );
+        this.dirty = true;
+      }
+      return;
+    }
     const endsAt: number = windowEnd(entry, new Date(now)).getTime();
     const rules: SessionRuleSnapshot | null = normalizeSessionRules(rulesFromLists(this.lists));
     if (rules === null) {
@@ -1410,6 +1475,7 @@ export class Engine {
     this.activateMatcher(this.runtime.session);
     this.runtime.accruedFocusMs = 0;
     this.runtime.scheduleActiveEntryId = scheduleOccurrenceToken(entry, now);
+    this.runtime.scheduleUnavailableNoticeToken = null;
     this.recordEvent({
       t: 'sessionStarted',
       at: now,

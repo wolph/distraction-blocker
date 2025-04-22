@@ -320,6 +320,7 @@ describe('pending Sync retention', () => {
       reportError: (error: unknown): never => {
         throw error;
       },
+      websiteBlockingReady: (): boolean => true,
     };
     const engine: Engine = new Engine(
       ports,

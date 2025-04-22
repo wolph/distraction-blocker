@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { reconcileContentRegistration } from '../../../src/background/content-registration';
 import type { EnginePorts } from '../../../src/background/engine';
 import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/background/list-sync-codec';
 import { main } from '../../../src/background/main';
@@ -69,6 +70,7 @@ type StorageListener = (
   changes: Record<string, chrome.storage.StorageChange>,
   areaName: string,
 ) => void;
+type PermissionListener = (permissions: chrome.permissions.Permissions) => void;
 
 const mocks = vi.hoisted(
   (): {
@@ -94,6 +96,10 @@ const mocks = vi.hoisted(
     invalidationError: Error | null;
     invalidatedTabIds: number[];
     localState: Record<string, unknown>;
+    permissionAddedListener: PermissionListener | null;
+    permissionRemovedListener: PermissionListener | null;
+    registrationStatuses: Array<'unavailable' | 'ready' | 'error'>;
+    websiteLossEndCalls: number;
   } => ({
     engineArguments: null,
     alarmListener: null,
@@ -120,6 +126,10 @@ const mocks = vi.hoisted(
     invalidationError: null,
     invalidatedTabIds: [],
     localState: {},
+    permissionAddedListener: null,
+    permissionRemovedListener: null,
+    registrationStatuses: ['unavailable'],
+    websiteLossEndCalls: 0,
   }),
 );
 
@@ -153,7 +163,31 @@ vi.mock('../../../src/background/engine', () => ({
     ): Promise<T> {
       return operation();
     }
+
+    async endSessionForWebsiteBlockingLoss(): Promise<boolean> {
+      const runtime: RuntimeState | undefined = mocks.engineArguments?.[5] as
+        | RuntimeState
+        | undefined;
+      if (runtime?.session === null || runtime === undefined) return false;
+      runtime.session = null;
+      mocks.websiteLossEndCalls += 1;
+      return true;
+    }
+
+    hasActiveSession(): boolean {
+      const runtime: RuntimeState | undefined = mocks.engineArguments?.[5] as
+        | RuntimeState
+        | undefined;
+      return runtime?.session !== null && runtime !== undefined;
+    }
   },
+}));
+
+vi.mock('../../../src/background/content-registration', () => ({
+  contentScriptFile: 'assets/content-runtime.js',
+  reconcileContentRegistration: vi.fn(async (): Promise<'unavailable' | 'ready' | 'error'> => {
+    return mocks.registrationStatuses.shift() ?? 'unavailable';
+  }),
 }));
 
 vi.mock('../../../src/background/icon', () => ({ updateIcon: vi.fn() }));
@@ -307,6 +341,19 @@ function stubChrome(): void {
         }),
       },
       sendMessage: vi.fn().mockResolvedValue(undefined),
+    },
+    permissions: {
+      contains: vi.fn().mockResolvedValue(false),
+      onAdded: {
+        addListener: vi.fn((listener: PermissionListener): void => {
+          mocks.permissionAddedListener = listener;
+        }),
+      },
+      onRemoved: {
+        addListener: vi.fn((listener: PermissionListener): void => {
+          mocks.permissionRemovedListener = listener;
+        }),
+      },
     },
     storage: {
       onChanged: {
@@ -463,6 +510,11 @@ beforeEach((): void => {
   mocks.invalidationError = null;
   mocks.invalidatedTabIds = [];
   mocks.localState = { [LOCAL_RUNTIME]: {} };
+  mocks.permissionAddedListener = null;
+  mocks.permissionRemovedListener = null;
+  mocks.registrationStatuses = ['unavailable'];
+  mocks.websiteLossEndCalls = 0;
+  vi.mocked(reconcileContentRegistration).mockClear();
   stubChrome();
 });
 
@@ -474,6 +526,131 @@ afterEach((): void => {
 });
 
 describe('background runtime request boundary', () => {
+  it('reconciles website blocking before Engine construction and injects only when ready', async (): Promise<void> => {
+    mocks.registrationStatuses = ['ready'];
+
+    await finishBoot();
+
+    expect(reconcileContentRegistration).toHaveBeenCalledOnce();
+    expect(enginePorts().websiteBlockingReady?.()).toBe(true);
+    const { injectIntoExistingTabs } = await import('../../../src/background/tabs');
+    expect(injectIntoExistingTabs).toHaveBeenCalledWith(
+      'assets/content-runtime.js',
+      expect.any(Function),
+    );
+  });
+
+  it('ignores unrelated permission events', async (): Promise<void> => {
+    await finishBoot();
+    vi.mocked(reconcileContentRegistration).mockClear();
+
+    mocks.permissionAddedListener?.({ origins: ['https://calendar.example/*'] });
+    mocks.permissionRemovedListener?.({ permissions: ['notifications'] });
+    await Promise.resolve();
+
+    expect(reconcileContentRegistration).not.toHaveBeenCalled();
+  });
+
+  it('does not inject before registration and restores capability after relevant access is added', async (): Promise<void> => {
+    mocks.registrationStatuses = ['unavailable', 'ready'];
+    const { injectIntoExistingTabs } = await import('../../../src/background/tabs');
+    vi.mocked(injectIntoExistingTabs).mockClear();
+
+    await finishBoot();
+    expect(injectIntoExistingTabs).not.toHaveBeenCalled();
+
+    mocks.permissionAddedListener?.({ origins: ['https://*/*'] });
+    await vi.waitFor((): void =>
+      expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+        websiteAccess: 'granted',
+        blockingRegistration: 'ready',
+        websiteAccessNotice: null,
+      }),
+    );
+
+    expect(enginePorts().websiteBlockingReady()).toBe(true);
+    expect(injectIntoExistingTabs).toHaveBeenCalledWith(
+      'assets/content-runtime.js',
+      expect.any(Function),
+    );
+  });
+
+  it('fails blocking readiness synchronously and ends an active session after access removal', async (): Promise<void> => {
+    mocks.registrationStatuses = ['ready', 'unavailable'];
+    const now: number = Date.now();
+    mocks.scenario.runtime = {
+      ...emptyRuntime(now),
+      session: {
+        config: {
+          mode: 'blacklist',
+          strictness: 'hard',
+          durationMin: 25,
+          cycling: null,
+          intention: 'protected work',
+          source: 'manual',
+          scheduleEntryId: null,
+          rules: rulesFromLists(DEFAULT_LISTS),
+        },
+        startedAt: now,
+        sessionEndsAt: now + 25 * 60_000,
+        phase: 'focus',
+        phaseStartedAt: now,
+        phaseEndsAt: now + 25 * 60_000,
+        cycleIndex: 0,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+    };
+    await finishBoot();
+
+    mocks.permissionRemovedListener?.({ origins: ['http://*/*'] });
+    expect(enginePorts().websiteBlockingReady?.()).toBe(false);
+    await vi.waitFor((): void => expect(mocks.websiteLossEndCalls).toBe(1));
+
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      websiteAccess: 'denied',
+      blockingRegistration: 'unavailable',
+      websiteAccessNotice: 'revoked-during-session',
+    });
+  });
+
+  it('ends a restored active session when boot registration fails despite retained access', async (): Promise<void> => {
+    mocks.registrationStatuses = ['error'];
+    const now: number = Date.now();
+    mocks.scenario.runtime = {
+      ...emptyRuntime(now),
+      session: {
+        config: {
+          mode: 'blacklist',
+          strictness: 'friction',
+          durationMin: 25,
+          cycling: null,
+          intention: 'protected work',
+          source: 'manual',
+          scheduleEntryId: null,
+          rules: rulesFromLists(DEFAULT_LISTS),
+        },
+        startedAt: now,
+        sessionEndsAt: now + 25 * 60_000,
+        phase: 'focus',
+        phaseStartedAt: now,
+        phaseEndsAt: now + 25 * 60_000,
+        cycleIndex: 0,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+    };
+
+    await finishBoot();
+
+    expect(mocks.websiteLossEndCalls).toBe(1);
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      websiteAccess: 'granted',
+      blockingRegistration: 'error',
+      websiteAccessNotice: 'registration-failed-during-session',
+    });
+  });
+
   it('classifies a clean install before boot and performs zero Sync calls', async (): Promise<void> => {
     mocks.localState = {};
     mocks.scenario.storedSync = { [SYNC_SETTINGS]: { ...DEFAULT_SETTINGS, retentionDays: 30 } };
@@ -636,6 +813,7 @@ describe('background runtime request boundary', () => {
 
 describe('background session policy boot', () => {
   it('migrates a legacy active session with the loaded lists before engine construction', async (): Promise<void> => {
+    mocks.registrationStatuses = ['ready'];
     const now: number = Date.now();
     const lists: ListsConfig = {
       ...DEFAULT_LISTS,
@@ -668,6 +846,7 @@ describe('background session policy boot', () => {
       accruedFocusMs: 0,
       attemptDebounce: {},
       scheduleActiveEntryId: null,
+      scheduleUnavailableNoticeToken: null,
       date: '2026-08-31',
       todayAgg: null,
       lastPruneDate: null,

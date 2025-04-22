@@ -1147,23 +1147,41 @@ export function registerTabListeners(
   );
 }
 
-/** onInstalled: content scripts only auto-attach on new loads, so inject into what is open. */
-export async function injectIntoExistingTabs(): Promise<void> {
-  const manifest: chrome.runtime.Manifest = chrome.runtime.getManifest();
-  const file: string | undefined = manifest.content_scripts?.[0]?.js?.[0];
-  if (file === undefined) return;
-  const tabs: chrome.tabs.Tab[] = await chrome.tabs.query({
-    url: ['http://*/*', 'https://*/*'],
-  });
+function isUnsupportedPageInjectionFailure(error: unknown): boolean {
+  const message: string = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes('The extensions gallery cannot be scripted') ||
+    message.includes('Cannot access a chrome:// URL') ||
+    message.includes('Cannot access contents of url') ||
+    message.includes('Missing host permission')
+  );
+}
+
+/** Inject the registered content asset into eligible documents already open. */
+export async function injectIntoExistingTabs(
+  file: string,
+  reportError: (error: unknown) => void,
+): Promise<void> {
+  let tabs: chrome.tabs.Tab[];
+  try {
+    tabs = await chrome.tabs.query({
+      url: ['http://*/*', 'https://*/*'],
+    });
+  } catch (error: unknown) {
+    reportError(error);
+    return;
+  }
+  const injectedTabIds: Set<number> = new Set<number>();
   for (const tab of tabs) {
-    if (tab.id === undefined) continue;
+    if (tab.id === undefined || injectedTabIds.has(tab.id)) continue;
+    injectedTabIds.add(tab.id);
     try {
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         files: [file],
       });
-    } catch {
-      // Pages that refuse injection (web store, PDF viewer) are fine.
+    } catch (error: unknown) {
+      if (!isUnsupportedPageInjectionFailure(error)) reportError(error);
     }
   }
 }

@@ -626,6 +626,7 @@ describe('runtime storage migration', () => {
         accruedFocusMs: -1,
         attemptDebounce: { bad: 'yesterday' },
         scheduleActiveEntryId: 42,
+        scheduleUnavailableNoticeToken: 42,
         lastPruneDate: 'not-a-date',
         commitCheckpoint: { bank: { balanceMs: -1 }, events: [{}], syncBank: 'yes' },
       },
@@ -639,6 +640,7 @@ describe('runtime storage migration', () => {
       accruedFocusMs: 0,
       attemptDebounce: {},
       scheduleActiveEntryId: null,
+      scheduleUnavailableNoticeToken: null,
       lastPruneDate: null,
       commitCheckpoint: null,
     });

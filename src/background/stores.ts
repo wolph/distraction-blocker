@@ -68,6 +68,8 @@ export interface RuntimeState {
   /** "tabId:url" -> last attempt timestamp, for the 30 s attempt debounce */
   attemptDebounce: Record<string, number>;
   scheduleActiveEntryId: string | null;
+  /** Scheduled occurrence already reported while website blocking was unavailable. */
+  scheduleUnavailableNoticeToken: string | null;
   /** local date todayAgg belongs to, watermark for the midnight rollover */
   date: string;
   todayAgg: DailyAgg | null;
@@ -113,6 +115,7 @@ export function emptyRuntime(now: number): RuntimeState {
     accruedFocusMs: 0,
     attemptDebounce: {},
     scheduleActiveEntryId: null,
+    scheduleUnavailableNoticeToken: null,
     date: localDateStr(now),
     todayAgg: null,
     lastPruneDate: null,
@@ -327,6 +330,9 @@ export function mergeRuntime(raw: unknown, now: number): ParsedRuntimeState {
     attemptDebounce: parseAttemptDebounce(raw.attemptDebounce),
     scheduleActiveEntryId: isNullableString(raw.scheduleActiveEntryId)
       ? raw.scheduleActiveEntryId
+      : null,
+    scheduleUnavailableNoticeToken: isNullableString(raw.scheduleUnavailableNoticeToken)
+      ? raw.scheduleUnavailableNoticeToken
       : null,
     date,
     todayAgg: parseDailyAgg(raw.todayAgg, date),

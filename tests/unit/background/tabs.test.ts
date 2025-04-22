@@ -4,6 +4,7 @@ import { emptyRuntime } from '../../../src/background/stores';
 import {
   applyBlockingFactory,
   applyToTab,
+  injectIntoExistingTabs,
   invalidateRemovedTab,
   planTabAction,
   registerTabListeners,
@@ -126,6 +127,70 @@ describe('planTabAction', () => {
         wasStopped: false,
       }),
     ).toEqual({ command: 'clearBlock', mute: null, reload: false });
+  });
+});
+
+describe('injectIntoExistingTabs', () => {
+  afterEach((): void => {
+    vi.unstubAllGlobals();
+  });
+
+  it('injects the emitted file once into each eligible existing tab', async (): Promise<void> => {
+    const executeScript = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('chrome', {
+      tabs: {
+        query: vi.fn().mockResolvedValue([{ id: 7 }, { id: 7 }, { id: 8 }, {}]),
+      },
+      scripting: { executeScript },
+    });
+
+    await injectIntoExistingTabs('assets/content.js', vi.fn());
+
+    expect(chrome.tabs.query).toHaveBeenCalledWith({
+      url: ['http://*/*', 'https://*/*'],
+    });
+    expect(executeScript).toHaveBeenCalledTimes(2);
+    expect(executeScript).toHaveBeenNthCalledWith(1, {
+      target: { tabId: 7 },
+      files: ['assets/content.js'],
+    });
+    expect(executeScript).toHaveBeenNthCalledWith(2, {
+      target: { tabId: 8 },
+      files: ['assets/content.js'],
+    });
+  });
+
+  it('ignores an explicit protected-page failure but reports unexpected injection failures', async (): Promise<void> => {
+    const protectedFailure: Error = new Error('The extensions gallery cannot be scripted.');
+    const unexpectedFailure: Error = new Error('service worker unavailable');
+    const reportError = vi.fn();
+    const executeScript = vi
+      .fn()
+      .mockRejectedValueOnce(protectedFailure)
+      .mockRejectedValueOnce(unexpectedFailure);
+    vi.stubGlobal('chrome', {
+      tabs: { query: vi.fn().mockResolvedValue([{ id: 7 }, { id: 8 }]) },
+      scripting: { executeScript },
+    });
+
+    await injectIntoExistingTabs('assets/content.js', reportError);
+
+    expect(reportError).toHaveBeenCalledOnce();
+    expect(reportError).toHaveBeenCalledWith(unexpectedFailure);
+  });
+
+  it('reports an existing-tab query failure without rejecting worker boot', async (): Promise<void> => {
+    const failure: Error = new Error('tab query failed');
+    const reportError = vi.fn();
+    vi.stubGlobal('chrome', {
+      tabs: { query: vi.fn().mockRejectedValue(failure) },
+      scripting: { executeScript: vi.fn() },
+    });
+
+    await expect(injectIntoExistingTabs('assets/content.js', reportError)).resolves.toBeUndefined();
+
+    expect(reportError).toHaveBeenCalledWith(failure);
+    expect(chrome.scripting.executeScript).not.toHaveBeenCalled();
   });
 });
 
@@ -4623,6 +4688,7 @@ describe('applyBlockingFactory', () => {
       scheduleWake: vi.fn(),
       prune: vi.fn().mockResolvedValue(undefined),
       reportError,
+      websiteBlockingReady: vi.fn((): boolean => true),
     };
     const engine = new Engine(
       ports,

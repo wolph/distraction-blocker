@@ -151,6 +151,7 @@ function makeEngine(opts?: {
   applyBlocking?: EnginePorts['applyBlocking'];
   sessionCompiler?: typeof compileSessionMatcher;
   hasPendingSync?: (key: string) => boolean;
+  websiteBlockingReady?: () => boolean;
   lists?: ListsConfig;
 }): Harness {
   let nowMs: number = T0;
@@ -182,6 +183,10 @@ function makeEngine(opts?: {
     scheduleWake: vi.fn(),
     prune: vi.fn().mockResolvedValue(undefined),
     reportError: vi.fn(),
+    websiteBlockingReady:
+      opts?.websiteBlockingReady === undefined
+        ? vi.fn((): boolean => true)
+        : vi.fn(opts.websiteBlockingReady),
     hasPendingSync:
       opts?.hasPendingSync === undefined ? vi.fn((): boolean => false) : vi.fn(opts.hasPendingSync),
     saveMatcherCache:
@@ -254,6 +259,83 @@ function oversizedSettings(overrides: Partial<Settings> = {}): Settings {
 }
 
 describe('Engine', () => {
+  it('rejects a manual start before creating runtime state when website blocking is unavailable', async (): Promise<void> => {
+    const h: Harness = makeEngine({ websiteBlockingReady: (): boolean => false });
+
+    await expect(h.engine.startSession(manualConfig)).resolves.toEqual({
+      ok: false,
+      error:
+        'Website blocking is not enabled. Finish setup or grant website access, then try again.',
+    });
+
+    expect(h.engine.snapshot().phase).toBe('idle');
+    expect(h.ports.newId).not.toHaveBeenCalled();
+    expect(h.ports.appendEvents).not.toHaveBeenCalled();
+    expect(h.ports.applyBlocking).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unavailable scheduled start eligible and notifies once per occurrence', (): void => {
+    let ready: boolean = false;
+    const h: Harness = makeEngine({
+      settings: { schedule: [scheduledEntry] },
+      websiteBlockingReady: (): boolean => ready,
+    });
+    h.setNow(new Date(2026, 7, 29, 9, 1).getTime());
+
+    expect(h.engine.snapshot()).toMatchObject({ phase: 'idle', scheduleActive: false });
+    expect(h.engine.snapshot()).toMatchObject({ phase: 'idle', scheduleActive: false });
+    expect(h.ports.newId).not.toHaveBeenCalled();
+    expect(h.ports.playSound).not.toHaveBeenCalled();
+    expect(h.ports.notify).toHaveBeenCalledOnce();
+    expect(h.ports.notify).toHaveBeenCalledWith(
+      'Focus schedule could not start',
+      'Website blocking is not enabled. Finish setup or grant website access, then try again.',
+    );
+
+    ready = true;
+    expect(h.engine.snapshot()).toMatchObject({
+      phase: 'focus',
+      scheduleActive: true,
+      config: { source: 'schedule', scheduleEntryId: scheduledEntry.id },
+    });
+    expect(h.ports.newId).toHaveBeenCalledOnce();
+  });
+
+  it('deduplicates an unavailable schedule notice after a worker restart', async (): Promise<void> => {
+    const insideWindow: number = new Date(2026, 7, 29, 9, 1).getTime();
+    const first: Harness = makeEngine({
+      settings: { schedule: [scheduledEntry] },
+      websiteBlockingReady: (): boolean => false,
+    });
+    first.setNow(insideWindow);
+    await first.engine.snapshotPersisted();
+    const persisted: RuntimeState = structuredClone(
+      first.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
+    );
+
+    const restarted: Harness = makeEngine({
+      runtime: persisted,
+      settings: { schedule: [scheduledEntry] },
+      websiteBlockingReady: (): boolean => false,
+    });
+    restarted.setNow(insideWindow);
+    expect(restarted.engine.snapshot()).toMatchObject({ phase: 'idle', scheduleActive: false });
+    expect(restarted.ports.notify).not.toHaveBeenCalled();
+  });
+
+  it('ends an active Hard session and clears blocking when website access is lost', async (): Promise<void> => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession({ ...manualConfig, strictness: 'hard' });
+    clearMutationPorts(h.ports);
+
+    await h.engine.endSessionForWebsiteBlockingLoss();
+
+    expect(h.engine.snapshot()).toMatchObject({ phase: 'idle', gate: null, activeUnlocks: [] });
+    expect(h.loggedEvents()).toContainEqual(expect.objectContaining({ t: 'sessionCanceled' }));
+    expect(h.ports.saveRuntime).toHaveBeenCalled();
+    expect(h.ports.applyBlocking).toHaveBeenCalledOnce();
+  });
+
   it('compiles one matcher when a manual session starts and reuses it for verdicts', async (): Promise<void> => {
     const sessionCompiler: Mock<typeof compileSessionMatcher> = vi.fn(compileSessionMatcher);
     const h: Harness = makeEngine({ sessionCompiler });
