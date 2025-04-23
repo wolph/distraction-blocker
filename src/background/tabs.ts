@@ -1147,13 +1147,13 @@ export function registerTabListeners(
   );
 }
 
-function isUnsupportedPageInjectionFailure(error: unknown): boolean {
+function isIgnorableInjectionFailure(error: unknown): boolean {
   const message: string = error instanceof Error ? error.message : String(error);
   return (
     message.includes('The extensions gallery cannot be scripted') ||
     message.includes('Cannot access a chrome:// URL') ||
-    message.includes('Cannot access contents of url') ||
-    message.includes('Missing host permission')
+    message.includes('No tab with id') ||
+    message.includes('The tab was closed')
   );
 }
 
@@ -1181,7 +1181,7 @@ export async function injectIntoExistingTabs(
         files: [file],
       });
     } catch (error: unknown) {
-      if (!isUnsupportedPageInjectionFailure(error)) reportError(error);
+      if (!isIgnorableInjectionFailure(error)) reportError(error);
     }
   }
 }

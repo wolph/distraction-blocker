@@ -3,6 +3,12 @@ import { CONTENT_SCRIPT_ID, WEBSITE_ORIGINS } from '../shared/permissions';
 import type { BlockingRegistrationStatus } from '../shared/types';
 
 export type RegistrationErrorReporter = (error: unknown) => void;
+export type WebsitePermissionStatus = 'granted' | 'denied' | 'unknown';
+
+export interface ContentRegistrationState {
+  permission: WebsitePermissionStatus;
+  status: BlockingRegistrationStatus;
+}
 
 function sorted(values: readonly string[] | undefined): string[] {
   return [...(values ?? [])].sort();
@@ -65,9 +71,15 @@ export async function getContentRegistrationStatus(
 export async function reconcileContentRegistration(
   reportError: RegistrationErrorReporter,
 ): Promise<BlockingRegistrationStatus> {
-  const requested: Promise<BlockingRegistrationStatus> = reconciliationTail.then(
-    (): Promise<BlockingRegistrationStatus> => reconcileContentRegistrationNow(reportError),
-    (): Promise<BlockingRegistrationStatus> => reconcileContentRegistrationNow(reportError),
+  return (await reconcileContentRegistrationState(reportError)).status;
+}
+
+export async function reconcileContentRegistrationState(
+  reportError: RegistrationErrorReporter,
+): Promise<ContentRegistrationState> {
+  const requested: Promise<ContentRegistrationState> = reconciliationTail.then(
+    (): Promise<ContentRegistrationState> => reconcileContentRegistrationNow(reportError),
+    (): Promise<ContentRegistrationState> => reconcileContentRegistrationNow(reportError),
   );
   reconciliationTail = requested.then(
     (): void => undefined,
@@ -80,15 +92,22 @@ let reconciliationTail: Promise<void> = Promise.resolve();
 
 async function reconcileContentRegistrationNow(
   reportError: RegistrationErrorReporter,
-): Promise<BlockingRegistrationStatus> {
+): Promise<ContentRegistrationState> {
+  let permission: Exclude<WebsitePermissionStatus, 'unknown'>;
   try {
     const granted: boolean = await permissionGranted();
+    permission = granted ? 'granted' : 'denied';
+  } catch (error: unknown) {
+    reportError(error);
+    return { permission: 'unknown', status: 'error' };
+  }
+  try {
     const registrations: chrome.scripting.RegisteredContentScript[] = await currentRegistrations();
-    if (!granted) {
+    if (permission === 'denied') {
       if (registrations.length > 0) {
         await chrome.scripting.unregisterContentScripts({ ids: [CONTENT_SCRIPT_ID] });
       }
-      return 'unavailable';
+      return { permission, status: 'unavailable' };
     }
     const registration: chrome.scripting.RegisteredContentScript | undefined = registrations[0];
     if (
@@ -96,7 +115,7 @@ async function reconcileContentRegistrationNow(
       registration !== undefined &&
       registrationMatches(registration)
     ) {
-      return 'ready';
+      return { permission, status: 'ready' };
     }
     if (registrations.length > 0) {
       await chrome.scripting.unregisterContentScripts({ ids: [CONTENT_SCRIPT_ID] });
@@ -112,10 +131,10 @@ async function reconcileContentRegistrationNow(
         world: 'ISOLATED',
       },
     ]);
-    return 'ready';
+    return { permission, status: 'ready' };
   } catch (error: unknown) {
     reportError(error);
-    return 'error';
+    return { permission, status: 'error' };
   }
 }
 

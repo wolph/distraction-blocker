@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   getContentRegistrationStatus,
   reconcileContentRegistration,
+  reconcileContentRegistrationState,
 } from '../../../src/background/content-registration';
 import { CONTENT_SCRIPT_ID, WEBSITE_ORIGINS } from '../../../src/shared/permissions';
 
@@ -17,6 +18,7 @@ interface RegistrationChrome {
   permissionError: Error | null;
   registrationReadError: Error | null;
   registrationWriteError: Error | null;
+  registrationRemoveError: Error | null;
 }
 
 const state: RegistrationChrome = {
@@ -25,6 +27,7 @@ const state: RegistrationChrome = {
   permissionError: null,
   registrationReadError: null,
   registrationWriteError: null,
+  registrationRemoveError: null,
 };
 
 function expectedRegistration(): chrome.scripting.RegisteredContentScript {
@@ -61,6 +64,7 @@ function stubChrome(): void {
         },
       ),
       unregisterContentScripts: vi.fn(async (): Promise<void> => {
+        if (state.registrationRemoveError !== null) throw state.registrationRemoveError;
         state.registrations = [];
       }),
     },
@@ -73,6 +77,7 @@ beforeEach((): void => {
   state.permissionError = null;
   state.registrationReadError = null;
   state.registrationWriteError = null;
+  state.registrationRemoveError = null;
   stubChrome();
 });
 
@@ -175,6 +180,43 @@ describe('runtime content registration', () => {
 
     expect(reportError).toHaveBeenCalledWith(failure);
     expect(await getContentRegistrationStatus(reportError)).toBe('error');
+  });
+
+  it('preserves denied permission truth when stale-registration cleanup fails', async (): Promise<void> => {
+    const failure: Error = new Error('unregister rejected');
+    const reportError = vi.fn();
+    state.registrations = [expectedRegistration()];
+    state.registrationRemoveError = failure;
+
+    await expect(reconcileContentRegistrationState(reportError)).resolves.toEqual({
+      permission: 'denied',
+      status: 'error',
+    });
+
+    expect(reportError).toHaveBeenCalledWith(failure);
+  });
+
+  it('preserves granted permission truth when registration fails', async (): Promise<void> => {
+    state.permissionGranted = true;
+    state.registrationWriteError = new Error('registration rejected');
+
+    await expect(reconcileContentRegistrationState(vi.fn())).resolves.toEqual({
+      permission: 'granted',
+      status: 'error',
+    });
+  });
+
+  it('does not infer permission truth when the permission query fails', async (): Promise<void> => {
+    const failure: Error = new Error('permission query rejected');
+    const reportError = vi.fn();
+    state.permissionError = failure;
+
+    await expect(reconcileContentRegistrationState(reportError)).resolves.toEqual({
+      permission: 'unknown',
+      status: 'error',
+    });
+
+    expect(reportError).toHaveBeenCalledWith(failure);
   });
 
   it('classifies missing access, exact registration, and stale registration', async (): Promise<void> => {

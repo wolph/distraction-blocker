@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { reconcileContentRegistration } from '../../../src/background/content-registration';
+import { reconcileContentRegistrationState } from '../../../src/background/content-registration';
 import type { EnginePorts } from '../../../src/background/engine';
 import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/background/list-sync-codec';
 import { main } from '../../../src/background/main';
@@ -71,6 +71,14 @@ type StorageListener = (
   areaName: string,
 ) => void;
 type PermissionListener = (permissions: chrome.permissions.Permissions) => void;
+type MockRegistrationResult =
+  | 'unavailable'
+  | 'ready'
+  | 'error'
+  | {
+      permission: 'granted' | 'denied' | 'unknown';
+      status: 'unavailable' | 'ready' | 'error';
+    };
 
 const mocks = vi.hoisted(
   (): {
@@ -98,8 +106,10 @@ const mocks = vi.hoisted(
     localState: Record<string, unknown>;
     permissionAddedListener: PermissionListener | null;
     permissionRemovedListener: PermissionListener | null;
-    registrationStatuses: Array<'unavailable' | 'ready' | 'error'>;
+    registrationStatuses: MockRegistrationResult[];
     websiteLossEndCalls: number;
+    websiteLossEndGate: Promise<void> | null;
+    websiteLossEndStarted: (() => void) | null;
   } => ({
     engineArguments: null,
     alarmListener: null,
@@ -130,6 +140,8 @@ const mocks = vi.hoisted(
     permissionRemovedListener: null,
     registrationStatuses: ['unavailable'],
     websiteLossEndCalls: 0,
+    websiteLossEndGate: null,
+    websiteLossEndStarted: null,
   }),
 );
 
@@ -170,6 +182,8 @@ vi.mock('../../../src/background/engine', () => ({
         | undefined;
       if (runtime?.session === null || runtime === undefined) return false;
       runtime.session = null;
+      mocks.websiteLossEndStarted?.();
+      if (mocks.websiteLossEndGate !== null) await mocks.websiteLossEndGate;
       mocks.websiteLossEndCalls += 1;
       return true;
     }
@@ -185,9 +199,18 @@ vi.mock('../../../src/background/engine', () => ({
 
 vi.mock('../../../src/background/content-registration', () => ({
   contentScriptFile: 'assets/content-runtime.js',
-  reconcileContentRegistration: vi.fn(async (): Promise<'unavailable' | 'ready' | 'error'> => {
-    return mocks.registrationStatuses.shift() ?? 'unavailable';
-  }),
+  reconcileContentRegistrationState: vi.fn(
+    async (): Promise<{
+      permission: 'granted' | 'denied' | 'unknown';
+      status: 'unavailable' | 'ready' | 'error';
+    }> => {
+      const result: MockRegistrationResult = mocks.registrationStatuses.shift() ?? 'unavailable';
+      if (typeof result !== 'string') return result;
+      if (result === 'ready') return { permission: 'granted', status: 'ready' };
+      if (result === 'error') return { permission: 'granted', status: 'error' };
+      return { permission: 'denied', status: 'unavailable' };
+    },
+  ),
 }));
 
 vi.mock('../../../src/background/icon', () => ({ updateIcon: vi.fn() }));
@@ -514,7 +537,9 @@ beforeEach((): void => {
   mocks.permissionRemovedListener = null;
   mocks.registrationStatuses = ['unavailable'];
   mocks.websiteLossEndCalls = 0;
-  vi.mocked(reconcileContentRegistration).mockClear();
+  mocks.websiteLossEndGate = null;
+  mocks.websiteLossEndStarted = null;
+  vi.mocked(reconcileContentRegistrationState).mockClear();
   stubChrome();
 });
 
@@ -531,7 +556,7 @@ describe('background runtime request boundary', () => {
 
     await finishBoot();
 
-    expect(reconcileContentRegistration).toHaveBeenCalledOnce();
+    expect(reconcileContentRegistrationState).toHaveBeenCalledOnce();
     expect(enginePorts().websiteBlockingReady?.()).toBe(true);
     const { injectIntoExistingTabs } = await import('../../../src/background/tabs');
     expect(injectIntoExistingTabs).toHaveBeenCalledWith(
@@ -542,13 +567,13 @@ describe('background runtime request boundary', () => {
 
   it('ignores unrelated permission events', async (): Promise<void> => {
     await finishBoot();
-    vi.mocked(reconcileContentRegistration).mockClear();
+    vi.mocked(reconcileContentRegistrationState).mockClear();
 
     mocks.permissionAddedListener?.({ origins: ['https://calendar.example/*'] });
     mocks.permissionRemovedListener?.({ permissions: ['notifications'] });
     await Promise.resolve();
 
-    expect(reconcileContentRegistration).not.toHaveBeenCalled();
+    expect(reconcileContentRegistrationState).not.toHaveBeenCalled();
   });
 
   it('does not inject before registration and restores capability after relevant access is added', async (): Promise<void> => {
@@ -576,7 +601,7 @@ describe('background runtime request boundary', () => {
   });
 
   it('fails blocking readiness synchronously and ends an active session after access removal', async (): Promise<void> => {
-    mocks.registrationStatuses = ['ready', 'unavailable'];
+    mocks.registrationStatuses = ['ready', { permission: 'denied', status: 'error' }];
     const now: number = Date.now();
     mocks.scenario.runtime = {
       ...emptyRuntime(now),
@@ -609,9 +634,92 @@ describe('background runtime request boundary', () => {
 
     expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
       websiteAccess: 'denied',
-      blockingRegistration: 'unavailable',
+      blockingRegistration: 'error',
       websiteAccessNotice: 'revoked-during-session',
     });
+  });
+
+  it('does not claim website access when the boot permission query is unknown', async (): Promise<void> => {
+    mocks.registrationStatuses = [{ permission: 'unknown', status: 'error' }];
+
+    await finishBoot();
+
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      websiteAccess: 'pending',
+      blockingRegistration: 'error',
+      websiteAccessNotice: null,
+    });
+  });
+
+  it('persists denied access when boot cleanup fails after missing permission', async (): Promise<void> => {
+    mocks.registrationStatuses = [{ permission: 'denied', status: 'error' }];
+
+    await finishBoot();
+
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      websiteAccess: 'denied',
+      blockingRegistration: 'error',
+      websiteAccessNotice: null,
+    });
+  });
+
+  it('serializes rapid removal and addition through setup persistence', async (): Promise<void> => {
+    mocks.registrationStatuses = ['ready', 'unavailable', 'ready'];
+    const now: number = Date.now();
+    mocks.scenario.runtime = {
+      ...emptyRuntime(now),
+      session: {
+        config: {
+          mode: 'blacklist',
+          strictness: 'hard',
+          durationMin: 25,
+          cycling: null,
+          intention: 'protected work',
+          source: 'manual',
+          scheduleEntryId: null,
+          rules: rulesFromLists(DEFAULT_LISTS),
+        },
+        startedAt: now,
+        sessionEndsAt: now + 25 * 60_000,
+        phase: 'focus',
+        phaseStartedAt: now,
+        phaseEndsAt: now + 25 * 60_000,
+        cycleIndex: 0,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+    };
+    let releaseEnd: () => void = (): void => undefined;
+    let signalEndStarted: () => void = (): void => undefined;
+    const endGate: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseEnd = resolve;
+    });
+    const endStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalEndStarted = resolve;
+    });
+    mocks.websiteLossEndGate = endGate;
+    mocks.websiteLossEndStarted = signalEndStarted;
+    await finishBoot();
+
+    mocks.permissionRemovedListener?.({ origins: ['http://*/*'] });
+    expect(enginePorts().websiteBlockingReady()).toBe(false);
+    await endStarted;
+    mocks.permissionAddedListener?.({ origins: ['http://*/*'] });
+    for (let turn: number = 0; turn < 10; turn += 1) await Promise.resolve();
+    releaseEnd();
+
+    await vi.waitFor((): void =>
+      expect(reconcileContentRegistrationState).toHaveBeenCalledTimes(3),
+    );
+    await vi.waitFor((): void => expect(mocks.websiteLossEndCalls).toBe(1));
+    await vi.waitFor((): void =>
+      expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+        websiteAccess: 'granted',
+        blockingRegistration: 'ready',
+        websiteAccessNotice: null,
+      }),
+    );
+    expect(enginePorts().websiteBlockingReady()).toBe(true);
   });
 
   it('ends a restored active session when boot registration fails despite retained access', async (): Promise<void> => {
@@ -698,7 +806,10 @@ describe('background runtime request boundary', () => {
     expect(mocks.localState[LOCAL_DEVICE_ID]).toBeUndefined();
     expect(mocks.scenario.storedSync[SYNC_SETTINGS]).toBeUndefined();
     expect(mocks.localState[LOCAL_DATA_CLEAR_JOURNAL]).toBeUndefined();
-    expect(mocks.localState[LOCAL_SETUP]).toEqual(DEFAULT_SETUP);
+    expect(mocks.localState[LOCAL_SETUP]).toEqual({
+      ...DEFAULT_SETUP,
+      websiteAccess: 'denied',
+    });
   });
 
   it.each([

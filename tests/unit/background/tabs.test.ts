@@ -192,6 +192,41 @@ describe('injectIntoExistingTabs', () => {
     expect(reportError).toHaveBeenCalledWith(failure);
     expect(chrome.scripting.executeScript).not.toHaveBeenCalled();
   });
+
+  it('reports missing host permission but ignores a vanished tab during injection', async (): Promise<void> => {
+    const missingPermission: Error = new Error('Missing host permission for the tab');
+    const vanishedTab: Error = new Error('No tab with id: 8.');
+    const reportError = vi.fn();
+    vi.stubGlobal('chrome', {
+      tabs: { query: vi.fn().mockResolvedValue([{ id: 7 }, { id: 8 }]) },
+      scripting: {
+        executeScript: vi
+          .fn()
+          .mockRejectedValueOnce(missingPermission)
+          .mockRejectedValueOnce(vanishedTab),
+      },
+    });
+
+    await injectIntoExistingTabs('assets/content.js', reportError);
+
+    expect(reportError).toHaveBeenCalledOnce();
+    expect(reportError).toHaveBeenCalledWith(missingPermission);
+  });
+
+  it('reports a generic inaccessible HTTP page instead of assuming it is protected', async (): Promise<void> => {
+    const failure: Error = new Error(
+      'Cannot access contents of url "https://example.com/". Extension manifest must request permission to access this host.',
+    );
+    const reportError = vi.fn();
+    vi.stubGlobal('chrome', {
+      tabs: { query: vi.fn().mockResolvedValue([{ id: 7 }]) },
+      scripting: { executeScript: vi.fn().mockRejectedValue(failure) },
+    });
+
+    await injectIntoExistingTabs('assets/content.js', reportError);
+
+    expect(reportError).toHaveBeenCalledWith(failure);
+  });
 });
 
 describe('applyToTab', () => {

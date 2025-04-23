@@ -22,7 +22,6 @@ import {
 import { localDateStr, localMonthStr } from '../shared/time';
 import type {
   BankState,
-  BlockingRegistrationStatus,
   DailyAgg,
   InstallMarker,
   ListsConfig,
@@ -33,7 +32,11 @@ import type {
   StreakState,
 } from '../shared/types';
 import { notify, playSound } from './audio';
-import { contentScriptFile, reconcileContentRegistration } from './content-registration';
+import {
+  type ContentRegistrationState,
+  contentScriptFile,
+  reconcileContentRegistrationState,
+} from './content-registration';
 import { Engine, type EnginePorts } from './engine';
 import { updateIcon } from './icon';
 import {
@@ -101,39 +104,44 @@ function isWebsitePermissionEvent(permissions: chrome.permissions.Permissions): 
 async function applyWebsiteCapability(
   storage: PolicyStorage,
   engine: Engine,
-  status: BlockingRegistrationStatus,
+  capability: ContentRegistrationState,
   cause: WebsiteCapabilityCause,
+  isCurrent: () => boolean = (): boolean => true,
 ): Promise<void> {
   const setup: SetupState = await storage.loadSetup();
+  if (!isCurrent()) return;
   const hadActiveSession: boolean = engine.hasActiveSession();
-  if (status !== 'ready' && hadActiveSession) {
+  if (capability.status !== 'ready' && hadActiveSession) {
     try {
       await engine.endSessionForWebsiteBlockingLoss();
     } catch (error: unknown) {
       reportBackgroundError(error);
     }
+    if (!isCurrent()) return;
   }
   const websiteAccess: typeof setup.websiteAccess =
-    status === 'ready' || status === 'error'
+    capability.permission === 'granted'
       ? 'granted'
-      : cause === 'permission-removed' || setup.websiteAccess === 'granted'
+      : capability.permission === 'denied' || cause === 'permission-removed'
         ? 'denied'
         : setup.websiteAccess;
   const websiteAccessNotice: typeof setup.websiteAccessNotice =
-    status === 'ready'
+    capability.status === 'ready'
       ? null
       : hadActiveSession
-        ? status === 'error'
-          ? 'registration-failed-during-session'
-          : 'revoked-during-session'
+        ? capability.permission === 'denied' || cause === 'permission-removed'
+          ? 'revoked-during-session'
+          : 'registration-failed-during-session'
         : setup.websiteAccessNotice;
   await storage.updateSetup({
     websiteAccess,
-    blockingRegistration: status,
+    blockingRegistration: capability.status,
     websiteAccessNotice,
   });
-  if (status === 'ready') {
+  if (!isCurrent()) return;
+  if (capability.status === 'ready') {
     await injectIntoExistingTabs(contentScriptFile, reportBackgroundError);
+    if (!isCurrent()) return;
   }
 }
 
@@ -499,7 +507,7 @@ async function preparePolicyStorage(): Promise<PolicyStorage> {
 
 async function boot(
   policyStorage: PolicyStorage,
-  websiteRegistrationStatus: () => BlockingRegistrationStatus,
+  websiteCapability: () => ContentRegistrationState,
 ): Promise<Engine> {
   const now: number = Date.now();
   await policyStorage.initialize();
@@ -553,7 +561,7 @@ async function boot(
     prune: (retentionDays: number, pruneNow: number): Promise<void> =>
       policyStorage.pruneRemoteHistory(deviceId, retentionDays, pruneNow),
     reportError: reportBackgroundError,
-    websiteBlockingReady: (): boolean => websiteRegistrationStatus() === 'ready',
+    websiteBlockingReady: (): boolean => websiteCapability().status === 'ready',
   };
   const engine: Engine = new Engine(
     ports,
@@ -565,7 +573,7 @@ async function boot(
     deviceId,
   );
   engineInstance = engine;
-  await applyWebsiteCapability(policyStorage, engine, websiteRegistrationStatus(), 'boot');
+  await applyWebsiteCapability(policyStorage, engine, websiteCapability(), 'boot');
   if (completedAllDataClear) {
     await engine.runWithDataClearBarrier(
       (): Promise<void> => Promise.resolve(),
@@ -588,31 +596,49 @@ export function main(): void {
   let listChangeApplyQueue: Promise<void> = Promise.resolve();
   let policyStorageReady: Promise<PolicyStorage>;
   let ready: Promise<Engine>;
-  let websiteRegistrationStatus: BlockingRegistrationStatus = 'unavailable';
+  let websiteCapability: ContentRegistrationState = {
+    permission: 'unknown',
+    status: 'unavailable',
+  };
   let websiteReconciliationGeneration: number = 0;
   let websiteReconciliationTail: Promise<void> = Promise.resolve();
 
   const reconcileWebsiteCapability = (
     cause: WebsiteCapabilityCause,
-  ): Promise<BlockingRegistrationStatus> => {
+    applyToEngine: boolean,
+  ): Promise<ContentRegistrationState> => {
     websiteReconciliationGeneration += 1;
     const generation: number = websiteReconciliationGeneration;
-    if (cause === 'permission-removed') websiteRegistrationStatus = 'unavailable';
-    const reconcile: () => Promise<BlockingRegistrationStatus> =
-      async (): Promise<BlockingRegistrationStatus> => {
-        const status: BlockingRegistrationStatus =
-          await reconcileContentRegistration(reportBackgroundError);
-        if (generation === websiteReconciliationGeneration) websiteRegistrationStatus = status;
-        return websiteRegistrationStatus;
+    if (cause === 'permission-removed') {
+      websiteCapability = { permission: 'denied', status: 'unavailable' };
+    }
+    const isCurrent: () => boolean = (): boolean => generation === websiteReconciliationGeneration;
+    const reconcile: () => Promise<ContentRegistrationState> =
+      async (): Promise<ContentRegistrationState> => {
+        const reconciled: ContentRegistrationState =
+          await reconcileContentRegistrationState(reportBackgroundError);
+        if (!isCurrent()) return websiteCapability;
+        websiteCapability =
+          cause === 'permission-removed' && reconciled.permission === 'unknown'
+            ? { ...reconciled, permission: 'denied' }
+            : reconciled;
+        if (!applyToEngine) return websiteCapability;
+        const storage: PolicyStorage = await policyStorageReady;
+        if (!isCurrent()) return websiteCapability;
+        const engine: Engine = await ready;
+        if (!isCurrent()) return websiteCapability;
+        await applyWebsiteCapability(storage, engine, websiteCapability, cause, isCurrent);
+        if (!isCurrent()) return websiteCapability;
+        return websiteCapability;
       };
-    const requested: Promise<BlockingRegistrationStatus> = websiteReconciliationTail.then(
+    const requested: Promise<ContentRegistrationState> = websiteReconciliationTail.then(
       reconcile,
       reconcile,
     );
-    const settled: Promise<BlockingRegistrationStatus> = requested.catch(
-      (error: unknown): BlockingRegistrationStatus => {
+    const settled: Promise<ContentRegistrationState> = requested.catch(
+      (error: unknown): ContentRegistrationState => {
         reportBackgroundError(error);
-        return websiteRegistrationStatus;
+        return websiteCapability;
       },
     );
     websiteReconciliationTail = settled.then((): void => undefined);
@@ -620,15 +646,7 @@ export function main(): void {
   };
 
   const reconcileAfterPermissionEvent = (cause: WebsiteCapabilityCause): void => {
-    void reconcileWebsiteCapability(cause)
-      .then(async (status: BlockingRegistrationStatus): Promise<void> => {
-        const [storage, engine]: [PolicyStorage, Engine] = await Promise.all([
-          policyStorageReady,
-          ready,
-        ]);
-        await applyWebsiteCapability(storage, engine, status, cause);
-      })
-      .catch(reportBackgroundError);
+    void reconcileWebsiteCapability(cause, true).catch(reportBackgroundError);
   };
 
   chrome.runtime.onInstalled.addListener((details: chrome.runtime.InstalledDetails): void => {
@@ -642,11 +660,13 @@ export function main(): void {
     if (isWebsitePermissionEvent(permissions)) reconcileAfterPermissionEvent('permission-removed');
   });
   policyStorageReady = preparePolicyStorage();
-  const initialWebsiteCapability: Promise<BlockingRegistrationStatus> =
-    reconcileWebsiteCapability('boot');
+  const initialWebsiteCapability: Promise<ContentRegistrationState> = reconcileWebsiteCapability(
+    'boot',
+    false,
+  );
   ready = Promise.all([policyStorageReady, initialWebsiteCapability]).then(
-    ([storage]: [PolicyStorage, BlockingRegistrationStatus]): Promise<Engine> =>
-      boot(storage, (): BlockingRegistrationStatus => websiteRegistrationStatus),
+    ([storage]: [PolicyStorage, ContentRegistrationState]): Promise<Engine> =>
+      boot(storage, (): ContentRegistrationState => websiteCapability),
   );
 
   chrome.runtime.onMessage.addListener(
