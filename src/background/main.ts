@@ -107,11 +107,13 @@ async function applyWebsiteCapability(
   capability: ContentRegistrationState,
   cause: WebsiteCapabilityCause,
   isCurrent: () => boolean = (): boolean => true,
+  sessionEndedForRemoval: boolean = false,
 ): Promise<void> {
   const setup: SetupState = await storage.loadSetup();
   if (!isCurrent()) return;
-  const hadActiveSession: boolean = engine.hasActiveSession();
-  if (capability.status !== 'ready' && hadActiveSession) {
+  const activeSessionNow: boolean = engine.hasActiveSession();
+  const hadActiveSession: boolean = sessionEndedForRemoval || activeSessionNow;
+  if (capability.status !== 'ready' && activeSessionNow) {
     try {
       await engine.endSessionForWebsiteBlockingLoss();
     } catch (error: unknown) {
@@ -143,6 +145,17 @@ async function applyWebsiteCapability(
     await injectIntoExistingTabs(contentScriptFile, reportBackgroundError);
     if (!isCurrent()) return;
   }
+}
+
+async function endSessionAfterPermissionRemoval(engine: Engine): Promise<boolean> {
+  const hadActiveSession: boolean = engine.hasActiveSession();
+  if (!hadActiveSession) return false;
+  try {
+    await engine.endSessionForWebsiteBlockingLoss();
+  } catch (error: unknown) {
+    reportBackgroundError(error);
+  }
+  return true;
 }
 
 function currentEngine(): Engine {
@@ -615,6 +628,13 @@ export function main(): void {
     const isCurrent: () => boolean = (): boolean => generation === websiteReconciliationGeneration;
     const reconcile: () => Promise<ContentRegistrationState> =
       async (): Promise<ContentRegistrationState> => {
+        let sessionEndedForRemoval: boolean = false;
+        if (cause === 'permission-removed' && applyToEngine) {
+          // Permission loss is a fail-closed safety event. A later permission
+          // generation may suppress stale setup writes, but never this cleanup.
+          const engine: Engine = await ready;
+          sessionEndedForRemoval = await endSessionAfterPermissionRemoval(engine);
+        }
         const reconciled: ContentRegistrationState =
           await reconcileContentRegistrationState(reportBackgroundError);
         if (!isCurrent()) return websiteCapability;
@@ -627,7 +647,14 @@ export function main(): void {
         if (!isCurrent()) return websiteCapability;
         const engine: Engine = await ready;
         if (!isCurrent()) return websiteCapability;
-        await applyWebsiteCapability(storage, engine, websiteCapability, cause, isCurrent);
+        await applyWebsiteCapability(
+          storage,
+          engine,
+          websiteCapability,
+          cause,
+          isCurrent,
+          sessionEndedForRemoval,
+        );
         if (!isCurrent()) return websiteCapability;
         return websiteCapability;
       };
