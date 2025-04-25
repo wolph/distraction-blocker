@@ -144,7 +144,7 @@ describe('injectIntoExistingTabs', () => {
       scripting: { executeScript },
     });
 
-    await injectIntoExistingTabs('assets/content.js', vi.fn());
+    await expect(injectIntoExistingTabs('assets/content.js', vi.fn())).resolves.toBe(true);
 
     expect(chrome.tabs.query).toHaveBeenCalledWith({
       url: ['http://*/*', 'https://*/*'],
@@ -173,10 +173,27 @@ describe('injectIntoExistingTabs', () => {
       scripting: { executeScript },
     });
 
-    await injectIntoExistingTabs('assets/content.js', reportError);
+    await expect(injectIntoExistingTabs('assets/content.js', reportError)).resolves.toBe(false);
 
     expect(reportError).toHaveBeenCalledOnce();
     expect(reportError).toHaveBeenCalledWith(unexpectedFailure);
+  });
+
+  it('treats only protected-page and vanished-tab failures as a complete injection sweep', async (): Promise<void> => {
+    const reportError = vi.fn();
+    vi.stubGlobal('chrome', {
+      tabs: { query: vi.fn().mockResolvedValue([{ id: 7 }, { id: 8 }]) },
+      scripting: {
+        executeScript: vi
+          .fn()
+          .mockRejectedValueOnce(new Error('The extensions gallery cannot be scripted.'))
+          .mockRejectedValueOnce(new Error('No tab with id: 8.')),
+      },
+    });
+
+    await expect(injectIntoExistingTabs('assets/content.js', reportError)).resolves.toBe(true);
+
+    expect(reportError).not.toHaveBeenCalled();
   });
 
   it('reports an existing-tab query failure without rejecting worker boot', async (): Promise<void> => {
@@ -187,7 +204,7 @@ describe('injectIntoExistingTabs', () => {
       scripting: { executeScript: vi.fn() },
     });
 
-    await expect(injectIntoExistingTabs('assets/content.js', reportError)).resolves.toBeUndefined();
+    await expect(injectIntoExistingTabs('assets/content.js', reportError)).resolves.toBe(false);
 
     expect(reportError).toHaveBeenCalledWith(failure);
     expect(chrome.scripting.executeScript).not.toHaveBeenCalled();
@@ -207,7 +224,7 @@ describe('injectIntoExistingTabs', () => {
       },
     });
 
-    await injectIntoExistingTabs('assets/content.js', reportError);
+    await expect(injectIntoExistingTabs('assets/content.js', reportError)).resolves.toBe(false);
 
     expect(reportError).toHaveBeenCalledOnce();
     expect(reportError).toHaveBeenCalledWith(missingPermission);
@@ -223,7 +240,7 @@ describe('injectIntoExistingTabs', () => {
       scripting: { executeScript: vi.fn().mockRejectedValue(failure) },
     });
 
-    await injectIntoExistingTabs('assets/content.js', reportError);
+    await expect(injectIntoExistingTabs('assets/content.js', reportError)).resolves.toBe(false);
 
     expect(reportError).toHaveBeenCalledWith(failure);
   });

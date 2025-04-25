@@ -111,6 +111,11 @@ const mocks = vi.hoisted(
     websiteLossEndCalls: number;
     websiteLossEndGate: Promise<void> | null;
     websiteLossEndStarted: (() => void) | null;
+    setupWriteError: Error | null;
+    setupWriteGate: Promise<void> | null;
+    setupWriteStarted: (() => void) | null;
+    injectionGate: Promise<void> | null;
+    injectionResult: boolean;
   } => ({
     engineArguments: null,
     alarmListener: null,
@@ -144,6 +149,11 @@ const mocks = vi.hoisted(
     websiteLossEndCalls: 0,
     websiteLossEndGate: null,
     websiteLossEndStarted: null,
+    setupWriteError: null,
+    setupWriteGate: null,
+    setupWriteStarted: null,
+    injectionGate: null,
+    injectionResult: true,
   }),
 );
 
@@ -282,7 +292,10 @@ vi.mock('../../../src/background/tabs', () => ({
     if (mocks.invalidationError !== null) return Promise.reject(mocks.invalidationError);
     return Promise.resolve();
   }),
-  injectIntoExistingTabs: vi.fn(),
+  injectIntoExistingTabs: vi.fn(async (): Promise<boolean> => {
+    if (mocks.injectionGate !== null) await mocks.injectionGate;
+    return mocks.injectionResult;
+  }),
   registerTabListeners: vi.fn(),
 }));
 
@@ -399,6 +412,15 @@ function stubChrome(): void {
           );
         }),
         set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+          if (Object.hasOwn(items, LOCAL_SETUP)) {
+            mocks.setupWriteStarted?.();
+            if (mocks.setupWriteGate !== null) await mocks.setupWriteGate;
+            if (mocks.setupWriteError !== null) {
+              const setupWriteError: Error = mocks.setupWriteError;
+              mocks.setupWriteError = null;
+              throw setupWriteError;
+            }
+          }
           Object.assign(mocks.localState, structuredClone(items));
           if (Object.hasOwn(items, LOCAL_SYNC_JOURNAL)) {
             mocks.savedJournals.push(structuredClone(items[LOCAL_SYNC_JOURNAL]) as SyncJournal);
@@ -544,6 +566,11 @@ beforeEach((): void => {
   mocks.websiteLossEndCalls = 0;
   mocks.websiteLossEndGate = null;
   mocks.websiteLossEndStarted = null;
+  mocks.setupWriteError = null;
+  mocks.setupWriteGate = null;
+  mocks.setupWriteStarted = null;
+  mocks.injectionGate = null;
+  mocks.injectionResult = true;
   vi.mocked(reconcileContentRegistrationState).mockClear();
   stubChrome();
 });
@@ -603,6 +630,112 @@ describe('background runtime request boundary', () => {
       'assets/content-runtime.js',
       expect.any(Function),
     );
+  });
+
+  it('keeps blocking unavailable until existing-tab injection and setup persistence finish', async (): Promise<void> => {
+    mocks.registrationStatuses = ['unavailable', 'ready'];
+    const { injectIntoExistingTabs } = await import('../../../src/background/tabs');
+    await finishBoot();
+    vi.mocked(injectIntoExistingTabs).mockClear();
+
+    let releaseSetupWrite: () => void = (): void => undefined;
+    let signalSetupWriteStarted: () => void = (): void => undefined;
+    mocks.setupWriteGate = new Promise<void>((resolve: () => void): void => {
+      releaseSetupWrite = resolve;
+    });
+    const setupWriteStarted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalSetupWriteStarted = resolve;
+    });
+    mocks.setupWriteStarted = signalSetupWriteStarted;
+
+    mocks.permissionAddedListener?.({ origins: ['https://*/*'] });
+    await setupWriteStarted;
+    const injectedBeforeSetupFinished: boolean =
+      vi.mocked(injectIntoExistingTabs).mock.calls.length === 1;
+    const readyWhileSetupBlocked: boolean = enginePorts().websiteBlockingReady();
+    releaseSetupWrite();
+
+    await vi.waitFor((): void => expect(enginePorts().websiteBlockingReady()).toBe(true));
+    expect(injectedBeforeSetupFinished).toBe(true);
+    expect(readyWhileSetupBlocked).toBe(false);
+  });
+
+  it('injects existing tabs but keeps blocking unavailable when setup persistence fails', async (): Promise<void> => {
+    mocks.registrationStatuses = ['unavailable', 'ready'];
+    const { injectIntoExistingTabs } = await import('../../../src/background/tabs');
+    const setupFailure: Error = new Error('setup write failed');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+    await finishBoot();
+    vi.mocked(injectIntoExistingTabs).mockClear();
+    mocks.setupWriteError = setupFailure;
+
+    mocks.permissionAddedListener?.({ origins: ['https://*/*'] });
+
+    await vi.waitFor((): void => expect(consoleError).toHaveBeenCalled());
+    expect(injectIntoExistingTabs).toHaveBeenCalledOnce();
+    expect(enginePorts().websiteBlockingReady()).toBe(false);
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      websiteAccess: 'denied',
+      blockingRegistration: 'unavailable',
+    });
+  });
+
+  it('keeps blocking unavailable while existing-tab injection is still pending', async (): Promise<void> => {
+    mocks.registrationStatuses = ['unavailable', 'ready'];
+    const { injectIntoExistingTabs } = await import('../../../src/background/tabs');
+    await finishBoot();
+    vi.mocked(injectIntoExistingTabs).mockClear();
+
+    let releaseInjection: () => void = (): void => undefined;
+    mocks.injectionGate = new Promise<void>((resolve: () => void): void => {
+      releaseInjection = resolve;
+    });
+    mocks.permissionAddedListener?.({ origins: ['https://*/*'] });
+    await vi.waitFor((): void => expect(injectIntoExistingTabs).toHaveBeenCalledOnce());
+
+    expect(enginePorts().websiteBlockingReady()).toBe(false);
+    releaseInjection();
+    await vi.waitFor((): void => expect(enginePorts().websiteBlockingReady()).toBe(true));
+  });
+
+  it('does not publish stale readiness when removal supersedes pending injection', async (): Promise<void> => {
+    mocks.registrationStatuses = ['unavailable', 'ready', 'unavailable'];
+    const { injectIntoExistingTabs } = await import('../../../src/background/tabs');
+    await finishBoot();
+    vi.mocked(injectIntoExistingTabs).mockClear();
+
+    let releaseInjection: () => void = (): void => undefined;
+    mocks.injectionGate = new Promise<void>((resolve: () => void): void => {
+      releaseInjection = resolve;
+    });
+    mocks.permissionAddedListener?.({ origins: ['https://*/*'] });
+    await vi.waitFor((): void => expect(injectIntoExistingTabs).toHaveBeenCalledOnce());
+    mocks.permissionRemovedListener?.({ origins: ['https://*/*'] });
+    releaseInjection();
+
+    await vi.waitFor((): void =>
+      expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+        websiteAccess: 'denied',
+        blockingRegistration: 'unavailable',
+      }),
+    );
+    expect(enginePorts().websiteBlockingReady()).toBe(false);
+  });
+
+  it('persists registration error and keeps blocking unavailable when existing-tab injection fails', async (): Promise<void> => {
+    mocks.registrationStatuses = ['unavailable', 'ready'];
+    await finishBoot();
+    mocks.injectionResult = false;
+
+    mocks.permissionAddedListener?.({ origins: ['https://*/*'] });
+
+    await vi.waitFor((): void =>
+      expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+        websiteAccess: 'granted',
+        blockingRegistration: 'error',
+      }),
+    );
+    expect(enginePorts().websiteBlockingReady()).toBe(false);
   });
 
   it('fails blocking readiness synchronously and ends an active session after access removal', async (): Promise<void> => {
@@ -781,6 +914,61 @@ describe('background runtime request boundary', () => {
       }),
     );
     expect(enginePorts().websiteBlockingReady()).toBe(true);
+  });
+
+  it('retains the ended-session notice across two superseding permission removals', async (): Promise<void> => {
+    mocks.registrationStatuses = ['ready', 'unavailable', 'unavailable'];
+    const now: number = Date.now();
+    mocks.scenario.runtime = {
+      ...emptyRuntime(now),
+      session: {
+        config: {
+          mode: 'blacklist',
+          strictness: 'hard',
+          durationMin: 25,
+          cycling: null,
+          intention: 'protected work',
+          source: 'manual',
+          scheduleEntryId: null,
+          rules: rulesFromLists(DEFAULT_LISTS),
+        },
+        startedAt: now,
+        sessionEndsAt: now + 25 * 60_000,
+        phase: 'focus',
+        phaseStartedAt: now,
+        phaseEndsAt: now + 25 * 60_000,
+        cycleIndex: 0,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+    };
+    let releaseFirstCleanup: () => void = (): void => undefined;
+    let signalFirstCleanupStarted: () => void = (): void => undefined;
+    mocks.websiteLossEndGate = new Promise<void>((resolve: () => void): void => {
+      releaseFirstCleanup = resolve;
+    });
+    const firstCleanupStarted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalFirstCleanupStarted = resolve;
+    });
+    mocks.websiteLossEndStarted = signalFirstCleanupStarted;
+    await finishBoot();
+
+    mocks.permissionRemovedListener?.({ origins: ['http://*/*'] });
+    await firstCleanupStarted;
+    mocks.permissionRemovedListener?.({ origins: ['https://*/*'] });
+    releaseFirstCleanup();
+
+    await vi.waitFor((): void =>
+      expect(reconcileContentRegistrationState).toHaveBeenCalledTimes(3),
+    );
+    await vi.waitFor((): void =>
+      expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+        websiteAccess: 'denied',
+        blockingRegistration: 'unavailable',
+        websiteAccessNotice: 'revoked-during-session',
+      }),
+    );
+    expect(mocks.websiteLossEndCalls).toBe(1);
   });
 
   it('ends a restored active session when boot registration fails despite retained access', async (): Promise<void> => {

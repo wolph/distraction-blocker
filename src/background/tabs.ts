@@ -1161,7 +1161,7 @@ function isIgnorableInjectionFailure(error: unknown): boolean {
 export async function injectIntoExistingTabs(
   file: string,
   reportError: (error: unknown) => void,
-): Promise<void> {
+): Promise<boolean> {
   let tabs: chrome.tabs.Tab[];
   try {
     tabs = await chrome.tabs.query({
@@ -1169,9 +1169,10 @@ export async function injectIntoExistingTabs(
     });
   } catch (error: unknown) {
     reportError(error);
-    return;
+    return false;
   }
   const injectedTabIds: Set<number> = new Set<number>();
+  let complete: boolean = true;
   for (const tab of tabs) {
     if (tab.id === undefined || injectedTabIds.has(tab.id)) continue;
     injectedTabIds.add(tab.id);
@@ -1181,7 +1182,11 @@ export async function injectIntoExistingTabs(
         files: [file],
       });
     } catch (error: unknown) {
-      if (!isIgnorableInjectionFailure(error)) reportError(error);
+      if (!isIgnorableInjectionFailure(error)) {
+        complete = false;
+        reportError(error);
+      }
     }
   }
+  return complete;
 }
