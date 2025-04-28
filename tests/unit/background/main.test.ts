@@ -112,10 +112,13 @@ const mocks = vi.hoisted(
     websiteLossEndGate: Promise<void> | null;
     websiteLossEndStarted: (() => void) | null;
     setupWriteError: Error | null;
+    setupReadError: Error | null;
     setupWriteGate: Promise<void> | null;
     setupWriteStarted: (() => void) | null;
     injectionGate: Promise<void> | null;
     injectionResult: boolean;
+    tickActiveSessionStates: boolean[];
+    applyBlockingActiveSessionStates: boolean[];
   } => ({
     engineArguments: null,
     alarmListener: null,
@@ -150,10 +153,13 @@ const mocks = vi.hoisted(
     websiteLossEndGate: null,
     websiteLossEndStarted: null,
     setupWriteError: null,
+    setupReadError: null,
     setupWriteGate: null,
     setupWriteStarted: null,
     injectionGate: null,
     injectionResult: true,
+    tickActiveSessionStates: [],
+    applyBlockingActiveSessionStates: [],
   }),
 );
 
@@ -171,6 +177,10 @@ vi.mock('../../../src/background/engine', () => ({
     async tick(): Promise<void> {
       mocks.bootTrace.push('tick');
       mocks.tickCalls += 1;
+      const runtime: RuntimeState | undefined = mocks.engineArguments?.[5] as
+        | RuntimeState
+        | undefined;
+      mocks.tickActiveSessionStates.push(runtime?.session !== null && runtime !== undefined);
       if (mocks.tickCalls === 1 && mocks.tickGate !== null) await mocks.tickGate;
       if (mocks.tickCalls > 1 && mocks.tickError !== null) throw mocks.tickError;
     }
@@ -197,6 +207,8 @@ vi.mock('../../../src/background/engine', () => ({
       mocks.websiteLossEndStarted?.();
       if (mocks.websiteLossEndGate !== null) await mocks.websiteLossEndGate;
       mocks.websiteLossEndCalls += 1;
+      const ports: EnginePorts | undefined = mocks.engineArguments?.[0] as EnginePorts | undefined;
+      await ports?.applyBlocking();
       return true;
     }
 
@@ -286,7 +298,12 @@ vi.mock('../../../src/background/stores', async () => {
   };
 });
 vi.mock('../../../src/background/tabs', () => ({
-  applyBlockingFactory: vi.fn((): (() => void) => vi.fn()),
+  applyBlockingFactory: vi.fn((): (() => Promise<void>) => async (): Promise<void> => {
+    const runtime: RuntimeState | undefined = mocks.engineArguments?.[5] as
+      | RuntimeState
+      | undefined;
+    mocks.applyBlockingActiveSessionStates.push(runtime?.session !== null && runtime !== undefined);
+  }),
   invalidateRemovedTab: vi.fn((tabId: number): Promise<void> => {
     mocks.invalidatedTabIds.push(tabId);
     if (mocks.invalidationError !== null) return Promise.reject(mocks.invalidationError);
@@ -403,6 +420,15 @@ function stubChrome(): void {
       },
       local: {
         get: vi.fn(async (keys: string | string[] | null): Promise<Record<string, unknown>> => {
+          if (
+            keys === LOCAL_SETUP &&
+            mocks.engineArguments !== null &&
+            mocks.setupReadError !== null
+          ) {
+            const setupReadError: Error = mocks.setupReadError;
+            mocks.setupReadError = null;
+            throw setupReadError;
+          }
           if (keys === null) return structuredClone(mocks.localState);
           const requested: string[] = Array.isArray(keys) ? keys : [keys];
           return Object.fromEntries(
@@ -567,10 +593,13 @@ beforeEach((): void => {
   mocks.websiteLossEndGate = null;
   mocks.websiteLossEndStarted = null;
   mocks.setupWriteError = null;
+  mocks.setupReadError = null;
   mocks.setupWriteGate = null;
   mocks.setupWriteStarted = null;
   mocks.injectionGate = null;
   mocks.injectionResult = true;
+  mocks.tickActiveSessionStates = [];
+  mocks.applyBlockingActiveSessionStates = [];
   vi.mocked(reconcileContentRegistrationState).mockClear();
   stubChrome();
 });
@@ -1006,6 +1035,102 @@ describe('background runtime request boundary', () => {
       blockingRegistration: 'error',
       websiteAccessNotice: 'registration-failed-during-session',
     });
+  });
+
+  it('clears a restored session before a failing setup read and retains its later notice', async (): Promise<void> => {
+    mocks.registrationStatuses = ['error', 'error'];
+    const setupReadFailure: Error = new Error('setup read failed');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+    const now: number = Date.now();
+    mocks.scenario.runtime = {
+      ...emptyRuntime(now),
+      session: {
+        config: {
+          mode: 'blacklist',
+          strictness: 'hard',
+          durationMin: 25,
+          cycling: null,
+          intention: 'protected work',
+          source: 'manual',
+          scheduleEntryId: null,
+          rules: rulesFromLists(DEFAULT_LISTS),
+        },
+        startedAt: now,
+        sessionEndsAt: now + 25 * 60_000,
+        phase: 'focus',
+        phaseStartedAt: now,
+        phaseEndsAt: now + 25 * 60_000,
+        cycleIndex: 0,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+    };
+    mocks.setupReadError = setupReadFailure;
+
+    await finishBoot();
+
+    expect(consoleError).toHaveBeenCalledWith('focus-lock background error', setupReadFailure);
+    expect(mocks.websiteLossEndCalls).toBe(1);
+    expect(engineRuntime().session).toBeNull();
+    expect(mocks.tickActiveSessionStates).toEqual([false]);
+    expect(mocks.applyBlockingActiveSessionStates.length).toBeGreaterThan(0);
+    expect(mocks.applyBlockingActiveSessionStates).not.toContain(true);
+
+    mocks.permissionAddedListener?.({ origins: ['https://*/*'] });
+    await vi.waitFor((): void =>
+      expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+        websiteAccess: 'granted',
+        blockingRegistration: 'error',
+        websiteAccessNotice: 'registration-failed-during-session',
+      }),
+    );
+    expect(mocks.websiteLossEndCalls).toBe(1);
+  });
+
+  it('clears a restored session before boot enforcement when a permission event supersedes boot', async (): Promise<void> => {
+    mocks.registrationStatuses = ['error', 'error'];
+    const now: number = Date.now();
+    mocks.scenario.runtime = {
+      ...emptyRuntime(now),
+      session: {
+        config: {
+          mode: 'blacklist',
+          strictness: 'hard',
+          durationMin: 25,
+          cycling: null,
+          intention: 'protected work',
+          source: 'manual',
+          scheduleEntryId: null,
+          rules: rulesFromLists(DEFAULT_LISTS),
+        },
+        startedAt: now,
+        sessionEndsAt: now + 25 * 60_000,
+        phase: 'focus',
+        phaseStartedAt: now,
+        phaseEndsAt: now + 25 * 60_000,
+        cycleIndex: 0,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+    };
+    let releaseBoot: () => void = (): void => undefined;
+    mocks.bootGate = new Promise<void>((resolve: () => void): void => {
+      releaseBoot = resolve;
+    });
+
+    main();
+    await vi.waitFor((): void => expect(reconcileContentRegistrationState).toHaveBeenCalledOnce());
+    mocks.permissionAddedListener?.({ origins: ['https://*/*'] });
+    await vi.waitFor((): void =>
+      expect(reconcileContentRegistrationState).toHaveBeenCalledTimes(2),
+    );
+    releaseBoot();
+    await expect(dispatchRuntime({ type: 'getSnapshot' })).resolves.toEqual({ ok: true });
+
+    expect(mocks.websiteLossEndCalls).toBe(1);
+    expect(engineRuntime().session).toBeNull();
+    expect(mocks.tickActiveSessionStates).toEqual([false]);
+    expect(mocks.applyBlockingActiveSessionStates).not.toContain(true);
   });
 
   it('classifies a clean install before boot and performs zero Sync calls', async (): Promise<void> => {

@@ -98,6 +98,36 @@ type WebsiteReconciliation = {
   capability: ContentRegistrationState;
   generation: number;
 };
+type WebsiteAccessNotice = Exclude<SetupState['websiteAccessNotice'], null>;
+type PendingWebsiteAccessNotice = { value: WebsiteAccessNotice | null };
+
+function recordWebsiteAccessNotice(
+  pending: PendingWebsiteAccessNotice,
+  notice: WebsiteAccessNotice,
+): void {
+  if (pending.value === 'revoked-during-session') return;
+  pending.value = notice;
+}
+
+async function endActiveSessionForWebsiteCapabilityLoss(
+  engine: Engine,
+  capability: ContentRegistrationState,
+  cause: WebsiteCapabilityCause,
+  pendingNotice: PendingWebsiteAccessNotice,
+): Promise<boolean> {
+  if (!engine.hasActiveSession()) return false;
+  const notice: WebsiteAccessNotice =
+    capability.permission === 'denied' || cause === 'permission-removed'
+      ? 'revoked-during-session'
+      : 'registration-failed-during-session';
+  try {
+    await engine.endSessionForWebsiteBlockingLoss();
+  } catch (error: unknown) {
+    reportBackgroundError(error);
+  }
+  recordWebsiteAccessNotice(pendingNotice, notice);
+  return true;
+}
 
 function isWebsitePermissionEvent(permissions: chrome.permissions.Permissions): boolean {
   return (permissions.origins ?? []).some(
@@ -110,8 +140,8 @@ async function applyWebsiteCapability(
   engine: Engine,
   capability: ContentRegistrationState,
   cause: WebsiteCapabilityCause,
+  pendingNotice: PendingWebsiteAccessNotice,
   isCurrent: () => boolean = (): boolean => true,
-  sessionEndedForRemoval: boolean = false,
 ): Promise<ContentRegistrationState | null> {
   if (!isCurrent()) return null;
   let effectiveCapability: ContentRegistrationState = capability;
@@ -125,18 +155,17 @@ async function applyWebsiteCapability(
       effectiveCapability = { permission: capability.permission, status: 'error' };
     }
   }
-  const setup: SetupState = await storage.loadSetup();
-  if (!isCurrent()) return null;
-  const activeSessionNow: boolean = engine.hasActiveSession();
-  const hadActiveSession: boolean = sessionEndedForRemoval || activeSessionNow;
-  if (effectiveCapability.status !== 'ready' && activeSessionNow) {
-    try {
-      await engine.endSessionForWebsiteBlockingLoss();
-    } catch (error: unknown) {
-      reportBackgroundError(error);
-    }
+  if (effectiveCapability.status !== 'ready') {
+    await endActiveSessionForWebsiteCapabilityLoss(
+      engine,
+      effectiveCapability,
+      cause,
+      pendingNotice,
+    );
     if (!isCurrent()) return null;
   }
+  const setup: SetupState = await storage.loadSetup();
+  if (!isCurrent()) return null;
   const websiteAccess: typeof setup.websiteAccess =
     effectiveCapability.permission === 'granted'
       ? 'granted'
@@ -146,13 +175,7 @@ async function applyWebsiteCapability(
   const websiteAccessNotice: typeof setup.websiteAccessNotice =
     effectiveCapability.status === 'ready'
       ? null
-      : hadActiveSession
-        ? sessionEndedForRemoval ||
-          effectiveCapability.permission === 'denied' ||
-          cause === 'permission-removed'
-          ? 'revoked-during-session'
-          : 'registration-failed-during-session'
-        : setup.websiteAccessNotice;
+      : (pendingNotice.value ?? setup.websiteAccessNotice);
   await storage.updateSetup({
     websiteAccess,
     blockingRegistration: effectiveCapability.status,
@@ -160,17 +183,6 @@ async function applyWebsiteCapability(
   });
   if (!isCurrent()) return null;
   return effectiveCapability;
-}
-
-async function endSessionAfterPermissionRemoval(engine: Engine): Promise<boolean> {
-  const hadActiveSession: boolean = engine.hasActiveSession();
-  if (!hadActiveSession) return false;
-  try {
-    await engine.endSessionForWebsiteBlockingLoss();
-  } catch (error: unknown) {
-    reportBackgroundError(error);
-  }
-  return true;
 }
 
 function currentEngine(): Engine {
@@ -539,6 +551,7 @@ async function boot(
   websiteCapability: () => ContentRegistrationState,
   initialCapabilityIsCurrent: () => boolean,
   publishWebsiteCapability: (capability: ContentRegistrationState) => void,
+  pendingWebsiteAccessNotice: PendingWebsiteAccessNotice,
 ): Promise<Engine> {
   const now: number = Date.now();
   await policyStorage.initialize();
@@ -604,19 +617,32 @@ async function boot(
     deviceId,
   );
   engineInstance = engine;
+  let appliedCapability: ContentRegistrationState | null = null;
   try {
-    const appliedCapability: ContentRegistrationState | null = await applyWebsiteCapability(
+    appliedCapability = await applyWebsiteCapability(
       policyStorage,
       engine,
       initialWebsiteCapability.capability,
       'boot',
+      pendingWebsiteAccessNotice,
       initialCapabilityIsCurrent,
     );
-    if (appliedCapability !== null && initialCapabilityIsCurrent()) {
-      publishWebsiteCapability(appliedCapability);
-    }
   } catch (error: unknown) {
     reportBackgroundError(error);
+  }
+  if (appliedCapability === null || !initialCapabilityIsCurrent()) {
+    const failClosedCapability: ContentRegistrationState = websiteCapability();
+    await endActiveSessionForWebsiteCapabilityLoss(
+      engine,
+      failClosedCapability.status === 'ready'
+        ? { permission: failClosedCapability.permission, status: 'error' }
+        : failClosedCapability,
+      'boot',
+      pendingWebsiteAccessNotice,
+    );
+  } else {
+    pendingWebsiteAccessNotice.value = null;
+    publishWebsiteCapability(appliedCapability);
   }
   if (completedAllDataClear) {
     await engine.runWithDataClearBarrier(
@@ -646,7 +672,7 @@ export function main(): void {
   };
   let websiteReconciliationGeneration: number = 0;
   let websiteReconciliationTail: Promise<void> = Promise.resolve();
-  let pendingRemovalSessionEnded: boolean = false;
+  const pendingWebsiteAccessNotice: PendingWebsiteAccessNotice = { value: null };
 
   const reconcileWebsiteCapability = (
     cause: WebsiteCapabilityCause,
@@ -669,8 +695,12 @@ export function main(): void {
           // Permission loss is a fail-closed safety event. A later permission
           // generation may suppress stale setup writes, but never this cleanup.
           const engine: Engine = await ready;
-          const sessionEnded: boolean = await endSessionAfterPermissionRemoval(engine);
-          pendingRemovalSessionEnded = pendingRemovalSessionEnded || sessionEnded;
+          await endActiveSessionForWebsiteCapabilityLoss(
+            engine,
+            { permission: 'denied', status: 'unavailable' },
+            'permission-removed',
+            pendingWebsiteAccessNotice,
+          );
         }
         const reconciled: ContentRegistrationState =
           await reconcileContentRegistrationState(reportBackgroundError);
@@ -689,14 +719,14 @@ export function main(): void {
           engine,
           candidateCapability,
           cause,
+          pendingWebsiteAccessNotice,
           isCurrent,
-          pendingRemovalSessionEnded,
         );
         if (!isCurrent() || appliedCapability === null) {
           return { capability: websiteCapability, generation };
         }
         websiteCapability = appliedCapability;
-        pendingRemovalSessionEnded = false;
+        pendingWebsiteAccessNotice.value = null;
         return { capability: websiteCapability, generation };
       };
     const requested: Promise<WebsiteReconciliation> = websiteReconciliationTail.then(
@@ -742,6 +772,7 @@ export function main(): void {
         (capability: ContentRegistrationState): void => {
           websiteCapability = capability;
         },
+        pendingWebsiteAccessNotice,
       ),
   );
 
