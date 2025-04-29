@@ -183,6 +183,7 @@ export class Engine {
   private pendingAggregateRemoves: Set<string> = new Set();
   private dataClearBarrierState: 'open' | 'draining' | 'quiesced' = 'open';
   private dataClearOperationRunning = false;
+  private websiteBlockingLossPending = false;
 
   constructor(
     private readonly ports: EnginePorts,
@@ -259,6 +260,9 @@ export class Engine {
       throw error;
     } finally {
       this.dataClearOperationRunning = false;
+      if (this.dataClearBarrierState === 'open') {
+        await this.applyPendingWebsiteBlockingLoss();
+      }
     }
   }
 
@@ -280,6 +284,7 @@ export class Engine {
     } finally {
       this.dataClearBarrierState = 'open';
       this.dataClearOperationRunning = false;
+      await this.applyPendingWebsiteBlockingLoss();
     }
   }
 
@@ -357,6 +362,10 @@ export class Engine {
   }
 
   async endSessionForWebsiteBlockingLoss(): Promise<boolean> {
+    if (this.dataClearBarrierState !== 'open') {
+      this.websiteBlockingLossPending = true;
+      return false;
+    }
     return this.enqueuePolicyMutation(async (): Promise<boolean> => {
       const now: number = this.ports.now();
       this.catchUp(now);
@@ -377,6 +386,16 @@ export class Engine {
       }
       return true;
     });
+  }
+
+  private async applyPendingWebsiteBlockingLoss(): Promise<void> {
+    if (!this.websiteBlockingLossPending) return;
+    this.websiteBlockingLossPending = false;
+    try {
+      await this.endSessionForWebsiteBlockingLoss();
+    } catch (error: unknown) {
+      this.ports.reportError(error);
+    }
   }
 
   private websiteBlockingReady(): boolean {
@@ -1849,6 +1868,7 @@ export class Engine {
     this.activeMatcherSessionIdentity = null;
     this.activeMatcherRules = null;
     this.activeMatcherMode = null;
+    this.websiteBlockingLossPending = false;
     this.ownedRuntimeSnapshot = structuredClone(this.runtime);
   }
 

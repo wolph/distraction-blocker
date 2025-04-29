@@ -2240,6 +2240,48 @@ describe('Engine', () => {
     expect(savedRuntime.commitCheckpoint).toBeNull();
   });
 
+  it('latches website access loss until an aggregate storage barrier reopens', async (): Promise<void> => {
+    let websiteBlockingReady: boolean = true;
+    const h: Harness = makeEngine({
+      websiteBlockingReady: (): boolean => websiteBlockingReady,
+    });
+    await h.engine.startSession({ ...manualConfig, strictness: 'hard' });
+    clearMutationPorts(h.ports);
+    const blockingPhases: SessionSnapshot['phase'][] = [];
+    h.ports.applyBlocking.mockImplementation(async (): Promise<void> => {
+      blockingPhases.push(h.engine.snapshot().phase);
+    });
+    let signalBarrierEntered: () => void = (): void => undefined;
+    let releaseBarrier: () => void = (): void => undefined;
+    const barrierEntered: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalBarrierEntered = resolve;
+    });
+    const barrierGate: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseBarrier = resolve;
+    });
+    const transitioning: Promise<void> = h.engine.runWithAggregateStorageBarrier(
+      async (): Promise<void> => {
+        signalBarrierEntered();
+        await barrierGate;
+      },
+    );
+    await barrierEntered;
+    websiteBlockingReady = false;
+
+    await expect(h.engine.endSessionForWebsiteBlockingLoss()).resolves.toBe(false);
+    await expect(h.engine.endSessionForWebsiteBlockingLoss()).resolves.toBe(false);
+    expect(h.engine.snapshot().phase).toBe('focus');
+    releaseBarrier();
+    await transitioning;
+
+    expect(h.engine.snapshot()).toMatchObject({ phase: 'idle', gate: null, activeUnlocks: [] });
+    expect(h.loggedEvents()).toContainEqual(expect.objectContaining({ t: 'sessionCanceled' }));
+    expect(h.ports.applyBlocking).toHaveBeenCalledOnce();
+    expect(blockingPhases).toEqual(['idle']);
+    await h.engine.tick();
+    expect(blockingPhases).not.toContain('focus');
+  });
+
   it('does not grant a freeze token during off-Monday rollover catch-up', async () => {
     const previousDate: string = localDateStr(T0 - DAY_MS);
     const streak: StreakState = {
