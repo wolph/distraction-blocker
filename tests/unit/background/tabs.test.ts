@@ -4115,6 +4115,147 @@ describe('applyBlockingFactory', () => {
     expect(flushRuntime).toHaveBeenCalledTimes(1);
   });
 
+  it('coalesces a clear sweep requested while an active sweep is still running', async (): Promise<void> => {
+    const url: string = 'https://facebook.com/already-blocked';
+    let blocking: boolean = true;
+    let signalFirstFlush: () => void = (): void => undefined;
+    let releaseFirstFlush: () => void = (): void => undefined;
+    const firstFlushStarted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalFirstFlush = resolve;
+    });
+    const firstFlushGate: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseFirstFlush = resolve;
+    });
+    let flushCalls: number = 0;
+    const engine: Engine = {
+      verdictFor: vi.fn((): Verdict => (blocking ? blocked : allowed)),
+      snapshot: vi.fn(() => emptySnapshot(0)),
+      tabFacts: vi.fn(() => ({
+        wasMutedByUs: false,
+        priorMuted: false,
+        wasStopped: false,
+      })),
+      recordAttempt: vi.fn().mockResolvedValue(undefined),
+      claimMute: vi.fn().mockResolvedValue(true),
+      releaseMuteClaim: vi.fn().mockResolvedValue(undefined),
+      transferMuteClaim: vi.fn().mockResolvedValue(undefined),
+      settleMuteClaim: vi.fn().mockResolvedValue(undefined),
+      rebindTab: vi.fn(),
+      reconcileTabs: vi.fn(),
+      flushRuntime: vi.fn(async (): Promise<void> => {
+        flushCalls += 1;
+        if (flushCalls !== 1) return;
+        signalFirstFlush();
+        await firstFlushGate;
+      }),
+      reportError: vi.fn(),
+      noteMuteRestored: vi.fn(),
+      noteReloaded: vi.fn(),
+    } as unknown as Engine;
+    const query = vi
+      .fn()
+      .mockResolvedValue([{ id: 7, url, mutedInfo: { muted: false } } as chrome.tabs.Tab]);
+    const sentCommands: string[] = [];
+    vi.stubGlobal('chrome', {
+      runtime: { id: 'focus-lock' },
+      tabs: {
+        query,
+        get: vi.fn().mockResolvedValue({ id: 7, url, mutedInfo: { muted: false } }),
+        sendMessage: vi.fn(async (_tabId: number, command: { type: string }): Promise<void> => {
+          sentCommands.push(command.type);
+        }),
+        update: vi.fn().mockResolvedValue(undefined),
+        reload: vi.fn().mockResolvedValue(undefined),
+      },
+      webNavigation: {
+        getFrame: vi.fn().mockResolvedValue({ documentId: 'document-seven' }),
+      },
+    });
+    const runSweep: () => Promise<void> = applyBlockingFactory((): Engine => engine);
+
+    const activeSweep: Promise<void> = runSweep();
+    await bounded(firstFlushStarted, 'first blocking sweep flush');
+    expect(sentCommands).toEqual(['applyBlock']);
+    blocking = false;
+    await runSweep();
+    releaseFirstFlush();
+    await bounded(activeSweep, 'coalesced clear sweep');
+
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(sentCommands).toEqual(['applyBlock', 'clearBlock']);
+  });
+
+  it('runs a coalesced clear after the active sweep fails', async (): Promise<void> => {
+    const url: string = 'https://facebook.com/already-blocked';
+    let blocking: boolean = true;
+    let signalFirstFlush: () => void = (): void => undefined;
+    let releaseFirstFlush: () => void = (): void => undefined;
+    const firstFlushStarted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalFirstFlush = resolve;
+    });
+    const firstFlushGate: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseFirstFlush = resolve;
+    });
+    const firstFlushError: Error = new Error('first sweep flush failed');
+    let flushCalls: number = 0;
+    const engine: Engine = {
+      verdictFor: vi.fn((): Verdict => (blocking ? blocked : allowed)),
+      snapshot: vi.fn(() => emptySnapshot(0)),
+      tabFacts: vi.fn(() => ({
+        wasMutedByUs: false,
+        priorMuted: false,
+        wasStopped: false,
+      })),
+      recordAttempt: vi.fn().mockResolvedValue(undefined),
+      claimMute: vi.fn().mockResolvedValue(true),
+      releaseMuteClaim: vi.fn().mockResolvedValue(undefined),
+      transferMuteClaim: vi.fn().mockResolvedValue(undefined),
+      settleMuteClaim: vi.fn().mockResolvedValue(undefined),
+      rebindTab: vi.fn(),
+      reconcileTabs: vi.fn(),
+      flushRuntime: vi.fn(async (): Promise<void> => {
+        flushCalls += 1;
+        if (flushCalls !== 1) return;
+        signalFirstFlush();
+        await firstFlushGate;
+        throw firstFlushError;
+      }),
+      reportError: vi.fn(),
+      noteMuteRestored: vi.fn(),
+      noteReloaded: vi.fn(),
+    } as unknown as Engine;
+    const query = vi
+      .fn()
+      .mockResolvedValue([{ id: 7, url, mutedInfo: { muted: false } } as chrome.tabs.Tab]);
+    const sentCommands: string[] = [];
+    vi.stubGlobal('chrome', {
+      runtime: { id: 'focus-lock' },
+      tabs: {
+        query,
+        get: vi.fn().mockResolvedValue({ id: 7, url, mutedInfo: { muted: false } }),
+        sendMessage: vi.fn(async (_tabId: number, command: { type: string }): Promise<void> => {
+          sentCommands.push(command.type);
+        }),
+        update: vi.fn().mockResolvedValue(undefined),
+        reload: vi.fn().mockResolvedValue(undefined),
+      },
+      webNavigation: {
+        getFrame: vi.fn().mockResolvedValue({ documentId: 'document-seven' }),
+      },
+    });
+    const runSweep: () => Promise<void> = applyBlockingFactory((): Engine => engine);
+
+    const activeSweep: Promise<void> = runSweep();
+    await bounded(firstFlushStarted, 'first blocking sweep flush');
+    blocking = false;
+    await runSweep();
+    releaseFirstFlush();
+
+    await expect(activeSweep).rejects.toBe(firstFlushError);
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(sentCommands).toEqual(['applyBlock', 'clearBlock']);
+  });
+
   it('preserves omitted-tab work completed while the sweep query is pending', async () => {
     const claimedUrl = 'https://facebook.com/query-pending-claim';
     const harness = omittedClaimEngine(claimedUrl);

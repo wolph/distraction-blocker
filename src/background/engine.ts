@@ -128,6 +128,7 @@ interface AttemptDurability {
 }
 
 const NO_SESSION_VERDICT: Verdict = { blocked: false, reason: 'no-session', matchedPattern: null };
+const WEBSITE_BLOCKING_LOSS_RETRY_MS: number = 1_000;
 
 function strictnessStrength(strictness: Strictness): number {
   if (strictness === 'flexible') return 0;
@@ -363,8 +364,7 @@ export class Engine {
 
   async endSessionForWebsiteBlockingLoss(): Promise<boolean> {
     if (this.dataClearBarrierState !== 'open') {
-      this.websiteBlockingLossPending = true;
-      return false;
+      return this.endSessionForWebsiteBlockingLossDuringBarrier();
     }
     return this.enqueuePolicyMutation(async (): Promise<boolean> => {
       const now: number = this.ports.now();
@@ -388,13 +388,39 @@ export class Engine {
     });
   }
 
+  private async endSessionForWebsiteBlockingLossDuringBarrier(): Promise<boolean> {
+    const session: SessionState | null = this.runtime.session;
+    if (session === null) return false;
+    const now: number = this.ports.now();
+    this.domainPersistRevision += 1;
+    this.cancelSession(session, now);
+    this.dirty = true;
+    this.websiteBlockingLossPending = true;
+    const snapshot: SessionSnapshot = this.buildSnapshot(now);
+    this.ports.broadcast(snapshot);
+    this.ports.updateIcon(snapshot);
+    this.ports.scheduleWake(null);
+    try {
+      await this.ports.applyBlocking();
+    } catch (error: unknown) {
+      this.ports.reportError(error);
+    }
+    return true;
+  }
+
   private async applyPendingWebsiteBlockingLoss(): Promise<void> {
     if (!this.websiteBlockingLossPending) return;
     this.websiteBlockingLossPending = false;
+    this.dirty = true;
+    this.needsBlocking = true;
     try {
-      await this.endSessionForWebsiteBlockingLoss();
+      await this.commit(this.ports.now());
     } catch (error: unknown) {
+      this.websiteBlockingLossPending = true;
+      this.dirty = true;
+      this.needsBlocking = true;
       this.ports.reportError(error);
+      this.ports.scheduleWake(this.ports.now() + WEBSITE_BLOCKING_LOSS_RETRY_MS);
     }
   }
 
@@ -908,6 +934,9 @@ export class Engine {
     await this.commit(now);
     await this.maybePrune(now);
     if (this.dirty) await this.commit(now);
+    if (this.websiteBlockingLossPending && this.runtime.session === null) {
+      this.websiteBlockingLossPending = false;
+    }
   }
 
   async updateSettings(s: Settings): Promise<Ack> {
@@ -1658,6 +1687,9 @@ export class Engine {
       this.applyingBlocking = true;
       try {
         await this.ports.applyBlocking();
+      } catch (error: unknown) {
+        this.needsBlocking = true;
+        throw error;
       } finally {
         this.applyingBlocking = false;
       }

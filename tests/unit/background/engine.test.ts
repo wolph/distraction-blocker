@@ -2240,7 +2240,7 @@ describe('Engine', () => {
     expect(savedRuntime.commitCheckpoint).toBeNull();
   });
 
-  it('latches website access loss until an aggregate storage barrier reopens', async (): Promise<void> => {
+  it('cancels immediately and defers durability while an aggregate barrier is open', async (): Promise<void> => {
     let websiteBlockingReady: boolean = true;
     const h: Harness = makeEngine({
       websiteBlockingReady: (): boolean => websiteBlockingReady,
@@ -2251,6 +2251,106 @@ describe('Engine', () => {
     h.ports.applyBlocking.mockImplementation(async (): Promise<void> => {
       blockingPhases.push(h.engine.snapshot().phase);
     });
+    let signalBarrierEntered: () => void = (): void => undefined;
+    let releaseBarrier: () => void = (): void => undefined;
+    let barrierObservedPhase: SessionSnapshot['phase'] | null = null;
+    const barrierEntered: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalBarrierEntered = resolve;
+    });
+    const barrierGate: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseBarrier = resolve;
+    });
+    const transitioning: Promise<void> = h.engine.runWithAggregateStorageBarrier(
+      async (): Promise<void> => {
+        signalBarrierEntered();
+        await barrierGate;
+        barrierObservedPhase = h.engine.snapshot().phase;
+      },
+    );
+    await barrierEntered;
+    websiteBlockingReady = false;
+
+    await expect(h.engine.endSessionForWebsiteBlockingLoss()).resolves.toBe(true);
+    await expect(h.engine.endSessionForWebsiteBlockingLoss()).resolves.toBe(false);
+    expect(h.engine.snapshot()).toMatchObject({ phase: 'idle', gate: null, activeUnlocks: [] });
+    expect(h.ports.applyBlocking).toHaveBeenCalledOnce();
+    expect(blockingPhases).toEqual(['idle']);
+    expect(h.ports.saveRuntime).not.toHaveBeenCalled();
+    releaseBarrier();
+    await transitioning;
+
+    expect(barrierObservedPhase).toBe('idle');
+    expect(h.loggedEvents()).toContainEqual(expect.objectContaining({ t: 'sessionCanceled' }));
+    expect(h.ports.applyBlocking).toHaveBeenCalledTimes(2);
+    expect(blockingPhases).toEqual(['idle', 'idle']);
+    const persistedRuntime: RuntimeState = h.ports.saveRuntime.mock.calls.at(-1)?.[0];
+    expect(persistedRuntime.session).toBeNull();
+    expect(persistedRuntime.commitCheckpoint).toBeNull();
+    const restarted: Harness = makeEngine({
+      runtime: structuredClone(persistedRuntime),
+      websiteBlockingReady: (): boolean => false,
+    });
+    expect(restarted.engine.snapshot().phase).toBe('idle');
+    await h.engine.tick();
+    expect(blockingPhases).not.toContain('focus');
+  });
+
+  it('does not let a draining active-session snapshot resurrect a canceled session', async (): Promise<void> => {
+    let websiteBlockingReady: boolean = true;
+    const h: Harness = makeEngine({
+      websiteBlockingReady: (): boolean => websiteBlockingReady,
+    });
+    await h.engine.startSession({ ...manualConfig, strictness: 'hard' });
+    clearMutationPorts(h.ports);
+    let signalRuntimeSave: () => void = (): void => undefined;
+    let releaseRuntimeSave: () => void = (): void => undefined;
+    const runtimeSaveStarted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalRuntimeSave = resolve;
+    });
+    const runtimeSaveGate: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseRuntimeSave = resolve;
+    });
+    const drainingSnapshots: RuntimeState[] = [];
+    h.ports.saveRuntime.mockImplementationOnce(async (runtime: RuntimeState): Promise<void> => {
+      drainingSnapshots.push(structuredClone(runtime));
+      signalRuntimeSave();
+      await runtimeSaveGate;
+    });
+    h.setNow(T0 + 60_000);
+    const ticking: Promise<void> = h.engine.tick();
+    await runtimeSaveStarted;
+    let barrierObservedPhase: SessionSnapshot['phase'] | null = null;
+    const transitioning: Promise<void> = h.engine.runWithAggregateStorageBarrier(
+      async (): Promise<void> => {
+        barrierObservedPhase = h.engine.snapshot().phase;
+      },
+    );
+    websiteBlockingReady = false;
+
+    await expect(h.engine.endSessionForWebsiteBlockingLoss()).resolves.toBe(true);
+    expect(h.engine.snapshot().phase).toBe('idle');
+    releaseRuntimeSave();
+    await Promise.all([ticking, transitioning]);
+
+    expect(drainingSnapshots[0]?.session).not.toBeNull();
+    expect(barrierObservedPhase).toBe('idle');
+    const persistedRuntime: RuntimeState = h.ports.saveRuntime.mock.calls.at(-1)?.[0];
+    expect(persistedRuntime.session).toBeNull();
+    expect(persistedRuntime.commitCheckpoint).toBeNull();
+    const restarted: Harness = makeEngine({
+      runtime: structuredClone(persistedRuntime),
+      websiteBlockingReady: (): boolean => false,
+    });
+    expect(restarted.engine.snapshot().phase).toBe('idle');
+  });
+
+  it('retries a deferred surface clear after consecutive apply failures', async (): Promise<void> => {
+    let websiteBlockingReady: boolean = true;
+    const h: Harness = makeEngine({
+      websiteBlockingReady: (): boolean => websiteBlockingReady,
+    });
+    await h.engine.startSession({ ...manualConfig, strictness: 'hard' });
+    clearMutationPorts(h.ports);
     let signalBarrierEntered: () => void = (): void => undefined;
     let releaseBarrier: () => void = (): void => undefined;
     const barrierEntered: Promise<void> = new Promise<void>((resolve: () => void): void => {
@@ -2268,18 +2368,25 @@ describe('Engine', () => {
     await barrierEntered;
     websiteBlockingReady = false;
 
-    await expect(h.engine.endSessionForWebsiteBlockingLoss()).resolves.toBe(false);
-    await expect(h.engine.endSessionForWebsiteBlockingLoss()).resolves.toBe(false);
-    expect(h.engine.snapshot().phase).toBe('focus');
+    await expect(h.engine.endSessionForWebsiteBlockingLoss()).resolves.toBe(true);
+    const deferredApplyError: Error = new Error('deferred clear failed');
+    h.ports.applyBlocking.mockRejectedValueOnce(deferredApplyError);
     releaseBarrier();
     await transitioning;
 
-    expect(h.engine.snapshot()).toMatchObject({ phase: 'idle', gate: null, activeUnlocks: [] });
-    expect(h.loggedEvents()).toContainEqual(expect.objectContaining({ t: 'sessionCanceled' }));
-    expect(h.ports.applyBlocking).toHaveBeenCalledOnce();
-    expect(blockingPhases).toEqual(['idle']);
+    expect(h.ports.reportError).toHaveBeenCalledWith(deferredApplyError);
+    expect(h.ports.scheduleWake).toHaveBeenCalledWith(T0 + 1_000);
+    const retryApplyError: Error = new Error('retry clear failed');
+    h.ports.applyBlocking.mockRejectedValueOnce(retryApplyError);
+    await expect(h.engine.tick()).rejects.toBe(retryApplyError);
+
     await h.engine.tick();
-    expect(blockingPhases).not.toContain('focus');
+    expect(h.ports.applyBlocking).toHaveBeenCalledTimes(4);
+    await h.engine.tick();
+    expect(h.ports.applyBlocking).toHaveBeenCalledTimes(4);
+    const persistedRuntime: RuntimeState = h.ports.saveRuntime.mock.calls.at(-1)?.[0];
+    expect(persistedRuntime.session).toBeNull();
+    expect(persistedRuntime.commitCheckpoint).toBeNull();
   });
 
   it('does not grant a freeze token during off-Monday rollover catch-up', async () => {

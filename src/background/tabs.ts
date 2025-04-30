@@ -218,6 +218,7 @@ interface TabApplyInput {
 interface ResolvedTabApplyOptions {
   beforeEffects?(input: TabApplyInput, taskVersion: number): void;
   afterEffects?(input: TabApplyInput): Promise<void>;
+  isCurrent?: () => boolean;
   requireCurrentTask?: boolean;
   validateDocument?: boolean;
 }
@@ -312,7 +313,7 @@ async function queueResolvedTabApply(
 ): Promise<void> {
   if (!acceptTabOperation(tabId, operationVersion, operationUrl)) return;
   const operationIsCurrent: () => boolean = (): boolean =>
-    tabOperationVersions.get(tabId) === operationVersion;
+    tabOperationVersions.get(tabId) === operationVersion && (options.isCurrent?.() ?? true);
   let recordedAttemptUrl: string | null = null;
   while (true) {
     const preparation: {
@@ -980,92 +981,122 @@ async function restoreMute(
  */
 export function applyBlockingFactory(engine: () => Engine): () => Promise<void> {
   let running: boolean = false;
+  let rerunRequested: boolean = false;
+  let requestRevision: number = 0;
   return async (): Promise<void> => {
-    if (running) return;
-    const sweepOperationVersion: number = nextTabOperationVersion();
+    requestRevision += 1;
+    if (running) {
+      rerunRequested = true;
+      return;
+    }
     running = true;
+    let hasDeferredError: boolean = false;
+    let deferredError: unknown;
     try {
-      const e: Engine = engine();
-      const sweepStartTaskSequence: number = tabTaskSequence;
-      const activeTabIdsAtStart: Set<number> = new Set(tabTaskTails.keys());
-      const activeOperationTabIdsAtStart: Set<number> = new Set(activeTabOperationLeases.keys());
-      const tabs: chrome.tabs.Tab[] = await chrome.tabs.query({});
-      const queriedTabIds: number[] = [
-        ...new Set(
-          tabs.flatMap((tab: chrome.tabs.Tab): number[] => (tab.id === undefined ? [] : [tab.id])),
-        ),
-      ];
-      const queriedTabUrls: Map<number, string | null> = new Map(
-        tabs.flatMap((tab: chrome.tabs.Tab): [number, string | null][] =>
-          tab.id === undefined ? [] : [[tab.id, tab.url ?? null]],
-        ),
-      );
-      const observedTabIds: Set<number> = new Set(queriedTabIds);
-      const protectedTabIds: (currentTabId?: number | null) => Set<number> = (
-        currentTabId: number | null = null,
-      ): Set<number> => {
-        const protectedIds: Set<number> = new Set([
-          ...activeTabIdsAtStart,
-          ...activeOperationTabIdsAtStart,
-          ...observedTabIds,
-          ...activeTabOperationLeases.keys(),
-          ...muteContinuations.keys(),
-          ...inheritedMuteClaims.keys(),
-        ]);
-        for (const [tabId, version] of tabTaskVersions) {
-          if (version > sweepStartTaskSequence) protectedIds.add(tabId);
-        }
-        if (currentTabId !== null) protectedIds.delete(currentTabId);
-        return protectedIds;
-      };
-      e.reconcileTabs(new Map(), protectedTabIds());
-
-      const applyTasks: Promise<void>[] = queriedTabIds.map((tabId: number): Promise<void> => {
-        const releaseOperationLease: () => void = acquireTabOperationLease(tabId);
+      do {
+        rerunRequested = false;
         try {
-          return queueResolvedTabApply(
-            e,
-            tabId,
-            'existing',
-            async (taskVersion: number): Promise<TabApplyInput | null> => {
-              const liveTab: LiveTabIdentity | null = await readStableLiveTabIdentity(e, tabId);
-              if (liveTab === null || tabTaskVersions.get(tabId) !== taskVersion) return null;
-              return {
-                url: liveTab.identity.url,
-                mutedNow: liveTab.tab.mutedInfo?.muted ?? false,
-                mutedByExtension: liveTab.tab.mutedInfo?.extensionId === chrome.runtime.id,
-                documentId: liveTab.identity.documentId,
-              };
-            },
-            {
-              beforeEffects: (input: TabApplyInput): void => {
-                const liveState: LiveTabState = {
-                  url: input.url,
-                  mutedByExtension: input.mutedByExtension,
-                  documentId: input.documentId,
-                };
-                e.reconcileTabs(new Map([[tabId, liveState]]), protectedTabIds(tabId));
-              },
-              requireCurrentTask: true,
-              validateDocument: true,
-            },
-            sweepOperationVersion,
-            queriedTabUrls.get(tabId) ?? null,
-          ).finally(releaseOperationLease);
-        } catch (error: unknown) {
-          releaseOperationLease();
-          throw error;
-        }
-      });
-      await Promise.all(applyTasks);
-      const cleanupVersions: Map<number, number> = new Map(tabTaskVersions);
-      await e.flushRuntime();
+          const sweepRequestRevision: number = requestRevision;
+          const sweepIsCurrent: () => boolean = (): boolean =>
+            sweepRequestRevision === requestRevision;
+          const sweepOperationVersion: number = nextTabOperationVersion();
+          const e: Engine = engine();
+          const sweepStartTaskSequence: number = tabTaskSequence;
+          const activeTabIdsAtStart: Set<number> = new Set(tabTaskTails.keys());
+          const activeOperationTabIdsAtStart: Set<number> = new Set(
+            activeTabOperationLeases.keys(),
+          );
+          const tabs: chrome.tabs.Tab[] = await chrome.tabs.query({});
+          const queriedTabIds: number[] = [
+            ...new Set(
+              tabs.flatMap((tab: chrome.tabs.Tab): number[] =>
+                tab.id === undefined ? [] : [tab.id],
+              ),
+            ),
+          ];
+          const queriedTabUrls: Map<number, string | null> = new Map(
+            tabs.flatMap((tab: chrome.tabs.Tab): [number, string | null][] =>
+              tab.id === undefined ? [] : [[tab.id, tab.url ?? null]],
+            ),
+          );
+          const observedTabIds: Set<number> = new Set(queriedTabIds);
+          const protectedTabIds: (currentTabId?: number | null) => Set<number> = (
+            currentTabId: number | null = null,
+          ): Set<number> => {
+            const protectedIds: Set<number> = new Set([
+              ...activeTabIdsAtStart,
+              ...activeOperationTabIdsAtStart,
+              ...observedTabIds,
+              ...activeTabOperationLeases.keys(),
+              ...muteContinuations.keys(),
+              ...inheritedMuteClaims.keys(),
+            ]);
+            for (const [tabId, version] of tabTaskVersions) {
+              if (version > sweepStartTaskSequence) protectedIds.add(tabId);
+            }
+            if (currentTabId !== null) protectedIds.delete(currentTabId);
+            return protectedIds;
+          };
+          e.reconcileTabs(new Map(), protectedTabIds());
 
-      for (const [tabId, version] of cleanupVersions) {
-        if (!tabTaskTails.has(tabId) && tabTaskVersions.get(tabId) === version) {
-          tabTaskVersions.delete(tabId);
+          const applyTasks: Promise<void>[] = queriedTabIds.map((tabId: number): Promise<void> => {
+            const releaseOperationLease: () => void = acquireTabOperationLease(tabId);
+            try {
+              return queueResolvedTabApply(
+                e,
+                tabId,
+                'existing',
+                async (taskVersion: number): Promise<TabApplyInput | null> => {
+                  const liveTab: LiveTabIdentity | null = await readStableLiveTabIdentity(e, tabId);
+                  if (liveTab === null || tabTaskVersions.get(tabId) !== taskVersion) return null;
+                  return {
+                    url: liveTab.identity.url,
+                    mutedNow: liveTab.tab.mutedInfo?.muted ?? false,
+                    mutedByExtension: liveTab.tab.mutedInfo?.extensionId === chrome.runtime.id,
+                    documentId: liveTab.identity.documentId,
+                  };
+                },
+                {
+                  beforeEffects: (input: TabApplyInput): void => {
+                    const liveState: LiveTabState = {
+                      url: input.url,
+                      mutedByExtension: input.mutedByExtension,
+                      documentId: input.documentId,
+                    };
+                    e.reconcileTabs(new Map([[tabId, liveState]]), protectedTabIds(tabId));
+                  },
+                  isCurrent: sweepIsCurrent,
+                  requireCurrentTask: true,
+                  validateDocument: true,
+                },
+                sweepOperationVersion,
+                queriedTabUrls.get(tabId) ?? null,
+              ).finally(releaseOperationLease);
+            } catch (error: unknown) {
+              releaseOperationLease();
+              throw error;
+            }
+          });
+          await Promise.all(applyTasks);
+          if (!sweepIsCurrent()) continue;
+          const cleanupVersions: Map<number, number> = new Map(tabTaskVersions);
+          await e.flushRuntime();
+          if (!sweepIsCurrent()) continue;
+
+          for (const [tabId, version] of cleanupVersions) {
+            if (!tabTaskTails.has(tabId) && tabTaskVersions.get(tabId) === version) {
+              tabTaskVersions.delete(tabId);
+            }
+          }
+        } catch (error: unknown) {
+          if (!rerunRequested) throw error;
+          if (!hasDeferredError) {
+            hasDeferredError = true;
+            deferredError = error;
+          }
         }
-      }
+      } while (rerunRequested);
+      if (hasDeferredError) throw deferredError;
     } finally {
       running = false;
     }
