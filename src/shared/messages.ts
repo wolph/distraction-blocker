@@ -7,6 +7,8 @@ import type {
   SessionConfig,
   SessionSnapshot,
   Settings,
+  SetupState,
+  StorageMode,
   StreakState,
   ThemeMode,
   Verdict,
@@ -16,6 +18,15 @@ export type SoundId = 'sessionComplete' | 'breakStart' | 'breakEnd' | 'scheduleS
 
 export type Request =
   | { type: 'getSnapshot' }
+  | { type: 'getSetupState' }
+  | { type: 'reconcileWebsiteAccess' }
+  | { type: 'dismissWebsiteAccessNotice' }
+  | { type: 'completeSetup'; storageMode: StorageMode; settings: Settings; lists: ListsConfig }
+  | { type: 'setStorageMode'; storageMode: StorageMode; deleteRemote: boolean }
+  | {
+      type: 'clearFocusLockData';
+      scope: 'local-history' | 'synced-policy' | 'all';
+    }
   /** docState fresh = document_start on a new navigation (worker records the tab as stopped when blocked), loaded = an already-rendered page */
   | { type: 'getBlockState'; url: string; docState: 'fresh' | 'loaded' }
   | { type: 'startSession'; config: SessionConfig }
@@ -41,6 +52,28 @@ export interface Rejection {
 }
 export type Ack = { ok: true } | Rejection;
 
+export type WebsiteAccessReconciliation =
+  | {
+      ok: true;
+      granted: boolean;
+      registration: SetupState['blockingRegistration'];
+    }
+  | (Rejection & {
+      granted?: boolean;
+      registration?: SetupState['blockingRegistration'];
+    });
+
+export type ClearFocusLockDataResponse =
+  | {
+      ok: true;
+      scope: 'local-history' | 'synced-policy' | 'all';
+      status: 'cleared';
+    }
+  | (Rejection & {
+      scope: 'local-history' | 'synced-policy' | 'all';
+      status: 'pending' | 'cleared';
+    });
+
 export interface StatsBundle {
   /** merged across devices, oldest first */
   days: DailyAgg[];
@@ -58,6 +91,12 @@ export interface StatsBundle {
 
 export interface ResponseMap {
   getSnapshot: SessionSnapshot;
+  getSetupState: SetupState;
+  reconcileWebsiteAccess: WebsiteAccessReconciliation;
+  dismissWebsiteAccessNotice: Ack;
+  completeSetup: Ack;
+  setStorageMode: Ack;
+  clearFocusLockData: ClearFocusLockDataResponse;
   getBlockState: { verdict: Verdict; snapshot: SessionSnapshot };
   startSession: Ack;
   openGate: Ack;

@@ -16,6 +16,7 @@ import { type SyncJournal, SyncWriter } from '../../../src/background/sync-write
 import { ALL_CATEGORIES } from '../../../src/core/categories';
 import { buildMatcherCache, compileSessionMatcher } from '../../../src/core/matcher';
 import { beginPause, endPauseEarly, startSession } from '../../../src/core/session';
+import { emptyDaily } from '../../../src/core/stats';
 import {
   CATEGORY_IDS,
   DEFAULT_LISTS,
@@ -158,6 +159,7 @@ function makeEngine(opts?: {
   const ports: Harness['ports'] = {
     now: vi.fn((): number => nowMs),
     newId: vi.fn((): string => 'archive-id'),
+    rehydrateAfterDataClear: vi.fn().mockResolvedValue('dev-rehydrated'),
     saveRuntime: vi.fn().mockResolvedValue(undefined),
     ...(opts?.savePolicy === undefined ? {} : { savePolicy: vi.fn(opts.savePolicy) }),
     ...(opts?.saveAggregate === undefined ? {} : { saveAggregate: vi.fn(opts.saveAggregate) }),
@@ -1333,15 +1335,65 @@ describe('Engine', () => {
     releaseRemote();
     await clearing;
 
-    await expect(h.engine.tick()).rejects.toThrow('data clear');
-    await expect(h.engine.startSession(manualConfig)).rejects.toThrow('data clear');
-    await expect(h.engine.snapshotPersisted()).rejects.toThrow('data clear');
-    await expect(h.engine.updateLists(DEFAULT_LISTS)).rejects.toThrow('data clear');
+    await expect(h.engine.tick()).resolves.toBeUndefined();
+    await expect(h.engine.snapshotPersisted()).resolves.toMatchObject({ phase: 'idle' });
+    await expect(h.engine.updateLists(DEFAULT_LISTS)).resolves.toEqual({ ok: true });
     expect(h.engine.getSettings()).toEqual(DEFAULT_SETTINGS);
     expect(h.engine.getLists()).toEqual(DEFAULT_LISTS);
     expect(h.engine.snapshot()).toMatchObject({ phase: 'idle', bankMs: 0 });
     expect(h.engine.statsOverlay().pendingEvents).toEqual([]);
-    expect(h.ports.saveRuntime).not.toHaveBeenCalled();
+    expect(h.ports.rehydrateAfterDataClear).toHaveBeenCalledOnce();
+  });
+
+  it('clears local in-memory aggregates after durable local-history deletion', async (): Promise<void> => {
+    const runtime: RuntimeState = {
+      ...emptyRuntime(T0),
+      todayAgg: { ...emptyDaily('2026-08-29'), focusMs: 60_000 },
+    };
+    const h: Harness = makeEngine({ runtime });
+    const clearStorage = vi.fn().mockResolvedValue(true);
+
+    await h.engine.runWithLocalHistoryClear(clearStorage);
+
+    expect(clearStorage).toHaveBeenCalledOnce();
+    expect(h.engine.statsOverlay()).toMatchObject({
+      deviceId: 'dev-test',
+      todayAgg: { focusMs: 0 },
+      pendingEvents: [],
+    });
+    expect(h.ports.saveRuntime).toHaveBeenLastCalledWith(
+      expect.objectContaining({ todayAgg: null, commitCheckpoint: null }),
+    );
+  });
+
+  it('ends an active session inside the all-data barrier and rehydrates a usable device', async (): Promise<void> => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession(manualConfig);
+    h.ports.saveRuntime.mockClear();
+    const observedActive: boolean[] = [];
+
+    await h.engine.runWithDataClearBarrier(async (): Promise<void> => {
+      observedActive.push(h.engine.hasActiveSession());
+    });
+
+    expect(observedActive).toEqual([false]);
+    expect(h.ports.applyBlocking).toHaveBeenCalled();
+    expect(h.ports.rehydrateAfterDataClear).toHaveBeenCalledOnce();
+    expect(h.engine.statsOverlay().deviceId).toBe('dev-rehydrated');
+    await expect(h.engine.snapshotPersisted()).resolves.toMatchObject({ phase: 'idle' });
+  });
+
+  it('retains quiescence for a boot-restored all-data retry and reopens after success', async (): Promise<void> => {
+    const h: Harness = makeEngine();
+    await h.engine.startSession(manualConfig);
+    await h.engine.retainDataClearQuiescence();
+
+    await expect(h.engine.startSession(manualConfig)).rejects.toThrow('data clear');
+    await h.engine.runWithDataClearBarrier((): Promise<void> => Promise.resolve());
+
+    expect(h.engine.hasActiveSession()).toBe(false);
+    expect(h.ports.rehydrateAfterDataClear).toHaveBeenCalledOnce();
+    await expect(h.engine.snapshotPersisted()).resolves.toMatchObject({ phase: 'idle' });
   });
 
   it('lets an admitted mutation finish its applyBlocking persistence before closing the barrier', async (): Promise<void> => {

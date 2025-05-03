@@ -76,6 +76,8 @@ import { assertSyncItemWithinQuota, SyncQuotaError } from './sync-quota';
 export interface EnginePorts {
   now(): number;
   newId(): string;
+  /** Recreate and durably store the device identity after an all-data clear. */
+  rehydrateAfterDataClear(): Promise<string>;
   saveRuntime(r: RuntimeState): Promise<void>;
   saveMatcherCache(cache: StoredMatcherCache, lists: ListsConfig): Promise<void>;
   savePolicy?<K extends keyof PolicyValueByKey>(key: K, value: PolicyValueByKey[K]): Promise<void>;
@@ -252,9 +254,11 @@ export class Engine {
     if (startingOpen) this.dataClearBarrierState = 'draining';
     try {
       if (startingOpen) await this.drainRuntimeMutations();
+      await this.prepareRuntimeForAllDataClear();
       this.dataClearBarrierState = 'quiesced';
       const result: T = await operation();
-      this.resetAfterAllDataClear();
+      await this.resetAfterAllDataClear();
+      this.dataClearBarrierState = 'open';
       return result;
     } catch (error: unknown) {
       if (startingOpen && !retainQuiescence()) this.dataClearBarrierState = 'open';
@@ -265,6 +269,35 @@ export class Engine {
         await this.applyPendingWebsiteBlockingLoss();
       }
     }
+  }
+
+  async retainDataClearQuiescence(): Promise<void> {
+    if (this.dataClearOperationRunning || this.dataClearBarrierState !== 'open') {
+      throw new Error('another storage transition is already in progress');
+    }
+    this.dataClearOperationRunning = true;
+    this.dataClearBarrierState = 'draining';
+    try {
+      await this.drainRuntimeMutations();
+      this.dataClearBarrierState = 'quiesced';
+    } finally {
+      this.dataClearOperationRunning = false;
+    }
+  }
+
+  async runWithLocalHistoryClear(operation: () => Promise<boolean>): Promise<boolean> {
+    return this.runWithAggregateStorageBarrier(async (): Promise<boolean> => {
+      const aggregatesCleared: boolean = await operation();
+      if (!aggregatesCleared) return false;
+      this.runtime.todayAgg = null;
+      this.runtime.commitCheckpoint = null;
+      this.pendingEvents = [];
+      this.pendingAggregateSets.clear();
+      this.pendingAggregateRemoves.clear();
+      this.ownedRuntimeSnapshot = structuredClone(this.runtime);
+      await this.persistRuntime(structuredClone(this.runtime));
+      return true;
+    });
   }
 
   async runWithAggregateStorageBarrier<T>(operation: () => Promise<T>): Promise<T> {
@@ -293,7 +326,7 @@ export class Engine {
     const now: number = this.ports.now();
     this.catchUp(now);
     const snap: SessionSnapshot = this.buildSnapshot(now);
-    if (this.dataClearBarrierState !== 'quiesced' && this.dirty) this.commitInBackground(now);
+    if (this.dataClearBarrierState === 'open' && this.dirty) this.commitInBackground(now);
     return snap;
   }
 
@@ -309,7 +342,7 @@ export class Engine {
   verdictFor(url: string): Verdict {
     const now: number = this.ports.now();
     this.catchUp(now);
-    if (this.dataClearBarrierState !== 'quiesced' && this.dirty) this.commitInBackground(now);
+    if (this.dataClearBarrierState === 'open' && this.dirty) this.commitInBackground(now);
     const session: SessionState | null = this.runtime.session;
     if (session === null || session.phase !== 'focus') return NO_SESSION_VERDICT;
     return evaluateUrl(this.ensureMatcher(session), url, this.runtime.unlocks, now);
@@ -833,7 +866,7 @@ export class Engine {
 
   /** In-memory bookkeeping mutators for tabs.ts, persisted by flushRuntime. */
   noteMuteRestored(tabId: number, url: string): void {
-    if (this.dataClearBarrierState === 'quiesced') return;
+    if (this.dataClearBarrierState !== 'open') return;
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (state === undefined || state.muteUrl !== url) return;
     state.muteUrl = null;
@@ -842,7 +875,7 @@ export class Engine {
   }
 
   noteReloaded(tabId: number, documentId: string): void {
-    if (this.dataClearBarrierState === 'quiesced') return;
+    if (this.dataClearBarrierState !== 'open') return;
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (state === undefined || state.stoppedDocumentId !== documentId) return;
     state.stoppedDocumentId = null;
@@ -853,7 +886,7 @@ export class Engine {
     liveTabs: ReadonlyMap<number, LiveTabState>,
     protectedTabIds: ReadonlySet<number> = new Set(),
   ): void {
-    if (this.dataClearBarrierState === 'quiesced') return;
+    if (this.dataClearBarrierState !== 'open') return;
     for (const [tabIdText, state] of Object.entries(this.runtime.tabStates)) {
       const tabId: number = Number(tabIdText);
       const live: LiveTabState | undefined = liveTabs.get(tabId);
@@ -881,13 +914,13 @@ export class Engine {
   }
 
   rebindTab(tabId: number, url: string): void {
-    if (this.dataClearBarrierState === 'quiesced') return;
+    if (this.dataClearBarrierState !== 'open') return;
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (state !== undefined && state.priorMuted !== null) state.muteUrl = url;
   }
 
   flushRuntime(): Promise<void> {
-    this.assertRuntimeMutationAllowed();
+    if (!this.applyingBlocking) this.assertRuntimeMutationAllowed();
     return this.persistRuntime();
   }
 
@@ -1285,7 +1318,7 @@ export class Engine {
   statsOverlay(): EngineStatsOverlay {
     const now: number = this.ports.now();
     this.catchUp(now);
-    if (this.dataClearBarrierState !== 'quiesced' && this.dirty) this.commitInBackground(now);
+    if (this.dataClearBarrierState === 'open' && this.dirty) this.commitInBackground(now);
     return {
       deviceId: this.deviceId,
       todayAgg: capAttempts(
@@ -1300,7 +1333,7 @@ export class Engine {
   // --- catch-up: settle accrual, advance the machine, expire gates and unlocks ---
 
   private catchUp(now: number): void {
-    if (this.dataClearBarrierState === 'quiesced') return;
+    if (this.dataClearBarrierState !== 'open') return;
     const today: string = localDateStr(now);
     if (this.runtime.date > today) this.rebaseDateBackward(today, now);
     while (this.runtime.date !== today) {
@@ -1871,21 +1904,21 @@ export class Engine {
   }
 
   private assertRuntimeMutationAllowed(): void {
-    if (this.dataClearBarrierState === 'quiesced') {
+    if (this.dataClearBarrierState !== 'open') {
       throw new Error(
         'runtime mutation rejected while storage transition or data clear is in progress',
       );
     }
   }
 
-  private resetAfterAllDataClear(): void {
+  private async resetAfterAllDataClear(): Promise<void> {
     const now: number = this.ports.now();
     this.settings = structuredClone(DEFAULT_SETTINGS);
     this.lists = structuredClone(DEFAULT_LISTS);
     this.bank = { balanceMs: 0 };
     this.streak = null;
     this.runtime = emptyRuntime(now);
-    this.deviceId = '';
+    this.deviceId = await this.ports.rehydrateAfterDataClear();
     this.pendingEvents = [];
     this.dirty = false;
     this.needsBlocking = false;
@@ -1902,6 +1935,25 @@ export class Engine {
     this.activeMatcherMode = null;
     this.websiteBlockingLossPending = false;
     this.ownedRuntimeSnapshot = structuredClone(this.runtime);
+    await this.persistRuntime(structuredClone(this.runtime));
+  }
+
+  private async prepareRuntimeForAllDataClear(): Promise<void> {
+    const hadBlockingState: boolean =
+      this.runtime.session !== null ||
+      this.runtime.gate !== null ||
+      this.runtime.unlocks.length > 0 ||
+      Object.keys(this.runtime.tabStates).length > 0;
+    if (!hadBlockingState) return;
+    const now: number = this.ports.now();
+    if (this.runtime.session !== null) this.cancelSession(this.runtime.session, now);
+    this.runtime.gate = null;
+    this.runtime.unlocks = [];
+    this.runtime.tabStates = {};
+    this.dirty = true;
+    this.needsBlocking = true;
+    await this.commit(now);
+    await this.drainRuntimeMutations();
   }
 
   private async drainRuntimeMutations(): Promise<void> {

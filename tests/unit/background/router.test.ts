@@ -4,9 +4,14 @@ import type { PolicyStorage } from '../../../src/background/policy-storage';
 import { routeMessage } from '../../../src/background/router';
 import { type AggregateStorage, fetchStats } from '../../../src/background/stats-service';
 import { readEvents } from '../../../src/background/stores';
-import { emptySnapshot } from '../../../src/shared/constants';
+import {
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  DEFAULT_SETUP,
+  emptySnapshot,
+} from '../../../src/shared/constants';
 import type { StatsBundle } from '../../../src/shared/messages';
-import type { EventRecord } from '../../../src/shared/types';
+import type { EventRecord, SetupState } from '../../../src/shared/types';
 
 vi.mock('../../../src/background/audio', () => ({ playSound: vi.fn() }));
 vi.mock('../../../src/background/stats-service', () => ({ fetchStats: vi.fn() }));
@@ -51,6 +56,355 @@ const stats: StatsBundle = {
   },
 };
 
+function onboardingStorage(
+  overrides: Partial<Record<keyof PolicyStorage, unknown>> = {},
+): PolicyStorage {
+  return {
+    loadSetup: vi.fn().mockResolvedValue(structuredClone(DEFAULT_SETUP)),
+    updateSetup: vi.fn().mockResolvedValue(undefined),
+    markSetupCompleted: vi.fn().mockResolvedValue(undefined),
+    selectLocalMode: vi.fn().mockResolvedValue(undefined),
+    enableSync: vi.fn().mockResolvedValue(undefined),
+    storageMode: vi.fn().mockResolvedValue('local'),
+    deleteRemoteData: vi.fn().mockResolvedValue(undefined),
+    clearLocalHistory: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  } as unknown as PolicyStorage;
+}
+
+describe('routeMessage onboarding wiring', (): void => {
+  it('returns setup state without exposing a broad setup writer', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, websiteAccess: 'denied' };
+    const storage: PolicyStorage = onboardingStorage({
+      loadSetup: vi.fn().mockResolvedValue(setup),
+    });
+
+    await expect(routeMessage(engine, { type: 'getSetupState' }, sender, storage)).resolves.toEqual(
+      setup,
+    );
+  });
+
+  it.each([
+    ['granted', 'ready', true, true],
+    ['denied', 'unavailable', false, true],
+    ['granted', 'error', true, false],
+  ] as const)(
+    'reports %s permission with %s registration truthfully',
+    async (permission, status, granted, ok): Promise<void> => {
+      const reconcileWebsiteAccess = vi.fn().mockResolvedValue({ permission, status });
+
+      const result: unknown = await routeMessage(
+        engine,
+        { type: 'reconcileWebsiteAccess' },
+        sender,
+        onboardingStorage(),
+        { reconcileWebsiteAccess, removeOnboardingDraft: vi.fn(), reportError: vi.fn() },
+      );
+
+      expect(result).toMatchObject({ ok, granted, registration: status });
+      if (!ok) {
+        expect(result).toMatchObject({
+          error:
+            'Website access is granted, but Focus Lock could not enable blocking. Retry setup or reload the extension.',
+        });
+      }
+    },
+  );
+
+  it('dismisses only the website-access notice', async (): Promise<void> => {
+    const storage: PolicyStorage = onboardingStorage();
+    const dismissWebsiteAccessNotice = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      routeMessage(engine, { type: 'dismissWebsiteAccessNotice' }, sender, storage, {
+        reconcileWebsiteAccess: vi.fn(),
+        dismissWebsiteAccessNotice,
+        removeOnboardingDraft: vi.fn(),
+        reportError: vi.fn(),
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(dismissWebsiteAccessNotice).toHaveBeenCalledOnce();
+    expect(storage.updateSetup).not.toHaveBeenCalled();
+  });
+
+  it.each(['local', 'sync'] as const)(
+    'commits policy, %s mode, completion, then draft cleanup',
+    async (storageMode): Promise<void> => {
+      const order: string[] = [];
+      const setupEngine: Engine = {
+        updateSettings: vi.fn(async (): Promise<{ ok: true }> => {
+          order.push('settings');
+          return { ok: true };
+        }),
+        updateLists: vi.fn(async (): Promise<{ ok: true }> => {
+          order.push('lists');
+          return { ok: true };
+        }),
+      } as unknown as Engine;
+      const storage: PolicyStorage = onboardingStorage({
+        selectLocalMode: vi.fn(async (): Promise<void> => {
+          order.push('local');
+        }),
+        enableSync: vi.fn(async (): Promise<void> => {
+          order.push('sync');
+        }),
+        markSetupCompleted: vi.fn(async (): Promise<void> => {
+          order.push('completed');
+        }),
+      });
+      const removeOnboardingDraft = vi.fn(async (): Promise<void> => {
+        order.push('draft');
+      });
+
+      await expect(
+        routeMessage(
+          setupEngine,
+          { type: 'completeSetup', storageMode, settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS },
+          sender,
+          storage,
+          { reconcileWebsiteAccess: vi.fn(), removeOnboardingDraft, reportError: vi.fn() },
+        ),
+      ).resolves.toEqual({ ok: true });
+
+      expect(order).toEqual(['settings', 'lists', storageMode, 'completed', 'draft']);
+    },
+  );
+
+  it('keeps setup incomplete and the draft when policy persistence fails', async (): Promise<void> => {
+    const setupEngine: Engine = {
+      updateSettings: vi.fn().mockResolvedValue({ ok: true }),
+      updateLists: vi.fn().mockResolvedValue({ ok: false, error: 'lists rejected' }),
+    } as unknown as Engine;
+    const storage: PolicyStorage = onboardingStorage();
+    const removeOnboardingDraft = vi.fn();
+
+    await expect(
+      routeMessage(
+        setupEngine,
+        {
+          type: 'completeSetup',
+          storageMode: 'local',
+          settings: DEFAULT_SETTINGS,
+          lists: DEFAULT_LISTS,
+        },
+        sender,
+        storage,
+        { reconcileWebsiteAccess: vi.fn(), removeOnboardingDraft, reportError: vi.fn() },
+      ),
+    ).resolves.toEqual({ ok: false, error: 'lists rejected' });
+    expect(storage.selectLocalMode).not.toHaveBeenCalled();
+    expect(storage.markSetupCompleted).not.toHaveBeenCalled();
+    expect(removeOnboardingDraft).not.toHaveBeenCalled();
+  });
+
+  it('keeps completed setup when stale-draft cleanup fails', async (): Promise<void> => {
+    const reportError = vi.fn();
+    const storage: PolicyStorage = onboardingStorage();
+    const setupEngine: Engine = {
+      updateSettings: vi.fn().mockResolvedValue({ ok: true }),
+      updateLists: vi.fn().mockResolvedValue({ ok: true }),
+    } as unknown as Engine;
+
+    await expect(
+      routeMessage(
+        setupEngine,
+        {
+          type: 'completeSetup',
+          storageMode: 'local',
+          settings: DEFAULT_SETTINGS,
+          lists: DEFAULT_LISTS,
+        },
+        sender,
+        storage,
+        {
+          reconcileWebsiteAccess: vi.fn(),
+          removeOnboardingDraft: vi.fn().mockRejectedValue(new Error('remove failed')),
+          reportError,
+        },
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(storage.markSetupCompleted).toHaveBeenCalledOnce();
+    expect(reportError).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the draft when setup completion persistence fails', async (): Promise<void> => {
+    const storage: PolicyStorage = onboardingStorage({
+      markSetupCompleted: vi.fn().mockRejectedValue(new Error('completion unavailable')),
+    });
+    const setupEngine: Engine = {
+      updateSettings: vi.fn().mockResolvedValue({ ok: true }),
+      updateLists: vi.fn().mockResolvedValue({ ok: true }),
+    } as unknown as Engine;
+    const removeOnboardingDraft = vi.fn();
+
+    await expect(
+      routeMessage(
+        setupEngine,
+        {
+          type: 'completeSetup',
+          storageMode: 'local',
+          settings: DEFAULT_SETTINGS,
+          lists: DEFAULT_LISTS,
+        },
+        sender,
+        storage,
+        { reconcileWebsiteAccess: vi.fn(), removeOnboardingDraft, reportError: vi.fn() },
+      ),
+    ).rejects.toThrow('completion unavailable');
+    expect(removeOnboardingDraft).not.toHaveBeenCalled();
+  });
+
+  it('changes to local mode before optionally deleting remote data', async (): Promise<void> => {
+    const order: string[] = [];
+    const storage: PolicyStorage = onboardingStorage({
+      storageMode: vi.fn().mockResolvedValue('sync'),
+      selectLocalMode: vi.fn(async (): Promise<void> => {
+        order.push('local');
+      }),
+      deleteRemoteData: vi.fn(async (): Promise<void> => {
+        order.push('delete');
+      }),
+    });
+
+    await expect(
+      routeMessage(
+        engine,
+        { type: 'setStorageMode', storageMode: 'local', deleteRemote: true },
+        sender,
+        storage,
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(order).toEqual(['local', 'delete']);
+    expect(storage.deleteRemoteData).toHaveBeenCalledWith('synced-policy');
+  });
+
+  it('does not report a failed remote deletion as a successful mode change', async (): Promise<void> => {
+    const storage: PolicyStorage = onboardingStorage({
+      deleteRemoteData: vi.fn().mockRejectedValue(new Error('remote deletion failed')),
+    });
+
+    await expect(
+      routeMessage(
+        engine,
+        { type: 'setStorageMode', storageMode: 'local', deleteRemote: true },
+        sender,
+        storage,
+      ),
+    ).rejects.toThrow('remote deletion failed');
+  });
+
+  it('clears local history through the serialized storage adapter', async (): Promise<void> => {
+    const storage: PolicyStorage = onboardingStorage();
+    const historyEngine: Engine = {
+      runWithLocalHistoryClear: vi.fn(
+        async (operation: () => Promise<boolean>): Promise<boolean> => operation(),
+      ),
+    } as unknown as Engine;
+
+    await expect(
+      routeMessage(
+        historyEngine,
+        { type: 'clearFocusLockData', scope: 'local-history' },
+        sender,
+        storage,
+      ),
+    ).resolves.toEqual({ ok: true, scope: 'local-history', status: 'cleared' });
+    expect(storage.clearLocalHistory).toHaveBeenCalledOnce();
+  });
+
+  it('returns the pending local-history scope when durable removal fails', async (): Promise<void> => {
+    const storage: PolicyStorage = onboardingStorage({
+      clearLocalHistory: vi.fn().mockRejectedValue(new Error('local history unavailable')),
+    });
+    const historyEngine: Engine = {
+      runWithLocalHistoryClear: vi.fn(
+        async (operation: () => Promise<boolean>): Promise<boolean> => operation(),
+      ),
+    } as unknown as Engine;
+
+    await expect(
+      routeMessage(
+        historyEngine,
+        { type: 'clearFocusLockData', scope: 'local-history' },
+        sender,
+        storage,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: 'local history unavailable',
+      scope: 'local-history',
+      status: 'pending',
+    });
+  });
+
+  it('returns the pending scope when synced-policy deletion requires disabled Sync', async (): Promise<void> => {
+    const storage: PolicyStorage = onboardingStorage({
+      storageMode: vi.fn().mockResolvedValue('sync'),
+    });
+
+    await expect(
+      routeMessage(engine, { type: 'clearFocusLockData', scope: 'synced-policy' }, sender, storage),
+    ).resolves.toEqual({
+      ok: false,
+      error: 'Disable Sync before deleting synced data',
+      scope: 'synced-policy',
+      status: 'pending',
+    });
+    expect(storage.deleteRemoteData).not.toHaveBeenCalled();
+  });
+
+  it('quiesces Sync, clears all data through its Engine barrier, then reconciles permission', async (): Promise<void> => {
+    const order: string[] = [];
+    const storage: PolicyStorage = onboardingStorage({
+      storageMode: vi.fn().mockResolvedValue('sync'),
+      selectLocalMode: vi.fn(async (): Promise<void> => {
+        order.push('local');
+      }),
+      deleteRemoteData: vi.fn(async (): Promise<void> => {
+        order.push('delete');
+      }),
+    });
+    const clearingEngine: Engine = {} as Engine;
+    const reconcileWebsiteAccess = vi.fn(async () => {
+      order.push('reconcile');
+      return { permission: 'granted' as const, status: 'ready' as const };
+    });
+
+    await expect(
+      routeMessage(clearingEngine, { type: 'clearFocusLockData', scope: 'all' }, sender, storage, {
+        reconcileWebsiteAccess,
+        removeOnboardingDraft: vi.fn(),
+        reportError: vi.fn(),
+      }),
+    ).resolves.toEqual({ ok: true, scope: 'all', status: 'cleared' });
+    expect(order).toEqual(['local', 'delete', 'reconcile']);
+    expect(storage.deleteRemoteData).toHaveBeenCalledWith('all');
+  });
+
+  it('preserves data and does not reconcile when all-data remote deletion fails', async (): Promise<void> => {
+    const clearingEngine: Engine = {} as Engine;
+    const storage: PolicyStorage = onboardingStorage({
+      deleteRemoteData: vi.fn().mockRejectedValue(new Error('remote deletion unavailable')),
+    });
+    const reconcileWebsiteAccess = vi.fn();
+
+    await expect(
+      routeMessage(clearingEngine, { type: 'clearFocusLockData', scope: 'all' }, sender, storage, {
+        reconcileWebsiteAccess,
+        removeOnboardingDraft: vi.fn(),
+        reportError: vi.fn(),
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: 'remote deletion unavailable',
+      scope: 'all',
+      status: 'pending',
+    });
+    expect(reconcileWebsiteAccess).not.toHaveBeenCalled();
+  });
+});
+
 describe('routeMessage stats wiring', () => {
   beforeEach((): void => {
     vi.clearAllMocks();
@@ -71,10 +425,10 @@ describe('routeMessage stats wiring', () => {
       async (operation: (storage: AggregateStorage) => Promise<unknown>): Promise<unknown> =>
         operation(aggregateStorage),
     );
-    const policyStorage = {
+    const policyStorage: PolicyStorage = {
       withAggregateStorage:
         withAggregateStorage as unknown as PolicyStorage['withAggregateStorage'],
-    } satisfies Pick<PolicyStorage, 'withAggregateStorage'>;
+    } as unknown as PolicyStorage;
     const result: unknown = await routeMessage(
       engine,
       { type: 'getStats', days: 14 },

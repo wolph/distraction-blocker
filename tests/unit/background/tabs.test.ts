@@ -4865,6 +4865,7 @@ describe('applyBlockingFactory', () => {
     const ports: EnginePorts = {
       now: vi.fn((): number => now),
       newId: vi.fn((): string => 'deadlock-session'),
+      rehydrateAfterDataClear: vi.fn().mockResolvedValue('rehydrated-device'),
       saveRuntime: vi.fn().mockResolvedValue(undefined),
       saveMatcherCache: vi.fn().mockResolvedValue(undefined),
       hasPendingSync: vi.fn((): boolean => false),

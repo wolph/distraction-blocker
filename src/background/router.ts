@@ -1,10 +1,33 @@
-import type { Request } from '../shared/messages';
-import type { SoundSettings, Verdict } from '../shared/types';
+import type { Ack, Request } from '../shared/messages';
+import type { BlockingRegistrationStatus, SoundSettings, Verdict } from '../shared/types';
 import { playSound } from './audio';
 import type { Engine } from './engine';
 import type { PolicyStorage } from './policy-storage';
 import { fetchStats } from './stats-service';
 import { readEvents } from './stores';
+
+export interface OnboardingRouterServices {
+  reconcileWebsiteAccess(): Promise<{
+    permission: 'granted' | 'denied' | 'unknown';
+    status: BlockingRegistrationStatus;
+  }>;
+  dismissWebsiteAccessNotice?(): Promise<void>;
+  removeOnboardingDraft(): Promise<void>;
+  reportError(error: unknown): void;
+  setupCompleted?(completed: boolean): void;
+}
+
+function requirePolicyStorage(storage: PolicyStorage | undefined): PolicyStorage {
+  if (storage === undefined) throw new Error('policy storage is unavailable');
+  return storage;
+}
+
+function requireOnboardingServices(
+  services: OnboardingRouterServices | undefined,
+): OnboardingRouterServices {
+  if (services === undefined) throw new Error('onboarding services are unavailable');
+  return services;
+}
 
 /**
  * One exhaustive switch from typed requests to engine calls. The never
@@ -14,11 +37,134 @@ export async function routeMessage(
   engine: Engine,
   msg: Request,
   sender: chrome.runtime.MessageSender,
-  policyStorage?: Pick<PolicyStorage, 'withAggregateStorage'>,
+  policyStorage?: PolicyStorage,
+  onboardingServices?: OnboardingRouterServices,
 ): Promise<unknown> {
   switch (msg.type) {
     case 'getSnapshot':
       return engine.snapshotPersisted();
+    case 'getSetupState':
+      return requirePolicyStorage(policyStorage).loadSetup();
+    case 'reconcileWebsiteAccess': {
+      const capability =
+        await requireOnboardingServices(onboardingServices).reconcileWebsiteAccess();
+      const granted: boolean = capability.permission === 'granted';
+      if (granted && capability.status === 'error') {
+        return {
+          ok: false,
+          error:
+            'Website access is granted, but Focus Lock could not enable blocking. Retry setup or reload the extension.',
+          granted,
+          registration: capability.status,
+        };
+      }
+      if (capability.permission === 'unknown') {
+        return {
+          ok: false,
+          error: 'Focus Lock could not check website access. Retry setup or reload the extension.',
+          registration: capability.status,
+        };
+      }
+      return { ok: true, granted, registration: capability.status };
+    }
+    case 'dismissWebsiteAccessNotice':
+      if (requireOnboardingServices(onboardingServices).dismissWebsiteAccessNotice === undefined) {
+        throw new Error('website access notice dismissal is unavailable');
+      }
+      await onboardingServices?.dismissWebsiteAccessNotice?.();
+      return { ok: true };
+    case 'completeSetup': {
+      const storage: PolicyStorage = requirePolicyStorage(policyStorage);
+      const settingsResult: Ack = await engine.updateSettings(msg.settings);
+      if (!settingsResult.ok) return settingsResult;
+      const listsResult: Ack = await engine.updateLists(msg.lists);
+      if (!listsResult.ok) return listsResult;
+      if (msg.storageMode === 'local') await storage.selectLocalMode();
+      else await storage.enableSync();
+      await storage.markSetupCompleted();
+      onboardingServices?.setupCompleted?.(true);
+      if (onboardingServices !== undefined) {
+        try {
+          await onboardingServices.removeOnboardingDraft();
+        } catch (error: unknown) {
+          onboardingServices.reportError(error);
+        }
+      }
+      return { ok: true };
+    }
+    case 'setStorageMode': {
+      const storage: PolicyStorage = requirePolicyStorage(policyStorage);
+      if (msg.storageMode === 'sync') await storage.enableSync();
+      else {
+        await storage.selectLocalMode();
+        if (msg.deleteRemote) await storage.deleteRemoteData('synced-policy');
+      }
+      return { ok: true };
+    }
+    case 'clearFocusLockData': {
+      const storage: PolicyStorage = requirePolicyStorage(policyStorage);
+      if (msg.scope === 'local-history') {
+        try {
+          await engine.runWithLocalHistoryClear(
+            (): Promise<boolean> => storage.clearLocalHistory(),
+          );
+          return { ok: true, scope: msg.scope, status: 'cleared' };
+        } catch (error: unknown) {
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+            scope: msg.scope,
+            status: 'pending',
+          };
+        }
+      }
+      if (msg.scope === 'synced-policy') {
+        if ((await storage.storageMode()) !== 'local') {
+          return {
+            ok: false,
+            error: 'Disable Sync before deleting synced data',
+            scope: msg.scope,
+            status: 'pending',
+          };
+        }
+        try {
+          await storage.deleteRemoteData(msg.scope);
+          return { ok: true, scope: msg.scope, status: 'cleared' };
+        } catch (error: unknown) {
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+            scope: msg.scope,
+            status: 'pending',
+          };
+        }
+      }
+      onboardingServices?.setupCompleted?.(false);
+      try {
+        if ((await storage.storageMode()) !== 'local') await storage.selectLocalMode();
+        await storage.deleteRemoteData(msg.scope);
+      } catch (error: unknown) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          scope: msg.scope,
+          status: 'pending',
+        };
+      }
+      if (onboardingServices !== undefined) {
+        try {
+          await onboardingServices.reconcileWebsiteAccess();
+        } catch (error: unknown) {
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+            scope: msg.scope,
+            status: 'cleared',
+          };
+        }
+      }
+      return { ok: true, scope: msg.scope, status: 'cleared' };
+    }
     case 'getBlockState': {
       const verdict: Verdict = engine.verdictFor(msg.url);
       const tabId: number | undefined = sender.tab?.id;

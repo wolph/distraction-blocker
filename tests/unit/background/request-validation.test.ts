@@ -41,6 +41,17 @@ const MAX_RELATIVE_DURATION_MS: number = DATE_MAX_MS / 2;
 
 const VALID_REQUESTS: RequestByType = {
   getSnapshot: { type: 'getSnapshot' },
+  getSetupState: { type: 'getSetupState' },
+  reconcileWebsiteAccess: { type: 'reconcileWebsiteAccess' },
+  dismissWebsiteAccessNotice: { type: 'dismissWebsiteAccessNotice' },
+  completeSetup: {
+    type: 'completeSetup',
+    storageMode: 'local',
+    settings: SETTINGS,
+    lists: LISTS,
+  },
+  setStorageMode: { type: 'setStorageMode', storageMode: 'local', deleteRemote: false },
+  clearFocusLockData: { type: 'clearFocusLockData', scope: 'local-history' },
   getBlockState: {
     type: 'getBlockState',
     url: 'https://news.example/story',
@@ -77,6 +88,44 @@ function replaceNested(
 }
 
 describe('parseRequest', (): void => {
+  it.each([
+    { type: 'getSetupState' },
+    { type: 'reconcileWebsiteAccess' },
+    { type: 'dismissWebsiteAccessNotice' },
+    {
+      type: 'completeSetup',
+      storageMode: 'sync',
+      settings: SETTINGS,
+      lists: LISTS,
+    },
+    { type: 'setStorageMode', storageMode: 'local', deleteRemote: false },
+    { type: 'setStorageMode', storageMode: 'local', deleteRemote: true },
+    { type: 'setStorageMode', storageMode: 'sync', deleteRemote: false },
+    { type: 'clearFocusLockData', scope: 'local-history' },
+    { type: 'clearFocusLockData', scope: 'synced-policy' },
+    { type: 'clearFocusLockData', scope: 'all' },
+  ])('accepts the onboarding request %#', (request: unknown): void => {
+    expect(parseRequest(request)).toEqual(request);
+  });
+
+  it.each([
+    { type: 'getSetupState', extra: true },
+    { type: 'reconcileWebsiteAccess', granted: true },
+    { type: 'dismissWebsiteAccessNotice', notice: null },
+    { type: 'completeSetup', storageMode: null, settings: SETTINGS, lists: LISTS },
+    { type: 'completeSetup', storageMode: 'cloud', settings: SETTINGS, lists: LISTS },
+    { type: 'completeSetup', storageMode: 'local', settings: {}, lists: LISTS },
+    { type: 'completeSetup', storageMode: 'local', settings: SETTINGS, lists: {} },
+    { type: 'completeSetup', storageMode: 'local', settings: SETTINGS, lists: LISTS, extra: true },
+    { type: 'setStorageMode', storageMode: 'sync', deleteRemote: true },
+    { type: 'setStorageMode', storageMode: 'local', deleteRemote: 'yes' },
+    { type: 'setStorageMode', storageMode: null, deleteRemote: false },
+    { type: 'clearFocusLockData', scope: 'settings' },
+    { type: 'clearFocusLockData', scope: 'all', extra: true },
+  ])('rejects the malformed onboarding request %#', (request: unknown): void => {
+    expect(parseRequest(request)).toBeNull();
+  });
+
   it('accepts only the exact requestSessionEnd shape', (): void => {
     expect(parseRequest({ type: 'requestSessionEnd' })).toEqual({ type: 'requestSessionEnd' });
     expect(parseRequest({ type: 'requestSessionEnd', extra: true })).toBeNull();

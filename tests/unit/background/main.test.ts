@@ -32,6 +32,7 @@ import {
   LOCAL_INSTALL_MARKER,
   LOCAL_LISTS,
   LOCAL_LISTS_SNAPSHOT,
+  LOCAL_ONBOARDING_DRAFT,
   LOCAL_RUNTIME,
   LOCAL_SETTINGS,
   LOCAL_SETUP,
@@ -117,6 +118,7 @@ const mocks = vi.hoisted(
     setupWriteStarted: (() => void) | null;
     injectionGate: Promise<void> | null;
     injectionResult: boolean;
+    syncRemoveError: Error | null;
     tickActiveSessionStates: boolean[];
     applyBlockingActiveSessionStates: boolean[];
   } => ({
@@ -158,6 +160,7 @@ const mocks = vi.hoisted(
     setupWriteStarted: null,
     injectionGate: null,
     injectionResult: true,
+    syncRemoveError: null,
     tickActiveSessionStates: [],
     applyBlockingActiveSessionStates: [],
   }),
@@ -196,6 +199,10 @@ vi.mock('../../../src/background/engine', () => ({
       _retainQuiescence?: () => boolean,
     ): Promise<T> {
       return operation();
+    }
+
+    async retainDataClearQuiescence(): Promise<void> {
+      return Promise.resolve();
     }
 
     async endSessionForWebsiteBlockingLoss(): Promise<boolean> {
@@ -353,6 +360,21 @@ function setCompleteSyncedPolicy(): void {
   });
 }
 
+function setCompleteLocalPolicy(): void {
+  Object.assign(mocks.localState, {
+    [LOCAL_SETUP]: {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      legacyImported: true,
+    },
+    [LOCAL_SETTINGS]: DEFAULT_SETTINGS,
+    [LOCAL_LISTS]: DEFAULT_LISTS,
+    [LOCAL_BANK]: { balanceMs: 0 },
+    [LOCAL_STREAK]: null,
+  });
+}
+
 function oversizedHostRules(prefix: string): ListsConfig['custom'] {
   return Array.from({ length: 600 }, (_value: unknown, index: number) => ({
     kind: 'host' as const,
@@ -480,6 +502,7 @@ function stubChrome(): void {
             ),
         ),
         remove: vi.fn(async (keys: string | string[]): Promise<void> => {
+          if (mocks.syncRemoveError !== null) throw mocks.syncRemoveError;
           const requested: string[] = typeof keys === 'string' ? [keys] : keys;
           for (const key of requested) delete mocks.scenario.storedSync[key];
         }),
@@ -598,6 +621,7 @@ beforeEach((): void => {
   mocks.setupWriteStarted = null;
   mocks.injectionGate = null;
   mocks.injectionResult = true;
+  mocks.syncRemoveError = null;
   mocks.tickActiveSessionStates = [];
   mocks.applyBlockingActiveSessionStates = [];
   vi.mocked(reconcileContentRegistrationState).mockClear();
@@ -612,7 +636,75 @@ afterEach((): void => {
 });
 
 describe('background runtime request boundary', () => {
+  it('keeps website blocking disabled until authoritative setup completion', async (): Promise<void> => {
+    mocks.registrationStatuses = ['ready'];
+
+    await finishBoot();
+
+    expect(enginePorts().websiteBlockingReady()).toBe(false);
+    const services = vi.mocked(routeMessage).mock.calls.at(-1)?.[4];
+    if (services === undefined) throw new Error('onboarding services were not provided');
+    services.setupCompleted?.(true);
+    expect(enginePorts().websiteBlockingReady()).toBe(true);
+    services.setupCompleted?.(false);
+    expect(enginePorts().websiteBlockingReady()).toBe(false);
+  });
+
+  it('removes a stale onboarding draft after completed setup boots', async (): Promise<void> => {
+    setCompleteLocalPolicy();
+    mocks.localState[LOCAL_ONBOARDING_DRAFT] = { version: 1, step: 2 };
+
+    await finishBoot();
+
+    expect(mocks.localState[LOCAL_ONBOARDING_DRAFT]).toBeUndefined();
+  });
+
+  it('keeps worker requests responsive when boot cannot resume pending all-data deletion', async (): Promise<void> => {
+    mocks.localState = {
+      [LOCAL_SETUP]: {
+        ...DEFAULT_SETUP,
+        completed: true,
+        storageMode: 'local',
+        dataClear: { status: 'pending', scope: 'all', phase: 'remote' },
+      },
+      [LOCAL_RUNTIME]: emptyRuntime(Date.now()),
+      [LOCAL_DATA_CLEAR_JOURNAL]: {
+        scope: 'all',
+        phase: 'remote',
+        inventory: [SYNC_SETTINGS],
+      },
+      [LOCAL_SETTINGS]: DEFAULT_SETTINGS,
+      [LOCAL_LISTS]: DEFAULT_LISTS,
+      [LOCAL_BANK]: { balanceMs: 0 },
+      [LOCAL_STREAK]: null,
+    };
+    mocks.scenario.storedSync = { [SYNC_SETTINGS]: DEFAULT_SETTINGS };
+    mocks.syncRemoveError = new Error('remote removal unavailable');
+
+    main();
+    await expect(dispatchRuntime({ type: 'getSetupState' })).resolves.toEqual({ ok: true });
+
+    const storage: unknown = vi.mocked(routeMessage).mock.calls.at(-1)?.[3];
+    expect(storage).toBeDefined();
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      dataClear: { status: 'error', scope: 'all', phase: 'remote' },
+      storageError: 'remote-deletion-failed',
+    });
+  });
+
+  it('propagates explicit website reconciliation persistence failures', async (): Promise<void> => {
+    mocks.registrationStatuses = ['unavailable'];
+    await finishBoot();
+    const services = vi.mocked(routeMessage).mock.calls.at(-1)?.[4];
+    if (services === undefined) throw new Error('onboarding services were not provided');
+    mocks.registrationStatuses = ['ready'];
+    mocks.setupWriteError = new Error('setup persistence failed');
+
+    await expect(services.reconcileWebsiteAccess()).rejects.toThrow('setup persistence failed');
+  });
+
   it('reconciles website blocking before Engine construction and injects only when ready', async (): Promise<void> => {
+    setCompleteLocalPolicy();
     mocks.registrationStatuses = ['ready'];
 
     await finishBoot();
@@ -638,6 +730,7 @@ describe('background runtime request boundary', () => {
   });
 
   it('does not inject before registration and restores capability after relevant access is added', async (): Promise<void> => {
+    setCompleteLocalPolicy();
     mocks.registrationStatuses = ['unavailable', 'ready'];
     const { injectIntoExistingTabs } = await import('../../../src/background/tabs');
     vi.mocked(injectIntoExistingTabs).mockClear();
@@ -662,6 +755,7 @@ describe('background runtime request boundary', () => {
   });
 
   it('keeps blocking unavailable until existing-tab injection and setup persistence finish', async (): Promise<void> => {
+    setCompleteLocalPolicy();
     mocks.registrationStatuses = ['unavailable', 'ready'];
     const { injectIntoExistingTabs } = await import('../../../src/background/tabs');
     await finishBoot();
@@ -710,6 +804,7 @@ describe('background runtime request boundary', () => {
   });
 
   it('keeps blocking unavailable while existing-tab injection is still pending', async (): Promise<void> => {
+    setCompleteLocalPolicy();
     mocks.registrationStatuses = ['unavailable', 'ready'];
     const { injectIntoExistingTabs } = await import('../../../src/background/tabs');
     await finishBoot();
@@ -831,6 +926,7 @@ describe('background runtime request boundary', () => {
   });
 
   it('serializes rapid removal and addition through setup persistence', async (): Promise<void> => {
+    setCompleteLocalPolicy();
     mocks.registrationStatuses = ['ready', 'unavailable', 'ready'];
     const now: number = Date.now();
     mocks.scenario.runtime = {
@@ -890,6 +986,7 @@ describe('background runtime request boundary', () => {
   });
 
   it('does not generation-cancel active-session cleanup after permission removal', async (): Promise<void> => {
+    setCompleteLocalPolicy();
     mocks.registrationStatuses = ['ready', 'unavailable', 'ready'];
     const now: number = Date.now();
     mocks.scenario.runtime = {
@@ -1290,6 +1387,7 @@ describe('background runtime request boundary', () => {
       expect.anything(),
       request,
       sender,
+      expect.anything(),
       expect.anything(),
     );
     expect(vi.mocked(routeMessage).mock.calls[0]?.[1]).toBe(request);

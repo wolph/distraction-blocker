@@ -379,6 +379,9 @@ function parseListsConfigForSync(value: unknown): ListsConfig | null {
 function parseRecord(value: Record<string, unknown>): Request | null {
   switch (value.type) {
     case 'getSnapshot':
+    case 'getSetupState':
+    case 'reconcileWebsiteAccess':
+    case 'dismissWebsiteAccessNotice':
     case 'abandonGate':
     case 'requestSessionEnd':
     case 'forceEndGate':
@@ -388,6 +391,27 @@ function parseRecord(value: Record<string, unknown>): Request | null {
     case 'getLists':
     case 'exportEvents':
       return hasExactKeys(value, ['type']) ? (value as Request) : null;
+    case 'completeSetup':
+      return hasExactKeys(value, ['type', 'storageMode', 'settings', 'lists']) &&
+        (value.storageMode === 'local' || value.storageMode === 'sync') &&
+        isSettings(value.settings) &&
+        isListsConfig(value.lists)
+        ? (value as Request)
+        : null;
+    case 'setStorageMode':
+      return hasExactKeys(value, ['type', 'storageMode', 'deleteRemote']) &&
+        (value.storageMode === 'local' || value.storageMode === 'sync') &&
+        typeof value.deleteRemote === 'boolean' &&
+        !(value.storageMode === 'sync' && value.deleteRemote)
+        ? (value as Request)
+        : null;
+    case 'clearFocusLockData':
+      return hasExactKeys(value, ['type', 'scope']) &&
+        (value.scope === 'local-history' ||
+          value.scope === 'synced-policy' ||
+          value.scope === 'all')
+        ? (value as Request)
+        : null;
     case 'getBlockState':
       return hasExactKeys(value, ['type', 'url', 'docState']) &&
         isValidUrl(value.url) &&

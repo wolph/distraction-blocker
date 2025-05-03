@@ -11,6 +11,7 @@ import {
   LOCAL_EVENTS,
   LOCAL_INSTALL_MARKER,
   LOCAL_LISTS_SNAPSHOT,
+  LOCAL_ONBOARDING_DRAFT,
   LOCAL_RUNTIME,
   LOCAL_SYNC_JOURNAL,
   LOCAL_SYNC_QUOTA_EVICTION,
@@ -93,7 +94,7 @@ type StoredAggregate = DailyAgg | MonthlyAgg;
 
 let engineInstance: Engine | null = null;
 
-type WebsiteCapabilityCause = 'boot' | 'permission-added' | 'permission-removed';
+type WebsiteCapabilityCause = 'boot' | 'explicit' | 'permission-added' | 'permission-removed';
 type WebsiteReconciliation = {
   capability: ContentRegistrationState;
   generation: number;
@@ -448,6 +449,8 @@ async function preparePolicyStorage(): Promise<PolicyStorage> {
     },
   );
   await storage.initialize();
+  const recoveredSetup: SetupState = await storage.loadSetup();
+  if (recoveredSetup.dataClear.status !== 'idle') return storage;
   if (marker.profile === 'clean') {
     return storage;
   }
@@ -552,20 +555,38 @@ async function boot(
   initialCapabilityIsCurrent: () => boolean,
   publishWebsiteCapability: (capability: ContentRegistrationState) => void,
   pendingWebsiteAccessNotice: PendingWebsiteAccessNotice,
+  setupCompleted: () => boolean,
+  publishSetupCompleted: (completed: boolean) => void,
 ): Promise<Engine> {
   const now: number = Date.now();
   await policyStorage.initialize();
   const snapshot: PolicySnapshot = await policyStorage.loadSnapshot();
   const completedAllDataClear: boolean = policyStorage.allDataClearCompleted();
-  const [loadedRuntime, deviceId]: [ParsedRuntimeState, string] = completedAllDataClear
-    ? [emptyRuntime(now), '']
+  const [loadedRuntime, initialDeviceId]: [ParsedRuntimeState, string] = completedAllDataClear
+    ? [emptyRuntime(now), await getDeviceId()]
     : await Promise.all([loadRuntime(now), getDeviceId()]);
+  let deviceId: string = initialDeviceId;
+  const setup: SetupState = await policyStorage.loadSetup();
+  if (setup.completed) {
+    try {
+      await chrome.storage.local.remove(LOCAL_ONBOARDING_DRAFT);
+    } catch (error: unknown) {
+      reportBackgroundError(error);
+    }
+  }
+  const pendingAllDataClear: boolean =
+    setup.dataClear.status !== 'idle' && setup.dataClear.scope === 'all';
+  publishSetupCompleted(setup.completed && !pendingAllDataClear);
   const runtime: RuntimeState = migrateRuntimeRules(loadedRuntime, snapshot.lists);
   if (!completedAllDataClear && runtime !== loadedRuntime) await saveRuntime(runtime);
   const streak: StreakState = snapshot.streak ?? emptyStreak(localMonthStr(now));
   const ports: EnginePorts = {
     now: (): number => Date.now(),
     newId: (): string => crypto.randomUUID(),
+    rehydrateAfterDataClear: async (): Promise<string> => {
+      deviceId = await getDeviceId();
+      return deviceId;
+    },
     saveRuntime,
     saveMatcherCache,
     savePolicy: (key, value): Promise<void> => policyStorage.setPolicy(key, value),
@@ -605,7 +626,7 @@ async function boot(
     prune: (retentionDays: number, pruneNow: number): Promise<void> =>
       policyStorage.pruneRemoteHistory(deviceId, retentionDays, pruneNow),
     reportError: reportBackgroundError,
-    websiteBlockingReady: (): boolean => websiteCapability().status === 'ready',
+    websiteBlockingReady: (): boolean => setupCompleted() && websiteCapability().status === 'ready',
   };
   const engine: Engine = new Engine(
     ports,
@@ -644,13 +665,11 @@ async function boot(
     pendingWebsiteAccessNotice.value = null;
     publishWebsiteCapability(appliedCapability);
   }
-  if (completedAllDataClear) {
-    await engine.runWithDataClearBarrier(
-      (): Promise<void> => Promise.resolve(),
-      (): boolean => true,
-    );
+  if (pendingAllDataClear) {
+    await engine.retainDataClearQuiescence();
     return engine;
   }
+  if (completedAllDataClear) return engine;
   await engine.tick();
   await ports.applyBlocking();
   return engine;
@@ -672,11 +691,14 @@ export function main(): void {
   };
   let websiteReconciliationGeneration: number = 0;
   let websiteReconciliationTail: Promise<void> = Promise.resolve();
+  let workerControlTail: Promise<void> = Promise.resolve();
+  let setupCompleted: boolean = false;
   const pendingWebsiteAccessNotice: PendingWebsiteAccessNotice = { value: null };
 
   const reconcileWebsiteCapability = (
     cause: WebsiteCapabilityCause,
     applyToEngine: boolean,
+    propagateErrors: boolean = false,
   ): Promise<WebsiteReconciliation> => {
     websiteReconciliationGeneration += 1;
     const generation: number = websiteReconciliationGeneration;
@@ -740,7 +762,28 @@ export function main(): void {
       },
     );
     websiteReconciliationTail = settled.then((): void => undefined);
-    return settled;
+    return propagateErrors ? requested : settled;
+  };
+
+  const runWorkerControl = <T>(operation: () => Promise<T>): Promise<T> => {
+    const requested: Promise<T> = workerControlTail.then(operation, operation);
+    workerControlTail = requested.then(
+      (): void => undefined,
+      (): void => undefined,
+    );
+    return requested;
+  };
+
+  const dismissWebsiteAccessNotice = (): Promise<void> => {
+    const dismiss = async (): Promise<void> => {
+      const storage: PolicyStorage = await policyStorageReady;
+      await storage.updateSetup({ websiteAccessNotice: null });
+    };
+    const requested: Promise<void> = websiteReconciliationTail.then(dismiss, dismiss);
+    websiteReconciliationTail = requested.catch((error: unknown): void => {
+      reportBackgroundError(error);
+    });
+    return requested;
   };
 
   const reconcileAfterPermissionEvent = (cause: WebsiteCapabilityCause): void => {
@@ -773,6 +816,10 @@ export function main(): void {
           websiteCapability = capability;
         },
         pendingWebsiteAccessNotice,
+        (): boolean => setupCompleted,
+        (completed: boolean): void => {
+          setupCompleted = completed;
+        },
       ),
   );
 
@@ -790,7 +837,21 @@ export function main(): void {
       ready
         .then(
           async (engine: Engine): Promise<unknown> =>
-            routeMessage(engine, request, sender, await policyStorageReady),
+            runWorkerControl(
+              async (): Promise<unknown> =>
+                routeMessage(engine, request, sender, await policyStorageReady, {
+                  reconcileWebsiteAccess: async (): Promise<ContentRegistrationState> =>
+                    (await reconcileWebsiteCapability('explicit', true, true)).capability,
+                  dismissWebsiteAccessNotice,
+                  removeOnboardingDraft: async (): Promise<void> => {
+                    await chrome.storage.local.remove(LOCAL_ONBOARDING_DRAFT);
+                  },
+                  reportError: reportBackgroundError,
+                  setupCompleted: (completed: boolean): void => {
+                    setupCompleted = completed;
+                  },
+                }),
+            ),
         )
         .then((response: unknown): void => sendResponse(response))
         .catch((err: unknown): void => sendResponse({ ok: false, error: String(err) }));

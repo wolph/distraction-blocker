@@ -2522,14 +2522,15 @@ describe('PolicyStorage', (): void => {
     const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
     const storage: PolicyStorage = policyStorage(local, sync);
 
-    await expect(storage.initialize()).rejects.toThrow(
-      'stop the active session and blocking state before deleting all data',
-    );
+    await expect(storage.initialize()).resolves.toBeUndefined();
 
     expect(local.state.values[LOCAL_RUNTIME]).toEqual(runtime);
     expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toEqual(journal);
     expect(sync.state.values[SYNC_SETTINGS]).toEqual(SNAPSHOT.settings);
-    expect(local.area.set).not.toHaveBeenCalled();
+    expect(await storage.loadSetup()).toMatchObject({
+      dataClear: { status: 'error', scope: 'all', phase: 'remote' },
+      storageError: 'remote-deletion-failed',
+    });
     expect(local.area.remove).not.toHaveBeenCalled();
     expect(sync.area.set).not.toHaveBeenCalled();
     expect(sync.area.remove).not.toHaveBeenCalled();
@@ -2716,5 +2717,50 @@ describe('PolicyStorage', (): void => {
     await expect(storage.deleteRemoteData('synced-policy')).rejects.toThrow(
       'disable sync before deleting',
     );
+  });
+
+  it('clears detailed and aggregate history in local mode without touching policy', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_EVENTS]: [{ t: 'sessionCompleted', at: 1, focusedMs: 1 }],
+      'agg:device:2026-08-31': emptyDaily('2026-08-31'),
+      'aggm:device:2026-08': rollupMonth('2026-08', [emptyDaily('2026-08-31')]),
+      'archive:clock-rebase:device:one': emptyDaily('2026-08-30'),
+      [LOCAL_AGGREGATE_PRUNE]: { remove: [], set: {} },
+      [LOCAL_AGGREGATE_TOMBSTONES]: ['agg:device:2026-08-30'],
+      [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: { version: 1, items: {} },
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    await storage.initialize();
+
+    await expect(storage.clearLocalHistory()).resolves.toBe(true);
+
+    expect(local.state.values[LOCAL_EVENTS]).toBeUndefined();
+    expect(local.state.values['agg:device:2026-08-31']).toBeUndefined();
+    expect(local.state.values['aggm:device:2026-08']).toBeUndefined();
+    expect(local.state.values['archive:clock-rebase:device:one']).toBeUndefined();
+    expect(local.state.values[LOCAL_AGGREGATE_PRUNE]).toBeUndefined();
+    expect(local.state.values[LOCAL_AGGREGATE_TOMBSTONES]).toBeUndefined();
+    expect(local.state.values[LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]).toBeUndefined();
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(SNAPSHOT.settings);
+    expect(local.state.values[LOCAL_LISTS]).toEqual(SNAPSHOT.lists);
+  });
+
+  it('clears only detailed local events while Sync owns aggregate history', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const aggregate = emptyDaily('2026-08-31');
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_EVENTS]: [{ t: 'sessionCompleted', at: 1, focusedMs: 1 }],
+      'agg:device:2026-08-31': aggregate,
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    await storage.initialize();
+
+    await expect(storage.clearLocalHistory()).resolves.toBe(false);
+
+    expect(local.state.values[LOCAL_EVENTS]).toBeUndefined();
+    expect(local.state.values['agg:device:2026-08-31']).toEqual(aggregate);
   });
 });

@@ -128,6 +128,8 @@ export interface PolicyStorage {
   ): Promise<void>;
   queueVerifiedRemoteCorrections(keys: readonly (keyof PolicyValueByKey)[]): Promise<void>;
   deleteRemoteData(scope: 'synced-policy' | 'all'): Promise<void>;
+  /** Returns true when local aggregate history was cleared with detailed events. */
+  clearLocalHistory(): Promise<boolean>;
   allDataClearCompleted(): boolean;
   storageMode(): Promise<StorageMode | null>;
   inboundSyncAllowed(): Promise<boolean>;
@@ -912,7 +914,24 @@ export function createPolicyStorage(
         }
         allDataClearQuiescenceRequired = true;
       }
-      await resumeDataClear(dataClearJournal);
+      try {
+        await resumeDataClear(dataClearJournal);
+      } catch (_error: unknown) {
+        const failedSetup: SetupState = await loadSetupInternal();
+        await saveSetupInternal({
+          ...failedSetup,
+          dataClear: {
+            status: 'error',
+            scope: dataClearJournal.scope,
+            phase: dataClearJournal.phase,
+          },
+          storageError:
+            dataClearJournal.phase === 'remote' ? 'remote-deletion-failed' : 'local-clear-failed',
+        });
+        initialized = true;
+        mode = (await loadSetupInternal()).storageMode;
+        return;
+      }
       initialized = true;
       return;
     }
@@ -1731,6 +1750,26 @@ export function createPolicyStorage(
     await resumeDataClear(journal);
   }
 
+  async function clearLocalHistoryInternal(): Promise<boolean> {
+    await ensureInitialized();
+    const clearAggregates: boolean = mode !== 'sync';
+    const stored: Record<string, unknown> = await local.get(null);
+    const keys: string[] = [LOCAL_EVENTS];
+    if (clearAggregates) {
+      keys.push(
+        ...Object.keys(stored).filter(
+          (key: string): boolean =>
+            isAggregateHistoryKey(key) || key.startsWith('archive:clock-rebase:'),
+        ),
+        LOCAL_AGGREGATE_PRUNE,
+        LOCAL_AGGREGATE_TOMBSTONES,
+        LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS,
+      );
+    }
+    await verifiedRemove([...new Set(keys)], 'local history');
+    return clearAggregates;
+  }
+
   async function saveAggregateInternal(key: string, value: unknown): Promise<void> {
     await ensureInitialized();
     const normalized: unknown = normalizeAggregateItem(key, value);
@@ -2018,12 +2057,18 @@ export function createPolicyStorage(
       key: K,
       value: PolicyValueByKey[K],
     ): Promise<void> => enqueue((): Promise<void> => setPolicyInternal(key, value)),
-    selectLocalMode: (): Promise<void> => enqueue(selectLocalModeInternal),
+    selectLocalMode: (): Promise<void> =>
+      firstSyncCheckpoint.runExclusive === undefined
+        ? enqueue(selectLocalModeInternal)
+        : firstSyncCheckpoint.runExclusive((): Promise<void> => enqueue(selectLocalModeInternal)),
     enableSync: (): Promise<void> =>
       firstSyncCheckpoint.runExclusive === undefined
         ? enqueue(enableSyncInternal)
         : firstSyncCheckpoint.runExclusive((): Promise<void> => enqueue(enableSyncInternal)),
-    disableSync: (): Promise<void> => enqueue(disableSyncInternal),
+    disableSync: (): Promise<void> =>
+      firstSyncCheckpoint.runExclusive === undefined
+        ? enqueue(disableSyncInternal)
+        : firstSyncCheckpoint.runExclusive((): Promise<void> => enqueue(disableSyncInternal)),
     mirrorAcceptedRemotePolicy: (
       changes: Record<string, unknown>,
       pendingRemoteKeys: readonly string[] = [],
@@ -2037,6 +2082,7 @@ export function createPolicyStorage(
             (): Promise<void> => enqueue((): Promise<void> => deleteRemoteDataInternal(scope)),
           )
         : enqueue((): Promise<void> => deleteRemoteDataInternal(scope)),
+    clearLocalHistory: (): Promise<boolean> => enqueue(clearLocalHistoryInternal),
     allDataClearCompleted: (): boolean => completedAllDataClear,
     storageMode: (): Promise<StorageMode | null> =>
       enqueue(async (): Promise<StorageMode | null> => {

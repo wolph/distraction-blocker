@@ -295,6 +295,7 @@ describe('pending Sync retention', () => {
     const ports: EnginePorts = {
       now: (): number => now,
       newId: (): string => 'id',
+      rehydrateAfterDataClear: async (): Promise<string> => 'rehydrated-id',
       saveRuntime: async (): Promise<void> => {},
       saveMatcherCache: async (): Promise<void> => {},
       hasPendingSync: (key: string): boolean => writer.hasPending(key),
