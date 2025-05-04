@@ -75,12 +75,12 @@ export async function routeMessage(
       return { ok: true };
     case 'completeSetup': {
       const storage: PolicyStorage = requirePolicyStorage(policyStorage);
+      if (msg.storageMode === 'local') await storage.selectLocalMode();
       const settingsResult: Ack = await engine.updateSettings(msg.settings);
       if (!settingsResult.ok) return settingsResult;
       const listsResult: Ack = await engine.updateLists(msg.lists);
       if (!listsResult.ok) return listsResult;
-      if (msg.storageMode === 'local') await storage.selectLocalMode();
-      else await storage.enableSync();
+      if (msg.storageMode === 'sync') await storage.enableSync();
       await storage.markSetupCompleted();
       onboardingServices?.setupCompleted?.(true);
       if (onboardingServices !== undefined) {
@@ -119,15 +119,15 @@ export async function routeMessage(
         }
       }
       if (msg.scope === 'synced-policy') {
-        if ((await storage.storageMode()) !== 'local') {
-          return {
-            ok: false,
-            error: 'Disable Sync before deleting synced data',
-            scope: msg.scope,
-            status: 'pending',
-          };
-        }
         try {
+          if ((await storage.storageMode()) !== 'local') {
+            return {
+              ok: false,
+              error: 'Disable Sync before deleting synced data',
+              scope: msg.scope,
+              status: 'pending',
+            };
+          }
           await storage.deleteRemoteData(msg.scope);
           return { ok: true, scope: msg.scope, status: 'cleared' };
         } catch (error: unknown) {
@@ -141,7 +141,7 @@ export async function routeMessage(
       }
       onboardingServices?.setupCompleted?.(false);
       try {
-        if ((await storage.storageMode()) !== 'local') await storage.selectLocalMode();
+        if ((await storage.storageMode()) === 'sync') await storage.selectLocalMode();
         await storage.deleteRemoteData(msg.scope);
       } catch (error: unknown) {
         return {

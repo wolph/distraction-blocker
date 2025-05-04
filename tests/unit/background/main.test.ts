@@ -118,6 +118,7 @@ const mocks = vi.hoisted(
     setupWriteStarted: (() => void) | null;
     injectionGate: Promise<void> | null;
     injectionResult: boolean;
+    localRemoveError: Error | null;
     syncRemoveError: Error | null;
     tickActiveSessionStates: boolean[];
     applyBlockingActiveSessionStates: boolean[];
@@ -160,6 +161,7 @@ const mocks = vi.hoisted(
     setupWriteStarted: null,
     injectionGate: null,
     injectionResult: true,
+    localRemoveError: null,
     syncRemoveError: null,
     tickActiveSessionStates: [],
     applyBlockingActiveSessionStates: [],
@@ -198,7 +200,11 @@ vi.mock('../../../src/background/engine', () => ({
       operation: () => Promise<T>,
       _retainQuiescence?: () => boolean,
     ): Promise<T> {
-      return operation();
+      const result: T = await operation();
+      const ports: EnginePorts | undefined = mocks.engineArguments?.[0] as EnginePorts | undefined;
+      await ports?.rehydrateAfterDataClear();
+      mocks.localState[LOCAL_DEVICE_ID] = 'device-id';
+      return result;
     }
 
     async retainDataClearQuiescence(): Promise<void> {
@@ -475,6 +481,11 @@ function stubChrome(): void {
           }
         }),
         remove: vi.fn(async (keys: string | string[]): Promise<void> => {
+          if (mocks.localRemoveError !== null) {
+            const localRemoveError: Error = mocks.localRemoveError;
+            mocks.localRemoveError = null;
+            throw localRemoveError;
+          }
           const requested: string[] = typeof keys === 'string' ? [keys] : keys;
           for (const key of requested) delete mocks.localState[key];
         }),
@@ -621,6 +632,7 @@ beforeEach((): void => {
   mocks.setupWriteStarted = null;
   mocks.injectionGate = null;
   mocks.injectionResult = true;
+  mocks.localRemoveError = null;
   mocks.syncRemoveError = null;
   mocks.tickActiveSessionStates = [];
   mocks.applyBlockingActiveSessionStates = [];
@@ -659,6 +671,40 @@ describe('background runtime request boundary', () => {
     expect(mocks.localState[LOCAL_ONBOARDING_DRAFT]).toBeUndefined();
   });
 
+  it('marks a live all-data reset clean before the next boot creates legacy evidence', async (): Promise<void> => {
+    setCompleteLocalPolicy();
+    mocks.localState[LOCAL_RUNTIME] = emptyRuntime(Date.now());
+    mocks.registrationStatuses = ['ready', 'unavailable'];
+    const actualRouter: typeof import('../../../src/background/router') = await vi.importActual(
+      '../../../src/background/router',
+    );
+    vi.mocked(routeMessage).mockImplementationOnce(actualRouter.routeMessage);
+
+    main();
+    await expect(dispatchRuntime({ type: 'clearFocusLockData', scope: 'all' })).resolves.toEqual({
+      ok: true,
+      scope: 'all',
+      status: 'cleared',
+    });
+
+    expect(mocks.localState[LOCAL_INSTALL_MARKER]).toMatchObject({ profile: 'clean' });
+    expect(mocks.localState[LOCAL_DEVICE_ID]).toBe('device-id');
+
+    vi.mocked(chrome.storage.sync.get).mockClear();
+    vi.mocked(chrome.storage.sync.getBytesInUse).mockClear();
+    vi.mocked(chrome.storage.sync.set).mockClear();
+    vi.mocked(chrome.storage.sync.remove).mockClear();
+    mocks.scenario.storedSync = { [SYNC_SETTINGS]: DEFAULT_SETTINGS };
+
+    main();
+    await expect(dispatchRuntime({ type: 'getSnapshot' })).resolves.toEqual({ ok: true });
+
+    expect(chrome.storage.sync.get).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.getBytesInUse).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
+  });
+
   it('keeps worker requests responsive when boot cannot resume pending all-data deletion', async (): Promise<void> => {
     mocks.localState = {
       [LOCAL_SETUP]: {
@@ -690,6 +736,46 @@ describe('background runtime request boundary', () => {
       dataClear: { status: 'error', scope: 'all', phase: 'remote' },
       storageError: 'remote-deletion-failed',
     });
+  });
+
+  it('retries a boot-restored local-phase all-data clear through the runtime router', async (): Promise<void> => {
+    mocks.localState = {
+      [LOCAL_SETUP]: {
+        ...DEFAULT_SETUP,
+        completed: true,
+        storageMode: null,
+        dataClear: { status: 'pending', scope: 'all', phase: 'local' },
+      },
+      [LOCAL_RUNTIME]: emptyRuntime(Date.now()),
+      [LOCAL_DATA_CLEAR_JOURNAL]: {
+        scope: 'all',
+        phase: 'local',
+        inventory: [],
+      },
+      [LOCAL_SETTINGS]: DEFAULT_SETTINGS,
+      [LOCAL_LISTS]: DEFAULT_LISTS,
+      [LOCAL_BANK]: { balanceMs: 0 },
+      [LOCAL_STREAK]: null,
+    };
+    mocks.localRemoveError = new Error('local removal unavailable during boot');
+    const actualRouter: typeof import('../../../src/background/router') = await vi.importActual(
+      '../../../src/background/router',
+    );
+    vi.mocked(routeMessage).mockImplementationOnce(actualRouter.routeMessage);
+
+    main();
+    await expect(dispatchRuntime({ type: 'clearFocusLockData', scope: 'all' })).resolves.toEqual({
+      ok: true,
+      scope: 'all',
+      status: 'cleared',
+    });
+
+    expect(mocks.localState[LOCAL_DATA_CLEAR_JOURNAL]).toBeUndefined();
+    expect(mocks.localState[LOCAL_SETUP]).toEqual({
+      ...DEFAULT_SETUP,
+      websiteAccess: 'denied',
+    });
+    expect(mocks.localState[LOCAL_INSTALL_MARKER]).toMatchObject({ profile: 'clean' });
   });
 
   it('propagates explicit website reconciliation persistence failures', async (): Promise<void> => {
@@ -1281,6 +1367,21 @@ describe('background runtime request boundary', () => {
       ...DEFAULT_SETUP,
       websiteAccess: 'denied',
     });
+    expect(mocks.localState[LOCAL_INSTALL_MARKER]).toMatchObject({ profile: 'clean' });
+
+    vi.mocked(chrome.storage.sync.get).mockClear();
+    vi.mocked(chrome.storage.sync.getBytesInUse).mockClear();
+    vi.mocked(chrome.storage.sync.set).mockClear();
+    vi.mocked(chrome.storage.sync.remove).mockClear();
+    mocks.scenario.storedSync = { [SYNC_SETTINGS]: DEFAULT_SETTINGS };
+
+    main();
+    await expect(dispatchRuntime({ type: 'getSnapshot' })).resolves.toEqual({ ok: true });
+
+    expect(chrome.storage.sync.get).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.getBytesInUse).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+    expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
   });
 
   it.each([

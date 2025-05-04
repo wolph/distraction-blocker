@@ -387,6 +387,22 @@ async function classifyInstallProfile(): Promise<InstallMarker> {
   return verified;
 }
 
+async function persistCleanInstallMarker(): Promise<void> {
+  const marker: InstallMarker = {
+    version: 1,
+    profile: 'clean',
+    latestReason: 'install',
+    extensionVersion: chrome.runtime.getManifest?.().version ?? 'unknown',
+  };
+  await chrome.storage.local.set({ [LOCAL_INSTALL_MARKER]: marker });
+  const verified: unknown = (await chrome.storage.local.get(LOCAL_INSTALL_MARKER))[
+    LOCAL_INSTALL_MARKER
+  ];
+  if (!isInstallMarker(verified) || verified.profile !== 'clean') {
+    throw new Error('could not persist clean install profile after data reset');
+  }
+}
+
 async function updateInstallMarker(details: chrome.runtime.InstalledDetails): Promise<void> {
   const marker: InstallMarker = await classifyInstallProfile();
   const next: InstallMarker = {
@@ -584,6 +600,7 @@ async function boot(
     now: (): number => Date.now(),
     newId: (): string => crypto.randomUUID(),
     rehydrateAfterDataClear: async (): Promise<string> => {
+      await persistCleanInstallMarker();
       deviceId = await getDeviceId();
       return deviceId;
     },

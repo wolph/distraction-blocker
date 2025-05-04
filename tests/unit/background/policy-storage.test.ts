@@ -2719,6 +2719,70 @@ describe('PolicyStorage', (): void => {
     );
   });
 
+  it.each(['pending', 'error'] as const)(
+    'rejects enabling Sync while synced-policy deletion is %s without any remote write',
+    async (status): Promise<void> => {
+      const setup: SetupState = {
+        ...DEFAULT_SETUP,
+        storageMode: 'local',
+        dataClear: { status, scope: 'synced-policy', phase: 'remote' },
+        storageError: status === 'error' ? 'remote-deletion-failed' : null,
+      };
+      const local: FakeStorage = fakeStorage(localPolicy(setup));
+      const sync: FakeStorage = fakeStorage();
+      const storage: PolicyStorage = policyStorage(local, sync);
+      await storage.initialize();
+      vi.mocked(sync.area.get).mockClear();
+      vi.mocked(sync.area.set).mockClear();
+      vi.mocked(sync.area.remove).mockClear();
+
+      await expect(storage.enableSync()).rejects.toThrow('data deletion');
+
+      expect(await storage.storageMode()).toBe('local');
+      expect(sync.area.get).not.toHaveBeenCalled();
+      expect(sync.area.set).not.toHaveBeenCalled();
+      expect(sync.area.remove).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves the advanced local phase when boot recovery fails after remote success', async (): Promise<void> => {
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      dataClear: { status: 'pending', scope: 'all', phase: 'remote' },
+    };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_RUNTIME]: emptyRuntime(Date.now()),
+      [LOCAL_DATA_CLEAR_JOURNAL]: {
+        scope: 'all',
+        phase: 'remote',
+        inventory: [SYNC_SETTINGS],
+      },
+    });
+    const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: DEFAULT_SETTINGS });
+    const storage: PolicyStorage = policyStorage(local, sync);
+    vi.mocked(local.area.remove).mockImplementation(
+      async (keys: string | string[]): Promise<void> => {
+        const requested: string[] = typeof keys === 'string' ? [keys] : keys;
+        if (requested.includes(LOCAL_SETTINGS)) throw new Error('local clear unavailable');
+        for (const key of requested) delete local.state.values[key];
+      },
+    );
+
+    await storage.initialize();
+
+    expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toMatchObject({
+      scope: 'all',
+      phase: 'local',
+    });
+    expect(await storage.loadSetup()).toMatchObject({
+      dataClear: { status: 'error', scope: 'all', phase: 'local' },
+      storageError: 'local-clear-failed',
+    });
+  });
+
   it('clears detailed and aggregate history in local mode without touching policy', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
     const local: FakeStorage = fakeStorage({

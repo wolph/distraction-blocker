@@ -917,16 +917,17 @@ export function createPolicyStorage(
       try {
         await resumeDataClear(dataClearJournal);
       } catch (_error: unknown) {
+        const currentJournal: DataClearJournal = (await loadDataClearJournal()) ?? dataClearJournal;
         const failedSetup: SetupState = await loadSetupInternal();
         await saveSetupInternal({
           ...failedSetup,
           dataClear: {
             status: 'error',
-            scope: dataClearJournal.scope,
-            phase: dataClearJournal.phase,
+            scope: currentJournal.scope,
+            phase: currentJournal.phase,
           },
           storageError:
-            dataClearJournal.phase === 'remote' ? 'remote-deletion-failed' : 'local-clear-failed',
+            currentJournal.phase === 'remote' ? 'remote-deletion-failed' : 'local-clear-failed',
         });
         initialized = true;
         mode = (await loadSetupInternal()).storageMode;
@@ -1065,6 +1066,10 @@ export function createPolicyStorage(
 
   async function enableSyncInternal(): Promise<void> {
     await ensureInitialized();
+    const setupBeforeEnable: SetupState = await loadSetupInternal();
+    if (setupBeforeEnable.dataClear.status !== 'idle') {
+      throw new Error('finish the pending data deletion before enabling Sync');
+    }
     if (mode === 'sync') return;
     const priorMode: StorageMode | null = mode;
     let complete: SyncJournal;

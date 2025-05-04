@@ -167,9 +167,98 @@ describe('routeMessage onboarding wiring', (): void => {
         ),
       ).resolves.toEqual({ ok: true });
 
-      expect(order).toEqual(['settings', 'lists', storageMode, 'completed', 'draft']);
+      expect(order).toEqual(
+        storageMode === 'local'
+          ? ['local', 'settings', 'lists', 'completed', 'draft']
+          : ['settings', 'lists', 'sync', 'completed', 'draft'],
+      );
     },
   );
+
+  it('leaves local mode unchanged when a pending deletion rejects a Sync mode request', async (): Promise<void> => {
+    const storage: PolicyStorage = onboardingStorage({
+      enableSync: vi
+        .fn()
+        .mockRejectedValue(new Error('finish the pending data deletion before enabling Sync')),
+    });
+
+    await expect(
+      routeMessage(
+        engine,
+        { type: 'setStorageMode', storageMode: 'sync', deleteRemote: false },
+        sender,
+        storage,
+      ),
+    ).rejects.toThrow('finish the pending data deletion before enabling Sync');
+
+    expect(storage.enableSync).toHaveBeenCalledOnce();
+    expect(storage.selectLocalMode).not.toHaveBeenCalled();
+  });
+
+  it('keeps setup incomplete when a pending deletion rejects Sync completion', async (): Promise<void> => {
+    const setupEngine: Engine = {
+      updateSettings: vi.fn().mockResolvedValue({ ok: true }),
+      updateLists: vi.fn().mockResolvedValue({ ok: true }),
+    } as unknown as Engine;
+    const storage: PolicyStorage = onboardingStorage({
+      enableSync: vi
+        .fn()
+        .mockRejectedValue(new Error('finish the pending data deletion before enabling Sync')),
+    });
+
+    await expect(
+      routeMessage(
+        setupEngine,
+        {
+          type: 'completeSetup',
+          storageMode: 'sync',
+          settings: DEFAULT_SETTINGS,
+          lists: DEFAULT_LISTS,
+        },
+        sender,
+        storage,
+      ),
+    ).rejects.toThrow('finish the pending data deletion before enabling Sync');
+
+    expect(storage.markSetupCompleted).not.toHaveBeenCalled();
+  });
+
+  it('quiesces a failed Sync completion before writing a replacement local policy', async (): Promise<void> => {
+    let storageMode: 'local' | 'sync' = 'sync';
+    let remoteWrites: number = 0;
+    const storage: PolicyStorage = onboardingStorage({
+      selectLocalMode: vi.fn(async (): Promise<void> => {
+        storageMode = 'local';
+      }),
+    });
+    const setupEngine: Engine = {
+      updateSettings: vi.fn(async (): Promise<{ ok: true }> => {
+        if (storageMode === 'sync') remoteWrites += 1;
+        return { ok: true };
+      }),
+      updateLists: vi.fn(async (): Promise<{ ok: true }> => {
+        if (storageMode === 'sync') remoteWrites += 1;
+        return { ok: true };
+      }),
+    } as unknown as Engine;
+
+    await expect(
+      routeMessage(
+        setupEngine,
+        {
+          type: 'completeSetup',
+          storageMode: 'local',
+          settings: DEFAULT_SETTINGS,
+          lists: DEFAULT_LISTS,
+        },
+        sender,
+        storage,
+      ),
+    ).resolves.toEqual({ ok: true });
+
+    expect(remoteWrites).toBe(0);
+    expect(storage.selectLocalMode).toHaveBeenCalledOnce();
+  });
 
   it('keeps setup incomplete and the draft when policy persistence fails', async (): Promise<void> => {
     const setupEngine: Engine = {
@@ -193,7 +282,7 @@ describe('routeMessage onboarding wiring', (): void => {
         { reconcileWebsiteAccess: vi.fn(), removeOnboardingDraft, reportError: vi.fn() },
       ),
     ).resolves.toEqual({ ok: false, error: 'lists rejected' });
-    expect(storage.selectLocalMode).not.toHaveBeenCalled();
+    expect(storage.selectLocalMode).toHaveBeenCalledOnce();
     expect(storage.markSetupCompleted).not.toHaveBeenCalled();
     expect(removeOnboardingDraft).not.toHaveBeenCalled();
   });
@@ -354,6 +443,22 @@ describe('routeMessage onboarding wiring', (): void => {
     expect(storage.deleteRemoteData).not.toHaveBeenCalled();
   });
 
+  it('returns the pending synced-policy scope when storage-mode loading fails', async (): Promise<void> => {
+    const storage: PolicyStorage = onboardingStorage({
+      storageMode: vi.fn().mockRejectedValue(new Error('mode unavailable')),
+    });
+
+    await expect(
+      routeMessage(engine, { type: 'clearFocusLockData', scope: 'synced-policy' }, sender, storage),
+    ).resolves.toEqual({
+      ok: false,
+      error: 'mode unavailable',
+      scope: 'synced-policy',
+      status: 'pending',
+    });
+    expect(storage.deleteRemoteData).not.toHaveBeenCalled();
+  });
+
   it('quiesces Sync, clears all data through its Engine barrier, then reconciles permission', async (): Promise<void> => {
     const order: string[] = [];
     const storage: PolicyStorage = onboardingStorage({
@@ -402,6 +507,18 @@ describe('routeMessage onboarding wiring', (): void => {
       status: 'pending',
     });
     expect(reconcileWebsiteAccess).not.toHaveBeenCalled();
+  });
+
+  it('retries a boot-restored null-mode all-data local phase without selecting a mode', async (): Promise<void> => {
+    const storage: PolicyStorage = onboardingStorage({
+      storageMode: vi.fn().mockResolvedValue(null),
+    });
+
+    await expect(
+      routeMessage({} as Engine, { type: 'clearFocusLockData', scope: 'all' }, sender, storage),
+    ).resolves.toEqual({ ok: true, scope: 'all', status: 'cleared' });
+    expect(storage.selectLocalMode).not.toHaveBeenCalled();
+    expect(storage.deleteRemoteData).toHaveBeenCalledWith('all');
   });
 });
 
