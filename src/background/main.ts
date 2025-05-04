@@ -707,6 +707,7 @@ export function main(): void {
     status: 'unavailable',
   };
   let websiteReconciliationGeneration: number = 0;
+  let websiteReconciliationLatest: Promise<WebsiteReconciliation> | null = null;
   let websiteReconciliationTail: Promise<void> = Promise.resolve();
   let workerControlTail: Promise<void> = Promise.resolve();
   let setupCompleted: boolean = false;
@@ -778,8 +779,18 @@ export function main(): void {
         return { capability: websiteCapability, generation };
       },
     );
+    websiteReconciliationLatest = requested;
     websiteReconciliationTail = settled.then((): void => undefined);
-    return propagateErrors ? requested : settled;
+    if (!propagateErrors) return settled;
+    return (async (): Promise<WebsiteReconciliation> => {
+      let result: WebsiteReconciliation = await requested;
+      while (result.generation !== websiteReconciliationGeneration) {
+        const latest: Promise<WebsiteReconciliation> | null = websiteReconciliationLatest;
+        if (latest === null) throw new Error('website reconciliation generation is unavailable');
+        result = await latest;
+      }
+      return result;
+    })();
   };
 
   const runWorkerControl = <T>(operation: () => Promise<T>): Promise<T> => {

@@ -789,6 +789,32 @@ describe('background runtime request boundary', () => {
     await expect(services.reconcileWebsiteAccess()).rejects.toThrow('setup persistence failed');
   });
 
+  it('waits for a newer permission generation before returning explicit reconciliation', async (): Promise<void> => {
+    setCompleteLocalPolicy();
+    mocks.registrationStatuses = ['unavailable'];
+    await finishBoot();
+    const services = vi.mocked(routeMessage).mock.calls.at(-1)?.[4];
+    if (services === undefined) throw new Error('onboarding services were not provided');
+    vi.mocked(reconcileContentRegistrationState).mockClear();
+    let releaseExplicit: () => void = (): void => undefined;
+    const explicitGate: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseExplicit = resolve;
+    });
+    mocks.registrationStatuses = ['unavailable', 'ready'];
+    mocks.registrationReconcileGates = [explicitGate, null];
+
+    const explicit: Promise<{
+      permission: 'granted' | 'denied' | 'unknown';
+      status: 'unavailable' | 'ready' | 'error';
+    }> = services.reconcileWebsiteAccess();
+    await vi.waitFor((): void => expect(reconcileContentRegistrationState).toHaveBeenCalledOnce());
+    mocks.permissionAddedListener?.({ origins: ['https://*/*'] });
+    releaseExplicit();
+
+    await expect(explicit).resolves.toEqual({ permission: 'granted', status: 'ready' });
+    expect(reconcileContentRegistrationState).toHaveBeenCalledTimes(2);
+  });
+
   it('reconciles website blocking before Engine construction and injects only when ready', async (): Promise<void> => {
     setCompleteLocalPolicy();
     mocks.registrationStatuses = ['ready'];

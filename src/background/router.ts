@@ -1,5 +1,10 @@
 import type { Ack, Request } from '../shared/messages';
-import type { BlockingRegistrationStatus, SoundSettings, Verdict } from '../shared/types';
+import type {
+  BlockingRegistrationStatus,
+  SetupState,
+  SoundSettings,
+  Verdict,
+} from '../shared/types';
 import { playSound } from './audio';
 import type { Engine } from './engine';
 import type { PolicyStorage } from './policy-storage';
@@ -139,11 +144,18 @@ export async function routeMessage(
           };
         }
       }
-      onboardingServices?.setupCompleted?.(false);
       try {
         if ((await storage.storageMode()) === 'sync') await storage.selectLocalMode();
         await storage.deleteRemoteData(msg.scope);
       } catch (error: unknown) {
+        try {
+          const setup: SetupState = await storage.loadSetup();
+          if (setup.dataClear.status !== 'idle' && setup.dataClear.scope === 'all') {
+            onboardingServices?.setupCompleted?.(false);
+          }
+        } catch (setupError: unknown) {
+          onboardingServices?.reportError(setupError);
+        }
         return {
           ok: false,
           error: error instanceof Error ? error.message : String(error),
@@ -151,6 +163,7 @@ export async function routeMessage(
           status: 'pending',
         };
       }
+      onboardingServices?.setupCompleted?.(false);
       if (onboardingServices !== undefined) {
         try {
           await onboardingServices.reconcileWebsiteAccess();

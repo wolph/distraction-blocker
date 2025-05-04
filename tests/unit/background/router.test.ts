@@ -489,8 +489,15 @@ describe('routeMessage onboarding wiring', (): void => {
 
   it('preserves data and does not reconcile when all-data remote deletion fails', async (): Promise<void> => {
     const clearingEngine: Engine = {} as Engine;
+    const setupCompleted = vi.fn();
     const storage: PolicyStorage = onboardingStorage({
       deleteRemoteData: vi.fn().mockRejectedValue(new Error('remote deletion unavailable')),
+      loadSetup: vi.fn().mockResolvedValue({
+        ...DEFAULT_SETUP,
+        completed: true,
+        storageMode: 'local',
+        dataClear: { status: 'error', scope: 'all', phase: 'remote' },
+      } satisfies SetupState),
     });
     const reconcileWebsiteAccess = vi.fn();
 
@@ -499,6 +506,7 @@ describe('routeMessage onboarding wiring', (): void => {
         reconcileWebsiteAccess,
         removeOnboardingDraft: vi.fn(),
         reportError: vi.fn(),
+        setupCompleted,
       }),
     ).resolves.toEqual({
       ok: false,
@@ -507,6 +515,71 @@ describe('routeMessage onboarding wiring', (): void => {
       status: 'pending',
     });
     expect(reconcileWebsiteAccess).not.toHaveBeenCalled();
+    expect(setupCompleted).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it('keeps live completion aligned when all-data storage-mode loading fails early', async (): Promise<void> => {
+    const setupCompleted = vi.fn();
+    const completedSetup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+    };
+    const storage: PolicyStorage = onboardingStorage({
+      storageMode: vi.fn().mockRejectedValue(new Error('mode unavailable')),
+      loadSetup: vi.fn().mockResolvedValue(completedSetup),
+    });
+
+    await expect(
+      routeMessage({} as Engine, { type: 'clearFocusLockData', scope: 'all' }, sender, storage, {
+        reconcileWebsiteAccess: vi.fn(),
+        removeOnboardingDraft: vi.fn(),
+        reportError: vi.fn(),
+        setupCompleted,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: 'mode unavailable',
+      scope: 'all',
+      status: 'pending',
+    });
+
+    expect(completedSetup).toMatchObject({ completed: true, dataClear: { status: 'idle' } });
+    expect(storage.loadSetup).toHaveBeenCalledOnce();
+    expect(setupCompleted).not.toHaveBeenCalled();
+  });
+
+  it('keeps live completion aligned when local-mode selection fails before deletion', async (): Promise<void> => {
+    const setupCompleted = vi.fn();
+    const completedSetup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'sync',
+    };
+    const storage: PolicyStorage = onboardingStorage({
+      storageMode: vi.fn().mockResolvedValue('sync'),
+      selectLocalMode: vi.fn().mockRejectedValue(new Error('local mode unavailable')),
+      loadSetup: vi.fn().mockResolvedValue(completedSetup),
+    });
+
+    await expect(
+      routeMessage({} as Engine, { type: 'clearFocusLockData', scope: 'all' }, sender, storage, {
+        reconcileWebsiteAccess: vi.fn(),
+        removeOnboardingDraft: vi.fn(),
+        reportError: vi.fn(),
+        setupCompleted,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: 'local mode unavailable',
+      scope: 'all',
+      status: 'pending',
+    });
+
+    expect(completedSetup).toMatchObject({ completed: true, dataClear: { status: 'idle' } });
+    expect(storage.loadSetup).toHaveBeenCalledOnce();
+    expect(storage.deleteRemoteData).not.toHaveBeenCalled();
+    expect(setupCompleted).not.toHaveBeenCalled();
   });
 
   it('retries a boot-restored null-mode all-data local phase without selecting a mode', async (): Promise<void> => {
