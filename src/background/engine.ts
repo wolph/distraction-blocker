@@ -1939,21 +1939,26 @@ export class Engine {
   }
 
   private async prepareRuntimeForAllDataClear(): Promise<void> {
+    const hadTabStates: boolean = Object.keys(this.runtime.tabStates).length > 0;
     const hadBlockingState: boolean =
       this.runtime.session !== null ||
       this.runtime.gate !== null ||
       this.runtime.unlocks.length > 0 ||
-      Object.keys(this.runtime.tabStates).length > 0;
+      hadTabStates;
     if (!hadBlockingState) return;
     const now: number = this.ports.now();
     if (this.runtime.session !== null) this.cancelSession(this.runtime.session, now);
     this.runtime.gate = null;
     this.runtime.unlocks = [];
-    this.runtime.tabStates = {};
     this.dirty = true;
     this.needsBlocking = true;
     await this.commit(now);
     await this.drainRuntimeMutations();
+    if (hadTabStates) {
+      this.runtime.tabStates = {};
+      await this.persistRuntime();
+      await this.drainRuntimeMutations();
+    }
   }
 
   private async drainRuntimeMutations(): Promise<void> {

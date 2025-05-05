@@ -150,9 +150,9 @@ export async function routeMessage(
       } catch (error: unknown) {
         try {
           const setup: SetupState = await storage.loadSetup();
-          if (setup.dataClear.status !== 'idle' && setup.dataClear.scope === 'all') {
-            onboardingServices?.setupCompleted?.(false);
-          }
+          const allDataClearPending: boolean =
+            setup.dataClear.status !== 'idle' && setup.dataClear.scope === 'all';
+          onboardingServices?.setupCompleted?.(setup.completed && !allDataClearPending);
         } catch (setupError: unknown) {
           onboardingServices?.reportError(setupError);
         }

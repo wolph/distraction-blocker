@@ -503,7 +503,7 @@ export function createPolicyStorage(
   }
 
   function runAllDataClearExclusive<T>(operation: () => Promise<T>): Promise<T> {
-    return allDataClearBarrier.runExclusive(
+    const requested: Promise<T> = allDataClearBarrier.runExclusive(
       async (): Promise<T> => {
         allDataClearBarrierHeld = true;
         try {
@@ -514,6 +514,9 @@ export function createPolicyStorage(
       },
       (): boolean => allDataClearQuiescenceRequired,
     );
+    return requested.finally((): void => {
+      allDataClearQuiescenceRequired = false;
+    });
   }
 
   async function previousValues(keys: readonly string[]): Promise<PreviousValues> {

@@ -2365,6 +2365,38 @@ describe('PolicyStorage', (): void => {
     expect(await storage.loadSetup()).toEqual(DEFAULT_SETUP);
   });
 
+  it('does not retain stale quiescence when a later all-data journal write fails early', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_RUNTIME]: emptyRuntime(Date.now()),
+    });
+    const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
+    const retainedAfterFailure: boolean[] = [];
+    const storage: PolicyStorage = createPolicyStorage(local.area, sync.area, EMPTY_CHECKPOINT, {
+      runExclusive: async <T>(
+        operation: () => Promise<T>,
+        retainQuiescence: () => boolean,
+      ): Promise<T> => {
+        try {
+          return await operation();
+        } catch (error: unknown) {
+          retainedAfterFailure.push(retainQuiescence());
+          throw error;
+        }
+      },
+    });
+
+    await storage.deleteRemoteData('all');
+    vi.mocked(local.area.set).mockRejectedValueOnce(new Error('journal write unavailable'));
+
+    await expect(storage.deleteRemoteData('all')).rejects.toThrow('journal write unavailable');
+
+    expect(retainedAfterFailure).toEqual([false]);
+    expect(await storage.loadSetup()).toEqual(DEFAULT_SETUP);
+    expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toBeUndefined();
+  });
+
   it('re-scans local authority when a writer recreates Focus Lock data after removal', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
     const local: FakeStorage = fakeStorage({

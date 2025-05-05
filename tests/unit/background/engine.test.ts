@@ -1383,6 +1383,42 @@ describe('Engine', () => {
     await expect(h.engine.snapshotPersisted()).resolves.toMatchObject({ phase: 'idle' });
   });
 
+  it('keeps mute ownership visible until the all-data cleanup sweep restores audio', async (): Promise<void> => {
+    const url: string = 'https://facebook.com/feed';
+    let restoredMutedTab: boolean = false;
+    let h: Harness;
+    h = makeEngine({
+      applyBlocking: async (): Promise<void> => {
+        const facts: ReturnType<Engine['tabFacts']> = h.engine.tabFacts(7, url);
+        restoredMutedTab = facts.wasMutedByUs && !facts.priorMuted;
+      },
+    });
+    await h.engine.claimMute(7, url, false);
+
+    await h.engine.runWithDataClearBarrier((): Promise<void> => Promise.resolve());
+
+    expect(restoredMutedTab).toBe(true);
+    expect(h.engine.tabFacts(7, url).wasMutedByUs).toBe(false);
+  });
+
+  it('keeps stopped-document ownership visible until the all-data cleanup sweep reloads it', async (): Promise<void> => {
+    const url: string = 'https://facebook.com/feed';
+    const documentId: string = 'stopped-document';
+    let restoredStoppedTab: boolean = false;
+    let h: Harness;
+    h = makeEngine({
+      applyBlocking: async (): Promise<void> => {
+        restoredStoppedTab = h.engine.tabFacts(7, url, documentId).wasStopped;
+      },
+    });
+    await h.engine.markStopped(7, url, documentId);
+
+    await h.engine.runWithDataClearBarrier((): Promise<void> => Promise.resolve());
+
+    expect(restoredStoppedTab).toBe(true);
+    expect(h.engine.tabFacts(7, url, documentId).wasStopped).toBe(false);
+  });
+
   it('retains quiescence for a boot-restored all-data retry and reopens after success', async (): Promise<void> => {
     const h: Harness = makeEngine();
     await h.engine.startSession(manualConfig);
