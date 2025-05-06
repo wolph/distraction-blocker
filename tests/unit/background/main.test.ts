@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { reconcileContentRegistrationState } from '../../../src/background/content-registration';
-import type { EnginePorts } from '../../../src/background/engine';
+import type { Engine, EnginePorts } from '../../../src/background/engine';
 import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/background/list-sync-codec';
 import { main } from '../../../src/background/main';
 import { routeMessage } from '../../../src/background/router';
@@ -76,6 +76,7 @@ type MockRegistrationResult =
   | 'unavailable'
   | 'ready'
   | 'error'
+  | Error
   | {
       permission: 'granted' | 'denied' | 'unknown';
       status: 'unavailable' | 'ready' | 'error';
@@ -244,6 +245,7 @@ vi.mock('../../../src/background/content-registration', () => ({
       const result: MockRegistrationResult = mocks.registrationStatuses.shift() ?? 'unavailable';
       const gate: Promise<void> | null = mocks.registrationReconcileGates.shift() ?? null;
       if (gate !== null) await gate;
+      if (result instanceof Error) throw result;
       if (typeof result !== 'string') return result;
       if (result === 'ready') return { permission: 'granted', status: 'ready' };
       if (result === 'error') return { permission: 'granted', status: 'error' };
@@ -813,6 +815,64 @@ describe('background runtime request boundary', () => {
 
     await expect(explicit).resolves.toEqual({ permission: 'granted', status: 'ready' });
     expect(reconcileContentRegistrationState).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores a stale explicit reconciliation failure after permission-added succeeds', async (): Promise<void> => {
+    setCompleteLocalPolicy();
+    mocks.registrationStatuses = ['unavailable'];
+    await finishBoot();
+    const services = vi.mocked(routeMessage).mock.calls.at(-1)?.[4];
+    if (services === undefined) throw new Error('onboarding services were not provided');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+    vi.mocked(reconcileContentRegistrationState).mockClear();
+    let releaseExplicit: () => void = (): void => undefined;
+    const explicitGate: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseExplicit = resolve;
+    });
+    mocks.registrationStatuses = [new Error('stale reconciliation failed'), 'ready'];
+    mocks.registrationReconcileGates = [explicitGate, null];
+
+    const explicit: Promise<{
+      permission: 'granted' | 'denied' | 'unknown';
+      status: 'unavailable' | 'ready' | 'error';
+    }> = services.reconcileWebsiteAccess();
+    await vi.waitFor((): void => expect(reconcileContentRegistrationState).toHaveBeenCalledOnce());
+    mocks.permissionAddedListener?.({ origins: ['https://*/*'] });
+    releaseExplicit();
+
+    await expect(explicit).resolves.toEqual({ permission: 'granted', status: 'ready' });
+    expect(reconcileContentRegistrationState).toHaveBeenCalledTimes(2);
+    expect(consoleError).toHaveBeenCalledWith(
+      'focus-lock background error',
+      expect.objectContaining({ message: 'stale reconciliation failed' }),
+    );
+  });
+
+  it('propagates persistence failure from the latest superseding permission generation', async (): Promise<void> => {
+    setCompleteLocalPolicy();
+    mocks.registrationStatuses = ['unavailable'];
+    await finishBoot();
+    const services = vi.mocked(routeMessage).mock.calls.at(-1)?.[4];
+    if (services === undefined) throw new Error('onboarding services were not provided');
+    let releaseExplicit: () => void = (): void => undefined;
+    const explicitGate: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseExplicit = resolve;
+    });
+    mocks.registrationStatuses = ['unavailable', 'ready'];
+    mocks.registrationReconcileGates = [explicitGate, null];
+
+    const explicit: Promise<{
+      permission: 'granted' | 'denied' | 'unknown';
+      status: 'unavailable' | 'ready' | 'error';
+    }> = services.reconcileWebsiteAccess();
+    await vi.waitFor((): void =>
+      expect(reconcileContentRegistrationState).toHaveBeenCalledTimes(2),
+    );
+    mocks.permissionAddedListener?.({ origins: ['https://*/*'] });
+    mocks.setupWriteError = new Error('latest setup persistence failed');
+    releaseExplicit();
+
+    await expect(explicit).rejects.toThrow('latest setup persistence failed');
   });
 
   it('reconciles website blocking before Engine construction and injects only when ready', async (): Promise<void> => {
@@ -1518,6 +1578,67 @@ describe('background runtime request boundary', () => {
       expect.anything(),
     );
     expect(vi.mocked(routeMessage).mock.calls[0]?.[1]).toBe(request);
+  });
+
+  it('keeps reads responsive while onboarding controls remain ordered', async (): Promise<void> => {
+    await finishBoot();
+    vi.mocked(routeMessage).mockClear();
+    let releaseFirstControl: () => void = (): void => undefined;
+    let signalFirstControlStarted: () => void = (): void => undefined;
+    const firstControlBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseFirstControl = resolve;
+    });
+    const firstControlStarted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalFirstControlStarted = resolve;
+    });
+    const routed: Request['type'][] = [];
+    vi.mocked(routeMessage).mockImplementation(
+      async (_engine: Engine, request: Request): Promise<unknown> => {
+        routed.push(request.type);
+        if (request.type === 'completeSetup') {
+          signalFirstControlStarted();
+          await firstControlBlocked;
+        }
+        return { ok: true };
+      },
+    );
+
+    const firstControl: Promise<unknown> = dispatchRuntime({
+      type: 'completeSetup',
+      storageMode: 'local',
+      settings: DEFAULT_SETTINGS,
+      lists: DEFAULT_LISTS,
+    });
+    await firstControlStarted;
+    const blockRead: Promise<unknown> = dispatchRuntime({
+      type: 'getBlockState',
+      url: 'https://example.com',
+      docState: 'loaded',
+    });
+    const setupRead: Promise<unknown> = dispatchRuntime({ type: 'getSetupState' });
+    const secondControl: Promise<unknown> = dispatchRuntime({
+      type: 'dismissWebsiteAccessNotice',
+    });
+    for (let index: number = 0; index < 10; index += 1) await Promise.resolve();
+
+    try {
+      expect(routed).toContain('getBlockState');
+      expect(routed).toContain('getSetupState');
+      expect(routed).not.toContain('dismissWebsiteAccessNotice');
+    } finally {
+      releaseFirstControl();
+      await Promise.all([firstControl, blockRead, setupRead, secondControl]);
+    }
+
+    expect(
+      routed.filter((type: Request['type']): boolean => type === 'completeSetup'),
+    ).toHaveLength(1);
+    expect(
+      routed.filter((type: Request['type']): boolean => type === 'dismissWebsiteAccessNotice'),
+    ).toHaveLength(1);
+    expect(routed.indexOf('completeSetup')).toBeLessThan(
+      routed.indexOf('dismissWebsiteAccessNotice'),
+    );
   });
 });
 

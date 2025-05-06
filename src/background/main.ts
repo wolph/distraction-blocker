@@ -99,8 +99,25 @@ type WebsiteReconciliation = {
   capability: ContentRegistrationState;
   generation: number;
 };
+type WebsiteReconciliationRequest = {
+  generation: number;
+  promise: Promise<WebsiteReconciliation>;
+};
 type WebsiteAccessNotice = Exclude<SetupState['websiteAccessNotice'], null>;
 type PendingWebsiteAccessNotice = { value: WebsiteAccessNotice | null };
+
+function requiresWorkerControl(request: Request): boolean {
+  switch (request.type) {
+    case 'reconcileWebsiteAccess':
+    case 'dismissWebsiteAccessNotice':
+    case 'completeSetup':
+    case 'setStorageMode':
+    case 'clearFocusLockData':
+      return true;
+    default:
+      return false;
+  }
+}
 
 function recordWebsiteAccessNotice(
   pending: PendingWebsiteAccessNotice,
@@ -707,7 +724,7 @@ export function main(): void {
     status: 'unavailable',
   };
   let websiteReconciliationGeneration: number = 0;
-  let websiteReconciliationLatest: Promise<WebsiteReconciliation> | null = null;
+  let websiteReconciliationLatest: WebsiteReconciliationRequest | null = null;
   let websiteReconciliationTail: Promise<void> = Promise.resolve();
   let workerControlTail: Promise<void> = Promise.resolve();
   let setupCompleted: boolean = false;
@@ -779,17 +796,24 @@ export function main(): void {
         return { capability: websiteCapability, generation };
       },
     );
-    websiteReconciliationLatest = requested;
+    websiteReconciliationLatest = { generation, promise: requested };
     websiteReconciliationTail = settled.then((): void => undefined);
     if (!propagateErrors) return settled;
     return (async (): Promise<WebsiteReconciliation> => {
-      let result: WebsiteReconciliation = await requested;
-      while (result.generation !== websiteReconciliationGeneration) {
-        const latest: Promise<WebsiteReconciliation> | null = websiteReconciliationLatest;
-        if (latest === null) throw new Error('website reconciliation generation is unavailable');
-        result = await latest;
+      let current: WebsiteReconciliationRequest = { generation, promise: requested };
+      while (true) {
+        try {
+          const result: WebsiteReconciliation = await current.promise;
+          if (current.generation === websiteReconciliationGeneration) return result;
+        } catch (error: unknown) {
+          if (current.generation === websiteReconciliationGeneration) throw error;
+        }
+        const latest: WebsiteReconciliationRequest | null = websiteReconciliationLatest;
+        if (latest === null || latest.generation === current.generation) {
+          throw new Error('website reconciliation generation is unavailable');
+        }
+        current = latest;
       }
-      return result;
     })();
   };
 
@@ -863,24 +887,22 @@ export function main(): void {
         return true;
       }
       ready
-        .then(
-          async (engine: Engine): Promise<unknown> =>
-            runWorkerControl(
-              async (): Promise<unknown> =>
-                routeMessage(engine, request, sender, await policyStorageReady, {
-                  reconcileWebsiteAccess: async (): Promise<ContentRegistrationState> =>
-                    (await reconcileWebsiteCapability('explicit', true, true)).capability,
-                  dismissWebsiteAccessNotice,
-                  removeOnboardingDraft: async (): Promise<void> => {
-                    await chrome.storage.local.remove(LOCAL_ONBOARDING_DRAFT);
-                  },
-                  reportError: reportBackgroundError,
-                  setupCompleted: (completed: boolean): void => {
-                    setupCompleted = completed;
-                  },
-                }),
-            ),
-        )
+        .then(async (engine: Engine): Promise<unknown> => {
+          const route: () => Promise<unknown> = async (): Promise<unknown> =>
+            routeMessage(engine, request, sender, await policyStorageReady, {
+              reconcileWebsiteAccess: async (): Promise<ContentRegistrationState> =>
+                (await reconcileWebsiteCapability('explicit', true, true)).capability,
+              dismissWebsiteAccessNotice,
+              removeOnboardingDraft: async (): Promise<void> => {
+                await chrome.storage.local.remove(LOCAL_ONBOARDING_DRAFT);
+              },
+              reportError: reportBackgroundError,
+              setupCompleted: (completed: boolean): void => {
+                setupCompleted = completed;
+              },
+            });
+          return requiresWorkerControl(request) ? runWorkerControl(route) : route();
+        })
         .then((response: unknown): void => sendResponse(response))
         .catch((err: unknown): void => sendResponse({ ok: false, error: String(err) }));
       return true;
