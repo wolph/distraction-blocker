@@ -119,6 +119,7 @@ const mocks = vi.hoisted(
     setupWriteStarted: (() => void) | null;
     injectionGate: Promise<void> | null;
     injectionResult: boolean;
+    persistDeviceIdOnGet: boolean;
     localRemoveError: Error | null;
     syncRemoveError: Error | null;
     tickActiveSessionStates: boolean[];
@@ -162,6 +163,7 @@ const mocks = vi.hoisted(
     setupWriteStarted: null,
     injectionGate: null,
     injectionResult: true,
+    persistDeviceIdOnGet: false,
     localRemoveError: null,
     syncRemoveError: null,
     tickActiveSessionStates: [],
@@ -273,7 +275,10 @@ vi.mock('../../../src/background/stores', async () => {
   return {
     appendEvents: vi.fn(),
     emptyRuntime: actual.emptyRuntime,
-    getDeviceId: vi.fn().mockResolvedValue('device-id'),
+    getDeviceId: vi.fn().mockImplementation(async (): Promise<string> => {
+      if (mocks.persistDeviceIdOnGet) mocks.localState[LOCAL_DEVICE_ID] = 'device-id';
+      return 'device-id';
+    }),
     loadBank: actual.loadBank,
     loadLists: actual.loadLists,
     loadMatcherCache: vi.fn().mockImplementation(async (): Promise<unknown> => {
@@ -634,6 +639,7 @@ beforeEach((): void => {
   mocks.setupWriteStarted = null;
   mocks.injectionGate = null;
   mocks.injectionResult = true;
+  mocks.persistDeviceIdOnGet = false;
   mocks.localRemoveError = null;
   mocks.syncRemoveError = null;
   mocks.tickActiveSessionStates = [];
@@ -1468,6 +1474,55 @@ describe('background runtime request boundary', () => {
     expect(chrome.storage.sync.getBytesInUse).not.toHaveBeenCalled();
     expect(chrome.storage.sync.set).not.toHaveBeenCalled();
     expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
+  });
+
+  it('recreates a clean marker after recovered all-data clear across two restarts', async (): Promise<void> => {
+    const now: number = Date.now();
+    mocks.persistDeviceIdOnGet = true;
+    mocks.localState = {
+      [LOCAL_INSTALL_MARKER]: {
+        version: 1,
+        profile: 'clean',
+        latestReason: 'install',
+        extensionVersion: '0.1.0',
+      },
+      [LOCAL_SETUP]: {
+        ...DEFAULT_SETUP,
+        completed: true,
+        storageMode: 'local',
+        dataClear: { status: 'pending', scope: 'all', phase: 'remote' },
+      },
+      [LOCAL_RUNTIME]: emptyRuntime(now),
+      [LOCAL_DATA_CLEAR_JOURNAL]: {
+        scope: 'all',
+        phase: 'remote',
+        inventory: [SYNC_SETTINGS],
+      },
+    };
+    mocks.scenario.storedSync = { [SYNC_SETTINGS]: DEFAULT_SETTINGS };
+
+    main();
+    await expect(dispatchRuntime({ type: 'getSnapshot' })).resolves.toEqual({ ok: true });
+
+    expect(mocks.localState[LOCAL_INSTALL_MARKER]).toMatchObject({ profile: 'clean' });
+    expect(mocks.localState[LOCAL_DEVICE_ID]).toBe('device-id');
+
+    for (let restart: number = 0; restart < 2; restart += 1) {
+      vi.mocked(chrome.storage.sync.get).mockClear();
+      vi.mocked(chrome.storage.sync.getBytesInUse).mockClear();
+      vi.mocked(chrome.storage.sync.set).mockClear();
+      vi.mocked(chrome.storage.sync.remove).mockClear();
+      mocks.scenario.storedSync = { [SYNC_SETTINGS]: DEFAULT_SETTINGS };
+
+      main();
+      await expect(dispatchRuntime({ type: 'getSnapshot' })).resolves.toEqual({ ok: true });
+
+      expect(chrome.storage.sync.get).not.toHaveBeenCalled();
+      expect(chrome.storage.sync.getBytesInUse).not.toHaveBeenCalled();
+      expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+      expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
+      expect(mocks.localState[LOCAL_INSTALL_MARKER]).toMatchObject({ profile: 'clean' });
+    }
   });
 
   it.each([

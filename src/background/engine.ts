@@ -129,6 +129,13 @@ interface AttemptDurability {
   reject(error: unknown): void;
 }
 
+interface DeferredBlockStateRequest {
+  documentId?: string;
+  kind: 'navigation' | 'existing';
+  tabId: number;
+  url: string;
+}
+
 const NO_SESSION_VERDICT: Verdict = { blocked: false, reason: 'no-session', matchedPattern: null };
 const WEBSITE_BLOCKING_LOSS_RETRY_MS: number = 1_000;
 
@@ -187,6 +194,7 @@ export class Engine {
   private dataClearBarrierState: 'open' | 'draining' | 'quiesced' = 'open';
   private dataClearOperationRunning = false;
   private websiteBlockingLossPending = false;
+  private deferredBlockStateRequests: Map<string, DeferredBlockStateRequest> = new Map();
 
   constructor(
     private readonly ports: EnginePorts,
@@ -267,6 +275,7 @@ export class Engine {
       this.dataClearOperationRunning = false;
       if (this.dataClearBarrierState === 'open') {
         await this.applyPendingWebsiteBlockingLoss();
+        await this.flushDeferredBlockStateRequests();
       }
     }
   }
@@ -319,7 +328,32 @@ export class Engine {
       this.dataClearBarrierState = 'open';
       this.dataClearOperationRunning = false;
       await this.applyPendingWebsiteBlockingLoss();
+      await this.flushDeferredBlockStateRequests();
     }
+  }
+
+  blockStateDuringTransition(
+    url: string,
+    tabId: number | undefined,
+    senderOwnsUrl: boolean,
+    kind: 'navigation' | 'existing',
+    documentId?: string,
+  ): { verdict: Verdict; snapshot: SessionSnapshot } | null {
+    if (this.dataClearBarrierState === 'open') return null;
+    const verdict: Verdict = this.verdictFor(url);
+    if (verdict.blocked && tabId !== undefined && senderOwnsUrl) {
+      const request: DeferredBlockStateRequest = {
+        url,
+        tabId,
+        kind,
+        ...(typeof documentId === 'string' && documentId !== '' ? { documentId } : {}),
+      };
+      this.deferredBlockStateRequests.set(
+        `${tabId}:${url}:${kind}:${request.documentId ?? ''}`,
+        request,
+      );
+    }
+    return { verdict, snapshot: this.buildSnapshot(this.ports.now()) };
   }
 
   snapshot(): SessionSnapshot {
@@ -1958,6 +1992,23 @@ export class Engine {
       this.runtime.tabStates = {};
       await this.persistRuntime();
       await this.drainRuntimeMutations();
+    }
+  }
+
+  private async flushDeferredBlockStateRequests(): Promise<void> {
+    if (this.dataClearBarrierState !== 'open' || this.deferredBlockStateRequests.size === 0) return;
+    const requests: DeferredBlockStateRequest[] = [...this.deferredBlockStateRequests.values()];
+    this.deferredBlockStateRequests.clear();
+    for (const request of requests) {
+      if (!this.verdictFor(request.url).blocked) continue;
+      try {
+        await this.recordAttempt(request.url, request.tabId, request.kind);
+        if (request.kind === 'navigation' && request.documentId !== undefined) {
+          await this.markStopped(request.tabId, request.url, request.documentId);
+        }
+      } catch (error: unknown) {
+        this.ports.reportError(error);
+      }
     }
   }
 

@@ -1,21 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Engine } from '../../../src/background/engine';
+import { Engine, type EnginePorts } from '../../../src/background/engine';
 import type { PolicyStorage } from '../../../src/background/policy-storage';
 import { routeMessage } from '../../../src/background/router';
 import { type AggregateStorage, fetchStats } from '../../../src/background/stats-service';
-import { readEvents } from '../../../src/background/stores';
+import { emptyRuntime, readEvents } from '../../../src/background/stores';
 import {
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
   DEFAULT_SETUP,
   emptySnapshot,
+  rulesFromLists,
 } from '../../../src/shared/constants';
 import type { StatsBundle } from '../../../src/shared/messages';
-import type { EventRecord, SetupState } from '../../../src/shared/types';
+import type { EventRecord, SessionConfig, SetupState } from '../../../src/shared/types';
 
 vi.mock('../../../src/background/audio', () => ({ playSound: vi.fn() }));
 vi.mock('../../../src/background/stats-service', () => ({ fetchStats: vi.fn() }));
-vi.mock('../../../src/background/stores', () => ({ readEvents: vi.fn() }));
+vi.mock('../../../src/background/stores', async () => {
+  const actual: typeof import('../../../src/background/stores') = await vi.importActual(
+    '../../../src/background/stores',
+  );
+  return { ...actual, readEvents: vi.fn() };
+});
 
 const overlay: ReturnType<Engine['statsOverlay']> = {
   deviceId: 'devA',
@@ -70,6 +76,41 @@ function onboardingStorage(
     clearLocalHistory: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   } as unknown as PolicyStorage;
+}
+
+function realBlockingEngine(): Engine {
+  const ports: EnginePorts = {
+    now: (): number => new Date(2026, 7, 31, 12, 0).getTime(),
+    newId: (): string => 'new-id',
+    rehydrateAfterDataClear: async (): Promise<string> => 'device-rehydrated',
+    saveRuntime: async (): Promise<void> => undefined,
+    saveMatcherCache: async (): Promise<void> => undefined,
+    queueSync: (): void => undefined,
+    supersedeSync: (): void => undefined,
+    removeSync: (): void => undefined,
+    persistSyncJournal: async (): Promise<void> => undefined,
+    appendEvents: async (): Promise<void> => undefined,
+    broadcast: (): void => undefined,
+    applyBlocking: async (): Promise<void> => undefined,
+    playSound: (): void => undefined,
+    notify: (): void => undefined,
+    updateIcon: (): void => undefined,
+    scheduleWake: (): void => undefined,
+    prune: async (): Promise<void> => undefined,
+    reportError: (): void => undefined,
+    websiteBlockingReady: (): boolean => true,
+    hasPendingSync: (): boolean => false,
+  };
+  const now: number = ports.now();
+  return new Engine(
+    ports,
+    DEFAULT_SETTINGS,
+    { ...DEFAULT_LISTS, custom: [{ kind: 'host', pattern: 'facebook.com' }] },
+    { balanceMs: 0 },
+    null,
+    emptyRuntime(now),
+    'device-id',
+  );
 }
 
 describe('routeMessage onboarding wiring', (): void => {
@@ -382,6 +423,77 @@ describe('routeMessage onboarding wiring', (): void => {
       ),
     ).rejects.toThrow('remote deletion failed');
   });
+
+  it.each(['enableSync', 'selectLocalMode'] as const)(
+    'returns a valid blocked state while %s holds the Engine storage barrier',
+    async (transition: 'enableSync' | 'selectLocalMode'): Promise<void> => {
+      const blockingEngine: Engine = realBlockingEngine();
+      const config: SessionConfig = {
+        mode: 'blacklist',
+        strictness: 'friction',
+        durationMin: 25,
+        cycling: null,
+        intention: 'finish the launch',
+        source: 'manual',
+        scheduleEntryId: null,
+        rules: rulesFromLists({
+          ...DEFAULT_LISTS,
+          custom: [{ kind: 'host', pattern: 'facebook.com' }],
+        }),
+      };
+      await blockingEngine.startSession(config);
+      let releaseBarrier: () => void = (): void => undefined;
+      let signalBarrierHeld: () => void = (): void => undefined;
+      const barrierBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
+        releaseBarrier = resolve;
+      });
+      const barrierHeld: Promise<void> = new Promise<void>((resolve: () => void): void => {
+        signalBarrierHeld = resolve;
+      });
+      const holdBarrier: () => Promise<void> = (): Promise<void> =>
+        blockingEngine.runWithAggregateStorageBarrier(async (): Promise<void> => {
+          signalBarrierHeld();
+          await barrierBlocked;
+        });
+      const storage: PolicyStorage = onboardingStorage({
+        [transition]: vi.fn(holdBarrier),
+      });
+      const changingMode: Promise<unknown> = routeMessage(
+        blockingEngine,
+        {
+          type: 'setStorageMode',
+          storageMode: transition === 'enableSync' ? 'sync' : 'local',
+          deleteRemote: false,
+        },
+        sender,
+        storage,
+      );
+      await barrierHeld;
+      const url: string = 'https://facebook.com/feed';
+
+      try {
+        await expect(
+          routeMessage(
+            blockingEngine,
+            { type: 'getBlockState', url, docState: 'fresh' },
+            {
+              url,
+              tab: { id: 7, url } as chrome.tabs.Tab,
+              documentId: 'document-id',
+            },
+          ),
+        ).resolves.toMatchObject({
+          verdict: { blocked: true },
+          snapshot: { phase: 'focus' },
+        });
+      } finally {
+        releaseBarrier();
+        await changingMode;
+      }
+      expect(blockingEngine.tabFacts(7, url, 'document-id').wasStopped).toBe(true);
+      expect(blockingEngine.statsOverlay().todayAgg.attempts['facebook.com']).toBe(1);
+    },
+  );
 
   it('clears local history through the serialized storage adapter', async (): Promise<void> => {
     const storage: PolicyStorage = onboardingStorage();

@@ -482,6 +482,7 @@ async function preparePolicyStorage(): Promise<PolicyStorage> {
     },
   );
   await storage.initialize();
+  if (storage.allDataClearCompleted()) await persistCleanInstallMarker();
   const recoveredSetup: SetupState = await storage.loadSetup();
   if (recoveredSetup.dataClear.status !== 'idle') return storage;
   if (marker.profile === 'clean') {

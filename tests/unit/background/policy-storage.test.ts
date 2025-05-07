@@ -2777,6 +2777,48 @@ describe('PolicyStorage', (): void => {
     },
   );
 
+  it('serves validated setup state while a first Sync checkpoint is stalled', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    let releaseCheckpoint: () => void = (): void => undefined;
+    let signalCheckpointStarted: () => void = (): void => undefined;
+    const checkpointBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseCheckpoint = resolve;
+    });
+    const checkpointStarted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalCheckpointStarted = resolve;
+    });
+    const storage: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      {
+        loadAggregateItems: async (): Promise<Record<string, unknown>> => {
+          signalCheckpointStarted();
+          await checkpointBlocked;
+          return {};
+        },
+      },
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+    await storage.initialize();
+
+    const enabling: Promise<void> = storage.enableSync();
+    await checkpointStarted;
+    let setupRead: SetupState | null = null;
+    const reading: Promise<void> = storage.loadSetup().then((value: SetupState): void => {
+      setupRead = value;
+    });
+    for (let index: number = 0; index < 10; index += 1) await Promise.resolve();
+
+    try {
+      expect(setupRead).toEqual(setup);
+    } finally {
+      releaseCheckpoint();
+      await Promise.all([enabling, reading]);
+    }
+  });
+
   it('preserves the advanced local phase when boot recovery fails after remote success', async (): Promise<void> => {
     const setup: SetupState = {
       ...DEFAULT_SETUP,

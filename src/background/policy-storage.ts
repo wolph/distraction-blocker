@@ -488,6 +488,7 @@ export function createPolicyStorage(
   let operationQueue: Promise<void> = Promise.resolve();
   let publisher: SyncWriter | null = null;
   let firstCheckpointComplete: boolean = false;
+  let setupCache: SetupState | null = null;
   let allDataClearBarrierHeld = false;
   let allDataClearQuiescenceRequired = false;
   let completedAllDataClear = false;
@@ -533,12 +534,17 @@ export function createPolicyStorage(
   }
 
   async function verifiedWrite(items: Record<string, unknown>, label: string): Promise<void> {
+    const nextSetup: unknown = items[LOCAL_SETUP];
+    if (Object.hasOwn(items, LOCAL_SETUP) && !isSetupState(nextSetup)) {
+      throw new Error('invalid setup state write');
+    }
     const keys: string[] = Object.keys(items);
     const previous: PreviousValues = await previousValues(keys);
     try {
       await local.set(structuredClone(items));
       const verified: Record<string, unknown> = await local.get(keys);
       if (!valuesEqual(verified, items)) throw new Error(`could not verify local ${label}`);
+      if (isSetupState(nextSetup)) setupCache = structuredClone(nextSetup);
     } catch (error: unknown) {
       try {
         await restore(previous);
@@ -568,10 +574,14 @@ export function createPolicyStorage(
 
   async function loadSetupInternal(): Promise<SetupState> {
     const stored: Record<string, unknown> = await local.get(LOCAL_SETUP);
-    if (!Object.hasOwn(stored, LOCAL_SETUP)) return structuredClone(DEFAULT_SETUP);
+    if (!Object.hasOwn(stored, LOCAL_SETUP)) {
+      setupCache = structuredClone(DEFAULT_SETUP);
+      return structuredClone(setupCache);
+    }
     const value: unknown = stored[LOCAL_SETUP];
     if (!isSetupState(value)) throw new Error('invalid local setup state');
-    return structuredClone(value);
+    setupCache = structuredClone(value);
+    return structuredClone(setupCache);
   }
 
   async function saveSetupInternal(next: SetupState): Promise<void> {
@@ -2048,11 +2058,13 @@ export function createPolicyStorage(
       allDataClearQuiescenceRequired = true;
       return runAllDataClearExclusive((): Promise<void> => enqueue(initializeInternal));
     },
-    loadSetup: (): Promise<SetupState> =>
-      enqueue(async (): Promise<SetupState> => {
+    loadSetup: (): Promise<SetupState> => {
+      if (initialized && setupCache !== null) return Promise.resolve(structuredClone(setupCache));
+      return enqueue(async (): Promise<SetupState> => {
         await ensureInitialized();
         return loadSetupInternal();
-      }),
+      });
+    },
     updateSetup: (next: Partial<SetupUpdate>): Promise<void> =>
       enqueue((): Promise<void> => updateSetupInternal(next)),
     markSetupCompleted: (): Promise<void> => enqueue(markSetupCompletedInternal),

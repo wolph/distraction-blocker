@@ -1,6 +1,7 @@
 import type { Ack, Request } from '../shared/messages';
 import type {
   BlockingRegistrationStatus,
+  SessionSnapshot,
   SetupState,
   SoundSettings,
   Verdict,
@@ -179,19 +180,30 @@ export async function routeMessage(
       return { ok: true, scope: msg.scope, status: 'cleared' };
     }
     case 'getBlockState': {
-      const verdict: Verdict = engine.verdictFor(msg.url);
       const tabId: number | undefined = sender.tab?.id;
       const senderOwnsUrl: boolean = sender.url === msg.url && sender.tab?.url === msg.url;
-      if (verdict.blocked && tabId !== undefined && senderOwnsUrl) {
-        await engine.recordAttempt(
+      const kind: 'navigation' | 'existing' = msg.docState === 'fresh' ? 'navigation' : 'existing';
+      const duringTransition = (): { verdict: Verdict; snapshot: SessionSnapshot } | null =>
+        engine.blockStateDuringTransition?.(
           msg.url,
           tabId,
-          msg.docState === 'fresh' ? 'navigation' : 'existing',
-        );
+          senderOwnsUrl,
+          kind,
+          sender.documentId,
+        ) ?? null;
+      const initialTransitionState = duringTransition();
+      if (initialTransitionState !== null) return initialTransitionState;
+      const verdict: Verdict = engine.verdictFor(msg.url);
+      if (verdict.blocked && tabId !== undefined && senderOwnsUrl) {
+        await engine.recordAttempt(msg.url, tabId, kind);
+        const admittedTransitionState = duringTransition();
+        if (admittedTransitionState !== null) return admittedTransitionState;
         if (msg.docState === 'fresh' && sender.documentId !== undefined) {
           await engine.markStopped(tabId, msg.url, sender.documentId);
         }
       }
+      const finalTransitionState = duringTransition();
+      if (finalTransitionState !== null) return finalTransitionState;
       return { verdict, snapshot: await engine.snapshotPersisted() };
     }
     case 'startSession':
