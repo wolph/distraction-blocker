@@ -183,27 +183,36 @@ export async function routeMessage(
       const tabId: number | undefined = sender.tab?.id;
       const senderOwnsUrl: boolean = sender.url === msg.url && sender.tab?.url === msg.url;
       const kind: 'navigation' | 'existing' = msg.docState === 'fresh' ? 'navigation' : 'existing';
-      const duringTransition = (): { verdict: Verdict; snapshot: SessionSnapshot } | null =>
+      const duringTransition = (
+        stage: 'attempt' | 'stopped' | null,
+      ): Promise<{ verdict: Verdict; snapshot: SessionSnapshot }> | null =>
         engine.blockStateDuringTransition?.(
           msg.url,
           tabId,
           senderOwnsUrl,
           kind,
+          stage,
           sender.documentId,
         ) ?? null;
-      const initialTransitionState = duringTransition();
-      if (initialTransitionState !== null) return initialTransitionState;
+      const initialTransitionState = duringTransition('attempt');
+      if (initialTransitionState !== null) return await initialTransitionState;
       const verdict: Verdict = engine.verdictFor(msg.url);
       if (verdict.blocked && tabId !== undefined && senderOwnsUrl) {
         await engine.recordAttempt(msg.url, tabId, kind);
-        const admittedTransitionState = duringTransition();
-        if (admittedTransitionState !== null) return admittedTransitionState;
+        const remainingStage: 'stopped' | null =
+          msg.docState === 'fresh' &&
+          typeof sender.documentId === 'string' &&
+          sender.documentId !== ''
+            ? 'stopped'
+            : null;
+        const admittedTransitionState = duringTransition(remainingStage);
+        if (admittedTransitionState !== null) return await admittedTransitionState;
         if (msg.docState === 'fresh' && sender.documentId !== undefined) {
           await engine.markStopped(tabId, msg.url, sender.documentId);
         }
       }
-      const finalTransitionState = duringTransition();
-      if (finalTransitionState !== null) return finalTransitionState;
+      const finalTransitionState = duringTransition(null);
+      if (finalTransitionState !== null) return await finalTransitionState;
       return { verdict, snapshot: await engine.snapshotPersisted() };
     }
     case 'startSession':

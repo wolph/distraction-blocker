@@ -1731,6 +1731,7 @@ describe('background session policy boot', () => {
       tabStates: {},
       accruedFocusMs: 0,
       attemptDebounce: {},
+      deferredBlockClaims: {},
       scheduleActiveEntryId: null,
       scheduleUnavailableNoticeToken: null,
       date: '2026-08-31',

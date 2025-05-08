@@ -133,6 +133,12 @@ function clearMutationPorts(ports: Harness['ports']): void {
   ports.saveMatcherCache.mockClear();
 }
 
+function lastSavedRuntime(harness: Harness): RuntimeState {
+  const saved: unknown = harness.ports.saveRuntime.mock.calls.at(-1)?.[0];
+  if (saved === undefined) throw new Error('expected a saved runtime');
+  return saved as RuntimeState;
+}
+
 function hasCommitCheckpoint(runtime: RuntimeState): boolean {
   return (runtime as RuntimeState & { commitCheckpoint?: unknown }).commitCheckpoint != null;
 }
@@ -1343,6 +1349,168 @@ describe('Engine', () => {
     expect(h.engine.snapshot()).toMatchObject({ phase: 'idle', bankMs: 0 });
     expect(h.engine.statsOverlay().pendingEvents).toEqual([]);
     expect(h.ports.rehydrateAfterDataClear).toHaveBeenCalledOnce();
+  });
+
+  it('persists and replays deferred navigation bookkeeping after worker restart', async (): Promise<void> => {
+    const url: string = 'https://facebook.com/feed';
+    const first: Harness = makeEngine();
+    await first.engine.startSession(manualConfig);
+    await first.engine.retainDataClearQuiescence();
+
+    await expect(
+      first.engine.blockStateDuringTransition(
+        url,
+        7,
+        true,
+        'navigation',
+        'attempt',
+        'document-one',
+      ),
+    ).resolves.toMatchObject({ verdict: { blocked: true }, snapshot: { phase: 'focus' } });
+    const stored: RuntimeState = structuredClone(lastSavedRuntime(first));
+    expect(Object.values(stored.deferredBlockClaims)).toContainEqual(
+      expect.objectContaining({
+        attemptAt: T0,
+        documentId: 'document-one',
+        sessionId: stored.session?.sessionId,
+        stage: 'attempt',
+      }),
+    );
+
+    const restarted: Harness = makeEngine({
+      runtime: migrateRuntimeRules(mergeRuntime(stored, T0 + 31_000), ENGINE_LISTS),
+    });
+    restarted.setNow(T0 + 31_000);
+    await restarted.engine.tick();
+
+    expect(restarted.engine.snapshot().attemptsToday).toBe(1);
+    expect(restarted.engine.tabFacts(7, url, 'document-one').wasStopped).toBe(true);
+    expect(restarted.loggedEvents()).toContainEqual(
+      expect.objectContaining({
+        t: 'attempt',
+        at: T0,
+        sessionId: stored.session?.sessionId,
+      }),
+    );
+    expect(lastSavedRuntime(restarted).deferredBlockClaims).toEqual({});
+  });
+
+  it('replays only the unfinished stopped stage after the debounce window', async (): Promise<void> => {
+    const url: string = 'https://facebook.com/feed';
+    const first: Harness = makeEngine();
+    await first.engine.startSession(manualConfig);
+    await first.engine.recordAttempt(url, 7, 'navigation');
+    await first.engine.retainDataClearQuiescence();
+    await first.engine.blockStateDuringTransition(
+      url,
+      7,
+      true,
+      'navigation',
+      'stopped',
+      'document-two',
+    );
+    const stored: RuntimeState = structuredClone(lastSavedRuntime(first));
+
+    const restarted: Harness = makeEngine({
+      runtime: migrateRuntimeRules(mergeRuntime(stored, T0 + 31_000), ENGINE_LISTS),
+    });
+    restarted.setNow(T0 + 31_000);
+    await restarted.engine.tick();
+
+    expect(restarted.engine.snapshot().attemptsToday).toBe(1);
+    expect(restarted.engine.tabFacts(7, url, 'document-two').wasStopped).toBe(true);
+    expect(
+      restarted.loggedEvents().filter((event: EventRecord): boolean => event.t === 'attempt'),
+    ).toEqual([]);
+  });
+
+  it('does not persist an unfinished stopped stage without a document identity', async (): Promise<void> => {
+    const first: Harness = makeEngine();
+    await first.engine.startSession(manualConfig);
+    await first.engine.retainDataClearQuiescence();
+    first.ports.saveRuntime.mockClear();
+
+    await expect(
+      first.engine.blockStateDuringTransition(
+        'https://facebook.com/feed',
+        7,
+        true,
+        'navigation',
+        'stopped',
+        '',
+      ),
+    ).resolves.toMatchObject({ verdict: { blocked: true } });
+
+    expect(first.ports.saveRuntime).not.toHaveBeenCalled();
+  });
+
+  it('retries a failed deferred attempt replay without double counting it', async (): Promise<void> => {
+    const url: string = 'https://facebook.com/feed';
+    const first: Harness = makeEngine();
+    await first.engine.startSession(manualConfig);
+    await first.engine.retainDataClearQuiescence();
+    await first.engine.blockStateDuringTransition(
+      url,
+      7,
+      true,
+      'navigation',
+      'attempt',
+      'document-three',
+    );
+    const stored: RuntimeState = structuredClone(lastSavedRuntime(first));
+    const restarted: Harness = makeEngine({
+      runtime: migrateRuntimeRules(mergeRuntime(stored, T0 + 1_000), ENGINE_LISTS),
+    });
+    const replayError: Error = new Error('event storage unavailable');
+    restarted.ports.appendEvents.mockRejectedValueOnce(replayError);
+    restarted.setNow(T0 + 1_000);
+
+    await restarted.engine.tick();
+    await restarted.engine.tick();
+
+    expect(restarted.ports.reportError).toHaveBeenCalledWith(replayError);
+    expect(restarted.engine.snapshot().attemptsToday).toBe(1);
+    expect(restarted.engine.tabFacts(7, url, 'document-three').wasStopped).toBe(true);
+    expect(lastSavedRuntime(restarted).deferredBlockClaims).toEqual({});
+  });
+
+  it('keeps an old deferred attempt attributed to its originating session', async (): Promise<void> => {
+    const url: string = 'https://facebook.com/feed';
+    const first: Harness = makeEngine();
+    await first.engine.startSession(manualConfig);
+    await first.engine.retainDataClearQuiescence();
+    await first.engine.blockStateDuringTransition(
+      url,
+      7,
+      true,
+      'navigation',
+      'attempt',
+      'old-document',
+    );
+    const stored: RuntimeState = structuredClone(lastSavedRuntime(first));
+    if (stored.session === null) throw new Error('expected an active session');
+    const originatingSessionId: string | undefined = Object.values(stored.deferredBlockClaims)[0]
+      ?.sessionId;
+    stored.session = { ...stored.session, sessionId: 'later-session' };
+
+    const restarted: Harness = makeEngine({
+      runtime: migrateRuntimeRules(mergeRuntime(stored, T0 + 1_000), ENGINE_LISTS),
+    });
+    restarted.setNow(T0 + 1_000);
+    await restarted.engine.tick();
+
+    expect(restarted.engine.snapshot().attemptsToday).toBe(1);
+    expect(restarted.engine.tabFacts(7, url, 'old-document').wasStopped).toBe(true);
+    expect(restarted.loggedEvents()).toContainEqual(
+      expect.objectContaining({
+        t: 'attempt',
+        sessionId: originatingSessionId,
+      }),
+    );
+    expect(restarted.loggedEvents()).not.toContainEqual(
+      expect.objectContaining({ t: 'attempt', sessionId: 'later-session' }),
+    );
+    expect(lastSavedRuntime(restarted).deferredBlockClaims).toEqual({});
   });
 
   it('clears local in-memory aggregates after durable local-history deletion', async (): Promise<void> => {

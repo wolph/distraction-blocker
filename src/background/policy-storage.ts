@@ -1777,8 +1777,11 @@ export function createPolicyStorage(
       keys.push(
         ...Object.keys(stored).filter(
           (key: string): boolean =>
-            isAggregateHistoryKey(key) || key.startsWith('archive:clock-rebase:'),
+            key.startsWith('agg:') ||
+            key.startsWith('aggm:') ||
+            key.startsWith('archive:clock-rebase:'),
         ),
+        LOCAL_SYNC_QUOTA_EVICTION,
         LOCAL_AGGREGATE_PRUNE,
         LOCAL_AGGREGATE_TOMBSTONES,
         LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS,

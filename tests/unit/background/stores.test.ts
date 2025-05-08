@@ -625,6 +625,31 @@ describe('runtime storage migration', () => {
         unlocks: [{ host: 42, until: Number.POSITIVE_INFINITY }],
         accruedFocusMs: -1,
         attemptDebounce: { bad: 'yesterday' },
+        deferredBlockClaims: {
+          missingSession: {
+            attemptAt: now,
+            kind: 'navigation',
+            stage: 'attempt',
+            tabId: 7,
+            url: 'https://blocked.example',
+          },
+          stoppedWithoutDocument: {
+            attemptAt: now,
+            kind: 'navigation',
+            sessionId: 'session-one',
+            stage: 'stopped',
+            tabId: 7,
+            url: 'https://blocked.example',
+          },
+          blankSession: {
+            attemptAt: now,
+            kind: 'existing',
+            sessionId: '   ',
+            stage: 'attempt',
+            tabId: 7,
+            url: 'https://blocked.example',
+          },
+        },
         scheduleActiveEntryId: 42,
         scheduleUnavailableNoticeToken: 42,
         lastPruneDate: 'not-a-date',
@@ -639,11 +664,29 @@ describe('runtime storage migration', () => {
       unlocks: [],
       accruedFocusMs: 0,
       attemptDebounce: {},
+      deferredBlockClaims: {},
       scheduleActiveEntryId: null,
       scheduleUnavailableNoticeToken: null,
       lastPruneDate: null,
       commitCheckpoint: null,
     });
+  });
+
+  it('preserves valid deferred navigation claims for restart replay', (): void => {
+    const now: number = new Date(2026, 7, 29, 12, 0).getTime();
+    const claim = {
+      attemptAt: now - 31_000,
+      documentId: 'document-one',
+      kind: 'navigation' as const,
+      sessionId: 'session-one',
+      stage: 'attempt' as const,
+      tabId: 7,
+      url: 'https://blocked.example/feed',
+    };
+
+    const runtime = mergeRuntime({ deferredBlockClaims: { claim } }, now);
+
+    expect(runtime.deferredBlockClaims).toEqual({ claim });
   });
 
   it('preserves a valid legacy session without copying unknown runtime fields', () => {

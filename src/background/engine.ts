@@ -65,6 +65,7 @@ import {
   type RolloverPlan,
 } from './rollover';
 import {
+  type DeferredBlockClaim,
   emptyRuntime,
   type RuntimeCommitCheckpoint,
   type RuntimeState,
@@ -129,13 +130,6 @@ interface AttemptDurability {
   reject(error: unknown): void;
 }
 
-interface DeferredBlockStateRequest {
-  documentId?: string;
-  kind: 'navigation' | 'existing';
-  tabId: number;
-  url: string;
-}
-
 const NO_SESSION_VERDICT: Verdict = { blocked: false, reason: 'no-session', matchedPattern: null };
 const WEBSITE_BLOCKING_LOSS_RETRY_MS: number = 1_000;
 
@@ -194,7 +188,6 @@ export class Engine {
   private dataClearBarrierState: 'open' | 'draining' | 'quiesced' = 'open';
   private dataClearOperationRunning = false;
   private websiteBlockingLossPending = false;
-  private deferredBlockStateRequests: Map<string, DeferredBlockStateRequest> = new Map();
 
   constructor(
     private readonly ports: EnginePorts,
@@ -275,7 +268,7 @@ export class Engine {
       this.dataClearOperationRunning = false;
       if (this.dataClearBarrierState === 'open') {
         await this.applyPendingWebsiteBlockingLoss();
-        await this.flushDeferredBlockStateRequests();
+        await this.flushDeferredBlockClaims();
       }
     }
   }
@@ -325,10 +318,13 @@ export class Engine {
       this.dataClearBarrierState = 'quiesced';
       return await operation();
     } finally {
-      this.dataClearBarrierState = 'open';
-      this.dataClearOperationRunning = false;
+      try {
+        await this.flushDeferredBlockClaims();
+      } finally {
+        this.dataClearBarrierState = 'open';
+        this.dataClearOperationRunning = false;
+      }
       await this.applyPendingWebsiteBlockingLoss();
-      await this.flushDeferredBlockStateRequests();
     }
   }
 
@@ -337,23 +333,39 @@ export class Engine {
     tabId: number | undefined,
     senderOwnsUrl: boolean,
     kind: 'navigation' | 'existing',
+    stage: 'attempt' | 'stopped' | null,
     documentId?: string,
-  ): { verdict: Verdict; snapshot: SessionSnapshot } | null {
+  ): Promise<{ verdict: Verdict; snapshot: SessionSnapshot }> | null {
     if (this.dataClearBarrierState === 'open') return null;
     const verdict: Verdict = this.verdictFor(url);
-    if (verdict.blocked && tabId !== undefined && senderOwnsUrl) {
-      const request: DeferredBlockStateRequest = {
-        url,
-        tabId,
-        kind,
-        ...(typeof documentId === 'string' && documentId !== '' ? { documentId } : {}),
-      };
-      this.deferredBlockStateRequests.set(
-        `${tabId}:${url}:${kind}:${request.documentId ?? ''}`,
-        request,
-      );
+    const snapshot: SessionSnapshot = this.buildSnapshot(this.ports.now());
+    if (!verdict.blocked || tabId === undefined || !senderOwnsUrl || stage === null) {
+      return Promise.resolve({ verdict, snapshot });
     }
-    return { verdict, snapshot: this.buildSnapshot(this.ports.now()) };
+    const hasDocumentId: boolean = typeof documentId === 'string' && documentId !== '';
+    if (stage === 'stopped' && (kind !== 'navigation' || !hasDocumentId)) {
+      return Promise.resolve({ verdict, snapshot });
+    }
+    const sessionId: string | undefined = this.runtime.session?.sessionId;
+    if (sessionId === undefined) return Promise.resolve({ verdict, snapshot });
+    const claim: DeferredBlockClaim = {
+      attemptAt: this.ports.now(),
+      url,
+      tabId,
+      kind,
+      sessionId,
+      stage,
+      ...(hasDocumentId ? { documentId } : {}),
+    };
+    const key: string = `${sessionId}:${tabId}:${url}:${kind}:${claim.documentId ?? ''}`;
+    const existing: DeferredBlockClaim | undefined = this.runtime.deferredBlockClaims[key];
+    if (existing === undefined || (existing.stage === 'attempt' && stage === 'stopped')) {
+      this.runtime.deferredBlockClaims[key] =
+        existing === undefined ? claim : { ...claim, attemptAt: existing.attemptAt };
+    }
+    return this.persistRuntime()
+      .catch((error: unknown): void => this.ports.reportError(error))
+      .then((): { verdict: Verdict; snapshot: SessionSnapshot } => ({ verdict, snapshot }));
   }
 
   snapshot(): SessionSnapshot {
@@ -968,7 +980,10 @@ export class Engine {
         this.failedAttemptPersistence.delete(key);
       }
     }
-    await this.persistDroppedTab(tabId);
+    for (const [key, claim] of Object.entries(this.runtime.deferredBlockClaims)) {
+      if (claim.tabId === tabId) delete this.runtime.deferredBlockClaims[key];
+    }
+    await this.persistDroppedTab();
   }
 
   private ensureTabState(tabId: number): RuntimeTabState {
@@ -995,6 +1010,7 @@ export class Engine {
   }
 
   private async tickNow(): Promise<void> {
+    await this.flushDeferredBlockClaims();
     const now: number = this.ports.now();
     this.catchUp(now);
     this.pruneDebounce(now);
@@ -1861,17 +1877,22 @@ export class Engine {
     if (snapshot === undefined) {
       this.runtimePersistRevision += 1;
       this.ownedRuntimeSnapshot.tabStates = structuredClone(this.runtime.tabStates);
+      this.ownedRuntimeSnapshot.attemptDebounce = structuredClone(this.runtime.attemptDebounce);
+      this.ownedRuntimeSnapshot.deferredBlockClaims = structuredClone(
+        this.runtime.deferredBlockClaims,
+      );
       return this.queueRuntimeSnapshot(structuredClone(this.ownedRuntimeSnapshot));
     }
     return this.queueRuntimeSnapshot(snapshot);
   }
 
-  private persistDroppedTab(tabId: number): Promise<void> {
+  private persistDroppedTab(): Promise<void> {
     this.runtimePersistRevision += 1;
     this.ownedRuntimeSnapshot.tabStates = structuredClone(this.runtime.tabStates);
-    for (const key of Object.keys(this.ownedRuntimeSnapshot.attemptDebounce)) {
-      if (key.startsWith(`${tabId}:`)) delete this.ownedRuntimeSnapshot.attemptDebounce[key];
-    }
+    this.ownedRuntimeSnapshot.attemptDebounce = structuredClone(this.runtime.attemptDebounce);
+    this.ownedRuntimeSnapshot.deferredBlockClaims = structuredClone(
+      this.runtime.deferredBlockClaims,
+    );
     return this.queueRuntimeSnapshot(structuredClone(this.ownedRuntimeSnapshot));
   }
 
@@ -1995,20 +2016,70 @@ export class Engine {
     }
   }
 
-  private async flushDeferredBlockStateRequests(): Promise<void> {
-    if (this.dataClearBarrierState !== 'open' || this.deferredBlockStateRequests.size === 0) return;
-    const requests: DeferredBlockStateRequest[] = [...this.deferredBlockStateRequests.values()];
-    this.deferredBlockStateRequests.clear();
-    for (const request of requests) {
-      if (!this.verdictFor(request.url).blocked) continue;
+  private async flushDeferredBlockClaims(): Promise<void> {
+    await this.runtimePersistQueue;
+    if (Object.keys(this.runtime.deferredBlockClaims).length === 0) return;
+    if (this.dirty) {
       try {
-        await this.recordAttempt(request.url, request.tabId, request.kind);
-        if (request.kind === 'navigation' && request.documentId !== undefined) {
-          await this.markStopped(request.tabId, request.url, request.documentId);
-        }
+        await this.commit(this.ports.now());
       } catch (error: unknown) {
         this.ports.reportError(error);
+        return;
       }
+    }
+    while (Object.keys(this.runtime.deferredBlockClaims).length > 0) {
+      let replayed: boolean = false;
+      for (const [key, storedClaim] of Object.entries(this.runtime.deferredBlockClaims)) {
+        const claim: DeferredBlockClaim | undefined = this.runtime.deferredBlockClaims[key];
+        if (claim === undefined || claim !== storedClaim) continue;
+        try {
+          await this.replayDeferredBlockClaim(key, claim);
+          replayed = true;
+        } catch (error: unknown) {
+          this.ports.reportError(error);
+        }
+      }
+      if (!replayed) {
+        if (!this.dirty) return;
+        try {
+          await this.commit(this.ports.now());
+        } catch (error: unknown) {
+          this.ports.reportError(error);
+          return;
+        }
+      }
+    }
+  }
+
+  private async replayDeferredBlockClaim(key: string, claim: DeferredBlockClaim): Promise<void> {
+    if (claim.stage === 'attempt') {
+      const nextStage: 'stopped' | null =
+        claim.kind === 'navigation' && claim.documentId !== undefined ? 'stopped' : null;
+      if (nextStage === null) delete this.runtime.deferredBlockClaims[key];
+      else this.runtime.deferredBlockClaims[key] = { ...claim, stage: nextStage };
+      this.runtime.attemptDebounce[`${claim.tabId}:${claim.url}`] = claim.attemptAt;
+      this.recordEvent({
+        t: 'attempt',
+        at: claim.attemptAt,
+        url: claim.url,
+        host: hostOf(claim.url),
+        tabId: claim.tabId,
+        kind: claim.kind,
+        sessionId: claim.sessionId,
+      });
+      this.attemptRevision += 1;
+      await this.commit(this.ports.now());
+    }
+    const stoppedClaim: DeferredBlockClaim | undefined = this.runtime.deferredBlockClaims[key];
+    if (stoppedClaim?.stage !== 'stopped' || stoppedClaim.documentId === undefined) return;
+    const state: RuntimeTabState = this.ensureTabState(stoppedClaim.tabId);
+    state.stoppedDocumentId = stoppedClaim.documentId;
+    delete this.runtime.deferredBlockClaims[key];
+    try {
+      await this.persistRuntime();
+    } catch (error: unknown) {
+      this.runtime.deferredBlockClaims[key] = stoppedClaim;
+      throw error;
     }
   }
 

@@ -67,6 +67,7 @@ export interface RuntimeState {
   accruedFocusMs: number;
   /** "tabId:url" -> last attempt timestamp, for the 30 s attempt debounce */
   attemptDebounce: Record<string, number>;
+  deferredBlockClaims: Record<string, DeferredBlockClaim>;
   scheduleActiveEntryId: string | null;
   /** Scheduled occurrence already reported while website blocking was unavailable. */
   scheduleUnavailableNoticeToken: string | null;
@@ -77,6 +78,16 @@ export interface RuntimeState {
   lastPruneDate: string | null;
   /** Durable recovery record cleared after events, sync journal, and runtime agree. */
   commitCheckpoint: RuntimeCommitCheckpoint | null;
+}
+
+export interface DeferredBlockClaim {
+  attemptAt: number;
+  documentId?: string;
+  kind: 'navigation' | 'existing';
+  sessionId: string;
+  stage: 'attempt' | 'stopped';
+  tabId: number;
+  url: string;
 }
 
 export type LegacySessionConfig = Omit<SessionConfig, 'rules'>;
@@ -114,6 +125,7 @@ export function emptyRuntime(now: number): RuntimeState {
     tabStates: {},
     accruedFocusMs: 0,
     attemptDebounce: {},
+    deferredBlockClaims: {},
     scheduleActiveEntryId: null,
     scheduleUnavailableNoticeToken: null,
     date: localDateStr(now),
@@ -328,6 +340,7 @@ export function mergeRuntime(raw: unknown, now: number): ParsedRuntimeState {
     tabStates: parseTabStates(raw.tabStates),
     accruedFocusMs: isNonNegativeNumber(raw.accruedFocusMs) ? raw.accruedFocusMs : 0,
     attemptDebounce: parseAttemptDebounce(raw.attemptDebounce),
+    deferredBlockClaims: parseDeferredBlockClaims(raw.deferredBlockClaims),
     scheduleActiveEntryId: isNullableString(raw.scheduleActiveEntryId)
       ? raw.scheduleActiveEntryId
       : null,
@@ -983,6 +996,47 @@ function parseTabStates(value: unknown): Record<number, RuntimeTabState> {
     }
     if (muteUrl === null && stoppedDocumentId === null) continue;
     parsed[tabId] = { muteUrl, priorMuted, stoppedDocumentId };
+  }
+  return parsed;
+}
+
+function parseDeferredBlockClaims(value: unknown): Record<string, DeferredBlockClaim> {
+  if (!isRecord(value)) return {};
+  const parsed: Record<string, DeferredBlockClaim> = {};
+  for (const [key, candidate] of Object.entries(value)) {
+    if (!isRecord(candidate)) continue;
+    if (
+      !isNonNegativeNumber(candidate.attemptAt) ||
+      (candidate.kind !== 'navigation' && candidate.kind !== 'existing') ||
+      typeof candidate.sessionId !== 'string' ||
+      candidate.sessionId.trim() === '' ||
+      (candidate.stage !== 'attempt' && candidate.stage !== 'stopped') ||
+      !Number.isInteger(candidate.tabId) ||
+      (candidate.tabId as number) < 0 ||
+      typeof candidate.url !== 'string' ||
+      candidate.url === ''
+    ) {
+      continue;
+    }
+    const documentId: string | undefined =
+      typeof candidate.documentId === 'string' && candidate.documentId !== ''
+        ? candidate.documentId
+        : undefined;
+    if (
+      candidate.stage === 'stopped' &&
+      (candidate.kind !== 'navigation' || documentId === undefined)
+    ) {
+      continue;
+    }
+    parsed[key] = {
+      attemptAt: candidate.attemptAt,
+      kind: candidate.kind,
+      sessionId: candidate.sessionId,
+      stage: candidate.stage,
+      tabId: candidate.tabId as number,
+      url: candidate.url,
+      ...(documentId === undefined ? {} : { documentId }),
+    };
   }
   return parsed;
 }

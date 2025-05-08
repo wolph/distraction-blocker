@@ -3,7 +3,7 @@ import { Engine, type EnginePorts } from '../../../src/background/engine';
 import type { PolicyStorage } from '../../../src/background/policy-storage';
 import { routeMessage } from '../../../src/background/router';
 import { type AggregateStorage, fetchStats } from '../../../src/background/stats-service';
-import { emptyRuntime, readEvents } from '../../../src/background/stores';
+import { emptyRuntime, type RuntimeState, readEvents } from '../../../src/background/stores';
 import {
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
@@ -78,12 +78,15 @@ function onboardingStorage(
   } as unknown as PolicyStorage;
 }
 
-function realBlockingEngine(): Engine {
+function realBlockingEngine(options?: {
+  now?: () => number;
+  saveRuntime?: (runtime: RuntimeState) => Promise<void> | void;
+}): Engine {
   const ports: EnginePorts = {
-    now: (): number => new Date(2026, 7, 31, 12, 0).getTime(),
+    now: options?.now ?? ((): number => new Date(2026, 7, 31, 12, 0).getTime()),
     newId: (): string => 'new-id',
     rehydrateAfterDataClear: async (): Promise<string> => 'device-rehydrated',
-    saveRuntime: async (): Promise<void> => undefined,
+    saveRuntime: async (runtime: RuntimeState): Promise<void> => options?.saveRuntime?.(runtime),
     saveMatcherCache: async (): Promise<void> => undefined,
     queueSync: (): void => undefined,
     supersedeSync: (): void => undefined,
@@ -494,6 +497,80 @@ describe('routeMessage onboarding wiring', (): void => {
       expect(blockingEngine.statsOverlay().todayAgg.attempts['facebook.com']).toBe(1);
     },
   );
+
+  it('persists only the stopped stage when the barrier starts after attempt recording', async (): Promise<void> => {
+    const initialNow: number = new Date(2026, 7, 31, 12, 0).getTime();
+    let now: number = initialNow;
+    let armed: boolean = false;
+    let releaseBarrier: () => void = (): void => undefined;
+    let signalBarrierHeld: () => void = (): void => undefined;
+    const barrierBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseBarrier = resolve;
+    });
+    const barrierHeld: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalBarrierHeld = resolve;
+    });
+    const savedRuntimes: RuntimeState[] = [];
+    let barrier: Promise<void> | null = null;
+    let blockingEngine: Engine;
+    blockingEngine = realBlockingEngine({
+      now: (): number => now,
+      saveRuntime: (runtime: RuntimeState): void => {
+        savedRuntimes.push(structuredClone(runtime));
+        if (!armed || barrier !== null || runtime.todayAgg?.attempts['facebook.com'] !== 1) {
+          return;
+        }
+        barrier = blockingEngine.runWithAggregateStorageBarrier(async (): Promise<void> => {
+          signalBarrierHeld();
+          await barrierBlocked;
+        });
+      },
+    });
+    await blockingEngine.startSession({
+      mode: 'blacklist',
+      strictness: 'friction',
+      durationMin: 25,
+      cycling: null,
+      intention: 'finish the launch',
+      source: 'manual',
+      scheduleEntryId: null,
+      rules: rulesFromLists({
+        ...DEFAULT_LISTS,
+        custom: [{ kind: 'host', pattern: 'facebook.com' }],
+      }),
+    });
+    armed = true;
+    const url: string = 'https://facebook.com/feed';
+
+    await expect(
+      routeMessage(
+        blockingEngine,
+        { type: 'getBlockState', url, docState: 'fresh' },
+        {
+          url,
+          tab: { id: 7, url } as chrome.tabs.Tab,
+          documentId: 'document-between-stages',
+        },
+      ),
+    ).resolves.toMatchObject({
+      verdict: { blocked: true },
+      snapshot: { phase: 'focus' },
+    });
+    await barrierHeld;
+    expect(Object.values(savedRuntimes.at(-1)?.deferredBlockClaims ?? {})).toContainEqual(
+      expect.objectContaining({
+        documentId: 'document-between-stages',
+        stage: 'stopped',
+      }),
+    );
+
+    now = initialNow + 31_000;
+    releaseBarrier();
+    await barrier;
+
+    expect(blockingEngine.statsOverlay().todayAgg.attempts['facebook.com']).toBe(1);
+    expect(blockingEngine.tabFacts(7, url, 'document-between-stages').wasStopped).toBe(true);
+  });
 
   it('clears local history through the serialized storage adapter', async (): Promise<void> => {
     const storage: PolicyStorage = onboardingStorage();

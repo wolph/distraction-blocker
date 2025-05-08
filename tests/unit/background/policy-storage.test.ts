@@ -2313,6 +2313,7 @@ describe('PolicyStorage', (): void => {
       [SYNC_STREAK]: SNAPSHOT.streak,
       'agg:device:2026-08-30': { date: '2026-08-30' },
       'agg:stale-malformed': null,
+      'aggm:stale-malformed': null,
       'prune:device': { remove: [] },
       'lists:category:retired': { stale: true },
       'archive:clock-rebase:device:2026-08-30:1:id': { date: '2026-08-30' },
@@ -2337,6 +2338,8 @@ describe('PolicyStorage', (): void => {
       [LOCAL_CACHES]: { matcher: true },
       [LOCAL_DEVICE_ID]: 'device-id',
       'agg:device-id:2026-08-31': emptyDaily('2026-08-31'),
+      'agg:malformed': { stale: true },
+      'aggm:malformed': { stale: true },
       [LOCAL_AGGREGATE_TOMBSTONES]: ['agg:device-id:2026-08-30'],
       [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: {
         version: 1,
@@ -2346,6 +2349,8 @@ describe('PolicyStorage', (): void => {
     });
     const sync: FakeStorage = fakeStorage({
       [SYNC_SETTINGS]: SNAPSHOT.settings,
+      'agg:malformed': { stale: true },
+      'aggm:malformed': { stale: true },
       unrelated: 'keep',
     });
     const storage: PolicyStorage = policyStorage(local, sync);
@@ -2360,6 +2365,8 @@ describe('PolicyStorage', (): void => {
     expect(local.state.values[LOCAL_CACHES]).toBeUndefined();
     expect(local.state.values[LOCAL_DEVICE_ID]).toBeUndefined();
     expect(local.state.values['agg:device-id:2026-08-31']).toBeUndefined();
+    expect(local.state.values['agg:malformed']).toBeUndefined();
+    expect(local.state.values['aggm:malformed']).toBeUndefined();
     expect(local.state.values[LOCAL_AGGREGATE_TOMBSTONES]).toBeUndefined();
     expect(local.state.values[LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]).toBeUndefined();
     expect(await storage.loadSetup()).toEqual(DEFAULT_SETUP);
@@ -2869,8 +2876,15 @@ describe('PolicyStorage', (): void => {
       [LOCAL_AGGREGATE_TOMBSTONES]: ['agg:device:2026-08-30'],
       [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: { version: 1, items: {} },
     });
-    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
     await storage.initialize();
+    local.state.values['agg:malformed'] = { stale: true };
+    local.state.values['aggm:malformed'] = { stale: true };
+    local.state.values[LOCAL_SYNC_QUOTA_EVICTION] = {
+      evicted: { 'agg:device:2026-08-30': emptyDaily('2026-08-30') },
+      setKeys: [],
+    };
 
     await expect(storage.clearLocalHistory()).resolves.toBe(true);
 
@@ -2878,11 +2892,18 @@ describe('PolicyStorage', (): void => {
     expect(local.state.values['agg:device:2026-08-31']).toBeUndefined();
     expect(local.state.values['aggm:device:2026-08']).toBeUndefined();
     expect(local.state.values['archive:clock-rebase:device:one']).toBeUndefined();
+    expect(local.state.values['agg:malformed']).toBeUndefined();
+    expect(local.state.values['aggm:malformed']).toBeUndefined();
+    expect(local.state.values[LOCAL_SYNC_QUOTA_EVICTION]).toBeUndefined();
     expect(local.state.values[LOCAL_AGGREGATE_PRUNE]).toBeUndefined();
     expect(local.state.values[LOCAL_AGGREGATE_TOMBSTONES]).toBeUndefined();
     expect(local.state.values[LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]).toBeUndefined();
     expect(local.state.values[LOCAL_SETTINGS]).toEqual(SNAPSHOT.settings);
     expect(local.state.values[LOCAL_LISTS]).toEqual(SNAPSHOT.lists);
+
+    await storage.enableSync();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(sync.state.values['agg:device:2026-08-30']).toBeUndefined();
   });
 
   it('clears only detailed local events while Sync owns aggregate history', async (): Promise<void> => {
