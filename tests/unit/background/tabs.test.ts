@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Engine, type EnginePorts, type LiveTabState } from '../../../src/background/engine';
+import {
+  type BlockingSweepLease,
+  Engine,
+  type EnginePorts,
+  type LiveTabState,
+} from '../../../src/background/engine';
 import { emptyRuntime } from '../../../src/background/stores';
 import {
   applyBlockingFactory,
@@ -4543,6 +4548,7 @@ describe('applyBlockingFactory', () => {
           call: [
             liveTabs: ReadonlyMap<number, LiveTabState>,
             protectedTabIds?: ReadonlySet<number>,
+            lease?: BlockingSweepLease,
           ],
         ): LiveTabState | undefined => call[0].get(8),
       );

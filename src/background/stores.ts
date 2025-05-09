@@ -68,6 +68,7 @@ export interface RuntimeState {
   /** "tabId:url" -> last attempt timestamp, for the 30 s attempt debounce */
   attemptDebounce: Record<string, number>;
   deferredBlockClaims: Record<string, DeferredBlockClaim>;
+  removedTabTombstones: Record<number, true>;
   scheduleActiveEntryId: string | null;
   /** Scheduled occurrence already reported while website blocking was unavailable. */
   scheduleUnavailableNoticeToken: string | null;
@@ -126,6 +127,7 @@ export function emptyRuntime(now: number): RuntimeState {
     accruedFocusMs: 0,
     attemptDebounce: {},
     deferredBlockClaims: {},
+    removedTabTombstones: {},
     scheduleActiveEntryId: null,
     scheduleUnavailableNoticeToken: null,
     date: localDateStr(now),
@@ -333,7 +335,7 @@ export function mergeRuntime(raw: unknown, now: number): ParsedRuntimeState {
   const empty: RuntimeState = emptyRuntime(now);
   if (!isRecord(raw)) return empty;
   const date: string = isDailyDate(raw.date) ? raw.date : empty.date;
-  return {
+  const runtime: ParsedRuntimeState = {
     session: parseSession(raw.session),
     gate: parseGate(raw.gate),
     unlocks: parseUnlocks(raw.unlocks),
@@ -341,6 +343,7 @@ export function mergeRuntime(raw: unknown, now: number): ParsedRuntimeState {
     accruedFocusMs: isNonNegativeNumber(raw.accruedFocusMs) ? raw.accruedFocusMs : 0,
     attemptDebounce: parseAttemptDebounce(raw.attemptDebounce),
     deferredBlockClaims: parseDeferredBlockClaims(raw.deferredBlockClaims),
+    removedTabTombstones: parseRemovedTabTombstones(raw.removedTabTombstones),
     scheduleActiveEntryId: isNullableString(raw.scheduleActiveEntryId)
       ? raw.scheduleActiveEntryId
       : null,
@@ -352,6 +355,8 @@ export function mergeRuntime(raw: unknown, now: number): ParsedRuntimeState {
     lastPruneDate: isDailyDate(raw.lastPruneDate) ? raw.lastPruneDate : null,
     commitCheckpoint: parseCommitCheckpoint(raw.commitCheckpoint),
   };
+  applyRemovedTabTombstones(runtime);
+  return runtime;
 }
 
 /** Completes the only accepted legacy SessionConfig shape at worker boot. */
@@ -1039,6 +1044,29 @@ function parseDeferredBlockClaims(value: unknown): Record<string, DeferredBlockC
     };
   }
   return parsed;
+}
+
+function parseRemovedTabTombstones(value: unknown): Record<number, true> {
+  if (!isRecord(value)) return {};
+  const parsed: Record<number, true> = {};
+  for (const [tabIdText, candidate] of Object.entries(value)) {
+    const tabId: number = Number(tabIdText);
+    if (candidate === true && Number.isInteger(tabId) && tabId >= 0) parsed[tabId] = true;
+  }
+  return parsed;
+}
+
+function applyRemovedTabTombstones(runtime: ParsedRuntimeState): void {
+  for (const tabIdText of Object.keys(runtime.removedTabTombstones)) {
+    const tabId: number = Number(tabIdText);
+    delete runtime.tabStates[tabId];
+    for (const key of Object.keys(runtime.attemptDebounce)) {
+      if (key.startsWith(`${tabId}:`)) delete runtime.attemptDebounce[key];
+    }
+    for (const [key, claim] of Object.entries(runtime.deferredBlockClaims)) {
+      if (claim.tabId === tabId) delete runtime.deferredBlockClaims[key];
+    }
+  }
 }
 
 export async function saveRuntime(r: RuntimeState): Promise<void> {

@@ -214,6 +214,11 @@ vi.mock('../../../src/background/engine', () => ({
       return Promise.resolve();
     }
 
+    async applyBlockingNow(): Promise<void> {
+      const ports: EnginePorts | undefined = mocks.engineArguments?.[0] as EnginePorts | undefined;
+      await ports?.applyBlocking({} as never);
+    }
+
     async endSessionForWebsiteBlockingLoss(): Promise<boolean> {
       const runtime: RuntimeState | undefined = mocks.engineArguments?.[5] as
         | RuntimeState
@@ -223,8 +228,7 @@ vi.mock('../../../src/background/engine', () => ({
       mocks.websiteLossEndStarted?.();
       if (mocks.websiteLossEndGate !== null) await mocks.websiteLossEndGate;
       mocks.websiteLossEndCalls += 1;
-      const ports: EnginePorts | undefined = mocks.engineArguments?.[0] as EnginePorts | undefined;
-      await ports?.applyBlocking();
+      await this.applyBlockingNow();
       return true;
     }
 
@@ -1732,6 +1736,7 @@ describe('background session policy boot', () => {
       accruedFocusMs: 0,
       attemptDebounce: {},
       deferredBlockClaims: {},
+      removedTabTombstones: {},
       scheduleActiveEntryId: null,
       scheduleUnavailableNoticeToken: null,
       date: '2026-08-31',

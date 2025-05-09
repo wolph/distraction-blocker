@@ -1227,6 +1227,9 @@ export function createPolicyStorage(
   async function selectLocalModeInternal(): Promise<void> {
     await ensureInitialized();
     const setup: SetupState = await loadSetupInternal();
+    if (setup.dataClear.status !== 'idle') {
+      throw new Error('finish or retry the pending data deletion before selecting Local storage');
+    }
     const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
     let hasPublicationIntent: boolean = true;
     try {

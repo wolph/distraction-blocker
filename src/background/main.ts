@@ -706,7 +706,7 @@ async function boot(
   }
   if (completedAllDataClear) return engine;
   await engine.tick();
-  await ports.applyBlocking();
+  await engine.applyBlockingNow();
   return engine;
 }
 

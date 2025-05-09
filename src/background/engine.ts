@@ -74,6 +74,12 @@ import {
 import { chooseNewerStreak, rebaseStreakForDate } from './streak-sync';
 import { assertSyncItemWithinQuota, SyncQuotaError } from './sync-quota';
 
+declare const blockingSweepLeaseBrand: unique symbol;
+
+export interface BlockingSweepLease {
+  readonly [blockingSweepLeaseBrand]: never;
+}
+
 export interface EnginePorts {
   now(): number;
   newId(): string;
@@ -91,7 +97,7 @@ export interface EnginePorts {
   persistSyncJournal(): Promise<void>;
   appendEvents(evs: EventRecord[]): Promise<void>;
   broadcast(snapshot: SessionSnapshot): void;
-  applyBlocking(): Promise<void>;
+  applyBlocking(lease: BlockingSweepLease): Promise<void>;
   playSound(sound: SoundId): void;
   notify(title: string, message: string): void;
   updateIcon(snapshot: SessionSnapshot): void;
@@ -173,7 +179,8 @@ export class Engine {
   private attemptPersistInFlight: Map<string, Set<AttemptDurability>> = new Map();
   private failedAttemptPersistence: Set<string> = new Set();
   private runtimePersistQueue: Promise<void> = Promise.resolve();
-  private applyingBlocking = false;
+  private activeBlockingSweepLeases: Set<BlockingSweepLease> = new Set();
+  private blockingSweepsInFlight: Set<Promise<void>> = new Set();
   private bankDirty = false;
   private streakDirty = false;
   private bankRevision = 0;
@@ -199,6 +206,7 @@ export class Engine {
     private deviceId: string,
     private readonly compileSessionPolicy: SessionMatcherCompiler = compileSessionMatcher,
   ) {
+    this.applyRemovedTabTombstones();
     const checkpoint: RuntimeCommitCheckpoint | null = this.runtime.commitCheckpoint;
     if (checkpoint !== null) {
       this.pendingEvents = [...checkpoint.events];
@@ -245,6 +253,10 @@ export class Engine {
     this.ports.reportError(error);
   }
 
+  applyBlockingNow(): Promise<void> {
+    return this.applyBlockingWithLease();
+  }
+
   async runWithDataClearBarrier<T>(
     operation: () => Promise<T>,
     retainQuiescence: () => boolean = (): boolean => false,
@@ -269,6 +281,7 @@ export class Engine {
       if (this.dataClearBarrierState === 'open') {
         await this.applyPendingWebsiteBlockingLoss();
         await this.flushDeferredBlockClaims();
+        await this.flushRemovedTabTombstones();
       }
     }
   }
@@ -320,6 +333,7 @@ export class Engine {
     } finally {
       try {
         await this.flushDeferredBlockClaims();
+        await this.flushRemovedTabTombstones();
       } finally {
         this.dataClearBarrierState = 'open';
         this.dataClearOperationRunning = false;
@@ -340,6 +354,9 @@ export class Engine {
     const verdict: Verdict = this.verdictFor(url);
     const snapshot: SessionSnapshot = this.buildSnapshot(this.ports.now());
     if (!verdict.blocked || tabId === undefined || !senderOwnsUrl || stage === null) {
+      return Promise.resolve({ verdict, snapshot });
+    }
+    if (this.runtime.removedTabTombstones[tabId] === true) {
       return Promise.resolve({ verdict, snapshot });
     }
     const hasDocumentId: boolean = typeof documentId === 'string' && documentId !== '';
@@ -457,7 +474,7 @@ export class Engine {
         await this.commit(now);
       } catch (error: unknown) {
         try {
-          await this.ports.applyBlocking();
+          await this.applyBlockingWithLease();
         } catch (clearError: unknown) {
           this.ports.reportError(clearError);
         }
@@ -480,7 +497,7 @@ export class Engine {
     this.ports.updateIcon(snapshot);
     this.ports.scheduleWake(null);
     try {
-      await this.ports.applyBlocking();
+      await this.applyBlockingWithLease();
     } catch (error: unknown) {
       this.ports.reportError(error);
     }
@@ -760,8 +777,13 @@ export class Engine {
     return { ok: true };
   }
 
-  async recordAttempt(url: string, tabId: number, kind: 'navigation' | 'existing'): Promise<void> {
-    this.assertRuntimeMutationAllowed();
+  async recordAttempt(
+    url: string,
+    tabId: number,
+    kind: 'navigation' | 'existing',
+    lease?: BlockingSweepLease,
+  ): Promise<void> {
+    this.assertRuntimeMutationAllowed(lease);
     const now: number = this.ports.now();
     const key: string = `${tabId}:${url}`;
     const last: number | undefined = this.runtime.attemptDebounce[key];
@@ -812,7 +834,9 @@ export class Engine {
       this.attemptPersistInFlight.get(key) ?? new Set<AttemptDurability>();
     inFlight.add(durability);
     this.attemptPersistInFlight.set(key, inFlight);
-    const persistence: Promise<void> = this.applyingBlocking
+    const leasedSweepMutation: boolean =
+      lease !== undefined && this.activeBlockingSweepLeases.has(lease);
+    const persistence: Promise<void> = leasedSweepMutation
       ? this.persistBlockingMutation(revision)
       : this.commit(now);
     void persistence.catch((error: unknown): void => {
@@ -835,10 +859,16 @@ export class Engine {
     }
   }
 
-  async markStopped(tabId: number, _url: string, documentId?: string): Promise<void> {
-    this.assertRuntimeMutationAllowed();
+  async markStopped(
+    tabId: number,
+    _url: string,
+    documentId?: string,
+    lease?: BlockingSweepLease,
+  ): Promise<void> {
+    this.assertRuntimeMutationAllowed(lease);
     if (typeof documentId !== 'string' || documentId === '') return;
-    const state: RuntimeTabState = this.ensureTabState(tabId);
+    const state: RuntimeTabState | null = this.ensureTabState(tabId);
+    if (state === null) return;
     state.stoppedDocumentId = documentId;
     await this.persistRuntime();
   }
@@ -864,21 +894,28 @@ export class Engine {
     };
   }
 
-  async claimMute(tabId: number, url: string, priorMuted: boolean): Promise<boolean> {
-    this.assertRuntimeMutationAllowed();
+  async claimMute(
+    tabId: number,
+    url: string,
+    priorMuted: boolean,
+    lease?: BlockingSweepLease,
+  ): Promise<boolean> {
+    this.assertRuntimeMutationAllowed(lease);
+    if (this.runtime.removedTabTombstones[tabId] === true) return false;
     const existing: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (existing !== undefined && existing.priorMuted !== null && existing.muteUrl !== url) {
       return false;
     }
-    const state: RuntimeTabState = this.ensureTabState(tabId);
+    const state: RuntimeTabState | null = this.ensureTabState(tabId);
+    if (state === null) return false;
     state.muteUrl = url;
     state.priorMuted = priorMuted;
     await this.persistRuntime();
     return true;
   }
 
-  async releaseMuteClaim(tabId: number, url: string): Promise<void> {
-    this.assertRuntimeMutationAllowed();
+  async releaseMuteClaim(tabId: number, url: string, lease?: BlockingSweepLease): Promise<void> {
+    this.assertRuntimeMutationAllowed(lease);
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (state === undefined || state.muteUrl !== url) return;
     state.muteUrl = null;
@@ -887,8 +924,13 @@ export class Engine {
     await this.persistRuntime();
   }
 
-  async transferMuteClaim(tabId: number, fromUrl: string, toUrl: string): Promise<void> {
-    this.assertRuntimeMutationAllowed();
+  async transferMuteClaim(
+    tabId: number,
+    fromUrl: string,
+    toUrl: string,
+    lease?: BlockingSweepLease,
+  ): Promise<void> {
+    this.assertRuntimeMutationAllowed(lease);
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (state === undefined) return;
     if (state.muteUrl === fromUrl) state.muteUrl = toUrl;
@@ -896,8 +938,12 @@ export class Engine {
     await this.persistRuntime();
   }
 
-  async settleMuteClaim(tabId: number, finalUrl: string | null): Promise<void> {
-    this.assertRuntimeMutationAllowed();
+  async settleMuteClaim(
+    tabId: number,
+    finalUrl: string | null,
+    lease?: BlockingSweepLease,
+  ): Promise<void> {
+    this.assertRuntimeMutationAllowed(lease);
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (state === undefined || state.priorMuted === null) return;
     if (finalUrl === null) {
@@ -911,8 +957,8 @@ export class Engine {
   }
 
   /** In-memory bookkeeping mutators for tabs.ts, persisted by flushRuntime. */
-  noteMuteRestored(tabId: number, url: string): void {
-    if (this.dataClearBarrierState !== 'open') return;
+  noteMuteRestored(tabId: number, url: string, lease?: BlockingSweepLease): void {
+    if (!this.runtimeMutationAllowed(lease)) return;
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (state === undefined || state.muteUrl !== url) return;
     state.muteUrl = null;
@@ -920,8 +966,8 @@ export class Engine {
     this.dropEmptyTabState(tabId, state);
   }
 
-  noteReloaded(tabId: number, documentId: string): void {
-    if (this.dataClearBarrierState !== 'open') return;
+  noteReloaded(tabId: number, documentId: string, lease?: BlockingSweepLease): void {
+    if (!this.runtimeMutationAllowed(lease)) return;
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (state === undefined || state.stoppedDocumentId !== documentId) return;
     state.stoppedDocumentId = null;
@@ -931,8 +977,9 @@ export class Engine {
   reconcileTabs(
     liveTabs: ReadonlyMap<number, LiveTabState>,
     protectedTabIds: ReadonlySet<number> = new Set(),
+    lease?: BlockingSweepLease,
   ): void {
-    if (this.dataClearBarrierState !== 'open') return;
+    if (!this.runtimeMutationAllowed(lease)) return;
     for (const [tabIdText, state] of Object.entries(this.runtime.tabStates)) {
       const tabId: number = Number(tabIdText);
       const live: LiveTabState | undefined = liveTabs.get(tabId);
@@ -959,20 +1006,20 @@ export class Engine {
     }
   }
 
-  rebindTab(tabId: number, url: string): void {
-    if (this.dataClearBarrierState !== 'open') return;
+  rebindTab(tabId: number, url: string, lease?: BlockingSweepLease): void {
+    if (!this.runtimeMutationAllowed(lease)) return;
     const state: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (state !== undefined && state.priorMuted !== null) state.muteUrl = url;
   }
 
-  flushRuntime(): Promise<void> {
-    if (!this.applyingBlocking) this.assertRuntimeMutationAllowed();
+  flushRuntime(lease?: BlockingSweepLease): Promise<void> {
+    this.assertRuntimeMutationAllowed(lease);
     return this.persistRuntime();
   }
 
   /** Purges a closed tab from mute, stopped, and debounce bookkeeping. */
   async dropTab(tabId: number): Promise<void> {
-    this.assertRuntimeMutationAllowed();
+    this.runtime.removedTabTombstones[tabId] = true;
     delete this.runtime.tabStates[tabId];
     for (const key of Object.keys(this.runtime.attemptDebounce)) {
       if (key.startsWith(`${tabId}:`)) {
@@ -983,10 +1030,11 @@ export class Engine {
     for (const [key, claim] of Object.entries(this.runtime.deferredBlockClaims)) {
       if (claim.tabId === tabId) delete this.runtime.deferredBlockClaims[key];
     }
-    await this.persistDroppedTab();
+    await this.persistRuntime();
   }
 
-  private ensureTabState(tabId: number): RuntimeTabState {
+  private ensureTabState(tabId: number): RuntimeTabState | null {
+    if (this.runtime.removedTabTombstones[tabId] === true) return null;
     const existing: RuntimeTabState | undefined = this.runtime.tabStates[tabId];
     if (existing !== undefined) return existing;
     const created: RuntimeTabState = {
@@ -1011,6 +1059,7 @@ export class Engine {
 
   private async tickNow(): Promise<void> {
     await this.flushDeferredBlockClaims();
+    await this.flushRemovedTabTombstones();
     const now: number = this.ports.now();
     this.catchUp(now);
     this.pruneDebounce(now);
@@ -1767,14 +1816,11 @@ export class Engine {
     }
     this.ports.scheduleWake(wakeCandidates.length === 0 ? null : Math.min(...wakeCandidates));
     if (block) {
-      this.applyingBlocking = true;
       try {
-        await this.ports.applyBlocking();
+        await this.applyBlockingWithLease();
       } catch (error: unknown) {
         this.needsBlocking = true;
         throw error;
-      } finally {
-        this.applyingBlocking = false;
       }
     }
     if (this.dirty) {
@@ -1881,19 +1927,12 @@ export class Engine {
       this.ownedRuntimeSnapshot.deferredBlockClaims = structuredClone(
         this.runtime.deferredBlockClaims,
       );
+      this.ownedRuntimeSnapshot.removedTabTombstones = structuredClone(
+        this.runtime.removedTabTombstones,
+      );
       return this.queueRuntimeSnapshot(structuredClone(this.ownedRuntimeSnapshot));
     }
     return this.queueRuntimeSnapshot(snapshot);
-  }
-
-  private persistDroppedTab(): Promise<void> {
-    this.runtimePersistRevision += 1;
-    this.ownedRuntimeSnapshot.tabStates = structuredClone(this.runtime.tabStates);
-    this.ownedRuntimeSnapshot.attemptDebounce = structuredClone(this.runtime.attemptDebounce);
-    this.ownedRuntimeSnapshot.deferredBlockClaims = structuredClone(
-      this.runtime.deferredBlockClaims,
-    );
-    return this.queueRuntimeSnapshot(structuredClone(this.ownedRuntimeSnapshot));
   }
 
   private queueRuntimeSnapshot(snapshot: RuntimeState): Promise<void> {
@@ -1958,12 +1997,40 @@ export class Engine {
     return requested;
   }
 
-  private assertRuntimeMutationAllowed(): void {
-    if (this.dataClearBarrierState !== 'open') {
+  private runtimeMutationAllowed(lease?: BlockingSweepLease): boolean {
+    return (
+      this.dataClearBarrierState === 'open' ||
+      (lease !== undefined && this.activeBlockingSweepLeases.has(lease))
+    );
+  }
+
+  private assertRuntimeMutationAllowed(lease?: BlockingSweepLease): void {
+    if (!this.runtimeMutationAllowed(lease)) {
       throw new Error(
         'runtime mutation rejected while storage transition or data clear is in progress',
       );
     }
+  }
+
+  private async applyBlockingWithLease(): Promise<void> {
+    const lease: BlockingSweepLease = {} as BlockingSweepLease;
+    this.activeBlockingSweepLeases.add(lease);
+    const requested: Promise<void> = (async (): Promise<void> => {
+      try {
+        await this.ports.applyBlocking(lease);
+      } finally {
+        this.activeBlockingSweepLeases.delete(lease);
+      }
+    })();
+    const settled: Promise<void> = requested.then(
+      (): void => undefined,
+      (): void => undefined,
+    );
+    this.blockingSweepsInFlight.add(settled);
+    void settled.then((): void => {
+      this.blockingSweepsInFlight.delete(settled);
+    });
+    return requested;
   }
 
   private async resetAfterAllDataClear(): Promise<void> {
@@ -2032,6 +2099,12 @@ export class Engine {
       for (const [key, storedClaim] of Object.entries(this.runtime.deferredBlockClaims)) {
         const claim: DeferredBlockClaim | undefined = this.runtime.deferredBlockClaims[key];
         if (claim === undefined || claim !== storedClaim) continue;
+        if (this.runtime.removedTabTombstones[claim.tabId] === true) {
+          delete this.runtime.deferredBlockClaims[key];
+          await this.persistRuntime();
+          replayed = true;
+          continue;
+        }
         try {
           await this.replayDeferredBlockClaim(key, claim);
           replayed = true;
@@ -2072,7 +2145,12 @@ export class Engine {
     }
     const stoppedClaim: DeferredBlockClaim | undefined = this.runtime.deferredBlockClaims[key];
     if (stoppedClaim?.stage !== 'stopped' || stoppedClaim.documentId === undefined) return;
-    const state: RuntimeTabState = this.ensureTabState(stoppedClaim.tabId);
+    const state: RuntimeTabState | null = this.ensureTabState(stoppedClaim.tabId);
+    if (state === null) {
+      delete this.runtime.deferredBlockClaims[key];
+      await this.persistRuntime();
+      return;
+    }
     state.stoppedDocumentId = stoppedClaim.documentId;
     delete this.runtime.deferredBlockClaims[key];
     try {
@@ -2083,24 +2161,88 @@ export class Engine {
     }
   }
 
-  private async drainRuntimeMutations(): Promise<void> {
+  private applyRemovedTabTombstones(): void {
+    for (const tabIdText of Object.keys(this.runtime.removedTabTombstones)) {
+      const tabId: number = Number(tabIdText);
+      delete this.runtime.tabStates[tabId];
+      for (const key of Object.keys(this.runtime.attemptDebounce)) {
+        if (key.startsWith(`${tabId}:`)) {
+          delete this.runtime.attemptDebounce[key];
+          this.failedAttemptPersistence.delete(key);
+        }
+      }
+      for (const [key, claim] of Object.entries(this.runtime.deferredBlockClaims)) {
+        if (claim.tabId === tabId) delete this.runtime.deferredBlockClaims[key];
+      }
+    }
+  }
+
+  private async flushRemovedTabTombstones(): Promise<void> {
+    if (Object.keys(this.runtime.removedTabTombstones).length === 0) return;
+    await this.drainRuntimePersistence();
+    this.applyRemovedTabTombstones();
+    const flushing: Record<number, true> = this.runtime.removedTabTombstones;
+    this.runtime.removedTabTombstones = {};
+    try {
+      await this.persistRuntime();
+    } catch (error: unknown) {
+      this.runtime.removedTabTombstones = {
+        ...flushing,
+        ...this.runtime.removedTabTombstones,
+      };
+      this.ownedRuntimeSnapshot.removedTabTombstones = structuredClone(
+        this.runtime.removedTabTombstones,
+      );
+      this.applyRemovedTabTombstones();
+      throw error;
+    }
+  }
+
+  private async drainRuntimePersistence(): Promise<void> {
     while (true) {
-      const policy: Promise<void> = this.policyMutationQueue;
       const commits: Promise<void> = this.commitQueue;
       const blocking: Promise<void> = this.blockingMutationPersistQueue;
       const runtime: Promise<void> = this.runtimePersistQueue;
+      const sweeps: Promise<void>[] = [...this.blockingSweepsInFlight];
       const attempts: Promise<void>[] = [...this.attemptPersistInFlight.values()].flatMap(
         (durabilities: Set<AttemptDurability>): Promise<void>[] =>
           [...durabilities].map(
             (durability: AttemptDurability): Promise<void> => durability.promise,
           ),
       );
-      await Promise.all([policy, commits, blocking, runtime, ...attempts]);
+      await Promise.all([commits, blocking, runtime, ...sweeps, ...attempts]);
+      if (
+        commits === this.commitQueue &&
+        blocking === this.blockingMutationPersistQueue &&
+        runtime === this.runtimePersistQueue &&
+        this.blockingSweepsInFlight.size === 0 &&
+        this.attemptPersistInFlight.size === 0
+      ) {
+        return;
+      }
+    }
+  }
+
+  private async drainRuntimeMutations(): Promise<void> {
+    while (true) {
+      const policy: Promise<void> = this.policyMutationQueue;
+      const commits: Promise<void> = this.commitQueue;
+      const blocking: Promise<void> = this.blockingMutationPersistQueue;
+      const runtime: Promise<void> = this.runtimePersistQueue;
+      const sweeps: Promise<void>[] = [...this.blockingSweepsInFlight];
+      const attempts: Promise<void>[] = [...this.attemptPersistInFlight.values()].flatMap(
+        (durabilities: Set<AttemptDurability>): Promise<void>[] =>
+          [...durabilities].map(
+            (durability: AttemptDurability): Promise<void> => durability.promise,
+          ),
+      );
+      await Promise.all([policy, commits, blocking, runtime, ...sweeps, ...attempts]);
       if (
         policy === this.policyMutationQueue &&
         commits === this.commitQueue &&
         blocking === this.blockingMutationPersistQueue &&
         runtime === this.runtimePersistQueue &&
+        this.blockingSweepsInFlight.size === 0 &&
         this.attemptPersistInFlight.size === 0
       ) {
         return;

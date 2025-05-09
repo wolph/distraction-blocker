@@ -625,6 +625,7 @@ describe('runtime storage migration', () => {
         unlocks: [{ host: 42, until: Number.POSITIVE_INFINITY }],
         accruedFocusMs: -1,
         attemptDebounce: { bad: 'yesterday' },
+        removedTabTombstones: { '-1': true, 7: false, invalid: true },
         deferredBlockClaims: {
           missingSession: {
             attemptAt: now,
@@ -665,10 +666,63 @@ describe('runtime storage migration', () => {
       accruedFocusMs: 0,
       attemptDebounce: {},
       deferredBlockClaims: {},
+      removedTabTombstones: {},
       scheduleActiveEntryId: null,
       scheduleUnavailableNoticeToken: null,
       lastPruneDate: null,
       commitCheckpoint: null,
+    });
+  });
+
+  it('applies valid removed-tab tombstones before exposing persisted runtime', (): void => {
+    const now: number = new Date(2026, 7, 29, 12, 0).getTime();
+    const runtime = mergeRuntime(
+      {
+        attemptDebounce: {
+          '7:https://blocked.example': now,
+          '8:https://allowed.example': now,
+        },
+        deferredBlockClaims: {
+          removed: {
+            attemptAt: now,
+            kind: 'existing',
+            sessionId: 'session-one',
+            stage: 'attempt',
+            tabId: 7,
+            url: 'https://blocked.example',
+          },
+          retained: {
+            attemptAt: now,
+            kind: 'existing',
+            sessionId: 'session-one',
+            stage: 'attempt',
+            tabId: 8,
+            url: 'https://allowed.example',
+          },
+        },
+        removedTabTombstones: { 7: true },
+        tabStates: {
+          7: { muteUrl: 'https://blocked.example', priorMuted: false, stoppedDocumentId: null },
+          8: { muteUrl: 'https://allowed.example', priorMuted: false, stoppedDocumentId: null },
+        },
+      },
+      now,
+    );
+
+    expect(runtime.removedTabTombstones).toEqual({ 7: true });
+    expect(runtime.tabStates).toEqual({
+      8: { muteUrl: 'https://allowed.example', priorMuted: false, stoppedDocumentId: null },
+    });
+    expect(runtime.attemptDebounce).toEqual({ '8:https://allowed.example': now });
+    expect(runtime.deferredBlockClaims).toEqual({
+      retained: {
+        attemptAt: now,
+        kind: 'existing',
+        sessionId: 'session-one',
+        stage: 'attempt',
+        tabId: 8,
+        url: 'https://allowed.example',
+      },
     });
   });
 

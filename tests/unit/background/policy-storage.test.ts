@@ -2650,6 +2650,32 @@ describe('PolicyStorage', (): void => {
     expect((await setupState(local)).dataClear.status).toBe('idle');
   });
 
+  it('preserves a failed deletion error when Local mode is selected again before and after restart', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
+    sync.state.failRemove = new Error('remote removal unavailable');
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    await expect(storage.deleteRemoteData('synced-policy')).rejects.toThrow(
+      'remote removal unavailable',
+    );
+    const failedSetup: SetupState = await setupState(local);
+
+    await expect(storage.selectLocalMode()).rejects.toThrow('data deletion');
+    expect(await setupState(local)).toEqual(failedSetup);
+
+    const restarted: PolicyStorage = policyStorage(local, sync);
+    await restarted.initialize();
+    const restartedFailure: SetupState = await restarted.loadSetup();
+    await expect(restarted.selectLocalMode()).rejects.toThrow('data deletion');
+    expect(await restarted.loadSetup()).toEqual(restartedFailure);
+    expect(restartedFailure).toMatchObject({
+      dataClear: { status: 'error', scope: 'synced-policy', phase: 'remote' },
+      storageError: 'remote-deletion-failed',
+    });
+  });
+
   it('resumes an idle-setup deletion journal before normal publication recovery', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
     const local: FakeStorage = fakeStorage({

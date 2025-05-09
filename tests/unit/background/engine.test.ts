@@ -1,5 +1,5 @@
 import { describe, expect, it, type Mock, vi } from 'vitest';
-import type { EnginePorts } from '../../../src/background/engine';
+import type { BlockingSweepLease, EnginePorts } from '../../../src/background/engine';
 import { Engine } from '../../../src/background/engine';
 import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/background/list-sync-codec';
 import { clockRebaseArchiveKey } from '../../../src/background/rollover';
@@ -1603,6 +1603,7 @@ describe('Engine', () => {
   it('lets an admitted mutation finish its applyBlocking persistence before closing the barrier', async (): Promise<void> => {
     let releaseBlocking: () => void = (): void => undefined;
     let signalBlockingStarted: () => void = (): void => undefined;
+    let attemptRecordedDuringDrain: boolean = false;
     let h: Harness;
     const blockingPaused: Promise<void> = new Promise((resolve: () => void): void => {
       releaseBlocking = resolve;
@@ -1611,10 +1612,11 @@ describe('Engine', () => {
       signalBlockingStarted = resolve;
     });
     h = makeEngine({
-      applyBlocking: async (): Promise<void> => {
+      applyBlocking: async (lease: BlockingSweepLease): Promise<void> => {
         signalBlockingStarted();
         await blockingPaused;
-        await h.engine.flushRuntime();
+        await h.engine.recordAttempt('https://facebook.com/feed', 7, 'existing', lease);
+        attemptRecordedDuringDrain = h.engine.snapshot().attemptsToday === 1;
       },
     });
 
@@ -1627,6 +1629,154 @@ describe('Engine', () => {
 
     await expect(starting).resolves.toEqual({ ok: true });
     await clearing;
+    expect(attemptRecordedDuringDrain).toBe(true);
+  });
+
+  it('keeps an admitted blocking sweep mutation leased while the barrier drains', async (): Promise<void> => {
+    let releaseSweep: () => void = (): void => undefined;
+    let signalSweepStarted: () => void = (): void => undefined;
+    const sweepBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseSweep = resolve;
+    });
+    const sweepStarted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalSweepStarted = resolve;
+    });
+    const h: Harness = makeEngine();
+    await h.engine.startSession(manualConfig);
+    h.ports.applyBlocking.mockImplementation(async (lease: BlockingSweepLease): Promise<void> => {
+      signalSweepStarted();
+      await sweepBlocked;
+      await h.engine.recordAttempt('https://facebook.com/feed', 7, 'existing', lease);
+    });
+
+    const sweeping: Promise<void> = h.engine.applyBlockingNow();
+    await sweepStarted;
+    let barrierEntered: boolean = false;
+    const transitioning: Promise<void> = h.engine.runWithAggregateStorageBarrier(
+      async (): Promise<void> => {
+        barrierEntered = true;
+      },
+    );
+    await Promise.resolve();
+    expect(barrierEntered).toBe(false);
+    releaseSweep();
+
+    await expect(sweeping).resolves.toBeUndefined();
+    await transitioning;
+    expect(barrierEntered).toBe(true);
+    expect(h.engine.snapshot().attemptsToday).toBe(1);
+  });
+
+  it('rejects a forged blocking sweep lease after its admitted sweep finishes', async (): Promise<void> => {
+    let capturedLease: BlockingSweepLease | null = null;
+    const h: Harness = makeEngine({
+      applyBlocking: async (lease: BlockingSweepLease): Promise<void> => {
+        capturedLease = lease;
+      },
+    });
+    await h.engine.startSession(manualConfig);
+    if (capturedLease === null) throw new Error('expected an admitted blocking sweep lease');
+    await h.engine.retainDataClearQuiescence();
+
+    await expect(
+      h.engine.recordAttempt('https://facebook.com/feed', 7, 'existing', capturedLease),
+    ).rejects.toThrow('storage transition');
+  });
+
+  it('lets a draining tab removal tombstone win over an admitted stale tab write', async (): Promise<void> => {
+    const h: Harness = makeEngine();
+    let releaseStaleWrite: () => void = (): void => undefined;
+    let signalStaleWrite: () => void = (): void => undefined;
+    const staleWriteBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseStaleWrite = resolve;
+    });
+    const staleWriteStarted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalStaleWrite = resolve;
+    });
+    h.ports.saveRuntime.mockImplementationOnce(async (): Promise<void> => {
+      signalStaleWrite();
+      await staleWriteBlocked;
+    });
+    const claiming: Promise<boolean> = h.engine.claimMute(7, 'https://facebook.com/feed', false);
+    await staleWriteStarted;
+    const transitioning: Promise<void> = h.engine.runWithAggregateStorageBarrier(
+      (): Promise<void> => Promise.resolve(),
+    );
+
+    const dropping: Promise<void> = h.engine.dropTab(7);
+    releaseStaleWrite();
+    await Promise.all([claiming, dropping, transitioning]);
+
+    expect(h.engine.tabFacts(7, 'https://facebook.com/feed')).toEqual({
+      wasMutedByUs: false,
+      priorMuted: false,
+      wasStopped: false,
+    });
+    expect(lastSavedRuntime(h).tabStates).toEqual({});
+  });
+
+  it('queues a tab removal while an aggregate barrier is quiesced', async (): Promise<void> => {
+    const h: Harness = makeEngine();
+    await h.engine.claimMute(7, 'https://facebook.com/feed', false);
+    let releaseBarrier: () => void = (): void => undefined;
+    let signalBarrierEntered: () => void = (): void => undefined;
+    const barrierBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseBarrier = resolve;
+    });
+    const barrierEntered: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalBarrierEntered = resolve;
+    });
+    const transitioning: Promise<void> = h.engine.runWithAggregateStorageBarrier(
+      async (): Promise<void> => {
+        signalBarrierEntered();
+        await barrierBlocked;
+      },
+    );
+    await barrierEntered;
+
+    await expect(h.engine.dropTab(7)).resolves.toBeUndefined();
+    expect(h.engine.tabFacts(7, 'https://facebook.com/feed').wasMutedByUs).toBe(false);
+    releaseBarrier();
+    await transitioning;
+
+    expect(lastSavedRuntime(h).tabStates).toEqual({});
+  });
+
+  it('applies a durable tab removal tombstone before deferred claims after restart', async (): Promise<void> => {
+    const first: Harness = makeEngine();
+    await first.engine.startSession(manualConfig);
+    const runtime: RuntimeState = structuredClone(lastSavedRuntime(first));
+    const sessionId: string | undefined = runtime.session?.sessionId;
+    if (sessionId === undefined) throw new Error('expected an active session identity');
+    runtime.tabStates[7] = {
+      muteUrl: 'https://facebook.com/feed',
+      priorMuted: false,
+      stoppedDocumentId: null,
+    };
+    runtime.deferredBlockClaims.claim = {
+      attemptAt: T0,
+      documentId: 'stale-document',
+      kind: 'navigation',
+      sessionId,
+      stage: 'stopped',
+      tabId: 7,
+      url: 'https://facebook.com/feed',
+    };
+    Reflect.set(runtime, 'removedTabTombstones', { 7: true });
+
+    const restarted: Harness = makeEngine({
+      runtime: migrateRuntimeRules(mergeRuntime(runtime, T0 + 1_000), ENGINE_LISTS),
+    });
+    restarted.setNow(T0 + 1_000);
+    await restarted.engine.tick();
+
+    expect(restarted.engine.tabFacts(7, 'https://facebook.com/feed', 'stale-document')).toEqual({
+      wasMutedByUs: false,
+      priorMuted: false,
+      wasStopped: false,
+    });
+    expect(lastSavedRuntime(restarted).deferredBlockClaims).toEqual({});
+    expect(Reflect.get(lastSavedRuntime(restarted), 'removedTabTombstones')).toEqual({});
   });
 
   it('keeps mutation admission quiesced after a durable all-data clear journal fails', async (): Promise<void> => {
@@ -2070,9 +2220,9 @@ describe('Engine', () => {
     const sweepAttemptStarted: Promise<void> = new Promise((resolve: () => void): void => {
       signalSweepAttempt = resolve;
     });
-    h.ports.applyBlocking.mockImplementation(async (): Promise<void> => {
+    h.ports.applyBlocking.mockImplementation(async (lease: BlockingSweepLease): Promise<void> => {
       signalSweepAttempt();
-      await h.engine.recordAttempt('https://facebook.com/feed', 7, 'existing');
+      await h.engine.recordAttempt('https://facebook.com/feed', 7, 'existing', lease);
       attemptWasDurableBeforeSweepContinued = h
         .loggedEvents()
         .some((event: EventRecord): boolean => event.t === 'attempt');
@@ -2997,15 +3147,21 @@ describe('Engine', () => {
     });
     vi.stubGlobal('chrome', { storage: { local: { get: getLocal, set: setLocal } } });
 
-    Reflect.set(h.engine, 'applyingBlocking', true);
+    const sweepLease: BlockingSweepLease = {} as BlockingSweepLease;
+    const activeLeases: Set<BlockingSweepLease> = Reflect.get(
+      h.engine,
+      'activeBlockingSweepLeases',
+    ) as Set<BlockingSweepLease>;
+    activeLeases.add(sweepLease);
     const first: Promise<void> = h.engine.recordAttempt(
       'https://facebook.com/first',
       7,
       'existing',
+      sweepLease,
     );
     await firstSetStarted;
 
-    Reflect.set(h.engine, 'applyingBlocking', false);
+    activeLeases.delete(sweepLease);
     const second: Promise<void> = h.engine.recordAttempt(
       'https://facebook.com/second',
       8,
@@ -3056,15 +3212,21 @@ describe('Engine', () => {
       appendUnique(durableEvents, events);
     });
 
-    Reflect.set(h.engine, 'applyingBlocking', true);
+    const sweepLease: BlockingSweepLease = {} as BlockingSweepLease;
+    const activeLeases: Set<BlockingSweepLease> = Reflect.get(
+      h.engine,
+      'activeBlockingSweepLeases',
+    ) as Set<BlockingSweepLease>;
+    activeLeases.add(sweepLease);
     const first: Promise<void> = h.engine.recordAttempt(
       'https://facebook.com/first',
       7,
       'existing',
+      sweepLease,
     );
     await vi.waitFor((): void => expect(h.ports.appendEvents).toHaveBeenCalledTimes(1));
 
-    Reflect.set(h.engine, 'applyingBlocking', false);
+    activeLeases.delete(sweepLease);
     const second: Promise<void> = h.engine.recordAttempt(
       'https://facebook.com/second',
       8,
@@ -4482,7 +4644,8 @@ describe('Engine', () => {
       },
     });
     h.ports.applyBlocking.mockImplementation(
-      (): Promise<void> => h.engine.recordAttempt('https://facebook.com/feed', 7, 'existing'),
+      (lease: BlockingSweepLease): Promise<void> =>
+        h.engine.recordAttempt('https://facebook.com/feed', 7, 'existing', lease),
     );
 
     const pendingAck: Promise<unknown> = h.engine.startSession(manualConfig);

@@ -1,6 +1,6 @@
 import type { ContentCommand } from '../shared/messages';
 import type { SessionSnapshot, Verdict } from '../shared/types';
-import type { Engine, LiveTabState } from './engine';
+import type { BlockingSweepLease, Engine, LiveTabState } from './engine';
 
 export interface TabState {
   /** the tab's current mute state */
@@ -219,8 +219,69 @@ interface ResolvedTabApplyOptions {
   beforeEffects?(input: TabApplyInput, taskVersion: number): void;
   afterEffects?(input: TabApplyInput): Promise<void>;
   isCurrent?: () => boolean;
+  lease?: BlockingSweepLease;
   requireCurrentTask?: boolean;
   validateDocument?: boolean;
+}
+
+function recordAttemptWithLease(
+  engine: Engine,
+  url: string,
+  tabId: number,
+  kind: 'navigation' | 'existing',
+  lease?: BlockingSweepLease,
+): Promise<void> {
+  return lease === undefined
+    ? engine.recordAttempt(url, tabId, kind)
+    : engine.recordAttempt(url, tabId, kind, lease);
+}
+
+function releaseMuteClaimWithLease(
+  engine: Engine,
+  tabId: number,
+  url: string,
+  lease?: BlockingSweepLease,
+): Promise<void> {
+  return lease === undefined
+    ? engine.releaseMuteClaim(tabId, url)
+    : engine.releaseMuteClaim(tabId, url, lease);
+}
+
+function claimMuteWithLease(
+  engine: Engine,
+  tabId: number,
+  url: string,
+  priorMuted: boolean,
+  lease?: BlockingSweepLease,
+): Promise<boolean> {
+  return lease === undefined
+    ? engine.claimMute(tabId, url, priorMuted)
+    : engine.claimMute(tabId, url, priorMuted, lease);
+}
+
+function settleMuteClaimWithLease(
+  engine: Engine,
+  tabId: number,
+  finalUrl: string | null,
+  lease?: BlockingSweepLease,
+): Promise<void> {
+  return lease === undefined
+    ? engine.settleMuteClaim(tabId, finalUrl)
+    : engine.settleMuteClaim(tabId, finalUrl, lease);
+}
+
+function reconcileTabsWithLease(
+  engine: Engine,
+  liveTabs: ReadonlyMap<number, LiveTabState>,
+  protectedTabIds: ReadonlySet<number>,
+  lease?: BlockingSweepLease,
+): void {
+  if (lease === undefined) engine.reconcileTabs(liveTabs, protectedTabIds);
+  else engine.reconcileTabs(liveTabs, protectedTabIds, lease);
+}
+
+function flushRuntimeWithLease(engine: Engine, lease?: BlockingSweepLease): Promise<void> {
+  return lease === undefined ? engine.flushRuntime() : engine.flushRuntime(lease);
 }
 
 async function applyTabEffectsNow(
@@ -231,6 +292,7 @@ async function applyTabEffectsNow(
   beforeEffects: () => void = (): void => undefined,
   shouldContinue: () => boolean = (): boolean => true,
   validateDocument: boolean = false,
+  lease?: BlockingSweepLease,
 ): Promise<void> {
   const { url, mutedNow, mutedByExtension, documentId }: TabApplyInput = input;
   if (!(await tabStillAt(tabId, url)) || !shouldContinue()) return;
@@ -276,6 +338,7 @@ async function applyTabEffectsNow(
       mutedByExtension,
       documentId,
       shouldContinue,
+      lease,
     );
   } else if (facts.wasMutedByUs) {
     await restoreMute(
@@ -287,6 +350,7 @@ async function applyTabEffectsNow(
       mutedByExtension,
       documentId,
       shouldContinue,
+      lease,
     );
   }
   if (action.reload) {
@@ -295,7 +359,8 @@ async function applyTabEffectsNow(
     if (liveDocumentId !== documentId || !shouldContinue()) return;
     try {
       await chrome.tabs.reload(tabId);
-      engine.noteReloaded(tabId, documentId);
+      if (lease === undefined) engine.noteReloaded(tabId, documentId);
+      else engine.noteReloaded(tabId, documentId, lease);
     } catch {
       // the tab may be gone already
     }
@@ -325,7 +390,7 @@ async function queueResolvedTabApply(
         taskVersion: number,
       ): Promise<{ input: TabApplyInput; persistence: Promise<void> | null } | null> => {
         if (!operationIsCurrent()) return null;
-        await cancelMuteContinuation(tabId);
+        await cancelMuteContinuation(tabId, options.lease);
         const input: TabApplyInput | null = await resolveInput(taskVersion);
         if (input === null || !operationIsCurrent()) return null;
         if (options.requireCurrentTask && tabTaskVersions.get(tabId) !== taskVersion) return null;
@@ -333,7 +398,13 @@ async function queueResolvedTabApply(
         if (!verdict.blocked || recordedAttemptUrl === input.url) {
           return { input, persistence: null };
         }
-        const persistence: Promise<void> = engine.recordAttempt(input.url, tabId, attemptKind);
+        const persistence: Promise<void> = recordAttemptWithLease(
+          engine,
+          input.url,
+          tabId,
+          attemptKind,
+          options.lease,
+        );
         void persistence.catch((): void => undefined);
         return { input, persistence };
       },
@@ -349,7 +420,7 @@ async function queueResolvedTabApply(
       tabId,
       async (taskVersion: number): Promise<boolean> => {
         if (!operationIsCurrent()) return true;
-        await cancelMuteContinuation(tabId);
+        await cancelMuteContinuation(tabId, options.lease);
         const input: TabApplyInput | null = await resolveInput(taskVersion);
         if (input === null || !operationIsCurrent()) return true;
         if (options.requireCurrentTask && tabTaskVersions.get(tabId) !== taskVersion) return true;
@@ -367,6 +438,7 @@ async function queueResolvedTabApply(
           },
           operationIsCurrent,
           options.validateDocument ?? false,
+          options.lease,
         );
         if (effectsAccepted && options.afterEffects !== undefined) {
           await options.afterEffects(input);
@@ -498,7 +570,11 @@ function dropInheritedMuteClaim(tabId: number, engine: Engine, url: string): voi
   if (inherited?.engine === engine && inherited.url === url) inheritedMuteClaims.delete(tabId);
 }
 
-function releaseInheritedMuteClaim(tabId: number, skipUrl: string | null = null): Promise<void> {
+function releaseInheritedMuteClaim(
+  tabId: number,
+  skipUrl: string | null = null,
+  lease?: BlockingSweepLease,
+): Promise<void> {
   const inherited: InheritedMuteClaim | undefined = inheritedMuteClaims.get(tabId);
   if (
     inherited === undefined ||
@@ -508,9 +584,12 @@ function releaseInheritedMuteClaim(tabId: number, skipUrl: string | null = null)
     return Promise.resolve();
   }
   if (inherited.cleanupPromise === null) {
-    inherited.cleanupPromise = inherited.engine
-      .releaseMuteClaim(tabId, inherited.url)
-      .catch((error: unknown): void => inherited.engine.reportError(error));
+    inherited.cleanupPromise = releaseMuteClaimWithLease(
+      inherited.engine,
+      tabId,
+      inherited.url,
+      lease,
+    ).catch((error: unknown): void => inherited.engine.reportError(error));
   }
   const cleanup: Promise<void> = inherited.cleanupPromise;
   void cleanup.then((): void => {
@@ -523,41 +602,50 @@ async function retainOrReleaseStaleMuteClaim(
   engine: Engine,
   tabId: number,
   url: string,
+  lease?: BlockingSweepLease,
 ): Promise<void> {
   if (tabOperationUrls.get(tabId) === url) {
     retainInheritedMuteClaim(tabId, engine, url);
     return;
   }
-  await engine.releaseMuteClaim(tabId, url);
+  await releaseMuteClaimWithLease(engine, tabId, url, lease);
   dropInheritedMuteClaim(tabId, engine, url);
 }
 
 function releaseMuteContinuationClaim(
   tabId: number,
   continuation: MuteContinuation,
+  lease?: BlockingSweepLease,
 ): Promise<void> {
   if (tabOperationUrls.get(tabId) === continuation.ownedUrl) {
     retainInheritedMuteClaim(tabId, continuation.engine, continuation.ownedUrl);
     return Promise.resolve();
   }
   if (continuation.cleanupPromise === null) {
-    continuation.cleanupPromise = continuation.engine
-      .releaseMuteClaim(tabId, continuation.ownedUrl)
-      .catch((error: unknown): void => continuation.engine.reportError(error));
+    continuation.cleanupPromise = releaseMuteClaimWithLease(
+      continuation.engine,
+      tabId,
+      continuation.ownedUrl,
+      lease,
+    ).catch((error: unknown): void => continuation.engine.reportError(error));
   }
   return continuation.cleanupPromise;
 }
 
-function cancelMuteContinuation(tabId: number): Promise<void> {
+function cancelMuteContinuation(tabId: number, lease?: BlockingSweepLease): Promise<void> {
   const continuation: MuteContinuation | undefined = muteContinuations.get(tabId);
-  if (continuation === undefined) return releaseInheritedMuteClaim(tabId);
+  if (continuation === undefined) return releaseInheritedMuteClaim(tabId, null, lease);
   continuation.cancelled = true;
   if (continuation.timer !== null) {
     clearTimeout(continuation.timer);
     continuation.timer = null;
   }
-  const cleanup: Promise<void> = releaseMuteContinuationClaim(tabId, continuation);
-  const inheritedCleanup: Promise<void> = releaseInheritedMuteClaim(tabId, continuation.ownedUrl);
+  const cleanup: Promise<void> = releaseMuteContinuationClaim(tabId, continuation, lease);
+  const inheritedCleanup: Promise<void> = releaseInheritedMuteClaim(
+    tabId,
+    continuation.ownedUrl,
+    lease,
+  );
   void cleanup.then((): void => {
     if (continuation.cleanupPromise !== null && muteContinuations.get(tabId) === continuation) {
       muteContinuations.delete(tabId);
@@ -647,6 +735,7 @@ async function settleMuteUpdate(
   initialLiveTab: LiveTabIdentity | null = null,
   continuation: MuteContinuation | null = null,
   shouldContinue: () => boolean = (): boolean => true,
+  lease?: BlockingSweepLease,
 ): Promise<void> {
   const settlementCancelled: () => boolean = (): boolean =>
     muteContinuationCancelled(continuation) || !shouldContinue();
@@ -658,11 +747,11 @@ async function settleMuteUpdate(
       return true;
     }
     if (continuation === null) {
-      await engine.releaseMuteClaim(tabId, ownedClaimUrl);
+      await releaseMuteClaimWithLease(engine, tabId, ownedClaimUrl, lease);
       dropInheritedMuteClaim(tabId, engine, ownedClaimUrl);
     } else {
       continuation.ownedUrl = ownedClaimUrl;
-      await releaseMuteContinuationClaim(tabId, continuation);
+      await releaseMuteContinuationClaim(tabId, continuation, lease);
     }
     return true;
   };
@@ -693,7 +782,7 @@ async function settleMuteUpdate(
       desiredMuted,
     );
     if (liveMute.muted && !liveMute.owned) {
-      await engine.settleMuteClaim(tabId, null);
+      await settleMuteClaimWithLease(engine, tabId, null, lease);
       dropInheritedMuteClaim(tabId, engine, ownedClaimUrl);
       return;
     }
@@ -702,7 +791,7 @@ async function settleMuteUpdate(
     if (liveMute.muted === desiredMuted) {
       if (desiredBlocked && liveMute.owned) {
         const previousOwnedClaimUrl: string = ownedClaimUrl;
-        const settlement: Promise<void> = engine.settleMuteClaim(tabId, liveUrl);
+        const settlement: Promise<void> = settleMuteClaimWithLease(engine, tabId, liveUrl, lease);
         ownedClaimUrl = liveUrl;
         moveInheritedMuteClaim(tabId, engine, previousOwnedClaimUrl, liveUrl);
         if (continuation !== null) {
@@ -712,7 +801,7 @@ async function settleMuteUpdate(
         await settlement;
         await releaseClaimIfCancelled();
       } else {
-        await engine.settleMuteClaim(tabId, null);
+        await settleMuteClaimWithLease(engine, tabId, null, lease);
         dropInheritedMuteClaim(tabId, engine, ownedClaimUrl);
       }
       return;
@@ -807,11 +896,12 @@ async function applyMute(
   fallbackOwned: boolean,
   documentId: string | null,
   shouldContinue: () => boolean,
+  lease?: BlockingSweepLease,
 ): Promise<void> {
   let liveTab: chrome.tabs.Tab | null = await getTab(tabId);
   if (liveTab === null) return;
   if (liveTab.url !== url || !shouldContinue()) {
-    if (facts.wasMutedByUs) await retainOrReleaseStaleMuteClaim(engine, tabId, url);
+    if (facts.wasMutedByUs) await retainOrReleaseStaleMuteClaim(engine, tabId, url, lease);
     return;
   }
   let liveMute: { muted: boolean; owned: boolean } = muteState(
@@ -820,31 +910,40 @@ async function applyMute(
     fallbackOwned,
   );
   if (liveMute.muted && !liveMute.owned) {
-    if (facts.wasMutedByUs && shouldContinue()) await engine.releaseMuteClaim(tabId, url);
+    if (facts.wasMutedByUs && shouldContinue()) {
+      await releaseMuteClaimWithLease(engine, tabId, url, lease);
+    }
     return;
   }
 
   const newClaim: boolean = !facts.wasMutedByUs;
   if (newClaim) {
-    if (!shouldContinue() || !(await engine.claimMute(tabId, url, liveMute.muted))) return;
+    if (
+      !shouldContinue() ||
+      !(await claimMuteWithLease(engine, tabId, url, liveMute.muted, lease))
+    ) {
+      return;
+    }
     if (!shouldContinue()) {
-      await engine.releaseMuteClaim(tabId, url);
+      await releaseMuteClaimWithLease(engine, tabId, url, lease);
       return;
     }
   }
 
   liveTab = await getTab(tabId);
   if (liveTab === null) {
-    if (newClaim) await engine.releaseMuteClaim(tabId, url);
+    if (newClaim) await releaseMuteClaimWithLease(engine, tabId, url, lease);
     return;
   }
   if (liveTab.url !== url || !shouldContinue()) {
-    await retainOrReleaseStaleMuteClaim(engine, tabId, url);
+    await retainOrReleaseStaleMuteClaim(engine, tabId, url, lease);
     return;
   }
   liveMute = muteState(liveTab, fallbackMuted, fallbackOwned);
   if (liveMute.muted) {
-    if (!liveMute.owned && shouldContinue()) await engine.releaseMuteClaim(tabId, url);
+    if (!liveMute.owned && shouldContinue()) {
+      await releaseMuteClaimWithLease(engine, tabId, url, lease);
+    }
     return;
   }
 
@@ -854,12 +953,12 @@ async function applyMute(
   } catch (error: unknown) {
     engine.reportError(error);
     if (!shouldContinue()) {
-      await retainOrReleaseStaleMuteClaim(engine, tabId, url);
+      await retainOrReleaseStaleMuteClaim(engine, tabId, url, lease);
       return;
     }
     const failedTab: LiveTabIdentity | null = await readLiveTabIdentity(engine, tabId);
     if (!shouldContinue()) {
-      await retainOrReleaseStaleMuteClaim(engine, tabId, url);
+      await retainOrReleaseStaleMuteClaim(engine, tabId, url, lease);
       return;
     }
     if (failedTab === null) return;
@@ -875,17 +974,18 @@ async function applyMute(
         failedTab,
         null,
         shouldContinue,
+        lease,
       );
       return;
     }
     const failedMute: { muted: boolean; owned: boolean } = muteState(failedTab.tab, false, false);
     if (!failedMute.owned) {
-      await engine.releaseMuteClaim(tabId, url);
+      await releaseMuteClaimWithLease(engine, tabId, url, lease);
     }
     return;
   }
   if (!shouldContinue()) {
-    await retainOrReleaseStaleMuteClaim(engine, tabId, url);
+    await retainOrReleaseStaleMuteClaim(engine, tabId, url, lease);
     return;
   }
   await settleMuteUpdate(
@@ -898,6 +998,7 @@ async function applyMute(
     null,
     null,
     shouldContinue,
+    lease,
   );
 }
 
@@ -910,11 +1011,12 @@ async function restoreMute(
   fallbackOwned: boolean,
   documentId: string | null,
   shouldContinue: () => boolean,
+  lease?: BlockingSweepLease,
 ): Promise<void> {
   const liveTab: chrome.tabs.Tab | null = await getTab(tabId);
   if (liveTab === null) return;
   if (liveTab.url !== url || !shouldContinue()) {
-    await retainOrReleaseStaleMuteClaim(engine, tabId, url);
+    await retainOrReleaseStaleMuteClaim(engine, tabId, url, lease);
     return;
   }
   const liveMute: { muted: boolean; owned: boolean } = muteState(
@@ -923,7 +1025,7 @@ async function restoreMute(
     fallbackOwned,
   );
   if (!liveMute.owned) {
-    if (shouldContinue()) await engine.releaseMuteClaim(tabId, url);
+    if (shouldContinue()) await releaseMuteClaimWithLease(engine, tabId, url, lease);
     return;
   }
   if (!shouldContinue()) return;
@@ -932,12 +1034,12 @@ async function restoreMute(
   } catch (error: unknown) {
     engine.reportError(error);
     if (!shouldContinue()) {
-      await retainOrReleaseStaleMuteClaim(engine, tabId, url);
+      await retainOrReleaseStaleMuteClaim(engine, tabId, url, lease);
       return;
     }
     const failedTab: LiveTabIdentity | null = await readLiveTabIdentity(engine, tabId);
     if (!shouldContinue()) {
-      await retainOrReleaseStaleMuteClaim(engine, tabId, url);
+      await retainOrReleaseStaleMuteClaim(engine, tabId, url, lease);
       return;
     }
     if (failedTab === null) return;
@@ -953,12 +1055,13 @@ async function restoreMute(
         failedTab,
         null,
         shouldContinue,
+        lease,
       );
     }
     return;
   }
   if (!shouldContinue()) {
-    await retainOrReleaseStaleMuteClaim(engine, tabId, url);
+    await retainOrReleaseStaleMuteClaim(engine, tabId, url, lease);
     return;
   }
   await settleMuteUpdate(
@@ -971,6 +1074,7 @@ async function restoreMute(
     null,
     null,
     shouldContinue,
+    lease,
   );
 }
 
@@ -979,11 +1083,13 @@ async function restoreMute(
  * Reentrancy-guarded because a sweep can advance the engine, whose
  * commit would start a second sweep.
  */
-export function applyBlockingFactory(engine: () => Engine): () => Promise<void> {
+export function applyBlockingFactory(
+  engine: () => Engine,
+): (lease?: BlockingSweepLease) => Promise<void> {
   let running: boolean = false;
   let rerunRequested: boolean = false;
   let requestRevision: number = 0;
-  return async (): Promise<void> => {
+  return async (lease?: BlockingSweepLease): Promise<void> => {
     requestRevision += 1;
     if (running) {
       rerunRequested = true;
@@ -1037,7 +1143,7 @@ export function applyBlockingFactory(engine: () => Engine): () => Promise<void> 
             if (currentTabId !== null) protectedIds.delete(currentTabId);
             return protectedIds;
           };
-          e.reconcileTabs(new Map(), protectedTabIds());
+          reconcileTabsWithLease(e, new Map(), protectedTabIds(), lease);
 
           const applyTasks: Promise<void>[] = queriedTabIds.map((tabId: number): Promise<void> => {
             const releaseOperationLease: () => void = acquireTabOperationLease(tabId);
@@ -1063,9 +1169,15 @@ export function applyBlockingFactory(engine: () => Engine): () => Promise<void> 
                       mutedByExtension: input.mutedByExtension,
                       documentId: input.documentId,
                     };
-                    e.reconcileTabs(new Map([[tabId, liveState]]), protectedTabIds(tabId));
+                    reconcileTabsWithLease(
+                      e,
+                      new Map([[tabId, liveState]]),
+                      protectedTabIds(tabId),
+                      lease,
+                    );
                   },
                   isCurrent: sweepIsCurrent,
+                  lease,
                   requireCurrentTask: true,
                   validateDocument: true,
                 },
@@ -1080,7 +1192,7 @@ export function applyBlockingFactory(engine: () => Engine): () => Promise<void> 
           await Promise.all(applyTasks);
           if (!sweepIsCurrent()) continue;
           const cleanupVersions: Map<number, number> = new Map(tabTaskVersions);
-          await e.flushRuntime();
+          await flushRuntimeWithLease(e, lease);
           if (!sweepIsCurrent()) continue;
 
           for (const [tabId, version] of cleanupVersions) {
