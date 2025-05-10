@@ -1196,12 +1196,6 @@ export function createPolicyStorage(
       if (publisher !== null) {
         await publisher.pause();
         await publisher.drain();
-        await publisher.transformPending(
-          (): Promise<void> => Promise.resolve(),
-          (): SyncJournal => ({ sets: {}, removes: [] }),
-        );
-      } else {
-        await persistPublicationJournal({ sets: {}, removes: [] });
       }
       const localSetup: SetupState = {
         ...setup,
@@ -1212,10 +1206,12 @@ export function createPolicyStorage(
       await verifiedWrite(
         {
           [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: emptyBlockedAggregatePublications(),
+          [LOCAL_SYNC_JOURNAL]: { sets: {}, removes: [] },
           [LOCAL_SETUP]: localSetup,
         },
         'local mode and abandoned aggregate publications',
       );
+      publisher?.discardPendingAfterDurableJournalCommit();
       mode = 'local';
     } catch (error: unknown) {
       if (mode === 'sync' && publisher !== null) publisher.resume();

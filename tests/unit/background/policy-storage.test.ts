@@ -2271,12 +2271,19 @@ describe('PolicyStorage', (): void => {
     expect(sync.state.values[SYNC_BANK]).toEqual(pendingBank);
   });
 
-  it('resumes an empty sync writer when the final local-mode switch fails', async (): Promise<void> => {
+  it('restores pending sync sets and removals when the final local-mode switch fails', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
     const local: FakeStorage = fakeStorage(localPolicy(setup));
-    const sync: FakeStorage = fakeStorage();
+    const removeKey: string = syncAggKey('pending-device', '2026-08-29');
+    const sync: FakeStorage = fakeStorage({ [removeKey]: emptyDaily('2026-08-29') });
     const storage: PolicyStorage = policyStorage(local, sync);
     await storage.initialize();
+    const pendingBank = { balanceMs: 92_000 };
+    await storage.setPolicy('bank', pendingBank);
+    await storage.removeAggregate(removeKey);
+    const pendingJournal: SyncJournal = structuredClone(
+      local.state.values[LOCAL_SYNC_JOURNAL] as SyncJournal,
+    );
     let failModeSwitch: boolean = true;
     vi.mocked(local.area.set).mockImplementation(
       async (items: Record<string, unknown>): Promise<void> => {
@@ -2297,10 +2304,15 @@ describe('PolicyStorage', (): void => {
     await expect(storage.disableSync()).rejects.toThrow('mode switch unavailable');
 
     expect((await setupState(local)).storageMode).toBe('sync');
-    const nextBank = { balanceMs: 92_000 };
-    await storage.setPolicy('bank', nextBank);
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual(pendingJournal);
+
+    vi.clearAllTimers();
+    const restarted: PolicyStorage = policyStorage(local, sync);
+    await restarted.initialize();
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(sync.state.values[SYNC_BANK]).toEqual(nextBank);
+    expect(sync.state.values[SYNC_BANK]).toEqual(pendingBank);
+    expect(sync.state.values[removeKey]).toBeUndefined();
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
   });
 
   it('uses a removal-only journal after sync is disabled and preserves unrelated keys', async (): Promise<void> => {

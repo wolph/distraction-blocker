@@ -1683,6 +1683,21 @@ describe('Engine', () => {
     ).rejects.toThrow('storage transition');
   });
 
+  it('releases a tracked runtime mutation lease when its operation rejects', async (): Promise<void> => {
+    const h: Harness = makeEngine();
+    const error: Error = new Error('tab operation failed');
+
+    await expect(
+      h.engine.runWithRuntimeMutationLease(async (): Promise<void> => {
+        throw error;
+      }),
+    ).rejects.toBe(error);
+
+    await expect(
+      h.engine.runWithAggregateStorageBarrier((): Promise<void> => Promise.resolve()),
+    ).resolves.toBeUndefined();
+  });
+
   it('lets a draining tab removal tombstone win over an admitted stale tab write', async (): Promise<void> => {
     const h: Harness = makeEngine();
     let releaseStaleWrite: () => void = (): void => undefined;
@@ -3150,7 +3165,7 @@ describe('Engine', () => {
     const sweepLease: BlockingSweepLease = {} as BlockingSweepLease;
     const activeLeases: Set<BlockingSweepLease> = Reflect.get(
       h.engine,
-      'activeBlockingSweepLeases',
+      'activeRuntimeMutationLeases',
     ) as Set<BlockingSweepLease>;
     activeLeases.add(sweepLease);
     const first: Promise<void> = h.engine.recordAttempt(
@@ -3215,7 +3230,7 @@ describe('Engine', () => {
     const sweepLease: BlockingSweepLease = {} as BlockingSweepLease;
     const activeLeases: Set<BlockingSweepLease> = Reflect.get(
       h.engine,
-      'activeBlockingSweepLeases',
+      'activeRuntimeMutationLeases',
     ) as Set<BlockingSweepLease>;
     activeLeases.add(sweepLease);
     const first: Promise<void> = h.engine.recordAttempt(

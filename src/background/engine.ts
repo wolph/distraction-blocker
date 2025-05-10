@@ -74,11 +74,13 @@ import {
 import { chooseNewerStreak, rebaseStreakForDate } from './streak-sync';
 import { assertSyncItemWithinQuota, SyncQuotaError } from './sync-quota';
 
-declare const blockingSweepLeaseBrand: unique symbol;
+declare const runtimeMutationLeaseBrand: unique symbol;
 
-export interface BlockingSweepLease {
-  readonly [blockingSweepLeaseBrand]: never;
+export interface RuntimeMutationLease {
+  readonly [runtimeMutationLeaseBrand]: never;
 }
+
+export type BlockingSweepLease = RuntimeMutationLease;
 
 export interface EnginePorts {
   now(): number;
@@ -179,8 +181,8 @@ export class Engine {
   private attemptPersistInFlight: Map<string, Set<AttemptDurability>> = new Map();
   private failedAttemptPersistence: Set<string> = new Set();
   private runtimePersistQueue: Promise<void> = Promise.resolve();
-  private activeBlockingSweepLeases: Set<BlockingSweepLease> = new Set();
-  private blockingSweepsInFlight: Set<Promise<void>> = new Set();
+  private activeRuntimeMutationLeases: Set<RuntimeMutationLease> = new Set();
+  private runtimeMutationsInFlight: Set<Promise<void>> = new Set();
   private bankDirty = false;
   private streakDirty = false;
   private bankRevision = 0;
@@ -255,6 +257,19 @@ export class Engine {
 
   applyBlockingNow(): Promise<void> {
     return this.applyBlockingWithLease();
+  }
+
+  runWithRuntimeMutationLease<T>(
+    operation: (lease: RuntimeMutationLease) => Promise<T>,
+  ): Promise<T> {
+    if (this.dataClearBarrierState !== 'open') {
+      return Promise.reject(
+        new Error(
+          'runtime mutation rejected while storage transition or data clear is in progress',
+        ),
+      );
+    }
+    return this.trackRuntimeMutation(operation);
   }
 
   async runWithDataClearBarrier<T>(
@@ -835,7 +850,7 @@ export class Engine {
     inFlight.add(durability);
     this.attemptPersistInFlight.set(key, inFlight);
     const leasedSweepMutation: boolean =
-      lease !== undefined && this.activeBlockingSweepLeases.has(lease);
+      lease !== undefined && this.activeRuntimeMutationLeases.has(lease);
     const persistence: Promise<void> = leasedSweepMutation
       ? this.persistBlockingMutation(revision)
       : this.commit(now);
@@ -2000,7 +2015,7 @@ export class Engine {
   private runtimeMutationAllowed(lease?: BlockingSweepLease): boolean {
     return (
       this.dataClearBarrierState === 'open' ||
-      (lease !== undefined && this.activeBlockingSweepLeases.has(lease))
+      (lease !== undefined && this.activeRuntimeMutationLeases.has(lease))
     );
   }
 
@@ -2013,22 +2028,30 @@ export class Engine {
   }
 
   private async applyBlockingWithLease(): Promise<void> {
-    const lease: BlockingSweepLease = {} as BlockingSweepLease;
-    this.activeBlockingSweepLeases.add(lease);
-    const requested: Promise<void> = (async (): Promise<void> => {
+    return this.trackRuntimeMutation(
+      (lease: RuntimeMutationLease): Promise<void> => this.ports.applyBlocking(lease),
+    );
+  }
+
+  private trackRuntimeMutation<T>(
+    operation: (lease: RuntimeMutationLease) => Promise<T>,
+  ): Promise<T> {
+    const lease: RuntimeMutationLease = {} as RuntimeMutationLease;
+    this.activeRuntimeMutationLeases.add(lease);
+    const requested: Promise<T> = (async (): Promise<T> => {
       try {
-        await this.ports.applyBlocking(lease);
+        return await operation(lease);
       } finally {
-        this.activeBlockingSweepLeases.delete(lease);
+        this.activeRuntimeMutationLeases.delete(lease);
       }
     })();
     const settled: Promise<void> = requested.then(
       (): void => undefined,
       (): void => undefined,
     );
-    this.blockingSweepsInFlight.add(settled);
+    this.runtimeMutationsInFlight.add(settled);
     void settled.then((): void => {
-      this.blockingSweepsInFlight.delete(settled);
+      this.runtimeMutationsInFlight.delete(settled);
     });
     return requested;
   }
@@ -2203,19 +2226,19 @@ export class Engine {
       const commits: Promise<void> = this.commitQueue;
       const blocking: Promise<void> = this.blockingMutationPersistQueue;
       const runtime: Promise<void> = this.runtimePersistQueue;
-      const sweeps: Promise<void>[] = [...this.blockingSweepsInFlight];
+      const leasedMutations: Promise<void>[] = [...this.runtimeMutationsInFlight];
       const attempts: Promise<void>[] = [...this.attemptPersistInFlight.values()].flatMap(
         (durabilities: Set<AttemptDurability>): Promise<void>[] =>
           [...durabilities].map(
             (durability: AttemptDurability): Promise<void> => durability.promise,
           ),
       );
-      await Promise.all([commits, blocking, runtime, ...sweeps, ...attempts]);
+      await Promise.all([commits, blocking, runtime, ...leasedMutations, ...attempts]);
       if (
         commits === this.commitQueue &&
         blocking === this.blockingMutationPersistQueue &&
         runtime === this.runtimePersistQueue &&
-        this.blockingSweepsInFlight.size === 0 &&
+        this.runtimeMutationsInFlight.size === 0 &&
         this.attemptPersistInFlight.size === 0
       ) {
         return;
@@ -2229,20 +2252,20 @@ export class Engine {
       const commits: Promise<void> = this.commitQueue;
       const blocking: Promise<void> = this.blockingMutationPersistQueue;
       const runtime: Promise<void> = this.runtimePersistQueue;
-      const sweeps: Promise<void>[] = [...this.blockingSweepsInFlight];
+      const leasedMutations: Promise<void>[] = [...this.runtimeMutationsInFlight];
       const attempts: Promise<void>[] = [...this.attemptPersistInFlight.values()].flatMap(
         (durabilities: Set<AttemptDurability>): Promise<void>[] =>
           [...durabilities].map(
             (durability: AttemptDurability): Promise<void> => durability.promise,
           ),
       );
-      await Promise.all([policy, commits, blocking, runtime, ...sweeps, ...attempts]);
+      await Promise.all([policy, commits, blocking, runtime, ...leasedMutations, ...attempts]);
       if (
         policy === this.policyMutationQueue &&
         commits === this.commitQueue &&
         blocking === this.blockingMutationPersistQueue &&
         runtime === this.runtimePersistQueue &&
-        this.blockingSweepsInFlight.size === 0 &&
+        this.runtimeMutationsInFlight.size === 0 &&
         this.attemptPersistInFlight.size === 0
       ) {
         return;

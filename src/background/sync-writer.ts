@@ -134,6 +134,18 @@ export class SyncWriter {
     await this.journalDurability;
   }
 
+  discardPendingAfterDurableJournalCommit(): void {
+    if (!this.paused) throw new Error('sync writer must be paused before discarding pending work');
+    if (this.timer !== null) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.pending.clear();
+    this.pendingRemovals.clear();
+    this.pendingRevisions.clear();
+    this.reconciliationPending.clear();
+  }
+
   resume(): void {
     this.paused = false;
     if (this.pending.size > 0 || this.pendingRemovals.size > 0) this.schedule();
