@@ -82,6 +82,12 @@ export interface RuntimeMutationLease {
 
 export type BlockingSweepLease = RuntimeMutationLease;
 
+interface DeferredBlockingSweep {
+  promise: Promise<void>;
+  reject(error: unknown): void;
+  resolve(): void;
+}
+
 export interface EnginePorts {
   now(): number;
   newId(): string;
@@ -183,6 +189,8 @@ export class Engine {
   private runtimePersistQueue: Promise<void> = Promise.resolve();
   private activeRuntimeMutationLeases: Set<RuntimeMutationLease> = new Set();
   private runtimeMutationsInFlight: Set<Promise<void>> = new Set();
+  private deferredBlockingSweep: DeferredBlockingSweep | null = null;
+  private deferredBlockingSweepRequested = false;
   private bankDirty = false;
   private streakDirty = false;
   private bankRevision = 0;
@@ -272,6 +280,35 @@ export class Engine {
     return this.trackRuntimeMutation(operation);
   }
 
+  runWithRuntimeMutationLeaseOrBlockingSweep(
+    operation: (lease: RuntimeMutationLease) => Promise<void>,
+  ): Promise<void> {
+    if (this.dataClearBarrierState === 'open') return this.trackRuntimeMutation(operation);
+    if (!this.dataClearOperationRunning) {
+      return Promise.reject(
+        new Error(
+          'runtime mutation rejected while storage transition or data clear is in progress',
+        ),
+      );
+    }
+    this.deferredBlockingSweepRequested = true;
+    if (this.deferredBlockingSweep !== null) return this.deferredBlockingSweep.promise;
+    let resolveSweep: () => void = (): void => undefined;
+    let rejectSweep: (error: unknown) => void = (): void => undefined;
+    const promise: Promise<void> = new Promise<void>(
+      (resolve: () => void, reject: (error: unknown) => void): void => {
+        resolveSweep = resolve;
+        rejectSweep = reject;
+      },
+    );
+    this.deferredBlockingSweep = {
+      promise,
+      reject: rejectSweep,
+      resolve: resolveSweep,
+    };
+    return promise;
+  }
+
   async runWithDataClearBarrier<T>(
     operation: () => Promise<T>,
     retainQuiescence: () => boolean = (): boolean => false,
@@ -297,6 +334,11 @@ export class Engine {
         await this.applyPendingWebsiteBlockingLoss();
         await this.flushDeferredBlockClaims();
         await this.flushRemovedTabTombstones();
+        await this.flushDeferredBlockingSweep();
+      } else {
+        this.rejectDeferredBlockingSweep(
+          new Error('runtime mutation deferred while all-data deletion remains pending'),
+        );
       }
     }
   }
@@ -312,6 +354,9 @@ export class Engine {
       this.dataClearBarrierState = 'quiesced';
     } finally {
       this.dataClearOperationRunning = false;
+      this.rejectDeferredBlockingSweep(
+        new Error('runtime mutation deferred while all-data deletion remains pending'),
+      );
     }
   }
 
@@ -349,6 +394,7 @@ export class Engine {
       try {
         await this.flushDeferredBlockClaims();
         await this.flushRemovedTabTombstones();
+        await this.flushDeferredBlockingSweep();
       } finally {
         this.dataClearBarrierState = 'open';
         this.dataClearOperationRunning = false;
@@ -2031,6 +2077,38 @@ export class Engine {
     return this.trackRuntimeMutation(
       (lease: RuntimeMutationLease): Promise<void> => this.ports.applyBlocking(lease),
     );
+  }
+
+  private async flushDeferredBlockingSweep(): Promise<void> {
+    const deferred: DeferredBlockingSweep | null = this.deferredBlockingSweep;
+    if (deferred === null) return;
+    while (this.deferredBlockingSweepRequested) {
+      this.deferredBlockingSweepRequested = false;
+      try {
+        await this.applyBlockingWithLease();
+      } catch (error: unknown) {
+        this.ports.reportError(error);
+        try {
+          await this.applyBlockingWithLease();
+        } catch (retryError: unknown) {
+          this.needsBlocking = true;
+          this.deferredBlockingSweep = null;
+          this.deferredBlockingSweepRequested = false;
+          deferred.reject(retryError);
+          return;
+        }
+      }
+    }
+    this.deferredBlockingSweep = null;
+    deferred.resolve();
+  }
+
+  private rejectDeferredBlockingSweep(error: Error): void {
+    const deferred: DeferredBlockingSweep | null = this.deferredBlockingSweep;
+    if (deferred === null) return;
+    this.deferredBlockingSweep = null;
+    this.deferredBlockingSweepRequested = false;
+    deferred.reject(error);
   }
 
   private trackRuntimeMutation<T>(

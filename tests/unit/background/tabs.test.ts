@@ -3209,6 +3209,7 @@ describe('invalidateRemovedTab', () => {
 describe('registerTabListeners', () => {
   async function blockedNavigationEngine(reportError: (error: unknown) => void): Promise<Engine> {
     const now: number = new Date(2026, 7, 29, 12, 0).getTime();
+    const applyBlocking = vi.fn().mockResolvedValue(undefined);
     const ports: EnginePorts = {
       now: vi.fn((): number => now),
       newId: vi.fn((): string => 'navigation-session'),
@@ -3222,7 +3223,7 @@ describe('registerTabListeners', () => {
       persistSyncJournal: vi.fn().mockResolvedValue(undefined),
       appendEvents: vi.fn().mockResolvedValue(undefined),
       broadcast: vi.fn(),
-      applyBlocking: vi.fn().mockResolvedValue(undefined),
+      applyBlocking,
       playSound: vi.fn(),
       notify: vi.fn(),
       updateIcon: vi.fn(),
@@ -3254,6 +3255,7 @@ describe('registerTabListeners', () => {
       scheduleEntryId: null,
       rules: rulesFromLists(lists),
     });
+    applyBlocking.mockImplementation(applyBlockingFactory((): Engine => engine));
     return engine;
   }
 
@@ -3364,6 +3366,225 @@ describe('registerTabListeners', () => {
     await transitioning;
   });
 
+  it('reconciles SPA navigation that arrives after an aggregate barrier owns storage', async (): Promise<void> => {
+    type NavigationDetails = { tabId: number; url: string; frameId: number; documentId?: string };
+    const url = 'https://facebook.com/quiesced-spa';
+    const reportError = vi.fn();
+    const engine: Engine = await blockedNavigationEngine(reportError);
+    let historyListener: ((details: NavigationDetails) => void) | undefined;
+    let releaseBarrier: () => void = (): void => {
+      throw new Error('barrier release was not initialized');
+    };
+    let signalBarrierEntered: () => void = (): void => {
+      throw new Error('barrier signal was not initialized');
+    };
+    const barrierBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseBarrier = resolve;
+    });
+    const barrierEntered: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalBarrierEntered = resolve;
+    });
+    let muted: boolean = false;
+    const liveTab = (): chrome.tabs.Tab =>
+      ({
+        id: 73,
+        url,
+        mutedInfo: { muted, extensionId: muted ? 'focus-lock' : undefined },
+      }) as chrome.tabs.Tab;
+    vi.stubGlobal('chrome', {
+      runtime: { id: 'focus-lock' },
+      tabs: {
+        query: vi.fn(async (): Promise<chrome.tabs.Tab[]> => [liveTab()]),
+        get: vi.fn(async (): Promise<chrome.tabs.Tab> => liveTab()),
+        sendMessage: vi.fn().mockResolvedValue(undefined),
+        update: vi.fn(
+          async (_tabId: number, properties: chrome.tabs.UpdateProperties): Promise<void> => {
+            if (properties.muted !== undefined) muted = properties.muted;
+          },
+        ),
+        reload: vi.fn().mockResolvedValue(undefined),
+      },
+      webNavigation: {
+        getFrame: vi.fn().mockResolvedValue({ documentId: 'quiesced-document' }),
+        onCommitted: { addListener: vi.fn() },
+        onHistoryStateUpdated: {
+          addListener: vi.fn((listener: (details: NavigationDetails) => void): void => {
+            historyListener = listener;
+          }),
+        },
+      },
+    });
+    registerTabListeners((): Promise<Engine> => Promise.resolve(engine), reportError);
+    if (historyListener === undefined) throw new Error('history listener was not registered');
+    const transitioning: Promise<void> = engine.runWithAggregateStorageBarrier(
+      async (): Promise<void> => {
+        signalBarrierEntered();
+        await barrierBlocked;
+      },
+    );
+    await barrierEntered;
+
+    historyListener({ tabId: 73, url, frameId: 0, documentId: 'quiesced-document' });
+    await Promise.resolve();
+    expect(muted).toBe(false);
+    releaseBarrier();
+    await transitioning;
+
+    expect(muted).toBe(true);
+    expect(reportError).not.toHaveBeenCalled();
+  });
+
+  it('coalesces quiesced navigation and retries one failed reconciliation sweep', async (): Promise<void> => {
+    type NavigationDetails = { tabId: number; url: string; frameId: number; documentId?: string };
+    const firstUrl = 'https://facebook.com/quiesced-first';
+    const latestUrl = 'https://facebook.com/quiesced-latest';
+    const replayError: Error = new Error('tab query temporarily unavailable');
+    const reportError = vi.fn();
+    const engine: Engine = await blockedNavigationEngine(reportError);
+    let historyListener: ((details: NavigationDetails) => void) | undefined;
+    let releaseBarrier: () => void = (): void => {
+      throw new Error('barrier release was not initialized');
+    };
+    let signalBarrierEntered: () => void = (): void => {
+      throw new Error('barrier signal was not initialized');
+    };
+    const barrierBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseBarrier = resolve;
+    });
+    const barrierEntered: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalBarrierEntered = resolve;
+    });
+    let liveUrl: string = firstUrl;
+    let muted: boolean = false;
+    const liveTab = (): chrome.tabs.Tab =>
+      ({
+        id: 74,
+        url: liveUrl,
+        mutedInfo: { muted, extensionId: muted ? 'focus-lock' : undefined },
+      }) as chrome.tabs.Tab;
+    const query = vi
+      .fn<() => Promise<chrome.tabs.Tab[]>>()
+      .mockRejectedValueOnce(replayError)
+      .mockImplementation(async (): Promise<chrome.tabs.Tab[]> => [liveTab()]);
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('chrome', {
+      runtime: { id: 'focus-lock' },
+      tabs: {
+        query,
+        get: vi.fn(async (): Promise<chrome.tabs.Tab> => liveTab()),
+        sendMessage,
+        update: vi.fn(
+          async (_tabId: number, properties: chrome.tabs.UpdateProperties): Promise<void> => {
+            if (properties.muted !== undefined) muted = properties.muted;
+          },
+        ),
+        reload: vi.fn().mockResolvedValue(undefined),
+      },
+      webNavigation: {
+        getFrame: vi.fn().mockResolvedValue({ documentId: 'latest-document' }),
+        onCommitted: { addListener: vi.fn() },
+        onHistoryStateUpdated: {
+          addListener: vi.fn((listener: (details: NavigationDetails) => void): void => {
+            historyListener = listener;
+          }),
+        },
+      },
+    });
+    registerTabListeners((): Promise<Engine> => Promise.resolve(engine), reportError);
+    if (historyListener === undefined) throw new Error('history listener was not registered');
+    const transitioning: Promise<void> = engine.runWithAggregateStorageBarrier(
+      async (): Promise<void> => {
+        signalBarrierEntered();
+        await barrierBlocked;
+      },
+    );
+    await barrierEntered;
+
+    historyListener({ tabId: 74, url: firstUrl, frameId: 0, documentId: 'first-document' });
+    liveUrl = latestUrl;
+    historyListener({ tabId: 74, url: latestUrl, frameId: 0, documentId: 'latest-document' });
+    releaseBarrier();
+    await transitioning;
+
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(sendMessage).toHaveBeenCalledWith(
+      74,
+      expect.objectContaining({
+        type: 'applyBlock',
+        verdict: expect.objectContaining({ blocked: true, reason: 'custom' }),
+      }),
+      { documentId: 'latest-document' },
+    );
+    expect(engine.tabFacts(74, firstUrl).wasMutedByUs).toBe(false);
+    expect(engine.tabFacts(74, latestUrl).wasMutedByUs).toBe(true);
+    expect(muted).toBe(true);
+    expect(reportError).toHaveBeenCalledOnce();
+    expect(reportError).toHaveBeenCalledWith(replayError);
+  });
+
+  it('lets a tab close supersede quiesced navigation reconciliation', async (): Promise<void> => {
+    type NavigationDetails = { tabId: number; url: string; frameId: number };
+    const url = 'https://facebook.com/quiesced-closed';
+    const reportError = vi.fn();
+    const engine: Engine = await blockedNavigationEngine(reportError);
+    let historyListener: ((details: NavigationDetails) => void) | undefined;
+    let releaseBarrier: () => void = (): void => {
+      throw new Error('barrier release was not initialized');
+    };
+    let signalBarrierEntered: () => void = (): void => {
+      throw new Error('barrier signal was not initialized');
+    };
+    const barrierBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseBarrier = resolve;
+    });
+    const barrierEntered: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalBarrierEntered = resolve;
+    });
+    let closed: boolean = false;
+    const update = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('chrome', {
+      runtime: { id: 'focus-lock' },
+      tabs: {
+        query: vi.fn(
+          async (): Promise<chrome.tabs.Tab[]> =>
+            closed ? [] : ([{ id: 75, url, mutedInfo: { muted: false } }] as chrome.tabs.Tab[]),
+        ),
+        get: vi.fn().mockRejectedValue(new Error('tab closed')),
+        sendMessage: vi.fn().mockResolvedValue(undefined),
+        update,
+        reload: vi.fn().mockResolvedValue(undefined),
+      },
+      webNavigation: {
+        getFrame: vi.fn(),
+        onCommitted: { addListener: vi.fn() },
+        onHistoryStateUpdated: {
+          addListener: vi.fn((listener: (details: NavigationDetails) => void): void => {
+            historyListener = listener;
+          }),
+        },
+      },
+    });
+    registerTabListeners((): Promise<Engine> => Promise.resolve(engine), reportError);
+    if (historyListener === undefined) throw new Error('history listener was not registered');
+    const transitioning: Promise<void> = engine.runWithAggregateStorageBarrier(
+      async (): Promise<void> => {
+        signalBarrierEntered();
+        await barrierBlocked;
+      },
+    );
+    await barrierEntered;
+
+    historyListener({ tabId: 75, url, frameId: 0 });
+    closed = true;
+    await Promise.all([invalidateRemovedTab(75), engine.dropTab(75)]);
+    releaseBarrier();
+    await transitioning;
+
+    expect(update).not.toHaveBeenCalled();
+    expect(reportError).not.toHaveBeenCalled();
+  });
+
   it('releases tracked navigation admission after an identity-read error', async (): Promise<void> => {
     type NavigationDetails = { tabId: number; url: string; frameId: number };
     const error: Error = new Error('tab identity unavailable');
@@ -3428,6 +3649,7 @@ describe('registerTabListeners', () => {
     let flushCalls = 0;
     const engine: Engine = {
       runWithRuntimeMutationLease: runMockRuntimeMutation,
+      runWithRuntimeMutationLeaseOrBlockingSweep: runMockRuntimeMutation,
       verdictFor: vi.fn((): Verdict => allowed),
       snapshot: vi.fn(() => emptySnapshot(0)),
       tabFacts: vi.fn((_tabId: number, inputUrl: string) => ({
@@ -3552,6 +3774,7 @@ describe('registerTabListeners', () => {
     let flushCalls = 0;
     const engine: Engine = {
       runWithRuntimeMutationLease: runMockRuntimeMutation,
+      runWithRuntimeMutationLeaseOrBlockingSweep: runMockRuntimeMutation,
       verdictFor: vi.fn(
         (url: string): Verdict => (url.includes('facebook.com') ? blocked : allowed),
       ),
@@ -3692,6 +3915,7 @@ describe('registerTabListeners', () => {
     const reload = vi.fn().mockResolvedValue(undefined);
     const engine: Engine = {
       runWithRuntimeMutationLease: runMockRuntimeMutation,
+      runWithRuntimeMutationLeaseOrBlockingSweep: runMockRuntimeMutation,
       rebindTab,
       verdictFor: vi.fn((): Verdict => allowed),
       snapshot: vi.fn(() => emptySnapshot(0)),
@@ -3752,6 +3976,7 @@ describe('registerTabListeners', () => {
     const flushRuntime = vi.fn().mockResolvedValue(undefined);
     const engine: Engine = {
       runWithRuntimeMutationLease: runMockRuntimeMutation,
+      runWithRuntimeMutationLeaseOrBlockingSweep: runMockRuntimeMutation,
       rebindTab,
       verdictFor: vi.fn((): Verdict => blocked),
       snapshot: vi.fn(() => emptySnapshot(0)),
@@ -3832,6 +4057,7 @@ describe('registerTabListeners', () => {
       .mockResolvedValue(undefined);
     const engine: Engine = {
       runWithRuntimeMutationLease: runMockRuntimeMutation,
+      runWithRuntimeMutationLeaseOrBlockingSweep: runMockRuntimeMutation,
       rebindTab: vi.fn(),
       verdictFor: vi.fn((): Verdict => blocked),
       snapshot: vi.fn(() => emptySnapshot(0)),
@@ -3926,6 +4152,7 @@ describe('registerTabListeners', () => {
     const flushRuntime = vi.fn().mockResolvedValue(undefined);
     const engine: Engine = {
       runWithRuntimeMutationLease: runMockRuntimeMutation,
+      runWithRuntimeMutationLeaseOrBlockingSweep: runMockRuntimeMutation,
       rebindTab: vi.fn(),
       verdictFor: vi.fn((): Verdict => blocked),
       snapshot: vi.fn(() => emptySnapshot(0)),
@@ -4025,6 +4252,7 @@ describe('registerTabListeners', () => {
     );
     const engine: Engine = {
       runWithRuntimeMutationLease: runMockRuntimeMutation,
+      runWithRuntimeMutationLeaseOrBlockingSweep: runMockRuntimeMutation,
       rebindTab,
       verdictFor: vi.fn((): Verdict => blocked),
       snapshot: vi.fn(() => emptySnapshot(0)),
@@ -4130,6 +4358,7 @@ describe('registerTabListeners', () => {
     const flushRuntime = vi.fn().mockResolvedValue(undefined);
     const engine: Engine = {
       runWithRuntimeMutationLease: runMockRuntimeMutation,
+      runWithRuntimeMutationLeaseOrBlockingSweep: runMockRuntimeMutation,
       rebindTab: vi.fn(),
       verdictFor: vi.fn((): Verdict => blocked),
       snapshot: vi.fn(() => emptySnapshot(0)),

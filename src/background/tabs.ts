@@ -1244,43 +1244,45 @@ export function registerTabListeners(
     void readiness
       .then(
         (engine: Engine): Promise<void> =>
-          engine.runWithRuntimeMutationLease(async (lease: BlockingSweepLease): Promise<void> => {
-            await cancelMuteContinuation(details.tabId, lease);
-            await queueResolvedTabApply(
-              engine,
-              details.tabId,
-              attemptKind,
-              async (): Promise<TabApplyInput | null> => {
-                const liveTab: LiveTabIdentity | null = await readStableLiveTabIdentity(
-                  engine,
-                  details.tabId,
-                );
-                if (liveTab === null || liveTab.identity.url !== details.url) return null;
-                const eventDocumentId: string | null = details.documentId ?? null;
-                if (eventDocumentId !== null && liveTab.identity.documentId !== eventDocumentId) {
-                  return null;
-                }
-                return {
-                  url: liveTab.identity.url,
-                  mutedNow: liveTab.tab.mutedInfo?.muted ?? false,
-                  mutedByExtension: liveTab.tab.mutedInfo?.extensionId === chrome.runtime.id,
-                  documentId: liveTab.identity.documentId,
-                };
-              },
-              {
-                beforeEffects: (input: TabApplyInput): void => {
-                  if (input.mutedByExtension) {
-                    engine.rebindTab(details.tabId, input.url, lease);
+          engine.runWithRuntimeMutationLeaseOrBlockingSweep(
+            async (lease: BlockingSweepLease): Promise<void> => {
+              await cancelMuteContinuation(details.tabId, lease);
+              await queueResolvedTabApply(
+                engine,
+                details.tabId,
+                attemptKind,
+                async (): Promise<TabApplyInput | null> => {
+                  const liveTab: LiveTabIdentity | null = await readStableLiveTabIdentity(
+                    engine,
+                    details.tabId,
+                  );
+                  if (liveTab === null || liveTab.identity.url !== details.url) return null;
+                  const eventDocumentId: string | null = details.documentId ?? null;
+                  if (eventDocumentId !== null && liveTab.identity.documentId !== eventDocumentId) {
+                    return null;
                   }
+                  return {
+                    url: liveTab.identity.url,
+                    mutedNow: liveTab.tab.mutedInfo?.muted ?? false,
+                    mutedByExtension: liveTab.tab.mutedInfo?.extensionId === chrome.runtime.id,
+                    documentId: liveTab.identity.documentId,
+                  };
                 },
-                afterEffects: async (): Promise<void> => engine.flushRuntime(lease),
-                lease,
-                validateDocument: true,
-              },
-              operationVersion,
-              details.url,
-            );
-          }),
+                {
+                  beforeEffects: (input: TabApplyInput): void => {
+                    if (input.mutedByExtension) {
+                      engine.rebindTab(details.tabId, input.url, lease);
+                    }
+                  },
+                  afterEffects: async (): Promise<void> => engine.flushRuntime(lease),
+                  lease,
+                  validateDocument: true,
+                },
+                operationVersion,
+                details.url,
+              );
+            },
+          ),
       )
       .catch(reportError)
       .finally(releaseOperationLease);
