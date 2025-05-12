@@ -391,13 +391,19 @@ export class Engine {
       this.dataClearBarrierState = 'quiesced';
       return await operation();
     } finally {
+      let barrierReopened: boolean = false;
       try {
         await this.flushDeferredBlockClaims();
         await this.flushRemovedTabTombstones();
-        await this.flushDeferredBlockingSweep();
+        await this.flushDeferredBlockingSweep(true);
+        barrierReopened = true;
       } finally {
-        this.dataClearBarrierState = 'open';
-        this.dataClearOperationRunning = false;
+        if (!barrierReopened) {
+          this.openRuntimeMutationBarrier();
+          this.rejectDeferredBlockingSweep(
+            new Error('runtime reconciliation cancelled while the storage barrier reopened'),
+          );
+        }
       }
       await this.applyPendingWebsiteBlockingLoss();
     }
@@ -2079,9 +2085,13 @@ export class Engine {
     );
   }
 
-  private async flushDeferredBlockingSweep(): Promise<void> {
+  private async flushDeferredBlockingSweep(openBarrierAfter: boolean = false): Promise<void> {
     const deferred: DeferredBlockingSweep | null = this.deferredBlockingSweep;
-    if (deferred === null) return;
+    if (deferred === null) {
+      if (openBarrierAfter) this.openRuntimeMutationBarrier();
+      return;
+    }
+    let retryFailure: unknown = null;
     while (this.deferredBlockingSweepRequested) {
       this.deferredBlockingSweepRequested = false;
       try {
@@ -2092,15 +2102,21 @@ export class Engine {
           await this.applyBlockingWithLease();
         } catch (retryError: unknown) {
           this.needsBlocking = true;
-          this.deferredBlockingSweep = null;
-          this.deferredBlockingSweepRequested = false;
-          deferred.reject(retryError);
-          return;
+          retryFailure = retryError;
+          break;
         }
       }
     }
     this.deferredBlockingSweep = null;
-    deferred.resolve();
+    this.deferredBlockingSweepRequested = false;
+    if (openBarrierAfter) this.openRuntimeMutationBarrier();
+    if (retryFailure === null) deferred.resolve();
+    else deferred.reject(retryFailure);
+  }
+
+  private openRuntimeMutationBarrier(): void {
+    this.dataClearBarrierState = 'open';
+    this.dataClearOperationRunning = false;
   }
 
   private rejectDeferredBlockingSweep(error: Error): void {

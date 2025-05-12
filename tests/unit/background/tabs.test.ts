@@ -3585,6 +3585,119 @@ describe('registerTabListeners', () => {
     expect(reportError).not.toHaveBeenCalled();
   });
 
+  it('admits navigation dispatched from final sweep settlement before the barrier continuation', async (): Promise<void> => {
+    type NavigationDetails = { tabId: number; url: string; frameId: number; documentId?: string };
+    const firstUrl = 'https://facebook.com/final-sweep-first';
+    const nextUrl = firstUrl;
+    const reportError = vi.fn();
+    const engine: Engine = await blockedNavigationEngine(reportError);
+    let historyListener: ((details: NavigationDetails) => void) | undefined;
+    let releaseBarrier: () => void = (): void => {
+      throw new Error('barrier release was not initialized');
+    };
+    let signalBarrierEntered: () => void = (): void => {
+      throw new Error('barrier signal was not initialized');
+    };
+    const barrierBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseBarrier = resolve;
+    });
+    const barrierEntered: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalBarrierEntered = resolve;
+    });
+    let liveUrl: string = firstUrl;
+    let liveDocumentId: string = 'first-document';
+    let muted: boolean = false;
+    const liveTab = (): chrome.tabs.Tab =>
+      ({
+        id: 76,
+        url: liveUrl,
+        mutedInfo: { muted, extensionId: muted ? 'focus-lock' : undefined },
+      }) as chrome.tabs.Tab;
+    vi.stubGlobal('chrome', {
+      runtime: { id: 'focus-lock' },
+      tabs: {
+        query: vi.fn(async (): Promise<chrome.tabs.Tab[]> => [liveTab()]),
+        get: vi.fn(async (): Promise<chrome.tabs.Tab> => liveTab()),
+        sendMessage: vi.fn().mockResolvedValue(undefined),
+        update: vi.fn(
+          async (_tabId: number, properties: chrome.tabs.UpdateProperties): Promise<void> => {
+            if (properties.muted !== undefined) muted = properties.muted;
+          },
+        ),
+        reload: vi.fn().mockResolvedValue(undefined),
+      },
+      webNavigation: {
+        getFrame: vi.fn().mockImplementation(
+          async (): Promise<{ documentId: string }> => ({
+            documentId: liveDocumentId,
+          }),
+        ),
+        onCommitted: { addListener: vi.fn() },
+        onHistoryStateUpdated: {
+          addListener: vi.fn((listener: (details: NavigationDetails) => void): void => {
+            historyListener = listener;
+          }),
+        },
+      },
+    });
+    const originalAdmission = engine.runWithRuntimeMutationLeaseOrBlockingSweep.bind(engine);
+    let admissionCalls: number = 0;
+    let nextOperation: Promise<void> | null = null;
+    let nextOperationSettled: boolean = false;
+    vi.spyOn(engine, 'runWithRuntimeMutationLeaseOrBlockingSweep').mockImplementation(
+      (operation: (lease: BlockingSweepLease) => Promise<void>): Promise<void> => {
+        admissionCalls += 1;
+        const admitted: Promise<void> = originalAdmission(operation);
+        if (admissionCalls === 1) {
+          void admitted.then((): void => {
+            liveUrl = nextUrl;
+            liveDocumentId = 'next-document';
+            muted = false;
+            historyListener?.({
+              tabId: 76,
+              url: nextUrl,
+              frameId: 0,
+              documentId: 'next-document',
+            });
+          });
+        } else if (admissionCalls === 2) {
+          nextOperation = admitted;
+          void admitted.then((): void => {
+            nextOperationSettled = true;
+          });
+        }
+        return admitted;
+      },
+    );
+    registerTabListeners((): Promise<Engine> => Promise.resolve(engine), reportError);
+    if (historyListener === undefined) throw new Error('history listener was not registered');
+    const transitioning: Promise<void> = engine.runWithAggregateStorageBarrier(
+      async (): Promise<void> => {
+        signalBarrierEntered();
+        await barrierBlocked;
+      },
+    );
+    await barrierEntered;
+
+    historyListener({ tabId: 76, url: firstUrl, frameId: 0, documentId: 'first-document' });
+    releaseBarrier();
+    await transitioning;
+    const settledOperation: Promise<void> | null = nextOperation;
+    if (settledOperation === null) throw new Error('next navigation operation was not admitted');
+    await settledOperation;
+    await Promise.resolve();
+
+    expect(muted).toBe(true);
+    expect(nextOperationSettled).toBe(true);
+    expect(reportError).not.toHaveBeenCalled();
+
+    const activeLeases: Set<BlockingSweepLease> = Reflect.get(
+      engine,
+      'activeRuntimeMutationLeases',
+    ) as Set<BlockingSweepLease>;
+    expect(activeLeases).toHaveLength(0);
+  });
+
   it('releases tracked navigation admission after an identity-read error', async (): Promise<void> => {
     type NavigationDetails = { tabId: number; url: string; frameId: number };
     const error: Error = new Error('tab identity unavailable');
