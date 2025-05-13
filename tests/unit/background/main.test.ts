@@ -117,6 +117,7 @@ const mocks = vi.hoisted(
     setupReadError: Error | null;
     setupWriteGate: Promise<void> | null;
     setupWriteStarted: (() => void) | null;
+    runtimeSaveError: Error | null;
     injectionGate: Promise<void> | null;
     injectionResult: boolean;
     persistDeviceIdOnGet: boolean;
@@ -161,6 +162,7 @@ const mocks = vi.hoisted(
     setupReadError: null,
     setupWriteGate: null,
     setupWriteStarted: null,
+    runtimeSaveError: null,
     injectionGate: null,
     injectionResult: true,
     persistDeviceIdOnGet: false,
@@ -305,7 +307,9 @@ vi.mock('../../../src/background/stores', async () => {
     parseLiveLists: actual.parseLiveLists,
     parseLiveSettings: actual.parseLiveSettings,
     parseStreak: actual.parseStreak,
+    sanitizeRuntimeForLocalHistory: actual.sanitizeRuntimeForLocalHistory,
     saveRuntime: vi.fn().mockImplementation(async (runtime: RuntimeState): Promise<void> => {
+      if (mocks.runtimeSaveError !== null) throw mocks.runtimeSaveError;
       mocks.savedRuntimes.push(structuredClone(runtime));
     }),
     saveMatcherCache: vi
@@ -641,6 +645,7 @@ beforeEach((): void => {
   mocks.setupReadError = null;
   mocks.setupWriteGate = null;
   mocks.setupWriteStarted = null;
+  mocks.runtimeSaveError = null;
   mocks.injectionGate = null;
   mocks.injectionResult = true;
   mocks.persistDeviceIdOnGet = false;
@@ -788,6 +793,86 @@ describe('background runtime request boundary', () => {
       websiteAccess: 'denied',
     });
     expect(mocks.localState[LOCAL_INSTALL_MARKER]).toMatchObject({ profile: 'clean' });
+  });
+
+  it('sanitizes runtime before Engine boot resumes a removed local-history transaction', async (): Promise<void> => {
+    const now: number = Date.now();
+    const runtime: RuntimeState = {
+      ...emptyRuntime(now),
+      unlocks: [{ host: 'allowed.example', until: now + 60_000 }],
+      todayAgg: { ...emptyDaily(new Date(now).toISOString().slice(0, 10)), focusMs: 60_000 },
+      commitCheckpoint: {
+        bank: { balanceMs: 42_000 },
+        events: [{ t: 'budgetEarned', at: now, ms: 1_000 }],
+        syncBank: false,
+        aggregateSets: {
+          'agg:device:stale': { ...emptyDaily('2026-08-31'), focusMs: 60_000 },
+        },
+      },
+    };
+    mocks.scenario.runtime = runtime;
+    mocks.localState = {
+      [LOCAL_SETUP]: {
+        ...DEFAULT_SETUP,
+        completed: true,
+        storageMode: 'local',
+        dataClear: { status: 'pending', scope: 'local-history', phase: 'runtime' },
+      },
+      [LOCAL_DATA_CLEAR_JOURNAL]: {
+        scope: 'local-history',
+        phase: 'runtime',
+        inventory: [],
+        clearAggregates: true,
+      },
+      [LOCAL_SETTINGS]: DEFAULT_SETTINGS,
+      [LOCAL_LISTS]: DEFAULT_LISTS,
+      [LOCAL_BANK]: { balanceMs: 42_000 },
+      [LOCAL_STREAK]: null,
+      [LOCAL_RUNTIME]: runtime,
+    };
+    mocks.runtimeSaveError = new Error('sanitized runtime unavailable');
+
+    main();
+    await expect(dispatchRuntime({ type: 'getSnapshot' })).resolves.toEqual({ ok: true });
+
+    const failedBootRuntime: RuntimeState | undefined = mocks.engineArguments?.[5] as
+      | RuntimeState
+      | undefined;
+    expect(failedBootRuntime).toMatchObject({
+      unlocks: runtime.unlocks,
+      todayAgg: null,
+      commitCheckpoint: null,
+    });
+    expect(mocks.savedRuntimes).toEqual([]);
+    expect(mocks.localState[LOCAL_DATA_CLEAR_JOURNAL]).toMatchObject({
+      scope: 'local-history',
+      phase: 'runtime',
+    });
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      dataClear: { status: 'pending', scope: 'local-history', phase: 'runtime' },
+    });
+
+    mocks.runtimeSaveError = null;
+    main();
+    await expect(dispatchRuntime({ type: 'getSnapshot' })).resolves.toEqual({ ok: true });
+
+    const recoveredBootRuntime: RuntimeState | undefined = mocks.engineArguments?.[5] as
+      | RuntimeState
+      | undefined;
+    expect(recoveredBootRuntime).toMatchObject({
+      unlocks: runtime.unlocks,
+      todayAgg: null,
+      commitCheckpoint: null,
+    });
+    expect(mocks.savedRuntimes).toContainEqual(
+      expect.objectContaining({ todayAgg: null, commitCheckpoint: null }),
+    );
+    expect(mocks.localState[LOCAL_DATA_CLEAR_JOURNAL]).toBeUndefined();
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      completed: true,
+      storageMode: 'local',
+      dataClear: { status: 'idle', scope: null, phase: null },
+    });
   });
 
   it('propagates explicit website reconciliation persistence failures', async (): Promise<void> => {

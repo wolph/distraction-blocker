@@ -137,6 +137,17 @@ export function emptyRuntime(now: number): RuntimeState {
   };
 }
 
+export function sanitizeRuntimeForLocalHistory(
+  runtime: RuntimeState,
+  clearAggregates: boolean,
+): RuntimeState {
+  return {
+    ...structuredClone(runtime),
+    todayAgg: clearAggregates ? null : structuredClone(runtime.todayAgg),
+    commitCheckpoint: null,
+  };
+}
+
 export async function loadSettings(journal?: SyncJournal): Promise<Settings> {
   const raw: unknown = (await chrome.storage.sync.get(SYNC_SETTINGS))[SYNC_SETTINGS];
   return mergeSettings(journalValue(journal, SYNC_SETTINGS, raw));

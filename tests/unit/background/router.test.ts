@@ -74,6 +74,7 @@ function onboardingStorage(
     storageMode: vi.fn().mockResolvedValue('local'),
     deleteRemoteData: vi.fn().mockResolvedValue(undefined),
     clearLocalHistory: vi.fn().mockResolvedValue(undefined),
+    finishLocalHistoryClear: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   } as unknown as PolicyStorage;
 }
@@ -576,7 +577,14 @@ describe('routeMessage onboarding wiring', (): void => {
     const storage: PolicyStorage = onboardingStorage();
     const historyEngine: Engine = {
       runWithLocalHistoryClear: vi.fn(
-        async (operation: () => Promise<boolean>): Promise<boolean> => operation(),
+        async (
+          operation: () => Promise<boolean>,
+          finish: () => Promise<void>,
+        ): Promise<boolean> => {
+          const result: boolean = await operation();
+          await finish();
+          return result;
+        },
       ),
     } as unknown as Engine;
 
@@ -589,6 +597,36 @@ describe('routeMessage onboarding wiring', (): void => {
       ),
     ).resolves.toEqual({ ok: true, scope: 'local-history', status: 'cleared' });
     expect(storage.clearLocalHistory).toHaveBeenCalledOnce();
+    expect(storage.finishLocalHistoryClear).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the exact local-history scope pending when runtime sanitization fails', async (): Promise<void> => {
+    const storage: PolicyStorage = onboardingStorage({
+      clearLocalHistory: vi.fn().mockResolvedValue(true),
+    });
+    const historyEngine: Engine = {
+      runWithLocalHistoryClear: vi.fn(
+        async (operation: () => Promise<boolean>): Promise<boolean> => {
+          await operation();
+          throw new Error('sanitized runtime unavailable');
+        },
+      ),
+    } as unknown as Engine;
+
+    await expect(
+      routeMessage(
+        historyEngine,
+        { type: 'clearFocusLockData', scope: 'local-history' },
+        sender,
+        storage,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: 'sanitized runtime unavailable',
+      scope: 'local-history',
+      status: 'pending',
+    });
+    expect(storage.finishLocalHistoryClear).not.toHaveBeenCalled();
   });
 
   it('returns the pending local-history scope when durable removal fails', async (): Promise<void> => {

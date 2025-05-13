@@ -113,6 +113,7 @@ export async function routeMessage(
         try {
           await engine.runWithLocalHistoryClear(
             (): Promise<boolean> => storage.clearLocalHistory(),
+            (): Promise<void> => storage.finishLocalHistoryClear(),
           );
           return { ok: true, scope: msg.scope, status: 'cleared' };
         } catch (error: unknown) {

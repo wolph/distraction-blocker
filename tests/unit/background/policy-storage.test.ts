@@ -45,6 +45,7 @@ import {
 import type {
   BankState,
   DailyAgg,
+  EventRecord,
   ListsConfig,
   MonthlyAgg,
   SessionState,
@@ -2925,6 +2926,7 @@ describe('PolicyStorage', (): void => {
     };
 
     await expect(storage.clearLocalHistory()).resolves.toBe(true);
+    await storage.finishLocalHistoryClear();
 
     expect(local.state.values[LOCAL_EVENTS]).toBeUndefined();
     expect(local.state.values['agg:device:2026-08-31']).toBeUndefined();
@@ -2938,10 +2940,128 @@ describe('PolicyStorage', (): void => {
     expect(local.state.values[LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]).toBeUndefined();
     expect(local.state.values[LOCAL_SETTINGS]).toEqual(SNAPSHOT.settings);
     expect(local.state.values[LOCAL_LISTS]).toEqual(SNAPSHOT.lists);
+    expect(local.state.values[LOCAL_BANK]).toEqual(SNAPSHOT.bank);
+    expect(local.state.values[LOCAL_STREAK]).toEqual(SNAPSHOT.streak);
 
     await storage.enableSync();
     await vi.advanceTimersByTimeAsync(10_000);
     expect(sync.state.values['agg:device:2026-08-30']).toBeUndefined();
+  });
+
+  it('keeps a durable local-history transaction pending until runtime sanitization finishes', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_EVENTS]: [{ t: 'sessionCompleted', at: 1, focusedMs: 1 }],
+      'agg:device:2026-08-31': emptyDaily('2026-08-31'),
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    await storage.initialize();
+
+    await expect(storage.clearLocalHistory()).resolves.toBe(true);
+
+    expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toEqual({
+      scope: 'local-history',
+      phase: 'runtime',
+      inventory: [],
+      clearAggregates: true,
+    });
+    expect(await storage.loadSetup()).toMatchObject({
+      completed: true,
+      storageMode: 'local',
+      dataClear: { status: 'pending', scope: 'local-history', phase: 'runtime' },
+      storageError: null,
+    });
+
+    await storage.finishLocalHistoryClear();
+
+    expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toBeUndefined();
+    expect(await storage.loadSetup()).toMatchObject({
+      completed: true,
+      storageMode: 'local',
+      dataClear: { status: 'idle', scope: null, phase: null },
+      storageError: null,
+    });
+  });
+
+  it('restores the exact runtime-phase status when transaction cleanup fails', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_EVENTS]: [{ t: 'sessionCompleted', at: 1, focusedMs: 1 }],
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    await storage.initialize();
+    await storage.clearLocalHistory();
+    vi.mocked(local.area.remove).mockImplementationOnce(async (): Promise<void> => {
+      throw new Error('journal cleanup unavailable');
+    });
+
+    await expect(storage.finishLocalHistoryClear()).rejects.toThrow('journal cleanup unavailable');
+
+    expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toMatchObject({
+      scope: 'local-history',
+      phase: 'runtime',
+    });
+    expect(await storage.loadSetup()).toMatchObject({
+      dataClear: { status: 'error', scope: 'local-history', phase: 'runtime' },
+      storageError: 'local-clear-failed',
+    });
+
+    await expect(storage.finishLocalHistoryClear()).resolves.toBeUndefined();
+    expect(await storage.loadSetup()).toMatchObject({
+      dataClear: { status: 'idle', scope: null, phase: null },
+      storageError: null,
+    });
+  });
+
+  it('rolls back history removal and retains an exact retry journal when removal fails', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const event: EventRecord = { t: 'sessionCompleted', at: 1, focusedMs: 1 };
+    const aggregate: DailyAgg = emptyDaily('2026-08-31');
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_EVENTS]: [event],
+      'agg:device:2026-08-31': aggregate,
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    await storage.initialize();
+    vi.mocked(local.area.remove).mockImplementationOnce(
+      async (keys: string | string[]): Promise<void> => {
+        const requested: string[] = typeof keys === 'string' ? [keys] : keys;
+        for (const key of requested) delete local.state.values[key];
+        throw new Error('history removal interrupted');
+      },
+    );
+
+    await expect(storage.clearLocalHistory()).rejects.toThrow('history removal interrupted');
+
+    expect(local.state.values[LOCAL_EVENTS]).toEqual([event]);
+    expect(local.state.values['agg:device:2026-08-31']).toEqual(aggregate);
+    expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toMatchObject({
+      scope: 'local-history',
+      phase: 'local',
+      clearAggregates: true,
+    });
+    expect(await storage.loadSetup()).toMatchObject({
+      dataClear: { status: 'error', scope: 'local-history', phase: 'local' },
+      storageError: 'local-clear-failed',
+    });
+
+    const restarted: PolicyStorage = policyStorage(local, fakeStorage());
+    await restarted.initialize();
+    await expect(restarted.pendingLocalHistoryClear()).resolves.toEqual({
+      clearAggregates: true,
+    });
+    await expect(restarted.clearLocalHistory()).resolves.toBe(true);
+    await restarted.finishLocalHistoryClear();
+
+    expect(local.state.values[LOCAL_EVENTS]).toBeUndefined();
+    expect(local.state.values['agg:device:2026-08-31']).toBeUndefined();
+    expect(await restarted.loadSetup()).toMatchObject({
+      dataClear: { status: 'idle', scope: null, phase: null },
+      storageError: null,
+    });
   });
 
   it('clears only detailed local events while Sync owns aggregate history', async (): Promise<void> => {
@@ -2956,6 +3076,7 @@ describe('PolicyStorage', (): void => {
     await storage.initialize();
 
     await expect(storage.clearLocalHistory()).resolves.toBe(false);
+    await storage.finishLocalHistoryClear();
 
     expect(local.state.values[LOCAL_EVENTS]).toBeUndefined();
     expect(local.state.values['agg:device:2026-08-31']).toEqual(aggregate);

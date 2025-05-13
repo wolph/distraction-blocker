@@ -70,6 +70,7 @@ import {
   type RuntimeCommitCheckpoint,
   type RuntimeState,
   type RuntimeTabState,
+  sanitizeRuntimeForLocalHistory,
 } from './stores';
 import { chooseNewerStreak, rebaseStreakForDate } from './streak-sync';
 import { assertSyncItemWithinQuota, SyncQuotaError } from './sync-quota';
@@ -360,18 +361,20 @@ export class Engine {
     }
   }
 
-  async runWithLocalHistoryClear(operation: () => Promise<boolean>): Promise<boolean> {
+  async runWithLocalHistoryClear(
+    operation: () => Promise<boolean>,
+    finish: () => Promise<void>,
+  ): Promise<boolean> {
     return this.runWithAggregateStorageBarrier(async (): Promise<boolean> => {
       const aggregatesCleared: boolean = await operation();
-      if (!aggregatesCleared) return false;
-      this.runtime.todayAgg = null;
-      this.runtime.commitCheckpoint = null;
+      this.runtime = sanitizeRuntimeForLocalHistory(this.runtime, aggregatesCleared);
       this.pendingEvents = [];
       this.pendingAggregateSets.clear();
       this.pendingAggregateRemoves.clear();
       this.ownedRuntimeSnapshot = structuredClone(this.runtime);
       await this.persistRuntime(structuredClone(this.runtime));
-      return true;
+      await finish();
+      return aggregatesCleared;
     });
   }
 

@@ -210,6 +210,18 @@ describe('runtime and worker request validation parity', (): void => {
       extensionVersion: '0.1.0',
     });
     expect(isSetupState(SETUP)).toBe(true);
+    expect(
+      isSetupState({
+        ...SETUP,
+        dataClear: { status: 'pending', scope: 'local-history', phase: 'runtime' },
+      }),
+    ).toBe(true);
+    expect(
+      isSetupState({
+        ...SETUP,
+        dataClear: { status: 'pending', scope: 'local-history', phase: 'remote' },
+      }),
+    ).toBe(false);
     expect(isSetupState({ ...SETUP, storageError: 'unknown' })).toBe(false);
     expect(isInstallMarker(INSTALL_MARKER)).toBe(true);
     expect(isInstallMarker({ ...INSTALL_MARKER, latestReason: 'startup' })).toBe(false);

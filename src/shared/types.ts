@@ -61,6 +61,11 @@ export interface SetupState {
         status: 'pending' | 'error';
         scope: 'synced-policy' | 'all';
         phase: 'remote' | 'local';
+      }
+    | {
+        status: 'pending' | 'error';
+        scope: 'local-history';
+        phase: 'local' | 'runtime';
       };
   legacyImported: boolean;
 }

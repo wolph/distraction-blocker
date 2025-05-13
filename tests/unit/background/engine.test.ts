@@ -1521,7 +1521,7 @@ describe('Engine', () => {
     const h: Harness = makeEngine({ runtime });
     const clearStorage = vi.fn().mockResolvedValue(true);
 
-    await h.engine.runWithLocalHistoryClear(clearStorage);
+    await h.engine.runWithLocalHistoryClear(clearStorage, (): Promise<void> => Promise.resolve());
 
     expect(clearStorage).toHaveBeenCalledOnce();
     expect(h.engine.statsOverlay()).toMatchObject({
@@ -1532,6 +1532,59 @@ describe('Engine', () => {
     expect(h.ports.saveRuntime).toHaveBeenLastCalledWith(
       expect.objectContaining({ todayAgg: null, commitCheckpoint: null }),
     );
+  });
+
+  it('keeps history sanitized and the transaction pending when runtime persistence fails', async (): Promise<void> => {
+    const runtime: RuntimeState = {
+      ...emptyRuntime(T0),
+      session: startSession(manualConfig, T0, 'active-session'),
+      todayAgg: { ...emptyDaily('2026-08-29'), focusMs: 60_000 },
+    };
+    const streak: StreakState = {
+      current: 3,
+      freezeTokens: 1,
+      lastCountedDate: '2026-08-28',
+      lastFreezeGrantDate: '2026-08-24',
+      activeDays: [27, 28],
+      activeMonth: '2026-08',
+    };
+    const saveAggregate = vi.fn().mockResolvedValue(undefined);
+    const h: Harness = makeEngine({ bankMs: 42_000, runtime, saveAggregate, streak });
+    const finishStorage = vi.fn().mockResolvedValue(undefined);
+    let historyRemoved: boolean = false;
+    h.ports.saveRuntime.mockImplementation(async (saved: RuntimeState): Promise<void> => {
+      if (historyRemoved && saved.todayAgg === null) {
+        throw new Error('sanitized runtime unavailable');
+      }
+    });
+
+    await expect(
+      h.engine.runWithLocalHistoryClear(async (): Promise<boolean> => {
+        historyRemoved = true;
+        return true;
+      }, finishStorage),
+    ).rejects.toThrow('sanitized runtime unavailable');
+
+    expect(finishStorage).not.toHaveBeenCalled();
+    expect(h.engine.snapshot()).toMatchObject({ phase: 'focus', bankMs: 42_000 });
+    expect(h.engine.statsOverlay()).toMatchObject({
+      todayAgg: { focusMs: 0 },
+      streak,
+      pendingEvents: [],
+    });
+
+    h.ports.saveRuntime.mockResolvedValue(undefined);
+    saveAggregate.mockClear();
+    await h.engine.snapshotPersisted();
+
+    expect(lastSavedRuntime(h)).toMatchObject({ todayAgg: null, commitCheckpoint: null });
+    expect(saveAggregate).not.toHaveBeenCalled();
+
+    await h.engine.runWithLocalHistoryClear(
+      (): Promise<boolean> => Promise.resolve(true),
+      finishStorage,
+    );
+    expect(finishStorage).toHaveBeenCalledOnce();
   });
 
   it('ends an active session inside the all-data barrier and rehydrates a usable device', async (): Promise<void> => {

@@ -65,6 +65,7 @@ import {
   parseLiveSettings,
   parseStreak,
   type RuntimeState,
+  sanitizeRuntimeForLocalHistory,
   saveMatcherCache,
   saveRuntime,
 } from './stores';
@@ -611,8 +612,23 @@ async function boot(
   const pendingAllDataClear: boolean =
     setup.dataClear.status !== 'idle' && setup.dataClear.scope === 'all';
   publishSetupCompleted(setup.completed && !pendingAllDataClear);
-  const runtime: RuntimeState = migrateRuntimeRules(loadedRuntime, snapshot.lists);
-  if (!completedAllDataClear && runtime !== loadedRuntime) await saveRuntime(runtime);
+  const migratedRuntime: RuntimeState = migrateRuntimeRules(loadedRuntime, snapshot.lists);
+  const localHistoryClear: { clearAggregates: boolean } | null =
+    await policyStorage.pendingLocalHistoryClear();
+  const runtime: RuntimeState =
+    localHistoryClear === null
+      ? migratedRuntime
+      : sanitizeRuntimeForLocalHistory(migratedRuntime, localHistoryClear.clearAggregates);
+  if (localHistoryClear !== null) {
+    try {
+      await saveRuntime(runtime);
+      await policyStorage.finishLocalHistoryClear();
+    } catch (error: unknown) {
+      reportBackgroundError(error);
+    }
+  } else if (!completedAllDataClear && runtime !== loadedRuntime) {
+    await saveRuntime(runtime);
+  }
   const streak: StreakState = snapshot.streak ?? emptyStreak(localMonthStr(now));
   const ports: EnginePorts = {
     now: (): number => Date.now(),

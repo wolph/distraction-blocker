@@ -3,6 +3,7 @@ import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/backgroun
 import type { ParsedRuntimeState, RuntimeState } from '../../../src/background/stores';
 import {
   appendEvents,
+  emptyRuntime,
   loadBank,
   loadLists,
   loadMatcherCache,
@@ -14,9 +15,11 @@ import {
   mergeSettings,
   migrateRuntimeRules,
   readEvents,
+  sanitizeRuntimeForLocalHistory,
   saveMatcherCache,
 } from '../../../src/background/stores';
 import type { StoredMatcherCache } from '../../../src/core/matcher';
+import { emptyDaily } from '../../../src/core/stats';
 import {
   CATEGORY_IDS,
   DEFAULT_LISTS,
@@ -451,6 +454,49 @@ describe('storage default merging', () => {
 });
 
 describe('runtime storage migration', () => {
+  it('sanitizes restart runtime history without changing active runtime ownership', (): void => {
+    const now: number = new Date(2026, 7, 29, 12, 0).getTime();
+    const runtime: RuntimeState = {
+      ...emptyRuntime(now),
+      gate: {
+        kind: 'pause',
+        host: null,
+        openedAt: now,
+        readyAt: now + 1_000,
+        requiredPhrase: null,
+        forceEndAvailable: false,
+      },
+      unlocks: [{ host: 'allowed.example', until: now + 60_000 }],
+      todayAgg: { ...emptyDaily('2026-08-29'), focusMs: 60_000 },
+      commitCheckpoint: {
+        bank: { balanceMs: 42_000 },
+        events: [{ t: 'budgetEarned', at: now, ms: 1_000 }],
+        syncBank: true,
+        aggregateSets: {
+          'agg:device:2026-08-29': { ...emptyDaily('2026-08-29'), focusMs: 60_000 },
+        },
+      },
+    };
+
+    const local = sanitizeRuntimeForLocalHistory(runtime, true);
+    const sync = sanitizeRuntimeForLocalHistory(runtime, false);
+
+    expect(local).toMatchObject({
+      gate: runtime.gate,
+      unlocks: runtime.unlocks,
+      todayAgg: null,
+      commitCheckpoint: null,
+    });
+    expect(sync).toMatchObject({
+      gate: runtime.gate,
+      unlocks: runtime.unlocks,
+      todayAgg: runtime.todayAgg,
+      commitCheckpoint: null,
+    });
+    expect(runtime.todayAgg).not.toBeNull();
+    expect(runtime.commitCheckpoint).not.toBeNull();
+  });
+
   it('defaults missing exact economy aggregate fields to zero', () => {
     const now: number = new Date(2026, 7, 29, 12, 0).getTime();
     const runtime = mergeRuntime(
