@@ -3064,6 +3064,155 @@ describe('PolicyStorage', (): void => {
     });
   });
 
+  it('removes failed first-Sync aggregate intent while preserving policy retry across restart', async (): Promise<void> => {
+    const policySettings: Settings = { ...DEFAULT_SETTINGS, theme: 'dark' };
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      syncWriteStatus: 'pending',
+      storageError: 'sync-publish-failed',
+    };
+    const aggregateSetKey: string = syncAggKey('device-a', '2026-08-31');
+    const aggregateRemoveKey: string = syncAggKey('device-a', '2026-08-30');
+    const pruneKey: string = 'prune:device-a';
+    const pruneValue: { remove: string[] } = { remove: [aggregateRemoveKey] };
+    const aggregate: DailyAgg = { ...emptyDaily('2026-08-31'), focusMs: 42_000 };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_SETTINGS]: policySettings,
+      [LOCAL_EVENTS]: [{ t: 'sessionCompleted', at: 1, focusedMs: 1 }],
+      [aggregateSetKey]: aggregate,
+      [LOCAL_SYNC_JOURNAL]: {
+        sets: {
+          [SYNC_SETTINGS]: policySettings,
+          [aggregateSetKey]: aggregate,
+          [pruneKey]: pruneValue,
+        },
+        removes: [aggregateRemoveKey],
+      },
+    });
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    const reconstructed: SyncJournal = structuredClone(
+      local.state.values[LOCAL_SYNC_JOURNAL] as SyncJournal,
+    );
+
+    await expect(storage.clearLocalHistory()).resolves.toBe(true);
+
+    const filtered: SyncJournal = local.state.values[LOCAL_SYNC_JOURNAL] as SyncJournal;
+    expect(filtered.sets[SYNC_SETTINGS]).toEqual(policySettings);
+    expect(filtered.sets[pruneKey]).toEqual(pruneValue);
+    expect(filtered.sets[aggregateSetKey]).toBeUndefined();
+    expect(filtered.removes).not.toContain(aggregateRemoveKey);
+    expect(
+      Object.keys(filtered.sets).filter((key: string): boolean => key.startsWith('agg')),
+    ).toEqual([]);
+    expect(filtered.removes.filter((key: string): boolean => key.startsWith('agg'))).toEqual([]);
+    expect(
+      Object.fromEntries(
+        Object.entries(filtered.sets).filter(
+          ([key]: [string, unknown]): boolean => !key.startsWith('agg'),
+        ),
+      ),
+    ).toEqual(
+      Object.fromEntries(
+        Object.entries(reconstructed.sets).filter(
+          ([key]: [string, unknown]): boolean => !key.startsWith('agg'),
+        ),
+      ),
+    );
+    expect(storage.hasPendingRemote(aggregateSetKey)).toBe(false);
+    expect(storage.hasPendingRemote(aggregateRemoveKey)).toBe(false);
+    expect(storage.hasPendingRemote(SYNC_SETTINGS)).toBe(true);
+    expect(local.state.values[aggregateSetKey]).toBeUndefined();
+
+    const interruptedRestart: PolicyStorage = policyStorage(local, sync);
+    await interruptedRestart.initialize();
+    await expect(interruptedRestart.pendingLocalHistoryClear()).resolves.toEqual({
+      clearAggregates: true,
+    });
+    expect(local.state.values[aggregateSetKey]).toBeUndefined();
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual(filtered);
+    await interruptedRestart.finishLocalHistoryClear();
+
+    const completedRestart: PolicyStorage = policyStorage(local, sync);
+    await completedRestart.initialize();
+    expect(completedRestart.hasPendingRemote(aggregateSetKey)).toBe(false);
+    expect(completedRestart.hasPendingRemote(aggregateRemoveKey)).toBe(false);
+    expect(completedRestart.hasPendingRemote(SYNC_SETTINGS)).toBe(true);
+    await completedRestart.enableSync();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(sync.state.values[SYNC_SETTINGS]).toEqual(policySettings);
+    expect(sync.state.values[aggregateSetKey]).toBeUndefined();
+    expect(local.state.values[aggregateSetKey]).toBeUndefined();
+  });
+
+  it('keeps history and aggregate publication intent pending when journal filtering fails', async (): Promise<void> => {
+    const policySettings: Settings = { ...DEFAULT_SETTINGS, theme: 'dark' };
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      syncWriteStatus: 'pending',
+    };
+    const aggregateKey: string = syncAggKey('device-a', '2026-08-31');
+    const aggregate: DailyAgg = { ...emptyDaily('2026-08-31'), focusMs: 42_000 };
+    const event: EventRecord = { t: 'sessionCompleted', at: 1, focusedMs: 1 };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_SETTINGS]: policySettings,
+      [LOCAL_EVENTS]: [event],
+      [aggregateKey]: aggregate,
+      [LOCAL_SYNC_JOURNAL]: {
+        sets: { [SYNC_SETTINGS]: policySettings, [aggregateKey]: aggregate },
+        removes: [],
+      },
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    await storage.initialize();
+    let failFilteredJournal: boolean = true;
+    vi.mocked(local.area.set).mockImplementation(
+      async (items: Record<string, unknown>): Promise<void> => {
+        const journal: SyncJournal | undefined = items[LOCAL_SYNC_JOURNAL] as
+          | SyncJournal
+          | undefined;
+        if (
+          failFilteredJournal &&
+          journal !== undefined &&
+          !Object.hasOwn(journal.sets, aggregateKey)
+        ) {
+          failFilteredJournal = false;
+          throw new Error('filtered journal unavailable');
+        }
+        Object.assign(local.state.values, structuredClone(items));
+      },
+    );
+
+    await expect(storage.clearLocalHistory()).rejects.toThrow('filtered journal unavailable');
+
+    expect(local.state.values[LOCAL_EVENTS]).toEqual([event]);
+    expect(local.state.values[aggregateKey]).toEqual(aggregate);
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toMatchObject({
+      sets: { [SYNC_SETTINGS]: policySettings, [aggregateKey]: aggregate },
+    });
+    expect(await storage.loadSetup()).toMatchObject({
+      dataClear: { status: 'error', scope: 'local-history', phase: 'local' },
+      storageError: 'local-clear-failed',
+    });
+
+    await expect(storage.clearLocalHistory()).resolves.toBe(true);
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toMatchObject({
+      sets: { [SYNC_SETTINGS]: policySettings },
+    });
+    expect(
+      (local.state.values[LOCAL_SYNC_JOURNAL] as SyncJournal).sets[aggregateKey],
+    ).toBeUndefined();
+    await storage.finishLocalHistoryClear();
+  });
+
   it('clears only detailed local events while Sync owns aggregate history', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
     const aggregate = emptyDaily('2026-08-31');

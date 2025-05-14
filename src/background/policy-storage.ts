@@ -1807,6 +1807,32 @@ export function createPolicyStorage(
     return [...new Set(keys)];
   }
 
+  function withoutAggregateHistory(journal: SyncJournal): SyncJournal {
+    return {
+      sets: Object.fromEntries(
+        Object.entries(journal.sets).filter(
+          ([key]: [string, unknown]): boolean => !isAggregateHistoryKey(key),
+        ),
+      ),
+      removes: journal.removes.filter((key: string): boolean => !isAggregateHistoryKey(key)),
+    };
+  }
+
+  async function clearPendingAggregatePublications(): Promise<void> {
+    if (publisher !== null) {
+      await publisher.pause();
+      await publisher.drain();
+      await publisher.transformPending(
+        (): Promise<undefined> => Promise.resolve(undefined),
+        (_prepared: undefined, pending: SyncJournal): SyncJournal =>
+          withoutAggregateHistory(pending),
+      );
+      return;
+    }
+    const pending: SyncJournal = await loadedJournal(LOCAL_SYNC_JOURNAL, false);
+    await persistPublicationJournal(withoutAggregateHistory(pending));
+  }
+
   async function clearLocalHistoryStoragePhase(
     journal: LocalHistoryClearJournal,
   ): Promise<LocalHistoryClearJournal> {
@@ -1814,6 +1840,7 @@ export function createPolicyStorage(
     const keys: string[] = localHistoryRemovalKeys(stored, journal.clearAggregates);
     const removing: LocalHistoryClearJournal = { ...journal, inventory: keys };
     await persistDataClearJournal(removing, 'pending', null);
+    if (journal.clearAggregates) await clearPendingAggregatePublications();
     const previous: PreviousValues = await previousValues(keys);
     await verifiedRemove(keys, 'local history');
     const runtimePending: LocalHistoryClearJournal = {
