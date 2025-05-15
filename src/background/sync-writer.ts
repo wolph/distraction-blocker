@@ -126,7 +126,8 @@ export class SyncWriter {
       this.timer = null;
     }
     await this.flushQueue;
-    await this.journalDurability;
+    await this.whenJournalDurable();
+    this.reconciliationPending.clear();
   }
 
   async drain(): Promise<void> {

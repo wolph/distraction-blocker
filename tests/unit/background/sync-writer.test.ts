@@ -148,6 +148,64 @@ describe('SyncWriter', () => {
     expect(restarted.hasPending('lists')).toBe(true);
   });
 
+  it('pause immediately retries failed cleanup durability without republishing remote data', async (): Promise<void> => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    let durableJournal: SyncJournal = { sets: {}, removes: [] };
+    let failCleanup: boolean = true;
+    const writer: SyncWriter = new SyncWriter(10_000, write, undefined, {
+      initial: durableJournal,
+      persist: async (journal: SyncJournal): Promise<void> => {
+        if (failCleanup && Object.keys(journal.sets).length === 0) {
+          failCleanup = false;
+          throw new Error('cleanup unavailable');
+        }
+        durableJournal = structuredClone(journal);
+      },
+    });
+    writer.queue('lists', { custom: [{ kind: 'host', pattern: 'local.example' }] });
+    await writer.whenJournalDurable();
+    await expect(writer.flushNow()).rejects.toThrow('cleanup unavailable');
+
+    await expect(writer.pause()).resolves.toBeUndefined();
+
+    expect(write).toHaveBeenCalledOnce();
+    expect(durableJournal).toEqual({ sets: {}, removes: [] });
+    expect(writer.hasPending('lists')).toBe(false);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(write).toHaveBeenCalledOnce();
+  });
+
+  it('stays paused when the fresh cleanup durability attempt also fails', async (): Promise<void> => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    let durableJournal: SyncJournal = { sets: {}, removes: [] };
+    let remainingCleanupFailures: number = 2;
+    const writer: SyncWriter = new SyncWriter(10_000, write, undefined, {
+      initial: durableJournal,
+      persist: async (journal: SyncJournal): Promise<void> => {
+        if (remainingCleanupFailures > 0 && Object.keys(journal.sets).length === 0) {
+          remainingCleanupFailures -= 1;
+          throw new Error('cleanup unavailable');
+        }
+        durableJournal = structuredClone(journal);
+      },
+    });
+    writer.queue('bank', { balanceMs: 42_000 });
+    await writer.whenJournalDurable();
+    await expect(writer.flushNow()).rejects.toThrow('cleanup unavailable');
+
+    await expect(writer.pause()).rejects.toThrow('cleanup unavailable');
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(write).toHaveBeenCalledOnce();
+    expect(durableJournal.sets).toHaveProperty('bank');
+    expect(writer.hasPending('bank')).toBe(true);
+
+    await expect(writer.pause()).resolves.toBeUndefined();
+    expect(durableJournal).toEqual({ sets: {}, removes: [] });
+    expect(writer.hasPending('bank')).toBe(false);
+    expect(write).toHaveBeenCalledOnce();
+  });
+
   it('reports journal failures without replacing them when the error hook also fails', async () => {
     const journalFailure: Error = new Error('journal unavailable');
     const statusFailure: Error = new Error('status unavailable');
