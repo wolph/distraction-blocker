@@ -15,6 +15,7 @@ export const LOCAL_RUNTIME: string = 'runtime';
 export const LOCAL_EVENTS: string = 'events';
 export const LOCAL_DEVICE_ID: string = 'deviceId';
 export const LOCAL_SYNC_JOURNAL: string = 'syncJournal';
+export const LOCAL_FIRST_SYNC_PUBLICATION: string = 'firstSyncPublication';
 export const LOCAL_SYNC_QUOTA_EVICTION: string = 'syncQuotaEviction';
 export const LOCAL_CACHES: string = 'caches';
 export const LOCAL_LISTS_SNAPSHOT: string = 'listsSnapshot';

@@ -15,6 +15,7 @@ import {
   LOCAL_DATA_CLEAR_JOURNAL,
   LOCAL_DEVICE_ID,
   LOCAL_EVENTS,
+  LOCAL_FIRST_SYNC_PUBLICATION,
   LOCAL_INSTALL_MARKER,
   LOCAL_LISTS,
   LOCAL_LISTS_SNAPSHOT,
@@ -187,6 +188,12 @@ type PolicyCommit =
   | { source: 'generation'; id: string; revision: string }
   | { source: 'direct'; revision: string };
 
+interface FirstSyncPublicationCheckpoint {
+  version: 1;
+  phase: 'publishing' | 'remote-complete';
+  publication: SyncJournal;
+}
+
 const FOCUS_LOCK_LOCAL_EXACT_KEYS: readonly string[] = [
   LOCAL_RUNTIME,
   LOCAL_CACHES,
@@ -194,6 +201,7 @@ const FOCUS_LOCK_LOCAL_EXACT_KEYS: readonly string[] = [
   LOCAL_EVENTS,
   LOCAL_LISTS_SNAPSHOT,
   LOCAL_SYNC_JOURNAL,
+  LOCAL_FIRST_SYNC_PUBLICATION,
   LOCAL_SYNC_QUOTA_EVICTION,
   LOCAL_AGGREGATE_TOMBSTONES,
   LOCAL_AGGREGATE_PRUNE,
@@ -454,6 +462,81 @@ function journalEmpty(journal: SyncJournal): boolean {
   return Object.keys(journal.sets).length === 0 && journal.removes.length === 0;
 }
 
+function parseFirstSyncPublication(value: unknown): FirstSyncPublicationCheckpoint | null {
+  if (value === undefined) return null;
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['version', 'phase', 'publication']) ||
+    value.version !== 1 ||
+    (value.phase !== 'publishing' && value.phase !== 'remote-complete')
+  ) {
+    throw new Error('invalid first Sync publication checkpoint');
+  }
+  const publication: SyncJournal = parseJournal(value.publication, false);
+  const removals: Set<string> = new Set();
+  for (const [key, item] of Object.entries(publication.sets)) {
+    if (!isFocusLockSyncKey(key) || !isAuthoritativeSyncItem(key, item)) {
+      throw new Error('invalid first Sync publication checkpoint');
+    }
+    assertSyncItemWithinQuota(key, item);
+  }
+  for (const key of publication.removes) {
+    if (removals.has(key) || Object.hasOwn(publication.sets, key) || !isFocusLockSyncKey(key)) {
+      throw new Error('invalid first Sync publication checkpoint');
+    }
+    removals.add(key);
+  }
+  return {
+    version: 1,
+    phase: value.phase,
+    publication,
+  };
+}
+
+function publicationWithPriorAuthority(current: SyncJournal, prior: SyncJournal): SyncJournal {
+  const setKeys: Set<string> = new Set(Object.keys(current.sets));
+  const removes: Set<string> = new Set([...current.removes, ...prior.removes]);
+  for (const key of Object.keys(prior.sets)) {
+    if (!setKeys.has(key)) removes.add(key);
+  }
+  return {
+    sets: current.sets,
+    removes: [...removes]
+      .filter((key: string): boolean => !setKeys.has(key))
+      .sort((left: string, right: string): number => left.localeCompare(right)),
+  };
+}
+
+function publicationDelta(current: SyncJournal, prior: SyncJournal): SyncJournal {
+  const priorRemovals: Set<string> = new Set(prior.removes);
+  return {
+    sets: Object.fromEntries(
+      Object.entries(current.sets).filter(
+        ([key, value]: [string, unknown]): boolean =>
+          priorRemovals.has(key) ||
+          !Object.hasOwn(prior.sets, key) ||
+          !valuesEqual(prior.sets[key], value),
+      ),
+    ),
+    removes: current.removes.filter((key: string): boolean => !priorRemovals.has(key)),
+  };
+}
+
+function publicationDeltaFromRemote(
+  current: SyncJournal,
+  remote: Record<string, unknown>,
+): SyncJournal {
+  return {
+    sets: Object.fromEntries(
+      Object.entries(current.sets).filter(
+        ([key, value]: [string, unknown]): boolean =>
+          !Object.hasOwn(remote, key) || !valuesEqual(remote[key], value),
+      ),
+    ),
+    removes: current.removes.filter((key: string): boolean => Object.hasOwn(remote, key)),
+  };
+}
+
 function parseDataClearJournal(value: unknown): DataClearJournal | null {
   if (value === undefined) return null;
   if (
@@ -525,6 +608,7 @@ export function createPolicyStorage(
   let operationQueue: Promise<void> = Promise.resolve();
   let publisher: SyncWriter | null = null;
   let firstCheckpointComplete: boolean = false;
+  let firstSyncPublication: FirstSyncPublicationCheckpoint | null = null;
   let setupCache: SetupState | null = null;
   let allDataClearBarrierHeld = false;
   let allDataClearQuiescenceRequired = false;
@@ -607,6 +691,34 @@ export function createPolicyStorage(
       }
       throw error;
     }
+  }
+
+  async function loadFirstSyncPublication(): Promise<FirstSyncPublicationCheckpoint | null> {
+    const stored: Record<string, unknown> = await local.get(LOCAL_FIRST_SYNC_PUBLICATION);
+    return parseFirstSyncPublication(stored[LOCAL_FIRST_SYNC_PUBLICATION]);
+  }
+
+  async function persistFirstSyncPublication(
+    checkpoint: FirstSyncPublicationCheckpoint,
+  ): Promise<void> {
+    await verifiedWrite(
+      { [LOCAL_FIRST_SYNC_PUBLICATION]: checkpoint },
+      'first Sync publication checkpoint',
+    );
+    firstSyncPublication = structuredClone(checkpoint);
+  }
+
+  async function removeFirstSyncPublication(): Promise<void> {
+    await verifiedRemove([LOCAL_FIRST_SYNC_PUBLICATION], 'first Sync publication checkpoint');
+    firstSyncPublication = null;
+  }
+
+  async function markFirstSyncRemoteComplete(): Promise<void> {
+    if (firstSyncPublication?.phase !== 'publishing') return;
+    await persistFirstSyncPublication({
+      ...firstSyncPublication,
+      phase: 'remote-complete',
+    });
   }
 
   async function loadSetupInternal(): Promise<SetupState> {
@@ -782,6 +894,7 @@ export function createPolicyStorage(
       {
         initial,
         persist: persistPublicationJournal,
+        onRemoteCommit: markFirstSyncRemoteComplete,
         onFlushError: async (): Promise<void> => {
           const setup: SetupState = await loadSetupInternal();
           await saveSetupInternal({
@@ -809,6 +922,11 @@ export function createPolicyStorage(
       const persisted: SyncJournal = sanitizeSyncJournal(
         await loadedJournal(LOCAL_SYNC_JOURNAL, false),
       ).journal;
+      if (firstSyncPublication !== null && setup.storageMode !== 'sync') {
+        await persistPublicationJournal(persisted);
+        await ensurePublisher(persisted);
+        return;
+      }
       const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
       const aggregateItems: Record<string, unknown> =
         await firstSyncCheckpoint.loadAggregateItems();
@@ -960,6 +1078,7 @@ export function createPolicyStorage(
     const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
     let setup: SetupState = await loadSetupInternal();
     mode = setup.storageMode;
+    firstSyncPublication = await loadFirstSyncPublication();
     const dataClearJournal: DataClearJournal | null = await loadDataClearJournal();
     if (dataClearJournal !== null) {
       if (dataClearJournal.scope === 'all') {
@@ -989,6 +1108,12 @@ export function createPolicyStorage(
       }
       initialized = true;
       return;
+    }
+    if (setup.storageMode === 'sync' && firstSyncPublication !== null) {
+      if (firstSyncPublication.phase !== 'remote-complete') {
+        throw new Error('incomplete first Sync publication cannot own Sync mode');
+      }
+      await removeFirstSyncPublication();
     }
     if (
       setup.storageMode === 'sync' &&
@@ -1118,19 +1243,12 @@ export function createPolicyStorage(
     }
   }
 
-  async function enableSyncInternal(): Promise<void> {
-    await ensureInitialized();
-    const setupBeforeEnable: SetupState = await loadSetupInternal();
-    if (setupBeforeEnable.dataClear.status !== 'idle') {
-      throw new Error('finish the pending data deletion before enabling Sync');
-    }
-    if (mode === 'sync') return;
-    const priorMode: StorageMode | null = mode;
-    let complete: SyncJournal;
-    try {
-      const aggregateItems: Record<string, unknown> =
-        await firstSyncCheckpoint.loadAggregateItems();
-      complete = await fullPublication(await loadSnapshotInternal(), aggregateItems);
+  async function buildFirstSyncPublication(
+    checkpoint: FirstSyncPublicationCheckpoint | null,
+  ): Promise<SyncJournal> {
+    const aggregateItems: Record<string, unknown> = await firstSyncCheckpoint.loadAggregateItems();
+    let complete: SyncJournal = await fullPublication(await loadSnapshotInternal(), aggregateItems);
+    if (checkpoint === null) {
       const deviceStored: Record<string, unknown> = await local.get(LOCAL_DEVICE_ID);
       const deviceId: unknown = deviceStored[LOCAL_DEVICE_ID];
       if (typeof deviceId === 'string' && deviceId !== '') {
@@ -1145,23 +1263,90 @@ export function createPolicyStorage(
           }
         }
       }
-      const normalizedLocal: Record<string, unknown> = normalizedAggregateItems(complete.sets);
-      if (Object.keys(normalizedLocal).length > 0) {
-        await verifiedWrite(normalizedLocal, 'normalized first sync aggregate authority');
-      }
-    } catch (error: unknown) {
-      const current: SetupState = await loadSetupInternal();
-      await saveSetupInternal({
-        ...current,
-        syncWriteStatus: 'error',
-        storageError: 'sync-publish-failed',
-      });
-      throw error;
+    } else {
+      complete = publicationWithPriorAuthority(complete, checkpoint.publication);
     }
+    const normalizedLocal: Record<string, unknown> = normalizedAggregateItems(complete.sets);
+    if (Object.keys(normalizedLocal).length > 0) {
+      await verifiedWrite(normalizedLocal, 'normalized first sync aggregate authority');
+    }
+    return complete;
+  }
+
+  async function firstSyncPublicationDelta(
+    complete: SyncJournal,
+    checkpoint: FirstSyncPublicationCheckpoint | null,
+  ): Promise<SyncJournal> {
+    if (checkpoint === null) return complete;
+    if (checkpoint.phase === 'remote-complete') {
+      return publicationDelta(complete, checkpoint.publication);
+    }
+    return publicationDeltaFromRemote(complete, await sync.get(null));
+  }
+
+  async function persistFirstSyncAttempt(
+    complete: SyncJournal,
+    pending: SyncJournal,
+  ): Promise<void> {
     const setup: SetupState = await loadSetupInternal();
+    const checkpoint: FirstSyncPublicationCheckpoint = {
+      version: 1,
+      phase: 'publishing',
+      publication: complete,
+    };
+    await verifiedWrite(
+      {
+        [LOCAL_FIRST_SYNC_PUBLICATION]: checkpoint,
+        [LOCAL_SYNC_JOURNAL]: pending,
+        [LOCAL_SETUP]: { ...setup, syncWriteStatus: 'pending' },
+      },
+      'first Sync publication attempt',
+    );
+    firstSyncPublication = structuredClone(checkpoint);
+  }
+
+  async function finishFirstSyncPublication(writer: SyncWriter): Promise<void> {
+    if (firstSyncPublication?.phase !== 'remote-complete') {
+      throw new Error('first Sync publication is not durably complete');
+    }
+    const completedSetup: SetupState = await loadSetupInternal();
+    const syncedSetup: SetupState = {
+      ...completedSetup,
+      storageMode: 'sync',
+      syncWriteStatus: 'idle',
+      storageError: null,
+    };
+    if (!isSetupState(syncedSetup)) throw new Error('invalid setup state');
+    await verifiedWrite(
+      {
+        [LOCAL_SETUP]: syncedSetup,
+        [LOCAL_AGGREGATE_TOMBSTONES]: [],
+      },
+      'sync mode and published aggregate tombstones',
+    );
+    mode = 'sync';
+    firstCheckpointComplete = true;
+    publisher = writer;
+    writer.resume();
+    await removeFirstSyncPublication();
+  }
+
+  async function enableSyncInternal(): Promise<void> {
+    await ensureInitialized();
+    const setupBeforeEnable: SetupState = await loadSetupInternal();
+    if (setupBeforeEnable.dataClear.status !== 'idle') {
+      throw new Error('finish the pending data deletion before enabling Sync');
+    }
+    if (mode === 'sync') {
+      if (firstSyncPublication !== null) await removeFirstSyncPublication();
+      return;
+    }
+    const priorMode: StorageMode | null = mode;
+    let complete: SyncJournal;
+    let pending: SyncJournal;
     try {
-      await saveSetupInternal({ ...setup, syncWriteStatus: 'pending' });
-      await verifiedWrite({ [LOCAL_SYNC_JOURNAL]: complete }, 'complete sync publication outbox');
+      complete = await buildFirstSyncPublication(firstSyncPublication);
+      pending = await firstSyncPublicationDelta(complete, firstSyncPublication);
     } catch (error: unknown) {
       const current: SetupState = await loadSetupInternal();
       await saveSetupInternal({
@@ -1172,36 +1357,36 @@ export function createPolicyStorage(
       throw error;
     }
     try {
-      const writer: SyncWriter = await ensurePublisher(complete);
+      const writer: SyncWriter = await ensurePublisher(pending);
       await writer.pause();
+      const alreadyComplete: boolean =
+        firstSyncPublication?.phase === 'remote-complete' && journalEmpty(pending);
+      if (!alreadyComplete) {
+        await persistFirstSyncAttempt(complete, pending);
+      }
       await writer.transformPending(
         (): Promise<void> => Promise.resolve(),
-        (): SyncJournal => complete,
+        (): SyncJournal => pending,
       );
-      writer.resume();
-      await writer.flushNow();
-      const completedSetup: SetupState = await loadSetupInternal();
-      const syncedSetup: SetupState = {
-        ...completedSetup,
-        storageMode: 'sync',
-        syncWriteStatus: 'idle',
-        storageError: null,
-      };
-      if (!isSetupState(syncedSetup)) throw new Error('invalid setup state');
-      await verifiedWrite(
-        {
-          [LOCAL_SETUP]: syncedSetup,
-          [LOCAL_AGGREGATE_TOMBSTONES]: [],
-        },
-        'sync mode and published aggregate tombstones',
-      );
-      mode = 'sync';
-      firstCheckpointComplete = true;
-      publisher = writer;
+      if (!alreadyComplete) {
+        if (journalEmpty(pending)) {
+          await markFirstSyncRemoteComplete();
+        } else {
+          writer.resume();
+          await writer.flushNow();
+        }
+      }
+      await finishFirstSyncPublication(writer);
     } catch (error: unknown) {
+      const current: SetupState = await loadSetupInternal();
+      if (current.storageMode === 'sync') {
+        mode = 'sync';
+        firstCheckpointComplete = true;
+        publisher?.resume();
+        throw error;
+      }
       mode = priorMode;
       if (publisher !== null) await publisher.pause();
-      const current: SetupState = await loadSetupInternal();
       await saveSetupInternal({
         ...current,
         syncWriteStatus: 'error',
@@ -1215,7 +1400,7 @@ export function createPolicyStorage(
     await ensureInitialized();
     if (mode !== 'sync' && publisher === null) {
       const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
-      if (blockedAggregatePublicationsEmpty(blocked)) return;
+      if (blockedAggregatePublicationsEmpty(blocked) && firstSyncPublication === null) return;
       const setup: SetupState = await loadSetupInternal();
       await verifiedWrite(
         {
@@ -1230,6 +1415,8 @@ export function createPolicyStorage(
         'abandoned local aggregate publications',
       );
       mode = 'local';
+      firstCheckpointComplete = false;
+      if (firstSyncPublication !== null) await removeFirstSyncPublication();
       return;
     }
     const setup: SetupState = await loadSetupInternal();
@@ -1254,11 +1441,12 @@ export function createPolicyStorage(
       );
       publisher?.discardPendingAfterDurableJournalCommit();
       mode = 'local';
+      firstCheckpointComplete = false;
+      if (firstSyncPublication !== null) await removeFirstSyncPublication();
     } catch (error: unknown) {
       if (mode === 'sync' && publisher !== null) publisher.resume();
       throw error;
     }
-    firstCheckpointComplete = false;
   }
 
   async function selectLocalModeInternal(): Promise<void> {
@@ -1270,7 +1458,9 @@ export function createPolicyStorage(
     const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
     let hasPublicationIntent: boolean = true;
     try {
-      hasPublicationIntent = !journalEmpty(await loadedJournal(LOCAL_SYNC_JOURNAL, false));
+      hasPublicationIntent =
+        firstSyncPublication !== null ||
+        !journalEmpty(await loadedJournal(LOCAL_SYNC_JOURNAL, false));
     } catch (_error: unknown) {
       // Explicit local selection also abandons a malformed failed-publish journal.
     }
@@ -1634,11 +1824,19 @@ export function createPolicyStorage(
 
   async function clearRemotePhase(journal: DataClearJournal): Promise<DataClearJournal> {
     const publication: SyncJournal = await loadedJournal(LOCAL_SYNC_JOURNAL, false);
+    const checkpointPublication: SyncJournal = firstSyncPublication?.publication ?? {
+      sets: {},
+      removes: [],
+    };
     const initialKeys: string[] = [
       ...new Set(
-        [...journal.inventory, ...Object.keys(publication.sets), ...publication.removes].filter(
-          isFocusLockDeletionKey,
-        ),
+        [
+          ...journal.inventory,
+          ...Object.keys(publication.sets),
+          ...publication.removes,
+          ...Object.keys(checkpointPublication.sets),
+          ...checkpointPublication.removes,
+        ].filter(isFocusLockDeletionKey),
       ),
     ].sort();
     journal = { ...journal, inventory: initialKeys };
@@ -1665,6 +1863,7 @@ export function createPolicyStorage(
       sync,
       local,
     );
+    if (firstSyncPublication !== null) await removeFirstSyncPublication();
     return { ...journal, inventory: [] };
   }
 
@@ -1739,6 +1938,7 @@ export function createPolicyStorage(
       }
       previousRemainingSignature = signature;
     }
+    firstSyncPublication = null;
     const incomplete: SetupState = {
       ...DEFAULT_SETUP,
       dataClear: { status: 'pending', scope: 'all', phase: 'local' },

@@ -12,6 +12,7 @@ export interface SyncJournal {
 export interface SyncWriterJournalOptions {
   initial: SyncJournal;
   persist(journal: SyncJournal): Promise<void>;
+  onRemoteCommit?(publication: SyncJournal): Promise<void>;
   onFlushError?(error: unknown): Promise<void>;
 }
 
@@ -242,6 +243,10 @@ export class SyncWriter {
       if (this.journal !== undefined) await this.removeBatch(removals);
       if (batch.size > 0) await this.write(Object.fromEntries(batch));
       if (this.journal === undefined) await this.removeBatch(removals);
+      await this.journal?.onRemoteCommit?.({
+        sets: Object.fromEntries(batch),
+        removes: [...removals],
+      });
       for (const key of batch.keys()) {
         if (this.pendingRevisions.get(key) === revisions.get(key)) {
           this.pending.delete(key);

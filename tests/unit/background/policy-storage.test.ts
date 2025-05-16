@@ -27,6 +27,7 @@ import {
   LOCAL_DATA_CLEAR_JOURNAL,
   LOCAL_DEVICE_ID,
   LOCAL_EVENTS,
+  LOCAL_FIRST_SYNC_PUBLICATION,
   LOCAL_LISTS,
   LOCAL_POLICY_COMMIT,
   LOCAL_POLICY_GENERATION_PREFIX,
@@ -84,6 +85,7 @@ const SNAPSHOT: PolicySnapshot = {
 };
 
 const BLOCKED_AGGREGATE_PUBLICATIONS_KEY: string = LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS;
+const FIRST_SYNC_PUBLICATION_KEY: string = LOCAL_FIRST_SYNC_PUBLICATION;
 
 function selectedValues(
   values: Record<string, unknown>,
@@ -2150,6 +2152,259 @@ describe('PolicyStorage', (): void => {
       syncWriteStatus: 'error',
       storageError: 'sync-publish-failed',
     });
+
+    const remoteGetCount: number = vi.mocked(sync.area.get).mock.calls.length;
+    await storage.enableSync();
+
+    expect(await storage.storageMode()).toBe('sync');
+    expect(sync.area.get).toHaveBeenCalledTimes(remoteGetCount);
+    expect(sync.area.set).toHaveBeenCalledOnce();
+    expect(sync.area.remove).toHaveBeenCalledOnce();
+    expect(local.state.values[FIRST_SYNC_PUBLICATION_KEY]).toBeUndefined();
+  });
+
+  it('publishes only local policy changes made after first Sync completed remotely', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    let failCleanup: boolean = true;
+    vi.mocked(local.area.set).mockImplementation(
+      async (items: Record<string, unknown>): Promise<void> => {
+        const journal: unknown = items[LOCAL_SYNC_JOURNAL];
+        if (
+          failCleanup &&
+          typeof journal === 'object' &&
+          journal !== null &&
+          Object.keys((journal as SyncJournal).sets).length === 0
+        ) {
+          failCleanup = false;
+          throw new Error('cleanup journal unavailable');
+        }
+        Object.assign(local.state.values, structuredClone(items));
+      },
+    );
+    await expect(storage.enableSync()).rejects.toThrow('cleanup journal unavailable');
+    const nextBank: BankState = { balanceMs: 84_000 };
+    await storage.setPolicy('bank', nextBank);
+    const remoteGetCount: number = vi.mocked(sync.area.get).mock.calls.length;
+
+    await storage.enableSync();
+
+    expect(sync.area.get).toHaveBeenCalledTimes(remoteGetCount + 1);
+    expect(sync.area.remove).toHaveBeenCalledOnce();
+    expect(sync.area.set).toHaveBeenCalledTimes(2);
+    expect(sync.area.set).toHaveBeenLastCalledWith({ [SYNC_BANK]: nextBank });
+    expect(sync.state.values[SYNC_BANK]).toEqual(nextBank);
+    expect(await storage.storageMode()).toBe('sync');
+  });
+
+  it('publishes only a local policy removal made after first Sync completed remotely', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    let failCleanup: boolean = true;
+    vi.mocked(local.area.set).mockImplementation(
+      async (items: Record<string, unknown>): Promise<void> => {
+        const journal: unknown = items[LOCAL_SYNC_JOURNAL];
+        if (
+          failCleanup &&
+          typeof journal === 'object' &&
+          journal !== null &&
+          Object.keys((journal as SyncJournal).sets).length === 0
+        ) {
+          failCleanup = false;
+          throw new Error('cleanup journal unavailable');
+        }
+        Object.assign(local.state.values, structuredClone(items));
+      },
+    );
+    await expect(storage.enableSync()).rejects.toThrow('cleanup journal unavailable');
+    await storage.setPolicy('streak', null);
+    const remoteGetCount: number = vi.mocked(sync.area.get).mock.calls.length;
+
+    await storage.enableSync();
+
+    expect(sync.area.get).toHaveBeenCalledTimes(remoteGetCount);
+    expect(sync.area.set).toHaveBeenCalledOnce();
+    expect(sync.area.remove).toHaveBeenCalledTimes(2);
+    expect(sync.area.remove).toHaveBeenLastCalledWith([SYNC_STREAK]);
+    expect(sync.state.values[SYNC_STREAK]).toBeUndefined();
+    expect(await storage.storageMode()).toBe('sync');
+  });
+
+  it('validates a publishing marker after its remote-complete checkpoint fails', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    let failRemoteCompleteMarker: boolean = true;
+    vi.mocked(local.area.set).mockImplementation(
+      async (items: Record<string, unknown>): Promise<void> => {
+        const marker: unknown = items[FIRST_SYNC_PUBLICATION_KEY];
+        if (
+          failRemoteCompleteMarker &&
+          typeof marker === 'object' &&
+          marker !== null &&
+          (marker as { phase?: unknown }).phase === 'remote-complete'
+        ) {
+          failRemoteCompleteMarker = false;
+          throw new Error('remote-complete marker unavailable');
+        }
+        Object.assign(local.state.values, structuredClone(items));
+      },
+    );
+
+    await expect(storage.enableSync()).rejects.toThrow('remote-complete marker unavailable');
+
+    expect(local.state.values[FIRST_SYNC_PUBLICATION_KEY]).toMatchObject({
+      version: 1,
+      phase: 'publishing',
+    });
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toMatchObject({
+      sets: { [SYNC_SETTINGS]: SNAPSHOT.settings, [SYNC_BANK]: SNAPSHOT.bank },
+    });
+    expect(sync.area.set).toHaveBeenCalledOnce();
+    expect(sync.area.remove).toHaveBeenCalledOnce();
+    const remoteGetCount: number = vi.mocked(sync.area.get).mock.calls.length;
+
+    await storage.enableSync();
+
+    expect(sync.area.get).toHaveBeenCalledTimes(remoteGetCount + 1);
+    expect(sync.area.set).toHaveBeenCalledOnce();
+    expect(sync.area.remove).toHaveBeenCalledOnce();
+    expect(await storage.storageMode()).toBe('sync');
+    expect(local.state.values[FIRST_SYNC_PUBLICATION_KEY]).toBeUndefined();
+  });
+
+  it('does not publish remotely before the publishing marker is durable', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    let failPublishingMarker: boolean = true;
+    vi.mocked(local.area.set).mockImplementation(
+      async (items: Record<string, unknown>): Promise<void> => {
+        const marker: unknown = items[FIRST_SYNC_PUBLICATION_KEY];
+        if (
+          failPublishingMarker &&
+          typeof marker === 'object' &&
+          marker !== null &&
+          (marker as { phase?: unknown }).phase === 'publishing'
+        ) {
+          failPublishingMarker = false;
+          throw new Error('publishing marker unavailable');
+        }
+        Object.assign(local.state.values, structuredClone(items));
+      },
+    );
+
+    await expect(storage.enableSync()).rejects.toThrow('publishing marker unavailable');
+
+    expect(sync.area.set).not.toHaveBeenCalled();
+    expect(sync.area.remove).not.toHaveBeenCalled();
+    expect(local.state.values[FIRST_SYNC_PUBLICATION_KEY]).toBeUndefined();
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toMatchObject({
+      sets: { [SYNC_SETTINGS]: SNAPSHOT.settings, [SYNC_BANK]: SNAPSHOT.bank },
+    });
+
+    await storage.enableSync();
+
+    expect(sync.area.set).toHaveBeenCalledOnce();
+    expect(sync.area.remove).toHaveBeenCalledOnce();
+    expect(await storage.storageMode()).toBe('sync');
+    expect(local.state.values[FIRST_SYNC_PUBLICATION_KEY]).toBeUndefined();
+  });
+
+  it('retains remote-complete authority across final mode persistence failure and restart', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    const first: PolicyStorage = policyStorage(local, sync);
+    await first.initialize();
+    let failModeWrite: boolean = true;
+    vi.mocked(local.area.set).mockImplementation(
+      async (items: Record<string, unknown>): Promise<void> => {
+        const nextSetup: unknown = items[LOCAL_SETUP];
+        if (
+          failModeWrite &&
+          typeof nextSetup === 'object' &&
+          nextSetup !== null &&
+          (nextSetup as SetupState).storageMode === 'sync'
+        ) {
+          failModeWrite = false;
+          throw new Error('final mode unavailable');
+        }
+        Object.assign(local.state.values, structuredClone(items));
+      },
+    );
+
+    await expect(first.enableSync()).rejects.toThrow('final mode unavailable');
+
+    expect(local.state.values[FIRST_SYNC_PUBLICATION_KEY]).toMatchObject({
+      version: 1,
+      phase: 'remote-complete',
+    });
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
+    expect(await first.storageMode()).toBe('local');
+    expect(sync.area.set).toHaveBeenCalledOnce();
+    expect(sync.area.remove).toHaveBeenCalledOnce();
+    const remoteGetCount: number = vi.mocked(sync.area.get).mock.calls.length;
+
+    const restarted: PolicyStorage = policyStorage(local, sync);
+    await restarted.initialize();
+    await restarted.enableSync();
+
+    expect(sync.area.get).toHaveBeenCalledTimes(remoteGetCount);
+    expect(sync.area.set).toHaveBeenCalledOnce();
+    expect(sync.area.remove).toHaveBeenCalledOnce();
+    expect(await restarted.storageMode()).toBe('sync');
+    expect(local.state.values[FIRST_SYNC_PUBLICATION_KEY]).toBeUndefined();
+  });
+
+  it('does not replay a durable outbox left behind after the remote-complete checkpoint', async (): Promise<void> => {
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    };
+    const publication: SyncJournal = {
+      sets: {
+        [SYNC_SETTINGS]: SNAPSHOT.settings,
+        [SYNC_LISTS]: SNAPSHOT.lists,
+        [SYNC_BANK]: SNAPSHOT.bank,
+        [SYNC_STREAK]: SNAPSHOT.streak,
+      },
+      removes: CATEGORY_IDS.map((categoryId: string): string => `lists:category:${categoryId}`),
+    };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_SYNC_JOURNAL]: publication,
+      [FIRST_SYNC_PUBLICATION_KEY]: {
+        version: 1,
+        phase: 'remote-complete',
+        publication,
+      },
+    });
+    const sync: FakeStorage = fakeStorage(publication.sets);
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+
+    await storage.enableSync();
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(sync.area.get).not.toHaveBeenCalled();
+    expect(sync.area.set).not.toHaveBeenCalled();
+    expect(sync.area.remove).not.toHaveBeenCalled();
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
+    expect(await storage.storageMode()).toBe('sync');
   });
 
   it('lets local-history clearing retry a twice-failed first Sync cleanup immediately', async (): Promise<void> => {
@@ -2419,6 +2674,42 @@ describe('PolicyStorage', (): void => {
     expect(sync.state.values).toEqual({ 'unrelated:key': 'keep' });
     expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toBeUndefined();
     expect((await setupState(local)).syncWriteStatus).toBe('idle');
+  });
+
+  it('deletes remotely completed first-Sync authority even after its outbox was cleaned', async (): Promise<void> => {
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    };
+    const publication: SyncJournal = {
+      sets: { [SYNC_SETTINGS]: SNAPSHOT.settings, [SYNC_BANK]: SNAPSHOT.bank },
+      removes: [],
+    };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_SYNC_JOURNAL]: { sets: {}, removes: [] },
+      [FIRST_SYNC_PUBLICATION_KEY]: {
+        version: 1,
+        phase: 'remote-complete',
+        publication,
+      },
+    });
+    const sync: FakeStorage = fakeStorage({ ...publication.sets, unrelated: 'keep' });
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+
+    await storage.deleteRemoteData('synced-policy');
+
+    expect(sync.state.values).toEqual({ unrelated: 'keep' });
+    expect(local.state.values[FIRST_SYNC_PUBLICATION_KEY]).toBeUndefined();
+    expect(await storage.loadSetup()).toMatchObject({
+      storageMode: 'local',
+      syncWriteStatus: 'idle',
+      storageError: null,
+    });
   });
 
   it('clears every Focus Lock local key only after remote all-data deletion succeeds', async (): Promise<void> => {
