@@ -785,6 +785,35 @@ describe('SyncWriter concurrency ordering', () => {
     expect(paused).toBe(true);
   });
 
+  it('adopts an externally committed filtered journal while paused', async (): Promise<void> => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const writer: SyncWriter = new SyncWriter(10_000, write, undefined, {
+      initial: { sets: {}, removes: [] },
+      persist: vi.fn().mockResolvedValue(undefined),
+    });
+    writer.queue('settings', { enabled: true });
+    writer.queue('agg:device:2026-08-31', { date: '2026-08-31' });
+    writer.remove('agg:device:2026-08-30');
+    await writer.pause();
+
+    expect(writer.pendingSnapshotWhilePaused()).toEqual({
+      sets: {
+        settings: { enabled: true },
+        'agg:device:2026-08-31': { date: '2026-08-31' },
+      },
+      removes: ['agg:device:2026-08-30'],
+    });
+    writer.replacePendingAfterDurableJournalCommit({
+      sets: { settings: { enabled: true } },
+      removes: [],
+    });
+
+    expect(writer.hasPending('settings')).toBe(true);
+    expect(writer.hasPending('agg:device:2026-08-31')).toBe(false);
+    expect(writer.hasPending('agg:device:2026-08-30')).toBe(false);
+    expect((): SyncJournal => writer.pendingSnapshotWhilePaused()).not.toThrow();
+  });
+
   it('durably replaces pending work while paused without a later timer overtaking it', async (): Promise<void> => {
     const write = vi.fn().mockResolvedValue(undefined);
     const durable: SyncJournal[] = [];

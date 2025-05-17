@@ -3520,6 +3520,159 @@ describe('PolicyStorage', (): void => {
     expect(local.state.values[aggregateSetKey]).toBeUndefined();
   });
 
+  it.each(['publishing', 'remote-complete'] as const)(
+    'strips aggregate history from the %s first-Sync checkpoint and live outbox',
+    async (phase: 'publishing' | 'remote-complete'): Promise<void> => {
+      const setup: SetupState = {
+        ...DEFAULT_SETUP,
+        completed: true,
+        storageMode: 'local',
+        syncWriteStatus: 'pending',
+        storageError: 'sync-publish-failed',
+      };
+      const dailyKey: string = syncAggKey('device-a', '2026-08-31');
+      const monthlyKey: string = 'aggm:device-a:2026-08';
+      const removedKey: string = syncAggKey('device-a', '2026-08-30');
+      const daily: DailyAgg = { ...emptyDaily('2026-08-31'), focusMs: 42_000 };
+      const monthly: MonthlyAgg = rollupMonth('2026-08', [daily]);
+      const pending: SyncJournal = {
+        sets: {
+          [SYNC_SETTINGS]: SNAPSHOT.settings,
+          [dailyKey]: daily,
+          [monthlyKey]: monthly,
+        },
+        removes: [SYNC_STREAK, removedKey],
+      };
+      const local: FakeStorage = fakeStorage({
+        ...localPolicy(setup),
+        [LOCAL_EVENTS]: [{ t: 'sessionCompleted', at: 1, focusedMs: 1 }],
+        [dailyKey]: daily,
+        [monthlyKey]: monthly,
+        [LOCAL_SYNC_JOURNAL]: pending,
+        [FIRST_SYNC_PUBLICATION_KEY]: {
+          version: 1,
+          phase,
+          publication: pending,
+        },
+      });
+      const storage: PolicyStorage = policyStorage(local, fakeStorage());
+      await storage.initialize();
+
+      await expect(storage.clearLocalHistory()).resolves.toBe(true);
+
+      const filteredJournal: SyncJournal = local.state.values[LOCAL_SYNC_JOURNAL] as SyncJournal;
+      const filteredCheckpoint = local.state.values[FIRST_SYNC_PUBLICATION_KEY] as {
+        phase: string;
+        publication: SyncJournal;
+        version: number;
+      };
+      expect(filteredJournal).toEqual({
+        sets: { [SYNC_SETTINGS]: SNAPSHOT.settings },
+        removes: [SYNC_STREAK],
+      });
+      expect(filteredCheckpoint).toEqual({
+        version: 1,
+        phase,
+        publication: filteredJournal,
+      });
+      expect(storage.hasPendingRemote(dailyKey)).toBe(false);
+      expect(storage.hasPendingRemote(monthlyKey)).toBe(false);
+      expect(storage.hasPendingRemote(removedKey)).toBe(false);
+      expect(storage.hasPendingRemote(SYNC_SETTINGS)).toBe(true);
+      expect(local.state.values[dailyKey]).toBeUndefined();
+      expect(local.state.values[monthlyKey]).toBeUndefined();
+
+      const restarted: PolicyStorage = policyStorage(local, fakeStorage());
+      await restarted.initialize();
+      await restarted.finishLocalHistoryClear();
+      const completedRestart: PolicyStorage = policyStorage(local, fakeStorage());
+      await completedRestart.initialize();
+
+      expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual(filteredJournal);
+      expect(local.state.values[FIRST_SYNC_PUBLICATION_KEY]).toEqual(filteredCheckpoint);
+      expect(completedRestart.hasPendingRemote(dailyKey)).toBe(false);
+      expect(completedRestart.hasPendingRemote(monthlyKey)).toBe(false);
+      expect(completedRestart.hasPendingRemote(removedKey)).toBe(false);
+      expect(completedRestart.hasPendingRemote(SYNC_SETTINGS)).toBe(true);
+    },
+  );
+
+  it('keeps checkpoint, outbox, and history exact when their filtered write fails', async (): Promise<void> => {
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      syncWriteStatus: 'pending',
+      storageError: 'sync-publish-failed',
+    };
+    const dailyKey: string = syncAggKey('device-a', '2026-08-31');
+    const monthlyKey: string = 'aggm:device-a:2026-08';
+    const removedKey: string = syncAggKey('device-a', '2026-08-30');
+    const daily: DailyAgg = { ...emptyDaily('2026-08-31'), focusMs: 42_000 };
+    const monthly: MonthlyAgg = rollupMonth('2026-08', [daily]);
+    const pending: SyncJournal = {
+      sets: {
+        [SYNC_SETTINGS]: SNAPSHOT.settings,
+        [dailyKey]: daily,
+        [monthlyKey]: monthly,
+      },
+      removes: [removedKey],
+    };
+    const checkpoint = { version: 1, phase: 'publishing', publication: pending } as const;
+    const event: EventRecord = { t: 'sessionCompleted', at: 1, focusedMs: 1 };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_EVENTS]: [event],
+      [dailyKey]: daily,
+      [monthlyKey]: monthly,
+      [LOCAL_SYNC_JOURNAL]: pending,
+      [FIRST_SYNC_PUBLICATION_KEY]: checkpoint,
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    await storage.initialize();
+    let failFilteredCheckpoint: boolean = true;
+    vi.mocked(local.area.set).mockImplementation(
+      async (items: Record<string, unknown>): Promise<void> => {
+        const candidate: unknown = items[FIRST_SYNC_PUBLICATION_KEY];
+        if (
+          failFilteredCheckpoint &&
+          typeof candidate === 'object' &&
+          candidate !== null &&
+          !Object.hasOwn((candidate as { publication: SyncJournal }).publication.sets, dailyKey)
+        ) {
+          failFilteredCheckpoint = false;
+          throw new Error('filtered checkpoint unavailable');
+        }
+        Object.assign(local.state.values, structuredClone(items));
+      },
+    );
+
+    await expect(storage.clearLocalHistory()).rejects.toThrow('filtered checkpoint unavailable');
+
+    expect(local.state.values[LOCAL_EVENTS]).toEqual([event]);
+    expect(local.state.values[dailyKey]).toEqual(daily);
+    expect(local.state.values[monthlyKey]).toEqual(monthly);
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual(pending);
+    expect(local.state.values[FIRST_SYNC_PUBLICATION_KEY]).toEqual(checkpoint);
+    expect(storage.hasPendingRemote(dailyKey)).toBe(true);
+    expect(storage.hasPendingRemote(monthlyKey)).toBe(true);
+    expect(storage.hasPendingRemote(removedKey)).toBe(true);
+
+    await expect(storage.clearLocalHistory()).resolves.toBe(true);
+    const filteredJournal: SyncJournal = local.state.values[LOCAL_SYNC_JOURNAL] as SyncJournal;
+    const filteredCheckpoint = local.state.values[FIRST_SYNC_PUBLICATION_KEY] as {
+      publication: SyncJournal;
+    };
+    expect(filteredJournal).toEqual({
+      sets: { [SYNC_SETTINGS]: SNAPSHOT.settings },
+      removes: [],
+    });
+    expect(filteredCheckpoint.publication).toEqual(filteredJournal);
+    expect(storage.hasPendingRemote(dailyKey)).toBe(false);
+    expect(storage.hasPendingRemote(monthlyKey)).toBe(false);
+    expect(storage.hasPendingRemote(removedKey)).toBe(false);
+  });
+
   it('keeps history and aggregate publication intent pending when journal filtering fails', async (): Promise<void> => {
     const policySettings: Settings = { ...DEFAULT_SETTINGS, theme: 'dark' };
     const setup: SetupState = {

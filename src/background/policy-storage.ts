@@ -744,13 +744,17 @@ export function createPolicyStorage(
     return parseBlockedAggregatePublications(stored[LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]);
   }
 
-  async function persistPublicationJournal(journal: SyncJournal): Promise<void> {
+  async function persistPublicationJournalState(
+    journal: SyncJournal,
+    additionalItems: Record<string, unknown> = {},
+  ): Promise<void> {
     const setup: SetupState = await loadSetupInternal();
     const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
     const hasBlocked: boolean = !blockedAggregatePublicationsEmpty(blocked);
     const empty: boolean = journalEmpty(journal);
     await verifiedWrite(
       {
+        ...additionalItems,
         [LOCAL_SYNC_JOURNAL]: journal,
         ...(empty && mode === 'sync' ? { [LOCAL_AGGREGATE_TOMBSTONES]: [] } : {}),
         [LOCAL_SETUP]: {
@@ -765,6 +769,10 @@ export function createPolicyStorage(
       },
       'sync publication journal',
     );
+  }
+
+  async function persistPublicationJournal(journal: SyncJournal): Promise<void> {
+    await persistPublicationJournalState(journal);
   }
 
   async function persistDataClearJournal(
@@ -2018,19 +2026,34 @@ export function createPolicyStorage(
     };
   }
 
+  function filteredFirstSyncPublication(): FirstSyncPublicationCheckpoint | null {
+    if (firstSyncPublication === null) return null;
+    return {
+      ...firstSyncPublication,
+      publication: withoutAggregateHistory(firstSyncPublication.publication),
+    };
+  }
+
+  async function persistFilteredPublicationState(journal: SyncJournal): Promise<void> {
+    const checkpoint: FirstSyncPublicationCheckpoint | null = filteredFirstSyncPublication();
+    await persistPublicationJournalState(
+      journal,
+      checkpoint === null ? {} : { [LOCAL_FIRST_SYNC_PUBLICATION]: checkpoint },
+    );
+    firstSyncPublication = checkpoint === null ? null : structuredClone(checkpoint);
+  }
+
   async function clearPendingAggregatePublications(): Promise<void> {
     if (publisher !== null) {
       await publisher.pause();
       await publisher.drain();
-      await publisher.transformPending(
-        (): Promise<undefined> => Promise.resolve(undefined),
-        (_prepared: undefined, pending: SyncJournal): SyncJournal =>
-          withoutAggregateHistory(pending),
-      );
+      const filtered: SyncJournal = withoutAggregateHistory(publisher.pendingSnapshotWhilePaused());
+      await persistFilteredPublicationState(filtered);
+      publisher.replacePendingAfterDurableJournalCommit(filtered);
       return;
     }
     const pending: SyncJournal = await loadedJournal(LOCAL_SYNC_JOURNAL, false);
-    await persistPublicationJournal(withoutAggregateHistory(pending));
+    await persistFilteredPublicationState(withoutAggregateHistory(pending));
   }
 
   async function clearLocalHistoryStoragePhase(

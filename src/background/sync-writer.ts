@@ -136,6 +136,32 @@ export class SyncWriter {
     await this.journalDurability;
   }
 
+  pendingSnapshotWhilePaused(): SyncJournal {
+    if (!this.paused) throw new Error('sync writer must be paused before reading pending work');
+    return {
+      sets: structuredClone(Object.fromEntries(this.pending)),
+      removes: [...this.pendingRemovals],
+    };
+  }
+
+  replacePendingAfterDurableJournalCommit(journal: SyncJournal): void {
+    if (!this.paused) throw new Error('sync writer must be paused before replacing pending work');
+    for (const [key, value] of Object.entries(journal.sets)) {
+      assertSyncItemWithinQuota(key, value);
+    }
+    const removals: Set<string> = new Set(journal.removes);
+    this.pending = new Map(
+      Object.entries(structuredClone(journal.sets)).filter(
+        ([key]: [string, unknown]): boolean => !removals.has(key),
+      ),
+    );
+    this.pendingRemovals = removals;
+    this.pendingRevisions.clear();
+    this.reconciliationPending.clear();
+    for (const key of this.pending.keys()) this.markChanged(key);
+    for (const key of this.pendingRemovals) this.markChanged(key);
+  }
+
   discardPendingAfterDurableJournalCommit(): void {
     if (!this.paused) throw new Error('sync writer must be paused before discarding pending work');
     if (this.timer !== null) {
