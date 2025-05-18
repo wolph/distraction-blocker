@@ -2445,7 +2445,7 @@ describe('PolicyStorage', (): void => {
     expect(await storage.loadSetup()).toMatchObject({
       storageMode: 'local',
       dataClear: { status: 'pending', scope: 'local-history', phase: 'runtime' },
-      storageError: null,
+      storageError: 'sync-publish-failed',
     });
   });
 
@@ -3335,6 +3335,7 @@ describe('PolicyStorage', (): void => {
       phase: 'runtime',
       inventory: [],
       clearAggregates: true,
+      priorStorageError: null,
     });
     expect(await storage.loadSetup()).toMatchObject({
       completed: true,
@@ -3353,6 +3354,193 @@ describe('PolicyStorage', (): void => {
       storageError: null,
     });
   });
+
+  it('upgrades a pending local-history journal written before prior errors were captured', async (): Promise<void> => {
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      dataClear: { status: 'pending', scope: 'local-history', phase: 'runtime' },
+    };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_DATA_CLEAR_JOURNAL]: {
+        scope: 'local-history',
+        phase: 'runtime',
+        inventory: [],
+        clearAggregates: true,
+      },
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+
+    await storage.initialize();
+
+    expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toEqual({
+      scope: 'local-history',
+      phase: 'runtime',
+      inventory: [],
+      clearAggregates: true,
+      priorStorageError: null,
+    });
+    await storage.finishLocalHistoryClear();
+    expect(await storage.loadSetup()).toMatchObject({
+      storageError: null,
+      dataClear: { status: 'idle', scope: null, phase: null },
+    });
+  });
+
+  it('rejects an invalid prior error in a local-history journal', async (): Promise<void> => {
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      dataClear: { status: 'pending', scope: 'local-history', phase: 'runtime' },
+    };
+    const storage: PolicyStorage = policyStorage(
+      fakeStorage({
+        ...localPolicy(setup),
+        [LOCAL_DATA_CLEAR_JOURNAL]: {
+          scope: 'local-history',
+          phase: 'runtime',
+          inventory: [],
+          clearAggregates: true,
+          priorStorageError: 'not-a-storage-error',
+        },
+      }),
+      fakeStorage(),
+    );
+
+    await expect(storage.initialize()).rejects.toThrow('invalid data clear journal');
+  });
+
+  it.each([
+    {
+      name: 'Sync publication',
+      storageError: 'sync-publish-failed' as const,
+      syncWriteStatus: 'error' as const,
+      legacyImported: true,
+    },
+    {
+      name: 'legacy migration',
+      storageError: 'legacy-migration-failed' as const,
+      syncWriteStatus: 'idle' as const,
+      legacyImported: false,
+    },
+  ])(
+    'restores a pre-existing $name error after a successful local-history clear',
+    async ({ storageError, syncWriteStatus, legacyImported }): Promise<void> => {
+      const setup: SetupState = {
+        ...DEFAULT_SETUP,
+        completed: true,
+        storageMode: 'local',
+        storageError,
+        syncWriteStatus,
+        legacyImported,
+      };
+      const local: FakeStorage = fakeStorage({
+        ...localPolicy(setup),
+        [LOCAL_EVENTS]: [{ t: 'sessionCompleted', at: 1, focusedMs: 1 }],
+      });
+      const storage: PolicyStorage = policyStorage(local, fakeStorage());
+      await storage.initialize();
+
+      await expect(storage.clearLocalHistory()).resolves.toBe(true);
+
+      expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toMatchObject({
+        scope: 'local-history',
+        phase: 'runtime',
+        priorStorageError: storageError,
+      });
+      expect(await storage.loadSetup()).toMatchObject({
+        storageError,
+        syncWriteStatus,
+        legacyImported,
+        dataClear: { status: 'pending', scope: 'local-history', phase: 'runtime' },
+      });
+
+      await storage.finishLocalHistoryClear();
+
+      expect(await storage.loadSetup()).toMatchObject({
+        storageError,
+        syncWriteStatus,
+        legacyImported,
+        dataClear: { status: 'idle', scope: null, phase: null },
+      });
+    },
+  );
+
+  it.each([
+    {
+      name: 'Sync publication',
+      storageError: 'sync-publish-failed' as const,
+      syncWriteStatus: 'error' as const,
+      legacyImported: true,
+    },
+    {
+      name: 'legacy migration',
+      storageError: 'legacy-migration-failed' as const,
+      syncWriteStatus: 'idle' as const,
+      legacyImported: false,
+    },
+  ])(
+    'recovers a failed local-history clear without losing the prior $name error',
+    async ({ storageError, syncWriteStatus, legacyImported }): Promise<void> => {
+      const setup: SetupState = {
+        ...DEFAULT_SETUP,
+        completed: true,
+        storageMode: 'local',
+        storageError,
+        syncWriteStatus,
+        legacyImported,
+      };
+      const event: EventRecord = { t: 'sessionCompleted', at: 1, focusedMs: 1 };
+      const local: FakeStorage = fakeStorage({
+        ...localPolicy(setup),
+        [LOCAL_EVENTS]: [event],
+      });
+      const first: PolicyStorage = policyStorage(local, fakeStorage());
+      await first.initialize();
+      vi.mocked(local.area.remove).mockRejectedValueOnce(new Error('history unavailable'));
+
+      await expect(first.clearLocalHistory()).rejects.toThrow('history unavailable');
+
+      expect(local.state.values[LOCAL_EVENTS]).toEqual([event]);
+      expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toMatchObject({
+        scope: 'local-history',
+        phase: 'local',
+        priorStorageError: storageError,
+      });
+      expect(await first.loadSetup()).toMatchObject({
+        storageError: 'local-clear-failed',
+        syncWriteStatus,
+        legacyImported,
+        dataClear: { status: 'error', scope: 'local-history', phase: 'local' },
+      });
+
+      const restarted: PolicyStorage = policyStorage(local, fakeStorage());
+      await restarted.initialize();
+
+      expect(local.state.values[LOCAL_EVENTS]).toBeUndefined();
+      expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toMatchObject({
+        scope: 'local-history',
+        phase: 'runtime',
+        priorStorageError: storageError,
+      });
+      expect(await restarted.loadSetup()).toMatchObject({
+        storageError,
+        syncWriteStatus,
+        legacyImported,
+        dataClear: { status: 'pending', scope: 'local-history', phase: 'runtime' },
+      });
+      await restarted.finishLocalHistoryClear();
+      expect(await restarted.loadSetup()).toMatchObject({
+        storageError,
+        syncWriteStatus,
+        legacyImported,
+        dataClear: { status: 'idle', scope: null, phase: null },
+      });
+    },
+  );
 
   it('restores the exact runtime-phase status when transaction cleanup fails', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };

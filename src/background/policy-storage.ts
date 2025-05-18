@@ -170,6 +170,7 @@ type DataClearJournal =
       phase: 'local' | 'runtime';
       inventory: string[];
       clearAggregates: boolean;
+      priorStorageError: SetupState['storageError'];
     };
 
 type LocalHistoryClearJournal = Extract<DataClearJournal, { scope: 'local-history' }>;
@@ -537,22 +538,42 @@ function publicationDeltaFromRemote(
   };
 }
 
+function isSetupStorageError(value: unknown): value is SetupState['storageError'] {
+  return (
+    value === null ||
+    value === 'legacy-migration-failed' ||
+    value === 'sync-publish-failed' ||
+    value === 'remote-deletion-failed' ||
+    value === 'local-clear-failed'
+  );
+}
+
 function parseDataClearJournal(value: unknown): DataClearJournal | null {
   if (value === undefined) return null;
+  const hasPriorStorageError: boolean =
+    isRecord(value) && Object.hasOwn(value, 'priorStorageError');
+  const localHistoryKeysValid: boolean =
+    isRecord(value) &&
+    (hasExactKeys(value, ['scope', 'phase', 'inventory', 'clearAggregates']) ||
+      hasExactKeys(value, ['scope', 'phase', 'inventory', 'clearAggregates', 'priorStorageError']));
   if (
     isRecord(value) &&
-    hasExactKeys(value, ['scope', 'phase', 'inventory', 'clearAggregates']) &&
+    localHistoryKeysValid &&
     value.scope === 'local-history' &&
     (value.phase === 'local' || value.phase === 'runtime') &&
     Array.isArray(value.inventory) &&
     value.inventory.every((key: unknown): key is string => typeof key === 'string') &&
-    typeof value.clearAggregates === 'boolean'
+    typeof value.clearAggregates === 'boolean' &&
+    (!hasPriorStorageError || isSetupStorageError(value.priorStorageError))
   ) {
     return {
       scope: value.scope,
       phase: value.phase,
       inventory: [...new Set(value.inventory)],
       clearAggregates: value.clearAggregates,
+      priorStorageError: isSetupStorageError(value.priorStorageError)
+        ? value.priorStorageError
+        : null,
     };
   }
   if (
@@ -782,16 +803,24 @@ export function createPolicyStorage(
   ): Promise<void> {
     const setup: SetupState = await loadSetupInternal();
     const dataClear: SetupState['dataClear'] = setupDataClearState(journal, status);
+    const effectiveStorageError: SetupState['storageError'] =
+      journal.scope === 'local-history'
+        ? status === 'error'
+          ? 'local-clear-failed'
+          : journal.priorStorageError
+        : storageError;
     await verifiedWrite(
       {
         [LOCAL_DATA_CLEAR_JOURNAL]: journal,
         [LOCAL_SETUP]: {
           ...setup,
           syncWriteStatus:
-            status === 'error' && journal.scope !== 'local-history'
+            journal.scope === 'local-history' && journal.priorStorageError === 'sync-publish-failed'
               ? 'error'
-              : setup.syncWriteStatus,
-          storageError,
+              : status === 'error' && journal.scope !== 'local-history'
+                ? 'error'
+                : setup.syncWriteStatus,
+          storageError: effectiveStorageError,
           dataClear,
         },
       },
@@ -1889,11 +1918,13 @@ export function createPolicyStorage(
     const setup: SetupState = await loadSetupInternal();
     await saveSetupInternal({
       ...setup,
-      syncWriteStatus: journal.scope === 'local-history' ? setup.syncWriteStatus : 'idle',
-      storageError:
-        journal.scope === 'local-history' && setup.storageError !== 'local-clear-failed'
-          ? setup.storageError
-          : null,
+      syncWriteStatus:
+        journal.scope === 'local-history'
+          ? journal.priorStorageError === 'sync-publish-failed'
+            ? 'error'
+            : setup.syncWriteStatus
+          : 'idle',
+      storageError: journal.scope === 'local-history' ? journal.priorStorageError : null,
       dataClear: { status: 'idle', scope: null, phase: null },
     });
     try {
@@ -2137,12 +2168,16 @@ export function createPolicyStorage(
     if (existing !== null && existing.scope !== 'local-history') {
       throw new Error('another data clear operation is pending');
     }
-    const journal: LocalHistoryClearJournal = existing ?? {
-      scope: 'local-history',
-      phase: 'local',
-      inventory: [],
-      clearAggregates: mode !== 'sync',
-    };
+    const setup: SetupState = await loadSetupInternal();
+    const journal: LocalHistoryClearJournal =
+      existing ??
+      ({
+        scope: 'local-history',
+        phase: 'local',
+        inventory: [],
+        clearAggregates: mode !== 'sync',
+        priorStorageError: setup.storageError,
+      } satisfies LocalHistoryClearJournal);
     await persistDataClearJournal(journal, 'pending', null);
     await resumeDataClear(journal);
     return journal.clearAggregates;
