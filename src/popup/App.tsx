@@ -1,11 +1,17 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../shared/constants';
-import { sendRequest } from '../shared/messages';
-import { isListsConfig, isSettings } from '../shared/runtime-validation';
+import { type Ack, sendRequest } from '../shared/messages';
+import { isListsConfig, isSettings, isSetupState } from '../shared/runtime-validation';
 import { ThemeControl } from '../shared/ThemeControl';
 import { applyTheme, updateTheme } from '../shared/theme';
-import type { ListsConfig, SessionSnapshot, Settings, ThemeMode } from '../shared/types';
+import type {
+  ListsConfig,
+  SessionSnapshot,
+  Settings,
+  SetupState,
+  ThemeMode,
+} from '../shared/types';
 import { ActiveView } from './ActiveView';
 import { StartForm } from './StartForm';
 import { useSnapshot } from './use-snapshot';
@@ -192,6 +198,91 @@ function Body({ snapshot, now }: { snapshot: SessionSnapshot; now: number }): VN
   return <ActiveView snapshot={snapshot} now={now} />;
 }
 
+function SetupRequired(): VNode {
+  const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
+    string | null
+  >(null);
+  const [pending, setPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
+  const openSetup: () => Promise<void> = async (): Promise<void> => {
+    setPending(true);
+    setError(null);
+    try {
+      await chrome.tabs.create({
+        url: chrome.runtime.getURL('src/onboarding/onboarding.html'),
+      });
+    } catch {
+      setError('Could not open setup. Try again.');
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <section class="view setup-required" aria-labelledby="setup-required-heading">
+      <h2 id="setup-required-heading">Finish setting up Focus Lock</h2>
+      <p>Choose your starting lists, website access, and storage mode before starting a session.</p>
+      <button
+        type="button"
+        class="start-button"
+        disabled={pending}
+        onClick={(): void => void openSetup()}
+      >
+        Open setup
+      </button>
+      {error !== null ? (
+        <p role="alert" class="form-error">
+          {error}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+function WebsiteAccessNotice(props: {
+  notice: Exclude<SetupState['websiteAccessNotice'], null>;
+  onDismissed: () => void;
+}): VNode {
+  const [pending, setPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
+  const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
+    string | null
+  >(null);
+  const message: string =
+    props.notice === 'revoked-during-session'
+      ? 'Your session ended because website access was removed.'
+      : 'Your session ended because Focus Lock could not enable website blocking.';
+  const dismiss: () => Promise<void> = async (): Promise<void> => {
+    setPending(true);
+    setError(null);
+    try {
+      const response: Ack = await sendRequest({ type: 'dismissWebsiteAccessNotice' });
+      if (!response.ok) {
+        setError(response.error);
+        return;
+      }
+      props.onDismissed();
+    } catch {
+      setError('Could not dismiss this notice. Try again.');
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <aside class="website-access-notice" role="status">
+      <span>{message}</span>
+      <button
+        type="button"
+        aria-label="Dismiss website access notice"
+        disabled={pending}
+        onClick={(): void => void dismiss()}
+      >
+        Dismiss
+      </button>
+      {error !== null ? <span role="alert">{error}</span> : null}
+    </aside>
+  );
+}
+
 export function App(): VNode {
   const {
     error,
@@ -200,6 +291,22 @@ export function App(): VNode {
   }: { snapshot: SessionSnapshot | null; now: number; error: boolean } = useSnapshot();
   const [theme, setTheme]: [ThemeMode | null, Dispatch<StateUpdater<ThemeMode | null>>] =
     useState<ThemeMode | null>(null);
+  const [setup, setSetup]: [SetupState | null, Dispatch<StateUpdater<SetupState | null>>] =
+    useState<SetupState | null>(null);
+  const [setupError, setSetupError]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
+
+  useEffect((): void => {
+    void sendRequest({ type: 'getSetupState' })
+      .then((value: SetupState): void => {
+        if (!isSetupState(value)) {
+          setSetupError(true);
+          return;
+        }
+        setSetup(value);
+      })
+      .catch((): void => setSetupError(true));
+  }, []);
 
   useEffect((): void => {
     if (snapshot !== null) setTheme(snapshot.theme);
@@ -220,7 +327,15 @@ export function App(): VNode {
   return (
     <div class="app">
       <Header theme={theme} onThemeChange={saveTheme} />
-      {error ? (
+      {setupError ? (
+        <section class="view snapshot-status" role="alert">
+          Setup status unavailable. Reload Focus Lock to try again.
+        </section>
+      ) : setup === null ? (
+        <section class="view" aria-busy="true" />
+      ) : !setup.completed ? (
+        <SetupRequired />
+      ) : error ? (
         <section class="view snapshot-status" role="status">
           Focus status unavailable
         </section>
@@ -229,7 +344,15 @@ export function App(): VNode {
       ) : (
         <Body snapshot={snapshot} now={now} />
       )}
-      {snapshot === null ? null : <Footer snapshot={snapshot} />}
+      {setup?.completed &&
+      setup.blockingRegistration !== 'ready' &&
+      setup.websiteAccessNotice !== null ? (
+        <WebsiteAccessNotice
+          notice={setup.websiteAccessNotice}
+          onDismissed={(): void => setSetup({ ...setup, websiteAccessNotice: null })}
+        />
+      ) : null}
+      {setup?.completed === true && snapshot !== null ? <Footer snapshot={snapshot} /> : null}
     </div>
   );
 }

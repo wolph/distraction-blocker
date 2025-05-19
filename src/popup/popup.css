@@ -143,6 +143,44 @@ body {
   padding: 14px;
 }
 
+.setup-required h2 {
+  margin: 0 0 8px;
+  font-size: 17px;
+}
+
+.setup-required p {
+  margin: 0 0 14px;
+  color: var(--text-soft);
+}
+
+.website-access-notice {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 14px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--paused-color);
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.website-access-notice button {
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.website-access-notice [role="alert"] {
+  grid-column: 1 / -1;
+  color: var(--danger);
+}
+
 .footer {
   display: flex;
   justify-content: space-between;

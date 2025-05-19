@@ -72,6 +72,7 @@ type StorageListener = (
   areaName: string,
 ) => void;
 type PermissionListener = (permissions: chrome.permissions.Permissions) => void;
+type InstalledListener = (details: chrome.runtime.InstalledDetails) => void;
 type MockRegistrationResult =
   | 'unavailable'
   | 'ready'
@@ -108,6 +109,7 @@ const mocks = vi.hoisted(
     localState: Record<string, unknown>;
     permissionAddedListener: PermissionListener | null;
     permissionRemovedListener: PermissionListener | null;
+    installedListener: InstalledListener | null;
     registrationStatuses: MockRegistrationResult[];
     registrationReconcileGates: Array<Promise<void> | null>;
     websiteLossEndCalls: number;
@@ -153,6 +155,7 @@ const mocks = vi.hoisted(
     localState: {},
     permissionAddedListener: null,
     permissionRemovedListener: null,
+    installedListener: null,
     registrationStatuses: ['unavailable'],
     registrationReconcileGates: [],
     websiteLossEndCalls: 0,
@@ -434,7 +437,12 @@ function stubChrome(): void {
       },
     },
     runtime: {
-      onInstalled: { addListener: vi.fn() },
+      getURL: vi.fn((path: string): string => `chrome-extension://test-id/${path}`),
+      onInstalled: {
+        addListener: vi.fn((listener: InstalledListener): void => {
+          mocks.installedListener = listener;
+        }),
+      },
       onMessage: {
         addListener: vi.fn((listener: RuntimeListener): void => {
           mocks.runtimeListener = listener;
@@ -538,6 +546,7 @@ function stubChrome(): void {
       },
     },
     tabs: {
+      create: vi.fn().mockResolvedValue({}),
       onRemoved: {
         addListener: vi.fn((listener: RemovedListener): void => {
           mocks.removedListener = listener;
@@ -559,6 +568,12 @@ async function finishBoot(): Promise<void> {
 function runtimeListener(): RuntimeListener {
   const listener: RuntimeListener | null = mocks.runtimeListener;
   if (listener === null) throw new Error('runtime listener was not registered');
+  return listener;
+}
+
+function installedListener(): InstalledListener {
+  const listener: InstalledListener | null = mocks.installedListener;
+  if (listener === null) throw new Error('installed listener was not registered');
   return listener;
 }
 
@@ -636,6 +651,7 @@ beforeEach((): void => {
   mocks.localState = { [LOCAL_RUNTIME]: {} };
   mocks.permissionAddedListener = null;
   mocks.permissionRemovedListener = null;
+  mocks.installedListener = null;
   mocks.registrationStatuses = ['unavailable'];
   mocks.registrationReconcileGates = [];
   mocks.websiteLossEndCalls = 0;
@@ -665,6 +681,43 @@ afterEach((): void => {
 });
 
 describe('background runtime request boundary', () => {
+  it('opens onboarding for a fresh install even when setup was previously complete', async (): Promise<void> => {
+    setCompleteLocalPolicy();
+    main();
+
+    installedListener()({ reason: 'install' });
+
+    await vi.waitFor((): void => {
+      expect(chrome.tabs.create).toHaveBeenCalledWith({
+        url: 'chrome-extension://test-id/src/onboarding/onboarding.html',
+      });
+    });
+    await expect(dispatchRuntime({ type: 'getSetupState' })).resolves.toEqual({ ok: true });
+  });
+
+  it('opens onboarding on update only when setup is incomplete', async (): Promise<void> => {
+    main();
+
+    installedListener()({ reason: 'update', previousVersion: '0.0.9' });
+
+    await vi.waitFor((): void => {
+      expect(chrome.tabs.create).toHaveBeenCalledWith({
+        url: 'chrome-extension://test-id/src/onboarding/onboarding.html',
+      });
+    });
+    await expect(dispatchRuntime({ type: 'getSetupState' })).resolves.toEqual({ ok: true });
+  });
+
+  it('does not open onboarding on update after setup completion', async (): Promise<void> => {
+    setCompleteLocalPolicy();
+    main();
+
+    installedListener()({ reason: 'update', previousVersion: '0.0.9' });
+    await expect(dispatchRuntime({ type: 'getSetupState' })).resolves.toEqual({ ok: true });
+
+    expect(chrome.tabs.create).not.toHaveBeenCalled();
+  });
+
   it('keeps website blocking disabled until authoritative setup completion', async (): Promise<void> => {
     mocks.registrationStatuses = ['ready'];
 

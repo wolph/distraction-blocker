@@ -11,6 +11,7 @@ export default defineConfig({
       // targets, so the stats tab and the offscreen audio document are
       // added as plain Vite inputs.
       input: {
+        onboarding: 'src/onboarding/onboarding.html',
         stats: 'src/stats/stats.html',
         offscreen: 'src/offscreen/audio.html',
       },

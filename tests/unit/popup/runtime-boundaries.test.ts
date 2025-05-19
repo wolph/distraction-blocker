@@ -11,6 +11,7 @@ import { StartForm } from '../../../src/popup/StartForm';
 import {
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
+  DEFAULT_SETUP,
   emptySnapshot,
   rulesFromLists,
 } from '../../../src/shared/constants';
@@ -27,10 +28,12 @@ import type {
   SessionConfig,
   SessionSnapshot,
   Settings,
+  SetupState,
 } from '../../../src/shared/types';
 import { resetChromeFake, sendMessageMock, tabsQueryMock } from './chrome-fake';
 
 const NOW: number = 1_700_000_000_000;
+const COMPLETED_SETUP: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
 const CONFIG: SessionConfig = {
   mode: 'blacklist',
   strictness: 'friction',
@@ -93,6 +96,7 @@ describe('popup runtime response boundaries', (): void => {
 
   it('disables fallback categories so a failed list load cannot overwrite worker lists', async (): Promise<void> => {
     sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getSetupState') return COMPLETED_SETUP;
       if (request.type === 'getSnapshot') return emptySnapshot(NOW);
       if (request.type === 'getSettings') return DEFAULT_SETTINGS;
       if (request.type === 'getLists') return { ...DEFAULT_LISTS, categories: null };
@@ -124,6 +128,7 @@ describe('popup runtime response boundaries', (): void => {
   it('renders fallback settings instead of crashing on a malformed nested cycle', async (): Promise<void> => {
     const malformed: unknown = { ...DEFAULT_SETTINGS, defaultCycling: null };
     sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getSetupState') return COMPLETED_SETUP;
       if (request.type === 'getSnapshot') return emptySnapshot(NOW);
       if (request.type === 'getSettings') return malformed;
       if (request.type === 'getLists') return DEFAULT_LISTS;

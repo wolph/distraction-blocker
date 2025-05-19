@@ -864,6 +864,18 @@ export function main(): void {
   chrome.runtime.onInstalled.addListener((details: chrome.runtime.InstalledDetails): void => {
     void updateInstallMarker(details).catch(reportBackgroundError);
     void chrome.alarms.create(TICK_ALARM, { periodInMinutes: 1 }).catch(reportBackgroundError);
+    const openOnboardingIfNeeded: () => Promise<void> = async (): Promise<void> => {
+      if (
+        details.reason !== 'install' &&
+        (await (await policyStorageReady).loadSetup()).completed
+      ) {
+        return;
+      }
+      await chrome.tabs.create({
+        url: chrome.runtime.getURL('src/onboarding/onboarding.html'),
+      });
+    };
+    void openOnboardingIfNeeded().catch(reportBackgroundError);
   });
   chrome.permissions.onAdded.addListener((permissions: chrome.permissions.Permissions): void => {
     if (isWebsitePermissionEvent(permissions)) reconcileAfterPermissionEvent('permission-added');

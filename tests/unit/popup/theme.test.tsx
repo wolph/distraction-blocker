@@ -5,9 +5,14 @@ import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from '../../../src/popup/App';
-import { DEFAULT_LISTS, emptySnapshot, rulesFromLists } from '../../../src/shared/constants';
+import {
+  DEFAULT_LISTS,
+  DEFAULT_SETUP,
+  emptySnapshot,
+  rulesFromLists,
+} from '../../../src/shared/constants';
 import type { Request, StatsBundle } from '../../../src/shared/messages';
-import type { SessionSnapshot } from '../../../src/shared/types';
+import type { SessionSnapshot, SetupState } from '../../../src/shared/types';
 import { emitMessage, resetChromeFake, sendMessageMock } from './chrome-fake';
 
 const stats: StatsBundle = {
@@ -24,6 +29,7 @@ const stats: StatsBundle = {
   },
   totals: { focusMsToday: 0, focusMsWeek: 0, attemptsToday: 0, resistedToday: 0 },
 };
+const COMPLETED_SETUP: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
 
 function activeSnapshot(theme: SessionSnapshot['theme'] = 'auto'): SessionSnapshot {
   return {
@@ -50,6 +56,7 @@ function activeSnapshot(theme: SessionSnapshot['theme'] = 'auto'): SessionSnapsh
 beforeEach((): void => {
   resetChromeFake();
   sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+    if (request.type === 'getSetupState') return COMPLETED_SETUP;
     if (request.type === 'getSnapshot') return activeSnapshot();
     if (request.type === 'getStats') return stats;
     return { ok: true };
@@ -116,6 +123,7 @@ describe('popup theme control', (): void => {
 
   it('retains the snapshot theme and reports a rejected update', async (): Promise<void> => {
     sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getSetupState') return COMPLETED_SETUP;
       if (request.type === 'getSnapshot') return activeSnapshot();
       if (request.type === 'getStats') return stats;
       if (request.type === 'updateTheme') return { ok: false, error: 'theme denied' };

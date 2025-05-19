@@ -10,11 +10,17 @@ import { StartForm } from '../../../src/popup/StartForm';
 import {
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
+  DEFAULT_SETUP,
   emptySnapshot,
   rulesFromLists,
 } from '../../../src/shared/constants';
 import type { Ack, Request, StatsBundle } from '../../../src/shared/messages';
-import type { GateState, SessionConfig, SessionSnapshot } from '../../../src/shared/types';
+import type {
+  GateState,
+  SessionConfig,
+  SessionSnapshot,
+  SetupState,
+} from '../../../src/shared/types';
 import {
   openOptionsPageMock,
   resetChromeFake,
@@ -24,6 +30,7 @@ import {
 } from './chrome-fake';
 
 const NOW: number = 1_700_000_000_000;
+const COMPLETED_SETUP: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -111,6 +118,7 @@ describe('popup request errors', (): void => {
 
   it('settles rejected idle-form loading with defaults and readable feedback', async (): Promise<void> => {
     sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getSetupState') return COMPLETED_SETUP;
       if (request.type === 'getSnapshot') return emptySnapshot(NOW);
       if (request.type === 'getSettings') throw new Error('worker disconnected');
       if (request.type === 'getLists') return DEFAULT_LISTS;
@@ -179,6 +187,7 @@ describe('popup request errors', (): void => {
     const pending: Deferred<unknown> = deferred<unknown>();
     tabsCreateMock.mockReturnValue(pending.promise);
     sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getSetupState') return COMPLETED_SETUP;
       if (request.type === 'getSnapshot') return emptySnapshot(NOW);
       if (request.type === 'getSettings') return DEFAULT_SETTINGS;
       if (request.type === 'getLists') return DEFAULT_LISTS;
@@ -203,6 +212,7 @@ describe('popup request errors', (): void => {
     const pending: Deferred<void> = deferred<void>();
     openOptionsPageMock.mockReturnValue(pending.promise);
     sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getSetupState') return COMPLETED_SETUP;
       if (request.type === 'getSnapshot') return emptySnapshot(NOW);
       if (request.type === 'getSettings') return DEFAULT_SETTINGS;
       if (request.type === 'getLists') return DEFAULT_LISTS;

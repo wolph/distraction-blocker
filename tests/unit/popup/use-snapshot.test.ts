@@ -9,6 +9,7 @@ import { useSnapshot } from '../../../src/popup/use-snapshot';
 import {
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
+  DEFAULT_SETUP,
   emptySnapshot,
   rulesFromLists,
 } from '../../../src/shared/constants';
@@ -134,7 +135,12 @@ describe('useSnapshot', () => {
   });
 
   it('shows no session controls when the initial snapshot is unavailable', async (): Promise<void> => {
-    sendMessageMock.mockRejectedValue(new Error('worker unavailable'));
+    sendMessageMock.mockImplementation(async (request: { type: string }): Promise<unknown> => {
+      if (request.type === 'getSetupState') {
+        return { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+      }
+      throw new Error('worker unavailable');
+    });
     const { getByRole, queryByRole } = render(h(App, null));
 
     await waitFor((): void => {
