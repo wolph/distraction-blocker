@@ -10,7 +10,12 @@ import {
 } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
 import { SYNC_LISTS } from '../../../src/shared/storage-keys';
-import type { ListsConfig, SessionConfig, Settings } from '../../../src/shared/types';
+import type {
+  ListsConfig,
+  OnboardingDraft,
+  SessionConfig,
+  Settings,
+} from '../../../src/shared/types';
 
 type RequestByType = {
   [Type in Request['type']]: Extract<Request, { type: Type }>;
@@ -38,10 +43,24 @@ const DAY_MS: number = 86_400_000;
 const DATE_MAX_MS: number = 8_640_000_000_000_000;
 const MINUTE_MS: number = 60_000;
 const MAX_RELATIVE_DURATION_MS: number = DATE_MAX_MS / 2;
+const ONBOARDING_DRAFT: OnboardingDraft = {
+  version: 1,
+  revision: 3,
+  step: 2,
+  settings: SETTINGS,
+  lists: LISTS,
+  websiteAccessChoice: 'denied',
+  syncEnabled: true,
+};
 
 const VALID_REQUESTS: RequestByType = {
   getSnapshot: { type: 'getSnapshot' },
   getSetupState: { type: 'getSetupState' },
+  openOnboarding: { type: 'openOnboarding' },
+  getOnboardingDraft: { type: 'getOnboardingDraft' },
+  cleanupOnboardingDraft: { type: 'cleanupOnboardingDraft' },
+  saveOnboardingDraft: { type: 'saveOnboardingDraft', draft: ONBOARDING_DRAFT },
+  completeOnboarding: { type: 'completeOnboarding', revision: 3, storageMode: 'local' },
   reconcileWebsiteAccess: { type: 'reconcileWebsiteAccess' },
   dismissWebsiteAccessNotice: { type: 'dismissWebsiteAccessNotice' },
   completeSetup: {
@@ -88,6 +107,29 @@ function replaceNested(
 }
 
 describe('parseRequest', (): void => {
+  it.each([
+    { type: 'openOnboarding' },
+    { type: 'getOnboardingDraft' },
+    { type: 'cleanupOnboardingDraft' },
+    { type: 'saveOnboardingDraft', draft: ONBOARDING_DRAFT },
+    { type: 'completeOnboarding', revision: 3, storageMode: 'sync' },
+  ])('accepts the serialized onboarding request %#', (request: unknown): void => {
+    expect(parseRequest(request)).toEqual(request);
+  });
+
+  it.each([
+    { type: 'openOnboarding', extra: true },
+    { type: 'getOnboardingDraft', revision: 1 },
+    { type: 'cleanupOnboardingDraft', force: true },
+    { type: 'saveOnboardingDraft', draft: { ...ONBOARDING_DRAFT, revision: -1 } },
+    { type: 'saveOnboardingDraft', draft: { ...ONBOARDING_DRAFT, extra: true } },
+    { type: 'completeOnboarding', revision: 0, storageMode: 'sync' },
+    { type: 'completeOnboarding', revision: 3, storageMode: 'cloud' },
+    { type: 'completeOnboarding', revision: 3, storageMode: 'local', extra: true },
+  ])('rejects the invalid serialized onboarding request %#', (request: unknown): void => {
+    expect(parseRequest(request)).toBeNull();
+  });
+
   it.each([
     { type: 'getSetupState' },
     { type: 'reconcileWebsiteAccess' },

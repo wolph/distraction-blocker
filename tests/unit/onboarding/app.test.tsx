@@ -5,14 +5,12 @@ import { App } from '../../../src/onboarding/App';
 import type { OnboardingDraft } from '../../../src/onboarding/draft-storage';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, DEFAULT_SETUP } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
+import { isOnboardingDraft } from '../../../src/shared/runtime-validation';
 import { LOCAL_ONBOARDING_DRAFT } from '../../../src/shared/storage-keys';
-import type { SetupState } from '../../../src/shared/types';
+import type { SetupState, StorageMode } from '../../../src/shared/types';
 
 const sendMessageMock = vi.fn<(request: Request) => Promise<unknown>>();
 const permissionRequestMock = vi.fn<() => Promise<boolean>>();
-const localGetMock = vi.fn();
-const localSetMock = vi.fn();
-const localRemoveMock = vi.fn();
 let localState: Record<string, unknown> = {};
 let setupState: SetupState = DEFAULT_SETUP;
 
@@ -25,14 +23,57 @@ function installChromeFake(): void {
       getURL: (path: string): string => `chrome-extension://fake-id/${path}`,
       sendMessage: sendMessageMock,
     },
-    storage: {
-      local: {
-        get: localGetMock,
-        set: localSetMock,
-        remove: localRemoveMock,
-      },
-    },
   });
+}
+
+function loadStoredDraft(): OnboardingDraft | null {
+  const stored: unknown = localState[LOCAL_ONBOARDING_DRAFT];
+  return isOnboardingDraft(stored) ? structuredClone(stored) : null;
+}
+
+function saveDraftResponse(draft: OnboardingDraft): unknown {
+  const current: OnboardingDraft | null = loadStoredDraft();
+  if (setupState.completed) {
+    return {
+      ok: false,
+      error: 'Setup was completed in another tab.',
+      conflict: true,
+      completed: true,
+      draft: current,
+    };
+  }
+  const expectedRevision: number = current?.revision ?? 0;
+  const canSave: boolean =
+    (current === null && draft.revision === 0) ||
+    (current !== null && draft.revision === current.revision);
+  if (!canSave) {
+    return {
+      ok: false,
+      error: 'Setup changed in another tab. The latest choices were reloaded.',
+      conflict: true,
+      completed: false,
+      draft: current,
+    };
+  }
+  const saved: OnboardingDraft = { ...structuredClone(draft), revision: expectedRevision + 1 };
+  localState[LOCAL_ONBOARDING_DRAFT] = saved;
+  return { ok: true, draft: structuredClone(saved) };
+}
+
+function completeOnboardingResponse(revision: number, storageMode: StorageMode): unknown {
+  const current: OnboardingDraft | null = loadStoredDraft();
+  if (
+    setupState.completed ||
+    current === null ||
+    current.revision !== revision ||
+    current.step !== 3 ||
+    storageMode !== (current.syncEnabled ? 'sync' : 'local')
+  ) {
+    return { ok: false, error: 'Setup changed in another tab. Reload the latest choices.' };
+  }
+  setupState = { ...setupState, completed: true, storageMode };
+  delete localState[LOCAL_ONBOARDING_DRAFT];
+  return { ok: true };
 }
 
 async function persistedDraft(): Promise<OnboardingDraft> {
@@ -48,27 +89,29 @@ beforeEach((): void => {
   sendMessageMock.mockReset();
   permissionRequestMock.mockReset();
   permissionRequestMock.mockResolvedValue(false);
-  localGetMock.mockReset();
-  localGetMock.mockImplementation(
-    async (key: string): Promise<Record<string, unknown>> =>
-      Object.hasOwn(localState, key) ? { [key]: structuredClone(localState[key]) } : {},
-  );
-  localSetMock.mockReset();
-  localSetMock.mockImplementation(async (items: Record<string, unknown>): Promise<void> => {
-    Object.assign(localState, structuredClone(items));
-  });
-  localRemoveMock.mockReset();
-  localRemoveMock.mockImplementation(async (key: string): Promise<void> => {
-    delete localState[key];
-  });
   sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
     if (request.type === 'getSetupState') return structuredClone(setupState);
     if (request.type === 'getSettings') return structuredClone(DEFAULT_SETTINGS);
     if (request.type === 'getLists') return structuredClone(DEFAULT_LISTS);
+    if (request.type === 'getOnboardingDraft') {
+      const draft: OnboardingDraft | null = loadStoredDraft();
+      return {
+        draft,
+        invalid: Object.hasOwn(localState, LOCAL_ONBOARDING_DRAFT) && draft === null,
+      };
+    }
+    if (request.type === 'saveOnboardingDraft') return saveDraftResponse(request.draft);
+    if (request.type === 'cleanupOnboardingDraft') {
+      if (!setupState.completed) return { ok: false, error: 'Setup is not complete.' };
+      delete localState[LOCAL_ONBOARDING_DRAFT];
+      return { ok: true };
+    }
+    if (request.type === 'completeOnboarding') {
+      return completeOnboardingResponse(request.revision, request.storageMode);
+    }
     if (request.type === 'reconcileWebsiteAccess') {
       return { ok: true, granted: false, registration: 'unavailable' };
     }
-    if (request.type === 'completeSetup') return { ok: true };
     return { ok: true };
   });
   installChromeFake();
@@ -110,6 +153,7 @@ describe('onboarding page state', (): void => {
   it('persists a denied permission attempt without advancing', async (): Promise<void> => {
     localState[LOCAL_ONBOARDING_DRAFT] = {
       version: 1,
+      revision: 1,
       step: 2,
       settings: DEFAULT_SETTINGS,
       lists: DEFAULT_LISTS,
@@ -135,6 +179,7 @@ describe('onboarding page state', (): void => {
   it('persists Not now before advancing to Step 3', async (): Promise<void> => {
     localState[LOCAL_ONBOARDING_DRAFT] = {
       version: 1,
+      revision: 1,
       step: 2,
       settings: DEFAULT_SETTINGS,
       lists: DEFAULT_LISTS,
@@ -155,6 +200,7 @@ describe('onboarding page state', (): void => {
   it('commits settings and lists only through the final setup action', async (): Promise<void> => {
     localState[LOCAL_ONBOARDING_DRAFT] = {
       version: 1,
+      revision: 4,
       step: 3,
       settings: DEFAULT_SETTINGS,
       lists: DEFAULT_LISTS,
@@ -167,10 +213,9 @@ describe('onboarding page state', (): void => {
 
     expect(await view.findByRole('heading', { name: 'Setup complete' })).toBeTruthy();
     expect(sendMessageMock).toHaveBeenCalledWith({
-      type: 'completeSetup',
+      type: 'completeOnboarding',
+      revision: 4,
       storageMode: 'local',
-      settings: DEFAULT_SETTINGS,
-      lists: DEFAULT_LISTS,
     });
     expect(localState[LOCAL_ONBOARDING_DRAFT]).toBeUndefined();
   });
@@ -179,6 +224,7 @@ describe('onboarding page state', (): void => {
     setupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
     localState[LOCAL_ONBOARDING_DRAFT] = {
       version: 1,
+      revision: 1,
       step: 2,
       settings: DEFAULT_SETTINGS,
       lists: DEFAULT_LISTS,
@@ -197,6 +243,10 @@ describe('onboarding page state', (): void => {
     localState[LOCAL_ONBOARDING_DRAFT] = { invalid: true };
     sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
       if (request.type === 'getSetupState') return structuredClone(setupState);
+      if (request.type === 'cleanupOnboardingDraft') {
+        delete localState[LOCAL_ONBOARDING_DRAFT];
+        return { ok: true };
+      }
       throw new Error('editable policy unavailable');
     });
 

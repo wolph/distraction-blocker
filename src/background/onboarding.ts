@@ -1,0 +1,128 @@
+import type { OnboardingDraftLoadResponse, OnboardingDraftWriteResponse } from '../shared/messages';
+import { isOnboardingDraft } from '../shared/runtime-validation';
+import { LOCAL_ONBOARDING_DRAFT } from '../shared/storage-keys';
+import type { OnboardingDraft, SetupState } from '../shared/types';
+
+export type OnboardingDraftLoadResult = OnboardingDraftLoadResponse;
+export type OnboardingDraftWriteResult = OnboardingDraftWriteResponse;
+
+export interface OnboardingService {
+  loadDraft(): Promise<OnboardingDraftLoadResult>;
+  saveDraft(draft: OnboardingDraft): Promise<OnboardingDraftWriteResult>;
+  removeDraft(): Promise<void>;
+  open(): Promise<void>;
+}
+
+interface OnboardingServicePorts {
+  loadSetup(): Promise<SetupState>;
+}
+
+function conflict(draft: OnboardingDraft | null, completed: boolean): OnboardingDraftWriteResult {
+  return {
+    ok: false,
+    error: completed
+      ? 'Setup was completed in another tab.'
+      : 'Setup changed in another tab. The latest choices were reloaded.',
+    conflict: true,
+    completed,
+    draft,
+  };
+}
+
+async function readDraft(): Promise<OnboardingDraftLoadResult> {
+  const stored: Record<string, unknown> = await chrome.storage.local.get(LOCAL_ONBOARDING_DRAFT);
+  if (!Object.hasOwn(stored, LOCAL_ONBOARDING_DRAFT)) return { draft: null, invalid: false };
+  const value: unknown = stored[LOCAL_ONBOARDING_DRAFT];
+  if (!isOnboardingDraft(value)) return { draft: null, invalid: true };
+  return { draft: structuredClone(value), invalid: false };
+}
+
+function draftsEqual(left: OnboardingDraft, right: OnboardingDraft): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function createOnboardingService(ports: OnboardingServicePorts): OnboardingService {
+  let draftTail: Promise<void> = Promise.resolve();
+  let openTail: Promise<void> = Promise.resolve();
+
+  const serializeDraft: <T>(operation: () => Promise<T>) => Promise<T> = <T>(
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    const requested: Promise<T> = draftTail.then(operation, operation);
+    draftTail = requested.then(
+      (): void => undefined,
+      (): void => undefined,
+    );
+    return requested;
+  };
+
+  const loadDraft: () => Promise<OnboardingDraftLoadResult> =
+    (): Promise<OnboardingDraftLoadResult> => serializeDraft(readDraft);
+
+  const saveDraft: (draft: OnboardingDraft) => Promise<OnboardingDraftWriteResult> = (
+    draft: OnboardingDraft,
+  ): Promise<OnboardingDraftWriteResult> =>
+    serializeDraft(async (): Promise<OnboardingDraftWriteResult> => {
+      const [setup, current]: [SetupState, OnboardingDraftLoadResult] = await Promise.all([
+        ports.loadSetup(),
+        readDraft(),
+      ]);
+      if (setup.completed) return conflict(current.draft, true);
+      const expectedRevision: number = current.draft?.revision ?? 0;
+      const canCreate: boolean = current.draft === null && draft.revision === 0;
+      const canUpdate: boolean = current.draft !== null && draft.revision === expectedRevision;
+      if (!canCreate && !canUpdate) return conflict(current.draft, false);
+      const next: OnboardingDraft = structuredClone({
+        ...draft,
+        revision: expectedRevision + 1,
+      });
+      if (!isOnboardingDraft(next)) throw new Error('invalid onboarding draft');
+      await chrome.storage.local.set({ [LOCAL_ONBOARDING_DRAFT]: next });
+      const verified: OnboardingDraftLoadResult = await readDraft();
+      if (verified.draft === null || !draftsEqual(verified.draft, next)) {
+        throw new Error('could not verify onboarding draft');
+      }
+      return { ok: true, draft: next };
+    });
+
+  const removeDraft: () => Promise<void> = (): Promise<void> =>
+    serializeDraft(async (): Promise<void> => {
+      await chrome.storage.local.remove(LOCAL_ONBOARDING_DRAFT);
+    });
+
+  const focusExisting: (tabs: chrome.tabs.Tab[]) => Promise<boolean> = async (
+    tabs: chrome.tabs.Tab[],
+  ): Promise<boolean> => {
+    for (const tab of tabs) {
+      if (tab.id === undefined) continue;
+      try {
+        await chrome.tabs.update(tab.id, { active: true });
+        if (tab.windowId !== undefined)
+          await chrome.windows.update(tab.windowId, { focused: true });
+        return true;
+      } catch {
+        // The tab may close between query and update. Try another result or re-query.
+      }
+    }
+    return false;
+  };
+
+  const openOnce: () => Promise<void> = async (): Promise<void> => {
+    const url: string = chrome.runtime.getURL('src/onboarding/onboarding.html');
+    const first: chrome.tabs.Tab[] = await chrome.tabs.query({ url });
+    if (await focusExisting(first)) return;
+    if (first.length > 0) {
+      const refreshed: chrome.tabs.Tab[] = await chrome.tabs.query({ url });
+      if (await focusExisting(refreshed)) return;
+    }
+    await chrome.tabs.create({ url });
+  };
+
+  const open: () => Promise<void> = (): Promise<void> => {
+    const requested: Promise<void> = openTail.then(openOnce, openOnce);
+    openTail = requested.catch((): void => undefined);
+    return requested;
+  };
+
+  return { loadDraft, saveDraft, removeDraft, open };
+}

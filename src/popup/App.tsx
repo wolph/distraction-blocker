@@ -208,9 +208,8 @@ function SetupRequired(): VNode {
     setPending(true);
     setError(null);
     try {
-      await chrome.tabs.create({
-        url: chrome.runtime.getURL('src/onboarding/onboarding.html'),
-      });
+      const response: Ack = await sendRequest({ type: 'openOnboarding' });
+      if (!response.ok) throw new Error(response.error);
     } catch {
       setError('Could not open setup. Try again.');
     } finally {

@@ -16,6 +16,7 @@ import type {
   GateState,
   InstallMarker,
   ListsConfig,
+  OnboardingDraft,
   PauseEconomy,
   Rule,
   ScheduleEntry,
@@ -113,6 +114,33 @@ export function isSetupState(value: unknown): value is SetupState {
             (value.dataClear.scope === 'local-history' &&
               (value.dataClear.phase === 'local' || value.dataClear.phase === 'runtime'))))) &&
       typeof value.legacyImported === 'boolean',
+  );
+}
+
+export function isOnboardingDraft(value: unknown): value is OnboardingDraft {
+  return safelyValidate(
+    (): boolean =>
+      isRecord(value) &&
+      hasExactKeys(value, [
+        'version',
+        'revision',
+        'step',
+        'settings',
+        'lists',
+        'websiteAccessChoice',
+        'syncEnabled',
+      ]) &&
+      value.version === 1 &&
+      isNonNegativeInteger(value.revision) &&
+      (value.step === 1 || value.step === 2 || value.step === 3) &&
+      isSettings(value.settings) &&
+      isListsConfig(value.lists) &&
+      (value.websiteAccessChoice === 'pending' ||
+        value.websiteAccessChoice === 'granted' ||
+        value.websiteAccessChoice === 'denied' ||
+        value.websiteAccessChoice === 'deferred' ||
+        value.websiteAccessChoice === 'registration-error') &&
+      typeof value.syncEnabled === 'boolean',
   );
 }
 

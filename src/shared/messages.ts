@@ -4,6 +4,7 @@ import type {
   GateKind,
   ListsConfig,
   MonthlyAgg,
+  OnboardingDraft,
   SessionConfig,
   SessionSnapshot,
   Settings,
@@ -19,6 +20,11 @@ export type SoundId = 'sessionComplete' | 'breakStart' | 'breakEnd' | 'scheduleS
 export type Request =
   | { type: 'getSnapshot' }
   | { type: 'getSetupState' }
+  | { type: 'openOnboarding' }
+  | { type: 'getOnboardingDraft' }
+  | { type: 'cleanupOnboardingDraft' }
+  | { type: 'saveOnboardingDraft'; draft: OnboardingDraft }
+  | { type: 'completeOnboarding'; revision: number; storageMode: StorageMode }
   | { type: 'reconcileWebsiteAccess' }
   | { type: 'dismissWebsiteAccessNotice' }
   | { type: 'completeSetup'; storageMode: StorageMode; settings: Settings; lists: ListsConfig }
@@ -51,6 +57,19 @@ export interface Rejection {
   error: string;
 }
 export type Ack = { ok: true } | Rejection;
+
+export interface OnboardingDraftLoadResponse {
+  draft: OnboardingDraft | null;
+  invalid: boolean;
+}
+
+export type OnboardingDraftWriteResponse =
+  | { ok: true; draft: OnboardingDraft }
+  | (Rejection & {
+      conflict: true;
+      completed: boolean;
+      draft: OnboardingDraft | null;
+    });
 
 export type WebsiteAccessReconciliation =
   | {
@@ -92,6 +111,11 @@ export interface StatsBundle {
 export interface ResponseMap {
   getSnapshot: SessionSnapshot;
   getSetupState: SetupState;
+  openOnboarding: Ack;
+  getOnboardingDraft: OnboardingDraftLoadResponse;
+  cleanupOnboardingDraft: Ack;
+  saveOnboardingDraft: OnboardingDraftWriteResponse;
+  completeOnboarding: Ack;
   reconcileWebsiteAccess: WebsiteAccessReconciliation;
   dismissWebsiteAccessNotice: Ack;
   completeSetup: Ack;

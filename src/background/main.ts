@@ -48,6 +48,7 @@ import {
   LIST_SYNC_KEYS,
   type ListsSyncEncoding,
 } from './list-sync-codec';
+import { createOnboardingService, type OnboardingService } from './onboarding';
 import { createPolicyStorage, type PolicySnapshot, type PolicyStorage } from './policy-storage';
 import { parseRequest } from './request-validation';
 import { routeMessage } from './router';
@@ -112,6 +113,11 @@ function requiresWorkerControl(request: Request): boolean {
   switch (request.type) {
     case 'reconcileWebsiteAccess':
     case 'dismissWebsiteAccessNotice':
+    case 'openOnboarding':
+    case 'getOnboardingDraft':
+    case 'cleanupOnboardingDraft':
+    case 'saveOnboardingDraft':
+    case 'completeOnboarding':
     case 'completeSetup':
     case 'setStorageMode':
     case 'clearFocusLockData':
@@ -748,6 +754,9 @@ export function main(): void {
   let workerControlTail: Promise<void> = Promise.resolve();
   let setupCompleted: boolean = false;
   const pendingWebsiteAccessNotice: PendingWebsiteAccessNotice = { value: null };
+  const onboardingService: OnboardingService = createOnboardingService({
+    loadSetup: async (): Promise<SetupState> => (await policyStorageReady).loadSetup(),
+  });
 
   const reconcileWebsiteCapability = (
     cause: WebsiteCapabilityCause,
@@ -871,9 +880,7 @@ export function main(): void {
       ) {
         return;
       }
-      await chrome.tabs.create({
-        url: chrome.runtime.getURL('src/onboarding/onboarding.html'),
-      });
+      await onboardingService.open();
     };
     void openOnboardingIfNeeded().catch(reportBackgroundError);
   });
@@ -924,9 +931,10 @@ export function main(): void {
               reconcileWebsiteAccess: async (): Promise<ContentRegistrationState> =>
                 (await reconcileWebsiteCapability('explicit', true, true)).capability,
               dismissWebsiteAccessNotice,
-              removeOnboardingDraft: async (): Promise<void> => {
-                await chrome.storage.local.remove(LOCAL_ONBOARDING_DRAFT);
-              },
+              openOnboarding: onboardingService.open,
+              loadOnboardingDraft: onboardingService.loadDraft,
+              saveOnboardingDraft: onboardingService.saveDraft,
+              removeOnboardingDraft: onboardingService.removeDraft,
               reportError: reportBackgroundError,
               setupCompleted: (completed: boolean): void => {
                 setupCompleted = completed;

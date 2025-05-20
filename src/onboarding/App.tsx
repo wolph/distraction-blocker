@@ -10,6 +10,7 @@ import {
   type DraftLoadResult,
   loadOnboardingDraft,
   type OnboardingDraft,
+  OnboardingDraftConflictError,
   type OnboardingStep,
   removeOnboardingDraft,
   saveOnboardingDraft,
@@ -229,8 +230,21 @@ export function App(): VNode {
         if (!isSettings(settings) || !isListsConfig(lists)) {
           throw new Error('invalid setup policy response');
         }
-        const draft: OnboardingDraft = storedDraft.draft ?? createOnboardingDraft(settings, lists);
-        if (storedDraft.draft === null) await saveOnboardingDraft(draft);
+        let draft: OnboardingDraft = storedDraft.draft ?? createOnboardingDraft(settings, lists);
+        if (storedDraft.draft === null) {
+          try {
+            draft = await saveOnboardingDraft(draft);
+          } catch (error: unknown) {
+            if (error instanceof OnboardingDraftConflictError && error.completed) {
+              if (active) setPage({ kind: 'complete' });
+              return;
+            }
+            if (!(error instanceof OnboardingDraftConflictError) || error.draft === null) {
+              throw error;
+            }
+            draft = error.draft;
+          }
+        }
         if (active) setPage({ kind: 'draft', draft, recovered: storedDraft.invalid });
       } catch {
         if (active) setPage({ kind: 'error' });
@@ -242,19 +256,41 @@ export function App(): VNode {
     };
   }, [loadAttempt]);
 
-  const persist: (draft: OnboardingDraft) => Promise<void> = async (
+  const commitDraft: (draft: OnboardingDraft) => Promise<boolean> = async (
     draft: OnboardingDraft,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
+    try {
+      const saved: OnboardingDraft = await saveOnboardingDraft(draft);
+      setPage(
+        (current: PageState): PageState =>
+          current.kind === 'draft' ? { ...current, draft: saved } : current,
+      );
+      return true;
+    } catch (error: unknown) {
+      if (error instanceof OnboardingDraftConflictError) {
+        if (error.completed) setPage({ kind: 'complete' });
+        else if (error.draft !== null) {
+          const authoritative: OnboardingDraft = error.draft;
+          setPage(
+            (current: PageState): PageState =>
+              current.kind === 'draft' ? { ...current, draft: authoritative } : current,
+          );
+        }
+        setActionError(error.message);
+      } else {
+        setActionError('Could not save setup progress. Try again.');
+      }
+      return false;
+    }
+  };
+
+  const persist: (draft: OnboardingDraft) => Promise<boolean> = async (
+    draft: OnboardingDraft,
+  ): Promise<boolean> => {
     setPending(true);
     setActionError(null);
     try {
-      await saveOnboardingDraft(draft);
-      setPage(
-        (current: PageState): PageState =>
-          current.kind === 'draft' ? { ...current, draft } : current,
-      );
-    } catch {
-      setActionError('Could not save setup progress. Try again.');
+      return await commitDraft(draft);
     } finally {
       setPending(false);
     }
@@ -289,11 +325,7 @@ export function App(): VNode {
     try {
       const granted: boolean = await chrome.permissions.request({ origins: [...WEBSITE_ORIGINS] });
       if (!granted) {
-        await saveOnboardingDraft({ ...page.draft, websiteAccessChoice: 'denied' });
-        setPage({
-          ...page,
-          draft: { ...page.draft, websiteAccessChoice: 'denied' },
-        });
+        await commitDraft({ ...page.draft, websiteAccessChoice: 'denied' });
         return;
       }
       const response: WebsiteAccessReconciliation = await sendRequest({
@@ -304,8 +336,7 @@ export function App(): VNode {
           ...page.draft,
           websiteAccessChoice: 'registration-error',
         };
-        await saveOnboardingDraft(failed);
-        setPage({ ...page, draft: failed });
+        if (!(await commitDraft(failed))) return;
         setActionError(
           response.ok
             ? 'Website access is available, but blocking could not start. Retry setup.'
@@ -318,8 +349,7 @@ export function App(): VNode {
         step: 3,
         websiteAccessChoice: 'granted',
       };
-      await saveOnboardingDraft(next);
-      setPage({ ...page, draft: next });
+      await commitDraft(next);
     } catch {
       setActionError('Could not enable website blocking. Try again.');
     } finally {
@@ -332,13 +362,25 @@ export function App(): VNode {
     setActionError(null);
     try {
       const response: Ack = await sendRequest({
-        type: 'completeSetup',
+        type: 'completeOnboarding',
+        revision: page.draft.revision,
         storageMode: page.draft.syncEnabled ? 'sync' : 'local',
-        settings: page.draft.settings,
-        lists: page.draft.lists,
       });
       if (!response.ok) {
         setActionError(response.error);
+        const setup: SetupState = await sendRequest({ type: 'getSetupState' });
+        if (isSetupState(setup) && setup.completed) {
+          setPage({ kind: 'complete' });
+          return;
+        }
+        const latest: DraftLoadResult = await loadOnboardingDraft();
+        if (latest.draft !== null) {
+          const authoritative: OnboardingDraft = latest.draft;
+          setPage(
+            (current: PageState): PageState =>
+              current.kind === 'draft' ? { ...current, draft: authoritative } : current,
+          );
+        }
         return;
       }
       try {
@@ -369,7 +411,7 @@ export function App(): VNode {
           draft={page.draft}
           pending={pending}
           onListsChange={async (lists: ListsConfig): Promise<void> =>
-            persist({ ...page.draft, lists })
+            void (await persist({ ...page.draft, lists }))
           }
           onContinue={async (): Promise<void> => navigate(2)}
         />
@@ -387,7 +429,7 @@ export function App(): VNode {
           pending={pending}
           error={actionError}
           onSyncChange={async (syncEnabled: boolean): Promise<void> =>
-            persist({ ...page.draft, syncEnabled })
+            void (await persist({ ...page.draft, syncEnabled }))
           }
           onComplete={completeSetup}
         />

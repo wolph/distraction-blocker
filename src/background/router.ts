@@ -1,9 +1,18 @@
-import type { Ack, Request } from '../shared/messages';
+import type {
+  Ack,
+  OnboardingDraftLoadResponse,
+  OnboardingDraftWriteResponse,
+  Request,
+} from '../shared/messages';
 import type {
   BlockingRegistrationStatus,
+  ListsConfig,
+  OnboardingDraft,
   SessionSnapshot,
+  Settings,
   SetupState,
   SoundSettings,
+  StorageMode,
   Verdict,
 } from '../shared/types';
 import { playSound } from './audio';
@@ -18,9 +27,38 @@ export interface OnboardingRouterServices {
     status: BlockingRegistrationStatus;
   }>;
   dismissWebsiteAccessNotice?(): Promise<void>;
+  openOnboarding?(): Promise<void>;
+  loadOnboardingDraft?(): Promise<OnboardingDraftLoadResponse>;
+  saveOnboardingDraft?(draft: OnboardingDraft): Promise<OnboardingDraftWriteResponse>;
   removeOnboardingDraft(): Promise<void>;
   reportError(error: unknown): void;
   setupCompleted?(completed: boolean): void;
+}
+
+async function completeSetupPolicy(
+  engine: Engine,
+  storage: PolicyStorage,
+  storageMode: StorageMode,
+  settings: Settings,
+  lists: ListsConfig,
+  onboardingServices?: OnboardingRouterServices,
+): Promise<Ack> {
+  if (storageMode === 'local') await storage.selectLocalMode();
+  const settingsResult: Ack = await engine.updateSettings(settings);
+  if (!settingsResult.ok) return settingsResult;
+  const listsResult: Ack = await engine.updateLists(lists);
+  if (!listsResult.ok) return listsResult;
+  if (storageMode === 'sync') await storage.enableSync();
+  await storage.markSetupCompleted();
+  onboardingServices?.setupCompleted?.(true);
+  if (onboardingServices !== undefined) {
+    try {
+      await onboardingServices.removeOnboardingDraft();
+    } catch (error: unknown) {
+      onboardingServices.reportError(error);
+    }
+  }
+  return { ok: true };
 }
 
 function requirePolicyStorage(storage: PolicyStorage | undefined): PolicyStorage {
@@ -51,6 +89,62 @@ export async function routeMessage(
       return engine.snapshotPersisted();
     case 'getSetupState':
       return requirePolicyStorage(policyStorage).loadSetup();
+    case 'openOnboarding': {
+      const open: (() => Promise<void>) | undefined =
+        requireOnboardingServices(onboardingServices).openOnboarding;
+      if (open === undefined) throw new Error('onboarding tab service is unavailable');
+      await open();
+      return { ok: true };
+    }
+    case 'getOnboardingDraft': {
+      const load: (() => Promise<OnboardingDraftLoadResponse>) | undefined =
+        requireOnboardingServices(onboardingServices).loadOnboardingDraft;
+      if (load === undefined) throw new Error('onboarding draft service is unavailable');
+      return load();
+    }
+    case 'cleanupOnboardingDraft': {
+      const storage: PolicyStorage = requirePolicyStorage(policyStorage);
+      if (!(await storage.loadSetup()).completed) {
+        return { ok: false, error: 'Setup is not complete.' };
+      }
+      await requireOnboardingServices(onboardingServices).removeOnboardingDraft();
+      return { ok: true };
+    }
+    case 'saveOnboardingDraft': {
+      const save: ((draft: OnboardingDraft) => Promise<OnboardingDraftWriteResponse>) | undefined =
+        requireOnboardingServices(onboardingServices).saveOnboardingDraft;
+      if (save === undefined) throw new Error('onboarding draft service is unavailable');
+      return save(msg.draft);
+    }
+    case 'completeOnboarding': {
+      const storage: PolicyStorage = requirePolicyStorage(policyStorage);
+      const setup: SetupState = await storage.loadSetup();
+      if (setup.completed) return { ok: false, error: 'Setup was completed in another tab.' };
+      const load: (() => Promise<OnboardingDraftLoadResponse>) | undefined =
+        requireOnboardingServices(onboardingServices).loadOnboardingDraft;
+      if (load === undefined) throw new Error('onboarding draft service is unavailable');
+      const loaded: OnboardingDraftLoadResponse = await load();
+      const draft: OnboardingDraft | null = loaded.draft;
+      if (draft === null || draft.revision !== msg.revision) {
+        return {
+          ok: false,
+          error: 'Setup changed in another tab. Reload setup before finishing.',
+        };
+      }
+      if (draft.step !== 3) return { ok: false, error: 'Setup is not ready to finish.' };
+      const selectedMode: StorageMode = draft.syncEnabled ? 'sync' : 'local';
+      if (msg.storageMode !== selectedMode) {
+        return { ok: false, error: 'Setup storage choice changed. Reload setup before finishing.' };
+      }
+      return completeSetupPolicy(
+        engine,
+        storage,
+        selectedMode,
+        draft.settings,
+        draft.lists,
+        onboardingServices,
+      );
+    }
     case 'reconcileWebsiteAccess': {
       const capability =
         await requireOnboardingServices(onboardingServices).reconcileWebsiteAccess();
@@ -81,22 +175,14 @@ export async function routeMessage(
       return { ok: true };
     case 'completeSetup': {
       const storage: PolicyStorage = requirePolicyStorage(policyStorage);
-      if (msg.storageMode === 'local') await storage.selectLocalMode();
-      const settingsResult: Ack = await engine.updateSettings(msg.settings);
-      if (!settingsResult.ok) return settingsResult;
-      const listsResult: Ack = await engine.updateLists(msg.lists);
-      if (!listsResult.ok) return listsResult;
-      if (msg.storageMode === 'sync') await storage.enableSync();
-      await storage.markSetupCompleted();
-      onboardingServices?.setupCompleted?.(true);
-      if (onboardingServices !== undefined) {
-        try {
-          await onboardingServices.removeOnboardingDraft();
-        } catch (error: unknown) {
-          onboardingServices.reportError(error);
-        }
-      }
-      return { ok: true };
+      return completeSetupPolicy(
+        engine,
+        storage,
+        msg.storageMode,
+        msg.settings,
+        msg.lists,
+        onboardingServices,
+      );
     }
     case 'setStorageMode': {
       const storage: PolicyStorage = requirePolicyStorage(policyStorage);

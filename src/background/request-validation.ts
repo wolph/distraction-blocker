@@ -8,6 +8,7 @@ import {
   isRelativeMinuteDuration,
   isSafeDayCount,
 } from '../shared/numeric-validation';
+import { isOnboardingDraft } from '../shared/runtime-validation';
 import { SYNC_SETTINGS } from '../shared/storage-keys';
 import type {
   CategoryId,
@@ -380,6 +381,9 @@ function parseRecord(value: Record<string, unknown>): Request | null {
   switch (value.type) {
     case 'getSnapshot':
     case 'getSetupState':
+    case 'openOnboarding':
+    case 'getOnboardingDraft':
+    case 'cleanupOnboardingDraft':
     case 'reconcileWebsiteAccess':
     case 'dismissWebsiteAccessNotice':
     case 'abandonGate':
@@ -391,6 +395,16 @@ function parseRecord(value: Record<string, unknown>): Request | null {
     case 'getLists':
     case 'exportEvents':
       return hasExactKeys(value, ['type']) ? (value as Request) : null;
+    case 'saveOnboardingDraft':
+      return hasExactKeys(value, ['type', 'draft']) && isOnboardingDraft(value.draft)
+        ? (value as Request)
+        : null;
+    case 'completeOnboarding':
+      return hasExactKeys(value, ['type', 'revision', 'storageMode']) &&
+        isPositiveInteger(value.revision) &&
+        (value.storageMode === 'local' || value.storageMode === 'sync')
+        ? (value as Request)
+        : null;
     case 'completeSetup':
       return hasExactKeys(value, ['type', 'storageMode', 'settings', 'lists']) &&
         (value.storageMode === 'local' || value.storageMode === 'sync') &&

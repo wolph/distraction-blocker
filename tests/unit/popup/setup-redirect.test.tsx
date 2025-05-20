@@ -37,10 +37,9 @@ describe('popup setup routing', (): void => {
     expect(view.queryByRole('button', { name: 'Start focusing' })).toBeNull();
     fireEvent.click(view.getByRole('button', { name: 'Open setup' }));
     await waitFor((): void => {
-      expect(tabsCreateMock).toHaveBeenCalledWith({
-        url: 'chrome-extension://fake-id/src/onboarding/onboarding.html',
-      });
+      expect(sendMessageMock).toHaveBeenCalledWith({ type: 'openOnboarding' });
     });
+    expect(tabsCreateMock).not.toHaveBeenCalled();
   });
 
   it('shows completed setup session controls without a setup redirect', async (): Promise<void> => {

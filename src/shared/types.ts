@@ -70,6 +70,25 @@ export interface SetupState {
   legacyImported: boolean;
 }
 
+export type OnboardingStep = 1 | 2 | 3;
+export type WebsiteAccessChoice =
+  | 'pending'
+  | 'granted'
+  | 'denied'
+  | 'deferred'
+  | 'registration-error';
+
+export interface OnboardingDraft {
+  version: 1;
+  /** Worker-issued optimistic concurrency token. New, unsaved drafts use 0. */
+  revision: number;
+  step: OnboardingStep;
+  settings: Settings;
+  lists: ListsConfig;
+  websiteAccessChoice: WebsiteAccessChoice;
+  syncEnabled: boolean;
+}
+
 export interface InstallMarker {
   version: 1;
   profile: 'clean' | 'legacy';

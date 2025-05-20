@@ -12,7 +12,12 @@ import {
   rulesFromLists,
 } from '../../../src/shared/constants';
 import type { StatsBundle } from '../../../src/shared/messages';
-import type { EventRecord, SessionConfig, SetupState } from '../../../src/shared/types';
+import type {
+  EventRecord,
+  OnboardingDraft,
+  SessionConfig,
+  SetupState,
+} from '../../../src/shared/types';
 
 vi.mock('../../../src/background/audio', () => ({ playSound: vi.fn() }));
 vi.mock('../../../src/background/stats-service', () => ({ fetchStats: vi.fn() }));
@@ -118,6 +123,80 @@ function realBlockingEngine(options?: {
 }
 
 describe('routeMessage onboarding wiring', (): void => {
+  it('rejects stale-tab completion before committing any policy', async (): Promise<void> => {
+    const authoritative: OnboardingDraft = {
+      version: 1,
+      revision: 8,
+      step: 3,
+      settings: DEFAULT_SETTINGS,
+      lists: DEFAULT_LISTS,
+      websiteAccessChoice: 'deferred',
+      syncEnabled: true,
+    };
+    const setupEngine: Engine = {
+      updateSettings: vi.fn().mockResolvedValue({ ok: true }),
+      updateLists: vi.fn().mockResolvedValue({ ok: true }),
+    } as unknown as Engine;
+    const storage: PolicyStorage = onboardingStorage();
+
+    await expect(
+      routeMessage(
+        setupEngine,
+        { type: 'completeOnboarding', revision: 7, storageMode: 'sync' },
+        sender,
+        storage,
+        {
+          reconcileWebsiteAccess: vi.fn(),
+          loadOnboardingDraft: vi.fn().mockResolvedValue({ draft: authoritative, invalid: false }),
+          removeOnboardingDraft: vi.fn(),
+          reportError: vi.fn(),
+        },
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: 'Setup changed in another tab. Reload setup before finishing.',
+    });
+    expect(setupEngine.updateSettings).not.toHaveBeenCalled();
+    expect(setupEngine.updateLists).not.toHaveBeenCalled();
+    expect(storage.enableSync).not.toHaveBeenCalled();
+    expect(storage.markSetupCompleted).not.toHaveBeenCalled();
+  });
+
+  it('completes from the revision-checked authoritative draft', async (): Promise<void> => {
+    const authoritative: OnboardingDraft = {
+      version: 1,
+      revision: 8,
+      step: 3,
+      settings: { ...DEFAULT_SETTINGS, retentionDays: 30 },
+      lists: { ...DEFAULT_LISTS, categories: { ...DEFAULT_LISTS.categories, news: true } },
+      websiteAccessChoice: 'deferred',
+      syncEnabled: false,
+    };
+    const setupEngine: Engine = {
+      updateSettings: vi.fn().mockResolvedValue({ ok: true }),
+      updateLists: vi.fn().mockResolvedValue({ ok: true }),
+    } as unknown as Engine;
+    const storage: PolicyStorage = onboardingStorage();
+
+    await expect(
+      routeMessage(
+        setupEngine,
+        { type: 'completeOnboarding', revision: 8, storageMode: 'local' },
+        sender,
+        storage,
+        {
+          reconcileWebsiteAccess: vi.fn(),
+          loadOnboardingDraft: vi.fn().mockResolvedValue({ draft: authoritative, invalid: false }),
+          removeOnboardingDraft: vi.fn(),
+          reportError: vi.fn(),
+        },
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(setupEngine.updateSettings).toHaveBeenCalledWith(authoritative.settings);
+    expect(setupEngine.updateLists).toHaveBeenCalledWith(authoritative.lists);
+    expect(storage.markSetupCompleted).toHaveBeenCalledOnce();
+  });
+
   it('returns setup state without exposing a broad setup writer', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, websiteAccess: 'denied' };
     const storage: PolicyStorage = onboardingStorage({
