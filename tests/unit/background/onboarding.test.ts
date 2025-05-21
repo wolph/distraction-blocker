@@ -9,6 +9,9 @@ let localState: Record<string, unknown>;
 let setup: SetupState;
 let tabs: chrome.tabs.Tab[];
 let queryResults: chrome.tabs.Tab[][] | null;
+let localGetCall: number;
+let localGetFailures: Set<number>;
+let localSetError: Error | null;
 
 function draft(revision: number, social: boolean = false): OnboardingDraft {
   return {
@@ -32,11 +35,13 @@ function installChromeFake(options?: { staleUpdateId?: number }): void {
     },
     storage: {
       local: {
-        get: vi.fn(
-          async (key: string): Promise<Record<string, unknown>> =>
-            Object.hasOwn(localState, key) ? { [key]: structuredClone(localState[key]) } : {},
-        ),
+        get: vi.fn(async (key: string): Promise<Record<string, unknown>> => {
+          localGetCall += 1;
+          if (localGetFailures.has(localGetCall)) throw new Error('storage get failed');
+          return Object.hasOwn(localState, key) ? { [key]: structuredClone(localState[key]) } : {};
+        }),
         set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+          if (localSetError !== null) throw localSetError;
           Object.assign(localState, structuredClone(items));
         }),
         remove: vi.fn(async (key: string): Promise<void> => {
@@ -93,21 +98,61 @@ beforeEach((): void => {
   setup = structuredClone(DEFAULT_SETUP);
   tabs = [];
   queryResults = null;
+  localGetCall = 0;
+  localGetFailures = new Set<number>();
+  localSetError = null;
   installChromeFake();
 });
 
 describe('serialized onboarding draft storage', (): void => {
+  it('returns an exact operational failure when draft loading fails', async (): Promise<void> => {
+    localGetFailures.add(1);
+    const service = createOnboardingService({
+      loadSetup: async (): Promise<SetupState> => structuredClone(setup),
+    });
+
+    await expect(service.loadDraft()).resolves.toEqual({
+      ok: false,
+      error: 'storage get failed',
+    });
+  });
+
+  it('returns an exact operational failure when draft writing fails', async (): Promise<void> => {
+    localSetError = new Error('storage set failed');
+    const service = createOnboardingService({
+      loadSetup: async (): Promise<SetupState> => structuredClone(setup),
+    });
+
+    await expect(service.saveDraft(draft(0))).resolves.toEqual({
+      ok: false,
+      error: 'storage set failed',
+    });
+  });
+
+  it('returns an exact operational failure when draft verification cannot read', async (): Promise<void> => {
+    localGetFailures.add(2);
+    const service = createOnboardingService({
+      loadSetup: async (): Promise<SetupState> => structuredClone(setup),
+    });
+
+    await expect(service.saveDraft(draft(0))).resolves.toEqual({
+      ok: false,
+      error: 'storage get failed',
+    });
+  });
+
   it("rejects the second tab's stale full-draft save instead of losing the first update", async (): Promise<void> => {
     localState[LOCAL_ONBOARDING_DRAFT] = draft(1);
     const service = createOnboardingService({
       loadSetup: async (): Promise<SetupState> => structuredClone(setup),
     });
-    const tabOne: OnboardingDraft = structuredClone(
-      (await service.loadDraft()).draft as OnboardingDraft,
-    );
-    const tabTwo: OnboardingDraft = structuredClone(
-      (await service.loadDraft()).draft as OnboardingDraft,
-    );
+    const firstLoad = await service.loadDraft();
+    const secondLoad = await service.loadDraft();
+    if (!firstLoad.ok || firstLoad.draft === null || !secondLoad.ok || secondLoad.draft === null) {
+      throw new Error('expected stored onboarding drafts');
+    }
+    const tabOne: OnboardingDraft = structuredClone(firstLoad.draft);
+    const tabTwo: OnboardingDraft = structuredClone(secondLoad.draft);
 
     const first = await service.saveDraft({
       ...tabOne,

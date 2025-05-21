@@ -123,6 +123,52 @@ function realBlockingEngine(options?: {
 }
 
 describe('routeMessage onboarding wiring', (): void => {
+  it('returns an exact operational cleanup failure', async (): Promise<void> => {
+    const storage: PolicyStorage = onboardingStorage({
+      loadSetup: vi.fn().mockResolvedValue({ ...DEFAULT_SETUP, completed: true }),
+    });
+
+    await expect(
+      routeMessage(engine, { type: 'cleanupOnboardingDraft' }, sender, storage, {
+        reconcileWebsiteAccess: vi.fn(),
+        removeOnboardingDraft: vi.fn().mockRejectedValue(new Error('storage remove failed')),
+        reportError: vi.fn(),
+      }),
+    ).resolves.toEqual({ ok: false, error: 'storage remove failed' });
+  });
+
+  it('returns an exact operational completion failure', async (): Promise<void> => {
+    const authoritative: OnboardingDraft = {
+      version: 1,
+      revision: 8,
+      step: 3,
+      settings: DEFAULT_SETTINGS,
+      lists: DEFAULT_LISTS,
+      websiteAccessChoice: 'deferred',
+      syncEnabled: false,
+    };
+    const storage: PolicyStorage = onboardingStorage({
+      selectLocalMode: vi.fn().mockRejectedValue(new Error('policy storage failed')),
+    });
+
+    await expect(
+      routeMessage(
+        engine,
+        { type: 'completeOnboarding', revision: 8, storageMode: 'local' },
+        sender,
+        storage,
+        {
+          reconcileWebsiteAccess: vi.fn(),
+          loadOnboardingDraft: vi
+            .fn()
+            .mockResolvedValue({ ok: true, draft: authoritative, invalid: false }),
+          removeOnboardingDraft: vi.fn(),
+          reportError: vi.fn(),
+        },
+      ),
+    ).resolves.toEqual({ ok: false, error: 'policy storage failed' });
+  });
+
   it('rejects stale-tab completion before committing any policy', async (): Promise<void> => {
     const authoritative: OnboardingDraft = {
       version: 1,
@@ -147,7 +193,9 @@ describe('routeMessage onboarding wiring', (): void => {
         storage,
         {
           reconcileWebsiteAccess: vi.fn(),
-          loadOnboardingDraft: vi.fn().mockResolvedValue({ draft: authoritative, invalid: false }),
+          loadOnboardingDraft: vi
+            .fn()
+            .mockResolvedValue({ ok: true, draft: authoritative, invalid: false }),
           removeOnboardingDraft: vi.fn(),
           reportError: vi.fn(),
         },
@@ -155,6 +203,9 @@ describe('routeMessage onboarding wiring', (): void => {
     ).resolves.toEqual({
       ok: false,
       error: 'Setup changed in another tab. Reload setup before finishing.',
+      conflict: true,
+      completed: false,
+      draft: authoritative,
     });
     expect(setupEngine.updateSettings).not.toHaveBeenCalled();
     expect(setupEngine.updateLists).not.toHaveBeenCalled();
@@ -186,7 +237,9 @@ describe('routeMessage onboarding wiring', (): void => {
         storage,
         {
           reconcileWebsiteAccess: vi.fn(),
-          loadOnboardingDraft: vi.fn().mockResolvedValue({ draft: authoritative, invalid: false }),
+          loadOnboardingDraft: vi
+            .fn()
+            .mockResolvedValue({ ok: true, draft: authoritative, invalid: false }),
           removeOnboardingDraft: vi.fn(),
           reportError: vi.fn(),
         },

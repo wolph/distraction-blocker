@@ -2,7 +2,14 @@ import { normalizeSessionRules, validateRule } from '../core/matcher';
 import { scheduleEntriesOverlap, validateEntry } from '../core/schedule';
 import { isDailyDate, parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { CATEGORY_IDS, MAX_FREEZE_TOKENS } from './constants';
-import type { Ack, StatsBundle } from './messages';
+import type {
+  Ack,
+  OnboardingCleanupResponse,
+  OnboardingCompletionResponse,
+  OnboardingDraftLoadResponse,
+  OnboardingDraftWriteResponse,
+  StatsBundle,
+} from './messages';
 import {
   isPositiveMinuteValue,
   isRelativeMillisecondDuration,
@@ -141,6 +148,78 @@ export function isOnboardingDraft(value: unknown): value is OnboardingDraft {
         value.websiteAccessChoice === 'deferred' ||
         value.websiteAccessChoice === 'registration-error') &&
       typeof value.syncEnabled === 'boolean',
+  );
+}
+
+function isOnboardingOperationalFailure(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['ok', 'error']) &&
+    value.ok === false &&
+    isNonBlankString(value.error)
+  );
+}
+
+export function isOnboardingDraftLoadResponse(
+  value: unknown,
+): value is OnboardingDraftLoadResponse {
+  return safelyValidate(
+    (): boolean =>
+      isOnboardingOperationalFailure(value) ||
+      (isRecord(value) &&
+        hasExactKeys(value, ['ok', 'draft', 'invalid']) &&
+        value.ok === true &&
+        (value.draft === null || isOnboardingDraft(value.draft)) &&
+        typeof value.invalid === 'boolean' &&
+        (value.draft === null || value.invalid === false)),
+  );
+}
+
+export function isOnboardingDraftWriteResponse(
+  value: unknown,
+): value is OnboardingDraftWriteResponse {
+  return safelyValidate(
+    (): boolean =>
+      isOnboardingOperationalFailure(value) ||
+      (isRecord(value) &&
+        hasExactKeys(value, ['ok', 'draft']) &&
+        value.ok === true &&
+        isOnboardingDraft(value.draft)) ||
+      (isRecord(value) &&
+        hasExactKeys(value, ['ok', 'error', 'conflict', 'completed', 'draft']) &&
+        value.ok === false &&
+        isNonBlankString(value.error) &&
+        value.conflict === true &&
+        typeof value.completed === 'boolean' &&
+        (value.draft === null || isOnboardingDraft(value.draft))),
+  );
+}
+
+export function isOnboardingCleanupResponse(value: unknown): value is OnboardingCleanupResponse {
+  return isOnboardingActionResponse(value);
+}
+
+export function isOnboardingCompletionResponse(
+  value: unknown,
+): value is OnboardingCompletionResponse {
+  return safelyValidate(
+    (): boolean =>
+      isOnboardingActionResponse(value) ||
+      (isRecord(value) &&
+        hasExactKeys(value, ['ok', 'error', 'conflict', 'completed', 'draft']) &&
+        value.ok === false &&
+        isNonBlankString(value.error) &&
+        value.conflict === true &&
+        typeof value.completed === 'boolean' &&
+        (value.draft === null || isOnboardingDraft(value.draft))),
+  );
+}
+
+function isOnboardingActionResponse(value: unknown): boolean {
+  return safelyValidate(
+    (): boolean =>
+      isOnboardingOperationalFailure(value) ||
+      (isRecord(value) && hasExactKeys(value, ['ok']) && value.ok === true),
   );
 }
 

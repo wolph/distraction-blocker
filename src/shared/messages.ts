@@ -58,18 +58,32 @@ export interface Rejection {
 }
 export type Ack = { ok: true } | Rejection;
 
-export interface OnboardingDraftLoadResponse {
+export type OnboardingOperationalFailure = Rejection & {
+  conflict?: never;
+  completed?: never;
+  draft?: never;
+};
+
+export type OnboardingDraftLoadResponse =
+  | { ok: true; draft: OnboardingDraft | null; invalid: boolean }
+  | OnboardingOperationalFailure;
+
+export type OnboardingDraftConflict = Rejection & {
+  conflict: true;
+  completed: boolean;
   draft: OnboardingDraft | null;
-  invalid: boolean;
-}
+};
 
 export type OnboardingDraftWriteResponse =
   | { ok: true; draft: OnboardingDraft }
-  | (Rejection & {
-      conflict: true;
-      completed: boolean;
-      draft: OnboardingDraft | null;
-    });
+  | OnboardingOperationalFailure
+  | OnboardingDraftConflict;
+
+export type OnboardingCleanupResponse = { ok: true } | OnboardingOperationalFailure;
+export type OnboardingCompletionResponse =
+  | { ok: true }
+  | OnboardingDraftConflict
+  | OnboardingOperationalFailure;
 
 export type WebsiteAccessReconciliation =
   | {
@@ -113,9 +127,9 @@ export interface ResponseMap {
   getSetupState: SetupState;
   openOnboarding: Ack;
   getOnboardingDraft: OnboardingDraftLoadResponse;
-  cleanupOnboardingDraft: Ack;
+  cleanupOnboardingDraft: OnboardingCleanupResponse;
   saveOnboardingDraft: OnboardingDraftWriteResponse;
-  completeOnboarding: Ack;
+  completeOnboarding: OnboardingCompletionResponse;
   reconcileWebsiteAccess: WebsiteAccessReconciliation;
   dismissWebsiteAccessNotice: Ack;
   completeSetup: Ack;

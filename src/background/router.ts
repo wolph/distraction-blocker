@@ -1,7 +1,9 @@
 import type {
   Ack,
+  OnboardingDraftConflict,
   OnboardingDraftLoadResponse,
   OnboardingDraftWriteResponse,
+  OnboardingOperationalFailure,
   Request,
 } from '../shared/messages';
 import type {
@@ -73,6 +75,29 @@ function requireOnboardingServices(
   return services;
 }
 
+function onboardingDraftConflict(
+  draft: OnboardingDraft | null,
+  completed: boolean,
+): OnboardingDraftConflict {
+  return {
+    ok: false,
+    error: completed
+      ? 'Setup was completed in another tab.'
+      : 'Setup changed in another tab. Reload setup before finishing.',
+    conflict: true,
+    completed,
+    draft,
+  };
+}
+
+function onboardingOperationalFailure(error: unknown): OnboardingOperationalFailure {
+  const message: string = error instanceof Error ? error.message : String(error);
+  return {
+    ok: false,
+    error: message.trim().length > 0 ? message : 'Onboarding operation failed.',
+  };
+}
+
 /**
  * One exhaustive switch from typed requests to engine calls. The never
  * check at the bottom keeps it exhaustive when the message union grows.
@@ -103,12 +128,16 @@ export async function routeMessage(
       return load();
     }
     case 'cleanupOnboardingDraft': {
-      const storage: PolicyStorage = requirePolicyStorage(policyStorage);
-      if (!(await storage.loadSetup()).completed) {
-        return { ok: false, error: 'Setup is not complete.' };
+      try {
+        const storage: PolicyStorage = requirePolicyStorage(policyStorage);
+        if (!(await storage.loadSetup()).completed) {
+          return { ok: false, error: 'Setup is not complete.' };
+        }
+        await requireOnboardingServices(onboardingServices).removeOnboardingDraft();
+        return { ok: true };
+      } catch (error: unknown) {
+        return onboardingOperationalFailure(error);
       }
-      await requireOnboardingServices(onboardingServices).removeOnboardingDraft();
-      return { ok: true };
     }
     case 'saveOnboardingDraft': {
       const save: ((draft: OnboardingDraft) => Promise<OnboardingDraftWriteResponse>) | undefined =
@@ -117,33 +146,38 @@ export async function routeMessage(
       return save(msg.draft);
     }
     case 'completeOnboarding': {
-      const storage: PolicyStorage = requirePolicyStorage(policyStorage);
-      const setup: SetupState = await storage.loadSetup();
-      if (setup.completed) return { ok: false, error: 'Setup was completed in another tab.' };
-      const load: (() => Promise<OnboardingDraftLoadResponse>) | undefined =
-        requireOnboardingServices(onboardingServices).loadOnboardingDraft;
-      if (load === undefined) throw new Error('onboarding draft service is unavailable');
-      const loaded: OnboardingDraftLoadResponse = await load();
-      const draft: OnboardingDraft | null = loaded.draft;
-      if (draft === null || draft.revision !== msg.revision) {
-        return {
-          ok: false,
-          error: 'Setup changed in another tab. Reload setup before finishing.',
-        };
+      try {
+        const storage: PolicyStorage = requirePolicyStorage(policyStorage);
+        const setup: SetupState = await storage.loadSetup();
+        if (setup.completed) return onboardingDraftConflict(null, true);
+        const load: (() => Promise<OnboardingDraftLoadResponse>) | undefined =
+          requireOnboardingServices(onboardingServices).loadOnboardingDraft;
+        if (load === undefined) throw new Error('onboarding draft service is unavailable');
+        const loaded: OnboardingDraftLoadResponse = await load();
+        if (!loaded.ok) return loaded;
+        const draft: OnboardingDraft | null = loaded.draft;
+        if (draft === null || draft.revision !== msg.revision) {
+          return onboardingDraftConflict(draft, false);
+        }
+        if (draft.step !== 3) return { ok: false, error: 'Setup is not ready to finish.' };
+        const selectedMode: StorageMode = draft.syncEnabled ? 'sync' : 'local';
+        if (msg.storageMode !== selectedMode) {
+          return {
+            ok: false,
+            error: 'Setup storage choice changed. Reload setup before finishing.',
+          };
+        }
+        return await completeSetupPolicy(
+          engine,
+          storage,
+          selectedMode,
+          draft.settings,
+          draft.lists,
+          onboardingServices,
+        );
+      } catch (error: unknown) {
+        return onboardingOperationalFailure(error);
       }
-      if (draft.step !== 3) return { ok: false, error: 'Setup is not ready to finish.' };
-      const selectedMode: StorageMode = draft.syncEnabled ? 'sync' : 'local';
-      if (msg.storageMode !== selectedMode) {
-        return { ok: false, error: 'Setup storage choice changed. Reload setup before finishing.' };
-      }
-      return completeSetupPolicy(
-        engine,
-        storage,
-        selectedMode,
-        draft.settings,
-        draft.lists,
-        onboardingServices,
-      );
     }
     case 'reconcileWebsiteAccess': {
       const capability =

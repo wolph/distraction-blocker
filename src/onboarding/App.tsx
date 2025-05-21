@@ -1,11 +1,12 @@
 import type { TargetedEvent, VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import { CATEGORY_IDS } from '../shared/constants';
-import { type Ack, sendRequest, type WebsiteAccessReconciliation } from '../shared/messages';
+import { sendRequest, type WebsiteAccessReconciliation } from '../shared/messages';
 import { WEBSITE_ORIGINS } from '../shared/permissions';
 import { isListsConfig, isSettings, isSetupState } from '../shared/runtime-validation';
 import type { CategoryId, ListsConfig, Settings, SetupState } from '../shared/types';
 import {
+  completeOnboardingDraft,
   createOnboardingDraft,
   type DraftLoadResult,
   loadOnboardingDraft,
@@ -361,36 +362,27 @@ export function App(): VNode {
     setPending(true);
     setActionError(null);
     try {
-      const response: Ack = await sendRequest({
-        type: 'completeOnboarding',
-        revision: page.draft.revision,
-        storageMode: page.draft.syncEnabled ? 'sync' : 'local',
-      });
-      if (!response.ok) {
-        setActionError(response.error);
-        const setup: SetupState = await sendRequest({ type: 'getSetupState' });
-        if (isSetupState(setup) && setup.completed) {
-          setPage({ kind: 'complete' });
-          return;
-        }
-        const latest: DraftLoadResult = await loadOnboardingDraft();
-        if (latest.draft !== null) {
-          const authoritative: OnboardingDraft = latest.draft;
-          setPage(
-            (current: PageState): PageState =>
-              current.kind === 'draft' ? { ...current, draft: authoritative } : current,
-          );
-        }
-        return;
-      }
+      await completeOnboardingDraft(page.draft.revision, page.draft.syncEnabled ? 'sync' : 'local');
       try {
         await removeOnboardingDraft();
       } catch (error: unknown) {
         console.error('could not remove completed onboarding draft', error);
       }
       setPage({ kind: 'complete' });
-    } catch {
-      setActionError('Could not complete setup. Your choices are still saved. Try again.');
+    } catch (error: unknown) {
+      if (error instanceof OnboardingDraftConflictError) {
+        if (error.completed) setPage({ kind: 'complete' });
+        else if (error.draft !== null) {
+          const authoritative: OnboardingDraft = error.draft;
+          setPage(
+            (current: PageState): PageState =>
+              current.kind === 'draft' ? { ...current, draft: authoritative } : current,
+          );
+        }
+        setActionError(error.message);
+      } else {
+        setActionError('Could not complete setup. Your choices are still saved. Try again.');
+      }
     } finally {
       setPending(false);
     }

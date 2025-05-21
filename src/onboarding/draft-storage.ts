@@ -1,19 +1,31 @@
 import {
-  type Ack,
+  type OnboardingDraftConflict,
   type OnboardingDraftLoadResponse,
-  type OnboardingDraftWriteResponse,
   sendRequest,
 } from '../shared/messages';
-import type { ListsConfig, OnboardingDraft, Settings } from '../shared/types';
+import {
+  isOnboardingCleanupResponse,
+  isOnboardingCompletionResponse,
+  isOnboardingDraftLoadResponse,
+  isOnboardingDraftWriteResponse,
+} from '../shared/runtime-validation';
+import type { ListsConfig, OnboardingDraft, Settings, StorageMode } from '../shared/types';
 
 export type { OnboardingDraft, OnboardingStep, WebsiteAccessChoice } from '../shared/types';
-export type DraftLoadResult = OnboardingDraftLoadResponse;
+export type DraftLoadResult = Extract<OnboardingDraftLoadResponse, { ok: true }>;
+
+export class OnboardingDraftOperationalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OnboardingDraftOperationalError';
+  }
+}
 
 export class OnboardingDraftConflictError extends Error {
   readonly completed: boolean;
   readonly draft: OnboardingDraft | null;
 
-  constructor(response: Extract<OnboardingDraftWriteResponse, { ok: false }>) {
+  constructor(response: OnboardingDraftConflict) {
     super(response.error);
     this.name = 'OnboardingDraftConflictError';
     this.completed = response.completed;
@@ -34,19 +46,51 @@ export function createOnboardingDraft(settings: Settings, lists: ListsConfig): O
 }
 
 export async function loadOnboardingDraft(): Promise<DraftLoadResult> {
-  return sendRequest({ type: 'getOnboardingDraft' });
+  const response: unknown = await sendRequest({ type: 'getOnboardingDraft' });
+  if (!isOnboardingDraftLoadResponse(response)) {
+    throw new OnboardingDraftOperationalError('Invalid onboarding draft load response.');
+  }
+  if (!response.ok) throw new OnboardingDraftOperationalError(response.error);
+  return response;
 }
 
 export async function saveOnboardingDraft(draft: OnboardingDraft): Promise<OnboardingDraft> {
-  const response: OnboardingDraftWriteResponse = await sendRequest({
+  const response: unknown = await sendRequest({
     type: 'saveOnboardingDraft',
     draft,
   });
-  if (!response.ok) throw new OnboardingDraftConflictError(response);
+  if (!isOnboardingDraftWriteResponse(response)) {
+    throw new OnboardingDraftOperationalError('Invalid onboarding draft save response.');
+  }
+  if (!response.ok && response.conflict === true) {
+    throw new OnboardingDraftConflictError(response);
+  }
+  if (!response.ok) throw new OnboardingDraftOperationalError(response.error);
   return response.draft;
 }
 
 export async function removeOnboardingDraft(): Promise<void> {
-  const response: Ack = await sendRequest({ type: 'cleanupOnboardingDraft' });
-  if (!response.ok) throw new Error(response.error);
+  const response: unknown = await sendRequest({ type: 'cleanupOnboardingDraft' });
+  if (!isOnboardingCleanupResponse(response)) {
+    throw new OnboardingDraftOperationalError('Invalid onboarding draft cleanup response.');
+  }
+  if (!response.ok) throw new OnboardingDraftOperationalError(response.error);
+}
+
+export async function completeOnboardingDraft(
+  revision: number,
+  storageMode: StorageMode,
+): Promise<void> {
+  const response: unknown = await sendRequest({
+    type: 'completeOnboarding',
+    revision,
+    storageMode,
+  });
+  if (!isOnboardingCompletionResponse(response)) {
+    throw new OnboardingDraftOperationalError('Invalid onboarding completion response.');
+  }
+  if (!response.ok && response.conflict === true) {
+    throw new OnboardingDraftConflictError(response);
+  }
+  if (!response.ok) throw new OnboardingDraftOperationalError(response.error);
 }

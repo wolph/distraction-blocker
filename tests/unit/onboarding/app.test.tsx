@@ -69,7 +69,13 @@ function completeOnboardingResponse(revision: number, storageMode: StorageMode):
     current.step !== 3 ||
     storageMode !== (current.syncEnabled ? 'sync' : 'local')
   ) {
-    return { ok: false, error: 'Setup changed in another tab. Reload the latest choices.' };
+    return {
+      ok: false,
+      error: 'Setup changed in another tab. Reload the latest choices.',
+      conflict: true,
+      completed: setupState.completed,
+      draft: current,
+    };
   }
   setupState = { ...setupState, completed: true, storageMode };
   delete localState[LOCAL_ONBOARDING_DRAFT];
@@ -96,6 +102,7 @@ beforeEach((): void => {
     if (request.type === 'getOnboardingDraft') {
       const draft: OnboardingDraft | null = loadStoredDraft();
       return {
+        ok: true,
         draft,
         invalid: Object.hasOwn(localState, LOCAL_ONBOARDING_DRAFT) && draft === null,
       };
@@ -279,5 +286,58 @@ describe('onboarding page state', (): void => {
     expect((await view.findByRole('alert')).textContent).toBe('Could not load setup. Try again.');
     expect(view.getByRole('button', { name: 'Retry' })).toBeTruthy();
     expect(view.queryByText(/Step \d of 3/)).toBeNull();
+  });
+
+  it.each([
+    { ok: false, error: 'storage get failed' },
+    { ok: true, invalid: false },
+  ])('keeps an operational or malformed draft load retryable %#', async (response: unknown) => {
+    const normalImplementation: ((request: Request) => Promise<unknown>) | undefined =
+      sendMessageMock.getMockImplementation();
+    if (normalImplementation === undefined) throw new Error('missing normal worker fake');
+    sendMessageMock.mockImplementation(
+      async (request: Request): Promise<unknown> =>
+        request.type === 'getOnboardingDraft' ? response : normalImplementation(request),
+    );
+
+    const view = render(<App />);
+
+    expect((await view.findByRole('alert')).textContent).toBe('Could not load setup. Try again.');
+    expect(view.getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect(view.queryByText(/Step \d of 3/)).toBeNull();
+  });
+
+  it('retains the current draft after an operational save failure', async (): Promise<void> => {
+    localState[LOCAL_ONBOARDING_DRAFT] = {
+      version: 1,
+      revision: 1,
+      step: 1,
+      settings: DEFAULT_SETTINGS,
+      lists: DEFAULT_LISTS,
+      websiteAccessChoice: 'pending',
+      syncEnabled: true,
+    } satisfies OnboardingDraft;
+    const normalImplementation: ((request: Request) => Promise<unknown>) | undefined =
+      sendMessageMock.getMockImplementation();
+    if (normalImplementation === undefined) throw new Error('missing normal worker fake');
+    sendMessageMock.mockImplementation(
+      async (request: Request): Promise<unknown> =>
+        request.type === 'saveOnboardingDraft'
+          ? { ok: false, error: 'storage set failed' }
+          : normalImplementation(request),
+    );
+    const view = render(<App />);
+    const social: HTMLElement = await view.findByRole('checkbox', { name: 'Social' });
+
+    fireEvent.click(social);
+
+    expect((await view.findByRole('alert')).textContent).toBe(
+      'Could not save setup progress. Try again.',
+    );
+    expect(view.getByText('Step 1 of 3')).toBeTruthy();
+    expect((view.getByRole('checkbox', { name: 'Social' }) as HTMLInputElement).checked).toBe(
+      false,
+    );
+    expect((localState[LOCAL_ONBOARDING_DRAFT] as OnboardingDraft).revision).toBe(1);
   });
 });

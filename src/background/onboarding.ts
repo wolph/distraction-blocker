@@ -1,4 +1,8 @@
-import type { OnboardingDraftLoadResponse, OnboardingDraftWriteResponse } from '../shared/messages';
+import type {
+  OnboardingDraftLoadResponse,
+  OnboardingDraftWriteResponse,
+  OnboardingOperationalFailure,
+} from '../shared/messages';
 import { isOnboardingDraft } from '../shared/runtime-validation';
 import { LOCAL_ONBOARDING_DRAFT } from '../shared/storage-keys';
 import type { OnboardingDraft, SetupState } from '../shared/types';
@@ -17,6 +21,19 @@ interface OnboardingServicePorts {
   loadSetup(): Promise<SetupState>;
 }
 
+interface OnboardingDraftSnapshot {
+  draft: OnboardingDraft | null;
+  invalid: boolean;
+}
+
+function operationalFailure(error: unknown): OnboardingOperationalFailure {
+  const message: string = error instanceof Error ? error.message : String(error);
+  return {
+    ok: false,
+    error: message.trim().length > 0 ? message : 'Onboarding storage operation failed.',
+  };
+}
+
 function conflict(draft: OnboardingDraft | null, completed: boolean): OnboardingDraftWriteResult {
   return {
     ok: false,
@@ -29,7 +46,7 @@ function conflict(draft: OnboardingDraft | null, completed: boolean): Onboarding
   };
 }
 
-async function readDraft(): Promise<OnboardingDraftLoadResult> {
+async function readDraft(): Promise<OnboardingDraftSnapshot> {
   const stored: Record<string, unknown> = await chrome.storage.local.get(LOCAL_ONBOARDING_DRAFT);
   if (!Object.hasOwn(stored, LOCAL_ONBOARDING_DRAFT)) return { draft: null, invalid: false };
   const value: unknown = stored[LOCAL_ONBOARDING_DRAFT];
@@ -57,32 +74,43 @@ export function createOnboardingService(ports: OnboardingServicePorts): Onboardi
   };
 
   const loadDraft: () => Promise<OnboardingDraftLoadResult> =
-    (): Promise<OnboardingDraftLoadResult> => serializeDraft(readDraft);
+    (): Promise<OnboardingDraftLoadResult> =>
+      serializeDraft(async (): Promise<OnboardingDraftLoadResult> => {
+        try {
+          return { ok: true, ...(await readDraft()) };
+        } catch (error: unknown) {
+          return operationalFailure(error);
+        }
+      });
 
   const saveDraft: (draft: OnboardingDraft) => Promise<OnboardingDraftWriteResult> = (
     draft: OnboardingDraft,
   ): Promise<OnboardingDraftWriteResult> =>
     serializeDraft(async (): Promise<OnboardingDraftWriteResult> => {
-      const [setup, current]: [SetupState, OnboardingDraftLoadResult] = await Promise.all([
-        ports.loadSetup(),
-        readDraft(),
-      ]);
-      if (setup.completed) return conflict(current.draft, true);
-      const expectedRevision: number = current.draft?.revision ?? 0;
-      const canCreate: boolean = current.draft === null && draft.revision === 0;
-      const canUpdate: boolean = current.draft !== null && draft.revision === expectedRevision;
-      if (!canCreate && !canUpdate) return conflict(current.draft, false);
-      const next: OnboardingDraft = structuredClone({
-        ...draft,
-        revision: expectedRevision + 1,
-      });
-      if (!isOnboardingDraft(next)) throw new Error('invalid onboarding draft');
-      await chrome.storage.local.set({ [LOCAL_ONBOARDING_DRAFT]: next });
-      const verified: OnboardingDraftLoadResult = await readDraft();
-      if (verified.draft === null || !draftsEqual(verified.draft, next)) {
-        throw new Error('could not verify onboarding draft');
+      try {
+        const [setup, current]: [SetupState, OnboardingDraftSnapshot] = await Promise.all([
+          ports.loadSetup(),
+          readDraft(),
+        ]);
+        if (setup.completed) return conflict(current.draft, true);
+        const expectedRevision: number = current.draft?.revision ?? 0;
+        const canCreate: boolean = current.draft === null && draft.revision === 0;
+        const canUpdate: boolean = current.draft !== null && draft.revision === expectedRevision;
+        if (!canCreate && !canUpdate) return conflict(current.draft, false);
+        const next: OnboardingDraft = structuredClone({
+          ...draft,
+          revision: expectedRevision + 1,
+        });
+        if (!isOnboardingDraft(next)) throw new Error('invalid onboarding draft');
+        await chrome.storage.local.set({ [LOCAL_ONBOARDING_DRAFT]: next });
+        const verified: OnboardingDraftSnapshot = await readDraft();
+        if (verified.draft === null || !draftsEqual(verified.draft, next)) {
+          throw new Error('could not verify onboarding draft');
+        }
+        return { ok: true, draft: next };
+      } catch (error: unknown) {
+        return operationalFailure(error);
       }
-      return { ok: true, draft: next };
     });
 
   const removeDraft: () => Promise<void> = (): Promise<void> =>
