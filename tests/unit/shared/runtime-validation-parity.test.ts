@@ -11,6 +11,7 @@ import {
 import type { StatsBundle } from '../../../src/shared/messages';
 import {
   ackError,
+  isAck,
   isCycleConfig,
   isDeviceId,
   isEventRecord,
@@ -472,6 +473,18 @@ describe('runtime and worker request validation parity', (): void => {
 });
 
 describe('exported runtime validators are total for hostile unknowns', (): void => {
+  it.each([
+    [{ ok: true }, true],
+    [{ ok: false, error: 'failed' }, true],
+    [{}, false],
+    [{ ok: true, extra: true }, false],
+    [{ ok: false }, false],
+    [{ ok: false, error: '' }, false],
+    [{ ok: false, error: 'failed', extra: true }, false],
+  ])('validates exact acknowledgements %#', (value: unknown, accepted: boolean): void => {
+    expect(isAck(value)).toBe(accepted);
+  });
+
   it('returns rejection values for a revoked proxy', (): void => {
     const revocable: { proxy: object; revoke: () => void } = Proxy.revocable<object>({}, {});
     revocable.revoke();
@@ -485,6 +498,7 @@ describe('exported runtime validators are total for hostile unknowns', (): void 
       isEventRecord,
       isStatsBundle,
       isDeviceId,
+      isAck,
     ];
 
     for (const validate of booleanValidators) {

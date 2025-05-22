@@ -340,4 +340,122 @@ describe('onboarding page state', (): void => {
     );
     expect((localState[LOCAL_ONBOARDING_DRAFT] as OnboardingDraft).revision).toBe(1);
   });
+
+  it('reloads incomplete setup after a save conflict has no authoritative draft', async (): Promise<void> => {
+    localState[LOCAL_ONBOARDING_DRAFT] = {
+      version: 1,
+      revision: 3,
+      step: 1,
+      settings: DEFAULT_SETTINGS,
+      lists: DEFAULT_LISTS,
+      websiteAccessChoice: 'pending',
+      syncEnabled: true,
+    } satisfies OnboardingDraft;
+    const normalImplementation: ((request: Request) => Promise<unknown>) | undefined =
+      sendMessageMock.getMockImplementation();
+    if (normalImplementation === undefined) throw new Error('missing normal worker fake');
+    let conflictPending: boolean = true;
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'saveOnboardingDraft' && conflictPending) {
+        conflictPending = false;
+        delete localState[LOCAL_ONBOARDING_DRAFT];
+        return {
+          ok: false,
+          error: 'Setup changed in another tab.',
+          conflict: true,
+          completed: false,
+          draft: null,
+        };
+      }
+      return normalImplementation(request);
+    });
+    const view = render(<App />);
+
+    fireEvent.click(await view.findByRole('checkbox', { name: 'Social' }));
+
+    await waitFor((): void => {
+      const current: OnboardingDraft = localState[LOCAL_ONBOARDING_DRAFT] as OnboardingDraft;
+      expect(current.revision).toBe(1);
+      expect(current.lists.categories.social).toBe(false);
+    });
+    expect(view.getByText('Step 1 of 3')).toBeTruthy();
+  });
+
+  it('confirms completed setup after a save conflict has no authoritative draft', async (): Promise<void> => {
+    localState[LOCAL_ONBOARDING_DRAFT] = {
+      version: 1,
+      revision: 3,
+      step: 1,
+      settings: DEFAULT_SETTINGS,
+      lists: DEFAULT_LISTS,
+      websiteAccessChoice: 'pending',
+      syncEnabled: true,
+    } satisfies OnboardingDraft;
+    const normalImplementation: ((request: Request) => Promise<unknown>) | undefined =
+      sendMessageMock.getMockImplementation();
+    if (normalImplementation === undefined) throw new Error('missing normal worker fake');
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'saveOnboardingDraft') {
+        setupState = { ...setupState, completed: true, storageMode: 'local' };
+        delete localState[LOCAL_ONBOARDING_DRAFT];
+        return {
+          ok: false,
+          error: 'Setup changed in another tab.',
+          conflict: true,
+          completed: false,
+          draft: null,
+        };
+      }
+      return normalImplementation(request);
+    });
+    const view = render(<App />);
+
+    fireEvent.click(await view.findByRole('checkbox', { name: 'Social' }));
+
+    expect(await view.findByRole('heading', { name: 'Setup complete' })).toBeTruthy();
+  });
+
+  it('makes a failed reload retryable after a completion conflict has no draft', async (): Promise<void> => {
+    localState[LOCAL_ONBOARDING_DRAFT] = {
+      version: 1,
+      revision: 4,
+      step: 3,
+      settings: DEFAULT_SETTINGS,
+      lists: DEFAULT_LISTS,
+      websiteAccessChoice: 'deferred',
+      syncEnabled: false,
+    } satisfies OnboardingDraft;
+    const normalImplementation: ((request: Request) => Promise<unknown>) | undefined =
+      sendMessageMock.getMockImplementation();
+    if (normalImplementation === undefined) throw new Error('missing normal worker fake');
+    let reloadDraftFails: boolean = false;
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'completeOnboarding') {
+        delete localState[LOCAL_ONBOARDING_DRAFT];
+        reloadDraftFails = true;
+        return {
+          ok: false,
+          error: 'Setup changed in another tab.',
+          conflict: true,
+          completed: false,
+          draft: null,
+        };
+      }
+      if (request.type === 'getOnboardingDraft' && reloadDraftFails) {
+        reloadDraftFails = false;
+        return { ok: false, error: 'storage get failed' };
+      }
+      return normalImplementation(request);
+    });
+    const view = render(<App />);
+
+    fireEvent.click(await view.findByRole('button', { name: 'Finish setup without sync' }));
+
+    expect((await view.findByRole('alert')).textContent).toBe('Could not load setup. Try again.');
+    fireEvent.click(view.getByRole('button', { name: 'Retry' }));
+    await waitFor((): void => {
+      expect((localState[LOCAL_ONBOARDING_DRAFT] as OnboardingDraft).revision).toBe(1);
+    });
+    expect(await view.findByText('Step 1 of 3')).toBeTruthy();
+  });
 });

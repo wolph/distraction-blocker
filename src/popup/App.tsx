@@ -1,8 +1,8 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../shared/constants';
-import { type Ack, sendRequest } from '../shared/messages';
-import { isListsConfig, isSettings, isSetupState } from '../shared/runtime-validation';
+import { sendRequest } from '../shared/messages';
+import { isAck, isListsConfig, isSettings, isSetupState } from '../shared/runtime-validation';
 import { ThemeControl } from '../shared/ThemeControl';
 import { applyTheme, updateTheme } from '../shared/theme';
 import type {
@@ -208,7 +208,8 @@ function SetupRequired(): VNode {
     setPending(true);
     setError(null);
     try {
-      const response: Ack = await sendRequest({ type: 'openOnboarding' });
+      const response: unknown = await sendRequest({ type: 'openOnboarding' });
+      if (!isAck(response)) throw new Error('invalid setup response');
       if (!response.ok) throw new Error(response.error);
     } catch {
       setError('Could not open setup. Try again.');
@@ -254,7 +255,11 @@ function WebsiteAccessNotice(props: {
     setPending(true);
     setError(null);
     try {
-      const response: Ack = await sendRequest({ type: 'dismissWebsiteAccessNotice' });
+      const response: unknown = await sendRequest({ type: 'dismissWebsiteAccessNotice' });
+      if (!isAck(response)) {
+        setError('Could not dismiss this notice. Try again.');
+        return;
+      }
       if (!response.ok) {
         setError(response.error);
         return;

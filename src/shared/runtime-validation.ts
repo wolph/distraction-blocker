@@ -738,21 +738,19 @@ export function isStatsBundle(value: unknown): value is StatsBundle {
 }
 
 export function ackError(value: unknown, malformedError: string): string | null {
-  try {
-    if (isRecord(value) && value.ok === true && hasExactKeys(value, ['ok'])) return null;
-    if (
+  if (!isAck(value)) return malformedError;
+  return value.ok ? null : value.error;
+}
+
+export function isAck(value: unknown): value is Ack {
+  return safelyValidate(
+    (): boolean =>
       isRecord(value) &&
-      value.ok === false &&
-      isNonBlankString(value.error) &&
-      hasExactKeys(value, ['ok', 'error'])
-    ) {
-      const rejection: Ack = { ok: false, error: value.error };
-      return rejection.error;
-    }
-    return malformedError;
-  } catch {
-    return malformedError;
-  }
+      ((value.ok === true && hasExactKeys(value, ['ok'])) ||
+        (value.ok === false &&
+          isNonBlankString(value.error) &&
+          hasExactKeys(value, ['ok', 'error']))),
+  );
 }
 
 export function parseEventExportResponse(value: unknown): EventRecord[] | null {

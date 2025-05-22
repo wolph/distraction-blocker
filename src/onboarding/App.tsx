@@ -205,6 +205,11 @@ export function App(): VNode {
   const [loadAttempt, setLoadAttempt]: [number, Dispatch<StateUpdater<number>>] =
     useState<number>(0);
 
+  const reloadAuthoritativeSetup: () => void = (): void => {
+    setPage({ kind: 'loading' });
+    setLoadAttempt((value: number): number => value + 1);
+  };
+
   useEffect((): (() => void) => {
     let active: boolean = true;
     const load: () => Promise<void> = async (): Promise<void> => {
@@ -269,6 +274,10 @@ export function App(): VNode {
       return true;
     } catch (error: unknown) {
       if (error instanceof OnboardingDraftConflictError) {
+        if (error.draft === null) {
+          reloadAuthoritativeSetup();
+          return false;
+        }
         if (error.completed) setPage({ kind: 'complete' });
         else if (error.draft !== null) {
           const authoritative: OnboardingDraft = error.draft;
@@ -371,6 +380,10 @@ export function App(): VNode {
       setPage({ kind: 'complete' });
     } catch (error: unknown) {
       if (error instanceof OnboardingDraftConflictError) {
+        if (error.draft === null) {
+          reloadAuthoritativeSetup();
+          return;
+        }
         if (error.completed) setPage({ kind: 'complete' });
         else if (error.draft !== null) {
           const authoritative: OnboardingDraft = error.draft;

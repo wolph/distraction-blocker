@@ -42,6 +42,32 @@ describe('popup setup routing', (): void => {
     expect(tabsCreateMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {},
+    { error: 'missing ok' },
+    { ok: true, extra: true },
+    { ok: false },
+    { ok: false, error: '' },
+    { ok: false, error: 'worker failed', extra: true },
+  ])(
+    'shows a retryable setup error for malformed open response %#',
+    async (response: unknown): Promise<void> => {
+      const normalImplementation: ((request: Request) => Promise<unknown>) | undefined =
+        sendMessageMock.getMockImplementation();
+      if (normalImplementation === undefined) throw new Error('missing normal worker fake');
+      sendMessageMock.mockImplementation(
+        async (request: Request): Promise<unknown> =>
+          request.type === 'openOnboarding' ? response : normalImplementation(request),
+      );
+      const view = render(<App />);
+
+      fireEvent.click(await view.findByRole('button', { name: 'Open setup' }));
+
+      expect((await view.findByRole('alert')).textContent).toBe('Could not open setup. Try again.');
+      expect(view.getByRole('button', { name: 'Open setup' })).toBeTruthy();
+    },
+  );
+
   it('shows completed setup session controls without a setup redirect', async (): Promise<void> => {
     setup = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
 
@@ -74,6 +100,44 @@ describe('popup setup routing', (): void => {
       expect(view.queryByText('Your session ended because website access was removed.')).toBeNull();
     });
   });
+
+  it.each([
+    {},
+    { error: 'missing ok' },
+    { ok: true, extra: true },
+    { ok: false },
+    { ok: false, error: '' },
+    { ok: false, error: 'worker failed', extra: true },
+  ])(
+    'keeps the truthful notice visible for malformed dismissal response %#',
+    async (response: unknown): Promise<void> => {
+      setup = {
+        ...DEFAULT_SETUP,
+        completed: true,
+        storageMode: 'local',
+        websiteAccess: 'denied',
+        blockingRegistration: 'unavailable',
+        websiteAccessNotice: 'revoked-during-session',
+      };
+      const normalImplementation: ((request: Request) => Promise<unknown>) | undefined =
+        sendMessageMock.getMockImplementation();
+      if (normalImplementation === undefined) throw new Error('missing normal worker fake');
+      sendMessageMock.mockImplementation(
+        async (request: Request): Promise<unknown> =>
+          request.type === 'dismissWebsiteAccessNotice' ? response : normalImplementation(request),
+      );
+      const view = render(<App />);
+      const notice: string = 'Your session ended because website access was removed.';
+
+      fireEvent.click(await view.findByRole('button', { name: 'Dismiss website access notice' }));
+
+      expect((await view.findByRole('alert')).textContent).toBe(
+        'Could not dismiss this notice. Try again.',
+      );
+      expect(view.getByText(notice)).toBeTruthy();
+      expect(view.getByRole('button', { name: 'Dismiss website access notice' })).toBeTruthy();
+    },
+  );
 
   it('does not show a stale notice after blocking registration is ready', async (): Promise<void> => {
     setup = {
