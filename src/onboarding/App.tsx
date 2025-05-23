@@ -1,9 +1,14 @@
 import type { TargetedEvent, VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import { CATEGORY_IDS } from '../shared/constants';
-import { sendRequest, type WebsiteAccessReconciliation } from '../shared/messages';
+import { sendRequest } from '../shared/messages';
 import { WEBSITE_ORIGINS } from '../shared/permissions';
-import { isListsConfig, isSettings, isSetupState } from '../shared/runtime-validation';
+import {
+  isListsConfig,
+  isSettings,
+  isSetupState,
+  isWebsiteAccessReconciliation,
+} from '../shared/runtime-validation';
 import type { CategoryId, ListsConfig, Settings, SetupState } from '../shared/types';
 import {
   completeOnboardingDraft,
@@ -338,9 +343,13 @@ export function App(): VNode {
         await commitDraft({ ...page.draft, websiteAccessChoice: 'denied' });
         return;
       }
-      const response: WebsiteAccessReconciliation = await sendRequest({
+      const response: unknown = await sendRequest({
         type: 'reconcileWebsiteAccess',
       });
+      if (!isWebsiteAccessReconciliation(response)) {
+        setActionError('Could not enable website blocking. Try again.');
+        return;
+      }
       if (!response.ok || !response.granted || response.registration !== 'ready') {
         const failed: OnboardingDraft = {
           ...page.draft,

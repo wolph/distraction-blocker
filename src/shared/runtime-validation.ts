@@ -9,6 +9,7 @@ import type {
   OnboardingDraftLoadResponse,
   OnboardingDraftWriteResponse,
   StatsBundle,
+  WebsiteAccessReconciliation,
 } from './messages';
 import {
   isPositiveMinuteValue,
@@ -212,6 +213,31 @@ export function isOnboardingCompletionResponse(
         value.conflict === true &&
         typeof value.completed === 'boolean' &&
         (value.draft === null || isOnboardingDraft(value.draft))),
+  );
+}
+
+export function isWebsiteAccessReconciliation(
+  value: unknown,
+): value is WebsiteAccessReconciliation {
+  return safelyValidate(
+    (): boolean =>
+      isOnboardingOperationalFailure(value) ||
+      (isRecord(value) &&
+        hasExactKeys(value, ['ok', 'granted', 'registration']) &&
+        value.ok === true &&
+        ((value.granted === true && value.registration === 'ready') ||
+          (value.granted === false && value.registration === 'unavailable'))) ||
+      (isRecord(value) &&
+        hasExactKeys(value, ['ok', 'error', 'granted', 'registration']) &&
+        value.ok === false &&
+        isNonBlankString(value.error) &&
+        value.granted === true &&
+        value.registration === 'error') ||
+      (isRecord(value) &&
+        hasExactKeys(value, ['ok', 'error', 'registration']) &&
+        value.ok === false &&
+        isNonBlankString(value.error) &&
+        value.registration === 'error'),
   );
 }
 

@@ -86,15 +86,11 @@ export type OnboardingCompletionResponse =
   | OnboardingOperationalFailure;
 
 export type WebsiteAccessReconciliation =
-  | {
-      ok: true;
-      granted: boolean;
-      registration: SetupState['blockingRegistration'];
-    }
-  | (Rejection & {
-      granted?: boolean;
-      registration?: SetupState['blockingRegistration'];
-    });
+  | { ok: true; granted: true; registration: 'ready' }
+  | { ok: true; granted: false; registration: 'unavailable' }
+  | (Rejection & { granted?: never; registration?: never })
+  | (Rejection & { granted: true; registration: 'error' })
+  | (Rejection & { granted?: never; registration: 'error' });
 
 export type ClearFocusLockDataResponse =
   | {

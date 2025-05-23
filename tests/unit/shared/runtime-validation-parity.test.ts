@@ -22,6 +22,7 @@ import {
   isSettings,
   isSetupState,
   isStatsBundle,
+  isWebsiteAccessReconciliation,
   parseEventExportResponse,
 } from '../../../src/shared/runtime-validation';
 import {
@@ -474,6 +475,29 @@ describe('runtime and worker request validation parity', (): void => {
 
 describe('exported runtime validators are total for hostile unknowns', (): void => {
   it.each([
+    [{ ok: true, granted: true, registration: 'ready' }, true],
+    [{ ok: true, granted: false, registration: 'unavailable' }, true],
+    [{ ok: false, error: 'worker failed' }, true],
+    [{ ok: false, error: 'registration failed', granted: true, registration: 'error' }, true],
+    [{ ok: false, error: 'permission unknown', registration: 'error' }, true],
+    [{ ok: true, granted: true }, false],
+    [{ ok: true, granted: true, registration: 'ready', extra: true }, false],
+    [{ ok: true, granted: true, registration: 'error' }, false],
+    [{ ok: true, granted: true, registration: 'bogus' }, false],
+    [{ ok: true, granted: false, registration: 'ready' }, false],
+    [{ ok: false }, false],
+    [{ ok: false, error: '' }, false],
+    [{ ok: false, error: 'failed', granted: false, registration: 'error' }, false],
+    [{ ok: false, error: 'failed', registration: 'ready' }, false],
+    [{ ok: false, error: 'failed', registration: 'error', extra: true }, false],
+  ])(
+    'validates exact website access reconciliation responses %#',
+    (value: unknown, accepted: boolean): void => {
+      expect(isWebsiteAccessReconciliation(value)).toBe(accepted);
+    },
+  );
+
+  it.each([
     [{ ok: true }, true],
     [{ ok: false, error: 'failed' }, true],
     [{}, false],
@@ -499,6 +523,7 @@ describe('exported runtime validators are total for hostile unknowns', (): void 
       isStatsBundle,
       isDeviceId,
       isAck,
+      isWebsiteAccessReconciliation,
     ];
 
     for (const validate of booleanValidators) {

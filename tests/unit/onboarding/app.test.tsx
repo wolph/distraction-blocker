@@ -183,6 +183,53 @@ describe('onboarding page state', (): void => {
     expect(view.getByText('Step 2 of 3')).toBeTruthy();
   });
 
+  it.each([
+    {},
+    { ok: true, granted: true },
+    { ok: true, granted: true, registration: 'ready', extra: true },
+    { ok: true, granted: 'yes', registration: 'ready' },
+    { ok: true, granted: true, registration: 'bogus' },
+    { ok: true, granted: true, registration: 'error' },
+    { ok: true, granted: false, registration: 'ready' },
+    { ok: false },
+    { ok: false, error: '' },
+    { ok: false, error: 'failed', granted: false, registration: 'error' },
+    { ok: false, error: 'failed', registration: 'ready' },
+    { ok: false, error: 'failed', registration: 'error', extra: true },
+  ])(
+    'retains Step 2 for malformed website reconciliation response %#',
+    async (response: unknown): Promise<void> => {
+      localState[LOCAL_ONBOARDING_DRAFT] = {
+        version: 1,
+        revision: 2,
+        step: 2,
+        settings: DEFAULT_SETTINGS,
+        lists: DEFAULT_LISTS,
+        websiteAccessChoice: 'pending',
+        syncEnabled: true,
+      } satisfies OnboardingDraft;
+      permissionRequestMock.mockResolvedValue(true);
+      const normalImplementation: ((request: Request) => Promise<unknown>) | undefined =
+        sendMessageMock.getMockImplementation();
+      if (normalImplementation === undefined) throw new Error('missing normal worker fake');
+      sendMessageMock.mockImplementation(
+        async (request: Request): Promise<unknown> =>
+          request.type === 'reconcileWebsiteAccess' ? response : normalImplementation(request),
+      );
+      const view = render(<App />);
+
+      fireEvent.click(await view.findByRole('button', { name: 'Enable website blocking' }));
+
+      expect((await view.findByRole('alert')).textContent).toBe(
+        'Could not enable website blocking. Try again.',
+      );
+      expect(view.getByText('Step 2 of 3')).toBeTruthy();
+      const current: OnboardingDraft = localState[LOCAL_ONBOARDING_DRAFT] as OnboardingDraft;
+      expect(current.revision).toBe(2);
+      expect(current.websiteAccessChoice).toBe('pending');
+    },
+  );
+
   it('persists Not now before advancing to Step 3', async (): Promise<void> => {
     localState[LOCAL_ONBOARDING_DRAFT] = {
       version: 1,
