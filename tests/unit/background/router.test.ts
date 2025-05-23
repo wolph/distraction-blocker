@@ -12,6 +12,7 @@ import {
   rulesFromLists,
 } from '../../../src/shared/constants';
 import type { StatsBundle } from '../../../src/shared/messages';
+import { isWebsiteAccessReconciliation } from '../../../src/shared/runtime-validation';
 import type {
   EventRecord,
   OnboardingDraft,
@@ -262,12 +263,76 @@ describe('routeMessage onboarding wiring', (): void => {
   });
 
   it.each([
-    ['granted', 'ready', true, true],
-    ['denied', 'unavailable', false, true],
-    ['granted', 'error', true, false],
+    ['granted', 'ready', { ok: true, granted: true, registration: 'ready' }],
+    [
+      'granted',
+      'unavailable',
+      {
+        ok: false,
+        error:
+          'Focus Lock received an inconsistent website access state. Retry setup or reload the extension.',
+      },
+    ],
+    [
+      'granted',
+      'error',
+      {
+        ok: false,
+        error:
+          'Website access is granted, but Focus Lock could not enable blocking. Retry setup or reload the extension.',
+        granted: true,
+        registration: 'error',
+      },
+    ],
+    [
+      'denied',
+      'ready',
+      {
+        ok: false,
+        error:
+          'Focus Lock received an inconsistent website access state. Retry setup or reload the extension.',
+      },
+    ],
+    ['denied', 'unavailable', { ok: true, granted: false, registration: 'unavailable' }],
+    [
+      'denied',
+      'error',
+      {
+        ok: false,
+        error:
+          'Website access is unavailable, and Focus Lock could not finish blocking cleanup. Retry setup or reload the extension.',
+        granted: false,
+        registration: 'error',
+      },
+    ],
+    [
+      'unknown',
+      'ready',
+      {
+        ok: false,
+        error: 'Focus Lock could not check website access. Retry setup or reload the extension.',
+      },
+    ],
+    [
+      'unknown',
+      'unavailable',
+      {
+        ok: false,
+        error: 'Focus Lock could not check website access. Retry setup or reload the extension.',
+      },
+    ],
+    [
+      'unknown',
+      'error',
+      {
+        ok: false,
+        error: 'Focus Lock could not check website access. Retry setup or reload the extension.',
+        registration: 'error',
+      },
+    ],
   ] as const)(
-    'reports %s permission with %s registration truthfully',
-    async (permission, status, granted, ok): Promise<void> => {
+    'maps %s permission with %s registration to an exact reconciliation response',
+    async (permission, status, expected): Promise<void> => {
       const reconcileWebsiteAccess = vi.fn().mockResolvedValue({ permission, status });
 
       const result: unknown = await routeMessage(
@@ -278,13 +343,8 @@ describe('routeMessage onboarding wiring', (): void => {
         { reconcileWebsiteAccess, removeOnboardingDraft: vi.fn(), reportError: vi.fn() },
       );
 
-      expect(result).toMatchObject({ ok, granted, registration: status });
-      if (!ok) {
-        expect(result).toMatchObject({
-          error:
-            'Website access is granted, but Focus Lock could not enable blocking. Retry setup or reload the extension.',
-        });
-      }
+      expect(result).toEqual(expected);
+      expect(isWebsiteAccessReconciliation(result)).toBe(true);
     },
   );
 

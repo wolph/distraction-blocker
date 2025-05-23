@@ -183,20 +183,38 @@ export async function routeMessage(
       const capability =
         await requireOnboardingServices(onboardingServices).reconcileWebsiteAccess();
       const granted: boolean = capability.permission === 'granted';
-      if (granted && capability.status === 'error') {
+      if (capability.status === 'error') {
+        if (capability.permission === 'unknown') {
+          return {
+            ok: false,
+            error:
+              'Focus Lock could not check website access. Retry setup or reload the extension.',
+            registration: 'error',
+          };
+        }
         return {
           ok: false,
-          error:
-            'Website access is granted, but Focus Lock could not enable blocking. Retry setup or reload the extension.',
+          error: granted
+            ? 'Website access is granted, but Focus Lock could not enable blocking. Retry setup or reload the extension.'
+            : 'Website access is unavailable, and Focus Lock could not finish blocking cleanup. Retry setup or reload the extension.',
           granted,
-          registration: capability.status,
+          registration: 'error',
         };
       }
       if (capability.permission === 'unknown') {
         return {
           ok: false,
           error: 'Focus Lock could not check website access. Retry setup or reload the extension.',
-          registration: capability.status,
+        };
+      }
+      if (
+        (capability.permission === 'granted' && capability.status !== 'ready') ||
+        (capability.permission === 'denied' && capability.status !== 'unavailable')
+      ) {
+        return {
+          ok: false,
+          error:
+            'Focus Lock received an inconsistent website access state. Retry setup or reload the extension.',
         };
       }
       return { ok: true, granted, registration: capability.status };

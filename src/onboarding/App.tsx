@@ -350,6 +350,11 @@ export function App(): VNode {
         setActionError('Could not enable website blocking. Try again.');
         return;
       }
+      if (response.granted === false) {
+        if (!(await commitDraft({ ...page.draft, websiteAccessChoice: 'denied' }))) return;
+        if (!response.ok) setActionError(response.error);
+        return;
+      }
       if (!response.ok || !response.granted || response.registration !== 'ready') {
         const failed: OnboardingDraft = {
           ...page.draft,

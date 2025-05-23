@@ -231,7 +231,7 @@ export function isWebsiteAccessReconciliation(
         hasExactKeys(value, ['ok', 'error', 'granted', 'registration']) &&
         value.ok === false &&
         isNonBlankString(value.error) &&
-        value.granted === true &&
+        typeof value.granted === 'boolean' &&
         value.registration === 'error') ||
       (isRecord(value) &&
         hasExactKeys(value, ['ok', 'error', 'registration']) &&

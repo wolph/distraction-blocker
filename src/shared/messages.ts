@@ -89,7 +89,7 @@ export type WebsiteAccessReconciliation =
   | { ok: true; granted: true; registration: 'ready' }
   | { ok: true; granted: false; registration: 'unavailable' }
   | (Rejection & { granted?: never; registration?: never })
-  | (Rejection & { granted: true; registration: 'error' })
+  | (Rejection & { granted: boolean; registration: 'error' })
   | (Rejection & { granted?: never; registration: 'error' });
 
 export type ClearFocusLockDataResponse =

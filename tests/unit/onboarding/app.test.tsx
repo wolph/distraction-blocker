@@ -183,6 +183,35 @@ describe('onboarding page state', (): void => {
     expect(view.getByText('Step 2 of 3')).toBeTruthy();
   });
 
+  it('treats denied reconciliation after a granted prompt as denied across reload', async (): Promise<void> => {
+    localState[LOCAL_ONBOARDING_DRAFT] = {
+      version: 1,
+      revision: 1,
+      step: 2,
+      settings: DEFAULT_SETTINGS,
+      lists: DEFAULT_LISTS,
+      websiteAccessChoice: 'pending',
+      syncEnabled: true,
+    } satisfies OnboardingDraft;
+    permissionRequestMock.mockResolvedValue(true);
+
+    const first = render(<App />);
+    fireEvent.click(await first.findByRole('button', { name: 'Enable website blocking' }));
+
+    await waitFor((): void => {
+      const draft: OnboardingDraft = localState[LOCAL_ONBOARDING_DRAFT] as OnboardingDraft;
+      expect(draft.step).toBe(2);
+      expect(draft.websiteAccessChoice).toBe('denied');
+    });
+    expect(first.getByText('Chrome did not grant website access. You can retry.')).toBeTruthy();
+    expect(first.queryByText(/Website access is available/)).toBeNull();
+
+    first.unmount();
+    const reloaded = render(<App />);
+    expect(await reloaded.findByText('Step 2 of 3')).toBeTruthy();
+    expect(reloaded.getByText('Chrome did not grant website access. You can retry.')).toBeTruthy();
+  });
+
   it.each([
     {},
     { ok: true, granted: true },
@@ -193,7 +222,6 @@ describe('onboarding page state', (): void => {
     { ok: true, granted: false, registration: 'ready' },
     { ok: false },
     { ok: false, error: '' },
-    { ok: false, error: 'failed', granted: false, registration: 'error' },
     { ok: false, error: 'failed', registration: 'ready' },
     { ok: false, error: 'failed', registration: 'error', extra: true },
   ])(

@@ -479,6 +479,7 @@ describe('exported runtime validators are total for hostile unknowns', (): void 
     [{ ok: true, granted: false, registration: 'unavailable' }, true],
     [{ ok: false, error: 'worker failed' }, true],
     [{ ok: false, error: 'registration failed', granted: true, registration: 'error' }, true],
+    [{ ok: false, error: 'cleanup failed', granted: false, registration: 'error' }, true],
     [{ ok: false, error: 'permission unknown', registration: 'error' }, true],
     [{ ok: true, granted: true }, false],
     [{ ok: true, granted: true, registration: 'ready', extra: true }, false],
@@ -487,7 +488,6 @@ describe('exported runtime validators are total for hostile unknowns', (): void 
     [{ ok: true, granted: false, registration: 'ready' }, false],
     [{ ok: false }, false],
     [{ ok: false, error: '' }, false],
-    [{ ok: false, error: 'failed', granted: false, registration: 'error' }, false],
     [{ ok: false, error: 'failed', registration: 'ready' }, false],
     [{ ok: false, error: 'failed', registration: 'error', extra: true }, false],
   ])(
