@@ -29,7 +29,13 @@ const stats: StatsBundle = {
   },
   totals: { focusMsToday: 0, focusMsWeek: 0, attemptsToday: 0, resistedToday: 0 },
 };
-const COMPLETED_SETUP: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+const COMPLETED_SETUP: SetupState = {
+  ...DEFAULT_SETUP,
+  completed: true,
+  storageMode: 'local',
+  websiteAccess: 'granted',
+  blockingRegistration: 'ready',
+};
 
 function activeSnapshot(theme: SessionSnapshot['theme'] = 'auto'): SessionSnapshot {
   return {

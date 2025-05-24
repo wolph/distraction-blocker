@@ -135,7 +135,7 @@ describe('onboarding page state', (): void => {
     expect(await first.findByText('Step 1 of 3')).toBeTruthy();
     expect(first.getByRole('heading', { name: 'Choose your starting block list' })).toBeTruthy();
 
-    fireEvent.click(first.getByRole('checkbox', { name: 'Social' }));
+    fireEvent.click(first.getByRole('checkbox', { name: 'Social media' }));
     await waitFor((): void => {
       expect((localState[LOCAL_ONBOARDING_DRAFT] as OnboardingDraft).lists.categories.social).toBe(
         true,
@@ -180,7 +180,71 @@ describe('onboarding page state', (): void => {
       expect(draft.websiteAccessChoice).toBe('denied');
     });
     expect(permissionRequestMock).toHaveBeenCalledOnce();
+    expect(sendMessageMock).toHaveBeenCalledWith({ type: 'reconcileWebsiteAccess' });
     expect(view.getByText('Step 2 of 3')).toBeTruthy();
+  });
+
+  it('focuses the heading after each onboarding step change', async (): Promise<void> => {
+    const view = render(<App />);
+    const firstHeading: HTMLElement = await view.findByRole('heading', {
+      name: 'Choose your starting block list',
+    });
+    await waitFor((): void => expect(document.activeElement).toBe(firstHeading));
+
+    fireEvent.click(view.getByRole('button', { name: 'Continue' }));
+    const secondHeading: HTMLElement = await view.findByRole('heading', {
+      name: 'Enable website blocking',
+    });
+    await waitFor((): void => expect(document.activeElement).toBe(secondHeading));
+
+    fireEvent.click(view.getByRole('button', { name: 'Not now' }));
+    const thirdHeading: HTMLElement = await view.findByRole('heading', {
+      name: 'Choose where your settings are stored',
+    });
+    await waitFor((): void => expect(document.activeElement).toBe(thirdHeading));
+  });
+
+  it('submits setup only once while completion is pending', async (): Promise<void> => {
+    localState[LOCAL_ONBOARDING_DRAFT] = {
+      version: 1,
+      revision: 4,
+      step: 3,
+      settings: DEFAULT_SETTINGS,
+      lists: DEFAULT_LISTS,
+      websiteAccessChoice: 'deferred',
+      syncEnabled: false,
+    } satisfies OnboardingDraft;
+    const normalImplementation: ((request: Request) => Promise<unknown>) | undefined =
+      sendMessageMock.getMockImplementation();
+    if (normalImplementation === undefined) throw new Error('missing normal worker fake');
+    const finishGate: { resolve: (() => void) | null } = { resolve: null };
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type !== 'completeOnboarding') return normalImplementation(request);
+      await new Promise<void>((resolve: () => void): void => {
+        finishGate.resolve = resolve;
+      });
+      return completeOnboardingResponse(request.revision, request.storageMode);
+    });
+    const view = render(<App />);
+    const finish: HTMLButtonElement = (await view.findByRole('button', {
+      name: 'Finish setup without sync',
+    })) as HTMLButtonElement;
+
+    fireEvent.click(finish);
+    fireEvent.click(finish);
+
+    await waitFor((): void => {
+      expect(
+        sendMessageMock.mock.calls.filter(
+          ([request]: [Request]): boolean => request.type === 'completeOnboarding',
+        ),
+      ).toHaveLength(1);
+      expect(finish.disabled).toBe(true);
+    });
+    const finishRequest: (() => void) | null = finishGate.resolve;
+    if (finishRequest === null) throw new Error('completion request did not start');
+    finishRequest();
+    expect(await view.findByRole('heading', { name: 'Setup complete' })).toBeTruthy();
   });
 
   it('treats denied reconciliation after a granted prompt as denied across reload', async (): Promise<void> => {
@@ -402,7 +466,7 @@ describe('onboarding page state', (): void => {
           : normalImplementation(request),
     );
     const view = render(<App />);
-    const social: HTMLElement = await view.findByRole('checkbox', { name: 'Social' });
+    const social: HTMLElement = await view.findByRole('checkbox', { name: 'Social media' });
 
     fireEvent.click(social);
 
@@ -410,7 +474,7 @@ describe('onboarding page state', (): void => {
       'Could not save setup progress. Try again.',
     );
     expect(view.getByText('Step 1 of 3')).toBeTruthy();
-    expect((view.getByRole('checkbox', { name: 'Social' }) as HTMLInputElement).checked).toBe(
+    expect((view.getByRole('checkbox', { name: 'Social media' }) as HTMLInputElement).checked).toBe(
       false,
     );
     expect((localState[LOCAL_ONBOARDING_DRAFT] as OnboardingDraft).revision).toBe(1);
@@ -446,7 +510,7 @@ describe('onboarding page state', (): void => {
     });
     const view = render(<App />);
 
-    fireEvent.click(await view.findByRole('checkbox', { name: 'Social' }));
+    fireEvent.click(await view.findByRole('checkbox', { name: 'Social media' }));
 
     await waitFor((): void => {
       const current: OnboardingDraft = localState[LOCAL_ONBOARDING_DRAFT] as OnboardingDraft;
@@ -485,7 +549,7 @@ describe('onboarding page state', (): void => {
     });
     const view = render(<App />);
 
-    fireEvent.click(await view.findByRole('checkbox', { name: 'Social' }));
+    fireEvent.click(await view.findByRole('checkbox', { name: 'Social media' }));
 
     expect(await view.findByRole('heading', { name: 'Setup complete' })).toBeTruthy();
   });

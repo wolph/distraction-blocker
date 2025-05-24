@@ -1,8 +1,15 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'preact/hooks';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../shared/constants';
 import { sendRequest } from '../shared/messages';
-import { isAck, isListsConfig, isSettings, isSetupState } from '../shared/runtime-validation';
+import { WEBSITE_ORIGINS } from '../shared/permissions';
+import {
+  isAck,
+  isListsConfig,
+  isSettings,
+  isSetupState,
+  isWebsiteAccessReconciliation,
+} from '../shared/runtime-validation';
 import { ThemeControl } from '../shared/ThemeControl';
 import { applyTheme, updateTheme } from '../shared/theme';
 import type {
@@ -238,6 +245,110 @@ function SetupRequired(): VNode {
   );
 }
 
+function WebsiteBlockingOff(props: {
+  setup: SetupState;
+  onReconciled: (setup: SetupState) => void;
+}): VNode {
+  const [pending, setPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
+  const [denied, setDenied]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
+  const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
+    string | null
+  >(null);
+  const actionInFlight: { current: boolean } = useRef<boolean>(false);
+
+  const enable: () => Promise<void> = async (): Promise<void> => {
+    if (actionInFlight.current) return;
+    actionInFlight.current = true;
+    setPending(true);
+    setDenied(false);
+    setError(null);
+    try {
+      const granted: boolean = await chrome.permissions.request({ origins: [...WEBSITE_ORIGINS] });
+      const response: unknown = await sendRequest({ type: 'reconcileWebsiteAccess' });
+      if (!isWebsiteAccessReconciliation(response)) {
+        setError('Could not confirm website blocking. Try again.');
+        return;
+      }
+      if (!granted) {
+        setDenied(true);
+        if (response.ok && response.granted === false) {
+          props.onReconciled({
+            ...props.setup,
+            websiteAccess: 'denied',
+            blockingRegistration: 'unavailable',
+          });
+        } else if (!response.ok) {
+          setError(response.error);
+        } else {
+          setError('Chrome and Focus Lock reported different website access states. Retry.');
+        }
+        return;
+      }
+      if (response.ok) {
+        if (response.granted) {
+          props.onReconciled({
+            ...props.setup,
+            websiteAccess: 'granted',
+            blockingRegistration: 'ready',
+            websiteAccessNotice: null,
+          });
+        } else {
+          setDenied(true);
+          props.onReconciled({
+            ...props.setup,
+            websiteAccess: 'denied',
+            blockingRegistration: 'unavailable',
+          });
+        }
+        return;
+      }
+      setError(response.error);
+      if (response.registration === 'error') {
+        props.onReconciled({
+          ...props.setup,
+          websiteAccess: response.granted === false ? 'denied' : 'granted',
+          blockingRegistration: 'error',
+        });
+      }
+    } catch {
+      setError('Could not enable website blocking. Try again.');
+    } finally {
+      actionInFlight.current = false;
+      setPending(false);
+    }
+  };
+
+  return (
+    <section
+      class="view setup-required website-blocking-off"
+      aria-labelledby="blocking-off-heading"
+    >
+      <h2 id="blocking-off-heading">Website blocking is off</h2>
+      <p>
+        Focus Lock cannot start a session until Chrome grants website access and blocking is
+        enabled.
+      </p>
+      {denied ? (
+        <p role="status">Chrome did not grant website access. Website blocking is still off.</p>
+      ) : null}
+      <button
+        type="button"
+        class="start-button"
+        disabled={pending}
+        onClick={(): void => void enable()}
+      >
+        {denied ? 'Retry' : 'Enable website blocking'}
+      </button>
+      {error !== null ? (
+        <p role="alert" class="form-error">
+          {error}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 function WebsiteAccessNotice(props: {
   notice: Exclude<SetupState['websiteAccessNotice'], null>;
   onDismissed: () => void;
@@ -339,6 +450,8 @@ export function App(): VNode {
         <section class="view" aria-busy="true" />
       ) : !setup.completed ? (
         <SetupRequired />
+      ) : setup.blockingRegistration !== 'ready' ? (
+        <WebsiteBlockingOff setup={setup} onReconciled={setSetup} />
       ) : error ? (
         <section class="view snapshot-status" role="status">
           Focus status unavailable

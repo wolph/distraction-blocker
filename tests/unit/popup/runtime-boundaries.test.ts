@@ -33,7 +33,13 @@ import type {
 import { resetChromeFake, sendMessageMock, tabsQueryMock } from './chrome-fake';
 
 const NOW: number = 1_700_000_000_000;
-const COMPLETED_SETUP: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+const COMPLETED_SETUP: SetupState = {
+  ...DEFAULT_SETUP,
+  completed: true,
+  storageMode: 'local',
+  websiteAccess: 'granted',
+  blockingRegistration: 'ready',
+};
 const CONFIG: SessionConfig = {
   mode: 'blacklist',
   strictness: 'friction',

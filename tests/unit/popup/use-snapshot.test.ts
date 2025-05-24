@@ -137,7 +137,13 @@ describe('useSnapshot', () => {
   it('shows no session controls when the initial snapshot is unavailable', async (): Promise<void> => {
     sendMessageMock.mockImplementation(async (request: { type: string }): Promise<unknown> => {
       if (request.type === 'getSetupState') {
-        return { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+        return {
+          ...DEFAULT_SETUP,
+          completed: true,
+          storageMode: 'local',
+          websiteAccess: 'granted',
+          blockingRegistration: 'ready',
+        };
       }
       throw new Error('worker unavailable');
     });
