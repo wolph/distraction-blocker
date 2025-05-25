@@ -19,6 +19,7 @@ import type {
   SetupState,
   ThemeMode,
 } from '../shared/types';
+import { type WebsiteAccessOutcome, websiteAccessOutcome } from '../shared/website-access-state';
 import { ActiveView } from './ActiveView';
 import { StartForm } from './StartForm';
 import { useSnapshot } from './use-snapshot';
@@ -251,66 +252,58 @@ function WebsiteBlockingOff(props: {
 }): VNode {
   const [pending, setPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
     useState<boolean>(false);
-  const [denied, setDenied]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
+  const [attempted, setAttempted]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
   const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
     string | null
   >(null);
   const actionInFlight: { current: boolean } = useRef<boolean>(false);
+  const denied: boolean = props.setup.websiteAccess === 'denied';
+  const registrationError: boolean =
+    props.setup.websiteAccess === 'granted' && props.setup.blockingRegistration === 'error';
 
   const enable: () => Promise<void> = async (): Promise<void> => {
     if (actionInFlight.current) return;
     actionInFlight.current = true;
+    setAttempted(true);
     setPending(true);
-    setDenied(false);
     setError(null);
     try {
-      const granted: boolean = await chrome.permissions.request({ origins: [...WEBSITE_ORIGINS] });
+      await chrome.permissions.request({ origins: [...WEBSITE_ORIGINS] });
       const response: unknown = await sendRequest({ type: 'reconcileWebsiteAccess' });
       if (!isWebsiteAccessReconciliation(response)) {
         setError('Could not confirm website blocking. Try again.');
         return;
       }
-      if (!granted) {
-        setDenied(true);
-        if (response.ok && response.granted === false) {
-          props.onReconciled({
-            ...props.setup,
-            websiteAccess: 'denied',
-            blockingRegistration: 'unavailable',
-          });
-        } else if (!response.ok) {
-          setError(response.error);
-        } else {
-          setError('Chrome and Focus Lock reported different website access states. Retry.');
-        }
-        return;
-      }
-      if (response.ok) {
-        if (response.granted) {
-          props.onReconciled({
-            ...props.setup,
-            websiteAccess: 'granted',
-            blockingRegistration: 'ready',
-            websiteAccessNotice: null,
-          });
-        } else {
-          setDenied(true);
-          props.onReconciled({
-            ...props.setup,
-            websiteAccess: 'denied',
-            blockingRegistration: 'unavailable',
-          });
-        }
-        return;
-      }
-      setError(response.error);
-      if (response.registration === 'error') {
+      const outcome: WebsiteAccessOutcome = websiteAccessOutcome(response);
+      if (outcome.kind === 'ready') {
         props.onReconciled({
           ...props.setup,
-          websiteAccess: response.granted === false ? 'denied' : 'granted',
+          websiteAccess: 'granted',
+          blockingRegistration: 'ready',
+          websiteAccessNotice: null,
+        });
+        return;
+      }
+      if (outcome.kind === 'denied') {
+        props.onReconciled({
+          ...props.setup,
+          websiteAccess: 'denied',
+          blockingRegistration: 'unavailable',
+        });
+        if (outcome.error !== null) setError(outcome.error);
+        return;
+      }
+      if (outcome.kind === 'registration-error') {
+        props.onReconciled({
+          ...props.setup,
+          websiteAccess: 'granted',
           blockingRegistration: 'error',
         });
+        setError(outcome.error);
+        return;
       }
+      setError(outcome.error);
     } catch {
       setError('Could not enable website blocking. Try again.');
     } finally {
@@ -332,13 +325,19 @@ function WebsiteBlockingOff(props: {
       {denied ? (
         <p role="status">Chrome did not grant website access. Website blocking is still off.</p>
       ) : null}
+      {registrationError ? (
+        <p role="status">
+          Website access is granted, but Focus Lock could not enable blocking. Retry setup or reload
+          the extension.
+        </p>
+      ) : null}
       <button
         type="button"
         class="start-button"
         disabled={pending}
         onClick={(): void => void enable()}
       >
-        {denied ? 'Retry' : 'Enable website blocking'}
+        {attempted ? 'Retry' : 'Enable website blocking'}
       </button>
       {error !== null ? (
         <p role="alert" class="form-error">

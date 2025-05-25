@@ -146,6 +146,77 @@ describe('popup setup routing', (): void => {
     expect(view.queryByRole('button', { name: 'Start focusing' })).toBeNull();
   });
 
+  it.each([
+    {
+      promptGranted: true,
+      response: {
+        ok: false,
+        error: 'Registration failed after permission changed.',
+        granted: false,
+        registration: 'error',
+      },
+      websiteAccess: 'denied' as const,
+      blockingRegistration: 'unavailable' as const,
+      expectedCopy: 'Chrome did not grant website access. Website blocking is still off.',
+      absentCopy:
+        'Website access is granted, but Focus Lock could not enable blocking. Retry setup or reload the extension.',
+    },
+    {
+      promptGranted: false,
+      response: {
+        ok: false,
+        error: 'Registration failed after permission changed.',
+        granted: true,
+        registration: 'error',
+      },
+      websiteAccess: 'granted' as const,
+      blockingRegistration: 'error' as const,
+      expectedCopy:
+        'Website access is granted, but Focus Lock could not enable blocking. Retry setup or reload the extension.',
+      absentCopy: 'Chrome did not grant website access. Website blocking is still off.',
+    },
+  ])(
+    'renders and reloads authoritative reconciliation mismatch %#',
+    async ({
+      promptGranted,
+      response,
+      websiteAccess,
+      blockingRegistration,
+      expectedCopy,
+      absentCopy,
+    }): Promise<void> => {
+      setup = {
+        ...DEFAULT_SETUP,
+        completed: true,
+        storageMode: 'local',
+        websiteAccess: 'pending',
+        blockingRegistration: 'unavailable',
+      };
+      permissionsRequestMock.mockResolvedValue(promptGranted);
+      const normalImplementation: ((request: Request) => Promise<unknown>) | undefined =
+        sendMessageMock.getMockImplementation();
+      if (normalImplementation === undefined) throw new Error('missing normal worker fake');
+      sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+        if (request.type !== 'reconcileWebsiteAccess') return normalImplementation(request);
+        setup = { ...setup, websiteAccess, blockingRegistration };
+        return response;
+      });
+      const first = render(<App />);
+
+      fireEvent.click(await first.findByRole('button', { name: 'Enable website blocking' }));
+
+      expect((await first.findByRole('status')).textContent).toBe(expectedCopy);
+      expect(first.queryByText(absentCopy)).toBeNull();
+      expect(first.queryByRole('button', { name: 'Start focusing' })).toBeNull();
+
+      first.unmount();
+      const reloaded = render(<App />);
+      expect((await reloaded.findByRole('status')).textContent).toBe(expectedCopy);
+      expect(reloaded.queryByText(absentCopy)).toBeNull();
+      expect(reloaded.queryByRole('button', { name: 'Start focusing' })).toBeNull();
+    },
+  );
+
   it('shows session controls after completed setup only when registration is ready', async (): Promise<void> => {
     setup = {
       ...DEFAULT_SETUP,

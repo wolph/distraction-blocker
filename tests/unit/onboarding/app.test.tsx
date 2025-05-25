@@ -277,6 +277,85 @@ describe('onboarding page state', (): void => {
   });
 
   it.each([
+    {
+      promptGranted: true,
+      response: {
+        ok: false,
+        error: 'Registration failed after permission changed.',
+        granted: false,
+        registration: 'error',
+      },
+      expectedChoice: 'denied' as const,
+      expectedCopy: 'Chrome did not grant website access. You can retry.',
+      absentCopy:
+        'Website access is granted, but Focus Lock could not enable blocking. Retry setup or reload the extension.',
+    },
+    {
+      promptGranted: false,
+      response: {
+        ok: false,
+        error: 'Registration failed after permission changed.',
+        granted: true,
+        registration: 'error',
+      },
+      expectedChoice: 'registration-error' as const,
+      expectedCopy:
+        'Website access is granted, but Focus Lock could not enable blocking. Retry setup or reload the extension.',
+      absentCopy: 'Chrome did not grant website access. You can retry.',
+    },
+  ])(
+    'uses authoritative reconciliation instead of prompt result %#',
+    async ({
+      promptGranted,
+      response,
+      expectedChoice,
+      expectedCopy,
+      absentCopy,
+    }): Promise<void> => {
+      const lists = {
+        ...structuredClone(DEFAULT_LISTS),
+        categories: { ...DEFAULT_LISTS.categories, social: true },
+      };
+      localState[LOCAL_ONBOARDING_DRAFT] = {
+        version: 1,
+        revision: 2,
+        step: 2,
+        settings: DEFAULT_SETTINGS,
+        lists,
+        websiteAccessChoice: 'pending',
+        syncEnabled: true,
+      } satisfies OnboardingDraft;
+      permissionRequestMock.mockResolvedValue(promptGranted);
+      const normalImplementation: ((request: Request) => Promise<unknown>) | undefined =
+        sendMessageMock.getMockImplementation();
+      if (normalImplementation === undefined) throw new Error('missing normal worker fake');
+      sendMessageMock.mockImplementation(
+        async (request: Request): Promise<unknown> =>
+          request.type === 'reconcileWebsiteAccess' ? response : normalImplementation(request),
+      );
+      const first = render(<App />);
+
+      fireEvent.click(await first.findByRole('button', { name: 'Enable website blocking' }));
+
+      await waitFor((): void => {
+        const draft: OnboardingDraft = localState[LOCAL_ONBOARDING_DRAFT] as OnboardingDraft;
+        expect(draft.websiteAccessChoice).toBe(expectedChoice);
+        expect(draft.lists.categories.social).toBe(true);
+      });
+      expect(first.getByText(expectedCopy)).toBeTruthy();
+      expect(first.queryByText(absentCopy)).toBeNull();
+
+      first.unmount();
+      const reloaded = render(<App />);
+      expect(await reloaded.findByText(expectedCopy)).toBeTruthy();
+      expect(reloaded.queryByText(absentCopy)).toBeNull();
+      expect((localState[LOCAL_ONBOARDING_DRAFT] as OnboardingDraft).lists.categories.social).toBe(
+        true,
+      );
+    },
+  );
+
+  it.each([
     {},
     { ok: true, granted: true },
     { ok: true, granted: true, registration: 'ready', extra: true },

@@ -9,6 +9,7 @@ import {
   isWebsiteAccessReconciliation,
 } from '../shared/runtime-validation';
 import type { ListsConfig, Settings, SetupState } from '../shared/types';
+import { type WebsiteAccessOutcome, websiteAccessOutcome } from '../shared/website-access-state';
 import {
   completeOnboardingDraft,
   createOnboardingDraft,
@@ -219,7 +220,7 @@ export function App(): VNode {
   const enableWebsiteAccess: () => Promise<void> = async (): Promise<void> => {
     if (!beginAction()) return;
     try {
-      const granted: boolean = await chrome.permissions.request({ origins: [...WEBSITE_ORIGINS] });
+      await chrome.permissions.request({ origins: [...WEBSITE_ORIGINS] });
       const response: unknown = await sendRequest({
         type: 'reconcileWebsiteAccess',
       });
@@ -227,30 +228,23 @@ export function App(): VNode {
         setActionError('Could not enable website blocking. Try again.');
         return;
       }
-      if (!granted) {
-        if (response.ok && response.granted === true) {
-          setActionError('Chrome and Focus Lock reported different website access states. Retry.');
-          return;
-        }
+      const outcome: WebsiteAccessOutcome = websiteAccessOutcome(response);
+      if (outcome.kind === 'denied') {
         if (!(await commitDraft({ ...page.draft, websiteAccessChoice: 'denied' }))) return;
-        if (!response.ok) setActionError(response.error);
+        if (outcome.error !== null) setActionError(outcome.error);
         return;
       }
-      if (response.ok && response.granted === false) {
-        await commitDraft({ ...page.draft, websiteAccessChoice: 'denied' });
-        return;
-      }
-      if (!response.ok) {
-        if (response.registration !== 'error') {
-          setActionError(response.error);
-          return;
-        }
+      if (outcome.kind === 'registration-error') {
         const failed: OnboardingDraft = {
           ...page.draft,
           websiteAccessChoice: 'registration-error',
         };
         if (!(await commitDraft(failed))) return;
-        setActionError(response.error);
+        setActionError(outcome.error);
+        return;
+      }
+      if (outcome.kind === 'error') {
+        setActionError(outcome.error);
         return;
       }
       const next: OnboardingDraft = {
