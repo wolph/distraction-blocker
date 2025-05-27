@@ -1,5 +1,12 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'preact/hooks';
+import {
+  type Dispatch,
+  type StateUpdater,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'preact/hooks';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../shared/constants';
 import { sendRequest } from '../shared/messages';
 import { WEBSITE_ORIGINS } from '../shared/permissions';
@@ -258,13 +265,22 @@ function WebsiteBlockingOff(props: {
     string | null
   >(null);
   const actionInFlight: { current: boolean } = useRef<boolean>(false);
+  const enableButton: { current: HTMLButtonElement | null } = useRef<HTMLButtonElement>(null);
+  const restoreEnableFocus: { current: boolean } = useRef<boolean>(false);
   const denied: boolean = props.setup.websiteAccess === 'denied';
   const registrationError: boolean =
     props.setup.websiteAccess === 'granted' && props.setup.blockingRegistration === 'error';
 
+  useLayoutEffect((): void => {
+    if (pending || !restoreEnableFocus.current) return;
+    restoreEnableFocus.current = false;
+    enableButton.current?.focus();
+  }, [pending]);
+
   const enable: () => Promise<void> = async (): Promise<void> => {
     if (actionInFlight.current) return;
     actionInFlight.current = true;
+    restoreEnableFocus.current = true;
     setAttempted(true);
     setPending(true);
     setError(null);
@@ -332,6 +348,7 @@ function WebsiteBlockingOff(props: {
         </p>
       ) : null}
       <button
+        ref={enableButton}
         type="button"
         class="start-button"
         disabled={pending}

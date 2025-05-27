@@ -1,4 +1,6 @@
 /** @vitest-environment jsdom */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { cleanup, fireEvent, render } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ALL_CATEGORIES } from '../../../src/core/categories';
@@ -67,6 +69,14 @@ describe('StartingListsStep', (): void => {
 });
 
 describe('WebsiteAccessStep', (): void => {
+  it('gives the secondary action a distinct hover and keyboard-focus surface', (): void => {
+    const css: string = readFileSync(resolve('src/onboarding/onboarding.css'), 'utf8');
+
+    expect(css).toMatch(
+      /\.secondary-button:hover:not\(:disabled\),\s*\.secondary-button:focus-visible\s*\{[^}]*background:\s*var\(--accent-soft\)/s,
+    );
+  });
+
   it('explains local address matching and all-sites access before the request action', (): void => {
     const view = render(
       <WebsiteAccessStep

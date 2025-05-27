@@ -259,6 +259,11 @@ p {
   color: var(--accent);
 }
 
+.secondary-button:hover:not(:disabled),
+.secondary-button:focus-visible {
+  background: var(--accent-soft);
+}
+
 button:disabled {
   cursor: wait;
   opacity: 0.65;

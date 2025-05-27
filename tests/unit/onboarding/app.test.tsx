@@ -184,6 +184,48 @@ describe('onboarding page state', (): void => {
     expect(view.getByText('Step 2 of 3')).toBeTruthy();
   });
 
+  it('focuses Retry after a denied permission action settles', async (): Promise<void> => {
+    localState[LOCAL_ONBOARDING_DRAFT] = {
+      version: 1,
+      revision: 1,
+      step: 2,
+      settings: DEFAULT_SETTINGS,
+      lists: DEFAULT_LISTS,
+      websiteAccessChoice: 'pending',
+      syncEnabled: true,
+    } satisfies OnboardingDraft;
+    const normalImplementation: ((request: Request) => Promise<unknown>) | undefined =
+      sendMessageMock.getMockImplementation();
+    if (normalImplementation === undefined) throw new Error('missing normal worker fake');
+    const reconciliationGate: { resolve: (() => void) | null } = { resolve: null };
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type !== 'reconcileWebsiteAccess') return normalImplementation(request);
+      await new Promise<void>((resolve: () => void): void => {
+        reconciliationGate.resolve = resolve;
+      });
+      return { ok: true, granted: false, registration: 'unavailable' };
+    });
+
+    const view = render(<App />);
+    const enable: HTMLButtonElement = (await view.findByRole('button', {
+      name: 'Enable website blocking',
+    })) as HTMLButtonElement;
+    enable.focus();
+    fireEvent.click(enable);
+    await waitFor((): void => expect(enable.disabled).toBe(true));
+    document.body.tabIndex = -1;
+    document.body.focus();
+    expect(document.activeElement).toBe(document.body);
+
+    const resolveReconciliation: (() => void) | null = reconciliationGate.resolve;
+    if (resolveReconciliation === null) throw new Error('reconciliation request did not start');
+    resolveReconciliation();
+    const retry: HTMLButtonElement = (await view.findByRole('button', {
+      name: 'Retry',
+    })) as HTMLButtonElement;
+    await waitFor((): void => expect(document.activeElement).toBe(retry));
+  });
+
   it('focuses the heading after each onboarding step change', async (): Promise<void> => {
     const view = render(<App />);
     const firstHeading: HTMLElement = await view.findByRole('heading', {
@@ -420,6 +462,48 @@ describe('onboarding page state', (): void => {
     expect(draft.step).toBe(3);
     expect(draft.websiteAccessChoice).toBe('deferred');
     expect(permissionRequestMock).not.toHaveBeenCalled();
+  });
+
+  it('restores switch focus after its persisted toggle settles', async (): Promise<void> => {
+    localState[LOCAL_ONBOARDING_DRAFT] = {
+      version: 1,
+      revision: 4,
+      step: 3,
+      settings: DEFAULT_SETTINGS,
+      lists: DEFAULT_LISTS,
+      websiteAccessChoice: 'deferred',
+      syncEnabled: true,
+    } satisfies OnboardingDraft;
+    const normalImplementation: ((request: Request) => Promise<unknown>) | undefined =
+      sendMessageMock.getMockImplementation();
+    if (normalImplementation === undefined) throw new Error('missing normal worker fake');
+    const saveGate: { resolve: (() => void) | null } = { resolve: null };
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type !== 'saveOnboardingDraft' || request.draft.syncEnabled) {
+        return normalImplementation(request);
+      }
+      await new Promise<void>((resolve: () => void): void => {
+        saveGate.resolve = resolve;
+      });
+      return normalImplementation(request);
+    });
+
+    const view = render(<App />);
+    const sync: HTMLInputElement = (await view.findByRole('switch', {
+      name: 'Sync across Chrome devices',
+    })) as HTMLInputElement;
+    sync.focus();
+    fireEvent.click(sync);
+    await waitFor((): void => expect(sync.disabled).toBe(true));
+    document.body.tabIndex = -1;
+    document.body.focus();
+    expect(document.activeElement).toBe(document.body);
+
+    const resolveSave: (() => void) | null = saveGate.resolve;
+    if (resolveSave === null) throw new Error('draft save did not start');
+    resolveSave();
+    expect(await view.findByRole('button', { name: 'Finish setup without sync' })).toBeTruthy();
+    await waitFor((): void => expect(document.activeElement).toBe(sync));
   });
 
   it('commits settings and lists only through the final setup action', async (): Promise<void> => {

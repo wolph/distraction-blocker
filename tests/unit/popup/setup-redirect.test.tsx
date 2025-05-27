@@ -146,6 +146,45 @@ describe('popup setup routing', (): void => {
     expect(view.queryByRole('button', { name: 'Start focusing' })).toBeNull();
   });
 
+  it('focuses Retry after a denied popup permission action settles', async (): Promise<void> => {
+    setup = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      websiteAccess: 'denied',
+      blockingRegistration: 'unavailable',
+    };
+    const normalImplementation: ((request: Request) => Promise<unknown>) | undefined =
+      sendMessageMock.getMockImplementation();
+    if (normalImplementation === undefined) throw new Error('missing normal worker fake');
+    const reconciliationGate: { resolve: (() => void) | null } = { resolve: null };
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type !== 'reconcileWebsiteAccess') return normalImplementation(request);
+      await new Promise<void>((resolve: () => void): void => {
+        reconciliationGate.resolve = resolve;
+      });
+      return { ok: true, granted: false, registration: 'unavailable' };
+    });
+    const view = render(<App />);
+    const enable: HTMLButtonElement = (await view.findByRole('button', {
+      name: 'Enable website blocking',
+    })) as HTMLButtonElement;
+    enable.focus();
+    fireEvent.click(enable);
+    await waitFor((): void => expect(enable.disabled).toBe(true));
+    document.body.tabIndex = -1;
+    document.body.focus();
+    expect(document.activeElement).toBe(document.body);
+
+    const resolveReconciliation: (() => void) | null = reconciliationGate.resolve;
+    if (resolveReconciliation === null) throw new Error('reconciliation request did not start');
+    resolveReconciliation();
+    const retry: HTMLButtonElement = (await view.findByRole('button', {
+      name: 'Retry',
+    })) as HTMLButtonElement;
+    await waitFor((): void => expect(document.activeElement).toBe(retry));
+  });
+
   it.each([
     {
       promptGranted: true,

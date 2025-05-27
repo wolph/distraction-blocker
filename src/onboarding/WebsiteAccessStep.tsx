@@ -1,4 +1,5 @@
 import type { VNode } from 'preact';
+import { useLayoutEffect, useRef } from 'preact/hooks';
 import type { WebsiteAccessChoice } from '../shared/types';
 
 export interface WebsiteAccessStepProps {
@@ -13,6 +14,19 @@ export function WebsiteAccessStep(props: WebsiteAccessStepProps): VNode {
   const denied: boolean = props.choice === 'denied';
   const registrationError: boolean = props.choice === 'registration-error';
   const retry: boolean = denied || registrationError;
+  const enableButton: { current: HTMLButtonElement | null } = useRef<HTMLButtonElement>(null);
+  const restoreEnableFocus: { current: boolean } = useRef<boolean>(false);
+  useLayoutEffect((): void => {
+    if (props.pending || !restoreEnableFocus.current) return;
+    restoreEnableFocus.current = false;
+    enableButton.current?.focus();
+  }, [props.pending, props.choice, props.error]);
+
+  const enable: () => void = (): void => {
+    restoreEnableFocus.current = true;
+    void props.onEnable();
+  };
+
   return (
     <section aria-labelledby="website-access-heading">
       <h1 id="website-access-heading" tabIndex={-1}>
@@ -38,10 +52,11 @@ export function WebsiteAccessStep(props: WebsiteAccessStepProps): VNode {
       {props.error !== null ? <p role="alert">{props.error}</p> : null}
       <div class="button-row">
         <button
+          ref={enableButton}
           type="button"
           class="primary-button"
           disabled={props.pending}
-          onClick={(): void => void props.onEnable()}
+          onClick={enable}
         >
           {retry ? 'Retry' : 'Enable website blocking'}
         </button>

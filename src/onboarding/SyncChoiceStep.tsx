@@ -1,4 +1,5 @@
 import type { TargetedEvent, VNode } from 'preact';
+import { useLayoutEffect, useRef } from 'preact/hooks';
 
 export interface SyncChoiceStepProps {
   syncEnabled: boolean;
@@ -43,6 +44,21 @@ export function SyncChoiceStep(props: SyncChoiceStepProps): VNode {
   const completionLabel: string = props.syncEnabled
     ? 'Finish setup with sync enabled'
     : 'Finish setup without sync';
+  const syncControl: { current: HTMLInputElement | null } = useRef<HTMLInputElement>(null);
+  const restoreSyncFocus: { current: boolean } = useRef<boolean>(false);
+  useLayoutEffect((): void => {
+    if (props.pending || !restoreSyncFocus.current) return;
+    restoreSyncFocus.current = false;
+    syncControl.current?.focus();
+  }, [props.pending, props.syncEnabled]);
+
+  const changeSync: (event: TargetedEvent<HTMLInputElement>) => void = (
+    event: TargetedEvent<HTMLInputElement>,
+  ): void => {
+    restoreSyncFocus.current = true;
+    void props.onSyncChange(event.currentTarget.checked);
+  };
+
   return (
     <section aria-labelledby="sync-choice-heading">
       <h1 id="sync-choice-heading" tabIndex={-1}>
@@ -50,15 +66,14 @@ export function SyncChoiceStep(props: SyncChoiceStepProps): VNode {
       </h1>
       <label class="sync-choice">
         <input
+          ref={syncControl}
           type="checkbox"
           role="switch"
           aria-label="Sync across Chrome devices"
           aria-checked={props.syncEnabled}
           checked={props.syncEnabled}
           disabled={props.pending}
-          onChange={(event: TargetedEvent<HTMLInputElement>): void =>
-            void props.onSyncChange(event.currentTarget.checked)
-          }
+          onChange={changeSync}
         />
         <span>
           <strong>Sync across Chrome devices</strong>
