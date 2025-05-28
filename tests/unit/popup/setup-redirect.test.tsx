@@ -20,6 +20,14 @@ import {
 
 let setup: SetupState;
 
+function moveFocusToDocumentBody(): void {
+  const focusSink: HTMLButtonElement = document.createElement('button');
+  document.body.append(focusSink);
+  focusSink.focus();
+  focusSink.remove();
+  expect(document.activeElement).toBe(document.body);
+}
+
 beforeEach((): void => {
   resetChromeFake();
   setup = structuredClone(DEFAULT_SETUP);
@@ -172,9 +180,7 @@ describe('popup setup routing', (): void => {
     enable.focus();
     fireEvent.click(enable);
     await waitFor((): void => expect(enable.disabled).toBe(true));
-    document.body.tabIndex = -1;
-    document.body.focus();
-    expect(document.activeElement).toBe(document.body);
+    moveFocusToDocumentBody();
 
     const resolveReconciliation: (() => void) | null = reconciliationGate.resolve;
     if (resolveReconciliation === null) throw new Error('reconciliation request did not start');
@@ -183,6 +189,45 @@ describe('popup setup routing', (): void => {
       name: 'Retry',
     })) as HTMLButtonElement;
     await waitFor((): void => expect(document.activeElement).toBe(retry));
+  });
+
+  it('keeps user-moved focus when popup permission reconciliation settles', async (): Promise<void> => {
+    setup = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      websiteAccess: 'denied',
+      blockingRegistration: 'unavailable',
+    };
+    const normalImplementation: ((request: Request) => Promise<unknown>) | undefined =
+      sendMessageMock.getMockImplementation();
+    if (normalImplementation === undefined) throw new Error('missing normal worker fake');
+    const reconciliationGate: { resolve: (() => void) | null } = { resolve: null };
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type !== 'reconcileWebsiteAccess') return normalImplementation(request);
+      await new Promise<void>((resolve: () => void): void => {
+        reconciliationGate.resolve = resolve;
+      });
+      return { ok: true, granted: false, registration: 'unavailable' };
+    });
+    const view = render(<App />);
+    const enable: HTMLButtonElement = (await view.findByRole('button', {
+      name: 'Enable website blocking',
+    })) as HTMLButtonElement;
+    enable.focus();
+    fireEvent.click(enable);
+    await waitFor((): void => expect(enable.disabled).toBe(true));
+    const statistics: HTMLButtonElement = view.getByRole('button', {
+      name: 'Statistics',
+    }) as HTMLButtonElement;
+    statistics.focus();
+    expect(document.activeElement).toBe(statistics);
+
+    const resolveReconciliation: (() => void) | null = reconciliationGate.resolve;
+    if (resolveReconciliation === null) throw new Error('reconciliation request did not start');
+    resolveReconciliation();
+    expect(await view.findByRole('button', { name: 'Retry' })).toBeTruthy();
+    await waitFor((): void => expect(document.activeElement).toBe(statistics));
   });
 
   it.each([

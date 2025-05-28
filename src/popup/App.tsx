@@ -274,7 +274,10 @@ function WebsiteBlockingOff(props: {
   useLayoutEffect((): void => {
     if (pending || !restoreEnableFocus.current) return;
     restoreEnableFocus.current = false;
-    enableButton.current?.focus();
+    const active: Element | null = document.activeElement;
+    if (active === document.body || active === enableButton.current) {
+      enableButton.current?.focus();
+    }
   }, [pending]);
 
   const enable: () => Promise<void> = async (): Promise<void> => {

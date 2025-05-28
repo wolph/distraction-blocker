@@ -89,6 +89,14 @@ async function persistedDraft(): Promise<OnboardingDraft> {
   return structuredClone(localState[LOCAL_ONBOARDING_DRAFT]) as OnboardingDraft;
 }
 
+function moveFocusToDocumentBody(): void {
+  const focusSink: HTMLButtonElement = document.createElement('button');
+  document.body.append(focusSink);
+  focusSink.focus();
+  focusSink.remove();
+  expect(document.activeElement).toBe(document.body);
+}
+
 beforeEach((): void => {
   localState = {};
   setupState = structuredClone(DEFAULT_SETUP);
@@ -213,9 +221,7 @@ describe('onboarding page state', (): void => {
     enable.focus();
     fireEvent.click(enable);
     await waitFor((): void => expect(enable.disabled).toBe(true));
-    document.body.tabIndex = -1;
-    document.body.focus();
-    expect(document.activeElement).toBe(document.body);
+    moveFocusToDocumentBody();
 
     const resolveReconciliation: (() => void) | null = reconciliationGate.resolve;
     if (resolveReconciliation === null) throw new Error('reconciliation request did not start');
@@ -495,9 +501,7 @@ describe('onboarding page state', (): void => {
     sync.focus();
     fireEvent.click(sync);
     await waitFor((): void => expect(sync.disabled).toBe(true));
-    document.body.tabIndex = -1;
-    document.body.focus();
-    expect(document.activeElement).toBe(document.body);
+    moveFocusToDocumentBody();
 
     const resolveSave: (() => void) | null = saveGate.resolve;
     if (resolveSave === null) throw new Error('draft save did not start');
