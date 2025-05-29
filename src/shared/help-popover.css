@@ -37,14 +37,13 @@
 }
 
 .help-popover__content {
-  position: absolute;
+  position: fixed;
   z-index: 100;
-  inset-block-start: calc(100% + 0.5rem);
-  inset-inline-start: clamp(0rem, 50%, 100%);
-  width: max-content;
-  max-width: min(18rem, calc(100vw - 2rem));
+  box-sizing: border-box;
+  inline-size: max-content;
+  max-inline-size: min(18rem, calc(100vw - 2rem));
+  max-block-size: calc(100vh - 2rem);
   padding: 0.625rem 0.75rem;
-  transform: translateX(-50%);
   border: 1px solid var(--border, #314238);
   border-radius: 0.5rem;
   background: var(--text, var(--ink, #16211a));
@@ -53,6 +52,7 @@
   font-size: 0.8125rem;
   font-weight: 500;
   line-height: 1.45;
+  overflow-y: auto;
   overflow-wrap: anywhere;
   white-space: normal;
 }

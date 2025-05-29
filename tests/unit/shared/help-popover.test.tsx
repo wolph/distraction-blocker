@@ -1,11 +1,34 @@
 /** @vitest-environment jsdom */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HelpPopover } from '../../../src/shared/HelpPopover';
+
+const originalInnerWidth: number = window.innerWidth;
+const originalInnerHeight: number = window.innerHeight;
+
+function rectangle(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    x: left,
+    y: top,
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    toJSON: (): Record<string, number> => ({ left, top, width, height }),
+  };
+}
 
 afterEach((): void => {
   cleanup();
   document.body.replaceChildren();
+  document.documentElement.removeAttribute('dir');
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+  Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+  vi.restoreAllMocks();
 });
 
 describe('HelpPopover', (): void => {
@@ -93,5 +116,55 @@ describe('HelpPopover', (): void => {
 
     await waitFor((): void => expect(view.queryByRole('tooltip')).toBeNull());
     expect(document.activeElement).toBe(button);
+  });
+
+  it('clamps fixed logical placement at both viewport edges and on resize', async (): Promise<void> => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 320 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 480 });
+    let triggerLeft: number = 2;
+    let triggerTop: number = 40;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ): DOMRect {
+      if (this.classList.contains('help-popover__trigger')) {
+        return rectangle(triggerLeft, triggerTop, 20, 20);
+      }
+      if (this.classList.contains('help-popover__content')) {
+        return rectangle(0, 0, 240, 64);
+      }
+      return rectangle(0, 0, 0, 0);
+    });
+    const view = render(
+      <HelpPopover label="Edge help">
+        Long help content must remain inside the viewport.
+      </HelpPopover>,
+    );
+
+    const button: HTMLElement = view.getByRole('button', { name: 'Edge help' });
+    fireEvent.click(button);
+    const tooltip: HTMLElement = await view.findByRole('tooltip');
+    await waitFor((): void => expect(tooltip.style.insetInlineStart).toBe('16px'));
+    expect(tooltip.style.insetBlockStart).toBe('68px');
+
+    triggerLeft = 298;
+    fireEvent(window, new Event('resize'));
+    await waitFor((): void => expect(tooltip.style.insetInlineStart).toBe('64px'));
+
+    const root: HTMLElement = button.closest('.help-popover') as HTMLElement;
+    root.style.direction = 'rtl';
+    triggerTop = 450;
+    fireEvent(window, new Event('resize'));
+    await waitFor((): void => expect(tooltip.style.insetInlineStart).toBe('16px'));
+    expect(tooltip.style.insetBlockStart).toBe('378px');
+  });
+
+  it('uses fixed logical insets without transform-based edge overflow', (): void => {
+    const css: string = readFileSync(resolve('src/shared/help-popover.css'), 'utf8');
+
+    expect(css).toMatch(/\.help-popover__content\s*\{[^}]*position:\s*fixed/s);
+    expect(css).toMatch(/\.help-popover__content\s*\{[^}]*max-inline-size:/s);
+    expect(css).toMatch(/\.help-popover__content\s*\{[^}]*max-block-size:/s);
+    expect(css).not.toMatch(/translateX\s*\(/);
+    expect(css).not.toContain('clamp(0rem, 50%, 100%)');
   });
 });
