@@ -47,6 +47,7 @@ import {
   type LocalAggregatePruneCheckpoint,
   pruneAndRollup,
 } from './stats-service';
+import { storageValuesEqual } from './storage-value-equality';
 import {
   mergeRuntime,
   migrateRuntimeRules,
@@ -234,7 +235,7 @@ function serialized(value: unknown): string {
 }
 
 function valuesEqual(left: unknown, right: unknown): boolean {
-  return serialized(left) === serialized(right);
+  return storageValuesEqual(left, right);
 }
 
 function parseAggregateTombstones(value: unknown): string[] {

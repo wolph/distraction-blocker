@@ -12,6 +12,22 @@ let queryResults: chrome.tabs.Tab[][] | null;
 let localGetCall: number;
 let localGetFailures: Set<number>;
 let localSetError: Error | null;
+let alphabetizeLocalReads: boolean;
+
+function alphabetizedStorageValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(alphabetizedStorageValue);
+  if (typeof value !== 'object' || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left]: [string, unknown], [right]: [string, unknown]): number =>
+        left.localeCompare(right),
+      )
+      .map(([key, nested]: [string, unknown]): [string, unknown] => [
+        key,
+        alphabetizedStorageValue(nested),
+      ]),
+  );
+}
 
 function draft(revision: number, social: boolean = false): OnboardingDraft {
   return {
@@ -38,7 +54,11 @@ function installChromeFake(options?: { staleUpdateId?: number }): void {
         get: vi.fn(async (key: string): Promise<Record<string, unknown>> => {
           localGetCall += 1;
           if (localGetFailures.has(localGetCall)) throw new Error('storage get failed');
-          return Object.hasOwn(localState, key) ? { [key]: structuredClone(localState[key]) } : {};
+          if (!Object.hasOwn(localState, key)) return {};
+          const selected: Record<string, unknown> = { [key]: structuredClone(localState[key]) };
+          return alphabetizeLocalReads
+            ? (alphabetizedStorageValue(selected) as Record<string, unknown>)
+            : selected;
         }),
         set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
           if (localSetError !== null) throw localSetError;
@@ -101,6 +121,7 @@ beforeEach((): void => {
   localGetCall = 0;
   localGetFailures = new Set<number>();
   localSetError = null;
+  alphabetizeLocalReads = false;
   installChromeFake();
 });
 
@@ -138,6 +159,18 @@ describe('serialized onboarding draft storage', (): void => {
     await expect(service.saveDraft(draft(0))).resolves.toEqual({
       ok: false,
       error: 'storage get failed',
+    });
+  });
+
+  it('verifies draft writes when Chrome reorders nested object keys', async (): Promise<void> => {
+    alphabetizeLocalReads = true;
+    const service = createOnboardingService({
+      loadSetup: async (): Promise<SetupState> => structuredClone(setup),
+    });
+
+    await expect(service.saveDraft(draft(0))).resolves.toMatchObject({
+      ok: true,
+      draft: { revision: 1 },
     });
   });
 

@@ -1,5 +1,5 @@
 import type { Page, Worker } from '@playwright/test';
-import type { SessionSnapshot } from '../../src/shared/types';
+import type { SessionSnapshot, SetupState } from '../../src/shared/types';
 import {
   type ExtensionLaunch,
   expect,
@@ -60,12 +60,21 @@ async function restoredBlockedPage(launch: ExtensionLaunch, url: string): Promis
   return page;
 }
 
-test('persistent profile restores a stopped muted tab and active countdown after relaunch', async ({
+test('persistent profile restores a blocked muted tab and active countdown after relaunch', async ({
   restartableExtension,
   siteUrl,
 }) => {
   const url: string = siteUrl('/plain.html');
   const first: ExtensionLaunch = await restartableExtension.launch();
+  const setupBefore: SetupState = await sendExtensionRequest(first.extPage, {
+    type: 'getSetupState',
+  });
+  expect(setupBefore).toMatchObject({
+    completed: true,
+    storageMode: 'sync',
+    websiteAccess: 'granted',
+    blockingRegistration: 'ready',
+  });
   await startTestSession(first.extPage, {
     durationMin: 0.5,
     intention: 'survive browser restart',
@@ -74,6 +83,7 @@ test('persistent profile restores a stopped muted tab and active countdown after
   await blockedPage.goto(url, { waitUntil: 'commit' });
   await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
   await expect(blockedPage).toHaveTitle('Locked - Focus Lock');
+  await expect(blockedPage.locator('#marker')).toHaveCount(0);
 
   const before: SessionSnapshot = await sendExtensionRequest(first.extPage, {
     type: 'getSnapshot',
@@ -90,9 +100,24 @@ test('persistent profile restores a stopped muted tab and active countdown after
 
   await restartableExtension.close();
   const second: ExtensionLaunch = await restartableExtension.launch();
+  expect(await sendExtensionRequest(second.extPage, { type: 'getSetupState' })).toEqual(
+    setupBefore,
+  );
   const restoredPage: Page = await restoredBlockedPage(second, url);
+  expect(restoredPage.url()).toBe(url);
   await expect(restoredPage.locator('focus-lock-overlay')).toBeAttached();
-  await expect(restoredPage).toHaveTitle('Locked - Focus Lock');
+  await expect(restoredPage).toHaveTitle('Plain test page');
+  await expect(restoredPage.locator('#marker')).toHaveText('plain page');
+  const topmostAtInput: string | null = await restoredPage
+    .locator('#keep')
+    .evaluate((input: HTMLInputElement): string | null => {
+      const bounds: DOMRect = input.getBoundingClientRect();
+      return (
+        document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+          ?.tagName ?? null
+      );
+    });
+  expect(topmostAtInput).toBe('FOCUS-LOCK-OVERLAY');
   await expect(second.extPage.locator('.phase-label')).toHaveText('focusing');
   await expect(second.extPage.locator('.clock')).toHaveText(/\d+:[0-5]\d/);
 
@@ -105,8 +130,8 @@ test('persistent profile restores a stopped muted tab and active countdown after
   expect(after.phaseEndsAt).toBe(before.phaseEndsAt);
   expect((after.phaseEndsAt ?? 0) - after.at).toBeGreaterThan(0);
   expect((after.phaseEndsAt ?? 0) - after.at).toBeLessThan((before.phaseEndsAt ?? 0) - before.at);
-  expect(tabAfter.stoppedDocumentId).toBe(tabAfter.frameDocumentId);
-  expect(tabAfter.stoppedDocumentId).not.toBeNull();
+  expect(tabAfter.stoppedDocumentId).toBeNull();
+  expect(tabAfter.frameDocumentId).not.toBeNull();
   expect(tabAfter.muted).toBe(true);
   expect(tabAfter.extensionOwnedMute).toBe(true);
 

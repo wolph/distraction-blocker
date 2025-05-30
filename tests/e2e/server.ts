@@ -32,6 +32,11 @@ document.querySelector('#navigate').addEventListener('click', () => {
 export async function startServer(): Promise<TestServer> {
   const server: Server = createServer((request, response): void => {
     const pathname: string = new URL(request.url ?? '/', 'http://blocked.example').pathname;
+    if (pathname === '/favicon.ico') {
+      response.writeHead(204, { 'cache-control': 'no-store' });
+      response.end();
+      return;
+    }
     const body: string | undefined = PAGES[pathname];
     if (body === undefined) {
       response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });

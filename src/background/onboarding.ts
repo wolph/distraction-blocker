@@ -6,6 +6,7 @@ import type {
 import { isOnboardingDraft } from '../shared/runtime-validation';
 import { LOCAL_ONBOARDING_DRAFT } from '../shared/storage-keys';
 import type { OnboardingDraft, SetupState } from '../shared/types';
+import { storageValuesEqual } from './storage-value-equality';
 
 export type OnboardingDraftLoadResult = OnboardingDraftLoadResponse;
 export type OnboardingDraftWriteResult = OnboardingDraftWriteResponse;
@@ -54,10 +55,6 @@ async function readDraft(): Promise<OnboardingDraftSnapshot> {
   return { draft: structuredClone(value), invalid: false };
 }
 
-function draftsEqual(left: OnboardingDraft, right: OnboardingDraft): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
 export function createOnboardingService(ports: OnboardingServicePorts): OnboardingService {
   let draftTail: Promise<void> = Promise.resolve();
   let openTail: Promise<void> = Promise.resolve();
@@ -104,7 +101,7 @@ export function createOnboardingService(ports: OnboardingServicePorts): Onboardi
         if (!isOnboardingDraft(next)) throw new Error('invalid onboarding draft');
         await chrome.storage.local.set({ [LOCAL_ONBOARDING_DRAFT]: next });
         const verified: OnboardingDraftSnapshot = await readDraft();
-        if (verified.draft === null || !draftsEqual(verified.draft, next)) {
+        if (verified.draft === null || !storageValuesEqual(verified.draft, next)) {
           throw new Error('could not verify onboarding draft');
         }
         return { ok: true, draft: next };

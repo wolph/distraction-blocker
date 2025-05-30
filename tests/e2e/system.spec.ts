@@ -78,7 +78,6 @@ test('sync and local storage keep their documented split and quota', async ({
           'settings' in syncItems &&
           'lists' in syncItems &&
           'bank' in syncItems &&
-          'streak' in syncItems &&
           Object.keys(syncItems).some((key: string): boolean => key.startsWith('agg:'))
         );
       },
@@ -106,6 +105,7 @@ test('sync and local storage keep their documented split and quota', async ({
   expect(localItems).toHaveProperty('events');
   expect(syncItems).not.toHaveProperty('events');
   expect(syncItems).not.toHaveProperty('runtime');
+  expect(syncItems).not.toHaveProperty('streak');
 });
 
 test('an active schedule window starts a scheduled focus session', async ({ extPage, worker }) => {

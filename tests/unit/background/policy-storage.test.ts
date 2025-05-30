@@ -61,6 +61,7 @@ interface FakeAreaState {
   failSet: Error | null;
   failRemove: Error | null;
   suppressNextSet: boolean;
+  alphabetizeValuesOnGet: boolean;
 }
 
 interface FakeStorage {
@@ -101,6 +102,21 @@ function selectedValues(
   );
 }
 
+function alphabetizedStorageValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(alphabetizedStorageValue);
+  if (typeof value !== 'object' || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left]: [string, unknown], [right]: [string, unknown]): number =>
+        left.localeCompare(right),
+      )
+      .map(([key, nested]: [string, unknown]): [string, unknown] => [
+        key,
+        alphabetizedStorageValue(nested),
+      ]),
+  );
+}
+
 function fakeStorage(initial: Record<string, unknown> = {}): FakeStorage {
   const state: FakeAreaState = {
     values: structuredClone(initial),
@@ -108,6 +124,7 @@ function fakeStorage(initial: Record<string, unknown> = {}): FakeStorage {
     failSet: null,
     failRemove: null,
     suppressNextSet: false,
+    alphabetizeValuesOnGet: false,
   };
   const area = {
     clear: vi.fn(async (): Promise<void> => {
@@ -118,7 +135,10 @@ function fakeStorage(initial: Record<string, unknown> = {}): FakeStorage {
         keys?: string | string[] | Record<string, unknown> | null,
       ): Promise<Record<string, unknown>> => {
         if (state.failGet !== null) throw state.failGet;
-        return selectedValues(state.values, keys);
+        const selected: Record<string, unknown> = selectedValues(state.values, keys);
+        return state.alphabetizeValuesOnGet
+          ? (alphabetizedStorageValue(selected) as Record<string, unknown>)
+          : selected;
       },
     ),
     getBytesInUse: vi.fn(async (): Promise<number> => JSON.stringify(state.values).length),
@@ -342,6 +362,25 @@ describe('PolicyStorage', (): void => {
     expect((await storage.loadSetup()).websiteAccess).toBe('granted');
   });
 
+  it('verifies storage writes when Chrome reorders nested object keys', async (): Promise<void> => {
+    const local: FakeStorage = fakeStorage();
+    local.state.alphabetizeValuesOnGet = true;
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    await storage.initialize();
+
+    await storage.updateSetup({
+      websiteAccess: 'granted',
+      blockingRegistration: 'ready',
+      websiteAccessNotice: null,
+    });
+
+    expect(await storage.loadSetup()).toEqual({
+      ...DEFAULT_SETUP,
+      websiteAccess: 'granted',
+      blockingRegistration: 'ready',
+    });
+  });
+
   it('marks setup complete only after a storage mode is durable', async (): Promise<void> => {
     const local: FakeStorage = fakeStorage();
     const storage: PolicyStorage = policyStorage(local, fakeStorage());
@@ -503,6 +542,40 @@ describe('PolicyStorage', (): void => {
     const storage: PolicyStorage = policyStorage(local, fakeStorage());
     await storage.initialize();
     local.state.suppressNextSet = true;
+
+    await expect(storage.setPolicy('settings', DEFAULT_SETTINGS)).rejects.toThrow(
+      'could not verify local settings policy',
+    );
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(prior);
+  });
+
+  it('does not treat reordered storage arrays as an equivalent write', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const prior: Settings = { ...DEFAULT_SETTINGS, retentionDays: 30 };
+    const local: FakeStorage = fakeStorage({ [LOCAL_SETUP]: setup, [LOCAL_SETTINGS]: prior });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    await storage.initialize();
+    const get = vi.mocked(local.area.get);
+    get.mockImplementationOnce(
+      async (
+        keys?: string | string[] | Record<string, unknown> | null,
+      ): Promise<Record<string, unknown>> => selectedValues(local.state.values, keys),
+    );
+    get.mockImplementationOnce(
+      async (
+        keys?: string | string[] | Record<string, unknown> | null,
+      ): Promise<Record<string, unknown>> => {
+        const selected: Record<string, unknown> = selectedValues(local.state.values, keys);
+        const settings: Settings = selected[LOCAL_SETTINGS] as Settings;
+        return {
+          ...selected,
+          [LOCAL_SETTINGS]: {
+            ...settings,
+            presetsMin: [settings.presetsMin[2], settings.presetsMin[1], settings.presetsMin[0]],
+          },
+        };
+      },
+    );
 
     await expect(storage.setPolicy('settings', DEFAULT_SETTINGS)).rejects.toThrow(
       'could not verify local settings policy',
