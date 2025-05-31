@@ -1,6 +1,6 @@
 # Focus Lock QA checklist
 
-Last updated: 2026-08-30. Automated browser evidence targets exact source commit `c87383f1cd441a9ecc2d175daa3df9e4b8825b3d`. The run started from a clean worktree at the same commit as `master` and ended on that commit. It used isolated headless Chrome-for-Testing 151.0.7922.34 profiles and did not touch the user's Chrome.
+Last updated: 2026-09-01. The full visual browser evidence below targets exact source commit `c87383f1cd441a9ecc2d175daa3df9e4b8825b3d`. That run started from a clean worktree at the same commit as `master` and ended on that commit. It used isolated headless Chrome-for-Testing 151.0.7922.34 profiles and did not touch the user's Chrome.
 
 ## Exact automated gates
 
@@ -8,6 +8,30 @@ Last updated: 2026-08-30. Automated browser evidence targets exact source commit
 - [x] `NO_COLOR=1 npm run e2e` rebuilt the extension and passed all 30 Playwright scenarios in isolated Chrome-for-Testing profiles.
 - [x] The exact visual and behavior run recorded 568 artifacts, including 207 surface captures and 78 hover or focus interactions. The generated review set contains 42 contact sheets.
 - [x] The report records `sameHead: true`, all three clean exact-source checks as true, and a fresh-build distribution hash match.
+
+## Runtime permission onboarding evidence
+
+Task 5 automated evidence targets exact source commit `72d330c6a89bebb357037da71c51cc1bd96c0cc7` with Google Chrome for Testing 151.0.7922.34. Every browser run used an isolated Playwright profile and did not touch the user's Chrome.
+
+- [x] `npm run build && npx playwright test tests/e2e/onboarding.spec.ts tests/e2e/restart.spec.ts` passed all 6 scenarios. It covered a fresh install without host access, the incomplete popup, denial and retry, a granted dynamic registration, local and Sync completion, browser restart, permission revocation, rejected session start after revocation, a real blocked page after grant, and restored blocking after restart.
+- [x] The real Chrome Sync quota scenario filled only test-owned keys, preserved unrelated Sync data, forced first publication to fail, and kept setup incomplete with local choices, the pending journal, and the checkpoint intact. The state survived a protocol-level background-worker stop and a browser restart. Removing only the test filler allowed retry, and the remote settings and decoded lists matched the preserved local snapshot.
+- [x] The onboarding scenarios recorded zero browser console, page, worker, and request errors. Shutdown-only worker messages with the exact text `focus-lock background error Error: The browser is shutting down.` were classified separately.
+- [x] `NO_COLOR=1 npm run check` passed 65 test files with 1,722 tests passed and 2 skipped. Biome, TypeScript, deterministic icon generation, and the production build passed.
+- [x] `NO_COLOR=1 npm run e2e` rebuilt the extension and passed all 36 Playwright scenarios in 3.6 minutes.
+- [x] Automated grant setup launched a test-only copy of the same extension ID with required HTTP and HTTPS host permissions, then relaunched the production optional-permission manifest. This exercised Chrome's persisted permission state, dynamic registration, revocation, and enforcement without faking extension APIs.
+- [ ] The native Chrome permission warning was not observed in headless automation. Exact warning copy and a real-prompt artifact remain part of Task 6 visual verification.
+
+Task 5 artifacts are in `test-results/`:
+
+- `test-results/.last-run.json`
+- `test-results/onboarding-fresh-install-h-1fd80--routes-to-unfinished-setup/`
+- `test-results/onboarding-denied-access-c-23193-cally-and-block-a-real-page/`
+- `test-results/onboarding-sync-completion-f5095-n-survive-a-browser-restart/`
+- `test-results/onboarding-permission-revo-bebe5-jects-another-session-start/`
+- `test-results/onboarding-quota-backed-fi-cfc63-rowser-restart-then-retries/`
+- `test-results/restart-persistent-profile-88b20-ve-countdown-after-relaunch/`
+
+Playwright retains traces only on failure. The passing exact-source run therefore records isolated profiles and `.last-run.json`, not a green trace archive.
 
 ## Automated browser behavior
 
