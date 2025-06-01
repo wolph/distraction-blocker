@@ -1,5 +1,6 @@
 import type { Page, Worker } from '@playwright/test';
 import type { SessionSnapshot, SetupState } from '../../src/shared/types';
+import { createBrowserDiagnostics } from './browser-diagnostics';
 import {
   type ExtensionLaunch,
   expect,
@@ -97,6 +98,7 @@ test('persistent profile restores a blocked muted tab and active countdown after
   expect(tabBefore.stoppedDocumentId).not.toBeNull();
   expect(tabBefore.muted).toBe(true);
   expect(tabBefore.extensionOwnedMute).toBe(true);
+  expect(restartableExtension.diagnostics).toEqual(createBrowserDiagnostics());
 
   await restartableExtension.close();
   const second: ExtensionLaunch = await restartableExtension.launch();
@@ -154,4 +156,5 @@ test('persistent profile restores a blocked muted tab and active countdown after
   expect(settledTab.stoppedDocumentId).toBeNull();
   expect(settledTab.muted).toBe(false);
   expect(settledTab.extensionOwnedMute).toBe(false);
+  expect(restartableExtension.diagnostics).toEqual(createBrowserDiagnostics());
 });

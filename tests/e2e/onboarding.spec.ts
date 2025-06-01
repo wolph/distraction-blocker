@@ -1,4 +1,4 @@
-import type { ConsoleMessage, Page, Request as PlaywrightRequest, Worker } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { decodeListsSyncSnapshot } from '../../src/background/list-sync-codec';
 import {
   LOCAL_FIRST_SYNC_PUBLICATION,
@@ -15,6 +15,7 @@ import type {
   SessionSnapshot,
   SetupState,
 } from '../../src/shared/types';
+import { type BrowserDiagnostics, createBrowserDiagnostics } from './browser-diagnostics';
 import {
   expect,
   type FreshInstallLaunch,
@@ -25,59 +26,8 @@ import {
 
 test.setTimeout(90_000);
 
-interface BrowserDiagnostics {
-  consoleErrors: string[];
-  pageErrors: string[];
-  requestErrors: string[];
-  workerErrors: string[];
-}
-
-function emptyDiagnostics(): BrowserDiagnostics {
-  return { consoleErrors: [], pageErrors: [], requestErrors: [], workerErrors: [] };
-}
-
-function monitorLaunch(launch: FreshInstallLaunch, diagnostics: BrowserDiagnostics): void {
-  const monitoredPages: WeakSet<Page> = new WeakSet<Page>();
-  const monitoredWorkers: WeakSet<Worker> = new WeakSet<Worker>();
-  const monitorPage = (page: Page): void => {
-    if (monitoredPages.has(page)) return;
-    monitoredPages.add(page);
-    page.on('console', (message: ConsoleMessage): void => {
-      if (message.type() !== 'error') return;
-      const location: string = message.location().url;
-      diagnostics.consoleErrors.push(
-        location === '' ? message.text() : `${location}: ${message.text()}`,
-      );
-    });
-    page.on('pageerror', (error: Error): void => {
-      diagnostics.pageErrors.push(error.message);
-    });
-    page.on('requestfailed', (request: PlaywrightRequest): void => {
-      diagnostics.requestErrors.push(
-        `${request.url()}: ${request.failure()?.errorText ?? 'failed'}`,
-      );
-    });
-  };
-  const monitorWorker = (worker: Worker): void => {
-    if (monitoredWorkers.has(worker)) return;
-    monitoredWorkers.add(worker);
-    worker.on('console', (message: ConsoleMessage): void => {
-      if (
-        message.type() === 'error' &&
-        message.text() !== 'focus-lock background error Error: The browser is shutting down.'
-      ) {
-        diagnostics.workerErrors.push(message.text());
-      }
-    });
-  };
-  launch.context.pages().forEach(monitorPage);
-  launch.context.serviceWorkers().forEach(monitorWorker);
-  launch.context.on('page', monitorPage);
-  launch.context.on('serviceworker', monitorWorker);
-}
-
 function expectNoDiagnostics(diagnostics: BrowserDiagnostics): void {
-  expect(diagnostics).toEqual(emptyDiagnostics());
+  expect(diagnostics).toEqual(createBrowserDiagnostics());
 }
 
 async function currentSetup(launch: FreshInstallLaunch): Promise<SetupState> {
@@ -88,8 +38,7 @@ test('fresh install has no host access and popup routes to unfinished setup', as
   freshInstallExtension,
 }) => {
   const launch: FreshInstallLaunch = await freshInstallExtension.launch();
-  const diagnostics: BrowserDiagnostics = emptyDiagnostics();
-  monitorLaunch(launch, diagnostics);
+  const diagnostics: BrowserDiagnostics = freshInstallExtension.diagnostics;
 
   expect(await freshInstallExtension.hasWebsiteAccess()).toBe(false);
   expect(await freshInstallExtension.dynamicRegistrations()).toEqual([]);
@@ -115,8 +64,7 @@ test('denied access can be retried, completed locally, and block a real page', a
   siteUrl,
 }) => {
   let launch: FreshInstallLaunch = await freshInstallExtension.launch();
-  const diagnostics: BrowserDiagnostics = emptyDiagnostics();
-  monitorLaunch(launch, diagnostics);
+  const diagnostics: BrowserDiagnostics = freshInstallExtension.diagnostics;
   await launch.onboardingPage.getByRole('button', { name: 'Continue' }).click();
 
   await freshInstallExtension.denyWebsiteAccess();
@@ -127,7 +75,6 @@ test('denied access can be retried, completed locally, and block a real page', a
   expect(await freshInstallExtension.hasWebsiteAccess()).toBe(false);
 
   launch = await freshInstallExtension.grantWebsiteAccess();
-  monitorLaunch(launch, diagnostics);
   expect(await freshInstallExtension.hasWebsiteAccess()).toBe(true);
   expect(await freshInstallExtension.dynamicRegistrations()).toMatchObject([
     {
@@ -164,8 +111,7 @@ test('sync completion and dynamic registration survive a browser restart', async
 }) => {
   await freshInstallExtension.launch();
   let launch: FreshInstallLaunch = await freshInstallExtension.grantWebsiteAccess();
-  const diagnostics: BrowserDiagnostics = emptyDiagnostics();
-  monitorLaunch(launch, diagnostics);
+  const diagnostics: BrowserDiagnostics = freshInstallExtension.diagnostics;
 
   const completed: SetupState = await freshInstallExtension.completeSetup('sync');
   expect(completed).toMatchObject({
@@ -179,7 +125,6 @@ test('sync completion and dynamic registration survive a browser restart', async
   expect(await freshInstallExtension.syncItems()).toHaveProperty(SYNC_SETTINGS);
 
   launch = await freshInstallExtension.relaunch();
-  monitorLaunch(launch, diagnostics);
   expect(await currentSetup(launch)).toEqual(completed);
   expect(await freshInstallExtension.hasWebsiteAccess()).toBe(true);
   expect(await freshInstallExtension.dynamicRegistrations()).toHaveLength(1);
@@ -195,8 +140,7 @@ test('permission revocation ends a session and rejects another session start', a
 }) => {
   await freshInstallExtension.launch();
   const launch: FreshInstallLaunch = await freshInstallExtension.grantWebsiteAccess();
-  const diagnostics: BrowserDiagnostics = emptyDiagnostics();
-  monitorLaunch(launch, diagnostics);
+  const diagnostics: BrowserDiagnostics = freshInstallExtension.diagnostics;
   await freshInstallExtension.completeSetup('local');
   await startTestSession(launch.extPage, { durationMin: 0.3 });
   const active: SessionSnapshot = await sendExtensionRequest(launch.extPage, {
@@ -242,8 +186,7 @@ test('quota-backed first sync checkpoint survives worker and browser restart, th
   freshInstallExtension,
 }) => {
   let launch: FreshInstallLaunch = await freshInstallExtension.launch();
-  const diagnostics: BrowserDiagnostics = emptyDiagnostics();
-  monitorLaunch(launch, diagnostics);
+  const diagnostics: BrowserDiagnostics = freshInstallExtension.diagnostics;
   const socialMedia = launch.onboardingPage.getByRole('checkbox', { name: 'Social media' });
   await socialMedia.click();
   await expect(socialMedia).toBeChecked();
@@ -275,6 +218,8 @@ test('quota-backed first sync checkpoint survives worker and browser restart, th
   expect(failedLocal).toHaveProperty(LOCAL_SETTINGS);
   expect(failedLocal).toHaveProperty(LOCAL_LISTS);
   expect(failedLocal[LOCAL_LISTS]).toMatchObject({ categories: { social: true } });
+  const failedSettings: unknown = structuredClone(failedLocal[LOCAL_SETTINGS]);
+  const failedLists: ListsConfig = structuredClone(failedLocal[LOCAL_LISTS] as ListsConfig);
   const failedJournal = failedLocal[LOCAL_SYNC_JOURNAL] as {
     sets: Record<string, unknown>;
     removes: string[];
@@ -290,7 +235,6 @@ test('quota-backed first sync checkpoint survives worker and browser restart, th
   expect(await freshInstallExtension.localItems()).toHaveProperty(LOCAL_FIRST_SYNC_PUBLICATION);
 
   launch = await freshInstallExtension.relaunch();
-  monitorLaunch(launch, diagnostics);
   await expect(
     launch.onboardingPage.getByRole('heading', {
       name: 'Choose where your settings are stored',
@@ -326,9 +270,13 @@ test('quota-backed first sync checkpoint survives worker and browser restart, th
   });
   const recoveredLocal: Record<string, unknown> = await freshInstallExtension.localItems();
   const recoveredRemote: Record<string, unknown> = await freshInstallExtension.syncItems();
-  const localLists: ListsConfig = recoveredLocal[LOCAL_LISTS] as ListsConfig;
-  expect(recoveredRemote[SYNC_SETTINGS]).toEqual(recoveredLocal[LOCAL_SETTINGS]);
-  expect(decodeListsSyncSnapshot(recoveredRemote)).toEqual({ kind: 'complete', lists: localLists });
+  expect(recoveredLocal[LOCAL_SETTINGS]).toEqual(failedSettings);
+  expect(recoveredLocal[LOCAL_LISTS]).toEqual(failedLists);
+  expect(recoveredRemote[SYNC_SETTINGS]).toEqual(failedSettings);
+  expect(decodeListsSyncSnapshot(recoveredRemote)).toEqual({
+    kind: 'complete',
+    lists: failedLists,
+  });
   expect(recoveredRemote.foreignSyncSentinel).toEqual({ owner: 'another extension test' });
   expect(recoveredLocal[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
   expect(recoveredLocal).not.toHaveProperty(LOCAL_FIRST_SYNC_PUBLICATION);
