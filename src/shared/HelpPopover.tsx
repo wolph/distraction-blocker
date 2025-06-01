@@ -21,16 +21,21 @@ type InteractionSources = {
 
 type PopoverInteraction = {
   open: boolean;
-  handleBlur: (event: JSX.TargetedFocusEvent<HTMLButtonElement>) => void;
   handleClick: () => void;
-  handleFocus: () => void;
-  handleKeyDown: (event: JSX.TargetedKeyboardEvent<HTMLButtonElement>) => void;
 };
 
 function cancelHoverClose(sources: InteractionSources): void {
   if (sources.hoverCloseTimer === null) return;
   window.clearTimeout(sources.hoverCloseTimer);
   sources.hoverCloseTimer = null;
+}
+
+function dismissPopover(sources: InteractionSources, setOpen: (open: boolean) => void): void {
+  cancelHoverClose(sources);
+  sources.pointerInside = false;
+  sources.focusInside = false;
+  sources.clickOpen = false;
+  setOpen(false);
 }
 
 function calculatePopoverPosition(
@@ -145,11 +150,7 @@ function usePointerDismissal(
     };
     const closeFromOutsideClick = (event: MouseEvent): void => {
       if (event.target instanceof Node && root?.contains(event.target)) return;
-      cancelHoverClose(sources);
-      sources.pointerInside = false;
-      sources.focusInside = false;
-      sources.clickOpen = false;
-      setOpen(false);
+      dismissPopover(sources, setOpen);
     };
     root?.addEventListener('pointerenter', openFromPointer);
     root?.addEventListener('pointerleave', closeFromPointer);
@@ -163,7 +164,50 @@ function usePointerDismissal(
   }, [rootRef, setOpen, sources]);
 }
 
-function usePopoverInteraction(rootRef: RefObject<HTMLSpanElement>): PopoverInteraction {
+function useFocusDismissal(
+  rootRef: RefObject<HTMLSpanElement>,
+  triggerRef: RefObject<HTMLButtonElement>,
+  sources: InteractionSources,
+  setOpen: (open: boolean) => void,
+): void {
+  useLayoutEffect((): (() => void) => {
+    const root: HTMLSpanElement | null = rootRef.current;
+    const openFromFocus = (): void => {
+      cancelHoverClose(sources);
+      sources.focusInside = true;
+      setOpen(true);
+    };
+    const closeFromFocus = (event: FocusEvent): void => {
+      if (event.relatedTarget instanceof Node && (root?.contains(event.relatedTarget) ?? false))
+        return;
+      sources.focusInside = false;
+      const leftContent: boolean =
+        event.target instanceof Element && event.target.closest('.help-popover__content') !== null;
+      if (leftContent) sources.clickOpen = false;
+      if (!sources.pointerInside && !sources.clickOpen) setOpen(false);
+    };
+    const closeFromEscape = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.target !== triggerRef.current) triggerRef.current?.focus();
+      dismissPopover(sources, setOpen);
+    };
+    root?.addEventListener('focusin', openFromFocus);
+    root?.addEventListener('focusout', closeFromFocus);
+    root?.addEventListener('keydown', closeFromEscape);
+    return (): void => {
+      root?.removeEventListener('focusin', openFromFocus);
+      root?.removeEventListener('focusout', closeFromFocus);
+      root?.removeEventListener('keydown', closeFromEscape);
+    };
+  }, [rootRef, setOpen, sources, triggerRef]);
+}
+
+function usePopoverInteraction(
+  rootRef: RefObject<HTMLSpanElement>,
+  triggerRef: RefObject<HTMLButtonElement>,
+): PopoverInteraction {
   const [open, setOpen] = useState<boolean>(false);
   const sourcesRef = useRef<InteractionSources>({
     pointerInside: false,
@@ -173,37 +217,13 @@ function usePopoverInteraction(rootRef: RefObject<HTMLSpanElement>): PopoverInte
   });
   const sources: InteractionSources = sourcesRef.current;
   usePointerDismissal(rootRef, sources, setOpen);
-
-  const handleBlur = (event: JSX.TargetedFocusEvent<HTMLButtonElement>): void => {
-    if (
-      event.relatedTarget instanceof Node &&
-      (rootRef.current?.contains(event.relatedTarget) ?? false)
-    )
-      return;
-    sources.focusInside = false;
-    if (!sources.pointerInside && !sources.clickOpen) setOpen(false);
-  };
-  const handleKeyDown = (event: JSX.TargetedKeyboardEvent<HTMLButtonElement>): void => {
-    if (event.key !== 'Escape') return;
-    event.preventDefault();
-    event.stopPropagation();
-    cancelHoverClose(sources);
-    sources.pointerInside = false;
-    sources.focusInside = false;
-    sources.clickOpen = false;
-    setOpen(false);
-  };
+  useFocusDismissal(rootRef, triggerRef, sources, setOpen);
   const handleClick = (): void => {
     cancelHoverClose(sources);
     sources.clickOpen = true;
     setOpen(true);
   };
-  const handleFocus = (): void => {
-    cancelHoverClose(sources);
-    sources.focusInside = true;
-    setOpen(true);
-  };
-  return { open, handleBlur, handleClick, handleFocus, handleKeyDown };
+  return { open, handleClick };
 }
 
 export type HelpPopoverProps = {
@@ -217,7 +237,7 @@ export function HelpPopover({ label, children }: HelpPopoverProps): JSX.Element 
   const contentRef = useRef<HTMLSpanElement | null>(null);
   const generatedId: string = useId();
   const contentId: string = `help-popover-${generatedId}`;
-  const interaction: PopoverInteraction = usePopoverInteraction(rootRef);
+  const interaction: PopoverInteraction = usePopoverInteraction(rootRef, triggerRef);
   const position: PopoverPosition | null = usePopoverPosition(
     interaction.open,
     rootRef,
@@ -235,10 +255,7 @@ export function HelpPopover({ label, children }: HelpPopoverProps): JSX.Element 
         aria-controls={contentId}
         aria-describedby={interaction.open ? contentId : undefined}
         aria-expanded={interaction.open}
-        onBlur={interaction.handleBlur}
         onClick={interaction.handleClick}
-        onFocus={interaction.handleFocus}
-        onKeyDown={interaction.handleKeyDown}
       >
         <span aria-hidden="true">?</span>
       </button>

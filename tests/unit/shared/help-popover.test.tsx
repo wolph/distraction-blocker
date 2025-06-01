@@ -140,6 +140,55 @@ describe('HelpPopover', (): void => {
     outside.remove();
   });
 
+  it('closes after focus moves from the trigger through the scrollable tooltip body to outside', async (): Promise<void> => {
+    const view = render(
+      <HelpPopover label="Scrollable help">
+        Long help content can overflow vertically and receive browser focus for keyboard scrolling.
+      </HelpPopover>,
+    );
+    const button: HTMLButtonElement = view.getByRole('button', {
+      name: 'Scrollable help',
+    }) as HTMLButtonElement;
+    const outside: HTMLButtonElement = document.createElement('button');
+    document.body.appendChild(outside);
+
+    button.focus();
+    const tooltip: HTMLElement = await view.findByRole('tooltip');
+    const body: HTMLElement = tooltip.querySelector('.help-popover__body') as HTMLElement;
+    body.tabIndex = 0;
+    body.focus();
+    expect(document.activeElement).toBe(body);
+    expect(view.getByRole('tooltip')).toBe(tooltip);
+
+    outside.focus();
+
+    await waitFor((): void => expect(view.queryByRole('tooltip')).toBeNull());
+    outside.remove();
+  });
+
+  it('closes on Escape from the focused tooltip body and restores trigger focus', async (): Promise<void> => {
+    const view = render(
+      <HelpPopover label="Scrollable help">
+        Long help content can overflow vertically and receive browser focus for keyboard scrolling.
+      </HelpPopover>,
+    );
+    const button: HTMLButtonElement = view.getByRole('button', {
+      name: 'Scrollable help',
+    }) as HTMLButtonElement;
+
+    button.focus();
+    const tooltip: HTMLElement = await view.findByRole('tooltip');
+    const body: HTMLElement = tooltip.querySelector('.help-popover__body') as HTMLElement;
+    body.tabIndex = 0;
+    body.focus();
+    expect(document.activeElement).toBe(body);
+
+    fireEvent.keyDown(body, { key: 'Escape' });
+
+    await waitFor((): void => expect(view.queryByRole('tooltip')).toBeNull());
+    expect(document.activeElement).toBe(button);
+  });
+
   it('opens on click and closes after a click outside', (): void => {
     const view = render(<HelpPopover label="Social sites help">See bundled sites.</HelpPopover>);
     const button: HTMLButtonElement = view.getByRole('button', {
