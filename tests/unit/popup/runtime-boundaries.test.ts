@@ -125,7 +125,7 @@ describe('popup runtime response boundaries', (): void => {
       ),
     ).toBe(false);
 
-    fireEvent.click(getByRole('button', { name: 'Start focusing' }));
+    fireEvent.click(getByRole('button', { name: 'Start 25 min - Block selected sites' }));
     await waitFor((): void => {
       expect(getByText('authoritative start failure')).toBeTruthy();
     });
@@ -143,7 +143,7 @@ describe('popup runtime response boundaries', (): void => {
     const { getByRole } = render(h(App, null));
 
     await waitFor((): void => {
-      expect(getByRole('button', { name: 'Start focusing' })).toBeTruthy();
+      expect(getByRole('button', { name: 'Start 25 min - Block selected sites' })).toBeTruthy();
       expect(getByRole('alert').textContent).toMatch(/reload the popup/i);
     });
   });
@@ -264,14 +264,14 @@ describe('popup runtime response boundaries', (): void => {
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
 
-    fireEvent.click(getByRole('button', { name: 'Start focusing' }));
+    fireEvent.click(getByRole('button', { name: 'Start 25 min - Block selected sites' }));
 
     await waitFor((): void => {
       expect(getByRole('alert').textContent).toBe('Could not start session. Try again.');
     });
   });
 
-  it('does not commit a category change after a malformed acknowledgement', async (): Promise<void> => {
+  it('keeps category changes local without depending on an acknowledgement', (): void => {
     sendMessageMock.mockResolvedValue({ ok: true, error: 'not a literal success' });
     const { getByRole } = render(
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
@@ -282,10 +282,8 @@ describe('popup runtime response boundaries', (): void => {
 
     fireEvent.click(social);
 
-    await waitFor((): void => {
-      expect(social.getAttribute('aria-pressed')).toBe('false');
-      expect(getByRole('alert').textContent).toBe('Could not update categories. Try again.');
-    });
+    expect(social.getAttribute('aria-pressed')).toBe('true');
+    expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
   it.each([

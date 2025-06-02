@@ -1,100 +1,91 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
-import { rulesFromLists } from '../shared/constants';
 import type { Ack } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
-import { ackError, isListsConfig } from '../shared/runtime-validation';
-import type {
-  CycleConfig,
-  ListsConfig,
-  SessionConfig,
-  SessionMode,
-  Settings,
-  Strictness,
-} from '../shared/types';
-import { CategoryControls } from './category-controls';
+import { ackError } from '../shared/runtime-validation';
+import type { CycleConfig, ListsConfig, SessionMode, Settings, Strictness } from '../shared/types';
+import { DomainInput } from './DomainInput';
 import { Chip, RadioRow } from './form-controls';
+import { RuleSummary } from './RuleSummary';
+import { SessionTypeControl } from './SessionTypeControl';
+import {
+  addDraftAllowHost,
+  createSessionDraft,
+  type DraftUpdate,
+  type SessionDraft,
+  toggleDraftCategory,
+  toSessionConfig,
+} from './session-draft';
 
-/** Positional labels for the three presets, per the weak-evidence ledger. */
 const PRESET_LABELS: readonly [string, string, string] = [
   'short',
   'focus',
   'deep work (preference, not science)',
 ];
 
-type VisibleStrictness = Exclude<Strictness, 'flexible'>;
+interface ModeChoice {
+  value: SessionMode;
+  label: string;
+  hint: string;
+}
 
-const STRICTNESS_HINTS: Record<VisibleStrictness, string> = {
-  friction: 'can end early after 30 s wait typing sentence',
-  hard: 'no way out until timer ends, pauses excepted',
+const MODE_CHOICES: readonly ModeChoice[] = [
+  {
+    value: 'blacklist',
+    label: 'Block selected sites',
+    hint: 'The selected categories and extra rules are blocked. Other sites remain available.',
+  },
+  {
+    value: 'whitelist',
+    label: 'Allow selected sites only',
+    hint: 'Only the listed sites are available. Every other website is blocked.',
+  },
+];
+
+const MODE_START_LABELS: Record<SessionMode, string> = {
+  blacklist: 'Block selected sites',
+  whitelist: 'Allow selected sites only',
 };
 
-const MODE_HINTS: Record<SessionMode, string> = {
-  blacklist: 'block the listed sites, allow the rest',
-  whitelist: 'allow the listed sites, block the rest',
-};
-
-export function StartForm({
-  settings,
-  lists,
-  categoriesEditable = true,
-}: {
+export interface StartFormProps {
   settings: Settings;
   lists: ListsConfig;
   categoriesEditable?: boolean;
-}): VNode {
+}
+
+export function StartForm({ settings, lists, categoriesEditable = true }: StartFormProps): VNode {
+  const [draft, setDraft]: [SessionDraft, Dispatch<StateUpdater<SessionDraft>>] =
+    useState<SessionDraft>(() => createSessionDraft(settings, lists));
   const [selectedMin, setSelectedMin]: [number, Dispatch<StateUpdater<number>>] = useState<number>(
     settings.presetsMin[1],
   );
   const [customMin, setCustomMin]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
-  const [intention, setIntention]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
-  const [mode, setMode]: [SessionMode, Dispatch<StateUpdater<SessionMode>>] = useState<SessionMode>(
-    settings.defaultMode,
-  );
-  const [strictness, setStrictness]: [Strictness, Dispatch<StateUpdater<Strictness>>] =
-    useState<Strictness>(settings.defaultStrictness);
-  const [cyclingOn, setCyclingOn]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(
-    settings.cyclingOnByDefault,
-  );
   const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
     string | null
   >(null);
   const [starting, setStarting]: [boolean, Dispatch<StateUpdater<boolean>>] =
     useState<boolean>(false);
-  const [categoryUpdatePending, setCategoryUpdatePending]: [
-    boolean,
-    Dispatch<StateUpdater<boolean>>,
-  ] = useState<boolean>(false);
 
   const durationMin: number = customMin.trim() === '' ? selectedMin : Number(customMin);
+  const durationLabel: string = Number.isFinite(durationMin)
+    ? `${durationMin} min`
+    : 'invalid time';
+  const startLabel: string = `Start ${durationLabel} - ${MODE_START_LABELS[draft.mode]}`;
 
   const start: () => Promise<void> = async (): Promise<void> => {
-    if (starting || categoryUpdatePending) return;
+    if (starting) return;
     if (!Number.isFinite(durationMin) || durationMin <= 0) {
-      setError('enter a session length in minutes');
+      setError('Enter a session length greater than zero minutes.');
       return;
     }
+
     setError(null);
     setStarting(true);
     try {
-      let currentLists: ListsConfig = lists;
-      try {
-        const loadedLists: ListsConfig = await sendRequest({ type: 'getLists' });
-        if (isListsConfig(loadedLists)) currentLists = loadedLists;
-      } catch {
-        // The worker validates the fallback freshness token before starting.
-      }
-      const config: SessionConfig = {
-        mode,
-        strictness,
-        durationMin,
-        cycling: cyclingOn ? settings.defaultCycling : null,
-        intention: intention.trim(),
-        source: 'manual',
-        scheduleEntryId: null,
-        rules: rulesFromLists(currentLists),
-      };
-      const ack: Ack = await sendRequest({ type: 'startSession', config });
+      const ack: Ack = await sendRequest({
+        type: 'startSession',
+        config: toSessionConfig({ ...draft, durationMin }),
+      });
       const responseError: string | null = ackError(ack, 'Could not start session. Try again.');
       if (responseError !== null) setError(responseError);
     } catch {
@@ -104,109 +95,124 @@ export function StartForm({
     }
   };
 
-  const c: CycleConfig = settings.defaultCycling;
-  const cyclingLabel: string = `cycles: ${c.focusMin} min focus, ${c.shortBreakMin} min break, ${c.longBreakMin} min long break every ${c.longEvery}th`;
+  const addAllowedDomain: (raw: string) => string | null = (raw: string): string | null => {
+    const update: DraftUpdate = addDraftAllowHost(draft, raw);
+    if (update.draft !== draft) setDraft(update.draft);
+    return update.error;
+  };
+
+  const cycle: CycleConfig = settings.defaultCycling;
+  const cyclingLabel: string = `Cycles: ${cycle.focusMin} min focus, ${cycle.shortBreakMin} min break, ${cycle.longBreakMin} min long break every ${cycle.longEvery}th`;
 
   return (
     <section class="view start-form">
-      <fieldset class="chip-row" aria-label="Session length">
-        {settings.presetsMin.map(
-          (min: number, i: number): VNode => (
-            <Chip
-              key={min}
-              label={`${min} ${PRESET_LABELS[i] ?? ''}`.trim()}
-              selected={customMin.trim() === '' && selectedMin === min}
-              onClick={(): void => {
-                setSelectedMin(min);
-                setCustomMin('');
-              }}
-            />
-          ),
-        )}
-        <input
-          class="custom-min"
-          type="number"
-          min="1"
-          inputMode="numeric"
-          aria-label="Custom minutes"
-          placeholder="min"
-          value={customMin}
-          onInput={(e: Event): void => setCustomMin((e.currentTarget as HTMLInputElement).value)}
-        />
-      </fieldset>
-
-      <input
-        class="intention-input"
-        type="text"
-        placeholder="What you working on?"
-        value={intention}
-        onInput={(e: Event): void => setIntention((e.currentTarget as HTMLInputElement).value)}
-      />
-
-      <CategoryControls
-        lists={lists}
-        editable={categoriesEditable}
-        onError={setError}
-        onPendingChange={setCategoryUpdatePending}
-      />
-
-      <details class="options">
-        <summary>Session options</summary>
-        <fieldset>
-          <legend>Mode</legend>
-          {(['blacklist', 'whitelist'] as const).map(
-            (m: SessionMode): VNode => (
-              <RadioRow
-                key={m}
-                name="mode"
-                label={m}
-                hint={MODE_HINTS[m]}
-                checked={mode === m}
-                onSelect={(): void => setMode(m)}
+      <div class="start-form__scroll">
+        <fieldset class="chip-row" aria-label="Session length">
+          {settings.presetsMin.map(
+            (min: number, index: number): VNode => (
+              <Chip
+                key={min}
+                label={`${min} ${PRESET_LABELS[index] ?? ''}`.trim()}
+                selected={customMin.trim() === '' && selectedMin === min}
+                onClick={(): void => {
+                  setSelectedMin(min);
+                  setCustomMin('');
+                }}
               />
             ),
           )}
-        </fieldset>
-        <fieldset>
-          <legend>Strictness</legend>
-          {(['friction', 'hard'] as const).map(
-            (s: VisibleStrictness): VNode => (
-              <RadioRow
-                key={s}
-                name="strictness"
-                label={s}
-                hint={STRICTNESS_HINTS[s]}
-                checked={strictness === s}
-                onSelect={(): void => setStrictness(s)}
-              />
-            ),
-          )}
-        </fieldset>
-        <label class="check-row">
           <input
-            type="checkbox"
-            checked={cyclingOn}
-            onChange={(e: Event): void =>
-              setCyclingOn((e.currentTarget as HTMLInputElement).checked)
+            class="custom-min"
+            type="number"
+            min="1"
+            inputMode="numeric"
+            aria-label="Custom minutes"
+            placeholder="min"
+            value={customMin}
+            onInput={(event: Event): void =>
+              setCustomMin((event.currentTarget as HTMLInputElement).value)
             }
           />
-          <span>{cyclingLabel}</span>
-        </label>
-      </details>
+        </fieldset>
 
-      <button
-        type="button"
-        class="start-button"
-        disabled={starting || categoryUpdatePending}
-        onClick={(): void => void start()}
-      >
-        Start focusing
-      </button>
-      {error !== null ? (
-        <p class="form-error" role="alert">
-          {error}
-        </p>
-      ) : null}
+        <div class="field-control">
+          <label class="field-label" for="session-intention">
+            Intention
+          </label>
+          <input
+            id="session-intention"
+            class="intention-input"
+            type="text"
+            placeholder="What are you working on?"
+            value={draft.intention}
+            onInput={(event: Event): void =>
+              setDraft({ ...draft, intention: (event.currentTarget as HTMLInputElement).value })
+            }
+          />
+        </div>
+
+        <SessionTypeControl
+          value={draft.strictness}
+          onChange={(strictness: Strictness): void => setDraft({ ...draft, strictness })}
+        />
+
+        <fieldset class="mode-control" aria-label="Blocking mode">
+          <legend>Blocking mode</legend>
+          {MODE_CHOICES.map(
+            (choice: ModeChoice): VNode => (
+              <RadioRow
+                key={choice.value}
+                name="mode"
+                label={choice.label}
+                hint={choice.hint}
+                checked={draft.mode === choice.value}
+                onSelect={(): void => setDraft({ ...draft, mode: choice.value })}
+              />
+            ),
+          )}
+        </fieldset>
+
+        {draft.mode === 'whitelist' ? <DomainInput onAdd={addAllowedDomain} /> : null}
+
+        <RuleSummary
+          draft={draft}
+          categoriesEditable={categoriesEditable}
+          onCategoryToggle={(id): void => {
+            if (categoriesEditable) setDraft(toggleDraftCategory(draft, id));
+          }}
+        />
+
+        <details class="options">
+          <summary>Cycle options</summary>
+          <label class="check-row">
+            <input
+              type="checkbox"
+              checked={draft.cycling !== null}
+              onChange={(event: Event): void => {
+                const enabled: boolean = (event.currentTarget as HTMLInputElement).checked;
+                setDraft({ ...draft, cycling: enabled ? structuredClone(cycle) : null });
+              }}
+            />
+            <span>{cyclingLabel}</span>
+          </label>
+        </details>
+      </div>
+
+      <div class="start-form__actions">
+        <button
+          type="button"
+          class="start-button"
+          disabled={starting}
+          onClick={(): void => void start()}
+        >
+          {startLabel}
+        </button>
+        {error !== null ? (
+          <p class="form-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+      </div>
     </section>
   );
 }

@@ -133,7 +133,7 @@ describe('popup request errors', (): void => {
     const { getByRole } = render(h(App, null));
 
     await waitFor((): void => {
-      expect(getByRole('button', { name: 'Start focusing' })).toBeTruthy();
+      expect(getByRole('button', { name: /^Start 25 min/ })).toBeTruthy();
       expect(getByRole('alert').textContent).toBe(
         'Could not load session settings. Reload the popup to try again. Defaults are shown.',
       );
@@ -150,7 +150,7 @@ describe('popup request errors', (): void => {
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
     const start: HTMLButtonElement = getByRole('button', {
-      name: 'Start focusing',
+      name: /^Start 25 min/,
     }) as HTMLButtonElement;
 
     fireEvent.click(start);

@@ -50,7 +50,7 @@ describe('popup setup routing', (): void => {
     const view = render(<App />);
 
     expect(await view.findByRole('heading', { name: 'Finish setting up Focus Lock' })).toBeTruthy();
-    expect(view.queryByRole('button', { name: 'Start focusing' })).toBeNull();
+    expect(view.queryByRole('button', { name: /^Start / })).toBeNull();
     fireEvent.click(view.getByRole('button', { name: 'Open setup' }));
     await waitFor((): void => {
       expect(sendMessageMock).toHaveBeenCalledWith({ type: 'openOnboarding' });
@@ -96,7 +96,7 @@ describe('popup setup routing', (): void => {
     const view = render(<App />);
 
     expect(await view.findByText('Website blocking is off')).toBeTruthy();
-    expect(view.queryByRole('button', { name: 'Start focusing' })).toBeNull();
+    expect(view.queryByRole('button', { name: /^Start / })).toBeNull();
     expect(view.getByRole('button', { name: 'Enable website blocking' })).toBeTruthy();
     expect(view.queryByRole('button', { name: 'Open setup' })).toBeNull();
     expect(permissionsRequestMock).not.toHaveBeenCalled();
@@ -131,7 +131,7 @@ describe('popup setup routing', (): void => {
 
     await waitFor((): void => expect(permissionsRequestMock).toHaveBeenCalledOnce());
     expect(sendMessageMock).toHaveBeenCalledWith({ type: 'reconcileWebsiteAccess' });
-    expect(await view.findByRole('button', { name: 'Start focusing' })).toBeTruthy();
+    expect(await view.findByRole('button', { name: /^Start 25 min/ })).toBeTruthy();
   });
 
   it('keeps blocking off after denial and offers Retry', async (): Promise<void> => {
@@ -151,7 +151,7 @@ describe('popup setup routing', (): void => {
     );
     expect(sendMessageMock).toHaveBeenCalledWith({ type: 'reconcileWebsiteAccess' });
     expect(view.getByRole('button', { name: 'Retry' })).toBeTruthy();
-    expect(view.queryByRole('button', { name: 'Start focusing' })).toBeNull();
+    expect(view.queryByRole('button', { name: /^Start / })).toBeNull();
   });
 
   it('focuses Retry after a denied popup permission action settles', async (): Promise<void> => {
@@ -291,13 +291,13 @@ describe('popup setup routing', (): void => {
 
       expect((await first.findByRole('status')).textContent).toBe(expectedCopy);
       expect(first.queryByText(absentCopy)).toBeNull();
-      expect(first.queryByRole('button', { name: 'Start focusing' })).toBeNull();
+      expect(first.queryByRole('button', { name: /^Start / })).toBeNull();
 
       first.unmount();
       const reloaded = render(<App />);
       expect((await reloaded.findByRole('status')).textContent).toBe(expectedCopy);
       expect(reloaded.queryByText(absentCopy)).toBeNull();
-      expect(reloaded.queryByRole('button', { name: 'Start focusing' })).toBeNull();
+      expect(reloaded.queryByRole('button', { name: /^Start / })).toBeNull();
     },
   );
 
@@ -312,7 +312,7 @@ describe('popup setup routing', (): void => {
 
     const view = render(<App />);
 
-    expect(await view.findByRole('button', { name: 'Start focusing' })).toBeTruthy();
+    expect(await view.findByRole('button', { name: /^Start 25 min/ })).toBeTruthy();
     expect(view.queryByText('Website blocking is off')).toBeNull();
   });
 
@@ -390,7 +390,7 @@ describe('popup setup routing', (): void => {
 
     const view = render(<App />);
 
-    expect(await view.findByRole('button', { name: 'Start focusing' })).toBeTruthy();
+    expect(await view.findByRole('button', { name: /^Start 25 min/ })).toBeTruthy();
     expect(view.queryByText(/session ended/i)).toBeNull();
   });
 });

@@ -6,11 +6,12 @@ import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, rulesFromLists } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
+import type { ListsConfig } from '../../../src/shared/types';
 import { resetChromeFake, sendMessageMock } from './chrome-fake';
 
 vi.mock('../../../src/core/categories', () => ({
   ALL_CATEGORIES: [
-    { id: 'social', title: 'Social', hosts: ['facebook.com'] },
+    { id: 'social', title: 'Social media', hosts: ['facebook.com', 'instagram.com'] },
     { id: 'video', title: 'Video and streaming', hosts: ['youtube.com'] },
   ],
 }));
@@ -18,13 +19,22 @@ vi.mock('../../../src/core/categories', () => ({
 import { StartForm } from '../../../src/popup/StartForm';
 
 function ackByType(): void {
-  sendMessageMock.mockImplementation(async (req: Request): Promise<unknown> => {
-    if (req.type === 'startSession' || req.type === 'updateLists') return { ok: true };
+  sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+    if (request.type === 'startSession') return { ok: true };
     return undefined;
   });
 }
 
-describe('StartForm', () => {
+function startRequest(): Extract<Request, { type: 'startSession' }> | undefined {
+  return sendMessageMock.mock.calls
+    .map(([request]: unknown[]): Request => request as Request)
+    .find(
+      (request: Request): request is Extract<Request, { type: 'startSession' }> =>
+        request.type === 'startSession',
+    );
+}
+
+describe('StartForm', (): void => {
   beforeEach((): void => {
     resetChromeFake();
     ackByType();
@@ -38,109 +48,133 @@ describe('StartForm', () => {
     const { getByRole } = render(
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
+
     expect(getByRole('button', { name: '15 short' })).toBeTruthy();
     expect(getByRole('button', { name: '25 focus' })).toBeTruthy();
     expect(getByRole('button', { name: '50 deep work (preference, not science)' })).toBeTruthy();
   });
 
-  it('renders the prescribed strictness hints exactly', (): void => {
-    const { getByPlaceholderText, getByText } = render(
+  it('uses visible labels and a start label that names duration and mode', (): void => {
+    const { getByLabelText, getByRole } = render(
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
 
-    expect(getByPlaceholderText('What you working on?')).toBeTruthy();
-    expect(getByText('can end early after 30 s wait typing sentence')).toBeTruthy();
-    expect(getByText('no way out until timer ends, pauses excepted')).toBeTruthy();
+    expect(getByLabelText('Intention')).toBeTruthy();
+    expect(getByRole('group', { name: 'Session type' })).toBeTruthy();
+    expect(getByRole('group', { name: 'Blocking mode' })).toBeTruthy();
+    expect(getByRole('button', { name: 'Start 25 min - Block selected sites' })).toBeTruthy();
   });
 
-  it('starts a session from the chosen preset and typed intention', async (): Promise<void> => {
-    const { getByRole, getByPlaceholderText } = render(
-      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
+  it('keeps category changes in the draft and sends the complete rules snapshot once', async (): Promise<void> => {
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [
+        { kind: 'host', pattern: 'news.example' },
+        { kind: 'regex', pattern: '^https://example\\.com/private' },
+      ],
+      whitelist: [{ kind: 'host', pattern: 'docs.python.org' }],
+      exclusions: { social: ['facebook.com'] },
+    };
+    const { getByLabelText, getByRole } = render(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists }),
     );
 
-    fireEvent.click(getByRole('button', { name: '25 focus' }));
-    fireEvent.input(getByPlaceholderText('What you working on?'), {
-      target: { value: 'write the report' },
-    });
-    fireEvent.click(getByRole('button', { name: 'Start focusing' }));
+    fireEvent.click(getByRole('button', { name: 'Social media' }));
+    fireEvent.input(getByLabelText('Intention'), { target: { value: 'write the report' } });
+
+    expect(
+      sendMessageMock.mock.calls.some(
+        ([request]: unknown[]): boolean => (request as Request).type === 'updateLists',
+      ),
+    ).toBe(false);
+
+    fireEvent.click(getByRole('button', { name: 'Start 25 min - Block selected sites' }));
 
     await waitFor((): void => {
-      expect(sendMessageMock).toHaveBeenCalledWith({
-        type: 'startSession',
-        config: {
-          mode: 'blacklist',
-          strictness: 'friction',
-          durationMin: 25,
-          cycling: DEFAULT_SETTINGS.defaultCycling,
-          intention: 'write the report',
-          source: 'manual',
-          scheduleEntryId: null,
-          rules: rulesFromLists(DEFAULT_LISTS),
+      expect(startRequest()?.config).toEqual({
+        mode: 'blacklist',
+        strictness: 'friction',
+        durationMin: 25,
+        cycling: DEFAULT_SETTINGS.defaultCycling,
+        intention: 'write the report',
+        source: 'manual',
+        scheduleEntryId: null,
+        rules: {
+          ...rulesFromLists(lists),
+          categories: { ...lists.categories, social: true },
         },
       });
     });
+    expect(
+      sendMessageMock.mock.calls.some(
+        ([request]: unknown[]): boolean => (request as Request).type === 'getLists',
+      ),
+    ).toBe(false);
   });
 
-  it('toggles a category pill by sending updateLists immediately', async (): Promise<void> => {
-    const { getByRole } = render(
+  it('adds only valid normalized allow domains to this session', async (): Promise<void> => {
+    const { getByLabelText, getByRole, queryByText } = render(
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
 
-    fireEvent.click(getByRole('button', { name: 'Social' }));
+    fireEvent.click(getByRole('radio', { name: /Allow selected sites only/ }));
+    const input: HTMLInputElement = getByLabelText('Add an allowed domain') as HTMLInputElement;
+    fireEvent.input(input, { target: { value: 'https://Docs.Python.org/3/library/' } });
+    fireEvent.click(getByRole('button', { name: 'Add allowed domain' }));
+
+    expect(queryByText('docs.python.org')).toBeTruthy();
+    fireEvent.input(input, { target: { value: 'https://user@example.com/' } });
+    fireEvent.click(getByRole('button', { name: 'Add allowed domain' }));
+    expect(getByRole('alert').textContent).toContain('valid domain');
+
+    fireEvent.click(getByRole('button', { name: 'Start 25 min - Allow selected sites only' }));
 
     await waitFor((): void => {
-      expect(sendMessageMock).toHaveBeenCalledWith({
-        type: 'updateLists',
-        lists: { ...DEFAULT_LISTS, categories: { ...DEFAULT_LISTS.categories, social: true } },
-      });
-    });
-  });
-
-  it('starts from the worker-confirmed lists after a category update', async (): Promise<void> => {
-    let currentLists = structuredClone(DEFAULT_LISTS);
-    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
-      if (request.type === 'updateLists') {
-        currentLists = request.lists;
-        return { ok: true };
-      }
-      if (request.type === 'getLists') return currentLists;
-      if (request.type === 'startSession') return { ok: true };
-      return undefined;
-    });
-    const { getByRole } = render(
-      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
-    );
-
-    fireEvent.click(getByRole('button', { name: 'Social' }));
-    await waitFor((): void => {
-      expect(sendMessageMock).toHaveBeenCalledWith(
-        expect.objectContaining({ type: 'updateLists' }),
-      );
-    });
-    fireEvent.click(getByRole('button', { name: 'Start focusing' }));
-
-    await waitFor((): void => {
-      expect(sendMessageMock).toHaveBeenCalledWith({
-        type: 'startSession',
-        config: expect.objectContaining({
+      expect(startRequest()?.config).toEqual(
+        expect.objectContaining({
+          mode: 'whitelist',
           rules: expect.objectContaining({
-            categories: { ...DEFAULT_LISTS.categories, social: true },
+            sessionAllowlist: [{ kind: 'host', pattern: 'docs.python.org' }],
           }),
         }),
-      });
+      );
     });
+    expect(
+      sendMessageMock.mock.calls.some(
+        ([request]: unknown[]): boolean => (request as Request).type === 'updateLists',
+      ),
+    ).toBe(false);
   });
 
-  it('shows the worker rejection inline under the start button', async (): Promise<void> => {
-    sendMessageMock.mockImplementation(async (req: Request): Promise<unknown> => {
-      if (req.type === 'startSession') return { ok: false, error: 'a session is already running' };
-      return { ok: true };
+  it('keeps the start action and validation errors outside the scrollable rule list', (): void => {
+    const { getByLabelText, getByRole } = render(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
+    );
+    const start: HTMLElement = getByRole('button', {
+      name: 'Start 25 min - Block selected sites',
+    });
+    const scrollRegion: HTMLElement = getByRole('region', { name: 'Session rule details' });
+
+    expect(scrollRegion.contains(start)).toBe(false);
+    fireEvent.input(getByLabelText('Custom minutes'), { target: { value: '0' } });
+    fireEvent.click(start);
+    const error: HTMLElement = getByRole('alert');
+    expect(error.textContent).toContain('session length');
+    expect(scrollRegion.contains(error)).toBe(false);
+  });
+
+  it('shows the worker rejection beside the start action', async (): Promise<void> => {
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'startSession') {
+        return { ok: false, error: 'a session is already running' };
+      }
+      return undefined;
     });
     const { getByRole, getByText } = render(
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
 
-    fireEvent.click(getByRole('button', { name: 'Start focusing' }));
+    fireEvent.click(getByRole('button', { name: 'Start 25 min - Block selected sites' }));
 
     await waitFor((): void => {
       expect(getByText('a session is already running')).toBeTruthy();

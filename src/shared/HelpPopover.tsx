@@ -229,9 +229,20 @@ function usePopoverInteraction(
 export type HelpPopoverProps = {
   label: string;
   children: ComponentChildren;
+  triggerContent?: ComponentChildren;
+  triggerClassName?: string;
+  triggerPressed?: boolean;
+  onTriggerClick?: () => void;
 };
 
-export function HelpPopover({ label, children }: HelpPopoverProps): JSX.Element {
+export function HelpPopover({
+  label,
+  children,
+  triggerContent,
+  triggerClassName,
+  triggerPressed,
+  onTriggerClick,
+}: HelpPopoverProps): JSX.Element {
   const rootRef = useRef<HTMLSpanElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const contentRef = useRef<HTMLSpanElement | null>(null);
@@ -249,15 +260,23 @@ export function HelpPopover({ label, children }: HelpPopoverProps): JSX.Element 
     <span ref={rootRef} class="help-popover">
       <button
         ref={triggerRef}
-        class="help-popover__trigger"
+        class={
+          triggerClassName === undefined
+            ? 'help-popover__trigger'
+            : `help-popover__trigger ${triggerClassName}`
+        }
         type="button"
         aria-label={label}
         aria-controls={contentId}
         aria-describedby={interaction.open ? contentId : undefined}
         aria-expanded={interaction.open}
-        onClick={interaction.handleClick}
+        aria-pressed={triggerPressed}
+        onClick={(): void => {
+          onTriggerClick?.();
+          interaction.handleClick();
+        }}
       >
-        <span aria-hidden="true">?</span>
+        {triggerContent ?? <span aria-hidden="true">?</span>}
       </button>
       {interaction.open ? (
         <span
