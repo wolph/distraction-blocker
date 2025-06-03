@@ -15,7 +15,10 @@ import type {
   SessionSnapshot,
   SetupState,
 } from '../../src/shared/types';
-import { type BrowserDiagnostics, createBrowserDiagnostics } from './browser-diagnostics';
+import {
+  assertNoUnexpectedBrowserDiagnostics,
+  type BrowserDiagnostics,
+} from './browser-diagnostics';
 import {
   expect,
   type FreshInstallLaunch,
@@ -27,7 +30,7 @@ import {
 test.setTimeout(90_000);
 
 function expectNoDiagnostics(diagnostics: BrowserDiagnostics): void {
-  expect(diagnostics).toEqual(createBrowserDiagnostics());
+  expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).not.toThrow();
 }
 
 async function currentSetup(launch: FreshInstallLaunch): Promise<SetupState> {
@@ -55,8 +58,34 @@ test('fresh install has no host access and popup routes to unfinished setup', as
   await expect(
     launch.extPage.getByRole('heading', { name: 'Finish setting up Focus Lock' }),
   ).toBeVisible();
-  await expect(launch.extPage.getByRole('button', { name: 'Start focusing' })).toHaveCount(0);
+  await expect(launch.extPage.getByRole('button', { name: /^Start/ })).toHaveCount(0);
   expectNoDiagnostics(diagnostics);
+});
+
+test('setup completion waits for delayed initial load and step transitions', async ({
+  freshInstallExtension,
+}) => {
+  test.info().setTimeout(15_000);
+  const launch: FreshInstallLaunch = await freshInstallExtension.launch();
+  await launch.onboardingPage.addInitScript((delayMs: number): void => {
+    const originalSendMessage: typeof chrome.runtime.sendMessage = chrome.runtime.sendMessage.bind(
+      chrome.runtime,
+    );
+    Object.defineProperty(chrome.runtime, 'sendMessage', {
+      configurable: true,
+      value: async (...args: Parameters<typeof chrome.runtime.sendMessage>): Promise<unknown> => {
+        await new Promise<void>((resolve: () => void): void => {
+          globalThis.setTimeout(resolve, delayMs);
+        });
+        return await originalSendMessage(...args);
+      },
+    });
+  }, 200);
+
+  expect(await freshInstallExtension.completeSetup('local')).toMatchObject({
+    completed: true,
+    storageMode: 'local',
+  });
 });
 
 test('denied access can be retried, completed locally, and block a real page', async ({
@@ -131,7 +160,7 @@ test('sync completion and dynamic registration survive a browser restart', async
   await expect(
     launch.onboardingPage.getByRole('heading', { name: 'Setup complete' }),
   ).toBeVisible();
-  await expect(launch.extPage.getByRole('button', { name: 'Start focusing' })).toBeVisible();
+  await expect(launch.extPage.getByRole('button', { name: /^Start/ })).toBeVisible();
   expectNoDiagnostics(diagnostics);
 });
 
@@ -178,7 +207,7 @@ test('permission revocation ends a session and rejects another session start', a
   await expect(
     launch.extPage.getByRole('heading', { name: 'Website blocking is off' }),
   ).toBeVisible();
-  await expect(launch.extPage.getByRole('button', { name: 'Start focusing' })).toHaveCount(0);
+  await expect(launch.extPage.getByRole('button', { name: /^Start/ })).toHaveCount(0);
   expectNoDiagnostics(diagnostics);
 });
 

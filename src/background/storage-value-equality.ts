@@ -10,7 +10,7 @@ function canonicalStorageValue(value: unknown): unknown {
   return Object.fromEntries(
     Object.entries(value)
       .sort(([left]: [string, unknown], [right]: [string, unknown]): number =>
-        left.localeCompare(right),
+        left === right ? 0 : left < right ? -1 : 1,
       )
       .map(([key, nested]: [string, unknown]): [string, unknown] => [
         key,

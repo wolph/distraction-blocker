@@ -1,7 +1,8 @@
 import type { BrowserContext, ConsoleMessage, Page, Request, Worker } from '@playwright/test';
-import { expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { BrowserDiagnostics } from '../../../tests/e2e/browser-diagnostics';
 import {
+  closeAndAssertBrowserDiagnostics,
   createBrowserDiagnostics,
   monitorBrowserContext,
 } from '../../../tests/e2e/browser-diagnostics';
@@ -23,6 +24,18 @@ class FakeEmitter {
   }
 }
 
+interface FakeContext extends FakeEmitter {
+  pages(): Page[];
+  serviceWorkers(): Worker[];
+}
+
+function fakeContext(existingWorkers: Worker[] = []): FakeContext {
+  return Object.assign(new FakeEmitter(), {
+    pages: (): Page[] => [],
+    serviceWorkers: (): Worker[] => existingWorkers,
+  });
+}
+
 function errorMessage(text: string, url: string = ''): ConsoleMessage {
   return {
     type: (): string => 'error',
@@ -38,47 +51,115 @@ function requestFailure(url: string, errorText: string): Request {
   } as Request;
 }
 
-it('captures startup, navigation, restart, request, and blocked-request diagnostics', (): void => {
-  const startupWorker: FakeEmitter = new FakeEmitter();
-  const initialPage: FakeEmitter = new FakeEmitter();
-  const context: FakeEmitter & {
-    pages(): Page[];
-    serviceWorkers(): Worker[];
-  } = Object.assign(new FakeEmitter(), {
-    pages: (): Page[] => [],
-    serviceWorkers: (): Worker[] => [startupWorker as unknown as Worker],
+describe('monitorBrowserContext', (): void => {
+  it('cannot recover worker errors emitted before listeners attach', (): void => {
+    const startupWorker: FakeEmitter = new FakeEmitter();
+    const context: FakeContext = fakeContext([startupWorker as unknown as Worker]);
+    const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
+
+    startupWorker.emit('console', errorMessage('unobservable launch error'));
+    monitorBrowserContext(context as unknown as BrowserContext, diagnostics);
+    startupWorker.emit('console', errorMessage('observable worker error'));
+
+    expect(diagnostics.workerErrors).toEqual(['observable worker error']);
   });
-  const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
 
-  monitorBrowserContext(context as unknown as BrowserContext, diagnostics);
-  startupWorker.emit('console', errorMessage('startup failed'));
-  startupWorker.emit(
-    'console',
-    errorMessage('focus-lock background error Error: The browser is shutting down.'),
-  );
-  context.emit('page', initialPage as unknown as Page);
-  initialPage.emit(
-    'console',
-    errorMessage('navigation failed', 'chrome-extension://test/popup.html'),
-  );
-  initialPage.emit('pageerror', new Error('page crashed'));
-  initialPage.emit(
-    'requestfailed',
-    requestFailure('https://example.test/api', 'net::ERR_CONNECTION_REFUSED'),
-  );
-  initialPage.emit(
-    'requestfailed',
-    requestFailure('https://blocked.test/', 'net::ERR_BLOCKED_BY_CLIENT'),
-  );
-  const restartedWorker: FakeEmitter = new FakeEmitter();
-  context.emit('serviceworker', restartedWorker as unknown as Worker);
-  restartedWorker.emit('console', errorMessage('restart failed'));
+  it('collects request failures from the browser context', (): void => {
+    const context: FakeContext = fakeContext();
+    const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
 
-  expect(diagnostics).toEqual({
-    blockedRequests: ['https://blocked.test/: net::ERR_BLOCKED_BY_CLIENT'],
-    consoleErrors: ['chrome-extension://test/popup.html: navigation failed'],
-    pageErrors: ['page crashed'],
-    requestErrors: ['https://example.test/api: net::ERR_CONNECTION_REFUSED'],
-    workerErrors: ['startup failed', 'restart failed'],
+    monitorBrowserContext(context as unknown as BrowserContext, diagnostics);
+    context.emit(
+      'requestfailed',
+      requestFailure('https://example.test/api', 'net::ERR_CONNECTION_REFUSED'),
+    );
+    context.emit(
+      'requestfailed',
+      requestFailure('https://blocked.test/', 'net::ERR_BLOCKED_BY_CLIENT'),
+    );
+
+    expect(diagnostics.requestErrors).toEqual([
+      'https://example.test/api: net::ERR_CONNECTION_REFUSED',
+    ]);
+    expect(diagnostics.blockedRequests).toEqual([
+      'https://blocked.test/: net::ERR_BLOCKED_BY_CLIENT',
+    ]);
+  });
+
+  it('captures the boot error from a worker restarted after monitoring begins', (): void => {
+    const context: FakeContext = fakeContext();
+    const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
+    const restartedWorker: FakeEmitter = new FakeEmitter();
+
+    monitorBrowserContext(context as unknown as BrowserContext, diagnostics);
+    context.emit('serviceworker', restartedWorker as unknown as Worker);
+    restartedWorker.emit('console', errorMessage('monitored restart boot failed'));
+
+    expect(diagnostics.workerErrors).toEqual(['monitored restart boot failed']);
+  });
+
+  it('classifies exact browser shutdown messages separately from worker errors', (): void => {
+    const startupWorker: FakeEmitter = new FakeEmitter();
+    const context: FakeContext = fakeContext([startupWorker as unknown as Worker]);
+    const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
+
+    monitorBrowserContext(context as unknown as BrowserContext, diagnostics);
+    startupWorker.emit(
+      'console',
+      errorMessage('focus-lock background error Error: The browser is shutting down.'),
+    );
+    startupWorker.emit('console', errorMessage('different worker error'));
+
+    expect(diagnostics.shutdownWorkerMessages).toEqual([
+      'focus-lock background error Error: The browser is shutting down.',
+    ]);
+    expect(diagnostics.workerErrors).toEqual(['different worker error']);
+  });
+
+  it('captures page console and uncaught errors from pages created after attachment', (): void => {
+    const context: FakeContext = fakeContext();
+    const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
+    const page: FakeEmitter = new FakeEmitter();
+
+    monitorBrowserContext(context as unknown as BrowserContext, diagnostics);
+    context.emit('page', page as unknown as Page);
+    page.emit('console', errorMessage('navigation failed', 'chrome-extension://test/popup.html'));
+    page.emit('pageerror', new Error('page crashed'));
+
+    expect(diagnostics.consoleErrors).toEqual([
+      'chrome-extension://test/popup.html: navigation failed',
+    ]);
+    expect(diagnostics.pageErrors).toEqual(['page crashed']);
+  });
+});
+
+describe('closeAndAssertBrowserDiagnostics', (): void => {
+  it('closes the final context before checking late diagnostics', async (): Promise<void> => {
+    const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
+    let closed: boolean = false;
+
+    await expect(
+      closeAndAssertBrowserDiagnostics(async (): Promise<void> => {
+        closed = true;
+        diagnostics.workerErrors.push('worker teardown failed');
+      }, diagnostics),
+    ).rejects.toThrow('worker teardown failed');
+    expect(closed).toBe(true);
+  });
+
+  it('surfaces both context-close and diagnostic failures', async (): Promise<void> => {
+    const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
+    diagnostics.pageErrors.push('page failed');
+
+    await expect(
+      closeAndAssertBrowserDiagnostics(async (): Promise<void> => {
+        throw new Error('context close failed');
+      }, diagnostics),
+    ).rejects.toMatchObject({
+      errors: [
+        expect.objectContaining({ message: 'context close failed' }),
+        expect.objectContaining({ message: expect.stringContaining('page failed') }),
+      ],
+    });
   });
 });

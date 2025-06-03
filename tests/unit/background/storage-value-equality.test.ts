@@ -11,6 +11,27 @@ describe('storageValuesEqual', (): void => {
     ).toBe(true);
   });
 
+  it('orders composed and decomposed object keys by exact code units', (): void => {
+    const composed: string = '\u00e9';
+    const decomposed: string = 'e\u0301';
+    expect(
+      storageValuesEqual(
+        {
+          nested: {
+            [composed]: { order: ['first', 'second'] },
+            [decomposed]: 'decomposed',
+          },
+        },
+        {
+          nested: {
+            [decomposed]: 'decomposed',
+            [composed]: { order: ['first', 'second'] },
+          },
+        },
+      ),
+    ).toBe(true);
+  });
+
   it('does not treat changed nested values as equal', (): void => {
     expect(storageValuesEqual({ outer: { value: 1 } }, { outer: { value: 2 } })).toBe(false);
   });

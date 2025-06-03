@@ -21,6 +21,7 @@ import type {
 } from '../../src/shared/types';
 import {
   type BrowserDiagnostics,
+  closeAndAssertBrowserDiagnostics,
   createBrowserDiagnostics,
   monitorBrowserContext,
 } from './browser-diagnostics';
@@ -108,7 +109,13 @@ async function extensionLaunch(
     const extensionId: string = new URL(worker.url()).host;
     const extPage: Page = await context.newPage();
     await extPage.goto(`chrome-extension://${extensionId}/src/popup/popup.html`);
-    return { context, diagnostics, worker, extensionId, extPage };
+    return await restartMonitoredWorker({
+      context,
+      diagnostics,
+      worker,
+      extensionId,
+      extPage,
+    });
   });
 }
 
@@ -136,6 +143,55 @@ async function waitForServiceWorkerVersion(
     });
   }
   throw new Error(failure);
+}
+
+async function restartMonitoredWorker(launch: ExtensionLaunch): Promise<ExtensionLaunch> {
+  const session: CDPSession = await launch.context.newCDPSession(launch.extPage);
+  let versions: readonly ServiceWorkerVersionInfo[] = [];
+  const stoppedVersionIds: Set<string> = new Set<string>();
+  session.on('ServiceWorker.workerVersionUpdated', (payload): void => {
+    versions = payload.versions as readonly ServiceWorkerVersionInfo[];
+    for (const version of versions) {
+      if (version.runningStatus === 'stopped') stoppedVersionIds.add(version.versionId);
+    }
+  });
+  try {
+    await session.send('ServiceWorker.enable');
+    const scriptPrefix: string = `chrome-extension://${launch.extensionId}/`;
+    const running: ServiceWorkerVersionInfo = await waitForServiceWorkerVersion(
+      (): readonly ServiceWorkerVersionInfo[] => versions,
+      (version: ServiceWorkerVersionInfo): boolean =>
+        version.scriptURL.startsWith(scriptPrefix) && version.runningStatus === 'running',
+      'running extension worker version is unavailable',
+    );
+    await session.send('ServiceWorker.stopWorker', { versionId: running.versionId });
+    await waitForServiceWorkerVersion(
+      (): readonly ServiceWorkerVersionInfo[] =>
+        stoppedVersionIds.has(running.versionId) ? [running] : [],
+      (version: ServiceWorkerVersionInfo): boolean => version.versionId === running.versionId,
+      'extension worker did not stop',
+    );
+    await launch.extPage.evaluate(
+      async (): Promise<unknown> => await chrome.runtime.sendMessage({ type: 'getSetupState' }),
+    );
+    await waitForServiceWorkerVersion(
+      (): readonly ServiceWorkerVersionInfo[] => versions,
+      (version: ServiceWorkerVersionInfo): boolean =>
+        version.scriptURL.startsWith(scriptPrefix) && version.runningStatus === 'running',
+      'extension worker did not restart',
+    );
+    const worker: Worker =
+      launch.context
+        .serviceWorkers()
+        .find((candidate: Worker): boolean => candidate.url().startsWith(scriptPrefix)) ??
+      launch.worker;
+    await worker.evaluate(async (): Promise<void> => {
+      await chrome.storage.local.get(null);
+    });
+    return { ...launch, worker };
+  } finally {
+    await session.detach();
+  }
 }
 
 const SYNC_FILLER_PREFIX: string = '__focusLockE2EQuota:';
@@ -227,8 +283,14 @@ export const test = base.extend<ExtFixtures>({
       grantDist,
       diagnostics,
     );
-    await use(launch.context);
-    await launch.context.close();
+    try {
+      await use(launch.context);
+    } finally {
+      await closeAndAssertBrowserDiagnostics(
+        async (): Promise<void> => await launch.context.close(),
+        diagnostics,
+      );
+    }
   },
   worker: async ({ context }, use) => {
     const existing: Worker | undefined = context.serviceWorkers()[0];
@@ -278,8 +340,11 @@ export const test = base.extend<ExtFixtures>({
       return current;
     };
 
-    await use({ diagnostics, launch, close });
-    await close();
+    try {
+      await use({ diagnostics, launch, close });
+    } finally {
+      await closeAndAssertBrowserDiagnostics(close, diagnostics);
+    }
   },
   // biome-ignore lint/correctness/noEmptyPattern: playwright fixture signature
   freshInstallExtension: async ({}, use, testInfo) => {
@@ -387,69 +452,43 @@ export const test = base.extend<ExtFixtures>({
     };
     const restartWorker = async (): Promise<FreshInstallLaunch> => {
       const launchState: FreshInstallLaunch = requireCurrent();
-      const session: CDPSession = await launchState.context.newCDPSession(launchState.extPage);
-      let versions: readonly ServiceWorkerVersionInfo[] = [];
-      session.on('ServiceWorker.workerVersionUpdated', (payload): void => {
-        versions = payload.versions as readonly ServiceWorkerVersionInfo[];
-      });
-      try {
-        await session.send('ServiceWorker.enable');
-        const scriptPrefix: string = `chrome-extension://${launchState.extensionId}/`;
-        const running: ServiceWorkerVersionInfo = await waitForServiceWorkerVersion(
-          (): readonly ServiceWorkerVersionInfo[] => versions,
-          (version: ServiceWorkerVersionInfo): boolean =>
-            version.scriptURL.startsWith(scriptPrefix) && version.runningStatus === 'running',
-          'running extension worker version is unavailable',
-        );
-        await session.send('ServiceWorker.stopWorker', { versionId: running.versionId });
-        await waitForServiceWorkerVersion(
-          (): readonly ServiceWorkerVersionInfo[] => versions,
-          (version: ServiceWorkerVersionInfo): boolean =>
-            version.versionId === running.versionId && version.runningStatus === 'stopped',
-          'extension worker did not stop',
-        );
-        const nextWorker: Promise<Worker | undefined> = launchState.context
-          .waitForEvent('serviceworker', { timeout: 5_000 })
-          .catch((): undefined => undefined);
-        await launchState.extPage.evaluate(
-          async (): Promise<unknown> => await chrome.runtime.sendMessage({ type: 'getSetupState' }),
-        );
-        await waitForServiceWorkerVersion(
-          (): readonly ServiceWorkerVersionInfo[] => versions,
-          (version: ServiceWorkerVersionInfo): boolean =>
-            version.scriptURL.startsWith(scriptPrefix) && version.runningStatus === 'running',
-          'extension worker did not restart',
-        );
-        const emittedWorker: Worker | undefined = await nextWorker;
-        const worker: Worker =
-          emittedWorker ??
-          launchState.context
-            .serviceWorkers()
-            .find((candidate: Worker): boolean => candidate.url().startsWith(scriptPrefix)) ??
-          launchState.worker;
-        await worker.evaluate(async (): Promise<void> => {
-          await chrome.storage.local.get(null);
-        });
-        current = { ...launchState, worker };
-        return current;
-      } finally {
-        await session.detach();
-      }
+      const restarted: ExtensionLaunch = await restartMonitoredWorker(launchState);
+      current = { ...launchState, worker: restarted.worker };
+      return current;
     };
     const completeSetup = async (storageMode: StorageMode): Promise<SetupState> => {
       const launchState: FreshInstallLaunch = requireCurrent();
       const page: Page = launchState.onboardingPage;
       await page.reload();
       const stepOne = page.getByRole('heading', { name: 'Choose your starting block list' });
-      if (await stepOne.isVisible()) await page.getByRole('button', { name: 'Continue' }).click();
       const stepTwo = page.getByRole('heading', { name: 'Enable website blocking' });
+      const stepThree = page.getByRole('heading', {
+        name: 'Choose where your settings are stored',
+      });
+      const setupComplete = page.getByRole('heading', { name: 'Setup complete' });
+      const authoritativeHeading = page.getByRole('heading', {
+        name: /^(Choose your starting block list|Enable website blocking|Choose where your settings are stored|Setup complete)$/,
+      });
+      await authoritativeHeading.waitFor();
+      if ((await authoritativeHeading.count()) !== 1) {
+        throw new Error('onboarding did not render exactly one authoritative step heading');
+      }
+      if (await stepOne.isVisible()) {
+        await page.getByRole('button', { name: 'Continue' }).click();
+        await stepTwo.waitFor();
+      }
       if (await stepTwo.isVisible()) {
         if (await hasWebsiteAccess()) {
           await page.getByRole('button', { name: /^(Enable website blocking|Retry)$/ }).click();
         } else {
           await page.getByRole('button', { name: 'Not now' }).click();
         }
+        await stepThree.waitFor();
       }
+      if (await setupComplete.isVisible()) {
+        return await sendExtensionRequest(launchState.extPage, { type: 'getSetupState' });
+      }
+      await stepThree.waitFor();
       const syncSwitch = page.getByRole('switch', { name: 'Sync across Chrome devices' });
       await syncSwitch.waitFor();
       const wantSync: boolean = storageMode === 'sync';
@@ -459,7 +498,7 @@ export const test = base.extend<ExtFixtures>({
           name: wantSync ? 'Finish setup with sync enabled' : 'Finish setup without sync',
         })
         .click();
-      await page.getByRole('heading', { name: 'Setup complete' }).waitFor();
+      await setupComplete.waitFor();
       return await sendExtensionRequest(launchState.extPage, { type: 'getSetupState' });
     };
     const fillSyncNearQuota = async (): Promise<{
@@ -498,25 +537,28 @@ export const test = base.extend<ExtFixtures>({
       }, SYNC_FILLER_PREFIX);
     };
 
-    await use({
-      diagnostics,
-      launch,
-      close,
-      relaunch,
-      grantWebsiteAccess,
-      denyWebsiteAccess,
-      revokeWebsiteAccess,
-      restartWorker,
-      onboardingUrl,
-      hasWebsiteAccess,
-      dynamicRegistrations,
-      completeSetup,
-      fillSyncNearQuota,
-      clearSyncFiller,
-      localItems,
-      syncItems,
-    });
-    await close();
+    try {
+      await use({
+        diagnostics,
+        launch,
+        close,
+        relaunch,
+        grantWebsiteAccess,
+        denyWebsiteAccess,
+        revokeWebsiteAccess,
+        restartWorker,
+        onboardingUrl,
+        hasWebsiteAccess,
+        dynamicRegistrations,
+        completeSetup,
+        fillSyncNearQuota,
+        clearSyncFiller,
+        localItems,
+        syncItems,
+      });
+    } finally {
+      await closeAndAssertBrowserDiagnostics(close, diagnostics);
+    }
   },
 });
 
