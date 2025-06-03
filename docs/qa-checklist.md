@@ -11,13 +11,14 @@ Last updated: 2026-09-01. The full visual browser evidence below targets exact s
 
 ## Runtime permission onboarding evidence
 
-Task 5 automated evidence targets exact source commit `d2aae6db6034397b1cf77963d5219d08c329090c` with Google Chrome for Testing 151.0.7922.34. Every browser run used an isolated Playwright profile and did not touch the user's Chrome.
+Task 5 fixes are recorded in commit `364560292daa58f327802aae40082556aaa6128b` with Google Chrome for Testing 151.0.7922.34. Every browser run used an isolated Playwright profile and did not touch the user's Chrome. The verification ran in the shared integration worktree with this commit checked out plus preserved in-progress Task 2 popup edits. The results validate that integrated state, not a clean exact tree for this commit alone.
 
-- [x] `npm run build && npx playwright test tests/e2e/onboarding.spec.ts tests/e2e/restart.spec.ts` passed all 6 scenarios. It covered a fresh install without host access, the incomplete popup, denial and retry, a granted dynamic registration, local and Sync completion, browser restart, permission revocation, rejected session start after revocation, a real blocked page after grant, and restored blocking after restart.
+- [x] `npm run build && npx playwright test tests/e2e/onboarding.spec.ts tests/e2e/restart.spec.ts` passed all 7 scenarios in 45.9 seconds. It covered a fresh install without host access, the incomplete popup, delayed onboarding loading and step transitions, denial and retry, a granted dynamic registration, local and Sync completion, browser restart, permission revocation, rejected session start after revocation, a real blocked page after grant, and restored blocking after restart.
 - [x] The real Chrome Sync quota scenario filled only test-owned keys, preserved unrelated Sync data, forced first publication to fail, and kept setup incomplete with local choices, the pending journal, and the checkpoint intact. The state survived a protocol-level background-worker stop and a browser restart. Removing only the test filler allowed retry. Both recovered local and remote settings and lists matched the captured pre-failure local snapshot.
-- [x] The onboarding and restart scenarios recorded zero browser console, page, worker, request, and blocked-request errors across worker startup, initial navigation, permission-bootstrap launches, and restarts. Shutdown-only worker messages with the exact text `focus-lock background error Error: The browser is shutting down.` were classified separately.
-- [x] `NO_COLOR=1 npm run check` passed 66 test files with 1,725 tests passed and 2 skipped. Biome, TypeScript, deterministic icon generation, and the production build passed.
-- [x] `NO_COLOR=1 npm run e2e` rebuilt the extension and passed all 36 Playwright scenarios in 3.7 minutes.
+- [x] Playwright cannot attach listeners before `launchPersistentContext` returns. The fixture attaches page, worker, and context-level request listeners immediately after launch, then forces a monitored worker stop and restart before behavior assertions for every production, temporary permission, and restart launch. The onboarding and restart scenarios recorded zero browser console, page, worker, request, and blocked-request errors through monitored worker boot, initial navigation, permission-bootstrap launches, and restarts.
+- [x] Every final browser context closed before fixture diagnostics were asserted. Teardown failures and diagnostics failures are aggregated. Shutdown-only worker messages are retained in a separate bucket and accepted only when they exactly equal `focus-lock background error Error: The browser is shutting down.`
+- [x] `NO_COLOR=1 npm run check` passed 68 test files with 1,734 tests passed and 2 skipped. Biome, TypeScript, deterministic icon generation, and the production build passed.
+- [x] `NO_COLOR=1 npm run e2e` rebuilt the extension and passed all 37 Playwright scenarios in 3.8 minutes.
 - [x] Automated grant setup launched a test-only copy of the same extension ID with required HTTP and HTTPS host permissions, then relaunched the production optional-permission manifest. This exercised Chrome's persisted permission state, dynamic registration, revocation, and enforcement without faking extension APIs.
 - [ ] The native Chrome permission warning was not observed in headless automation. Exact warning copy and a real-prompt artifact remain part of Task 6 visual verification.
 
@@ -29,9 +30,10 @@ Task 5 artifacts are in `test-results/`:
 - `test-results/onboarding-sync-completion-f5095-n-survive-a-browser-restart/`
 - `test-results/onboarding-permission-revo-bebe5-jects-another-session-start/`
 - `test-results/onboarding-quota-backed-fi-cfc63-rowser-restart-then-retries/`
+- `test-results/onboarding-setup-completio-b9e30-l-load-and-step-transitions/`
 - `test-results/restart-persistent-profile-88b20-ve-countdown-after-relaunch/`
 
-Playwright retains traces only on failure. The passing exact-source run therefore records isolated profiles and `.last-run.json`, not a green trace archive.
+Playwright retains traces only on failure. The passing integrated run therefore records isolated profiles and `.last-run.json`, not a green trace archive.
 
 ## Automated browser behavior
 
