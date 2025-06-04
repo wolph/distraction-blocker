@@ -20,7 +20,36 @@ Task 5 fixes are recorded in commit `364560292daa58f327802aae40082556aaa6128b` w
 - [x] `NO_COLOR=1 npm run check` passed 68 test files with 1,734 tests passed and 2 skipped. Biome, TypeScript, deterministic icon generation, and the production build passed.
 - [x] `NO_COLOR=1 npm run e2e` rebuilt the extension and passed all 37 Playwright scenarios in 3.8 minutes.
 - [x] Automated grant setup launched a test-only copy of the same extension ID with required HTTP and HTTPS host permissions, then relaunched the production optional-permission manifest. This exercised Chrome's persisted permission state, dynamic registration, revocation, and enforcement without faking extension APIs.
-- [ ] The native Chrome permission warning was not observed in headless automation. Exact warning copy and a real-prompt artifact remain part of Task 6 visual verification.
+- [x] Task 6 captured the native Chrome permission warning in a headed, isolated Chrome-for-Testing 151.0.7922.34 profile. The prompt was absent before clicking `Enable website blocking`, appeared only after that click, disappeared after `Deny`, reappeared after `Retry`, and disappeared after `Allow`. The user's regular Chrome was not attached, quit, restarted, or modified.
+
+## Onboarding visual and native permission evidence
+
+Task 6 verified the three-step onboarding UI against the production extension, the Vite development server, and a separate headed release-build launch. The longest bundled domain, `store.steampowered.com`, is the long-value boundary because onboarding deliberately offers bundled category choices rather than custom-domain entry.
+
+- [x] `npx vitest run tests/unit/onboarding/theme-entry.test.ts` passed all 6 tests. Saved Light and Dark themes load through the validated settings message boundary, invalid or failed loads retain Auto, and valid live snapshots update the onboarding theme.
+- [x] `npm run build && npx playwright test tests/e2e/onboarding-visual.spec.ts` passed the production visual scenario in an isolated Chrome-for-Testing profile. It captured every seeded state at 375, 768, and 1280 px in Auto with light media, Auto with dark media, explicit Light with dark media, and explicit Dark with light media.
+- [x] Production coverage includes all three steps, an expanded Gaming category, the permission explanation, denied access, registration failure, Retry, Not now, Sync on and off, pending completion, invalid-draft recovery, and load-error recovery. The run captured 324 full-page, heading, and focused-component PNGs. It reported zero overflow, clipping, console errors, page errors, worker errors, request failures, and blocked requests.
+- [x] The Vite development-server pass exercised all three steps at the same three widths and four theme/media combinations. It captured 72 full-page and focused-component PNGs across 36 states. Computed colors, explicit-theme precedence, viewport edges, long-domain wrapping, and browser diagnostics passed.
+- [x] Representative full-page and focused captures were inspected at every width and in light and dark presentations. Headings, expanded lists, warning and recovery messages, button rows, the Sync switch, disabled pending-completion action, focus outlines, and viewport edges remained readable and contained.
+
+Chrome-for-Testing 151.0.7922.34 displayed these exact browser-owned lines after the real `Enable website blocking` click:
+
+- `"Focus Lock" has requested additional permissions.`
+- `It could:`
+- `Read and change all your data on all websites`
+- `Deny`
+- `Allow`
+
+The onboarding explanation says `Chrome will therefore ask whether Focus Lock may read and change data on all websites.` Chrome inserts `your` in its capability line. The scope matches line by line: read and change access, all data, and all websites. The surrounding onboarding copy additionally limits the product's stated use to checking addresses, applying blocking rules, and restoring pages.
+
+Task 6 artifacts:
+
+- Production visual evidence: `test-results/onboarding-visual-producti-6c3bf-it-every-viewport-and-theme/onboarding-visual-evidence/`
+- Development-server evidence: `~/.dev-browser/tmp/task6/`
+- Native prompt before click: `test-results/task6-real-prompt/permission-step-before-click.png`
+- Native browser-owned prompt: `test-results/task6-real-prompt/real-permission-prompt.png`
+- Native prompt after denial: `test-results/task6-real-prompt/after-deny.png`
+- Native prompt after grant: `test-results/task6-real-prompt/after-grant.png`
 
 Task 5 artifacts are in `test-results/`:
 
