@@ -14,6 +14,10 @@ import type {
 export interface SessionDraft {
   mode: SessionMode;
   strictness: Strictness;
+  frictionGate: {
+    delayMs: number;
+    requireTypedPhrase: boolean;
+  };
   durationMin: number;
   cycling: CycleConfig | null;
   intention: string;
@@ -29,6 +33,10 @@ export function createSessionDraft(settings: Settings, lists: ListsConfig): Sess
   return {
     mode: settings.defaultMode,
     strictness: settings.defaultStrictness,
+    frictionGate: {
+      delayMs: settings.gate.delayMs,
+      requireTypedPhrase: settings.gate.requireTypedPhrase,
+    },
     durationMin: settings.presetsMin[1],
     cycling: settings.cyclingOnByDefault ? structuredClone(settings.defaultCycling) : null,
     intention: '',

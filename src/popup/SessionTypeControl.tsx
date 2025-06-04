@@ -8,35 +8,53 @@ interface SessionTypeChoice {
   consequence: string;
 }
 
-const SESSION_TYPES: readonly SessionTypeChoice[] = [
-  {
-    value: 'flexible',
-    label: 'Flexible',
-    consequence: 'End the session immediately whenever you choose.',
-  },
-  {
-    value: 'friction',
-    label: 'Friction',
-    consequence: 'Ending early requires a 30-second wait and typed confirmation.',
-  },
-  {
-    value: 'hard',
-    label: 'Hard lock',
-    consequence: 'The session cannot end early. Earned pauses still work.',
-  },
-];
-
 export interface SessionTypeControlProps {
   value: Strictness;
+  frictionDelayMs: number;
+  requireTypedPhrase: boolean;
   onChange: (value: Strictness) => void;
 }
 
-export function SessionTypeControl({ value, onChange }: SessionTypeControlProps): VNode {
+function formatDelaySeconds(delayMs: number): string {
+  const seconds: number = delayMs / 1_000;
+  return Number.isInteger(seconds) ? String(seconds) : String(Number(seconds.toFixed(3)));
+}
+
+function frictionConsequence(delayMs: number, requireTypedPhrase: boolean): string {
+  const wait: string = delayMs === 0 ? 'no wait' : `a ${formatDelaySeconds(delayMs)}-second wait`;
+  return requireTypedPhrase
+    ? `Ending early requires ${wait} and typed confirmation.`
+    : `Ending early requires ${wait}. No typing is required.`;
+}
+
+export function SessionTypeControl({
+  value,
+  frictionDelayMs,
+  requireTypedPhrase,
+  onChange,
+}: SessionTypeControlProps): VNode {
+  const choices: readonly SessionTypeChoice[] = [
+    {
+      value: 'flexible',
+      label: 'Flexible',
+      consequence: 'End the session immediately whenever you choose.',
+    },
+    {
+      value: 'friction',
+      label: 'Friction',
+      consequence: frictionConsequence(frictionDelayMs, requireTypedPhrase),
+    },
+    {
+      value: 'hard',
+      label: 'Hard lock',
+      consequence: 'The session cannot end early. Earned pauses still work.',
+    },
+  ];
   return (
     <fieldset class="session-type-control" aria-label="Session type">
       <legend>Session type</legend>
       <div class="session-type-choices">
-        {SESSION_TYPES.map(
+        {choices.map(
           (choice: SessionTypeChoice): VNode => (
             <HelpPopover
               key={choice.value}

@@ -6,8 +6,8 @@ import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, rulesFromLists } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
-import type { ListsConfig } from '../../../src/shared/types';
-import { resetChromeFake, sendMessageMock } from './chrome-fake';
+import type { ListsConfig, Settings } from '../../../src/shared/types';
+import { openOptionsPageMock, resetChromeFake, sendMessageMock } from './chrome-fake';
 
 vi.mock('../../../src/core/categories', () => ({
   ALL_CATEGORIES: [
@@ -63,6 +63,24 @@ describe('StartForm', (): void => {
     expect(getByRole('group', { name: 'Session type' })).toBeTruthy();
     expect(getByRole('group', { name: 'Blocking mode' })).toBeTruthy();
     expect(getByRole('button', { name: 'Start 25 min - Block selected sites' })).toBeTruthy();
+  });
+
+  it('describes configured typed confirmation without exposing the intention phrase', async (): Promise<void> => {
+    const settings: Settings = {
+      ...DEFAULT_SETTINGS,
+      gate: { ...DEFAULT_SETTINGS.gate, delayMs: 30_000, requireTypedPhrase: true },
+    };
+    const secretLikeIntention: string = 'finish private acquisition notes';
+    const { findByRole, getByLabelText, getByRole } = render(
+      h(StartForm, { settings, lists: DEFAULT_LISTS }),
+    );
+
+    fireEvent.input(getByLabelText('Intention'), { target: { value: secretLikeIntention } });
+    fireEvent.click(getByRole('button', { name: 'Friction' }));
+
+    const tooltipText: string = (await findByRole('tooltip')).textContent ?? '';
+    expect(tooltipText).toContain('30-second wait and typed confirmation');
+    expect(tooltipText).not.toContain(secretLikeIntention);
   });
 
   it('keeps category changes in the draft and sends the complete rules snapshot once', async (): Promise<void> => {
@@ -161,6 +179,17 @@ describe('StartForm', (): void => {
     const error: HTMLElement = getByRole('alert');
     expect(error.textContent).toContain('session length');
     expect(scrollRegion.contains(error)).toBe(false);
+  });
+
+  it('opens extension Settings for permanent defaults without persisting the draft', (): void => {
+    const { getByRole } = render(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
+    );
+
+    fireEvent.click(getByRole('button', { name: 'Open Settings for permanent defaults' }));
+
+    expect(openOptionsPageMock).toHaveBeenCalledOnce();
+    expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
   it('shows the worker rejection beside the start action', async (): Promise<void> => {

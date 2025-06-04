@@ -1,14 +1,32 @@
 /** @vitest-environment jsdom */
 import { cleanup, fireEvent, render } from '@testing-library/preact';
+import type { VNode } from 'preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SessionTypeControl } from '../../../src/popup/SessionTypeControl';
 import type { Strictness } from '../../../src/shared/types';
 
 const EXPLANATIONS: Record<Strictness, string> = {
   flexible: 'End the session immediately whenever you choose.',
-  friction: 'Ending early requires a 30-second wait and typed confirmation.',
+  friction: 'Ending early requires a 10-second wait. No typing is required.',
   hard: 'The session cannot end early. Earned pauses still work.',
 };
+
+function SessionTypes({
+  delayMs = 10_000,
+  requireTypedPhrase = false,
+}: {
+  delayMs?: number;
+  requireTypedPhrase?: boolean;
+}): VNode {
+  return (
+    <SessionTypeControl
+      value="flexible"
+      frictionDelayMs={delayMs}
+      requireTypedPhrase={requireTypedPhrase}
+      onChange={vi.fn<(value: Strictness) => void>()}
+    />
+  );
+}
 
 afterEach((): void => {
   cleanup();
@@ -22,9 +40,7 @@ describe('SessionTypeControl', (): void => {
   ] as const)(
     'uses the %s on the choice itself to reveal its shared explanation',
     async (interaction: 'focus' | 'pointer' | 'click', label: string): Promise<void> => {
-      const view = render(
-        <SessionTypeControl value="flexible" onChange={vi.fn<(value: Strictness) => void>()} />,
-      );
+      const view = render(<SessionTypes />);
       const button: HTMLButtonElement = view.getByRole('button', {
         name: label,
       }) as HTMLButtonElement;
@@ -48,7 +64,14 @@ describe('SessionTypeControl', (): void => {
 
   it('makes each choice the selection and disclosure control without extra help buttons', (): void => {
     const onChange = vi.fn<(value: Strictness) => void>();
-    const view = render(<SessionTypeControl value="friction" onChange={onChange} />);
+    const view = render(
+      <SessionTypeControl
+        value="friction"
+        frictionDelayMs={10_000}
+        requireTypedPhrase={false}
+        onChange={onChange}
+      />,
+    );
     const hard: HTMLButtonElement = view.getByRole('button', {
       name: 'Hard lock',
     }) as HTMLButtonElement;
@@ -60,5 +83,24 @@ describe('SessionTypeControl', (): void => {
     );
     fireEvent.click(hard);
     expect(onChange).toHaveBeenCalledWith('hard');
+  });
+
+  it('describes the default ten-second gate without claiming typing is required', async (): Promise<void> => {
+    const view = render(<SessionTypes />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Friction' }));
+
+    expect((await view.findByRole('tooltip')).textContent).toContain(
+      'Ending early requires a 10-second wait. No typing is required.',
+    );
+  });
+
+  it('derives a configured delay and names the typed-confirmation requirement', async (): Promise<void> => {
+    const view = render(<SessionTypes delayMs={30_000} requireTypedPhrase={true} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Friction' }));
+
+    const text: string = (await view.findByRole('tooltip')).textContent ?? '';
+    expect(text).toContain('Ending early requires a 30-second wait and typed confirmation.');
   });
 });

@@ -436,6 +436,34 @@ body {
   font-size: 11.5px;
 }
 
+.rule-summary__scope {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  margin-top: 6px;
+  color: var(--text-soft);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.rule-summary__scope button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--focus-strong);
+  font: inherit;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.rule-summary__scope button:hover,
+.rule-summary__scope button:focus-visible {
+  color: var(--text);
+}
+
 .rule-summary__scroll {
   max-height: 190px;
   padding: 8px 10px;
@@ -551,6 +579,41 @@ body {
   color: var(--text);
   font-size: 11.5px;
   line-height: 1.4;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.rule-item > .help-popover,
+.rule-membership .help-popover {
+  min-width: 0;
+  align-items: stretch;
+}
+
+.help-popover__trigger.rule-detail {
+  display: flex;
+  width: 100%;
+  height: auto;
+  min-width: 0;
+  min-height: 24px;
+  padding: 2px 4px;
+  align-items: flex-start;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.help-popover__trigger.rule-detail:hover,
+.help-popover__trigger.rule-detail:focus-visible,
+.help-popover__trigger.rule-detail[aria-expanded="true"] {
+  border-color: var(--focus-color);
+  background: var(--accent-soft);
+}
+
+.rule-detail__full {
   overflow-wrap: anywhere;
   word-break: break-word;
 }

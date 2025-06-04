@@ -101,6 +101,15 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
     return update.error;
   };
 
+  const openPermanentSettings: () => Promise<void> = async (): Promise<void> => {
+    setError(null);
+    try {
+      await chrome.runtime.openOptionsPage();
+    } catch {
+      setError('Could not open Settings. Try again.');
+    }
+  };
+
   const cycle: CycleConfig = settings.defaultCycling;
   const cyclingLabel: string = `Cycles: ${cycle.focusMin} min focus, ${cycle.shortBreakMin} min break, ${cycle.longBreakMin} min long break every ${cycle.longEvery}th`;
 
@@ -153,6 +162,8 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
 
         <SessionTypeControl
           value={draft.strictness}
+          frictionDelayMs={draft.frictionGate.delayMs}
+          requireTypedPhrase={draft.frictionGate.requireTypedPhrase}
           onChange={(strictness: Strictness): void => setDraft({ ...draft, strictness })}
         />
 
@@ -180,6 +191,7 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
           onCategoryToggle={(id): void => {
             if (categoriesEditable) setDraft(toggleDraftCategory(draft, id));
           }}
+          onOpenSettings={(): void => void openPermanentSettings()}
         />
 
         <details class="options">

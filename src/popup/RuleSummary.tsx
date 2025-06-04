@@ -1,5 +1,6 @@
 import type { VNode } from 'preact';
 import { ALL_CATEGORIES } from '../core/categories';
+import { HelpPopover } from '../shared/HelpPopover';
 import type { CategoryId, CategoryList, Rule } from '../shared/types';
 import type { SessionDraft } from './session-draft';
 
@@ -7,19 +8,38 @@ export interface RuleSummaryProps {
   draft: SessionDraft;
   categoriesEditable: boolean;
   onCategoryToggle: (id: CategoryId) => void;
+  onOpenSettings: () => void;
 }
 
 function plural(count: number, singular: string, pluralValue: string): string {
   return count === 1 ? singular : pluralValue;
 }
 
+function RuleDetail({
+  kind,
+  pattern,
+}: {
+  kind: 'domain' | 'regular expression';
+  pattern: string;
+}): VNode {
+  return (
+    <HelpPopover
+      label={`Show full ${kind}: ${pattern}`}
+      triggerClassName="rule-detail"
+      triggerContent={<span class="rule-value">{pattern}</span>}
+    >
+      <span class="rule-detail__full">{pattern}</span>
+    </HelpPopover>
+  );
+}
+
 function RuleValue({ rule }: { rule: Rule }): VNode {
+  const kind: 'domain' | 'regular expression' =
+    rule.kind === 'regex' ? 'regular expression' : 'domain';
   return (
     <li class="rule-item">
       <span class="rule-kind">{rule.kind === 'regex' ? 'Regular expression' : 'Domain'}</span>
-      <span class="rule-value" title={rule.pattern}>
-        {rule.pattern}
-      </span>
+      <RuleDetail kind={kind} pattern={rule.pattern} />
     </li>
   );
 }
@@ -71,8 +91,8 @@ function BlockRules({ draft, categoriesEditable, onCategoryToggle }: RuleSummary
                   <ul class="rule-membership" aria-label={`${category.title} sites`}>
                     {category.hosts.map(
                       (host: string): VNode => (
-                        <li key={host} class="rule-value" title={host} aria-label={host}>
-                          {host}
+                        <li key={host}>
+                          <RuleDetail kind="domain" pattern={host} />
                         </li>
                       ),
                     )}
@@ -92,9 +112,7 @@ function BlockRules({ draft, categoriesEditable, onCategoryToggle }: RuleSummary
               ({ category, host }: { category: CategoryList; host: string }): VNode => (
                 <li class="rule-item" key={`${category.id}:${host}`}>
                   <span class="rule-kind">{category.title}</span>
-                  <span class="rule-value" title={host}>
-                    {host}
-                  </span>
+                  <RuleDetail kind="domain" pattern={host} />
                 </li>
               ),
             )}
@@ -169,6 +187,16 @@ export function RuleSummary(props: RuleSummaryProps): VNode {
             {allowedCount} allowed {plural(allowedCount, 'rule', 'rules')}
           </p>
         )}
+        <div class="rule-summary__scope">
+          <span>
+            {props.draft.mode === 'whitelist'
+              ? 'Allowed-site and rule changes here apply only to this session. Everything else is blocked.'
+              : 'Category and rule changes here apply only to this session.'}
+          </span>
+          <button type="button" onClick={props.onOpenSettings}>
+            Open Settings for permanent defaults
+          </button>
+        </div>
       </div>
       <section
         class="rule-summary__scroll"
