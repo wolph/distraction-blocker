@@ -401,10 +401,9 @@ export function isPauseEconomy(value: unknown): value is PauseEconomy {
 function isGateSettings(value: unknown): boolean {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['delayMs', 'requireTypedPhrase', 'allowForceEnd']) &&
+    hasExactKeys(value, ['delayMs', 'requireTypedPhrase']) &&
     isRelativeMillisecondDuration(value.delayMs, true) &&
-    typeof value.requireTypedPhrase === 'boolean' &&
-    typeof value.allowForceEnd === 'boolean'
+    typeof value.requireTypedPhrase === 'boolean'
   );
 }
 
@@ -579,8 +578,7 @@ function isGate(value: unknown): value is GateState {
     !isNonNegativeNumber(value.openedAt) ||
     !isNonNegativeNumber(value.readyAt) ||
     value.readyAt < value.openedAt ||
-    !isNullableString(value.requiredPhrase) ||
-    typeof value.forceEndAvailable !== 'boolean'
+    !isNullableString(value.requiredPhrase)
   ) {
     return false;
   }

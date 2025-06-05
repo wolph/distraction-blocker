@@ -299,18 +299,6 @@ describe('BehaviorDefaults', () => {
     expect(getByText('Custom delay must be a positive whole number of seconds.')).toBeTruthy();
   });
 
-  it('toggles the force-end button setting', (): void => {
-    const onChange = vi.fn();
-    const { getByLabelText } = render(
-      <BehaviorDefaults settings={DEFAULT_SETTINGS} onChange={onChange} />,
-    );
-
-    fireEvent.click(getByLabelText('Enable "Ignore timeout and end anyway" button'));
-
-    const next: Settings = onChange.mock.calls[0]?.[0] as Settings;
-    expect(next.gate.allowForceEnd).toBe(true);
-  });
-
   it('rejects zero focus minutes with a field-specific error', (): void => {
     const onChange = vi.fn();
     const { getByLabelText, getByText } = render(

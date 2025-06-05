@@ -3818,7 +3818,7 @@ describe('Engine', () => {
   it('opens one stable cancel gate for repeated Friction end requests', async () => {
     const h: Harness = makeEngine({
       settings: {
-        gate: { delayMs: 10_000, requireTypedPhrase: false, allowForceEnd: false },
+        gate: { delayMs: 10_000, requireTypedPhrase: false },
       },
     });
     await h.engine.startSession(manualConfig);
@@ -3829,7 +3829,6 @@ describe('Engine', () => {
       kind: 'cancel',
       readyAt: T0 + 10_000,
       requiredPhrase: null,
-      forceEndAvailable: false,
     });
     const firstGate = structuredClone(h.engine.snapshot().gate);
     h.ports.applyBlocking.mockClear();
@@ -3847,50 +3846,6 @@ describe('Engine', () => {
     h.setNow(T0 + 10_000);
     expect(await h.engine.confirmGate(null)).toEqual({ ok: true });
     expect(h.engine.snapshot().gate).toBeNull();
-  });
-
-  it('never exposes force end even when the deprecated setting is enabled', async () => {
-    const h: Harness = makeEngine({
-      settings: {
-        gate: {
-          ...DEFAULT_SETTINGS.gate,
-          delayMs: 30_000,
-          requireTypedPhrase: true,
-          allowForceEnd: true,
-        },
-      },
-    });
-    await h.engine.startSession(manualConfig);
-    await h.engine.requestSessionEnd();
-
-    expect(h.engine.snapshot().gate?.forceEndAvailable).toBe(false);
-  });
-
-  it('cannot restore force end from a persisted legacy gate', async () => {
-    const first: Harness = makeEngine({
-      settings: { gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: true } },
-    });
-    await first.engine.startSession(manualConfig);
-    await first.engine.requestSessionEnd();
-    const runtime: RuntimeState = structuredClone(
-      first.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState,
-    );
-    if (runtime.gate === null) throw new Error('expected a persisted cancel gate');
-    runtime.gate.forceEndAvailable = true;
-    const restarted: Harness = makeEngine({
-      runtime,
-      settings: { gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: true } },
-    });
-    const before: SessionSnapshot = restarted.engine.snapshot();
-    restarted.ports.saveRuntime.mockClear();
-
-    expect(before.gate?.forceEndAvailable).toBe(false);
-    expect(await restarted.engine.forceEndGate()).toEqual({
-      ok: false,
-      error: 'Force end is no longer available. Choose a Flexible session before starting.',
-    });
-    expect(restarted.engine.snapshot()).toEqual(before);
-    expect(restarted.ports.saveRuntime).not.toHaveBeenCalled();
   });
 
   it('rejects ending a Hard session without opening or changing a gate', async () => {
@@ -3953,7 +3908,7 @@ describe('Engine', () => {
       const h: Harness = makeEngine({
         bankMs: 600_000,
         settings: {
-          gate: { delayMs: 10_000, requireTypedPhrase: true, allowForceEnd: false },
+          gate: { delayMs: 10_000, requireTypedPhrase: true },
         },
       });
       await h.engine.startSession(manualConfig);

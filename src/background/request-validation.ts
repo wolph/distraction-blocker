@@ -175,10 +175,9 @@ function isPauseSettings(value: unknown): boolean {
 function isGateSettings(value: unknown): boolean {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['delayMs', 'requireTypedPhrase', 'allowForceEnd']) &&
+    hasExactKeys(value, ['delayMs', 'requireTypedPhrase']) &&
     isRelativeMillisecondDuration(value.delayMs, true) &&
-    typeof value.requireTypedPhrase === 'boolean' &&
-    typeof value.allowForceEnd === 'boolean'
+    typeof value.requireTypedPhrase === 'boolean'
   );
 }
 
@@ -388,7 +387,6 @@ function parseRecord(value: Record<string, unknown>): Request | null {
     case 'dismissWebsiteAccessNotice':
     case 'abandonGate':
     case 'requestSessionEnd':
-    case 'forceEndGate':
     case 'resumeFromPause':
     case 'startNextFocusEarly':
     case 'getSettings':

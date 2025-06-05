@@ -1102,17 +1102,6 @@ describe('routeMessage session ending wiring', () => {
     });
     expect(requestSessionEnd).toHaveBeenCalledTimes(1);
   });
-
-  it('rejects deprecated force end without invoking the engine', async (): Promise<void> => {
-    const forceEndGate = vi.fn().mockResolvedValue({ ok: true });
-    const endingEngine: Engine = { forceEndGate } as unknown as Engine;
-
-    expect(await routeMessage(endingEngine, { type: 'forceEndGate' }, sender)).toEqual({
-      ok: false,
-      error: 'Force end is no longer available. Choose a Flexible session before starting.',
-    });
-    expect(forceEndGate).not.toHaveBeenCalled();
-  });
 });
 
 describe('routeMessage tab identity wiring', () => {

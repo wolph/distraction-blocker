@@ -39,7 +39,6 @@ export type Request =
   | { type: 'openGate'; gate: GateKind; host: string | null }
   | { type: 'confirmGate'; typedPhrase: string | null }
   | { type: 'requestSessionEnd' }
-  | { type: 'forceEndGate' }
   | { type: 'abandonGate' }
   | { type: 'resumeFromPause' }
   | { type: 'startNextFocusEarly' }
@@ -136,7 +135,6 @@ export interface ResponseMap {
   openGate: Ack;
   confirmGate: Ack;
   requestSessionEnd: Ack;
-  forceEndGate: Ack;
   abandonGate: Ack;
   resumeFromPause: Ack;
   startNextFocusEarly: Ack;

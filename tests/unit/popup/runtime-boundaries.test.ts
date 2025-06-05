@@ -287,7 +287,7 @@ describe('popup runtime response boundaries', (): void => {
   });
 
   it.each([
-    ['openGate' as const, activeSnapshot('focus'), /Pause everything/],
+    ['openGate' as const, activeSnapshot('focus'), /Pause blocking/],
     ['resumeFromPause' as const, activeSnapshot('paused'), 'Resume now'],
     ['startNextFocusEarly' as const, activeSnapshot('break'), 'Start next focus early'],
   ])(
@@ -325,7 +325,6 @@ describe('popup runtime response boundaries', (): void => {
         openedAt: NOW - 10_000,
         readyAt: NOW - 1,
         requiredPhrase: null,
-        forceEndAvailable: false,
       };
       sendMessageMock.mockImplementation(
         async (request: Request): Promise<unknown> =>

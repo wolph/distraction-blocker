@@ -92,12 +92,18 @@ describe('overlay', () => {
     hideOverlay(emptySnapshot(Date.now()));
     expect(document.querySelectorAll('focus-lock-overlay').length).toBe(0);
   });
-  it('shows the friction cancel entry only for friction sessions', () => {
+  it('shows the end action for Flexible and Friction sessions but not Hard sessions', () => {
     const snap = focusSnap();
     showOverlay(verdict, snap);
     // closed shadow root: keep a test-only handle
     const root = (globalThis as { __focusLockShadow?: ShadowRoot }).__focusLockShadow;
     expect(root?.textContent).toContain('finish the report');
+    expect(root?.textContent).toContain('End session');
+    const flexibleSnap: SessionSnapshot = {
+      ...snap,
+      config: snap.config === null ? null : { ...snap.config, strictness: 'flexible' },
+    };
+    showOverlay(verdict, flexibleSnap);
     expect(root?.textContent).toContain('End session');
     const hardSnap: SessionSnapshot = {
       ...snap,
@@ -137,11 +143,19 @@ describe('overlay', () => {
 
     await vi.waitFor((): void => {
       expect(sendMessage).toHaveBeenCalledTimes(2);
+      expect(sendMessage.mock.calls[0]?.[0]).toEqual({ type: 'requestSessionEnd' });
       expect(root.querySelector('.backdrop')?.classList.contains('opaque')).toBe(true);
       expect(root.querySelector('.notloaded')?.textContent).toBe(
         'This page did not load. It will load by itself when the session ends.',
       );
     });
+  });
+
+  it('uses truthful pause and unlock wording', (): void => {
+    showOverlay(verdict, focusSnap());
+
+    expect(shadowRoot().textContent).toContain('Unlock this site for 5 min');
+    expect(shadowRoot().textContent).toContain('Pause blocking for 5 min');
   });
 
   it.each([
@@ -158,7 +172,6 @@ describe('overlay', () => {
         openedAt: Date.now() - 2_000,
         readyAt: Date.now() - 1_000,
         requiredPhrase: null,
-        forceEndAvailable: false,
       },
     });
 
@@ -167,37 +180,6 @@ describe('overlay', () => {
         (button: HTMLButtonElement): boolean => button.textContent === label,
       ),
     ).toBe(true);
-  });
-
-  it('offers force end before timeout and sends the dedicated request', async (): Promise<void> => {
-    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
-      async (): Promise<unknown> => ({ ok: true }),
-    );
-    vi.stubGlobal('chrome', { runtime: { sendMessage } });
-    showOverlay(verdict, {
-      ...focusSnap(),
-      gate: {
-        kind: 'cancel',
-        host: null,
-        openedAt: Date.now(),
-        readyAt: Date.now() + 30_000,
-        requiredPhrase: 'I choose to stop',
-        forceEndAvailable: true,
-      },
-    });
-
-    const forceEnd: HTMLButtonElement = Array.from(
-      shadowRoot().querySelectorAll<HTMLButtonElement>('button'),
-    ).find(
-      (button: HTMLButtonElement): boolean =>
-        button.textContent === 'Ignore timeout and end anyway',
-    ) as HTMLButtonElement;
-    expect(forceEnd.disabled).toBe(false);
-    forceEnd.click();
-
-    await vi.waitFor((): void => {
-      expect(sendMessage).toHaveBeenCalledWith({ type: 'forceEndGate' });
-    });
   });
 
   it('owns focus and traps Tab when hard mode has no enabled controls', () => {
@@ -403,7 +385,6 @@ describe('overlay action failures', () => {
         openedAt: Date.now() - 2_000,
         readyAt: Date.now() - 1_000,
         requiredPhrase,
-        forceEndAvailable: false,
       },
     });
     const root: ShadowRoot = shadowRoot();
@@ -549,7 +530,6 @@ describe('overlay keyboard scrolling', () => {
           openedAt: Date.now() - 2_000,
           readyAt: Date.now() - 1_000,
           requiredPhrase: 'I choose to stop',
-          forceEndAvailable: false,
         },
       });
       const root: ShadowRoot = shadowRoot();

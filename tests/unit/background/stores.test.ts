@@ -173,13 +173,6 @@ describe('storage default merging', () => {
     expect(settings.sessionCompleteNotification).toBe(true);
   });
 
-  it('backfills force end to disabled and preserves an explicit stored choice', (): void => {
-    expect(mergeSettings({ gate: { delayMs: 0 } }).gate.allowForceEnd).toBe(false);
-    expect(
-      mergeSettings({ gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: true } }).gate.allowForceEnd,
-    ).toBe(true);
-  });
-
   it.each([
     ['zero', 0],
     ['maximum safe integer days', Number.MAX_SAFE_INTEGER],
@@ -464,7 +457,6 @@ describe('runtime storage migration', () => {
         openedAt: now,
         readyAt: now + 1_000,
         requiredPhrase: null,
-        forceEndAvailable: false,
       },
       unlocks: [{ host: 'allowed.example', until: now + 60_000 }],
       todayAgg: { ...emptyDaily('2026-08-29'), focusMs: 60_000 },

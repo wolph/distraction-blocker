@@ -2971,7 +2971,6 @@ describe('PolicyStorage', (): void => {
           openedAt: now,
           readyAt: now + 10_000,
           requiredPhrase: null,
-          forceEndAvailable: false,
         };
       } else if (field === 'unlocks') {
         runtime.unlocks = [{ host: 'allowed.example', until: now + 60_000 }];

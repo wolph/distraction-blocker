@@ -362,11 +362,6 @@ export async function routeMessage(
       return engine.confirmGate(msg.typedPhrase);
     case 'requestSessionEnd':
       return engine.requestSessionEnd();
-    case 'forceEndGate':
-      return {
-        ok: false,
-        error: 'Force end is no longer available. Choose a Flexible session before starting.',
-      };
     case 'abandonGate':
       return engine.abandonGate();
     case 'resumeFromPause':

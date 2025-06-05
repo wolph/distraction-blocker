@@ -144,8 +144,6 @@ export interface GateState {
   readyAt: number;
   /** exact phrase the user must type, null when typing is not required */
   requiredPhrase: string | null;
-  /** @deprecated Kept temporarily for persisted snapshot compatibility. */
-  forceEndAvailable: boolean;
 }
 
 export interface SiteUnlock {
@@ -191,8 +189,6 @@ export interface PauseEconomy {
 export interface GateSettings {
   delayMs: number;
   requireTypedPhrase: boolean;
-  /** @deprecated Kept temporarily for stored settings compatibility. */
-  allowForceEnd: boolean;
 }
 
 export interface SoundSettings {

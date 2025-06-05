@@ -92,7 +92,6 @@ function gateSnapshot(): SessionSnapshot {
     openedAt: NOW - 2_000,
     readyAt: NOW + 8_000,
     requiredPhrase: null,
-    forceEndAvailable: false,
   };
   return { ...focusSnapshot(), gate };
 }
@@ -240,11 +239,15 @@ describe('popup request errors', (): void => {
   });
 
   it.each([
-    ['openGate' as const, focusSnapshot(), /Pause everything 5 min/],
+    ['openGate' as const, focusSnapshot(), /Pause blocking for 5 min/],
+    ['requestSessionEnd' as const, focusSnapshot(), 'End session'],
     ['resumeFromPause' as const, pausedSnapshot(), 'Resume now'],
   ])(
     'settles a rejected %s action and allows retry',
-    async (requestType: 'openGate' | 'resumeFromPause', snapshot: SessionSnapshot, buttonName:
+    async (requestType:
+      | 'openGate'
+      | 'requestSessionEnd'
+      | 'resumeFromPause', snapshot: SessionSnapshot, buttonName:
       | string
       | RegExp): Promise<void> => {
       const pending: Deferred<Ack> = deferred<Ack>();

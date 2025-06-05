@@ -5,10 +5,7 @@ import { sendRequest } from '../shared/messages';
 import { ackError } from '../shared/runtime-validation';
 import type { GateKind, GateState } from '../shared/types';
 
-type GateRequest =
-  | { type: 'abandonGate' }
-  | { type: 'confirmGate'; typedPhrase: string | null }
-  | { type: 'forceEndGate' };
+type GateRequest = { type: 'abandonGate' } | { type: 'confirmGate'; typedPhrase: string | null };
 
 const CONFIRM_LABELS: Record<GateKind, string> = {
   pause: 'Take the pause',
@@ -68,10 +65,6 @@ export function GatePanel({
     });
   };
 
-  const forceEnd: () => void = (): void => {
-    void requestGateUpdate({ type: 'forceEndGate' });
-  };
-
   return (
     <div class="gate-panel">
       {intention !== '' ? <p class="gate-intention">You said: {intention}</p> : null}
@@ -99,11 +92,6 @@ export function GatePanel({
       >
         {CONFIRM_LABELS[gate.kind]}
       </button>
-      {gate.forceEndAvailable ? (
-        <button type="button" class="gate-force-end" disabled={pending} onClick={forceEnd}>
-          Ignore timeout and end anyway
-        </button>
-      ) : null}
       {error !== null ? (
         <p class="form-error" role="alert">
           {error}

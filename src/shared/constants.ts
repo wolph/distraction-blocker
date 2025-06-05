@@ -32,7 +32,7 @@ export const DEFAULT_SETTINGS: Settings = {
     pauseMs: 5 * 60_000,
     unlockMs: 5 * 60_000,
   },
-  gate: { delayMs: 10_000, requireTypedPhrase: false, allowForceEnd: false },
+  gate: { delayMs: 10_000, requireTypedPhrase: false },
   badgeCountdown: true,
   sessionCompleteNotification: true,
   sounds: {

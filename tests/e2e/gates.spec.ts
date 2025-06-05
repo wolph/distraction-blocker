@@ -8,7 +8,6 @@ interface FastEconomyOptions {
   unlockMs?: number;
   gateDelayMs?: number;
   requireTypedPhrase?: boolean;
-  allowForceEnd?: boolean;
 }
 
 async function configureFastEconomy(
@@ -31,7 +30,6 @@ async function configureFastEconomy(
       gate: {
         delayMs: options.gateDelayMs ?? 500,
         requireTypedPhrase: options.requireTypedPhrase ?? false,
-        allowForceEnd: options.allowForceEnd ?? false,
       },
     },
   });
@@ -112,7 +110,7 @@ test('pause gate rejects an early confirmation and unblocks after its delay', as
       const names: string[] = await closedShadowButtonNames(context, page);
       return names.find((name: string): boolean => name.startsWith('Unlock this site')) ?? '';
     })
-    .toBe('Unlock this site 0 min');
+    .toBe('Unlock this site for 0 min');
 
   expect(
     await sendExtensionRequest(extPage, { type: 'openGate', gate: 'pause', host: null }),
@@ -152,7 +150,7 @@ test('pause gate supports back to work, taking a pause, and resuming now', async
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
   await waitForBank(extPage, pauseMs);
 
-  const pauseButton = extPage.getByRole('button', { name: 'Pause everything 0 min' });
+  const pauseButton = extPage.getByRole('button', { name: 'Pause blocking for 0 min' });
   await expect(pauseButton).toBeEnabled();
   await pauseButton.click();
   await extPage.getByRole('button', { name: 'Never mind, back to work' }).click();
@@ -277,28 +275,6 @@ test('zero delay removes the wait but still honors the typing setting', async ({
   expect(
     await sendExtensionRequest(extPage, { type: 'confirmGate', typedPhrase: requiredPhrase }),
   ).toEqual({ ok: true });
-});
-
-test('deprecated force end cannot bypass a Friction cancellation gate', async ({ extPage }) => {
-  await configureFastEconomy(extPage, {
-    gateDelayMs: 30_000,
-    requireTypedPhrase: true,
-    allowForceEnd: true,
-  });
-  await startTestSession(extPage, { durationMin: 0.3 });
-  expect(await sendExtensionRequest(extPage, { type: 'requestSessionEnd' })).toEqual({ ok: true });
-
-  const opened: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
-  expect(opened.gate?.forceEndAvailable).toBe(false);
-  expect(await sendExtensionRequest(extPage, { type: 'forceEndGate' })).toEqual({
-    ok: false,
-    error: 'Force end is no longer available. Choose a Flexible session before starting.',
-  });
-  const unchanged: SessionSnapshot = await sendExtensionRequest(extPage, {
-    type: 'getSnapshot',
-  });
-  expect(unchanged.phase).toBe('focus');
-  expect(unchanged.gate).toEqual(opened.gate);
 });
 
 test('friction cancellation with typing requires the configured phrase after its delay', async ({

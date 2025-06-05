@@ -624,7 +624,6 @@ export class Engine {
       openedAt: now,
       readyAt: now + this.settings.gate.delayMs,
       requiredPhrase: needsPhrase ? cancelPhrase(session.config.intention) : null,
-      forceEndAvailable: false,
     };
     this.recordEvent({ t: 'gateOpened', at: now, gate, ...sessionIdentity(session) });
     this.dirty = true;
@@ -668,19 +667,11 @@ export class Engine {
       requiredPhrase: this.settings.gate.requireTypedPhrase
         ? cancelPhrase(session.config.intention)
         : null,
-      forceEndAvailable: false,
     };
     this.recordEvent({ t: 'gateOpened', at: now, gate: 'cancel', ...sessionIdentity(session) });
     this.dirty = true;
     await this.commit(now);
     return { ok: true };
-  }
-
-  async forceEndGate(): Promise<Ack> {
-    return {
-      ok: false,
-      error: 'Force end is no longer available. Choose a Flexible session before starting.',
-    };
   }
 
   async confirmGate(typedPhrase: string | null): Promise<Ack> {
@@ -2403,10 +2394,7 @@ export class Engine {
       pauseCostMs: this.settings.pause.pauseMs,
       unlockCostMs: this.settings.pause.unlockMs,
       activeUnlocks: structuredClone(this.runtime.unlocks),
-      gate:
-        this.runtime.gate === null
-          ? null
-          : { ...structuredClone(this.runtime.gate), forceEndAvailable: false },
+      gate: this.runtime.gate === null ? null : structuredClone(this.runtime.gate),
       attemptsToday,
       scheduleActive: this.runtime.scheduleActiveEntryId !== null,
       nextSchedule: this.nextScheduleInfo(now),

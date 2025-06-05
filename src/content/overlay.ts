@@ -197,11 +197,6 @@ button:disabled { cursor: default; }
 }
 .pill:hover:not(:disabled) { background: var(--overlay-pill-hover); }
 .pill:disabled { opacity: 0.55; }
-.force-end {
-  border: 1px solid var(--overlay-danger); border-radius: 999px; padding: 0.55rem 1.2rem;
-  background: var(--overlay-danger-soft); color: var(--overlay-danger); font-size: 0.9rem;
-}
-.force-end:hover { filter: brightness(0.96); }
 .ready { display: block; font-size: 0.75rem; color: var(--overlay-muted); }
 .ready[hidden] { display: none; }
 .linkish {
@@ -475,23 +470,23 @@ function buildButtons(m: Mounted, snap: SessionSnapshot, now: number): HTMLEleme
   const row: HTMLElement = document.createElement('div');
   row.className = 'buttons';
   const unlock: SpendRef = spendButton(
-    `Unlock this site ${costMin(snap.unlockCostMs)} min`,
+    `Unlock this site for ${costMin(snap.unlockCostMs)} min`,
     snap.unlockCostMs,
     (): void => requestOpenGate('unlockSite', location.hostname),
   );
   const pause: SpendRef = spendButton(
-    `Pause everything ${costMin(snap.pauseCostMs)} min`,
+    `Pause blocking for ${costMin(snap.pauseCostMs)} min`,
     snap.pauseCostMs,
     (): void => requestOpenGate('pause', null),
   );
   m.spends = [unlock, pause];
   row.append(unlock.button, pause.button);
-  if (snap.config?.strictness === 'friction') {
+  if (snap.config?.strictness !== 'hard') {
     const cancel: HTMLButtonElement = document.createElement('button');
     cancel.className = 'linkish';
     cancel.type = 'button';
     cancel.textContent = 'End session';
-    cancel.addEventListener('click', (): void => requestOpenGate('cancel', null));
+    cancel.addEventListener('click', (): void => requestSessionEnd());
     row.appendChild(cancel);
   }
   for (const ref of m.spends) updateSpend(ref, snap, now);
@@ -529,7 +524,7 @@ function updateSpend(ref: SpendRef, snap: SessionSnapshot, now: number): void {
 }
 
 function gateTitle(gate: GateState, snap: SessionSnapshot): string {
-  if (gate.kind === 'pause') return `Pause everything ${costMin(snap.pauseCostMs)} min`;
+  if (gate.kind === 'pause') return `Pause blocking for ${costMin(snap.pauseCostMs)} min`;
   if (gate.kind === 'unlockSite') {
     return `Unlock ${gate.host ?? 'this site'} ${costMin(snap.unlockCostMs)} min`;
   }
@@ -576,14 +571,6 @@ function buildGate(m: Mounted, gate: GateState, snap: SessionSnapshot, now: numb
   confirm.hidden = true;
   confirm.addEventListener('click', (): void => requestConfirmGate(phrase?.value ?? null));
   wrap.appendChild(confirm);
-  if (gate.forceEndAvailable) {
-    const forceEnd: HTMLButtonElement = document.createElement('button');
-    forceEnd.className = 'force-end';
-    forceEnd.type = 'button';
-    forceEnd.textContent = 'Ignore timeout and end anyway';
-    forceEnd.addEventListener('click', (): void => requestForceEndGate());
-    wrap.appendChild(forceEnd);
-  }
   m.gate = { ringFill, count, waitWrap, confirm, phrase };
   updateGate(m, snap, now);
   return wrap;
@@ -676,12 +663,12 @@ function requestConfirmGate(typedPhrase: string | null): void {
   void sendAndRefresh({ type: 'confirmGate', typedPhrase });
 }
 
-function requestForceEndGate(): void {
-  void sendAndRefresh({ type: 'forceEndGate' });
+function requestSessionEnd(): void {
+  void sendAndRefresh({ type: 'requestSessionEnd' });
 }
 
 async function sendAndRefresh(
-  req: Extract<Request, { type: 'openGate' | 'confirmGate' | 'forceEndGate' | 'abandonGate' }>,
+  req: Extract<Request, { type: 'openGate' | 'confirmGate' | 'requestSessionEnd' | 'abandonGate' }>,
 ): Promise<void> {
   const mount: Mounted | null = mounted;
   if (mount === null) return;

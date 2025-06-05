@@ -153,7 +153,7 @@ describe('useSnapshot', () => {
       expect(getByRole('status').textContent?.trim()).toBe('Focus status unavailable');
     });
     expect(queryByRole('button', { name: /^Start / })).toBeNull();
-    expect(queryByRole('button', { name: /Pause everything/ })).toBeNull();
+    expect(queryByRole('button', { name: /Pause blocking/ })).toBeNull();
     expect(queryByRole('button', { name: 'End session' })).toBeNull();
   });
 

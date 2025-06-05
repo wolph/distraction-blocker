@@ -72,28 +72,22 @@ function useFocusedTodayMs(): { ms: number | null; error: boolean } {
 function SpendButton({
   label,
   sub,
-  affordable,
-  countdown,
-  pending,
+  disabledReason,
   onClick,
 }: {
   label: string;
   sub: string | null;
-  affordable: boolean;
-  countdown: string | null;
-  pending: boolean;
+  disabledReason: string | null;
   onClick: () => void;
 }): VNode {
   return (
-    <button type="button" class="spend-button" disabled={!affordable || pending} onClick={onClick}>
+    <button type="button" class="spend-button" disabled={disabledReason !== null} onClick={onClick}>
       <span class="spend-label">{label}</span>
-      {affordable ? (
-        sub !== null ? (
-          <span class="spend-sub">{sub}</span>
-        ) : null
-      ) : (
-        <span class="spend-sub">{countdown ?? 'earn pause time by focusing'}</span>
-      )}
+      {disabledReason !== null ? (
+        <span class="spend-sub">{disabledReason}</span>
+      ) : sub !== null ? (
+        <span class="spend-sub">{sub}</span>
+      ) : null}
     </button>
   );
 }
@@ -130,20 +124,29 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
     }
   };
 
-  const act: (req: { type: 'resumeFromPause' } | { type: 'startNextFocusEarly' }) => Promise<void> =
-    async (req: { type: 'resumeFromPause' } | { type: 'startNextFocusEarly' }): Promise<void> => {
-      setError(null);
-      setActionPending(true);
-      try {
-        const ack: Ack = await sendRequest(req);
-        const responseError: string | null = ackError(ack, 'Could not request action. Try again.');
-        if (responseError !== null) setError(responseError);
-      } catch {
-        setError('Could not request that action. Try again.');
-      } finally {
-        setActionPending(false);
-      }
-    };
+  const act: (
+    req:
+      | { type: 'resumeFromPause' }
+      | { type: 'startNextFocusEarly' }
+      | { type: 'requestSessionEnd' },
+  ) => Promise<void> = async (
+    req:
+      | { type: 'resumeFromPause' }
+      | { type: 'startNextFocusEarly' }
+      | { type: 'requestSessionEnd' },
+  ): Promise<void> => {
+    setError(null);
+    setActionPending(true);
+    try {
+      const ack: Ack = await sendRequest(req);
+      const responseError: string | null = ackError(ack, 'Could not request action. Try again.');
+      if (responseError !== null) setError(responseError);
+    } catch {
+      setError('Could not request that action. Try again.');
+    } finally {
+      setActionPending(false);
+    }
+  };
 
   const affordability: (costMs: number) => { affordable: boolean; countdown: string | null } = (
     costMs: number,
@@ -166,6 +169,20 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
   const pauseAfford: { affordable: boolean; countdown: string | null } = affordability(
     snapshot.pauseCostMs,
   );
+  const affordabilityReason: (value: {
+    affordable: boolean;
+    countdown: string | null;
+  }) => string | null = (value: {
+    affordable: boolean;
+    countdown: string | null;
+  }): string | null =>
+    value.affordable ? null : (value.countdown ?? 'earn pause time by focusing');
+  const pendingReason: string | null = actionPending ? 'Action in progress' : null;
+  const unlockDisabledReason: string | null =
+    pendingReason ??
+    (activeHost === null ? 'Open a regular website to unlock it' : null) ??
+    affordabilityReason(unlockAfford);
+  const pauseDisabledReason: string | null = pendingReason ?? affordabilityReason(pauseAfford);
   const costMin: (ms: number) => number = (ms: number): number => Math.round(ms / 60_000);
   const breakEarlyVisible: boolean =
     snapshot.phase === 'break' &&
@@ -223,27 +240,23 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
       ) : (
         <div class="actions">
           <SpendButton
-            label={`Unlock this site ${costMin(snapshot.unlockCostMs)} min`}
+            label={`Unlock this site for ${costMin(snapshot.unlockCostMs)} min`}
             sub={activeHost}
-            affordable={unlockAfford.affordable && activeHost !== null}
-            countdown={unlockAfford.countdown}
-            pending={actionPending}
+            disabledReason={unlockDisabledReason}
             onClick={(): void => void openGate('unlockSite', activeHost)}
           />
           <SpendButton
-            label={`Pause everything ${costMin(snapshot.pauseCostMs)} min`}
+            label={`Pause blocking for ${costMin(snapshot.pauseCostMs)} min`}
             sub={null}
-            affordable={pauseAfford.affordable}
-            countdown={pauseAfford.countdown}
-            pending={actionPending}
+            disabledReason={pauseDisabledReason}
             onClick={(): void => void openGate('pause', null)}
           />
-          {strictness === 'friction' ? (
+          {strictness !== 'hard' ? (
             <button
               type="button"
               class="cancel-link"
               disabled={actionPending}
-              onClick={(): void => void openGate('cancel', null)}
+              onClick={(): void => void act({ type: 'requestSessionEnd' })}
             >
               End session
             </button>
