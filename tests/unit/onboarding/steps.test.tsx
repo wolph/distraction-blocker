@@ -89,7 +89,7 @@ describe('WebsiteAccessStep', (): void => {
     );
 
     expect(view.getByText(/checks page addresses locally/i)).toBeTruthy();
-    expect(view.getByText(/read and change data on all websites/i)).toBeTruthy();
+    expect(view.getByText('Read and change all your data on all websites')).toBeTruthy();
     expect(view.getByText(/restore affected pages/i)).toBeTruthy();
     expect(view.getByRole('button', { name: 'Enable website blocking' })).toBeTruthy();
     expect(view.getByRole('button', { name: 'Not now' })).toBeTruthy();

@@ -38,10 +38,13 @@ export function WebsiteAccessStep(props: WebsiteAccessStepProps): VNode {
         session ends.
       </p>
       <p>
-        Categories and custom domains can include any website. Chrome will therefore ask whether
-        Focus Lock may read and change data on all websites. Focus Lock uses that access only while
-        applying your blocking rules.
+        Categories and custom domains can include any website. Chrome will therefore request this
+        capability:
       </p>
+      <p class="permission-capability">
+        <strong>Read and change all your data on all websites</strong>
+      </p>
+      <p>Focus Lock uses that access only while applying your blocking rules.</p>
       {denied ? <p role="status">Chrome did not grant website access. You can retry.</p> : null}
       {registrationError ? (
         <p role="status">

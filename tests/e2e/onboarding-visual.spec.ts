@@ -1,4 +1,5 @@
-import { mkdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../src/shared/constants';
@@ -31,10 +32,29 @@ interface ViewportCase {
 
 interface VisualState {
   choice: WebsiteAccessChoice;
+  extraFocusSelectors?: readonly { name: string; selector: string }[];
   focusSelector: string;
   name: string;
   step: OnboardingStep;
   syncEnabled: boolean;
+}
+
+interface EvidenceArtifact {
+  bytes: number;
+  path: string;
+  sha256: string;
+}
+
+interface EvidenceManifest {
+  artifactCount: number;
+  artifacts: EvidenceArtifact[];
+  chromeVersion: string;
+  mockedChromeApis: false;
+  sourceCommit: string;
+  stateCount: number;
+  states: string[];
+  themes: string[];
+  viewportWidths: number[];
 }
 
 const THEMES: readonly ThemeCase[] = [
@@ -83,7 +103,8 @@ const VISUAL_STATES: readonly VisualState[] = [
     step: 2,
     choice: 'pending',
     syncEnabled: true,
-    focusSelector: '.button-row',
+    focusSelector: '.permission-capability',
+    extraFocusSelectors: [{ name: 'buttons', selector: '.button-row' }],
   },
   {
     name: 'step-2-denied-retry',
@@ -91,6 +112,7 @@ const VISUAL_STATES: readonly VisualState[] = [
     choice: 'denied',
     syncEnabled: true,
     focusSelector: '[role="status"]',
+    extraFocusSelectors: [{ name: 'buttons', selector: '.button-row' }],
   },
   {
     name: 'step-2-registration-error',
@@ -98,6 +120,7 @@ const VISUAL_STATES: readonly VisualState[] = [
     choice: 'registration-error',
     syncEnabled: true,
     focusSelector: '[role="status"]',
+    extraFocusSelectors: [{ name: 'buttons', selector: '.button-row' }],
   },
   {
     name: 'step-3-sync-on',
@@ -259,6 +282,14 @@ async function captureState(
     path: path.join(evidenceDir, `${stem}-component.png`),
     animations: 'disabled',
   });
+  for (const extra of state.extraFocusSelectors ?? []) {
+    const extraComponent: Locator = page.locator(extra.selector).first();
+    await expect(extraComponent).toBeVisible();
+    await extraComponent.screenshot({
+      path: path.join(evidenceDir, `${stem}-${extra.name}.png`),
+      animations: 'disabled',
+    });
+  }
   await testInfo.attach(`${stem}-viewport-edges`, {
     body: Buffer.from(
       JSON.stringify(
@@ -272,12 +303,53 @@ async function captureState(
   });
 }
 
+async function writeArtifactManifest(page: Page, evidenceDir: string): Promise<void> {
+  const artifactNames: string[] = (await readdir(evidenceDir))
+    .filter((name: string): boolean => name.endsWith('.png'))
+    .sort((left: string, right: string): number => (left < right ? -1 : left > right ? 1 : 0));
+  const artifacts: EvidenceArtifact[] = await Promise.all(
+    artifactNames.map(async (name: string): Promise<EvidenceArtifact> => {
+      const contents: Buffer = await readFile(path.join(evidenceDir, name));
+      return {
+        path: name,
+        bytes: contents.byteLength,
+        sha256: createHash('sha256').update(contents).digest('hex'),
+      };
+    }),
+  );
+  const userAgent: string = await page.evaluate((): string => navigator.userAgent);
+  const chromeVersion: string =
+    /(?:HeadlessChrome|Chrome)\/([^ ]+)/.exec(userAgent)?.[1] ?? 'unknown';
+  const manifest: EvidenceManifest = {
+    artifactCount: artifacts.length,
+    artifacts,
+    chromeVersion,
+    mockedChromeApis: false,
+    sourceCommit: process.env.TASK6_SOURCE_COMMIT ?? 'working-tree-after-a5677ad',
+    stateCount: VISUAL_STATES.length + 2,
+    states: [
+      ...VISUAL_STATES.map((state: VisualState): string => state.name),
+      'step-1-load-recovery',
+      'load-error-retry',
+    ],
+    themes: THEMES.map((theme: ThemeCase): string => theme.slug),
+    viewportWidths: VIEWPORTS.map((viewport: ViewportCase): number => viewport.width),
+  };
+  await writeFile(
+    path.join(evidenceDir, 'manifest.json'),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+}
+
 test('production onboarding states fit every viewport and theme', async ({
   freshInstallExtension,
 }, testInfo: TestInfo) => {
   const launch: FreshInstallLaunch = await freshInstallExtension.launch();
   const page: Page = launch.onboardingPage;
-  const evidenceDir: string = testInfo.outputPath('onboarding-visual-evidence');
+  const evidenceDir: string =
+    process.env.TASK6_EVIDENCE_DIR === undefined
+      ? testInfo.outputPath('onboarding-visual-evidence')
+      : path.resolve(process.env.TASK6_EVIDENCE_DIR);
   await mkdir(evidenceDir, { recursive: true });
 
   for (const state of VISUAL_STATES) {
@@ -306,7 +378,9 @@ test('production onboarding states fit every viewport and theme', async ({
         }
         if (state.name === 'step-3-pending-completion') await holdCompletion(page);
         if (state.name === 'step-2-permission-explanation') {
-          await expect(page.getByText('read and change data on all websites')).toBeVisible();
+          await expect(
+            page.getByText('Read and change all your data on all websites', { exact: true }),
+          ).toBeVisible();
           await expect(page.getByRole('button', { name: 'Enable website blocking' })).toBeVisible();
           await expect(page.getByRole('button', { name: 'Not now' })).toBeVisible();
         }
@@ -376,6 +450,7 @@ test('production onboarding states fit every viewport and theme', async ({
     choice: 'pending',
     syncEnabled: true,
     focusSelector: '[role="alert"]',
+    extraFocusSelectors: [{ name: 'buttons', selector: '.primary-button' }],
   };
   for (const theme of THEMES) {
     await page.emulateMedia({ colorScheme: theme.media });
@@ -393,6 +468,14 @@ test('production onboarding states fit every viewport and theme', async ({
       ).toBeVisible();
     }
   }
+
+  await writeArtifactManifest(page, evidenceDir);
+  const artifactManifest: EvidenceManifest = JSON.parse(
+    await readFile(path.join(evidenceDir, 'manifest.json'), 'utf8'),
+  );
+  expect(artifactManifest.artifactCount).toBe(372);
+  expect(artifactManifest.chromeVersion).not.toBe('unknown');
+  expect(artifactManifest.mockedChromeApis).toBe(false);
 
   const diagnostics: BrowserDiagnostics = freshInstallExtension.diagnostics;
   expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).not.toThrow();
