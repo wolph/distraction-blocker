@@ -24,12 +24,12 @@ Task 5 fixes are recorded in commit `364560292daa58f327802aae40082556aaa6128b` w
 
 ## Onboarding visual and native permission evidence
 
-Task 6 verified the three-step onboarding UI against the production extension, the Vite development server, and a separate headed release-build launch. The longest bundled domain, `store.steampowered.com`, is the long-value boundary because onboarding deliberately offers bundled category choices rather than custom-domain entry.
+Task 6 verified the three-step onboarding UI from initial implementation commit `a5677ad` plus permission-copy fix commit `c39029868c79e5dad1ced2ce99ff36de10493f24`. The checks covered the production extension, the Vite development server, and a separate headed release-build launch. The longest bundled domain, `store.steampowered.com`, is the long-value boundary because onboarding deliberately offers bundled category choices rather than custom-domain entry.
 
 - [x] `npx vitest run tests/unit/onboarding/theme-entry.test.ts` passed all 6 tests. Saved Light and Dark themes load through the validated settings message boundary, invalid or failed loads retain Auto, and valid live snapshots update the onboarding theme.
-- [x] `npm run build && npx playwright test tests/e2e/onboarding-visual.spec.ts` passed the production visual scenario in an isolated Chrome-for-Testing profile. It captured every seeded state at 375, 768, and 1280 px in Auto with light media, Auto with dark media, explicit Light with dark media, and explicit Dark with light media.
-- [x] Production coverage includes all three steps, an expanded Gaming category, the permission explanation, denied access, registration failure, Retry, Not now, Sync on and off, pending completion, invalid-draft recovery, and load-error recovery. The run captured 324 full-page, heading, and focused-component PNGs. It reported zero overflow, clipping, console errors, page errors, worker errors, request failures, and blocked requests.
-- [x] The Vite development-server pass exercised all three steps at the same three widths and four theme/media combinations. It captured 72 full-page and focused-component PNGs across 36 states. Computed colors, explicit-theme precedence, viewport edges, long-domain wrapping, and browser diagnostics passed.
+- [x] `npm run build && npx playwright test tests/e2e/onboarding-visual.spec.ts` passed the production visual scenario in 37.6 seconds in an isolated Chrome-for-Testing profile. It captured every seeded state at 375, 768, and 1280 px in Auto with light media, Auto with dark media, explicit Light with dark media, and explicit Dark with light media.
+- [x] Production coverage includes all three steps, an expanded Gaming category, the exact permission explanation, denied access, registration failure, Retry, Not now, Sync on and off, pending completion, invalid-draft recovery, and load-error recovery. The run captured 372 full-page, heading, explanation, list, error, button, and switch PNGs. It reported zero overflow, clipping, console errors, page errors, worker errors, request failures, and blocked requests.
+- [x] The Vite development-server pass exercised the same 9 states in 108 state, theme, and viewport configurations. It captured 528 full-page, heading, list, explanation, error, button, switch, and viewport-edge PNGs. Computed colors, explicit-theme precedence, viewport containment, `store.steampowered.com` wrapping, the real `Not now` transition, load-error Retry, and browser diagnostics passed. This pass used an in-page Chrome API mock only to seed visual states.
 - [x] Representative full-page and focused captures were inspected at every width and in light and dark presentations. Headings, expanded lists, warning and recovery messages, button rows, the Sync switch, disabled pending-completion action, focus outlines, and viewport edges remained readable and contained.
 
 Chrome-for-Testing 151.0.7922.34 displayed these exact browser-owned lines after the real `Enable website blocking` click:
@@ -40,16 +40,21 @@ Chrome-for-Testing 151.0.7922.34 displayed these exact browser-owned lines after
 - `Deny`
 - `Allow`
 
-The onboarding explanation says `Chrome will therefore ask whether Focus Lock may read and change data on all websites.` Chrome inserts `your` in its capability line. The scope matches line by line: read and change access, all data, and all websites. The surrounding onboarding copy additionally limits the product's stated use to checking addresses, applying blocking rules, and restoring pages.
+The onboarding explanation now reproduces Chrome's capability line exactly: `Read and change all your data on all websites`. No material capability is omitted. The surrounding onboarding copy additionally limits the product's stated use to checking addresses, applying blocking rules, and restoring pages.
 
 Task 6 artifacts:
 
-- Production visual evidence: `test-results/onboarding-visual-producti-6c3bf-it-every-viewport-and-theme/onboarding-visual-evidence/`
-- Development-server evidence: `~/.dev-browser/tmp/task6/`
-- Native prompt before click: `test-results/task6-real-prompt/permission-step-before-click.png`
-- Native browser-owned prompt: `test-results/task6-real-prompt/real-permission-prompt.png`
-- Native prompt after denial: `test-results/task6-real-prompt/after-deny.png`
-- Native prompt after grant: `test-results/task6-real-prompt/after-grant.png`
+- Development-server evidence: `~/.dev-browser/tmp/task6-final/`. Its 99,587-byte `manifest.json` has SHA-256 `3cbe2e5ed8bffd35cadf591a9b0d9722f897c039d85ad2cf6d9048c5f44ac13b` and inventories all 528 PNGs with byte sizes and SHA-256 hashes.
+- Production evidence: `~/.dev-browser/tmp/task6-production-final/`. Its 70,062-byte `manifest.json` has SHA-256 `e5e8cf5389fc4ce3a032c7fdcf0a76385b8290ea181b029c9e34d5e9bcac8d6c` and inventories all 372 PNGs with byte sizes and SHA-256 hashes.
+- Real browser-chrome evidence: `~/.dev-browser/tmp/task6-real-prompt-final/`. Its 1,642-byte `manifest.json` has SHA-256 `55fb49ae6bfb91dda8d93ab6eb82a079198482002adb33944fdb4f68b45b5256` and records Chrome, source, profile, method, sequence, sizes, and hashes.
+
+The real prompt used headed Chrome-for-Testing 151.0.7922.34, unpacked production `dist/`, and the fresh isolated profile `/tmp/focus-lock-task6-prompt-final.7b0q5P`. Computer Use clicked the real extension controls and Chrome's browser-owned sheet. No Chrome API or prompt mock was used. The user's regular Chrome was not targeted or modified.
+
+- Before click: `~/.dev-browser/tmp/task6-real-prompt-final/permission-step-before-click.png`, 66,419 bytes, SHA-256 `3451831c17fd2bdef1b0194fcafbdce55e46beb021a6eab76253a7d5eed96234`.
+- After click: `~/.dev-browser/tmp/task6-real-prompt-final/real-permission-prompt.png`, 13,545 bytes, SHA-256 `80750cb787a45dd655fe58c96f32afef28f0d035454d8f44fbe89d8345ef3d67`.
+- After denial: `~/.dev-browser/tmp/task6-real-prompt-final/after-deny.png`, 67,350 bytes, SHA-256 `69dd7b2d6070acd3c913ed08220f108a3244b2ebb026acb0ae392e91d80d3dad`.
+- After Retry: `~/.dev-browser/tmp/task6-real-prompt-final/after-retry.png`, 13,545 bytes, SHA-256 `80750cb787a45dd655fe58c96f32afef28f0d035454d8f44fbe89d8345ef3d67`.
+- After grant: `~/.dev-browser/tmp/task6-real-prompt-final/after-grant.png`, 67,591 bytes, SHA-256 `f597f26f75a6d06db43aed229776f683e5de6ea7d5b441b50254fae55ef44811`.
 
 Task 5 artifacts are in `test-results/`:
 
