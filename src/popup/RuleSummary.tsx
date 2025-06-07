@@ -60,9 +60,11 @@ function BlockRules({ draft, categoriesEditable, onCategoryToggle }: RuleSummary
   const extraRules: Rule[] = [...draft.rules.permanentBlacklist, ...draft.rules.sessionBlacklist];
   const exclusionRows: Array<{ category: CategoryList; host: string }> = ALL_CATEGORIES.flatMap(
     (category: CategoryList): Array<{ category: CategoryList; host: string }> =>
-      (draft.rules.exclusions[category.id] ?? []).map(
-        (host: string): { category: CategoryList; host: string } => ({ category, host }),
-      ),
+      draft.rules.categories[category.id]
+        ? (draft.rules.exclusions[category.id] ?? []).map(
+            (host: string): { category: CategoryList; host: string } => ({ category, host }),
+          )
+        : [],
   );
 
   return (
@@ -72,6 +74,12 @@ function BlockRules({ draft, categoriesEditable, onCategoryToggle }: RuleSummary
         <div class="draft-categories">
           {ALL_CATEGORIES.map((category: CategoryList): VNode => {
             const enabled: boolean = draft.rules.categories[category.id];
+            const exclusions: ReadonlySet<string> = new Set(
+              draft.rules.exclusions[category.id] ?? [],
+            );
+            const effectiveHosts: string[] = category.hosts.filter(
+              (host: string): boolean => !exclusions.has(host),
+            );
             return (
               <section class="draft-category" key={category.id}>
                 <button
@@ -84,12 +92,12 @@ function BlockRules({ draft, categoriesEditable, onCategoryToggle }: RuleSummary
                 >
                   <span>{category.title}</span>
                   <span class="draft-category__count" aria-hidden="true">
-                    {category.hosts.length} {plural(category.hosts.length, 'site', 'sites')}
+                    {effectiveHosts.length} {plural(effectiveHosts.length, 'site', 'sites')}
                   </span>
                 </button>
                 {enabled ? (
                   <ul class="rule-membership" aria-label={`${category.title} sites`}>
-                    {category.hosts.map(
+                    {effectiveHosts.map(
                       (host: string): VNode => (
                         <li key={host}>
                           <RuleDetail kind="domain" pattern={host} />

@@ -14,6 +14,7 @@ const T0 = 1_000_000_000;
 const MIN = 60_000;
 const SESSION_RULES: SessionRuleSnapshot = {
   baselineRevision: 'lists-v1-example',
+  baselineCategories: { ...DEFAULT_LISTS.categories },
   categories: { ...DEFAULT_LISTS.categories },
   exclusions: {},
   permanentBlacklist: [{ kind: 'host', pattern: 'reddit.com' }],

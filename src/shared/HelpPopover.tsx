@@ -148,20 +148,32 @@ function usePointerDismissal(
         if (!sources.pointerInside && !sources.focusInside && !sources.clickOpen) setOpen(false);
       }, HOVER_EXIT_GRACE_MS);
     };
-    const closeFromOutsideClick = (event: MouseEvent): void => {
-      if (event.target instanceof Node && root?.contains(event.target)) return;
-      dismissPopover(sources, setOpen);
-    };
     root?.addEventListener('pointerenter', openFromPointer);
     root?.addEventListener('pointerleave', closeFromPointer);
-    document.addEventListener('click', closeFromOutsideClick);
     return (): void => {
       cancelHoverClose(sources);
       root?.removeEventListener('pointerenter', openFromPointer);
       root?.removeEventListener('pointerleave', closeFromPointer);
-      document.removeEventListener('click', closeFromOutsideClick);
     };
   }, [rootRef, setOpen, sources]);
+}
+
+function useOutsideClickDismissal(
+  open: boolean,
+  rootRef: RefObject<HTMLSpanElement>,
+  sources: InteractionSources,
+  setOpen: (open: boolean) => void,
+): void {
+  useLayoutEffect((): (() => void) | undefined => {
+    if (!open) return undefined;
+    const closeFromOutsideClick = (event: MouseEvent): void => {
+      if (event.target instanceof Node && (rootRef.current?.contains(event.target) ?? false))
+        return;
+      dismissPopover(sources, setOpen);
+    };
+    document.addEventListener('click', closeFromOutsideClick);
+    return (): void => document.removeEventListener('click', closeFromOutsideClick);
+  }, [open, rootRef, setOpen, sources]);
 }
 
 function useFocusDismissal(
@@ -218,6 +230,7 @@ function usePopoverInteraction(
   const sources: InteractionSources = sourcesRef.current;
   usePointerDismissal(rootRef, sources, setOpen);
   useFocusDismissal(rootRef, triggerRef, sources, setOpen);
+  useOutsideClickDismissal(open, rootRef, sources, setOpen);
   const handleClick = (): void => {
     cancelHoverClose(sources);
     sources.clickOpen = true;

@@ -133,6 +133,7 @@ export function policyRevision(lists: ListsConfig): string {
 export function rulesFromLists(lists: ListsConfig): SessionRuleSnapshot {
   return {
     baselineRevision: policyRevision(lists),
+    baselineCategories: { ...lists.categories },
     categories: { ...lists.categories },
     exclusions: structuredClone(lists.exclusions),
     permanentBlacklist: structuredClone(lists.custom),

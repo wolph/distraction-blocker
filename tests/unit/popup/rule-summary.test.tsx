@@ -86,9 +86,8 @@ describe('RuleSummary', (): void => {
 
     expect(view.getByText('1 of 2 categories selected')).toBeTruthy();
     expect(view.getByText('2 extra blocked rules')).toBeTruthy();
-    expect(view.getByRole('button', { name: 'Social media' })).toBeTruthy();
-    expect(view.getByText('2 sites')).toBeTruthy();
-    expect(view.getAllByText('facebook.com')).toHaveLength(2);
+    expect(view.getByRole('button', { name: 'Social media' }).textContent).toContain('1 site');
+    expect(view.getAllByText('facebook.com')).toHaveLength(1);
     expect(view.getByText('instagram.com')).toBeTruthy();
     expect(view.getByText('Allowed exceptions')).toBeTruthy();
     expect(view.getByText('news.example')).toBeTruthy();
@@ -98,6 +97,25 @@ describe('RuleSummary', (): void => {
       view.getByText('Category and rule changes here apply only to this session.'),
     ).toBeTruthy();
     expect(view.getByRole('button', { name: 'Open Settings for permanent defaults' })).toBeTruthy();
+  });
+
+  it('does not show exceptions for a disabled category', (): void => {
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      categories: { ...DEFAULT_LISTS.categories, social: false },
+      exclusions: { social: ['facebook.com'] },
+    };
+    const view = render(
+      <RuleSummary
+        draft={createSessionDraft(DEFAULT_SETTINGS, lists)}
+        categoriesEditable={true}
+        onCategoryToggle={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    expect(view.queryByText('Allowed exceptions')).toBeNull();
+    expect(view.queryByText('facebook.com')).toBeNull();
   });
 
   it('hides categories and shows every permanent and session allow rule in allow-only mode', (): void => {
@@ -217,5 +235,15 @@ describe('RuleSummary', (): void => {
 
     expect(css).toMatch(/\.help-popover__trigger\.rule-detail\s*\{[^}]*height:\s*auto/s);
     expect(css).toMatch(/\.help-popover__trigger\.rule-detail\s*\{[^}]*font-weight:\s*500/s);
+  });
+
+  it('uses viewport-owned popup layout without fixed header arithmetic', (): void => {
+    const css: string = readFileSync(resolve('src/popup/popup.css'), 'utf8');
+
+    expect(css).not.toContain('calc(100vh - 86px)');
+    expect(css).toMatch(/body\s*\{[^}]*block-size:\s*100vh/s);
+    expect(css).toMatch(/#app\s*\{[^}]*min-block-size:\s*0/s);
+    expect(css).toMatch(/\.app\s*\{[^}]*min-block-size:\s*0/s);
+    expect(css).toMatch(/\.start-form\s*\{[^}]*min-block-size:\s*0/s);
   });
 });

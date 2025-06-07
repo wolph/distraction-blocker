@@ -1,5 +1,5 @@
 import { normalizeSessionHostInput } from '../core/matcher';
-import { rulesFromLists } from '../shared/constants';
+import { CATEGORY_IDS, rulesFromLists } from '../shared/constants';
 import type {
   CategoryId,
   CycleConfig,
@@ -53,6 +53,25 @@ export function toggleDraftCategory(draft: SessionDraft, id: CategoryId): Sessio
         ...draft.rules.categories,
         [id]: !draft.rules.categories[id],
       },
+    },
+  };
+}
+
+export function rebaseSessionDraft(draft: SessionDraft, lists: ListsConfig): SessionDraft {
+  const baseline: SessionRuleSnapshot = rulesFromLists(lists);
+  const categories: Record<CategoryId, boolean> = { ...baseline.categories };
+  for (const id of CATEGORY_IDS) {
+    if (draft.rules.categories[id] !== draft.rules.baselineCategories[id]) {
+      categories[id] = draft.rules.categories[id];
+    }
+  }
+  return {
+    ...draft,
+    rules: {
+      ...baseline,
+      categories,
+      sessionBlacklist: structuredClone(draft.rules.sessionBlacklist),
+      sessionAllowlist: structuredClone(draft.rules.sessionAllowlist),
     },
   };
 }

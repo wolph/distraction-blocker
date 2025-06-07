@@ -251,6 +251,7 @@ export function normalizeSessionRules(value: unknown): SessionRuleSnapshot | nul
     !isRecord(value) ||
     !hasExactOwnKeys(value, [
       'baselineRevision',
+      'baselineCategories',
       'categories',
       'exclusions',
       'permanentBlacklist',
@@ -263,6 +264,9 @@ export function normalizeSessionRules(value: unknown): SessionRuleSnapshot | nul
   ) {
     return null;
   }
+  const baselineCategories: Record<CategoryId, boolean> | null = normalizeCategories(
+    value.baselineCategories,
+  );
   const categories: Record<CategoryId, boolean> | null = normalizeCategories(value.categories);
   const exclusions: Partial<Record<CategoryId, string[]>> | null = normalizeExclusions(
     value.exclusions,
@@ -272,6 +276,7 @@ export function normalizeSessionRules(value: unknown): SessionRuleSnapshot | nul
   const sessionBlacklist: HostRule[] | null = normalizeHostRules(value.sessionBlacklist);
   const sessionAllowlist: HostRule[] | null = normalizeHostRules(value.sessionAllowlist);
   if (
+    baselineCategories === null ||
     categories === null ||
     exclusions === null ||
     permanentBlacklist === null ||
@@ -283,6 +288,7 @@ export function normalizeSessionRules(value: unknown): SessionRuleSnapshot | nul
   }
   return {
     baselineRevision: value.baselineRevision,
+    baselineCategories,
     categories,
     exclusions,
     permanentBlacklist,
@@ -303,7 +309,7 @@ export function sessionRulesMatchLists(rules: SessionRuleSnapshot, lists: ListsC
   if (actual === null || expected === null) return false;
   return (
     actual.baselineRevision === policyRevision(lists) &&
-    sameValue(actual.categories, expected.categories) &&
+    sameValue(actual.baselineCategories, expected.baselineCategories) &&
     sameValue(actual.exclusions, expected.exclusions) &&
     sameValue(actual.permanentBlacklist, expected.permanentBlacklist) &&
     sameValue(actual.permanentAllowlist, expected.permanentAllowlist)

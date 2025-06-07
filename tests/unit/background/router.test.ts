@@ -15,6 +15,7 @@ import type { StatsBundle } from '../../../src/shared/messages';
 import { isWebsiteAccessReconciliation } from '../../../src/shared/runtime-validation';
 import type {
   EventRecord,
+  ListsConfig,
   OnboardingDraft,
   SessionConfig,
   SetupState,
@@ -1089,6 +1090,43 @@ describe('routeMessage stats wiring', () => {
     const result: unknown = await routeMessage(engine, { type: 'exportEvents' }, sender);
 
     expect(result).toEqual({ json: JSON.stringify(events, null, 2) });
+  });
+});
+
+describe('routeMessage session category override wiring', (): void => {
+  it('starts and enforces an edited category without changing persistent lists', async (): Promise<void> => {
+    const blockingEngine: Engine = realBlockingEngine();
+    const before: ListsConfig = blockingEngine.getLists();
+    const config: SessionConfig = {
+      mode: 'blacklist',
+      strictness: 'friction',
+      durationMin: 25,
+      cycling: null,
+      intention: 'finish the launch',
+      source: 'manual',
+      scheduleEntryId: null,
+      rules: {
+        ...rulesFromLists(before),
+        categories: { ...before.categories, social: true },
+      },
+    };
+
+    await expect(
+      routeMessage(blockingEngine, { type: 'startSession', config }, sender),
+    ).resolves.toEqual({ ok: true });
+    const url: string = 'https://instagram.com/explore';
+    await expect(
+      routeMessage(
+        blockingEngine,
+        { type: 'getBlockState', url, docState: 'fresh' },
+        {
+          url,
+          tab: { id: 17, url } as chrome.tabs.Tab,
+          documentId: 'category-override-document',
+        },
+      ),
+    ).resolves.toMatchObject({ verdict: { blocked: true }, snapshot: { phase: 'focus' } });
+    expect(blockingEngine.getLists()).toEqual(before);
   });
 });
 

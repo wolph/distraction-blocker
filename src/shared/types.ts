@@ -26,6 +26,9 @@ export type HostRule = { kind: 'host'; pattern: string };
 
 export interface SessionRuleSnapshot {
   baselineRevision: string;
+  /** Authoritative category defaults at baselineRevision. The worker verifies these. */
+  baselineCategories: Record<CategoryId, boolean>;
+  /** Effective categories for this session. Differences from baselineCategories are session-only. */
   categories: Record<CategoryId, boolean>;
   exclusions: Partial<Record<CategoryId, string[]>>;
   permanentBlacklist: Rule[];

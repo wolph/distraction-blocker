@@ -445,6 +445,21 @@ describe('Engine', () => {
     expect(whitelist.engine.verdictFor('https://github.com/openai').blocked).toBe(false);
   });
 
+  it('accepts and enforces a session category override without mutating persistent lists', async (): Promise<void> => {
+    const h: Harness = makeEngine();
+    const before: ListsConfig = h.engine.getLists();
+    const rules: SessionRuleSnapshot = {
+      ...manualConfig.rules,
+      categories: { ...manualConfig.rules.categories, social: true },
+    };
+
+    await expect(h.engine.startSession({ ...manualConfig, rules })).resolves.toEqual({ ok: true });
+
+    expect(h.engine.snapshot().config?.rules.categories.social).toBe(true);
+    expect(h.engine.verdictFor('https://instagram.com/explore').blocked).toBe(true);
+    expect(h.engine.getLists()).toEqual(before);
+  });
+
   it.each([
     ['stale revision', { ...manualConfig.rules, baselineRevision: 'lists-v1:stale' }],
     [
@@ -458,7 +473,7 @@ describe('Engine', () => {
       'forged category baseline',
       {
         ...manualConfig.rules,
-        categories: { ...manualConfig.rules.categories, social: true },
+        baselineCategories: { ...manualConfig.rules.baselineCategories, social: true },
       },
     ],
     [

@@ -1,9 +1,16 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import type { Ack } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import { ackError } from '../shared/runtime-validation';
-import type { CycleConfig, ListsConfig, SessionMode, Settings, Strictness } from '../shared/types';
+import type {
+  CategoryId,
+  CycleConfig,
+  ListsConfig,
+  SessionMode,
+  Settings,
+  Strictness,
+} from '../shared/types';
 import { DomainInput } from './DomainInput';
 import { Chip, RadioRow } from './form-controls';
 import { RuleSummary } from './RuleSummary';
@@ -12,6 +19,7 @@ import {
   addDraftAllowHost,
   createSessionDraft,
   type DraftUpdate,
+  rebaseSessionDraft,
   type SessionDraft,
   toggleDraftCategory,
   toSessionConfig,
@@ -65,6 +73,10 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
   >(null);
   const [starting, setStarting]: [boolean, Dispatch<StateUpdater<boolean>>] =
     useState<boolean>(false);
+
+  useEffect((): void => {
+    setDraft((current: SessionDraft): SessionDraft => rebaseSessionDraft(current, lists));
+  }, [lists]);
 
   const durationMin: number = customMin.trim() === '' ? selectedMin : Number(customMin);
   const durationLabel: string = Number.isFinite(durationMin)
@@ -188,7 +200,7 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
         <RuleSummary
           draft={draft}
           categoriesEditable={categoriesEditable}
-          onCategoryToggle={(id): void => {
+          onCategoryToggle={(id: CategoryId): void => {
             if (categoriesEditable) setDraft(toggleDraftCategory(draft, id));
           }}
           onOpenSettings={(): void => void openPermanentSettings()}

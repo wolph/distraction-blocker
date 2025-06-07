@@ -58,6 +58,7 @@ afterEach((): void => {
 const NOW: number = 1_700_000_000_000;
 const SESSION_RULES: SessionRuleSnapshot = {
   baselineRevision: 'lists-v1-example',
+  baselineCategories: { ...DEFAULT_LISTS.categories },
   categories: { ...DEFAULT_LISTS.categories },
   exclusions: {},
   permanentBlacklist: [{ kind: 'host', pattern: 'reddit.com' }],
@@ -271,6 +272,7 @@ describe('runtime and worker request validation parity', (): void => {
 
     expect(snapshot).toEqual({
       baselineRevision: policyRevision(lists),
+      baselineCategories: lists.categories,
       categories: lists.categories,
       exclusions: lists.exclusions,
       permanentBlacklist: lists.custom,
@@ -287,6 +289,7 @@ describe('runtime and worker request validation parity', (): void => {
     customRule.pattern = 'changed.example';
     allowRule.pattern = 'changed.example';
 
+    expect(snapshot.baselineCategories.social).toBe(true);
     expect(snapshot.categories.social).toBe(true);
     expect(snapshot.exclusions.social).toEqual(['workplace.com']);
     expect(snapshot.permanentBlacklist).toEqual([{ kind: 'host', pattern: 'reddit.com' }]);

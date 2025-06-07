@@ -33,6 +33,26 @@ afterEach((): void => {
 });
 
 describe('HelpPopover', (): void => {
+  it('attaches the document outside-click listener only while open', async (): Promise<void> => {
+    const addListener = vi.spyOn(document, 'addEventListener');
+    const removeListener = vi.spyOn(document, 'removeEventListener');
+    const view = render(<HelpPopover label="Listener help">Listener details.</HelpPopover>);
+    const button: HTMLButtonElement = view.getByRole('button', {
+      name: 'Listener help',
+    }) as HTMLButtonElement;
+    const clickCalls = (): unknown[][] =>
+      addListener.mock.calls.filter((call: unknown[]): boolean => call[0] === 'click');
+
+    expect(clickCalls()).toHaveLength(0);
+    fireEvent.click(button);
+    expect(clickCalls()).toHaveLength(1);
+    fireEvent.keyDown(button, { key: 'Escape' });
+    await waitFor((): void => expect(view.queryByRole('tooltip')).toBeNull());
+    expect(
+      removeListener.mock.calls.filter((call: unknown[]): boolean => call[0] === 'click'),
+    ).toHaveLength(1);
+  });
+
   it('opens the controlled tooltip on focus with a stable accessible relationship', async (): Promise<void> => {
     const view = render(
       <HelpPopover label="Friction help">Ending early requires a 10-second wait.</HelpPopover>,

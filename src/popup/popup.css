@@ -71,6 +71,10 @@
   box-sizing: border-box;
 }
 
+html {
+  block-size: 100%;
+}
+
 input[type="radio"],
 input[type="checkbox"] {
   accent-color: var(--focus-color);
@@ -79,6 +83,9 @@ input[type="checkbox"] {
 body {
   margin: 0;
   width: 340px;
+  block-size: 100vh;
+  min-block-size: 0;
+  overflow: hidden;
   background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -86,14 +93,21 @@ body {
   line-height: 1.45;
 }
 
+#app {
+  block-size: 100%;
+  min-block-size: 0;
+}
+
 .app {
   display: flex;
+  block-size: 100%;
+  min-block-size: 0;
   flex-direction: column;
-  min-height: 200px;
 }
 
 .header {
   display: flex;
+  flex: none;
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
@@ -183,6 +197,7 @@ body {
 
 .footer {
   display: flex;
+  flex: none;
   justify-content: space-between;
   gap: 8px;
   padding: 8px 14px;
@@ -200,7 +215,8 @@ body {
 
 .start-form {
   display: grid;
-  max-block-size: calc(100vh - 86px);
+  min-block-size: 0;
+  flex: 1 1 auto;
   grid-template-rows: minmax(0, 1fr) auto;
   gap: 0;
 }

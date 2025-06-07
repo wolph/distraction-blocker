@@ -385,6 +385,8 @@ describe('parseRequest', (): void => {
     { sessionBlacklist: [{ kind: 'host', pattern: 'localhost' }] },
     { sessionBlacklist: [{ kind: 'host', pattern: 'intranet' }] },
     { sessionBlacklist: [{ kind: 'host', pattern: 'not a host/path' }] },
+    { baselineCategories: { ...DEFAULT_LISTS.categories, social: 'yes' } },
+    { baselineCategories: { ...DEFAULT_LISTS.categories, unknown: true } },
     { categories: { ...DEFAULT_LISTS.categories, unknown: true } },
     { permanentBlacklist: [{ kind: 'regex', pattern: '(' }] },
   ])('rejects malformed nested session rules %#', (rulesUpdate: Record<string, unknown>): void => {
