@@ -46,15 +46,15 @@ Task 6 artifacts:
 
 - Development-server evidence: `~/.dev-browser/tmp/task6-final/`. Its 99,587-byte `manifest.json` has SHA-256 `3cbe2e5ed8bffd35cadf591a9b0d9722f897c039d85ad2cf6d9048c5f44ac13b` and inventories all 528 PNGs with byte sizes and SHA-256 hashes.
 - Production evidence: `~/.dev-browser/tmp/task6-production-final/`. Its 70,062-byte `manifest.json` has SHA-256 `e5e8cf5389fc4ce3a032c7fdcf0a76385b8290ea181b029c9e34d5e9bcac8d6c` and inventories all 372 PNGs with byte sizes and SHA-256 hashes.
-- Real browser-chrome evidence: `~/.dev-browser/tmp/task6-real-prompt-final/`. Its 1,642-byte `manifest.json` has SHA-256 `55fb49ae6bfb91dda8d93ab6eb82a079198482002adb33944fdb4f68b45b5256` and records Chrome, source, profile, method, sequence, sizes, and hashes.
+- Real browser-chrome evidence: `~/.dev-browser/tmp/task6-real-prompt-final/`. Its 1,646-byte `manifest.json` has SHA-256 `041a35f7e8581bec4505e83c7b99f7c73ae4622b237b80d1dc218833e811acb9` and records Chrome, source, profile, method, sequence, sizes, and hashes. All six `.png` files contain PNG image data, not filename-only PNG labels.
 
 The real prompt used headed Chrome-for-Testing 151.0.7922.34, unpacked production `dist/`, and the fresh isolated profile `/tmp/focus-lock-task6-prompt-final.7b0q5P`. Computer Use clicked the real extension controls and Chrome's browser-owned sheet. No Chrome API or prompt mock was used. The user's regular Chrome was not targeted or modified.
 
-- Before click: `~/.dev-browser/tmp/task6-real-prompt-final/permission-step-before-click.png`, 66,419 bytes, SHA-256 `3451831c17fd2bdef1b0194fcafbdce55e46beb021a6eab76253a7d5eed96234`.
-- After click: `~/.dev-browser/tmp/task6-real-prompt-final/real-permission-prompt.png`, 13,545 bytes, SHA-256 `80750cb787a45dd655fe58c96f32afef28f0d035454d8f44fbe89d8345ef3d67`.
-- After denial: `~/.dev-browser/tmp/task6-real-prompt-final/after-deny.png`, 67,350 bytes, SHA-256 `69dd7b2d6070acd3c913ed08220f108a3244b2ebb026acb0ae392e91d80d3dad`.
-- After Retry: `~/.dev-browser/tmp/task6-real-prompt-final/after-retry.png`, 13,545 bytes, SHA-256 `80750cb787a45dd655fe58c96f32afef28f0d035454d8f44fbe89d8345ef3d67`.
-- After grant: `~/.dev-browser/tmp/task6-real-prompt-final/after-grant.png`, 67,591 bytes, SHA-256 `f597f26f75a6d06db43aed229776f683e5de6ea7d5b441b50254fae55ef44811`.
+- Before click: `~/.dev-browser/tmp/task6-real-prompt-final/permission-step-before-click.png`, 156,264 bytes, SHA-256 `350d20fa62932c604c4ce4de100130097667c548c31fd56df871bd08400eb04f`.
+- After click: `~/.dev-browser/tmp/task6-real-prompt-final/real-permission-prompt.png`, 29,630 bytes, SHA-256 `60c458beff58b53faca4aedfd3fc8e06b0b9a020e1a56875ed615ef33df55048`.
+- After denial: `~/.dev-browser/tmp/task6-real-prompt-final/after-deny.png`, 157,926 bytes, SHA-256 `a5b188078919c6da28d300ec77a7956fcbecf2fd624e526eb1fe9997367d46bb`.
+- After Retry: `~/.dev-browser/tmp/task6-real-prompt-final/after-retry.png`, 29,630 bytes, SHA-256 `60c458beff58b53faca4aedfd3fc8e06b0b9a020e1a56875ed615ef33df55048`.
+- After grant: `~/.dev-browser/tmp/task6-real-prompt-final/after-grant.png`, 155,471 bytes, SHA-256 `295963316595cb4d80a291297baa8994780a4695c8b9f76ad89f1997bfe0f9ef`.
 
 Task 5 artifacts are in `test-results/`:
 
