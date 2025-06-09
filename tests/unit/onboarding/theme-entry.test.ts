@@ -96,4 +96,12 @@ describe('onboarding theme entrypoint', (): void => {
       styles.indexOf('@media (prefers-color-scheme: dark)'),
     );
   });
+
+  it('uses the dark palette before Auto has been applied', (): void => {
+    const styles: string = readFileSync(resolve('src/onboarding/onboarding.css'), 'utf8');
+
+    expect(styles).toMatch(
+      /@media \(prefers-color-scheme: dark\)\s*\{[^}]*:root:not\(\[data-theme\]\),\s*:root\[data-theme="auto"\]/s,
+    );
+  });
 });

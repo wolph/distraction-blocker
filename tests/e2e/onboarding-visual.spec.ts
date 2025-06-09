@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto';
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../src/shared/constants';
@@ -15,6 +14,12 @@ import {
   type BrowserDiagnostics,
 } from './browser-diagnostics';
 import { expect, type FreshInstallLaunch, sendExtensionRequest, test } from './fixtures';
+import {
+  PRODUCTION_RUNTIME_API_INTERCEPTIONS,
+  type RuntimeApiInterception,
+  type VisualEvidenceManifest,
+  writeVisualEvidenceManifest,
+} from './onboarding-visual-manifest';
 
 test.setTimeout(300_000);
 
@@ -37,24 +42,6 @@ interface VisualState {
   name: string;
   step: OnboardingStep;
   syncEnabled: boolean;
-}
-
-interface EvidenceArtifact {
-  bytes: number;
-  path: string;
-  sha256: string;
-}
-
-interface EvidenceManifest {
-  artifactCount: number;
-  artifacts: EvidenceArtifact[];
-  chromeVersion: string;
-  mockedChromeApis: false;
-  sourceCommit: string;
-  stateCount: number;
-  states: string[];
-  themes: string[];
-  viewportWidths: number[];
 }
 
 const THEMES: readonly ThemeCase[] = [
@@ -303,44 +290,6 @@ async function captureState(
   });
 }
 
-async function writeArtifactManifest(page: Page, evidenceDir: string): Promise<void> {
-  const artifactNames: string[] = (await readdir(evidenceDir))
-    .filter((name: string): boolean => name.endsWith('.png'))
-    .sort((left: string, right: string): number => (left < right ? -1 : left > right ? 1 : 0));
-  const artifacts: EvidenceArtifact[] = await Promise.all(
-    artifactNames.map(async (name: string): Promise<EvidenceArtifact> => {
-      const contents: Buffer = await readFile(path.join(evidenceDir, name));
-      return {
-        path: name,
-        bytes: contents.byteLength,
-        sha256: createHash('sha256').update(contents).digest('hex'),
-      };
-    }),
-  );
-  const userAgent: string = await page.evaluate((): string => navigator.userAgent);
-  const chromeVersion: string =
-    /(?:HeadlessChrome|Chrome)\/([^ ]+)/.exec(userAgent)?.[1] ?? 'unknown';
-  const manifest: EvidenceManifest = {
-    artifactCount: artifacts.length,
-    artifacts,
-    chromeVersion,
-    mockedChromeApis: false,
-    sourceCommit: process.env.TASK6_SOURCE_COMMIT ?? 'working-tree-after-a5677ad',
-    stateCount: VISUAL_STATES.length + 2,
-    states: [
-      ...VISUAL_STATES.map((state: VisualState): string => state.name),
-      'step-1-load-recovery',
-      'load-error-retry',
-    ],
-    themes: THEMES.map((theme: ThemeCase): string => theme.slug),
-    viewportWidths: VIEWPORTS.map((viewport: ViewportCase): number => viewport.width),
-  };
-  await writeFile(
-    path.join(evidenceDir, 'manifest.json'),
-    `${JSON.stringify(manifest, null, 2)}\n`,
-  );
-}
-
 test('production onboarding states fit every viewport and theme', async ({
   freshInstallExtension,
 }, testInfo: TestInfo) => {
@@ -351,6 +300,8 @@ test('production onboarding states fit every viewport and theme', async ({
       ? testInfo.outputPath('onboarding-visual-evidence')
       : path.resolve(process.env.TASK6_EVIDENCE_DIR);
   await mkdir(evidenceDir, { recursive: true });
+  let pendingCompletionInterceptions: number = 0;
+  let loadFailureInterceptions: number = 0;
 
   for (const state of VISUAL_STATES) {
     for (const theme of THEMES) {
@@ -376,7 +327,10 @@ test('production onboarding states fit every viewport and theme', async ({
           expect(domainMetrics.right).toBeLessThanOrEqual(viewport.width);
           expect(domainMetrics.width).toBeGreaterThan(0);
         }
-        if (state.name === 'step-3-pending-completion') await holdCompletion(page);
+        if (state.name === 'step-3-pending-completion') {
+          await holdCompletion(page);
+          pendingCompletionInterceptions += 1;
+        }
         if (state.name === 'step-2-permission-explanation') {
           await expect(
             page.getByText('Read and change all your data on all websites', { exact: true }),
@@ -466,16 +420,47 @@ test('production onboarding states fit every viewport and theme', async ({
       await expect(
         page.getByRole('heading', { name: 'Choose your starting block list' }),
       ).toBeVisible();
+      loadFailureInterceptions += 1;
     }
   }
 
-  await writeArtifactManifest(page, evidenceDir);
-  const artifactManifest: EvidenceManifest = JSON.parse(
+  const userAgent: string = await page.evaluate((): string => navigator.userAgent);
+  const chromeVersion: string =
+    process.env.TASK6_CHROME_VERSION ??
+    /(?:HeadlessChrome|Chrome)\/([^ ]+)/.exec(userAgent)?.[1] ??
+    'unknown';
+  const states: string[] = [
+    ...VISUAL_STATES.map((state: VisualState): string => state.name),
+    'step-1-load-recovery',
+    'load-error-retry',
+  ];
+  const runtimeApiInterceptions: RuntimeApiInterception[] =
+    PRODUCTION_RUNTIME_API_INTERCEPTIONS.map(
+      (definition): RuntimeApiInterception => ({
+        ...definition,
+        observedCount:
+          definition.requestType === 'completeOnboarding'
+            ? pendingCompletionInterceptions
+            : loadFailureInterceptions,
+      }),
+    );
+  const writtenManifest: VisualEvidenceManifest = await writeVisualEvidenceManifest({
+    chromeVersion,
+    evidenceDir,
+    sourceCommit: process.env.TASK6_SOURCE_COMMIT ?? 'working-tree-after-a5677ad',
+    states,
+    themes: THEMES.map((theme: ThemeCase): string => theme.slug),
+    viewportWidths: VIEWPORTS.map((viewport: ViewportCase): number => viewport.width),
+    runtimeApiInterceptions,
+  });
+  const artifactManifest: VisualEvidenceManifest = JSON.parse(
     await readFile(path.join(evidenceDir, 'manifest.json'), 'utf8'),
   );
+  expect(artifactManifest).toEqual(writtenManifest);
   expect(artifactManifest.artifactCount).toBe(372);
   expect(artifactManifest.chromeVersion).not.toBe('unknown');
-  expect(artifactManifest.mockedChromeApis).toBe(false);
+  expect(artifactManifest.runtimeApiInterceptions).toEqual(runtimeApiInterceptions);
+  expect('mockedChromeApis' in artifactManifest).toBe(false);
 
   const diagnostics: BrowserDiagnostics = freshInstallExtension.diagnostics;
   expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).not.toThrow();
