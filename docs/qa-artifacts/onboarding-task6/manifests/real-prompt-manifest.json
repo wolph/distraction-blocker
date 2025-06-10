@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "kind": "real-browser-permission-prompt",
+  "sourceCommit": "c39029868c79e5dad1ced2ce99ff36de10493f24",
+  "chromeVersion": "151.0.7922.34",
+  "isolatedProfilePath": "/tmp/focus-lock-task6-prompt-final.7b0q5P",
+  "mockedChromeApis": false,
+  "method": "Headed Chrome-for-Testing loaded the unpacked production build. Computer Use clicked the real extension controls and Chrome browser-owned permission sheet.",
+  "capability": "Read and change all your data on all websites",
+  "sequence": [
+    "permission-step-before-click.png",
+    "real-permission-prompt.png",
+    "after-deny.png",
+    "after-retry.png",
+    "after-grant.png"
+  ],
+  "artifactCount": 6,
+  "artifacts": [
+    {
+      "path": "after-deny.png",
+      "bytes": 157926,
+      "sha256": "a5b188078919c6da28d300ec77a7956fcbecf2fd624e526eb1fe9997367d46bb"
+    },
+    {
+      "path": "after-grant.png",
+      "bytes": 155471,
+      "sha256": "295963316595cb4d80a291297baa8994780a4695c8b9f76ad89f1997bfe0f9ef"
+    },
+    {
+      "path": "after-retry.png",
+      "bytes": 29630,
+      "sha256": "60c458beff58b53faca4aedfd3fc8e06b0b9a020e1a56875ed615ef33df55048"
+    },
+    {
+      "path": "before-step-advance.png",
+      "bytes": 194594,
+      "sha256": "51d627b52a6705ef10cb8dc8cf5bfc7c56705599a57e1fb5065af2a8ce0e488e"
+    },
+    {
+      "path": "permission-step-before-click.png",
+      "bytes": 156264,
+      "sha256": "350d20fa62932c604c4ce4de100130097667c548c31fd56df871bd08400eb04f"
+    },
+    {
+      "path": "real-permission-prompt.png",
+      "bytes": 29630,
+      "sha256": "60c458beff58b53faca4aedfd3fc8e06b0b9a020e1a56875ed615ef33df55048"
+    }
+  ]
+}

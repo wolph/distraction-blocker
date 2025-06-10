@@ -1,0 +1,1912 @@
+{
+  "artifactCount": 372,
+  "artifacts": [
+    {
+      "path": "load-error-retry-auto-dark-1280-buttons.png",
+      "bytes": 1371,
+      "sha256": "56c33049c548eec848ccf536e3a64e5f49f43e7185149764a3a19765dbebd24f"
+    },
+    {
+      "path": "load-error-retry-auto-dark-1280-component.png",
+      "bytes": 4021,
+      "sha256": "deaed6b6f45d32a00e3237c452d39f1b93e449528aa264db5edb1238d5c8f147"
+    },
+    {
+      "path": "load-error-retry-auto-dark-1280-full.png",
+      "bytes": 20800,
+      "sha256": "f00d331fa44c3d3a4ee7d2060ef52a717e2a5eee85de5652ac587c835dd21fdc"
+    },
+    {
+      "path": "load-error-retry-auto-dark-1280-heading.png",
+      "bytes": 5878,
+      "sha256": "1e1583510ec556f6f39015c79db8cdf474e1d31caed4b2907bcc8de4b5efcef6"
+    },
+    {
+      "path": "load-error-retry-auto-dark-375-buttons.png",
+      "bytes": 1464,
+      "sha256": "fdd0d436724cfe1b66fd1937baa22e2f0bdb42b237b33e1a7cea1f0eb368a4e5"
+    },
+    {
+      "path": "load-error-retry-auto-dark-375-component.png",
+      "bytes": 3830,
+      "sha256": "b9bfae7e07c5b728cd97cd37e0797d255678f3a049d2691e6751d33f139928ac"
+    },
+    {
+      "path": "load-error-retry-auto-dark-375-full.png",
+      "bytes": 15111,
+      "sha256": "354b059f0365c3645f4699ee4fab1e33ae91fd4c7605fa9c1bc55f1a4b429a1f"
+    },
+    {
+      "path": "load-error-retry-auto-dark-375-heading.png",
+      "bytes": 3904,
+      "sha256": "005894aa74c377e4a0d49ff842f9ac4c5f0d2f73d4c6db46e459d1291788bf5e"
+    },
+    {
+      "path": "load-error-retry-auto-dark-768-buttons.png",
+      "bytes": 1332,
+      "sha256": "c917a7a4910d5c2d5c3891a5a1633e5e83fd954fb77e0104c7f6c83c1f2c01a3"
+    },
+    {
+      "path": "load-error-retry-auto-dark-768-component.png",
+      "bytes": 4210,
+      "sha256": "00efb12d024a20e74bdb21ca1d5e8c83f53199766abf7b8a3a6e2e8ace6fe253"
+    },
+    {
+      "path": "load-error-retry-auto-dark-768-full.png",
+      "bytes": 19526,
+      "sha256": "c4af6671d16541490b7510fbd2db9d9fbc41274b6de0a45495e2b8dbcbd5cf24"
+    },
+    {
+      "path": "load-error-retry-auto-dark-768-heading.png",
+      "bytes": 5921,
+      "sha256": "48362763d8161dc8cd965a460fdfadbd61e0e6db12f5461abfadcb105b8eeff8"
+    },
+    {
+      "path": "load-error-retry-auto-light-1280-buttons.png",
+      "bytes": 1339,
+      "sha256": "254b94f248942cd9dd0fecc0c1804883f9299938b6755611d8aa4658f3a3493c"
+    },
+    {
+      "path": "load-error-retry-auto-light-1280-component.png",
+      "bytes": 3855,
+      "sha256": "291323a889d3f1d28538b944872924205f195f798047046a11ab5c3d290841d4"
+    },
+    {
+      "path": "load-error-retry-auto-light-1280-full.png",
+      "bytes": 27248,
+      "sha256": "fb1ce82e116083de47742021e379fca1d55e3fe9ccf063150281f2e118ae908e"
+    },
+    {
+      "path": "load-error-retry-auto-light-1280-heading.png",
+      "bytes": 5914,
+      "sha256": "300abe8d7804fabbe3b2724659d705199cfbc41d1342509e709d74e5778d2eb3"
+    },
+    {
+      "path": "load-error-retry-auto-light-375-buttons.png",
+      "bytes": 1492,
+      "sha256": "c834025bd36dddf97b04aad8bf6f267c4c410772a3a4adea8e9efff16e8df803"
+    },
+    {
+      "path": "load-error-retry-auto-light-375-component.png",
+      "bytes": 3668,
+      "sha256": "dce864cef58857c4195d11d28ac23457bdf9d2e6b69a001e5999e79757977124"
+    },
+    {
+      "path": "load-error-retry-auto-light-375-full.png",
+      "bytes": 18968,
+      "sha256": "125133331a40fd9dc3417d41858fbf738db969c33079385f0b21dde5e4a105cf"
+    },
+    {
+      "path": "load-error-retry-auto-light-375-heading.png",
+      "bytes": 3928,
+      "sha256": "619165c24be566d58a0656e6b68c9f4038d778538742c4ceb2d5551dbe563635"
+    },
+    {
+      "path": "load-error-retry-auto-light-768-buttons.png",
+      "bytes": 1333,
+      "sha256": "2401f72804afddd475cbbb59689d7381508e041d7f22fa29215c1015238cb0e9"
+    },
+    {
+      "path": "load-error-retry-auto-light-768-component.png",
+      "bytes": 4078,
+      "sha256": "21a52e7ae9d94532925e2722db87148f3236b773f2e461aba28e0d4035cb0538"
+    },
+    {
+      "path": "load-error-retry-auto-light-768-full.png",
+      "bytes": 25586,
+      "sha256": "f520df686f79f14309bdce1eeb73ce3d7bc234259c85b3eb04e941de6413fa7c"
+    },
+    {
+      "path": "load-error-retry-auto-light-768-heading.png",
+      "bytes": 5933,
+      "sha256": "7514cd1b3703dad0d262ebff1975877a34bc6b1973c5443f63e2bfa7e485f1e6"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-1280-buttons.png",
+      "bytes": 1371,
+      "sha256": "56c33049c548eec848ccf536e3a64e5f49f43e7185149764a3a19765dbebd24f"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-1280-component.png",
+      "bytes": 4021,
+      "sha256": "deaed6b6f45d32a00e3237c452d39f1b93e449528aa264db5edb1238d5c8f147"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-1280-full.png",
+      "bytes": 20800,
+      "sha256": "f00d331fa44c3d3a4ee7d2060ef52a717e2a5eee85de5652ac587c835dd21fdc"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-1280-heading.png",
+      "bytes": 5878,
+      "sha256": "1e1583510ec556f6f39015c79db8cdf474e1d31caed4b2907bcc8de4b5efcef6"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-375-buttons.png",
+      "bytes": 1464,
+      "sha256": "fdd0d436724cfe1b66fd1937baa22e2f0bdb42b237b33e1a7cea1f0eb368a4e5"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-375-component.png",
+      "bytes": 3830,
+      "sha256": "b9bfae7e07c5b728cd97cd37e0797d255678f3a049d2691e6751d33f139928ac"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-375-full.png",
+      "bytes": 15111,
+      "sha256": "354b059f0365c3645f4699ee4fab1e33ae91fd4c7605fa9c1bc55f1a4b429a1f"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-375-heading.png",
+      "bytes": 3904,
+      "sha256": "005894aa74c377e4a0d49ff842f9ac4c5f0d2f73d4c6db46e459d1291788bf5e"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-768-buttons.png",
+      "bytes": 1332,
+      "sha256": "c917a7a4910d5c2d5c3891a5a1633e5e83fd954fb77e0104c7f6c83c1f2c01a3"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-768-component.png",
+      "bytes": 4210,
+      "sha256": "00efb12d024a20e74bdb21ca1d5e8c83f53199766abf7b8a3a6e2e8ace6fe253"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-768-full.png",
+      "bytes": 19526,
+      "sha256": "c4af6671d16541490b7510fbd2db9d9fbc41274b6de0a45495e2b8dbcbd5cf24"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-768-heading.png",
+      "bytes": 5921,
+      "sha256": "48362763d8161dc8cd965a460fdfadbd61e0e6db12f5461abfadcb105b8eeff8"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-1280-buttons.png",
+      "bytes": 1339,
+      "sha256": "254b94f248942cd9dd0fecc0c1804883f9299938b6755611d8aa4658f3a3493c"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-1280-component.png",
+      "bytes": 3855,
+      "sha256": "291323a889d3f1d28538b944872924205f195f798047046a11ab5c3d290841d4"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-1280-full.png",
+      "bytes": 27248,
+      "sha256": "fb1ce82e116083de47742021e379fca1d55e3fe9ccf063150281f2e118ae908e"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-1280-heading.png",
+      "bytes": 5914,
+      "sha256": "300abe8d7804fabbe3b2724659d705199cfbc41d1342509e709d74e5778d2eb3"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-375-buttons.png",
+      "bytes": 1492,
+      "sha256": "c834025bd36dddf97b04aad8bf6f267c4c410772a3a4adea8e9efff16e8df803"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-375-component.png",
+      "bytes": 3668,
+      "sha256": "dce864cef58857c4195d11d28ac23457bdf9d2e6b69a001e5999e79757977124"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-375-full.png",
+      "bytes": 18968,
+      "sha256": "125133331a40fd9dc3417d41858fbf738db969c33079385f0b21dde5e4a105cf"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-375-heading.png",
+      "bytes": 3928,
+      "sha256": "619165c24be566d58a0656e6b68c9f4038d778538742c4ceb2d5551dbe563635"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-768-buttons.png",
+      "bytes": 1333,
+      "sha256": "2401f72804afddd475cbbb59689d7381508e041d7f22fa29215c1015238cb0e9"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-768-component.png",
+      "bytes": 4078,
+      "sha256": "21a52e7ae9d94532925e2722db87148f3236b773f2e461aba28e0d4035cb0538"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-768-full.png",
+      "bytes": 25586,
+      "sha256": "f520df686f79f14309bdce1eeb73ce3d7bc234259c85b3eb04e941de6413fa7c"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-768-heading.png",
+      "bytes": 5933,
+      "sha256": "7514cd1b3703dad0d262ebff1975877a34bc6b1973c5443f63e2bfa7e485f1e6"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-1280-component.png",
+      "bytes": 17484,
+      "sha256": "a9ae8b437974f5e932228dffea7d2f8310a9b0fa18196ee67d0e4a3929c41617"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-1280-full.png",
+      "bytes": 112538,
+      "sha256": "866dbcb07e383e68ebab8083e56e6c6b9483c07934e088ee25c1c238cf2d6e9f"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-1280-heading.png",
+      "bytes": 8518,
+      "sha256": "d97648d42651fd56228c398565238db728dbd2c211df93902169d7f6af956769"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-375-component.png",
+      "bytes": 11951,
+      "sha256": "6a201ad4abf2c2d0b50c26ff3f99c8191a371e6d6d8d1225f8e0610735e04d68"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-375-full.png",
+      "bytes": 94405,
+      "sha256": "b6e27f973b67b583e91e7943f996ee012ef99442b339d2bd35d3084a3aa60b6c"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-375-heading.png",
+      "bytes": 6397,
+      "sha256": "a303a2f5bc8728fc1a1d2bf7000f2f6f8b4e8b5fa8ae914d893476962386f94b"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-768-component.png",
+      "bytes": 16839,
+      "sha256": "bdee62444a243bc7f201a7905d1f94deca3da6ce30292b0559a2519a151f4280"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-768-full.png",
+      "bytes": 106214,
+      "sha256": "d97e98c7ce25d1eb07f768fb7890542fcd4c4008bf546405b4d88e9d5f9bc3eb"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-768-heading.png",
+      "bytes": 8723,
+      "sha256": "000bb61cf9ad8c110a38e3be9eb7d645c1b182c8a883bcff12656e4f081ea246"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-1280-component.png",
+      "bytes": 17688,
+      "sha256": "24c47c15d0cee472c607914540f02717b37a18194d68cae760077cf9eed2f64a"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-1280-full.png",
+      "bytes": 120486,
+      "sha256": "2c6dc37e788a9df6fe2e6c97a7a086423ca87423ece33eac1a7e7fa4eeb34c7a"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-1280-heading.png",
+      "bytes": 8515,
+      "sha256": "8d08b718c799088a1e72a6dcc9b6a72bd26ac06d5552b82fa1ffadbcfbfedcd7"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-375-component.png",
+      "bytes": 12230,
+      "sha256": "5824fb5f3953d6b274eab7b660dd2edd8c070fd205f9dcedfa36f215b1ba9119"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-375-full.png",
+      "bytes": 98823,
+      "sha256": "2ccf4020e8861a65d4daccf63754664709f0126b53a184dc5a24e1a9f203f969"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-375-heading.png",
+      "bytes": 6477,
+      "sha256": "68b8add7a876c25a2f696fc8fe89cb197f424791f91c25085a712477e0321ebf"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-768-component.png",
+      "bytes": 17188,
+      "sha256": "c28cb8675aca356506f92e89090c173cbf03389fb82b81d6b80c5656310fe356"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-768-full.png",
+      "bytes": 113928,
+      "sha256": "d2dc3dd657f0674c0ed776dc645dc6d77031a9289297a2f342792227fbc4e413"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-768-heading.png",
+      "bytes": 8796,
+      "sha256": "d89d1ae1aa62952bd2751bb458c8fbc0cbe2862d74545dc494a970ff366d5ca1"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-1280-component.png",
+      "bytes": 17484,
+      "sha256": "a9ae8b437974f5e932228dffea7d2f8310a9b0fa18196ee67d0e4a3929c41617"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-1280-full.png",
+      "bytes": 112538,
+      "sha256": "866dbcb07e383e68ebab8083e56e6c6b9483c07934e088ee25c1c238cf2d6e9f"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-1280-heading.png",
+      "bytes": 8518,
+      "sha256": "d97648d42651fd56228c398565238db728dbd2c211df93902169d7f6af956769"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-375-component.png",
+      "bytes": 11951,
+      "sha256": "6a201ad4abf2c2d0b50c26ff3f99c8191a371e6d6d8d1225f8e0610735e04d68"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-375-full.png",
+      "bytes": 94405,
+      "sha256": "b6e27f973b67b583e91e7943f996ee012ef99442b339d2bd35d3084a3aa60b6c"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-375-heading.png",
+      "bytes": 6397,
+      "sha256": "a303a2f5bc8728fc1a1d2bf7000f2f6f8b4e8b5fa8ae914d893476962386f94b"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-768-component.png",
+      "bytes": 16839,
+      "sha256": "bdee62444a243bc7f201a7905d1f94deca3da6ce30292b0559a2519a151f4280"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-768-full.png",
+      "bytes": 106214,
+      "sha256": "d97e98c7ce25d1eb07f768fb7890542fcd4c4008bf546405b4d88e9d5f9bc3eb"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-768-heading.png",
+      "bytes": 8723,
+      "sha256": "000bb61cf9ad8c110a38e3be9eb7d645c1b182c8a883bcff12656e4f081ea246"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-1280-component.png",
+      "bytes": 17688,
+      "sha256": "24c47c15d0cee472c607914540f02717b37a18194d68cae760077cf9eed2f64a"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-1280-full.png",
+      "bytes": 120486,
+      "sha256": "2c6dc37e788a9df6fe2e6c97a7a086423ca87423ece33eac1a7e7fa4eeb34c7a"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-1280-heading.png",
+      "bytes": 8515,
+      "sha256": "8d08b718c799088a1e72a6dcc9b6a72bd26ac06d5552b82fa1ffadbcfbfedcd7"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-375-component.png",
+      "bytes": 12230,
+      "sha256": "5824fb5f3953d6b274eab7b660dd2edd8c070fd205f9dcedfa36f215b1ba9119"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-375-full.png",
+      "bytes": 98823,
+      "sha256": "2ccf4020e8861a65d4daccf63754664709f0126b53a184dc5a24e1a9f203f969"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-375-heading.png",
+      "bytes": 6477,
+      "sha256": "68b8add7a876c25a2f696fc8fe89cb197f424791f91c25085a712477e0321ebf"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-768-component.png",
+      "bytes": 17188,
+      "sha256": "c28cb8675aca356506f92e89090c173cbf03389fb82b81d6b80c5656310fe356"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-768-full.png",
+      "bytes": 113928,
+      "sha256": "d2dc3dd657f0674c0ed776dc645dc6d77031a9289297a2f342792227fbc4e413"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-768-heading.png",
+      "bytes": 8796,
+      "sha256": "d89d1ae1aa62952bd2751bb458c8fbc0cbe2862d74545dc494a970ff366d5ca1"
+    },
+    {
+      "path": "step-1-load-recovery-auto-dark-1280-component.png",
+      "bytes": 9449,
+      "sha256": "656da13e582bfbf81810238c420b0a27da748f2edeb5d9171c6795414b187c3d"
+    },
+    {
+      "path": "step-1-load-recovery-auto-dark-1280-full.png",
+      "bytes": 104030,
+      "sha256": "f86fe3e3aea3329329522412154b985af585a561b4b84bcc40b5890e305375ec"
+    },
+    {
+      "path": "step-1-load-recovery-auto-dark-1280-heading.png",
+      "bytes": 8518,
+      "sha256": "d97648d42651fd56228c398565238db728dbd2c211df93902169d7f6af956769"
+    },
+    {
+      "path": "step-1-load-recovery-auto-dark-375-component.png",
+      "bytes": 9226,
+      "sha256": "ea92dc03ea0a66fde62bcd570a602c1708b681ad2595a25047d9437972c19f0c"
+    },
+    {
+      "path": "step-1-load-recovery-auto-dark-375-full.png",
+      "bytes": 91791,
+      "sha256": "f9b768cf321a867413b4057802fd23cfe22d0aa522253c7fb6190328af0351e6"
+    },
+    {
+      "path": "step-1-load-recovery-auto-dark-375-heading.png",
+      "bytes": 6397,
+      "sha256": "a303a2f5bc8728fc1a1d2bf7000f2f6f8b4e8b5fa8ae914d893476962386f94b"
+    },
+    {
+      "path": "step-1-load-recovery-auto-dark-768-component.png",
+      "bytes": 9169,
+      "sha256": "7ac30c332302a8d0d6894ea5e9ab8179482437cdb1ea6e043df709304460923f"
+    },
+    {
+      "path": "step-1-load-recovery-auto-dark-768-full.png",
+      "bytes": 97926,
+      "sha256": "75e2fc32ab825b6eed43575a841dca90c67086948e8f044e2d073feaf6647d04"
+    },
+    {
+      "path": "step-1-load-recovery-auto-dark-768-heading.png",
+      "bytes": 8723,
+      "sha256": "000bb61cf9ad8c110a38e3be9eb7d645c1b182c8a883bcff12656e4f081ea246"
+    },
+    {
+      "path": "step-1-load-recovery-auto-light-1280-component.png",
+      "bytes": 9227,
+      "sha256": "8f82b0771f81be6aa8e8f8da57763c40da88a7801e53bbfc8c9223dca816a709"
+    },
+    {
+      "path": "step-1-load-recovery-auto-light-1280-full.png",
+      "bytes": 111185,
+      "sha256": "394ec8fb71f35bb8b3b2baa4e1fe2989aab2773974014666894bcd9ae766ad74"
+    },
+    {
+      "path": "step-1-load-recovery-auto-light-1280-heading.png",
+      "bytes": 8515,
+      "sha256": "8d08b718c799088a1e72a6dcc9b6a72bd26ac06d5552b82fa1ffadbcfbfedcd7"
+    },
+    {
+      "path": "step-1-load-recovery-auto-light-375-component.png",
+      "bytes": 8934,
+      "sha256": "f5ab435f100702d5b61b9b5d7a0c6df38de36538cd6a391dbc8dbb2f0a2b4f2b"
+    },
+    {
+      "path": "step-1-load-recovery-auto-light-375-full.png",
+      "bytes": 95582,
+      "sha256": "e9f579356b0109073ac242eb953f30fc25bec046da1881ac973998fd10fa59af"
+    },
+    {
+      "path": "step-1-load-recovery-auto-light-375-heading.png",
+      "bytes": 6477,
+      "sha256": "68b8add7a876c25a2f696fc8fe89cb197f424791f91c25085a712477e0321ebf"
+    },
+    {
+      "path": "step-1-load-recovery-auto-light-768-component.png",
+      "bytes": 8730,
+      "sha256": "995762619a283c743e64dce44c8b020abccb8d9f7671d3eb83a8fb392fbd99af"
+    },
+    {
+      "path": "step-1-load-recovery-auto-light-768-full.png",
+      "bytes": 104766,
+      "sha256": "a5b023c169abf8900d4bc73303c3952b61e7bd7cfad5182fe6fb0b9c71b3dc3c"
+    },
+    {
+      "path": "step-1-load-recovery-auto-light-768-heading.png",
+      "bytes": 8796,
+      "sha256": "d89d1ae1aa62952bd2751bb458c8fbc0cbe2862d74545dc494a970ff366d5ca1"
+    },
+    {
+      "path": "step-1-load-recovery-dark-light-media-1280-component.png",
+      "bytes": 9449,
+      "sha256": "656da13e582bfbf81810238c420b0a27da748f2edeb5d9171c6795414b187c3d"
+    },
+    {
+      "path": "step-1-load-recovery-dark-light-media-1280-full.png",
+      "bytes": 104030,
+      "sha256": "f86fe3e3aea3329329522412154b985af585a561b4b84bcc40b5890e305375ec"
+    },
+    {
+      "path": "step-1-load-recovery-dark-light-media-1280-heading.png",
+      "bytes": 8518,
+      "sha256": "d97648d42651fd56228c398565238db728dbd2c211df93902169d7f6af956769"
+    },
+    {
+      "path": "step-1-load-recovery-dark-light-media-375-component.png",
+      "bytes": 9226,
+      "sha256": "ea92dc03ea0a66fde62bcd570a602c1708b681ad2595a25047d9437972c19f0c"
+    },
+    {
+      "path": "step-1-load-recovery-dark-light-media-375-full.png",
+      "bytes": 91791,
+      "sha256": "f9b768cf321a867413b4057802fd23cfe22d0aa522253c7fb6190328af0351e6"
+    },
+    {
+      "path": "step-1-load-recovery-dark-light-media-375-heading.png",
+      "bytes": 6397,
+      "sha256": "a303a2f5bc8728fc1a1d2bf7000f2f6f8b4e8b5fa8ae914d893476962386f94b"
+    },
+    {
+      "path": "step-1-load-recovery-dark-light-media-768-component.png",
+      "bytes": 9169,
+      "sha256": "7ac30c332302a8d0d6894ea5e9ab8179482437cdb1ea6e043df709304460923f"
+    },
+    {
+      "path": "step-1-load-recovery-dark-light-media-768-full.png",
+      "bytes": 97926,
+      "sha256": "75e2fc32ab825b6eed43575a841dca90c67086948e8f044e2d073feaf6647d04"
+    },
+    {
+      "path": "step-1-load-recovery-dark-light-media-768-heading.png",
+      "bytes": 8723,
+      "sha256": "000bb61cf9ad8c110a38e3be9eb7d645c1b182c8a883bcff12656e4f081ea246"
+    },
+    {
+      "path": "step-1-load-recovery-light-dark-media-1280-component.png",
+      "bytes": 9227,
+      "sha256": "8f82b0771f81be6aa8e8f8da57763c40da88a7801e53bbfc8c9223dca816a709"
+    },
+    {
+      "path": "step-1-load-recovery-light-dark-media-1280-full.png",
+      "bytes": 111185,
+      "sha256": "394ec8fb71f35bb8b3b2baa4e1fe2989aab2773974014666894bcd9ae766ad74"
+    },
+    {
+      "path": "step-1-load-recovery-light-dark-media-1280-heading.png",
+      "bytes": 8515,
+      "sha256": "8d08b718c799088a1e72a6dcc9b6a72bd26ac06d5552b82fa1ffadbcfbfedcd7"
+    },
+    {
+      "path": "step-1-load-recovery-light-dark-media-375-component.png",
+      "bytes": 8934,
+      "sha256": "f5ab435f100702d5b61b9b5d7a0c6df38de36538cd6a391dbc8dbb2f0a2b4f2b"
+    },
+    {
+      "path": "step-1-load-recovery-light-dark-media-375-full.png",
+      "bytes": 95582,
+      "sha256": "e9f579356b0109073ac242eb953f30fc25bec046da1881ac973998fd10fa59af"
+    },
+    {
+      "path": "step-1-load-recovery-light-dark-media-375-heading.png",
+      "bytes": 6477,
+      "sha256": "68b8add7a876c25a2f696fc8fe89cb197f424791f91c25085a712477e0321ebf"
+    },
+    {
+      "path": "step-1-load-recovery-light-dark-media-768-component.png",
+      "bytes": 8730,
+      "sha256": "995762619a283c743e64dce44c8b020abccb8d9f7671d3eb83a8fb392fbd99af"
+    },
+    {
+      "path": "step-1-load-recovery-light-dark-media-768-full.png",
+      "bytes": 104766,
+      "sha256": "a5b023c169abf8900d4bc73303c3952b61e7bd7cfad5182fe6fb0b9c71b3dc3c"
+    },
+    {
+      "path": "step-1-load-recovery-light-dark-media-768-heading.png",
+      "bytes": 8796,
+      "sha256": "d89d1ae1aa62952bd2751bb458c8fbc0cbe2862d74545dc494a970ff366d5ca1"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-1280-buttons.png",
+      "bytes": 3134,
+      "sha256": "8fcca962c56f777464b67296a7efde54bb923a33bbd6ab753886a5b42009e92c"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-1280-component.png",
+      "bytes": 6129,
+      "sha256": "d15b92f1969a3b08636139895c092659ce49cecf223a37ff44a7a4f08d826f23"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-1280-full.png",
+      "bytes": 70529,
+      "sha256": "5fd5a68b0a2dfdf4b8f5a5efa34da88a1a638d83c8c8f0568a4396354e2dc75d"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-1280-heading.png",
+      "bytes": 7662,
+      "sha256": "c2ee027c93f5f0b6abf512798530b6a981d49ef42fee8b5d29dd576dac395d56"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-375-buttons.png",
+      "bytes": 3162,
+      "sha256": "779531559a45b3c44db1bb7be707ccbc60bcd7738578961be84df51a76602e0c"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-375-component.png",
+      "bytes": 6120,
+      "sha256": "e5bb2e29620190e4b9a4863c34e4d0fef0add783319f2f028cc6a7379d9da843"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-375-full.png",
+      "bytes": 57446,
+      "sha256": "4d700da86e8ab2c1e7813189bca1ff9662ad193e5b14ef072ec913893518bee6"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-375-heading.png",
+      "bytes": 4913,
+      "sha256": "59307753c8e0f5426e68649a2a4a99e9ef3faa984260d7c47d7fffa352eae74b"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-768-buttons.png",
+      "bytes": 3099,
+      "sha256": "3ccf4d75fb80c18984b272f8dd1c7dc3f1057fb62f83dba173fbed959729dce3"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-768-component.png",
+      "bytes": 5985,
+      "sha256": "15eca71170761ac50f8ce2faba9f9713281404dd44a81e33d83f4dccd9286cb3"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-768-full.png",
+      "bytes": 65689,
+      "sha256": "8bec5e8c4473facaf4fce8da669acf5c6e299b59d6a6aaacd70f66be29a79dc0"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-768-heading.png",
+      "bytes": 7258,
+      "sha256": "4c745056209dfb649ad8bc826029187e2b3307423a96d86478f0d55e8639e3d2"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-1280-buttons.png",
+      "bytes": 3100,
+      "sha256": "891cb0d6b22ba5e661453a92793de5ee9848452db6feb14f8ee7d2284341faed"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-1280-component.png",
+      "bytes": 5925,
+      "sha256": "dfb227399fc2d70abcd65e7c6faf868dc432f31461000279ee2d17fe6f02fff2"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-1280-full.png",
+      "bytes": 77604,
+      "sha256": "fee870245606c2cd7c599b95fe84fc6a2d3b8049a8bdb6fc5475a5e6e99cffb4"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-1280-heading.png",
+      "bytes": 7666,
+      "sha256": "7abdcdc496fd52d8b6e0bfb4aa145b13cf11fb17228552df988bdb98e639fb27"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-375-buttons.png",
+      "bytes": 3206,
+      "sha256": "84a8a99d53cde452d27b66f8a32be53bad965609e24be25604995d171f464640"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-375-component.png",
+      "bytes": 5912,
+      "sha256": "40b953a9881f7d621882232d05771ca2ddcbd55f080e98a5815fb54ca2a0b4f7"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-375-full.png",
+      "bytes": 62067,
+      "sha256": "d9807765bb555baf7d655a1c8dd854cbe9a9d455b2cb4fc8450314386ec839b2"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-375-heading.png",
+      "bytes": 4961,
+      "sha256": "afdb306c16611b2551b59c07fb5b0a634415023c606a26881027f10ecad88f13"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-768-buttons.png",
+      "bytes": 3107,
+      "sha256": "91c1aaf5f74a96502e491a42b24f7c787e9efe5552fc02b03ca4ea5357f90680"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-768-component.png",
+      "bytes": 5720,
+      "sha256": "5c3ea15859593fba7fd07cc91a1d9e9da7756a25ec61d3f360ed776e4a7975cb"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-768-full.png",
+      "bytes": 72475,
+      "sha256": "77af9730dc5a2a7eebc8bb729f0279dc20db6776f5bbcf429387ef53f8f6fac7"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-768-heading.png",
+      "bytes": 7236,
+      "sha256": "86b83c43d15ffc4324b0da9c605f6f58a8a0d9a0ac63c0dcaa8a73c220f56a58"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-1280-buttons.png",
+      "bytes": 3134,
+      "sha256": "8fcca962c56f777464b67296a7efde54bb923a33bbd6ab753886a5b42009e92c"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-1280-component.png",
+      "bytes": 6129,
+      "sha256": "d15b92f1969a3b08636139895c092659ce49cecf223a37ff44a7a4f08d826f23"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-1280-full.png",
+      "bytes": 70529,
+      "sha256": "5fd5a68b0a2dfdf4b8f5a5efa34da88a1a638d83c8c8f0568a4396354e2dc75d"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-1280-heading.png",
+      "bytes": 7662,
+      "sha256": "c2ee027c93f5f0b6abf512798530b6a981d49ef42fee8b5d29dd576dac395d56"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-375-buttons.png",
+      "bytes": 3162,
+      "sha256": "779531559a45b3c44db1bb7be707ccbc60bcd7738578961be84df51a76602e0c"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-375-component.png",
+      "bytes": 6120,
+      "sha256": "e5bb2e29620190e4b9a4863c34e4d0fef0add783319f2f028cc6a7379d9da843"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-375-full.png",
+      "bytes": 57446,
+      "sha256": "4d700da86e8ab2c1e7813189bca1ff9662ad193e5b14ef072ec913893518bee6"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-375-heading.png",
+      "bytes": 4913,
+      "sha256": "59307753c8e0f5426e68649a2a4a99e9ef3faa984260d7c47d7fffa352eae74b"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-768-buttons.png",
+      "bytes": 3099,
+      "sha256": "3ccf4d75fb80c18984b272f8dd1c7dc3f1057fb62f83dba173fbed959729dce3"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-768-component.png",
+      "bytes": 5985,
+      "sha256": "15eca71170761ac50f8ce2faba9f9713281404dd44a81e33d83f4dccd9286cb3"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-768-full.png",
+      "bytes": 65689,
+      "sha256": "8bec5e8c4473facaf4fce8da669acf5c6e299b59d6a6aaacd70f66be29a79dc0"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-768-heading.png",
+      "bytes": 7258,
+      "sha256": "4c745056209dfb649ad8bc826029187e2b3307423a96d86478f0d55e8639e3d2"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-1280-buttons.png",
+      "bytes": 3100,
+      "sha256": "891cb0d6b22ba5e661453a92793de5ee9848452db6feb14f8ee7d2284341faed"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-1280-component.png",
+      "bytes": 5925,
+      "sha256": "dfb227399fc2d70abcd65e7c6faf868dc432f31461000279ee2d17fe6f02fff2"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-1280-full.png",
+      "bytes": 77604,
+      "sha256": "fee870245606c2cd7c599b95fe84fc6a2d3b8049a8bdb6fc5475a5e6e99cffb4"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-1280-heading.png",
+      "bytes": 7666,
+      "sha256": "7abdcdc496fd52d8b6e0bfb4aa145b13cf11fb17228552df988bdb98e639fb27"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-375-buttons.png",
+      "bytes": 3206,
+      "sha256": "84a8a99d53cde452d27b66f8a32be53bad965609e24be25604995d171f464640"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-375-component.png",
+      "bytes": 5912,
+      "sha256": "40b953a9881f7d621882232d05771ca2ddcbd55f080e98a5815fb54ca2a0b4f7"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-375-full.png",
+      "bytes": 62067,
+      "sha256": "d9807765bb555baf7d655a1c8dd854cbe9a9d455b2cb4fc8450314386ec839b2"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-375-heading.png",
+      "bytes": 4961,
+      "sha256": "afdb306c16611b2551b59c07fb5b0a634415023c606a26881027f10ecad88f13"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-768-buttons.png",
+      "bytes": 3107,
+      "sha256": "91c1aaf5f74a96502e491a42b24f7c787e9efe5552fc02b03ca4ea5357f90680"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-768-component.png",
+      "bytes": 5720,
+      "sha256": "5c3ea15859593fba7fd07cc91a1d9e9da7756a25ec61d3f360ed776e4a7975cb"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-768-full.png",
+      "bytes": 72475,
+      "sha256": "77af9730dc5a2a7eebc8bb729f0279dc20db6776f5bbcf429387ef53f8f6fac7"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-768-heading.png",
+      "bytes": 7236,
+      "sha256": "86b83c43d15ffc4324b0da9c605f6f58a8a0d9a0ac63c0dcaa8a73c220f56a58"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-1280-buttons.png",
+      "bytes": 5189,
+      "sha256": "4d838c2f91d89ae5a90cfda9e834dadcd0792fbcec69e7fd698ef5771aae558a"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-1280-component.png",
+      "bytes": 4783,
+      "sha256": "d352435f8bddfcca3ac47cfb4ac2ae2e01b1ea1173caa706a39e166828f65243"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-1280-full.png",
+      "bytes": 66411,
+      "sha256": "28749bddbea5bbfd32233c343c48d2a3a4398ee84e51a38d38fa1861f14f216d"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-1280-heading.png",
+      "bytes": 7662,
+      "sha256": "c2ee027c93f5f0b6abf512798530b6a981d49ef42fee8b5d29dd576dac395d56"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-375-buttons.png",
+      "bytes": 5088,
+      "sha256": "3b65833d057288f394a88060456d4b8246f651d63627ff5b57b2b8bf078af22f"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-375-component.png",
+      "bytes": 4795,
+      "sha256": "5cb743708b340611e7bcae8ec32e901c51f49c524acd8423a69ff6d0961413fd"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-375-full.png",
+      "bytes": 53499,
+      "sha256": "23ec04614ea957f975ab1e775dbe807fd427c2d212d4d6ab01f80f79a52b03c0"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-375-heading.png",
+      "bytes": 4913,
+      "sha256": "59307753c8e0f5426e68649a2a4a99e9ef3faa984260d7c47d7fffa352eae74b"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-768-buttons.png",
+      "bytes": 5198,
+      "sha256": "294f0b581bd04c2cbe35bf4e0ae0162275d62f00baa9da2296de54743b3e9ae8"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-768-component.png",
+      "bytes": 5000,
+      "sha256": "db22c743e06910354fb50d42f6e079ddef52e54aab200b6b4798b79e39a9a6ef"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-768-full.png",
+      "bytes": 61976,
+      "sha256": "553f0713e9d33afff0af759459e0a7ba25a4dcad23932793468cbfadaed90b2a"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-768-heading.png",
+      "bytes": 7258,
+      "sha256": "4c745056209dfb649ad8bc826029187e2b3307423a96d86478f0d55e8639e3d2"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-1280-buttons.png",
+      "bytes": 5159,
+      "sha256": "76c07718c4017c5f87c266a0a980b905e58eab06dc05d03678c2f107532a69f3"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-1280-component.png",
+      "bytes": 4844,
+      "sha256": "fe556df152423d2c8714d7453a10e4370c91b8c9f2d792ca2b9199455c601d2c"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-1280-full.png",
+      "bytes": 73750,
+      "sha256": "c0b0e210abcf9bed230da8ce018ebbda921fe0fb3e71ae34423cede514346983"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-1280-heading.png",
+      "bytes": 7666,
+      "sha256": "7abdcdc496fd52d8b6e0bfb4aa145b13cf11fb17228552df988bdb98e639fb27"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-375-buttons.png",
+      "bytes": 5184,
+      "sha256": "395ff482473119cbb3b5a44e35329dfeab2a5410fc8a9ba97055cb31e71b5c1c"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-375-component.png",
+      "bytes": 4819,
+      "sha256": "d3dae7e76d52da90260e78eaa19a60294393af418a1365ee87148055f53e73a5"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-375-full.png",
+      "bytes": 58224,
+      "sha256": "a1b79cb7909fbde16f730a893bee69dad85f8cd0ddfe994cae02459d67d8159a"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-375-heading.png",
+      "bytes": 4961,
+      "sha256": "afdb306c16611b2551b59c07fb5b0a634415023c606a26881027f10ecad88f13"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-768-buttons.png",
+      "bytes": 5087,
+      "sha256": "55671fae058b0ce05e0e2be9501a876a4340e898c45ad2a059415e0afb18259e"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-768-component.png",
+      "bytes": 5077,
+      "sha256": "c9e34c9e7d582e1ba64c13a2f110475320130900d75a41991eb5d806b97e31d1"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-768-full.png",
+      "bytes": 68884,
+      "sha256": "35bff2af35cd8fa6396875f9fdff25b4655d291817ebb8c8d3a4d883ad971c56"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-768-heading.png",
+      "bytes": 7236,
+      "sha256": "86b83c43d15ffc4324b0da9c605f6f58a8a0d9a0ac63c0dcaa8a73c220f56a58"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-1280-buttons.png",
+      "bytes": 5189,
+      "sha256": "4d838c2f91d89ae5a90cfda9e834dadcd0792fbcec69e7fd698ef5771aae558a"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-1280-component.png",
+      "bytes": 4783,
+      "sha256": "d352435f8bddfcca3ac47cfb4ac2ae2e01b1ea1173caa706a39e166828f65243"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-1280-full.png",
+      "bytes": 66411,
+      "sha256": "28749bddbea5bbfd32233c343c48d2a3a4398ee84e51a38d38fa1861f14f216d"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-1280-heading.png",
+      "bytes": 7662,
+      "sha256": "c2ee027c93f5f0b6abf512798530b6a981d49ef42fee8b5d29dd576dac395d56"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-375-buttons.png",
+      "bytes": 5088,
+      "sha256": "3b65833d057288f394a88060456d4b8246f651d63627ff5b57b2b8bf078af22f"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-375-component.png",
+      "bytes": 4795,
+      "sha256": "5cb743708b340611e7bcae8ec32e901c51f49c524acd8423a69ff6d0961413fd"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-375-full.png",
+      "bytes": 53499,
+      "sha256": "23ec04614ea957f975ab1e775dbe807fd427c2d212d4d6ab01f80f79a52b03c0"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-375-heading.png",
+      "bytes": 4913,
+      "sha256": "59307753c8e0f5426e68649a2a4a99e9ef3faa984260d7c47d7fffa352eae74b"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-768-buttons.png",
+      "bytes": 5198,
+      "sha256": "294f0b581bd04c2cbe35bf4e0ae0162275d62f00baa9da2296de54743b3e9ae8"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-768-component.png",
+      "bytes": 5000,
+      "sha256": "db22c743e06910354fb50d42f6e079ddef52e54aab200b6b4798b79e39a9a6ef"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-768-full.png",
+      "bytes": 61976,
+      "sha256": "553f0713e9d33afff0af759459e0a7ba25a4dcad23932793468cbfadaed90b2a"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-768-heading.png",
+      "bytes": 7258,
+      "sha256": "4c745056209dfb649ad8bc826029187e2b3307423a96d86478f0d55e8639e3d2"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-1280-buttons.png",
+      "bytes": 5159,
+      "sha256": "76c07718c4017c5f87c266a0a980b905e58eab06dc05d03678c2f107532a69f3"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-1280-component.png",
+      "bytes": 4844,
+      "sha256": "fe556df152423d2c8714d7453a10e4370c91b8c9f2d792ca2b9199455c601d2c"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-1280-full.png",
+      "bytes": 73750,
+      "sha256": "c0b0e210abcf9bed230da8ce018ebbda921fe0fb3e71ae34423cede514346983"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-1280-heading.png",
+      "bytes": 7666,
+      "sha256": "7abdcdc496fd52d8b6e0bfb4aa145b13cf11fb17228552df988bdb98e639fb27"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-375-buttons.png",
+      "bytes": 5184,
+      "sha256": "395ff482473119cbb3b5a44e35329dfeab2a5410fc8a9ba97055cb31e71b5c1c"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-375-component.png",
+      "bytes": 4819,
+      "sha256": "d3dae7e76d52da90260e78eaa19a60294393af418a1365ee87148055f53e73a5"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-375-full.png",
+      "bytes": 58224,
+      "sha256": "a1b79cb7909fbde16f730a893bee69dad85f8cd0ddfe994cae02459d67d8159a"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-375-heading.png",
+      "bytes": 4961,
+      "sha256": "afdb306c16611b2551b59c07fb5b0a634415023c606a26881027f10ecad88f13"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-768-buttons.png",
+      "bytes": 5087,
+      "sha256": "55671fae058b0ce05e0e2be9501a876a4340e898c45ad2a059415e0afb18259e"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-768-component.png",
+      "bytes": 5077,
+      "sha256": "c9e34c9e7d582e1ba64c13a2f110475320130900d75a41991eb5d806b97e31d1"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-768-full.png",
+      "bytes": 68884,
+      "sha256": "35bff2af35cd8fa6396875f9fdff25b4655d291817ebb8c8d3a4d883ad971c56"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-768-heading.png",
+      "bytes": 7236,
+      "sha256": "86b83c43d15ffc4324b0da9c605f6f58a8a0d9a0ac63c0dcaa8a73c220f56a58"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-1280-buttons.png",
+      "bytes": 3134,
+      "sha256": "8fcca962c56f777464b67296a7efde54bb923a33bbd6ab753886a5b42009e92c"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-1280-component.png",
+      "bytes": 10888,
+      "sha256": "6ec952729dd0eee5fcd8e7243a9b77f5921e83236729b5d47be4c132b71668f3"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-1280-full.png",
+      "bytes": 75638,
+      "sha256": "9d7fec1e7c8eafed37e5bdc1e43ba66aa4f5a453a05d7c675654b51b1078746b"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-1280-heading.png",
+      "bytes": 7662,
+      "sha256": "c2ee027c93f5f0b6abf512798530b6a981d49ef42fee8b5d29dd576dac395d56"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-375-buttons.png",
+      "bytes": 3162,
+      "sha256": "779531559a45b3c44db1bb7be707ccbc60bcd7738578961be84df51a76602e0c"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-375-component.png",
+      "bytes": 9579,
+      "sha256": "ca9f7fe9b9447effa1e3d809160aa3a7083f34cb3ec9fb24db742aee740a1623"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-375-full.png",
+      "bytes": 60959,
+      "sha256": "e6ff5a685772c55212d78ef415d8fdab89fd56907a0b5879885ea138ded19af6"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-375-heading.png",
+      "bytes": 4913,
+      "sha256": "59307753c8e0f5426e68649a2a4a99e9ef3faa984260d7c47d7fffa352eae74b"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-768-buttons.png",
+      "bytes": 3099,
+      "sha256": "3ccf4d75fb80c18984b272f8dd1c7dc3f1057fb62f83dba173fbed959729dce3"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-768-component.png",
+      "bytes": 11106,
+      "sha256": "3d094fda0e101dc4cacb30ea008fb8f8acdb54ebd8faa7d370dce7c46c3e337f"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-768-full.png",
+      "bytes": 71123,
+      "sha256": "c779126abe11c6b56629d0b8e4216467e609f9390c0773ad319f4685f7051a97"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-768-heading.png",
+      "bytes": 7258,
+      "sha256": "4c745056209dfb649ad8bc826029187e2b3307423a96d86478f0d55e8639e3d2"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-1280-buttons.png",
+      "bytes": 3100,
+      "sha256": "891cb0d6b22ba5e661453a92793de5ee9848452db6feb14f8ee7d2284341faed"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-1280-component.png",
+      "bytes": 10452,
+      "sha256": "6fe1381d9f2d6ae9a2e90c6f70b9333a4bb6a07fba968de1b739748a71a5d309"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-1280-full.png",
+      "bytes": 82508,
+      "sha256": "ed5087cc72a4e873e40069fea89d52ca3a998c52fee0cbf0e91580104490910f"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-1280-heading.png",
+      "bytes": 7666,
+      "sha256": "7abdcdc496fd52d8b6e0bfb4aa145b13cf11fb17228552df988bdb98e639fb27"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-375-buttons.png",
+      "bytes": 3206,
+      "sha256": "84a8a99d53cde452d27b66f8a32be53bad965609e24be25604995d171f464640"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-375-component.png",
+      "bytes": 9179,
+      "sha256": "a063f8062a4b1ccb03973ab786422d283f2bb5489bf881c521199498512d3f7f"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-375-full.png",
+      "bytes": 65306,
+      "sha256": "882dfbee3b0d49977be0ea5568dc7de77fa38f1fa449cfed65899d4f1002e720"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-375-heading.png",
+      "bytes": 4961,
+      "sha256": "afdb306c16611b2551b59c07fb5b0a634415023c606a26881027f10ecad88f13"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-768-buttons.png",
+      "bytes": 3107,
+      "sha256": "91c1aaf5f74a96502e491a42b24f7c787e9efe5552fc02b03ca4ea5357f90680"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-768-component.png",
+      "bytes": 10811,
+      "sha256": "ccec4510f9b3a1976433ce4e13fe80a7821076dcbed4c3f1b3b34e0bdda2a028"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-768-full.png",
+      "bytes": 77896,
+      "sha256": "201a2ec7a016d891c5be6bcc2c3ce8a70b808969bd35f55cc79444192d2d4d2f"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-768-heading.png",
+      "bytes": 7236,
+      "sha256": "86b83c43d15ffc4324b0da9c605f6f58a8a0d9a0ac63c0dcaa8a73c220f56a58"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-1280-buttons.png",
+      "bytes": 3134,
+      "sha256": "8fcca962c56f777464b67296a7efde54bb923a33bbd6ab753886a5b42009e92c"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-1280-component.png",
+      "bytes": 10888,
+      "sha256": "6ec952729dd0eee5fcd8e7243a9b77f5921e83236729b5d47be4c132b71668f3"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-1280-full.png",
+      "bytes": 75638,
+      "sha256": "9d7fec1e7c8eafed37e5bdc1e43ba66aa4f5a453a05d7c675654b51b1078746b"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-1280-heading.png",
+      "bytes": 7662,
+      "sha256": "c2ee027c93f5f0b6abf512798530b6a981d49ef42fee8b5d29dd576dac395d56"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-375-buttons.png",
+      "bytes": 3162,
+      "sha256": "779531559a45b3c44db1bb7be707ccbc60bcd7738578961be84df51a76602e0c"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-375-component.png",
+      "bytes": 9579,
+      "sha256": "ca9f7fe9b9447effa1e3d809160aa3a7083f34cb3ec9fb24db742aee740a1623"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-375-full.png",
+      "bytes": 60959,
+      "sha256": "e6ff5a685772c55212d78ef415d8fdab89fd56907a0b5879885ea138ded19af6"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-375-heading.png",
+      "bytes": 4913,
+      "sha256": "59307753c8e0f5426e68649a2a4a99e9ef3faa984260d7c47d7fffa352eae74b"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-768-buttons.png",
+      "bytes": 3099,
+      "sha256": "3ccf4d75fb80c18984b272f8dd1c7dc3f1057fb62f83dba173fbed959729dce3"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-768-component.png",
+      "bytes": 11106,
+      "sha256": "3d094fda0e101dc4cacb30ea008fb8f8acdb54ebd8faa7d370dce7c46c3e337f"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-768-full.png",
+      "bytes": 71123,
+      "sha256": "c779126abe11c6b56629d0b8e4216467e609f9390c0773ad319f4685f7051a97"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-768-heading.png",
+      "bytes": 7258,
+      "sha256": "4c745056209dfb649ad8bc826029187e2b3307423a96d86478f0d55e8639e3d2"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-1280-buttons.png",
+      "bytes": 3100,
+      "sha256": "891cb0d6b22ba5e661453a92793de5ee9848452db6feb14f8ee7d2284341faed"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-1280-component.png",
+      "bytes": 10452,
+      "sha256": "6fe1381d9f2d6ae9a2e90c6f70b9333a4bb6a07fba968de1b739748a71a5d309"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-1280-full.png",
+      "bytes": 82508,
+      "sha256": "ed5087cc72a4e873e40069fea89d52ca3a998c52fee0cbf0e91580104490910f"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-1280-heading.png",
+      "bytes": 7666,
+      "sha256": "7abdcdc496fd52d8b6e0bfb4aa145b13cf11fb17228552df988bdb98e639fb27"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-375-buttons.png",
+      "bytes": 3206,
+      "sha256": "84a8a99d53cde452d27b66f8a32be53bad965609e24be25604995d171f464640"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-375-component.png",
+      "bytes": 9179,
+      "sha256": "a063f8062a4b1ccb03973ab786422d283f2bb5489bf881c521199498512d3f7f"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-375-full.png",
+      "bytes": 65306,
+      "sha256": "882dfbee3b0d49977be0ea5568dc7de77fa38f1fa449cfed65899d4f1002e720"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-375-heading.png",
+      "bytes": 4961,
+      "sha256": "afdb306c16611b2551b59c07fb5b0a634415023c606a26881027f10ecad88f13"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-768-buttons.png",
+      "bytes": 3107,
+      "sha256": "91c1aaf5f74a96502e491a42b24f7c787e9efe5552fc02b03ca4ea5357f90680"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-768-component.png",
+      "bytes": 10811,
+      "sha256": "ccec4510f9b3a1976433ce4e13fe80a7821076dcbed4c3f1b3b34e0bdda2a028"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-768-full.png",
+      "bytes": 77896,
+      "sha256": "201a2ec7a016d891c5be6bcc2c3ce8a70b808969bd35f55cc79444192d2d4d2f"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-768-heading.png",
+      "bytes": 7236,
+      "sha256": "86b83c43d15ffc4324b0da9c605f6f58a8a0d9a0ac63c0dcaa8a73c220f56a58"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-1280-component.png",
+      "bytes": 3876,
+      "sha256": "18534fffda4f5e5b2e5eac964dec5486608624af44191549ae7f07d0f5950b60"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-1280-full.png",
+      "bytes": 67195,
+      "sha256": "931a290f6443be119d089f5914b5d60648473257d863e3d4670d82c971854948"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-1280-heading.png",
+      "bytes": 11792,
+      "sha256": "0e7175eb436692522d42a8a5c2ce382233015d246aafef722a9d6d5bd86b38a5"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-375-component.png",
+      "bytes": 3940,
+      "sha256": "13b15140ca469c49fd354fdb539e69f7adb537a03507a41d5b134fdce0174381"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-375-full.png",
+      "bytes": 56886,
+      "sha256": "30d8e09f6bda34e99c0a61b90309addbc8c2fcffc7f279fae09a73654198f2ab"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-375-heading.png",
+      "bytes": 7454,
+      "sha256": "82778447f599e3616743bffc713f4063bcbeea973d1e96661572b472674fa168"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-768-component.png",
+      "bytes": 3900,
+      "sha256": "f6a50a660ac0daf9c5b1da171b0a3df94b6bcbb763398b3d3b0ad6a077bac552"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-768-full.png",
+      "bytes": 64688,
+      "sha256": "88a468878c7b02152ecae45a9ad106d9e192c3e49346c732e8424ca0fd57e82f"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-768-heading.png",
+      "bytes": 11694,
+      "sha256": "7864ce7a483c03d0faee33595e1db69040ae81181f738071fde71cbad8393f92"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-1280-component.png",
+      "bytes": 4152,
+      "sha256": "1d0e47edcc4e2ea26af34aacada75dc084def27e88791cc48a26b94cca2fa755"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-1280-full.png",
+      "bytes": 74586,
+      "sha256": "a366e3caa8cdb7a7de4bed7bc8d595be57fc7e4da81fb71d29df3f326648a7fd"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-1280-heading.png",
+      "bytes": 11812,
+      "sha256": "6a4a7b3ae34c46e3372f31374a3766707d4da6dbcf613b1834868658025dbc92"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-375-component.png",
+      "bytes": 4212,
+      "sha256": "711b54da4da1e43808556fdc8074304f91b4370ec17b0937c359a385aaff1ae9"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-375-full.png",
+      "bytes": 59555,
+      "sha256": "2b9f7e83010fb3196e36c881026c8f68a5f7b6df72e0d37b194d87273b346f92"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-375-heading.png",
+      "bytes": 7557,
+      "sha256": "118a3e705b2a45e4f4b386e7b3b991d9ed7ac60582fb1f7ad4789f65b3935eed"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-768-component.png",
+      "bytes": 4139,
+      "sha256": "43df90e8e9e893411dd4e82595f1b606126315cc7f7f81b9025d4f5fd0eb370b"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-768-full.png",
+      "bytes": 71751,
+      "sha256": "49e637d866548dffc3c2e406a0ce6febdd8c07a0c77eae7bd91840a98095c603"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-768-heading.png",
+      "bytes": 11699,
+      "sha256": "44d34bf1f446875d18c8ae5d70e8102231c162efef052ed2c077af54b421d71e"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-1280-component.png",
+      "bytes": 3876,
+      "sha256": "18534fffda4f5e5b2e5eac964dec5486608624af44191549ae7f07d0f5950b60"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-1280-full.png",
+      "bytes": 67195,
+      "sha256": "931a290f6443be119d089f5914b5d60648473257d863e3d4670d82c971854948"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-1280-heading.png",
+      "bytes": 11792,
+      "sha256": "0e7175eb436692522d42a8a5c2ce382233015d246aafef722a9d6d5bd86b38a5"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-375-component.png",
+      "bytes": 3940,
+      "sha256": "13b15140ca469c49fd354fdb539e69f7adb537a03507a41d5b134fdce0174381"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-375-full.png",
+      "bytes": 56886,
+      "sha256": "30d8e09f6bda34e99c0a61b90309addbc8c2fcffc7f279fae09a73654198f2ab"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-375-heading.png",
+      "bytes": 7454,
+      "sha256": "82778447f599e3616743bffc713f4063bcbeea973d1e96661572b472674fa168"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-768-component.png",
+      "bytes": 3900,
+      "sha256": "f6a50a660ac0daf9c5b1da171b0a3df94b6bcbb763398b3d3b0ad6a077bac552"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-768-full.png",
+      "bytes": 64688,
+      "sha256": "88a468878c7b02152ecae45a9ad106d9e192c3e49346c732e8424ca0fd57e82f"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-768-heading.png",
+      "bytes": 11694,
+      "sha256": "7864ce7a483c03d0faee33595e1db69040ae81181f738071fde71cbad8393f92"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-1280-component.png",
+      "bytes": 4152,
+      "sha256": "1d0e47edcc4e2ea26af34aacada75dc084def27e88791cc48a26b94cca2fa755"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-1280-full.png",
+      "bytes": 74586,
+      "sha256": "a366e3caa8cdb7a7de4bed7bc8d595be57fc7e4da81fb71d29df3f326648a7fd"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-1280-heading.png",
+      "bytes": 11812,
+      "sha256": "6a4a7b3ae34c46e3372f31374a3766707d4da6dbcf613b1834868658025dbc92"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-375-component.png",
+      "bytes": 4212,
+      "sha256": "711b54da4da1e43808556fdc8074304f91b4370ec17b0937c359a385aaff1ae9"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-375-full.png",
+      "bytes": 59555,
+      "sha256": "2b9f7e83010fb3196e36c881026c8f68a5f7b6df72e0d37b194d87273b346f92"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-375-heading.png",
+      "bytes": 7557,
+      "sha256": "118a3e705b2a45e4f4b386e7b3b991d9ed7ac60582fb1f7ad4789f65b3935eed"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-768-component.png",
+      "bytes": 4139,
+      "sha256": "43df90e8e9e893411dd4e82595f1b606126315cc7f7f81b9025d4f5fd0eb370b"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-768-full.png",
+      "bytes": 71751,
+      "sha256": "49e637d866548dffc3c2e406a0ce6febdd8c07a0c77eae7bd91840a98095c603"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-768-heading.png",
+      "bytes": 11699,
+      "sha256": "44d34bf1f446875d18c8ae5d70e8102231c162efef052ed2c077af54b421d71e"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-1280-component.png",
+      "bytes": 8400,
+      "sha256": "ffa75d18b784b43829c1057047f467792577800b884e88fb88e43d1f78fc8d9e"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-1280-full.png",
+      "bytes": 65219,
+      "sha256": "521a0ab0b713bf27bd58b549ee76f68da60e10eacb39727562f90af48fb489eb"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-1280-heading.png",
+      "bytes": 11792,
+      "sha256": "0e7175eb436692522d42a8a5c2ce382233015d246aafef722a9d6d5bd86b38a5"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-375-component.png",
+      "bytes": 8231,
+      "sha256": "b4ef7392ca6bb868fd55217cffdc402bede927bf5851872e28988c487862c65c"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-375-full.png",
+      "bytes": 54707,
+      "sha256": "47ec5ccfbff59634bf64e31b71f2043b6f0c8319112dc1de45380990a957c5c5"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-375-heading.png",
+      "bytes": 7454,
+      "sha256": "82778447f599e3616743bffc713f4063bcbeea973d1e96661572b472674fa168"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-768-component.png",
+      "bytes": 8919,
+      "sha256": "718afe494473a5dd5521a8c6481563614d9111379a5cd59b792387747b19bc30"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-768-full.png",
+      "bytes": 63065,
+      "sha256": "4f0ffa4914e407e7cd2cfb6aeb6e1cdaedd885bb054cfacc188e195c597b169b"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-768-heading.png",
+      "bytes": 11694,
+      "sha256": "7864ce7a483c03d0faee33595e1db69040ae81181f738071fde71cbad8393f92"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-1280-component.png",
+      "bytes": 8514,
+      "sha256": "d830955d18ba950ea8390c4de74d84c7f02c17d980cd20c7b4a338b70d13f141"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-1280-full.png",
+      "bytes": 72517,
+      "sha256": "dfd4f5c7120c39795a488790f86fbad332e11579f556c9ab460257627da018cd"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-1280-heading.png",
+      "bytes": 11812,
+      "sha256": "6a4a7b3ae34c46e3372f31374a3766707d4da6dbcf613b1834868658025dbc92"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-375-component.png",
+      "bytes": 8456,
+      "sha256": "72860f863f7301a47ac5ff4904f7b3e45088ee9d6f9fdd27ce6f6e2d57b4281f"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-375-full.png",
+      "bytes": 57260,
+      "sha256": "ecd1e91f87a45a007c82664b09b58ed9fe7f1eb944cd58b583d5059ee56ad300"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-375-heading.png",
+      "bytes": 7557,
+      "sha256": "118a3e705b2a45e4f4b386e7b3b991d9ed7ac60582fb1f7ad4789f65b3935eed"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-768-component.png",
+      "bytes": 9065,
+      "sha256": "4f77611b391a2a84c6285f852c50d9bc4e4a3b70b092b13100d632426d8b10c2"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-768-full.png",
+      "bytes": 69998,
+      "sha256": "ad814d9ab07e907854a1cf3af20d600dfd5d542b82986e1fd638a60f0b95e8ab"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-768-heading.png",
+      "bytes": 11699,
+      "sha256": "44d34bf1f446875d18c8ae5d70e8102231c162efef052ed2c077af54b421d71e"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-1280-component.png",
+      "bytes": 8400,
+      "sha256": "ffa75d18b784b43829c1057047f467792577800b884e88fb88e43d1f78fc8d9e"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-1280-full.png",
+      "bytes": 65219,
+      "sha256": "521a0ab0b713bf27bd58b549ee76f68da60e10eacb39727562f90af48fb489eb"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-1280-heading.png",
+      "bytes": 11792,
+      "sha256": "0e7175eb436692522d42a8a5c2ce382233015d246aafef722a9d6d5bd86b38a5"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-375-component.png",
+      "bytes": 8231,
+      "sha256": "b4ef7392ca6bb868fd55217cffdc402bede927bf5851872e28988c487862c65c"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-375-full.png",
+      "bytes": 54707,
+      "sha256": "47ec5ccfbff59634bf64e31b71f2043b6f0c8319112dc1de45380990a957c5c5"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-375-heading.png",
+      "bytes": 7454,
+      "sha256": "82778447f599e3616743bffc713f4063bcbeea973d1e96661572b472674fa168"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-768-component.png",
+      "bytes": 8919,
+      "sha256": "718afe494473a5dd5521a8c6481563614d9111379a5cd59b792387747b19bc30"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-768-full.png",
+      "bytes": 63065,
+      "sha256": "4f0ffa4914e407e7cd2cfb6aeb6e1cdaedd885bb054cfacc188e195c597b169b"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-768-heading.png",
+      "bytes": 11694,
+      "sha256": "7864ce7a483c03d0faee33595e1db69040ae81181f738071fde71cbad8393f92"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-1280-component.png",
+      "bytes": 8514,
+      "sha256": "d830955d18ba950ea8390c4de74d84c7f02c17d980cd20c7b4a338b70d13f141"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-1280-full.png",
+      "bytes": 72517,
+      "sha256": "dfd4f5c7120c39795a488790f86fbad332e11579f556c9ab460257627da018cd"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-1280-heading.png",
+      "bytes": 11812,
+      "sha256": "6a4a7b3ae34c46e3372f31374a3766707d4da6dbcf613b1834868658025dbc92"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-375-component.png",
+      "bytes": 8456,
+      "sha256": "72860f863f7301a47ac5ff4904f7b3e45088ee9d6f9fdd27ce6f6e2d57b4281f"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-375-full.png",
+      "bytes": 57260,
+      "sha256": "ecd1e91f87a45a007c82664b09b58ed9fe7f1eb944cd58b583d5059ee56ad300"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-375-heading.png",
+      "bytes": 7557,
+      "sha256": "118a3e705b2a45e4f4b386e7b3b991d9ed7ac60582fb1f7ad4789f65b3935eed"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-768-component.png",
+      "bytes": 9065,
+      "sha256": "4f77611b391a2a84c6285f852c50d9bc4e4a3b70b092b13100d632426d8b10c2"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-768-full.png",
+      "bytes": 69998,
+      "sha256": "ad814d9ab07e907854a1cf3af20d600dfd5d542b82986e1fd638a60f0b95e8ab"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-768-heading.png",
+      "bytes": 11699,
+      "sha256": "44d34bf1f446875d18c8ae5d70e8102231c162efef052ed2c077af54b421d71e"
+    },
+    {
+      "path": "step-3-sync-on-auto-dark-1280-component.png",
+      "bytes": 9859,
+      "sha256": "b6dd73417cac277c99a4689fea01295dee2b7ffe8d4ec0f47512d4d3eb4e57c3"
+    },
+    {
+      "path": "step-3-sync-on-auto-dark-1280-full.png",
+      "bytes": 67341,
+      "sha256": "1e5af536319ce6731d2d7b16fee48f9655a245c0b256195f9ea9272d74141354"
+    },
+    {
+      "path": "step-3-sync-on-auto-dark-1280-heading.png",
+      "bytes": 11792,
+      "sha256": "0e7175eb436692522d42a8a5c2ce382233015d246aafef722a9d6d5bd86b38a5"
+    },
+    {
+      "path": "step-3-sync-on-auto-dark-375-component.png",
+      "bytes": 10074,
+      "sha256": "5130d0ad460d0b7944d4c4418422ee411abeae90429fb66246bcc96e5b2e7c3f"
+    },
+    {
+      "path": "step-3-sync-on-auto-dark-375-full.png",
+      "bytes": 57006,
+      "sha256": "c6a42c01d8cd0be80e4d5a5e841167f8ebf2e06faeccbd1dd98ea949bbcbfda0"
+    },
+    {
+      "path": "step-3-sync-on-auto-dark-375-heading.png",
+      "bytes": 7454,
+      "sha256": "82778447f599e3616743bffc713f4063bcbeea973d1e96661572b472674fa168"
+    },
+    {
+      "path": "step-3-sync-on-auto-dark-768-component.png",
+      "bytes": 10058,
+      "sha256": "935824845b7a21b1c7410e37182b7a6279d4a6416d3228a3ae55cb87732bdea4"
+    },
+    {
+      "path": "step-3-sync-on-auto-dark-768-full.png",
+      "bytes": 64976,
+      "sha256": "74867c12edfdb22011ecb5025e2fe88207ad5160c7ae7c03faf86b356823263f"
+    },
+    {
+      "path": "step-3-sync-on-auto-dark-768-heading.png",
+      "bytes": 11694,
+      "sha256": "7864ce7a483c03d0faee33595e1db69040ae81181f738071fde71cbad8393f92"
+    },
+    {
+      "path": "step-3-sync-on-auto-light-1280-component.png",
+      "bytes": 9966,
+      "sha256": "1248e5d78caebd46d7b1595ebecca353eaa7de04579a1762e148da770c1a70ac"
+    },
+    {
+      "path": "step-3-sync-on-auto-light-1280-full.png",
+      "bytes": 74751,
+      "sha256": "0af4e76217f63cdfd08c163242388d59e2a67d48b8d57881f7b4dbba049d26a9"
+    },
+    {
+      "path": "step-3-sync-on-auto-light-1280-heading.png",
+      "bytes": 11812,
+      "sha256": "6a4a7b3ae34c46e3372f31374a3766707d4da6dbcf613b1834868658025dbc92"
+    },
+    {
+      "path": "step-3-sync-on-auto-light-375-component.png",
+      "bytes": 10225,
+      "sha256": "1789634f0f354b54c221c5fcdb600e1c75b775ec5af8587411cc3a75ec28629a"
+    },
+    {
+      "path": "step-3-sync-on-auto-light-375-full.png",
+      "bytes": 59655,
+      "sha256": "be7890eb452ae22fe421b2147952719ee55849d504ce98eadb022e14301cddb8"
+    },
+    {
+      "path": "step-3-sync-on-auto-light-375-heading.png",
+      "bytes": 7557,
+      "sha256": "118a3e705b2a45e4f4b386e7b3b991d9ed7ac60582fb1f7ad4789f65b3935eed"
+    },
+    {
+      "path": "step-3-sync-on-auto-light-768-component.png",
+      "bytes": 10202,
+      "sha256": "4ef04225840069e6d8e1b618c0e0ea32091c9804df42483d79f92dffa734423e"
+    },
+    {
+      "path": "step-3-sync-on-auto-light-768-full.png",
+      "bytes": 71959,
+      "sha256": "3ec083059428ec8820476e722bd9cda079d67f0b452d95776e5c4c9c8e8e3f10"
+    },
+    {
+      "path": "step-3-sync-on-auto-light-768-heading.png",
+      "bytes": 11699,
+      "sha256": "44d34bf1f446875d18c8ae5d70e8102231c162efef052ed2c077af54b421d71e"
+    },
+    {
+      "path": "step-3-sync-on-dark-light-media-1280-component.png",
+      "bytes": 9859,
+      "sha256": "b6dd73417cac277c99a4689fea01295dee2b7ffe8d4ec0f47512d4d3eb4e57c3"
+    },
+    {
+      "path": "step-3-sync-on-dark-light-media-1280-full.png",
+      "bytes": 67341,
+      "sha256": "1e5af536319ce6731d2d7b16fee48f9655a245c0b256195f9ea9272d74141354"
+    },
+    {
+      "path": "step-3-sync-on-dark-light-media-1280-heading.png",
+      "bytes": 11792,
+      "sha256": "0e7175eb436692522d42a8a5c2ce382233015d246aafef722a9d6d5bd86b38a5"
+    },
+    {
+      "path": "step-3-sync-on-dark-light-media-375-component.png",
+      "bytes": 10074,
+      "sha256": "5130d0ad460d0b7944d4c4418422ee411abeae90429fb66246bcc96e5b2e7c3f"
+    },
+    {
+      "path": "step-3-sync-on-dark-light-media-375-full.png",
+      "bytes": 57006,
+      "sha256": "c6a42c01d8cd0be80e4d5a5e841167f8ebf2e06faeccbd1dd98ea949bbcbfda0"
+    },
+    {
+      "path": "step-3-sync-on-dark-light-media-375-heading.png",
+      "bytes": 7454,
+      "sha256": "82778447f599e3616743bffc713f4063bcbeea973d1e96661572b472674fa168"
+    },
+    {
+      "path": "step-3-sync-on-dark-light-media-768-component.png",
+      "bytes": 10058,
+      "sha256": "935824845b7a21b1c7410e37182b7a6279d4a6416d3228a3ae55cb87732bdea4"
+    },
+    {
+      "path": "step-3-sync-on-dark-light-media-768-full.png",
+      "bytes": 64976,
+      "sha256": "74867c12edfdb22011ecb5025e2fe88207ad5160c7ae7c03faf86b356823263f"
+    },
+    {
+      "path": "step-3-sync-on-dark-light-media-768-heading.png",
+      "bytes": 11694,
+      "sha256": "7864ce7a483c03d0faee33595e1db69040ae81181f738071fde71cbad8393f92"
+    },
+    {
+      "path": "step-3-sync-on-light-dark-media-1280-component.png",
+      "bytes": 9966,
+      "sha256": "1248e5d78caebd46d7b1595ebecca353eaa7de04579a1762e148da770c1a70ac"
+    },
+    {
+      "path": "step-3-sync-on-light-dark-media-1280-full.png",
+      "bytes": 74751,
+      "sha256": "0af4e76217f63cdfd08c163242388d59e2a67d48b8d57881f7b4dbba049d26a9"
+    },
+    {
+      "path": "step-3-sync-on-light-dark-media-1280-heading.png",
+      "bytes": 11812,
+      "sha256": "6a4a7b3ae34c46e3372f31374a3766707d4da6dbcf613b1834868658025dbc92"
+    },
+    {
+      "path": "step-3-sync-on-light-dark-media-375-component.png",
+      "bytes": 10225,
+      "sha256": "1789634f0f354b54c221c5fcdb600e1c75b775ec5af8587411cc3a75ec28629a"
+    },
+    {
+      "path": "step-3-sync-on-light-dark-media-375-full.png",
+      "bytes": 59655,
+      "sha256": "be7890eb452ae22fe421b2147952719ee55849d504ce98eadb022e14301cddb8"
+    },
+    {
+      "path": "step-3-sync-on-light-dark-media-375-heading.png",
+      "bytes": 7557,
+      "sha256": "118a3e705b2a45e4f4b386e7b3b991d9ed7ac60582fb1f7ad4789f65b3935eed"
+    },
+    {
+      "path": "step-3-sync-on-light-dark-media-768-component.png",
+      "bytes": 10202,
+      "sha256": "4ef04225840069e6d8e1b618c0e0ea32091c9804df42483d79f92dffa734423e"
+    },
+    {
+      "path": "step-3-sync-on-light-dark-media-768-full.png",
+      "bytes": 71959,
+      "sha256": "3ec083059428ec8820476e722bd9cda079d67f0b452d95776e5c4c9c8e8e3f10"
+    },
+    {
+      "path": "step-3-sync-on-light-dark-media-768-heading.png",
+      "bytes": 11699,
+      "sha256": "44d34bf1f446875d18c8ae5d70e8102231c162efef052ed2c077af54b421d71e"
+    }
+  ],
+  "chromeVersion": "151.0.7922.34",
+  "runtimeApiInterceptions": [
+    {
+      "scope": "chrome.runtime.sendMessage",
+      "state": "step-3-pending-completion",
+      "requestType": "completeOnboarding",
+      "behavior": "hold-pending",
+      "passthrough": "all-other-calls",
+      "expectedCount": 12,
+      "purpose": "Keep the completion request pending so the disabled pending UI can be captured.",
+      "observedCount": 12
+    },
+    {
+      "scope": "chrome.runtime.sendMessage",
+      "state": "load-error-retry",
+      "requestType": "getSetupState",
+      "behavior": "throw-once",
+      "passthrough": "all-other-calls",
+      "expectedCount": 12,
+      "purpose": "Fail the first setup-state load so the error and successful Retry UI can be captured.",
+      "observedCount": 12
+    }
+  ],
+  "sourceCommit": "ed37f9848c5278ca1d550dc583647e26218201cd",
+  "stateCount": 9,
+  "states": [
+    "step-1-expanded-gaming",
+    "step-2-permission-explanation",
+    "step-2-denied-retry",
+    "step-2-registration-error",
+    "step-3-sync-on",
+    "step-3-sync-off",
+    "step-3-pending-completion",
+    "step-1-load-recovery",
+    "load-error-retry"
+  ],
+  "themes": [
+    "auto-light",
+    "auto-dark",
+    "light-dark-media",
+    "dark-light-media"
+  ],
+  "viewportWidths": [
+    375,
+    768,
+    1280
+  ]
+}

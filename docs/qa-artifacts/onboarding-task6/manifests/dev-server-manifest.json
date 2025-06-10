@@ -1,0 +1,2684 @@
+{
+  "version": 1,
+  "kind": "dev-server",
+  "sourceCommits": [
+    "a5677ad",
+    "c39029868c79e5dad1ced2ce99ff36de10493f24"
+  ],
+  "chromeVersion": "145.0.7632.6",
+  "isolatedProfile": true,
+  "mockedChromeApis": true,
+  "method": "Vite development server with an in-page Chrome API mock used only to seed visual states",
+  "artifactCount": 528,
+  "stateCount": 9,
+  "configurationCount": 108,
+  "states": [
+    "step-1-expanded-gaming",
+    "step-2-permission-explanation",
+    "step-2-denied-retry",
+    "step-2-registration-error",
+    "step-3-not-now-sync-on",
+    "step-3-sync-off",
+    "step-3-pending-completion",
+    "step-1-invalid-draft-recovery",
+    "load-error-retry"
+  ],
+  "themes": [
+    "auto-light",
+    "auto-dark",
+    "light-dark-media",
+    "dark-light-media"
+  ],
+  "viewportWidths": [
+    375,
+    768,
+    1280
+  ],
+  "diagnostics": {
+    "console": [],
+    "page": [],
+    "request": []
+  },
+  "artifacts": [
+    {
+      "path": "load-error-retry-auto-dark-1280-buttons.png",
+      "bytes": 1480,
+      "sha256": "026d5ff2923cb1cb3f527ccfc445495893a5277cfe3f3542b59787bad9918f09"
+    },
+    {
+      "path": "load-error-retry-auto-dark-1280-edges.png",
+      "bytes": 16090,
+      "sha256": "803b3445e18dfeecb122b78c43faf9e0de90122b3647d5b24ff09e89e7620795"
+    },
+    {
+      "path": "load-error-retry-auto-dark-1280-error.png",
+      "bytes": 4192,
+      "sha256": "d571fb05b867fb5780818b7ad6dfbe115266e162b88a96ce0b52b96e3cef2e51"
+    },
+    {
+      "path": "load-error-retry-auto-dark-1280-full.png",
+      "bytes": 22667,
+      "sha256": "2d312501356e60076413b486019fa1cb25c6e22ba0cf9144d841b1ca0cf0bac3"
+    },
+    {
+      "path": "load-error-retry-auto-dark-1280-heading.png",
+      "bytes": 6057,
+      "sha256": "63d0ed9849aef0294a64c8bba2c298828c9c0d118cfe1a4a33b1f4b91a22f051"
+    },
+    {
+      "path": "load-error-retry-auto-dark-375-buttons.png",
+      "bytes": 1543,
+      "sha256": "b18166b726a5d3038bb1c4d87982377d4ed0e93166499a983ec3c1d8d6bea767"
+    },
+    {
+      "path": "load-error-retry-auto-dark-375-edges.png",
+      "bytes": 13055,
+      "sha256": "0da9cc670e11097a4ddd8ac38888a8d78a1b5d045d4bdb51382c472a1f1cbf3b"
+    },
+    {
+      "path": "load-error-retry-auto-dark-375-error.png",
+      "bytes": 3981,
+      "sha256": "baaa67b034052abd31cc4c62aae09bc8f842979dd70749163fe418bb67dee973"
+    },
+    {
+      "path": "load-error-retry-auto-dark-375-full.png",
+      "bytes": 16177,
+      "sha256": "509103fe58a32c521ae2c79d666ac84d03bb2f8c992b0d5eff205487e042e92f"
+    },
+    {
+      "path": "load-error-retry-auto-dark-375-heading.png",
+      "bytes": 4062,
+      "sha256": "f1af0b11b5cf539de8e4d96c8c7508c8b0428b39cd7fd0d90426e8228c01ee9b"
+    },
+    {
+      "path": "load-error-retry-auto-dark-768-buttons.png",
+      "bytes": 1439,
+      "sha256": "ec96bf29ffafdd5b2d92303c3279db9e23c040fa99347f5b29d649c1c5ef5581"
+    },
+    {
+      "path": "load-error-retry-auto-dark-768-edges.png",
+      "bytes": 16327,
+      "sha256": "dec7cd0ccae498ec9e7f23e3980d785c5a85464c375c1546f72e1c1111261c07"
+    },
+    {
+      "path": "load-error-retry-auto-dark-768-error.png",
+      "bytes": 4358,
+      "sha256": "0c3fe7b535a078c41530a233cc6de210a7fe0c54411ced2f0e64e03a58354aab"
+    },
+    {
+      "path": "load-error-retry-auto-dark-768-full.png",
+      "bytes": 21467,
+      "sha256": "53da5699d12b8e0a68ab34638f454061b3d24bfadabc1e6e742d7c819fae07cd"
+    },
+    {
+      "path": "load-error-retry-auto-dark-768-heading.png",
+      "bytes": 6139,
+      "sha256": "c3949aaec73f0cf3d8bdf0fe52451912fa7727dc6407211aa63f569737bf01fa"
+    },
+    {
+      "path": "load-error-retry-auto-light-1280-buttons.png",
+      "bytes": 1451,
+      "sha256": "be67b5c31db890dc9736cba0e2caa4faba0b7fbcb0ae0eb7265154e139adf9b7"
+    },
+    {
+      "path": "load-error-retry-auto-light-1280-edges.png",
+      "bytes": 15948,
+      "sha256": "a28d9c95d3edbe08300b82b22d2c0f781eecb0c67505c43f8c6293cff02a8cf9"
+    },
+    {
+      "path": "load-error-retry-auto-light-1280-error.png",
+      "bytes": 3992,
+      "sha256": "4f912684263d27ab61f62a776c4382916ba585c1bf95e2228c5ea0c7194d0a69"
+    },
+    {
+      "path": "load-error-retry-auto-light-1280-full.png",
+      "bytes": 24687,
+      "sha256": "644504c66b3b20a231d399034cb5a6341a64b18be8b94cb79e8a9391b399aacd"
+    },
+    {
+      "path": "load-error-retry-auto-light-1280-heading.png",
+      "bytes": 5914,
+      "sha256": "5afe6c5e51cd010e5c7538fd4f525605d4c5cace788801b964430f379967c92f"
+    },
+    {
+      "path": "load-error-retry-auto-light-375-buttons.png",
+      "bytes": 1566,
+      "sha256": "8f0906cca1e3397fd9fbe6a3310dc730cce568ed9c54660c52d70bd8d5eb765d"
+    },
+    {
+      "path": "load-error-retry-auto-light-375-edges.png",
+      "bytes": 12924,
+      "sha256": "d8f17efd1753b169feaaf62c09b5cea1d993ab673d697d81fb8c024b5a599a90"
+    },
+    {
+      "path": "load-error-retry-auto-light-375-error.png",
+      "bytes": 3813,
+      "sha256": "12d044047a6d8bc15dab2bf9bf1f675ca0dff6b1c7a3100d0f83eff279921c53"
+    },
+    {
+      "path": "load-error-retry-auto-light-375-full.png",
+      "bytes": 17483,
+      "sha256": "2bbc57307f836358284f0791f43c914e480932aa7c19e53a8fe10011149d6765"
+    },
+    {
+      "path": "load-error-retry-auto-light-375-heading.png",
+      "bytes": 3915,
+      "sha256": "70f358ee66c1e04599fd279b94192705e012949c1391737671a20dbbbec6ac81"
+    },
+    {
+      "path": "load-error-retry-auto-light-768-buttons.png",
+      "bytes": 1460,
+      "sha256": "7af2cfe7fb51583421957938afa86e4eef74cc861c75b8ded582fe37d559e81c"
+    },
+    {
+      "path": "load-error-retry-auto-light-768-edges.png",
+      "bytes": 16108,
+      "sha256": "3e58a4ea41d404e4ef5773c51c64d4349de520b9b484797db3336c05e8225b5b"
+    },
+    {
+      "path": "load-error-retry-auto-light-768-error.png",
+      "bytes": 4230,
+      "sha256": "f9f0889ee242fd338e243fdd6fcfa36633f5ef91d67ba26c905cec8dbf3fdd70"
+    },
+    {
+      "path": "load-error-retry-auto-light-768-full.png",
+      "bytes": 23211,
+      "sha256": "984e966e1718065345bc13afb1bb7645b7fb5267b32ba273db5104f450433c0c"
+    },
+    {
+      "path": "load-error-retry-auto-light-768-heading.png",
+      "bytes": 5938,
+      "sha256": "169162f078def611992b13c428836b0e97d502c53d5ea5f6e804722f160d00b5"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-1280-buttons.png",
+      "bytes": 1480,
+      "sha256": "026d5ff2923cb1cb3f527ccfc445495893a5277cfe3f3542b59787bad9918f09"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-1280-edges.png",
+      "bytes": 16090,
+      "sha256": "803b3445e18dfeecb122b78c43faf9e0de90122b3647d5b24ff09e89e7620795"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-1280-error.png",
+      "bytes": 4192,
+      "sha256": "d571fb05b867fb5780818b7ad6dfbe115266e162b88a96ce0b52b96e3cef2e51"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-1280-full.png",
+      "bytes": 22667,
+      "sha256": "2d312501356e60076413b486019fa1cb25c6e22ba0cf9144d841b1ca0cf0bac3"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-1280-heading.png",
+      "bytes": 6057,
+      "sha256": "63d0ed9849aef0294a64c8bba2c298828c9c0d118cfe1a4a33b1f4b91a22f051"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-375-buttons.png",
+      "bytes": 1543,
+      "sha256": "b18166b726a5d3038bb1c4d87982377d4ed0e93166499a983ec3c1d8d6bea767"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-375-edges.png",
+      "bytes": 13055,
+      "sha256": "0da9cc670e11097a4ddd8ac38888a8d78a1b5d045d4bdb51382c472a1f1cbf3b"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-375-error.png",
+      "bytes": 3981,
+      "sha256": "baaa67b034052abd31cc4c62aae09bc8f842979dd70749163fe418bb67dee973"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-375-full.png",
+      "bytes": 16177,
+      "sha256": "509103fe58a32c521ae2c79d666ac84d03bb2f8c992b0d5eff205487e042e92f"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-375-heading.png",
+      "bytes": 4062,
+      "sha256": "f1af0b11b5cf539de8e4d96c8c7508c8b0428b39cd7fd0d90426e8228c01ee9b"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-768-buttons.png",
+      "bytes": 1439,
+      "sha256": "ec96bf29ffafdd5b2d92303c3279db9e23c040fa99347f5b29d649c1c5ef5581"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-768-edges.png",
+      "bytes": 16327,
+      "sha256": "dec7cd0ccae498ec9e7f23e3980d785c5a85464c375c1546f72e1c1111261c07"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-768-error.png",
+      "bytes": 4358,
+      "sha256": "0c3fe7b535a078c41530a233cc6de210a7fe0c54411ced2f0e64e03a58354aab"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-768-full.png",
+      "bytes": 21467,
+      "sha256": "53da5699d12b8e0a68ab34638f454061b3d24bfadabc1e6e742d7c819fae07cd"
+    },
+    {
+      "path": "load-error-retry-dark-light-media-768-heading.png",
+      "bytes": 6139,
+      "sha256": "c3949aaec73f0cf3d8bdf0fe52451912fa7727dc6407211aa63f569737bf01fa"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-1280-buttons.png",
+      "bytes": 1451,
+      "sha256": "be67b5c31db890dc9736cba0e2caa4faba0b7fbcb0ae0eb7265154e139adf9b7"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-1280-edges.png",
+      "bytes": 15948,
+      "sha256": "a28d9c95d3edbe08300b82b22d2c0f781eecb0c67505c43f8c6293cff02a8cf9"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-1280-error.png",
+      "bytes": 3992,
+      "sha256": "4f912684263d27ab61f62a776c4382916ba585c1bf95e2228c5ea0c7194d0a69"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-1280-full.png",
+      "bytes": 24687,
+      "sha256": "644504c66b3b20a231d399034cb5a6341a64b18be8b94cb79e8a9391b399aacd"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-1280-heading.png",
+      "bytes": 5914,
+      "sha256": "5afe6c5e51cd010e5c7538fd4f525605d4c5cace788801b964430f379967c92f"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-375-buttons.png",
+      "bytes": 1566,
+      "sha256": "8f0906cca1e3397fd9fbe6a3310dc730cce568ed9c54660c52d70bd8d5eb765d"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-375-edges.png",
+      "bytes": 12924,
+      "sha256": "d8f17efd1753b169feaaf62c09b5cea1d993ab673d697d81fb8c024b5a599a90"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-375-error.png",
+      "bytes": 3813,
+      "sha256": "12d044047a6d8bc15dab2bf9bf1f675ca0dff6b1c7a3100d0f83eff279921c53"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-375-full.png",
+      "bytes": 17483,
+      "sha256": "2bbc57307f836358284f0791f43c914e480932aa7c19e53a8fe10011149d6765"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-375-heading.png",
+      "bytes": 3915,
+      "sha256": "70f358ee66c1e04599fd279b94192705e012949c1391737671a20dbbbec6ac81"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-768-buttons.png",
+      "bytes": 1460,
+      "sha256": "7af2cfe7fb51583421957938afa86e4eef74cc861c75b8ded582fe37d559e81c"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-768-edges.png",
+      "bytes": 16108,
+      "sha256": "3e58a4ea41d404e4ef5773c51c64d4349de520b9b484797db3336c05e8225b5b"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-768-error.png",
+      "bytes": 4230,
+      "sha256": "f9f0889ee242fd338e243fdd6fcfa36633f5ef91d67ba26c905cec8dbf3fdd70"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-768-full.png",
+      "bytes": 23211,
+      "sha256": "984e966e1718065345bc13afb1bb7645b7fb5267b32ba273db5104f450433c0c"
+    },
+    {
+      "path": "load-error-retry-light-dark-media-768-heading.png",
+      "bytes": 5938,
+      "sha256": "169162f078def611992b13c428836b0e97d502c53d5ea5f6e804722f160d00b5"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-1280-edges.png",
+      "bytes": 108440,
+      "sha256": "79bdb67e35c8d7fce6720d5089506586b8a52ffc1012e86bd17823d0fda538a6"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-1280-full.png",
+      "bytes": 117393,
+      "sha256": "928847d8968079fbab3b4d02dda7933fa06cac61cbd4664926ddb53ee82d5a50"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-1280-heading.png",
+      "bytes": 8876,
+      "sha256": "d300f4fe85dc1157f1b6ec435b471daa8162f02cd9fed333690f785c12fa08ce"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-1280-list.png",
+      "bytes": 17688,
+      "sha256": "fc9a42e74f636fad03ed32e58ccd04c83d5c15bd11f6f4d8de2a99b24ece0649"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-375-edges.png",
+      "bytes": 97229,
+      "sha256": "4c66c1c7ff12b0d79570227909f2e31d1aa617484d28a8fa5d8dd958b262d725"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-375-full.png",
+      "bytes": 99060,
+      "sha256": "fb3cda65921f531ee59fdcac435f1304eabe76da2728a8ec26089806d2438796"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-375-heading.png",
+      "bytes": 6642,
+      "sha256": "65c492bcdfce584b80413ea2a8b9b23ea14b63e3c2aca95819b2361f54a1d2fb"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-375-list.png",
+      "bytes": 12118,
+      "sha256": "9f77685111f8e42107885f5ecbcb21f99e428338936794fb57645f358139b684"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-768-edges.png",
+      "bytes": 107231,
+      "sha256": "2d425592a49b273a465d36624da3ced3944e1a4f48f75f093363f62cab3e954c"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-768-full.png",
+      "bytes": 111110,
+      "sha256": "79bc60cc13213c532b593849c361669d8452cb78ac16ecf3f813bf68f34754fd"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-768-heading.png",
+      "bytes": 9045,
+      "sha256": "9411002c4fe77acf109470ed620473b43c022f7cc546cd9ef6a4bb50fb940f3f"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-dark-768-list.png",
+      "bytes": 17065,
+      "sha256": "3fd63b85e417c5071834575330c765904059af3e5e5b37c3c19f86b0d25509e3"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-1280-edges.png",
+      "bytes": 107971,
+      "sha256": "8cb3123944141bf0ff85af71b4c8d4796b4504376341694671f451550e3c7a88"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-1280-full.png",
+      "bytes": 119655,
+      "sha256": "e2824537e29b914fd6b71c809164fb86f6fdeaf1359e9db466b3c3d5928379d0"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-1280-heading.png",
+      "bytes": 8600,
+      "sha256": "212dcccf230e0fc4420c12a51419609bab75b5f64bef6b6de9f96577c8598020"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-1280-list.png",
+      "bytes": 17786,
+      "sha256": "3c3ffa0d363b26f012baa20b338375f30609eadbed8b65a269906707c088a4fc"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-375-edges.png",
+      "bytes": 97368,
+      "sha256": "f711f4df7610641e8a0a15d7057a93a2859875b600bce1e1cb5e1cc84d569aca"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-375-full.png",
+      "bytes": 99992,
+      "sha256": "130c3c62168f5ecc3efcba3e74218ee2a838a27b058511f6e1dc2612d9376a8e"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-375-heading.png",
+      "bytes": 6535,
+      "sha256": "a6cc74b3fad2c15ae33781ab550552d899bf3567097cf4c81338efe0f305b781"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-375-list.png",
+      "bytes": 12278,
+      "sha256": "08bb3d360a67ee4b63904c0855afe802adb9f9596da13a84cc63bd46b0aef606"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-768-edges.png",
+      "bytes": 107223,
+      "sha256": "09b328aadb8826a7b7b81dec614e3fa06b89b61bcdda81429a18c9fbf15676c6"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-768-full.png",
+      "bytes": 113402,
+      "sha256": "585bd6982995678f54edb5e51a120d317a4a355a2949b65fd02589e143474314"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-768-heading.png",
+      "bytes": 8904,
+      "sha256": "b4238e74eb37eb42d8065669e458179d85d6331abec732d942e48d3bbd6ecac0"
+    },
+    {
+      "path": "step-1-expanded-gaming-auto-light-768-list.png",
+      "bytes": 17279,
+      "sha256": "37a8b4bd553bb2110f4724fbd3188d8fbd7c417e5ba416d691c06b3988e47c6d"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-1280-edges.png",
+      "bytes": 108440,
+      "sha256": "79bdb67e35c8d7fce6720d5089506586b8a52ffc1012e86bd17823d0fda538a6"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-1280-full.png",
+      "bytes": 117393,
+      "sha256": "928847d8968079fbab3b4d02dda7933fa06cac61cbd4664926ddb53ee82d5a50"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-1280-heading.png",
+      "bytes": 8876,
+      "sha256": "d300f4fe85dc1157f1b6ec435b471daa8162f02cd9fed333690f785c12fa08ce"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-1280-list.png",
+      "bytes": 17688,
+      "sha256": "fc9a42e74f636fad03ed32e58ccd04c83d5c15bd11f6f4d8de2a99b24ece0649"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-375-edges.png",
+      "bytes": 97229,
+      "sha256": "4c66c1c7ff12b0d79570227909f2e31d1aa617484d28a8fa5d8dd958b262d725"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-375-full.png",
+      "bytes": 99060,
+      "sha256": "fb3cda65921f531ee59fdcac435f1304eabe76da2728a8ec26089806d2438796"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-375-heading.png",
+      "bytes": 6642,
+      "sha256": "65c492bcdfce584b80413ea2a8b9b23ea14b63e3c2aca95819b2361f54a1d2fb"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-375-list.png",
+      "bytes": 12118,
+      "sha256": "9f77685111f8e42107885f5ecbcb21f99e428338936794fb57645f358139b684"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-768-edges.png",
+      "bytes": 107231,
+      "sha256": "2d425592a49b273a465d36624da3ced3944e1a4f48f75f093363f62cab3e954c"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-768-full.png",
+      "bytes": 111110,
+      "sha256": "79bc60cc13213c532b593849c361669d8452cb78ac16ecf3f813bf68f34754fd"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-768-heading.png",
+      "bytes": 9045,
+      "sha256": "9411002c4fe77acf109470ed620473b43c022f7cc546cd9ef6a4bb50fb940f3f"
+    },
+    {
+      "path": "step-1-expanded-gaming-dark-light-media-768-list.png",
+      "bytes": 17065,
+      "sha256": "3fd63b85e417c5071834575330c765904059af3e5e5b37c3c19f86b0d25509e3"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-1280-edges.png",
+      "bytes": 107971,
+      "sha256": "8cb3123944141bf0ff85af71b4c8d4796b4504376341694671f451550e3c7a88"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-1280-full.png",
+      "bytes": 119655,
+      "sha256": "e2824537e29b914fd6b71c809164fb86f6fdeaf1359e9db466b3c3d5928379d0"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-1280-heading.png",
+      "bytes": 8600,
+      "sha256": "212dcccf230e0fc4420c12a51419609bab75b5f64bef6b6de9f96577c8598020"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-1280-list.png",
+      "bytes": 17786,
+      "sha256": "3c3ffa0d363b26f012baa20b338375f30609eadbed8b65a269906707c088a4fc"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-375-edges.png",
+      "bytes": 97368,
+      "sha256": "f711f4df7610641e8a0a15d7057a93a2859875b600bce1e1cb5e1cc84d569aca"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-375-full.png",
+      "bytes": 99992,
+      "sha256": "130c3c62168f5ecc3efcba3e74218ee2a838a27b058511f6e1dc2612d9376a8e"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-375-heading.png",
+      "bytes": 6535,
+      "sha256": "a6cc74b3fad2c15ae33781ab550552d899bf3567097cf4c81338efe0f305b781"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-375-list.png",
+      "bytes": 12278,
+      "sha256": "08bb3d360a67ee4b63904c0855afe802adb9f9596da13a84cc63bd46b0aef606"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-768-edges.png",
+      "bytes": 107223,
+      "sha256": "09b328aadb8826a7b7b81dec614e3fa06b89b61bcdda81429a18c9fbf15676c6"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-768-full.png",
+      "bytes": 113402,
+      "sha256": "585bd6982995678f54edb5e51a120d317a4a355a2949b65fd02589e143474314"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-768-heading.png",
+      "bytes": 8904,
+      "sha256": "b4238e74eb37eb42d8065669e458179d85d6331abec732d942e48d3bbd6ecac0"
+    },
+    {
+      "path": "step-1-expanded-gaming-light-dark-media-768-list.png",
+      "bytes": 17279,
+      "sha256": "37a8b4bd553bb2110f4724fbd3188d8fbd7c417e5ba416d691c06b3988e47c6d"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-dark-1280-edges.png",
+      "bytes": 100181,
+      "sha256": "f2ebd0c05069369cadfc04d6679666068be101284a7cc685b1e10b5e942ef87d"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-dark-1280-error.png",
+      "bytes": 9769,
+      "sha256": "e3327e2c972fa96c5deb7e1920709bc1999ef28c840ec9b3a5c9eff564b3d4a8"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-dark-1280-full.png",
+      "bytes": 108746,
+      "sha256": "699b69898741a0913c4fd71d458943a33602d1100c040445ccad0c437377c3d3"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-dark-1280-heading.png",
+      "bytes": 8876,
+      "sha256": "d300f4fe85dc1157f1b6ec435b471daa8162f02cd9fed333690f785c12fa08ce"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-dark-1280-list.png",
+      "bytes": 48722,
+      "sha256": "d8819a26f63a9dcc520cc8ab748e83198414c45f234b89b33e8dc5d6d3d0be80"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-dark-375-edges.png",
+      "bytes": 94650,
+      "sha256": "743e3117c3658fb9712916da973258da9995372451d829470de3da8b6ee0c2a8"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-dark-375-error.png",
+      "bytes": 9573,
+      "sha256": "2b19a4e426b4f61b893b332ba768d2fdc67b466ec5241f19c411a02b3127fffa"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-dark-375-full.png",
+      "bytes": 96147,
+      "sha256": "e5b66dc675fd502be3670d06b65cd034cfb069a3e5897a4a6fb21ef602ac202d"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-dark-375-heading.png",
+      "bytes": 6642,
+      "sha256": "65c492bcdfce584b80413ea2a8b9b23ea14b63e3c2aca95819b2361f54a1d2fb"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-dark-375-list.png",
+      "bytes": 47651,
+      "sha256": "61427173764bc9366a6da5c36d63ecd9bb66b8648a922ee2ea5e0990aeb14f97"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-dark-768-edges.png",
+      "bytes": 99363,
+      "sha256": "fb796ef23c1f58afc693a142829243d86303923e5b04409559d9a9019facce04"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-dark-768-error.png",
+      "bytes": 9480,
+      "sha256": "9077db691a7ae3053039471b56c847747900a6fd88dd228042cbb14d0590d5d3"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-dark-768-full.png",
+      "bytes": 102741,
+      "sha256": "cef3e5f043383f7c07102151314392d92d0fe1e3b8362e02125293428725ce28"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-dark-768-heading.png",
+      "bytes": 9045,
+      "sha256": "9411002c4fe77acf109470ed620473b43c022f7cc546cd9ef6a4bb50fb940f3f"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-dark-768-list.png",
+      "bytes": 48519,
+      "sha256": "96a0847a7143f022ed9aa8887f7e819811b3de8361bc90ddbed58c37e92d2b74"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-light-1280-edges.png",
+      "bytes": 99425,
+      "sha256": "fc4584177dcea74dcd68a71d1643caed13561d83dfcfb55cd13b7760ad9e0479"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-light-1280-error.png",
+      "bytes": 9570,
+      "sha256": "a7b117bd6f62415713879d92e0ea888e83df8f1655d5469b9850d107ebab3c3b"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-light-1280-full.png",
+      "bytes": 110626,
+      "sha256": "b2fbb62d1a5dab76029b8a6f7ace2986222d9faa334d16718181766ec41d3d37"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-light-1280-heading.png",
+      "bytes": 8600,
+      "sha256": "212dcccf230e0fc4420c12a51419609bab75b5f64bef6b6de9f96577c8598020"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-light-1280-list.png",
+      "bytes": 48499,
+      "sha256": "576a9428a91e156a0c0429dc69b3b4d19f65e337a1388715835a2ffe617cbe6e"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-light-375-edges.png",
+      "bytes": 94231,
+      "sha256": "024eb166c84d6fe13435e0dedeacb2ce63c88a17a8706603f95eabbf7525e90b"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-light-375-error.png",
+      "bytes": 9291,
+      "sha256": "4a9a46167c6a29fee8abc28c248fe0ae9cd7758947734bb26a2c767e496415d1"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-light-375-full.png",
+      "bytes": 96679,
+      "sha256": "18896775694466f2f6cc5e0d8a1661ec478269597d2139ef4060f352715b3b6b"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-light-375-heading.png",
+      "bytes": 6535,
+      "sha256": "a6cc74b3fad2c15ae33781ab550552d899bf3567097cf4c81338efe0f305b781"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-light-375-list.png",
+      "bytes": 47388,
+      "sha256": "b47bf2d1455b9174249901bc99b0149da1efe10263644b5d82f47f25c4b30fcd"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-light-768-edges.png",
+      "bytes": 98817,
+      "sha256": "2ee6d47fd1c0a5de51248d4da43ff7d560c7ed8d4c27059cc65b52d19f51db7c"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-light-768-error.png",
+      "bytes": 9038,
+      "sha256": "fa49e7a6b78d31ef0f9a9efdac39f403be7bf92140a89e929c573968c436e9e3"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-light-768-full.png",
+      "bytes": 104370,
+      "sha256": "f57d1d3b5041d3322e662ef23d69cc397b748217f85272e1574fc362b54a10a7"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-light-768-heading.png",
+      "bytes": 8904,
+      "sha256": "b4238e74eb37eb42d8065669e458179d85d6331abec732d942e48d3bbd6ecac0"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-auto-light-768-list.png",
+      "bytes": 48527,
+      "sha256": "637a6071b12cd1ae1afc7fdc6a203f1b7743258625c2456203596e724d522d9f"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-dark-light-media-1280-edges.png",
+      "bytes": 100181,
+      "sha256": "f2ebd0c05069369cadfc04d6679666068be101284a7cc685b1e10b5e942ef87d"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-dark-light-media-1280-error.png",
+      "bytes": 9769,
+      "sha256": "e3327e2c972fa96c5deb7e1920709bc1999ef28c840ec9b3a5c9eff564b3d4a8"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-dark-light-media-1280-full.png",
+      "bytes": 108746,
+      "sha256": "699b69898741a0913c4fd71d458943a33602d1100c040445ccad0c437377c3d3"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-dark-light-media-1280-heading.png",
+      "bytes": 8876,
+      "sha256": "d300f4fe85dc1157f1b6ec435b471daa8162f02cd9fed333690f785c12fa08ce"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-dark-light-media-1280-list.png",
+      "bytes": 48722,
+      "sha256": "d8819a26f63a9dcc520cc8ab748e83198414c45f234b89b33e8dc5d6d3d0be80"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-dark-light-media-375-edges.png",
+      "bytes": 94650,
+      "sha256": "743e3117c3658fb9712916da973258da9995372451d829470de3da8b6ee0c2a8"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-dark-light-media-375-error.png",
+      "bytes": 9573,
+      "sha256": "2b19a4e426b4f61b893b332ba768d2fdc67b466ec5241f19c411a02b3127fffa"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-dark-light-media-375-full.png",
+      "bytes": 96147,
+      "sha256": "e5b66dc675fd502be3670d06b65cd034cfb069a3e5897a4a6fb21ef602ac202d"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-dark-light-media-375-heading.png",
+      "bytes": 6642,
+      "sha256": "65c492bcdfce584b80413ea2a8b9b23ea14b63e3c2aca95819b2361f54a1d2fb"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-dark-light-media-375-list.png",
+      "bytes": 47651,
+      "sha256": "61427173764bc9366a6da5c36d63ecd9bb66b8648a922ee2ea5e0990aeb14f97"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-dark-light-media-768-edges.png",
+      "bytes": 99363,
+      "sha256": "fb796ef23c1f58afc693a142829243d86303923e5b04409559d9a9019facce04"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-dark-light-media-768-error.png",
+      "bytes": 9480,
+      "sha256": "9077db691a7ae3053039471b56c847747900a6fd88dd228042cbb14d0590d5d3"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-dark-light-media-768-full.png",
+      "bytes": 102741,
+      "sha256": "cef3e5f043383f7c07102151314392d92d0fe1e3b8362e02125293428725ce28"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-dark-light-media-768-heading.png",
+      "bytes": 9045,
+      "sha256": "9411002c4fe77acf109470ed620473b43c022f7cc546cd9ef6a4bb50fb940f3f"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-dark-light-media-768-list.png",
+      "bytes": 48519,
+      "sha256": "96a0847a7143f022ed9aa8887f7e819811b3de8361bc90ddbed58c37e92d2b74"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-light-dark-media-1280-edges.png",
+      "bytes": 99425,
+      "sha256": "fc4584177dcea74dcd68a71d1643caed13561d83dfcfb55cd13b7760ad9e0479"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-light-dark-media-1280-error.png",
+      "bytes": 9570,
+      "sha256": "a7b117bd6f62415713879d92e0ea888e83df8f1655d5469b9850d107ebab3c3b"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-light-dark-media-1280-full.png",
+      "bytes": 110626,
+      "sha256": "b2fbb62d1a5dab76029b8a6f7ace2986222d9faa334d16718181766ec41d3d37"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-light-dark-media-1280-heading.png",
+      "bytes": 8600,
+      "sha256": "212dcccf230e0fc4420c12a51419609bab75b5f64bef6b6de9f96577c8598020"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-light-dark-media-1280-list.png",
+      "bytes": 48499,
+      "sha256": "576a9428a91e156a0c0429dc69b3b4d19f65e337a1388715835a2ffe617cbe6e"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-light-dark-media-375-edges.png",
+      "bytes": 94231,
+      "sha256": "024eb166c84d6fe13435e0dedeacb2ce63c88a17a8706603f95eabbf7525e90b"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-light-dark-media-375-error.png",
+      "bytes": 9291,
+      "sha256": "4a9a46167c6a29fee8abc28c248fe0ae9cd7758947734bb26a2c767e496415d1"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-light-dark-media-375-full.png",
+      "bytes": 96679,
+      "sha256": "18896775694466f2f6cc5e0d8a1661ec478269597d2139ef4060f352715b3b6b"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-light-dark-media-375-heading.png",
+      "bytes": 6535,
+      "sha256": "a6cc74b3fad2c15ae33781ab550552d899bf3567097cf4c81338efe0f305b781"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-light-dark-media-375-list.png",
+      "bytes": 47388,
+      "sha256": "b47bf2d1455b9174249901bc99b0149da1efe10263644b5d82f47f25c4b30fcd"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-light-dark-media-768-edges.png",
+      "bytes": 98817,
+      "sha256": "2ee6d47fd1c0a5de51248d4da43ff7d560c7ed8d4c27059cc65b52d19f51db7c"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-light-dark-media-768-error.png",
+      "bytes": 9038,
+      "sha256": "fa49e7a6b78d31ef0f9a9efdac39f403be7bf92140a89e929c573968c436e9e3"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-light-dark-media-768-full.png",
+      "bytes": 104370,
+      "sha256": "f57d1d3b5041d3322e662ef23d69cc397b748217f85272e1574fc362b54a10a7"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-light-dark-media-768-heading.png",
+      "bytes": 8904,
+      "sha256": "b4238e74eb37eb42d8065669e458179d85d6331abec732d942e48d3bbd6ecac0"
+    },
+    {
+      "path": "step-1-invalid-draft-recovery-light-dark-media-768-list.png",
+      "bytes": 48527,
+      "sha256": "637a6071b12cd1ae1afc7fdc6a203f1b7743258625c2456203596e724d522d9f"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-1280-buttons.png",
+      "bytes": 3264,
+      "sha256": "da17a5ee24d3fae8e40e69902c1eec24630162547d387ec787bd9fcf57d60a63"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-1280-edges.png",
+      "bytes": 64969,
+      "sha256": "dba0b1402c93792ecb8b2be7b368f4d173c337595b65da325a9fb420c3cba82d"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-1280-error.png",
+      "bytes": 6381,
+      "sha256": "131180dd1c605fd1b4936803cbfc9d7a03c63231d05db85bcfa8333579e14930"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-1280-full.png",
+      "bytes": 73750,
+      "sha256": "26084a0e501ece3097bd5df3d6ee4de8630be6667e579f63dbea52fbf464c8e7"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-1280-heading.png",
+      "bytes": 7943,
+      "sha256": "0e168da377e972b00ad3eff9d8c27f11c2a92e16b4824ec13e49b4467175d14d"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-375-buttons.png",
+      "bytes": 3300,
+      "sha256": "aa97996b28decd8b8710d33e2f5f6aba45778716d72b85dd90358a39defad1f4"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-375-edges.png",
+      "bytes": 57595,
+      "sha256": "a0552189d44208431525699fd2066b6ffb2c976e17af7c2de77baadfc416ffe2"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-375-error.png",
+      "bytes": 6328,
+      "sha256": "2009bc436c75d2c31e0da4beb9060ad1b61daac2bb7f0c8686a6df5cb1fb1d89"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-375-full.png",
+      "bytes": 59736,
+      "sha256": "276767e95c84ff28f175975cff8731e4648acf4727383b2e86406934d8b07bdc"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-375-heading.png",
+      "bytes": 5128,
+      "sha256": "70e67f00007a6f8dc6f9be31af11d0c7141ef371fdd0aa6c23670cf8c0ec2d29"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-768-buttons.png",
+      "bytes": 3256,
+      "sha256": "ece5efad7009973e49a7e974876605aabc199fe1859ed7af03ae6d52702788ce"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-768-edges.png",
+      "bytes": 63788,
+      "sha256": "e51b4866388533c066c263972b57f00cda881e1f182828d8f2ceec8217434be1"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-768-error.png",
+      "bytes": 6202,
+      "sha256": "f4c7a70eac8052c4830f408d57fd8a885c8f47a987b1b8ec122fd12a940121d3"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-768-full.png",
+      "bytes": 69167,
+      "sha256": "4d1fef1c14f1da907179c32d7e110ffab8392aee61f3510ee5fcf18b5160770f"
+    },
+    {
+      "path": "step-2-denied-retry-auto-dark-768-heading.png",
+      "bytes": 7521,
+      "sha256": "0fda8fade95180657581baace5391a8c96b962c5c870d6d6c6cf6564ce039384"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-1280-buttons.png",
+      "bytes": 3230,
+      "sha256": "a1c621b212903b10f912fdd08898e87eae46ab7c5295b04793881f74c1f721cb"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-1280-edges.png",
+      "bytes": 63983,
+      "sha256": "e66d472ed5330b9fe9a2eae55827abc737bffcda8baa5d41d8512e05647300b2"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-1280-error.png",
+      "bytes": 6150,
+      "sha256": "ce169340db42e55ca067f0c9a24004fbcf90dd2b62186ede1aa577d1703c3998"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-1280-full.png",
+      "bytes": 75405,
+      "sha256": "c802298fc69a8fbef64ae2d54eff665f8043075f0703eb66a895854a53a201ca"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-1280-heading.png",
+      "bytes": 7719,
+      "sha256": "013fb88dc863a065a1ff11b85b931402d6bd8489797e1cc499ec1b0e09295686"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-375-buttons.png",
+      "bytes": 3309,
+      "sha256": "6666363800a98aa1bac61b51ade70035272a9b341efda933fef0a4bce6fadd51"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-375-edges.png",
+      "bytes": 57280,
+      "sha256": "264abc8f23758fca3e99786e91079660d3f8bfa631c82f133fb56ecc7af88f5f"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-375-error.png",
+      "bytes": 6135,
+      "sha256": "bc290e141ffda3b64eef5d35aa70222188eef6d24946433c96e06cdb024c5bd4"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-375-full.png",
+      "bytes": 60887,
+      "sha256": "2c656c3ab1fba7e95b6a0e26d9a2674cbdefe50b814cf6e33fc4aa9941de2f16"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-375-heading.png",
+      "bytes": 4958,
+      "sha256": "8ba22b69e06324462b9c5942f0ada3083f543f3741fb96cf848c2931b0807aea"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-768-buttons.png",
+      "bytes": 3230,
+      "sha256": "93b98aa82f84d0f30b789699abd948943b7bd92df26a3712103b4bc08f042739"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-768-edges.png",
+      "bytes": 62773,
+      "sha256": "41fbe1b60dda89d735851a09d6dd05c6b214ba1d9f9a67fe5c9b44e8a0411f9d"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-768-error.png",
+      "bytes": 5903,
+      "sha256": "a98a2d5e0ed6351f59d79f63cca8a209dab275144fcc42750417dc7c93e4bd2e"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-768-full.png",
+      "bytes": 70230,
+      "sha256": "66e8df5d892a9661cf91113a99ac35a75e1598e72ed377e40e09664303b85ecf"
+    },
+    {
+      "path": "step-2-denied-retry-auto-light-768-heading.png",
+      "bytes": 7298,
+      "sha256": "16ed342b26005b43f60205051a70fec5ba5b1a7cc952130903156f6caf1997d8"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-1280-buttons.png",
+      "bytes": 3264,
+      "sha256": "da17a5ee24d3fae8e40e69902c1eec24630162547d387ec787bd9fcf57d60a63"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-1280-edges.png",
+      "bytes": 64969,
+      "sha256": "dba0b1402c93792ecb8b2be7b368f4d173c337595b65da325a9fb420c3cba82d"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-1280-error.png",
+      "bytes": 6381,
+      "sha256": "131180dd1c605fd1b4936803cbfc9d7a03c63231d05db85bcfa8333579e14930"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-1280-full.png",
+      "bytes": 73750,
+      "sha256": "26084a0e501ece3097bd5df3d6ee4de8630be6667e579f63dbea52fbf464c8e7"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-1280-heading.png",
+      "bytes": 7943,
+      "sha256": "0e168da377e972b00ad3eff9d8c27f11c2a92e16b4824ec13e49b4467175d14d"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-375-buttons.png",
+      "bytes": 3300,
+      "sha256": "aa97996b28decd8b8710d33e2f5f6aba45778716d72b85dd90358a39defad1f4"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-375-edges.png",
+      "bytes": 57595,
+      "sha256": "a0552189d44208431525699fd2066b6ffb2c976e17af7c2de77baadfc416ffe2"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-375-error.png",
+      "bytes": 6328,
+      "sha256": "2009bc436c75d2c31e0da4beb9060ad1b61daac2bb7f0c8686a6df5cb1fb1d89"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-375-full.png",
+      "bytes": 59736,
+      "sha256": "276767e95c84ff28f175975cff8731e4648acf4727383b2e86406934d8b07bdc"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-375-heading.png",
+      "bytes": 5128,
+      "sha256": "70e67f00007a6f8dc6f9be31af11d0c7141ef371fdd0aa6c23670cf8c0ec2d29"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-768-buttons.png",
+      "bytes": 3256,
+      "sha256": "ece5efad7009973e49a7e974876605aabc199fe1859ed7af03ae6d52702788ce"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-768-edges.png",
+      "bytes": 63788,
+      "sha256": "e51b4866388533c066c263972b57f00cda881e1f182828d8f2ceec8217434be1"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-768-error.png",
+      "bytes": 6202,
+      "sha256": "f4c7a70eac8052c4830f408d57fd8a885c8f47a987b1b8ec122fd12a940121d3"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-768-full.png",
+      "bytes": 69167,
+      "sha256": "4d1fef1c14f1da907179c32d7e110ffab8392aee61f3510ee5fcf18b5160770f"
+    },
+    {
+      "path": "step-2-denied-retry-dark-light-media-768-heading.png",
+      "bytes": 7521,
+      "sha256": "0fda8fade95180657581baace5391a8c96b962c5c870d6d6c6cf6564ce039384"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-1280-buttons.png",
+      "bytes": 3230,
+      "sha256": "a1c621b212903b10f912fdd08898e87eae46ab7c5295b04793881f74c1f721cb"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-1280-edges.png",
+      "bytes": 63983,
+      "sha256": "e66d472ed5330b9fe9a2eae55827abc737bffcda8baa5d41d8512e05647300b2"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-1280-error.png",
+      "bytes": 6150,
+      "sha256": "ce169340db42e55ca067f0c9a24004fbcf90dd2b62186ede1aa577d1703c3998"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-1280-full.png",
+      "bytes": 75405,
+      "sha256": "c802298fc69a8fbef64ae2d54eff665f8043075f0703eb66a895854a53a201ca"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-1280-heading.png",
+      "bytes": 7719,
+      "sha256": "013fb88dc863a065a1ff11b85b931402d6bd8489797e1cc499ec1b0e09295686"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-375-buttons.png",
+      "bytes": 3309,
+      "sha256": "6666363800a98aa1bac61b51ade70035272a9b341efda933fef0a4bce6fadd51"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-375-edges.png",
+      "bytes": 57280,
+      "sha256": "264abc8f23758fca3e99786e91079660d3f8bfa631c82f133fb56ecc7af88f5f"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-375-error.png",
+      "bytes": 6135,
+      "sha256": "bc290e141ffda3b64eef5d35aa70222188eef6d24946433c96e06cdb024c5bd4"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-375-full.png",
+      "bytes": 60887,
+      "sha256": "2c656c3ab1fba7e95b6a0e26d9a2674cbdefe50b814cf6e33fc4aa9941de2f16"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-375-heading.png",
+      "bytes": 4958,
+      "sha256": "8ba22b69e06324462b9c5942f0ada3083f543f3741fb96cf848c2931b0807aea"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-768-buttons.png",
+      "bytes": 3230,
+      "sha256": "93b98aa82f84d0f30b789699abd948943b7bd92df26a3712103b4bc08f042739"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-768-edges.png",
+      "bytes": 62773,
+      "sha256": "41fbe1b60dda89d735851a09d6dd05c6b214ba1d9f9a67fe5c9b44e8a0411f9d"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-768-error.png",
+      "bytes": 5903,
+      "sha256": "a98a2d5e0ed6351f59d79f63cca8a209dab275144fcc42750417dc7c93e4bd2e"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-768-full.png",
+      "bytes": 70230,
+      "sha256": "66e8df5d892a9661cf91113a99ac35a75e1598e72ed377e40e09664303b85ecf"
+    },
+    {
+      "path": "step-2-denied-retry-light-dark-media-768-heading.png",
+      "bytes": 7298,
+      "sha256": "16ed342b26005b43f60205051a70fec5ba5b1a7cc952130903156f6caf1997d8"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-1280-buttons.png",
+      "bytes": 5444,
+      "sha256": "6a40dc7b471258a9ee93d05ee09d224c2f94a244f325db7f26bb22b265252f8e"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-1280-edges.png",
+      "bytes": 60586,
+      "sha256": "143ae583654fd30880128cc6a6fe3de245c313cd48ed634f7cb2ed0ede06e077"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-1280-explanation.png",
+      "bytes": 5003,
+      "sha256": "4dbe2699f064a30da4317b6b98cab5ae9f78914ebcbb5f82433f93ef17482554"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-1280-full.png",
+      "bytes": 69505,
+      "sha256": "d10423f0f0f661b931c8af05c92f385142cb597830bf8f82d644b170fd24cbc9"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-1280-heading.png",
+      "bytes": 7943,
+      "sha256": "0e168da377e972b00ad3eff9d8c27f11c2a92e16b4824ec13e49b4467175d14d"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-375-buttons.png",
+      "bytes": 5354,
+      "sha256": "03619b1326bd9d52e6320bb49c394a0add2c3787cf47c23f538147f6cd595c18"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-375-edges.png",
+      "bytes": 53315,
+      "sha256": "b934a9896e5407853567c06e1fe6da409630de29bcd9ced62f3d7a2de91a0f52"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-375-explanation.png",
+      "bytes": 4933,
+      "sha256": "cd6fe3b2e4edea964a20a0e797e41e1e22e78b1d3bfc5ba7d9a92212359c8db4"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-375-full.png",
+      "bytes": 55623,
+      "sha256": "fdde898a34e59811e0dd52ff8a3818306edd020a138dbdc95a90a08b0272257d"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-375-heading.png",
+      "bytes": 5128,
+      "sha256": "70e67f00007a6f8dc6f9be31af11d0c7141ef371fdd0aa6c23670cf8c0ec2d29"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-768-buttons.png",
+      "bytes": 5467,
+      "sha256": "8621b33948f1a785a8c6cbbdfc0cc28b61b5bfdc527b5043538379f171550da0"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-768-edges.png",
+      "bytes": 59666,
+      "sha256": "9436bae359b57500d2dad168fd4975e906c3babbfca60197795fd321981b6a04"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-768-explanation.png",
+      "bytes": 5202,
+      "sha256": "97206480d6079601ef3491c5161f4665a398f5e472188122e41ee53f975e928b"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-768-full.png",
+      "bytes": 65287,
+      "sha256": "6d942c514f2f4230086cfc01772769aa2a081e52354d639443e69ec7791fa19a"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-dark-768-heading.png",
+      "bytes": 7521,
+      "sha256": "0fda8fade95180657581baace5391a8c96b962c5c870d6d6c6cf6564ce039384"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-1280-buttons.png",
+      "bytes": 5321,
+      "sha256": "a8b1e6438e354ab71bea0e69161f00e1e8fb3b65bf3ea634ad608393ef22d19b"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-1280-edges.png",
+      "bytes": 59784,
+      "sha256": "cc88b557f0ce5a696fcf1fd8b33c707a4097f56aa86ecf5d34e1e39e7b7f42a2"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-1280-explanation.png",
+      "bytes": 4846,
+      "sha256": "e6e038f26d56bb1470df03b6fa4cc9d55e01ea548d7839e44fe79dd84778ade2"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-1280-full.png",
+      "bytes": 71354,
+      "sha256": "e9a032625ce884e8cf155523cb80dd2089982826cf9ba1215f31fc189596c3e8"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-1280-heading.png",
+      "bytes": 7719,
+      "sha256": "013fb88dc863a065a1ff11b85b931402d6bd8489797e1cc499ec1b0e09295686"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-375-buttons.png",
+      "bytes": 5300,
+      "sha256": "3f033397467b68944bb56d15169ffc42339cefd4e3bb4addd30c0ac99e6754cc"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-375-edges.png",
+      "bytes": 53077,
+      "sha256": "4774db51a1900aa915353f3c218cbf8034caae23d1fcd552e0f41309304b6a62"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-375-explanation.png",
+      "bytes": 4819,
+      "sha256": "d916a4d995c4b3221a632a6c2fbbcb0fc4971490906c8a5f007cc6d586f9d7b1"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-375-full.png",
+      "bytes": 56798,
+      "sha256": "4e5ede7d3ef90ef2bbc23ef37bc63fccdc421c40bb00fefe92bbb518d610944b"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-375-heading.png",
+      "bytes": 4958,
+      "sha256": "8ba22b69e06324462b9c5942f0ada3083f543f3741fb96cf848c2931b0807aea"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-768-buttons.png",
+      "bytes": 5277,
+      "sha256": "69cecb203965f2b88a925f23c4a848162300655031d6bea1e290116c00e0dc8e"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-768-edges.png",
+      "bytes": 58855,
+      "sha256": "af2afe114be8b85297984f1a1774087bf03aa8f1d302183f62dc2f6b95abc74d"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-768-explanation.png",
+      "bytes": 5087,
+      "sha256": "2c0782ab55d367646e889264f8668e8785704f4ef4f9908d716f5a9018330162"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-768-full.png",
+      "bytes": 66528,
+      "sha256": "41b86d158be8bf7fea2d32731a771f8570925304e274cbe7e814aed2006da544"
+    },
+    {
+      "path": "step-2-permission-explanation-auto-light-768-heading.png",
+      "bytes": 7298,
+      "sha256": "16ed342b26005b43f60205051a70fec5ba5b1a7cc952130903156f6caf1997d8"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-1280-buttons.png",
+      "bytes": 5444,
+      "sha256": "6a40dc7b471258a9ee93d05ee09d224c2f94a244f325db7f26bb22b265252f8e"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-1280-edges.png",
+      "bytes": 60586,
+      "sha256": "143ae583654fd30880128cc6a6fe3de245c313cd48ed634f7cb2ed0ede06e077"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-1280-explanation.png",
+      "bytes": 5003,
+      "sha256": "4dbe2699f064a30da4317b6b98cab5ae9f78914ebcbb5f82433f93ef17482554"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-1280-full.png",
+      "bytes": 69505,
+      "sha256": "d10423f0f0f661b931c8af05c92f385142cb597830bf8f82d644b170fd24cbc9"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-1280-heading.png",
+      "bytes": 7943,
+      "sha256": "0e168da377e972b00ad3eff9d8c27f11c2a92e16b4824ec13e49b4467175d14d"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-375-buttons.png",
+      "bytes": 5354,
+      "sha256": "03619b1326bd9d52e6320bb49c394a0add2c3787cf47c23f538147f6cd595c18"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-375-edges.png",
+      "bytes": 53315,
+      "sha256": "b934a9896e5407853567c06e1fe6da409630de29bcd9ced62f3d7a2de91a0f52"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-375-explanation.png",
+      "bytes": 4933,
+      "sha256": "cd6fe3b2e4edea964a20a0e797e41e1e22e78b1d3bfc5ba7d9a92212359c8db4"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-375-full.png",
+      "bytes": 55623,
+      "sha256": "fdde898a34e59811e0dd52ff8a3818306edd020a138dbdc95a90a08b0272257d"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-375-heading.png",
+      "bytes": 5128,
+      "sha256": "70e67f00007a6f8dc6f9be31af11d0c7141ef371fdd0aa6c23670cf8c0ec2d29"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-768-buttons.png",
+      "bytes": 5467,
+      "sha256": "8621b33948f1a785a8c6cbbdfc0cc28b61b5bfdc527b5043538379f171550da0"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-768-edges.png",
+      "bytes": 59666,
+      "sha256": "9436bae359b57500d2dad168fd4975e906c3babbfca60197795fd321981b6a04"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-768-explanation.png",
+      "bytes": 5202,
+      "sha256": "97206480d6079601ef3491c5161f4665a398f5e472188122e41ee53f975e928b"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-768-full.png",
+      "bytes": 65287,
+      "sha256": "6d942c514f2f4230086cfc01772769aa2a081e52354d639443e69ec7791fa19a"
+    },
+    {
+      "path": "step-2-permission-explanation-dark-light-media-768-heading.png",
+      "bytes": 7521,
+      "sha256": "0fda8fade95180657581baace5391a8c96b962c5c870d6d6c6cf6564ce039384"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-1280-buttons.png",
+      "bytes": 5321,
+      "sha256": "a8b1e6438e354ab71bea0e69161f00e1e8fb3b65bf3ea634ad608393ef22d19b"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-1280-edges.png",
+      "bytes": 59784,
+      "sha256": "cc88b557f0ce5a696fcf1fd8b33c707a4097f56aa86ecf5d34e1e39e7b7f42a2"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-1280-explanation.png",
+      "bytes": 4846,
+      "sha256": "e6e038f26d56bb1470df03b6fa4cc9d55e01ea548d7839e44fe79dd84778ade2"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-1280-full.png",
+      "bytes": 71354,
+      "sha256": "e9a032625ce884e8cf155523cb80dd2089982826cf9ba1215f31fc189596c3e8"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-1280-heading.png",
+      "bytes": 7719,
+      "sha256": "013fb88dc863a065a1ff11b85b931402d6bd8489797e1cc499ec1b0e09295686"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-375-buttons.png",
+      "bytes": 5300,
+      "sha256": "3f033397467b68944bb56d15169ffc42339cefd4e3bb4addd30c0ac99e6754cc"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-375-edges.png",
+      "bytes": 53077,
+      "sha256": "4774db51a1900aa915353f3c218cbf8034caae23d1fcd552e0f41309304b6a62"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-375-explanation.png",
+      "bytes": 4819,
+      "sha256": "d916a4d995c4b3221a632a6c2fbbcb0fc4971490906c8a5f007cc6d586f9d7b1"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-375-full.png",
+      "bytes": 56798,
+      "sha256": "4e5ede7d3ef90ef2bbc23ef37bc63fccdc421c40bb00fefe92bbb518d610944b"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-375-heading.png",
+      "bytes": 4958,
+      "sha256": "8ba22b69e06324462b9c5942f0ada3083f543f3741fb96cf848c2931b0807aea"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-768-buttons.png",
+      "bytes": 5277,
+      "sha256": "69cecb203965f2b88a925f23c4a848162300655031d6bea1e290116c00e0dc8e"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-768-edges.png",
+      "bytes": 58855,
+      "sha256": "af2afe114be8b85297984f1a1774087bf03aa8f1d302183f62dc2f6b95abc74d"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-768-explanation.png",
+      "bytes": 5087,
+      "sha256": "2c0782ab55d367646e889264f8668e8785704f4ef4f9908d716f5a9018330162"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-768-full.png",
+      "bytes": 66528,
+      "sha256": "41b86d158be8bf7fea2d32731a771f8570925304e274cbe7e814aed2006da544"
+    },
+    {
+      "path": "step-2-permission-explanation-light-dark-media-768-heading.png",
+      "bytes": 7298,
+      "sha256": "16ed342b26005b43f60205051a70fec5ba5b1a7cc952130903156f6caf1997d8"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-1280-buttons.png",
+      "bytes": 3261,
+      "sha256": "daa5406fc7cc2214cdc2e258a071b422052222d8435dcb8103cbdb15b035159a"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-1280-edges.png",
+      "bytes": 70000,
+      "sha256": "7e5188763d3a831acceba065631283d1106375c0c85737998ff63b163bf2d453"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-1280-error.png",
+      "bytes": 11270,
+      "sha256": "ca90db40c860c14aa4c1b83434f092289887e4fce0cd091b8c2f7277b71a49d7"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-1280-full.png",
+      "bytes": 78944,
+      "sha256": "7d99eea0e80fbb9d786064edda0fd83203fd3943a52ec9b122c433518f925acb"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-1280-heading.png",
+      "bytes": 7943,
+      "sha256": "0e168da377e972b00ad3eff9d8c27f11c2a92e16b4824ec13e49b4467175d14d"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-375-buttons.png",
+      "bytes": 3300,
+      "sha256": "aa97996b28decd8b8710d33e2f5f6aba45778716d72b85dd90358a39defad1f4"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-375-edges.png",
+      "bytes": 61304,
+      "sha256": "1386277396de8933ce92d930ecfcf060b2953cd3639879ba600e125553cd8181"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-375-error.png",
+      "bytes": 9913,
+      "sha256": "0f6d913dd8b4b2d0e787fffcc90a43909ab535935ff56c4e578b641374df2f75"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-375-full.png",
+      "bytes": 63319,
+      "sha256": "ff44b4aeea8a9da1bc54a91a4e58d2fcdc7647e7e84905daec9472befd49f4e3"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-375-heading.png",
+      "bytes": 5128,
+      "sha256": "70e67f00007a6f8dc6f9be31af11d0c7141ef371fdd0aa6c23670cf8c0ec2d29"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-768-buttons.png",
+      "bytes": 3245,
+      "sha256": "aa67217371699ecf1ab46f354a12af92e29ce291d20a757053cccbf30386de42"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-768-edges.png",
+      "bytes": 69250,
+      "sha256": "ef58f40f599eb75a95b3e43543046eaa4ec7d4ee20ad283e4b21a4e201432e05"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-768-error.png",
+      "bytes": 11492,
+      "sha256": "eda30b6c7eafdcfa451b171cb63b41ebfb404e285fd930b6ebb84ca7eb0fceb0"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-768-full.png",
+      "bytes": 74774,
+      "sha256": "1a7f44375b66eb07378f1e1e2ad62bff9c4fe8388ed57f51bee4ea85ecc99bd4"
+    },
+    {
+      "path": "step-2-registration-error-auto-dark-768-heading.png",
+      "bytes": 7521,
+      "sha256": "0fda8fade95180657581baace5391a8c96b962c5c870d6d6c6cf6564ce039384"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-1280-buttons.png",
+      "bytes": 3239,
+      "sha256": "8258d0d3d45c1991dad7bb4b2336a93f69a89678b08d79f59d80d0de5ff1971d"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-1280-edges.png",
+      "bytes": 68825,
+      "sha256": "66b33210c6f4a0a5fa3ba0ea1affd9d7affc229a90e6e6f992e89e94e0901d5a"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-1280-error.png",
+      "bytes": 10833,
+      "sha256": "d6a86e7e060b31ce609025a6fa2724979f1841e831af7ab41dc8a9e917848c2e"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-1280-full.png",
+      "bytes": 80398,
+      "sha256": "02b42ed08f3110953558901cf949655763d41715f79dee7bbf87fc25f46bf776"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-1280-heading.png",
+      "bytes": 7719,
+      "sha256": "013fb88dc863a065a1ff11b85b931402d6bd8489797e1cc499ec1b0e09295686"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-375-buttons.png",
+      "bytes": 3309,
+      "sha256": "6666363800a98aa1bac61b51ade70035272a9b341efda933fef0a4bce6fadd51"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-375-edges.png",
+      "bytes": 60819,
+      "sha256": "b3c63e734347d1b65b8e70e0e47b296af64e6de81a970805feb4cb92a7542ba8"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-375-error.png",
+      "bytes": 9555,
+      "sha256": "1a76ce2105859193957524726b21a7304ec8605eb4ef7709e16cd2d1824b3208"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-375-full.png",
+      "bytes": 64309,
+      "sha256": "6423984d2be13f70a3f399b73526613776c203ad5b035082cc840cec9795f46a"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-375-heading.png",
+      "bytes": 4958,
+      "sha256": "8ba22b69e06324462b9c5942f0ada3083f543f3741fb96cf848c2931b0807aea"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-768-buttons.png",
+      "bytes": 3229,
+      "sha256": "0087465fb51d4c556e63e8bf48438544a3ec27af5255b1e0f39cee91a4d2b853"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-768-edges.png",
+      "bytes": 68255,
+      "sha256": "58e9314cbaeb834b7f3d5c21df32f72ea52fa3aa1993e404dfe2623af79ef545"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-768-error.png",
+      "bytes": 11208,
+      "sha256": "9778fb3478d2acf9a39042b077ad14ba0ee3358af6c9519df4af62a746a4f78a"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-768-full.png",
+      "bytes": 75856,
+      "sha256": "3d9fc9e4417884206c52009540fb7d81b5d4c97e26243826d186ad92dbb9ee4f"
+    },
+    {
+      "path": "step-2-registration-error-auto-light-768-heading.png",
+      "bytes": 7298,
+      "sha256": "16ed342b26005b43f60205051a70fec5ba5b1a7cc952130903156f6caf1997d8"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-1280-buttons.png",
+      "bytes": 3261,
+      "sha256": "daa5406fc7cc2214cdc2e258a071b422052222d8435dcb8103cbdb15b035159a"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-1280-edges.png",
+      "bytes": 70000,
+      "sha256": "7e5188763d3a831acceba065631283d1106375c0c85737998ff63b163bf2d453"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-1280-error.png",
+      "bytes": 11270,
+      "sha256": "ca90db40c860c14aa4c1b83434f092289887e4fce0cd091b8c2f7277b71a49d7"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-1280-full.png",
+      "bytes": 78944,
+      "sha256": "7d99eea0e80fbb9d786064edda0fd83203fd3943a52ec9b122c433518f925acb"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-1280-heading.png",
+      "bytes": 7943,
+      "sha256": "0e168da377e972b00ad3eff9d8c27f11c2a92e16b4824ec13e49b4467175d14d"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-375-buttons.png",
+      "bytes": 3300,
+      "sha256": "aa97996b28decd8b8710d33e2f5f6aba45778716d72b85dd90358a39defad1f4"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-375-edges.png",
+      "bytes": 61304,
+      "sha256": "1386277396de8933ce92d930ecfcf060b2953cd3639879ba600e125553cd8181"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-375-error.png",
+      "bytes": 9913,
+      "sha256": "0f6d913dd8b4b2d0e787fffcc90a43909ab535935ff56c4e578b641374df2f75"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-375-full.png",
+      "bytes": 63319,
+      "sha256": "ff44b4aeea8a9da1bc54a91a4e58d2fcdc7647e7e84905daec9472befd49f4e3"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-375-heading.png",
+      "bytes": 5128,
+      "sha256": "70e67f00007a6f8dc6f9be31af11d0c7141ef371fdd0aa6c23670cf8c0ec2d29"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-768-buttons.png",
+      "bytes": 3245,
+      "sha256": "aa67217371699ecf1ab46f354a12af92e29ce291d20a757053cccbf30386de42"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-768-edges.png",
+      "bytes": 69250,
+      "sha256": "ef58f40f599eb75a95b3e43543046eaa4ec7d4ee20ad283e4b21a4e201432e05"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-768-error.png",
+      "bytes": 11492,
+      "sha256": "eda30b6c7eafdcfa451b171cb63b41ebfb404e285fd930b6ebb84ca7eb0fceb0"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-768-full.png",
+      "bytes": 74774,
+      "sha256": "1a7f44375b66eb07378f1e1e2ad62bff9c4fe8388ed57f51bee4ea85ecc99bd4"
+    },
+    {
+      "path": "step-2-registration-error-dark-light-media-768-heading.png",
+      "bytes": 7521,
+      "sha256": "0fda8fade95180657581baace5391a8c96b962c5c870d6d6c6cf6564ce039384"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-1280-buttons.png",
+      "bytes": 3239,
+      "sha256": "8258d0d3d45c1991dad7bb4b2336a93f69a89678b08d79f59d80d0de5ff1971d"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-1280-edges.png",
+      "bytes": 68825,
+      "sha256": "66b33210c6f4a0a5fa3ba0ea1affd9d7affc229a90e6e6f992e89e94e0901d5a"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-1280-error.png",
+      "bytes": 10833,
+      "sha256": "d6a86e7e060b31ce609025a6fa2724979f1841e831af7ab41dc8a9e917848c2e"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-1280-full.png",
+      "bytes": 80398,
+      "sha256": "02b42ed08f3110953558901cf949655763d41715f79dee7bbf87fc25f46bf776"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-1280-heading.png",
+      "bytes": 7719,
+      "sha256": "013fb88dc863a065a1ff11b85b931402d6bd8489797e1cc499ec1b0e09295686"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-375-buttons.png",
+      "bytes": 3309,
+      "sha256": "6666363800a98aa1bac61b51ade70035272a9b341efda933fef0a4bce6fadd51"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-375-edges.png",
+      "bytes": 60819,
+      "sha256": "b3c63e734347d1b65b8e70e0e47b296af64e6de81a970805feb4cb92a7542ba8"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-375-error.png",
+      "bytes": 9555,
+      "sha256": "1a76ce2105859193957524726b21a7304ec8605eb4ef7709e16cd2d1824b3208"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-375-full.png",
+      "bytes": 64309,
+      "sha256": "6423984d2be13f70a3f399b73526613776c203ad5b035082cc840cec9795f46a"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-375-heading.png",
+      "bytes": 4958,
+      "sha256": "8ba22b69e06324462b9c5942f0ada3083f543f3741fb96cf848c2931b0807aea"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-768-buttons.png",
+      "bytes": 3229,
+      "sha256": "0087465fb51d4c556e63e8bf48438544a3ec27af5255b1e0f39cee91a4d2b853"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-768-edges.png",
+      "bytes": 68255,
+      "sha256": "58e9314cbaeb834b7f3d5c21df32f72ea52fa3aa1993e404dfe2623af79ef545"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-768-error.png",
+      "bytes": 11208,
+      "sha256": "9778fb3478d2acf9a39042b077ad14ba0ee3358af6c9519df4af62a746a4f78a"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-768-full.png",
+      "bytes": 75856,
+      "sha256": "3d9fc9e4417884206c52009540fb7d81b5d4c97e26243826d186ad92dbb9ee4f"
+    },
+    {
+      "path": "step-2-registration-error-light-dark-media-768-heading.png",
+      "bytes": 7298,
+      "sha256": "16ed342b26005b43f60205051a70fec5ba5b1a7cc952130903156f6caf1997d8"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-dark-1280-buttons.png",
+      "bytes": 4278,
+      "sha256": "917b13aeeea63d1e58df5b2b7c15c5ae8280f3c4d4214c1447b80e25aed2fd57"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-dark-1280-edges.png",
+      "bytes": 63197,
+      "sha256": "7c61b85a9d4ed9bee5f7641918c0033e9171cbfcf10f132f627c564daf208fac"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-dark-1280-full.png",
+      "bytes": 70752,
+      "sha256": "4296a561cf3f5e362a89d53e451c759235889688e21f9cb1cd5eca5d459468df"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-dark-1280-heading.png",
+      "bytes": 12170,
+      "sha256": "e2a8c62f224e3e1c5265d9a780983d0382ad7db392caea84cc9f7b186c6de14e"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-dark-1280-switch.png",
+      "bytes": 10434,
+      "sha256": "b3eb6957dfcc47fe265ff1661107682ab54e83fecc1a8247a103cf0c974b4b85"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-dark-375-buttons.png",
+      "bytes": 4328,
+      "sha256": "0412f34afb4316f2535fb8f78c1c903e570c428ea64d95e179d823cf473080b7"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-dark-375-edges.png",
+      "bytes": 58448,
+      "sha256": "ebf2497da9776a3ddbe7432e37facab505c634d7c9e09b968f133499a92a5da5"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-dark-375-full.png",
+      "bytes": 59755,
+      "sha256": "ee1cac475027cfc381f24ed8b7b6379192a196bd691f1bfe66a929fbc18b34c6"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-dark-375-heading.png",
+      "bytes": 7780,
+      "sha256": "928cbce9a31618d38732c36bc1c1c15f522e21322238a8b8759df822d7c35976"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-dark-375-switch.png",
+      "bytes": 10690,
+      "sha256": "af63fc06bdf0a1cfe64edb48b0a4f4c38af680008c6434ad499a91a7499ae101"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-dark-768-buttons.png",
+      "bytes": 4288,
+      "sha256": "c82a19dfd8c89fbad2ed57fb7aa8c4b68891c8795d6970c8d23d872c876e2085"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-dark-768-edges.png",
+      "bytes": 64098,
+      "sha256": "d8325c195efc8c8f8b62659392af7020ce0d582238cc230a51f99c6d92b7f93e"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-dark-768-full.png",
+      "bytes": 68596,
+      "sha256": "a3aad3fc2dca2941ad7dd9ddb8ca6ca4858c9d5a42c0675fea285a09d3b548c6"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-dark-768-heading.png",
+      "bytes": 12125,
+      "sha256": "66b0c0c2ce814e93b3495cf6552dc73251ee4ec1bea988a38dcec32bfc07bc0a"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-dark-768-switch.png",
+      "bytes": 10687,
+      "sha256": "22c24e3ac305d53561bc0c419f368d9e28813d5b317aae0bed9c1f9db443f5ca"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-light-1280-buttons.png",
+      "bytes": 4184,
+      "sha256": "88e55b3a4aec627d79afada116116a17e9b37dc5a5fe9e90d0c33b1f1afcaf96"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-light-1280-edges.png",
+      "bytes": 62560,
+      "sha256": "7f298e111994ed110478395414074ad5c64f0d0ae5474e84259a14f855b04a8f"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-light-1280-full.png",
+      "bytes": 72701,
+      "sha256": "f5903c5e076df59dbfa16b3b86fee960795f844d61100e7b4d673767501a81c1"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-light-1280-heading.png",
+      "bytes": 11880,
+      "sha256": "adbf1d4e21e61a6fa779d0b7b029cd8eec89b4d19ec86aa1627bc141a1faf3fc"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-light-1280-switch.png",
+      "bytes": 10471,
+      "sha256": "f81a9e521a01a8ab295691d7b02d1d73ec32936cf8c88ae3301d6a6c3e7eaa34"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-light-375-buttons.png",
+      "bytes": 4251,
+      "sha256": "a278fdaf3353d8983f6047ea554049356ec57cd28ea42f02d192d09f037d9aad"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-light-375-edges.png",
+      "bytes": 57598,
+      "sha256": "2c8e557f84171e6e9b9f69fd810965a2f824fc8c12ff298320c12db9bcfef079"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-light-375-full.png",
+      "bytes": 59615,
+      "sha256": "5ae907cfb6fbb698b5d81058b9cc183ccdd6ece33d0a705df3d681afd9af8d5c"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-light-375-heading.png",
+      "bytes": 7624,
+      "sha256": "33bffd349699d649c300f524a04b27aa5c3cec658f689eaf87a459452ded34bd"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-light-375-switch.png",
+      "bytes": 10741,
+      "sha256": "73c306b1caaf47cc33a065ef3bcbb14b3da84d28bc1f01eb7f5f2f4a58147d0c"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-light-768-buttons.png",
+      "bytes": 4253,
+      "sha256": "9da92d9e61020f6730e2ae1d5557ebdfb724f55c42752784fcbc9efb337f7633"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-light-768-edges.png",
+      "bytes": 63434,
+      "sha256": "1e5d29bdfebdf1256be6bb1cad471989eb84ec5645daed3e89246587f4c3c611"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-light-768-full.png",
+      "bytes": 70014,
+      "sha256": "bc84b5402fdfab3e23f5545556220e5ea2da59626c2f248cf977fc491edc74ba"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-light-768-heading.png",
+      "bytes": 11685,
+      "sha256": "2701db94ba7928ebb28f7aabb522eb4299cbd9b865407287574e39326fcb4f34"
+    },
+    {
+      "path": "step-3-not-now-sync-on-auto-light-768-switch.png",
+      "bytes": 10691,
+      "sha256": "2383cf0ec7c4af552586a734075b73603a0b0b3e209f68e5ef45bf15c2e1105a"
+    },
+    {
+      "path": "step-3-not-now-sync-on-dark-light-media-1280-buttons.png",
+      "bytes": 4278,
+      "sha256": "917b13aeeea63d1e58df5b2b7c15c5ae8280f3c4d4214c1447b80e25aed2fd57"
+    },
+    {
+      "path": "step-3-not-now-sync-on-dark-light-media-1280-edges.png",
+      "bytes": 63197,
+      "sha256": "7c61b85a9d4ed9bee5f7641918c0033e9171cbfcf10f132f627c564daf208fac"
+    },
+    {
+      "path": "step-3-not-now-sync-on-dark-light-media-1280-full.png",
+      "bytes": 70752,
+      "sha256": "4296a561cf3f5e362a89d53e451c759235889688e21f9cb1cd5eca5d459468df"
+    },
+    {
+      "path": "step-3-not-now-sync-on-dark-light-media-1280-heading.png",
+      "bytes": 12170,
+      "sha256": "e2a8c62f224e3e1c5265d9a780983d0382ad7db392caea84cc9f7b186c6de14e"
+    },
+    {
+      "path": "step-3-not-now-sync-on-dark-light-media-1280-switch.png",
+      "bytes": 10434,
+      "sha256": "b3eb6957dfcc47fe265ff1661107682ab54e83fecc1a8247a103cf0c974b4b85"
+    },
+    {
+      "path": "step-3-not-now-sync-on-dark-light-media-375-buttons.png",
+      "bytes": 4328,
+      "sha256": "0412f34afb4316f2535fb8f78c1c903e570c428ea64d95e179d823cf473080b7"
+    },
+    {
+      "path": "step-3-not-now-sync-on-dark-light-media-375-edges.png",
+      "bytes": 58448,
+      "sha256": "ebf2497da9776a3ddbe7432e37facab505c634d7c9e09b968f133499a92a5da5"
+    },
+    {
+      "path": "step-3-not-now-sync-on-dark-light-media-375-full.png",
+      "bytes": 59755,
+      "sha256": "ee1cac475027cfc381f24ed8b7b6379192a196bd691f1bfe66a929fbc18b34c6"
+    },
+    {
+      "path": "step-3-not-now-sync-on-dark-light-media-375-heading.png",
+      "bytes": 7780,
+      "sha256": "928cbce9a31618d38732c36bc1c1c15f522e21322238a8b8759df822d7c35976"
+    },
+    {
+      "path": "step-3-not-now-sync-on-dark-light-media-375-switch.png",
+      "bytes": 10690,
+      "sha256": "af63fc06bdf0a1cfe64edb48b0a4f4c38af680008c6434ad499a91a7499ae101"
+    },
+    {
+      "path": "step-3-not-now-sync-on-dark-light-media-768-buttons.png",
+      "bytes": 4288,
+      "sha256": "c82a19dfd8c89fbad2ed57fb7aa8c4b68891c8795d6970c8d23d872c876e2085"
+    },
+    {
+      "path": "step-3-not-now-sync-on-dark-light-media-768-edges.png",
+      "bytes": 64098,
+      "sha256": "d8325c195efc8c8f8b62659392af7020ce0d582238cc230a51f99c6d92b7f93e"
+    },
+    {
+      "path": "step-3-not-now-sync-on-dark-light-media-768-full.png",
+      "bytes": 68596,
+      "sha256": "a3aad3fc2dca2941ad7dd9ddb8ca6ca4858c9d5a42c0675fea285a09d3b548c6"
+    },
+    {
+      "path": "step-3-not-now-sync-on-dark-light-media-768-heading.png",
+      "bytes": 12125,
+      "sha256": "66b0c0c2ce814e93b3495cf6552dc73251ee4ec1bea988a38dcec32bfc07bc0a"
+    },
+    {
+      "path": "step-3-not-now-sync-on-dark-light-media-768-switch.png",
+      "bytes": 10687,
+      "sha256": "22c24e3ac305d53561bc0c419f368d9e28813d5b317aae0bed9c1f9db443f5ca"
+    },
+    {
+      "path": "step-3-not-now-sync-on-light-dark-media-1280-buttons.png",
+      "bytes": 4184,
+      "sha256": "88e55b3a4aec627d79afada116116a17e9b37dc5a5fe9e90d0c33b1f1afcaf96"
+    },
+    {
+      "path": "step-3-not-now-sync-on-light-dark-media-1280-edges.png",
+      "bytes": 62560,
+      "sha256": "7f298e111994ed110478395414074ad5c64f0d0ae5474e84259a14f855b04a8f"
+    },
+    {
+      "path": "step-3-not-now-sync-on-light-dark-media-1280-full.png",
+      "bytes": 72701,
+      "sha256": "f5903c5e076df59dbfa16b3b86fee960795f844d61100e7b4d673767501a81c1"
+    },
+    {
+      "path": "step-3-not-now-sync-on-light-dark-media-1280-heading.png",
+      "bytes": 11880,
+      "sha256": "adbf1d4e21e61a6fa779d0b7b029cd8eec89b4d19ec86aa1627bc141a1faf3fc"
+    },
+    {
+      "path": "step-3-not-now-sync-on-light-dark-media-1280-switch.png",
+      "bytes": 10471,
+      "sha256": "f81a9e521a01a8ab295691d7b02d1d73ec32936cf8c88ae3301d6a6c3e7eaa34"
+    },
+    {
+      "path": "step-3-not-now-sync-on-light-dark-media-375-buttons.png",
+      "bytes": 4251,
+      "sha256": "a278fdaf3353d8983f6047ea554049356ec57cd28ea42f02d192d09f037d9aad"
+    },
+    {
+      "path": "step-3-not-now-sync-on-light-dark-media-375-edges.png",
+      "bytes": 57598,
+      "sha256": "2c8e557f84171e6e9b9f69fd810965a2f824fc8c12ff298320c12db9bcfef079"
+    },
+    {
+      "path": "step-3-not-now-sync-on-light-dark-media-375-full.png",
+      "bytes": 59615,
+      "sha256": "5ae907cfb6fbb698b5d81058b9cc183ccdd6ece33d0a705df3d681afd9af8d5c"
+    },
+    {
+      "path": "step-3-not-now-sync-on-light-dark-media-375-heading.png",
+      "bytes": 7624,
+      "sha256": "33bffd349699d649c300f524a04b27aa5c3cec658f689eaf87a459452ded34bd"
+    },
+    {
+      "path": "step-3-not-now-sync-on-light-dark-media-375-switch.png",
+      "bytes": 10741,
+      "sha256": "73c306b1caaf47cc33a065ef3bcbb14b3da84d28bc1f01eb7f5f2f4a58147d0c"
+    },
+    {
+      "path": "step-3-not-now-sync-on-light-dark-media-768-buttons.png",
+      "bytes": 4253,
+      "sha256": "9da92d9e61020f6730e2ae1d5557ebdfb724f55c42752784fcbc9efb337f7633"
+    },
+    {
+      "path": "step-3-not-now-sync-on-light-dark-media-768-edges.png",
+      "bytes": 63434,
+      "sha256": "1e5d29bdfebdf1256be6bb1cad471989eb84ec5645daed3e89246587f4c3c611"
+    },
+    {
+      "path": "step-3-not-now-sync-on-light-dark-media-768-full.png",
+      "bytes": 70014,
+      "sha256": "bc84b5402fdfab3e23f5545556220e5ea2da59626c2f248cf977fc491edc74ba"
+    },
+    {
+      "path": "step-3-not-now-sync-on-light-dark-media-768-heading.png",
+      "bytes": 11685,
+      "sha256": "2701db94ba7928ebb28f7aabb522eb4299cbd9b865407287574e39326fcb4f34"
+    },
+    {
+      "path": "step-3-not-now-sync-on-light-dark-media-768-switch.png",
+      "bytes": 10691,
+      "sha256": "2383cf0ec7c4af552586a734075b73603a0b0b3e209f68e5ef45bf15c2e1105a"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-1280-buttons.png",
+      "bytes": 3993,
+      "sha256": "d86e5dcbb3139ca458b258a82da29bdf4d5e73fab970be230bb96562bde4753a"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-1280-edges.png",
+      "bytes": 62901,
+      "sha256": "9c9c744a02962a454dae0508b1cea3c9089020238762573fde5600893e0a6ae9"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-1280-full.png",
+      "bytes": 70510,
+      "sha256": "ef42e2dcff161821115ba9a2f9c50afa49da3b82a33a6f2fcc8623a2a4603300"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-1280-heading.png",
+      "bytes": 12170,
+      "sha256": "e2a8c62f224e3e1c5265d9a780983d0382ad7db392caea84cc9f7b186c6de14e"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-1280-switch.png",
+      "bytes": 10377,
+      "sha256": "d0669d197b077c3cdbd0b03abf0230ababa2d8b0a591f86b8e277ba5a38e7551"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-375-buttons.png",
+      "bytes": 4074,
+      "sha256": "81edc481e729f1f0b00f8c3c2f3f51b695639198d863cbb540a104ff50fa1ebe"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-375-edges.png",
+      "bytes": 58164,
+      "sha256": "dc9793fdfb7a04f339efb031485dd208a001141e59786c78c38a2da17bb00e40"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-375-full.png",
+      "bytes": 59469,
+      "sha256": "ab129b0b0064a79d419ef9b7d08f7ff41f2b1b723be1c6e20524d4e12cfd3334"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-375-heading.png",
+      "bytes": 7780,
+      "sha256": "928cbce9a31618d38732c36bc1c1c15f522e21322238a8b8759df822d7c35976"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-375-switch.png",
+      "bytes": 10638,
+      "sha256": "52b1d1d2cc37bd715a460b98535eafed1a553c0814f1e96f554b064f233cc2ee"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-768-buttons.png",
+      "bytes": 4043,
+      "sha256": "757cc452d6c43245005cd810e2120328588ae74762e938b7c00e82d0546f7fca"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-768-edges.png",
+      "bytes": 63877,
+      "sha256": "81c03f6ec20e97a85fce09bdd04d1e6664de4788a88d665fb2fdcf0808137689"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-768-full.png",
+      "bytes": 68384,
+      "sha256": "795b82c895605e42a0397a63bad9444f5add2a3ead5bd0301291f6172b95bd8f"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-768-heading.png",
+      "bytes": 12125,
+      "sha256": "66b0c0c2ce814e93b3495cf6552dc73251ee4ec1bea988a38dcec32bfc07bc0a"
+    },
+    {
+      "path": "step-3-pending-completion-auto-dark-768-switch.png",
+      "bytes": 10630,
+      "sha256": "f27c39c8d611070a564b1ae5ae4d6b03dca5a1b0a12cc966c5109a76b392188d"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-1280-buttons.png",
+      "bytes": 4243,
+      "sha256": "2fd8778c6546614d9016b94298cc760684c45c6c612d2ab9345ce6f2c02ab17b"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-1280-edges.png",
+      "bytes": 62468,
+      "sha256": "372f1899f61125f5d215f3f89f3a4c1ed21223ce0b797478d42478d55949e369"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-1280-full.png",
+      "bytes": 72578,
+      "sha256": "78ead756298013c2aa365551f59b98a937d9e0c53cec3c6e128e9aedae1b16bf"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-1280-heading.png",
+      "bytes": 11880,
+      "sha256": "adbf1d4e21e61a6fa779d0b7b029cd8eec89b4d19ec86aa1627bc141a1faf3fc"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-1280-switch.png",
+      "bytes": 10422,
+      "sha256": "5931d4cf6c701b510e761e8d10ad9227df4d204128cae465377c3b05940b887f"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-375-buttons.png",
+      "bytes": 4337,
+      "sha256": "5f9cf282f4bd1c65aa87075efd54c8bb7fa90eed800bbece33ab2751b05660bf"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-375-edges.png",
+      "bytes": 57537,
+      "sha256": "983b2554e388778a8e763077869a6b19958d76a3cc0c9a8aca71dc92008e114b"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-375-full.png",
+      "bytes": 59575,
+      "sha256": "050d9ad1fd6ac0ef39349499478a1f53392dcb3cd0a63fa03f5ecdbe60d03ff3"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-375-heading.png",
+      "bytes": 7624,
+      "sha256": "33bffd349699d649c300f524a04b27aa5c3cec658f689eaf87a459452ded34bd"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-375-switch.png",
+      "bytes": 10685,
+      "sha256": "ddb1f563ea4767577231f5e4fbb6e7d456beb9a1f8afb7f941bdce38ccaf7989"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-768-buttons.png",
+      "bytes": 4298,
+      "sha256": "8f7e2e697f7c07e10ae45b01f26d493447384ee5eade1aea2f548bef7f95c935"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-768-edges.png",
+      "bytes": 63363,
+      "sha256": "5af3669a9805f7e495c1a1fb46d145e7c30f36b24008aaedcf6de339115f93e0"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-768-full.png",
+      "bytes": 69879,
+      "sha256": "572f888096cbb75cfeb942115da161065c47fe46edab3804ec2e8747b2a7e48b"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-768-heading.png",
+      "bytes": 11685,
+      "sha256": "2701db94ba7928ebb28f7aabb522eb4299cbd9b865407287574e39326fcb4f34"
+    },
+    {
+      "path": "step-3-pending-completion-auto-light-768-switch.png",
+      "bytes": 10639,
+      "sha256": "978d695d88b5d11680ef49a5476160501c163699d1db016c5a993e90a9d9ab96"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-1280-buttons.png",
+      "bytes": 3993,
+      "sha256": "d86e5dcbb3139ca458b258a82da29bdf4d5e73fab970be230bb96562bde4753a"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-1280-edges.png",
+      "bytes": 62901,
+      "sha256": "9c9c744a02962a454dae0508b1cea3c9089020238762573fde5600893e0a6ae9"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-1280-full.png",
+      "bytes": 70510,
+      "sha256": "ef42e2dcff161821115ba9a2f9c50afa49da3b82a33a6f2fcc8623a2a4603300"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-1280-heading.png",
+      "bytes": 12170,
+      "sha256": "e2a8c62f224e3e1c5265d9a780983d0382ad7db392caea84cc9f7b186c6de14e"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-1280-switch.png",
+      "bytes": 10377,
+      "sha256": "d0669d197b077c3cdbd0b03abf0230ababa2d8b0a591f86b8e277ba5a38e7551"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-375-buttons.png",
+      "bytes": 4074,
+      "sha256": "81edc481e729f1f0b00f8c3c2f3f51b695639198d863cbb540a104ff50fa1ebe"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-375-edges.png",
+      "bytes": 58164,
+      "sha256": "dc9793fdfb7a04f339efb031485dd208a001141e59786c78c38a2da17bb00e40"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-375-full.png",
+      "bytes": 59469,
+      "sha256": "ab129b0b0064a79d419ef9b7d08f7ff41f2b1b723be1c6e20524d4e12cfd3334"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-375-heading.png",
+      "bytes": 7780,
+      "sha256": "928cbce9a31618d38732c36bc1c1c15f522e21322238a8b8759df822d7c35976"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-375-switch.png",
+      "bytes": 10638,
+      "sha256": "52b1d1d2cc37bd715a460b98535eafed1a553c0814f1e96f554b064f233cc2ee"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-768-buttons.png",
+      "bytes": 4043,
+      "sha256": "757cc452d6c43245005cd810e2120328588ae74762e938b7c00e82d0546f7fca"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-768-edges.png",
+      "bytes": 63877,
+      "sha256": "81c03f6ec20e97a85fce09bdd04d1e6664de4788a88d665fb2fdcf0808137689"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-768-full.png",
+      "bytes": 68384,
+      "sha256": "795b82c895605e42a0397a63bad9444f5add2a3ead5bd0301291f6172b95bd8f"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-768-heading.png",
+      "bytes": 12125,
+      "sha256": "66b0c0c2ce814e93b3495cf6552dc73251ee4ec1bea988a38dcec32bfc07bc0a"
+    },
+    {
+      "path": "step-3-pending-completion-dark-light-media-768-switch.png",
+      "bytes": 10630,
+      "sha256": "f27c39c8d611070a564b1ae5ae4d6b03dca5a1b0a12cc966c5109a76b392188d"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-1280-buttons.png",
+      "bytes": 4243,
+      "sha256": "2fd8778c6546614d9016b94298cc760684c45c6c612d2ab9345ce6f2c02ab17b"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-1280-edges.png",
+      "bytes": 62468,
+      "sha256": "372f1899f61125f5d215f3f89f3a4c1ed21223ce0b797478d42478d55949e369"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-1280-full.png",
+      "bytes": 72578,
+      "sha256": "78ead756298013c2aa365551f59b98a937d9e0c53cec3c6e128e9aedae1b16bf"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-1280-heading.png",
+      "bytes": 11880,
+      "sha256": "adbf1d4e21e61a6fa779d0b7b029cd8eec89b4d19ec86aa1627bc141a1faf3fc"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-1280-switch.png",
+      "bytes": 10422,
+      "sha256": "5931d4cf6c701b510e761e8d10ad9227df4d204128cae465377c3b05940b887f"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-375-buttons.png",
+      "bytes": 4337,
+      "sha256": "5f9cf282f4bd1c65aa87075efd54c8bb7fa90eed800bbece33ab2751b05660bf"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-375-edges.png",
+      "bytes": 57537,
+      "sha256": "983b2554e388778a8e763077869a6b19958d76a3cc0c9a8aca71dc92008e114b"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-375-full.png",
+      "bytes": 59575,
+      "sha256": "050d9ad1fd6ac0ef39349499478a1f53392dcb3cd0a63fa03f5ecdbe60d03ff3"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-375-heading.png",
+      "bytes": 7624,
+      "sha256": "33bffd349699d649c300f524a04b27aa5c3cec658f689eaf87a459452ded34bd"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-375-switch.png",
+      "bytes": 10685,
+      "sha256": "ddb1f563ea4767577231f5e4fbb6e7d456beb9a1f8afb7f941bdce38ccaf7989"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-768-buttons.png",
+      "bytes": 4298,
+      "sha256": "8f7e2e697f7c07e10ae45b01f26d493447384ee5eade1aea2f548bef7f95c935"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-768-edges.png",
+      "bytes": 63363,
+      "sha256": "5af3669a9805f7e495c1a1fb46d145e7c30f36b24008aaedcf6de339115f93e0"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-768-full.png",
+      "bytes": 69879,
+      "sha256": "572f888096cbb75cfeb942115da161065c47fe46edab3804ec2e8747b2a7e48b"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-768-heading.png",
+      "bytes": 11685,
+      "sha256": "2701db94ba7928ebb28f7aabb522eb4299cbd9b865407287574e39326fcb4f34"
+    },
+    {
+      "path": "step-3-pending-completion-light-dark-media-768-switch.png",
+      "bytes": 10639,
+      "sha256": "978d695d88b5d11680ef49a5476160501c163699d1db016c5a993e90a9d9ab96"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-1280-buttons.png",
+      "bytes": 3735,
+      "sha256": "d7c26e8dd53d551671a13dc8c8f0eedf3cb09281c4fc9e1cc6c8c4107cc2c0aa"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-1280-edges.png",
+      "bytes": 61064,
+      "sha256": "e73199327c5d541b3958682e665d24017f48bd20944a066a86c0d635d5ba8dc9"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-1280-full.png",
+      "bytes": 68444,
+      "sha256": "c42fd9e87da22a4084320c507b7800a60e45711446cd2f60867da11b641df6a9"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-1280-heading.png",
+      "bytes": 12170,
+      "sha256": "e2a8c62f224e3e1c5265d9a780983d0382ad7db392caea84cc9f7b186c6de14e"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-1280-switch.png",
+      "bytes": 8846,
+      "sha256": "535b2ef8296ff6a1ab858367a255f941713cfcd0890388d8275cf1df5b04c809"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-375-buttons.png",
+      "bytes": 3794,
+      "sha256": "a5878c36fcac9f2e0ce8227fb7ee21eaca6adf0356fdb31eecce89d4d445ac04"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-375-edges.png",
+      "bytes": 55953,
+      "sha256": "ff2f973bf71b8b03f26b2f2dfe239d1a24c3200ec88a4f3e3bc465075f78ba7e"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-375-full.png",
+      "bytes": 57240,
+      "sha256": "ab3303d4b59243824a22df56c1ddab20d2bbfb910249a3a13a16a1eca25d1fce"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-375-heading.png",
+      "bytes": 7780,
+      "sha256": "928cbce9a31618d38732c36bc1c1c15f522e21322238a8b8759df822d7c35976"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-375-switch.png",
+      "bytes": 8717,
+      "sha256": "fbfa402e8a60862db441a1b88b650ff44838b60ca9c0ba574431843419921379"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-768-buttons.png",
+      "bytes": 3512,
+      "sha256": "e3afafa98a2a51eb50426ca1f94077591ed4a34f27c73de352a10ee57af3de19"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-768-edges.png",
+      "bytes": 62046,
+      "sha256": "c558d18f96805d736893b1adbc310bd138370cfba9dd3d69b69b8d6913e902a0"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-768-full.png",
+      "bytes": 66508,
+      "sha256": "7055830fbd608c3a8ee842d070cc0c85c7bceff35b02f7b3760fdebdd808bae0"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-768-heading.png",
+      "bytes": 12125,
+      "sha256": "66b0c0c2ce814e93b3495cf6552dc73251ee4ec1bea988a38dcec32bfc07bc0a"
+    },
+    {
+      "path": "step-3-sync-off-auto-dark-768-switch.png",
+      "bytes": 9475,
+      "sha256": "bff8f3994d225f3b7f7b3b04bf053c2dab24390850619898250ac59bea3dd228"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-1280-buttons.png",
+      "bytes": 3677,
+      "sha256": "75f5fc2d3175878739bd00920bf634c9b60e140307ae8a545fbc406b5770e827"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-1280-edges.png",
+      "bytes": 60322,
+      "sha256": "54208671ec4a6866c69932f202a7fe315693ce44e7774515095db34da1a378a6"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-1280-full.png",
+      "bytes": 70255,
+      "sha256": "a6b6b20a96a7b63ab18cefa4683d6ff8e9589d4f4ce1ddce38e14695da41c6b2"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-1280-heading.png",
+      "bytes": 11880,
+      "sha256": "adbf1d4e21e61a6fa779d0b7b029cd8eec89b4d19ec86aa1627bc141a1faf3fc"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-1280-switch.png",
+      "bytes": 8894,
+      "sha256": "a3f51fd567e5d201cd4600ee68cc96dca95f889202f71031286ddd1a8d2a062e"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-375-buttons.png",
+      "bytes": 3722,
+      "sha256": "f87155dc28797537c3143032b01aa778fb817e2c790e59b182c7cc02d83e71ca"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-375-edges.png",
+      "bytes": 55044,
+      "sha256": "d9a1540da80f1ba6af174a9650777df7f7d19ea8455508dfe6ba5ed5083f8a82"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-375-full.png",
+      "bytes": 57053,
+      "sha256": "5e5aec841042f3625f36621d2ec3918b975700aa9a80703466bc16db743ba685"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-375-heading.png",
+      "bytes": 7624,
+      "sha256": "33bffd349699d649c300f524a04b27aa5c3cec658f689eaf87a459452ded34bd"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-375-switch.png",
+      "bytes": 8816,
+      "sha256": "57e982b7e49b959d8ad42e5db0b1b41878447c5e13be7f2a40fada3bd8749631"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-768-buttons.png",
+      "bytes": 3487,
+      "sha256": "d3514709aad7432900e74c8614765c91823c271b013bd282b3b05f86e01abd3a"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-768-edges.png",
+      "bytes": 61345,
+      "sha256": "58d48ac3688931834bb862df9ba862efbe33a41b410141583f2f31ba587d9746"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-768-full.png",
+      "bytes": 67908,
+      "sha256": "9afa0c77817de58284f9979d25052b8c1e2913333f366c34f579b11a076b2626"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-768-heading.png",
+      "bytes": 11685,
+      "sha256": "2701db94ba7928ebb28f7aabb522eb4299cbd9b865407287574e39326fcb4f34"
+    },
+    {
+      "path": "step-3-sync-off-auto-light-768-switch.png",
+      "bytes": 9402,
+      "sha256": "4ae35feeb212b609305d36f2243e03108e6b7207b3e5638c78441c46975b5c96"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-1280-buttons.png",
+      "bytes": 3735,
+      "sha256": "d7c26e8dd53d551671a13dc8c8f0eedf3cb09281c4fc9e1cc6c8c4107cc2c0aa"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-1280-edges.png",
+      "bytes": 61064,
+      "sha256": "e73199327c5d541b3958682e665d24017f48bd20944a066a86c0d635d5ba8dc9"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-1280-full.png",
+      "bytes": 68444,
+      "sha256": "c42fd9e87da22a4084320c507b7800a60e45711446cd2f60867da11b641df6a9"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-1280-heading.png",
+      "bytes": 12170,
+      "sha256": "e2a8c62f224e3e1c5265d9a780983d0382ad7db392caea84cc9f7b186c6de14e"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-1280-switch.png",
+      "bytes": 8846,
+      "sha256": "535b2ef8296ff6a1ab858367a255f941713cfcd0890388d8275cf1df5b04c809"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-375-buttons.png",
+      "bytes": 3794,
+      "sha256": "a5878c36fcac9f2e0ce8227fb7ee21eaca6adf0356fdb31eecce89d4d445ac04"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-375-edges.png",
+      "bytes": 55953,
+      "sha256": "ff2f973bf71b8b03f26b2f2dfe239d1a24c3200ec88a4f3e3bc465075f78ba7e"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-375-full.png",
+      "bytes": 57240,
+      "sha256": "ab3303d4b59243824a22df56c1ddab20d2bbfb910249a3a13a16a1eca25d1fce"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-375-heading.png",
+      "bytes": 7780,
+      "sha256": "928cbce9a31618d38732c36bc1c1c15f522e21322238a8b8759df822d7c35976"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-375-switch.png",
+      "bytes": 8717,
+      "sha256": "fbfa402e8a60862db441a1b88b650ff44838b60ca9c0ba574431843419921379"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-768-buttons.png",
+      "bytes": 3512,
+      "sha256": "e3afafa98a2a51eb50426ca1f94077591ed4a34f27c73de352a10ee57af3de19"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-768-edges.png",
+      "bytes": 62046,
+      "sha256": "c558d18f96805d736893b1adbc310bd138370cfba9dd3d69b69b8d6913e902a0"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-768-full.png",
+      "bytes": 66508,
+      "sha256": "7055830fbd608c3a8ee842d070cc0c85c7bceff35b02f7b3760fdebdd808bae0"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-768-heading.png",
+      "bytes": 12125,
+      "sha256": "66b0c0c2ce814e93b3495cf6552dc73251ee4ec1bea988a38dcec32bfc07bc0a"
+    },
+    {
+      "path": "step-3-sync-off-dark-light-media-768-switch.png",
+      "bytes": 9475,
+      "sha256": "bff8f3994d225f3b7f7b3b04bf053c2dab24390850619898250ac59bea3dd228"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-1280-buttons.png",
+      "bytes": 3677,
+      "sha256": "75f5fc2d3175878739bd00920bf634c9b60e140307ae8a545fbc406b5770e827"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-1280-edges.png",
+      "bytes": 60322,
+      "sha256": "54208671ec4a6866c69932f202a7fe315693ce44e7774515095db34da1a378a6"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-1280-full.png",
+      "bytes": 70255,
+      "sha256": "a6b6b20a96a7b63ab18cefa4683d6ff8e9589d4f4ce1ddce38e14695da41c6b2"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-1280-heading.png",
+      "bytes": 11880,
+      "sha256": "adbf1d4e21e61a6fa779d0b7b029cd8eec89b4d19ec86aa1627bc141a1faf3fc"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-1280-switch.png",
+      "bytes": 8894,
+      "sha256": "a3f51fd567e5d201cd4600ee68cc96dca95f889202f71031286ddd1a8d2a062e"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-375-buttons.png",
+      "bytes": 3722,
+      "sha256": "f87155dc28797537c3143032b01aa778fb817e2c790e59b182c7cc02d83e71ca"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-375-edges.png",
+      "bytes": 55044,
+      "sha256": "d9a1540da80f1ba6af174a9650777df7f7d19ea8455508dfe6ba5ed5083f8a82"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-375-full.png",
+      "bytes": 57053,
+      "sha256": "5e5aec841042f3625f36621d2ec3918b975700aa9a80703466bc16db743ba685"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-375-heading.png",
+      "bytes": 7624,
+      "sha256": "33bffd349699d649c300f524a04b27aa5c3cec658f689eaf87a459452ded34bd"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-375-switch.png",
+      "bytes": 8816,
+      "sha256": "57e982b7e49b959d8ad42e5db0b1b41878447c5e13be7f2a40fada3bd8749631"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-768-buttons.png",
+      "bytes": 3487,
+      "sha256": "d3514709aad7432900e74c8614765c91823c271b013bd282b3b05f86e01abd3a"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-768-edges.png",
+      "bytes": 61345,
+      "sha256": "58d48ac3688931834bb862df9ba862efbe33a41b410141583f2f31ba587d9746"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-768-full.png",
+      "bytes": 67908,
+      "sha256": "9afa0c77817de58284f9979d25052b8c1e2913333f366c34f579b11a076b2626"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-768-heading.png",
+      "bytes": 11685,
+      "sha256": "2701db94ba7928ebb28f7aabb522eb4299cbd9b865407287574e39326fcb4f34"
+    },
+    {
+      "path": "step-3-sync-off-light-dark-media-768-switch.png",
+      "bytes": 9402,
+      "sha256": "4ae35feeb212b609305d36f2243e03108e6b7207b3e5638c78441c46975b5c96"
+    }
+  ]
+}
