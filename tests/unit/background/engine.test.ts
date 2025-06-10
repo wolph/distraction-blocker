@@ -19,6 +19,7 @@ import { beginPause, endPauseEarly, startSession } from '../../../src/core/sessi
 import { emptyDaily } from '../../../src/core/stats';
 import {
   CATEGORY_IDS,
+  cancelPhrase,
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
   GATE_EXPIRY_MS,
@@ -3861,6 +3862,33 @@ describe('Engine', () => {
     h.setNow(T0 + 10_000);
     expect(await h.engine.confirmGate(null)).toEqual({ ok: true });
     expect(h.engine.snapshot().gate).toBeNull();
+  });
+
+  it('keeps a zero-delay cancel gate stable while requiring the exact phrase', async (): Promise<void> => {
+    const h: Harness = makeEngine({
+      settings: { gate: { delayMs: 0, requireTypedPhrase: true } },
+    });
+    await h.engine.startSession(manualConfig);
+    const requiredPhrase: string = cancelPhrase(manualConfig.intention);
+
+    expect(await h.engine.requestSessionEnd()).toEqual({ ok: true });
+    expect(h.engine.snapshot().gate).toMatchObject({
+      kind: 'cancel',
+      openedAt: T0,
+      readyAt: T0,
+      requiredPhrase,
+    });
+    expect(await h.engine.confirmGate(null)).toEqual({
+      ok: false,
+      error: 'that is not the exact phrase',
+    });
+    expect(await h.engine.confirmGate(requiredPhrase)).toEqual({ ok: true });
+    expect(
+      h.loggedEvents().filter((event: EventRecord): boolean => event.t === 'gateOpened'),
+    ).toHaveLength(1);
+    expect(
+      h.loggedEvents().filter((event: EventRecord): boolean => event.t === 'sessionCanceled'),
+    ).toHaveLength(1);
   });
 
   it('rejects ending a Hard session without opening or changing a gate', async () => {

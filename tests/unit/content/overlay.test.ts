@@ -76,6 +76,8 @@ describe('overlay', () => {
     expect(styles).toMatch(
       /@media \(prefers-color-scheme: dark\)[\s\S]*--overlay-subtle: #94a3b8;/,
     );
+    expect(styles).toContain('.backdrop:focus { outline: none; }');
+    expect(styles).not.toContain('--overlay-danger');
   });
 
   it('depends only on shared application modules', () => {
@@ -321,6 +323,52 @@ function frictionCancel(root: ShadowRoot): HTMLButtonElement {
 }
 
 describe('overlay action failures', () => {
+  it('disables every action synchronously and ignores duplicate end requests', async (): Promise<void> => {
+    const response: Deferred<unknown> = deferred<unknown>();
+    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+      async (): Promise<unknown> => response.promise,
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    showOverlay(verdict, focusSnap());
+    const root: ShadowRoot = shadowRoot();
+    const cancel: HTMLButtonElement = frictionCancel(root);
+
+    cancel.click();
+    cancel.click();
+
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'requestSessionEnd' });
+    expect(
+      Array.from(root.querySelectorAll<HTMLButtonElement>('button')).every(
+        (button: HTMLButtonElement): boolean => button.disabled,
+      ),
+    ).toBe(true);
+
+    response.resolve({ ok: false, error: 'still running' });
+    await vi.waitFor((): void => expect(cancel.disabled).toBe(false));
+  });
+
+  it('keeps the action lock across an unrelated block-state render', async (): Promise<void> => {
+    const response: Deferred<unknown> = deferred<unknown>();
+    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+      async (): Promise<unknown> => response.promise,
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const snapshot: SessionSnapshot = focusSnap();
+    showOverlay(verdict, snapshot);
+    frictionCancel(shadowRoot()).click();
+
+    showOverlay(verdict, { ...snapshot, attemptsToday: snapshot.attemptsToday + 1 });
+    const rerenderedCancel: HTMLButtonElement = frictionCancel(shadowRoot());
+
+    expect(rerenderedCancel.disabled).toBe(true);
+    rerenderedCancel.click();
+    expect(sendMessage).toHaveBeenCalledOnce();
+
+    response.resolve({ ok: false, error: 'still running' });
+    await vi.waitFor((): void => expect(rerenderedCancel.disabled).toBe(false));
+  });
+
   it('keeps an exact worker rejection across a later block-state render', async () => {
     const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
       async (): Promise<unknown> => ({ ok: false, error: 'Gate timing changed.' }),
@@ -409,11 +457,10 @@ describe('overlay action failures', () => {
     expect(root.activeElement).toBe(phrase);
   });
 
-  it('clears stale errors and ignores superseded and unmounted action responses', async () => {
+  it('clears stale errors and ignores unmounted action responses', async () => {
     const first: Deferred<unknown> = deferred<unknown>();
     const second: Deferred<unknown> = deferred<unknown>();
-    const third: Deferred<unknown> = deferred<unknown>();
-    const replies: Promise<unknown>[] = [first.promise, second.promise, third.promise];
+    const replies: Promise<unknown>[] = [first.promise, second.promise];
     const sendMessage: Mock<() => Promise<unknown>> = vi.fn(
       async (): Promise<unknown> => replies.shift() as Promise<unknown>,
     );
@@ -423,11 +470,7 @@ describe('overlay action failures', () => {
     const cancel: HTMLButtonElement = frictionCancel(firstRoot);
 
     cancel.click();
-    cancel.click();
-    first.resolve({ ok: false, error: 'stale first failure' });
-    await Promise.resolve();
-    expect(firstRoot.querySelector('.action-error')).toBeNull();
-    second.resolve({ ok: false, error: 'current failure' });
+    first.resolve({ ok: false, error: 'current failure' });
     await vi.waitFor((): void => {
       expect(firstRoot.querySelector('.action-error')?.textContent).toBe('current failure');
     });
@@ -437,7 +480,7 @@ describe('overlay action failures', () => {
     hideOverlay(focusSnap());
     showOverlay(verdict, focusSnap());
     const secondRoot: ShadowRoot = shadowRoot();
-    third.resolve({ ok: false, error: 'unmounted failure' });
+    second.resolve({ ok: false, error: 'unmounted failure' });
     await Promise.resolve();
     expect(secondRoot.querySelector('.action-error')).toBeNull();
   });

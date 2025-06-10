@@ -10,6 +10,7 @@ import {
   TOP_SITES_DAILY,
 } from '../shared/constants';
 import { isRelativeMinuteDuration, isSafeDayCount } from '../shared/numeric-validation';
+import { isSettings } from '../shared/runtime-validation';
 import {
   LOCAL_CACHES,
   LOCAL_DEVICE_ID,
@@ -46,6 +47,7 @@ import {
   isListSyncKey,
   LIST_SYNC_KEYS,
 } from './list-sync-codec';
+import { storageValuesEqual } from './storage-value-equality';
 import type { SyncJournal } from './sync-writer';
 
 const TIME_RE: RegExp = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -249,6 +251,47 @@ export function mergeSettings(raw: unknown, base: Settings = DEFAULT_SETTINGS): 
       : base.streakFreezeIntervalDays,
     retentionDays: isSafeDayCount(stored.retentionDays) ? stored.retentionDays : base.retentionDays,
   };
+}
+
+export type StoredSettingsParseResult =
+  | { valid: false }
+  | { valid: true; changed: boolean; legacy: boolean; settings: Settings };
+
+/** Accepts canonical Settings or the one supported mixed-version predecessor. */
+export function parseStoredSettings(
+  value: unknown,
+  current: Settings = DEFAULT_SETTINGS,
+): StoredSettingsParseResult {
+  try {
+    if (isSettings(value)) {
+      const settings: Settings = structuredClone(value);
+      return {
+        valid: true,
+        changed: !storageValuesEqual(settings, current),
+        legacy: false,
+        settings,
+      };
+    }
+    if (
+      !isRecord(value) ||
+      !Object.hasOwn(value, 'allowForceEnd') ||
+      typeof value.allowForceEnd !== 'boolean'
+    ) {
+      return { valid: false };
+    }
+    const legacy: Record<string, unknown> = { ...value };
+    delete legacy.allowForceEnd;
+    if (!isSettings(legacy)) return { valid: false };
+    const settings: Settings = structuredClone(legacy);
+    return {
+      valid: true,
+      changed: !storageValuesEqual(settings, current),
+      legacy: true,
+      settings,
+    };
+  } catch {
+    return { valid: false };
+  }
 }
 
 export function mergeLists(raw: unknown, base: ListsConfig = DEFAULT_LISTS): ListsConfig {

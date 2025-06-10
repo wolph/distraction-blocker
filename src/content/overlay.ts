@@ -64,6 +64,7 @@ interface Mounted {
   spends: SpendRef[];
   gate: GateRefs | null;
   actionGeneration: number;
+  actionPending: boolean;
   actionError: string | null;
 }
 
@@ -108,8 +109,6 @@ const OVERLAY_CSS: string = `
   --overlay-error-border: #d97706;
   --overlay-error-bg: #fffbeb;
   --overlay-error-text: #78350f;
-  --overlay-danger: #a4251b;
-  --overlay-danger-soft: #fce8e6;
 }
 @media (prefers-color-scheme: dark) {
   :host([data-theme="auto"]) {
@@ -129,8 +128,6 @@ const OVERLAY_CSS: string = `
     --overlay-error-border: rgba(251, 191, 36, 0.45);
     --overlay-error-bg: rgba(120, 53, 15, 0.35);
     --overlay-error-text: #fde68a;
-    --overlay-danger: #ff8a80;
-    --overlay-danger-soft: #3d2422;
   }
 }
 :host([data-theme="dark"]) {
@@ -150,8 +147,6 @@ const OVERLAY_CSS: string = `
   --overlay-error-border: rgba(251, 191, 36, 0.45);
   --overlay-error-bg: rgba(120, 53, 15, 0.35);
   --overlay-error-text: #fde68a;
-  --overlay-danger: #ff8a80;
-  --overlay-danger-soft: #3d2422;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 .backdrop {
@@ -162,6 +157,7 @@ const OVERLAY_CSS: string = `
   display: flex; align-items: center; justify-content: center;
   text-align: center;
 }
+.backdrop:focus { outline: none; }
 .backdrop.opaque { background: var(--overlay-opaque); }
 .notloaded { font-size: 0.9rem; color: var(--overlay-muted); }
 .panel {
@@ -248,11 +244,12 @@ button:disabled { cursor: default; }
 export function showOverlay(verdict: Verdict, snapshot: SessionSnapshot, stopped?: boolean): void {
   if (mounted === null) mounted = mount();
   applyTheme(mounted.host, snapshot.theme);
-  mounted.actionGeneration += 1;
+  if (!mounted.actionPending) mounted.actionGeneration += 1;
   mounted.verdict = verdict;
   mounted.snapshot = snapshot;
   mounted.stopped = stopped ?? false;
   render(mounted);
+  if (mounted.actionPending) disableAllActions(mounted);
   focusInitial(mounted);
 }
 
@@ -299,6 +296,7 @@ function mount(): Mounted {
     spends: [],
     gate: null,
     actionGeneration: 0,
+    actionPending: false,
     actionError: null,
   };
 }
@@ -649,6 +647,7 @@ function tick(): void {
   updateBank(mounted, snap, now);
   for (const ref of mounted.spends) updateSpend(ref, snap, now);
   updateGate(mounted, snap, now);
+  if (mounted.actionPending) disableAllActions(mounted);
 }
 
 function requestOpenGate(kind: GateKind, host: string | null): void {
@@ -671,22 +670,45 @@ async function sendAndRefresh(
   req: Extract<Request, { type: 'openGate' | 'confirmGate' | 'requestSessionEnd' | 'abandonGate' }>,
 ): Promise<void> {
   const mount: Mounted | null = mounted;
-  if (mount === null) return;
+  if (mount === null || mount.actionPending) return;
   const generation: number = mount.actionGeneration + 1;
   mount.actionGeneration = generation;
+  mount.actionPending = true;
+  disableAllActions(mount);
   clearActionError(mount);
   try {
     const ack: Ack = await sendRequest(req);
     if (!isCurrentAction(mount, generation)) return;
     if (!ack.ok) {
+      finishAction(mount);
       showActionError(mount, ack.error);
       return;
     }
     const snapshot: SessionSnapshot = await sendRequest({ type: 'getSnapshot' });
     if (!isCurrentAction(mount, generation)) return;
+    finishAction(mount);
     showOverlay(mount.verdict, snapshot, mount.stopped);
   } catch {
-    if (isCurrentAction(mount, generation)) showActionError(mount, TRANSPORT_ERROR);
+    if (isCurrentAction(mount, generation)) {
+      finishAction(mount);
+      showActionError(mount, TRANSPORT_ERROR);
+    }
+  }
+}
+
+function disableAllActions(mount: Mounted): void {
+  for (const button of mount.root.querySelectorAll<HTMLButtonElement>('button')) {
+    button.disabled = true;
+  }
+}
+
+function finishAction(mount: Mounted): void {
+  mount.actionPending = false;
+  const now: number = Date.now();
+  for (const ref of mount.spends) updateSpend(ref, mount.snapshot, now);
+  updateGate(mount, mount.snapshot, now);
+  for (const button of mount.root.querySelectorAll<HTMLButtonElement>('.linkish, .primary')) {
+    button.disabled = false;
   }
 }
 

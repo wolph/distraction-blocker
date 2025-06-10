@@ -60,13 +60,13 @@ import {
   loadLists,
   loadRuntime,
   loadSyncJournal,
-  mergeSettings,
   migrateRuntimeRules,
   type ParsedRuntimeState,
   parseBank,
-  parseLiveSettings,
+  parseStoredSettings,
   parseStreak,
   type RuntimeState,
+  type StoredSettingsParseResult,
   sanitizeRuntimeForLocalHistory,
   saveMatcherCache,
   saveRuntime,
@@ -299,8 +299,16 @@ function validatedPendingJournal(
     removes: [...rawJournal.removes],
   };
   if (hasPendingSet(journal, SYNC_SETTINGS)) {
-    const synced: Settings = mergeSettings(storedSync[SYNC_SETTINGS]);
-    journal.sets[SYNC_SETTINGS] = parseLiveSettings(journal.sets[SYNC_SETTINGS], synced) ?? synced;
+    const syncedResult: StoredSettingsParseResult = parseStoredSettings(
+      storedSync[SYNC_SETTINGS],
+      DEFAULT_SETTINGS,
+    );
+    const synced: Settings = syncedResult.valid ? syncedResult.settings : DEFAULT_SETTINGS;
+    const pending: StoredSettingsParseResult = parseStoredSettings(
+      journal.sets[SYNC_SETTINGS],
+      synced,
+    );
+    journal.sets[SYNC_SETTINGS] = pending.valid ? pending.settings : synced;
   }
   if (hasPendingSet(journal, SYNC_BANK)) {
     const synced: BankState = parseBank(storedSync[SYNC_BANK]) ?? { balanceMs: 0 };
@@ -319,16 +327,13 @@ function assertValidAuthoritativeRemotePolicy(
   storedSync: Record<string, unknown>,
   journal: SyncJournal,
 ): void {
-  const pendingSettings: Settings | null = hasPendingSet(journal, SYNC_SETTINGS)
-    ? isSettings(journal.sets[SYNC_SETTINGS])
-      ? journal.sets[SYNC_SETTINGS]
-      : parseLiveSettings(journal.sets[SYNC_SETTINGS], DEFAULT_SETTINGS)
+  const pendingSettings: StoredSettingsParseResult | null = hasPendingSet(journal, SYNC_SETTINGS)
+    ? parseStoredSettings(journal.sets[SYNC_SETTINGS], DEFAULT_SETTINGS)
     : null;
   if (
-    pendingSettings === null &&
+    (pendingSettings === null || !pendingSettings.valid) &&
     Object.hasOwn(storedSync, SYNC_SETTINGS) &&
-    !isSettings(storedSync[SYNC_SETTINGS]) &&
-    parseLiveSettings(storedSync[SYNC_SETTINGS], DEFAULT_SETTINGS) === null
+    !parseStoredSettings(storedSync[SYNC_SETTINGS], DEFAULT_SETTINGS).valid
   ) {
     throw new Error('invalid authoritative legacy settings');
   }
@@ -533,10 +538,11 @@ async function preparePolicyStorage(): Promise<PolicyStorage> {
     if (journalHadLists || remoteListsIncomplete) {
       replacePendingLists(journal, await encodeListsForSync(lists));
     }
-    const settings: Settings = mergeSettings(
+    const parsedSettings: StoredSettingsParseResult = parseStoredSettings(
       effectiveLegacyValue(journal, storedSync, SYNC_SETTINGS),
       DEFAULT_SETTINGS,
     );
+    const settings: Settings = parsedSettings.valid ? parsedSettings.settings : DEFAULT_SETTINGS;
     const bank: BankState = parseBank(effectiveLegacyValue(journal, storedSync, SYNC_BANK)) ?? {
       balanceMs: 0,
     };

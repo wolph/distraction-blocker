@@ -7,7 +7,14 @@ import {
   isListSyncKey,
 } from './list-sync-codec';
 import type { PolicySnapshot, PolicyValueByKey } from './policy-storage';
-import { parseBank, parseLiveLists, parseLiveSettings, parseStreak } from './stores';
+import {
+  parseBank,
+  parseLiveLists,
+  parseLiveSettings,
+  parseStoredSettings,
+  parseStreak,
+  type StoredSettingsParseResult,
+} from './stores';
 import { isAuthoritativeSyncItem } from './sync-item-validation';
 export interface SyncEchoConsumer {
   consume(key: string, value: unknown): boolean;
@@ -85,11 +92,14 @@ async function transactionalPolicyChanges(
   const malformed: Set<keyof PolicyValueByKey> = new Set();
   const settingsValue: unknown = changes[SYNC_SETTINGS]?.newValue;
   if (settingsValue !== undefined && !echoes.consume(SYNC_SETTINGS, settingsValue)) {
-    if (isAuthoritativeSyncItem(SYNC_SETTINGS, settingsValue)) {
-      const settings: Settings | null = parseLiveSettings(settingsValue, engine.getSettings());
-      if (settings !== null) candidate.settings = settings;
-    } else {
+    const parsedSettings: StoredSettingsParseResult = parseStoredSettings(
+      settingsValue,
+      engine.getSettings(),
+    );
+    if (!parsedSettings.valid) {
       malformed.add('settings');
+    } else if (parsedSettings.changed || parsedSettings.legacy) {
+      candidate.settings = parsedSettings.settings;
     }
   }
 

@@ -95,7 +95,10 @@ async function extensionLaunch(
   distOverride?: string,
   diagnostics: BrowserDiagnostics = createBrowserDiagnostics(),
 ): Promise<ExtensionLaunch> {
-  const dist: string = distOverride ?? path.resolve(import.meta.dirname, '../../dist');
+  const dist: string =
+    distOverride ??
+    process.env.FOCUS_LOCK_E2E_DIST ??
+    path.resolve(import.meta.dirname, '../../dist');
   const args: string[] = extensionArgs(dist);
   if (restoreLastSession) args.push('--restore-last-session');
   const context: BrowserContext = await chromium.launchPersistentContext(profileDir, {

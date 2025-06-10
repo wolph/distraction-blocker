@@ -89,6 +89,20 @@ const statsBundle: StatsBundle = {
   totals: { focusMsToday: 52 * 60_000, focusMsWeek: 0, attemptsToday: 0, resistedToday: 0 },
 };
 
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve: ((value: T) => void) | undefined;
+  const promise: Promise<T> = new Promise<T>((done: (value: T) => void): void => {
+    resolve = done;
+  });
+  if (resolve === undefined) throw new Error('deferred resolver was not initialized');
+  return { promise, resolve };
+}
+
 describe('ActiveView', () => {
   beforeEach((): void => {
     resetChromeFake();
@@ -152,6 +166,74 @@ describe('ActiveView', () => {
     await waitFor((): void => {
       expect(sendMessageMock).toHaveBeenCalledWith({ type: 'requestSessionEnd' });
     });
+  });
+
+  it('locks every action synchronously and ignores duplicate Flexible end clicks', async (): Promise<void> => {
+    const ending: Deferred<unknown> = deferred<unknown>();
+    sendMessageMock.mockImplementation((request: Request): Promise<unknown> => {
+      if (request.type === 'getStats') return Promise.resolve(statsBundle);
+      if (request.type === 'requestSessionEnd') return ending.promise;
+      return Promise.resolve({ ok: true });
+    });
+    const flexible: SessionSnapshot = {
+      ...focusSnap(),
+      config: { ...config, strictness: 'flexible' },
+    };
+    const { container, getByRole } = render(h(ActiveView, { snapshot: flexible, now: NOW }));
+    const end: HTMLButtonElement = getByRole('button', {
+      name: 'End session',
+    }) as HTMLButtonElement;
+
+    end.click();
+    end.click();
+
+    expect(
+      sendMessageMock.mock.calls.filter(
+        (call: unknown[]): boolean => (call[0] as Request).type === 'requestSessionEnd',
+      ),
+    ).toHaveLength(1);
+    expect(
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button')).every(
+        (button: HTMLButtonElement): boolean => button.disabled,
+      ),
+    ).toBe(true);
+
+    ending.resolve({ ok: true });
+    await waitFor((): void => expect(end.disabled).toBe(false));
+  });
+
+  it('reports active-site loading, ready, unsupported, and error states truthfully', async (): Promise<void> => {
+    const lookup: Deferred<Array<{ url: string }>> = deferred<Array<{ url: string }>>();
+    tabsQueryMock.mockReturnValue(lookup.promise);
+    const first = render(h(ActiveView, { snapshot: focusSnap(), now: NOW }));
+    const loading: HTMLButtonElement = first.getByRole('button', {
+      name: /Unlock this site for 5 min/,
+    }) as HTMLButtonElement;
+    expect(loading.textContent).toContain('Checking the active site');
+    expect(loading.disabled).toBe(true);
+    lookup.resolve([{ url: 'https://www.youtube.com/watch?v=1' }]);
+    await waitFor((): void => expect(loading.textContent).toContain('youtube.com'));
+    first.unmount();
+
+    tabsQueryMock.mockResolvedValue([{ url: 'chrome://extensions/' }]);
+    const unsupportedView = render(h(ActiveView, { snapshot: focusSnap(), now: NOW }));
+    const unsupported: HTMLButtonElement = unsupportedView.getByRole('button', {
+      name: /Unlock this site for 5 min/,
+    }) as HTMLButtonElement;
+    await waitFor((): void => {
+      expect(unsupported.textContent).toContain('Open a regular website to unlock it');
+    });
+    unsupportedView.unmount();
+
+    tabsQueryMock.mockRejectedValue(new Error('tabs unavailable'));
+    const errorView = render(h(ActiveView, { snapshot: focusSnap(), now: NOW }));
+    const errored: HTMLButtonElement = errorView.getByRole('button', {
+      name: /Unlock this site for 5 min/,
+    }) as HTMLButtonElement;
+    await waitFor((): void => {
+      expect(errored.textContent).toContain('Could not identify the active site');
+    });
+    expect(errored.textContent).not.toContain('Open a regular website');
   });
 
   it('prioritizes the unsupported-tab reason over insufficient budget', async (): Promise<void> => {
@@ -268,6 +350,55 @@ describe('ActiveView', () => {
       name: 'Take the pause',
     }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(false);
+  });
+
+  it('renders no deliberation wait for a zero-delay gate', (): void => {
+    const snapshot: SessionSnapshot = gateSnap();
+    if (snapshot.gate === null) throw new Error('gate fixture must contain a gate');
+    const zeroDelay: SessionSnapshot = {
+      ...snapshot,
+      gate: { ...snapshot.gate, openedAt: NOW, readyAt: NOW },
+    };
+    const { getByRole, queryByText } = render(h(ActiveView, { snapshot: zeroDelay, now: NOW }));
+
+    expect(queryByText(/A moment to decide/)).toBeNull();
+    expect((getByRole('button', { name: 'Take the pause' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+  });
+
+  it('resets gate input state when the gate identity changes', (): void => {
+    const first: SessionSnapshot = gateSnap();
+    if (first.gate === null) throw new Error('gate fixture must contain a gate');
+    const initialGate: GateState = { ...first.gate, requiredPhrase: 'first phrase' };
+    const initial: SessionSnapshot = {
+      ...first,
+      gate: initialGate,
+    };
+    const view = render(h(ActiveView, { snapshot: initial, now: NOW + 9_000 }));
+    const input: HTMLInputElement = view.getByRole('textbox') as HTMLInputElement;
+    fireEvent.input(input, { target: { value: 'first phrase' } });
+    expect(input.value).toBe('first phrase');
+
+    const replacement: SessionSnapshot = {
+      ...initial,
+      gate: {
+        ...initialGate,
+        openedAt: initialGate.openedAt + 20_000,
+        readyAt: initialGate.readyAt + 20_000,
+        requiredPhrase: 'second phrase',
+      },
+    };
+    view.rerender(h(ActiveView, { snapshot: replacement, now: NOW + 29_000 }));
+
+    expect((view.getByRole('textbox') as HTMLInputElement).value).toBe('');
+    expect(view.getByText('Type: second phrase')).toBeTruthy();
+  });
+
+  it('styles disabled end-session controls as inactive', (): void => {
+    const css: string = readFileSync(resolve(process.cwd(), 'src/popup/popup.css'), 'utf8');
+    expect(css).toMatch(/\.cancel-link:disabled\s*\{[^}]*cursor:\s*default/s);
+    expect(css).toMatch(/\.cancel-link:disabled\s*\{[^}]*text-decoration:\s*none/s);
   });
 
   it.each([

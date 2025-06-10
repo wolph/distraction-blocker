@@ -1,5 +1,5 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useRef, useState } from 'preact/hooks';
 import type { Ack } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import { ackError } from '../shared/runtime-validation';
@@ -32,6 +32,7 @@ export function GatePanel({
   >(null);
   const [pending, setPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
     useState<boolean>(false);
+  const requestInFlight: { current: boolean } = useRef<boolean>(false);
 
   const totalS: number = Math.max(1, Math.round((gate.readyAt - gate.openedAt) / 1000));
   const elapsedS: number = Math.min(totalS, Math.max(0, Math.floor((now - gate.openedAt) / 1000)));
@@ -41,6 +42,8 @@ export function GatePanel({
   const requestGateUpdate: (request: GateRequest) => Promise<void> = async (
     request: GateRequest,
   ): Promise<void> => {
+    if (requestInFlight.current) return;
+    requestInFlight.current = true;
     setError(null);
     setPending(true);
     try {
@@ -50,6 +53,7 @@ export function GatePanel({
     } catch {
       setError('Could not update the gate. Try again.');
     } finally {
+      requestInFlight.current = false;
       setPending(false);
     }
   };
@@ -68,9 +72,11 @@ export function GatePanel({
   return (
     <div class="gate-panel">
       {intention !== '' ? <p class="gate-intention">You said: {intention}</p> : null}
-      <p class="gate-wait">
-        A moment to decide: <span class="time">{elapsedS}</span> of {totalS} s
-      </p>
+      {!ready ? (
+        <p class="gate-wait">
+          A moment to decide: <span class="time">{elapsedS}</span> of {totalS} s
+        </p>
+      ) : null}
       <button type="button" class="start-button" disabled={pending} onClick={abandon}>
         Never mind, back to work
       </button>

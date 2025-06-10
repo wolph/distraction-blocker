@@ -31,6 +31,50 @@ function makeEngine(overrides: Partial<SyncChangeEngine> = {}): SyncChangeEngine
 }
 
 describe('handleSyncChanges', () => {
+  it('accepts mixed-version authoritative settings and mirrors only the canonical shape', async (): Promise<void> => {
+    const legacy: Record<string, unknown> = {
+      ...structuredClone(DEFAULT_SETTINGS),
+      retentionDays: 30,
+      allowForceEnd: false,
+    };
+    const canonical: Settings = { ...DEFAULT_SETTINGS, retentionDays: 30 };
+    const transactSyncedPolicy = vi.fn(
+      async (
+        changes: Partial<PolicyValueByKey>,
+        _reconcilePendingLists: boolean,
+        mirror: (accepted: Partial<PolicyValueByKey>) => Promise<void>,
+      ): Promise<{ ok: true }> => {
+        await mirror(changes);
+        return { ok: true };
+      },
+    );
+    const transaction: SyncPolicyTransaction = {
+      inboundSyncAllowed: vi.fn().mockResolvedValue(true),
+      loadSnapshot: vi.fn(),
+      mirrorAcceptedRemotePolicy: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleSyncChanges(
+      makeEngine({ transactSyncedPolicy }),
+      { [SYNC_SETTINGS]: { newValue: legacy } },
+      new SyncEchoes(),
+      vi.fn(),
+      false,
+      undefined,
+      transaction,
+    );
+
+    expect(transactSyncedPolicy).toHaveBeenCalledWith(
+      { settings: canonical },
+      false,
+      expect.any(Function),
+    );
+    expect(transaction.mirrorAcceptedRemotePolicy).toHaveBeenCalledWith(
+      { settings: canonical },
+      [],
+    );
+  });
+
   it('uses the engine policy mutex across preview, mirror, and commit', async () => {
     const incoming: Settings = { ...DEFAULT_SETTINGS, retentionDays: 30 };
     const transaction: SyncPolicyTransaction = {

@@ -1,5 +1,5 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'preact/hooks';
 import { getDomain } from 'tldts';
 import { msUntilNextEarnedMinute } from '../core/budget';
 import { MIN_BREAK_BEFORE_EARLY_MS } from '../shared/constants';
@@ -12,37 +12,47 @@ import type { GateKind, SessionSnapshot } from '../shared/types';
 import { GatePanel } from './GatePanel';
 import { Ring } from './Ring';
 
-function useActiveHost(): { host: string | null; error: boolean } {
-  const [host, setHost]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
-    string | null
-  >(null);
-  const [error, setError]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
+type ActiveHostState =
+  | { status: 'loading' }
+  | { status: 'ready'; host: string }
+  | { status: 'unsupported' }
+  | { status: 'error' };
+
+function useActiveHost(): ActiveHostState {
+  const [state, setState]: [ActiveHostState, Dispatch<StateUpdater<ActiveHostState>>] =
+    useState<ActiveHostState>({ status: 'loading' });
   useEffect((): void => {
     void chrome.tabs
       .query({ active: true, currentWindow: true })
       .then((tabs: chrome.tabs.Tab[]): void => {
         const url: string | undefined = tabs[0]?.url;
-        if (url === undefined || !url.startsWith('http')) {
-          setHost(null);
-          setError(false);
+        if (url === undefined) {
+          setState({ status: 'unsupported' });
           return;
         }
         try {
-          const hostname: string = new URL(url).hostname;
-          setHost(getDomain(hostname) ?? hostname);
-          setError(false);
+          const parsed: URL = new URL(url);
+          if (
+            (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+            parsed.hostname === ''
+          ) {
+            setState({ status: 'unsupported' });
+            return;
+          }
+          setState({ status: 'ready', host: getDomain(parsed.hostname) ?? parsed.hostname });
         } catch {
-          // Unparseable tab URL: leave the unlock button host-less.
-          setHost(null);
-          setError(false);
+          setState({ status: 'unsupported' });
         }
       })
       .catch((): void => {
-        setHost(null);
-        setError(true);
+        setState({ status: 'error' });
       });
   }, []);
-  return { host, error };
+  return state;
+}
+
+function gateIdentity(gate: NonNullable<SessionSnapshot['gate']>): string {
+  return `${gate.kind}\u0000${gate.host ?? ''}\u0000${gate.openedAt}\u0000${gate.readyAt}`;
 }
 
 function useFocusedTodayMs(): { ms: number | null; error: boolean } {
@@ -98,9 +108,22 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
   >(null);
   const [actionPending, setActionPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
     useState<boolean>(false);
-  const activeSite: { host: string | null; error: boolean } = useActiveHost();
-  const activeHost: string | null = activeSite.host;
+  const actionInFlight: { current: boolean } = useRef<boolean>(false);
+  const viewRef: { current: HTMLElement | null } = useRef<HTMLElement | null>(null);
+  const activeSite: ActiveHostState = useActiveHost();
+  const activeHost: string | null = activeSite.status === 'ready' ? activeSite.host : null;
   const focusedToday: { ms: number | null; error: boolean } = useFocusedTodayMs();
+
+  const beginAction: () => boolean = (): boolean => {
+    if (actionInFlight.current) return false;
+    actionInFlight.current = true;
+    for (const button of viewRef.current?.querySelectorAll<HTMLButtonElement>('button') ?? []) {
+      button.disabled = true;
+    }
+    setError(null);
+    setActionPending(true);
+    return true;
+  };
 
   const bankMs: number = extrapolatedBank(snapshot, now);
   const bankFill: number = snapshot.bankCapMs > 0 ? Math.min(1, bankMs / snapshot.bankCapMs) : 0;
@@ -111,8 +134,7 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
     gate: GateKind,
     host: string | null,
   ): Promise<void> => {
-    setError(null);
-    setActionPending(true);
+    if (!beginAction()) return;
     try {
       const ack: Ack = await sendRequest({ type: 'openGate', gate, host });
       const responseError: string | null = ackError(ack, 'Could not request action. Try again.');
@@ -120,6 +142,7 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
     } catch {
       setError('Could not request that action. Try again.');
     } finally {
+      actionInFlight.current = false;
       setActionPending(false);
     }
   };
@@ -135,8 +158,7 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
       | { type: 'startNextFocusEarly' }
       | { type: 'requestSessionEnd' },
   ): Promise<void> => {
-    setError(null);
-    setActionPending(true);
+    if (!beginAction()) return;
     try {
       const ack: Ack = await sendRequest(req);
       const responseError: string | null = ackError(ack, 'Could not request action. Try again.');
@@ -144,6 +166,7 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
     } catch {
       setError('Could not request that action. Try again.');
     } finally {
+      actionInFlight.current = false;
       setActionPending(false);
     }
   };
@@ -178,10 +201,16 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
   }): string | null =>
     value.affordable ? null : (value.countdown ?? 'earn pause time by focusing');
   const pendingReason: string | null = actionPending ? 'Action in progress' : null;
+  const activeSiteReason: string | null =
+    activeSite.status === 'loading'
+      ? 'Checking the active site'
+      : activeSite.status === 'unsupported'
+        ? 'Open a regular website to unlock it'
+        : activeSite.status === 'error'
+          ? 'Could not identify the active site'
+          : null;
   const unlockDisabledReason: string | null =
-    pendingReason ??
-    (activeHost === null ? 'Open a regular website to unlock it' : null) ??
-    affordabilityReason(unlockAfford);
+    pendingReason ?? activeSiteReason ?? affordabilityReason(unlockAfford);
   const pauseDisabledReason: string | null = pendingReason ?? affordabilityReason(pauseAfford);
   const costMin: (ms: number) => number = (ms: number): number => Math.round(ms / 60_000);
   const breakEarlyVisible: boolean =
@@ -190,7 +219,7 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
     now - snapshot.phaseStartedAt >= MIN_BREAK_BEFORE_EARLY_MS;
 
   return (
-    <section class="view active-view">
+    <section ref={viewRef} class="view active-view">
       <Ring snapshot={snapshot} now={now} />
       {intention !== '' ? <p class="intention-line">{intention}</p> : null}
       {focusedToday.ms !== null ? (
@@ -200,7 +229,7 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
           Today's focus total is unavailable.
         </p>
       ) : null}
-      {activeSite.error ? (
+      {activeSite.status === 'error' ? (
         <p class="form-error" role="alert">
           Could not identify the active site.
         </p>
@@ -214,7 +243,12 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
       </div>
 
       {snapshot.gate !== null ? (
-        <GatePanel gate={snapshot.gate} now={now} intention={intention} />
+        <GatePanel
+          key={gateIdentity(snapshot.gate)}
+          gate={snapshot.gate}
+          now={now}
+          intention={intention}
+        />
       ) : snapshot.phase === 'paused' ? (
         <button
           type="button"

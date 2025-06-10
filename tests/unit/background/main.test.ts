@@ -309,6 +309,7 @@ vi.mock('../../../src/background/stores', async () => {
     parseBank: actual.parseBank,
     parseLiveLists: actual.parseLiveLists,
     parseLiveSettings: actual.parseLiveSettings,
+    parseStoredSettings: actual.parseStoredSettings,
     parseStreak: actual.parseStreak,
     sanitizeRuntimeForLocalHistory: actual.sanitizeRuntimeForLocalHistory,
     saveRuntime: vi.fn().mockImplementation(async (runtime: RuntimeState): Promise<void> => {
@@ -2382,6 +2383,20 @@ describe('background boot state convergence', () => {
     expect(mocks.localState[LOCAL_SYNC_JOURNAL]).toEqual(originalJournal);
     expect(chrome.storage.sync.set).not.toHaveBeenCalled();
     expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['old defaults', DEFAULT_SETTINGS],
+    ['old customized settings', { ...DEFAULT_SETTINGS, retentionDays: 30 }],
+  ] as const)('imports %s with the deprecated boolean removed', async (_label, settings) => {
+    mocks.scenario.storedSync = {
+      [SYNC_SETTINGS]: { ...structuredClone(settings), allowForceEnd: false },
+    };
+
+    await finishBoot();
+
+    expect(engineSettings()).toEqual(settings);
+    expect(engineSettings()).not.toHaveProperty('allowForceEnd');
   });
 
   it('preserves valid pending base state over older sync state', async () => {

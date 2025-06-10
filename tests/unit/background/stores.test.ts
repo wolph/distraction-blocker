@@ -14,6 +14,7 @@ import {
   mergeRuntime,
   mergeSettings,
   migrateRuntimeRules,
+  parseStoredSettings,
   readEvents,
   sanitizeRuntimeForLocalHistory,
   saveMatcherCache,
@@ -144,6 +145,63 @@ describe('matcher cache storage', () => {
 });
 
 describe('storage default merging', () => {
+  it('accepts the exact legacy settings shape and distinguishes unchanged normalization', (): void => {
+    const legacy: Record<string, unknown> = {
+      ...structuredClone(DEFAULT_SETTINGS),
+      allowForceEnd: false,
+    };
+
+    expect(parseStoredSettings(legacy, DEFAULT_SETTINGS)).toEqual({
+      valid: true,
+      changed: false,
+      legacy: true,
+      settings: DEFAULT_SETTINGS,
+    });
+  });
+
+  it('preserves customized legacy settings while dropping the deprecated field', (): void => {
+    const legacy: Record<string, unknown> = {
+      ...structuredClone(DEFAULT_SETTINGS),
+      retentionDays: 30,
+      allowForceEnd: true,
+    };
+
+    expect(parseStoredSettings(legacy, DEFAULT_SETTINGS)).toEqual({
+      valid: true,
+      changed: true,
+      legacy: true,
+      settings: { ...DEFAULT_SETTINGS, retentionDays: 30 },
+    });
+  });
+
+  it('compares canonical and legacy settings by value instead of property order', (): void => {
+    const reordered: Settings = Object.fromEntries(
+      Object.entries(DEFAULT_SETTINGS).reverse(),
+    ) as Settings;
+    const reorderedLegacy: Record<string, unknown> = {
+      ...reordered,
+      allowForceEnd: false,
+    };
+
+    expect(parseStoredSettings(reordered, DEFAULT_SETTINGS)).toMatchObject({
+      valid: true,
+      changed: false,
+      legacy: false,
+    });
+    expect(parseStoredSettings(reorderedLegacy, DEFAULT_SETTINGS)).toMatchObject({
+      valid: true,
+      changed: false,
+      legacy: true,
+    });
+  });
+
+  it.each([
+    { ...structuredClone(DEFAULT_SETTINGS), allowForceEnd: 'yes' },
+    { ...structuredClone(DEFAULT_SETTINGS), allowForceEnd: false, unexpected: true },
+  ])('rejects malformed or wider legacy settings %#', (legacy: Record<string, unknown>): void => {
+    expect(parseStoredSettings(legacy, DEFAULT_SETTINGS)).toEqual({ valid: false });
+  });
+
   it.each([
     ['auto', 'auto'],
     ['light', 'light'],
