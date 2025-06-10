@@ -21,6 +21,11 @@ export interface RuntimeApiInterception {
 
 export type RuntimeApiInterceptionDefinition = Omit<RuntimeApiInterception, 'observedCount'>;
 
+export interface RuntimeApiInterceptionObservation {
+  requestType: RuntimeApiInterception['requestType'];
+  state: RuntimeApiInterception['state'];
+}
+
 export const PRODUCTION_RUNTIME_API_INTERCEPTIONS: readonly RuntimeApiInterceptionDefinition[] = [
   {
     scope: 'chrome.runtime.sendMessage',
@@ -42,6 +47,21 @@ export const PRODUCTION_RUNTIME_API_INTERCEPTIONS: readonly RuntimeApiIntercepti
       'Fail the first setup-state load so the error and successful Retry UI can be captured.',
   },
 ];
+
+export function runtimeApiInterceptionsFromObservations(
+  observations: readonly RuntimeApiInterceptionObservation[],
+): RuntimeApiInterception[] {
+  return PRODUCTION_RUNTIME_API_INTERCEPTIONS.map(
+    (definition: RuntimeApiInterceptionDefinition): RuntimeApiInterception => ({
+      ...definition,
+      observedCount: observations.filter(
+        (observation: RuntimeApiInterceptionObservation): boolean =>
+          observation.state === definition.state &&
+          observation.requestType === definition.requestType,
+      ).length,
+    }),
+  );
+}
 
 export interface VisualEvidenceManifest {
   artifactCount: number;

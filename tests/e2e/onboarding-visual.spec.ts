@@ -15,8 +15,9 @@ import {
 } from './browser-diagnostics';
 import { expect, type FreshInstallLaunch, sendExtensionRequest, test } from './fixtures';
 import {
-  PRODUCTION_RUNTIME_API_INTERCEPTIONS,
   type RuntimeApiInterception,
+  type RuntimeApiInterceptionObservation,
+  runtimeApiInterceptionsFromObservations,
   type VisualEvidenceManifest,
   writeVisualEvidenceManifest,
 } from './onboarding-visual-manifest';
@@ -199,6 +200,23 @@ async function holdCompletion(page: Page): Promise<void> {
           'type' in request &&
           request.type === 'completeOnboarding'
         ) {
+          const recordInterception:
+            | ((observation: RuntimeApiInterceptionObservation) => Promise<void>)
+            | null =
+            (
+              globalThis as unknown as {
+                __task6RecordRuntimeInterception?: (
+                  observation: RuntimeApiInterceptionObservation,
+                ) => Promise<void>;
+              }
+            ).__task6RecordRuntimeInterception ?? null;
+          if (recordInterception === null) {
+            throw new Error('Task 6 interception observer is unavailable');
+          }
+          await recordInterception({
+            state: 'step-3-pending-completion',
+            requestType: 'completeOnboarding',
+          });
           return await new Promise<never>(() => undefined);
         }
         return await sendMessage(...args);
@@ -208,6 +226,45 @@ async function holdCompletion(page: Page): Promise<void> {
   const button: Locator = page.getByRole('button', { name: 'Finish setup with sync enabled' });
   await button.click();
   await expect(button).toBeDisabled();
+}
+
+function isRuntimeApiInterceptionObservation(
+  candidate: unknown,
+): candidate is RuntimeApiInterceptionObservation {
+  if (typeof candidate !== 'object' || candidate === null) return false;
+  const observation: Partial<RuntimeApiInterceptionObservation> = candidate;
+  return (
+    (observation.state === 'step-3-pending-completion' &&
+      observation.requestType === 'completeOnboarding') ||
+    (observation.state === 'load-error-retry' && observation.requestType === 'getSetupState')
+  );
+}
+
+async function waitForInterceptionObservation(
+  observations: readonly RuntimeApiInterceptionObservation[],
+  expected: RuntimeApiInterceptionObservation,
+  expectedCount: number,
+): Promise<void> {
+  await expect
+    .poll(
+      (): number =>
+        observations.filter(
+          (observation: RuntimeApiInterceptionObservation): boolean =>
+            observation.state === expected.state &&
+            observation.requestType === expected.requestType,
+        ).length,
+    )
+    .toBe(expectedCount);
+}
+
+function interceptionObservationCount(
+  observations: readonly RuntimeApiInterceptionObservation[],
+  expected: RuntimeApiInterceptionObservation,
+): number {
+  return observations.filter(
+    (observation: RuntimeApiInterceptionObservation): boolean =>
+      observation.state === expected.state && observation.requestType === expected.requestType,
+  ).length;
 }
 
 async function assertThemeAndLayout(
@@ -295,13 +352,21 @@ test('production onboarding states fit every viewport and theme', async ({
 }, testInfo: TestInfo) => {
   const launch: FreshInstallLaunch = await freshInstallExtension.launch();
   const page: Page = launch.onboardingPage;
+  const interceptionObservations: RuntimeApiInterceptionObservation[] = [];
+  await page.exposeBinding(
+    '__task6RecordRuntimeInterception',
+    (_source, candidate: unknown): void => {
+      if (!isRuntimeApiInterceptionObservation(candidate)) {
+        throw new Error('Task 6 interception wrapper reported an invalid observation');
+      }
+      interceptionObservations.push(candidate);
+    },
+  );
   const evidenceDir: string =
     process.env.TASK6_EVIDENCE_DIR === undefined
       ? testInfo.outputPath('onboarding-visual-evidence')
       : path.resolve(process.env.TASK6_EVIDENCE_DIR);
   await mkdir(evidenceDir, { recursive: true });
-  let pendingCompletionInterceptions: number = 0;
-  let loadFailureInterceptions: number = 0;
 
   for (const state of VISUAL_STATES) {
     for (const theme of THEMES) {
@@ -328,8 +393,18 @@ test('production onboarding states fit every viewport and theme', async ({
           expect(domainMetrics.width).toBeGreaterThan(0);
         }
         if (state.name === 'step-3-pending-completion') {
+          const expectedObservation: RuntimeApiInterceptionObservation = {
+            state: 'step-3-pending-completion',
+            requestType: 'completeOnboarding',
+          };
+          const expectedCount: number =
+            interceptionObservationCount(interceptionObservations, expectedObservation) + 1;
           await holdCompletion(page);
-          pendingCompletionInterceptions += 1;
+          await waitForInterceptionObservation(
+            interceptionObservations,
+            expectedObservation,
+            expectedCount,
+          );
         }
         if (state.name === 'step-2-permission-explanation') {
           await expect(
@@ -392,6 +467,20 @@ test('production onboarding states fit every viewport and theme', async ({
           request.type === 'getSetupState'
         ) {
           failed = true;
+          const recordInterception:
+            | ((observation: RuntimeApiInterceptionObservation) => Promise<void>)
+            | null =
+            (
+              globalThis as unknown as {
+                __task6RecordRuntimeInterception?: (
+                  observation: RuntimeApiInterceptionObservation,
+                ) => Promise<void>;
+              }
+            ).__task6RecordRuntimeInterception ?? null;
+          if (recordInterception === null) {
+            throw new Error('Task 6 interception observer is unavailable');
+          }
+          await recordInterception({ state: 'load-error-retry', requestType: 'getSetupState' });
           throw new Error('seeded load failure');
         }
         return await sendMessage(...args);
@@ -411,16 +500,26 @@ test('production onboarding states fit every viewport and theme', async ({
     for (const viewport of VIEWPORTS) {
       await page.setViewportSize(viewport);
       await seedDraft(launch, loadErrorState, theme.mode);
+      const expectedObservation: RuntimeApiInterceptionObservation = {
+        state: 'load-error-retry',
+        requestType: 'getSetupState',
+      };
+      const expectedCount: number =
+        interceptionObservationCount(interceptionObservations, expectedObservation) + 1;
       await page.reload();
       await expect(page.getByRole('heading', { name: 'Setup unavailable' })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Retry' })).toBeVisible();
+      await waitForInterceptionObservation(
+        interceptionObservations,
+        expectedObservation,
+        expectedCount,
+      );
       await assertThemeAndLayout(page, theme, viewport);
       await captureState(page, testInfo, evidenceDir, loadErrorState, theme, viewport);
       await page.getByRole('button', { name: 'Retry' }).click();
       await expect(
         page.getByRole('heading', { name: 'Choose your starting block list' }),
       ).toBeVisible();
-      loadFailureInterceptions += 1;
     }
   }
 
@@ -435,15 +534,7 @@ test('production onboarding states fit every viewport and theme', async ({
     'load-error-retry',
   ];
   const runtimeApiInterceptions: RuntimeApiInterception[] =
-    PRODUCTION_RUNTIME_API_INTERCEPTIONS.map(
-      (definition): RuntimeApiInterception => ({
-        ...definition,
-        observedCount:
-          definition.requestType === 'completeOnboarding'
-            ? pendingCompletionInterceptions
-            : loadFailureInterceptions,
-      }),
-    );
+    runtimeApiInterceptionsFromObservations(interceptionObservations);
   const writtenManifest: VisualEvidenceManifest = await writeVisualEvidenceManifest({
     chromeVersion,
     evidenceDir,

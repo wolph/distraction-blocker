@@ -1,5 +1,3 @@
-import { cp, readFile, writeFile } from 'node:fs/promises';
-import path from 'node:path';
 import {
   type BrowserContext,
   test as base,
@@ -26,6 +24,7 @@ import {
   monitorBrowserContext,
 } from './browser-diagnostics';
 import { closeContextOnSetupFailure } from './context-cleanup';
+import { createPermissionGrantDist, resolveExtensionDist } from './extension-dist';
 import { startServer, type TestServer } from './server';
 
 interface ExtFixtures {
@@ -95,10 +94,7 @@ async function extensionLaunch(
   distOverride?: string,
   diagnostics: BrowserDiagnostics = createBrowserDiagnostics(),
 ): Promise<ExtensionLaunch> {
-  const dist: string =
-    distOverride ??
-    process.env.FOCUS_LOCK_E2E_DIST ??
-    path.resolve(import.meta.dirname, '../../dist');
+  const dist: string = resolveExtensionDist(distOverride);
   const args: string[] = extensionArgs(dist);
   if (restoreLastSession) args.push('--restore-last-session');
   const context: BrowserContext = await chromium.launchPersistentContext(profileDir, {
@@ -120,11 +116,6 @@ async function extensionLaunch(
       extPage,
     });
   });
-}
-
-interface ExtensionManifest {
-  optional_host_permissions?: string[];
-  host_permissions?: string[];
 }
 
 interface ServiceWorkerVersionInfo {
@@ -199,27 +190,16 @@ async function restartMonitoredWorker(launch: ExtensionLaunch): Promise<Extensio
 
 const SYNC_FILLER_PREFIX: string = '__focusLockE2EQuota:';
 
-async function createPermissionGrantDist(outputPath: string): Promise<string> {
-  const dist: string = path.resolve(import.meta.dirname, '../../dist');
-  await cp(dist, outputPath, { recursive: true });
-  const manifestPath: string = path.join(outputPath, 'manifest.json');
-  const manifest: ExtensionManifest = JSON.parse(
-    await readFile(manifestPath, 'utf8'),
-  ) as ExtensionManifest;
-  manifest.host_permissions = [...WEBSITE_ORIGINS];
-  await writeFile(manifestPath, JSON.stringify(manifest));
-  return outputPath;
-}
-
 async function grantProfileWebsiteAccess(
   profileDir: string,
+  baseDist: string,
   grantDist: string,
   diagnostics: BrowserDiagnostics,
 ): Promise<void> {
   const optionalLaunch: ExtensionLaunch = await extensionLaunch(
     profileDir,
     false,
-    undefined,
+    baseDist,
     diagnostics,
   );
   await sendExtensionRequest(optionalLaunch.extPage, { type: 'getSetupState' });
@@ -236,11 +216,12 @@ async function grantProfileWebsiteAccess(
 
 async function completedExtensionLaunch(
   profileDir: string,
+  baseDist: string,
   grantDist: string,
   diagnostics: BrowserDiagnostics,
 ): Promise<ExtensionLaunch> {
-  await grantProfileWebsiteAccess(profileDir, grantDist, diagnostics);
-  const launch: ExtensionLaunch = await extensionLaunch(profileDir, false, undefined, diagnostics);
+  await grantProfileWebsiteAccess(profileDir, baseDist, grantDist, diagnostics);
+  const launch: ExtensionLaunch = await extensionLaunch(profileDir, false, baseDist, diagnostics);
   const reconciled = await sendExtensionRequest(launch.extPage, {
     type: 'reconcileWebsiteAccess',
   });
@@ -278,11 +259,14 @@ export const test = base.extend<ExtFixtures>({
   context: async ({}, use, testInfo) => {
     const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
     const profileDir: string = testInfo.outputPath('default-profile');
+    const baseDist: string = resolveExtensionDist();
     const grantDist: string = await createPermissionGrantDist(
       testInfo.outputPath('permission-grant-dist'),
+      baseDist,
     );
     const launch: ExtensionLaunch = await completedExtensionLaunch(
       profileDir,
+      baseDist,
       grantDist,
       diagnostics,
     );
@@ -321,11 +305,14 @@ export const test = base.extend<ExtFixtures>({
   restartableExtension: async ({}, use, testInfo) => {
     const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
     const profileDir: string = testInfo.outputPath('restart-profile');
+    const baseDist: string = resolveExtensionDist();
     const grantDist: string = await createPermissionGrantDist(
       testInfo.outputPath('restart-permission-grant-dist'),
+      baseDist,
     );
     const prepared: ExtensionLaunch = await completedExtensionLaunch(
       profileDir,
+      baseDist,
       grantDist,
       diagnostics,
     );
@@ -339,7 +326,7 @@ export const test = base.extend<ExtFixtures>({
     };
     const launch = async (): Promise<ExtensionLaunch> => {
       if (current !== null) throw new Error('close the isolated browser before relaunching it');
-      current = await extensionLaunch(profileDir, true, undefined, diagnostics);
+      current = await extensionLaunch(profileDir, true, baseDist, diagnostics);
       return current;
     };
 
@@ -353,8 +340,10 @@ export const test = base.extend<ExtFixtures>({
   freshInstallExtension: async ({}, use, testInfo) => {
     const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
     const profileDir: string = testInfo.outputPath('fresh-install-profile');
+    const baseDist: string = resolveExtensionDist();
     const grantDist: string = await createPermissionGrantDist(
       testInfo.outputPath('fresh-permission-grant-dist'),
+      baseDist,
     );
     let current: FreshInstallLaunch | null = null;
     const requireCurrent = (): FreshInstallLaunch => {
@@ -372,7 +361,7 @@ export const test = base.extend<ExtFixtures>({
       const baseLaunch: ExtensionLaunch = await extensionLaunch(
         profileDir,
         true,
-        undefined,
+        baseDist,
         diagnostics,
       );
       const onboardingPage: Page = await baseLaunch.context.newPage();
@@ -412,7 +401,7 @@ export const test = base.extend<ExtFixtures>({
       );
     const grantWebsiteAccess = async (): Promise<FreshInstallLaunch> => {
       await close();
-      await grantProfileWebsiteAccess(profileDir, grantDist, diagnostics);
+      await grantProfileWebsiteAccess(profileDir, baseDist, grantDist, diagnostics);
       return await launch();
     };
     const revokeWebsiteAccess = async (): Promise<void> => {

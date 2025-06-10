@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   PRODUCTION_RUNTIME_API_INTERCEPTIONS,
   type RuntimeApiInterception,
+  runtimeApiInterceptionsFromObservations,
   writeVisualEvidenceManifest,
 } from '../../e2e/onboarding-visual-manifest';
 
@@ -17,6 +18,28 @@ afterEach(async (): Promise<void> => {
 });
 
 describe('onboarding visual evidence manifest', (): void => {
+  it('derives observed totals only from exact wrapper callback records', (): void => {
+    const uiStateWithoutCallback: { buttonDisabled: boolean; errorVisible: boolean } = {
+      buttonDisabled: true,
+      errorVisible: true,
+    };
+
+    expect(uiStateWithoutCallback).toEqual({ buttonDisabled: true, errorVisible: true });
+    expect(
+      runtimeApiInterceptionsFromObservations([]).map(({ observedCount }) => observedCount),
+    ).toEqual([0, 0]);
+    expect(
+      runtimeApiInterceptionsFromObservations([
+        {
+          state: 'step-3-pending-completion',
+          requestType: 'completeOnboarding',
+        },
+        { state: 'load-error-retry', requestType: 'getSetupState' },
+        { state: 'load-error-retry', requestType: 'getSetupState' },
+      ]).map(({ observedCount }) => observedCount),
+    ).toEqual([1, 2]);
+  });
+
   it('hashes every PNG and discloses each scoped runtime interception', async (): Promise<void> => {
     temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'focus-lock-visual-manifest-'));
     const contents: Buffer = Buffer.from(
