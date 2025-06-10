@@ -9,7 +9,7 @@ This directory preserves the complete onboarding visual review in repository-rel
 - `manifests/`: standalone copies of the development-server, production, and real-prompt manifests.
 - `real-prompt/`: all six browser-chrome PNGs from the no-mock Chrome-for-Testing run.
 
-The production manifest discloses the two scoped `chrome.runtime.sendMessage` interceptions used to synthesize pending completion and one failed setup load. It records 12 expected and 12 observed calls for each interception. All other production extension behavior used the real unpacked extension. Only the separate real-prompt manifest claims `mockedChromeApis: false`.
+The production manifest discloses the two scoped `chrome.runtime.sendMessage` interceptions used to synthesize pending completion and one failed setup load. It records 12 expected and 12 observed calls for each interception. The visual test derives each observed count only from a page-binding callback invoked inside the matching request wrapper. Visible pending or error UI cannot increment the count. All other production extension behavior used the real unpacked extension. Only the separate real-prompt manifest claims `mockedChromeApis: false`.
 
 ## Verify
 
@@ -19,11 +19,13 @@ Run the cross-platform verifier from the repository root:
 node docs/qa-artifacts/onboarding-task6/verify.mjs
 ```
 
-The verifier checks each content-addressed archive filename, rejects unsafe archive member paths, extracts through the platform `tar`, compares the archived and standalone manifests, verifies every PNG signature, size, and SHA-256 digest, rejects unlisted PNGs, and checks the interception disclosure.
+Before extraction, the verifier lists each member's type and declared size. It requires exactly one root directory, one `manifest.json`, and the flat regular-file set in the tracked manifest. It rejects duplicate, unexpected, absolute, traversal, link, FIFO, device, socket, and other special members. It also enforces these limits: 30 MiB compressed archive size, 600 members, 1 MiB per file, and 24 MiB total expanded size. It checks every declared size against the tracked manifest.
+
+After those checks pass, the verifier extracts with owner and permission restoration disabled. It rechecks the content-addressed archive hash, compares the archived and standalone manifests, verifies every PNG signature, size, and SHA-256 digest, rejects unlisted PNGs, and checks the interception disclosure.
 
 Extract either archive manually with the same command on macOS or Linux:
 
 ```bash
 mkdir -p /tmp/focus-lock-task6-production
-tar -xzf docs/qa-artifacts/onboarding-task6/archives/aefeeec2f37b11a342bf392d5df957cebb08f6fb20409a60ecad046b31233d4c.tar.gz -C /tmp/focus-lock-task6-production
+tar -xzf docs/qa-artifacts/onboarding-task6/archives/aefeeec2f37b11a342bf392d5df957cebb08f6fb20409a60ecad046b31233d4c.tar.gz --no-same-owner --no-same-permissions -C /tmp/focus-lock-task6-production
 ```
