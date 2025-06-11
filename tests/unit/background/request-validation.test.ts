@@ -458,6 +458,18 @@ describe('parseRequest', (): void => {
     });
   });
 
+  it('rejects the stored predecessor rule shape at the live request boundary', (): void => {
+    const predecessor: Record<string, unknown> = structuredClone(
+      SESSION_CONFIG.rules,
+    ) as unknown as Record<string, unknown>;
+    delete predecessor.baselineCategories;
+    const request: Record<string, unknown> = replaceNested(VALID_REQUESTS.startSession, 'config', {
+      rules: predecessor,
+    });
+
+    expect(parseRequest(request)).toBeNull();
+  });
+
   it('accepts editable freeze cadence and completion-notification settings', (): void => {
     const settings: Record<string, unknown> = {
       ...SETTINGS,

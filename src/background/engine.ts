@@ -32,7 +32,7 @@ import {
   TOP_SITES_DAILY,
 } from '../shared/constants';
 import { CoreError } from '../shared/errors';
-import type { Ack, SoundId } from '../shared/messages';
+import { type Ack, type SoundId, STALE_SESSION_RULES_ERROR } from '../shared/messages';
 import { isListsConfig } from '../shared/runtime-validation';
 import { syncAggKey } from '../shared/storage-keys';
 import { localDateStr, localMonthStr } from '../shared/time';
@@ -496,10 +496,7 @@ export class Engine {
     const rules: SessionRuleSnapshot | null = normalizeSessionRules(config.rules);
     if (rules === null) return this.fail(now, 'invalid session rules');
     if (!sessionRulesMatchLists(rules, this.lists)) {
-      return this.fail(
-        now,
-        'Your default blocking lists changed. Review this session and start again.',
-      );
+      return this.fail(now, STALE_SESSION_RULES_ERROR);
     }
     const normalizedConfig: SessionConfig = { ...config, rules };
     const sessionId: string = this.ports.newId();

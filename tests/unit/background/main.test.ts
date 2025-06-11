@@ -1895,6 +1895,45 @@ describe('background session policy boot', () => {
     expect(mocks.savedRuntimes.at(-1)?.session?.config.rules).toEqual(rulesFromLists(lists));
   });
 
+  it('persists a canonical replacement for direct predecessor session rules', async (): Promise<void> => {
+    mocks.registrationStatuses = ['ready'];
+    const now: number = Date.now();
+    const currentRules = rulesFromLists(DEFAULT_LISTS);
+    const predecessorRules: Record<string, unknown> = structuredClone(
+      currentRules,
+    ) as unknown as Record<string, unknown>;
+    delete predecessorRules.baselineCategories;
+    mocks.scenario.runtime = {
+      ...emptyRuntime(now),
+      session: {
+        sessionId: 'predecessor-session',
+        config: {
+          mode: 'blacklist',
+          strictness: 'friction',
+          durationMin: 25,
+          cycling: null,
+          intention: '',
+          source: 'manual',
+          scheduleEntryId: null,
+          rules: predecessorRules,
+        },
+        startedAt: now,
+        sessionEndsAt: now + 25 * 60_000,
+        phase: 'focus',
+        phaseStartedAt: now,
+        phaseEndsAt: now + 25 * 60_000,
+        cycleIndex: 0,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+    } as unknown as ParsedRuntimeState;
+
+    await finishBoot();
+
+    expect(engineRuntime().session?.config.rules).toEqual(currentRules);
+    expect(mocks.savedRuntimes.at(-1)?.session?.config.rules).toEqual(currentRules);
+  });
+
   it('does not restore or rebuild the obsolete permanent-list matcher cache', async (): Promise<void> => {
     mocks.scenario.localCache = { version: 2, modes: {} };
 

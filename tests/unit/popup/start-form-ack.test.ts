@@ -67,24 +67,37 @@ describe('StartForm session draft isolation', (): void => {
     });
   });
 
-  it('rebases authoritative list fields before retrying a stale start', async (): Promise<void> => {
+  it('fetches and rebases current lists after a stale response before a new explicit start', async (): Promise<void> => {
     const refreshed: ListsConfig = {
       ...DEFAULT_LISTS,
       categories: { ...DEFAULT_LISTS.categories, video: true },
       custom: [{ kind: 'host', pattern: 'fresh.example' }],
     };
-    sendMessageMock
-      .mockResolvedValueOnce({
-        ok: false,
-        error: 'Your default blocking lists changed. Review this session and start again.',
-      })
-      .mockResolvedValue({ ok: true });
+    let startCount: number = 0;
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getLists') return refreshed;
+      if (request.type !== 'startSession') return { ok: true };
+      startCount += 1;
+      return startCount === 1
+        ? {
+            ok: false,
+            error: 'Your default blocking lists changed. Review this session and start again.',
+          }
+        : { ok: true };
+    });
     const view = render(h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }));
 
     fireEvent.click(view.getByRole('button', { name: 'Social' }));
     fireEvent.click(view.getByRole('button', { name: 'Start 25 min - Block selected sites' }));
-    await view.findByRole('alert');
-    view.rerender(h(StartForm, { settings: DEFAULT_SETTINGS, lists: refreshed }));
+    await view.findByText('fresh.example');
+
+    expect(requests().map((request: Request): Request['type'] => request.type)).toEqual([
+      'startSession',
+      'getLists',
+    ]);
+    expect(startCount).toBe(1);
+    expect(view.getByRole('alert').textContent).toContain('start again');
+
     fireEvent.click(view.getByRole('button', { name: 'Start 25 min - Block selected sites' }));
 
     await waitFor((): void => {

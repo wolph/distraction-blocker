@@ -1,8 +1,7 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
-import type { Ack } from '../shared/messages';
-import { sendRequest } from '../shared/messages';
-import { ackError } from '../shared/runtime-validation';
+import { type Ack, STALE_SESSION_RULES_ERROR, sendRequest } from '../shared/messages';
+import { ackError, isListsConfig } from '../shared/runtime-validation';
 import type {
   CategoryId,
   CycleConfig,
@@ -99,6 +98,16 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
         config: toSessionConfig({ ...draft, durationMin }),
       });
       const responseError: string | null = ackError(ack, 'Could not start session. Try again.');
+      if (responseError === STALE_SESSION_RULES_ERROR) {
+        const refreshed: unknown = await sendRequest({ type: 'getLists' });
+        if (!isListsConfig(refreshed)) {
+          setError('Defaults changed, but current lists could not be loaded. Reload the popup.');
+          return;
+        }
+        setDraft((current: SessionDraft): SessionDraft => rebaseSessionDraft(current, refreshed));
+        setError(STALE_SESSION_RULES_ERROR);
+        return;
+      }
       if (responseError !== null) setError(responseError);
     } catch {
       setError('Could not start the session. Try again.');

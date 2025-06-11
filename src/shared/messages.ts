@@ -57,6 +57,9 @@ export interface Rejection {
 }
 export type Ack = { ok: true } | Rejection;
 
+export const STALE_SESSION_RULES_ERROR: string =
+  'Your default blocking lists changed. Review this session and start again.';
+
 export type OnboardingOperationalFailure = Rejection & {
   conflict?: never;
   completed?: never;

@@ -6,6 +6,7 @@ import {
   evaluateUrl,
   listsFromSessionRules,
   normalizeSessionHostInput,
+  normalizeStoredSessionRules,
   registrableHost,
   restoreMatcherCache,
   validateRule,
@@ -131,6 +132,46 @@ describe('categories and exclusions', () => {
     expect(evaluateUrl(m, 'https://www.facebook.com/work', NONE, NOW).reason).toBe('excluded');
   });
 
+  it('lets an exact custom host rule override a category exception', (): void => {
+    const matcher = compileMatcher(
+      lists({
+        categories: { ...DEFAULT_LISTS.categories, social: true },
+        exclusions: { social: ['facebook.com'] },
+        custom: [{ kind: 'host', pattern: 'facebook.com' }],
+      }),
+      CATS,
+      'blacklist',
+    );
+
+    expect(evaluateUrl(matcher, 'https://www.facebook.com/work', NONE, NOW)).toEqual({
+      blocked: true,
+      reason: 'custom',
+      matchedPattern: 'facebook.com',
+    });
+  });
+
+  it('lets a matching custom regex override a category exception only for matching URLs', (): void => {
+    const pattern: string = '^https://(?:www\\.)?facebook\\.com/private';
+    const matcher = compileMatcher(
+      lists({
+        categories: { ...DEFAULT_LISTS.categories, social: true },
+        exclusions: { social: ['facebook.com'] },
+        custom: [{ kind: 'regex', pattern }],
+      }),
+      CATS,
+      'blacklist',
+    );
+
+    expect(evaluateUrl(matcher, 'https://www.facebook.com/private/report', NONE, NOW)).toEqual({
+      blocked: true,
+      reason: 'custom',
+      matchedPattern: pattern,
+    });
+    expect(evaluateUrl(matcher, 'https://www.facebook.com/work', NONE, NOW).reason).toBe(
+      'excluded',
+    );
+  });
+
   it.each(['BÜCHER.EXAMPLE', 'xn--bcher-kva.example', 'xn--bcher-kva.example.'])(
     'normalizes the %s spelling before applying category exclusions',
     (excludedHost: string): void => {
@@ -154,6 +195,30 @@ describe('categories and exclusions', () => {
 });
 
 describe('session-local rule snapshots', (): void => {
+  it('accepts only the exact stored predecessor and copies its categories into the baseline', (): void => {
+    const current: SessionRuleSnapshot = {
+      ...rulesFromLists(DEFAULT_LISTS),
+      sessionBlacklist: [{ kind: 'host', pattern: 'session-only.example' }],
+    };
+    const predecessor: Record<string, unknown> = structuredClone(current) as unknown as Record<
+      string,
+      unknown
+    >;
+    delete predecessor.baselineCategories;
+
+    expect(normalizeStoredSessionRules(predecessor)).toEqual({
+      ...current,
+      baselineCategories: current.categories,
+    });
+    expect(normalizeStoredSessionRules({ ...predecessor, unexpected: true })).toBeNull();
+    expect(
+      normalizeStoredSessionRules({
+        ...predecessor,
+        categories: { ...current.categories, social: 'yes' },
+      }),
+    ).toBeNull();
+  });
+
   it.each(['\n', '\t', '\r', '\v', '\f'])(
     'rejects leading and trailing %j controls before trimming',
     (control: string): void => {

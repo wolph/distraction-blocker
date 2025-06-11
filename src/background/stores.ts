@@ -1,4 +1,9 @@
-import { normalizeSessionRules, type StoredMatcherCache, validateRule } from '../core/matcher';
+import {
+  normalizeSessionRules,
+  normalizeStoredSessionRules,
+  type StoredMatcherCache,
+  validateRule,
+} from '../core/matcher';
 import { capAttempts, isDailyDate, parseDailyAgg } from '../core/stats';
 import {
   CATEGORY_IDS,
@@ -95,7 +100,13 @@ export interface DeferredBlockClaim {
 
 export type LegacySessionConfig = Omit<SessionConfig, 'rules'>;
 
-export type ParsedSessionConfig = SessionConfig | LegacySessionConfig;
+export type PredecessorSessionRuleSnapshot = Omit<SessionRuleSnapshot, 'baselineCategories'>;
+
+export type PredecessorSessionConfig = Omit<SessionConfig, 'rules'> & {
+  rules: PredecessorSessionRuleSnapshot;
+};
+
+export type ParsedSessionConfig = SessionConfig | LegacySessionConfig | PredecessorSessionConfig;
 
 export type ParsedSessionState = Omit<SessionState, 'config'> & {
   config: ParsedSessionConfig;
@@ -415,10 +426,12 @@ export function mergeRuntime(raw: unknown, now: number): ParsedRuntimeState {
 export function migrateRuntimeRules(runtime: ParsedRuntimeState, lists: ListsConfig): RuntimeState {
   if (isNormalizedRuntimeState(runtime)) return runtime;
   const session: ParsedSessionState | null = runtime.session;
-  if (session === null || hasSessionRules(session.config)) {
+  if (session === null) {
     throw new Error('parsed runtime normalization invariant failed');
   }
-  const rules: SessionRuleSnapshot | null = normalizeSessionRules(rulesFromLists(lists));
+  const rules: SessionRuleSnapshot | null = hasAnySessionRules(session.config)
+    ? normalizeStoredSessionRules(session.config.rules)
+    : normalizeSessionRules(rulesFromLists(lists));
   if (rules === null) throw new Error('cannot migrate runtime from invalid blocking lists');
   return {
     ...runtime,
@@ -429,12 +442,22 @@ export function migrateRuntimeRules(runtime: ParsedRuntimeState, lists: ListsCon
   };
 }
 
-function hasSessionRules(config: ParsedSessionConfig): config is SessionConfig {
+function hasAnySessionRules(
+  config: ParsedSessionConfig,
+): config is SessionConfig | PredecessorSessionConfig {
   return Object.hasOwn(config, 'rules');
 }
 
+function hasCurrentSessionRules(config: ParsedSessionConfig): config is SessionConfig {
+  return (
+    hasAnySessionRules(config) &&
+    isRecord(config.rules) &&
+    Object.hasOwn(config.rules, 'baselineCategories')
+  );
+}
+
 function isNormalizedRuntimeState(runtime: ParsedRuntimeState): runtime is RuntimeState {
-  return runtime.session === null || hasSessionRules(runtime.session.config);
+  return runtime.session === null || hasCurrentSessionRules(runtime.session.config);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -720,7 +743,12 @@ function parseSessionConfig(value: unknown): ParsedSessionConfig | null {
   const hasRules: boolean = Object.hasOwn(value, 'rules');
   if (!hasExactKeys(value, hasRules ? [...baseKeys, 'rules'] : baseKeys)) return null;
   const cycling: CycleConfig | null = parseCycleConfig(value.cycling);
-  const rules: SessionRuleSnapshot | null = hasRules ? normalizeSessionRules(value.rules) : null;
+  const currentRules: SessionRuleSnapshot | null = hasRules
+    ? normalizeSessionRules(value.rules)
+    : null;
+  const storedRules: SessionRuleSnapshot | null = hasRules
+    ? normalizeStoredSessionRules(value.rules)
+    : null;
   if (
     (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
     (value.strictness !== 'flexible' &&
@@ -731,7 +759,7 @@ function parseSessionConfig(value: unknown): ParsedSessionConfig | null {
     typeof value.intention !== 'string' ||
     (value.source !== 'manual' && value.source !== 'schedule') ||
     !isNullableString(value.scheduleEntryId) ||
-    (hasRules && rules === null)
+    (hasRules && storedRules === null)
   ) {
     return null;
   }
@@ -750,7 +778,19 @@ function parseSessionConfig(value: unknown): ParsedSessionConfig | null {
     source: value.source,
     scheduleEntryId: value.scheduleEntryId,
   };
-  if (rules !== null) return { ...config, rules };
+  if (currentRules !== null) return { ...config, rules: currentRules };
+  if (storedRules !== null) {
+    const predecessorRules: PredecessorSessionRuleSnapshot = {
+      baselineRevision: storedRules.baselineRevision,
+      categories: storedRules.categories,
+      exclusions: storedRules.exclusions,
+      permanentBlacklist: storedRules.permanentBlacklist,
+      permanentAllowlist: storedRules.permanentAllowlist,
+      sessionBlacklist: storedRules.sessionBlacklist,
+      sessionAllowlist: storedRules.sessionAllowlist,
+    };
+    return { ...config, rules: predecessorRules };
+  }
   return config;
 }
 

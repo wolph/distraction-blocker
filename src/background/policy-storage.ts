@@ -51,6 +51,7 @@ import { storageValuesEqual } from './storage-value-equality';
 import {
   mergeRuntime,
   migrateRuntimeRules,
+  type ParsedRuntimeState,
   parseBank,
   parseStreak,
   type RuntimeState,
@@ -1680,13 +1681,11 @@ export function createPolicyStorage(
     }
     const runtimeNow: number = new Date(`${runtimeDate}T12:00:00`).getTime();
     if (!Number.isFinite(runtimeNow)) throw new Error('committed runtime generation is invalid');
-    const runtime: RuntimeState = migrateRuntimeRules(
-      mergeRuntime(value.runtime, runtimeNow),
-      policy.lists,
-    );
-    if (!valuesEqual(runtime, value.runtime)) {
+    const parsedRuntime: ParsedRuntimeState = mergeRuntime(value.runtime, runtimeNow);
+    if (!valuesEqual(parsedRuntime, value.runtime)) {
       throw new Error('committed runtime generation is invalid');
     }
+    const runtime: RuntimeState = migrateRuntimeRules(parsedRuntime, policy.lists);
     const journal: SyncJournal = parseJournal(value.journal, false);
     const hasAggregateAuthority: boolean = value.aggregates !== undefined;
     if (hasAggregateAuthority !== (value.aggregateTombstones !== undefined)) {

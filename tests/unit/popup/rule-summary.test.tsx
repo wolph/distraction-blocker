@@ -118,6 +118,32 @@ describe('RuleSummary', (): void => {
     expect(view.queryByText('facebook.com')).toBeNull();
   });
 
+  it('applies whole-host overrides without hiding a protocol-specific regex exception', (): void => {
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      categories: { ...DEFAULT_LISTS.categories, social: true },
+      exclusions: { social: ['facebook.com', 'instagram.com'] },
+      custom: [
+        { kind: 'host', pattern: 'facebook.com' },
+        { kind: 'regex', pattern: '^https://instagram\\.com/' },
+      ],
+    };
+    const view = render(
+      <RuleSummary
+        draft={createSessionDraft(DEFAULT_SETTINGS, lists)}
+        categoriesEditable={true}
+        onCategoryToggle={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    expect(view.getByRole('button', { name: 'Social media' }).textContent).toContain('1 site');
+    expect(view.getByText('Allowed exceptions')).toBeTruthy();
+    expect(view.getAllByText('facebook.com')).toHaveLength(2);
+    expect(view.getAllByText('instagram.com')).toHaveLength(1);
+    expect(view.getByText('^https://instagram\\.com/')).toBeTruthy();
+  });
+
   it('hides categories and shows every permanent and session allow rule in allow-only mode', (): void => {
     const lists: ListsConfig = {
       ...DEFAULT_LISTS,

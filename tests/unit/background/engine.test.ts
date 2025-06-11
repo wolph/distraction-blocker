@@ -247,6 +247,42 @@ const manualConfig: SessionConfig = {
   rules: rulesFromLists(ENGINE_LISTS),
 };
 
+it('migrates the exact predecessor rule snapshot and enforces its active session rules', (): void => {
+  const currentRules: SessionRuleSnapshot = {
+    ...rulesFromLists(ENGINE_LISTS),
+    sessionBlacklist: [{ kind: 'host', pattern: 'session-only.example' }],
+    sessionAllowlist: [{ kind: 'host', pattern: 'session-allow.example' }],
+  };
+  const predecessorRules: Record<string, unknown> = structuredClone(
+    currentRules,
+  ) as unknown as Record<string, unknown>;
+  delete predecessorRules.baselineCategories;
+  const storedSession = startSession(structuredClone(manualConfig), T0, 'predecessor-session');
+  (storedSession.config as unknown as { rules: unknown }).rules = predecessorRules;
+
+  const runtime: RuntimeState = migrateRuntimeRules(
+    mergeRuntime({ session: storedSession }, T0),
+    ENGINE_LISTS,
+  );
+  const harness: Harness = makeEngine({ runtime, lists: ENGINE_LISTS });
+
+  expect(runtime.session?.config.rules).toEqual({
+    ...currentRules,
+    baselineCategories: currentRules.categories,
+  });
+  expect(runtime.session?.config.rules.sessionBlacklist).toEqual([
+    { kind: 'host', pattern: 'session-only.example' },
+  ]);
+  expect(runtime.session?.config.rules.sessionAllowlist).toEqual([
+    { kind: 'host', pattern: 'session-allow.example' },
+  ]);
+  expect(harness.engine.verdictFor('https://session-only.example/work')).toEqual({
+    blocked: true,
+    reason: 'custom',
+    matchedPattern: 'session-only.example',
+  });
+});
+
 const scheduledEntry: ScheduleEntry = {
   id: 'weekday-focus',
   days: [0, 1, 2, 3, 4, 5, 6],

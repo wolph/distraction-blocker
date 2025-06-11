@@ -298,6 +298,30 @@ export function normalizeSessionRules(value: unknown): SessionRuleSnapshot | nul
   };
 }
 
+/** Accepts current snapshots plus the exact persisted predecessor without baselineCategories. */
+export function normalizeStoredSessionRules(value: unknown): SessionRuleSnapshot | null {
+  const current: SessionRuleSnapshot | null = normalizeSessionRules(value);
+  if (current !== null) return current;
+  if (
+    !isRecord(value) ||
+    !hasExactOwnKeys(value, [
+      'baselineRevision',
+      'categories',
+      'exclusions',
+      'permanentBlacklist',
+      'permanentAllowlist',
+      'sessionBlacklist',
+      'sessionAllowlist',
+    ])
+  ) {
+    return null;
+  }
+  return normalizeSessionRules({
+    ...value,
+    baselineCategories: value.categories,
+  });
+}
+
 function sameValue(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -348,6 +372,28 @@ function hostInSet(
   }
 }
 
+function hostWithProvenance(
+  host: string,
+  hosts: ReadonlyMap<string, HostProvenance>,
+  provenance: HostProvenance,
+): string | null {
+  let probe: string = host;
+  for (;;) {
+    if (hosts.get(probe) === provenance) return probe;
+    const dot: number = probe.indexOf('.');
+    if (dot === -1) return null;
+    probe = probe.slice(dot + 1);
+  }
+}
+
+/** True only when a custom host rule covers the complete category host. */
+export function hostRuleCoversHost(rule: Rule, hostValue: string): boolean {
+  if (rule.kind !== 'host' || validateRule(rule) !== null) return false;
+  const host: string | null = normalizeHost(hostValue);
+  const pattern: string | null = normalizeHost(rule.pattern);
+  return host !== null && pattern !== null && hostInSet(host, new Set<string>([pattern])) !== null;
+}
+
 export function compileMatcher(
   lists: ListsConfig,
   categories: CategoryList[],
@@ -365,7 +411,7 @@ export function compileMatcher(
       if (validateRule(rule) !== null) continue;
       if (rule.kind === 'host') {
         const host: string | null = normalizeHost(rule.pattern);
-        if (host !== null && !hosts.has(host)) hosts.set(host, via);
+        if (host !== null && (via === 'custom' || !hosts.has(host))) hosts.set(host, via);
       } else {
         regexes.push({ source: rule.pattern, re: new RegExp(rule.pattern, 'i'), via });
       }
@@ -575,7 +621,7 @@ export function registrableHost(url: string): string | null {
   return getDomain(url);
 }
 
-/** First match wins: always-allow, unlocks, exclusions, then rules, then mode default. */
+/** First match wins: always-allow, unlocks, custom rules, exclusions, categories, then default. */
 export function evaluateUrl(
   matcher: CompiledMatcher,
   url: string,
@@ -616,17 +662,21 @@ export function evaluateUrl(
     }
     return { blocked: true, reason: 'whitelist-miss', matchedPattern: null };
   }
-  if (hostInSet(host, matcher.excluded) !== null) return allow('excluded');
-  const hit: string | null = hostInSet(host, matcher.hosts);
-  if (hit !== null) {
+  const customHit: string | null = hostWithProvenance(host, matcher.hosts, 'custom');
+  if (customHit !== null) {
     return {
       blocked: true,
-      reason: matcher.hosts.get(hit) === 'category' ? 'category' : 'custom',
-      matchedPattern: hit,
+      reason: 'custom',
+      matchedPattern: customHit,
     };
   }
   for (const r of matcher.regexes) {
     if (r.re.test(url)) return { blocked: true, reason: 'custom', matchedPattern: r.source };
+  }
+  if (hostInSet(host, matcher.excluded) !== null) return allow('excluded');
+  const categoryHit: string | null = hostWithProvenance(host, matcher.hosts, 'category');
+  if (categoryHit !== null) {
+    return { blocked: true, reason: 'category', matchedPattern: categoryHit };
   }
   return allow('default');
 }

@@ -1,5 +1,6 @@
 import type { VNode } from 'preact';
 import { ALL_CATEGORIES } from '../core/categories';
+import { hostRuleCoversHost } from '../core/matcher';
 import { HelpPopover } from '../shared/HelpPopover';
 import type { CategoryId, CategoryList, Rule } from '../shared/types';
 import type { SessionDraft } from './session-draft';
@@ -56,14 +57,18 @@ function scrollRuleList(event: KeyboardEvent): void {
   region.scrollTop += delta;
 }
 
+function customHostRuleOverridesException(host: string, rules: Rule[]): boolean {
+  return rules.some((rule: Rule): boolean => hostRuleCoversHost(rule, host));
+}
+
 function BlockRules({ draft, categoriesEditable, onCategoryToggle }: RuleSummaryProps): VNode {
   const extraRules: Rule[] = [...draft.rules.permanentBlacklist, ...draft.rules.sessionBlacklist];
   const exclusionRows: Array<{ category: CategoryList; host: string }> = ALL_CATEGORIES.flatMap(
     (category: CategoryList): Array<{ category: CategoryList; host: string }> =>
       draft.rules.categories[category.id]
-        ? (draft.rules.exclusions[category.id] ?? []).map(
-            (host: string): { category: CategoryList; host: string } => ({ category, host }),
-          )
+        ? (draft.rules.exclusions[category.id] ?? [])
+            .filter((host: string): boolean => !customHostRuleOverridesException(host, extraRules))
+            .map((host: string): { category: CategoryList; host: string } => ({ category, host }))
         : [],
   );
 
@@ -75,7 +80,9 @@ function BlockRules({ draft, categoriesEditable, onCategoryToggle }: RuleSummary
           {ALL_CATEGORIES.map((category: CategoryList): VNode => {
             const enabled: boolean = draft.rules.categories[category.id];
             const exclusions: ReadonlySet<string> = new Set(
-              draft.rules.exclusions[category.id] ?? [],
+              (draft.rules.exclusions[category.id] ?? []).filter(
+                (host: string): boolean => !customHostRuleOverridesException(host, extraRules),
+              ),
             );
             const effectiveHosts: string[] = category.hosts.filter(
               (host: string): boolean => !exclusions.has(host),

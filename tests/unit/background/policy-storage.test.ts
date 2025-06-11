@@ -777,6 +777,64 @@ describe('PolicyStorage', (): void => {
     expect(await restarted.loadSnapshot()).toEqual(SNAPSHOT);
   });
 
+  it('recovers and canonicalizes predecessor session rules from an interrupted generation', async (): Promise<void> => {
+    const now: number = new Date(2026, 7, 31, 12, 0).getTime();
+    const currentRules = rulesFromLists(DEFAULT_LISTS);
+    const predecessorRules: Record<string, unknown> = structuredClone(
+      currentRules,
+    ) as unknown as Record<string, unknown>;
+    delete predecessorRules.baselineCategories;
+    const runtime: RuntimeState = {
+      ...emptyRuntime(now),
+      session: {
+        sessionId: 'predecessor-session',
+        config: {
+          mode: 'blacklist',
+          strictness: 'friction',
+          durationMin: 25,
+          cycling: null,
+          intention: 'finish migration',
+          source: 'manual',
+          scheduleEntryId: null,
+          rules: predecessorRules,
+        },
+        startedAt: now,
+        sessionEndsAt: now + 25 * 60_000,
+        phase: 'focus',
+        phaseStartedAt: now,
+        phaseEndsAt: now + 25 * 60_000,
+        cycleIndex: 0,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+    } as unknown as RuntimeState;
+    const local: FakeStorage = fakeStorage();
+    const first: PolicyStorage = policyStorage(local, fakeStorage());
+    let interruptMaterialization: boolean = true;
+    vi.mocked(local.area.set).mockImplementation(
+      async (items: Record<string, unknown>): Promise<void> => {
+        if (interruptMaterialization && Object.hasOwn(items, LOCAL_SETTINGS)) {
+          interruptMaterialization = false;
+          throw new Error('predecessor materialization interrupted');
+        }
+        Object.assign(local.state.values, structuredClone(items));
+      },
+    );
+
+    await expect(first.importLegacy(SNAPSHOT, runtime, { sets: {}, removes: [] })).rejects.toThrow(
+      'predecessor materialization interrupted',
+    );
+    expect(local.state.values[LOCAL_POLICY_COMMIT]).toMatchObject({ source: 'generation' });
+
+    const restarted: PolicyStorage = policyStorage(local, fakeStorage());
+    await restarted.initialize();
+
+    expect(local.state.values[LOCAL_POLICY_COMMIT]).toMatchObject({ source: 'direct' });
+    expect((local.state.values[LOCAL_RUNTIME] as RuntimeState).session?.config.rules).toEqual(
+      currentRules,
+    );
+  });
+
   it('recovers effective legacy aggregate authority from a committed migration generation', async (): Promise<void> => {
     const setKey: string = syncAggKey('legacy-device', '2026-08-30');
     const removeKey: string = syncAggKey('legacy-device', '2026-08-29');
