@@ -395,10 +395,86 @@ describe('ActiveView', () => {
     expect(view.getByText('Type: second phrase')).toBeTruthy();
   });
 
+  it('resets typed, error, and pending state when only the required phrase changes', async (): Promise<void> => {
+    const pending: Deferred<unknown> = deferred<unknown>();
+    let confirmationCount: number = 0;
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getStats') return statsBundle;
+      if (request.type !== 'confirmGate') return { ok: true };
+      confirmationCount += 1;
+      return confirmationCount === 1
+        ? { ok: false, error: 'The old phrase was rejected.' }
+        : pending.promise;
+    });
+    const first: SessionSnapshot = gateSnap();
+    if (first.gate === null) throw new Error('gate fixture must contain a gate');
+    const initialGate: GateState = { ...first.gate, requiredPhrase: 'first phrase' };
+    const initial: SessionSnapshot = { ...first, gate: initialGate };
+    const view = render(h(ActiveView, { snapshot: initial, now: NOW + 9_000 }));
+    const input: HTMLInputElement = view.getByRole('textbox') as HTMLInputElement;
+
+    fireEvent.input(input, { target: { value: 'first phrase' } });
+    fireEvent.click(view.getByRole('button', { name: 'Take the pause' }));
+    await waitFor((): void => {
+      expect(view.getByRole('alert').textContent).toBe('The old phrase was rejected.');
+    });
+
+    const second: SessionSnapshot = {
+      ...initial,
+      gate: { ...initialGate, requiredPhrase: 'second phrase' },
+    };
+    view.rerender(h(ActiveView, { snapshot: second, now: NOW + 9_000 }));
+
+    expect((view.getByRole('textbox') as HTMLInputElement).value).toBe('');
+    expect(view.queryByRole('alert')).toBeNull();
+    expect(
+      (
+        view.getByRole('button', {
+          name: 'Never mind, back to work',
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
+
+    fireEvent.input(view.getByRole('textbox'), { target: { value: 'second phrase' } });
+    fireEvent.click(view.getByRole('button', { name: 'Take the pause' }));
+    expect(
+      (
+        view.getByRole('button', {
+          name: 'Never mind, back to work',
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+
+    const third: SessionSnapshot = {
+      ...initial,
+      gate: { ...initialGate, requiredPhrase: 'third phrase' },
+    };
+    view.rerender(h(ActiveView, { snapshot: third, now: NOW + 9_000 }));
+
+    expect((view.getByRole('textbox') as HTMLInputElement).value).toBe('');
+    expect(view.queryByRole('alert')).toBeNull();
+    expect(
+      (
+        view.getByRole('button', {
+          name: 'Never mind, back to work',
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
+    pending.resolve({ ok: true });
+  });
+
   it('styles disabled end-session controls as inactive', (): void => {
     const css: string = readFileSync(resolve(process.cwd(), 'src/popup/popup.css'), 'utf8');
     expect(css).toMatch(/\.cancel-link:disabled\s*\{[^}]*cursor:\s*default/s);
     expect(css).toMatch(/\.cancel-link:disabled\s*\{[^}]*text-decoration:\s*none/s);
+  });
+
+  it('keeps disabled primary popup controls out of interactive hover styling', (): void => {
+    const css: string = readFileSync(resolve(process.cwd(), 'src/popup/popup.css'), 'utf8');
+
+    expect(css).toMatch(/\.start-button:hover:not\(:disabled\)\s*\{/);
+    expect(css).toMatch(/\.start-button:disabled\s*\{[^}]*cursor:\s*default/s);
+    expect(css).toMatch(/\.start-button:disabled\s*\{[^}]*opacity:\s*0\.65/s);
   });
 
   it.each([

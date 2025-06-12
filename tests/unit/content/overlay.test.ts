@@ -80,6 +80,35 @@ describe('overlay', () => {
     expect(styles).not.toContain('--overlay-danger');
   });
 
+  it('styles a pending primary gate control as inactive', (): void => {
+    const response: Deferred<unknown> = deferred<unknown>();
+    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+      async (): Promise<unknown> => response.promise,
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const snapshot: SessionSnapshot = focusSnap();
+    showOverlay(verdict, {
+      ...snapshot,
+      gate: {
+        kind: 'cancel',
+        host: null,
+        openedAt: Date.now() - 2_000,
+        readyAt: Date.now() - 1_000,
+        requiredPhrase: null,
+      },
+    });
+    const root: ShadowRoot = shadowRoot();
+    const primary: HTMLButtonElement = root.querySelector('.primary') as HTMLButtonElement;
+    const styles: string = root.querySelector('style')?.textContent ?? '';
+
+    primary.click();
+
+    expect(primary.disabled).toBe(true);
+    expect(styles).toMatch(/\.primary:hover:not\(:disabled\)\s*\{/);
+    expect(styles).toMatch(/\.primary:disabled\s*\{[^}]*cursor:\s*default/s);
+    expect(styles).toMatch(/\.primary:disabled\s*\{[^}]*opacity:\s*0\.55/s);
+  });
+
   it('depends only on shared application modules', () => {
     const source: string = readFileSync(resolve('src/content/overlay.ts'), 'utf8');
 

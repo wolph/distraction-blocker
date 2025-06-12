@@ -217,7 +217,8 @@ button:disabled { cursor: default; }
   background: #22c55e; color: #052e16; font-weight: 700;
   font-size: 1.25rem; padding: 1rem 2.2rem; border-radius: 999px;
 }
-.primary:hover { background: #4ade80; }
+.primary:hover:not(:disabled) { background: #4ade80; }
+.primary:disabled { cursor: default; opacity: 0.55; }
 .phrase-label { font-size: 0.9rem; color: var(--overlay-muted); }
 .phrase-text { font-size: 0.95rem; color: var(--overlay-intention); font-style: italic; overflow-wrap: anywhere; }
 .phrase {
