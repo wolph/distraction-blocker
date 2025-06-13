@@ -52,7 +52,7 @@ function useActiveHost(): ActiveHostState {
 }
 
 function gateIdentity(gate: NonNullable<SessionSnapshot['gate']>): string {
-  return `${gate.kind}\u0000${gate.host ?? ''}\u0000${gate.openedAt}\u0000${gate.readyAt}\u0000${gate.requiredPhrase ?? ''}`;
+  return JSON.stringify([gate.kind, gate.host, gate.openedAt, gate.readyAt, gate.requiredPhrase]);
 }
 
 function useFocusedTodayMs(): { ms: number | null; error: boolean } {

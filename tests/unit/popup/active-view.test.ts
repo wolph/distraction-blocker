@@ -463,6 +463,53 @@ describe('ActiveView', () => {
     pending.resolve({ ok: true });
   });
 
+  it('distinguishes null and empty required phrases when resetting gate state', async (): Promise<void> => {
+    const pending: Deferred<unknown> = deferred<unknown>();
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getStats') return statsBundle;
+      if (request.type === 'confirmGate') return { ok: false, error: 'The old gate failed.' };
+      if (request.type === 'abandonGate') return pending.promise;
+      return { ok: true };
+    });
+    const initial: SessionSnapshot = gateSnap();
+    if (initial.gate === null) throw new Error('gate fixture must contain a gate');
+    const view = render(h(ActiveView, { snapshot: initial, now: NOW + 9_000 }));
+
+    fireEvent.click(view.getByRole('button', { name: 'Take the pause' }));
+    await waitFor((): void => {
+      expect(view.getByRole('alert').textContent).toBe('The old gate failed.');
+    });
+
+    const emptyPhrase: SessionSnapshot = {
+      ...initial,
+      gate: { ...initial.gate, requiredPhrase: '' },
+    };
+    view.rerender(h(ActiveView, { snapshot: emptyPhrase, now: NOW + 9_000 }));
+
+    expect((view.getByRole('textbox') as HTMLInputElement).value).toBe('');
+    expect(view.queryByRole('alert')).toBeNull();
+    fireEvent.click(view.getByRole('button', { name: 'Never mind, back to work' }));
+    expect(
+      (
+        view.getByRole('button', {
+          name: 'Never mind, back to work',
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+
+    view.rerender(h(ActiveView, { snapshot: initial, now: NOW + 9_000 }));
+
+    expect(view.queryByRole('textbox')).toBeNull();
+    expect(
+      (
+        view.getByRole('button', {
+          name: 'Never mind, back to work',
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
+    pending.resolve({ ok: true });
+  });
+
   it('styles disabled end-session controls as inactive', (): void => {
     const css: string = readFileSync(resolve(process.cwd(), 'src/popup/popup.css'), 'utf8');
     expect(css).toMatch(/\.cancel-link:disabled\s*\{[^}]*cursor:\s*default/s);
