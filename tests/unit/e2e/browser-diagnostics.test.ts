@@ -2,6 +2,8 @@ import type { BrowserContext, ConsoleMessage, Page, Request, Worker } from '@pla
 import { describe, expect, it } from 'vitest';
 import type { BrowserDiagnostics } from '../../../tests/e2e/browser-diagnostics';
 import {
+  assertNoUnexpectedBrowserDiagnostics,
+  beginIntentionalWorkerStopDiagnosticWindow,
   closeAndAssertBrowserDiagnostics,
   createBrowserDiagnostics,
   monitorBrowserContext,
@@ -130,6 +132,40 @@ describe('monitorBrowserContext', (): void => {
       'chrome-extension://test/popup.html: navigation failed',
     ]);
     expect(diagnostics.pageErrors).toEqual(['page crashed']);
+  });
+
+  it('accepts exact No SW only inside an explicit intentional worker-stop window', (): void => {
+    const context: FakeContext = fakeContext();
+    const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
+    const page: FakeEmitter = new FakeEmitter();
+    const worker: FakeEmitter = new FakeEmitter();
+
+    monitorBrowserContext(context as unknown as BrowserContext, diagnostics);
+    context.emit('page', page as unknown as Page);
+    context.emit('serviceworker', worker as unknown as Worker);
+    const closeWindow: () => void = beginIntentionalWorkerStopDiagnosticWindow(diagnostics);
+    page.emit('console', errorMessage('No SW'));
+    worker.emit('console', errorMessage('No SW'));
+    closeWindow();
+
+    expect(diagnostics.intentionalWorkerStopMessages).toEqual(['No SW', 'No SW']);
+    expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).not.toThrow();
+  });
+
+  it('keeps exact No SW fatal outside the intentional worker-stop window', (): void => {
+    const context: FakeContext = fakeContext();
+    const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
+    const page: FakeEmitter = new FakeEmitter();
+
+    monitorBrowserContext(context as unknown as BrowserContext, diagnostics);
+    context.emit('page', page as unknown as Page);
+    const closeWindow: () => void = beginIntentionalWorkerStopDiagnosticWindow(diagnostics);
+    closeWindow();
+    page.emit('console', errorMessage('No SW'));
+
+    expect(diagnostics.intentionalWorkerStopMessages).toEqual([]);
+    expect(diagnostics.consoleErrors).toEqual(['No SW']);
+    expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).toThrow('No SW');
   });
 });
 

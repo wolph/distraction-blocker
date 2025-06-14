@@ -19,6 +19,7 @@ import type {
 } from '../../src/shared/types';
 import {
   type BrowserDiagnostics,
+  beginIntentionalWorkerStopDiagnosticWindow,
   closeAndAssertBrowserDiagnostics,
   createBrowserDiagnostics,
   monitorBrowserContext,
@@ -158,30 +159,42 @@ async function restartMonitoredWorker(launch: ExtensionLaunch): Promise<Extensio
         version.scriptURL.startsWith(scriptPrefix) && version.runningStatus === 'running',
       'running extension worker version is unavailable',
     );
-    await session.send('ServiceWorker.stopWorker', { versionId: running.versionId });
-    await waitForServiceWorkerVersion(
-      (): readonly ServiceWorkerVersionInfo[] =>
-        stoppedVersionIds.has(running.versionId) ? [running] : [],
-      (version: ServiceWorkerVersionInfo): boolean => version.versionId === running.versionId,
-      'extension worker did not stop',
+    const closeDiagnosticWindow: () => void = beginIntentionalWorkerStopDiagnosticWindow(
+      launch.diagnostics,
     );
-    await launch.extPage.evaluate(
-      async (): Promise<unknown> => await chrome.runtime.sendMessage({ type: 'getSetupState' }),
-    );
-    await waitForServiceWorkerVersion(
-      (): readonly ServiceWorkerVersionInfo[] => versions,
-      (version: ServiceWorkerVersionInfo): boolean =>
-        version.scriptURL.startsWith(scriptPrefix) && version.runningStatus === 'running',
-      'extension worker did not restart',
-    );
-    const worker: Worker =
-      launch.context
-        .serviceWorkers()
-        .find((candidate: Worker): boolean => candidate.url().startsWith(scriptPrefix)) ??
-      launch.worker;
-    await worker.evaluate(async (): Promise<void> => {
-      await chrome.storage.local.get(null);
-    });
+    let worker: Worker;
+    try {
+      await session.send('ServiceWorker.stopWorker', { versionId: running.versionId });
+      await waitForServiceWorkerVersion(
+        (): readonly ServiceWorkerVersionInfo[] =>
+          stoppedVersionIds.has(running.versionId) ? [running] : [],
+        (version: ServiceWorkerVersionInfo): boolean => version.versionId === running.versionId,
+        'extension worker did not stop',
+      );
+      await launch.extPage.evaluate(
+        async (): Promise<unknown> => await chrome.runtime.sendMessage({ type: 'getSetupState' }),
+      );
+      await waitForServiceWorkerVersion(
+        (): readonly ServiceWorkerVersionInfo[] => versions,
+        (version: ServiceWorkerVersionInfo): boolean =>
+          version.scriptURL.startsWith(scriptPrefix) && version.runningStatus === 'running',
+        'extension worker did not restart',
+      );
+      worker =
+        launch.context
+          .serviceWorkers()
+          .find((candidate: Worker): boolean => candidate.url().startsWith(scriptPrefix)) ??
+        launch.worker;
+      await worker.evaluate(async (): Promise<void> => {
+        await chrome.storage.local.get(null);
+      });
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 0);
+      });
+    } finally {
+      closeDiagnosticWindow();
+    }
+    await launch.extPage.reload();
     return { ...launch, worker };
   } finally {
     await session.detach();

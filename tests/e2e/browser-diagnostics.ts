@@ -9,6 +9,7 @@ import type {
 export interface BrowserDiagnostics {
   blockedRequests: string[];
   consoleErrors: string[];
+  intentionalWorkerStopMessages: string[];
   pageErrors: string[];
   requestErrors: string[];
   shutdownWorkerMessages: string[];
@@ -17,11 +18,15 @@ export interface BrowserDiagnostics {
 
 export const EXPECTED_BROWSER_SHUTDOWN_MESSAGE: string =
   'focus-lock background error Error: The browser is shutting down.';
+export const EXPECTED_INTENTIONAL_WORKER_STOP_MESSAGE: string = 'No SW';
+
+const intentionalWorkerStopWindows: WeakSet<BrowserDiagnostics> = new WeakSet<BrowserDiagnostics>();
 
 export function createBrowserDiagnostics(): BrowserDiagnostics {
   return {
     blockedRequests: [],
     consoleErrors: [],
+    intentionalWorkerStopMessages: [],
     pageErrors: [],
     requestErrors: [],
     shutdownWorkerMessages: [],
@@ -29,17 +34,51 @@ export function createBrowserDiagnostics(): BrowserDiagnostics {
   };
 }
 
+export function beginIntentionalWorkerStopDiagnosticWindow(
+  diagnostics: BrowserDiagnostics,
+): () => void {
+  if (intentionalWorkerStopWindows.has(diagnostics)) {
+    throw new Error('intentional worker-stop diagnostic window is already open');
+  }
+  intentionalWorkerStopWindows.add(diagnostics);
+  let closed: boolean = false;
+  return (): void => {
+    if (closed) return;
+    closed = true;
+    intentionalWorkerStopWindows.delete(diagnostics);
+  };
+}
+
+function classifyIntentionalWorkerStopMessage(
+  diagnostics: BrowserDiagnostics,
+  message: string,
+): boolean {
+  if (
+    message !== EXPECTED_INTENTIONAL_WORKER_STOP_MESSAGE ||
+    !intentionalWorkerStopWindows.has(diagnostics)
+  ) {
+    return false;
+  }
+  diagnostics.intentionalWorkerStopMessages.push(message);
+  return true;
+}
+
 function errorFromUnknown(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
 }
 
 export function assertNoUnexpectedBrowserDiagnostics(diagnostics: BrowserDiagnostics): void {
+  const invalidIntentionalWorkerStopMessages: string[] =
+    diagnostics.intentionalWorkerStopMessages.filter(
+      (message: string): boolean => message !== EXPECTED_INTENTIONAL_WORKER_STOP_MESSAGE,
+    );
   const invalidShutdownMessages: string[] = diagnostics.shutdownWorkerMessages.filter(
     (message: string): boolean => message !== EXPECTED_BROWSER_SHUTDOWN_MESSAGE,
   );
   const unexpected: Record<string, string[]> = {
     blockedRequests: diagnostics.blockedRequests,
     consoleErrors: diagnostics.consoleErrors,
+    intentionalWorkerStopMessages: invalidIntentionalWorkerStopMessages,
     pageErrors: diagnostics.pageErrors,
     requestErrors: diagnostics.requestErrors,
     shutdownWorkerMessages: invalidShutdownMessages,
@@ -83,6 +122,7 @@ export function monitorBrowserContext(
     monitoredPages.add(page);
     page.on('console', (message: ConsoleMessage): void => {
       if (message.type() !== 'error') return;
+      if (classifyIntentionalWorkerStopMessage(diagnostics, message.text())) return;
       const location: string = message.location().url;
       diagnostics.consoleErrors.push(
         location === '' ? message.text() : `${location}: ${message.text()}`,
@@ -101,6 +141,7 @@ export function monitorBrowserContext(
         diagnostics.shutdownWorkerMessages.push(message.text());
         return;
       }
+      if (classifyIntentionalWorkerStopMessage(diagnostics, message.text())) return;
       diagnostics.workerErrors.push(message.text());
     });
   };
