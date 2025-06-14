@@ -18,7 +18,8 @@ export interface BrowserDiagnostics {
 
 export const EXPECTED_BROWSER_SHUTDOWN_MESSAGE: string =
   'focus-lock background error Error: The browser is shutting down.';
-export const EXPECTED_INTENTIONAL_WORKER_STOP_MESSAGE: string = 'No SW';
+export const EXPECTED_INTENTIONAL_WORKER_STOP_MESSAGE: string =
+  'focus-lock background error Error: No SW';
 
 const intentionalWorkerStopWindows: WeakSet<BrowserDiagnostics> = new WeakSet<BrowserDiagnostics>();
 
@@ -51,15 +52,16 @@ export function beginIntentionalWorkerStopDiagnosticWindow(
 
 function classifyIntentionalWorkerStopMessage(
   diagnostics: BrowserDiagnostics,
-  message: string,
+  message: ConsoleMessage,
 ): boolean {
   if (
-    message !== EXPECTED_INTENTIONAL_WORKER_STOP_MESSAGE ||
+    message.type() !== 'error' ||
+    message.text() !== EXPECTED_INTENTIONAL_WORKER_STOP_MESSAGE ||
     !intentionalWorkerStopWindows.has(diagnostics)
   ) {
     return false;
   }
-  diagnostics.intentionalWorkerStopMessages.push(message);
+  diagnostics.intentionalWorkerStopMessages.push(message.text());
   return true;
 }
 
@@ -122,7 +124,7 @@ export function monitorBrowserContext(
     monitoredPages.add(page);
     page.on('console', (message: ConsoleMessage): void => {
       if (message.type() !== 'error') return;
-      if (classifyIntentionalWorkerStopMessage(diagnostics, message.text())) return;
+      if (classifyIntentionalWorkerStopMessage(diagnostics, message)) return;
       const location: string = message.location().url;
       diagnostics.consoleErrors.push(
         location === '' ? message.text() : `${location}: ${message.text()}`,
@@ -141,7 +143,7 @@ export function monitorBrowserContext(
         diagnostics.shutdownWorkerMessages.push(message.text());
         return;
       }
-      if (classifyIntentionalWorkerStopMessage(diagnostics, message.text())) return;
+      if (classifyIntentionalWorkerStopMessage(diagnostics, message)) return;
       diagnostics.workerErrors.push(message.text());
     });
   };

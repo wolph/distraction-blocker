@@ -11,6 +11,8 @@ import {
 
 type Listener = (value: unknown) => void;
 
+const FULL_INTENTIONAL_WORKER_STOP_MESSAGE: string = 'focus-lock background error Error: No SW';
+
 class FakeEmitter {
   private readonly listeners: Map<string, Listener[]> = new Map<string, Listener[]>();
 
@@ -134,7 +136,7 @@ describe('monitorBrowserContext', (): void => {
     expect(diagnostics.pageErrors).toEqual(['page crashed']);
   });
 
-  it('accepts exact No SW only inside an explicit intentional worker-stop window', (): void => {
+  it('accepts the exact full diagnostic from page and worker consoles only inside the window', (): void => {
     const context: FakeContext = fakeContext();
     const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
     const page: FakeEmitter = new FakeEmitter();
@@ -144,15 +146,18 @@ describe('monitorBrowserContext', (): void => {
     context.emit('page', page as unknown as Page);
     context.emit('serviceworker', worker as unknown as Worker);
     const closeWindow: () => void = beginIntentionalWorkerStopDiagnosticWindow(diagnostics);
-    page.emit('console', errorMessage('No SW'));
-    worker.emit('console', errorMessage('No SW'));
+    page.emit('console', errorMessage(FULL_INTENTIONAL_WORKER_STOP_MESSAGE));
+    worker.emit('console', errorMessage(FULL_INTENTIONAL_WORKER_STOP_MESSAGE));
     closeWindow();
 
-    expect(diagnostics.intentionalWorkerStopMessages).toEqual(['No SW', 'No SW']);
+    expect(diagnostics.intentionalWorkerStopMessages).toEqual([
+      FULL_INTENTIONAL_WORKER_STOP_MESSAGE,
+      FULL_INTENTIONAL_WORKER_STOP_MESSAGE,
+    ]);
     expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).not.toThrow();
   });
 
-  it('keeps exact No SW fatal outside the intentional worker-stop window', (): void => {
+  it('keeps the identical full diagnostic fatal outside the intentional worker-stop window', (): void => {
     const context: FakeContext = fakeContext();
     const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
     const page: FakeEmitter = new FakeEmitter();
@@ -161,11 +166,33 @@ describe('monitorBrowserContext', (): void => {
     context.emit('page', page as unknown as Page);
     const closeWindow: () => void = beginIntentionalWorkerStopDiagnosticWindow(diagnostics);
     closeWindow();
-    page.emit('console', errorMessage('No SW'));
+    page.emit('console', errorMessage(FULL_INTENTIONAL_WORKER_STOP_MESSAGE));
 
     expect(diagnostics.intentionalWorkerStopMessages).toEqual([]);
-    expect(diagnostics.consoleErrors).toEqual(['No SW']);
-    expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).toThrow('No SW');
+    expect(diagnostics.consoleErrors).toEqual([FULL_INTENTIONAL_WORKER_STOP_MESSAGE]);
+    expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).toThrow(
+      FULL_INTENTIONAL_WORKER_STOP_MESSAGE,
+    );
+  });
+
+  it.each([
+    'No SW',
+    'focus-lock background error Error: No SW!',
+    'focus-lock background error Error: no sw',
+  ])('keeps the in-window near-match fatal: %s', (message: string): void => {
+    const context: FakeContext = fakeContext();
+    const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
+    const worker: FakeEmitter = new FakeEmitter();
+
+    monitorBrowserContext(context as unknown as BrowserContext, diagnostics);
+    context.emit('serviceworker', worker as unknown as Worker);
+    const closeWindow: () => void = beginIntentionalWorkerStopDiagnosticWindow(diagnostics);
+    worker.emit('console', errorMessage(message));
+    closeWindow();
+
+    expect(diagnostics.intentionalWorkerStopMessages).toEqual([]);
+    expect(diagnostics.workerErrors).toEqual([message]);
+    expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).toThrow(message);
   });
 });
 
