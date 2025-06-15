@@ -1149,7 +1149,12 @@ describe('routeMessage tab identity wiring', () => {
     const markStopped = vi.fn().mockResolvedValue(undefined);
     const rebindTab = vi.fn();
     const blockingEngine: Engine = {
-      verdictFor: vi.fn(() => ({ blocked: true, reason: 'custom', matchedPattern: url })),
+      verdictFor: vi.fn(() => ({
+        blocked: true,
+        reason: 'custom',
+        categoryId: null,
+        matchedPattern: url,
+      })),
       recordAttempt: vi.fn().mockResolvedValue(undefined),
       rebindTab,
       markStopped,
@@ -1175,7 +1180,12 @@ describe('routeMessage tab identity wiring', () => {
     const url: string = 'https://blocked.example/page';
     const markStopped = vi.fn().mockResolvedValue(undefined);
     const blockingEngine: Engine = {
-      verdictFor: vi.fn(() => ({ blocked: true, reason: 'custom', matchedPattern: url })),
+      verdictFor: vi.fn(() => ({
+        blocked: true,
+        reason: 'custom',
+        categoryId: null,
+        matchedPattern: url,
+      })),
       recordAttempt: vi.fn().mockResolvedValue(undefined),
       rebindTab: vi.fn(),
       markStopped,
@@ -1198,7 +1208,12 @@ describe('routeMessage tab identity wiring', () => {
     const rebindTab = vi.fn();
     const markStopped = vi.fn().mockResolvedValue(undefined);
     const blockingEngine: Engine = {
-      verdictFor: vi.fn(() => ({ blocked: true, reason: 'custom', matchedPattern: oldUrl })),
+      verdictFor: vi.fn(() => ({
+        blocked: true,
+        reason: 'custom',
+        categoryId: null,
+        matchedPattern: oldUrl,
+      })),
       recordAttempt,
       rebindTab,
       markStopped,

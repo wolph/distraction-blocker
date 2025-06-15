@@ -279,6 +279,7 @@ it('migrates the exact predecessor rule snapshot and enforces its active session
   expect(harness.engine.verdictFor('https://session-only.example/work')).toEqual({
     blocked: true,
     reason: 'custom',
+    categoryId: null,
     matchedPattern: 'session-only.example',
   });
 });
@@ -493,7 +494,12 @@ describe('Engine', () => {
     await expect(h.engine.startSession({ ...manualConfig, rules })).resolves.toEqual({ ok: true });
 
     expect(h.engine.snapshot().config?.rules.categories.social).toBe(true);
-    expect(h.engine.verdictFor('https://instagram.com/explore').blocked).toBe(true);
+    expect(h.engine.verdictFor('https://instagram.com/explore')).toEqual({
+      blocked: true,
+      reason: 'category',
+      categoryId: 'social',
+      matchedPattern: 'instagram.com',
+    });
     expect(h.engine.getLists()).toEqual(before);
   });
 
@@ -3726,7 +3732,12 @@ describe('Engine', () => {
 
   it('verdictFor blocks during focus, returns no-session when idle', async () => {
     const h: Harness = makeEngine();
-    expect(h.engine.verdictFor('https://facebook.com/feed').reason).toBe('no-session');
+    expect(h.engine.verdictFor('https://facebook.com/feed')).toEqual({
+      blocked: false,
+      reason: 'no-session',
+      categoryId: null,
+      matchedPattern: null,
+    });
     await h.engine.startSession(manualConfig);
     expect(h.engine.verdictFor('https://facebook.com/feed').blocked).toBe(true);
     expect(h.engine.verdictFor('https://example.com/').blocked).toBe(false);

@@ -5,6 +5,7 @@ import { sendRequest } from '../shared/messages';
 import { applyTheme } from '../shared/theme';
 import { formatClock } from '../shared/time';
 import type { GateKind, GateState, SessionSnapshot, Verdict } from '../shared/types';
+import { verdictLabel } from '../shared/verdict-label';
 
 /** The block overlay. One closed shadow root, rendered from the worker's
  * SessionSnapshot. This module displays state, it never decides it. */
@@ -173,6 +174,9 @@ const OVERLAY_CSS: string = `
 }
 .intention { font-size: 1.5rem; font-weight: 600; color: var(--overlay-intention); overflow-wrap: anywhere; }
 .attempts { font-size: 0.9rem; color: var(--overlay-subtle); }
+.provenance {
+  max-width: 100%; font-size: 0.85rem; color: var(--overlay-subtle); overflow-wrap: anywhere;
+}
 .meter {
   width: 16rem; height: 0.5rem; border-radius: 999px;
   background: var(--overlay-meter); overflow: hidden;
@@ -288,7 +292,7 @@ function mount(): Mounted {
     root,
     container,
     timer,
-    verdict: { blocked: true, reason: 'default', matchedPattern: null },
+    verdict: { blocked: true, reason: 'default', categoryId: null, matchedPattern: null },
     snapshot: null as unknown as SessionSnapshot, // overwritten by showOverlay before any render
     stopped: false,
     clock: null,
@@ -385,6 +389,7 @@ function render(m: Mounted): void {
   m.clock = appendClock(panel, snap, now);
   appendIntention(panel, snap);
   appendAttempts(panel, snap);
+  appendVerdictProvenance(panel, m.verdict);
   if (m.stopped) appendNotLoaded(panel);
   appendBank(m, panel, snap, now);
   if (snap.gate === null) panel.appendChild(buildButtons(m, snap, now));
@@ -435,6 +440,13 @@ function appendAttempts(panel: HTMLElement, snap: SessionSnapshot): void {
   el.className = 'attempts';
   const n: number = snap.attemptsToday;
   el.textContent = n === 1 ? '1 attempt blocked today' : `${n} attempts blocked today`;
+  panel.appendChild(el);
+}
+
+function appendVerdictProvenance(panel: HTMLElement, verdict: Verdict): void {
+  const el: HTMLElement = document.createElement('div');
+  el.className = 'provenance';
+  el.textContent = verdictLabel(verdict);
   panel.appendChild(el);
 }
 

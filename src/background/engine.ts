@@ -145,7 +145,12 @@ interface AttemptDurability {
   reject(error: unknown): void;
 }
 
-const NO_SESSION_VERDICT: Verdict = { blocked: false, reason: 'no-session', matchedPattern: null };
+const NO_SESSION_VERDICT: Verdict = {
+  blocked: false,
+  reason: 'no-session',
+  categoryId: null,
+  matchedPattern: null,
+};
 const WEBSITE_BLOCKING_LOSS_RETRY_MS: number = 1_000;
 
 function strictnessStrength(strictness: Strictness): number {

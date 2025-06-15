@@ -327,5 +327,6 @@ export interface Verdict {
     | 'whitelist'
     | 'whitelist-miss'
     | 'default';
+  categoryId: CategoryId | null;
   matchedPattern: string | null;
 }

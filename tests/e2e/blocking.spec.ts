@@ -1,7 +1,129 @@
 import type { Buffer } from 'node:buffer';
-import type { Frame } from '@playwright/test';
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
+import type { BrowserContext, CDPSession, Frame, Page } from '@playwright/test';
 import { PNG } from 'pngjs';
 import { expect, startTestSession, test } from './fixtures';
+
+const BLOCK_LIST_PROVENANCE: string = 'Blocked by your block list: blocked.example';
+const OVERLAY_VIEWPORTS: ReadonlyArray<{ width: number; height: number }> = [
+  { width: 375, height: 667 },
+  { width: 768, height: 800 },
+  { width: 1280, height: 800 },
+];
+
+interface ElementBounds {
+  bottom: number;
+  left: number;
+  right: number;
+  top: number;
+}
+
+function boxBounds(quad: number[]): ElementBounds {
+  const xs: number[] = quad.filter((_value: number, index: number): boolean => index % 2 === 0);
+  const ys: number[] = quad.filter((_value: number, index: number): boolean => index % 2 === 1);
+  return {
+    bottom: Math.max(...ys),
+    left: Math.min(...xs),
+    right: Math.max(...xs),
+    top: Math.min(...ys),
+  };
+}
+
+async function overlayAccessibilityState(
+  session: CDPSession,
+  expectedLabel: string,
+): Promise<{ labelBackendNodeId: number | null; matchingLinkCount: number }> {
+  const tree = await session.send('Accessibility.getFullAXTree');
+  const labelNode = tree.nodes.find(
+    (node): boolean => node.role?.value === 'StaticText' && node.name?.value === expectedLabel,
+  );
+  return {
+    labelBackendNodeId: labelNode?.backendDOMNodeId ?? null,
+    matchingLinkCount: tree.nodes.filter(
+      (node): boolean => node.role?.value === 'link' && node.name?.value === expectedLabel,
+    ).length,
+  };
+}
+
+async function panelBounds(session: CDPSession): Promise<ElementBounds> {
+  await session.send('DOM.enable');
+  const document = await session.send('DOM.getFlattenedDocument', { depth: -1, pierce: true });
+  const panelNode = document.nodes.find((node): boolean => {
+    const attributes: string[] = node.attributes ?? [];
+    for (let index: number = 0; index < attributes.length; index += 2) {
+      if (attributes[index] === 'class' && attributes[index + 1]?.split(/\s+/).includes('panel')) {
+        return true;
+      }
+    }
+    return false;
+  });
+  if (panelNode?.backendNodeId === undefined) throw new Error('overlay panel was not found');
+  const box = await session.send('DOM.getBoxModel', { backendNodeId: panelNode.backendNodeId });
+  return boxBounds(box.model.border);
+}
+
+async function assertAndCaptureOverlay(
+  context: BrowserContext,
+  page: Page,
+  surface: 'existing' | 'stopped',
+): Promise<void> {
+  const evidenceDir: string | undefined = process.env.TASK4_EVIDENCE_DIR;
+  if (evidenceDir !== undefined) await mkdir(path.resolve(evidenceDir), { recursive: true });
+  for (const viewport of OVERLAY_VIEWPORTS) {
+    await page.setViewportSize(viewport);
+    const session: CDPSession = await context.newCDPSession(page);
+    try {
+      await expect
+        .poll(
+          async (): Promise<{ labelBackendNodeId: number | null; matchingLinkCount: number }> =>
+            await overlayAccessibilityState(session, BLOCK_LIST_PROVENANCE),
+        )
+        .toEqual({ labelBackendNodeId: expect.any(Number), matchingLinkCount: 0 });
+      const accessibility = await overlayAccessibilityState(session, BLOCK_LIST_PROVENANCE);
+      if (accessibility.labelBackendNodeId === null) {
+        throw new Error('overlay provenance text was not found');
+      }
+      const panel: ElementBounds = await panelBounds(session);
+      expect(panel.left).toBeGreaterThanOrEqual(0);
+      expect(panel.top).toBeGreaterThanOrEqual(0);
+      expect(panel.right).toBeLessThanOrEqual(viewport.width);
+      expect(panel.bottom).toBeLessThanOrEqual(viewport.height);
+      const widths: { clientWidth: number; scrollWidth: number } = await page.evaluate(
+        (): { clientWidth: number; scrollWidth: number } => ({
+          clientWidth: document.documentElement.clientWidth,
+          scrollWidth: document.documentElement.scrollWidth,
+        }),
+      );
+      expect(widths.scrollWidth).toBeLessThanOrEqual(widths.clientWidth);
+      if (evidenceDir === undefined) continue;
+      const stem: string = `${surface}-${viewport.width}`;
+      await page.screenshot({
+        path: path.join(path.resolve(evidenceDir), `${stem}-full.png`),
+        animations: 'disabled',
+      });
+      const labelBox = await session.send('DOM.getBoxModel', {
+        backendNodeId: accessibility.labelBackendNodeId,
+      });
+      const label: ElementBounds = boxBounds(labelBox.model.border);
+      const padding: number = 24;
+      const x: number = Math.max(0, label.left - padding);
+      const y: number = Math.max(0, label.top - padding);
+      await page.screenshot({
+        path: path.join(path.resolve(evidenceDir), `${stem}-provenance.png`),
+        animations: 'disabled',
+        clip: {
+          x,
+          y,
+          width: Math.min(viewport.width - x, label.right - label.left + padding * 2),
+          height: Math.min(viewport.height - y, label.bottom - label.top + padding * 2),
+        },
+      });
+    } finally {
+      await session.detach();
+    }
+  }
+}
 
 test('fresh navigation to a blocked site is stopped and overlaid', async ({
   context,
@@ -15,6 +137,7 @@ test('fresh navigation to a blocked site is stopped and overlaid', async ({
 
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
   await expect(page).toHaveTitle(/Locked/);
+  await assertAndCaptureOverlay(context, page, 'stopped');
   await expect
     .poll(async (): Promise<boolean> => {
       const screenshot: Buffer = await page.screenshot();
@@ -50,6 +173,7 @@ test('existing tab overlays, mutes, and resumes without reload', async ({
 
   await startTestSession(extPage, { durationMin: 0.12 });
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
+  await assertAndCaptureOverlay(context, page, 'existing');
   await expect
     .poll(async (): Promise<boolean> => {
       const tabs: chrome.tabs.Tab[] = await worker.evaluate(

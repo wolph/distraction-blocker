@@ -67,6 +67,7 @@ describe('host rules', () => {
     expect(evaluateUrl(idn, 'https://bücher.example/catalog', NONE, NOW)).toEqual({
       blocked: true,
       reason: 'custom',
+      categoryId: null,
       matchedPattern: 'xn--bcher-kva.example',
     });
     expect(evaluateUrl(idn, 'https://xn--bcher-kva.example/catalog', NONE, NOW).blocked).toBe(true);
@@ -97,6 +98,7 @@ describe('host rules', () => {
       expect(evaluateUrl(idn, 'https://bücher.example./catalog', NONE, NOW)).toEqual({
         blocked: true,
         reason: 'custom',
+        categoryId: null,
         matchedPattern: 'xn--bcher-kva.example',
       });
     },
@@ -126,7 +128,13 @@ describe('categories and exclusions', () => {
   );
   it('blocks enabled category entries with reason category', () => {
     const v = evaluateUrl(m, 'https://x.com/home', NONE, NOW);
-    expect(v).toEqual({ blocked: true, reason: 'category', matchedPattern: 'x.com' });
+    expect(m.hosts.get('x.com')).toEqual({ via: 'category', categoryId: 'social' });
+    expect(v).toEqual({
+      blocked: true,
+      reason: 'category',
+      categoryId: 'social',
+      matchedPattern: 'x.com',
+    });
   });
   it('excluded entries are allowed, subdomains included', () => {
     expect(evaluateUrl(m, 'https://www.facebook.com/work', NONE, NOW).reason).toBe('excluded');
@@ -146,6 +154,7 @@ describe('categories and exclusions', () => {
     expect(evaluateUrl(matcher, 'https://www.facebook.com/work', NONE, NOW)).toEqual({
       blocked: true,
       reason: 'custom',
+      categoryId: null,
       matchedPattern: 'facebook.com',
     });
   });
@@ -165,6 +174,7 @@ describe('categories and exclusions', () => {
     expect(evaluateUrl(matcher, 'https://www.facebook.com/private/report', NONE, NOW)).toEqual({
       blocked: true,
       reason: 'custom',
+      categoryId: null,
       matchedPattern: pattern,
     });
     expect(evaluateUrl(matcher, 'https://www.facebook.com/work', NONE, NOW).reason).toBe(
@@ -310,6 +320,7 @@ describe('whitelist mode', () => {
     expect(evaluateUrl(m, 'https://example.com/', NONE, NOW)).toEqual({
       blocked: true,
       reason: 'whitelist-miss',
+      categoryId: null,
       matchedPattern: null,
     });
   });
@@ -360,6 +371,10 @@ describe('persisted matcher cache', () => {
     expect(Array.isArray(built.stored.modes.blacklist.hosts)).toBe(true);
     expect(Array.isArray(built.stored.modes.blacklist.regexes)).toBe(true);
     expect(Array.isArray(built.stored.modes.blacklist.excluded)).toBe(true);
+    expect(built.stored.modes.blacklist.hosts).toContainEqual([
+      'x.com',
+      { via: 'category', categoryId: 'social' },
+    ]);
     expect(
       built.stored.modes.whitelist.regexes.map(
         (entry: { source: string; via: 'custom' | 'whitelist' }): string => entry.source,
@@ -372,7 +387,12 @@ describe('persisted matcher cache', () => {
         NONE,
         NOW,
       ),
-    ).toEqual({ blocked: true, reason: 'category', matchedPattern: 'x.com' });
+    ).toEqual({
+      blocked: true,
+      reason: 'category',
+      categoryId: 'social',
+      matchedPattern: 'x.com',
+    });
     expect(
       evaluateUrl(
         restored?.blacklist as ReturnType<typeof compileMatcher>,
@@ -391,6 +411,7 @@ describe('persisted matcher cache', () => {
     ).toEqual({
       blocked: true,
       reason: 'custom',
+      categoryId: null,
       matchedPattern: 'xn--bcher-kva.example',
     });
     expect(
@@ -403,6 +424,7 @@ describe('persisted matcher cache', () => {
     ).toEqual({
       blocked: true,
       reason: 'custom',
+      categoryId: null,
       matchedPattern: 'youtube\\.com/shorts',
     });
     expect(
@@ -415,6 +437,7 @@ describe('persisted matcher cache', () => {
     ).toEqual({
       blocked: false,
       reason: 'whitelist',
+      categoryId: null,
       matchedPattern: 'docs\\.example/allowed',
     });
   });
@@ -502,6 +525,13 @@ describe('persisted matcher cache', () => {
       (value: Record<string, unknown>): void => {
         const modes = value.modes as { blacklist: { hosts: unknown[] } };
         modes.blacklist.hosts = [['x.com', 'invalid']];
+      },
+    ],
+    [
+      'obsolete category provenance',
+      (value: Record<string, unknown>): void => {
+        const modes = value.modes as { blacklist: { hosts: unknown[] } };
+        modes.blacklist.hosts = [['x.com', 'category']];
       },
     ],
     [

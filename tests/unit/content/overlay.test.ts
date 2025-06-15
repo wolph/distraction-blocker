@@ -6,8 +6,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { hideOverlay, showOverlay } from '../../../src/content/overlay';
 import { DEFAULT_LISTS, emptySnapshot, rulesFromLists } from '../../../src/shared/constants';
 import type { SessionSnapshot, Verdict } from '../../../src/shared/types';
+import { verdictLabel } from '../../../src/shared/verdict-label';
 
-const verdict: Verdict = { blocked: true, reason: 'category', matchedPattern: 'x.com' };
+const verdict: Verdict = {
+  blocked: true,
+  reason: 'category',
+  categoryId: 'social',
+  matchedPattern: 'x.com',
+};
 
 function focusSnap(): SessionSnapshot {
   return {
@@ -45,6 +51,52 @@ afterEach((): void => {
 });
 
 describe('overlay', () => {
+  it('formats category and allow-list provenance truthfully', (): void => {
+    expect(
+      verdictLabel({
+        blocked: true,
+        reason: 'category',
+        categoryId: 'social',
+        matchedPattern: 'instagram.com',
+      }),
+    ).toBe('Blocked by Social media: instagram.com');
+    expect(
+      verdictLabel({
+        blocked: true,
+        reason: 'whitelist-miss',
+        categoryId: null,
+        matchedPattern: null,
+      }),
+    ).toBe('Not on your allow list');
+  });
+
+  it.each([false, true])(
+    'shows quiet non-link provenance below attempts and above actions when stopped is %s',
+    (stopped: boolean): void => {
+      showOverlay(verdict, focusSnap(), stopped);
+      const root: ShadowRoot = shadowRoot();
+      const panel: HTMLElement = root.querySelector('.panel') as HTMLElement;
+      const provenance: HTMLElement = root.querySelector('.provenance') as HTMLElement;
+      const attempts: HTMLElement = root.querySelector('.attempts') as HTMLElement;
+      const action: HTMLElement = root.querySelector(
+        stopped ? '.notloaded' : '.buttons',
+      ) as HTMLElement;
+
+      expect(provenance.textContent).toBe('Blocked by Social media: x.com');
+      expect(provenance.tagName).toBe('DIV');
+      expect(provenance.querySelector('a')).toBeNull();
+      expect(Array.from(panel.children).indexOf(provenance)).toBeGreaterThan(
+        Array.from(panel.children).indexOf(attempts),
+      );
+      expect(Array.from(panel.children).indexOf(provenance)).toBeLessThan(
+        Array.from(panel.children).indexOf(action),
+      );
+      expect(root.querySelector('style')?.textContent).toMatch(
+        /\.provenance\s*\{[^}]*color:\s*var\(--overlay-subtle\)[^}]*overflow-wrap:\s*anywhere/s,
+      );
+    },
+  );
+
   it.each(['auto', 'light', 'dark'] as const)(
     'applies the %s theme to normal and stopped overlays without remounting',
     (theme): void => {

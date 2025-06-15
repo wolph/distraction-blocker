@@ -22,8 +22,24 @@ import {
 } from '../../../src/shared/constants';
 import type { EventRecord, Verdict } from '../../../src/shared/types';
 
-const blocked: Verdict = { blocked: true, reason: 'custom', matchedPattern: 'facebook.com' };
-const allowed: Verdict = { blocked: false, reason: 'default', matchedPattern: null };
+const blocked: Verdict = {
+  blocked: true,
+  reason: 'custom',
+  categoryId: null,
+  matchedPattern: 'facebook.com',
+};
+const categoryBlocked: Verdict = {
+  blocked: true,
+  reason: 'category',
+  categoryId: 'social',
+  matchedPattern: 'instagram.com',
+};
+const allowed: Verdict = {
+  blocked: false,
+  reason: 'default',
+  categoryId: null,
+  matchedPattern: null,
+};
 
 describe('planTabAction', () => {
   it('blocks a fresh tab: applyBlock plus mute, recording the prior state', () => {
@@ -392,6 +408,18 @@ describe('applyToTab', () => {
     expect(engine.recordAttempt).toHaveBeenCalledWith('https://facebook.com/feed', 7, 'existing');
     expect(engine.tabFacts).toHaveBeenCalledWith(7, 'https://facebook.com/feed', null);
     expect(engine.claimMute).toHaveBeenCalledWith(7, 'https://facebook.com/feed', false);
+  });
+
+  it('forwards category identity and normalized pattern to the content overlay', async (): Promise<void> => {
+    liveUrl = 'https://instagram.com/explore';
+    const engine: Engine = engineFor(categoryBlocked);
+
+    await applyToTab(engine, 7, liveUrl, false);
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      7,
+      expect.objectContaining({ type: 'applyBlock', verdict: categoryBlocked }),
+    );
   });
 
   it('does not apply an older same-tab operation after its persistence resolves', async () => {

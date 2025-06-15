@@ -23,14 +23,19 @@ import type {
 export interface CompiledMatcher {
   mode: SessionMode;
   /** host suffix rules mapped to their provenance, drives Verdict.reason */
-  hosts: ReadonlyMap<string, 'category' | 'custom' | 'whitelist'>;
+  hosts: ReadonlyMap<string, HostProvenance>;
   /** compiled full-URL regexes with their sources */
   regexes: ReadonlyArray<{ source: string; re: RegExp; via: 'custom' | 'whitelist' }>;
   /** hosts excluded from enabled categories */
   excluded: ReadonlySet<string>;
 }
 
-type HostProvenance = 'category' | 'custom' | 'whitelist';
+export interface CategoryHostProvenance {
+  via: 'category';
+  categoryId: CategoryId;
+}
+
+type HostProvenance = CategoryHostProvenance | 'custom' | 'whitelist';
 type RegexProvenance = 'custom' | 'whitelist';
 type BlacklistHostProvenance = Exclude<HostProvenance, 'whitelist'>;
 
@@ -359,7 +364,7 @@ export function compileSessionMatcher(
 
 function hostInSet(
   host: string,
-  set: ReadonlyMap<string, string> | ReadonlySet<string>,
+  set: ReadonlyMap<string, unknown> | ReadonlySet<string>,
 ): string | null {
   const has: (h: string) => boolean = (h: string): boolean =>
     set instanceof Map ? set.has(h) : (set as ReadonlySet<string>).has(h);
@@ -375,11 +380,27 @@ function hostInSet(
 function hostWithProvenance(
   host: string,
   hosts: ReadonlyMap<string, HostProvenance>,
-  provenance: HostProvenance,
+  provenance: 'custom' | 'whitelist',
 ): string | null {
   let probe: string = host;
   for (;;) {
     if (hosts.get(probe) === provenance) return probe;
+    const dot: number = probe.indexOf('.');
+    if (dot === -1) return null;
+    probe = probe.slice(dot + 1);
+  }
+}
+
+function categoryHostWithProvenance(
+  host: string,
+  hosts: ReadonlyMap<string, HostProvenance>,
+): { matchedPattern: string; categoryId: CategoryId } | null {
+  let probe: string = host;
+  for (;;) {
+    const provenance: HostProvenance | undefined = hosts.get(probe);
+    if (typeof provenance === 'object' && provenance.via === 'category') {
+      return { matchedPattern: probe, categoryId: provenance.categoryId };
+    }
     const dot: number = probe.indexOf('.');
     if (dot === -1) return null;
     probe = probe.slice(dot + 1);
@@ -399,7 +420,7 @@ export function compileMatcher(
   categories: CategoryList[],
   mode: SessionMode,
 ): CompiledMatcher {
-  const hosts: Map<string, 'category' | 'custom' | 'whitelist'> = new Map();
+  const hosts: Map<string, HostProvenance> = new Map();
   const regexes: Array<{ source: string; re: RegExp; via: 'custom' | 'whitelist' }> = [];
   const excluded: Set<string> = new Set();
 
@@ -432,7 +453,7 @@ export function compileMatcher(
         const host: string | null = normalizeHost(raw);
         if (host === null) continue;
         if (excludedHere.has(host)) excluded.add(host);
-        else if (!hosts.has(host)) hosts.set(host, 'category');
+        else if (!hosts.has(host)) hosts.set(host, { via: 'category', categoryId: cat.id });
       }
     }
     addRules(lists.custom, 'custom');
@@ -532,7 +553,15 @@ function isNormalizedHost(value: unknown): value is string {
 }
 
 function validHostProvenance(value: unknown, mode: SessionMode): value is HostProvenance {
-  return mode === 'blacklist' ? value === 'category' || value === 'custom' : value === 'whitelist';
+  if (mode === 'whitelist') return value === 'whitelist';
+  if (value === 'custom') return true;
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['via', 'categoryId']) &&
+    value.via === 'category' &&
+    typeof value.categoryId === 'string' &&
+    CATEGORY_IDS.includes(value.categoryId as CategoryId)
+  );
 }
 
 function validRegexProvenance(value: unknown, mode: SessionMode): value is RegexProvenance {
@@ -634,6 +663,7 @@ export function evaluateUrl(
   ): Verdict => ({
     blocked: false,
     reason,
+    categoryId: null,
     matchedPattern,
   });
   let parsed: URL;
@@ -660,23 +690,32 @@ export function evaluateUrl(
     for (const r of matcher.regexes) {
       if (r.re.test(url)) return allow('whitelist', r.source);
     }
-    return { blocked: true, reason: 'whitelist-miss', matchedPattern: null };
+    return { blocked: true, reason: 'whitelist-miss', categoryId: null, matchedPattern: null };
   }
   const customHit: string | null = hostWithProvenance(host, matcher.hosts, 'custom');
   if (customHit !== null) {
     return {
       blocked: true,
       reason: 'custom',
+      categoryId: null,
       matchedPattern: customHit,
     };
   }
   for (const r of matcher.regexes) {
-    if (r.re.test(url)) return { blocked: true, reason: 'custom', matchedPattern: r.source };
+    if (r.re.test(url)) {
+      return { blocked: true, reason: 'custom', categoryId: null, matchedPattern: r.source };
+    }
   }
   if (hostInSet(host, matcher.excluded) !== null) return allow('excluded');
-  const categoryHit: string | null = hostWithProvenance(host, matcher.hosts, 'category');
+  const categoryHit: { matchedPattern: string; categoryId: CategoryId } | null =
+    categoryHostWithProvenance(host, matcher.hosts);
   if (categoryHit !== null) {
-    return { blocked: true, reason: 'category', matchedPattern: categoryHit };
+    return {
+      blocked: true,
+      reason: 'category',
+      categoryId: categoryHit.categoryId,
+      matchedPattern: categoryHit.matchedPattern,
+    };
   }
   return allow('default');
 }
