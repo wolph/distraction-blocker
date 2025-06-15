@@ -19,6 +19,19 @@ interface ElementBounds {
   top: number;
 }
 
+interface DomNodeSnapshot {
+  attributes?: string[];
+  backendNodeId: number;
+  children?: DomNodeSnapshot[];
+  nodeName: string;
+  shadowRoots?: DomNodeSnapshot[];
+}
+
+interface OverlayDomState {
+  backendNodeIds: ReadonlySet<number>;
+  panelBackendNodeId: number;
+}
+
 function boxBounds(quad: number[]): ElementBounds {
   const xs: number[] = quad.filter((_value: number, index: number): boolean => index % 2 === 0);
   const ys: number[] = quad.filter((_value: number, index: number): boolean => index % 2 === 1);
@@ -30,36 +43,78 @@ function boxBounds(quad: number[]): ElementBounds {
   };
 }
 
+function flattenDomNode(node: DomNodeSnapshot): DomNodeSnapshot[] {
+  const descendants: DomNodeSnapshot[] = [node];
+  for (const child of node.children ?? []) descendants.push(...flattenDomNode(child));
+  for (const shadowRoot of node.shadowRoots ?? []) {
+    descendants.push(...flattenDomNode(shadowRoot));
+  }
+  return descendants;
+}
+
+function hasClass(node: DomNodeSnapshot, className: string): boolean {
+  const attributes: string[] = node.attributes ?? [];
+  for (let index: number = 0; index < attributes.length; index += 2) {
+    if (attributes[index] === 'class') {
+      return attributes[index + 1]?.split(/\s+/).includes(className) ?? false;
+    }
+  }
+  return false;
+}
+
+async function overlayDomState(session: CDPSession): Promise<OverlayDomState> {
+  await session.send('DOM.enable');
+  const document = await session.send('DOM.getDocument', { depth: -1, pierce: true });
+  const allNodes: DomNodeSnapshot[] = flattenDomNode(document.root as DomNodeSnapshot);
+  const host: DomNodeSnapshot | undefined = allNodes.find(
+    (node: DomNodeSnapshot): boolean => node.nodeName === 'FOCUS-LOCK-OVERLAY',
+  );
+  if (host === undefined) throw new Error('overlay host was not found');
+  const overlayNodes: DomNodeSnapshot[] = (host.shadowRoots ?? []).flatMap(
+    (shadowRoot: DomNodeSnapshot): DomNodeSnapshot[] => flattenDomNode(shadowRoot),
+  );
+  const panel: DomNodeSnapshot | undefined = overlayNodes.find((node: DomNodeSnapshot): boolean =>
+    hasClass(node, 'panel'),
+  );
+  if (panel === undefined) throw new Error('overlay panel was not found');
+  return {
+    backendNodeIds: new Set<number>(
+      overlayNodes.map((node: DomNodeSnapshot): number => node.backendNodeId),
+    ),
+    panelBackendNodeId: panel.backendNodeId,
+  };
+}
+
 async function overlayAccessibilityState(
   session: CDPSession,
   expectedLabel: string,
 ): Promise<{ labelBackendNodeId: number | null; matchingLinkCount: number }> {
+  const overlay: OverlayDomState = await overlayDomState(session);
   const tree = await session.send('Accessibility.getFullAXTree');
-  const labelNode = tree.nodes.find(
-    (node): boolean => node.role?.value === 'StaticText' && node.name?.value === expectedLabel,
+  const scopedLabelNode = tree.nodes.find(
+    (node): boolean =>
+      node.backendDOMNodeId !== undefined &&
+      overlay.backendNodeIds.has(node.backendDOMNodeId) &&
+      node.role?.value === 'StaticText' &&
+      node.name?.value === expectedLabel,
   );
   return {
-    labelBackendNodeId: labelNode?.backendDOMNodeId ?? null,
+    labelBackendNodeId: scopedLabelNode?.backendDOMNodeId ?? null,
     matchingLinkCount: tree.nodes.filter(
-      (node): boolean => node.role?.value === 'link' && node.name?.value === expectedLabel,
+      (node): boolean =>
+        node.backendDOMNodeId !== undefined &&
+        overlay.backendNodeIds.has(node.backendDOMNodeId) &&
+        node.role?.value === 'link' &&
+        node.name?.value === expectedLabel,
     ).length,
   };
 }
 
 async function panelBounds(session: CDPSession): Promise<ElementBounds> {
-  await session.send('DOM.enable');
-  const document = await session.send('DOM.getFlattenedDocument', { depth: -1, pierce: true });
-  const panelNode = document.nodes.find((node): boolean => {
-    const attributes: string[] = node.attributes ?? [];
-    for (let index: number = 0; index < attributes.length; index += 2) {
-      if (attributes[index] === 'class' && attributes[index + 1]?.split(/\s+/).includes('panel')) {
-        return true;
-      }
-    }
-    return false;
+  const overlay: OverlayDomState = await overlayDomState(session);
+  const box = await session.send('DOM.getBoxModel', {
+    backendNodeId: overlay.panelBackendNodeId,
   });
-  if (panelNode?.backendNodeId === undefined) throw new Error('overlay panel was not found');
-  const box = await session.send('DOM.getBoxModel', { backendNodeId: panelNode.backendNodeId });
   return boxBounds(box.model.border);
 }
 
@@ -169,6 +224,12 @@ test('existing tab overlays, mutes, and resumes without reload', async ({
   await page.locator('#keep').fill('still here');
   await page.evaluate((): void => {
     (window as typeof window & { __focusLockAlive?: boolean }).__focusLockAlive = true;
+    const decoy: HTMLDivElement = document.createElement('div');
+    decoy.className = 'panel';
+    decoy.style.position = 'fixed';
+    decoy.style.left = '2000px';
+    decoy.textContent = 'Blocked by your block list: blocked.example';
+    document.body.appendChild(decoy);
   });
 
   await startTestSession(extPage, { durationMin: 0.12 });
