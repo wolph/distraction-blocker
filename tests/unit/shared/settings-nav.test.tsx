@@ -19,31 +19,46 @@ describe('settings navigation', (): void => {
     expect(css).toMatch(/\.settings-nav \.theme-error\s*\{[^}]*white-space:\s*normal/s);
   });
 
-  it('parses known hashes and falls back to Lists', (): void => {
+  it('parses canonical hashes, preserves aliases, and falls back to Blocking', (): void => {
+    expect(parseSettingsSectionHash('#blocking')).toBe('blocking');
     expect(parseSettingsSectionHash('#schedule')).toBe('schedule');
-    expect(parseSettingsSectionHash('#categories')).toBe('lists');
-    expect(parseSettingsSectionHash('#not-a-section')).toBe('lists');
-    expect(parseSettingsSectionHash('')).toBe('lists');
+    expect(parseSettingsSectionHash('#lists')).toBe('blocking');
+    expect(parseSettingsSectionHash('#categories')).toBe('blocking');
+    expect(parseSettingsSectionHash('#strictness')).toBe('behavior');
+    expect(parseSettingsSectionHash('#pause')).toBe('budget');
+    expect(parseSettingsSectionHash('#sounds')).toBe('notifications');
+    expect(parseSettingsSectionHash('#data')).toBe('privacy');
+    expect(parseSettingsSectionHash('#not-a-section')).toBe('blocking');
+    expect(parseSettingsSectionHash('')).toBe('blocking');
   });
 
-  it('renders Stats and all six Options links on Options', (): void => {
-    const { getAllByRole, getByRole } = render(
-      <SettingsNav page="options" section="lists" theme="auto" onThemeChange={async () => null} />,
+  it('renders Overview, a non-link Settings group, and six destinations', (): void => {
+    const { getAllByRole, getByRole, getByText } = render(
+      <SettingsNav
+        page="options"
+        section="blocking"
+        theme="auto"
+        onThemeChange={async () => null}
+      />,
     );
+    expect(getByRole('navigation', { name: 'Product navigation' })).toBeTruthy();
     expect(SETTINGS_SECTIONS).toHaveLength(6);
     expect(getAllByRole('link')).toHaveLength(7);
-    expect(getByRole('link', { name: 'Stats' }).getAttribute('href')).toBe('../stats/stats.html');
-    expect(getByRole('link', { name: 'Lists and categories' }).getAttribute('href')).toBe('#lists');
-    expect(getByRole('link', { name: 'Lists and categories' }).getAttribute('aria-current')).toBe(
-      'page',
+    expect(getByRole('link', { name: 'Overview' }).getAttribute('href')).toBe(
+      '../stats/stats.html',
     );
+    expect(getByText('Settings', { selector: '.settings-nav-group-label' })).toBeTruthy();
+    expect(getByRole('link', { name: 'Blocking' }).getAttribute('href')).toBe('#blocking');
+    expect(getByRole('link', { name: 'Blocking' }).getAttribute('aria-current')).toBe('page');
+    expect(getByText('Focus Lock', { selector: '.settings-nav-brand' })).toBeTruthy();
+    expect(document.querySelectorAll('h1')).toHaveLength(0);
   });
 
-  it('renders exact Options hashes and marks Stats current on Stats', (): void => {
+  it('renders exact Options hashes and marks Overview current on Stats', (): void => {
     const { getByRole } = render(
       <SettingsNav page="stats" theme="dark" onThemeChange={async () => null} />,
     );
-    expect(getByRole('link', { name: 'Stats' }).getAttribute('aria-current')).toBe('page');
+    expect(getByRole('link', { name: 'Overview' }).getAttribute('aria-current')).toBe('page');
     for (const section of SETTINGS_SECTIONS) {
       expect(getByRole('link', { name: section.label }).getAttribute('href')).toBe(
         `../options/options.html#${section.id}`,

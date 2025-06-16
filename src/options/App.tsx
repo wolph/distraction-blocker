@@ -11,8 +11,8 @@ import type { ListsConfig, Rule, ScheduleEntry, SessionSnapshot, Settings } from
 import { BehaviorDefaults, PauseEconomy } from './Behavior';
 import { Categories } from './Categories';
 import { Data } from './Data';
+import { DirtySaveBar } from './DirtySaveBar';
 import { RulesEditor } from './RulesEditor';
-import { SaveRow } from './SaveRow';
 import { Schedule } from './Schedule';
 import { SoundsBadge } from './SoundsBadge';
 import type { SettingsStore } from './use-settings';
@@ -41,13 +41,12 @@ interface SectionProps {
   lists: ListsConfig;
   onSettings: (next: Settings) => void;
   onLists: (next: ListsConfig) => void;
-  store: SettingsStore;
 }
 
-function ListsSection(props: SectionProps): VNode {
+function BlockingSection(props: SectionProps): VNode {
   return (
     <section>
-      <h2>Lists and categories</h2>
+      <h2>Blocking</h2>
       <p class="help">
         Custom rules block during blacklist sessions. The whitelist is what stays reachable during
         whitelist sessions. Bundled categories block common time sinks.
@@ -74,16 +73,11 @@ function ListsSection(props: SectionProps): VNode {
         </p>
         <Categories lists={props.lists} onChange={props.onLists} />
       </div>
-      <SaveRow
-        label="Save lists and categories"
-        onSave={(): Promise<string | null> => props.store.saveLists(props.lists)}
-      />
     </section>
   );
 }
 
 function ScheduleSection(props: SectionProps): VNode {
-  const committed: Settings = props.store.settings ?? props.settings;
   return (
     <section>
       <h2>Schedule</h2>
@@ -98,87 +92,41 @@ function ScheduleSection(props: SectionProps): VNode {
           props.onSettings({ ...props.settings, schedule: next });
         }}
       />
-      <SaveRow
-        label="Save schedule"
-        onSave={(): Promise<string | null> =>
-          props.store.saveSettings({ ...committed, schedule: props.settings.schedule })
-        }
-      />
     </section>
   );
 }
 
-function StrictnessSection(props: SectionProps): VNode {
-  const committed: Settings = props.store.settings ?? props.settings;
+function BehaviorSection(props: SectionProps): VNode {
   return (
     <section>
-      <h2>Strictness and gate</h2>
+      <h2>Session behavior</h2>
       <BehaviorDefaults settings={props.settings} onChange={props.onSettings} />
-      <SaveRow
-        label="Save strictness and gate"
-        onSave={(): Promise<string | null> =>
-          props.store.saveSettings({
-            ...committed,
-            presetsMin: props.settings.presetsMin,
-            defaultMode: props.settings.defaultMode,
-            defaultStrictness: props.settings.defaultStrictness,
-            defaultCycling: props.settings.defaultCycling,
-            cyclingOnByDefault: props.settings.cyclingOnByDefault,
-            gate: props.settings.gate,
-          })
-        }
-      />
     </section>
   );
 }
 
-function PauseSection(props: SectionProps): VNode {
-  const committed: Settings = props.store.settings ?? props.settings;
+function BudgetSection(props: SectionProps): VNode {
   return (
     <section>
-      <h2>Pause economy</h2>
+      <h2>Pause budget</h2>
       <PauseEconomy settings={props.settings} onChange={props.onSettings} />
-      <SaveRow
-        label="Save pause economy"
-        onSave={(): Promise<string | null> =>
-          props.store.saveSettings({
-            ...committed,
-            pause: props.settings.pause,
-            streakGoalMin: props.settings.streakGoalMin,
-            streakFreezeIntervalDays: props.settings.streakFreezeIntervalDays,
-            retentionDays: props.settings.retentionDays,
-          })
-        }
-      />
     </section>
   );
 }
 
-function SoundsSection(props: SectionProps): VNode {
-  const committed: Settings = props.store.settings ?? props.settings;
+function NotificationsSection(props: SectionProps): VNode {
   return (
     <section>
-      <h2>Sounds and badge</h2>
+      <h2>Notifications</h2>
       <SoundsBadge settings={props.settings} onChange={props.onSettings} />
-      <SaveRow
-        label="Save sounds and badge"
-        onSave={(): Promise<string | null> =>
-          props.store.saveSettings({
-            ...committed,
-            sounds: props.settings.sounds,
-            badgeCountdown: props.settings.badgeCountdown,
-            sessionCompleteNotification: props.settings.sessionCompleteNotification,
-          })
-        }
-      />
     </section>
   );
 }
 
-function DataSection(): VNode {
+function PrivacySection(): VNode {
   return (
     <section>
-      <h2>Data</h2>
+      <h2>Privacy and data</h2>
       <Data />
     </section>
   );
@@ -186,18 +134,18 @@ function DataSection(): VNode {
 
 function SectionBody(props: SectionProps): VNode {
   switch (props.section) {
-    case 'lists':
-      return <ListsSection {...props} />;
+    case 'blocking':
+      return <BlockingSection {...props} />;
     case 'schedule':
       return <ScheduleSection {...props} />;
-    case 'strictness':
-      return <StrictnessSection {...props} />;
-    case 'pause':
-      return <PauseSection {...props} />;
-    case 'sounds':
-      return <SoundsSection {...props} />;
-    case 'data':
-      return <DataSection />;
+    case 'behavior':
+      return <BehaviorSection {...props} />;
+    case 'budget':
+      return <BudgetSection {...props} />;
+    case 'notifications':
+      return <NotificationsSection {...props} />;
+    case 'privacy':
+      return <PrivacySection />;
   }
 }
 
@@ -215,6 +163,104 @@ function SectionPanels(props: SectionProps): VNode {
   );
 }
 
+function settingsSlice(section: SettingsSectionId, settings: Settings): unknown {
+  switch (section) {
+    case 'schedule':
+      return { schedule: settings.schedule };
+    case 'behavior':
+      return {
+        presetsMin: settings.presetsMin,
+        defaultMode: settings.defaultMode,
+        defaultStrictness: settings.defaultStrictness,
+        defaultCycling: settings.defaultCycling,
+        cyclingOnByDefault: settings.cyclingOnByDefault,
+        gate: settings.gate,
+      };
+    case 'budget':
+      return {
+        pause: settings.pause,
+        streakGoalMin: settings.streakGoalMin,
+        streakFreezeIntervalDays: settings.streakFreezeIntervalDays,
+        retentionDays: settings.retentionDays,
+      };
+    case 'notifications':
+      return {
+        sounds: settings.sounds,
+        badgeCountdown: settings.badgeCountdown,
+        sessionCompleteNotification: settings.sessionCompleteNotification,
+      };
+    case 'blocking':
+    case 'privacy':
+      return null;
+  }
+}
+
+function sameValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function sectionIsDirty(
+  section: SettingsSectionId,
+  draftSettings: Settings,
+  committedSettings: Settings,
+  draftLists: ListsConfig,
+  committedLists: ListsConfig,
+): boolean {
+  if (section === 'blocking') return !sameValue(draftLists, committedLists);
+  if (section === 'privacy') return false;
+  return !sameValue(
+    settingsSlice(section, draftSettings),
+    settingsSlice(section, committedSettings),
+  );
+}
+
+function settingsWithDraftSection(
+  section: SettingsSectionId,
+  committed: Settings,
+  draft: Settings,
+): Settings {
+  switch (section) {
+    case 'schedule':
+      return { ...committed, schedule: draft.schedule };
+    case 'behavior':
+      return {
+        ...committed,
+        presetsMin: draft.presetsMin,
+        defaultMode: draft.defaultMode,
+        defaultStrictness: draft.defaultStrictness,
+        defaultCycling: draft.defaultCycling,
+        cyclingOnByDefault: draft.cyclingOnByDefault,
+        gate: draft.gate,
+      };
+    case 'budget':
+      return {
+        ...committed,
+        pause: draft.pause,
+        streakGoalMin: draft.streakGoalMin,
+        streakFreezeIntervalDays: draft.streakFreezeIntervalDays,
+        retentionDays: draft.retentionDays,
+      };
+    case 'notifications':
+      return {
+        ...committed,
+        sounds: draft.sounds,
+        badgeCountdown: draft.badgeCountdown,
+        sessionCompleteNotification: draft.sessionCompleteNotification,
+      };
+    case 'blocking':
+    case 'privacy':
+      return committed;
+  }
+}
+
+function settingsWithCommittedSection(
+  section: SettingsSectionId,
+  draft: Settings,
+  committed: Settings,
+): Settings {
+  return settingsWithDraftSection(section, draft, committed);
+}
+
 export function App(): VNode {
   const store: SettingsStore = useSettingsStore();
   const [section, setSection]: [SettingsSectionId, Dispatch<StateUpdater<SettingsSectionId>>] =
@@ -229,6 +275,10 @@ export function App(): VNode {
     ListsConfig | null,
     Dispatch<StateUpdater<ListsConfig | null>>,
   ] = useState<ListsConfig | null>(null);
+  const [savePending, setSavePending]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
+  const [saveError, setSaveError]: [string | null, Dispatch<StateUpdater<string | null>>] =
+    useState<string | null>(null);
 
   useEffect((): void => {
     const loaded: Settings | null = store.settings;
@@ -256,6 +306,66 @@ export function App(): VNode {
     }
   }, [store.lists]);
 
+  useEffect((): void => {
+    setSaveError(null);
+  }, [section]);
+
+  const loaded: boolean =
+    draftSettings !== null &&
+    draftLists !== null &&
+    store.settings !== null &&
+    store.lists !== null;
+  const dirty: boolean =
+    draftSettings !== null && draftLists !== null && store.settings !== null && store.lists !== null
+      ? sectionIsDirty(section, draftSettings, store.settings, draftLists, store.lists)
+      : false;
+
+  const saveSection: () => Promise<void> = async (): Promise<void> => {
+    if (
+      draftSettings === null ||
+      draftLists === null ||
+      store.settings === null ||
+      store.lists === null ||
+      !dirty ||
+      savePending
+    ) {
+      return;
+    }
+    setSavePending(true);
+    setSaveError(null);
+    try {
+      const result: string | null =
+        section === 'blocking'
+          ? await store.saveLists(draftLists)
+          : await store.saveSettings(
+              settingsWithDraftSection(section, store.settings, draftSettings),
+            );
+      if (result !== null) setSaveError(result);
+    } catch {
+      setSaveError('Could not save. Try again.');
+    } finally {
+      setSavePending(false);
+    }
+  };
+
+  const discardSection: () => void = (): void => {
+    if (
+      draftSettings === null ||
+      draftLists === null ||
+      store.settings === null ||
+      store.lists === null ||
+      savePending
+    ) {
+      return;
+    }
+    setSaveError(null);
+    if (section === 'blocking') {
+      setDraftLists(store.lists);
+      return;
+    }
+    setDraftSettings(settingsWithCommittedSection(section, draftSettings, store.settings));
+  };
+
   return (
     <div class="options">
       <SettingsNav
@@ -266,6 +376,7 @@ export function App(): VNode {
         onSectionChange={setSection}
       />
       <main class="content">
+        <h1>Focus Lock settings</h1>
         {hardBanner(store.snapshot)}
         {store.loadError !== null ? (
           <p class="save-error" role="alert">
@@ -280,9 +391,25 @@ export function App(): VNode {
             lists={draftLists}
             onSettings={setDraftSettings}
             onLists={setDraftLists}
-            store={store}
           />
         )}
+        {loaded ? (
+          <>
+            {saveError === null ? null : (
+              <p class="save-error dirty-save-error" role="alert">
+                {saveError}
+              </p>
+            )}
+            <DirtySaveBar
+              dirty={dirty}
+              pending={savePending}
+              onSave={(): void => {
+                void saveSection();
+              }}
+              onDiscard={discardSection}
+            />
+          </>
+        ) : null}
       </main>
     </div>
   );

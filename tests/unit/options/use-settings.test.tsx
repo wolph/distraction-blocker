@@ -71,6 +71,7 @@ function hardSnapshot(sessionEndsAt: number): SessionSnapshot {
 
 beforeEach((): void => {
   captured = null;
+  window.history.replaceState(null, '', '/');
   fake = installChromeFake();
   fake.respond('getSettings', DEFAULT_SETTINGS);
   fake.respond('getLists', DEFAULT_LISTS);
@@ -285,21 +286,23 @@ describe('App frame', () => {
   it('renders the six merged nav sections', async (): Promise<void> => {
     const { getByRole } = render(<App />);
     await waitFor((): void => {
-      expect(getByRole('link', { name: 'Lists and categories' })).toBeTruthy();
+      expect(getByRole('link', { name: 'Blocking' })).toBeTruthy();
     });
     for (const label of [
-      'Lists and categories',
+      'Blocking',
       'Schedule',
-      'Strictness and gate',
-      'Pause economy',
-      'Sounds and badge',
-      'Data',
+      'Session behavior',
+      'Pause budget',
+      'Notifications',
+      'Privacy and data',
     ]) {
       expect(getByRole('link', { name: label })).toBeTruthy();
     }
+    expect(getByRole('heading', { level: 1, name: 'Focus Lock settings' })).toBeTruthy();
+    expect(document.querySelectorAll('h1')).toHaveLength(1);
   });
 
-  it('uses the initial hash, follows later hashes, and falls back to Lists', async (): Promise<void> => {
+  it('uses the initial hash, follows old aliases, and falls back to Blocking', async (): Promise<void> => {
     window.history.replaceState(null, '', '/#schedule');
     const { getByRole } = render(<App />);
     await waitFor((): void => expect(getByRole('heading', { name: 'Schedule' })).toBeTruthy());
@@ -307,28 +310,75 @@ describe('App frame', () => {
 
     window.location.hash = '#categories';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
-    await waitFor((): void =>
-      expect(getByRole('heading', { name: 'Lists and categories' })).toBeTruthy(),
-    );
+    await waitFor((): void => expect(getByRole('heading', { name: 'Blocking' })).toBeTruthy());
 
     window.location.hash = '#invalid';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
-    await waitFor((): void =>
-      expect(getByRole('heading', { name: 'Lists and categories' })).toBeTruthy(),
-    );
+    await waitFor((): void => expect(getByRole('heading', { name: 'Blocking' })).toBeTruthy());
   });
 
   it('keeps unfinished local rule input across section navigation', async (): Promise<void> => {
     const { getAllByLabelText, getByRole } = render(<App />);
-    await waitFor((): void =>
-      expect(getByRole('heading', { name: 'Lists and categories' })).toBeTruthy(),
-    );
+    await waitFor((): void => expect(getByRole('heading', { name: 'Blocking' })).toBeTruthy());
     const pattern: HTMLInputElement = getAllByLabelText('Pattern')[0] as HTMLInputElement;
     fireEvent.input(pattern, { target: { value: 'unfinished.example' } });
     fireEvent.click(getByRole('link', { name: 'Schedule' }));
     expect(getByRole('heading', { name: 'Schedule' })).toBeTruthy();
-    fireEvent.click(getByRole('link', { name: 'Lists and categories' }));
+    fireEvent.click(getByRole('link', { name: 'Blocking' }));
     expect((getAllByLabelText('Pattern')[0] as HTMLInputElement).value).toBe('unfinished.example');
+  });
+
+  it('owns dirty state per destination and discards only the active section', async (): Promise<void> => {
+    const { getByLabelText, getByRole, getByText } = render(<App />);
+    await waitFor((): void => expect(getByRole('link', { name: 'Session behavior' })).toBeTruthy());
+
+    fireEvent.click(getByRole('link', { name: 'Session behavior' }));
+    const preset: HTMLInputElement = getByLabelText(
+      'Short session preset (minutes)',
+    ) as HTMLInputElement;
+    expect((getByRole('button', { name: 'Save changes' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    fireEvent.input(preset, { target: { value: '12' } });
+    expect(getByText('Unsaved changes')).toBeTruthy();
+    expect((getByRole('button', { name: 'Save changes' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+
+    fireEvent.click(getByRole('link', { name: 'Schedule' }));
+    expect(getByText('No unsaved changes')).toBeTruthy();
+    expect((getByRole('button', { name: 'Save changes' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+
+    fireEvent.click(getByRole('link', { name: 'Session behavior' }));
+    expect((getByLabelText('Short session preset (minutes)') as HTMLInputElement).value).toBe('12');
+    fireEvent.click(getByRole('button', { name: 'Discard changes' }));
+    expect((getByLabelText('Short session preset (minutes)') as HTMLInputElement).value).toBe('15');
+    expect(getByText('No unsaved changes')).toBeTruthy();
+  });
+
+  it('keeps the sticky save actions pending until the destination save settles', async (): Promise<void> => {
+    const update: Deferred<{ ok: true }> = deferred<{ ok: true }>();
+    fake.respond('updateSettings', update.promise);
+    const { getByLabelText, getByRole, getByText } = render(<App />);
+    await waitFor((): void => expect(getByRole('link', { name: 'Pause budget' })).toBeTruthy());
+    fireEvent.click(getByRole('link', { name: 'Pause budget' }));
+    fireEvent.input(getByLabelText('Daily streak goal (focus minutes)'), {
+      target: { value: '30' },
+    });
+
+    fireEvent.click(getByRole('button', { name: 'Save changes' }));
+    expect(getByText('Saving changes')).toBeTruthy();
+    expect((getByRole('button', { name: 'Save changes' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect((getByRole('button', { name: 'Discard changes' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+
+    await act(async (): Promise<void> => update.resolve({ ok: true }));
+    await waitFor((): void => expect(getByText('No unsaved changes')).toBeTruthy());
   });
 
   it('keeps a live theme update in the draft used by a later section save', async (): Promise<void> => {
@@ -350,7 +400,7 @@ describe('App frame', () => {
       fake.emit({ type: 'stateChanged', snapshot: { ...emptySnapshot(0), theme: 'dark' } });
     });
     await waitFor((): void => expect(getByRole('button', { name: /Theme: Dark/i })).toBeTruthy());
-    window.location.hash = '#pause';
+    window.location.hash = '#budget';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
     await waitFor((): void =>
       expect(getByLabelText('Daily streak goal (focus minutes)')).toBeTruthy(),
@@ -358,7 +408,7 @@ describe('App frame', () => {
     fireEvent.input(getByLabelText('Daily streak goal (focus minutes)'), {
       target: { value: '30' },
     });
-    fireEvent.click(getByRole('button', { name: 'Save pause economy' }));
+    fireEvent.click(getByRole('button', { name: 'Save changes' }));
     await waitFor((): void =>
       expect(
         fake.sent.some(
@@ -381,7 +431,7 @@ describe('App frame', () => {
   it('shows no banner while idle and picks up a stateChanged broadcast', async (): Promise<void> => {
     const { getByText, queryByText } = render(<App />);
     await waitFor((): void => {
-      expect(getByText('Lists and categories')).toBeTruthy();
+      expect(getByText('Blocking')).toBeTruthy();
     });
     const bannerText: string = 'Changes that weaken blocking will be rejected until 09:30.';
     expect(queryByText(bannerText)).toBeNull();
@@ -420,7 +470,7 @@ describe('App frame', () => {
       target: { value: 'nu.nl' },
     });
     fireEvent.click(getAllByRole('button', { name: 'Add rule' })[0] as HTMLElement);
-    fireEvent.click(getByRole('button', { name: 'Save lists and categories' }));
+    fireEvent.click(getByRole('button', { name: 'Save changes' }));
 
     await waitFor((): void => {
       expect(fake.sent.some((request: Request): boolean => request.type === 'updateLists')).toBe(
@@ -441,18 +491,18 @@ describe('App frame', () => {
     fake.respond('updateSettings', { ok: true });
     const { getByLabelText, getByRole }: ReturnType<typeof render> = render(<App />);
     await waitFor((): void => {
-      expect(getByRole('link', { name: 'Strictness and gate' })).toBeTruthy();
+      expect(getByRole('link', { name: 'Session behavior' })).toBeTruthy();
     });
 
-    fireEvent.click(getByRole('link', { name: 'Strictness and gate' }));
+    fireEvent.click(getByRole('link', { name: 'Session behavior' }));
     fireEvent.click(
       getByLabelText('Friction: stopping early uses the configured deliberation gate'),
     );
-    fireEvent.click(getByRole('link', { name: 'Pause economy' }));
+    fireEvent.click(getByRole('link', { name: 'Pause budget' }));
     fireEvent.input(getByLabelText('Daily streak goal (focus minutes)'), {
       target: { value: '30' },
     });
-    fireEvent.click(getByRole('button', { name: 'Save pause economy' }));
+    fireEvent.click(getByRole('button', { name: 'Save changes' }));
 
     await waitFor((): void => {
       expect(fake.sent.some((request: Request): boolean => request.type === 'updateSettings')).toBe(
@@ -471,13 +521,13 @@ describe('App frame', () => {
     fake.respond('updateSettings', { ok: true });
     const { getByLabelText, getByRole }: ReturnType<typeof render> = render(<App />);
     await waitFor((): void => {
-      expect(getByRole('link', { name: 'Strictness and gate' })).toBeTruthy();
+      expect(getByRole('link', { name: 'Session behavior' })).toBeTruthy();
     });
-    fireEvent.click(getByRole('link', { name: 'Strictness and gate' }));
+    fireEvent.click(getByRole('link', { name: 'Session behavior' }));
     fireEvent.input(getByLabelText('Short session preset (minutes)'), {
       target: { value: '12' },
     });
-    fireEvent.click(getByRole('button', { name: 'Save strictness and gate' }));
+    fireEvent.click(getByRole('button', { name: 'Save changes' }));
 
     await waitFor((): void => {
       expect(fake.sent.some((request: Request): boolean => request.type === 'updateSettings')).toBe(
@@ -500,11 +550,11 @@ describe('App frame', () => {
     fake.respond('updateSettings', { ok: true });
     const { getByLabelText, getByRole }: ReturnType<typeof render> = render(<App />);
     await waitFor((): void => {
-      expect(getByRole('link', { name: 'Pause economy' })).toBeTruthy();
+      expect(getByRole('link', { name: 'Pause budget' })).toBeTruthy();
     });
-    fireEvent.click(getByRole('link', { name: 'Pause economy' }));
+    fireEvent.click(getByRole('link', { name: 'Pause budget' }));
     fireEvent.input(getByLabelText('Freeze token interval (days)'), { target: { value: '9' } });
-    fireEvent.click(getByRole('button', { name: 'Save pause economy' }));
+    fireEvent.click(getByRole('button', { name: 'Save changes' }));
 
     await waitFor((): void => {
       expect(fake.sent.some((request: Request): boolean => request.type === 'updateSettings')).toBe(
@@ -527,11 +577,11 @@ describe('App frame', () => {
     fake.respond('updateSettings', { ok: true });
     const { getByLabelText, getByRole }: ReturnType<typeof render> = render(<App />);
     await waitFor((): void => {
-      expect(getByRole('link', { name: 'Sounds and badge' })).toBeTruthy();
+      expect(getByRole('link', { name: 'Notifications' })).toBeTruthy();
     });
-    fireEvent.click(getByRole('link', { name: 'Sounds and badge' }));
+    fireEvent.click(getByRole('link', { name: 'Notifications' }));
     fireEvent.click(getByLabelText('Show a system notification when a session completes'));
-    fireEvent.click(getByRole('button', { name: 'Save sounds and badge' }));
+    fireEvent.click(getByRole('button', { name: 'Save changes' }));
 
     await waitFor((): void => {
       expect(fake.sent.some((request: Request): boolean => request.type === 'updateSettings')).toBe(

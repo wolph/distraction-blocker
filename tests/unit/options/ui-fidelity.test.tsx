@@ -1,4 +1,6 @@
 /** @vitest-environment jsdom */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { cleanup, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../../../src/options/App';
@@ -49,11 +51,21 @@ describe('Schedule saved entry', () => {
 });
 
 describe('Options navigation', () => {
-  it('links visibly to the Stats page', async (): Promise<void> => {
+  it('links visibly to the Overview page and renders one page heading', async (): Promise<void> => {
     const { getByRole } = render(<App />);
     await waitFor((): void => {
-      expect(getByRole('link', { name: 'Stats' }).getAttribute('href')).toBe('../stats/stats.html');
+      expect(getByRole('link', { name: 'Overview' }).getAttribute('href')).toBe(
+        '../stats/stats.html',
+      );
     });
+    expect(document.querySelectorAll('h1')).toHaveLength(1);
+  });
+
+  it('keeps one save bar stuck to the destination viewport edge', (): void => {
+    const css: string = readFileSync(resolve('src/options/options.css'), 'utf8');
+    expect(css).toMatch(/\.dirty-save-bar\s*\{[^}]*position:\s*sticky/s);
+    expect(css).toMatch(/\.dirty-save-bar\s*\{[^}]*bottom:\s*0/s);
+    expect(css).toMatch(/\.dirty-save-bar\s*\{[^}]*background:\s*var\(--surface\)/s);
   });
 
   it('uses the exact hard-blocking rejection copy', async (): Promise<void> => {

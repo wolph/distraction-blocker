@@ -81,11 +81,12 @@ afterEach((): void => {
 describe('Stats theme and navigation', (): void => {
   it('renders the shared menu and loads settings exactly once', async (): Promise<void> => {
     const { getByRole } = render(<App />);
-    await waitFor((): void => expect(getByRole('link', { name: 'Stats' })).toBeTruthy());
-    expect(getByRole('link', { name: 'Stats' }).getAttribute('aria-current')).toBe('page');
-    expect(getByRole('link', { name: 'Lists and categories' }).getAttribute('href')).toBe(
-      '../options/options.html#lists',
+    await waitFor((): void => expect(getByRole('link', { name: 'Overview' })).toBeTruthy());
+    expect(getByRole('link', { name: 'Overview' }).getAttribute('aria-current')).toBe('page');
+    expect(getByRole('link', { name: 'Blocking' }).getAttribute('href')).toBe(
+      '../options/options.html#blocking',
     );
+    expect(document.querySelectorAll('h1')).toHaveLength(1);
     expect(sent.filter((request: Request): boolean => request.type === 'getSettings')).toHaveLength(
       1,
     );

@@ -12,10 +12,6 @@ function siteCountLabel(count: number): string {
   return count === 1 ? '1 site' : `${count} sites`;
 }
 
-function categoryCountLabel(count: number): string {
-  return count === 1 ? '1 category' : `${count} categories`;
-}
-
 /**
  * One row per bundled category: toggle, title, entry count, expander.
  * Expanded rows list every host with a checkbox. Unchecked hosts land in
@@ -25,11 +21,16 @@ function categoryCountLabel(count: number): string {
 export function Categories(props: CategoriesProps): VNode {
   const [expanded, setExpanded]: [Set<CategoryId>, Dispatch<StateUpdater<Set<CategoryId>>>] =
     useState<Set<CategoryId>>(new Set());
+  const [announcement, setAnnouncement]: [string, Dispatch<StateUpdater<string>>] =
+    useState<string>('');
 
   const toggleCategory: (id: CategoryId, on: boolean) => void = (
     id: CategoryId,
     on: boolean,
   ): void => {
+    const title: string =
+      ALL_CATEGORIES.find((category: CategoryList): boolean => category.id === id)?.title ?? id;
+    setAnnouncement(`${title} category ${on ? 'on' : 'off'}.`);
     props.onChange({
       ...props.lists,
       categories: { ...props.lists.categories, [id]: on },
@@ -41,6 +42,7 @@ export function Categories(props: CategoriesProps): VNode {
     ALL_CATEGORIES.forEach((category: CategoryList): void => {
       categories[category.id] = enabled;
     });
+    setAnnouncement(`All categories ${enabled ? 'on' : 'off'}.`);
     props.onChange({ ...props.lists, categories });
   };
 
@@ -53,6 +55,7 @@ export function Categories(props: CategoriesProps): VNode {
     const next: string[] = active
       ? current.filter((h: string): boolean => h !== host)
       : [...current, host];
+    setAnnouncement(`${host} ${active ? 'included' : 'kept available'}.`);
     props.onChange({
       ...props.lists,
       exclusions: { ...props.lists.exclusions, [id]: next },
@@ -68,6 +71,7 @@ export function Categories(props: CategoriesProps): VNode {
     const next: string[] = active
       ? [...new Set(current.filter((host: string): boolean => !bundledHosts.has(host)))]
       : [...new Set([...current, ...category.hosts])];
+    setAnnouncement(`All ${category.title} sites ${active ? 'included' : 'kept available'}.`);
     props.onChange({
       ...props.lists,
       exclusions: { ...props.lists.exclusions, [category.id]: next },
@@ -97,21 +101,12 @@ export function Categories(props: CategoriesProps): VNode {
 
   return (
     <div class="categories">
+      <p class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+        {announcement}
+      </p>
       <fieldset class="cat-bulk-actions" aria-label="Category bulk actions">
-        <span
-          class="selection-count selected"
-          role="status"
-          aria-label={`Selected ${categoryCountLabel(selectedCategoryCount)}`}
-        >
-          Selected {selectedCategoryCount}
-        </span>
-        <span
-          class="selection-count deselected"
-          role="status"
-          aria-label={`Deselected ${categoryCountLabel(deselectedCategoryCount)}`}
-        >
-          Deselected {deselectedCategoryCount}
-        </span>
+        <span class="selection-count selected">Selected {selectedCategoryCount}</span>
+        <span class="selection-count deselected">Deselected {deselectedCategoryCount}</span>
         <span class="spacer" />
         <button
           type="button"
@@ -145,8 +140,7 @@ export function Categories(props: CategoriesProps): VNode {
           excludedHosts.has(host),
         ).length;
         const selectedHostCount: number = category.hosts.length - deselectedHostCount;
-        const partial: boolean = selectedHostCount > 0 && deselectedHostCount > 0;
-        const open: boolean = partial || expanded.has(category.id);
+        const open: boolean = expanded.has(category.id);
         const allHostsSelected: boolean = category.hosts.every(
           (host: string): boolean => !excluded.includes(host),
         );
@@ -166,42 +160,30 @@ export function Categories(props: CategoriesProps): VNode {
                 />
                 {category.title}
               </label>
-              <span
-                class="selection-count selected"
-                role="status"
-                aria-label={`${category.title}: selected ${siteCountLabel(selectedHostCount)}`}
-              >
-                Selected {selectedHostCount}
-              </span>
-              <span
-                class="selection-count deselected"
-                role="status"
-                aria-label={`${category.title}: deselected ${siteCountLabel(deselectedHostCount)}`}
-              >
-                Deselected {deselectedHostCount}
-              </span>
+              <span class="selection-count selected">Selected {selectedHostCount}</span>
+              <span class="selection-count deselected">Deselected {deselectedHostCount}</span>
               <span class="spacer" />
               <button
                 type="button"
                 class="ghost"
                 aria-expanded={open}
-                aria-label={
-                  partial
-                    ? `${category.title} sites are shown because the category is partially selected`
-                    : undefined
-                }
-                disabled={partial}
                 onClick={(): void => {
                   toggleExpanded(category.id);
                 }}
               >
-                {partial
-                  ? 'Partially selected'
-                  : open
-                    ? `Hide ${category.title} sites`
-                    : `Show ${category.title} sites`}
+                {open ? `Hide ${category.title} sites` : `Show ${category.title} sites`}
               </button>
             </div>
+            <p class="category-state">
+              {enabled ? (
+                <>{siteCountLabel(selectedHostCount)} included</>
+              ) : (
+                <>
+                  <strong>Category off</strong>
+                  <span>{selectedHostCount} included when enabled</span>
+                </>
+              )}
+            </p>
             {open ? (
               <div>
                 <p class="help">

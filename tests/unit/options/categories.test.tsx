@@ -21,17 +21,20 @@ describe('Categories', () => {
       exclusions: { social: [social.hosts[0] as string, 'retired.example'] },
     };
 
-    const { getByLabelText } = render(<Categories lists={lists} onChange={vi.fn()} />);
+    const { container, getAllByRole } = render(<Categories lists={lists} onChange={vi.fn()} />);
 
-    expect(getByLabelText('Selected 2 categories').textContent).toBe('Selected 2');
-    expect(getByLabelText('Deselected 5 categories').textContent).toBe('Deselected 5');
-    expect(
-      getByLabelText(`Social media: selected ${social.hosts.length - 1} sites`).textContent,
-    ).toBe(`Selected ${social.hosts.length - 1}`);
-    expect(getByLabelText('Social media: deselected 1 site').textContent).toBe('Deselected 1');
+    const bulk: Element = container.querySelector('.cat-bulk-actions') as Element;
+    expect(bulk.querySelector('.selected')?.textContent).toBe('Selected 2');
+    expect(bulk.querySelector('.deselected')?.textContent).toBe('Deselected 5');
+    const socialRow: Element = container.querySelector('.cat-row') as Element;
+    expect(socialRow.querySelector('.selected')?.textContent).toBe(
+      `Selected ${social.hosts.length - 1}`,
+    );
+    expect(socialRow.querySelector('.deselected')?.textContent).toBe('Deselected 1');
+    expect(getAllByRole('status')).toHaveLength(1);
   });
 
-  it('keeps a partially selected category expanded and refuses to collapse it', (): void => {
+  it('lets a partially selected category expand and collapse independently', (): void => {
     const social: CategoryList = ALL_CATEGORIES.find(
       (category: CategoryList): boolean => category.id === 'social',
     ) as CategoryList;
@@ -42,14 +45,18 @@ describe('Categories', () => {
     const { getByLabelText, getByRole } = render(<Categories lists={lists} onChange={vi.fn()} />);
 
     const toggle: HTMLButtonElement = getByRole('button', {
-      name: 'Social media sites are shown because the category is partially selected',
+      name: 'Show Social media sites',
     }) as HTMLButtonElement;
-    expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    expect(toggle.disabled).toBe(true);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.disabled).toBe(false);
+    expect((): HTMLElement => getByLabelText(social.hosts[0] as string)).toThrow();
+    fireEvent.click(toggle);
     expect(getByLabelText(social.hosts[0] as string)).toBeTruthy();
+    fireEvent.click(getByRole('button', { name: 'Hide Social media sites' }));
+    expect((): HTMLElement => getByLabelText(social.hosts[0] as string)).toThrow();
   });
 
-  it('opens a category when a prop update makes it partially selected', (): void => {
+  it('does not force a category open when a prop update makes it partial', (): void => {
     const social: CategoryList = ALL_CATEGORIES.find(
       (category: CategoryList): boolean => category.id === 'social',
     ) as CategoryList;
@@ -66,10 +73,18 @@ describe('Categories', () => {
     );
 
     expect(
-      getByRole('button', {
-        name: 'Social media sites are shown because the category is partially selected',
-      }).getAttribute('aria-expanded'),
-    ).toBe('true');
+      getByRole('button', { name: 'Show Social media sites' }).getAttribute('aria-expanded'),
+    ).toBe('false');
+  });
+
+  it('describes a disabled category without implying it currently blocks sites', (): void => {
+    const social: CategoryList = ALL_CATEGORIES.find(
+      (category: CategoryList): boolean => category.id === 'social',
+    ) as CategoryList;
+    const { getAllByText } = render(<Categories lists={DEFAULT_LISTS} onChange={vi.fn()} />);
+
+    expect(getAllByText('Category off')).toHaveLength(ALL_CATEGORIES.length);
+    expect(getAllByText(`${social.hosts.length} included when enabled`).length).toBeGreaterThan(0);
   });
 
   it('toggling a category on fires onChange with the toggle set', (): void => {
@@ -103,7 +118,8 @@ describe('Categories', () => {
       exclusions: { social: ['facebook.com', 'x.com'] },
     };
     const onChange = vi.fn();
-    const { getByLabelText } = render(<Categories lists={lists} onChange={onChange} />);
+    const { getByLabelText, getByRole } = render(<Categories lists={lists} onChange={onChange} />);
+    fireEvent.click(getByRole('button', { name: 'Show Social media sites' }));
     fireEvent.click(getByLabelText('facebook.com'));
     const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
     expect(next.exclusions.social).toEqual(['x.com']);
@@ -228,6 +244,7 @@ describe('Categories', () => {
     const onChange = vi.fn();
     const { getByRole } = render(<Categories lists={lists} onChange={onChange} />);
 
+    fireEvent.click(getByRole('button', { name: 'Show Social media sites' }));
     fireEvent.click(getByRole('button', { name: 'Select all Social media sites' }));
 
     const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
@@ -248,6 +265,7 @@ describe('Categories', () => {
     const onChange = vi.fn();
     const { getByRole } = render(<Categories lists={lists} onChange={onChange} />);
 
+    fireEvent.click(getByRole('button', { name: 'Show Social media sites' }));
     fireEvent.click(getByRole('button', { name: 'Deselect all Social media sites' }));
 
     const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;

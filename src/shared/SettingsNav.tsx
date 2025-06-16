@@ -1,24 +1,40 @@
-import type { VNode } from 'preact';
+import type { JSX, VNode } from 'preact';
 import { ThemeControl } from './ThemeControl';
 import type { ThemeMode } from './types';
 
-export type SettingsSectionId = 'lists' | 'schedule' | 'strictness' | 'pause' | 'sounds' | 'data';
+export type SettingsSectionId =
+  | 'blocking'
+  | 'schedule'
+  | 'behavior'
+  | 'budget'
+  | 'notifications'
+  | 'privacy';
 
 export const SETTINGS_SECTIONS: ReadonlyArray<{ id: SettingsSectionId; label: string }> = [
-  { id: 'lists', label: 'Lists and categories' },
+  { id: 'blocking', label: 'Blocking' },
   { id: 'schedule', label: 'Schedule' },
-  { id: 'strictness', label: 'Strictness and gate' },
-  { id: 'pause', label: 'Pause economy' },
-  { id: 'sounds', label: 'Sounds and badge' },
-  { id: 'data', label: 'Data' },
+  { id: 'behavior', label: 'Session behavior' },
+  { id: 'budget', label: 'Pause budget' },
+  { id: 'notifications', label: 'Notifications' },
+  { id: 'privacy', label: 'Privacy and data' },
 ];
+
+const SETTINGS_SECTION_ALIASES: Readonly<Record<string, SettingsSectionId>> = {
+  lists: 'blocking',
+  categories: 'blocking',
+  strictness: 'behavior',
+  pause: 'budget',
+  sounds: 'notifications',
+  data: 'privacy',
+};
 
 export function parseSettingsSectionHash(hash: string): SettingsSectionId {
   const candidate: string = hash.startsWith('#') ? hash.slice(1) : hash;
-  if (candidate === 'categories') return 'lists';
+  const alias: SettingsSectionId | undefined = SETTINGS_SECTION_ALIASES[candidate];
+  if (alias !== undefined) return alias;
   return SETTINGS_SECTIONS.some(({ id }: { id: SettingsSectionId }): boolean => id === candidate)
     ? (candidate as SettingsSectionId)
-    : 'lists';
+    : 'blocking';
 }
 
 interface SettingsNavProps {
@@ -31,9 +47,9 @@ interface SettingsNavProps {
 
 export function SettingsNav(props: SettingsNavProps): VNode {
   return (
-    <nav class="settings-nav" aria-label="Settings sections">
+    <nav class="settings-nav" aria-label="Product navigation">
       <div class="settings-nav-heading">
-        <h1>Focus Lock</h1>
+        <span class="settings-nav-brand">Focus Lock</span>
         <ThemeControl mode={props.theme} onChange={props.onThemeChange} />
       </div>
       <a
@@ -41,8 +57,9 @@ export function SettingsNav(props: SettingsNavProps): VNode {
         href="../stats/stats.html"
         aria-current={props.page === 'stats' ? 'page' : undefined}
       >
-        Stats
+        Overview
       </a>
+      <div class="settings-nav-group-label">Settings</div>
       {SETTINGS_SECTIONS.map(({ id, label }: { id: SettingsSectionId; label: string }): VNode => {
         const current: boolean = props.page === 'options' && props.section === id;
         return (
@@ -53,7 +70,18 @@ export function SettingsNav(props: SettingsNavProps): VNode {
             aria-current={current ? 'page' : undefined}
             onClick={
               props.page === 'options'
-                ? (): void => {
+                ? (event: JSX.TargetedMouseEvent<HTMLAnchorElement>): void => {
+                    if (
+                      event.button !== 0 ||
+                      event.altKey ||
+                      event.ctrlKey ||
+                      event.metaKey ||
+                      event.shiftKey
+                    ) {
+                      return;
+                    }
+                    event.preventDefault();
+                    window.history.pushState(null, '', `#${id}`);
                     props.onSectionChange?.(id);
                   }
                 : undefined

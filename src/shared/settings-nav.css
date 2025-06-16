@@ -14,10 +14,20 @@
   margin: 0 8px 16px;
 }
 
-.settings-nav-heading h1 {
+.settings-nav-brand {
   color: var(--accent, var(--focus-series));
   font-size: 18px;
+  font-weight: 700;
   margin: 0;
+}
+
+.settings-nav-group-label {
+  color: var(--muted, var(--ink-muted));
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  margin: 16px 10px 4px;
+  text-transform: uppercase;
 }
 
 .settings-nav-item {
@@ -63,5 +73,10 @@
   .settings-nav-heading {
     grid-column: 1 / -1;
     margin-bottom: 8px;
+  }
+
+  .settings-nav-group-label {
+    grid-column: 1 / -1;
+    margin-top: 12px;
   }
 }
