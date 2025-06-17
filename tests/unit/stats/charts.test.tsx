@@ -61,7 +61,7 @@ function bundleWith(days: DailyAgg[]): StatsBundle {
       activeMonth: '2026-08',
     },
     recentSessions: [],
-    totals: { focusMsToday: 0, focusMsWeek: 0, attemptsToday: 0, resistedToday: 0 },
+    totals: { focusMsToday: 0, focusMsLast7Days: 0, attemptsToday: 0, resistedToday: 0 },
   };
 }
 

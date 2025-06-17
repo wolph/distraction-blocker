@@ -114,7 +114,7 @@ export interface StatsBundle {
   recentSessions: EventRecord[];
   totals: {
     focusMsToday: number;
-    focusMsWeek: number;
+    focusMsLast7Days: number;
     attemptsToday: number;
     resistedToday: number;
   };

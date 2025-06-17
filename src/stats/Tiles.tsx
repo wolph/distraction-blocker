@@ -47,16 +47,20 @@ function todayAgg(bundle: StatsBundle, now: number): DailyAgg | null {
 
 function buildTiles(bundle: StatsBundle, now: number): TileSpec[] {
   const today: DailyAgg | null = todayAgg(bundle, now);
-  const spentMs: number = today === null ? 0 : today.pauseMsSpent + (today.unlockMsSpent ?? 0);
+  const pauseMs: number = today?.pauseMsSpent ?? 0;
+  const unlockMs: number = today?.unlockMsSpent ?? 0;
+  const spentMs: number = pauseMs + unlockMs;
   const earnedMs: number = today?.pauseMsEarned ?? 0;
-  const freezes: number = bundle.streak.freezeTokens;
+  const spendingSubline: string =
+    spentMs > 0
+      ? `Pause ${formatDuration(pauseMs)}, unlock ${formatDuration(unlockMs)}, ${formatDuration(earnedMs)} earned`
+      : `${formatDuration(earnedMs)} earned`;
   return [
     { label: 'Focus today', value: formatDuration(bundle.totals.focusMsToday), subline: null },
-    { label: 'Focus this week', value: formatDuration(bundle.totals.focusMsWeek), subline: null },
     {
-      label: 'Current streak',
-      value: `${bundle.streak.current} ${bundle.streak.current === 1 ? 'day' : 'days'}`,
-      subline: `${freezes} ${freezes === 1 ? 'freeze' : 'freezes'} banked`,
+      label: 'Focus in the last 7 days',
+      value: formatDuration(bundle.totals.focusMsLast7Days),
+      subline: null,
     },
     { label: 'Attempts blocked today', value: String(bundle.totals.attemptsToday), subline: null },
     {
@@ -65,19 +69,11 @@ function buildTiles(bundle: StatsBundle, now: number): TileSpec[] {
       subline: null,
     },
     {
-      label: 'Pause spent today',
+      label: 'Pause and unlock time spent today',
       value: formatDuration(spentMs),
-      subline: `of ${formatDuration(earnedMs)} earned`,
+      subline: spendingSubline,
     },
   ];
-}
-
-function FlameGlyph(): JSX.Element {
-  return (
-    <svg class="glyph flame" viewBox="0 0 16 16" aria-hidden="true">
-      <path d="M8 1.5c.6 2.2-1.9 3.6-1.9 6a2 2 0 0 0 .5 1.3C6.7 6.6 9 6.3 9 4.2c1.7 1.2 2.9 3 2.9 4.9A3.9 3.9 0 0 1 8 13a3.9 3.9 0 0 1-3.9-3.9C4.1 5.6 6.9 4.1 8 1.5Z" />
-    </svg>
-  );
 }
 
 export function Tiles(props: TilesProps): JSX.Element {
@@ -91,10 +87,7 @@ export function Tiles(props: TilesProps): JSX.Element {
         (tile: TileSpec): JSX.Element => (
           <div class="tile" key={tile.label}>
             <span class="tile-label">{tile.label}</span>
-            <span class="tile-value">
-              {tile.label === 'Current streak' ? <FlameGlyph /> : null}
-              {tile.value}
-            </span>
+            <span class="tile-value">{tile.value}</span>
             {tile.subline === null ? null : <span class="tile-subline">{tile.subline}</span>}
           </div>
         ),

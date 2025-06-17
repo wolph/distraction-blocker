@@ -63,7 +63,7 @@ const stats: StatsBundle = {
   recentSessions: [],
   totals: {
     focusMsToday: 0,
-    focusMsWeek: 0,
+    focusMsLast7Days: 0,
     attemptsToday: 0,
     resistedToday: 0,
   },

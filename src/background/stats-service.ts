@@ -304,7 +304,7 @@ export function buildStats(
     recentSessions,
     totals: {
       focusMsToday: todayAgg?.focusMs ?? 0,
-      focusMsWeek: daysMerged
+      focusMsLast7Days: daysMerged
         .filter((d: DailyAgg): boolean => d.date >= weekFrom)
         .reduce((a: number, d: DailyAgg): number => a + d.focusMs, 0),
       attemptsToday: todayAgg === undefined ? 0 : sumAttempts(todayAgg),

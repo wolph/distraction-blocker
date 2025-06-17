@@ -269,7 +269,22 @@ describe.sequential('stats-service local calendar ranges', (): void => {
     );
 
     expect(bundle.days.map((aggregate: DailyAgg): string => aggregate.date)).toEqual(expected);
-    expect(bundle.totals.focusMsWeek).toBe(7);
+    expect(bundle.totals.focusMsLast7Days).toBe(7);
+  });
+
+  it('totals focus from exactly the last seven local dates', (): void => {
+    const now: number = new Date(2026, 7, 28, 14, 0, 0).getTime();
+    const dates: string[] = calendarDates('2026-08-21', 8);
+    const syncItems: Record<string, unknown> = Object.fromEntries(
+      dates.map((date: string): [string, DailyAgg] => [
+        `agg:devA:${date}`,
+        daily(date, 20 * 60_000),
+      ]),
+    );
+
+    const bundle: StatsBundle = buildStats('devA', syncItems, [], 30, now);
+
+    expect(bundle.totals.focusMsLast7Days).toBe(140 * 60_000);
   });
 
   it('promotes a legacy start through an explicit persisted identity marker', (): void => {

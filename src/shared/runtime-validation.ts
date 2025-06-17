@@ -745,13 +745,19 @@ function isStatsBundleValue(value: unknown): value is StatsBundle {
     !isStreak(value.streak) ||
     !isDenseArray(value.recentSessions) ||
     !value.recentSessions.every(isEventRecord) ||
-    !isRecord(value.totals)
+    !isRecord(value.totals) ||
+    !hasExactKeys(value.totals, [
+      'focusMsToday',
+      'focusMsLast7Days',
+      'attemptsToday',
+      'resistedToday',
+    ])
   ) {
     return false;
   }
   return (
     isNonNegativeNumber(value.totals.focusMsToday) &&
-    isNonNegativeNumber(value.totals.focusMsWeek) &&
+    isNonNegativeNumber(value.totals.focusMsLast7Days) &&
     isNonNegativeInteger(value.totals.attemptsToday) &&
     isNonNegativeInteger(value.totals.resistedToday)
   );

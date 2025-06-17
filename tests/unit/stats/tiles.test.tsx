@@ -100,7 +100,7 @@ const BUNDLE: StatsBundle = {
   recentSessions: [],
   totals: {
     focusMsToday: 65 * 60_000,
-    focusMsWeek: 115 * 60_000,
+    focusMsLast7Days: 115 * 60_000,
     attemptsToday: 6,
     resistedToday: 2,
   },
@@ -118,7 +118,7 @@ const EMPTY: StatsBundle = {
     activeMonth: '2026-08',
   },
   recentSessions: [],
-  totals: { focusMsToday: 0, focusMsWeek: 0, attemptsToday: 0, resistedToday: 0 },
+  totals: { focusMsToday: 0, focusMsLast7Days: 0, attemptsToday: 0, resistedToday: 0 },
 };
 
 afterEach(cleanup);
@@ -131,6 +131,15 @@ function tileValue(container: Element, label: string): string {
   if (match === undefined) throw new Error(`no tile labeled ${label}`);
   const value: Element | null = match.parentElement?.querySelector('.tile-value') ?? null;
   return value?.textContent ?? '';
+}
+
+function tileSubline(container: Element, label: string): string {
+  const labels: Element[] = Array.from(container.querySelectorAll('.tile-label'));
+  const match: Element | undefined = labels.find(
+    (el: Element): boolean => el.textContent === label,
+  );
+  if (match === undefined) throw new Error(`no tile labeled ${label}`);
+  return match.parentElement?.querySelector('.tile-subline')?.textContent ?? '';
 }
 
 describe('formatDuration', () => {
@@ -146,16 +155,19 @@ describe('formatDuration', () => {
 });
 
 describe('Tiles', () => {
-  it('renders the six tile values from the bundle', () => {
+  it('renders exact period labels, totals, and separate pause and unlock spending', () => {
     const { container } = render(<Tiles bundle={BUNDLE} economy={ECONOMY} now={NOW} />);
     expect(tileValue(container, 'Focus today')).toBe('1 h 05 m');
-    expect(tileValue(container, 'Focus this week')).toBe('1 h 55 m');
-    expect(tileValue(container, 'Current streak')).toBe('4 days');
+    expect(tileValue(container, 'Focus in the last 7 days')).toBe('1 h 55 m');
     expect(tileValue(container, 'Attempts blocked today')).toBe('6');
     expect(tileValue(container, 'Temptations resisted today')).toBe('2');
-    expect(tileValue(container, 'Pause spent today')).toBe('7 m');
-    expect(container.textContent).toContain('of 17 m earned');
-    expect(container.textContent).toContain('2 freezes banked');
+    expect(tileValue(container, 'Pause and unlock time spent today')).toBe('7 m');
+    expect(tileSubline(container, 'Pause and unlock time spent today')).toBe(
+      'Pause 5 m, unlock 2 m, 17 m earned',
+    );
+    expect(container.textContent).not.toContain('Current streak');
+    expect(container.textContent).not.toContain('2 freezes banked');
+    expect(container.querySelectorAll('.tile')).toHaveLength(5);
   });
 
   it('renders the quiet zero-state line for an empty bundle', () => {
@@ -163,6 +175,30 @@ describe('Tiles', () => {
     expect(container.textContent).toContain('Stats appear after your first session.');
     expect(container.querySelectorAll('.tile').length).toBe(0);
   });
+
+  it.each([
+    { label: 'pause only', pauseMs: 5 * 60_000, unlockMs: 0 },
+    { label: 'unlock only', pauseMs: 0, unlockMs: 2 * 60_000 },
+  ])(
+    'shows both spending components when today has $label spending',
+    ({ pauseMs, unlockMs }: { pauseMs: number; unlockMs: number }): void => {
+      const bundle: StatsBundle = {
+        ...BUNDLE,
+        days: [
+          day('2026-08-28', {
+            pauseMsSpent: pauseMs,
+            unlockMsSpent: unlockMs,
+          }),
+        ],
+      };
+
+      const { container } = render(<Tiles bundle={bundle} economy={ECONOMY} now={NOW} />);
+
+      expect(tileSubline(container, 'Pause and unlock time spent today')).toBe(
+        `Pause ${formatDuration(pauseMs)}, unlock ${formatDuration(unlockMs)}, 0 m earned`,
+      );
+    },
+  );
 
   it('treats the worker live zero aggregate as first-run history', () => {
     const liveFirstRun: StatsBundle = {
@@ -187,7 +223,7 @@ describe('Tiles', () => {
 
       const { container } = render(<Tiles bundle={bundle} economy={ECONOMY} now={NOW} />);
 
-      expect(container.querySelectorAll('.tile')).toHaveLength(6);
+      expect(container.querySelectorAll('.tile')).toHaveLength(5);
       expect(container.textContent).not.toContain('Stats appear after your first session.');
     },
   );

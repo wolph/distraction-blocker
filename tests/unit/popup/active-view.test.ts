@@ -86,7 +86,12 @@ const statsBundle: StatsBundle = {
     activeMonth: '2026-08',
   },
   recentSessions: [],
-  totals: { focusMsToday: 52 * 60_000, focusMsWeek: 0, attemptsToday: 0, resistedToday: 0 },
+  totals: {
+    focusMsToday: 52 * 60_000,
+    focusMsLast7Days: 0,
+    attemptsToday: 0,
+    resistedToday: 0,
+  },
 };
 
 interface Deferred<T> {

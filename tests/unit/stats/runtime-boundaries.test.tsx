@@ -43,7 +43,12 @@ const BUNDLE: StatsBundle = {
       intention: 'report',
     },
   ],
-  totals: { focusMsToday: 60_000, focusMsWeek: 60_000, attemptsToday: 1, resistedToday: 0 },
+  totals: {
+    focusMsToday: 60_000,
+    focusMsLast7Days: 60_000,
+    attemptsToday: 1,
+    resistedToday: 0,
+  },
 };
 
 const sendMessageMock = vi.fn<(request: Request) => Promise<unknown>>();
@@ -66,6 +71,16 @@ describe('Stats runtime response boundaries', (): void => {
     ['streak', { ...BUNDLE, streak: { ...BUNDLE.streak, activeMonth: 'August' } }],
     ['session', { ...BUNDLE, recentSessions: [{ t: 'sessionStarted', at: 1 }] }],
     ['totals', { ...BUNDLE, totals: { ...BUNDLE.totals, attemptsToday: 1.5 } }],
+    [
+      'legacy totals alias',
+      {
+        ...BUNDLE,
+        totals: {
+          ...BUNDLE.totals,
+          focusMsWeek: 60_000,
+        },
+      },
+    ],
   ])(
     'shows a full load error for malformed %s data',
     async (_label: string, stats: unknown): Promise<void> => {

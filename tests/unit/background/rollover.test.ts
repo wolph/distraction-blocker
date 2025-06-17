@@ -442,7 +442,7 @@ describe('buildStats', () => {
     expect(bundle.days[1]?.focusMs).toBe(180_000);
     expect(bundle.days[1]?.attempts).toEqual({ 'x.com': 3, 'y.com': 3 });
     expect(bundle.totals.focusMsToday).toBe(180_000);
-    expect(bundle.totals.focusMsWeek).toBe(480_000);
+    expect(bundle.totals.focusMsLast7Days).toBe(480_000);
     expect(bundle.totals.attemptsToday).toBe(6);
     expect(bundle.totals.resistedToday).toBe(2);
     expect(bundle.recentSessions.map((e: EventRecord): string => e.t)).toEqual([
