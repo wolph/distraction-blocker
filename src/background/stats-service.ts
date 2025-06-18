@@ -284,16 +284,20 @@ export function buildStats(
     }
   }
   const fromDate: string = localDateBefore(now, days - 1);
-  const daysMerged: DailyAgg[] = [...dailyByDate.entries()]
-    .filter(([date]: [string, DailyAgg[]]): boolean => date >= fromDate)
+  const weekFrom: string = localDateBefore(now, 6);
+  const aggregateFrom: string = fromDate < weekFrom ? fromDate : weekFrom;
+  const relevantDaysMerged: DailyAgg[] = [...dailyByDate.entries()]
+    .filter(([date]: [string, DailyAgg[]]): boolean => date >= aggregateFrom)
     .sort(([a]: [string, DailyAgg[]], [b]: [string, DailyAgg[]]): number => a.localeCompare(b))
     .map(([, aggs]: [string, DailyAgg[]]): DailyAgg => mergeDaily(aggs));
+  const daysMerged: DailyAgg[] = relevantDaysMerged.filter(
+    (aggregate: DailyAgg): boolean => aggregate.date >= fromDate,
+  );
   const months: MonthlyAgg[] = [...monthlyByMonth.entries()]
     .sort(([a]: [string, MonthlyAgg[]], [b]: [string, MonthlyAgg[]]): number => a.localeCompare(b))
     .map(([, aggs]: [string, MonthlyAgg[]]): MonthlyAgg => mergeMonthly(aggs));
   const streak: StreakState = parseStreak(items[SYNC_STREAK]) ?? emptyStreak(localMonthStr(now));
   const recentSessions: EventRecord[] = recentSessionEvents(allEvents);
-  const weekFrom: string = localDateBefore(now, 6);
   const todayAgg: DailyAgg | undefined = daysMerged.find(
     (d: DailyAgg): boolean => d.date === today,
   );
@@ -304,7 +308,7 @@ export function buildStats(
     recentSessions,
     totals: {
       focusMsToday: todayAgg?.focusMs ?? 0,
-      focusMsLast7Days: daysMerged
+      focusMsLast7Days: relevantDaysMerged
         .filter((d: DailyAgg): boolean => d.date >= weekFrom)
         .reduce((a: number, d: DailyAgg): number => a + d.focusMs, 0),
       attemptsToday: todayAgg === undefined ? 0 : sumAttempts(todayAgg),

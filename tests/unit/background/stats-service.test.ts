@@ -272,7 +272,7 @@ describe.sequential('stats-service local calendar ranges', (): void => {
     expect(bundle.totals.focusMsLast7Days).toBe(7);
   });
 
-  it('totals focus from exactly the last seven local dates', (): void => {
+  it('totals focus from exactly the last seven local dates when only one day is requested', (): void => {
     const now: number = new Date(2026, 7, 28, 14, 0, 0).getTime();
     const dates: string[] = calendarDates('2026-08-21', 8);
     const syncItems: Record<string, unknown> = Object.fromEntries(
@@ -282,8 +282,11 @@ describe.sequential('stats-service local calendar ranges', (): void => {
       ]),
     );
 
-    const bundle: StatsBundle = buildStats('devA', syncItems, [], 30, now);
+    const bundle: StatsBundle = buildStats('devA', syncItems, [], 1, now);
 
+    expect(bundle.days.map((aggregate: DailyAgg): string => aggregate.date)).toEqual([
+      '2026-08-28',
+    ]);
     expect(bundle.totals.focusMsLast7Days).toBe(140 * 60_000);
   });
 
