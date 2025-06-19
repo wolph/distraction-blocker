@@ -1,4 +1,5 @@
-import type { Page } from '@playwright/test';
+import { type BrowserContext, chromium, type Page, type Worker } from '@playwright/test';
+import { resolveExtensionDist } from './extension-dist';
 import { expect, test } from './fixtures';
 
 interface CssColors {
@@ -511,6 +512,79 @@ test('options page fits a mobile viewport', async ({ context, extensionId }) => 
     (): number => document.documentElement.scrollWidth - window.innerWidth,
   );
   expect(horizontalOverflowPx).toBeLessThanOrEqual(0);
+});
+
+// biome-ignore lint/correctness/noEmptyPattern: this regression owns its isolated extension context
+test('options rejection and save actions stay together at the viewport edge', async ({}, testInfo) => {
+  const dist: string = resolveExtensionDist();
+  const context: BrowserContext = await chromium.launchPersistentContext(
+    testInfo.outputPath('task5-options-profile'),
+    {
+      channel: 'chromium',
+      args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`],
+    },
+  );
+  try {
+    const existingWorker: Worker | undefined = context.serviceWorkers()[0];
+    const worker: Worker = existingWorker ?? (await context.waitForEvent('serviceworker'));
+    const extensionId: string = new URL(worker.url()).host;
+    const page: Page = await context.newPage();
+    await page.addInitScript((): void => {
+      const sendMessage: typeof chrome.runtime.sendMessage = chrome.runtime.sendMessage.bind(
+        chrome.runtime,
+      );
+      Object.defineProperty(chrome.runtime, 'sendMessage', {
+        configurable: true,
+        value: async (...args: Parameters<typeof chrome.runtime.sendMessage>): Promise<unknown> => {
+          const request: unknown = args[0];
+          if (
+            typeof request === 'object' &&
+            request !== null &&
+            'type' in request &&
+            request.type === 'updateLists'
+          ) {
+            return { ok: false, error: 'Blocking changes could not be saved. Try again.' };
+          }
+          return await sendMessage(...args);
+        },
+      });
+    });
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto(`chrome-extension://${extensionId}/src/options/options.html#blocking`);
+    await expect(page.getByRole('heading', { level: 2, name: 'Blocking' })).toBeVisible();
+
+    await page.getByRole('textbox', { name: 'Pattern' }).first().fill('example.com');
+    await page.getByRole('button', { name: 'Add rule' }).first().click();
+    await page.getByRole('button', { name: 'Save changes' }).click();
+    await expect(page.getByRole('alert')).toHaveText(
+      'Blocking changes could not be saved. Try again.',
+    );
+    await page.evaluate((): void => window.scrollTo(0, 0));
+
+    const geometry: {
+      alertInside: boolean;
+      bottom: number;
+      discardInside: boolean;
+      saveInside: boolean;
+      top: number;
+      viewportHeight: number;
+    } = await page.locator('.dirty-save-bar').evaluate((bar: Element) => {
+      const bounds: DOMRect = bar.getBoundingClientRect();
+      return {
+        alertInside: bar.querySelector('[role="alert"]') !== null,
+        bottom: bounds.bottom,
+        discardInside: bar.querySelector('button.secondary') !== null,
+        saveInside: bar.querySelector('button.primary') !== null,
+        top: bounds.top,
+        viewportHeight: window.innerHeight,
+      };
+    });
+    expect(geometry).toMatchObject({ alertInside: true, discardInside: true, saveInside: true });
+    expect(geometry.top).toBeGreaterThanOrEqual(0);
+    expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewportHeight + 1);
+  } finally {
+    await context.close();
+  }
 });
 
 test('options current navigation meets light text contrast', async ({ context, extensionId }) => {

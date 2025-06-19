@@ -3,6 +3,7 @@ import type { VNode } from 'preact';
 export interface DirtySaveBarProps {
   dirty: boolean;
   pending: boolean;
+  error: string | null;
   onSave: () => void;
   onDiscard: () => void;
 }
@@ -17,6 +18,11 @@ export function DirtySaveBar(props: DirtySaveBarProps): VNode {
 
   return (
     <div class="dirty-save-bar">
+      {props.error === null ? null : (
+        <p class="save-error dirty-save-error" role="alert">
+          {props.error}
+        </p>
+      )}
       <p class="dirty-save-state" aria-live="polite">
         {message}
       </p>

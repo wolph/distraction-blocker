@@ -381,6 +381,124 @@ describe('App frame', () => {
     await waitFor((): void => expect(getByText('No unsaved changes')).toBeTruthy());
   });
 
+  it('keeps a deferred rejection owned by its originating destination', async (): Promise<void> => {
+    const update: Deferred<{ ok: false; error: string }> = deferred<{ ok: false; error: string }>();
+    fake.respond('updateSettings', update.promise);
+    const { getByLabelText, getByRole, getByText, queryByRole } = render(<App />);
+    await waitFor((): void => expect(getByRole('link', { name: 'Pause budget' })).toBeTruthy());
+
+    fireEvent.click(getByRole('link', { name: 'Pause budget' }));
+    fireEvent.input(getByLabelText('Daily streak goal (focus minutes)'), {
+      target: { value: '30' },
+    });
+    fireEvent.click(getByRole('button', { name: 'Save changes' }));
+    expect(getByText('Saving changes')).toBeTruthy();
+
+    fireEvent.click(getByRole('link', { name: 'Notifications' }));
+    expect(getByText('No unsaved changes')).toBeTruthy();
+    expect(queryByRole('alert')).toBeNull();
+
+    await act(async (): Promise<void> => {
+      update.resolve({ ok: false, error: 'budget write rejected' });
+    });
+    await waitFor((): void => expect(getByText('No unsaved changes')).toBeTruthy());
+    expect(queryByRole('alert')).toBeNull();
+
+    fireEvent.click(getByRole('link', { name: 'Pause budget' }));
+    await waitFor((): void => {
+      expect(getByRole('alert').textContent).toBe('budget write rejected');
+    });
+    expect(getByText('Unsaved changes')).toBeTruthy();
+    expect((getByRole('button', { name: 'Save changes' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+  });
+
+  it('preserves an accepted theme when it is requested before a destination save', async (): Promise<void> => {
+    const themeUpdate: Deferred<{ ok: true }> = deferred<{ ok: true }>();
+    const settingsUpdate: Deferred<{ ok: true }> = deferred<{ ok: true }>();
+    fake.respond('updateTheme', themeUpdate.promise);
+    fake.respond('updateSettings', settingsUpdate.promise);
+    const { getByLabelText, getByRole } = render(<App />);
+    const theme: HTMLButtonElement = await waitFor(
+      (): HTMLButtonElement => getByRole('button', { name: /Theme: Auto/i }) as HTMLButtonElement,
+    );
+
+    fireEvent.click(theme);
+    fireEvent.click(getByRole('link', { name: 'Pause budget' }));
+    fireEvent.input(getByLabelText('Daily streak goal (focus minutes)'), {
+      target: { value: '30' },
+    });
+    fireEvent.click(getByRole('button', { name: 'Save changes' }));
+
+    expect(
+      fake.sent.filter((request: Request): boolean => request.type === 'updateSettings'),
+    ).toHaveLength(0);
+    await act(async (): Promise<void> => themeUpdate.resolve({ ok: true }));
+    await waitFor((): void =>
+      expect(
+        fake.sent.some(
+          (request: Request): boolean =>
+            request.type === 'updateSettings' &&
+            request.settings.theme === 'light' &&
+            request.settings.streakGoalMin === 30,
+        ),
+      ).toBe(true),
+    );
+    await act(async (): Promise<void> => settingsUpdate.resolve({ ok: true }));
+    await waitFor((): void => expect(getByRole('button', { name: /Theme: Light/i })).toBeTruthy());
+  });
+
+  it('preserves a later accepted theme when a destination save is already pending', async (): Promise<void> => {
+    const settingsUpdate: Deferred<{ ok: true }> = deferred<{ ok: true }>();
+    const themeUpdate: Deferred<{ ok: true }> = deferred<{ ok: true }>();
+    fake.respond('updateSettings', settingsUpdate.promise);
+    fake.respond('updateTheme', themeUpdate.promise);
+    const { getByLabelText, getByRole, getByText } = render(<App />);
+    await waitFor((): void => expect(getByRole('link', { name: 'Pause budget' })).toBeTruthy());
+
+    fireEvent.click(getByRole('link', { name: 'Pause budget' }));
+    fireEvent.input(getByLabelText('Daily streak goal (focus minutes)'), {
+      target: { value: '30' },
+    });
+    fireEvent.click(getByRole('button', { name: 'Save changes' }));
+    fireEvent.click(getByRole('button', { name: /Theme: Auto/i }));
+
+    expect(
+      fake.sent.filter((request: Request): boolean => request.type === 'updateTheme'),
+    ).toHaveLength(0);
+    await act(async (): Promise<void> => settingsUpdate.resolve({ ok: true }));
+    await waitFor((): void =>
+      expect(fake.sent.some((request: Request): boolean => request.type === 'updateTheme')).toBe(
+        true,
+      ),
+    );
+    await act(async (): Promise<void> => themeUpdate.resolve({ ok: true }));
+    await waitFor((): void => expect(getByRole('button', { name: /Theme: Light/i })).toBeTruthy());
+    expect((getByLabelText('Daily streak goal (focus minutes)') as HTMLInputElement).value).toBe(
+      '30',
+    );
+    expect(getByText('No unsaved changes')).toBeTruthy();
+  });
+
+  it('keeps a rejected save message inside the sticky action wrapper', async (): Promise<void> => {
+    fake.respond('updateLists', { ok: false, error: 'blocking write rejected' });
+    const { getAllByLabelText, getAllByRole, getByRole } = render(<App />);
+    await waitFor((): void => expect(getByRole('heading', { name: 'Blocking' })).toBeTruthy());
+    fireEvent.input(getAllByLabelText('Pattern')[0] as HTMLElement, {
+      target: { value: 'example.com' },
+    });
+    fireEvent.click(getAllByRole('button', { name: 'Add rule' })[0] as HTMLElement);
+    fireEvent.click(getByRole('button', { name: 'Save changes' }));
+
+    const alert: HTMLElement = await waitFor((): HTMLElement => getByRole('alert'));
+    const wrapper: Element | null = alert.closest('.dirty-save-bar');
+    expect(wrapper).not.toBeNull();
+    expect(wrapper?.contains(getByRole('button', { name: 'Save changes' }))).toBe(true);
+    expect(wrapper?.contains(getByRole('button', { name: 'Discard changes' }))).toBe(true);
+    expect(wrapper?.contains(document.querySelector('.dirty-save-state'))).toBe(true);
+  });
+
   it('keeps a live theme update in the draft used by a later section save', async (): Promise<void> => {
     fake.respond('updateTheme', { ok: true });
     fake.respond('updateSettings', { ok: true });

@@ -1,4 +1,4 @@
-import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'preact/hooks';
 import type { Ack } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import {
@@ -28,6 +28,19 @@ export interface SettingsStore {
   saveLists(next: ListsConfig): Promise<string | null>;
 }
 
+interface WriteQueue {
+  current: Promise<void>;
+}
+
+function enqueueWrite<T>(queue: WriteQueue, operation: () => Promise<T>): Promise<T> {
+  const result: Promise<T> = queue.current.then(operation, operation);
+  queue.current = result.then(
+    (): void => {},
+    (): void => {},
+  );
+  return result;
+}
+
 /**
  * Loads settings, lists, and the session snapshot once, keeps the snapshot
  * live via the stateChanged broadcast, and exposes save calls that only
@@ -44,6 +57,9 @@ export function useSettingsStore(): SettingsStore {
   ] = useState<SessionSnapshot | null>(null);
   const [loadError, setLoadError]: [string | null, Dispatch<StateUpdater<string | null>>] =
     useState<string | null>(null);
+  const settingsRef: { current: Settings | null } = useRef<Settings | null>(null);
+  const settingsWrites: WriteQueue = useRef<Promise<void>>(Promise.resolve());
+  const listWrites: WriteQueue = useRef<Promise<void>>(Promise.resolve());
 
   useEffect((): (() => void) => {
     let alive: boolean = true;
@@ -66,7 +82,9 @@ export function useSettingsStore(): SettingsStore {
           return;
         }
         const currentSnapshot: SessionSnapshot = latestBroadcast ?? loadedSnapshot;
-        setSettings({ ...loadedSettings, theme: currentSnapshot.theme });
+        const currentSettings: Settings = { ...loadedSettings, theme: currentSnapshot.theme };
+        settingsRef.current = currentSettings;
+        setSettings(currentSettings);
         setLists(loadedLists);
         setSnapshot(currentSnapshot);
         setLoadError(null);
@@ -84,9 +102,11 @@ export function useSettingsStore(): SettingsStore {
         latestBroadcast = message.snapshot;
         setSnapshot(message.snapshot);
         const theme: ThemeMode = message.snapshot.theme;
-        setSettings((current: Settings | null): Settings | null =>
-          current === null ? null : { ...current, theme },
-        );
+        setSettings((current: Settings | null): Settings | null => {
+          const next: Settings | null = current === null ? null : { ...current, theme };
+          settingsRef.current = next;
+          return next;
+        });
       }
     };
     chrome.runtime.onMessage.addListener(onBroadcast);
@@ -99,38 +119,55 @@ export function useSettingsStore(): SettingsStore {
   const saveSettings: (next: Settings) => Promise<string | null> = async (
     next: Settings,
   ): Promise<string | null> => {
-    const ack: Ack = await sendRequest({ type: 'updateSettings', settings: next });
-    const responseError: string | null = ackError(
-      ack,
-      'Could not save settings. Reload the page and try again.',
-    );
-    if (responseError !== null) return responseError;
-    setSettings(next);
-    return null;
+    return enqueueWrite(settingsWrites, async (): Promise<string | null> => {
+      const current: Settings | null = settingsRef.current;
+      const requestSettings: Settings = current === null ? next : { ...next, theme: current.theme };
+      const ack: Ack = await sendRequest({ type: 'updateSettings', settings: requestSettings });
+      const responseError: string | null = ackError(
+        ack,
+        'Could not save settings. Reload the page and try again.',
+      );
+      if (responseError !== null) return responseError;
+      setSettings((latest: Settings | null): Settings => {
+        const accepted: Settings = {
+          ...requestSettings,
+          theme: latest?.theme ?? requestSettings.theme,
+        };
+        settingsRef.current = accepted;
+        return accepted;
+      });
+      return null;
+    });
   };
 
   const saveLists: (next: ListsConfig) => Promise<string | null> = async (
     next: ListsConfig,
   ): Promise<string | null> => {
-    const ack: Ack = await sendRequest({ type: 'updateLists', lists: next });
-    const responseError: string | null = ackError(
-      ack,
-      'Could not save lists. Reload the page and try again.',
-    );
-    if (responseError !== null) return responseError;
-    setLists(next);
-    return null;
+    return enqueueWrite(listWrites, async (): Promise<string | null> => {
+      const ack: Ack = await sendRequest({ type: 'updateLists', lists: next });
+      const responseError: string | null = ackError(
+        ack,
+        'Could not save lists. Reload the page and try again.',
+      );
+      if (responseError !== null) return responseError;
+      setLists(next);
+      return null;
+    });
   };
 
   const saveTheme: (next: ThemeMode) => Promise<string | null> = async (
     next: ThemeMode,
   ): Promise<string | null> => {
-    const responseError: string | null = await updateTheme(next);
-    if (responseError !== null) return responseError;
-    setSettings((current: Settings | null): Settings | null =>
-      current === null ? null : { ...current, theme: next },
-    );
-    return null;
+    return enqueueWrite(settingsWrites, async (): Promise<string | null> => {
+      const responseError: string | null = await updateTheme(next);
+      if (responseError !== null) return responseError;
+      setSettings((current: Settings | null): Settings | null => {
+        const updated: Settings | null = current === null ? null : { ...current, theme: next };
+        settingsRef.current = updated;
+        return updated;
+      });
+      return null;
+    });
   };
 
   return { settings, lists, snapshot, loadError, saveSettings, saveTheme, saveLists };

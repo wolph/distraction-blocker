@@ -1,5 +1,5 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'preact/hooks';
 import {
   parseSettingsSectionHash,
   SETTINGS_SECTIONS,
@@ -261,6 +261,26 @@ function settingsWithCommittedSection(
   return settingsWithDraftSection(section, draft, committed);
 }
 
+interface DestinationSaveState {
+  transactionId: number;
+  source: SettingsSectionId;
+  pending: boolean;
+  error: string | null;
+}
+
+type DestinationSaveStates = Record<SettingsSectionId, DestinationSaveState>;
+
+function initialSaveStates(): DestinationSaveStates {
+  return Object.fromEntries(
+    SETTINGS_SECTIONS.map(
+      ({ id }: { id: SettingsSectionId }): [SettingsSectionId, DestinationSaveState] => [
+        id,
+        { transactionId: 0, source: id, pending: false, error: null },
+      ],
+    ),
+  ) as DestinationSaveStates;
+}
+
 export function App(): VNode {
   const store: SettingsStore = useSettingsStore();
   const [section, setSection]: [SettingsSectionId, Dispatch<StateUpdater<SettingsSectionId>>] =
@@ -275,10 +295,14 @@ export function App(): VNode {
     ListsConfig | null,
     Dispatch<StateUpdater<ListsConfig | null>>,
   ] = useState<ListsConfig | null>(null);
-  const [savePending, setSavePending]: [boolean, Dispatch<StateUpdater<boolean>>] =
-    useState<boolean>(false);
-  const [saveError, setSaveError]: [string | null, Dispatch<StateUpdater<string | null>>] =
-    useState<string | null>(null);
+  const [saveStates, setSaveStates]: [
+    DestinationSaveStates,
+    Dispatch<StateUpdater<DestinationSaveStates>>,
+  ] = useState<DestinationSaveStates>(initialSaveStates);
+  const nextTransactionId: { current: number } = useRef<number>(1);
+  const pendingTransactions: { current: Map<SettingsSectionId, number> } = useRef<
+    Map<SettingsSectionId, number>
+  >(new Map<SettingsSectionId, number>());
 
   useEffect((): void => {
     const loaded: Settings | null = store.settings;
@@ -306,10 +330,6 @@ export function App(): VNode {
     }
   }, [store.lists]);
 
-  useEffect((): void => {
-    setSaveError(null);
-  }, [section]);
-
   const loaded: boolean =
     draftSettings !== null &&
     draftLists !== null &&
@@ -319,6 +339,9 @@ export function App(): VNode {
     draftSettings !== null && draftLists !== null && store.settings !== null && store.lists !== null
       ? sectionIsDirty(section, draftSettings, store.settings, draftLists, store.lists)
       : false;
+  const activeSaveState: DestinationSaveState = saveStates[section];
+  const savePending: boolean = activeSaveState.pending;
+  const saveError: string | null = activeSaveState.error;
 
   const saveSection: () => Promise<void> = async (): Promise<void> => {
     if (
@@ -331,20 +354,41 @@ export function App(): VNode {
     ) {
       return;
     }
-    setSavePending(true);
-    setSaveError(null);
+    const source: SettingsSectionId = section;
+    if (pendingTransactions.current.has(source)) return;
+    const transactionId: number = nextTransactionId.current;
+    nextTransactionId.current += 1;
+    pendingTransactions.current.set(source, transactionId);
+    setSaveStates(
+      (current: DestinationSaveStates): DestinationSaveStates => ({
+        ...current,
+        [source]: { transactionId, source, pending: true, error: null },
+      }),
+    );
+    let error: string | null = null;
     try {
       const result: string | null =
-        section === 'blocking'
+        source === 'blocking'
           ? await store.saveLists(draftLists)
           : await store.saveSettings(
-              settingsWithDraftSection(section, store.settings, draftSettings),
+              settingsWithDraftSection(source, store.settings, draftSettings),
             );
-      if (result !== null) setSaveError(result);
+      error = result;
     } catch {
-      setSaveError('Could not save. Try again.');
+      error = 'Could not save. Try again.';
     } finally {
-      setSavePending(false);
+      if (pendingTransactions.current.get(source) === transactionId) {
+        pendingTransactions.current.delete(source);
+      }
+      setSaveStates(
+        (current: DestinationSaveStates): DestinationSaveStates =>
+          current[source].transactionId === transactionId
+            ? {
+                ...current,
+                [source]: { transactionId, source, pending: false, error },
+              }
+            : current,
+      );
     }
   };
 
@@ -358,7 +402,12 @@ export function App(): VNode {
     ) {
       return;
     }
-    setSaveError(null);
+    setSaveStates(
+      (current: DestinationSaveStates): DestinationSaveStates => ({
+        ...current,
+        [section]: { ...current[section], error: null },
+      }),
+    );
     if (section === 'blocking') {
       setDraftLists(store.lists);
       return;
@@ -394,21 +443,15 @@ export function App(): VNode {
           />
         )}
         {loaded ? (
-          <>
-            {saveError === null ? null : (
-              <p class="save-error dirty-save-error" role="alert">
-                {saveError}
-              </p>
-            )}
-            <DirtySaveBar
-              dirty={dirty}
-              pending={savePending}
-              onSave={(): void => {
-                void saveSection();
-              }}
-              onDiscard={discardSection}
-            />
-          </>
+          <DirtySaveBar
+            dirty={dirty}
+            pending={savePending}
+            error={saveError}
+            onSave={(): void => {
+              void saveSection();
+            }}
+            onDiscard={discardSection}
+          />
         ) : null}
       </main>
     </div>
