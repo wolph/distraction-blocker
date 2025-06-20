@@ -12,7 +12,7 @@ import {
   emptySnapshot,
   rulesFromLists,
 } from '../../../src/shared/constants';
-import type { ListsConfig, ScheduleEntry, Settings } from '../../../src/shared/types';
+import type { ListsConfig, ScheduleEntry } from '../../../src/shared/types';
 import { type ChromeFake, installChromeFake } from './chrome-fake';
 
 let fake: ChromeFake;
@@ -158,11 +158,17 @@ describe('Options runtime response boundaries', (): void => {
     await waitFor((): void => {
       expect(store().settings).toEqual(DEFAULT_SETTINGS);
     });
-    const next: Settings = { ...DEFAULT_SETTINGS, badgeCountdown: false };
     let result: string | null = null;
 
     await act(async (): Promise<void> => {
-      result = await store().saveSettings(next);
+      result = await store().saveSettings({
+        section: 'notifications',
+        value: {
+          sounds: DEFAULT_SETTINGS.sounds,
+          badgeCountdown: false,
+          sessionCompleteNotification: DEFAULT_SETTINGS.sessionCompleteNotification,
+        },
+      });
     });
 
     expect(result).toBe('Could not save settings. Reload the page and try again.');

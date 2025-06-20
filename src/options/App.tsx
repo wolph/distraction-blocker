@@ -16,7 +16,7 @@ import { RulesEditor } from './RulesEditor';
 import { Schedule } from './Schedule';
 import { SoundsBadge } from './SoundsBadge';
 import type { SettingsStore } from './use-settings';
-import { useSettingsStore } from './use-settings';
+import { type SettingsMutation, useSettingsStore } from './use-settings';
 
 function formatWallTime(atMs: number): string {
   const d: Date = new Date(atMs);
@@ -261,6 +261,50 @@ function settingsWithCommittedSection(
   return settingsWithDraftSection(section, draft, committed);
 }
 
+function settingsMutationFromDraft(
+  section: SettingsSectionId,
+  draft: Settings,
+): SettingsMutation | null {
+  switch (section) {
+    case 'schedule':
+      return { section, value: { schedule: structuredClone(draft.schedule) } };
+    case 'behavior':
+      return {
+        section,
+        value: {
+          presetsMin: [...draft.presetsMin],
+          defaultMode: draft.defaultMode,
+          defaultStrictness: draft.defaultStrictness,
+          defaultCycling: structuredClone(draft.defaultCycling),
+          cyclingOnByDefault: draft.cyclingOnByDefault,
+          gate: { ...draft.gate },
+        },
+      };
+    case 'budget':
+      return {
+        section,
+        value: {
+          pause: { ...draft.pause },
+          streakGoalMin: draft.streakGoalMin,
+          streakFreezeIntervalDays: draft.streakFreezeIntervalDays,
+          retentionDays: draft.retentionDays,
+        },
+      };
+    case 'notifications':
+      return {
+        section,
+        value: {
+          sounds: { ...draft.sounds },
+          badgeCountdown: draft.badgeCountdown,
+          sessionCompleteNotification: draft.sessionCompleteNotification,
+        },
+      };
+    case 'blocking':
+    case 'privacy':
+      return null;
+  }
+}
+
 interface DestinationSaveState {
   transactionId: number;
   source: SettingsSectionId;
@@ -367,12 +411,14 @@ export function App(): VNode {
     );
     let error: string | null = null;
     try {
-      const result: string | null =
-        source === 'blocking'
-          ? await store.saveLists(draftLists)
-          : await store.saveSettings(
-              settingsWithDraftSection(source, store.settings, draftSettings),
-            );
+      let result: string | null;
+      if (source === 'blocking') {
+        result = await store.saveLists(draftLists);
+      } else {
+        const mutation: SettingsMutation | null = settingsMutationFromDraft(source, draftSettings);
+        result =
+          mutation === null ? 'Could not save. Try again.' : await store.saveSettings(mutation);
+      }
       error = result;
     } catch {
       error = 'Could not save. Try again.';

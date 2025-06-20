@@ -233,7 +233,15 @@ describe('useSettingsStore', () => {
     });
     let result: string | null = null;
     await act(async (): Promise<void> => {
-      result = await store().saveSettings({ ...DEFAULT_SETTINGS, streakGoalMin: 50 });
+      result = await store().saveSettings({
+        section: 'budget',
+        value: {
+          pause: DEFAULT_SETTINGS.pause,
+          streakGoalMin: 50,
+          streakFreezeIntervalDays: DEFAULT_SETTINGS.streakFreezeIntervalDays,
+          retentionDays: DEFAULT_SETTINGS.retentionDays,
+        },
+      });
     });
     expect(result).toBe(rejection);
     expect(store().settings).toEqual(DEFAULT_SETTINGS);
@@ -479,6 +487,76 @@ describe('App frame', () => {
       '30',
     );
     expect(getByText('No unsaved changes')).toBeTruthy();
+  });
+
+  it('rebases a queued Notifications save on an accepted Pause budget save', async (): Promise<void> => {
+    const budgetUpdate: Deferred<{ ok: true }> = deferred<{ ok: true }>();
+    const notificationsUpdate: Deferred<{ ok: true }> = deferred<{ ok: true }>();
+    let writeIndex: number = 0;
+    fake.respond('updateSettings', (): Promise<{ ok: true }> => {
+      writeIndex += 1;
+      return writeIndex === 1 ? budgetUpdate.promise : notificationsUpdate.promise;
+    });
+    const { getByLabelText, getByRole } = render(<App />);
+    await waitFor((): void => expect(getByRole('link', { name: 'Pause budget' })).toBeTruthy());
+
+    fireEvent.click(getByRole('link', { name: 'Pause budget' }));
+    fireEvent.input(getByLabelText('Daily streak goal (focus minutes)'), {
+      target: { value: '30' },
+    });
+    fireEvent.click(getByRole('button', { name: 'Save changes' }));
+    fireEvent.click(getByRole('link', { name: 'Notifications' }));
+    fireEvent.click(getByLabelText('Show a system notification when a session completes'));
+    fireEvent.click(getByRole('button', { name: 'Save changes' }));
+
+    await act(async (): Promise<void> => budgetUpdate.resolve({ ok: true }));
+    await waitFor((): void =>
+      expect(
+        fake.sent.filter((request: Request): boolean => request.type === 'updateSettings'),
+      ).toHaveLength(2),
+    );
+    const updates: Extract<Request, { type: 'updateSettings' }>[] = fake.sent.filter(
+      (request: Request): request is Extract<Request, { type: 'updateSettings' }> =>
+        request.type === 'updateSettings',
+    );
+    expect(updates[1]?.settings.streakGoalMin).toBe(30);
+    expect(updates[1]?.settings.sessionCompleteNotification).toBe(false);
+    await act(async (): Promise<void> => notificationsUpdate.resolve({ ok: true }));
+  });
+
+  it('rebases a queued Session behavior save on an accepted Notifications save', async (): Promise<void> => {
+    const notificationsUpdate: Deferred<{ ok: true }> = deferred<{ ok: true }>();
+    const behaviorUpdate: Deferred<{ ok: true }> = deferred<{ ok: true }>();
+    let writeIndex: number = 0;
+    fake.respond('updateSettings', (): Promise<{ ok: true }> => {
+      writeIndex += 1;
+      return writeIndex === 1 ? notificationsUpdate.promise : behaviorUpdate.promise;
+    });
+    const { getByLabelText, getByRole } = render(<App />);
+    await waitFor((): void => expect(getByRole('link', { name: 'Notifications' })).toBeTruthy());
+
+    fireEvent.click(getByRole('link', { name: 'Notifications' }));
+    fireEvent.click(getByLabelText('Show a system notification when a session completes'));
+    fireEvent.click(getByRole('button', { name: 'Save changes' }));
+    fireEvent.click(getByRole('link', { name: 'Session behavior' }));
+    fireEvent.input(getByLabelText('Short session preset (minutes)'), {
+      target: { value: '12' },
+    });
+    fireEvent.click(getByRole('button', { name: 'Save changes' }));
+
+    await act(async (): Promise<void> => notificationsUpdate.resolve({ ok: true }));
+    await waitFor((): void =>
+      expect(
+        fake.sent.filter((request: Request): boolean => request.type === 'updateSettings'),
+      ).toHaveLength(2),
+    );
+    const updates: Extract<Request, { type: 'updateSettings' }>[] = fake.sent.filter(
+      (request: Request): request is Extract<Request, { type: 'updateSettings' }> =>
+        request.type === 'updateSettings',
+    );
+    expect(updates[1]?.settings.sessionCompleteNotification).toBe(false);
+    expect(updates[1]?.settings.presetsMin).toEqual([12, 25, 50]);
+    await act(async (): Promise<void> => behaviorUpdate.resolve({ ok: true }));
   });
 
   it('keeps a rejected save message inside the sticky action wrapper', async (): Promise<void> => {

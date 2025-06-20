@@ -12,6 +12,40 @@ import type { ListsConfig, SessionSnapshot, Settings, ThemeMode } from '../share
 
 const LOAD_ERROR: string = 'Could not load settings. Reload the page to try again.';
 
+type ScheduleMutation = {
+  section: 'schedule';
+  value: Pick<Settings, 'schedule'>;
+};
+
+type BehaviorMutation = {
+  section: 'behavior';
+  value: Pick<
+    Settings,
+    | 'presetsMin'
+    | 'defaultMode'
+    | 'defaultStrictness'
+    | 'defaultCycling'
+    | 'cyclingOnByDefault'
+    | 'gate'
+  >;
+};
+
+type BudgetMutation = {
+  section: 'budget';
+  value: Pick<Settings, 'pause' | 'streakGoalMin' | 'streakFreezeIntervalDays' | 'retentionDays'>;
+};
+
+type NotificationsMutation = {
+  section: 'notifications';
+  value: Pick<Settings, 'sounds' | 'badgeCountdown' | 'sessionCompleteNotification'>;
+};
+
+export type SettingsMutation =
+  | ScheduleMutation
+  | BehaviorMutation
+  | BudgetMutation
+  | NotificationsMutation;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -23,7 +57,7 @@ export interface SettingsStore {
   snapshot: SessionSnapshot | null;
   loadError: string | null;
   /** resolves null on success, the worker's rejection string verbatim otherwise */
-  saveSettings(next: Settings): Promise<string | null>;
+  saveSettings(mutation: SettingsMutation): Promise<string | null>;
   saveTheme(next: ThemeMode): Promise<string | null>;
   saveLists(next: ListsConfig): Promise<string | null>;
 }
@@ -39,6 +73,19 @@ function enqueueWrite<T>(queue: WriteQueue, operation: () => Promise<T>): Promis
     (): void => {},
   );
   return result;
+}
+
+function applySettingsMutation(current: Settings, mutation: SettingsMutation): Settings {
+  switch (mutation.section) {
+    case 'schedule':
+      return { ...current, ...mutation.value };
+    case 'behavior':
+      return { ...current, ...mutation.value };
+    case 'budget':
+      return { ...current, ...mutation.value };
+    case 'notifications':
+      return { ...current, ...mutation.value };
+  }
 }
 
 /**
@@ -116,12 +163,13 @@ export function useSettingsStore(): SettingsStore {
     };
   }, []);
 
-  const saveSettings: (next: Settings) => Promise<string | null> = async (
-    next: Settings,
+  const saveSettings: (mutation: SettingsMutation) => Promise<string | null> = async (
+    mutation: SettingsMutation,
   ): Promise<string | null> => {
     return enqueueWrite(settingsWrites, async (): Promise<string | null> => {
       const current: Settings | null = settingsRef.current;
-      const requestSettings: Settings = current === null ? next : { ...next, theme: current.theme };
+      if (current === null) return 'Could not save settings. Reload the page and try again.';
+      const requestSettings: Settings = applySettingsMutation(current, mutation);
       const ack: Ack = await sendRequest({ type: 'updateSettings', settings: requestSettings });
       const responseError: string | null = ackError(
         ack,
