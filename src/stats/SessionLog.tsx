@@ -156,14 +156,14 @@ export function SessionLog(props: { events: EventRecord[] }): JSX.Element {
   if (rows.length === 0) {
     return (
       <section class="card">
-        <h2>Recent sessions</h2>
+        <h2>Recent sessions on this machine</h2>
         <p class="empty-line">Your first session will appear here.</p>
       </section>
     );
   }
   return (
     <section class="card">
-      <h2>Recent sessions</h2>
+      <h2>Recent sessions on this machine</h2>
       <div class="table-scroll">
         <table class="session-table">
           <thead>

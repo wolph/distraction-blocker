@@ -1,8 +1,9 @@
 /** @vitest-environment jsdom */
 import { cleanup, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import { DEFAULT_SETTINGS, DEFAULT_SETUP } from '../../../src/shared/constants';
 import type { Request, StatsBundle } from '../../../src/shared/messages';
+import type { StorageMode } from '../../../src/shared/types';
 import { App } from '../../../src/stats/App';
 
 const bundle: StatsBundle = {
@@ -69,4 +70,43 @@ describe('Stats request errors', (): void => {
       );
     });
   });
+
+  it.each([
+    {
+      storageMode: 'sync' as const,
+      expected: 'Synced totals from this Chrome account. Local-only panels are labeled.',
+      excluded: 'Totals from this machine. Focus Lock statistics are not synced.',
+    },
+    {
+      storageMode: 'local' as const,
+      expected: 'Totals from this machine. Focus Lock statistics are not synced.',
+      excluded: 'Synced totals from this Chrome account. Local-only panels are labeled.',
+    },
+  ])(
+    'labels the page from validated $storageMode setup storage',
+    async ({
+      storageMode,
+      expected,
+      excluded,
+    }: {
+      storageMode: StorageMode;
+      expected: string;
+      excluded: string;
+    }): Promise<void> => {
+      sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+        if (request.type === 'getStats') return bundle;
+        if (request.type === 'getSetupState') {
+          return { ...DEFAULT_SETUP, completed: true, storageMode };
+        }
+        if (request.type === 'getSettings') return DEFAULT_SETTINGS;
+        if (request.type === 'exportEvents') return { json: '[]' };
+        return { ok: true };
+      });
+      const { getByText, queryByText } = render(<App />);
+
+      await waitFor((): void => expect(getByText(expected)).toBeTruthy());
+      expect(queryByText(excluded)).toBeNull();
+      expect(sendMessageMock).toHaveBeenCalledWith({ type: 'getStats', days: 30 });
+    },
+  );
 });

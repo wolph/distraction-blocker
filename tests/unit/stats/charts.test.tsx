@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { cleanup, render } from '@testing-library/preact';
+import { cleanup, render, within } from '@testing-library/preact';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { StatsBundle } from '../../../src/shared/messages';
 import type { DailyAgg, EventRecord } from '../../../src/shared/types';
@@ -278,16 +278,38 @@ describe('attemptsByHour', () => {
 });
 
 describe('Charts', () => {
-  it('renders the four chart sections and the local-only caption', () => {
+  it('renders exact periods and keeps daily tables at 14 days while top sites uses 30 days', () => {
+    const hourlyAttempt: EventRecord = {
+      t: 'attempt',
+      at: new Date(2026, 7, 28, 9, 30, 0).getTime(),
+      url: 'https://current.example/',
+      host: 'current.example',
+      tabId: 1,
+      kind: 'navigation',
+    };
     const bundle: StatsBundle = bundleWith([
-      day('2026-08-28', { focusMs: 30 * 60_000, attempts: { 'x.com': 2 } }),
+      day('2026-08-09', { focusMs: 10 * 60_000, attempts: { 'old.example': 7 } }),
+      day('2026-08-28', { focusMs: 30 * 60_000, attempts: { 'current.example': 2 } }),
     ]);
-    const { container } = render(<Charts bundle={bundle} events={[]} now={NOW} />);
-    const text: string = container.textContent ?? '';
-    expect(text).toContain('Focus minutes per day');
-    expect(text).toContain('Blocked attempts per day');
-    expect(text).toContain('Top blocked sites');
-    expect(text).toContain('Attempts by hour of day');
-    expect(text).toContain('this machine only');
+    const { getAllByRole } = render(<Charts bundle={bundle} events={[hourlyAttempt]} now={NOW} />);
+    const headings: HTMLElement[] = getAllByRole('heading', { level: 2 });
+    expect(headings.map((heading: HTMLElement): string => heading.textContent ?? '')).toEqual([
+      'Focus, last 14 days',
+      'Blocked attempts, last 14 days',
+      'Top blocked sites, last 30 days',
+      'Attempts by hour, this machine only',
+    ]);
+
+    const sections: HTMLElement[] = headings.map((heading: HTMLElement): HTMLElement => {
+      const section: HTMLElement | null = heading.closest('section');
+      if (section === null) throw new Error('chart heading is not inside its panel');
+      return section;
+    });
+    for (const section of sections) {
+      expect(within(section).getByText('View as table')).toBeTruthy();
+    }
+    expect(sections[0]?.querySelectorAll('.chart-table tbody tr')).toHaveLength(14);
+    expect(sections[1]?.querySelectorAll('.chart-table tbody tr')).toHaveLength(14);
+    expect(sections[2]?.textContent).toContain('old.example');
   });
 });

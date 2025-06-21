@@ -97,44 +97,42 @@ export function Charts(props: ChartsProps): JSX.Element {
   return (
     <div class="charts">
       <section class="card">
-        <h2>Focus minutes per day</h2>
+        <h2>Focus, last 14 days</h2>
         <BarChart
           data={focus}
           format={formatMinutes}
-          label="Focus minutes per day"
+          label="Focus, last 14 days"
           tickFormat={(v: number): string => `${v}m`}
           color="var(--focus-series)"
           emptyLine="Focus minutes appear after your first session."
         />
       </section>
       <section class="card">
-        <h2>Blocked attempts per day</h2>
+        <h2>Blocked attempts, last 14 days</h2>
         <BarChart
           data={attempts}
           format={(v: number): string => `${v} blocked`}
-          label="Blocked attempts per day"
+          label="Blocked attempts, last 14 days"
           color="var(--attempts-series)"
           emptyLine="Blocked attempts show up here once a session catches one."
         />
       </section>
       <section class="card">
-        <h2>Top blocked sites</h2>
+        <h2>Top blocked sites, last 30 days</h2>
         <HBarChart
           data={sites}
           format={(v: number): string => String(v)}
-          label="Top blocked sites"
+          label="Top blocked sites, last 30 days"
           color="var(--attempts-series)"
           emptyLine="Nothing blocked yet. That is a fine start."
         />
       </section>
       <section class="card">
-        <h2>
-          Attempts by hour of day <span class="caption">this machine only</span>
-        </h2>
+        <h2>Attempts by hour, this machine only</h2>
         <HBarChart
           data={hours}
           format={(v: number): string => String(v)}
-          label="Attempts by hour of day, this machine only"
+          label="Attempts by hour, this machine only"
           color="var(--attempts-series)"
           emptyLine="Hourly patterns appear after your first blocked attempt."
         />

@@ -304,7 +304,8 @@ describe('pairSessions', () => {
 
 describe('SessionLog', () => {
   it('renders a row per session with outcome chips', () => {
-    const { container } = render(<SessionLog events={EVENTS} />);
+    const { container, getByRole } = render(<SessionLog events={EVENTS} />);
+    expect(getByRole('heading', { level: 2 }).textContent).toBe('Recent sessions on this machine');
     expect(container.querySelectorAll('tbody tr').length).toBe(3);
     expect(container.querySelectorAll('.chip.completed').length).toBe(1);
     expect(container.querySelectorAll('.chip.neutral').length).toBe(1);
@@ -316,7 +317,8 @@ describe('SessionLog', () => {
   });
 
   it('renders the quiet first-run line with no sessions', () => {
-    const { container } = render(<SessionLog events={[]} />);
+    const { container, getByRole } = render(<SessionLog events={[]} />);
+    expect(getByRole('heading', { level: 2 }).textContent).toBe('Recent sessions on this machine');
     expect(container.textContent).toContain('Your first session will appear here.');
   });
 });

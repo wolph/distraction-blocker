@@ -99,6 +99,12 @@ body {
   margin: 0;
 }
 
+.page-scope {
+  color: var(--muted);
+  margin: 4px 0 0;
+  max-width: 62ch;
+}
+
 h2 {
   font-size: 15px;
   font-weight: 600;
@@ -337,13 +343,6 @@ h2 {
 .hbar-row {
   outline: none;
   cursor: default;
-}
-
-.caption {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 400;
-  margin-left: 6px;
 }
 
 .chart-tooltip {

@@ -1,9 +1,10 @@
 import type { JSX } from 'preact';
-import { useEffect } from 'preact/hooks';
-import type { StatsBundle } from '../shared/messages';
+import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
+import { type StatsBundle, sendRequest } from '../shared/messages';
+import { isSetupState } from '../shared/runtime-validation';
 import { SettingsNav } from '../shared/SettingsNav';
 import { applyTheme } from '../shared/theme';
-import type { EventRecord, PauseEconomy } from '../shared/types';
+import type { EventRecord, PauseEconomy, SetupState, StorageMode } from '../shared/types';
 import { Charts } from './Charts';
 import { SessionLog } from './SessionLog';
 import { Streak } from './Streak';
@@ -24,6 +25,33 @@ function partialLoadError(attempts: boolean, economy: boolean): string | null {
   return null;
 }
 
+function useSetupStorageMode(): StorageMode | null {
+  const [storageMode, setStorageMode]: [
+    StorageMode | null,
+    Dispatch<StateUpdater<StorageMode | null>>,
+  ] = useState<StorageMode | null>(null);
+  useEffect((): (() => void) => {
+    let active: boolean = true;
+    void sendRequest({ type: 'getSetupState' })
+      .then((setup: SetupState): void => {
+        if (active && isSetupState(setup) && setup.completed && setup.storageMode !== null) {
+          setStorageMode(setup.storageMode);
+        }
+      })
+      .catch((): void => {});
+    return (): void => {
+      active = false;
+    };
+  }, []);
+  return storageMode;
+}
+
+function pageScope(storageMode: StorageMode): string {
+  return storageMode === 'sync'
+    ? 'Synced totals from this Chrome account. Local-only panels are labeled.'
+    : 'Totals from this machine. Focus Lock statistics are not synced.';
+}
+
 export function App(): JSX.Element {
   const stats: StatsLoadState = useStats();
   const economyState: EconomyState = useEconomy();
@@ -32,6 +60,7 @@ export function App(): JSX.Element {
   const economy: PauseEconomy = economyState.economy;
   const events: EventRecord[] | null = attempts.events;
   const partialError: string | null = partialLoadError(attempts.error, economyState.error);
+  const storageMode: StorageMode | null = useSetupStorageMode();
   const now: number = Date.now();
 
   useEffect((): void => {
@@ -44,6 +73,7 @@ export function App(): JSX.Element {
       <main class="stats-page">
         <header class="page-header">
           <h1>Your focus record</h1>
+          {storageMode === null ? null : <p class="page-scope">{pageScope(storageMode)}</p>}
         </header>
         {stats.error ? (
           <p class="empty-line" role="alert">
