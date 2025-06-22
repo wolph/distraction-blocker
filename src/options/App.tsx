@@ -10,8 +10,8 @@ import { applyTheme } from '../shared/theme';
 import type { ListsConfig, Rule, ScheduleEntry, SessionSnapshot, Settings } from '../shared/types';
 import { BehaviorDefaults, PauseEconomy } from './Behavior';
 import { Categories } from './Categories';
-import { Data } from './Data';
 import { DirtySaveBar } from './DirtySaveBar';
+import { PrivacyData } from './PrivacyData';
 import { RulesEditor } from './RulesEditor';
 import { Schedule } from './Schedule';
 import { SoundsBadge } from './SoundsBadge';
@@ -39,6 +39,7 @@ interface SectionProps {
   section: SettingsSectionId;
   settings: Settings;
   lists: ListsConfig;
+  store: SettingsStore;
   onSettings: (next: Settings) => void;
   onLists: (next: ListsConfig) => void;
 }
@@ -123,11 +124,20 @@ function NotificationsSection(props: SectionProps): VNode {
   );
 }
 
-function PrivacySection(): VNode {
+function PrivacySection(props: SectionProps): VNode {
   return (
     <section>
       <h2>Privacy and data</h2>
-      <Data />
+      {props.store.setup === null ? (
+        <p>Loading privacy settings</p>
+      ) : (
+        <PrivacyData
+          setup={props.store.setup}
+          onReconcileWebsiteAccess={props.store.reconcileWebsiteAccess}
+          onStorageModeChange={props.store.setStorageMode}
+          onClearData={props.store.clearData}
+        />
+      )}
     </section>
   );
 }
@@ -145,7 +155,7 @@ function SectionBody(props: SectionProps): VNode {
     case 'notifications':
       return <NotificationsSection {...props} />;
     case 'privacy':
-      return <PrivacySection />;
+      return <PrivacySection {...props} />;
   }
 }
 
@@ -484,11 +494,12 @@ export function App(): VNode {
             section={section}
             settings={draftSettings}
             lists={draftLists}
+            store={store}
             onSettings={setDraftSettings}
             onLists={setDraftLists}
           />
         )}
-        {loaded ? (
+        {loaded && section !== 'privacy' ? (
           <DirtySaveBar
             dirty={dirty}
             pending={savePending}

@@ -1,5 +1,6 @@
 import type { TargetedEvent, VNode } from 'preact';
 import { useLayoutEffect, useRef } from 'preact/hooks';
+import { LOCAL_ONLY_DATA_ITEMS, SYNCED_DATA_ITEMS } from '../shared/privacy-copy';
 
 export interface SyncChoiceStepProps {
   syncEnabled: boolean;
@@ -8,21 +9,6 @@ export interface SyncChoiceStepProps {
   onSyncChange: (enabled: boolean) => void | Promise<void>;
   onComplete: () => void | Promise<void>;
 }
-
-const SYNCED_DATA: readonly string[] = [
-  'Settings',
-  'Block and allow lists',
-  'Pause balance',
-  'Streaks',
-  'Domain-level blocked-attempt aggregates',
-];
-
-const LOCAL_DATA: readonly string[] = [
-  'Full URLs',
-  'Focus intentions',
-  'Detailed session events',
-  'Active runtime session',
-];
 
 function DataList(props: { id: string; title: string; items: readonly string[] }): VNode {
   const headingId: string = `${props.id}-heading`;
@@ -85,8 +71,8 @@ export function SyncChoiceStep(props: SyncChoiceStepProps): VNode {
         </span>
       </label>
       <div class="storage-data-grid">
-        <DataList id="synced-data" title="Synced" items={SYNCED_DATA} />
-        <DataList id="local-data" title="Local only" items={LOCAL_DATA} />
+        <DataList id="synced-data" title="Synced" items={SYNCED_DATA_ITEMS} />
+        <DataList id="local-data" title="Local only" items={LOCAL_ONLY_DATA_ITEMS} />
       </div>
       <p class="developer-data-note">Nothing is sent to the Focus Lock developer.</p>
       {props.error !== null ? <p role="alert">{props.error}</p> : null}

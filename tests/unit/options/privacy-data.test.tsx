@@ -1,0 +1,372 @@
+/** @vitest-environment jsdom */
+import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/preact';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { App } from '../../../src/options/App';
+import {
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  DEFAULT_SETUP,
+  emptySnapshot,
+} from '../../../src/shared/constants';
+import type { Request } from '../../../src/shared/messages';
+import { WEBSITE_ORIGINS } from '../../../src/shared/permissions';
+import { LOCAL_ONLY_DATA_ITEMS, SYNCED_DATA_ITEMS } from '../../../src/shared/privacy-copy';
+import type { SetupState } from '../../../src/shared/types';
+import type { ChromeFake } from './chrome-fake';
+import { installChromeFake } from './chrome-fake';
+
+interface ChromeActions {
+  permissionRequest: ReturnType<typeof vi.fn>;
+  tabCreate: ReturnType<typeof vi.fn>;
+}
+
+let fake: ChromeFake;
+let setup: SetupState;
+let actions: ChromeActions;
+
+function setupState(update: Partial<SetupState> = {}): SetupState {
+  return {
+    ...DEFAULT_SETUP,
+    completed: true,
+    websiteAccess: 'denied',
+    blockingRegistration: 'unavailable',
+    storageMode: 'sync',
+    ...update,
+  };
+}
+
+function installActions(): ChromeActions {
+  const permissionRequest: ReturnType<typeof vi.fn> = vi.fn(async (): Promise<boolean> => true);
+  const tabCreate: ReturnType<typeof vi.fn> = vi.fn(async (): Promise<void> => {});
+  const chromeObject: {
+    runtime: { id?: string };
+    permissions?: { request: typeof permissionRequest };
+    tabs?: { create: typeof tabCreate };
+  } = globalThis.chrome as unknown as {
+    runtime: { id?: string };
+    permissions?: { request: typeof permissionRequest };
+    tabs?: { create: typeof tabCreate };
+  };
+  chromeObject.runtime.id = 'focus-lock-test';
+  chromeObject.permissions = { request: permissionRequest };
+  chromeObject.tabs = { create: tabCreate };
+  return { permissionRequest, tabCreate };
+}
+
+function renderPrivacy(): ReturnType<typeof render> {
+  return render(<App />);
+}
+
+beforeEach((): void => {
+  window.history.replaceState(null, '', '/#privacy');
+  setup = setupState();
+  fake = installChromeFake();
+  actions = installActions();
+  fake.respond('getSettings', DEFAULT_SETTINGS);
+  fake.respond('getLists', DEFAULT_LISTS);
+  fake.respond('getSnapshot', emptySnapshot(0));
+  fake.respond('getSetupState', (): SetupState => structuredClone(setup));
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:focus-lock-export');
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation((): void => {});
+});
+
+afterEach((): void => {
+  cleanup();
+  vi.restoreAllMocks();
+  window.history.replaceState(null, '', '/');
+});
+
+describe('Privacy and data', (): void => {
+  it('distinguishes missing access from registration failure', async (): Promise<void> => {
+    const missing = renderPrivacy();
+    await waitFor((): void => expect(missing.getByText('Website access is off')).toBeTruthy());
+    expect(missing.getByRole('button', { name: 'Enable website blocking' })).toBeTruthy();
+    cleanup();
+
+    setup = setupState({ websiteAccess: 'granted', blockingRegistration: 'error' });
+    const failed = renderPrivacy();
+    await waitFor((): void =>
+      expect(
+        failed.getByText('Website access is granted, but blocking is not active'),
+      ).toBeTruthy(),
+    );
+    expect(failed.getByRole('button', { name: 'Retry website blocking' })).toBeTruthy();
+  });
+
+  it('does not imply immediate privacy actions need the settings save bar', async (): Promise<void> => {
+    const view = renderPrivacy();
+    await waitFor((): void => expect(view.getByText('Website access is off')).toBeTruthy());
+
+    expect(view.queryByRole('button', { name: 'Save changes' })).toBeNull();
+    expect(view.queryByRole('button', { name: 'Discard changes' })).toBeNull();
+  });
+
+  it('requests permission directly, reconciles registration, and exposes Chrome settings', async (): Promise<void> => {
+    const callOrder: string[] = [];
+    actions.permissionRequest.mockImplementation(async (): Promise<boolean> => {
+      callOrder.push('permission');
+      return true;
+    });
+    fake.respond('reconcileWebsiteAccess', (): object => {
+      callOrder.push('reconcile');
+      setup = setupState({ websiteAccess: 'granted', blockingRegistration: 'ready' });
+      return { ok: true, granted: true, registration: 'ready' };
+    });
+    const view = renderPrivacy();
+    await waitFor((): void =>
+      expect(view.getByRole('button', { name: 'Enable website blocking' })).toBeTruthy(),
+    );
+
+    fireEvent.click(view.getByRole('button', { name: 'Enable website blocking' }));
+    await waitFor((): void => expect(view.getByText('Website blocking is enabled')).toBeTruthy());
+    expect(callOrder).toEqual(['permission', 'reconcile']);
+    expect(actions.permissionRequest).toHaveBeenCalledWith({ origins: [...WEBSITE_ORIGINS] });
+
+    const openSettings: HTMLButtonElement = view.getByRole('button', {
+      name: 'Open Chrome permission settings',
+    }) as HTMLButtonElement;
+    await waitFor((): void => expect(openSettings.disabled).toBe(false));
+    fireEvent.click(openSettings);
+    await waitFor((): void =>
+      expect(actions.tabCreate).toHaveBeenCalledWith({
+        url: 'chrome://extensions/?id=focus-lock-test',
+      }),
+    );
+  });
+
+  it('retries registration without requesting permission again', async (): Promise<void> => {
+    setup = setupState({ websiteAccess: 'granted', blockingRegistration: 'error' });
+    fake.respond('reconcileWebsiteAccess', (): object => {
+      setup = setupState({ websiteAccess: 'granted', blockingRegistration: 'ready' });
+      return { ok: true, granted: true, registration: 'ready' };
+    });
+    const view = renderPrivacy();
+    await waitFor((): void =>
+      expect(view.getByRole('button', { name: 'Retry website blocking' })).toBeTruthy(),
+    );
+
+    fireEvent.click(view.getByRole('button', { name: 'Retry website blocking' }));
+    await waitFor((): void => expect(view.getByText('Website blocking is enabled')).toBeTruthy());
+    expect(actions.permissionRequest).not.toHaveBeenCalled();
+  });
+
+  it('keeps website access off when the Chrome permission prompt is denied', async (): Promise<void> => {
+    actions.permissionRequest.mockResolvedValue(false);
+    fake.respond('reconcileWebsiteAccess', {
+      ok: true,
+      granted: false,
+      registration: 'unavailable',
+    });
+    const view = renderPrivacy();
+    await waitFor((): void =>
+      expect(view.getByRole('button', { name: 'Enable website blocking' })).toBeTruthy(),
+    );
+
+    fireEvent.click(view.getByRole('button', { name: 'Enable website blocking' }));
+    await waitFor((): void =>
+      expect(view.getByRole('status').textContent).toBe('Website access was not granted.'),
+    );
+    expect(view.getByText('Website access is off')).toBeTruthy();
+  });
+
+  it('shows one Sync switch, durable pending and error states, and shared data copy', async (): Promise<void> => {
+    setup = setupState({ syncWriteStatus: 'pending' });
+    const pending = renderPrivacy();
+    await waitFor((): void =>
+      expect(pending.getByText('Chrome Sync is still saving your latest changes.')).toBeTruthy(),
+    );
+    expect(pending.getAllByRole('switch')).toHaveLength(1);
+    const syncCard: HTMLElement = document.querySelector(
+      'section[aria-labelledby="chrome-sync-heading"]',
+    ) as HTMLElement;
+    for (const item of [...SYNCED_DATA_ITEMS, ...LOCAL_ONLY_DATA_ITEMS]) {
+      expect(within(syncCard).getByText(item)).toBeTruthy();
+    }
+    cleanup();
+
+    setup = setupState({ syncWriteStatus: 'error', storageError: 'sync-publish-failed' });
+    const failed = renderPrivacy();
+    await waitFor((): void =>
+      expect(
+        failed.getByText(
+          'Chrome Sync could not save your latest changes. Your local save is safe.',
+        ),
+      ).toBeTruthy(),
+    );
+    expect(failed.getByRole('button', { name: 'Retry Chrome Sync' })).toBeTruthy();
+  });
+
+  it('retries Sync without deleting the accepted local save', async (): Promise<void> => {
+    setup = setupState({ syncWriteStatus: 'error', storageError: 'sync-publish-failed' });
+    fake.respond('setStorageMode', (request: Request): object => {
+      expect(request).toEqual({ type: 'setStorageMode', storageMode: 'sync', deleteRemote: false });
+      setup = setupState({ storageMode: 'sync', syncWriteStatus: 'idle', storageError: null });
+      return { ok: true };
+    });
+    const view = renderPrivacy();
+    await waitFor((): void =>
+      expect(view.getByRole('button', { name: 'Retry Chrome Sync' })).toBeTruthy(),
+    );
+
+    fireEvent.click(view.getByRole('button', { name: 'Retry Chrome Sync' }));
+    await waitFor((): void => expect(view.getByText('Chrome Sync is on.')).toBeTruthy());
+    expect(fake.sent).not.toContainEqual({
+      type: 'clearFocusLockData',
+      scope: 'synced-policy',
+    });
+  });
+
+  it('disables Sync without combining remote deletion', async (): Promise<void> => {
+    fake.respond('setStorageMode', (request: Request): object => {
+      expect(request).toEqual({
+        type: 'setStorageMode',
+        storageMode: 'local',
+        deleteRemote: false,
+      });
+      setup = setupState({ storageMode: 'local' });
+      return { ok: true };
+    });
+    const view = renderPrivacy();
+    const sync: HTMLInputElement = await waitFor(
+      (): HTMLInputElement =>
+        view.getByRole('switch', {
+          name: 'Sync Focus Lock data across Chrome devices',
+        }) as HTMLInputElement,
+    );
+
+    fireEvent.click(sync);
+    await waitFor((): void => expect(sync.checked).toBe(false));
+    expect(fake.sent).not.toContainEqual({
+      type: 'clearFocusLockData',
+      scope: 'synced-policy',
+    });
+    expect(view.getByRole('button', { name: 'Delete remote Sync data' })).toBeTruthy();
+  });
+
+  it('cancels and confirms local-history deletion with complete scope copy', async (): Promise<void> => {
+    setup = setupState({ storageMode: 'local' });
+    fake.respond('clearFocusLockData', {
+      ok: true,
+      scope: 'local-history',
+      status: 'cleared',
+    });
+    const view = renderPrivacy();
+    await waitFor((): void =>
+      expect(view.getByRole('button', { name: 'Delete local history' })).toBeTruthy(),
+    );
+
+    fireEvent.click(view.getByRole('button', { name: 'Delete local history' }));
+    const dialog: HTMLElement = view.getByRole('dialog', { name: 'Delete local history?' });
+    expect(dialog.textContent).toContain('full URLs');
+    expect(dialog.textContent).toContain('focus intentions');
+    expect(dialog.textContent).toContain('detailed session events');
+    expect(dialog.textContent).toContain('local-only aggregate statistics');
+    fireEvent.click(view.getByRole('button', { name: 'Cancel' }));
+    expect(
+      fake.sent.some((request: Request): boolean => request.type === 'clearFocusLockData'),
+    ).toBe(false);
+
+    fireEvent.click(view.getByRole('button', { name: 'Delete local history' }));
+    fireEvent.click(view.getByRole('button', { name: 'Confirm delete local history' }));
+    await waitFor((): void =>
+      expect(view.getByRole('status').textContent).toBe('Local history deleted.'),
+    );
+    expect(fake.sent).toContainEqual({ type: 'clearFocusLockData', scope: 'local-history' });
+    expect(view.getAllByRole('status')).toHaveLength(1);
+  });
+
+  it('focuses the safe confirmation action and restores focus after Escape', async (): Promise<void> => {
+    const view = renderPrivacy();
+    const open: HTMLButtonElement = await waitFor(
+      (): HTMLButtonElement =>
+        view.getByRole('button', { name: 'Delete local history' }) as HTMLButtonElement,
+    );
+
+    fireEvent.click(open);
+    await waitFor((): void => expect(document.activeElement?.textContent).toBe('Cancel'));
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    await waitFor((): void => {
+      expect(view.queryByRole('dialog')).toBeNull();
+      expect(document.activeElement).toBe(open);
+    });
+  });
+
+  it('keeps remote deletion separate, off-only, and preserves local data in its copy', async (): Promise<void> => {
+    setup = setupState({ storageMode: 'local' });
+    fake.respond('clearFocusLockData', {
+      ok: true,
+      scope: 'synced-policy',
+      status: 'cleared',
+    });
+    const view = renderPrivacy();
+    await waitFor((): void =>
+      expect(view.getByRole('button', { name: 'Delete remote Sync data' })).toBeTruthy(),
+    );
+
+    fireEvent.click(view.getByRole('button', { name: 'Delete remote Sync data' }));
+    const dialog: HTMLElement = view.getByRole('dialog', { name: 'Delete remote Sync data?' });
+    for (const text of [
+      'settings',
+      'block and allow lists',
+      'pause balance',
+      'streaks',
+      'domain-level blocked-attempt aggregates',
+      'Local settings and statistics stay on this device.',
+    ]) {
+      expect(dialog.textContent).toContain(text);
+    }
+    fireEvent.click(view.getByRole('button', { name: 'Confirm delete remote Sync data' }));
+    await waitFor((): void =>
+      expect(view.getByRole('status').textContent).toBe('Remote Chrome Sync data deleted.'),
+    );
+    expect(fake.sent).toContainEqual({ type: 'clearFocusLockData', scope: 'synced-policy' });
+
+    cleanup();
+    setup = setupState({ storageMode: 'sync' });
+    const syncing = renderPrivacy();
+    await waitFor((): void => expect(syncing.getByText('Chrome Sync is on.')).toBeTruthy());
+    expect(syncing.queryByRole('button', { name: 'Delete remote Sync data' })).toBeNull();
+  });
+
+  it('hides remote deletion until local-only storage is authoritative', async (): Promise<void> => {
+    setup = setupState({ storageMode: null });
+    const view = renderPrivacy();
+    await waitFor((): void =>
+      expect(
+        view.getByRole('switch', { name: 'Sync Focus Lock data across Chrome devices' }),
+      ).toBeTruthy(),
+    );
+
+    expect(view.queryByRole('button', { name: 'Delete remote Sync data' })).toBeNull();
+  });
+
+  it('exports the local event log and reports worker failures in one alert', async (): Promise<void> => {
+    const anchorClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation((): void => {});
+    fake.respond('exportEvents', { json: '[]' });
+    fake.respond('clearFocusLockData', {
+      ok: false,
+      error: 'local clear failed',
+      scope: 'local-history',
+      status: 'pending',
+    });
+    const view = renderPrivacy();
+    await waitFor((): void =>
+      expect(view.getByRole('button', { name: 'Export local event log' })).toBeTruthy(),
+    );
+
+    fireEvent.click(view.getByRole('button', { name: 'Export local event log' }));
+    await waitFor((): void => expect(anchorClick).toHaveBeenCalledOnce());
+    expect(fake.sent).toContainEqual({ type: 'exportEvents' });
+
+    fireEvent.click(view.getByRole('button', { name: 'Delete local history' }));
+    await act(async (): Promise<void> => {
+      fireEvent.click(view.getByRole('button', { name: 'Confirm delete local history' }));
+    });
+    await waitFor((): void =>
+      expect(view.getByRole('alert').textContent).toContain('local clear failed'),
+    );
+  });
+});

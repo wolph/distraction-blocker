@@ -8,6 +8,7 @@ import { useSettingsStore } from '../../../src/options/use-settings';
 import {
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
+  DEFAULT_SETUP,
   emptySnapshot,
   rulesFromLists,
 } from '../../../src/shared/constants';
@@ -17,6 +18,7 @@ import type {
   SessionConfig,
   SessionSnapshot,
   Settings,
+  SetupState,
 } from '../../../src/shared/types';
 import type { ChromeFake } from './chrome-fake';
 import { installChromeFake } from './chrome-fake';
@@ -93,6 +95,51 @@ describe('useSettingsStore', () => {
     expect(store().lists).toEqual(DEFAULT_LISTS);
     expect(store().snapshot).toEqual(emptySnapshot(0));
     expect(store().loadError).toBeNull();
+  });
+
+  it('loads the durable setup state with the settings surfaces', async (): Promise<void> => {
+    fake.respond('getSetupState', DEFAULT_SETUP);
+    render(<Harness />);
+    await waitFor((): void => expect(store().lists).not.toBeNull());
+
+    const privacyStore: SettingsStore & { setup?: SetupState | null } = store();
+    expect(privacyStore.setup).toEqual(DEFAULT_SETUP);
+  });
+
+  it('rejects malformed durable setup state without publishing partial settings', async (): Promise<void> => {
+    fake.respond('getSetupState', { ...DEFAULT_SETUP, unexpected: true });
+    render(<Harness />);
+
+    await waitFor((): void =>
+      expect(store().loadError).toBe('Could not load settings. Reload the page to try again.'),
+    );
+    expect(store().settings).toBeNull();
+    expect(store().setup).toBeNull();
+  });
+
+  it('refreshes durable setup state after changing storage mode', async (): Promise<void> => {
+    let setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    fake.respond('getSetupState', (): SetupState => structuredClone(setup));
+    fake.respond('setStorageMode', (request: Request): { ok: true } => {
+      expect(request).toEqual({
+        type: 'setStorageMode',
+        storageMode: 'sync',
+        deleteRemote: false,
+      });
+      setup = { ...setup, storageMode: 'sync', syncWriteStatus: 'pending' };
+      return { ok: true };
+    });
+    render(<Harness />);
+    await waitFor((): void => expect(store().setup?.storageMode).toBe('local'));
+
+    let result: string | null = 'unset';
+    await act(async (): Promise<void> => {
+      result = await store().setStorageMode('sync');
+    });
+
+    expect(result).toBeNull();
+    expect(store().setup?.storageMode).toBe('sync');
+    expect(store().setup?.syncWriteStatus).toBe('pending');
   });
 
   it('keeps a newer broadcast theme when the initial load resolves later', async (): Promise<void> => {

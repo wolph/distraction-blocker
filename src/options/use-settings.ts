@@ -1,14 +1,23 @@
 import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'preact/hooks';
-import type { Ack } from '../shared/messages';
+import type { Ack, ClearFocusLockDataResponse } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import {
   ackError,
   isListsConfig,
   isSessionSnapshot,
   isSettings,
+  isSetupState,
+  isWebsiteAccessReconciliation,
 } from '../shared/runtime-validation';
 import { updateTheme } from '../shared/theme';
-import type { ListsConfig, SessionSnapshot, Settings, ThemeMode } from '../shared/types';
+import type {
+  ListsConfig,
+  SessionSnapshot,
+  Settings,
+  SetupState,
+  StorageMode,
+  ThemeMode,
+} from '../shared/types';
 
 const LOAD_ERROR: string = 'Could not load settings. Reload the page to try again.';
 
@@ -55,11 +64,15 @@ export interface SettingsStore {
   settings: Settings | null;
   lists: ListsConfig | null;
   snapshot: SessionSnapshot | null;
+  setup: SetupState | null;
   loadError: string | null;
   /** resolves null on success, the worker's rejection string verbatim otherwise */
   saveSettings(mutation: SettingsMutation): Promise<string | null>;
   saveTheme(next: ThemeMode): Promise<string | null>;
   saveLists(next: ListsConfig): Promise<string | null>;
+  reconcileWebsiteAccess(): Promise<string | null>;
+  setStorageMode(next: StorageMode): Promise<string | null>;
+  clearData(scope: 'local-history' | 'synced-policy'): Promise<string | null>;
 }
 
 interface WriteQueue {
@@ -88,6 +101,30 @@ function applySettingsMutation(current: Settings, mutation: SettingsMutation): S
   }
 }
 
+function clearDataError(value: unknown, scope: 'local-history' | 'synced-policy'): string | null {
+  if (!isRecord(value)) return 'Could not delete data. Try again.';
+  const keys: string[] = Object.keys(value).sort();
+  if (
+    value.ok === true &&
+    keys.join(',') === 'ok,scope,status' &&
+    value.scope === scope &&
+    value.status === 'cleared'
+  ) {
+    return null;
+  }
+  if (
+    value.ok === false &&
+    keys.join(',') === 'error,ok,scope,status' &&
+    typeof value.error === 'string' &&
+    /\S/.test(value.error) &&
+    value.scope === scope &&
+    (value.status === 'pending' || value.status === 'cleared')
+  ) {
+    return value.error;
+  }
+  return 'Could not delete data. Try again.';
+}
+
 /**
  * Loads settings, lists, and the session snapshot once, keeps the snapshot
  * live via the stateChanged broadcast, and exposes save calls that only
@@ -102,28 +139,37 @@ export function useSettingsStore(): SettingsStore {
     SessionSnapshot | null,
     Dispatch<StateUpdater<SessionSnapshot | null>>,
   ] = useState<SessionSnapshot | null>(null);
+  const [setup, setSetup]: [SetupState | null, Dispatch<StateUpdater<SetupState | null>>] =
+    useState<SetupState | null>(null);
   const [loadError, setLoadError]: [string | null, Dispatch<StateUpdater<string | null>>] =
     useState<string | null>(null);
   const settingsRef: { current: Settings | null } = useRef<Settings | null>(null);
   const settingsWrites: WriteQueue = useRef<Promise<void>>(Promise.resolve());
   const listWrites: WriteQueue = useRef<Promise<void>>(Promise.resolve());
+  const setupWrites: WriteQueue = useRef<Promise<void>>(Promise.resolve());
 
   useEffect((): (() => void) => {
     let alive: boolean = true;
     let latestBroadcast: SessionSnapshot | null = null;
     const load: () => Promise<void> = async (): Promise<void> => {
       try {
-        const [loadedSettings, loadedLists, loadedSnapshot]: [unknown, unknown, unknown] =
-          await Promise.all([
-            sendRequest({ type: 'getSettings' }),
-            sendRequest({ type: 'getLists' }),
-            sendRequest({ type: 'getSnapshot' }),
-          ]);
+        const [loadedSettings, loadedLists, loadedSnapshot, loadedSetup]: [
+          unknown,
+          unknown,
+          unknown,
+          unknown,
+        ] = await Promise.all([
+          sendRequest({ type: 'getSettings' }),
+          sendRequest({ type: 'getLists' }),
+          sendRequest({ type: 'getSnapshot' }),
+          sendRequest({ type: 'getSetupState' }),
+        ]);
         if (!alive) return;
         if (
           !isSettings(loadedSettings) ||
           !isListsConfig(loadedLists) ||
-          !isSessionSnapshot(loadedSnapshot)
+          !isSessionSnapshot(loadedSnapshot) ||
+          !isSetupState(loadedSetup)
         ) {
           setLoadError(LOAD_ERROR);
           return;
@@ -134,6 +180,7 @@ export function useSettingsStore(): SettingsStore {
         setSettings(currentSettings);
         setLists(loadedLists);
         setSnapshot(currentSnapshot);
+        setSetup(loadedSetup);
         setLoadError(null);
       } catch {
         if (alive) setLoadError(LOAD_ERROR);
@@ -162,6 +209,74 @@ export function useSettingsStore(): SettingsStore {
       chrome.runtime.onMessage.removeListener(onBroadcast);
     };
   }, []);
+
+  const refreshSetup: () => Promise<string | null> = async (): Promise<string | null> => {
+    try {
+      const response: unknown = await sendRequest({ type: 'getSetupState' });
+      if (!isSetupState(response)) return 'Could not refresh privacy settings. Reload the page.';
+      setSetup(response);
+      return null;
+    } catch {
+      return 'Could not refresh privacy settings. Reload the page.';
+    }
+  };
+
+  const reconcileWebsiteAccess: () => Promise<string | null> = async (): Promise<string | null> => {
+    return enqueueWrite(setupWrites, async (): Promise<string | null> => {
+      let error: string | null = null;
+      try {
+        const response: unknown = await sendRequest({ type: 'reconcileWebsiteAccess' });
+        error = isWebsiteAccessReconciliation(response)
+          ? response.ok
+            ? null
+            : response.error
+          : 'Could not update website blocking. Try again.';
+      } catch {
+        error = 'Could not update website blocking. Try again.';
+      }
+      const refreshError: string | null = await refreshSetup();
+      return error ?? refreshError;
+    });
+  };
+
+  const setStorageMode: (next: StorageMode) => Promise<string | null> = async (
+    next: StorageMode,
+  ): Promise<string | null> => {
+    return enqueueWrite(setupWrites, async (): Promise<string | null> => {
+      let error: string | null = null;
+      try {
+        const response: unknown = await sendRequest({
+          type: 'setStorageMode',
+          storageMode: next,
+          deleteRemote: false,
+        });
+        error = ackError(response, 'Could not change Chrome Sync. Try again.');
+      } catch {
+        error = 'Could not change Chrome Sync. Try again.';
+      }
+      const refreshError: string | null = await refreshSetup();
+      return error ?? refreshError;
+    });
+  };
+
+  const clearData: (scope: 'local-history' | 'synced-policy') => Promise<string | null> = async (
+    scope: 'local-history' | 'synced-policy',
+  ): Promise<string | null> => {
+    return enqueueWrite(setupWrites, async (): Promise<string | null> => {
+      let error: string | null = null;
+      try {
+        const response: ClearFocusLockDataResponse = await sendRequest({
+          type: 'clearFocusLockData',
+          scope,
+        });
+        error = clearDataError(response, scope);
+      } catch {
+        error = 'Could not delete data. Try again.';
+      }
+      const refreshError: string | null = await refreshSetup();
+      return error ?? refreshError;
+    });
+  };
 
   const saveSettings: (mutation: SettingsMutation) => Promise<string | null> = async (
     mutation: SettingsMutation,
@@ -218,5 +333,17 @@ export function useSettingsStore(): SettingsStore {
     });
   };
 
-  return { settings, lists, snapshot, loadError, saveSettings, saveTheme, saveLists };
+  return {
+    settings,
+    lists,
+    snapshot,
+    setup,
+    loadError,
+    saveSettings,
+    saveTheme,
+    saveLists,
+    reconcileWebsiteAccess,
+    setStorageMode,
+    clearData,
+  };
 }

@@ -189,6 +189,118 @@ button.ghost {
   margin: 0;
 }
 
+button.danger {
+  background: var(--negative-soft);
+  border: 1px solid var(--negative);
+  border-radius: 6px;
+  color: var(--negative);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 7px 12px;
+}
+
+button.danger:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.privacy-data {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.privacy-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.privacy-card h3,
+.privacy-card h4,
+.privacy-confirmation h4 {
+  margin: 0 0 6px;
+}
+
+.privacy-card p,
+.privacy-confirmation p {
+  margin: 6px 0 12px;
+}
+
+.privacy-card-status {
+  display: block;
+  margin-top: 8px;
+}
+
+.privacy-actions,
+.privacy-confirmation-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.privacy-switch {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  font-weight: 600;
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.privacy-switch input {
+  flex: 0 0 auto;
+  height: 18px;
+  margin: 0;
+  width: 32px;
+}
+
+.privacy-data-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
+.privacy-data-scope {
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.privacy-data-scope ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+
+.privacy-developer-note {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.privacy-confirmation {
+  background: var(--negative-soft);
+  border: 1px solid var(--negative);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.privacy-message,
+.privacy-live-region:not(:empty) {
+  margin: 0;
+}
+
+.privacy-live-region:empty {
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  position: absolute;
+  width: 1px;
+}
+
 .field-error {
   color: var(--warn);
   margin: 4px 0 0;
@@ -439,6 +551,15 @@ table.rules th {
   .dirty-save-bar {
     margin: auto -16px 0;
     padding: 12px 16px;
+  }
+
+  .privacy-data-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .privacy-actions > button,
+  .privacy-confirmation-actions > button {
+    width: 100%;
   }
 
   .cat-hosts {

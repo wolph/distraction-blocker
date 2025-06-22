@@ -195,6 +195,23 @@ describe('Options runtime response boundaries', (): void => {
     expect(store().lists).toEqual(DEFAULT_LISTS);
   });
 
+  it('rejects a malformed data-clear response at the options boundary', async (): Promise<void> => {
+    fake.respond('clearFocusLockData', {
+      ok: true,
+      scope: 'all',
+      status: 'cleared',
+    });
+    render(<Harness />);
+    await waitFor((): void => expect(store().settings).toEqual(DEFAULT_SETTINGS));
+
+    let result: string | null = null;
+    await act(async (): Promise<void> => {
+      result = await store().clearData('local-history');
+    });
+
+    expect(result).toBe('Could not delete data. Try again.');
+  });
+
   it('shows a stable error for a malformed sound preview acknowledgement', async (): Promise<void> => {
     fake.respond('previewSound', { ok: false, error: 42 });
     const { getByRole } = render(

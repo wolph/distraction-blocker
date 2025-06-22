@@ -1,4 +1,5 @@
 import { type Mock, vi } from 'vitest';
+import { DEFAULT_SETUP } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
 
 type Responder = (req: Request) => unknown;
@@ -21,6 +22,7 @@ export interface ChromeFake {
 export function installChromeFake(): ChromeFake {
   const sent: Request[] = [];
   const responders: Map<string, unknown | Responder> = new Map();
+  responders.set('getSetupState', structuredClone(DEFAULT_SETUP));
   const listeners: Set<(message: unknown) => void> = new Set();
   const storageGet: Mock = vi.fn(
     async (): Promise<Record<string, unknown>> => ({
