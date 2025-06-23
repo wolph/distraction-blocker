@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import type { VNode } from 'preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_SETTINGS, emptySnapshot } from '../../../src/shared/constants';
+import { DEFAULT_SETTINGS, DEFAULT_SETUP, emptySnapshot } from '../../../src/shared/constants';
 import type { Request, StatsBundle } from '../../../src/shared/messages';
 import { App } from '../../../src/stats/App';
 import { useEconomy } from '../../../src/stats/use-stats';
@@ -56,6 +56,9 @@ beforeEach((): void => {
       sendMessage: async (request: Request): Promise<unknown> => {
         sent.push(request);
         if (request.type === 'getStats') return BUNDLE;
+        if (request.type === 'getSetupState') {
+          return { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+        }
         if (request.type === 'getSettings') return settingsResponse;
         if (request.type === 'exportEvents') return { json: '[]' };
         if (request.type === 'updateTheme') return themeResponse;

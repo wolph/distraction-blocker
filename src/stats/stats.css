@@ -105,6 +105,30 @@ body {
   max-width: 62ch;
 }
 
+.page-scope-error {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.scope-retry {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--baseline);
+  border-radius: 6px;
+  color: var(--ink-2);
+  cursor: pointer;
+  font: inherit;
+  padding: 3px 8px;
+}
+
+.scope-retry:hover,
+.scope-retry:focus-visible {
+  border-color: var(--ink-2);
+  color: var(--ink);
+}
+
 h2 {
   font-size: 15px;
   font-weight: 600;

@@ -2,7 +2,7 @@
 
 import { cleanup, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import { DEFAULT_SETTINGS, DEFAULT_SETUP } from '../../../src/shared/constants';
 import type { Request, StatsBundle } from '../../../src/shared/messages';
 import { App } from '../../../src/stats/App';
 
@@ -86,6 +86,9 @@ describe('Stats runtime response boundaries', (): void => {
     async (_label: string, stats: unknown): Promise<void> => {
       sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
         if (request.type === 'getStats') return stats;
+        if (request.type === 'getSetupState') {
+          return { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+        }
         if (request.type === 'getSettings') return DEFAULT_SETTINGS;
         if (request.type === 'exportEvents') return { json: '[]' };
         return { ok: true };
@@ -106,6 +109,9 @@ describe('Stats runtime response boundaries', (): void => {
     async (_label: string, json: string): Promise<void> => {
       sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
         if (request.type === 'getStats') return BUNDLE;
+        if (request.type === 'getSetupState') {
+          return { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+        }
         if (request.type === 'getSettings') return DEFAULT_SETTINGS;
         if (request.type === 'exportEvents') return { json };
         return { ok: true };

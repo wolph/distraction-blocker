@@ -4,7 +4,7 @@ import { type StatsBundle, sendRequest } from '../shared/messages';
 import { isSetupState } from '../shared/runtime-validation';
 import { SettingsNav } from '../shared/SettingsNav';
 import { applyTheme } from '../shared/theme';
-import type { EventRecord, PauseEconomy, SetupState, StorageMode } from '../shared/types';
+import type { EventRecord, PauseEconomy, StorageMode } from '../shared/types';
 import { Charts } from './Charts';
 import { SessionLog } from './SessionLog';
 import { Streak } from './Streak';
@@ -25,31 +25,75 @@ function partialLoadError(attempts: boolean, economy: boolean): string | null {
   return null;
 }
 
-function useSetupStorageMode(): StorageMode | null {
-  const [storageMode, setStorageMode]: [
-    StorageMode | null,
-    Dispatch<StateUpdater<StorageMode | null>>,
-  ] = useState<StorageMode | null>(null);
+type ScopeLoadState =
+  | { status: 'loading'; storageMode: null }
+  | { status: 'error'; storageMode: null }
+  | { status: 'ready'; storageMode: StorageMode };
+
+interface SetupScopeState {
+  load: ScopeLoadState;
+  retry(): void;
+}
+
+function useSetupScope(): SetupScopeState {
+  const [load, setLoad]: [ScopeLoadState, Dispatch<StateUpdater<ScopeLoadState>>] =
+    useState<ScopeLoadState>({ status: 'loading', storageMode: null });
+  const [attempt, setAttempt]: [number, Dispatch<StateUpdater<number>>] = useState<number>(0);
   useEffect((): (() => void) => {
     let active: boolean = true;
     void sendRequest({ type: 'getSetupState' })
-      .then((setup: SetupState): void => {
-        if (active && isSetupState(setup) && setup.completed && setup.storageMode !== null) {
-          setStorageMode(setup.storageMode);
+      .then((setup: unknown): void => {
+        if (!active) return;
+        if (isSetupState(setup) && setup.completed && setup.storageMode !== null) {
+          setLoad({ status: 'ready', storageMode: setup.storageMode });
+        } else {
+          setLoad({ status: 'error', storageMode: null });
         }
       })
-      .catch((): void => {});
+      .catch((): void => {
+        if (active) setLoad({ status: 'error', storageMode: null });
+      });
     return (): void => {
       active = false;
     };
-  }, []);
-  return storageMode;
+  }, [attempt]);
+  return {
+    load,
+    retry: (): void => {
+      setLoad({ status: 'loading', storageMode: null });
+      setAttempt((current: number): number => current + 1);
+    },
+  };
 }
 
 function pageScope(storageMode: StorageMode): string {
   return storageMode === 'sync'
     ? 'Synced totals from this Chrome account. Local-only panels are labeled.'
     : 'Totals from this machine. Focus Lock statistics are not synced.';
+}
+
+function ScopeDisclosure(props: SetupScopeState): JSX.Element {
+  if (props.load.status === 'ready') {
+    return <p class="page-scope">{pageScope(props.load.storageMode)}</p>;
+  }
+  if (props.load.status === 'loading') {
+    return (
+      <p class="page-scope" role="status">
+        Checking whether these totals are synced.
+      </p>
+    );
+  }
+  return (
+    <div class="page-scope page-scope-error" role="alert">
+      <span>
+        Statistics scope is unavailable. Totals may include synced data. Hourly attempts and recent
+        sessions are from this machine.
+      </span>
+      <button type="button" class="scope-retry" onClick={props.retry}>
+        Retry scope check
+      </button>
+    </div>
+  );
 }
 
 export function App(): JSX.Element {
@@ -60,7 +104,7 @@ export function App(): JSX.Element {
   const economy: PauseEconomy = economyState.economy;
   const events: EventRecord[] | null = attempts.events;
   const partialError: string | null = partialLoadError(attempts.error, economyState.error);
-  const storageMode: StorageMode | null = useSetupStorageMode();
+  const setupScope: SetupScopeState = useSetupScope();
   const now: number = Date.now();
 
   useEffect((): void => {
@@ -73,7 +117,7 @@ export function App(): JSX.Element {
       <main class="stats-page">
         <header class="page-header">
           <h1>Your focus record</h1>
-          {storageMode === null ? null : <p class="page-scope">{pageScope(storageMode)}</p>}
+          <ScopeDisclosure {...setupScope} />
         </header>
         {stats.error ? (
           <p class="empty-line" role="alert">

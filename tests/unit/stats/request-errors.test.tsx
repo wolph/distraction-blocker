@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { cleanup, render, waitFor } from '@testing-library/preact';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, DEFAULT_SETUP } from '../../../src/shared/constants';
 import type { Request, StatsBundle } from '../../../src/shared/messages';
@@ -22,6 +22,28 @@ const bundle: StatsBundle = {
 };
 
 const sendMessageMock = vi.fn<(request: Request) => Promise<unknown>>();
+const SYNC_SCOPE: string = 'Synced totals from this Chrome account. Local-only panels are labeled.';
+const LOCAL_SCOPE: string = 'Totals from this machine. Focus Lock statistics are not synced.';
+const SCOPE_LOADING: string = 'Checking whether these totals are synced.';
+const SCOPE_UNAVAILABLE: string =
+  'Statistics scope is unavailable. Totals may include synced data. Hourly attempts and recent sessions are from this machine.';
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value: T): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve: (value: T) => void = (): void => {};
+  const promise: Promise<T> = new Promise<T>((done: (value: T) => void): void => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function completedSetup(storageMode: StorageMode): unknown {
+  return { ...DEFAULT_SETUP, completed: true, storageMode };
+}
 
 describe('Stats request errors', (): void => {
   beforeEach((): void => {
@@ -41,6 +63,7 @@ describe('Stats request errors', (): void => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => {});
     sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
       if (request.type === 'getStats') return { ok: false, error: 'worker failed' };
+      if (request.type === 'getSetupState') return completedSetup('local');
       if (request.type === 'getSettings') return DEFAULT_SETTINGS;
       if (request.type === 'exportEvents') return { json: '[]' };
       return { ok: true };
@@ -57,6 +80,7 @@ describe('Stats request errors', (): void => {
   it('reports partial data failures while keeping loaded stats visible', async (): Promise<void> => {
     sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
       if (request.type === 'getStats') return bundle;
+      if (request.type === 'getSetupState') return completedSetup('local');
       if (request.type === 'getSettings') return { ok: false, error: 'worker failed' };
       if (request.type === 'exportEvents') return { ok: false, error: 'worker failed' };
       return { ok: true };
@@ -74,13 +98,13 @@ describe('Stats request errors', (): void => {
   it.each([
     {
       storageMode: 'sync' as const,
-      expected: 'Synced totals from this Chrome account. Local-only panels are labeled.',
-      excluded: 'Totals from this machine. Focus Lock statistics are not synced.',
+      expected: SYNC_SCOPE,
+      excluded: LOCAL_SCOPE,
     },
     {
       storageMode: 'local' as const,
-      expected: 'Totals from this machine. Focus Lock statistics are not synced.',
-      excluded: 'Synced totals from this Chrome account. Local-only panels are labeled.',
+      expected: LOCAL_SCOPE,
+      excluded: SYNC_SCOPE,
     },
   ])(
     'labels the page from validated $storageMode setup storage',
@@ -95,9 +119,7 @@ describe('Stats request errors', (): void => {
     }): Promise<void> => {
       sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
         if (request.type === 'getStats') return bundle;
-        if (request.type === 'getSetupState') {
-          return { ...DEFAULT_SETUP, completed: true, storageMode };
-        }
+        if (request.type === 'getSetupState') return completedSetup(storageMode);
         if (request.type === 'getSettings') return DEFAULT_SETTINGS;
         if (request.type === 'exportEvents') return { json: '[]' };
         return { ok: true };
@@ -109,4 +131,92 @@ describe('Stats request errors', (): void => {
       expect(sendMessageMock).toHaveBeenCalledWith({ type: 'getStats', days: 30 });
     },
   );
+
+  it('shows a scope status while setup is pending and replaces it after late settlement', async (): Promise<void> => {
+    const setup: Deferred<unknown> = deferred<unknown>();
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getStats') return bundle;
+      if (request.type === 'getSetupState') return setup.promise;
+      if (request.type === 'getSettings') return DEFAULT_SETTINGS;
+      if (request.type === 'exportEvents') return { json: '[]' };
+      return { ok: true };
+    });
+    const { getByRole, getByText, queryByText } = render(<App />);
+
+    await waitFor((): void =>
+      expect(getByText('Stats appear after your first session.')).toBeTruthy(),
+    );
+    expect(getByRole('status').textContent).toBe(SCOPE_LOADING);
+    expect(queryByText(SYNC_SCOPE)).toBeNull();
+    expect(queryByText(LOCAL_SCOPE)).toBeNull();
+
+    setup.resolve(completedSetup('sync'));
+    await waitFor((): void => expect(getByText(SYNC_SCOPE)).toBeTruthy());
+    expect(queryByText(SCOPE_LOADING)).toBeNull();
+  });
+
+  it('keeps stats visible after a rejected scope request and retries it', async (): Promise<void> => {
+    let setupRequests: number = 0;
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getStats') return bundle;
+      if (request.type === 'getSetupState') {
+        setupRequests += 1;
+        if (setupRequests === 1) throw new Error('worker unavailable');
+        return completedSetup('local');
+      }
+      if (request.type === 'getSettings') return DEFAULT_SETTINGS;
+      if (request.type === 'exportEvents') return { json: '[]' };
+      return { ok: true };
+    });
+    const { getByRole, getByText } = render(<App />);
+
+    await waitFor((): void => expect(getByRole('alert').textContent).toContain(SCOPE_UNAVAILABLE));
+    expect(getByText('Stats appear after your first session.')).toBeTruthy();
+    fireEvent.click(getByRole('button', { name: 'Retry scope check' }));
+    await waitFor((): void => expect(getByText(LOCAL_SCOPE)).toBeTruthy());
+    expect(setupRequests).toBe(2);
+  });
+
+  it.each([
+    ['malformed', { ...DEFAULT_SETUP, completed: true, storageMode: 'sync', extra: true }],
+    ['incomplete', { ...DEFAULT_SETUP, completed: false, storageMode: null }],
+  ])(
+    'keeps the scope uncertain for a %s setup response',
+    async (_label: string, setup: unknown): Promise<void> => {
+      sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+        if (request.type === 'getStats') return bundle;
+        if (request.type === 'getSetupState') return setup;
+        if (request.type === 'getSettings') return DEFAULT_SETTINGS;
+        if (request.type === 'exportEvents') return { json: '[]' };
+        return { ok: true };
+      });
+      const { getByRole, getByText, queryByText } = render(<App />);
+
+      await waitFor((): void =>
+        expect(getByRole('alert').textContent).toContain(SCOPE_UNAVAILABLE),
+      );
+      expect(getByText('Stats appear after your first session.')).toBeTruthy();
+      expect(queryByText(SYNC_SCOPE)).toBeNull();
+      expect(queryByText(LOCAL_SCOPE)).toBeNull();
+    },
+  );
+
+  it('does not update scope state after unmounting a pending request', async (): Promise<void> => {
+    const setup: Deferred<unknown> = deferred<unknown>();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => {});
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getStats') return bundle;
+      if (request.type === 'getSetupState') return setup.promise;
+      if (request.type === 'getSettings') return DEFAULT_SETTINGS;
+      if (request.type === 'exportEvents') return { json: '[]' };
+      return { ok: true };
+    });
+    const view = render(<App />);
+    await waitFor((): void => expect(view.getByRole('status').textContent).toBe(SCOPE_LOADING));
+
+    view.unmount();
+    setup.resolve(completedSetup('sync'));
+    await Promise.resolve();
+    expect(consoleError).not.toHaveBeenCalled();
+  });
 });
