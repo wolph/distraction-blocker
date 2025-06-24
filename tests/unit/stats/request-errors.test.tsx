@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, DEFAULT_SETUP } from '../../../src/shared/constants';
 import type { Request, StatsBundle } from '../../../src/shared/messages';
 import type { StorageMode } from '../../../src/shared/types';
-import { App } from '../../../src/stats/App';
+import { App, requestSetupScope } from '../../../src/stats/App';
 
 const bundle: StatsBundle = {
   days: [],
@@ -30,15 +30,20 @@ const SCOPE_UNAVAILABLE: string =
 
 interface Deferred<T> {
   promise: Promise<T>;
+  reject(reason: unknown): void;
   resolve(value: T): void;
 }
 
 function deferred<T>(): Deferred<T> {
   let resolve: (value: T) => void = (): void => {};
-  const promise: Promise<T> = new Promise<T>((done: (value: T) => void): void => {
-    resolve = done;
-  });
-  return { promise, resolve };
+  let reject: (reason: unknown) => void = (): void => {};
+  const promise: Promise<T> = new Promise<T>(
+    (done: (value: T) => void, fail: (reason: unknown) => void): void => {
+      resolve = done;
+      reject = fail;
+    },
+  );
+  return { promise, reject, resolve };
 }
 
 function completedSetup(storageMode: StorageMode): unknown {
@@ -146,12 +151,15 @@ describe('Stats request errors', (): void => {
     await waitFor((): void =>
       expect(getByText('Stats appear after your first session.')).toBeTruthy(),
     );
-    expect(getByRole('status').textContent).toBe(SCOPE_LOADING);
+    const scopeRegion: HTMLElement = getByRole('status');
+    expect(scopeRegion.textContent).toBe(SCOPE_LOADING);
     expect(queryByText(SYNC_SCOPE)).toBeNull();
     expect(queryByText(LOCAL_SCOPE)).toBeNull();
 
     setup.resolve(completedSetup('sync'));
     await waitFor((): void => expect(getByText(SYNC_SCOPE)).toBeTruthy());
+    expect(getByRole('status')).toBe(scopeRegion);
+    expect(scopeRegion.textContent).toBe(SYNC_SCOPE);
     expect(queryByText(SCOPE_LOADING)).toBeNull();
   });
 
@@ -170,10 +178,15 @@ describe('Stats request errors', (): void => {
     });
     const { getByRole, getByText } = render(<App />);
 
-    await waitFor((): void => expect(getByRole('alert').textContent).toContain(SCOPE_UNAVAILABLE));
+    await waitFor((): void => expect(getByRole('status').textContent).toContain(SCOPE_UNAVAILABLE));
     expect(getByText('Stats appear after your first session.')).toBeTruthy();
+    const scopeRegion: HTMLElement = getByRole('status');
     fireEvent.click(getByRole('button', { name: 'Retry scope check' }));
+    expect(getByRole('status')).toBe(scopeRegion);
+    expect(scopeRegion.textContent).toBe(SCOPE_LOADING);
     await waitFor((): void => expect(getByText(LOCAL_SCOPE)).toBeTruthy());
+    expect(getByRole('status')).toBe(scopeRegion);
+    expect(scopeRegion.textContent).toBe(LOCAL_SCOPE);
     expect(setupRequests).toBe(2);
   });
 
@@ -193,7 +206,7 @@ describe('Stats request errors', (): void => {
       const { getByRole, getByText, queryByText } = render(<App />);
 
       await waitFor((): void =>
-        expect(getByRole('alert').textContent).toContain(SCOPE_UNAVAILABLE),
+        expect(getByRole('status').textContent).toContain(SCOPE_UNAVAILABLE),
       );
       expect(getByText('Stats appear after your first session.')).toBeTruthy();
       expect(queryByText(SYNC_SCOPE)).toBeNull();
@@ -201,22 +214,25 @@ describe('Stats request errors', (): void => {
     },
   );
 
-  it('does not update scope state after unmounting a pending request', async (): Promise<void> => {
+  it('cancels a pending scope resolution before it can update state', async (): Promise<void> => {
     const setup: Deferred<unknown> = deferred<unknown>();
-    const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => {});
-    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
-      if (request.type === 'getStats') return bundle;
-      if (request.type === 'getSetupState') return setup.promise;
-      if (request.type === 'getSettings') return DEFAULT_SETTINGS;
-      if (request.type === 'exportEvents') return { json: '[]' };
-      return { ok: true };
-    });
-    const view = render(<App />);
-    await waitFor((): void => expect(view.getByRole('status').textContent).toBe(SCOPE_LOADING));
+    const update = vi.fn();
+    const cancel: () => void = requestSetupScope(update, (): Promise<unknown> => setup.promise);
 
-    view.unmount();
+    cancel();
     setup.resolve(completedSetup('sync'));
-    await Promise.resolve();
-    expect(consoleError).not.toHaveBeenCalled();
+    await setup.promise;
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('cancels a pending scope rejection before it can update state', async (): Promise<void> => {
+    const setup: Deferred<unknown> = deferred<unknown>();
+    const update = vi.fn();
+    const cancel: () => void = requestSetupScope(update, (): Promise<unknown> => setup.promise);
+
+    cancel();
+    setup.reject(new Error('worker unavailable'));
+    await expect(setup.promise).rejects.toThrow('worker unavailable');
+    expect(update).not.toHaveBeenCalled();
   });
 });

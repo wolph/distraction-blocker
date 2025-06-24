@@ -35,28 +35,35 @@ interface SetupScopeState {
   retry(): void;
 }
 
+type SetupScopeRequest = () => Promise<unknown>;
+
+export function requestSetupScope(
+  onSettled: (load: ScopeLoadState) => void,
+  request: SetupScopeRequest = (): Promise<unknown> => sendRequest({ type: 'getSetupState' }),
+): () => void {
+  let active: boolean = true;
+  void request()
+    .then((setup: unknown): void => {
+      if (!active) return;
+      if (isSetupState(setup) && setup.completed && setup.storageMode !== null) {
+        onSettled({ status: 'ready', storageMode: setup.storageMode });
+      } else {
+        onSettled({ status: 'error', storageMode: null });
+      }
+    })
+    .catch((): void => {
+      if (active) onSettled({ status: 'error', storageMode: null });
+    });
+  return (): void => {
+    active = false;
+  };
+}
+
 function useSetupScope(): SetupScopeState {
   const [load, setLoad]: [ScopeLoadState, Dispatch<StateUpdater<ScopeLoadState>>] =
     useState<ScopeLoadState>({ status: 'loading', storageMode: null });
   const [attempt, setAttempt]: [number, Dispatch<StateUpdater<number>>] = useState<number>(0);
-  useEffect((): (() => void) => {
-    let active: boolean = true;
-    void sendRequest({ type: 'getSetupState' })
-      .then((setup: unknown): void => {
-        if (!active) return;
-        if (isSetupState(setup) && setup.completed && setup.storageMode !== null) {
-          setLoad({ status: 'ready', storageMode: setup.storageMode });
-        } else {
-          setLoad({ status: 'error', storageMode: null });
-        }
-      })
-      .catch((): void => {
-        if (active) setLoad({ status: 'error', storageMode: null });
-      });
-    return (): void => {
-      active = false;
-    };
-  }, [attempt]);
+  useEffect((): (() => void) => requestSetupScope(setLoad), [attempt]);
   return {
     load,
     retry: (): void => {
@@ -73,25 +80,21 @@ function pageScope(storageMode: StorageMode): string {
 }
 
 function ScopeDisclosure(props: SetupScopeState): JSX.Element {
-  if (props.load.status === 'ready') {
-    return <p class="page-scope">{pageScope(props.load.storageMode)}</p>;
-  }
-  if (props.load.status === 'loading') {
-    return (
-      <p class="page-scope" role="status">
-        Checking whether these totals are synced.
-      </p>
-    );
-  }
+  const error: boolean = props.load.status === 'error';
   return (
-    <div class="page-scope page-scope-error" role="alert">
+    <div aria-atomic="true" class={`page-scope${error ? ' page-scope-error' : ''}`} role="status">
       <span>
-        Statistics scope is unavailable. Totals may include synced data. Hourly attempts and recent
-        sessions are from this machine.
+        {props.load.status === 'ready'
+          ? pageScope(props.load.storageMode)
+          : props.load.status === 'loading'
+            ? 'Checking whether these totals are synced.'
+            : 'Statistics scope is unavailable. Totals may include synced data. Hourly attempts and recent sessions are from this machine.'}
       </span>
-      <button type="button" class="scope-retry" onClick={props.retry}>
-        Retry scope check
-      </button>
+      {error ? (
+        <button type="button" class="scope-retry" onClick={props.retry}>
+          Retry scope check
+        </button>
+      ) : null}
     </div>
   );
 }
