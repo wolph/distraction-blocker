@@ -142,6 +142,50 @@ describe('useSettingsStore', () => {
     expect(store().setup?.syncWriteStatus).toBe('pending');
   });
 
+  it('uses the dedicated retry boundary and refreshes durable Sync completion', async (): Promise<void> => {
+    let setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'sync',
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    };
+    fake.respond('getSetupState', (): SetupState => structuredClone(setup));
+    fake.respond('retrySync' as Request['type'], (request: Request): object => {
+      expect(request).toEqual({ type: 'retrySync' });
+      setup = { ...setup, syncWriteStatus: 'idle', storageError: null };
+      return { ok: true, syncWriteStatus: 'idle' };
+    });
+    render(<Harness />);
+    await waitFor((): void => expect(store().setup?.syncWriteStatus).toBe('error'));
+
+    let result: string | null = 'unset';
+    await act(async (): Promise<void> => {
+      result = await (
+        store() as SettingsStore & { retrySync(): Promise<string | null> }
+      ).retrySync();
+    });
+
+    expect(result).toBeNull();
+    expect(store().setup?.syncWriteStatus).toBe('idle');
+    expect(fake.sent).toContainEqual({ type: 'retrySync' });
+  });
+
+  it('rejects a false retry success that does not prove durable completion', async (): Promise<void> => {
+    fake.respond('retrySync' as Request['type'], { ok: true });
+    render(<Harness />);
+    await waitFor((): void => expect(store().setup).not.toBeNull());
+
+    let result: string | null = null;
+    await act(async (): Promise<void> => {
+      result = await (
+        store() as SettingsStore & { retrySync(): Promise<string | null> }
+      ).retrySync();
+    });
+
+    expect(result).toBe('Could not retry Chrome Sync. Try again.');
+  });
+
   it('keeps a newer broadcast theme when the initial load resolves later', async (): Promise<void> => {
     const settings: Deferred<Settings> = deferred<Settings>();
     fake.respond('getSettings', settings.promise);

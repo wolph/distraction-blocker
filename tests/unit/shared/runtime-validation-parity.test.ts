@@ -18,6 +18,7 @@ import {
   isInstallMarker,
   isListsConfig,
   isPauseEconomy,
+  isRetrySyncResponse,
   isSessionSnapshot,
   isSettings,
   isSetupState,
@@ -204,6 +205,14 @@ describe('runtime validation dense array boundaries', (): void => {
 });
 
 describe('runtime and worker request validation parity', (): void => {
+  it('accepts only retry responses that prove durable Sync completion', (): void => {
+    expect(isRetrySyncResponse({ ok: true, syncWriteStatus: 'idle' })).toBe(true);
+    expect(isRetrySyncResponse({ ok: true })).toBe(false);
+    expect(isRetrySyncResponse({ ok: true, syncWriteStatus: 'pending' })).toBe(false);
+    expect(isRetrySyncResponse({ ok: false, error: 'sync unavailable' })).toBe(true);
+    expect(isRetrySyncResponse({ ok: false, error: '' })).toBe(false);
+  });
+
   it('defines the initial setup contract', (): void => {
     expect(DEFAULT_SETUP).toEqual(SETUP);
     expect(INSTALL_MARKER).toEqual({

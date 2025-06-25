@@ -120,6 +120,7 @@ function requiresWorkerControl(request: Request): boolean {
     case 'completeOnboarding':
     case 'completeSetup':
     case 'setStorageMode':
+    case 'retrySync':
     case 'clearFocusLockData':
       return true;
     default:

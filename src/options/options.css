@@ -285,7 +285,21 @@ button.danger:disabled {
   background: var(--negative-soft);
   border: 1px solid var(--negative);
   border-radius: 10px;
+  color: var(--text);
+  margin: auto;
+  max-height: calc(100dvh - 32px);
+  max-width: min(520px, calc(100vw - 32px));
+  overflow: auto;
   padding: 16px;
+  width: max-content;
+}
+
+.privacy-confirmation::backdrop {
+  background: rgb(18 24 20 / 55%);
+}
+
+.privacy-retry {
+  justify-self: start;
 }
 
 .privacy-message,

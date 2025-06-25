@@ -127,6 +127,7 @@ const mocks = vi.hoisted(
     syncRemoveError: Error | null;
     tickActiveSessionStates: boolean[];
     applyBlockingActiveSessionStates: boolean[];
+    aggregateBarrierCalls: number;
   } => ({
     engineArguments: null,
     alarmListener: null,
@@ -173,6 +174,7 @@ const mocks = vi.hoisted(
     syncRemoveError: null,
     tickActiveSessionStates: [],
     applyBlockingActiveSessionStates: [],
+    aggregateBarrierCalls: 0,
   }),
 );
 
@@ -213,6 +215,11 @@ vi.mock('../../../src/background/engine', () => ({
       await ports?.rehydrateAfterDataClear();
       mocks.localState[LOCAL_DEVICE_ID] = 'device-id';
       return result;
+    }
+
+    async runWithAggregateStorageBarrier<T>(operation: () => Promise<T>): Promise<T> {
+      mocks.aggregateBarrierCalls += 1;
+      return operation();
     }
 
     async retainDataClearQuiescence(): Promise<void> {
@@ -675,6 +682,7 @@ beforeEach((): void => {
   mocks.syncRemoveError = null;
   mocks.tickActiveSessionStates = [];
   mocks.applyBlockingActiveSessionStates = [];
+  mocks.aggregateBarrierCalls = 0;
   vi.mocked(reconcileContentRegistrationState).mockClear();
   stubChrome();
 });
@@ -812,6 +820,40 @@ describe('background runtime request boundary', () => {
       dataClear: { status: 'error', scope: 'all', phase: 'remote' },
       storageError: 'remote-deletion-failed',
     });
+  });
+
+  it('routes explicit Sync retry through the engine-owned aggregate checkpoint barrier', async (): Promise<void> => {
+    setCompleteSyncedPolicy();
+    const aggregateKey: string = 'agg:device-id:2026-08-29';
+    const aggregate: DailyAgg = { ...emptyDaily('2026-08-29'), focusMs: 42_000 };
+    mocks.localState[LOCAL_SETUP] = {
+      ...(mocks.localState[LOCAL_SETUP] as object),
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    };
+    mocks.localState[aggregateKey] = aggregate;
+    mocks.localState[LOCAL_SYNC_JOURNAL] = {
+      sets: { [aggregateKey]: aggregate },
+      removes: [],
+    };
+    const actualRouter: typeof import('../../../src/background/router') = await vi.importActual(
+      '../../../src/background/router',
+    );
+    vi.mocked(routeMessage).mockImplementationOnce(actualRouter.routeMessage);
+
+    main();
+
+    await expect(dispatchRuntime({ type: 'retrySync' })).resolves.toEqual({
+      ok: true,
+      syncWriteStatus: 'idle',
+    });
+    expect(mocks.scenario.storedSync[aggregateKey]).toEqual(aggregate);
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      storageMode: 'sync',
+      syncWriteStatus: 'idle',
+      storageError: null,
+    });
+    expect(mocks.aggregateBarrierCalls).toBe(1);
   });
 
   it('retries a boot-restored local-phase all-data clear through the runtime router', async (): Promise<void> => {

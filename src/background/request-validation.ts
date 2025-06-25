@@ -417,6 +417,8 @@ function parseRecord(value: Record<string, unknown>): Request | null {
         !(value.storageMode === 'sync' && value.deleteRemote)
         ? (value as Request)
         : null;
+    case 'retrySync':
+      return hasExactKeys(value, ['type']) ? (value as Request) : null;
     case 'clearFocusLockData':
       return hasExactKeys(value, ['type', 'scope']) &&
         (value.scope === 'local-history' ||

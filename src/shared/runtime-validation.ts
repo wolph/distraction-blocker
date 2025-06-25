@@ -8,6 +8,7 @@ import type {
   OnboardingCompletionResponse,
   OnboardingDraftLoadResponse,
   OnboardingDraftWriteResponse,
+  RetrySyncResponse,
   StatsBundle,
   WebsiteAccessReconciliation,
 } from './messages';
@@ -770,6 +771,19 @@ export function isStatsBundle(value: unknown): value is StatsBundle {
 export function ackError(value: unknown, malformedError: string): string | null {
   if (!isAck(value)) return malformedError;
   return value.ok ? null : value.error;
+}
+
+export function isRetrySyncResponse(value: unknown): value is RetrySyncResponse {
+  return safelyValidate(
+    (): boolean =>
+      isRecord(value) &&
+      ((value.ok === true &&
+        value.syncWriteStatus === 'idle' &&
+        hasExactKeys(value, ['ok', 'syncWriteStatus'])) ||
+        (value.ok === false &&
+          isNonBlankString(value.error) &&
+          hasExactKeys(value, ['ok', 'error']))),
+  );
 }
 
 export function isAck(value: unknown): value is Ack {

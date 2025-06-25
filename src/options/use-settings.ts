@@ -4,6 +4,7 @@ import { sendRequest } from '../shared/messages';
 import {
   ackError,
   isListsConfig,
+  isRetrySyncResponse,
   isSessionSnapshot,
   isSettings,
   isSetupState,
@@ -72,7 +73,8 @@ export interface SettingsStore {
   saveLists(next: ListsConfig): Promise<string | null>;
   reconcileWebsiteAccess(): Promise<string | null>;
   setStorageMode(next: StorageMode): Promise<string | null>;
-  clearData(scope: 'local-history' | 'synced-policy'): Promise<string | null>;
+  retrySync(): Promise<string | null>;
+  clearData(scope: 'local-history' | 'synced-policy' | 'all'): Promise<string | null>;
 }
 
 interface WriteQueue {
@@ -101,7 +103,10 @@ function applySettingsMutation(current: Settings, mutation: SettingsMutation): S
   }
 }
 
-function clearDataError(value: unknown, scope: 'local-history' | 'synced-policy'): string | null {
+function clearDataError(
+  value: unknown,
+  scope: 'local-history' | 'synced-policy' | 'all',
+): string | null {
   if (!isRecord(value)) return 'Could not delete data. Try again.';
   const keys: string[] = Object.keys(value).sort();
   if (
@@ -259,24 +264,41 @@ export function useSettingsStore(): SettingsStore {
     });
   };
 
-  const clearData: (scope: 'local-history' | 'synced-policy') => Promise<string | null> = async (
-    scope: 'local-history' | 'synced-policy',
-  ): Promise<string | null> => {
+  const retrySync: () => Promise<string | null> = async (): Promise<string | null> => {
     return enqueueWrite(setupWrites, async (): Promise<string | null> => {
       let error: string | null = null;
       try {
-        const response: ClearFocusLockDataResponse = await sendRequest({
-          type: 'clearFocusLockData',
-          scope,
-        });
-        error = clearDataError(response, scope);
+        const response: unknown = await sendRequest({ type: 'retrySync' });
+        error = isRetrySyncResponse(response)
+          ? response.ok
+            ? null
+            : response.error
+          : 'Could not retry Chrome Sync. Try again.';
       } catch {
-        error = 'Could not delete data. Try again.';
+        error = 'Could not retry Chrome Sync. Try again.';
       }
       const refreshError: string | null = await refreshSetup();
       return error ?? refreshError;
     });
   };
+
+  const clearData: (scope: 'local-history' | 'synced-policy' | 'all') => Promise<string | null> =
+    async (scope: 'local-history' | 'synced-policy' | 'all'): Promise<string | null> => {
+      return enqueueWrite(setupWrites, async (): Promise<string | null> => {
+        let error: string | null = null;
+        try {
+          const response: ClearFocusLockDataResponse = await sendRequest({
+            type: 'clearFocusLockData',
+            scope,
+          });
+          error = clearDataError(response, scope);
+        } catch {
+          error = 'Could not delete data. Try again.';
+        }
+        const refreshError: string | null = await refreshSetup();
+        return error ?? refreshError;
+      });
+    };
 
   const saveSettings: (mutation: SettingsMutation) => Promise<string | null> = async (
     mutation: SettingsMutation,
@@ -344,6 +366,7 @@ export function useSettingsStore(): SettingsStore {
     saveLists,
     reconcileWebsiteAccess,
     setStorageMode,
+    retrySync,
     clearData,
   };
 }

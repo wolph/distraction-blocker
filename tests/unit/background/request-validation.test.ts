@@ -70,6 +70,7 @@ const VALID_REQUESTS: RequestByType = {
     lists: LISTS,
   },
   setStorageMode: { type: 'setStorageMode', storageMode: 'local', deleteRemote: false },
+  retrySync: { type: 'retrySync' },
   clearFocusLockData: { type: 'clearFocusLockData', scope: 'local-history' },
   getBlockState: {
     type: 'getBlockState',
@@ -106,6 +107,11 @@ function replaceNested(
 }
 
 describe('parseRequest', (): void => {
+  it('accepts only the exact retry Sync request', (): void => {
+    expect(parseRequest({ type: 'retrySync' })).toEqual({ type: 'retrySync' });
+    expect(parseRequest({ type: 'retrySync', storageMode: 'sync' })).toBeNull();
+  });
+
   it.each([
     { type: 'openOnboarding' },
     { type: 'getOnboardingDraft' },

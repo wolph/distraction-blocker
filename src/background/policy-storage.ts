@@ -124,6 +124,7 @@ export interface PolicyStorage {
   setPolicy<K extends keyof PolicyValueByKey>(key: K, value: PolicyValueByKey[K]): Promise<void>;
   selectLocalMode(): Promise<void>;
   enableSync(): Promise<void>;
+  retrySync(): Promise<void>;
   disableSync(): Promise<void>;
   mirrorAcceptedRemotePolicy(
     changes: Record<string, unknown>,
@@ -1435,6 +1436,27 @@ export function createPolicyStorage(
     }
   }
 
+  async function retrySyncInternal(): Promise<void> {
+    await ensureInitialized();
+    const setup: SetupState = await loadSetupInternal();
+    if (mode !== 'sync' || setup.storageMode !== 'sync') {
+      throw new Error('Chrome Sync retry requires authoritative Sync mode');
+    }
+    if (setup.dataClear.status !== 'idle') {
+      throw new Error('finish or retry the pending data deletion before retrying Sync');
+    }
+    if (setup.syncWriteStatus === 'idle') return;
+    await reconstructPendingOutbox(setup);
+    const writer: SyncWriter = await ensurePublisher();
+    writer.resume();
+    await writer.flushNow();
+    await writer.whenJournalDurable();
+    const completed: SetupState = await loadSetupInternal();
+    if (completed.syncWriteStatus !== 'idle') {
+      throw new Error('Chrome Sync retry did not clear the durable pending state');
+    }
+  }
+
   async function disableSyncInternal(): Promise<void> {
     await ensureInitialized();
     if (mode !== 'sync' && publisher === null) {
@@ -2499,6 +2521,10 @@ export function createPolicyStorage(
       firstSyncCheckpoint.runExclusive === undefined
         ? enqueue(enableSyncInternal)
         : firstSyncCheckpoint.runExclusive((): Promise<void> => enqueue(enableSyncInternal)),
+    retrySync: (): Promise<void> =>
+      firstSyncCheckpoint.runExclusive === undefined
+        ? enqueue(retrySyncInternal)
+        : firstSyncCheckpoint.runExclusive((): Promise<void> => enqueue(retrySyncInternal)),
     disableSync: (): Promise<void> =>
       firstSyncCheckpoint.runExclusive === undefined
         ? enqueue(disableSyncInternal)

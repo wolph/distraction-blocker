@@ -198,10 +198,10 @@ describe('Privacy and data', (): void => {
 
   it('retries Sync without deleting the accepted local save', async (): Promise<void> => {
     setup = setupState({ syncWriteStatus: 'error', storageError: 'sync-publish-failed' });
-    fake.respond('setStorageMode', (request: Request): object => {
-      expect(request).toEqual({ type: 'setStorageMode', storageMode: 'sync', deleteRemote: false });
+    fake.respond('retrySync' as Request['type'], (request: Request): object => {
+      expect(request).toEqual({ type: 'retrySync' });
       setup = setupState({ storageMode: 'sync', syncWriteStatus: 'idle', storageError: null });
-      return { ok: true };
+      return { ok: true, syncWriteStatus: 'idle' };
     });
     const view = renderPrivacy();
     await waitFor((): void =>
@@ -214,7 +214,62 @@ describe('Privacy and data', (): void => {
       type: 'clearFocusLockData',
       scope: 'synced-policy',
     });
+    expect(fake.sent).not.toContainEqual({
+      type: 'setStorageMode',
+      storageMode: 'sync',
+      deleteRemote: false,
+    });
   });
+
+  it.each([
+    {
+      scope: 'local-history' as const,
+      label: 'Retry local history deletion',
+      copy: 'Local history could not be deleted. Try again.',
+    },
+    {
+      scope: 'synced-policy' as const,
+      label: 'Retry remote Sync deletion',
+      copy: 'Remote Chrome Sync data could not be deleted. Try again.',
+    },
+    {
+      scope: 'all' as const,
+      label: 'Retry all data deletion',
+      copy: 'All Focus Lock data could not be deleted. Try again.',
+    },
+  ])(
+    'prioritizes and retries the durable $scope deletion failure after reload',
+    async ({ scope, label, copy }): Promise<void> => {
+      const dataClear: SetupState['dataClear'] =
+        scope === 'local-history'
+          ? { status: 'error', scope, phase: 'local' }
+          : { status: 'error', scope, phase: 'remote' };
+      setup = setupState({
+        syncWriteStatus: 'error',
+        storageError: scope === 'local-history' ? 'local-clear-failed' : 'remote-deletion-failed',
+        dataClear,
+      });
+      fake.respond('clearFocusLockData', (request: Request): object => {
+        expect(request).toEqual({ type: 'clearFocusLockData', scope });
+        setup = setupState();
+        return { ok: true, scope, status: 'cleared' };
+      });
+      const view = renderPrivacy();
+
+      await waitFor((): void => expect(view.getByText(copy)).toBeTruthy());
+      expect(
+        view.queryByText(
+          'Chrome Sync could not save your latest changes. Your local save is safe.',
+        ),
+      ).toBeNull();
+      expect(view.queryByRole('button', { name: 'Retry Chrome Sync' })).toBeNull();
+
+      fireEvent.click(view.getByRole('button', { name: label }));
+      await waitFor((): void =>
+        expect(fake.sent).toContainEqual({ type: 'clearFocusLockData', scope }),
+      );
+    },
+  );
 
   it('disables Sync without combining remote deletion', async (): Promise<void> => {
     fake.respond('setStorageMode', (request: Request): object => {
@@ -290,6 +345,43 @@ describe('Privacy and data', (): void => {
       expect(view.queryByRole('dialog')).toBeNull();
       expect(document.activeElement).toBe(open);
     });
+  });
+
+  it('traps Tab in the modal and makes the background inert until cancellation', async (): Promise<void> => {
+    const view = renderPrivacy();
+    const open: HTMLButtonElement = await waitFor(
+      (): HTMLButtonElement =>
+        view.getByRole('button', { name: 'Delete local history' }) as HTMLButtonElement,
+    );
+    const exportButton: HTMLButtonElement = view.getByRole('button', {
+      name: 'Export local event log',
+    }) as HTMLButtonElement;
+
+    fireEvent.click(open);
+    const dialog: HTMLElement = view.getByRole('dialog', { name: 'Delete local history?' });
+    const cancel: HTMLButtonElement = view.getByRole('button', {
+      name: 'Cancel',
+    }) as HTMLButtonElement;
+    const confirm: HTMLButtonElement = view.getByRole('button', {
+      name: 'Confirm delete local history',
+    }) as HTMLButtonElement;
+    await waitFor((): void => expect(document.activeElement).toBe(cancel));
+    expect(dialog.tagName).toBe('DIALOG');
+    expect(dialog.hasAttribute('open')).toBe(true);
+
+    confirm.focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(document.activeElement).toBe(cancel);
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(confirm);
+
+    fireEvent.click(exportButton);
+    expect(fake.sent).not.toContainEqual({ type: 'exportEvents' });
+    expect(view.getByRole('dialog')).toBe(dialog);
+
+    fireEvent.click(cancel);
+    await waitFor((): void => expect(view.queryByRole('dialog')).toBeNull());
+    expect(document.activeElement).toBe(open);
   });
 
   it('keeps remote deletion separate, off-only, and preserves local data in its copy', async (): Promise<void> => {

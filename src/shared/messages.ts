@@ -29,6 +29,7 @@ export type Request =
   | { type: 'dismissWebsiteAccessNotice' }
   | { type: 'completeSetup'; storageMode: StorageMode; settings: Settings; lists: ListsConfig }
   | { type: 'setStorageMode'; storageMode: StorageMode; deleteRemote: boolean }
+  | { type: 'retrySync' }
   | {
       type: 'clearFocusLockData';
       scope: 'local-history' | 'synced-policy' | 'all';
@@ -105,6 +106,8 @@ export type ClearFocusLockDataResponse =
       status: 'pending' | 'cleared';
     });
 
+export type RetrySyncResponse = { ok: true; syncWriteStatus: 'idle' } | Rejection;
+
 export interface StatsBundle {
   /** merged across devices, oldest first */
   days: DailyAgg[];
@@ -132,6 +135,7 @@ export interface ResponseMap {
   dismissWebsiteAccessNotice: Ack;
   completeSetup: Ack;
   setStorageMode: Ack;
+  retrySync: RetrySyncResponse;
   clearFocusLockData: ClearFocusLockDataResponse;
   getBlockState: { verdict: Verdict; snapshot: SessionSnapshot };
   startSession: Ack;

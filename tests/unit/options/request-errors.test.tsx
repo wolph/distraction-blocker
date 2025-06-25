@@ -85,6 +85,7 @@ describe('Options request errors', (): void => {
         setup={setup}
         onReconcileWebsiteAccess={async (): Promise<string | null> => null}
         onStorageModeChange={(): Promise<string | null> => pending.promise}
+        onRetrySync={async (): Promise<string | null> => null}
         onClearData={async (): Promise<string | null> => null}
       />,
     );

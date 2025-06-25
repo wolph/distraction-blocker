@@ -433,6 +433,25 @@ describe('routeMessage onboarding wiring', (): void => {
     expect(storage.selectLocalMode).not.toHaveBeenCalled();
   });
 
+  it('retries the authoritative Sync journal and reports durable completion', async (): Promise<void> => {
+    const retrySync = vi.fn(async (): Promise<void> => {});
+    const storage: PolicyStorage = onboardingStorage({
+      retrySync,
+      loadSetup: vi.fn().mockResolvedValue({
+        ...DEFAULT_SETUP,
+        completed: true,
+        storageMode: 'sync',
+        syncWriteStatus: 'idle',
+      }),
+    });
+
+    await expect(
+      routeMessage(engine, { type: 'retrySync' } as never, sender, storage),
+    ).resolves.toEqual({ ok: true, syncWriteStatus: 'idle' });
+    expect(retrySync).toHaveBeenCalledOnce();
+    expect(storage.enableSync).not.toHaveBeenCalled();
+  });
+
   it('keeps setup incomplete when a pending deletion rejects Sync completion', async (): Promise<void> => {
     const setupEngine: Engine = {
       updateSettings: vi.fn().mockResolvedValue({ ok: true }),

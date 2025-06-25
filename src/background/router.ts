@@ -245,6 +245,15 @@ export async function routeMessage(
       }
       return { ok: true };
     }
+    case 'retrySync': {
+      const storage: PolicyStorage = requirePolicyStorage(policyStorage);
+      await storage.retrySync();
+      const setup: SetupState = await storage.loadSetup();
+      if (setup.storageMode !== 'sync' || setup.syncWriteStatus !== 'idle') {
+        throw new Error('Chrome Sync retry did not complete durably');
+      }
+      return { ok: true, syncWriteStatus: 'idle' };
+    }
     case 'clearFocusLockData': {
       const storage: PolicyStorage = requirePolicyStorage(policyStorage);
       if (msg.scope === 'local-history') {

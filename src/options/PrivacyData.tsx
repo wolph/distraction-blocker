@@ -13,7 +13,8 @@ export interface PrivacyDataProps {
   setup: SetupState;
   onReconcileWebsiteAccess: () => Promise<string | null>;
   onStorageModeChange: (next: StorageMode) => Promise<string | null>;
-  onClearData: (scope: 'local-history' | 'synced-policy') => Promise<string | null>;
+  onRetrySync: () => Promise<string | null>;
+  onClearData: (scope: 'local-history' | 'synced-policy' | 'all') => Promise<string | null>;
 }
 
 interface WebsiteAccessPresentation {
@@ -70,15 +71,80 @@ function ConfirmationDialog(props: {
   onCancel: () => void;
   onConfirm: () => void;
 }): VNode {
+  const dialog: { current: HTMLDialogElement | null } = useRef<HTMLDialogElement>(null);
   const cancelButton: { current: HTMLButtonElement | null } = useRef<HTMLButtonElement>(null);
-  useEffect((): void => cancelButton.current?.focus(), []);
+  useEffect((): (() => void) => {
+    const current: HTMLDialogElement | null = dialog.current;
+    if (current === null) return (): void => {};
+    if (typeof current.showModal === 'function') current.showModal();
+    else current.setAttribute('open', '');
+    cancelButton.current?.focus();
+    return (): void => {
+      if (current.open && typeof current.close === 'function') current.close();
+    };
+  }, []);
+  useEffect((): (() => void) => {
+    const onKeyDown: (event: KeyboardEvent) => void = (event: KeyboardEvent): void => {
+      const current: HTMLDialogElement | null = dialog.current;
+      if (current === null) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        if (!props.pending) props.onCancel();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const controls: HTMLButtonElement[] = Array.from(
+        current.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'),
+      );
+      event.preventDefault();
+      if (controls.length === 0) {
+        current.focus();
+        return;
+      }
+      const first: HTMLButtonElement | undefined = controls[0];
+      const last: HTMLButtonElement | undefined = controls.at(-1);
+      if (first === undefined || last === undefined) {
+        current.focus();
+        return;
+      }
+      const active: Element | null = document.activeElement;
+      if (event.shiftKey) {
+        (active === first || !current.contains(active) ? last : first).focus();
+      } else {
+        (active === last || !current.contains(active) ? first : last).focus();
+      }
+    };
+    const blockBackgroundClick: (event: MouseEvent) => void = (event: MouseEvent): void => {
+      const current: HTMLDialogElement | null = dialog.current;
+      const target: Node | null = event.target instanceof Node ? event.target : null;
+      if (current === null || (target !== null && current.contains(target))) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('click', blockBackgroundClick, true);
+    return (): void => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('click', blockBackgroundClick, true);
+    };
+  }, [props.onCancel, props.pending]);
   const local: boolean = props.kind === 'local-history';
   const title: string = local ? 'Delete local history?' : 'Delete remote Sync data?';
   const confirmLabel: string = local
     ? 'Confirm delete local history'
     : 'Confirm delete remote Sync data';
   return (
-    <section class="privacy-confirmation" role="dialog" aria-modal="true" aria-label={title}>
+    <dialog
+      ref={dialog}
+      class="privacy-confirmation"
+      aria-modal="true"
+      aria-label={title}
+      tabIndex={-1}
+      onCancel={(event: TargetedEvent<HTMLDialogElement>): void => {
+        event.preventDefault();
+        if (!props.pending) props.onCancel();
+      }}
+    >
       <h4>{title}</h4>
       {local ? (
         <p>
@@ -107,18 +173,22 @@ function ConfirmationDialog(props: {
           {confirmLabel}
         </button>
       </div>
-    </section>
+    </dialog>
   );
 }
 
 function durableError(setup: SetupState): string | null {
+  if (setup.dataClear.status === 'error') {
+    if (setup.dataClear.scope === 'local-history') {
+      return 'Local history could not be deleted. Try again.';
+    }
+    if (setup.dataClear.scope === 'synced-policy') {
+      return 'Remote Chrome Sync data could not be deleted. Try again.';
+    }
+    return 'All Focus Lock data could not be deleted. Try again.';
+  }
   if (setup.syncWriteStatus === 'error') {
     return 'Chrome Sync could not save your latest changes. Your local save is safe.';
-  }
-  if (setup.dataClear.status === 'error') {
-    return setup.dataClear.scope === 'local-history'
-      ? 'Local history could not be deleted. Try again.'
-      : 'Remote Chrome Sync data could not be deleted. Try again.';
   }
   return null;
 }
@@ -143,15 +213,6 @@ export function PrivacyData(props: PrivacyDataProps): VNode {
     if (active === document.body || active?.closest('.privacy-confirmation') !== null) {
       confirmationOrigin.current?.focus();
     }
-  }, [confirmation]);
-
-  useEffect((): (() => void) | undefined => {
-    if (confirmation === null) return undefined;
-    const onKeyDown: (event: KeyboardEvent) => void = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape' && !actionLocked.current) setConfirmation(null);
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return (): void => document.removeEventListener('keydown', onKeyDown);
   }, [confirmation]);
 
   const runAction: (action: () => Promise<string | null>, success: string) => Promise<void> =
@@ -236,6 +297,10 @@ export function PrivacyData(props: PrivacyDataProps): VNode {
   const syncing: boolean = props.setup.storageMode === 'sync';
   const localMode: boolean = props.setup.storageMode === 'local';
   const syncPending: boolean = props.setup.syncWriteStatus === 'pending';
+  const syncFailure: boolean =
+    props.setup.syncWriteStatus === 'error' && props.setup.dataClear.status === 'idle';
+  const dataClearFailure: Exclude<SetupState['dataClear']['scope'], null> | null =
+    props.setup.dataClear.status === 'error' ? props.setup.dataClear.scope : null;
   const visibleError: string | null = actionError ?? durableError(props.setup);
 
   return (
@@ -301,19 +366,16 @@ export function PrivacyData(props: PrivacyDataProps): VNode {
         </label>
         {syncPending ? (
           <p>Chrome Sync is still saving your latest changes.</p>
-        ) : props.setup.syncWriteStatus === 'error' ? null : (
+        ) : syncFailure ? null : (
           <p>{syncing ? 'Chrome Sync is on.' : 'Chrome Sync is off.'}</p>
         )}
-        {props.setup.syncWriteStatus === 'error' ? (
+        {syncFailure ? (
           <button
             type="button"
             class="secondary"
             disabled={pending}
             onClick={(): void => {
-              void runAction(
-                (): Promise<string | null> => props.onStorageModeChange('sync'),
-                'Chrome Sync enabled.',
-              );
+              void runAction(props.onRetrySync, 'Chrome Sync changes saved.');
             }}
           >
             Retry Chrome Sync
@@ -383,6 +445,31 @@ export function PrivacyData(props: PrivacyDataProps): VNode {
         <p class="save-error privacy-message" role="alert">
           {visibleError}
         </p>
+      )}
+      {dataClearFailure === null ? null : (
+        <button
+          type="button"
+          class="secondary privacy-retry"
+          disabled={pending}
+          onClick={(): void => {
+            const success: string =
+              dataClearFailure === 'local-history'
+                ? 'Local history deleted.'
+                : dataClearFailure === 'synced-policy'
+                  ? 'Remote Chrome Sync data deleted.'
+                  : 'All Focus Lock data deleted.';
+            void runAction(
+              (): Promise<string | null> => props.onClearData(dataClearFailure),
+              success,
+            );
+          }}
+        >
+          {dataClearFailure === 'local-history'
+            ? 'Retry local history deletion'
+            : dataClearFailure === 'synced-policy'
+              ? 'Retry remote Sync deletion'
+              : 'Retry all data deletion'}
+        </button>
       )}
       <p class="privacy-live-region" role="status" aria-live="polite">
         {status}

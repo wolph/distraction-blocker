@@ -2174,6 +2174,38 @@ describe('PolicyStorage', (): void => {
     expect((await setupState(local)).storageError).toBeNull();
   });
 
+  it('reconstructs and immediately flushes the durable journal on explicit retry', async (): Promise<void> => {
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'sync',
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_SYNC_JOURNAL]: { sets: { [SYNC_BANK]: SNAPSHOT.bank }, removes: [] },
+    });
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+
+    await (
+      storage as PolicyStorage & {
+        retrySync(): Promise<void>;
+      }
+    ).retrySync();
+
+    expect(sync.state.values[SYNC_SETTINGS]).toEqual(SNAPSHOT.settings);
+    expect(sync.state.values[SYNC_BANK]).toEqual(SNAPSHOT.bank);
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toEqual({ sets: {}, removes: [] });
+    expect(await storage.loadSetup()).toMatchObject({
+      storageMode: 'sync',
+      syncWriteStatus: 'idle',
+      storageError: null,
+    });
+  });
+
   it('marks a pre-flush journal verification failure as retryable', async (): Promise<void> => {
     const setup: SetupState = {
       ...DEFAULT_SETUP,
