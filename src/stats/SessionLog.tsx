@@ -164,7 +164,7 @@ export function SessionLog(props: { events: EventRecord[] }): JSX.Element {
   return (
     <section class="card">
       <h2>Recent sessions on this machine</h2>
-      <div class="table-scroll">
+      <div class="session-table-wrap">
         <table class="session-table">
           <thead>
             <tr>
@@ -203,6 +203,55 @@ export function SessionLog(props: { events: EventRecord[] }): JSX.Element {
             )}
           </tbody>
         </table>
+      </div>
+      <div class="session-articles">
+        {rows.map(
+          (row: SessionRow): JSX.Element => (
+            <article
+              class="session-article"
+              aria-label={`Session: ${row.intention || 'No intention'}`}
+              key={row.startedAt}
+            >
+              <div class="session-article-heading">
+                <strong>{row.intention || 'No intention'}</strong>
+                <span class={chipClass(row.outcome)}>{row.outcome}</span>
+              </div>
+              <dl class="session-fields">
+                <div>
+                  <dt>Date</dt>
+                  <dd>{new Date(row.startedAt).toLocaleDateString()}</dd>
+                </div>
+                <div>
+                  <dt>Start</dt>
+                  <dd>{formatTimeOfDay(row.startedAt)}</dd>
+                </div>
+                <div>
+                  <dt>Planned</dt>
+                  <dd>{formatDuration(row.plannedMin * 60_000)}</dd>
+                </div>
+                <div>
+                  <dt>Focused</dt>
+                  <dd>{row.focusedMs === null ? '-' : formatDuration(row.focusedMs)}</dd>
+                </div>
+                <div>
+                  <dt>Pause</dt>
+                  <dd>{formatDuration(row.pauseMs)}</dd>
+                </div>
+                <div>
+                  <dt>Unlock</dt>
+                  <dd>{formatDuration(row.unlockMs)}</dd>
+                </div>
+                <div>
+                  <dt>Source</dt>
+                  <dd class="session-source">
+                    <SourceGlyph source={row.source} />
+                    {row.source}
+                  </dd>
+                </div>
+              </dl>
+            </article>
+          ),
+        )}
       </div>
     </section>
   );

@@ -8,6 +8,7 @@ import type { DailyAgg, EventRecord } from '../../../src/shared/types';
 import { attemptsByHour, Charts, topSites } from '../../../src/stats/Charts';
 import { BarChart } from '../../../src/stats/charts/BarChart';
 import { HBarChart } from '../../../src/stats/charts/HBarChart';
+import { HourlyHeatStrip } from '../../../src/stats/charts/HourlyHeatStrip';
 
 afterEach(cleanup);
 
@@ -229,6 +230,49 @@ describe('HBarChart', () => {
   });
 });
 
+describe('HourlyHeatStrip', () => {
+  it('renders 24 equal labeled intensity cells under one accessible image', () => {
+    const values: number[] = Array.from({ length: 24 }, (_value: unknown, hour: number): number =>
+      hour === 9 ? 4 : hour === 14 ? 2 : 0,
+    );
+    const { container, getByRole, getByText } = render(<HourlyHeatStrip values={values} />);
+
+    expect(getByRole('img', { name: '24-hour blocked-attempt heat strip' })).toBeTruthy();
+    expect(container.querySelectorAll('[role="img"]')).toHaveLength(1);
+    expect(container.querySelectorAll('.heat-cell')).toHaveLength(24);
+    expect(container.querySelectorAll('.heat-cell[role]')).toHaveLength(0);
+    const cells: Element[] = Array.from(container.querySelectorAll('.heat-cell'));
+    expect(cells.map((cell: Element): string | null => cell.getAttribute('data-hour'))).toEqual(
+      Array.from(
+        { length: 24 },
+        (_value: unknown, hour: number): string => `${String(hour).padStart(2, '0')}:00`,
+      ),
+    );
+    expect(cells[9]?.getAttribute('style')).toContain('--intensity: 1');
+    expect(cells[14]?.getAttribute('style')).toContain('--intensity: 0.5');
+    expect(cells[0]?.getAttribute('style')).toContain('--intensity: 0');
+    expect(getByText('View as table')).toBeTruthy();
+    expect(container.querySelectorAll('.chart-table tbody tr')).toHaveLength(24);
+    expect(container.querySelector('.chart-table table')).toBeTruthy();
+  });
+
+  it('defines equal heat columns and a readable chart fallback without tiny SVG text', () => {
+    const css: string = readFileSync(resolve(process.cwd(), 'src/stats/stats.css'), 'utf8');
+    expect(css).toMatch(
+      /\.heat-strip\s*\{[^}]*grid-template-columns:\s*repeat\(24,\s*minmax\(0,\s*1fr\)\)/s,
+    );
+    expect(css).toMatch(/\.heat-cell-label\s*\{[^}]*font-size:\s*12px/s);
+    expect(css).toMatch(/\.axis-text[^}]*font-size:\s*12px/s);
+    expect(css).not.toMatch(/@container[^}]*\.axis-text/s);
+    expect(css).toMatch(
+      /@container\s*\(max-width:\s*560px\)[\s\S]*?\.chart-wrap:not\(\.hourly-heat-wrap\) > \.chart\s*\{[^}]*display:\s*none/s,
+    );
+    expect(css).toMatch(
+      /@container\s*\(max-width:\s*560px\)[\s\S]*?\.chart-wrap:not\(\.hourly-heat-wrap\) > \.chart-table:not\(\[open\]\) > table\s*\{[^}]*display:\s*table/s,
+    );
+  });
+});
+
 describe('topSites', () => {
   it('merges attempts across days, caps at ten sites plus other', () => {
     const hosts: Record<string, number> = {};
@@ -311,5 +355,11 @@ describe('Charts', () => {
     expect(sections[0]?.querySelectorAll('.chart-table tbody tr')).toHaveLength(14);
     expect(sections[1]?.querySelectorAll('.chart-table tbody tr')).toHaveLength(14);
     expect(sections[2]?.textContent).toContain('old.example');
+    expect(sections[3]?.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe(
+      '24-hour blocked-attempt heat strip',
+    );
+    expect(sections[3]?.querySelectorAll('.heat-cell')).toHaveLength(24);
+    expect(sections[3]?.querySelector('svg')).toBeNull();
+    expect(sections[3]?.querySelectorAll('.chart-table tbody tr')).toHaveLength(24);
   });
 });

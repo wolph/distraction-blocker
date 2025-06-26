@@ -4,6 +4,7 @@ import { localDateStr } from '../shared/time';
 import type { DailyAgg, EventRecord } from '../shared/types';
 import { BarChart, type ChartDatum } from './charts/BarChart';
 import { HBarChart } from './charts/HBarChart';
+import { HourlyHeatStrip } from './charts/HourlyHeatStrip';
 import { formatMinutes } from './format';
 
 export interface ChartsProps {
@@ -78,22 +79,13 @@ export function attemptsByHour(events: EventRecord[]): number[] {
   return buckets;
 }
 
-function hourSeries(events: EventRecord[]): ChartDatum[] {
-  return attemptsByHour(events).map(
-    (value: number, hour: number): ChartDatum => ({
-      label: `${String(hour).padStart(2, '0')}:00`,
-      value,
-    }),
-  );
-}
-
 export function Charts(props: ChartsProps): JSX.Element {
   const focus: ChartDatum[] = dailySeries(props.bundle, props.now, (d: DailyAgg): number =>
     Math.round(d.focusMs / 60_000),
   );
   const attempts: ChartDatum[] = dailySeries(props.bundle, props.now, dayAttempts);
   const sites: ChartDatum[] = topSites(props.bundle);
-  const hours: ChartDatum[] = hourSeries(props.events ?? []);
+  const hours: number[] = attemptsByHour(props.events ?? []);
   return (
     <div class="charts">
       <section class="card">
@@ -129,13 +121,7 @@ export function Charts(props: ChartsProps): JSX.Element {
       </section>
       <section class="card">
         <h2>Attempts by hour, this machine only</h2>
-        <HBarChart
-          data={hours}
-          format={(v: number): string => String(v)}
-          label="Attempts by hour, this machine only"
-          color="var(--attempts-series)"
-          emptyLine="Hourly patterns appear after your first blocked attempt."
-        />
+        <HourlyHeatStrip values={hours} />
       </section>
     </div>
   );
