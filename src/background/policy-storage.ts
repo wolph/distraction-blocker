@@ -956,7 +956,10 @@ export function createPolicyStorage(
     return publisher;
   }
 
-  async function reconstructPendingOutbox(setup: SetupState): Promise<void> {
+  async function reconstructPendingOutbox(
+    setup: SetupState,
+    throwQuotaError: boolean = false,
+  ): Promise<void> {
     if (setup.syncWriteStatus === 'idle') return;
     try {
       const persisted: SyncJournal = sanitizeSyncJournal(
@@ -1062,7 +1065,9 @@ export function createPolicyStorage(
         syncWriteStatus: 'error',
         storageError: 'sync-publish-failed',
       });
-      if (setup.storageMode === 'sync' && !(error instanceof SyncQuotaError)) throw error;
+      if (setup.storageMode === 'sync' && (throwQuotaError || !(error instanceof SyncQuotaError))) {
+        throw error;
+      }
     }
   }
 
@@ -1446,7 +1451,7 @@ export function createPolicyStorage(
       throw new Error('finish or retry the pending data deletion before retrying Sync');
     }
     if (setup.syncWriteStatus === 'idle') return;
-    await reconstructPendingOutbox(setup);
+    await reconstructPendingOutbox(setup, true);
     const writer: SyncWriter = await ensurePublisher();
     writer.resume();
     await writer.flushNow();

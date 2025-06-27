@@ -299,6 +299,7 @@ export function PrivacyData(props: PrivacyDataProps): VNode {
   const syncPending: boolean = props.setup.syncWriteStatus === 'pending';
   const syncFailure: boolean =
     props.setup.syncWriteStatus === 'error' && props.setup.dataClear.status === 'idle';
+  const firstSyncFailure: boolean = syncFailure && props.setup.storageMode !== 'sync';
   const dataClearFailure: Exclude<SetupState['dataClear']['scope'], null> | null =
     props.setup.dataClear.status === 'error' ? props.setup.dataClear.scope : null;
   const visibleError: string | null = actionError ?? durableError(props.setup);
@@ -375,10 +376,15 @@ export function PrivacyData(props: PrivacyDataProps): VNode {
             class="secondary"
             disabled={pending}
             onClick={(): void => {
-              void runAction(props.onRetrySync, 'Chrome Sync changes saved.');
+              void runAction(
+                firstSyncFailure
+                  ? (): Promise<string | null> => props.onStorageModeChange('sync')
+                  : props.onRetrySync,
+                firstSyncFailure ? 'Chrome Sync enabled.' : 'Chrome Sync changes saved.',
+              );
             }}
           >
-            Retry Chrome Sync
+            {firstSyncFailure ? 'Retry enabling Chrome Sync' : 'Retry Chrome Sync'}
           </button>
         ) : null}
         <div class="privacy-data-grid">

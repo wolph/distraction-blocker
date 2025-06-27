@@ -2024,6 +2024,55 @@ describe('PolicyStorage', (): void => {
     expect(sync.area.set).not.toHaveBeenCalled();
   });
 
+  it('retries a durable failed first publication through enableSync after reload', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage();
+    let checkpointAvailable: boolean = false;
+    const checkpoint: FirstSyncCheckpointSource = {
+      loadAggregateItems: async (): Promise<Record<string, unknown>> => {
+        if (!checkpointAvailable) throw new Error('aggregate checkpoint unavailable');
+        return {};
+      },
+    };
+    const first: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      checkpoint,
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+
+    await expect(first.enableSync()).rejects.toThrow('aggregate checkpoint unavailable');
+
+    const restarted: PolicyStorage = createPolicyStorage(
+      local.area,
+      sync.area,
+      checkpoint,
+      DIRECT_ALL_DATA_CLEAR_BARRIER,
+    );
+    await restarted.initialize();
+    expect(await restarted.loadSetup()).toMatchObject({
+      storageMode: 'local',
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    });
+
+    checkpointAvailable = true;
+    await restarted.enableSync();
+
+    expect(sync.state.values).toMatchObject({
+      [SYNC_SETTINGS]: SNAPSHOT.settings,
+      [SYNC_LISTS]: expect.anything(),
+      [SYNC_BANK]: SNAPSHOT.bank,
+      [SYNC_STREAK]: SNAPSHOT.streak,
+    });
+    expect(await restarted.loadSetup()).toMatchObject({
+      storageMode: 'sync',
+      syncWriteStatus: 'idle',
+      storageError: null,
+    });
+  });
+
   it('rejects a malformed aggregate before the first Sync mode flip', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
     const local: FakeStorage = fakeStorage(localPolicy(setup));
@@ -2122,6 +2171,61 @@ describe('PolicyStorage', (): void => {
     await expect(storage.enableSync()).rejects.toThrow('8192-byte limit');
     expect((await setupState(local)).storageMode).toBe('local');
     expect((await setupState(local)).syncWriteStatus).toBe('error');
+  });
+
+  it('keeps an unsyncable authoritative policy retryable without clearing its durable error', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
+    const impossibleSettings = {
+      ...DEFAULT_SETTINGS,
+      schedule: [
+        {
+          id: 'too-large-after-sync',
+          days: [1],
+          start: '09:00',
+          end: '10:00',
+          mode: 'blacklist' as const,
+          strictness: 'friction' as const,
+          cycling: null,
+          intention: 'x'.repeat(20_000),
+          enabled: true,
+        },
+      ],
+    };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: DEFAULT_SETTINGS });
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+
+    await expect(storage.setPolicy('settings', impossibleSettings)).rejects.toThrow(
+      '8192-byte limit',
+    );
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(impossibleSettings);
+    const journalAfterWrite: unknown = local.state.values[LOCAL_SYNC_JOURNAL] ?? {
+      sets: {},
+      removes: [],
+    };
+    expect(journalAfterWrite).toEqual({
+      sets: {},
+      removes: [],
+    });
+
+    await expect(storage.retrySync()).rejects.toThrow('8192-byte limit');
+
+    expect(sync.state.values[SYNC_SETTINGS]).toEqual(DEFAULT_SETTINGS);
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(impossibleSettings);
+    const journalAfterRetry: unknown = local.state.values[LOCAL_SYNC_JOURNAL] ?? {
+      sets: {},
+      removes: [],
+    };
+    expect(journalAfterRetry).toEqual({
+      sets: {},
+      removes: [],
+    });
+    expect(await storage.loadSetup()).toMatchObject({
+      storageMode: 'sync',
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    });
   });
 
   it('reconstructs a full outbox after a crash gap and recovers on retry', async (): Promise<void> => {

@@ -221,6 +221,34 @@ describe('Privacy and data', (): void => {
     });
   });
 
+  it('retries a failed first Sync publication through the enable path after reload', async (): Promise<void> => {
+    setup = setupState({
+      storageMode: 'local',
+      syncWriteStatus: 'error',
+      storageError: 'sync-publish-failed',
+    });
+    fake.respond('setStorageMode', (request: Request): object => {
+      expect(request).toEqual({ type: 'setStorageMode', storageMode: 'sync', deleteRemote: false });
+      setup = setupState({ storageMode: 'sync', syncWriteStatus: 'idle', storageError: null });
+      return { ok: true };
+    });
+    const view = renderPrivacy();
+    const retry: HTMLButtonElement = await waitFor(
+      (): HTMLButtonElement =>
+        view.getByRole('button', { name: 'Retry enabling Chrome Sync' }) as HTMLButtonElement,
+    );
+
+    fireEvent.click(retry);
+
+    await waitFor((): void => expect(view.getByText('Chrome Sync is on.')).toBeTruthy());
+    expect(fake.sent).toContainEqual({
+      type: 'setStorageMode',
+      storageMode: 'sync',
+      deleteRemote: false,
+    });
+    expect(fake.sent).not.toContainEqual({ type: 'retrySync' });
+  });
+
   it.each([
     {
       scope: 'local-history' as const,

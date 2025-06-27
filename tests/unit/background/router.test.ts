@@ -452,6 +452,24 @@ describe('routeMessage onboarding wiring', (): void => {
     expect(storage.enableSync).not.toHaveBeenCalled();
   });
 
+  it('reports an authoritative Sync retry failure instead of returning success', async (): Promise<void> => {
+    const storage: PolicyStorage = onboardingStorage({
+      retrySync: vi.fn().mockRejectedValue(new Error('8192-byte limit')),
+      loadSetup: vi.fn().mockResolvedValue({
+        ...DEFAULT_SETUP,
+        completed: true,
+        storageMode: 'sync',
+        syncWriteStatus: 'error',
+        storageError: 'sync-publish-failed',
+      }),
+    });
+
+    await expect(routeMessage(engine, { type: 'retrySync' }, sender, storage)).rejects.toThrow(
+      '8192-byte limit',
+    );
+    expect(storage.loadSetup).not.toHaveBeenCalled();
+  });
+
   it('keeps setup incomplete when a pending deletion rejects Sync completion', async (): Promise<void> => {
     const setupEngine: Engine = {
       updateSettings: vi.fn().mockResolvedValue({ ok: true }),
