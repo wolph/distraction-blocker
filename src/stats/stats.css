@@ -305,6 +305,22 @@ h2 {
   .chart-wrap:not(.hourly-heat-wrap) > .chart {
     display: none;
   }
+
+  .chart-wrap:not(.hourly-heat-wrap) > .chart-table {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .chart-wrap:not(.hourly-heat-wrap) > .chart-table table {
+    table-layout: fixed;
+    width: 100%;
+  }
+
+  .chart-wrap:not(.hourly-heat-wrap) > .chart-table th,
+  .chart-wrap:not(.hourly-heat-wrap) > .chart-table td {
+    overflow-wrap: anywhere;
+    padding-right: 4px;
+  }
 }
 
 .bar-mark.hover,

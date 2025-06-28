@@ -209,7 +209,7 @@ test('Stats content stays inside responsive viewports', async ({
         sessionsCompleted: 1,
         attempts: {
           'blocked.example': 2,
-          'representative-long-domain.example': 9_999_999,
+          'an-extremely-long-domain-name-used-for-responsive-verification.example': 9_999_999,
         },
         attemptsOther: 0,
         pausesTaken: 1,
@@ -256,10 +256,20 @@ test('Stats content stays inside responsive viewports', async ({
     { width: 601, height: 812 },
     { width: 767, height: 900 },
     { width: 768, height: 900 },
+    { width: 900, height: 900 },
+    { width: 901, height: 900 },
     { width: 1280, height: 850 },
   ];
   for (const viewport of viewports) {
     await page.setViewportSize(viewport);
+    await page.evaluate(
+      (): Promise<void> =>
+        new Promise<void>((resolve: () => void): void => {
+          requestAnimationFrame((): void => {
+            requestAnimationFrame((): void => resolve());
+          });
+        }),
+    );
     const metrics: StatsLayoutMetrics = await page.evaluate((): StatsLayoutMetrics => {
       function bounds(selector: string): ElementBounds[] {
         const elements: Element[] = Array.from(document.querySelectorAll(selector));
@@ -492,31 +502,93 @@ test('Stats content stays inside responsive viewports', async ({
     }
   }
 
-  await page.setViewportSize({ width: 375, height: 812 });
-  await page.addStyleTag({
-    content: '.heat-cell-label { font-size: 24px !important; }',
+  // A headed 375px Chrome viewport leaves 360 CSS pixels after its vertical scrollbar.
+  await page.setViewportSize({ width: 360, height: 812 });
+  await page.evaluate((): void => {
+    const elements: Element[] = [document.documentElement, ...document.querySelectorAll('*')];
+    const fontSizes: number[] = elements.map((element: Element): number =>
+      Number.parseFloat(getComputedStyle(element).fontSize),
+    );
+    elements.forEach((element: Element, index: number): void => {
+      const fontSize: number | undefined = fontSizes[index];
+      if (
+        (element instanceof HTMLElement || element instanceof SVGElement) &&
+        fontSize !== undefined &&
+        Number.isFinite(fontSize)
+      ) {
+        element.style.fontSize = `${fontSize * 2}px`;
+      }
+    });
   });
-  const scaledTextMetrics: { columns: number; documentOverflow: number; labelsFit: boolean } =
-    await page.evaluate((): { columns: number; documentOverflow: number; labelsFit: boolean } => {
+  const scaledTextMetrics: {
+    columns: number;
+    documentOverflow: number;
+    labelsFit: boolean;
+    outOfBounds: string[];
+    horizontalScrollers: string[];
+    visibleReadableTableCount: number;
+  } = await page.evaluate(
+    (): {
+      columns: number;
+      documentOverflow: number;
+      labelsFit: boolean;
+      outOfBounds: string[];
+      horizontalScrollers: string[];
+      visibleReadableTableCount: number;
+    } => {
       const strip: HTMLElement | null = document.querySelector('.heat-strip');
       if (strip === null) throw new Error('Missing scaled Stats heat strip');
       const labels: HTMLElement[] = Array.from(
         document.querySelectorAll<HTMLElement>('.heat-cell-label'),
       );
+      const visibleBounds: Element[] = Array.from(
+        document.querySelectorAll('.stats-page details, .stats-page table'),
+      ).filter((element: Element): boolean => element.checkVisibility());
+      const viewportWidth: number = document.documentElement.clientWidth;
       return {
         columns: getComputedStyle(strip)
           .gridTemplateColumns.split(/\s+/)
           .filter((column: string): boolean => column.length > 0).length,
-        documentOverflow:
-          document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        documentOverflow: document.documentElement.scrollWidth - viewportWidth,
+        horizontalScrollers: Array.from(document.querySelectorAll<HTMLElement>('*'))
+          .filter((element: HTMLElement): boolean => {
+            const overflowX: string = getComputedStyle(element).overflowX;
+            return (
+              (overflowX === 'auto' || overflowX === 'scroll') &&
+              element.scrollWidth > element.clientWidth
+            );
+          })
+          .map((element: HTMLElement): string => element.className),
         labelsFit: labels.every((label: HTMLElement): boolean => {
           const cell: HTMLElement | null = label.closest('.heat-cell');
           if (cell === null) return false;
           return label.getBoundingClientRect().width <= cell.getBoundingClientRect().width;
         }),
+        outOfBounds: visibleBounds
+          .filter((element: Element): boolean => {
+            const bounds: DOMRect = element.getBoundingClientRect();
+            return bounds.left < 0 || bounds.right > viewportWidth;
+          })
+          .map((element: Element): string => {
+            const bounds: DOMRect = element.getBoundingClientRect();
+            return `${element.tagName.toLowerCase()}.${element.className}:${bounds.left}-${bounds.right}`;
+          }),
+        visibleReadableTableCount: Array.from(
+          document.querySelectorAll<HTMLTableElement>(
+            '.chart-wrap:not(.hourly-heat-wrap) .chart-table table',
+          ),
+        ).filter((table: HTMLTableElement): boolean => table.checkVisibility()).length,
       };
-    });
-  expect(scaledTextMetrics).toEqual({ columns: 6, documentOverflow: 0, labelsFit: true });
+    },
+  );
+  expect(scaledTextMetrics).toEqual({
+    columns: 6,
+    documentOverflow: 0,
+    horizontalScrollers: [],
+    labelsFit: true,
+    outOfBounds: [],
+    visibleReadableTableCount: 3,
+  });
 
   const containerCases: ReadonlyArray<{ chartVisible: boolean; width: number }> = [
     { width: 559, chartVisible: false },

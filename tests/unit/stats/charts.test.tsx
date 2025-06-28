@@ -275,6 +275,12 @@ describe('HourlyHeatStrip', () => {
     expect(css).toMatch(
       /@container\s*\(max-width:\s*560px\)[\s\S]*?\.chart-wrap:not\(\.hourly-heat-wrap\) > \.chart\s*\{[^}]*display:\s*none/s,
     );
+    expect(css).toMatch(
+      /@container\s*\(max-width:\s*560px\)[\s\S]*?\.chart-wrap:not\(\.hourly-heat-wrap\)[\s\S]*?table-layout:\s*fixed/s,
+    );
+    expect(css).toMatch(
+      /@container\s*\(max-width:\s*560px\)[\s\S]*?\.chart-wrap:not\(\.hourly-heat-wrap\)[\s\S]*?overflow-wrap:\s*anywhere/s,
+    );
   });
 });
 
