@@ -53,10 +53,13 @@ interface StatsLayoutMetrics {
   documentWidth: number;
   viewportWidth: number;
   elements: ElementBounds[];
+  heatCellWidths: number[];
+  heatLabelFontSizes: number[];
+  heatStripColumns: number;
   hbarRows: HbarRowGeometry[];
   horizontalScrollers: string[];
-  tableClientWidth: number;
-  tableScrollWidth: number;
+  visibleChartCount: number;
+  visibleReadableTableCount: number;
 }
 
 function relativeLuminance(channel: number): number {
@@ -267,12 +270,16 @@ test('Stats content stays inside responsive viewports', async ({
         });
       }
 
-      const tableScroll: HTMLElement | null = document.querySelector('.table-scroll');
-      if (tableScroll === null) throw new Error('Missing Stats session table scroller');
-      const chartLabels: SVGTextElement[] = Array.from(
-        document.querySelectorAll<SVGTextElement>(
-          '.chart .axis-text, .chart .value-label, .chart .direct-label',
-        ),
+      const heatStrip: HTMLElement | null = document.querySelector('.heat-strip');
+      if (heatStrip === null) throw new Error('Missing Stats hourly heat strip');
+      const visibleCharts: SVGSVGElement[] = Array.from(
+        document.querySelectorAll<SVGSVGElement>('.chart'),
+      ).filter((chart: SVGSVGElement): boolean => getComputedStyle(chart).display !== 'none');
+      const chartLabels: SVGTextElement[] = visibleCharts.flatMap(
+        (chart: SVGSVGElement): SVGTextElement[] =>
+          Array.from(
+            chart.querySelectorAll<SVGTextElement>('.axis-text, .value-label, .direct-label'),
+          ),
       );
       return {
         chartLabelScreenFontSizes: chartLabels.map((label: SVGTextElement): number => {
@@ -295,73 +302,82 @@ test('Stats content stays inside responsive viewports', async ({
             viewBoxWidth: svg.viewBox.baseVal.width,
           };
         }),
-        chartTextGaps: Array.from(
-          document.querySelectorAll<SVGSVGElement>('.chart:not(.hbar)'),
-        ).flatMap((chart: SVGSVGElement): ChartTextGap[] => {
-          const labels: Array<{ box: DOMRect; text: string }> = Array.from(
-            chart.querySelectorAll<SVGTextElement>('.axis-text'),
-          )
-            .map((label: SVGTextElement): { box: DOMRect; text: string } => ({
-              box: label.getBBox(),
-              text: label.textContent ?? '',
-            }))
-            .filter(
-              ({ box }: { box: DOMRect; text: string }): boolean =>
-                box.y > chart.viewBox.baseVal.height * 0.8,
+        chartTextGaps: visibleCharts
+          .filter((chart: SVGSVGElement): boolean => !chart.classList.contains('hbar'))
+          .flatMap((chart: SVGSVGElement): ChartTextGap[] => {
+            const labels: Array<{ box: DOMRect; text: string }> = Array.from(
+              chart.querySelectorAll<SVGTextElement>('.axis-text'),
             )
-            .sort(
-              (
-                first: { box: DOMRect; text: string },
-                second: { box: DOMRect; text: string },
-              ): number => first.box.x - second.box.x,
+              .map((label: SVGTextElement): { box: DOMRect; text: string } => ({
+                box: label.getBBox(),
+                text: label.textContent ?? '',
+              }))
+              .filter(
+                ({ box }: { box: DOMRect; text: string }): boolean =>
+                  box.y > chart.viewBox.baseVal.height * 0.8,
+              )
+              .sort(
+                (
+                  first: { box: DOMRect; text: string },
+                  second: { box: DOMRect; text: string },
+                ): number => first.box.x - second.box.x,
+              );
+            return labels
+              .slice(1)
+              .map((label: { box: DOMRect; text: string }, index: number): ChartTextGap => {
+                const previous: { box: DOMRect; text: string } | undefined = labels[index];
+                if (previous === undefined) throw new Error('Missing previous Stats chart label');
+                return {
+                  first: previous.text,
+                  gap: label.box.x - (previous.box.x + previous.box.width),
+                  second: label.text,
+                };
+              });
+          }),
+        chartTextSeparations: visibleCharts
+          .filter((chart: SVGSVGElement): boolean => !chart.classList.contains('hbar'))
+          .flatMap((chart: SVGSVGElement): ChartTextSeparation[] => {
+            const direct: SVGTextElement | null = chart.querySelector('.direct-label');
+            if (direct === null) throw new Error('Missing Stats direct chart label');
+            const directBox: DOMRect = direct.getBBox();
+            const ticks: SVGTextElement[] = Array.from(
+              chart.querySelectorAll<SVGTextElement>('.axis-text'),
+            ).filter(
+              (tick: SVGTextElement): boolean =>
+                tick.getBBox().y <= chart.viewBox.baseVal.height * 0.8,
             );
-          return labels
-            .slice(1)
-            .map((label: { box: DOMRect; text: string }, index: number): ChartTextGap => {
-              const previous: { box: DOMRect; text: string } | undefined = labels[index];
-              if (previous === undefined) throw new Error('Missing previous Stats chart label');
+            return ticks.map((tick: SVGTextElement): ChartTextSeparation => {
+              const tickBox: DOMRect = tick.getBBox();
               return {
-                first: previous.text,
-                gap: label.box.x - (previous.box.x + previous.box.width),
-                second: label.text,
+                direct: direct.textContent ?? '',
+                separation: Math.max(
+                  tickBox.x - (directBox.x + directBox.width),
+                  directBox.x - (tickBox.x + tickBox.width),
+                  tickBox.y - (directBox.y + directBox.height),
+                  directBox.y - (tickBox.y + tickBox.height),
+                ),
+                tick: tick.textContent ?? '',
               };
             });
-        }),
-        chartTextSeparations: Array.from(
-          document.querySelectorAll<SVGSVGElement>('.chart:not(.hbar)'),
-        ).flatMap((chart: SVGSVGElement): ChartTextSeparation[] => {
-          const direct: SVGTextElement | null = chart.querySelector('.direct-label');
-          if (direct === null) throw new Error('Missing Stats direct chart label');
-          const directBox: DOMRect = direct.getBBox();
-          const ticks: SVGTextElement[] = Array.from(
-            chart.querySelectorAll<SVGTextElement>('.axis-text'),
-          ).filter(
-            (tick: SVGTextElement): boolean =>
-              tick.getBBox().y <= chart.viewBox.baseVal.height * 0.8,
-          );
-          return ticks.map((tick: SVGTextElement): ChartTextSeparation => {
-            const tickBox: DOMRect = tick.getBBox();
-            return {
-              direct: direct.textContent ?? '',
-              separation: Math.max(
-                tickBox.x - (directBox.x + directBox.width),
-                directBox.x - (tickBox.x + tickBox.width),
-                tickBox.y - (directBox.y + directBox.height),
-                directBox.y - (tickBox.y + tickBox.height),
-              ),
-              tick: tick.textContent ?? '',
-            };
-          });
-        }),
+          }),
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: document.documentElement.clientWidth,
         elements: [
           ...bounds('.stats-page'),
           ...bounds('.tile'),
           ...bounds('.card'),
-          ...bounds('.chart'),
-          ...bounds('.table-scroll'),
+          ...bounds('.chart-wrap'),
+          ...bounds('.session-table-wrap'),
         ],
+        heatCellWidths: Array.from(document.querySelectorAll<HTMLElement>('.heat-cell')).map(
+          (cell: HTMLElement): number => cell.getBoundingClientRect().width,
+        ),
+        heatLabelFontSizes: Array.from(
+          document.querySelectorAll<HTMLElement>('.heat-cell-label'),
+        ).map((label: HTMLElement): number => Number.parseFloat(getComputedStyle(label).fontSize)),
+        heatStripColumns: getComputedStyle(heatStrip)
+          .gridTemplateColumns.split(/\s+/)
+          .filter((column: string): boolean => column.length > 0).length,
         horizontalScrollers: Array.from(document.querySelectorAll<HTMLElement>('*'))
           .filter((element: HTMLElement): boolean => {
             const overflowX: string = getComputedStyle(element).overflowX;
@@ -376,8 +392,12 @@ test('Stats content stays inside responsive viewports', async ({
               .join('');
             return `${element.tagName.toLowerCase()}${classes}`;
           }),
-        hbarRows: Array.from(document.querySelectorAll<SVGGElement>('.hbar-row')).map(
-          (row: SVGGElement): HbarRowGeometry => {
+        hbarRows: visibleCharts
+          .filter((chart: SVGSVGElement): boolean => chart.classList.contains('hbar'))
+          .flatMap((chart: SVGSVGElement): SVGGElement[] =>
+            Array.from(chart.querySelectorAll<SVGGElement>('.hbar-row')),
+          )
+          .map((row: SVGGElement): HbarRowGeometry => {
             const domain: SVGTextElement | null = row.querySelector('.axis-text');
             const bar: SVGGraphicsElement | null = row.querySelector('.hbar-mark');
             const value: SVGTextElement | null = row.querySelector('.value-label');
@@ -397,10 +417,13 @@ test('Stats content stays inside responsive viewports', async ({
               valueRight: valueBox.x + valueBox.width,
               viewBoxWidth: svg.viewBox.baseVal.width,
             };
-          },
-        ),
-        tableClientWidth: tableScroll.clientWidth,
-        tableScrollWidth: tableScroll.scrollWidth,
+          }),
+        visibleChartCount: visibleCharts.length,
+        visibleReadableTableCount: Array.from(
+          document.querySelectorAll<HTMLTableElement>(
+            '.chart-wrap:not(.hourly-heat-wrap) .chart-table table',
+          ),
+        ).filter((table: HTMLTableElement): boolean => table.checkVisibility()).length,
       };
     });
 
@@ -412,19 +435,40 @@ test('Stats content stays inside responsive viewports', async ({
       expect(element.left, evidence).toBeGreaterThanOrEqual(0);
       expect(element.right, evidence).toBeLessThanOrEqual(metrics.viewportWidth);
     }
-    expect(
-      metrics.horizontalScrollers.every(
-        (selector: string): boolean => selector === 'div.table-scroll',
-      ),
-      JSON.stringify({ viewport, horizontalScrollers: metrics.horizontalScrollers }),
-    ).toBe(true);
-    expect(metrics.chartLabelScreenFontSizes.length).toBeGreaterThan(0);
-    expect
-      .soft(
-        Math.min(...metrics.chartLabelScreenFontSizes),
-        JSON.stringify({ viewport, chartLabelScreenFontSizes: metrics.chartLabelScreenFontSizes }),
-      )
-      .toBeGreaterThanOrEqual(9);
+    const expectedHeatColumns: number = viewport.width <= 600 ? 6 : viewport.width <= 900 ? 12 : 24;
+    expect(metrics.heatStripColumns, JSON.stringify({ viewport, metrics })).toBe(
+      expectedHeatColumns,
+    );
+    expect(metrics.heatCellWidths).toHaveLength(24);
+    expect(Math.max(...metrics.heatCellWidths) - Math.min(...metrics.heatCellWidths)).toBeLessThan(
+      0.02,
+    );
+    expect(Math.min(...metrics.heatLabelFontSizes)).toBeGreaterThanOrEqual(12);
+    if (viewport.width <= 600) {
+      expect(metrics.horizontalScrollers, JSON.stringify({ viewport, metrics })).toEqual([]);
+    } else {
+      expect(
+        metrics.horizontalScrollers.every(
+          (selector: string): boolean => selector === 'div.session-table-wrap',
+        ),
+        JSON.stringify({ viewport, horizontalScrollers: metrics.horizontalScrollers }),
+      ).toBe(true);
+    }
+    if (metrics.visibleChartCount === 0) {
+      expect(metrics.visibleReadableTableCount).toBe(3);
+      expect(metrics.chartLabelScreenFontSizes).toEqual([]);
+    } else {
+      expect(metrics.chartLabelScreenFontSizes.length).toBeGreaterThan(0);
+      expect
+        .soft(
+          Math.min(...metrics.chartLabelScreenFontSizes),
+          JSON.stringify({
+            viewport,
+            chartLabelScreenFontSizes: metrics.chartLabelScreenFontSizes,
+          }),
+        )
+        .toBeGreaterThanOrEqual(12);
+    }
     for (const label of metrics.chartTextBounds) {
       const evidence: string = JSON.stringify({ viewport, label });
       expect.soft(label.left, evidence).toBeGreaterThanOrEqual(0);
@@ -446,53 +490,105 @@ test('Stats content stays inside responsive viewports', async ({
       expect.soft(row.barRight, evidence).toBeLessThanOrEqual(row.valueLeft);
       expect.soft(row.valueRight, evidence).toBeLessThanOrEqual(row.viewBoxWidth);
     }
-    if (viewport.width === 375) {
-      expect(metrics.tableScrollWidth).toBeGreaterThan(metrics.tableClientWidth);
-      expect(metrics.horizontalScrollers).toContain('div.table-scroll');
-    }
   }
 
-  const containerCases: ReadonlyArray<{ expectedFontSize: number; width: number }> = [
-    { width: 334, expectedFontSize: 18 },
-    { width: 335, expectedFontSize: 18 },
-    { width: 336, expectedFontSize: 15.1 },
-    { width: 390, expectedFontSize: 15.1 },
-    { width: 391, expectedFontSize: 15.1 },
-    { width: 392, expectedFontSize: 13 },
-    { width: 446, expectedFontSize: 13 },
-    { width: 447, expectedFontSize: 13 },
-    { width: 448, expectedFontSize: 12 },
-    { width: 502, expectedFontSize: 12 },
-    { width: 503, expectedFontSize: 12 },
-    { width: 504, expectedFontSize: 10.1 },
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.addStyleTag({
+    content: '.heat-cell-label { font-size: 24px !important; }',
+  });
+  const scaledTextMetrics: { columns: number; documentOverflow: number; labelsFit: boolean } =
+    await page.evaluate((): { columns: number; documentOverflow: number; labelsFit: boolean } => {
+      const strip: HTMLElement | null = document.querySelector('.heat-strip');
+      if (strip === null) throw new Error('Missing scaled Stats heat strip');
+      const labels: HTMLElement[] = Array.from(
+        document.querySelectorAll<HTMLElement>('.heat-cell-label'),
+      );
+      return {
+        columns: getComputedStyle(strip)
+          .gridTemplateColumns.split(/\s+/)
+          .filter((column: string): boolean => column.length > 0).length,
+        documentOverflow:
+          document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        labelsFit: labels.every((label: HTMLElement): boolean => {
+          const cell: HTMLElement | null = label.closest('.heat-cell');
+          if (cell === null) return false;
+          return label.getBoundingClientRect().width <= cell.getBoundingClientRect().width;
+        }),
+      };
+    });
+  expect(scaledTextMetrics).toEqual({ columns: 6, documentOverflow: 0, labelsFit: true });
+
+  const containerCases: ReadonlyArray<{ chartVisible: boolean; width: number }> = [
+    { width: 559, chartVisible: false },
+    { width: 560, chartVisible: false },
+    { width: 561, chartVisible: true },
+    { width: 700, chartVisible: true },
   ];
   await page.setViewportSize({ width: 1280, height: 850 });
   for (const containerCase of containerCases) {
-    const labelSize: { containerWidth: number; internal: number; screen: number } = await page
+    const labelSize: {
+      chartVisible: boolean;
+      containerWidth: number;
+      internal: number | null;
+      screen: number | null;
+      tableVisible: boolean;
+    } = await page
       .locator('.chart-wrap')
       .first()
       .evaluate(
-        (
+        async (
           chartWrap: HTMLElement,
           width: number,
-        ): { containerWidth: number; internal: number; screen: number } => {
+        ): Promise<{
+          chartVisible: boolean;
+          containerWidth: number;
+          internal: number | null;
+          screen: number | null;
+          tableVisible: boolean;
+        }> => {
           chartWrap.style.width = `${width}px`;
+          const chart: SVGSVGElement | null = chartWrap.querySelector('.chart');
+          const table: HTMLTableElement | null = chartWrap.querySelector('.chart-table table');
           const label: SVGTextElement | null = chartWrap.querySelector('.axis-text');
-          if (label === null) throw new Error('Missing Stats chart threshold label');
+          if (chart === null || table === null || label === null) {
+            throw new Error('Missing Stats chart fallback threshold element');
+          }
+          await new Promise<void>((resolve: () => void): number => requestAnimationFrame(resolve));
+          await new Promise<void>((resolve: () => void): number => requestAnimationFrame(resolve));
+          const chartVisible: boolean = getComputedStyle(chart).display !== 'none';
+          if (!chartVisible) {
+            return {
+              chartVisible,
+              containerWidth: chartWrap.getBoundingClientRect().width,
+              internal: null,
+              screen: null,
+              tableVisible: table.checkVisibility(),
+            };
+          }
           const matrix: DOMMatrix | null = label.getScreenCTM();
           if (matrix === null) throw new Error('Missing Stats chart threshold transform');
           const internal: number = Number.parseFloat(getComputedStyle(label).fontSize);
           return {
+            chartVisible,
             containerWidth: chartWrap.getBoundingClientRect().width,
             internal,
             screen: internal * Math.hypot(matrix.c, matrix.d),
+            tableVisible: table.checkVisibility(),
           };
         },
         containerCase.width,
       );
     expect(labelSize.containerWidth).toBe(containerCase.width);
-    expect(labelSize.internal).toBe(containerCase.expectedFontSize);
-    expect(labelSize.screen).toBeGreaterThanOrEqual(9);
+    expect(labelSize.chartVisible).toBe(containerCase.chartVisible);
+    if (containerCase.chartVisible) {
+      expect(labelSize.internal).toBeGreaterThanOrEqual(12);
+      expect(labelSize.screen).toBeGreaterThanOrEqual(12);
+      expect(labelSize.tableVisible).toBe(false);
+    } else {
+      expect(labelSize.internal).toBeNull();
+      expect(labelSize.screen).toBeNull();
+      expect(labelSize.tableVisible).toBe(true);
+    }
   }
 });
 

@@ -305,10 +305,6 @@ h2 {
   .chart-wrap:not(.hourly-heat-wrap) > .chart {
     display: none;
   }
-
-  .chart-wrap:not(.hourly-heat-wrap) > .chart-table:not([open]) > table {
-    display: table;
-  }
 }
 
 .bar-mark.hover,
@@ -395,8 +391,20 @@ h2 {
 .heat-strip {
   display: grid;
   grid-template-columns: repeat(24, minmax(0, 1fr));
-  gap: 1px;
+  gap: 8px 1px;
   width: 100%;
+}
+
+@media (max-width: 900px) {
+  .heat-strip {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .heat-strip {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
 }
 
 .heat-cell {

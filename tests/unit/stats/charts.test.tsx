@@ -150,6 +150,7 @@ describe('BarChart', () => {
       'Value',
     ]);
     expect(container.querySelectorAll('.chart-table tbody th[scope="row"]')).toHaveLength(2);
+    expect(container.querySelectorAll('.chart-table summary')).toHaveLength(1);
   });
 });
 
@@ -199,6 +200,7 @@ describe('HBarChart', () => {
 
     expect(container.querySelectorAll('.chart-table thead th[scope="col"]')).toHaveLength(2);
     expect(container.querySelectorAll('.chart-table tbody th[scope="row"]')).toHaveLength(2);
+    expect(container.querySelectorAll('.chart-table summary')).toHaveLength(1);
   });
 
   it('renders a contrast-safe focus-visible ring around every keyboard row', () => {
@@ -261,14 +263,17 @@ describe('HourlyHeatStrip', () => {
     expect(css).toMatch(
       /\.heat-strip\s*\{[^}]*grid-template-columns:\s*repeat\(24,\s*minmax\(0,\s*1fr\)\)/s,
     );
+    expect(css).toMatch(
+      /@media\s*\(max-width:\s*900px\)[\s\S]*?\.heat-strip\s*\{[^}]*grid-template-columns:\s*repeat\(12,\s*minmax\(0,\s*1fr\)\)/s,
+    );
+    expect(css).toMatch(
+      /@media\s*\(max-width:\s*600px\)[\s\S]*?\.heat-strip\s*\{[^}]*grid-template-columns:\s*repeat\(6,\s*minmax\(0,\s*1fr\)\)/s,
+    );
     expect(css).toMatch(/\.heat-cell-label\s*\{[^}]*font-size:\s*12px/s);
     expect(css).toMatch(/\.axis-text[^}]*font-size:\s*12px/s);
     expect(css).not.toMatch(/@container[^}]*\.axis-text/s);
     expect(css).toMatch(
       /@container\s*\(max-width:\s*560px\)[\s\S]*?\.chart-wrap:not\(\.hourly-heat-wrap\) > \.chart\s*\{[^}]*display:\s*none/s,
-    );
-    expect(css).toMatch(
-      /@container\s*\(max-width:\s*560px\)[\s\S]*?\.chart-wrap:not\(\.hourly-heat-wrap\) > \.chart-table:not\(\[open\]\) > table\s*\{[^}]*display:\s*table/s,
     );
   });
 });

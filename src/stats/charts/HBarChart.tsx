@@ -2,6 +2,7 @@ import type { JSX } from 'preact';
 import { useId } from 'preact/hooks';
 import type { ChartDatum } from './BarChart';
 import { niceMax } from './BarChart';
+import { ChartTable } from './ChartTable';
 
 export interface HBarChartProps {
   data: ChartDatum[];
@@ -97,27 +98,7 @@ export function HBarChart(props: HBarChartProps): JSX.Element {
           );
         })}
       </svg>
-      <details class="chart-table">
-        <summary>View as table</summary>
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Category</th>
-              <th scope="col">Value</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.map(
-              (d: ChartDatum): JSX.Element => (
-                <tr key={d.label}>
-                  <th scope="row">{d.label}</th>
-                  <td>{props.format(d.value)}</td>
-                </tr>
-              ),
-            )}
-          </tbody>
-        </table>
-      </details>
+      <ChartTable autoOpenBelow={560} className="chart-table" data={data} format={props.format} />
     </div>
   );
 }

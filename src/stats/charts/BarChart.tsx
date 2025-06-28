@@ -1,5 +1,6 @@
 import type { JSX } from 'preact';
 import { type Dispatch, type StateUpdater, useId, useState } from 'preact/hooks';
+import { ChartTable } from './ChartTable';
 
 export interface ChartDatum {
   label: string;
@@ -187,27 +188,7 @@ export function BarChart(props: BarChartProps): JSX.Element {
           <span>{hoveredDatum.label}</span>
         </div>
       ) : null}
-      <details class="chart-table">
-        <summary>View as table</summary>
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Category</th>
-              <th scope="col">Value</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.map(
-              (d: ChartDatum): JSX.Element => (
-                <tr key={d.label}>
-                  <th scope="row">{d.label}</th>
-                  <td>{props.format(d.value)}</td>
-                </tr>
-              ),
-            )}
-          </tbody>
-        </table>
-      </details>
+      <ChartTable autoOpenBelow={560} className="chart-table" data={data} format={props.format} />
     </div>
   );
 }
