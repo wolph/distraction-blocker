@@ -4,7 +4,12 @@ import './chrome-fake';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS, rulesFromLists } from '../../../src/shared/constants';
+import {
+  cancelPhrase,
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  rulesFromLists,
+} from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
 import type { ListsConfig, Settings } from '../../../src/shared/types';
 import { openOptionsPageMock, resetChromeFake, sendMessageMock } from './chrome-fake';
@@ -58,11 +63,21 @@ describe('StartForm', (): void => {
     const { getByLabelText, getByRole } = render(
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
+    const intention: HTMLElement = getByLabelText('Intention');
 
-    expect(getByLabelText('Intention')).toBeTruthy();
+    expect(intention.getAttribute('placeholder')).toBe('What are you working on?');
+    expect(intention.getAttribute('placeholder')).not.toContain('What you working on');
     expect(getByRole('group', { name: 'Session type' })).toBeTruthy();
     expect(getByRole('group', { name: 'Blocking mode' })).toBeTruthy();
     expect(getByRole('button', { name: 'Start 25 min - Block selected sites' })).toBeTruthy();
+  });
+
+  it('uses neutral early-ending confirmation copy with a safe empty fallback', (): void => {
+    expect(cancelPhrase(' write the report ')).toBe(
+      'I am ending this session before: write the report',
+    );
+    expect(cancelPhrase('  ')).toBe('I am ending this session before: my focus session');
+    expect(cancelPhrase('write the report')).not.toContain('I choose distraction over');
   });
 
   it('describes configured typed confirmation without exposing the intention phrase', async (): Promise<void> => {

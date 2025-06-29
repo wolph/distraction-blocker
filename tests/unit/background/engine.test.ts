@@ -4005,7 +4005,7 @@ describe('Engine', () => {
       await h.engine.openGate(gate, gate === 'unlockSite' ? 'facebook.com' : null);
 
       expect(h.engine.snapshot().gate?.requiredPhrase).toBe(
-        'I choose distraction over: write the report',
+        'I am ending this session before: write the report',
       );
     },
   );
@@ -4159,7 +4159,7 @@ describe('Engine', () => {
     h.setNow(T0 + DEFAULT_SETTINGS.gate.delayMs);
     const wrong = await h.engine.confirmGate('let me out');
     expect(wrong.ok).toBe(false);
-    const right = await h.engine.confirmGate('I choose distraction over: write the report');
+    const right = await h.engine.confirmGate('I am ending this session before: write the report');
     expect(right).toEqual({ ok: true });
     expect(h.engine.snapshot().phase).toBe('idle');
     expect(h.loggedEvents().some((e: EventRecord): boolean => e.t === 'sessionCanceled')).toBe(

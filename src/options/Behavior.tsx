@@ -307,8 +307,8 @@ export function PauseEconomy(props: BehaviorProps): VNode {
   return (
     <div>
       <p class="help">
-        Pause minutes accrue while you focus and spend from one bank, whether you pause everything
-        or unlock a single site. The cap keeps a saved-up bank from funding a binge.
+        Pause minutes accrue while you focus and spend from one bank, whether you pause blocking or
+        unlock a single site. The cap helps keep the pause bank bounded.
       </p>
       <NumberField
         label="Minutes of pause per 30 minutes of focus"

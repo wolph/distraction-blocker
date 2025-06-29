@@ -23,6 +23,16 @@ afterEach((): void => {
 });
 
 describe('PauseEconomy', () => {
+  it('describes the pause cap without addiction framing', (): void => {
+    const { container }: ReturnType<typeof render> = render(
+      <PauseEconomy settings={DEFAULT_SETTINGS} onChange={vi.fn()} />,
+    );
+
+    expect(container.textContent).toContain('keep the pause bank bounded');
+    expect(container.textContent).not.toContain('funding a binge');
+    expect(container.textContent).not.toContain('pause everything');
+  });
+
   it('edits the freeze token interval in calendar days', (): void => {
     const onChange: Mock<(next: Settings) => void> = vi.fn<(next: Settings) => void>();
     const settings: Settings = {

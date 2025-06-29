@@ -239,6 +239,7 @@ describe('overlay', () => {
 
     expect(shadowRoot().textContent).toContain('Unlock this site for 5 min');
     expect(shadowRoot().textContent).toContain('Pause blocking for 5 min');
+    expect(shadowRoot().textContent).not.toContain('Pause everything');
   });
 
   it.each([

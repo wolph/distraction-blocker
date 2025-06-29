@@ -160,13 +160,14 @@ describe('Tiles', () => {
     expect(tileValue(container, 'Focus today')).toBe('1 h 05 m');
     expect(tileValue(container, 'Focus in the last 7 days')).toBe('1 h 55 m');
     expect(tileValue(container, 'Attempts blocked today')).toBe('6');
-    expect(tileValue(container, 'Temptations resisted today')).toBe('2');
+    expect(tileValue(container, 'Gate requests dismissed')).toBe('2');
     expect(tileValue(container, 'Pause and unlock time spent today')).toBe('7 m');
     expect(tileSubline(container, 'Pause and unlock time spent today')).toBe(
       'Pause 5 m, unlock 2 m, 17 m earned',
     );
     expect(container.textContent).not.toContain('Current streak');
     expect(container.textContent).not.toContain('2 freezes banked');
+    expect(container.textContent).not.toContain('Temptations resisted');
     expect(container.querySelectorAll('.tile')).toHaveLength(5);
   });
 

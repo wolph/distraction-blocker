@@ -166,7 +166,7 @@ export const MAX_FREEZE_TOKENS: number = 2;
 
 export function cancelPhrase(intention: string): string {
   const goal: string = intention.trim() === '' ? 'my focus session' : intention.trim();
-  return `I choose distraction over: ${goal}`;
+  return `I am ending this session before: ${goal}`;
 }
 
 export function emptySnapshot(at: number): SessionSnapshot {
