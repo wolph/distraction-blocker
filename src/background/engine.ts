@@ -28,8 +28,10 @@ import {
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
   GATE_EXPIRY_MS,
+  pausePhrase,
   rulesFromLists,
   TOP_SITES_DAILY,
+  unlockSitePhrase,
 } from '../shared/constants';
 import { CoreError } from '../shared/errors';
 import { type Ack, type SoundId, STALE_SESSION_RULES_ERROR } from '../shared/messages';
@@ -620,12 +622,17 @@ export class Engine {
     const needsPhrase: boolean = this.settings.gate.requireTypedPhrase;
     const unlockHost: string | null =
       gate === 'unlockSite' && host !== null ? (registrableHost(host) ?? host) : null;
+    let requiredPhrase: string | null = null;
+    if (needsPhrase && gate === 'pause') requiredPhrase = pausePhrase();
+    if (needsPhrase && gate === 'unlockSite' && unlockHost !== null) {
+      requiredPhrase = unlockSitePhrase(unlockHost);
+    }
     this.runtime.gate = {
       kind: gate,
       host: unlockHost,
       openedAt: now,
       readyAt: now + this.settings.gate.delayMs,
-      requiredPhrase: needsPhrase ? cancelPhrase(session.config.intention) : null,
+      requiredPhrase,
     };
     this.recordEvent({ t: 'gateOpened', at: now, gate, ...sessionIdentity(session) });
     this.dirty = true;

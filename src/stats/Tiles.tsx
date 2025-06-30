@@ -64,7 +64,7 @@ function buildTiles(bundle: StatsBundle, now: number): TileSpec[] {
     },
     { label: 'Attempts blocked today', value: String(bundle.totals.attemptsToday), subline: null },
     {
-      label: 'Gate requests dismissed',
+      label: 'Gate requests dismissed today',
       value: String(bundle.totals.resistedToday),
       subline: null,
     },

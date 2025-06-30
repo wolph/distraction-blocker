@@ -39,6 +39,7 @@ import { localDateStr } from '../../../src/shared/time';
 import type {
   DailyAgg,
   EventRecord,
+  GateKind,
   ListsConfig,
   ScheduleEntry,
   SessionConfig,
@@ -59,6 +60,12 @@ interface Harness {
   };
   setNow(ms: number): void;
   loggedEvents(): EventRecord[];
+}
+
+interface GatePhraseCase {
+  gate: GateKind;
+  host: string | null;
+  expectedPhrase: string;
 }
 
 const T0: number = new Date(2026, 7, 29, 8, 59).getTime();
@@ -3992,9 +3999,21 @@ describe('Engine', () => {
     expect(h.ports.applyBlocking).not.toHaveBeenCalled();
   });
 
-  it.each(['pause', 'unlockSite', 'cancel'] as const)(
-    'uses the configured intention phrase for the %s gate',
-    async (gate: 'pause' | 'unlockSite' | 'cancel'): Promise<void> => {
+  it.each<GatePhraseCase>([
+    { gate: 'pause', host: null, expectedPhrase: 'I am pausing blocking' },
+    {
+      gate: 'unlockSite',
+      host: 'm.facebook.com',
+      expectedPhrase: 'I am allowing this site: facebook.com',
+    },
+    {
+      gate: 'cancel',
+      host: null,
+      expectedPhrase: 'I am ending this session before: write the report',
+    },
+  ])(
+    'uses truthful action-specific copy for the $gate gate',
+    async ({ gate, host, expectedPhrase }: GatePhraseCase): Promise<void> => {
       const h: Harness = makeEngine({
         bankMs: 600_000,
         settings: {
@@ -4002,11 +4021,9 @@ describe('Engine', () => {
         },
       });
       await h.engine.startSession(manualConfig);
-      await h.engine.openGate(gate, gate === 'unlockSite' ? 'facebook.com' : null);
+      await h.engine.openGate(gate, host);
 
-      expect(h.engine.snapshot().gate?.requiredPhrase).toBe(
-        'I am ending this session before: write the report',
-      );
+      expect(h.engine.snapshot().gate?.requiredPhrase).toBe(expectedPhrase);
     },
   );
 
@@ -4023,14 +4040,17 @@ describe('Engine', () => {
   it('rejects confirmGate before readyAt, accepts after, spends and pauses', async () => {
     const h: Harness = makeEngine({
       bankMs: 300_000,
-      settings: { pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0 } },
+      settings: {
+        gate: { ...DEFAULT_SETTINGS.gate, requireTypedPhrase: true },
+        pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0 },
+      },
     });
     await h.engine.startSession(manualConfig);
     await h.engine.openGate('pause', null);
     const early = await h.engine.confirmGate(null);
     expect(early.ok).toBe(false);
     h.setNow(T0 + DEFAULT_SETTINGS.gate.delayMs);
-    const ack = await h.engine.confirmGate(null);
+    const ack = await h.engine.confirmGate('I am pausing blocking');
     expect(ack).toEqual({ ok: true });
     const snap = h.engine.snapshot();
     expect(snap.phase).toBe('paused');
@@ -4203,13 +4223,15 @@ describe('Engine', () => {
     const h: Harness = makeEngine({
       bankMs: 300_000,
       settings: {
+        gate: { ...DEFAULT_SETTINGS.gate, requireTypedPhrase: true },
         pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0 },
       },
     });
     await h.engine.startSession(manualConfig);
     await h.engine.openGate('unlockSite', 'm.facebook.com');
+    expect(h.engine.snapshot().gate?.requiredPhrase).toBe('I am allowing this site: facebook.com');
     h.setNow(T0 + DEFAULT_SETTINGS.gate.delayMs);
-    await h.engine.confirmGate(null);
+    await h.engine.confirmGate('I am allowing this site: facebook.com');
 
     expect(h.engine.snapshot().activeUnlocks[0]?.host).toBe('facebook.com');
     expect(h.engine.verdictFor('https://www.facebook.com/feed').blocked).toBe(false);

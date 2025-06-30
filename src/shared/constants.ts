@@ -165,8 +165,17 @@ export const TOP_SITES_MONTHLY: number = 10;
 export const MAX_FREEZE_TOKENS: number = 2;
 
 export function cancelPhrase(intention: string): string {
-  const goal: string = intention.trim() === '' ? 'my focus session' : intention.trim();
+  const goal: string = intention.trim();
+  if (goal === '') return 'I am ending this focus session early';
   return `I am ending this session before: ${goal}`;
+}
+
+export function pausePhrase(): string {
+  return 'I am pausing blocking';
+}
+
+export function unlockSitePhrase(host: string): string {
+  return `I am allowing this site: ${host}`;
 }
 
 export function emptySnapshot(at: number): SessionSnapshot {
