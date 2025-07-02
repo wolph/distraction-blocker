@@ -74,6 +74,27 @@ Task 5 artifacts are in `test-results/`:
 
 Playwright retains traces only on failure. The passing integrated run therefore records isolated profiles and `.last-run.json`, not a green trace archive.
 
+## Daily product surface evidence
+
+Task 7 verified the integrated daily-use Popup, Options, overlay, and Privacy surfaces on 2026-09-01. The run used isolated, daemon-managed headless Chrome-for-Testing 151.0.7922.34 profiles. It did not attach to, close, restart, or modify the user's regular Chrome. The category separator correction is commit `fb95ed746bdda7ed86556e13ebfddab366ea77aa`. The Task 7 tests and evidence were verified in the working tree on top of that commit.
+
+- [x] The first focused Options geometry assertion failed at 375 px because every collapsed `.category-state` started 6 px above its preceding `.cat-row` bottom border. The original-resolution evidence is `artifacts/daily-product-surfaces-task7/task7-dev-options-auto-light-375-partial-dirty-full.png`. Changing `.category-state` from `margin: -6px 0 10px 28px` to `margin: 0 0 10px 28px` made the assertion pass.
+- [x] The fixed Options matrix reran at 375, 768, and 1280 px in Auto with light media, Auto with dark media, explicit Light with dark media, and explicit Dark with light media. All 84 measured category row-to-state gaps were 0 px. Document scroll width equaled client width in all 12 cases. The sticky save bar remained inside every viewport. All 12 diagnostic counts were zero.
+- [x] The native 340 px Popup matrix covered block mode, allow mode, invalid-domain feedback, long internal rule-list scrolling, Flexible hover help, Friction keyboard-focus help, Hard lock click help, all three session types, overlay provenance, and the unsupported-tab disabled reason. The document stayed at 340 px. The rule region scrolled internally with `clientWidth` equal to `scrollWidth`. No help popover, list, action, or error escaped the viewport.
+- [x] The Options and Privacy matrices covered 375, 768, and 1280 px across the same four theme and media cases. They covered category off and partial states, the dirty sticky save bar, keyboard focus, local deletion confirmation, remote Sync deletion confirmation, Sync save error text, Escape dismissal, and focus restoration. Confirmation dialogs stayed inside the viewport at every width.
+- [x] The Vite development-server pass used `npm run dev -- --host 127.0.0.1 --port 4177`. It produced 147 Popup, Options, Privacy, and post-fix full-page or focused component captures. Every visual case recorded zero console errors, page errors, worker errors, request failures, and blocked requests.
+- [x] A freshly rebuilt production extension reran the two critical Task 7 scenarios with `TASK7_EVIDENCE_DIR=artifacts/daily-product-surfaces-task7 npx playwright test tests/e2e/qa-flows.spec.ts --grep "popup daily states|Options exposes destination"`. Both scenarios passed in 5.0 seconds and produced 9 production captures.
+- [x] `NO_COLOR=1 npm run e2e` rebuilt the production extension and passed all 41 Playwright scenarios in 4.2 minutes. The fixture reported zero unexpected console, page, worker, request, and blocked-request diagnostics.
+
+Task 7 contains 156 PNG files totaling 13 MB in `artifacts/daily-product-surfaces-task7/`. Representative evidence:
+
+- Native Popup block and allow states: `production-popup-block-340-full.png` and `production-popup-allow-invalid-340-full.png`.
+- Help and unsupported-tab states: `production-popup-friction-focus-340-full.png` and `production-popup-unsupported-tab-340-full.png`.
+- Overlay provenance: `production-overlay-provenance-340-full.png`.
+- Options partial category and sticky saving: `production-options-partial-dirty-375-full.png` and `production-options-sticky-save-375.png`.
+- Privacy confirmations: `production-privacy-local-confirm-375.png` and `production-privacy-remote-confirm-375.png`.
+- Corrected responsive Options matrix: `task7-options-overlap-fixed-<theme-case>-<375|768|1280>-full.png` and matching `-categories.png` files.
+
 ## Automated browser behavior
 
 - [x] The Manifest V3 worker loaded and answered extension-page requests. Popup, Options, Stats, content overlay, stopped-document overlay, and gate surfaces rendered.

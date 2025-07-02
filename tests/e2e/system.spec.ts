@@ -175,3 +175,69 @@ test('an active schedule window starts a scheduled focus session', async ({ extP
     .poll(async (): Promise<string[]> => await notificationIds(worker))
     .not.toHaveLength(0);
 });
+
+test('privacy data deletion keeps local and remote scopes separate', async ({
+  extPage,
+  worker,
+}) => {
+  await worker.evaluate(async (): Promise<void> => {
+    await chrome.storage.local.set({
+      events: [
+        {
+          at: Date.now(),
+          kind: 'attempt',
+          domain: 'private.example',
+          intention: 'private intention',
+        },
+      ],
+    });
+  });
+  const syncBefore: Record<string, unknown> = await worker.evaluate(
+    async (): Promise<Record<string, unknown>> => await chrome.storage.sync.get(null),
+  );
+  expect(syncBefore).toHaveProperty('settings');
+  expect(syncBefore).toHaveProperty('lists');
+
+  expect(
+    await sendExtensionRequest(extPage, {
+      type: 'clearFocusLockData',
+      scope: 'local-history',
+    }),
+  ).toEqual({ ok: true, scope: 'local-history', status: 'cleared' });
+  const localAfterHistoryClear: Record<string, unknown> = await worker.evaluate(
+    async (): Promise<Record<string, unknown>> => await chrome.storage.local.get(null),
+  );
+  expect(localAfterHistoryClear).not.toHaveProperty('events');
+  const syncAfterHistoryClear: Record<string, unknown> = await worker.evaluate(
+    async (): Promise<Record<string, unknown>> => await chrome.storage.sync.get(null),
+  );
+  expect(syncAfterHistoryClear.settings).toEqual(syncBefore.settings);
+  expect(syncAfterHistoryClear.lists).toEqual(syncBefore.lists);
+
+  expect(
+    await sendExtensionRequest(extPage, {
+      type: 'setStorageMode',
+      storageMode: 'local',
+      deleteRemote: false,
+    }),
+  ).toEqual({ ok: true });
+  expect(
+    await sendExtensionRequest(extPage, {
+      type: 'clearFocusLockData',
+      scope: 'synced-policy',
+    }),
+  ).toEqual({ ok: true, scope: 'synced-policy', status: 'cleared' });
+  const syncAfterRemoteClear: Record<string, unknown> = await worker.evaluate(
+    async (): Promise<Record<string, unknown>> => await chrome.storage.sync.get(null),
+  );
+  expect(syncAfterRemoteClear).not.toHaveProperty('settings');
+  expect(syncAfterRemoteClear).not.toHaveProperty('lists');
+  expect(syncAfterRemoteClear).not.toHaveProperty('bank');
+  expect(syncAfterRemoteClear).not.toHaveProperty('streak');
+  const localAfterRemoteClear: Record<string, unknown> = await worker.evaluate(
+    async (): Promise<Record<string, unknown>> => await chrome.storage.local.get(null),
+  );
+  expect(localAfterRemoteClear).toHaveProperty('settings');
+  expect(localAfterRemoteClear).toHaveProperty('lists');
+  expect(localAfterRemoteClear).toHaveProperty('runtime');
+});
