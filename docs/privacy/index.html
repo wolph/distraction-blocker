@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Privacy policy and data boundaries for the Focus Lock Chrome extension." />
+    <link rel="icon" href="data:," />
+    <link rel="canonical" href="https://wolph.github.io/distraction-blocker/privacy/" />
+    <link rel="stylesheet" href="./style.css" />
+    <title>Focus Lock Privacy</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to privacy details</a>
+    <header class="page-header">
+      <div class="header-inner">
+        <p class="eyebrow">Focus Lock for Chrome</p>
+        <h1>Privacy with a visible boundary</h1>
+        <p class="lede">
+          Focus Lock checks page addresses and applies blocking rules inside Chrome. It does not
+          send extension data to a developer-controlled server.
+        </p>
+        <nav aria-label="Privacy policy sections">
+          <a href="#data-boundaries">Data boundaries</a>
+          <a href="#controls">Your controls</a>
+          <a href="#permissions">Website access</a>
+          <a href="#retention">Retention</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main-content">
+      <section class="summary" aria-labelledby="summary-heading">
+        <div>
+          <p class="section-label">Policy summary</p>
+          <h2 id="summary-heading">Local first, with optional Chrome Sync</h2>
+        </div>
+        <p>
+          Full URLs, focus intentions, detailed session events, and live sessions remain in the
+          local Chrome profile. Chrome Sync receives a smaller approved set only after the user
+          confirms setup with sync enabled.
+        </p>
+      </section>
+
+      <section id="data-boundaries" aria-labelledby="boundaries-heading">
+        <p class="section-label">Data boundaries</p>
+        <h2 id="boundaries-heading">What stays local and what can sync</h2>
+        <div class="boundary-grid">
+          <article class="boundary-card local-card">
+            <span class="card-kicker">This Chrome profile only</span>
+            <h3>Local data</h3>
+            <ul>
+              <li>Full URLs used for rule matching and blocked-attempt records</li>
+              <li>Focus intentions entered for sessions</li>
+              <li>Detailed session events and gate outcomes</li>
+              <li>Live sessions, active gates, and temporary site unlocks</li>
+            </ul>
+          </article>
+          <article class="boundary-card sync-card">
+            <span class="card-kicker">Optional, after setup confirmation</span>
+            <h3>Chrome Sync data</h3>
+            <ul>
+              <li>Settings and block or allow lists</li>
+              <li>Pause balance and streaks</li>
+              <li>Per-device daily and monthly session totals and domain-level blocked-attempt counts</li>
+            </ul>
+          </article>
+          <article class="boundary-card server-card">
+            <span class="card-kicker">Not part of the extension</span>
+            <h3>No developer data service</h3>
+            <ul>
+              <li>No developer-controlled server</li>
+              <li>No advertising or behavioral profiling</li>
+              <li>No sale of user data</li>
+              <li>No remotely hosted executable code</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section id="controls" aria-labelledby="controls-heading">
+        <p class="section-label">Your controls</p>
+        <h2 id="controls-heading">Export, disable, and delete</h2>
+        <div class="control-list">
+          <article>
+            <span aria-hidden="true">01</span>
+            <div>
+              <h3>Export local history</h3>
+              <p>
+                In Settings, open Privacy and data, then choose Export local event log. The JSON
+                export contains the detailed event log from this Chrome profile.
+              </p>
+            </div>
+          </article>
+          <article>
+            <span aria-hidden="true">02</span>
+            <div>
+              <h3>Delete local history</h3>
+              <p>
+                Delete local history removes full URLs, focus intentions, and detailed session
+                events. In local-only mode it also removes local aggregate statistics. Deletion does
+                not end an active session.
+              </p>
+            </div>
+          </article>
+          <article>
+            <span aria-hidden="true">03</span>
+            <div>
+              <h3>Control Chrome Sync separately</h3>
+              <p>
+                Turn off Chrome Sync for Focus Lock to stop future synchronization. Disabling sync
+                does not delete existing remote copies. After sync is off, use Delete remote Sync
+                data to remove Focus Lock data stored through Chrome Sync while keeping local
+                settings and statistics on this device.
+              </p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="permissions" aria-labelledby="permissions-heading">
+        <p class="section-label">Website access</p>
+        <h2 id="permissions-heading">Why blocking needs broad site access</h2>
+        <div class="prose-card">
+          <p>
+            Focus Lock asks for optional access to HTTP and HTTPS websites during onboarding. The
+            extension needs this access because categories, custom rules, and allow-only sessions
+            can apply to any top-level website.
+          </p>
+          <p>
+            That access is used to read the current page URL, stop a fresh blocked navigation, add
+            or remove the Focus Lock blocking interface, and mute or restore an affected tab. Focus
+            Lock does not inspect page text, form fields, passwords, messages, or other page content.
+          </p>
+        </div>
+      </section>
+
+      <section id="retention" aria-labelledby="retention-heading">
+        <p class="section-label">Retention</p>
+        <h2 id="retention-heading">Data remains until its limit or your action</h2>
+        <dl class="retention-list">
+          <div>
+            <dt>Detailed local events</dt>
+            <dd>
+              The local event log keeps at most 50,000 records. New records replace the oldest
+              records after that limit.
+            </dd>
+          </div>
+          <div>
+            <dt>Daily aggregate statistics</dt>
+            <dd>
+              Daily records use the retention period selected in Settings. The default is 90 days.
+              Older daily records roll into monthly session totals and domain-level blocked-attempt
+              counts.
+            </dd>
+          </div>
+          <div>
+            <dt>Settings and monthly aggregates</dt>
+            <dd>
+              Settings remain until the user changes or deletes them. When sync is enabled, Focus
+              Lock can discard the oldest monthly aggregate records if needed to fit Chrome Sync's
+              storage quota. Chrome and Google can also apply their own account and storage rules.
+            </dd>
+          </div>
+        </dl>
+      </section>
+
+      <section aria-labelledby="google-heading">
+        <p class="section-label">Chrome and Google</p>
+        <h2 id="google-heading">Chrome Sync is operated by Google</h2>
+        <div class="prose-card">
+          <p>
+            Focus Lock has no developer-controlled copy of Chrome Sync data. Data handled by Chrome
+            or Google is governed by the
+            <a href="https://policies.google.com/privacy">Google Privacy Policy</a> and applicable
+            <a href="https://www.google.com/chrome/terms/">Google Chrome Terms of Service</a>.
+          </p>
+          <p>
+            Focus Lock's use of information received from Chrome APIs complies with the
+            <a href="https://developer.chrome.com/docs/webstore/program-policies/user-data-faq/">Chrome Web Store User Data Policy</a>,
+            including its Limited Use requirements.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div>
+        <strong>Focus Lock privacy</strong>
+        <span>Last updated July 2, 2025</span>
+      </div>
+      <a href="https://github.com/WoLpH/distraction-blocker/issues">Support and issue reports</a>
+    </footer>
+  </body>
+</html>

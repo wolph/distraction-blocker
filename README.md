@@ -54,7 +54,14 @@ Fresh blocked navigations show an opaque locked document. A page that was alread
 
 The stats page reports focus time, blocked attempts, resisted gates, pause spending, recent sessions, hourly and daily activity, streaks, and freeze tokens. The options page can export the detailed local event log as JSON.
 
-Chrome Sync stores settings, lists, pause bank, streak state, and per-device daily and monthly aggregates. Detailed events, the active runtime session, and the device ID stay in `chrome.storage.local`. An active session therefore resumes in the same Chrome profile, but it does not move live to another machine. Aggregate sync is eventually consistent and can briefly show different totals across machines.
+Full URLs, focus intentions, detailed events, and live sessions remain in the local Chrome profile. Chrome Sync receives settings, lists, pause bank, streak state, and per-device daily and monthly session totals with domain-level blocked-attempt counts only after setup is confirmed with sync enabled. An active session therefore resumes in the same Chrome profile, but it does not move live to another machine. Aggregate sync is eventually consistent and can briefly show different totals across machines.
+
+Focus Lock sends no extension data to a developer-controlled server. Settings > Privacy and data can export or delete local history, disable sync, and separately delete remote Focus Lock data from Chrome Sync. Chrome and Google handle Chrome Sync under their own terms.
+
+## Privacy and support
+
+- Privacy policy: https://wolph.github.io/distraction-blocker/privacy/
+- Support and issue reports: https://github.com/WoLpH/distraction-blocker/issues
 
 ## Development
 
