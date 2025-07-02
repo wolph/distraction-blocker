@@ -1,6 +1,6 @@
 # Focus Lock
 
-Focus Lock is a Chrome extension for focus sessions that blocks distracting sites without redirecting them. It stops fresh blocked navigations before page content renders, overlays and mutes already-open blocked tabs without reloading them, handles single-page app URL changes, earns a capped budget for pauses or one-site unlocks behind a deliberation gate, and restores scheduled sessions and local session state after the Manifest V3 worker wakes again.
+Focus Lock is a Chrome extension for focus sessions that blocks distracting sites without redirecting them. It checks top-level navigations and replaces blocked pages with the Focus Lock blocking surface, overlays and mutes already-open blocked tabs without reloading them, handles single-page app URL changes, earns a capped budget for pauses or one-site unlocks behind a deliberation gate, and restores scheduled sessions and local session state after the Manifest V3 worker wakes again.
 
 ## Research foundation
 

@@ -11,16 +11,16 @@ No account, payment, external service, or test credential is required. The exten
 
 ## Start a short Flexible session and trigger a block
 
-5. Open `https://x.com/` in a normal top-level tab. Keep that page open.
-6. Click the Focus Lock toolbar icon. In Custom minutes, enter `2`. In Intention, enter `Chrome Web Store review`.
-7. Choose Flexible under Session type. Keep Block selected sites as the blocking mode. Confirm Social media is selected under What will be blocked.
-8. Choose Start 2 min - Block selected sites. The already-open x.com tab receives the Focus Lock overlay without a reload.
-9. Confirm the overlay shows the intention, countdown, blocked-attempt count, and provenance text `Blocked by Social media: x.com`. Provenance identifies the exact rule source and matched domain.
-10. Click the Focus Lock toolbar icon and choose End session. Flexible ends immediately without a wait or typed phrase. The original x.com page is restored in place.
+5. Click the Focus Lock toolbar icon. In Custom minutes, enter `2`. In Intention, enter `Chrome Web Store review`.
+6. Choose Flexible under Session type. Keep Block selected sites as the blocking mode. Confirm Social media is selected under What will be blocked.
+7. Choose Start 2 min - Block selected sites.
+8. After the session starts, open a new normal top-level tab and navigate to `https://x.com/`.
+9. Confirm the blocking surface shows the intention, countdown, blocked-attempt count, and provenance text `Blocked by Social media: x.com`. Provenance identifies the exact rule source and matched domain. x.com is an unaffiliated example from the bundled Social media list. If the review environment cannot reach it or rewrites the URL, navigate to another domain shown in that list and substitute the final registrable host in the expected provenance text.
+10. Click the Focus Lock toolbar icon and choose End session. Flexible ends immediately without a wait or typed phrase. Focus Lock removes the blocking surface. If the document was stopped during navigation, the tab reloads so the requested page can render.
 
 ## Inspect Statistics
 
-11. In the popup header, choose the Statistics button. Confirm Your focus record opens and Attempts blocked today includes the test block.
+11. In the popup header, choose the Statistics button. Confirm Your focus record opens and Attempts blocked today includes the navigation from step 8.
 12. In Recent sessions on this machine, confirm the `Chrome Web Store review` intention appears with an ended early outcome and a manual source marker.
 
 ## Verify sync and deletion controls

@@ -4,7 +4,7 @@ Focus Lock blocks distracting websites during deliberate focus sessions. Choose 
 
 - Block selected site categories and custom rules, or allow only selected sites.
 - Choose Flexible, Friction, or Hard lock before each session. Friction can require a wait and typed confirmation. Hard lock cannot end early.
-- Stop fresh blocked navigations before page content renders. Already-open pages receive an in-place overlay and keep their form, scroll, and JavaScript state.
+- Focus Lock checks top-level navigations and replaces blocked pages with its blocking surface. Already-open pages receive an in-place overlay and keep their form, scroll, and JavaScript state.
 - Earn pause time at a configurable rate and cap. Pause and one-site unlock actions use a deliberation gate.
 - Run manual, cycling, or scheduled sessions and inspect session and blocking records in Statistics.
 
@@ -18,7 +18,7 @@ Privacy policy: https://wolph.github.io/distraction-blocker/privacy/
 
 ## Permissions
 
-Focus Lock requests optional access to HTTP and HTTPS websites during onboarding. This access lets it read page addresses for local rule matching, stop fresh blocked navigations, add or remove its blocking interface, and mute or restore affected tabs. It does not inspect page text, form fields, passwords, or messages.
+Focus Lock requests optional access to HTTP and HTTPS websites during onboarding. This access lets it read page addresses for local rule matching, check top-level navigations, replace blocked pages with its blocking surface, and mute or restore affected tabs. It does not inspect page text, form fields, passwords, or messages.
 
 The extension also uses Chrome permissions for local and optional synced storage, session and schedule alarms, tab state, top-level navigation changes, extension-packaged audio, notifications, and dynamic registration of its packaged blocking script.
 
