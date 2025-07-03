@@ -30,11 +30,12 @@ No account, payment, external service, or test credential is required. The exten
 15. Turn off Sync Focus Lock data across Chrome devices. Wait for the status `Chrome Sync disabled.` Disabling sync stops later writes but intentionally keeps any existing remote copy until the separate deletion action.
 16. Under Remote Sync data, choose Delete remote Sync data, then Confirm delete remote Sync data. Wait for `Remote Chrome Sync data deleted.` Local settings and statistics remain on this device.
 17. Under Local event log, choose Export local event log. Chrome downloads a JSON file containing the local detailed event log.
-18. Choose Delete local history, then Confirm delete local history. Wait for `Local history deleted.` This removes full URLs, intentions, and detailed session events. Because sync is off, local aggregate statistics are removed too.
+18. Choose Delete local history, then Confirm delete local history. Wait for `Local history deleted.` This removes historical full URLs, focus intentions, and detailed session events from the local event log. Because sync is off, local aggregate statistics are removed too. It does not clear the current live-session runtime, including its URL and intention state, which remains until that live state ends.
 
 ## Expected boundaries
 
 - Full URLs, focus intentions, detailed events, and live sessions remain in `chrome.storage.local`.
 - Settings, lists, pause balance, streaks, and aggregate session totals with domain-level blocked-attempt counts use `chrome.storage.sync` only after the setup confirmation in step 4.
+- Focus Lock reads, writes, and deletes the disclosed Chrome Sync data through Chrome's extension APIs. The developer does not receive or retain a separate copy.
 - No extension data is sent to a developer-controlled server.
 - The extension does not load or execute remote code.

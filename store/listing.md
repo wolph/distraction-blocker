@@ -14,6 +14,8 @@ Full URLs, focus intentions, detailed events, and live sessions remain in the lo
 
 If Chrome Sync is enabled after setup confirmation, it receives settings, block and allow lists, pause balance, streaks, and per-device daily and monthly session totals with domain-level blocked-attempt counts. Full URLs, intentions, detailed events, and live sessions never enter Chrome Sync through Focus Lock.
 
+Focus Lock reads, writes, and deletes the disclosed Chrome Sync data through Chrome's extension APIs. The developer does not receive or retain a separate copy.
+
 Privacy policy: https://wolph.github.io/distraction-blocker/privacy/
 
 ## Permissions
@@ -24,7 +26,9 @@ The extension also uses Chrome permissions for local and optional synced storage
 
 ## Sync choice and data controls
 
-Chrome Sync is a setup choice and can be disabled later in Settings > Privacy and data. The same page can export the local event log, delete local history, and, after sync is disabled, separately delete remote Focus Lock data from Chrome Sync.
+Chrome Sync is a setup choice and can be disabled later in Settings > Privacy and data. The same page can export the local event log and separately delete remote Focus Lock data from Chrome Sync after sync is disabled.
+
+Delete local history removes historical full URLs, focus intentions, and detailed session events from the local event log. In local-only mode, it also removes local aggregate statistics. It does not clear the current live-session runtime, including its URL and intention state, which remains until that live state ends.
 
 ## Limitations
 

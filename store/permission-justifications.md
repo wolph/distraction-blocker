@@ -15,7 +15,7 @@ Manifest source: `manifest.config.ts`. Each requested permission maps to one or 
 
 ## Permission minimization result
 
-Unused manifest permissions: none in the submitted build. Every permission above has a direct source reference and a reviewer-visible behavior.
+Unused manifest permissions: none in the submitted build. Every permission above has a direct source reference and a shipped user-facing behavior.
 
 If a mapped behavior is removed, mark its permission unused and remove it from `manifest.config.ts` before the next submission. In particular, remove `notifications` if the completion notification is removed, remove `offscreen` if packaged audio is removed, and remove both `scripting` and the optional host patterns if website blocking is removed.
 

@@ -56,7 +56,9 @@ The stats page reports focus time, blocked attempts, resisted gates, pause spend
 
 Full URLs, focus intentions, detailed events, and live sessions remain in the local Chrome profile. Chrome Sync receives settings, lists, pause bank, streak state, and per-device daily and monthly session totals with domain-level blocked-attempt counts only after setup is confirmed with sync enabled. An active session therefore resumes in the same Chrome profile, but it does not move live to another machine. Aggregate sync is eventually consistent and can briefly show different totals across machines.
 
-Focus Lock sends no extension data to a developer-controlled server. Settings > Privacy and data can export or delete local history, disable sync, and separately delete remote Focus Lock data from Chrome Sync. Chrome and Google handle Chrome Sync under their own terms.
+Focus Lock reads, writes, and deletes the disclosed Chrome Sync data through Chrome's extension APIs. The developer does not receive or retain a separate copy. Chrome and Google handle Chrome Sync under their own terms.
+
+Focus Lock sends no extension data to a developer-controlled server. Settings > Privacy and data can export the local event log, disable sync, and separately delete remote Focus Lock data from Chrome Sync. Delete local history removes historical full URLs, focus intentions, and detailed session events from the local event log. In local-only mode, it also removes local aggregate statistics. It does not clear the current live-session runtime, including its URL and intention state, which remains until that live state ends.
 
 ## Privacy and support
 

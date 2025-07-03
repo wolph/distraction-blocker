@@ -96,9 +96,10 @@
             <div>
               <h3>Delete local history</h3>
               <p>
-                Delete local history removes full URLs, focus intentions, and detailed session
-                events. In local-only mode it also removes local aggregate statistics. Deletion does
-                not end an active session.
+                Delete local history removes historical full URLs, focus intentions, and detailed
+                session events from the local event log. In local-only mode, it also removes local
+                aggregate statistics. It does not clear the current live-session runtime, including
+                its URL and intention state, which remains until that live state ends.
               </p>
             </div>
           </article>
@@ -128,8 +129,9 @@
           </p>
           <p>
             That access is used to read the current page URL, stop a fresh blocked navigation, add
-            or remove the Focus Lock blocking interface, and mute or restore an affected tab. Focus
-            Lock does not inspect page text, form fields, passwords, messages, or other page content.
+            or remove the packaged Focus Lock blocking interface, and mute or restore an affected
+            tab. The blocking interface is extension-provided content. Focus Lock does not inspect
+            or collect page text, images, form fields, passwords, messages, or other website content.
           </p>
         </div>
       </section>
@@ -169,8 +171,9 @@
         <h2 id="google-heading">Chrome Sync is operated by Google</h2>
         <div class="prose-card">
           <p>
-            Focus Lock has no developer-controlled copy of Chrome Sync data. Data handled by Chrome
-            or Google is governed by the
+            Focus Lock reads, writes, and deletes the disclosed Chrome Sync data through Chrome's
+            extension APIs. The developer does not receive or retain a separate copy. Data handled
+            by Chrome or Google is governed by the
             <a href="https://policies.google.com/privacy">Google Privacy Policy</a> and applicable
             <a href="https://www.google.com/chrome/terms/">Google Chrome Terms of Service</a>.
           </p>
@@ -186,7 +189,7 @@
     <footer>
       <div>
         <strong>Focus Lock privacy</strong>
-        <span>Last updated July 2, 2025</span>
+        <span>Last updated July 3, 2025</span>
       </div>
       <a href="https://github.com/WoLpH/distraction-blocker/issues">Support and issue reports</a>
     </footer>
