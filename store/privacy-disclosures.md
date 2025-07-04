@@ -62,4 +62,15 @@ Focus Lock's use of information received from Chrome APIs complies with the Chro
 
 Focus Lock reads, writes, and deletes the disclosed Chrome Sync data through Chrome's extension APIs. The developer does not receive or retain a separate copy. Chrome and Google handling is governed by the [Google Privacy Policy](https://policies.google.com/privacy) and applicable [Google Chrome Terms of Service](https://www.google.com/chrome/terms/).
 
-Published privacy policy: https://wolph.github.io/distraction-blocker/privacy/
+## Public URL verification
+
+Before the first deployment, this check is expected to fail because GitHub Pages has not published
+the privacy policy:
+
+```console
+curl --fail --silent --show-error https://wolph.github.io/distraction-blocker/privacy/ > /dev/null
+```
+
+After the Pages workflow deploys successfully, the command should exit with status 0.
+
+Privacy policy URL: https://wolph.github.io/distraction-blocker/privacy/
