@@ -8,7 +8,7 @@ import { parse } from 'yaml';
 const SITE_ORIGIN = 'https://wolph.github.io';
 const SITE_PREFIX = '/distraction-blocker/';
 const PRIVACY_URL = `${SITE_ORIGIN}${SITE_PREFIX}privacy/`;
-const REPOSITORY_URL = 'https://github.com/WoLpH/distraction-blocker';
+const REPOSITORY_URL = 'https://github.com/wolph/distraction-blocker';
 const PAGE_URL_EXPRESSION = '$' + '{{ steps.deployment.outputs.page_url }}';
 const REQUIRED_ACTIONS = [
   'actions/checkout@v7',
@@ -193,8 +193,8 @@ function validateSameSiteLinks(document, htmlPath, outputDirectory) {
 
 function validatePrivacyMetadata(document, stylesheet) {
   assert(
-    document.title === 'Focus Lock Privacy',
-    'Privacy page title must be exactly Focus Lock Privacy',
+    document.title === 'Focus Lock Privacy Policy',
+    'Privacy page title must be exactly Focus Lock Privacy Policy',
   );
   assert(
     document.querySelector('meta[name="viewport"]')?.getAttribute('content') ===
@@ -206,11 +206,10 @@ function validatePrivacyMetadata(document, stylesheet) {
     `Privacy page canonical URL must be ${PRIVACY_URL}`,
   );
   assert(
-    [...document.querySelectorAll('a[href]')].some((link) => {
-      const href = link.getAttribute('href');
-      return href === REPOSITORY_URL || href?.startsWith(`${REPOSITORY_URL}/`);
-    }),
-    `Privacy page must link to ${REPOSITORY_URL}`,
+    [...document.querySelectorAll('a[href]')].some(
+      (link) => link.getAttribute('href') === REPOSITORY_URL,
+    ),
+    `Privacy page must link to the exact repository URL ${REPOSITORY_URL}`,
   );
   assert(
     /:focus(?:-visible)?\b/u.test(stylesheet),
@@ -224,11 +223,14 @@ function validatePrivacyMetadata(document, stylesheet) {
 
 function validateStagedSite(rootDirectory) {
   const outputDirectory = join(rootDirectory, 'dist-pages');
-  const privacyHtmlPath = join(outputDirectory, 'privacy', 'index.html');
-  const notFoundPath = join(outputDirectory, '404.html');
   const privacyHtml = readRequiredFile(rootDirectory, 'dist-pages/privacy/index.html');
   const stylesheet = readRequiredFile(rootDirectory, 'dist-pages/privacy/style.css');
-  readRequiredFile(rootDirectory, 'dist-pages/404.html');
+  const privacyNotFoundHtml = readRequiredFile(rootDirectory, 'dist-pages/privacy/404.html');
+  const rootNotFoundHtml = readRequiredFile(rootDirectory, 'dist-pages/404.html');
+  assert(
+    privacyNotFoundHtml === rootNotFoundHtml,
+    'Root and privacy-scoped 404 pages must have identical content',
+  );
   assert(
     !existsSync(join(outputDirectory, 'index.html')),
     'Privacy page must not be flattened to dist-pages/index.html',
@@ -236,9 +238,10 @@ function validateStagedSite(rootDirectory) {
 
   const privacyDocument = new JSDOM(privacyHtml, { url: PRIVACY_URL }).window.document;
   validatePrivacyMetadata(privacyDocument, stylesheet);
-  for (const htmlPath of [privacyHtmlPath, notFoundPath]) {
+  for (const htmlPath of htmlFiles(outputDirectory)) {
     const html = readFileSync(htmlPath, 'utf8');
-    const url = htmlPath === privacyHtmlPath ? PRIVACY_URL : `${SITE_ORIGIN}${SITE_PREFIX}404.html`;
+    const relativePath = relative(outputDirectory, htmlPath).split(sep).join('/');
+    const url = new URL(relativePath, `${SITE_ORIGIN}${SITE_PREFIX}`).href;
     const document = new JSDOM(html, { url }).window.document;
     assert(
       !FORBIDDEN_PROSE_PUNCTUATION.test(visibleText(document)),

@@ -9,7 +9,7 @@ const privacyOutputDirectory = join(outputDirectory, 'privacy');
 rmSync(outputDirectory, { recursive: true, force: true });
 mkdirSync(privacyOutputDirectory, { recursive: true });
 
-for (const filename of ['index.html', 'style.css']) {
+for (const filename of ['index.html', 'style.css', '404.html']) {
   cpSync(join(sourceDirectory, filename), join(privacyOutputDirectory, filename));
 }
 

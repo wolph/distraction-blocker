@@ -36,7 +36,7 @@
     "gen-icons": "node scripts/gen-icons.mjs",
     "lint": "biome check .",
     "pages:build": "node scripts/build-pages.mjs",
-    "pages:validate": "node scripts/validate-pages.mjs",
+    "pages:validate": "npm run pages:build && node scripts/validate-pages.mjs && html-validate 'dist-pages/**/*.html'",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

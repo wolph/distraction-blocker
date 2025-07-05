@@ -51,14 +51,14 @@ const VALID_PRIVACY_HTML: string = `<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="canonical" href="https://wolph.github.io/distraction-blocker/privacy/">
     <link rel="stylesheet" href="./style.css">
-    <title>Focus Lock Privacy</title>
+    <title>Focus Lock Privacy Policy</title>
   </head>
   <body>
     <a class="skip-link" href="#details">Skip to privacy details</a>
     <main id="details">
       <h1>Focus Lock Privacy</h1>
       <p>Policy text uses plain punctuation.</p>
-      <a href="https://github.com/WoLpH/distraction-blocker">Source repository</a>
+      <a href="https://github.com/wolph/distraction-blocker">https://github.com/wolph/distraction-blocker</a>
     </main>
   </body>
 </html>
@@ -94,6 +94,7 @@ function fixture(): string {
     join(path, 'dist-pages', 'privacy', 'style.css'),
     '.skip-link { transform: translateY(-180%); }\n.skip-link:focus { transform: translateY(0); }\n',
   );
+  write(join(path, 'dist-pages', 'privacy', '404.html'), VALID_NOT_FOUND_HTML);
   write(join(path, 'dist-pages', '404.html'), VALID_NOT_FOUND_HTML);
   return path;
 }
@@ -154,6 +155,12 @@ describe('Pages validation', () => {
     expectValidationFailure(path, /dist-pages\/404\.html/i);
   });
 
+  it('rejects a missing privacy-scoped 404 page', (): void => {
+    const path: string = fixture();
+    rmSync(join(path, 'dist-pages', 'privacy', '404.html'));
+    expectValidationFailure(path, /dist-pages\/privacy\/404\.html/i);
+  });
+
   it('rejects the wrong upload path', (): void => {
     const path: string = fixture();
     const workflowPath: string = join(path, '.github', 'workflows', 'pages.yml');
@@ -194,11 +201,39 @@ describe('Pages validation', () => {
     expectValidationFailure(path, /authored prose punctuation/i);
   });
 
+  it('rejects an issue-only repository link', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'privacy', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        'https://github.com/wolph/distraction-blocker',
+        'https://github.com/wolph/distraction-blocker/issues',
+      ),
+    );
+    expectValidationFailure(path, /exact repository URL/i);
+  });
+
+  it('rejects the old privacy page title', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'privacy', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '<title>Focus Lock Privacy Policy</title>',
+        '<title>Focus Lock Privacy</title>',
+      ),
+    );
+    expectValidationFailure(path, /exactly Focus Lock Privacy Policy/i);
+  });
+
   it('requires the exact package scripts', (): void => {
     const packageJson: { scripts: Record<string, string> } = JSON.parse(
       readFileSync('package.json', 'utf8'),
     ) as { scripts: Record<string, string> };
     expect(packageJson.scripts['pages:build']).toBe('node scripts/build-pages.mjs');
-    expect(packageJson.scripts['pages:validate']).toBe('node scripts/validate-pages.mjs');
+    expect(packageJson.scripts['pages:validate']).toBe(
+      "npm run pages:build && node scripts/validate-pages.mjs && html-validate 'dist-pages/**/*.html'",
+    );
   });
 });
