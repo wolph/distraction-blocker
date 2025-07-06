@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { HtmlValidate } from 'html-validate';
@@ -10,23 +10,43 @@ const SITE_PREFIX = '/distraction-blocker/';
 const PRIVACY_URL = `${SITE_ORIGIN}${SITE_PREFIX}privacy/`;
 const REPOSITORY_URL = 'https://github.com/wolph/distraction-blocker';
 const PAGE_URL_EXPRESSION = '$' + '{{ steps.deployment.outputs.page_url }}';
-const REQUIRED_ACTIONS = [
-  'actions/checkout@v7',
-  'actions/setup-node@v7',
-  'actions/configure-pages@v6',
-  'actions/upload-pages-artifact@v5',
-  'actions/deploy-pages@v5',
+const EXPECTED_OUTPUT_FILES = [
+  '404.html',
+  'privacy/404.html',
+  'privacy/index.html',
+  'privacy/style.css',
 ];
+const EXPECTED_BUILD_STEPS = [
+  { uses: 'actions/checkout@v7' },
+  {
+    uses: 'actions/setup-node@v7',
+    with: { 'node-version-file': 'package.json', cache: 'npm' },
+  },
+  { run: 'npm ci' },
+  { run: 'npm run pages:validate' },
+  { uses: 'actions/configure-pages@v6' },
+  { uses: 'actions/upload-pages-artifact@v5', with: { path: 'dist-pages' } },
+];
+const EXPECTED_DEPLOY_STEPS = [{ id: 'deployment', uses: 'actions/deploy-pages@v5' }];
 const FORBIDDEN_PROSE_PUNCTUATION = /[“”„‟‘’‚‛—–−‑‒…;]/u;
+const REQUEST_PRODUCING_SELECTOR =
+  'script, iframe, img, audio, video, source, track, object, embed, form';
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function isInside(path, directory) {
+  return path === directory || path.startsWith(`${directory}${sep}`);
+}
+
 function readRequiredFile(rootDirectory, relativePath) {
   const absolutePath = join(rootDirectory, relativePath);
   assert(existsSync(absolutePath), `Missing required file: ${relativePath}`);
-  assert(statSync(absolutePath).isFile(), `Required path is not a file: ${relativePath}`);
+  const fileStat = lstatSync(absolutePath);
+  assert(!fileStat.isSymbolicLink(), `Required file must not be a symbolic link: ${relativePath}`);
+  assert(fileStat.isFile(), `Required path is not a regular file: ${relativePath}`);
+  assert(fileStat.nlink === 1, `Required file must not be a hard link: ${relativePath}`);
   return readFileSync(absolutePath, 'utf8');
 }
 
@@ -41,21 +61,18 @@ function parseWorkflow(rootDirectory) {
   }
 }
 
-function workflowSteps(workflow) {
-  assert(workflow && typeof workflow === 'object', 'Workflow YAML must contain an object');
-  assert(workflow.jobs && typeof workflow.jobs === 'object', 'Workflow must define jobs');
-  const jobs = Object.values(workflow.jobs);
-  assert(jobs.length === 1, 'Workflow must define exactly one deployment job');
-  const job = jobs[0];
-  assert(
-    job && typeof job === 'object' && Array.isArray(job.steps),
-    'Deployment job must define steps',
-  );
-  return { job, steps: job.steps };
+function stepContract(steps) {
+  assert(Array.isArray(steps), 'Workflow job must define steps');
+  return steps.map((step) => {
+    assert(step && typeof step === 'object', 'Workflow steps must be objects');
+    const { name: _name, ...contract } = step;
+    return contract;
+  });
 }
 
 function validateWorkflow(rootDirectory) {
   const workflow = parseWorkflow(rootDirectory);
+  assert(workflow && typeof workflow === 'object', 'Workflow YAML must contain an object');
   const triggers = workflow.on;
   assert(triggers && typeof triggers === 'object', 'Workflow triggers must be an object');
   assert(
@@ -67,57 +84,111 @@ function validateWorkflow(rootDirectory) {
     'Push trigger must target only master',
   );
   assert(
-    isDeepStrictEqual(workflow.permissions, {
-      contents: 'read',
-      pages: 'write',
-      'id-token': 'write',
-    }),
-    'Workflow permissions must be exactly contents: read, pages: write, and id-token: write',
+    workflow.permissions === undefined,
+    'Workflow-level permissions are forbidden. Scope permissions to each job',
   );
   assert(
     isDeepStrictEqual(workflow.concurrency, { group: 'pages', 'cancel-in-progress': false }),
     'Workflow concurrency must serialize Pages deployments without cancelling an active deployment',
   );
-
-  const { job, steps } = workflowSteps(workflow);
+  assert(workflow.jobs && typeof workflow.jobs === 'object', 'Workflow must define jobs');
   assert(
-    isDeepStrictEqual(job.environment, {
+    isDeepStrictEqual(Object.keys(workflow.jobs).sort(), ['build', 'deploy']),
+    'Workflow jobs must be exactly build and deploy',
+  );
+
+  const { build, deploy } = workflow.jobs;
+  assert(build?.['runs-on'] === 'ubuntu-latest', 'Build runner must be exactly ubuntu-latest');
+  assert(
+    isDeepStrictEqual(build.permissions, { contents: 'read' }),
+    'Build permissions must be exactly contents: read',
+  );
+  assert(build.needs === undefined, 'Build job must not depend on another job');
+  assert(build.environment === undefined, 'Build job must not use an environment');
+  assert(build.outputs === undefined, 'Build job must not define outputs');
+  const uploadStep = build.steps?.find((step) => step?.uses === 'actions/upload-pages-artifact@v5');
+  assert(uploadStep?.with?.path === 'dist-pages', 'Pages upload path must be exactly dist-pages');
+  assert(
+    isDeepStrictEqual(stepContract(build.steps), EXPECTED_BUILD_STEPS),
+    'Build step sequence must contain only the approved actions and commands in the required order',
+  );
+
+  assert(deploy?.['runs-on'] === 'ubuntu-latest', 'Deploy runner must be exactly ubuntu-latest');
+  assert(deploy.needs === 'build', 'Deploy job needs must be exactly build');
+  assert(
+    isDeepStrictEqual(deploy.permissions, { pages: 'write', 'id-token': 'write' }),
+    'Deploy permissions must be exactly pages: write and id-token: write',
+  );
+  assert(
+    isDeepStrictEqual(deploy.environment, {
       name: 'github-pages',
       url: PAGE_URL_EXPRESSION,
     }),
-    'Deployment job must use the github-pages environment and deployment page_url',
+    'Deploy environment must be github-pages with the standard page_url',
   );
-
-  const actionNames = steps.map((step) => step.uses).filter(Boolean);
-  for (const action of REQUIRED_ACTIONS) {
-    assert(
-      actionNames.filter((candidate) => candidate === action).length === 1,
-      `Workflow must use ${action}`,
-    );
-  }
-
-  const commands = steps.map((step) => step.run).filter(Boolean);
-  for (const command of ['npm ci', 'npm run pages:build', 'npm run pages:validate']) {
-    assert(commands.includes(command), `Workflow must run: ${command}`);
-  }
-
-  const uploadStep = steps.find((step) => step.uses === 'actions/upload-pages-artifact@v5');
-  assert(uploadStep?.with?.path === 'dist-pages', 'Pages upload path must be exactly dist-pages');
-  const deployStep = steps.find((step) => step.uses === 'actions/deploy-pages@v5');
   assert(
-    deployStep?.id === 'deployment',
-    'Pages deployment step must expose the standard page_url output',
+    isDeepStrictEqual(deploy.outputs, { page_url: PAGE_URL_EXPRESSION }),
+    'Deploy outputs must expose the standard page_url',
+  );
+  assert(
+    isDeepStrictEqual(stepContract(deploy.steps), EXPECTED_DEPLOY_STEPS),
+    'Deploy step sequence must contain only actions/deploy-pages@v5',
   );
 }
 
-function htmlFiles(directory) {
+function inspectStagedTree(rootDirectory) {
+  const outputDirectory = join(rootDirectory, 'dist-pages');
+  assert(existsSync(outputDirectory), 'Missing required directory: dist-pages');
+  const outputStat = lstatSync(outputDirectory);
+  assert(!outputStat.isSymbolicLink(), 'Staged directory must not be a symbolic link: dist-pages');
+  assert(outputStat.isDirectory(), 'Staged path must be a directory: dist-pages');
+  const outputRealPath = realpathSync(outputDirectory);
   const files = [];
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const entryPath = join(directory, entry.name);
-    if (entry.isDirectory()) files.push(...htmlFiles(entryPath));
-    else if (entry.isFile() && entry.name.endsWith('.html')) files.push(entryPath);
+
+  function visit(directory) {
+    for (const entry of readdirSync(directory)) {
+      const entryPath = join(directory, entry);
+      const relativePath = relative(outputDirectory, entryPath).split(sep).join('/');
+      const entryStat = lstatSync(entryPath);
+      assert(
+        !entryStat.isSymbolicLink(),
+        `Staged path must not be a symbolic link: dist-pages/${relativePath}`,
+      );
+      assert(
+        isInside(realpathSync(entryPath), outputRealPath),
+        `Staged path resolves outside dist-pages: dist-pages/${relativePath}`,
+      );
+      if (entryStat.isDirectory()) {
+        visit(entryPath);
+        continue;
+      }
+      assert(entryStat.isFile(), `Staged path is not a regular file: dist-pages/${relativePath}`);
+      assert(
+        entryStat.nlink === 1,
+        `Staged file must not be a hard link: dist-pages/${relativePath}`,
+      );
+      files.push(relativePath);
+    }
   }
-  return files;
+
+  visit(outputDirectory);
+  files.sort();
+  const missingFiles = EXPECTED_OUTPUT_FILES.filter((file) => !files.includes(file));
+  assert(
+    missingFiles.length === 0,
+    `Missing required file: ${missingFiles.map((file) => `dist-pages/${file}`).join(', ')}`,
+  );
+  assert(
+    isDeepStrictEqual(files, EXPECTED_OUTPUT_FILES),
+    `Staged site must contain only: ${EXPECTED_OUTPUT_FILES.map((file) => `dist-pages/${file}`).join(', ')}`,
+  );
+  return outputDirectory;
+}
+
+function htmlFiles(outputDirectory) {
+  return EXPECTED_OUTPUT_FILES.filter((path) => path.endsWith('.html')).map((path) =>
+    join(outputDirectory, path),
+  );
 }
 
 function formatHtmlErrors(report, rootDirectory) {
@@ -161,7 +232,7 @@ function urlToOutputPath(url, outputDirectory) {
   const normalizedPath = relativePath.endsWith('/') ? `${relativePath}index.html` : relativePath;
   const outputPath = resolve(outputDirectory, normalizedPath);
   assert(
-    outputPath === outputDirectory || outputPath.startsWith(`${outputDirectory}${sep}`),
+    isInside(outputPath, outputDirectory),
     `Broken same-site link outside the staged site: ${url.href}`,
   );
   return outputPath;
@@ -176,9 +247,13 @@ function validateSameSiteLinks(document, htmlPath, outputDirectory) {
     const targetUrl = new URL(href, currentUrl);
     if (targetUrl.origin !== SITE_ORIGIN) continue;
     const targetPath = urlToOutputPath(targetUrl, outputDirectory);
+    assert(existsSync(targetPath), `Broken same-site link: ${href}`);
+    const targetStat = lstatSync(targetPath);
+    assert(!targetStat.isSymbolicLink(), `Broken same-site link targets a symbolic link: ${href}`);
+    assert(targetStat.isFile() && targetStat.nlink === 1, `Broken same-site link: ${href}`);
     assert(
-      existsSync(targetPath) && statSync(targetPath).isFile(),
-      `Broken same-site link: ${href}`,
+      isInside(realpathSync(targetPath), realpathSync(outputDirectory)),
+      `Broken same-site link resolves outside the staged site: ${href}`,
     );
     if (targetUrl.hash && targetPath.endsWith('.html')) {
       const targetDocument =
@@ -189,6 +264,39 @@ function validateSameSiteLinks(document, htmlPath, outputDirectory) {
       assert(targetDocument.getElementById(id), `Broken same-site link fragment: ${href}`);
     }
   }
+}
+
+function validateResources(document, relativeHtmlPath) {
+  assert(
+    document.querySelectorAll(REQUEST_PRODUCING_SELECTOR).length === 0,
+    `Request-producing HTML elements are forbidden in dist-pages/${relativeHtmlPath}`,
+  );
+  const expectedStylesheet =
+    relativeHtmlPath === 'privacy/index.html'
+      ? './style.css'
+      : '/distraction-blocker/privacy/style.css';
+  const stylesheets = [];
+  for (const link of document.querySelectorAll('link[href]')) {
+    const rel = link.getAttribute('rel');
+    const href = link.getAttribute('href');
+    if (rel === 'canonical') {
+      assert(
+        relativeHtmlPath === 'privacy/index.html' && href === PRIVACY_URL,
+        `Unexpected link resource in dist-pages/${relativeHtmlPath}`,
+      );
+      continue;
+    }
+    if (rel === 'icon') {
+      assert(href === 'data:,', `Unexpected link resource in dist-pages/${relativeHtmlPath}`);
+      continue;
+    }
+    assert(rel === 'stylesheet', `Unexpected link resource in dist-pages/${relativeHtmlPath}`);
+    stylesheets.push(href);
+  }
+  assert(
+    isDeepStrictEqual(stylesheets, [expectedStylesheet]),
+    `Stylesheet resource must be exactly ${expectedStylesheet} in dist-pages/${relativeHtmlPath}`,
+  );
 }
 
 function validatePrivacyMetadata(document, stylesheet) {
@@ -216,24 +324,20 @@ function validatePrivacyMetadata(document, stylesheet) {
     'Privacy stylesheet must provide visible focus styling',
   );
   assert(
-    document.querySelectorAll('script, iframe').length === 0,
-    'Privacy page must not include analytics',
+    !/(?:@import\b|url\s*\()/iu.test(stylesheet),
+    'Privacy stylesheet must not contain network resource declarations',
   );
 }
 
 function validateStagedSite(rootDirectory) {
-  const outputDirectory = join(rootDirectory, 'dist-pages');
-  const privacyHtml = readRequiredFile(rootDirectory, 'dist-pages/privacy/index.html');
-  const stylesheet = readRequiredFile(rootDirectory, 'dist-pages/privacy/style.css');
-  const privacyNotFoundHtml = readRequiredFile(rootDirectory, 'dist-pages/privacy/404.html');
-  const rootNotFoundHtml = readRequiredFile(rootDirectory, 'dist-pages/404.html');
+  const outputDirectory = inspectStagedTree(rootDirectory);
+  const privacyHtml = readFileSync(join(outputDirectory, 'privacy', 'index.html'), 'utf8');
+  const stylesheet = readFileSync(join(outputDirectory, 'privacy', 'style.css'), 'utf8');
+  const privacyNotFoundHtml = readFileSync(join(outputDirectory, 'privacy', '404.html'), 'utf8');
+  const rootNotFoundHtml = readFileSync(join(outputDirectory, '404.html'), 'utf8');
   assert(
     privacyNotFoundHtml === rootNotFoundHtml,
     'Root and privacy-scoped 404 pages must have identical content',
-  );
-  assert(
-    !existsSync(join(outputDirectory, 'index.html')),
-    'Privacy page must not be flattened to dist-pages/index.html',
   );
 
   const privacyDocument = new JSDOM(privacyHtml, { url: PRIVACY_URL }).window.document;
@@ -247,6 +351,7 @@ function validateStagedSite(rootDirectory) {
       !FORBIDDEN_PROSE_PUNCTUATION.test(visibleText(document)),
       `Authored prose punctuation is invalid in ${relative(rootDirectory, htmlPath)}`,
     );
+    validateResources(document, relativePath);
     validateSameSiteLinks(document, htmlPath, outputDirectory);
   }
 }
@@ -260,6 +365,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  console.error(error instanceof Error ? error.message : error);
   process.exitCode = 1;
 });

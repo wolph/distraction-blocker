@@ -6,20 +6,14 @@ on:
       - master
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  build:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -31,16 +25,26 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Build and validate Pages artifact
+        run: npm run pages:validate
       - name: Configure Pages
         uses: actions/configure-pages@v6
-      - name: Build privacy policy
-        run: npm run pages:build
-      - name: Validate Pages artifact
-        run: npm run pages:validate
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:
           path: dist-pages
+  deploy:
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
       - name: Deploy Pages artifact
         id: deployment
         uses: actions/deploy-pages@v5
