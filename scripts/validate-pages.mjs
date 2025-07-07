@@ -70,6 +70,14 @@ function stepContract(steps) {
   });
 }
 
+function validateJobKeys(job, expectedKeys, jobName) {
+  assert(job && typeof job === 'object' && !Array.isArray(job), `${jobName} job must be an object`);
+  assert(
+    isDeepStrictEqual(Object.keys(job).sort(), [...expectedKeys].sort()),
+    `${jobName} job keys must be exactly: ${expectedKeys.join(', ')}`,
+  );
+}
+
 function validateWorkflow(rootDirectory) {
   const workflow = parseWorkflow(rootDirectory);
   assert(workflow && typeof workflow === 'object', 'Workflow YAML must contain an object');
@@ -98,6 +106,7 @@ function validateWorkflow(rootDirectory) {
   );
 
   const { build, deploy } = workflow.jobs;
+  validateJobKeys(build, ['runs-on', 'permissions', 'steps'], 'Build');
   assert(build?.['runs-on'] === 'ubuntu-latest', 'Build runner must be exactly ubuntu-latest');
   assert(
     isDeepStrictEqual(build.permissions, { contents: 'read' }),
@@ -113,6 +122,11 @@ function validateWorkflow(rootDirectory) {
     'Build step sequence must contain only the approved actions and commands in the required order',
   );
 
+  validateJobKeys(
+    deploy,
+    ['needs', 'runs-on', 'permissions', 'environment', 'outputs', 'steps'],
+    'Deploy',
+  );
   assert(deploy?.['runs-on'] === 'ubuntu-latest', 'Deploy runner must be exactly ubuntu-latest');
   assert(deploy.needs === 'build', 'Deploy job needs must be exactly build');
   assert(
@@ -267,6 +281,10 @@ function validateSameSiteLinks(document, htmlPath, outputDirectory) {
 }
 
 function validateResources(document, relativeHtmlPath) {
+  assert(
+    document.querySelector('base') === null,
+    `HTML base elements are forbidden in dist-pages/${relativeHtmlPath}`,
+  );
   assert(
     document.querySelectorAll(REQUEST_PRODUCING_SELECTOR).length === 0,
     `Request-producing HTML elements are forbidden in dist-pages/${relativeHtmlPath}`,

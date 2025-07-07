@@ -245,6 +245,27 @@ describe('Pages validation', () => {
     expectValidationFailure(path, /exactly build and deploy/i);
   });
 
+  it.each([
+    ['if', '    if: false\n'],
+    ['env', '    env:\n      RELEASE_CHANNEL: pages\n'],
+    ['container', '    container: node:22\n'],
+    ['defaults', '    defaults:\n      run:\n        shell: bash\n'],
+    ['continue-on-error', '    continue-on-error: true\n'],
+    ['timeout-minutes', '    timeout-minutes: 5\n'],
+    ['strategy', '    strategy:\n      matrix:\n        node: [22]\n'],
+  ])('rejects the unapproved %s key in each workflow job', (_key: string, jobKey: string): void => {
+    for (const jobName of ['build', 'deploy']) {
+      const path: string = fixture();
+      const workflowPath: string = join(path, '.github', 'workflows', 'pages.yml');
+      const jobMarker: string = `  ${jobName}:\n`;
+      write(
+        workflowPath,
+        readFileSync(workflowPath, 'utf8').replace(jobMarker, `${jobMarker}${jobKey}`),
+      );
+      expectValidationFailure(path, new RegExp(`${jobName} job keys`, 'i'));
+    }
+  });
+
   it('rejects a wrong deployment output', (): void => {
     const path: string = fixture();
     const workflowPath: string = join(path, '.github', 'workflows', 'pages.yml');
@@ -387,6 +408,19 @@ describe('Pages validation', () => {
       ),
     );
     expectValidationFailure(path, /unexpected link resource/i);
+  });
+
+  it('rejects an external base URL with the approved relative stylesheet', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'privacy', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '<link rel="stylesheet" href="./style.css">',
+        '<base href="https://analytics.example/"><link rel="stylesheet" href="./style.css">',
+      ),
+    );
+    expectValidationFailure(path, /base/i);
   });
 
   it('rejects network resources in the staged stylesheet', (): void => {
