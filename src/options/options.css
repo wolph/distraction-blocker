@@ -148,13 +148,16 @@ button.ghost {
   align-items: center;
   background: var(--surface);
   border-top: 1px solid var(--border);
-  bottom: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
   justify-content: space-between;
   margin-top: auto;
   padding: 14px 0 16px;
+}
+
+.dirty-save-bar--sticky {
+  bottom: 0;
   position: sticky;
   z-index: 2;
 }

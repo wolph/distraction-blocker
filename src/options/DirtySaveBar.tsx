@@ -10,6 +10,7 @@ export interface DirtySaveBarProps {
 
 export function DirtySaveBar(props: DirtySaveBarProps): VNode {
   const disabled: boolean = !props.dirty || props.pending;
+  const sticky: boolean = props.dirty || props.pending || props.error !== null;
   const message: string = props.pending
     ? 'Saving changes'
     : props.dirty
@@ -17,7 +18,7 @@ export function DirtySaveBar(props: DirtySaveBarProps): VNode {
       : 'No unsaved changes';
 
   return (
-    <div class="dirty-save-bar">
+    <div class={`dirty-save-bar${sticky ? ' dirty-save-bar--sticky' : ''}`}>
       {props.error === null ? null : (
         <p class="save-error dirty-save-error" role="alert">
           {props.error}

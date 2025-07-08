@@ -61,11 +61,13 @@ describe('Options navigation', () => {
     expect(document.querySelectorAll('h1')).toHaveLength(1);
   });
 
-  it('keeps one save bar stuck to the destination viewport edge', (): void => {
+  it('sticks the save bar only while it represents an actionable state', (): void => {
     const css: string = readFileSync(resolve('src/options/options.css'), 'utf8');
-    expect(css).toMatch(/\.dirty-save-bar\s*\{[^}]*position:\s*sticky/s);
-    expect(css).toMatch(/\.dirty-save-bar\s*\{[^}]*bottom:\s*0/s);
     expect(css).toMatch(/\.dirty-save-bar\s*\{[^}]*background:\s*var\(--surface\)/s);
+    expect(css).not.toMatch(/\.dirty-save-bar\s*\{[^}]*position:\s*sticky/s);
+    expect(css).not.toMatch(/\.dirty-save-bar\s*\{[^}]*bottom:\s*0/s);
+    expect(css).toMatch(/\.dirty-save-bar--sticky\s*\{[^}]*position:\s*sticky/s);
+    expect(css).toMatch(/\.dirty-save-bar--sticky\s*\{[^}]*bottom:\s*0/s);
   });
 
   it('uses the exact hard-blocking rejection copy', async (): Promise<void> => {
