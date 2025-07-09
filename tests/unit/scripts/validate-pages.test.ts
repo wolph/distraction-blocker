@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 const fixtures: string[] = [];
 const BUILD_SCRIPT_PATH: string = resolve('scripts/build-pages.mjs');
+const GITHUB_REF_EXPRESSION: string = '$' + '{{ github.ref }}';
 const PAGE_URL_EXPRESSION: string = '$' + '{{ steps.deployment.outputs.page_url }}';
 const SCRIPT_PATH: string = resolve('scripts/validate-pages.mjs');
 
@@ -161,7 +162,7 @@ describe('Pages validation', () => {
   it('accepts the release workflow and staged site', (): void => {
     const result: ReturnType<typeof spawnSync> = validate(fixture());
     expect(result.status, String(result.stderr)).toBe(0);
-  });
+  }, 10_000);
 
   it('rejects invalid workflow YAML', (): void => {
     const path: string = fixture();
@@ -178,6 +179,28 @@ describe('Pages validation', () => {
     );
     expectValidationFailure(path, /permissions/i);
   });
+
+  it.each([
+    ['defaults', 'defaults:\n  run:\n    shell: "./scripts/publish-pages.sh {0}"\n'],
+    ['env', 'env:\n  RELEASE_CHANNEL: pages\n'],
+    ['permissions', 'permissions: read-all\n'],
+    ['run-name', `run-name: Publish from ${GITHUB_REF_EXPRESSION}\n`],
+    ['timeout control', 'timeout-minutes: 5\n'],
+  ])(
+    'rejects the unapproved top-level %s workflow key',
+    (_key: string, workflowKey: string): void => {
+      const path: string = fixture();
+      const workflowPath: string = join(path, '.github', 'workflows', 'pages.yml');
+      write(
+        workflowPath,
+        readFileSync(workflowPath, 'utf8').replace(
+          'name: Publish privacy policy\n',
+          `name: Publish privacy policy\n${workflowKey}`,
+        ),
+      );
+      expectValidationFailure(path, /top-level workflow keys/i);
+    },
+  );
 
   it('rejects an arbitrary command in the privileged deploy job', (): void => {
     const path: string = fixture();
@@ -421,6 +444,99 @@ describe('Pages validation', () => {
       ),
     );
     expectValidationFailure(path, /base/i);
+  });
+
+  it('rejects an inline style element with an external URL', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'privacy', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '</head>',
+        '<style>body { background: url("https://analytics.example/pixel"); }</style></head>',
+      ),
+    );
+    expectValidationFailure(path, /inline style/i);
+  });
+
+  it('rejects a style attribute with an external URL', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'privacy', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '<main id="details">',
+        '<main id="details" style="background: url(https://analytics.example/pixel)">',
+      ),
+    );
+    expectValidationFailure(path, /style attribute/i);
+  });
+
+  it('rejects a body onload handler that calls fetch', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'privacy', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '<body>',
+        '<body onload="fetch(\'https://analytics.example/collect\')">',
+      ),
+    );
+    expectValidationFailure(path, /event attribute/i);
+  });
+
+  it('rejects mixed-case event attributes', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'privacy', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '<h1>Focus Lock Privacy</h1>',
+        '<h1 oNcLiCk="alert(1)">Focus Lock Privacy</h1>',
+      ),
+    );
+    expectValidationFailure(path, /event attribute/i);
+  });
+
+  it('rejects anchor ping tracking', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'privacy', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '<a href="https://github.com/wolph/distraction-blocker">',
+        '<a href="https://github.com/wolph/distraction-blocker" ping="https://analytics.example/collect">',
+      ),
+    );
+    expectValidationFailure(path, /ping attribute/i);
+  });
+
+  it.each([
+    ['javascript', 'javascript:alert(1)'],
+    ['data', 'data:text/html,<script>alert(1)</script>'],
+    ['vbscript', 'vbscript:msgbox(1)'],
+  ])('rejects the %s executable URL scheme', (_scheme: string, href: string): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'privacy', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace('</main>', `<a href="${href}">Unsafe link</a></main>`),
+    );
+    expectValidationFailure(path, /executable URL scheme/i);
+  });
+
+  it.each([
+    ['background', '<div background="https://analytics.example/pixel">Background</div>'],
+    ['cite', '<blockquote cite="https://analytics.example/collect">Quote</blockquote>'],
+    ['formaction', '<button formaction="https://analytics.example/collect">Send</button>'],
+    ['poster', '<div poster="https://analytics.example/pixel">Poster</div>'],
+    ['SVG href', '<svg><use href="https://analytics.example/icon.svg#pixel"></use></svg>'],
+    ['xlink href', '<svg><use xlink:href="https://analytics.example/icon.svg#pixel"></use></svg>'],
+  ])('rejects the unapproved %s URL-bearing attribute', (_name: string, element: string): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'privacy', 'index.html');
+    write(htmlPath, readFileSync(htmlPath, 'utf8').replace('</main>', `${element}</main>`));
+    expectValidationFailure(path, /URL-bearing attribute/i);
   });
 
   it('rejects network resources in the staged stylesheet', (): void => {

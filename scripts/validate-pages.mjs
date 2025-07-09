@@ -31,6 +31,56 @@ const EXPECTED_DEPLOY_STEPS = [{ id: 'deployment', uses: 'actions/deploy-pages@v
 const FORBIDDEN_PROSE_PUNCTUATION = /[“”„‟‘’‚‛—–−‑‒…;]/u;
 const REQUEST_PRODUCING_SELECTOR =
   'script, iframe, img, audio, video, source, track, object, embed, form';
+const SAFE_NON_URL_ATTRIBUTES = new Set([
+  'aria-hidden',
+  'aria-label',
+  'aria-labelledby',
+  'charset',
+  'class',
+  'content',
+  'id',
+  'lang',
+  'name',
+  'rel',
+]);
+const URL_BEARING_ATTRIBUTES = new Set([
+  'about',
+  'action',
+  'archive',
+  'attributionsrc',
+  'background',
+  'cite',
+  'classid',
+  'code',
+  'codebase',
+  'data',
+  'datasrc',
+  'dynsrc',
+  'formaction',
+  'href',
+  'imagesrcset',
+  'itemid',
+  'longdesc',
+  'lowsrc',
+  'manifest',
+  'ping',
+  'poster',
+  'profile',
+  'resource',
+  'src',
+  'srcdoc',
+  'srcset',
+  'usemap',
+  'vocab',
+  'xlink:href',
+]);
+const ALLOWED_EXTERNAL_ANCHOR_URLS = new Set([
+  REPOSITORY_URL,
+  `${REPOSITORY_URL}/issues`,
+  'https://policies.google.com/privacy',
+  'https://www.google.com/chrome/terms/',
+  'https://developer.chrome.com/docs/webstore/program-policies/user-data-faq/',
+]);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -38,6 +88,10 @@ function assert(condition, message) {
 
 function isInside(path, directory) {
   return path === directory || path.startsWith(`${directory}${sep}`);
+}
+
+function stripUrlControlCharacters(value) {
+  return [...value].filter((character) => character.codePointAt(0) > 0x20).join('');
 }
 
 function readRequiredFile(rootDirectory, relativePath) {
@@ -81,6 +135,10 @@ function validateJobKeys(job, expectedKeys, jobName) {
 function validateWorkflow(rootDirectory) {
   const workflow = parseWorkflow(rootDirectory);
   assert(workflow && typeof workflow === 'object', 'Workflow YAML must contain an object');
+  assert(
+    isDeepStrictEqual(Object.keys(workflow).sort(), ['concurrency', 'jobs', 'name', 'on']),
+    'Top-level workflow keys must be exactly: name, on, concurrency, jobs',
+  );
   const triggers = workflow.on;
   assert(triggers && typeof triggers === 'object', 'Workflow triggers must be an object');
   assert(
@@ -286,9 +344,62 @@ function validateResources(document, relativeHtmlPath) {
     `HTML base elements are forbidden in dist-pages/${relativeHtmlPath}`,
   );
   assert(
+    document.querySelector('style') === null,
+    `Inline style elements are forbidden in dist-pages/${relativeHtmlPath}`,
+  );
+  assert(
     document.querySelectorAll(REQUEST_PRODUCING_SELECTOR).length === 0,
     `Request-producing HTML elements are forbidden in dist-pages/${relativeHtmlPath}`,
   );
+  for (const element of document.querySelectorAll('*')) {
+    for (const attribute of element.attributes) {
+      const attributeName = attribute.name.toLowerCase();
+      const attributeValue = attribute.value;
+      assert(
+        attributeName !== 'style',
+        `Style attributes are forbidden in dist-pages/${relativeHtmlPath}`,
+      );
+      assert(
+        !attributeName.startsWith('on'),
+        `Event attributes are forbidden in dist-pages/${relativeHtmlPath}`,
+      );
+      assert(
+        attributeName !== 'ping',
+        `Ping attributes are forbidden in dist-pages/${relativeHtmlPath}`,
+      );
+      if (URL_BEARING_ATTRIBUTES.has(attributeName)) {
+        const compactValue = stripUrlControlCharacters(attributeValue);
+        const isDataIcon =
+          element.localName === 'link' &&
+          element.getAttribute('rel') === 'icon' &&
+          attributeName === 'href' &&
+          attributeValue === 'data:,';
+        assert(
+          isDataIcon || !/^(?:data|javascript|vbscript):/iu.test(compactValue),
+          `Executable URL scheme is forbidden in dist-pages/${relativeHtmlPath}`,
+        );
+        assert(
+          attributeName === 'href' && ['a', 'link'].includes(element.localName),
+          `Unapproved URL-bearing attribute ${attribute.name} in dist-pages/${relativeHtmlPath}`,
+        );
+        if (element.localName === 'a') {
+          const isLocalHref =
+            attributeValue.startsWith('#') ||
+            attributeValue.startsWith('./') ||
+            attributeValue.startsWith(SITE_PREFIX);
+          assert(
+            isLocalHref || ALLOWED_EXTERNAL_ANCHOR_URLS.has(attributeValue),
+            `Anchor URL is outside the local and approved external contract: ${attributeValue}`,
+          );
+        }
+        continue;
+      }
+      assert(
+        SAFE_NON_URL_ATTRIBUTES.has(attributeName),
+        `Unapproved HTML attribute ${attribute.name} in dist-pages/${relativeHtmlPath}`,
+      );
+    }
+  }
   const expectedStylesheet =
     relativeHtmlPath === 'privacy/index.html'
       ? './style.css'
