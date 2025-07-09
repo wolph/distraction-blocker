@@ -1,4 +1,5 @@
-import type { SessionSnapshot, Settings } from '../../src/shared/types';
+import type { Worker } from '@playwright/test';
+import type { ListsConfig, SessionSnapshot, Settings } from '../../src/shared/types';
 import {
   clearNotifications,
   expect,
@@ -11,6 +12,43 @@ import {
   startTestSession,
   test,
 } from './fixtures';
+
+const PROJECTED_QUOTA_PREFIX: string = 'task7-system-quota:';
+
+async function fillSyncForProjectedQuota(worker: Worker): Promise<{
+  bytes: number;
+  quota: number;
+}> {
+  return await worker.evaluate(
+    async (prefix: string): Promise<{ bytes: number; quota: number }> => {
+      const quota: number = chrome.storage.sync.QUOTA_BYTES;
+      const itemQuota: number = chrome.storage.sync.QUOTA_BYTES_PER_ITEM;
+      const target: number = quota - 128;
+      let bytes: number = await chrome.storage.sync.getBytesInUse(null);
+      let index: number = 0;
+      while (bytes < target) {
+        const key: string = `${prefix}${String(index).padStart(2, '0')}`;
+        const remaining: number = target - bytes;
+        const valueLength: number = Math.max(1, Math.min(itemQuota - 256, remaining - 64));
+        await chrome.storage.sync.set({ [key]: 'q'.repeat(valueLength) });
+        bytes = await chrome.storage.sync.getBytesInUse(null);
+        index += 1;
+      }
+      return { bytes, quota };
+    },
+    PROJECTED_QUOTA_PREFIX,
+  );
+}
+
+async function clearProjectedQuotaFiller(worker: Worker): Promise<void> {
+  await worker.evaluate(async (prefix: string): Promise<void> => {
+    const stored: Record<string, unknown> = await chrome.storage.sync.get(null);
+    const keys: string[] = Object.keys(stored).filter((key: string): boolean =>
+      key.startsWith(prefix),
+    );
+    if (keys.length > 0) await chrome.storage.sync.remove(keys);
+  }, PROJECTED_QUOTA_PREFIX);
+}
 
 test('badge shows a countdown during focus and clears on completion', async ({
   extPage,
@@ -108,6 +146,74 @@ test('sync and local storage keep their documented split and quota', async ({
   expect(syncItems).not.toHaveProperty('streak');
 });
 
+test('projected first-Sync publication rejects total quota overflow and preserves local policy', async ({
+  extPage,
+  worker,
+}) => {
+  expect(
+    await sendExtensionRequest(extPage, {
+      type: 'setStorageMode',
+      storageMode: 'local',
+      deleteRemote: false,
+    }),
+  ).toEqual({ ok: true });
+  const originalLists: ListsConfig = await sendExtensionRequest(extPage, { type: 'getLists' });
+  const expandedLists: ListsConfig = {
+    ...originalLists,
+    custom: Array.from(
+      { length: 48 },
+      (_value: unknown, index: number): ListsConfig['custom'][number] => ({
+        kind: 'host',
+        pattern: `projected-quota-${String(index).padStart(2, '0')}.example`,
+      }),
+    ),
+  };
+  expect(
+    await sendExtensionRequest(extPage, { type: 'updateLists', lists: expandedLists }),
+  ).toEqual({ ok: true });
+
+  try {
+    const filled: { bytes: number; quota: number } = await fillSyncForProjectedQuota(worker);
+    expect(filled.bytes).toBeGreaterThanOrEqual(filled.quota - 128);
+    expect(filled.bytes).toBeLessThanOrEqual(filled.quota);
+
+    expect(
+      await sendExtensionRequest(extPage, {
+        type: 'setStorageMode',
+        storageMode: 'sync',
+        deleteRemote: false,
+      }),
+    ).toEqual({
+      error: expect.stringMatching(
+        /^SyncQuotaError: Cannot sync batch: \d+ bytes exceeds the 102400-byte limit/,
+      ),
+      ok: false,
+    });
+    await expect
+      .poll(async (): Promise<unknown> => {
+        const setup: unknown = await sendExtensionRequest(extPage, { type: 'getSetupState' });
+        return typeof setup === 'object' && setup !== null
+          ? (setup as Record<string, unknown>).syncWriteStatus
+          : null;
+      })
+      .toBe('error');
+    expect(await sendExtensionRequest(extPage, { type: 'getSetupState' })).toMatchObject({
+      storageError: 'sync-publish-failed',
+      storageMode: 'local',
+      syncWriteStatus: 'error',
+    });
+    expect(await sendExtensionRequest(extPage, { type: 'getLists' })).toEqual(expandedLists);
+    expect(
+      await worker.evaluate(
+        async (): Promise<number> => await chrome.storage.sync.getBytesInUse(null),
+      ),
+    ).toBeLessThanOrEqual(filled.quota);
+  } finally {
+    await clearProjectedQuotaFiller(worker);
+    await sendExtensionRequest(extPage, { type: 'updateLists', lists: originalLists });
+  }
+});
+
 test('an active schedule window starts a scheduled focus session', async ({ extPage, worker }) => {
   await clearNotifications(worker);
   await observeSoundMessages(extPage);
@@ -149,12 +255,15 @@ test('an active schedule window starts a scheduled focus session', async ({ extP
   ).toEqual({ ok: true });
 
   await expect
-    .poll(async (): Promise<string> => {
-      const snapshot: SessionSnapshot = await sendExtensionRequest(extPage, {
-        type: 'getSnapshot',
-      });
-      return snapshot.phase;
-    })
+    .poll(
+      async (): Promise<string> => {
+        const snapshot: SessionSnapshot = await sendExtensionRequest(extPage, {
+          type: 'getSnapshot',
+        });
+        return snapshot.phase;
+      },
+      { timeout: 15_000 },
+    )
     .toBe('focus');
   const snapshot: SessionSnapshot = await sendExtensionRequest(extPage, {
     type: 'getSnapshot',

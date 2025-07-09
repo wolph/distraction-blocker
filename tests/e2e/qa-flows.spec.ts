@@ -8,15 +8,15 @@ import type {
   Frame,
   Locator,
   Page,
+  Worker,
 } from '@playwright/test';
 import type { ListsConfig, SessionSnapshot, Settings, ThemeMode } from '../../src/shared/types';
 import {
   assertNoUnexpectedBrowserDiagnostics,
   type BrowserDiagnostics,
-  createBrowserDiagnostics,
-  monitorBrowserContext,
 } from './browser-diagnostics';
 import {
+  browserDiagnosticsFor,
   clearNotifications,
   expect,
   hasOffscreenAudioDocument,
@@ -28,6 +28,15 @@ import {
   startTestSession,
   test,
 } from './fixtures';
+import {
+  assertTask7BuildProvenance,
+  assertTask7ResolvedTheme,
+  readTask7BuildProvenance,
+  type Task7BuildProvenance,
+  type Task7ResolvedTheme,
+  type Task7ThemeCase,
+  type Task7ThemeSurface,
+} from './task7-evidence';
 
 test.setTimeout(60_000);
 
@@ -42,12 +51,6 @@ const THEME_LABEL: Readonly<Record<ThemeMode, string>> = {
   light: 'Light',
   dark: 'Dark',
 };
-
-interface Task7ThemeCase {
-  colorScheme: 'dark' | 'light';
-  id: 'auto-dark' | 'auto-light' | 'dark-light-media' | 'light-dark-media';
-  theme: ThemeMode;
-}
 
 interface Task7EvidenceRecord {
   buildSource: 'production';
@@ -164,13 +167,12 @@ async function task7FileRecord(
 }
 
 async function captureTask7MatrixEvidence(
+  evidenceDir: string,
   target: Locator | Page,
   stem: string,
   metadata: Omit<Task7EvidenceRecord, 'bytes' | 'file' | 'sha256'>,
   fullPage: boolean = false,
 ): Promise<Task7EvidenceRecord | null> {
-  const evidenceDir: string | undefined = process.env.TASK7_EVIDENCE_DIR;
-  if (evidenceDir === undefined) return null;
   const absoluteDir: string = path.resolve(evidenceDir);
   const absolutePath: string = path.join(absoluteDir, `${stem}.png`);
   await mkdir(absoluteDir, { recursive: true });
@@ -183,13 +185,12 @@ async function captureTask7MatrixEvidence(
 }
 
 async function captureTask7ClipEvidence(
+  evidenceDir: string,
   page: Page,
   stem: string,
   metadata: Omit<Task7EvidenceRecord, 'bytes' | 'file' | 'sha256'>,
   clip: { height: number; width: number; x: number; y: number },
 ): Promise<Task7EvidenceRecord | null> {
-  const evidenceDir: string | undefined = process.env.TASK7_EVIDENCE_DIR;
-  if (evidenceDir === undefined) return null;
   const absoluteDir: string = path.resolve(evidenceDir);
   const absolutePath: string = path.join(absoluteDir, `${stem}.png`);
   await mkdir(absoluteDir, { recursive: true });
@@ -204,7 +205,11 @@ function appendTask7Record(
   if (record !== null) records.push(record);
 }
 
-async function applyTask7ThemeCase(page: Page, themeCase: Task7ThemeCase): Promise<void> {
+async function applyTask7ThemeCase(
+  page: Page,
+  themeCase: Task7ThemeCase,
+  surface: Exclude<Task7ThemeSurface, 'overlay'>,
+): Promise<void> {
   await page.emulateMedia({ colorScheme: themeCase.colorScheme });
   expect(
     await page.evaluate(
@@ -215,6 +220,24 @@ async function applyTask7ThemeCase(page: Page, themeCase: Task7ThemeCase): Promi
   ).toEqual({ ok: true });
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-theme', themeCase.theme);
+  await expectTask7ResolvedPageTheme(page, themeCase, surface);
+}
+
+async function expectTask7ResolvedPageTheme(
+  page: Page,
+  themeCase: Task7ThemeCase,
+  surface: Exclude<Task7ThemeSurface, 'overlay'>,
+): Promise<void> {
+  const resolved: Task7ResolvedTheme = await page.evaluate((): Task7ResolvedTheme => {
+    const root: CSSStyleDeclaration = getComputedStyle(document.documentElement);
+    const body: CSSStyleDeclaration = getComputedStyle(document.body);
+    return {
+      backgroundColor: body.backgroundColor,
+      color: body.color,
+      colorScheme: root.colorScheme,
+    };
+  });
+  expect((): void => assertTask7ResolvedTheme(resolved, themeCase, surface)).not.toThrow();
 }
 
 function task7Metadata(
@@ -494,49 +517,50 @@ test('Options exposes destination saving, category states, and scoped privacy co
   await expect(deleteRemote).toBeFocused();
 });
 
-test('Task 7 production evidence matrix is reproducible', async ({
-  context,
-  extPage,
-  extensionId,
-  siteUrl,
-  worker,
-}) => {
-  test.setTimeout(360_000);
-  const evidenceDir: string | undefined = process.env.TASK7_EVIDENCE_DIR;
-  if (evidenceDir === undefined) {
-    await expectPageTheme(extPage, 'auto');
-    return;
-  }
-
-  const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
-  monitorBrowserContext(context, diagnostics);
-  const records: Task7EvidenceRecord[] = [];
-  const popupGeometry: Record<string, unknown>[] = [];
-  const optionsGeometry: Record<string, unknown>[] = [];
-  const privacyGeometry: Record<string, unknown>[] = [];
-  const overlayGeometry: Record<string, unknown>[] = [];
-  const capture = async (
+interface Task7CaptureContext {
+  capture(
     target: Locator | Page,
     surface: Task7EvidenceRecord['surface'],
     state: string,
     themeCase: Task7ThemeCase,
     viewport: { height: number; width: number },
     scope: Task7EvidenceRecord['scope'],
-    fullPage: boolean = false,
-  ): Promise<void> => {
-    appendTask7Record(
-      records,
-      await captureTask7MatrixEvidence(
-        target,
-        `task7-production-${surface}-${themeCase.id}-${String(viewport.width)}-${state}-${scope}`,
-        task7Metadata(themeCase, viewport, surface, state, scope),
-        fullPage,
-      ),
-    );
-  };
+    fullPage?: boolean,
+  ): Promise<void>;
+  evidenceDir: string;
+  records: Task7EvidenceRecord[];
+}
 
-  const lists: ListsConfig = await sendExtensionRequest(extPage, { type: 'getLists' });
-  const longLists: ListsConfig = {
+function createTask7CaptureContext(evidenceDir: string): Task7CaptureContext {
+  const records: Task7EvidenceRecord[] = [];
+  return {
+    evidenceDir,
+    records,
+    capture: async (
+      target: Locator | Page,
+      surface: Task7EvidenceRecord['surface'],
+      state: string,
+      themeCase: Task7ThemeCase,
+      viewport: { height: number; width: number },
+      scope: Task7EvidenceRecord['scope'],
+      fullPage: boolean = false,
+    ): Promise<void> => {
+      appendTask7Record(
+        records,
+        await captureTask7MatrixEvidence(
+          evidenceDir,
+          target,
+          `task7-production-${surface}-${themeCase.id}-${String(viewport.width)}-${state}-${scope}`,
+          task7Metadata(themeCase, viewport, surface, state, scope),
+          fullPage,
+        ),
+      );
+    },
+  };
+}
+
+function task7LongLists(lists: ListsConfig): ListsConfig {
+  return {
     ...lists,
     custom: Array.from({ length: 18 }, (_unused: unknown, index: number) => ({
       kind: 'host' as const,
@@ -559,224 +583,347 @@ test('Task 7 production evidence matrix is reproducible', async ({
       forums: true,
     },
   };
-  expect(await sendExtensionRequest(extPage, { type: 'updateLists', lists: longLists })).toEqual({
-    ok: true,
-  });
+}
 
-  const popupViewport = { height: 760, width: 340 };
-  await extPage.setViewportSize(popupViewport);
+async function captureTask7PopupMatrix(input: {
+  capture: Task7CaptureContext;
+  page: Page;
+  viewport: { height: number; width: number };
+}): Promise<Record<string, unknown>[]> {
+  const geometry: Record<string, unknown>[] = [];
+  await input.page.setViewportSize(input.viewport);
   for (const themeCase of TASK7_THEME_CASES) {
-    await applyTask7ThemeCase(extPage, themeCase);
-    await expect(extPage.getByRole('heading', { name: 'What will be blocked' })).toBeVisible();
-    await capture(extPage, 'popup', 'block', themeCase, popupViewport, 'full', true);
-    await capture(
-      extPage.locator('.rule-summary'),
-      'popup',
-      'block-summary',
-      themeCase,
-      popupViewport,
-      'focused',
-    );
-
-    const ruleScroll: Locator = extPage.getByRole('region', { name: 'Session rule details' });
-    const scrollGeometry: Record<string, number> = await ruleScroll.evaluate(
-      (element: HTMLElement): Record<string, number> => {
-        element.scrollTop = element.scrollHeight;
-        const rect: DOMRect = element.getBoundingClientRect();
-        return {
-          bottom: rect.bottom,
-          clientHeight: element.clientHeight,
-          clientWidth: element.clientWidth,
-          left: rect.left,
-          right: rect.right,
-          scrollHeight: element.scrollHeight,
-          scrollTop: element.scrollTop,
-          scrollWidth: element.scrollWidth,
-          top: rect.top,
-        };
-      },
-    );
-    await ruleScroll.focus();
-    expect(scrollGeometry.scrollTop).toBeGreaterThan(0);
-    expect(scrollGeometry.clientWidth).toBe(scrollGeometry.scrollWidth);
-    await capture(extPage, 'popup', 'long-list-scrolled-focus', themeCase, popupViewport, 'full');
-    await capture(
-      ruleScroll,
-      'popup',
-      'long-list-scrolled-focus',
-      themeCase,
-      popupViewport,
-      'focused',
-    );
-
-    const flexible: Locator = extPage.getByRole('button', { name: 'Flexible' });
-    await flexible.hover();
-    const flexibleTooltip: Locator = extPage
-      .getByRole('tooltip')
-      .filter({ hasText: 'End the session immediately' });
-    await expectWithinViewport(flexibleTooltip);
-    await capture(extPage, 'popup', 'flexible-hover', themeCase, popupViewport, 'full');
-    await capture(flexibleTooltip, 'popup', 'flexible-hover', themeCase, popupViewport, 'focused');
-    await extPage.mouse.move(0, 0);
-    await expect(flexibleTooltip).toHaveCount(0);
-
-    const friction: Locator = extPage.getByRole('button', { name: 'Friction' });
-    await friction.focus();
-    const frictionTooltip: Locator = extPage
-      .getByRole('tooltip')
-      .filter({ hasText: 'Ending early requires a 10-second wait' });
-    await expectWithinViewport(frictionTooltip);
-    await capture(extPage, 'popup', 'friction-focus', themeCase, popupViewport, 'full');
-    await capture(frictionTooltip, 'popup', 'friction-focus', themeCase, popupViewport, 'focused');
-    await friction.press('Escape');
-
-    const hard: Locator = extPage.getByRole('button', { name: 'Hard lock' });
-    await hard.click();
-    const hardTooltip: Locator = extPage
-      .getByRole('tooltip')
-      .filter({ hasText: 'The session cannot end early' });
-    await expectWithinViewport(hardTooltip);
-    await capture(extPage, 'popup', 'hard-click', themeCase, popupViewport, 'full');
-    await capture(hardTooltip, 'popup', 'hard-click', themeCase, popupViewport, 'focused');
-    await extPage.keyboard.press('Escape');
-
-    await extPage.getByRole('radio', { name: /Allow selected sites only/ }).check();
-    const allowInput: Locator = extPage.getByLabel('Add an allowed domain');
-    await allowInput.fill('https://user@example.com/private');
-    await extPage.getByRole('button', { name: 'Add allowed domain' }).click();
-    const invalidDomain: Locator = extPage.getByRole('alert');
-    await expect(invalidDomain).toHaveText('Enter a valid domain such as docs.example.com.');
-    await expectWithinViewport(invalidDomain);
-    await capture(extPage, 'popup', 'allow-invalid', themeCase, popupViewport, 'full', true);
-    await capture(invalidDomain, 'popup', 'allow-invalid', themeCase, popupViewport, 'focused');
-
-    const documentGeometry: { clientWidth: number; scrollWidth: number } = await extPage.evaluate(
-      (): { clientWidth: number; scrollWidth: number } => ({
-        clientWidth: document.documentElement.clientWidth,
-        scrollWidth: document.documentElement.scrollWidth,
-      }),
-    );
-    expect(documentGeometry.scrollWidth).toBe(documentGeometry.clientWidth);
-    popupGeometry.push({
-      document: documentGeometry,
-      ruleScroll: scrollGeometry,
-      themeCase: themeCase.id,
-      viewport: popupViewport,
-    });
-  }
-
-  expect(await sendExtensionRequest(extPage, { type: 'updateLists', lists })).toEqual({ ok: true });
-  const optionsPage: Page = await context.newPage();
-  const pageViewports: readonly { height: number; width: number }[] = [
-    { height: 667, width: 375 },
-    { height: 800, width: 768 },
-    { height: 800, width: 1280 },
-  ];
-  for (const themeCase of TASK7_THEME_CASES) {
-    for (const viewport of pageViewports) {
-      await optionsPage.setViewportSize(viewport);
-      await optionsPage.goto(`chrome-extension://${extensionId}/src/options/options.html#blocking`);
-      await applyTask7ThemeCase(optionsPage, themeCase);
-      const socialRow: Locator = optionsPage
-        .locator('.cat-row')
-        .filter({ hasText: 'Social media' });
-      const showSocial: Locator = socialRow.getByRole('button', {
-        name: 'Show Social media sites',
-      });
-      await showSocial.focus();
-      const socialContainer: Locator = socialRow.locator('xpath=..');
-      await capture(
-        optionsPage,
-        'options',
-        'category-off-focus',
+    await test.step(`popup ${themeCase.id} ${String(input.viewport.width)} block and help states`, async () => {
+      await applyTask7ThemeCase(input.page, themeCase, 'popup');
+      await expect(input.page.getByRole('heading', { name: 'What will be blocked' })).toBeVisible();
+      await input.capture.capture(
+        input.page,
+        'popup',
+        'block',
         themeCase,
-        viewport,
+        input.viewport,
         'full',
         true,
       );
-      await capture(
-        socialContainer,
-        'options',
-        'category-off-focus',
+      await input.capture.capture(
+        input.page.locator('.rule-summary'),
+        'popup',
+        'block-summary',
         themeCase,
-        viewport,
+        input.viewport,
         'focused',
       );
 
-      const categoryStateGaps: number[] = await optionsPage
-        .locator('.category-state')
-        .evaluateAll((states: Element[]): number[] =>
-          states.map((state: Element): number => {
-            const row: Element | null = state.previousElementSibling;
-            if (row === null) throw new Error('Category state has no preceding category row.');
-            return state.getBoundingClientRect().top - row.getBoundingClientRect().bottom;
-          }),
-        );
-      expect(categoryStateGaps).toHaveLength(7);
-      for (const gap of categoryStateGaps) expect(gap).toBeGreaterThanOrEqual(0);
-
-      await showSocial.click();
-      await optionsPage.getByRole('checkbox', { name: 'facebook.com' }).uncheck();
-      await socialRow.getByRole('checkbox', { name: 'Social media' }).check();
-      const saveBar: Locator = optionsPage.locator('.dirty-save-bar');
-      await expect(saveBar.getByText('Unsaved changes')).toBeVisible();
-      await optionsPage.evaluate((): void =>
-        window.scrollTo(0, document.documentElement.scrollHeight),
-      );
-      await expectWithinViewport(saveBar);
-      await capture(optionsPage, 'options', 'partial-dirty', themeCase, viewport, 'full', true);
-      await capture(socialContainer, 'options', 'partial-category', themeCase, viewport, 'focused');
-      await capture(saveBar, 'options', 'sticky-save', themeCase, viewport, 'focused');
-
-      const optionBounds: Record<string, unknown> = await optionsPage.evaluate(() => {
-        const bar: Element | null = document.querySelector('.dirty-save-bar');
-        if (bar === null) throw new Error('Dirty save bar is unavailable.');
-        const rect: DOMRect = bar.getBoundingClientRect();
-        return {
-          categoryStateGaps: Array.from(document.querySelectorAll('.category-state')).map(
-            (state: Element): number => {
-              const row: Element | null = state.previousElementSibling;
-              if (row === null) throw new Error('Category state has no preceding row.');
-              return state.getBoundingClientRect().top - row.getBoundingClientRect().bottom;
-            },
-          ),
-          clientWidth: document.documentElement.clientWidth,
-          saveBar: {
-            bottom: rect.bottom,
-            left: rect.left,
-            position: getComputedStyle(bar).position,
-            right: rect.right,
-            top: rect.top,
-          },
-          scrollWidth: document.documentElement.scrollWidth,
-        };
+      const ruleScroll: Locator = input.page.getByRole('region', {
+        name: 'Session rule details',
       });
-      expect(optionBounds.scrollWidth).toBe(optionBounds.clientWidth);
-      optionsGeometry.push({ themeCase: themeCase.id, viewport, ...optionBounds });
-      await saveBar.getByRole('button', { name: 'Discard changes' }).click();
+      const scrollGeometry: Record<string, number> = await ruleScroll.evaluate(
+        (element: HTMLElement): Record<string, number> => {
+          element.scrollTop = element.scrollHeight;
+          const rect: DOMRect = element.getBoundingClientRect();
+          return {
+            bottom: rect.bottom,
+            clientHeight: element.clientHeight,
+            clientWidth: element.clientWidth,
+            left: rect.left,
+            right: rect.right,
+            scrollHeight: element.scrollHeight,
+            scrollTop: element.scrollTop,
+            scrollWidth: element.scrollWidth,
+            top: rect.top,
+          };
+        },
+      );
+      await ruleScroll.focus();
+      expect(scrollGeometry.scrollTop).toBeGreaterThan(0);
+      expect(scrollGeometry.clientWidth).toBe(scrollGeometry.scrollWidth);
+      await input.capture.capture(
+        input.page,
+        'popup',
+        'long-list-scrolled-focus',
+        themeCase,
+        input.viewport,
+        'full',
+      );
+      await input.capture.capture(
+        ruleScroll,
+        'popup',
+        'long-list-scrolled-focus',
+        themeCase,
+        input.viewport,
+        'focused',
+      );
+
+      const helpCases: readonly {
+        action: 'click' | 'focus' | 'hover';
+        button: string;
+        state: string;
+        text: string;
+      }[] = [
+        {
+          action: 'hover',
+          button: 'Flexible',
+          state: 'flexible-hover',
+          text: 'End the session immediately',
+        },
+        {
+          action: 'focus',
+          button: 'Friction',
+          state: 'friction-focus',
+          text: 'Ending early requires a 10-second wait',
+        },
+        {
+          action: 'click',
+          button: 'Hard lock',
+          state: 'hard-click',
+          text: 'The session cannot end early',
+        },
+      ];
+      for (const helpCase of helpCases) {
+        const button: Locator = input.page.getByRole('button', { name: helpCase.button });
+        await button[helpCase.action]();
+        const tooltip: Locator = input.page.getByRole('tooltip').filter({
+          hasText: helpCase.text,
+        });
+        await expectWithinViewport(tooltip);
+        await input.capture.capture(
+          input.page,
+          'popup',
+          helpCase.state,
+          themeCase,
+          input.viewport,
+          'full',
+        );
+        await input.capture.capture(
+          tooltip,
+          'popup',
+          helpCase.state,
+          themeCase,
+          input.viewport,
+          'focused',
+        );
+        if (helpCase.action === 'hover') await input.page.mouse.move(0, 0);
+        else await input.page.keyboard.press('Escape');
+        await expect(tooltip).toHaveCount(0);
+      }
+
+      await input.page.getByRole('radio', { name: /Allow selected sites only/ }).check();
+      await input.page.getByLabel('Add an allowed domain').fill('https://user@example.com/private');
+      await input.page.getByRole('button', { name: 'Add allowed domain' }).click();
+      const invalidDomain: Locator = input.page.getByRole('alert');
+      await expect(invalidDomain).toHaveText('Enter a valid domain such as docs.example.com.');
+      await expectWithinViewport(invalidDomain);
+      await input.capture.capture(
+        input.page,
+        'popup',
+        'allow-invalid',
+        themeCase,
+        input.viewport,
+        'full',
+        true,
+      );
+      await input.capture.capture(
+        invalidDomain,
+        'popup',
+        'allow-invalid',
+        themeCase,
+        input.viewport,
+        'focused',
+      );
+      const documentGeometry = await input.page.evaluate(() => ({
+        clientWidth: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+      }));
+      expect(documentGeometry.scrollWidth).toBe(documentGeometry.clientWidth);
+      geometry.push({
+        document: documentGeometry,
+        ruleScroll: scrollGeometry,
+        themeCase: themeCase.id,
+        viewport: input.viewport,
+      });
+    });
+  }
+  return geometry;
+}
+
+interface Task7Rectangle {
+  bottom: number;
+  left: number;
+  right: number;
+  top: number;
+}
+
+function task7RectanglesIntersect(left: Task7Rectangle, right: Task7Rectangle): boolean {
+  return (
+    left.left < right.right &&
+    left.right > right.left &&
+    left.top < right.bottom &&
+    left.bottom > right.top
+  );
+}
+
+async function captureTask7OptionsMatrix(input: {
+  capture: Task7CaptureContext;
+  extensionId: string;
+  page: Page;
+  viewports: readonly { height: number; width: number }[];
+}): Promise<Record<string, unknown>[]> {
+  const geometry: Record<string, unknown>[] = [];
+  for (const themeCase of TASK7_THEME_CASES) {
+    for (const viewport of input.viewports) {
+      await test.step(`options ${themeCase.id} ${String(viewport.width)} category and save states`, async () => {
+        await input.page.setViewportSize(viewport);
+        await input.page.goto(
+          `chrome-extension://${input.extensionId}/src/options/options.html#blocking`,
+        );
+        await applyTask7ThemeCase(input.page, themeCase, 'options');
+        const socialRow: Locator = input.page
+          .locator('.cat-row')
+          .filter({ hasText: 'Social media' });
+        const socialContainer: Locator = socialRow.locator('xpath=..');
+        const showSocial: Locator = socialRow.getByRole('button', {
+          name: 'Show Social media sites',
+        });
+        const saveBar: Locator = input.page.locator('.dirty-save-bar');
+        await expect(saveBar.getByText('No unsaved changes')).toBeVisible();
+        await expect(saveBar).not.toHaveClass(/dirty-save-bar--sticky/);
+        const cleanPosition: string = await saveBar.evaluate(
+          (element: Element): string => getComputedStyle(element).position,
+        );
+        expect(cleanPosition).not.toBe('sticky');
+        const cleanSaveBarBounds: Task7Rectangle = await saveBar.evaluate(
+          (element: Element): Task7Rectangle => {
+            const rect: DOMRect = element.getBoundingClientRect();
+            return { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top };
+          },
+        );
+        const categoryBounds: Task7Rectangle[] = await input.page
+          .locator('.cat-row, .category-state')
+          .evaluateAll((elements: Element[]): Task7Rectangle[] =>
+            elements.map((element: Element): Task7Rectangle => {
+              const rect: DOMRect = element.getBoundingClientRect();
+              return { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top };
+            }),
+          );
+        expect(
+          categoryBounds.some((bounds: Task7Rectangle): boolean =>
+            task7RectanglesIntersect(cleanSaveBarBounds, bounds),
+          ),
+        ).toBe(false);
+        await showSocial.focus();
+        await input.capture.capture(
+          input.page,
+          'options',
+          'category-off-focus',
+          themeCase,
+          viewport,
+          'full',
+          true,
+        );
+        await input.capture.capture(
+          socialContainer,
+          'options',
+          'category-off-focus',
+          themeCase,
+          viewport,
+          'focused',
+        );
+
+        const categoryStateGaps: number[] = await input.page
+          .locator('.category-state')
+          .evaluateAll((states: Element[]): number[] =>
+            states.map((state: Element): number => {
+              const row: Element | null = state.previousElementSibling;
+              if (row === null) throw new Error('Category state has no preceding category row.');
+              return state.getBoundingClientRect().top - row.getBoundingClientRect().bottom;
+            }),
+          );
+        expect(categoryStateGaps).toHaveLength(7);
+        for (const gap of categoryStateGaps) expect(gap).toBeGreaterThanOrEqual(0);
+
+        await showSocial.click();
+        await input.page.getByRole('checkbox', { name: 'facebook.com' }).uncheck();
+        await socialRow.getByRole('checkbox', { name: 'Social media' }).check();
+        await expect(saveBar.getByText('Unsaved changes')).toBeVisible();
+        await expect(saveBar).toHaveClass(/dirty-save-bar--sticky/);
+        expect(
+          await saveBar.evaluate((element: Element): string => getComputedStyle(element).position),
+        ).toBe('sticky');
+        await socialRow.scrollIntoViewIfNeeded();
+        const dirtyBounds: { bar: Task7Rectangle; target: Task7Rectangle } =
+          await input.page.evaluate((): { bar: Task7Rectangle; target: Task7Rectangle } => {
+            const bar: Element | null = document.querySelector('.dirty-save-bar');
+            const target: Element | undefined = [...document.querySelectorAll('.cat-row')].find(
+              (row: Element): boolean => row.textContent?.includes('Social media') ?? false,
+            );
+            if (bar === null || target === undefined)
+              throw new Error('Save bar target unavailable.');
+            const toBounds = (element: Element): Task7Rectangle => {
+              const rect: DOMRect = element.getBoundingClientRect();
+              return { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top };
+            };
+            return { bar: toBounds(bar), target: toBounds(target) };
+          });
+        expect(task7RectanglesIntersect(dirtyBounds.bar, dirtyBounds.target)).toBe(false);
+        await expectWithinViewport(saveBar);
+        await input.capture.capture(
+          input.page,
+          'options',
+          'partial-dirty',
+          themeCase,
+          viewport,
+          'full',
+          true,
+        );
+        await input.capture.capture(
+          socialRow,
+          'options',
+          'partial-category',
+          themeCase,
+          viewport,
+          'focused',
+        );
+        await input.capture.capture(
+          saveBar,
+          'options',
+          'sticky-save',
+          themeCase,
+          viewport,
+          'focused',
+        );
+        const documentGeometry = await input.page.evaluate(() => ({
+          clientWidth: document.documentElement.clientWidth,
+          scrollWidth: document.documentElement.scrollWidth,
+        }));
+        expect(documentGeometry.scrollWidth).toBe(documentGeometry.clientWidth);
+        geometry.push({
+          categoryStateGaps,
+          cleanSaveBar: { bounds: cleanSaveBarBounds, position: cleanPosition },
+          clientWidth: documentGeometry.clientWidth,
+          dirtySaveBar: { ...dirtyBounds.bar, position: 'sticky' },
+          dirtyTarget: dirtyBounds.target,
+          intersections: { cleanCategories: false, dirtyTarget: false },
+          scrollWidth: documentGeometry.scrollWidth,
+          themeCase: themeCase.id,
+          viewport,
+        });
+        await saveBar.getByRole('button', { name: 'Discard changes' }).click();
+        await expect(saveBar).not.toHaveClass(/dirty-save-bar--sticky/);
+      });
     }
   }
+  return geometry;
+}
 
-  expect(
-    await sendExtensionRequest(extPage, {
-      type: 'setStorageMode',
-      storageMode: 'local',
-      deleteRemote: false,
-    }),
-  ).toEqual({ ok: true });
-  const setupAfterLocalSelection: unknown = await extPage.evaluate(
-    async (): Promise<unknown> => await chrome.runtime.sendMessage({ type: 'getSetupState' }),
-  );
-  expect(setupAfterLocalSelection).toMatchObject({
-    storageMode: 'local',
-    syncWriteStatus: 'idle',
-  });
-  expect(await sendExtensionRequest(extPage, { type: 'updateLists', lists: longLists })).toEqual({
-    ok: true,
-  });
-  const syncFiller: { bytes: number; keys: string[]; quota: number } = await worker.evaluate(
-    async (): Promise<{ bytes: number; keys: string[]; quota: number }> => {
-      const prefix: string = '__focusLockTask7EvidenceQuota:';
+const TASK7_SYNC_FILLER_PREFIX: string = '__focusLockTask7EvidenceQuota:';
+
+async function fillTask7SyncQuota(worker: Worker): Promise<{
+  bytes: number;
+  keys: string[];
+  quota: number;
+}> {
+  return await worker.evaluate(
+    async (prefix: string): Promise<{ bytes: number; keys: string[]; quota: number }> => {
       const quota: number = chrome.storage.sync.QUOTA_BYTES;
       const itemQuota: number = chrome.storage.sync.QUOTA_BYTES_PER_ITEM;
       const target: number = quota - 128;
@@ -794,20 +941,363 @@ test('Task 7 production evidence matrix is reproducible', async ({
       }
       return { bytes, keys, quota };
     },
+    TASK7_SYNC_FILLER_PREFIX,
   );
-  expect(syncFiller.bytes).toBeGreaterThanOrEqual(syncFiller.quota - 128);
-  const setupAfterSyncFiller: unknown = await extPage.evaluate(
-    async (): Promise<unknown> => await chrome.runtime.sendMessage({ type: 'getSetupState' }),
-  );
-  expect(setupAfterSyncFiller).toMatchObject({
-    storageMode: 'local',
-    syncWriteStatus: 'idle',
-  });
-  await optionsPage.setViewportSize(pageViewports[0] as { height: number; width: number });
-  await optionsPage.goto(`chrome-extension://${extensionId}/src/options/options.html#privacy`);
-  await optionsPage.reload();
+}
 
+async function clearTask7SyncQuota(worker: Worker): Promise<void> {
+  await worker.evaluate(async (prefix: string): Promise<void> => {
+    const stored: Record<string, unknown> = await chrome.storage.sync.get(null);
+    const keys: string[] = Object.keys(stored).filter((key: string): boolean =>
+      key.startsWith(prefix),
+    );
+    if (keys.length > 0) await chrome.storage.sync.remove(keys);
+  }, TASK7_SYNC_FILLER_PREFIX);
+}
+
+async function prepareTask7PrivacySyncError(input: {
+  extensionId: string;
+  page: Page;
+  policyPage: Page;
+  themeCase: Task7ThemeCase;
+  viewport: { height: number; width: number };
+}): Promise<Locator> {
+  expect(
+    await sendExtensionRequest(input.policyPage, {
+      type: 'setStorageMode',
+      storageMode: 'local',
+      deleteRemote: false,
+    }),
+  ).toEqual({ ok: true });
+  await input.page.setViewportSize(input.viewport);
+  await input.page.goto(`chrome-extension://${input.extensionId}/src/options/options.html#privacy`);
+  await applyTask7ThemeCase(input.page, input.themeCase, 'privacy');
+  const syncSwitch: Locator = input.page.getByRole('switch', {
+    name: 'Sync Focus Lock data across Chrome devices',
+  });
+  await expect(syncSwitch).not.toBeChecked();
+  expect(
+    await input.policyPage.evaluate(async (): Promise<boolean> => {
+      const settings: unknown = await chrome.runtime.sendMessage({ type: 'getSettings' });
+      if (typeof settings !== 'object' || settings === null || Array.isArray(settings))
+        return false;
+      await chrome.storage.sync.set({ settings });
+      return true;
+    }),
+  ).toBe(true);
+  await syncSwitch.click();
+  await expect(input.page.getByRole('alert')).toContainText('SyncQuotaError: Cannot sync batch:');
+  await expect
+    .poll(async (): Promise<unknown> => {
+      const setup: unknown = await sendExtensionRequest(input.policyPage, {
+        type: 'getSetupState',
+      });
+      return typeof setup === 'object' && setup !== null
+        ? (setup as Record<string, unknown>).syncWriteStatus
+        : null;
+    })
+    .toBe('error');
+  expect(await sendExtensionRequest(input.policyPage, { type: 'getSetupState' })).toMatchObject({
+    storageError: 'sync-publish-failed',
+    storageMode: 'local',
+    syncWriteStatus: 'error',
+  });
+  await input.page.emulateMedia({ colorScheme: input.themeCase.colorScheme });
+  await input.page.reload();
+  await expect(input.page.locator('html')).toHaveAttribute('data-theme', input.themeCase.theme);
+  await expectTask7ResolvedPageTheme(input.page, input.themeCase, 'privacy');
+  const syncError: Locator = input.page.getByRole('alert');
+  await expect(syncError).toHaveText(
+    'Chrome Sync could not save your latest changes. Your local save is safe.',
+  );
+  return syncError;
+}
+
+async function captureTask7PrivacyMatrix(input: {
+  capture: Task7CaptureContext;
+  extensionId: string;
+  page: Page;
+  policyPage: Page;
+  viewports: readonly { height: number; width: number }[];
+}): Promise<Record<string, unknown>[]> {
+  const geometry: Record<string, unknown>[] = [];
   for (const themeCase of TASK7_THEME_CASES) {
+    for (const viewport of input.viewports) {
+      await test.step(`privacy ${themeCase.id} ${String(viewport.width)} error and confirmations`, async () => {
+        const syncError: Locator = await prepareTask7PrivacySyncError({
+          extensionId: input.extensionId,
+          page: input.page,
+          policyPage: input.policyPage,
+          themeCase,
+          viewport,
+        });
+        await expect(input.page.getByRole('heading', { name: 'Privacy and data' })).toBeVisible();
+        await input.capture.capture(
+          input.page,
+          'privacy',
+          'sync-error',
+          themeCase,
+          viewport,
+          'full',
+          true,
+        );
+        await input.capture.capture(
+          syncError,
+          'privacy',
+          'sync-error',
+          themeCase,
+          viewport,
+          'focused',
+        );
+
+        const deleteLocal: Locator = input.page.getByRole('button', {
+          name: 'Delete local history',
+        });
+        await deleteLocal.click();
+        const localDialog: Locator = input.page.getByRole('dialog', {
+          name: 'Delete local history?',
+        });
+        await expect(localDialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+        await expectWithinViewport(localDialog);
+        await input.capture.capture(
+          input.page,
+          'privacy',
+          'local-confirm',
+          themeCase,
+          viewport,
+          'full',
+          true,
+        );
+        await input.capture.capture(
+          localDialog,
+          'privacy',
+          'local-confirm',
+          themeCase,
+          viewport,
+          'focused',
+        );
+        const localBounds = await localDialog.boundingBox();
+        await input.page.keyboard.press('Escape');
+        await expect(deleteLocal).toBeFocused();
+
+        const deleteRemote: Locator = input.page.getByRole('button', {
+          name: 'Delete remote Sync data',
+        });
+        await deleteRemote.click();
+        const remoteDialog: Locator = input.page.getByRole('dialog', {
+          name: 'Delete remote Sync data?',
+        });
+        await expect(remoteDialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+        await expectWithinViewport(remoteDialog);
+        await input.capture.capture(
+          input.page,
+          'privacy',
+          'remote-confirm',
+          themeCase,
+          viewport,
+          'full',
+          true,
+        );
+        await input.capture.capture(
+          remoteDialog,
+          'privacy',
+          'remote-confirm',
+          themeCase,
+          viewport,
+          'focused',
+        );
+        const remoteBounds = await remoteDialog.boundingBox();
+        await input.page.keyboard.press('Escape');
+        await expect(deleteRemote).toBeFocused();
+        const documentGeometry = await input.page.evaluate(() => ({
+          clientWidth: document.documentElement.clientWidth,
+          scrollWidth: document.documentElement.scrollWidth,
+        }));
+        expect(documentGeometry.scrollWidth).toBe(documentGeometry.clientWidth);
+        geometry.push({
+          document: documentGeometry,
+          localDialog: localBounds,
+          remoteDialog: remoteBounds,
+          themeCase: themeCase.id,
+          viewport,
+        });
+      });
+    }
+  }
+  return geometry;
+}
+
+async function captureTask7OverlayMatrix(input: {
+  capture: Task7CaptureContext;
+  controlPage: Page;
+  page: Page;
+  viewports: readonly { height: number; width: number }[];
+}): Promise<Record<string, unknown>[]> {
+  const geometry: Record<string, unknown>[] = [];
+  for (const themeCase of TASK7_THEME_CASES) {
+    for (const viewport of input.viewports) {
+      await test.step(`overlay ${themeCase.id} ${String(viewport.width)} provenance`, async () => {
+        await input.page.setViewportSize(viewport);
+        await input.page.emulateMedia({ colorScheme: themeCase.colorScheme });
+        await input.controlPage.bringToFront();
+        await applyTask7ThemeCase(input.controlPage, themeCase, 'popup');
+        const overlay: Locator = input.page.locator('focus-lock-overlay');
+        const handle: ElementHandle<HTMLElement | SVGElement> = await overlayHandle(input.page);
+        await expectOverlayTheme(handle, themeCase.theme);
+        const resolved: Task7ResolvedTheme = await handle.evaluate(
+          (host: HTMLElement | SVGElement): Task7ResolvedTheme => {
+            const style: CSSStyleDeclaration = getComputedStyle(host);
+            return {
+              backgroundColor: style.getPropertyValue('--overlay-bg').trim(),
+              color: style.getPropertyValue('--overlay-text').trim(),
+              colorScheme: style.colorScheme,
+            };
+          },
+        );
+        expect((): void => assertTask7ResolvedTheme(resolved, themeCase, 'overlay')).not.toThrow();
+        await input.page.bringToFront();
+        await input.capture.capture(
+          input.page,
+          'overlay',
+          'provenance',
+          themeCase,
+          viewport,
+          'full',
+          true,
+        );
+        const clipWidth: number = Math.min(viewport.width, 600);
+        const clipHeight: number = Math.min(viewport.height, 560);
+        appendTask7Record(
+          input.capture.records,
+          await captureTask7ClipEvidence(
+            input.capture.evidenceDir,
+            input.page,
+            `task7-production-overlay-${themeCase.id}-${String(viewport.width)}-provenance-focused`,
+            task7Metadata(themeCase, viewport, 'overlay', 'provenance', 'focused'),
+            {
+              height: clipHeight,
+              width: clipWidth,
+              x: (viewport.width - clipWidth) / 2,
+              y: (viewport.height - clipHeight) / 2,
+            },
+          ),
+        );
+        const bounds = await overlay.boundingBox();
+        expect(bounds).toEqual({ height: viewport.height, width: viewport.width, x: 0, y: 0 });
+        geometry.push({ bounds, resolvedTheme: resolved, themeCase: themeCase.id, viewport });
+      });
+    }
+  }
+  return geometry;
+}
+
+async function captureTask7UnsupportedMatrix(input: {
+  capture: Task7CaptureContext;
+  page: Page;
+  viewport: { height: number; width: number };
+}): Promise<void> {
+  await input.page.setViewportSize(input.viewport);
+  for (const themeCase of TASK7_THEME_CASES) {
+    await test.step(`popup ${themeCase.id} ${String(input.viewport.width)} unsupported-tab reason`, async () => {
+      await input.page.bringToFront();
+      await applyTask7ThemeCase(input.page, themeCase, 'popup');
+      const unsupported: Locator = input.page
+        .locator('.spend-button')
+        .filter({ hasText: 'Unlock this site' });
+      await expect(unsupported).toBeDisabled();
+      await expect(unsupported).toContainText('Open a regular website to unlock it');
+      await expectWithinViewport(unsupported);
+      await input.capture.capture(
+        input.page,
+        'popup',
+        'unsupported-tab',
+        themeCase,
+        input.viewport,
+        'full',
+        true,
+      );
+      await input.capture.capture(
+        unsupported,
+        'popup',
+        'unsupported-tab',
+        themeCase,
+        input.viewport,
+        'focused',
+      );
+    });
+  }
+}
+
+test('Task 7 production evidence matrix is reproducible', async ({
+  context,
+  extPage,
+  extensionId,
+  siteUrl,
+  worker,
+}, testInfo) => {
+  test.setTimeout(360_000);
+  const persistentEvidenceDir: string | undefined = process.env.TASK7_EVIDENCE_DIR;
+  const evidenceDir: string =
+    persistentEvidenceDir ?? testInfo.outputPath('task7-production-evidence');
+  await mkdir(evidenceDir, { recursive: true });
+  const capture: Task7CaptureContext = createTask7CaptureContext(evidenceDir);
+  const diagnostics: BrowserDiagnostics = browserDiagnosticsFor(context);
+  const repositoryRoot: string = path.resolve(import.meta.dirname, '../..');
+  const repositoryDist: string = path.join(repositoryRoot, 'dist');
+  const explicitDist: string | null =
+    persistentEvidenceDir === undefined ? null : (process.env.FOCUS_LOCK_E2E_DIST ?? null);
+  let provenanceBefore: Task7BuildProvenance | null = null;
+  if (persistentEvidenceDir !== undefined) {
+    if (explicitDist === null) {
+      throw new Error(
+        'Persistent Task 7 evidence requires an explicit isolated FOCUS_LOCK_E2E_DIST.',
+      );
+    }
+    const initial = await readTask7BuildProvenance(repositoryRoot, explicitDist);
+    provenanceBefore = initial.observed;
+    assertTask7BuildProvenance({
+      after: initial.observed,
+      before: initial.observed,
+      currentApplicationSourceTreeSha256: initial.currentApplicationSourceTreeSha256,
+      currentGitCommit: initial.currentGitCommit,
+      explicitDist,
+      repositoryDist,
+    });
+  }
+
+  const lists: ListsConfig = await sendExtensionRequest(extPage, { type: 'getLists' });
+  const longLists: ListsConfig = task7LongLists(lists);
+  expect(await sendExtensionRequest(extPage, { type: 'updateLists', lists: longLists })).toEqual({
+    ok: true,
+  });
+  const popupViewport = { height: 760, width: 340 };
+  const pageViewports: readonly { height: number; width: number }[] = [
+    { height: 667, width: 375 },
+    { height: 800, width: 768 },
+    { height: 800, width: 1280 },
+  ];
+  const popupGeometry: Record<string, unknown>[] = await captureTask7PopupMatrix({
+    capture,
+    page: extPage,
+    viewport: popupViewport,
+  });
+  expect(await sendExtensionRequest(extPage, { type: 'updateLists', lists })).toEqual({
+    ok: true,
+  });
+
+  const optionsPage: Page = await context.newPage();
+  let blockedPage: Page | null = null;
+  let syncFiller: { bytes: number; keys: string[]; quota: number } | null = null;
+  let optionsGeometry: Record<string, unknown>[] = [];
+  let privacyGeometry: Record<string, unknown>[] = [];
+  let overlayGeometry: Record<string, unknown>[] = [];
+  try {
+    optionsGeometry = await captureTask7OptionsMatrix({
+      capture,
+      extensionId,
+      page: optionsPage,
+      viewports: pageViewports,
+    });
     expect(
       await sendExtensionRequest(extPage, {
         type: 'setStorageMode',
@@ -815,131 +1305,65 @@ test('Task 7 production evidence matrix is reproducible', async ({
         deleteRemote: false,
       }),
     ).toEqual({ ok: true });
-    await optionsPage.reload();
-    await applyTask7ThemeCase(optionsPage, themeCase);
-    const syncSwitch: Locator = optionsPage.getByRole('switch', {
-      name: 'Sync Focus Lock data across Chrome devices',
+    expect(
+      await extPage.evaluate(
+        async (): Promise<unknown> => await chrome.runtime.sendMessage({ type: 'getSetupState' }),
+      ),
+    ).toMatchObject({ storageMode: 'local', syncWriteStatus: 'idle' });
+    expect(await sendExtensionRequest(extPage, { type: 'updateLists', lists: longLists })).toEqual({
+      ok: true,
     });
-    await expect(syncSwitch).not.toBeChecked();
-    await syncSwitch.click();
-    await expect(optionsPage.getByRole('alert')).toContainText(
-      'SyncQuotaError: Cannot sync batch:',
-    );
-    await optionsPage.reload();
-    await expect(optionsPage.getByRole('alert')).toHaveText(
-      'Chrome Sync could not save your latest changes. Your local save is safe.',
-    );
-    for (const viewport of pageViewports) {
-      await optionsPage.setViewportSize(viewport);
-      await optionsPage.reload();
-      await expect(optionsPage.getByRole('heading', { name: 'Privacy and data' })).toBeVisible();
-      const syncError: Locator = optionsPage.getByRole('alert');
-      await expect(syncError).toHaveText(
-        'Chrome Sync could not save your latest changes. Your local save is safe.',
-      );
-      await capture(optionsPage, 'privacy', 'sync-error', themeCase, viewport, 'full', true);
-      await capture(syncError, 'privacy', 'sync-error', themeCase, viewport, 'focused');
+    syncFiller = await fillTask7SyncQuota(worker);
+    expect(syncFiller.bytes).toBeGreaterThanOrEqual(syncFiller.quota - 128);
+    privacyGeometry = await captureTask7PrivacyMatrix({
+      capture,
+      extensionId,
+      page: optionsPage,
+      policyPage: extPage,
+      viewports: pageViewports,
+    });
 
-      const deleteLocal: Locator = optionsPage.getByRole('button', {
-        name: 'Delete local history',
-      });
-      await deleteLocal.click();
-      const localDialog: Locator = optionsPage.getByRole('dialog', {
-        name: 'Delete local history?',
-      });
-      await expect(localDialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
-      await expectWithinViewport(localDialog);
-      await capture(optionsPage, 'privacy', 'local-confirm', themeCase, viewport, 'full', true);
-      await capture(localDialog, 'privacy', 'local-confirm', themeCase, viewport, 'focused');
-      const localBounds = await localDialog.boundingBox();
-      await optionsPage.keyboard.press('Escape');
-      await expect(deleteLocal).toBeFocused();
-
-      const deleteRemote: Locator = optionsPage.getByRole('button', {
-        name: 'Delete remote Sync data',
-      });
-      await deleteRemote.click();
-      const remoteDialog: Locator = optionsPage.getByRole('dialog', {
-        name: 'Delete remote Sync data?',
-      });
-      await expect(remoteDialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
-      await expectWithinViewport(remoteDialog);
-      await capture(optionsPage, 'privacy', 'remote-confirm', themeCase, viewport, 'full', true);
-      await capture(remoteDialog, 'privacy', 'remote-confirm', themeCase, viewport, 'focused');
-      const remoteBounds = await remoteDialog.boundingBox();
-      await optionsPage.keyboard.press('Escape');
-      await expect(deleteRemote).toBeFocused();
-
-      const privacyDocument = await optionsPage.evaluate(() => ({
-        clientWidth: document.documentElement.clientWidth,
-        scrollWidth: document.documentElement.scrollWidth,
-      }));
-      expect(privacyDocument.scrollWidth).toBe(privacyDocument.clientWidth);
-      privacyGeometry.push({
-        document: privacyDocument,
-        localDialog: localBounds,
-        remoteDialog: remoteBounds,
-        themeCase: themeCase.id,
-        viewport,
-      });
-    }
-  }
-
-  const blockedPage: Page = await context.newPage();
-  await blockedPage.goto(siteUrl('/plain.html'));
-  await extPage.bringToFront();
-  await startTestSession(extPage, { durationMin: 2, strictness: 'friction' });
-  await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
-  await expectClosedOverlayText(
-    context,
-    blockedPage,
-    'Blocked by your block list: blocked.example',
-  );
-  for (const themeCase of TASK7_THEME_CASES) {
-    for (const viewport of pageViewports) {
-      await blockedPage.setViewportSize(viewport);
-      await blockedPage.emulateMedia({ colorScheme: themeCase.colorScheme });
-      await extPage.bringToFront();
-      await applyTask7ThemeCase(extPage, themeCase);
-      const overlay: Locator = blockedPage.locator('focus-lock-overlay');
-      await expectOverlayTheme(await overlayHandle(blockedPage), themeCase.theme);
-      await blockedPage.bringToFront();
-      await capture(blockedPage, 'overlay', 'provenance', themeCase, viewport, 'full', true);
-      const clipWidth: number = Math.min(viewport.width, 600);
-      const clipHeight: number = Math.min(viewport.height, 560);
-      appendTask7Record(
-        records,
-        await captureTask7ClipEvidence(
-          blockedPage,
-          `task7-production-overlay-${themeCase.id}-${String(viewport.width)}-provenance-focused`,
-          task7Metadata(themeCase, viewport, 'overlay', 'provenance', 'focused'),
-          {
-            height: clipHeight,
-            width: clipWidth,
-            x: (viewport.width - clipWidth) / 2,
-            y: (viewport.height - clipHeight) / 2,
-          },
-        ),
-      );
-      const overlayBounds = await overlay.boundingBox();
-      overlayGeometry.push({ bounds: overlayBounds, themeCase: themeCase.id, viewport });
-    }
-  }
-
-  await extPage.setViewportSize(popupViewport);
-  for (const themeCase of TASK7_THEME_CASES) {
+    blockedPage = await context.newPage();
+    await blockedPage.goto(siteUrl('/plain.html'));
     await extPage.bringToFront();
-    await applyTask7ThemeCase(extPage, themeCase);
-    const unsupported: Locator = extPage
-      .locator('.spend-button')
-      .filter({ hasText: 'Unlock this site' });
-    await expect(unsupported).toBeDisabled();
-    await expect(unsupported).toContainText('Open a regular website to unlock it');
-    await expectWithinViewport(unsupported);
-    await capture(extPage, 'popup', 'unsupported-tab', themeCase, popupViewport, 'full', true);
-    await capture(unsupported, 'popup', 'unsupported-tab', themeCase, popupViewport, 'focused');
+    await startTestSession(extPage, { durationMin: 2, strictness: 'friction' });
+    await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
+    await expectClosedOverlayText(
+      context,
+      blockedPage,
+      'Blocked by your block list: blocked.example',
+    );
+    overlayGeometry = await captureTask7OverlayMatrix({
+      capture,
+      controlPage: extPage,
+      page: blockedPage,
+      viewports: pageViewports,
+    });
+    await captureTask7UnsupportedMatrix({ capture, page: extPage, viewport: popupViewport });
+  } finally {
+    await clearTask7SyncQuota(worker);
+    await Promise.all([
+      optionsPage.close(),
+      ...(blockedPage === null ? [] : [blockedPage.close()]),
+    ]);
+    await sendExtensionRequest(extPage, { type: 'updateLists', lists });
   }
 
+  expect(capture.records).toHaveLength(212);
+  let provenanceAfter: Task7BuildProvenance | null = null;
+  if (persistentEvidenceDir !== undefined && explicitDist !== null && provenanceBefore !== null) {
+    const final = await readTask7BuildProvenance(repositoryRoot, explicitDist);
+    provenanceAfter = final.observed;
+    assertTask7BuildProvenance({
+      after: final.observed,
+      before: provenanceBefore,
+      currentApplicationSourceTreeSha256: final.currentApplicationSourceTreeSha256,
+      currentGitCommit: final.currentGitCommit,
+      explicitDist,
+      repositoryDist,
+    });
+  }
+  await context.close();
   expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).not.toThrow();
   const diagnosticCounts: Record<keyof BrowserDiagnostics, number> = {
     blockedRequests: diagnostics.blockedRequests.length,
@@ -950,13 +1374,16 @@ test('Task 7 production evidence matrix is reproducible', async ({
     shutdownWorkerMessages: diagnostics.shutdownWorkerMessages.length,
     workerErrors: diagnostics.workerErrors.length,
   };
-  const reportPath: string = path.join(path.resolve(evidenceDir), 'production-run-report.json');
   await writeFile(
-    reportPath,
+    path.join(evidenceDir, 'production-run-report.json'),
     `${JSON.stringify(
       {
-        buildCommit: process.env.TASK7_BUILD_COMMIT ?? null,
         buildSource: 'production',
+        diagnosticBoundary: {
+          contextClosedBeforeAudit: true,
+          fixtureContextTeardownAsserted: true,
+          ownedPagesClosedBeforeAudit: true,
+        },
         diagnosticCounts,
         extensionId,
         geometryAssertions: {
@@ -965,12 +1392,10 @@ test('Task 7 production evidence matrix is reproducible', async ({
           popup: popupGeometry,
           privacy: privacyGeometry,
         },
-        inventory: records,
-        matrix: {
-          pageViewports,
-          popupViewport,
-          themeCases: TASK7_THEME_CASES,
-        },
+        inventory: capture.records,
+        matrix: { pageViewports, popupViewport, themeCases: TASK7_THEME_CASES },
+        persistentEvidence: persistentEvidenceDir !== undefined,
+        provenance: { after: provenanceAfter, before: provenanceBefore },
         syncQuotaFiller: syncFiller,
       },
       null,
@@ -978,9 +1403,7 @@ test('Task 7 production evidence matrix is reproducible', async ({
     )}\n`,
     'utf8',
   );
-  expect(records.length).toBe(212);
 });
-
 test('completion clears browser effects and reaches sound and notification APIs', async ({
   context,
   extPage,

@@ -38,6 +38,17 @@ interface ExtFixtures {
   freshInstallExtension: FreshInstallExtension;
 }
 
+const fixtureDiagnostics: WeakMap<BrowserContext, BrowserDiagnostics> = new WeakMap<
+  BrowserContext,
+  BrowserDiagnostics
+>();
+
+export function browserDiagnosticsFor(context: BrowserContext): BrowserDiagnostics {
+  const diagnostics: BrowserDiagnostics | undefined = fixtureDiagnostics.get(context);
+  if (diagnostics === undefined) throw new Error('browser context diagnostics are unavailable');
+  return diagnostics;
+}
+
 export interface ExtensionLaunch {
   context: BrowserContext;
   diagnostics: BrowserDiagnostics;
@@ -283,13 +294,18 @@ export const test = base.extend<ExtFixtures>({
       grantDist,
       diagnostics,
     );
+    fixtureDiagnostics.set(launch.context, diagnostics);
     try {
       await use(launch.context);
     } finally {
-      await closeAndAssertBrowserDiagnostics(
-        async (): Promise<void> => await launch.context.close(),
-        diagnostics,
-      );
+      try {
+        await closeAndAssertBrowserDiagnostics(
+          async (): Promise<void> => await launch.context.close(),
+          diagnostics,
+        );
+      } finally {
+        fixtureDiagnostics.delete(launch.context);
+      }
     }
   },
   worker: async ({ context }, use) => {
