@@ -549,6 +549,48 @@ describe('Pages validation', () => {
     expectValidationFailure(path, /stylesheet.*network resource/i);
   });
 
+  it.each([
+    ['image-set', 'body { background: image-set("https://analytics.example/pixel" 1x); }'],
+    [
+      '-webkit-image-set',
+      'body { background: -webkit-image-set("https://analytics.example/pixel" 1x); }',
+    ],
+    [
+      '@font-face quoted src',
+      '@font-face { font-family: "Tracking Font"; src: "https://analytics.example/font.woff2"; }',
+    ],
+    [
+      'uppercase with whitespace',
+      'body { background: IMAGE-SET(  "https://analytics.example/pixel" 1x ); }',
+    ],
+    [
+      'escaped function name',
+      'body { background: im\\61 ge-set("https://analytics.example/pixel" 1x); }',
+    ],
+    [
+      'protocol-relative image-set',
+      'body { background: image-set("//analytics.example/pixel" 1x); }',
+    ],
+    ['unquoted URL', 'body { background: url(//analytics.example/pixel); }'],
+    ['escaped URL function', 'body { background: u\\72l("https://analytics.example/pixel"); }'],
+  ])('rejects the %s CSS resource construct', (_name: string, css: string): void => {
+    const path: string = fixture();
+    const stylesheetPath: string = join(path, 'dist-pages', 'privacy', 'style.css');
+    write(stylesheetPath, `${readFileSync(stylesheetPath, 'utf8')}${css}\n`);
+    expectValidationFailure(path, /stylesheet.*network resource/i);
+  });
+
+  it('allows request-like text in CSS strings and comments', (): void => {
+    const path: string = fixture();
+    const stylesheetPath: string = join(path, 'dist-pages', 'privacy', 'style.css');
+    write(
+      stylesheetPath,
+      `${readFileSync(stylesheetPath, 'utf8')}.note::before { content: "url(https://example.test/pixel) image-set(//example.test/pixel)"; }\n/* @import url(https://example.test/style.css) */\n`,
+    );
+    const result: ReturnType<typeof spawnSync> = validate(path);
+    expect(result.status, String(result.stderr)).toBe(0);
+  }, 10_000);
+
   it('builds only regular files in both 404 locations', (): void => {
     const path: string = sourceFixture();
     const result: ReturnType<typeof spawnSync> = build(path);

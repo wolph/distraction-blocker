@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { parse as parseCss, walk as walkCss } from 'css-tree';
 import { HtmlValidate } from 'html-validate';
 import { JSDOM } from 'jsdom';
 import { parse } from 'yaml';
@@ -80,6 +81,19 @@ const ALLOWED_EXTERNAL_ANCHOR_URLS = new Set([
   'https://policies.google.com/privacy',
   'https://www.google.com/chrome/terms/',
   'https://developer.chrome.com/docs/webstore/program-policies/user-data-faq/',
+]);
+const ALLOWED_CSS_AT_RULES = new Set(['media']);
+const ALLOWED_CSS_FUNCTIONS = new Set([
+  'calc',
+  'clamp',
+  'linear-gradient',
+  'min',
+  'minmax',
+  'radial-gradient',
+  'repeat',
+  'rgba',
+  'translateY',
+  'var',
 ]);
 
 function assert(condition, message) {
@@ -452,10 +466,32 @@ function validatePrivacyMetadata(document, stylesheet) {
     /:focus(?:-visible)?\b/u.test(stylesheet),
     'Privacy stylesheet must provide visible focus styling',
   );
-  assert(
-    !/(?:@import\b|url\s*\()/iu.test(stylesheet),
-    'Privacy stylesheet must not contain network resource declarations',
-  );
+  let stylesheetAst;
+  try {
+    stylesheetAst = parseCss(stylesheet, { parseCustomProperty: true });
+  } catch (error) {
+    throw new Error(
+      `Privacy stylesheet parsing failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  walkCss(stylesheetAst, (node) => {
+    assert(
+      node.type !== 'Url' && node.type !== 'Raw',
+      'Privacy stylesheet must not contain network resource declarations or unparsed syntax',
+    );
+    if (node.type === 'Atrule') {
+      assert(
+        ALLOWED_CSS_AT_RULES.has(node.name),
+        `Privacy stylesheet network resource policy forbids @${node.name}`,
+      );
+    }
+    if (node.type === 'Function') {
+      assert(
+        ALLOWED_CSS_FUNCTIONS.has(node.name),
+        `Privacy stylesheet network resource policy forbids ${node.name}()`,
+      );
+    }
+  });
 }
 
 function validateStagedSite(rootDirectory) {
