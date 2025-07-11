@@ -4295,6 +4295,22 @@ describe('Engine', () => {
     expect(h.engine.snapshot().phase).toBe('focus');
   });
 
+  it('wakes at the session end when a pause would outlive it', async () => {
+    const h: Harness = makeEngine({
+      bankMs: 300_000,
+      settings: { pause: { ...DEFAULT_SETTINGS.pause, earnRatio: 0 } },
+    });
+    const durationMin: number = 1;
+    await h.engine.startSession({ ...manualConfig, durationMin });
+    await h.engine.openGate('pause', null);
+    h.setNow(T0 + DEFAULT_SETTINGS.gate.delayMs);
+
+    await h.engine.confirmGate(null);
+
+    expect(h.engine.snapshot().phase).toBe('paused');
+    expect(h.ports.scheduleWake).toHaveBeenLastCalledWith(T0 + durationMin * 60_000);
+  });
+
   it('recordAttempt debounces the same tab and url within 30 s', async () => {
     const h: Harness = makeEngine();
     await h.engine.startSession(manualConfig);

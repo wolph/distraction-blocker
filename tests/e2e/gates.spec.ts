@@ -146,7 +146,7 @@ test('pause gate supports back to work, taking a pause, and resuming now', async
   await configureFastEconomy(extPage, { pauseMs });
   const page: Page = await context.newPage();
   await page.goto(siteUrl('/plain.html'));
-  await startTestSession(extPage, { durationMin: 0.3 });
+  await startTestSession(extPage, { durationMin: 2 });
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
   await waitForBank(extPage, pauseMs);
 
@@ -162,6 +162,11 @@ test('pause gate supports back to work, taking a pause, and resuming now', async
   await takePause.click();
   await expect(extPage.getByRole('button', { name: 'Resume now' })).toBeVisible();
   await expect(page.locator('focus-lock-overlay')).toHaveCount(0);
+  const beforeResume: SessionSnapshot = await sendExtensionRequest(extPage, {
+    type: 'getSnapshot',
+  });
+  expect(beforeResume.phase).toBe('paused');
+  expect((beforeResume.sessionEndsAt ?? 0) - beforeResume.at).toBeGreaterThan(60_000);
 
   await extPage.getByRole('button', { name: 'Resume now' }).click();
   await expect
@@ -173,6 +178,27 @@ test('pause gate supports back to work, taking a pause, and resuming now', async
     })
     .toBe('focus');
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
+});
+
+test('paused UI leaves when the session wall clock ends', async ({ extPage }) => {
+  const pauseMs: number = 10_000;
+  await configureFastEconomy(extPage, { pauseMs });
+  await startTestSession(extPage, { durationMin: 0.08 });
+  await waitForBank(extPage, pauseMs);
+
+  await extPage.getByRole('button', { name: 'Pause blocking for 0 min' }).click();
+  await extPage.getByRole('button', { name: 'Take the pause' }).click();
+  const paused: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+  expect(paused.phase).toBe('paused');
+  const sessionEndsAt: number | null = paused.sessionEndsAt;
+  if (sessionEndsAt === null) throw new Error('paused session has no end');
+
+  await expect.poll((): boolean => Date.now() >= sessionEndsAt + 50, { timeout: 5_000 }).toBe(true);
+  await expect(extPage.getByRole('button', { name: 'Resume now' })).toHaveCount(0, {
+    timeout: 5_000,
+  });
+  const ended: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+  expect(ended.phase).toBe('idle');
 });
 
 test('abandoning a gate records a resisted temptation', async ({ extPage }) => {

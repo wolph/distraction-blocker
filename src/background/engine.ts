@@ -1881,8 +1881,10 @@ export class Engine {
     const wakeCandidates: number[] = this.runtime.unlocks.map(
       (unlock: SiteUnlock): number => unlock.until,
     );
-    if (this.runtime.session?.phaseEndsAt !== undefined) {
-      wakeCandidates.push(this.runtime.session.phaseEndsAt);
+    if (this.runtime.session !== null) {
+      wakeCandidates.push(
+        Math.min(this.runtime.session.phaseEndsAt, this.runtime.session.sessionEndsAt),
+      );
     }
     this.ports.scheduleWake(wakeCandidates.length === 0 ? null : Math.min(...wakeCandidates));
     if (block) {
