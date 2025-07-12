@@ -614,6 +614,49 @@ describe('Pages validation', () => {
     }
   });
 
+  it('accepts real source and workflow ancestor directories', (): void => {
+    const sourcePath: string = sourceFixture();
+    const buildResult: ReturnType<typeof spawnSync> = build(sourcePath);
+    expect(buildResult.status, String(buildResult.stderr)).toBe(0);
+
+    const stagedPath: string = fixture();
+    const validationResult: ReturnType<typeof spawnSync> = validate(stagedPath);
+    expect(validationResult.status, String(validationResult.stderr)).toBe(0);
+  }, 10_000);
+
+  it('rejects an external docs ancestor symlink', (): void => {
+    const path: string = mkdtempSync(join(tmpdir(), 'focus-lock-pages-source-root-'));
+    fixtures.push(path);
+    const externalPath: string = sourceFixture();
+    symlinkSync(join(externalPath, 'docs'), join(path, 'docs'));
+    expectBuildFailure(path, /symbolic link.*docs/i);
+  });
+
+  it('rejects an external docs privacy ancestor symlink', (): void => {
+    const path: string = mkdtempSync(join(tmpdir(), 'focus-lock-pages-source-root-'));
+    fixtures.push(path);
+    mkdirSync(join(path, 'docs'));
+    const externalPath: string = sourceFixture();
+    symlinkSync(join(externalPath, 'docs', 'privacy'), join(path, 'docs', 'privacy'));
+    expectBuildFailure(path, /symbolic link.*privacy/i);
+  });
+
+  it('rejects an external .github ancestor symlink', (): void => {
+    const path: string = fixture();
+    const externalPath: string = fixture();
+    rmSync(join(path, '.github'), { recursive: true });
+    symlinkSync(join(externalPath, '.github'), join(path, '.github'));
+    expectValidationFailure(path, /symbolic link.*\.github/i);
+  });
+
+  it('rejects an external .github workflows ancestor symlink', (): void => {
+    const path: string = fixture();
+    const externalPath: string = fixture();
+    rmSync(join(path, '.github', 'workflows'), { recursive: true });
+    symlinkSync(join(externalPath, '.github', 'workflows'), join(path, '.github', 'workflows'));
+    expectValidationFailure(path, /symbolic link.*workflows/i);
+  });
+
   it('rejects an external source symlink', (): void => {
     const path: string = sourceFixture();
     const stylesheetPath: string = join(path, 'docs', 'privacy', 'style.css');

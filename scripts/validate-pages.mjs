@@ -108,11 +108,34 @@ function stripUrlControlCharacters(value) {
   return [...value].filter((character) => character.codePointAt(0) > 0x20).join('');
 }
 
+function inspectRequiredPath(rootDirectory, relativePath) {
+  const rootRealPath = realpathSync(rootDirectory);
+  const pathComponents = relativePath.split('/');
+  let absolutePath = rootDirectory;
+  for (const [index, component] of pathComponents.entries()) {
+    absolutePath = join(absolutePath, component);
+    assert(existsSync(absolutePath), `Missing required file: ${relativePath}`);
+    const componentStat = lstatSync(absolutePath);
+    assert(
+      !componentStat.isSymbolicLink(),
+      `Required path component must not be a symbolic link: ${pathComponents.slice(0, index + 1).join('/')}`,
+    );
+    assert(
+      isInside(realpathSync(absolutePath), rootRealPath),
+      `Required path component resolves outside the project root: ${relativePath}`,
+    );
+    if (index < pathComponents.length - 1) {
+      assert(
+        componentStat.isDirectory(),
+        `Required path component is not a directory: ${absolutePath}`,
+      );
+    }
+  }
+  return { absolutePath, fileStat: lstatSync(absolutePath) };
+}
+
 function readRequiredFile(rootDirectory, relativePath) {
-  const absolutePath = join(rootDirectory, relativePath);
-  assert(existsSync(absolutePath), `Missing required file: ${relativePath}`);
-  const fileStat = lstatSync(absolutePath);
-  assert(!fileStat.isSymbolicLink(), `Required file must not be a symbolic link: ${relativePath}`);
+  const { absolutePath, fileStat } = inspectRequiredPath(rootDirectory, relativePath);
   assert(fileStat.isFile(), `Required path is not a regular file: ${relativePath}`);
   assert(fileStat.nlink === 1, `Required file must not be a hard link: ${relativePath}`);
   return readFileSync(absolutePath, 'utf8');
@@ -522,7 +545,7 @@ function validateStagedSite(rootDirectory) {
 }
 
 async function main() {
-  const rootDirectory = resolve(process.cwd());
+  const rootDirectory = realpathSync(resolve(process.cwd()));
   validateWorkflow(rootDirectory);
   validateStagedSite(rootDirectory);
   await validateHtml(rootDirectory, join(rootDirectory, 'dist-pages'));

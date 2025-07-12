@@ -1,7 +1,7 @@
 import { copyFileSync, lstatSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 
-const rootDirectory = resolve(process.cwd());
+const rootDirectory = realpathSync(resolve(process.cwd()));
 const sourceDirectory = join(rootDirectory, 'docs', 'privacy');
 const outputDirectory = join(rootDirectory, 'dist-pages');
 const privacyOutputDirectory = join(outputDirectory, 'privacy');
@@ -15,6 +15,26 @@ function isInside(path, directory) {
   return path === directory || path.startsWith(`${directory}${sep}`);
 }
 
+function assertRealDirectoryComponents(relativeComponents) {
+  let currentPath = rootDirectory;
+  for (const component of relativeComponents) {
+    currentPath = join(currentPath, component);
+    const componentStat = lstatSync(currentPath);
+    assert(
+      !componentStat.isSymbolicLink(),
+      `Privacy source path component must not be a symbolic link: ${currentPath}`,
+    );
+    assert(
+      componentStat.isDirectory(),
+      `Privacy source path component must be a directory: ${currentPath}`,
+    );
+    assert(
+      isInside(realpathSync(currentPath), rootDirectory),
+      `Privacy source path component resolves outside the project root: ${currentPath}`,
+    );
+  }
+}
+
 function assertRegularSource(filename, sourceRealPath) {
   const sourcePath = join(sourceDirectory, filename);
   const sourceStat = lstatSync(sourcePath);
@@ -25,14 +45,13 @@ function assertRegularSource(filename, sourceRealPath) {
     isInside(realpathSync(sourcePath), sourceRealPath),
     `Privacy source resolves outside docs/privacy: ${sourcePath}`,
   );
+  assert(
+    isInside(realpathSync(sourcePath), rootDirectory),
+    `Privacy source resolves outside the project root: ${sourcePath}`,
+  );
 }
 
-const sourceDirectoryStat = lstatSync(sourceDirectory);
-assert(
-  !sourceDirectoryStat.isSymbolicLink(),
-  `Privacy source directory must not be a symbolic link: ${sourceDirectory}`,
-);
-assert(sourceDirectoryStat.isDirectory(), `Privacy source is not a directory: ${sourceDirectory}`);
+assertRealDirectoryComponents(['docs', 'privacy']);
 const sourceRealPath = realpathSync(sourceDirectory);
 
 for (const filename of sourceFiles) assertRegularSource(filename, sourceRealPath);
