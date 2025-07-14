@@ -17,7 +17,69 @@ export interface Task7ResolvedTheme {
   colorScheme: string;
 }
 
-export type Task7ThemeSurface = 'options' | 'overlay' | 'popup' | 'privacy';
+export type Task7ThemeSurface =
+  | 'gate'
+  | 'options'
+  | 'overlay'
+  | 'popup'
+  | 'privacy'
+  | 'stats'
+  | 'stopped-overlay';
+
+interface Task7CurrentSurfaceRecord {
+  file: string;
+  scope: 'focused' | 'full';
+  state: string;
+  surface: string;
+  themeCase: Task7ThemeCase['id'];
+  viewport: { height: number; width: number };
+}
+
+const TASK7_CURRENT_SURFACE_STATES: Readonly<Record<string, readonly string[]>> = {
+  gate: ['typed-gate', 'untyped-gate', 'force-end-removed'],
+  stats: ['current-language'],
+  'stopped-overlay': ['stopped-document'],
+};
+
+const TASK7_PAGE_VIEWPORTS: readonly { height: number; width: number }[] = [
+  { height: 667, width: 375 },
+  { height: 800, width: 768 },
+  { height: 800, width: 1280 },
+];
+
+const TASK7_THEME_IDS: readonly Task7ThemeCase['id'][] = [
+  'auto-light',
+  'auto-dark',
+  'light-dark-media',
+  'dark-light-media',
+];
+
+export function assertTask7CurrentSurfaceCoverage(
+  inventory: readonly Task7CurrentSurfaceRecord[],
+): void {
+  const observed: Set<string> = new Set(
+    inventory.map(
+      (record: Task7CurrentSurfaceRecord): string =>
+        `${record.surface}/${record.state}/${record.themeCase}/${String(record.viewport.width)}/${record.scope}`,
+    ),
+  );
+  const required: string[] = [];
+  for (const [surface, states] of Object.entries(TASK7_CURRENT_SURFACE_STATES)) {
+    for (const state of states) {
+      for (const themeCase of TASK7_THEME_IDS) {
+        for (const viewport of TASK7_PAGE_VIEWPORTS) {
+          for (const scope of ['full', 'focused'] as const) {
+            required.push(`${surface}/${state}/${themeCase}/${String(viewport.width)}/${scope}`);
+          }
+        }
+      }
+    }
+  }
+  const missing: string[] = required.filter((key: string): boolean => !observed.has(key));
+  if (missing.length > 0) {
+    throw new Error(`Missing Task 7 current surface evidence: ${missing.join(', ')}`);
+  }
+}
 
 export interface Task7BuildProvenance {
   applicationSourceTreeSha256: string;
@@ -68,6 +130,18 @@ const execFileAsync = promisify(execFile);
 const EXPECTED_THEME: Readonly<
   Record<Task7ThemeSurface, Record<'dark' | 'light', Task7ResolvedTheme>>
 > = {
+  gate: {
+    dark: {
+      backgroundColor: 'rgb(18, 26, 21)',
+      color: 'rgb(231, 239, 233)',
+      colorScheme: 'dark',
+    },
+    light: {
+      backgroundColor: 'rgb(247, 250, 248)',
+      color: 'rgb(22, 33, 26)',
+      colorScheme: 'light',
+    },
+  },
   options: {
     dark: {
       backgroundColor: 'rgb(22, 26, 24)',
@@ -113,6 +187,30 @@ const EXPECTED_THEME: Readonly<
     light: {
       backgroundColor: 'rgb(250, 250, 248)',
       color: 'rgb(28, 35, 33)',
+      colorScheme: 'light',
+    },
+  },
+  stats: {
+    dark: {
+      backgroundColor: 'rgb(13, 13, 13)',
+      color: 'rgb(255, 255, 255)',
+      colorScheme: 'dark',
+    },
+    light: {
+      backgroundColor: 'rgb(249, 249, 247)',
+      color: 'rgb(11, 11, 11)',
+      colorScheme: 'light',
+    },
+  },
+  'stopped-overlay': {
+    dark: {
+      backgroundColor: 'rgba(15, 23, 42, 0.97)',
+      color: '#f8fafc',
+      colorScheme: 'dark',
+    },
+    light: {
+      backgroundColor: 'rgba(248, 250, 252, 0.98)',
+      color: '#0f172a',
       colorScheme: 'light',
     },
   },

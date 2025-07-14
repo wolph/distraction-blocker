@@ -30,6 +30,7 @@ import {
 } from './fixtures';
 import {
   assertTask7BuildProvenance,
+  assertTask7CurrentSurfaceCoverage,
   assertTask7ResolvedTheme,
   readTask7BuildProvenance,
   type Task7BuildProvenance,
@@ -60,7 +61,7 @@ interface Task7EvidenceRecord {
   scope: 'focused' | 'full';
   sha256: string;
   state: string;
-  surface: 'options' | 'overlay' | 'popup' | 'privacy';
+  surface: Task7ThemeSurface;
   theme: ThemeMode;
   themeCase: Task7ThemeCase['id'];
   viewport: { height: number; width: number };
@@ -208,7 +209,7 @@ function appendTask7Record(
 async function applyTask7ThemeCase(
   page: Page,
   themeCase: Task7ThemeCase,
-  surface: Exclude<Task7ThemeSurface, 'overlay'>,
+  surface: Exclude<Task7ThemeSurface, 'overlay' | 'stopped-overlay'>,
 ): Promise<void> {
   await page.emulateMedia({ colorScheme: themeCase.colorScheme });
   expect(
@@ -226,7 +227,7 @@ async function applyTask7ThemeCase(
 async function expectTask7ResolvedPageTheme(
   page: Page,
   themeCase: Task7ThemeCase,
-  surface: Exclude<Task7ThemeSurface, 'overlay'>,
+  surface: Exclude<Task7ThemeSurface, 'overlay' | 'stopped-overlay'>,
 ): Promise<void> {
   const resolved: Task7ResolvedTheme = await page.evaluate((): Task7ResolvedTheme => {
     const root: CSSStyleDeclaration = getComputedStyle(document.documentElement);
@@ -1228,6 +1229,311 @@ async function captureTask7UnsupportedMatrix(input: {
   }
 }
 
+async function seedTask7Stats(worker: Worker): Promise<void> {
+  await worker.evaluate(async (): Promise<void> => {
+    const now: number = Date.now();
+    const dateFor = (daysAgo: number): string => {
+      const date: Date = new Date(now);
+      date.setDate(date.getDate() - daysAgo);
+      const year: string = String(date.getFullYear());
+      const month: string = String(date.getMonth() + 1).padStart(2, '0');
+      const day: string = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+    await chrome.storage.sync.set({
+      [`agg:task7-current:${dateFor(1)}`]: {
+        attempts: {
+          'blocked.example': 7,
+          'research.example.org': 3,
+        },
+        attemptsOther: 1,
+        date: dateFor(1),
+        focusMs: 42 * 60_000,
+        pauseMsEarned: 8 * 60_000,
+        pauseMsSpent: 2 * 60_000,
+        pausesTaken: 1,
+        resisted: 2,
+        sessionsCompleted: 1,
+        sessionsStarted: 1,
+        unlockMsSpent: 60_000,
+        unlocksTaken: 1,
+      },
+      [`agg:task7-current:${dateFor(13)}`]: {
+        attempts: { 'archive.example.net': 2 },
+        attemptsOther: 0,
+        date: dateFor(13),
+        focusMs: 18 * 60_000,
+        pauseMsEarned: 4 * 60_000,
+        pauseMsSpent: 0,
+        pausesTaken: 0,
+        resisted: 1,
+        sessionsCompleted: 1,
+        sessionsStarted: 1,
+        unlockMsSpent: 0,
+        unlocksTaken: 0,
+      },
+    });
+    await chrome.storage.local.set({
+      events: [
+        {
+          at: now - 45 * 60_000,
+          durationMin: 25,
+          intention: 'Review example.com release notes',
+          mode: 'blacklist',
+          sessionId: 'task7-current-stats',
+          source: 'manual',
+          strictness: 'friction',
+          t: 'sessionStarted',
+        },
+        {
+          at: now - 20 * 60_000,
+          focusedMs: 25 * 60_000,
+          sessionId: 'task7-current-stats',
+          t: 'sessionCompleted',
+        },
+        { at: now - 10 * 60_000, domain: 'blocked.example', t: 'attempt' },
+      ],
+    });
+  });
+}
+
+async function captureTask7StatsMatrix(input: {
+  capture: Task7CaptureContext;
+  extensionId: string;
+  page: Page;
+  viewports: readonly { height: number; width: number }[];
+}): Promise<Record<string, unknown>[]> {
+  const geometry: Record<string, unknown>[] = [];
+  for (const themeCase of TASK7_THEME_CASES) {
+    for (const viewport of input.viewports) {
+      await test.step(`stats ${themeCase.id} ${String(viewport.width)} current language and chart focus`, async () => {
+        await input.page.setViewportSize(viewport);
+        await input.page.goto(`chrome-extension://${input.extensionId}/src/stats/stats.html`);
+        await applyTask7ThemeCase(input.page, themeCase, 'stats');
+        await expect(
+          input.page.getByRole('heading', { level: 1, name: 'Your focus record' }),
+        ).toBeVisible();
+        await expect(
+          input.page.getByText(/Totals from this machine|Synced totals from this Chrome account/),
+        ).toBeVisible();
+        await expect(
+          input.page.getByRole('heading', { name: 'Focus, last 14 days' }),
+        ).toBeVisible();
+        await expect(
+          input.page.getByRole('heading', { name: 'Top blocked sites, last 30 days' }),
+        ).toBeVisible();
+        await expect(
+          input.page.getByRole('heading', { name: 'Attempts by hour, this machine only' }),
+        ).toBeVisible();
+        await expect(
+          input.page.getByRole('heading', { name: 'Recent sessions on this machine' }),
+        ).toBeVisible();
+        const seededIntention: Locator = input.page.getByText('Review example.com release notes');
+        await expect(seededIntention).toHaveCount(2);
+        expect(
+          await seededIntention.evaluateAll((elements: Element[]): boolean =>
+            elements.some((element: Element): boolean => {
+              const style: CSSStyleDeclaration = getComputedStyle(element);
+              return style.display !== 'none' && style.visibility !== 'hidden';
+            }),
+          ),
+        ).toBe(true);
+        await input.capture.capture(
+          input.page,
+          'stats',
+          'current-language',
+          themeCase,
+          viewport,
+          'full',
+          true,
+        );
+        const chartCard: Locator = input.page.locator('.card').filter({
+          has: input.page.getByRole('heading', { name: 'Focus, last 14 days' }),
+        });
+        await chartCard.scrollIntoViewIfNeeded();
+        const tableDisclosure: Locator = chartCard.locator('summary', {
+          hasText: 'View as table',
+        });
+        await tableDisclosure.focus();
+        await expect(tableDisclosure).toBeFocused();
+        await expect(chartCard).toBeVisible();
+        await input.capture.capture(
+          chartCard,
+          'stats',
+          'current-language',
+          themeCase,
+          viewport,
+          'focused',
+        );
+        const metrics = await input.page.evaluate(() => {
+          const root: HTMLElement = document.documentElement;
+          const chartLabels: SVGTextElement[] = Array.from(
+            document.querySelectorAll<SVGTextElement>('.axis-text, .value-label, .direct-label'),
+          );
+          const sessionTable: HTMLElement | null = document.querySelector('.session-table-wrap');
+          return {
+            chartLabelFontSizes: chartLabels.map((label: SVGTextElement): number => {
+              const matrix: DOMMatrix | null = label.getScreenCTM();
+              if (matrix === null) throw new Error('Missing Stats label transform.');
+              return (
+                Number.parseFloat(getComputedStyle(label).fontSize) * Math.hypot(matrix.c, matrix.d)
+              );
+            }),
+            clientWidth: root.clientWidth,
+            horizontalOverflow: root.scrollWidth - root.clientWidth,
+            sessionTable:
+              sessionTable === null
+                ? null
+                : {
+                    clientWidth: sessionTable.clientWidth,
+                    overflowX: getComputedStyle(sessionTable).overflowX,
+                    scrollWidth: sessionTable.scrollWidth,
+                  },
+          };
+        });
+        expect(metrics.horizontalOverflow).toBe(0);
+        expect(Math.min(...metrics.chartLabelFontSizes)).toBeGreaterThanOrEqual(9);
+        geometry.push({ metrics, themeCase: themeCase.id, viewport });
+      });
+    }
+  }
+  return geometry;
+}
+
+async function configureTask7Gate(page: Page, requireTypedPhrase: boolean): Promise<void> {
+  const settings: Settings = await sendExtensionRequest(page, { type: 'getSettings' });
+  expect(
+    await sendExtensionRequest(page, {
+      type: 'updateSettings',
+      settings: {
+        ...settings,
+        gate: { delayMs: 30_000, requireTypedPhrase },
+      },
+    }),
+  ).toEqual({ ok: true });
+}
+
+async function captureTask7GateState(input: {
+  capture: Task7CaptureContext;
+  page: Page;
+  state: 'force-end-removed' | 'typed-gate' | 'untyped-gate';
+  viewports: readonly { height: number; width: number }[];
+}): Promise<Record<string, unknown>[]> {
+  const geometry: Record<string, unknown>[] = [];
+  const panel: Locator = input.page.locator('.gate-panel');
+  const focusTarget: Locator =
+    input.state === 'typed-gate'
+      ? panel.locator('input[type="text"]')
+      : input.page.getByRole('button', { name: 'Never mind, back to work' });
+  for (const themeCase of TASK7_THEME_CASES) {
+    for (const viewport of input.viewports) {
+      await test.step(`gate ${input.state} ${themeCase.id} ${String(viewport.width)}`, async () => {
+        await input.page.setViewportSize(viewport);
+        await applyTask7ThemeCase(input.page, themeCase, 'gate');
+        await expect(panel).toBeVisible();
+        await expect(panel).toContainText('A moment to decide');
+        await expect(panel.getByRole('button', { name: 'End the session' })).toBeVisible();
+        await expect(input.page.getByText('Ignore timeout and end anyway')).toHaveCount(0);
+        await focusTarget.focus();
+        await expectWithinViewport(panel);
+        await input.capture.capture(
+          input.page,
+          'gate',
+          input.state,
+          themeCase,
+          viewport,
+          'full',
+          true,
+        );
+        await input.capture.capture(panel, 'gate', input.state, themeCase, viewport, 'focused');
+        const bounds = await panel.boundingBox();
+        const documentGeometry = await input.page.evaluate(() => ({
+          clientWidth: document.documentElement.clientWidth,
+          scrollWidth: document.documentElement.scrollWidth,
+        }));
+        expect(documentGeometry.scrollWidth).toBe(documentGeometry.clientWidth);
+        geometry.push({
+          bounds,
+          document: documentGeometry,
+          state: input.state,
+          themeCase: themeCase.id,
+          viewport,
+        });
+      });
+    }
+  }
+  return geometry;
+}
+
+async function captureTask7StoppedOverlayMatrix(input: {
+  capture: Task7CaptureContext;
+  controlPage: Page;
+  page: Page;
+  viewports: readonly { height: number; width: number }[];
+}): Promise<Record<string, unknown>[]> {
+  const geometry: Record<string, unknown>[] = [];
+  for (const themeCase of TASK7_THEME_CASES) {
+    for (const viewport of input.viewports) {
+      await test.step(`stopped overlay ${themeCase.id} ${String(viewport.width)} current document-stop language`, async () => {
+        await input.page.setViewportSize(viewport);
+        await input.page.emulateMedia({ colorScheme: themeCase.colorScheme });
+        await input.controlPage.bringToFront();
+        await applyTask7ThemeCase(input.controlPage, themeCase, 'popup');
+        const handle: ElementHandle<HTMLElement | SVGElement> = await overlayHandle(input.page);
+        await expectOverlayTheme(handle, themeCase.theme);
+        const resolved: Task7ResolvedTheme = await handle.evaluate(
+          (host: HTMLElement | SVGElement): Task7ResolvedTheme => {
+            const style: CSSStyleDeclaration = getComputedStyle(host);
+            return {
+              backgroundColor: style.getPropertyValue('--overlay-bg').trim(),
+              color: style.getPropertyValue('--overlay-text').trim(),
+              colorScheme: style.colorScheme,
+            };
+          },
+        );
+        expect((): void =>
+          assertTask7ResolvedTheme(resolved, themeCase, 'stopped-overlay'),
+        ).not.toThrow();
+        await expectClosedOverlayText(
+          input.page.context(),
+          input.page,
+          'This page did not load. It will load by itself when the session ends.',
+        );
+        await input.page.bringToFront();
+        await input.capture.capture(
+          input.page,
+          'stopped-overlay',
+          'stopped-document',
+          themeCase,
+          viewport,
+          'full',
+        );
+        const clipWidth: number = Math.min(viewport.width, 600);
+        const clipHeight: number = Math.min(viewport.height, 560);
+        appendTask7Record(
+          input.capture.records,
+          await captureTask7ClipEvidence(
+            input.capture.evidenceDir,
+            input.page,
+            `task7-production-stopped-overlay-${themeCase.id}-${String(viewport.width)}-stopped-document-focused`,
+            task7Metadata(themeCase, viewport, 'stopped-overlay', 'stopped-document', 'focused'),
+            {
+              height: clipHeight,
+              width: clipWidth,
+              x: (viewport.width - clipWidth) / 2,
+              y: (viewport.height - clipHeight) / 2,
+            },
+          ),
+        );
+        const bounds = await input.page.locator('focus-lock-overlay').boundingBox();
+        expect(bounds).toEqual({ height: viewport.height, width: viewport.width, x: 0, y: 0 });
+        geometry.push({ bounds, resolvedTheme: resolved, themeCase: themeCase.id, viewport });
+      });
+    }
+  }
+  return geometry;
+}
+
 test('Task 7 production evidence matrix is reproducible', async ({
   context,
   extPage,
@@ -1286,16 +1592,28 @@ test('Task 7 production evidence matrix is reproducible', async ({
   });
 
   const optionsPage: Page = await context.newPage();
+  const statsPage: Page = await context.newPage();
   let blockedPage: Page | null = null;
+  let stoppedPage: Page | null = null;
   let syncFiller: { bytes: number; keys: string[]; quota: number } | null = null;
+  const gateGeometry: Record<string, unknown>[] = [];
   let optionsGeometry: Record<string, unknown>[] = [];
   let privacyGeometry: Record<string, unknown>[] = [];
+  let statsGeometry: Record<string, unknown>[] = [];
   let overlayGeometry: Record<string, unknown>[] = [];
+  let stoppedOverlayGeometry: Record<string, unknown>[] = [];
   try {
     optionsGeometry = await captureTask7OptionsMatrix({
       capture,
       extensionId,
       page: optionsPage,
+      viewports: pageViewports,
+    });
+    await seedTask7Stats(worker);
+    statsGeometry = await captureTask7StatsMatrix({
+      capture,
+      extensionId,
+      page: statsPage,
       viewports: pageViewports,
     });
     expect(
@@ -1325,18 +1643,61 @@ test('Task 7 production evidence matrix is reproducible', async ({
 
     blockedPage = await context.newPage();
     await blockedPage.goto(siteUrl('/plain.html'));
+    await configureTask7Gate(extPage, true);
     await extPage.bringToFront();
-    await startTestSession(extPage, { durationMin: 2, strictness: 'friction' });
+    await startTestSession(extPage, { durationMin: 10, strictness: 'friction' });
     await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
     await expectClosedOverlayText(
       context,
       blockedPage,
       'Blocked by your block list: blocked.example',
     );
+    expect(await sendExtensionRequest(extPage, { type: 'requestSessionEnd' })).toEqual({
+      ok: true,
+    });
+    gateGeometry.push(
+      ...(await captureTask7GateState({
+        capture,
+        page: extPage,
+        state: 'typed-gate',
+        viewports: pageViewports,
+      })),
+    );
+    expect(await sendExtensionRequest(extPage, { type: 'abandonGate' })).toEqual({ ok: true });
+    await configureTask7Gate(extPage, false);
+    expect(await sendExtensionRequest(extPage, { type: 'requestSessionEnd' })).toEqual({
+      ok: true,
+    });
+    gateGeometry.push(
+      ...(await captureTask7GateState({
+        capture,
+        page: extPage,
+        state: 'untyped-gate',
+        viewports: pageViewports,
+      })),
+    );
+    gateGeometry.push(
+      ...(await captureTask7GateState({
+        capture,
+        page: extPage,
+        state: 'force-end-removed',
+        viewports: pageViewports,
+      })),
+    );
+    expect(await sendExtensionRequest(extPage, { type: 'abandonGate' })).toEqual({ ok: true });
     overlayGeometry = await captureTask7OverlayMatrix({
       capture,
       controlPage: extPage,
       page: blockedPage,
+      viewports: pageViewports,
+    });
+    stoppedPage = await context.newPage();
+    await stoppedPage.goto(siteUrl('/plain.html'), { waitUntil: 'commit' });
+    await expect(stoppedPage.locator('#marker')).toHaveCount(0);
+    stoppedOverlayGeometry = await captureTask7StoppedOverlayMatrix({
+      capture,
+      controlPage: extPage,
+      page: stoppedPage,
       viewports: pageViewports,
     });
     await captureTask7UnsupportedMatrix({ capture, page: extPage, viewport: popupViewport });
@@ -1344,12 +1705,15 @@ test('Task 7 production evidence matrix is reproducible', async ({
     await clearTask7SyncQuota(worker);
     await Promise.all([
       optionsPage.close(),
+      statsPage.close(),
       ...(blockedPage === null ? [] : [blockedPage.close()]),
+      ...(stoppedPage === null ? [] : [stoppedPage.close()]),
     ]);
     await sendExtensionRequest(extPage, { type: 'updateLists', lists });
   }
 
-  expect(capture.records).toHaveLength(212);
+  expect((): void => assertTask7CurrentSurfaceCoverage(capture.records)).not.toThrow();
+  expect(capture.records).toHaveLength(332);
   let provenanceAfter: Task7BuildProvenance | null = null;
   if (persistentEvidenceDir !== undefined && explicitDist !== null && provenanceBefore !== null) {
     const final = await readTask7BuildProvenance(repositoryRoot, explicitDist);
@@ -1387,10 +1751,13 @@ test('Task 7 production evidence matrix is reproducible', async ({
         diagnosticCounts,
         extensionId,
         geometryAssertions: {
+          gate: gateGeometry,
           options: optionsGeometry,
           overlay: overlayGeometry,
           popup: popupGeometry,
           privacy: privacyGeometry,
+          stats: statsGeometry,
+          stoppedOverlay: stoppedOverlayGeometry,
         },
         inventory: capture.records,
         matrix: { pageViewports, popupViewport, themeCases: TASK7_THEME_CASES },

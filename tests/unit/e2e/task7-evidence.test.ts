@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   assertTask7BuildProvenance,
+  assertTask7CurrentSurfaceCoverage,
   assertTask7ProductionInventoryParity,
   assertTask7ResolvedTheme,
   hashTask7Tree,
@@ -146,5 +147,17 @@ describe('Task 7 manifest production parity', () => {
         [{ file: 'a.png' }, { file: 'c.png' }],
       ),
     ).toThrow(/missing.*b\.png.*unexpected.*c\.png/i);
+    expect((): void =>
+      assertTask7CurrentSurfaceCoverage([
+        {
+          file: 'task7-production-stats-auto-light-375-current-language-full.png',
+          scope: 'full',
+          state: 'current-language',
+          surface: 'stats',
+          themeCase: 'auto-light',
+          viewport: { height: 667, width: 375 },
+        },
+      ]),
+    ).toThrow(/missing.*typed-gate.*stopped-overlay/i);
   });
 });
