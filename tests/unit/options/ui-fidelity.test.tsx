@@ -68,6 +68,9 @@ describe('Options navigation', () => {
     expect(css).not.toMatch(/\.dirty-save-bar\s*\{[^}]*bottom:\s*0/s);
     expect(css).toMatch(/\.dirty-save-bar--sticky\s*\{[^}]*position:\s*sticky/s);
     expect(css).toMatch(/\.dirty-save-bar--sticky\s*\{[^}]*bottom:\s*0/s);
+    expect(css).toMatch(/\.options--sticky-save\s*\{[^}]*height:\s*100dvh/s);
+    expect(css).toMatch(/\.options--sticky-save\s*\{[^}]*overflow:\s*hidden/s);
+    expect(css).toMatch(/\.options--sticky-save\s+\.content-body\s*\{[^}]*overflow-y:\s*auto/s);
   });
 
   it('uses the exact hard-blocking rejection copy', async (): Promise<void> => {

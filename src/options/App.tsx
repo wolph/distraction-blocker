@@ -397,6 +397,7 @@ export function App(): VNode {
   const activeSaveState: DestinationSaveState = saveStates[section];
   const savePending: boolean = activeSaveState.pending;
   const saveError: string | null = activeSaveState.error;
+  const stickySave: boolean = dirty || savePending || saveError !== null;
 
   const saveSection: () => Promise<void> = async (): Promise<void> => {
     if (
@@ -473,7 +474,7 @@ export function App(): VNode {
   };
 
   return (
-    <div class="options">
+    <div class={`options${stickySave ? ' options--sticky-save' : ''}`}>
       <SettingsNav
         page="options"
         section={section}
@@ -482,24 +483,26 @@ export function App(): VNode {
         onSectionChange={setSection}
       />
       <main class="content">
-        <h1>Focus Lock settings</h1>
-        {hardBanner(store.snapshot)}
-        {store.loadError !== null ? (
-          <p class="save-error" role="alert">
-            {store.loadError}
-          </p>
-        ) : draftSettings === null || draftLists === null ? (
-          <p>Loading settings</p>
-        ) : (
-          <SectionPanels
-            section={section}
-            settings={draftSettings}
-            lists={draftLists}
-            store={store}
-            onSettings={setDraftSettings}
-            onLists={setDraftLists}
-          />
-        )}
+        <div class="content-body">
+          <h1>Focus Lock settings</h1>
+          {hardBanner(store.snapshot)}
+          {store.loadError !== null ? (
+            <p class="save-error" role="alert">
+              {store.loadError}
+            </p>
+          ) : draftSettings === null || draftLists === null ? (
+            <p>Loading settings</p>
+          ) : (
+            <SectionPanels
+              section={section}
+              settings={draftSettings}
+              lists={draftLists}
+              store={store}
+              onSettings={setDraftSettings}
+              onLists={setDraftLists}
+            />
+          )}
+        </div>
         {loaded && section !== 'privacy' ? (
           <DirtySaveBar
             dirty={dirty}
