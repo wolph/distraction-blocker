@@ -27,6 +27,7 @@ export type Task7ThemeSurface =
   | 'stopped-overlay';
 
 interface Task7CurrentSurfaceRecord {
+  assertions?: { forceEndControlCount?: number };
   file: string;
   scope: 'focused' | 'full';
   state: string;
@@ -36,7 +37,7 @@ interface Task7CurrentSurfaceRecord {
 }
 
 const TASK7_CURRENT_SURFACE_STATES: Readonly<Record<string, readonly string[]>> = {
-  gate: ['typed-gate', 'untyped-gate', 'force-end-removed'],
+  gate: ['typed-gate', 'untyped-gate'],
   stats: ['current-language'],
   'stopped-overlay': ['stopped-document'],
 };
@@ -57,6 +58,7 @@ const TASK7_THEME_IDS: readonly Task7ThemeCase['id'][] = [
 export function assertTask7CurrentSurfaceCoverage(
   inventory: readonly Task7CurrentSurfaceRecord[],
 ): void {
+  assertTask7GateAbsenceEvidence(inventory);
   const observed: Set<string> = new Set(
     inventory.map(
       (record: Task7CurrentSurfaceRecord): string =>
@@ -78,6 +80,28 @@ export function assertTask7CurrentSurfaceCoverage(
   const missing: string[] = required.filter((key: string): boolean => !observed.has(key));
   if (missing.length > 0) {
     throw new Error(`Missing Task 7 current surface evidence: ${missing.join(', ')}`);
+  }
+}
+
+export function assertTask7GateAbsenceEvidence(
+  inventory: readonly Task7CurrentSurfaceRecord[],
+): void {
+  const obsolete: string[] = inventory
+    .filter((record: Task7CurrentSurfaceRecord): boolean => record.state === 'force-end-removed')
+    .map((record: Task7CurrentSurfaceRecord): string => record.file);
+  if (obsolete.length > 0) {
+    throw new Error(`Obsolete Task 7 force-end screenshot evidence: ${obsolete.join(', ')}`);
+  }
+  const missing: string[] = inventory
+    .filter(
+      (record: Task7CurrentSurfaceRecord): boolean =>
+        record.surface === 'gate' &&
+        ['typed-gate', 'untyped-gate'].includes(record.state) &&
+        record.assertions?.forceEndControlCount !== 0,
+    )
+    .map((record: Task7CurrentSurfaceRecord): string => record.file);
+  if (missing.length > 0) {
+    throw new Error(`Task 7 force-end absence metadata is missing: ${missing.join(', ')}`);
   }
 }
 
@@ -239,6 +263,14 @@ export function assertTask7ResolvedTheme(
     );
     throw new Error(
       `${themeCase.id} ${surface} ${label} expected ${expected[property]}, received ${actual[property]}`,
+    );
+  }
+}
+
+export function assertTask7SingleResponsiveCopy(visibleCopies: number): void {
+  if (visibleCopies !== 1) {
+    throw new Error(
+      `Task 7 Stats requires exactly one visible responsive DOM copy, received ${String(visibleCopies)}.`,
     );
   }
 }

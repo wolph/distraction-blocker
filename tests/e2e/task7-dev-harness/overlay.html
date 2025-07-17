@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Focus Lock Task 7 source overlay harness</title>
+    <style>
+      body { margin: 0; min-height: 100vh; background: #f7f8fa; color: #222; }
+    </style>
+  </head>
+  <body>
+    <main><h1>Development overlay provenance host</h1></main>
+    <script>
+      globalThis.chrome = {
+        runtime: {
+          sendMessage: async () => ({ ok: true }),
+          onMessage: { addListener: () => {}, removeListener: () => {} },
+        },
+      };
+    </script>
+    <script type="module">
+      import { showOverlay } from '/src/content/overlay.ts';
+
+      const params = new URLSearchParams(location.search);
+      const theme = params.get('theme') ?? 'auto';
+      const now = Date.now();
+      const snapshot = {
+        at: now,
+        theme,
+        phase: 'focus',
+        config: {
+          mode: 'blacklist',
+          strictness: 'friction',
+          durationMin: 25,
+          cycling: null,
+          intention: 'Task 7 source-module QA',
+          source: 'manual',
+          scheduleEntryId: null,
+          rules: {
+            mode: 'blacklist',
+            hosts: ['blocked.example'],
+            regexes: [],
+            categories: [],
+            exclusions: [],
+          },
+        },
+        startedAt: now - 60000,
+        phaseStartedAt: now - 60000,
+        phaseEndsAt: now + 1440000,
+        sessionEndsAt: now + 1440000,
+        cycleIndex: 0,
+        bankMs: 0,
+        bankAccrualPerMs: 5 / 30,
+        bankCapMs: 1800000,
+        pauseCostMs: 300000,
+        unlockCostMs: 300000,
+        activeUnlocks: [],
+        gate: null,
+        attemptsToday: 1,
+        scheduleActive: false,
+        nextSchedule: null,
+      };
+      showOverlay(
+        {
+          blocked: true,
+          reason: 'custom',
+          categoryId: null,
+          matchedPattern: 'blocked.example',
+        },
+        snapshot,
+        params.get('stopped') !== 'false',
+      );
+    </script>
+  </body>
+</html>

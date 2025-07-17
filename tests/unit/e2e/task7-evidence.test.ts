@@ -5,8 +5,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   assertTask7BuildProvenance,
   assertTask7CurrentSurfaceCoverage,
+  assertTask7GateAbsenceEvidence,
   assertTask7ProductionInventoryParity,
   assertTask7ResolvedTheme,
+  assertTask7SingleResponsiveCopy,
   hashTask7Tree,
   parseTask7BuildProvenance,
   type Task7BuildProvenance,
@@ -29,6 +31,12 @@ async function temporaryDirectory(): Promise<string> {
 }
 
 describe('Task 7 theme resolution', () => {
+  it('rejects zero or two visible responsive DOM copies', (): void => {
+    expect((): void => assertTask7SingleResponsiveCopy(0)).toThrow(/exactly one.*0/i);
+    expect((): void => assertTask7SingleResponsiveCopy(2)).toThrow(/exactly one.*2/i);
+    expect((): void => assertTask7SingleResponsiveCopy(1)).not.toThrow();
+  });
+
   it('rejects an Auto-light case whose computed colors resolve dark', (): void => {
     expect((): void =>
       assertTask7ResolvedTheme(
@@ -131,6 +139,34 @@ describe('Task 7 build provenance', () => {
 });
 
 describe('Task 7 manifest production parity', () => {
+  it('requires per-file force-end absence metadata in typed and untyped gate evidence', (): void => {
+    expect((): void =>
+      assertTask7GateAbsenceEvidence([
+        {
+          file: 'typed.png',
+          scope: 'full',
+          state: 'typed-gate',
+          surface: 'gate',
+          themeCase: 'auto-light',
+          viewport: { height: 667, width: 375 },
+        },
+      ]),
+    ).toThrow(/force-end.*absence.*metadata/i);
+    expect((): void =>
+      assertTask7GateAbsenceEvidence([
+        {
+          assertions: { forceEndControlCount: 0 },
+          file: 'typed.png',
+          scope: 'full',
+          state: 'typed-gate',
+          surface: 'gate',
+          themeCase: 'auto-light',
+          viewport: { height: 667, width: 375 },
+        },
+      ]),
+    ).not.toThrow();
+  });
+
   it('rejects duplicate report entries even when the report count matches', (): void => {
     expect((): void =>
       assertTask7ProductionInventoryParity(

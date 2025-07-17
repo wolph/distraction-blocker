@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   BrowserContext,
@@ -28,6 +27,7 @@ import {
   startTestSession,
   test,
 } from './fixtures';
+import { auditTask7Diagnostics, type Task7DiagnosticsAudit } from './task7-diagnostics';
 import {
   assertTask7BuildProvenance,
   assertTask7CurrentSurfaceCoverage,
@@ -38,6 +38,22 @@ import {
   type Task7ThemeCase,
   type Task7ThemeSurface,
 } from './task7-evidence';
+import { captureTask7GateState, configureTask7Gate } from './task7-gate-matrix';
+import {
+  appendTask7Record,
+  captureTask7ClipEvidence,
+  createTask7CaptureContext,
+  finishTask7DeferredSaveFailure,
+  installTask7DeferredSaveFailure,
+  TASK7_PAGE_VIEWPORTS,
+  TASK7_THEME_CASES,
+  type Task7CaptureContext,
+  type Task7Rectangle,
+  task7Metadata,
+  task7RectanglesIntersect,
+  task7VisibleContentIntersections,
+} from './task7-matrix-support';
+import { captureTask7StatsMatrix, seedTask7Stats } from './task7-stats-matrix';
 
 test.setTimeout(60_000);
 
@@ -52,27 +68,6 @@ const THEME_LABEL: Readonly<Record<ThemeMode, string>> = {
   light: 'Light',
   dark: 'Dark',
 };
-
-interface Task7EvidenceRecord {
-  buildSource: 'production';
-  bytes: number;
-  colorScheme: 'dark' | 'light';
-  file: string;
-  scope: 'focused' | 'full';
-  sha256: string;
-  state: string;
-  surface: Task7ThemeSurface;
-  theme: ThemeMode;
-  themeCase: Task7ThemeCase['id'];
-  viewport: { height: number; width: number };
-}
-
-const TASK7_THEME_CASES: readonly Task7ThemeCase[] = [
-  { colorScheme: 'light', id: 'auto-light', theme: 'auto' },
-  { colorScheme: 'dark', id: 'auto-dark', theme: 'auto' },
-  { colorScheme: 'dark', id: 'light-dark-media', theme: 'light' },
-  { colorScheme: 'light', id: 'dark-light-media', theme: 'dark' },
-];
 
 async function expectPageTheme(page: Page, theme: ThemeMode): Promise<void> {
   const next: ThemeMode = NEXT_THEME[theme];
@@ -154,58 +149,6 @@ async function captureTask7Evidence(
   });
 }
 
-async function task7FileRecord(
-  absolutePath: string,
-  metadata: Omit<Task7EvidenceRecord, 'bytes' | 'file' | 'sha256'>,
-): Promise<Task7EvidenceRecord> {
-  const payload: Buffer = await readFile(absolutePath);
-  return {
-    ...metadata,
-    bytes: (await stat(absolutePath)).size,
-    file: path.basename(absolutePath),
-    sha256: createHash('sha256').update(payload).digest('hex'),
-  };
-}
-
-async function captureTask7MatrixEvidence(
-  evidenceDir: string,
-  target: Locator | Page,
-  stem: string,
-  metadata: Omit<Task7EvidenceRecord, 'bytes' | 'file' | 'sha256'>,
-  fullPage: boolean = false,
-): Promise<Task7EvidenceRecord | null> {
-  const absoluteDir: string = path.resolve(evidenceDir);
-  const absolutePath: string = path.join(absoluteDir, `${stem}.png`);
-  await mkdir(absoluteDir, { recursive: true });
-  if ('page' in target) {
-    await target.screenshot({ path: absolutePath, animations: 'disabled' });
-  } else {
-    await target.screenshot({ path: absolutePath, animations: 'disabled', fullPage });
-  }
-  return await task7FileRecord(absolutePath, metadata);
-}
-
-async function captureTask7ClipEvidence(
-  evidenceDir: string,
-  page: Page,
-  stem: string,
-  metadata: Omit<Task7EvidenceRecord, 'bytes' | 'file' | 'sha256'>,
-  clip: { height: number; width: number; x: number; y: number },
-): Promise<Task7EvidenceRecord | null> {
-  const absoluteDir: string = path.resolve(evidenceDir);
-  const absolutePath: string = path.join(absoluteDir, `${stem}.png`);
-  await mkdir(absoluteDir, { recursive: true });
-  await page.screenshot({ path: absolutePath, animations: 'disabled', clip });
-  return await task7FileRecord(absolutePath, metadata);
-}
-
-function appendTask7Record(
-  records: Task7EvidenceRecord[],
-  record: Task7EvidenceRecord | null,
-): void {
-  if (record !== null) records.push(record);
-}
-
 async function applyTask7ThemeCase(
   page: Page,
   themeCase: Task7ThemeCase,
@@ -239,25 +182,6 @@ async function expectTask7ResolvedPageTheme(
     };
   });
   expect((): void => assertTask7ResolvedTheme(resolved, themeCase, surface)).not.toThrow();
-}
-
-function task7Metadata(
-  themeCase: Task7ThemeCase,
-  viewport: { height: number; width: number },
-  surface: Task7EvidenceRecord['surface'],
-  state: string,
-  scope: Task7EvidenceRecord['scope'],
-): Omit<Task7EvidenceRecord, 'bytes' | 'file' | 'sha256'> {
-  return {
-    buildSource: 'production',
-    colorScheme: themeCase.colorScheme,
-    scope,
-    state,
-    surface,
-    theme: themeCase.theme,
-    themeCase: themeCase.id,
-    viewport,
-  };
 }
 
 async function expectClosedOverlayText(
@@ -518,48 +442,6 @@ test('Options exposes destination saving, category states, and scoped privacy co
   await expect(deleteRemote).toBeFocused();
 });
 
-interface Task7CaptureContext {
-  capture(
-    target: Locator | Page,
-    surface: Task7EvidenceRecord['surface'],
-    state: string,
-    themeCase: Task7ThemeCase,
-    viewport: { height: number; width: number },
-    scope: Task7EvidenceRecord['scope'],
-    fullPage?: boolean,
-  ): Promise<void>;
-  evidenceDir: string;
-  records: Task7EvidenceRecord[];
-}
-
-function createTask7CaptureContext(evidenceDir: string): Task7CaptureContext {
-  const records: Task7EvidenceRecord[] = [];
-  return {
-    evidenceDir,
-    records,
-    capture: async (
-      target: Locator | Page,
-      surface: Task7EvidenceRecord['surface'],
-      state: string,
-      themeCase: Task7ThemeCase,
-      viewport: { height: number; width: number },
-      scope: Task7EvidenceRecord['scope'],
-      fullPage: boolean = false,
-    ): Promise<void> => {
-      appendTask7Record(
-        records,
-        await captureTask7MatrixEvidence(
-          evidenceDir,
-          target,
-          `task7-production-${surface}-${themeCase.id}-${String(viewport.width)}-${state}-${scope}`,
-          task7Metadata(themeCase, viewport, surface, state, scope),
-          fullPage,
-        ),
-      );
-    },
-  };
-}
-
 function task7LongLists(lists: ListsConfig): ListsConfig {
   return {
     ...lists,
@@ -747,22 +629,6 @@ async function captureTask7PopupMatrix(input: {
   return geometry;
 }
 
-interface Task7Rectangle {
-  bottom: number;
-  left: number;
-  right: number;
-  top: number;
-}
-
-function task7RectanglesIntersect(left: Task7Rectangle, right: Task7Rectangle): boolean {
-  return (
-    left.left < right.right &&
-    left.right > right.left &&
-    left.top < right.bottom &&
-    left.bottom > right.top
-  );
-}
-
 async function captureTask7OptionsMatrix(input: {
   capture: Task7CaptureContext;
   extensionId: string;
@@ -866,6 +732,25 @@ async function captureTask7OptionsMatrix(input: {
             return { bar: toBounds(bar), target: toBounds(target) };
           });
         expect(task7RectanglesIntersect(dirtyBounds.bar, dirtyBounds.target)).toBe(false);
+        const visibleContentIntersections = await task7VisibleContentIntersections(input.page);
+        expect(visibleContentIntersections.targets).toEqual([]);
+        const contentBodyScroll: {
+          clientHeight: number;
+          overflowY: string;
+          scrollHeight: number;
+        } = await input.page
+          .locator('.content-body')
+          .evaluate(
+            (
+              element: HTMLElement,
+            ): { clientHeight: number; overflowY: string; scrollHeight: number } => ({
+              clientHeight: element.clientHeight,
+              overflowY: getComputedStyle(element).overflowY,
+              scrollHeight: element.scrollHeight,
+            }),
+          );
+        expect(contentBodyScroll.overflowY).toBe('auto');
+        expect(contentBodyScroll.scrollHeight).toBeGreaterThan(contentBodyScroll.clientHeight);
         await expectWithinViewport(saveBar);
         await input.capture.capture(
           input.page,
@@ -892,6 +777,63 @@ async function captureTask7OptionsMatrix(input: {
           viewport,
           'focused',
         );
+        let saveFailureFinished: boolean = false;
+        await installTask7DeferredSaveFailure(input.page);
+        try {
+          await saveBar.getByRole('button', { name: 'Save changes' }).click();
+          await expect(saveBar.getByText('Saving changes')).toBeVisible();
+          const pendingIntersections = await task7VisibleContentIntersections(input.page);
+          expect(pendingIntersections.targets).toEqual([]);
+          await input.capture.capture(
+            input.page,
+            'options',
+            'save-pending',
+            themeCase,
+            viewport,
+            'full',
+          );
+          await input.capture.capture(
+            saveBar,
+            'options',
+            'save-pending',
+            themeCase,
+            viewport,
+            'focused',
+          );
+
+          await finishTask7DeferredSaveFailure(input.page);
+          saveFailureFinished = true;
+          await expect(saveBar.getByRole('alert')).toHaveText('Task 7 synthetic save rejection.');
+          const errorIntersections = await task7VisibleContentIntersections(input.page);
+          expect(errorIntersections.targets).toEqual([]);
+          await input.capture.capture(
+            input.page,
+            'options',
+            'save-error',
+            themeCase,
+            viewport,
+            'full',
+          );
+          await input.capture.capture(
+            saveBar,
+            'options',
+            'save-error',
+            themeCase,
+            viewport,
+            'focused',
+          );
+          geometry.push({
+            errorIntersections: errorIntersections.targets,
+            pendingIntersections: pendingIntersections.targets,
+            state: 'save-pending-error',
+            themeCase: themeCase.id,
+            viewport,
+          });
+        } finally {
+          if (!saveFailureFinished) {
+            await finishTask7DeferredSaveFailure(input.page).catch((): void => {});
+          }
+        }
         const documentGeometry = await input.page.evaluate(() => ({
           clientWidth: document.documentElement.clientWidth,
           scrollWidth: document.documentElement.scrollWidth,
@@ -903,7 +845,12 @@ async function captureTask7OptionsMatrix(input: {
           clientWidth: documentGeometry.clientWidth,
           dirtySaveBar: { ...dirtyBounds.bar, position: 'sticky' },
           dirtyTarget: dirtyBounds.target,
-          intersections: { cleanCategories: false, dirtyTarget: false },
+          intersections: {
+            cleanCategories: false,
+            dirtyTarget: false,
+            visibleContentTargets: visibleContentIntersections.targets,
+          },
+          contentBodyScroll,
           scrollWidth: documentGeometry.scrollWidth,
           themeCase: themeCase.id,
           viewport,
@@ -1229,242 +1176,6 @@ async function captureTask7UnsupportedMatrix(input: {
   }
 }
 
-async function seedTask7Stats(worker: Worker): Promise<void> {
-  await worker.evaluate(async (): Promise<void> => {
-    const now: number = Date.now();
-    const dateFor = (daysAgo: number): string => {
-      const date: Date = new Date(now);
-      date.setDate(date.getDate() - daysAgo);
-      const year: string = String(date.getFullYear());
-      const month: string = String(date.getMonth() + 1).padStart(2, '0');
-      const day: string = String(date.getDate()).padStart(2, '0');
-      return `${year}-${month}-${day}`;
-    };
-    await chrome.storage.sync.set({
-      [`agg:task7-current:${dateFor(1)}`]: {
-        attempts: {
-          'blocked.example': 7,
-          'research.example.org': 3,
-        },
-        attemptsOther: 1,
-        date: dateFor(1),
-        focusMs: 42 * 60_000,
-        pauseMsEarned: 8 * 60_000,
-        pauseMsSpent: 2 * 60_000,
-        pausesTaken: 1,
-        resisted: 2,
-        sessionsCompleted: 1,
-        sessionsStarted: 1,
-        unlockMsSpent: 60_000,
-        unlocksTaken: 1,
-      },
-      [`agg:task7-current:${dateFor(13)}`]: {
-        attempts: { 'archive.example.net': 2 },
-        attemptsOther: 0,
-        date: dateFor(13),
-        focusMs: 18 * 60_000,
-        pauseMsEarned: 4 * 60_000,
-        pauseMsSpent: 0,
-        pausesTaken: 0,
-        resisted: 1,
-        sessionsCompleted: 1,
-        sessionsStarted: 1,
-        unlockMsSpent: 0,
-        unlocksTaken: 0,
-      },
-    });
-    await chrome.storage.local.set({
-      events: [
-        {
-          at: now - 45 * 60_000,
-          durationMin: 25,
-          intention: 'Review example.com release notes',
-          mode: 'blacklist',
-          sessionId: 'task7-current-stats',
-          source: 'manual',
-          strictness: 'friction',
-          t: 'sessionStarted',
-        },
-        {
-          at: now - 20 * 60_000,
-          focusedMs: 25 * 60_000,
-          sessionId: 'task7-current-stats',
-          t: 'sessionCompleted',
-        },
-        { at: now - 10 * 60_000, domain: 'blocked.example', t: 'attempt' },
-      ],
-    });
-  });
-}
-
-async function captureTask7StatsMatrix(input: {
-  capture: Task7CaptureContext;
-  extensionId: string;
-  page: Page;
-  viewports: readonly { height: number; width: number }[];
-}): Promise<Record<string, unknown>[]> {
-  const geometry: Record<string, unknown>[] = [];
-  for (const themeCase of TASK7_THEME_CASES) {
-    for (const viewport of input.viewports) {
-      await test.step(`stats ${themeCase.id} ${String(viewport.width)} current language and chart focus`, async () => {
-        await input.page.setViewportSize(viewport);
-        await input.page.goto(`chrome-extension://${input.extensionId}/src/stats/stats.html`);
-        await applyTask7ThemeCase(input.page, themeCase, 'stats');
-        await expect(
-          input.page.getByRole('heading', { level: 1, name: 'Your focus record' }),
-        ).toBeVisible();
-        await expect(
-          input.page.getByText(/Totals from this machine|Synced totals from this Chrome account/),
-        ).toBeVisible();
-        await expect(
-          input.page.getByRole('heading', { name: 'Focus, last 14 days' }),
-        ).toBeVisible();
-        await expect(
-          input.page.getByRole('heading', { name: 'Top blocked sites, last 30 days' }),
-        ).toBeVisible();
-        await expect(
-          input.page.getByRole('heading', { name: 'Attempts by hour, this machine only' }),
-        ).toBeVisible();
-        await expect(
-          input.page.getByRole('heading', { name: 'Recent sessions on this machine' }),
-        ).toBeVisible();
-        const seededIntention: Locator = input.page.getByText('Review example.com release notes');
-        await expect(seededIntention).toHaveCount(2);
-        expect(
-          await seededIntention.evaluateAll((elements: Element[]): boolean =>
-            elements.some((element: Element): boolean => {
-              const style: CSSStyleDeclaration = getComputedStyle(element);
-              return style.display !== 'none' && style.visibility !== 'hidden';
-            }),
-          ),
-        ).toBe(true);
-        await input.capture.capture(
-          input.page,
-          'stats',
-          'current-language',
-          themeCase,
-          viewport,
-          'full',
-          true,
-        );
-        const chartCard: Locator = input.page.locator('.card').filter({
-          has: input.page.getByRole('heading', { name: 'Focus, last 14 days' }),
-        });
-        await chartCard.scrollIntoViewIfNeeded();
-        const tableDisclosure: Locator = chartCard.locator('summary', {
-          hasText: 'View as table',
-        });
-        await tableDisclosure.focus();
-        await expect(tableDisclosure).toBeFocused();
-        await expect(chartCard).toBeVisible();
-        await input.capture.capture(
-          chartCard,
-          'stats',
-          'current-language',
-          themeCase,
-          viewport,
-          'focused',
-        );
-        const metrics = await input.page.evaluate(() => {
-          const root: HTMLElement = document.documentElement;
-          const chartLabels: SVGTextElement[] = Array.from(
-            document.querySelectorAll<SVGTextElement>('.axis-text, .value-label, .direct-label'),
-          );
-          const sessionTable: HTMLElement | null = document.querySelector('.session-table-wrap');
-          return {
-            chartLabelFontSizes: chartLabels.map((label: SVGTextElement): number => {
-              const matrix: DOMMatrix | null = label.getScreenCTM();
-              if (matrix === null) throw new Error('Missing Stats label transform.');
-              return (
-                Number.parseFloat(getComputedStyle(label).fontSize) * Math.hypot(matrix.c, matrix.d)
-              );
-            }),
-            clientWidth: root.clientWidth,
-            horizontalOverflow: root.scrollWidth - root.clientWidth,
-            sessionTable:
-              sessionTable === null
-                ? null
-                : {
-                    clientWidth: sessionTable.clientWidth,
-                    overflowX: getComputedStyle(sessionTable).overflowX,
-                    scrollWidth: sessionTable.scrollWidth,
-                  },
-          };
-        });
-        expect(metrics.horizontalOverflow).toBe(0);
-        expect(Math.min(...metrics.chartLabelFontSizes)).toBeGreaterThanOrEqual(9);
-        geometry.push({ metrics, themeCase: themeCase.id, viewport });
-      });
-    }
-  }
-  return geometry;
-}
-
-async function configureTask7Gate(page: Page, requireTypedPhrase: boolean): Promise<void> {
-  const settings: Settings = await sendExtensionRequest(page, { type: 'getSettings' });
-  expect(
-    await sendExtensionRequest(page, {
-      type: 'updateSettings',
-      settings: {
-        ...settings,
-        gate: { delayMs: 30_000, requireTypedPhrase },
-      },
-    }),
-  ).toEqual({ ok: true });
-}
-
-async function captureTask7GateState(input: {
-  capture: Task7CaptureContext;
-  page: Page;
-  state: 'force-end-removed' | 'typed-gate' | 'untyped-gate';
-  viewports: readonly { height: number; width: number }[];
-}): Promise<Record<string, unknown>[]> {
-  const geometry: Record<string, unknown>[] = [];
-  const panel: Locator = input.page.locator('.gate-panel');
-  const focusTarget: Locator =
-    input.state === 'typed-gate'
-      ? panel.locator('input[type="text"]')
-      : input.page.getByRole('button', { name: 'Never mind, back to work' });
-  for (const themeCase of TASK7_THEME_CASES) {
-    for (const viewport of input.viewports) {
-      await test.step(`gate ${input.state} ${themeCase.id} ${String(viewport.width)}`, async () => {
-        await input.page.setViewportSize(viewport);
-        await applyTask7ThemeCase(input.page, themeCase, 'gate');
-        await expect(panel).toBeVisible();
-        await expect(panel).toContainText('A moment to decide');
-        await expect(panel.getByRole('button', { name: 'End the session' })).toBeVisible();
-        await expect(input.page.getByText('Ignore timeout and end anyway')).toHaveCount(0);
-        await focusTarget.focus();
-        await expectWithinViewport(panel);
-        await input.capture.capture(
-          input.page,
-          'gate',
-          input.state,
-          themeCase,
-          viewport,
-          'full',
-          true,
-        );
-        await input.capture.capture(panel, 'gate', input.state, themeCase, viewport, 'focused');
-        const bounds = await panel.boundingBox();
-        const documentGeometry = await input.page.evaluate(() => ({
-          clientWidth: document.documentElement.clientWidth,
-          scrollWidth: document.documentElement.scrollWidth,
-        }));
-        expect(documentGeometry.scrollWidth).toBe(documentGeometry.clientWidth);
-        geometry.push({
-          bounds,
-          document: documentGeometry,
-          state: input.state,
-          themeCase: themeCase.id,
-          viewport,
-        });
-      });
-    }
-  }
-  return geometry;
-}
-
 async function captureTask7StoppedOverlayMatrix(input: {
   capture: Task7CaptureContext;
   controlPage: Page;
@@ -1534,6 +1245,32 @@ async function captureTask7StoppedOverlayMatrix(input: {
   return geometry;
 }
 
+test('Task 7 dirty save bar leaves every visible Options target unobscured at 768', async ({
+  context,
+  extensionId,
+}) => {
+  const page: Page = await context.newPage();
+  try {
+    await page.setViewportSize({ height: 800, width: 768 });
+    await page.goto(`chrome-extension://${extensionId}/src/options/options.html#blocking`);
+    await applyTask7ThemeCase(
+      page,
+      { colorScheme: 'dark', id: 'auto-dark', theme: 'auto' },
+      'options',
+    );
+    const socialRow: Locator = page.locator('.cat-row').filter({ hasText: 'Social media' });
+    await socialRow.getByRole('button', { name: 'Show Social media sites' }).click();
+    await page.getByRole('checkbox', { name: 'facebook.com' }).uncheck();
+    const saveBar: Locator = page.locator('.dirty-save-bar');
+    await expect(saveBar).toHaveClass(/dirty-save-bar--sticky/);
+
+    const intersections = await task7VisibleContentIntersections(page);
+    expect(intersections.targets).toEqual([]);
+  } finally {
+    await page.close();
+  }
+});
+
 test('Task 7 production evidence matrix is reproducible', async ({
   context,
   extPage,
@@ -1577,11 +1314,7 @@ test('Task 7 production evidence matrix is reproducible', async ({
     ok: true,
   });
   const popupViewport = { height: 760, width: 340 };
-  const pageViewports: readonly { height: number; width: number }[] = [
-    { height: 667, width: 375 },
-    { height: 800, width: 768 },
-    { height: 800, width: 1280 },
-  ];
+  const pageViewports: readonly { height: number; width: number }[] = TASK7_PAGE_VIEWPORTS;
   const popupGeometry: Record<string, unknown>[] = await captureTask7PopupMatrix({
     capture,
     page: extPage,
@@ -1611,6 +1344,8 @@ test('Task 7 production evidence matrix is reproducible', async ({
     });
     await seedTask7Stats(worker);
     statsGeometry = await captureTask7StatsMatrix({
+      applyTheme: async (page: Page, themeCase: Task7ThemeCase): Promise<void> =>
+        await applyTask7ThemeCase(page, themeCase, 'stats'),
       capture,
       extensionId,
       page: statsPage,
@@ -1657,6 +1392,8 @@ test('Task 7 production evidence matrix is reproducible', async ({
     });
     gateGeometry.push(
       ...(await captureTask7GateState({
+        applyTheme: async (page: Page, themeCase: Task7ThemeCase): Promise<void> =>
+          await applyTask7ThemeCase(page, themeCase, 'gate'),
         capture,
         page: extPage,
         state: 'typed-gate',
@@ -1670,17 +1407,11 @@ test('Task 7 production evidence matrix is reproducible', async ({
     });
     gateGeometry.push(
       ...(await captureTask7GateState({
+        applyTheme: async (page: Page, themeCase: Task7ThemeCase): Promise<void> =>
+          await applyTask7ThemeCase(page, themeCase, 'gate'),
         capture,
         page: extPage,
         state: 'untyped-gate',
-        viewports: pageViewports,
-      })),
-    );
-    gateGeometry.push(
-      ...(await captureTask7GateState({
-        capture,
-        page: extPage,
-        state: 'force-end-removed',
         viewports: pageViewports,
       })),
     );
@@ -1713,7 +1444,7 @@ test('Task 7 production evidence matrix is reproducible', async ({
   }
 
   expect((): void => assertTask7CurrentSurfaceCoverage(capture.records)).not.toThrow();
-  expect(capture.records).toHaveLength(332);
+  expect(capture.records).toHaveLength(356);
   let provenanceAfter: Task7BuildProvenance | null = null;
   if (persistentEvidenceDir !== undefined && explicitDist !== null && provenanceBefore !== null) {
     const final = await readTask7BuildProvenance(repositoryRoot, explicitDist);
@@ -1729,26 +1460,20 @@ test('Task 7 production evidence matrix is reproducible', async ({
   }
   await context.close();
   expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).not.toThrow();
-  const diagnosticCounts: Record<keyof BrowserDiagnostics, number> = {
-    blockedRequests: diagnostics.blockedRequests.length,
-    consoleErrors: diagnostics.consoleErrors.length,
-    intentionalWorkerStopMessages: diagnostics.intentionalWorkerStopMessages.length,
-    pageErrors: diagnostics.pageErrors.length,
-    requestErrors: diagnostics.requestErrors.length,
-    shutdownWorkerMessages: diagnostics.shutdownWorkerMessages.length,
-    workerErrors: diagnostics.workerErrors.length,
-  };
+  const diagnosticsAudit: Task7DiagnosticsAudit = auditTask7Diagnostics(
+    diagnostics,
+    persistentEvidenceDir === undefined ? null : 2,
+  );
   await writeFile(
     path.join(evidenceDir, 'production-run-report.json'),
     `${JSON.stringify(
       {
         buildSource: 'production',
         diagnosticBoundary: {
-          contextClosedBeforeAudit: true,
-          fixtureContextTeardownAsserted: true,
+          ownedContextClosedBeforeReport: true,
           ownedPagesClosedBeforeAudit: true,
         },
-        diagnosticCounts,
+        diagnosticsAudit,
         extensionId,
         geometryAssertions: {
           gate: gateGeometry,
