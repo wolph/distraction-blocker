@@ -904,6 +904,44 @@ describe('Engine', () => {
     expect(h.engine.getSettings()).toEqual(remote);
   });
 
+  it('does not answer a persisted snapshot while an admitted policy mutation is active', async (): Promise<void> => {
+    let releasePolicySave: () => void = (): void => undefined;
+    const policySaveBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releasePolicySave = resolve;
+    });
+    let signalPolicySaveStarted: () => void = (): void => undefined;
+    const policySaveStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalPolicySaveStarted = resolve;
+    });
+    const h: Harness = makeEngine({
+      savePolicy: async (): Promise<void> => {
+        signalPolicySaveStarted();
+        await policySaveBlocked;
+      },
+    });
+    const updating: Promise<Ack> = h.engine.updateSettings({
+      ...DEFAULT_SETTINGS,
+      retentionDays: 30,
+    });
+    await policySaveStarted;
+
+    let snapshotResolved: boolean = false;
+    const snapshot: Promise<SessionSnapshot> = h.engine
+      .snapshotPersisted()
+      .then((value: SessionSnapshot): SessionSnapshot => {
+        snapshotResolved = true;
+        return value;
+      });
+    await new Promise<void>((resolve: () => void): void => {
+      setTimeout(resolve, 0);
+    });
+    expect(snapshotResolved).toBe(false);
+
+    releasePolicySave();
+    await expect(updating).resolves.toEqual({ ok: true });
+    await expect(snapshot).resolves.toMatchObject({ phase: 'idle' });
+  });
+
   it('holds a scheduled Hard start behind inbound mirror I/O across its clock boundary', async (): Promise<void> => {
     let releaseMirror: () => void = (): void => undefined;
     let signalMirrorStarted: () => void = (): void => undefined;

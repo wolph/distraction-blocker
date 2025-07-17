@@ -471,6 +471,10 @@ export class Engine {
   }
 
   async snapshotPersisted(): Promise<SessionSnapshot> {
+    return this.enqueuePolicyMutation((): Promise<SessionSnapshot> => this.snapshotPersistedNow());
+  }
+
+  private async snapshotPersistedNow(): Promise<SessionSnapshot> {
     this.assertRuntimeMutationAllowed();
     const now: number = this.ports.now();
     this.catchUp(now);
