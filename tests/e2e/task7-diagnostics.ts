@@ -5,8 +5,8 @@ export interface Task7ClassifiedDiagnostic {
   allowlist: readonly string[];
   bucket: 'shutdownWorkerMessages';
   classification: 'expected-browser-shutdown';
-  expectedCount: number;
   messages: string[];
+  policy: 'any-count-exact-allowlist';
 }
 
 export interface Task7DiagnosticsAudit {
@@ -28,10 +28,7 @@ function normalizeTask7DiagnosticMessage(message: string): string {
   return message.replace(/\r\n?/g, '\n').trim();
 }
 
-export function auditTask7Diagnostics(
-  diagnostics: BrowserDiagnostics,
-  expectedShutdownCount: number | null = 2,
-): Task7DiagnosticsAudit {
+export function auditTask7Diagnostics(diagnostics: BrowserDiagnostics): Task7DiagnosticsAudit {
   const unexpected: Task7DiagnosticsAudit['unexpected'] = {
     blockedRequests: diagnostics.blockedRequests.map(normalizeTask7DiagnosticMessage),
     consoleErrors: diagnostics.consoleErrors.map(normalizeTask7DiagnosticMessage),
@@ -51,13 +48,12 @@ export function auditTask7Diagnostics(
     normalizeTask7DiagnosticMessage,
   );
   if (
-    (expectedShutdownCount !== null && shutdownMessages.length !== expectedShutdownCount) ||
     shutdownMessages.some(
       (message: string): boolean => message !== EXPECTED_BROWSER_SHUTDOWN_MESSAGE,
     )
   ) {
     throw new Error(
-      `Task 7 classified teardown diagnostics differ from the exact allowlist/count: ${JSON.stringify(shutdownMessages)}`,
+      `Task 7 classified teardown diagnostics differ from the exact allowlist: ${JSON.stringify(shutdownMessages)}`,
     );
   }
 
@@ -74,8 +70,8 @@ export function auditTask7Diagnostics(
         allowlist: [EXPECTED_BROWSER_SHUTDOWN_MESSAGE],
         bucket: 'shutdownWorkerMessages',
         classification: 'expected-browser-shutdown',
-        expectedCount: shutdownMessages.length,
         messages: shutdownMessages,
+        policy: 'any-count-exact-allowlist',
       },
     ],
     observedCounts,

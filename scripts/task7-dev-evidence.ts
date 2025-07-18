@@ -23,6 +23,16 @@ export interface Task7DevEvidenceRecord {
   viewport: { height: number; width: number };
 }
 
+export function task7ViteStartupState(input: {
+  exitCode: number | null;
+  output: string;
+  responseReady: boolean;
+}): 'failed' | 'ready' | 'starting' {
+  if (input.exitCode !== null) return 'failed';
+  const ownedReadyOutput: boolean = /VITE v\S+\s+ready in \d+ ms/.test(input.output);
+  return ownedReadyOutput && input.responseReady ? 'ready' : 'starting';
+}
+
 export function assertTask7DevInventoryParity(
   expectedFiles: readonly string[],
   inventory: readonly Task7DevEvidenceRecord[],

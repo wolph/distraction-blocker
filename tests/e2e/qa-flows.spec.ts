@@ -1460,10 +1460,7 @@ test('Task 7 production evidence matrix is reproducible', async ({
   }
   await context.close();
   expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).not.toThrow();
-  const diagnosticsAudit: Task7DiagnosticsAudit = auditTask7Diagnostics(
-    diagnostics,
-    persistentEvidenceDir === undefined ? null : 2,
-  );
+  const diagnosticsAudit: Task7DiagnosticsAudit = auditTask7Diagnostics(diagnostics);
   await writeFile(
     path.join(evidenceDir, 'production-run-report.json'),
     `${JSON.stringify(

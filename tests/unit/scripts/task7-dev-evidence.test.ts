@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { assertTask7DevInventoryParity } from '../../../scripts/task7-dev-evidence';
+import {
+  assertTask7DevInventoryParity,
+  task7ViteStartupState,
+} from '../../../scripts/task7-dev-evidence';
 
 const validRecord = {
   assertions: { exactCopy: ['A moment to decide'], forceEndControlCount: 0 },
@@ -19,6 +22,26 @@ const validRecord = {
 };
 
 describe('Task 7 development evidence inventory', () => {
+  it('does not accept an unrelated listener as the owned Vite server', (): void => {
+    expect(task7ViteStartupState({ exitCode: null, output: '', responseReady: true })).toBe(
+      'starting',
+    );
+    expect(
+      task7ViteStartupState({
+        exitCode: null,
+        output: 'VITE v7.3.6 ready in 411 ms\nCRXJS: Load dist as unpacked extension',
+        responseReady: true,
+      }),
+    ).toBe('ready');
+    expect(
+      task7ViteStartupState({
+        exitCode: 1,
+        output: 'Port 4177 is already in use',
+        responseReady: true,
+      }),
+    ).toBe('failed');
+  });
+
   it('requires exact file parity with complete per-file metadata', (): void => {
     expect((): void =>
       assertTask7DevInventoryParity([validRecord.file], [validRecord]),

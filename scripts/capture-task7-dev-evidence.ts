@@ -14,7 +14,7 @@ import type * as Task7DevEvidenceModule from './task7-dev-evidence';
 import type { Task7DevEvidenceRecord } from './task7-dev-evidence';
 import type * as Task7PngModule from './task7-png';
 
-const { assertTask7DevInventoryParity } = (await import(
+const { assertTask7DevInventoryParity, task7ViteStartupState } = (await import(
   new URL('./task7-dev-evidence.ts', import.meta.url).href
 )) as typeof Task7DevEvidenceModule;
 const { task7PngDimensions } = (await import(
@@ -733,13 +733,20 @@ async function startVite(): Promise<ChildProcessWithoutNullStreams> {
     output += chunk.toString();
   });
   for (let attempt: number = 0; attempt < 100; attempt += 1) {
-    if (child.exitCode !== null) throw new Error(`Vite exited before readiness.\n${output}`);
+    let responseReady: boolean = false;
     try {
       const response: Response = await fetch(BASE_URL);
-      if (response.ok || response.status === 404) return child;
+      responseReady = response.ok || response.status === 404;
     } catch {
       // The isolated source server is still starting.
     }
+    const state: ReturnType<typeof task7ViteStartupState> = task7ViteStartupState({
+      exitCode: child.exitCode,
+      output,
+      responseReady,
+    });
+    if (state === 'failed') throw new Error(`Vite exited before readiness.\n${output}`);
+    if (state === 'ready') return child;
     await new Promise<void>((resolve): void => {
       setTimeout(resolve, 100);
     });
