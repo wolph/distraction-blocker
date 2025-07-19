@@ -35,6 +35,7 @@ const validRecord = {
 describe('Task 7 development evidence inventory', () => {
   class FakeViteProcess extends EventEmitter implements Task7StoppableProcess {
     exitCode: number | null = null;
+    signalCode: NodeJS.Signals | null = null;
     readonly signals: NodeJS.Signals[] = [];
 
     constructor(private readonly exitOn: NodeJS.Signals | null) {
@@ -116,6 +117,11 @@ describe('Task 7 development evidence inventory', () => {
   });
 
   it('awaits graceful Vite exit and escalates only after a bounded timeout', async (): Promise<void> => {
+    const alreadyStoppedBySignal: FakeViteProcess = new FakeViteProcess(null);
+    alreadyStoppedBySignal.signalCode = 'SIGTERM';
+    await expect(stopTask7Vite(alreadyStoppedBySignal, 5)).resolves.toBeUndefined();
+    expect(alreadyStoppedBySignal.signals).toEqual([]);
+
     const graceful: FakeViteProcess = new FakeViteProcess('SIGTERM');
     await expect(stopTask7Vite(graceful, 5)).resolves.toBeUndefined();
     expect(graceful.signals).toEqual(['SIGTERM']);

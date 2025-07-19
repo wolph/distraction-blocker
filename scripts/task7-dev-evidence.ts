@@ -1,8 +1,13 @@
 export interface Task7StoppableProcess {
   exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
   kill(signal: NodeJS.Signals): boolean;
   off(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
   on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
+}
+
+function task7ProcessStopped(process: Task7StoppableProcess): boolean {
+  return process.exitCode !== null || process.signalCode !== null;
 }
 
 export interface Task7DevEvidenceRecord {
@@ -40,7 +45,7 @@ async function signalAndAwaitExit(
   signal: NodeJS.Signals,
   timeoutMs: number,
 ): Promise<boolean> {
-  if (process.exitCode !== null) return true;
+  if (task7ProcessStopped(process)) return true;
   return await new Promise<boolean>((resolve: (exited: boolean) => void): void => {
     let settled: boolean = false;
     const finish = (exited: boolean): void => {
@@ -53,11 +58,11 @@ async function signalAndAwaitExit(
     const onExit = (): void => finish(true);
     const timer: NodeJS.Timeout = setTimeout((): void => finish(false), timeoutMs);
     process.on('exit', onExit);
-    if (process.exitCode !== null) {
+    if (task7ProcessStopped(process)) {
       finish(true);
       return;
     }
-    if (!process.kill(signal)) finish(process.exitCode !== null);
+    if (!process.kill(signal)) finish(task7ProcessStopped(process));
   });
 }
 
