@@ -9,14 +9,18 @@ import {
   type Locator,
   type Page,
 } from '@playwright/test';
+import type * as Task7EvidenceModule from '../tests/e2e/task7-evidence';
 import type * as Task7MatrixSupportModule from '../tests/e2e/task7-matrix-support';
 import type * as Task7DevEvidenceModule from './task7-dev-evidence';
 import type { Task7DevEvidenceRecord } from './task7-dev-evidence';
 import type * as Task7PngModule from './task7-png';
 
-const { assertTask7DevInventoryParity, task7ViteStartupState } = (await import(
+const { assertTask7DevInventoryParity, stopTask7Vite, task7ViteStartupState } = (await import(
   new URL('./task7-dev-evidence.ts', import.meta.url).href
 )) as typeof Task7DevEvidenceModule;
+const { assertTask7ResolvedTheme } = (await import(
+  new URL('../tests/e2e/task7-evidence.ts', import.meta.url).href
+)) as typeof Task7EvidenceModule;
 const { task7PngDimensions } = (await import(
   new URL('./task7-png.ts', import.meta.url).href
 )) as typeof Task7PngModule;
@@ -159,7 +163,7 @@ async function capture(
   outputDir: string,
   target: Locator | Page,
   input: {
-    assertions: Task7DevEvidenceRecord['assertions'];
+    assertions: Omit<Task7DevEvidenceRecord['assertions'], 'resolvedTheme'>;
     diagnostics: Diagnostics;
     scope: Scope;
     state: string;
@@ -181,8 +185,11 @@ async function capture(
   } else {
     await target.screenshot({ animations: 'disabled', fullPage: true, path: absolutePath });
   }
+  const page: Page = 'page' in target ? target.page() : target;
+  const resolvedTheme: Task7DevEvidenceRecord['assertions']['resolvedTheme'] =
+    await resolvedThemeFor(page, input.surface, input.themeCase);
   return await fileRecord(outputDir, file, {
-    assertions: input.assertions,
+    assertions: { ...input.assertions, resolvedTheme },
     buildSource: 'dev',
     colorScheme: input.themeCase.media,
     diagnostics: {
@@ -197,6 +204,40 @@ async function capture(
     themeCase: input.themeCase.id,
     viewport: input.viewport,
   });
+}
+
+async function resolvedThemeFor(
+  page: Page,
+  surface: string,
+  themeCase: ThemeCase,
+): Promise<Task7DevEvidenceRecord['assertions']['resolvedTheme']> {
+  const overlaySurface: boolean = surface === 'overlay' || surface === 'stopped-overlay';
+  const resolvedTheme: Task7DevEvidenceRecord['assertions']['resolvedTheme'] = overlaySurface
+    ? await page
+        .locator('focus-lock-overlay')
+        .evaluate((host: Element): Task7DevEvidenceRecord['assertions']['resolvedTheme'] => {
+          const style: CSSStyleDeclaration = getComputedStyle(host);
+          return {
+            backgroundColor: style.getPropertyValue('--overlay-bg').trim(),
+            color: style.getPropertyValue('--overlay-text').trim(),
+            colorScheme: style.colorScheme,
+          };
+        })
+    : await page.evaluate((): Task7DevEvidenceRecord['assertions']['resolvedTheme'] => {
+        const root: CSSStyleDeclaration = getComputedStyle(document.documentElement);
+        const body: CSSStyleDeclaration = getComputedStyle(document.body);
+        return {
+          backgroundColor: body.backgroundColor,
+          color: body.color,
+          colorScheme: root.colorScheme,
+        };
+      });
+  assertTask7ResolvedTheme(
+    resolvedTheme,
+    { colorScheme: themeCase.media, id: themeCase.id, theme: themeCase.theme },
+    surface as Task7EvidenceModule.Task7ThemeSurface,
+  );
+  return resolvedTheme;
 }
 
 async function expectTheme(page: Page, themeCase: ThemeCase): Promise<void> {
@@ -375,6 +416,8 @@ async function captureStoppedOverlay(
           viewport,
         }),
       );
+      const resolvedTheme: Task7DevEvidenceRecord['assertions']['resolvedTheme'] =
+        await resolvedThemeFor(page, 'stopped-overlay', themeCase);
       const file: string = fileName(
         'stopped-overlay',
         themeCase,
@@ -394,7 +437,7 @@ async function captureStoppedOverlay(
       });
       records.push(
         await fileRecord(outputDir, file, {
-          assertions: { exactCopy: copy },
+          assertions: { exactCopy: copy, resolvedTheme },
           buildSource: 'dev',
           colorScheme: themeCase.media,
           diagnostics,
@@ -751,7 +794,7 @@ async function startVite(): Promise<ChildProcessWithoutNullStreams> {
       setTimeout(resolve, 100);
     });
   }
-  child.kill('SIGTERM');
+  await stopTask7Vite(child);
   throw new Error(`Vite did not become ready.\n${output}`);
 }
 
@@ -801,8 +844,11 @@ async function main(): Promise<void> {
     );
     process.stdout.write(`Task 7 dev evidence: ${String(sorted.length)} screenshots\n`);
   } finally {
-    await browser?.close();
-    server.kill('SIGTERM');
+    try {
+      await browser?.close();
+    } finally {
+      await stopTask7Vite(server);
+    }
   }
 }
 

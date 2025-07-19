@@ -1,7 +1,19 @@
+export interface Task7StoppableProcess {
+  exitCode: number | null;
+  kill(signal: NodeJS.Signals): boolean;
+  off(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
+  on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
+}
+
 export interface Task7DevEvidenceRecord {
   assertions: {
     exactCopy: readonly string[];
     forceEndControlCount?: number;
+    resolvedTheme: {
+      backgroundColor: string;
+      color: string;
+      colorScheme: string;
+    };
     visibleResponsiveCopies?: number;
   };
   buildSource: 'dev';
@@ -21,6 +33,41 @@ export interface Task7DevEvidenceRecord {
   theme: 'auto' | 'dark' | 'light';
   themeCase: string;
   viewport: { height: number; width: number };
+}
+
+async function signalAndAwaitExit(
+  process: Task7StoppableProcess,
+  signal: NodeJS.Signals,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (process.exitCode !== null) return true;
+  return await new Promise<boolean>((resolve: (exited: boolean) => void): void => {
+    let settled: boolean = false;
+    const finish = (exited: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      process.off('exit', onExit);
+      resolve(exited);
+    };
+    const onExit = (): void => finish(true);
+    const timer: NodeJS.Timeout = setTimeout((): void => finish(false), timeoutMs);
+    process.on('exit', onExit);
+    if (process.exitCode !== null) {
+      finish(true);
+      return;
+    }
+    if (!process.kill(signal)) finish(process.exitCode !== null);
+  });
+}
+
+export async function stopTask7Vite(
+  process: Task7StoppableProcess,
+  timeoutMs: number = 2_000,
+): Promise<void> {
+  if (await signalAndAwaitExit(process, 'SIGTERM', timeoutMs)) return;
+  if (await signalAndAwaitExit(process, 'SIGKILL', timeoutMs)) return;
+  throw new Error('Task 7 Vite server did not exit after SIGTERM and SIGKILL');
 }
 
 export function task7ViteStartupState(input: {
@@ -46,6 +93,10 @@ export function assertTask7DevInventoryParity(
     if (
       record.buildSource !== 'dev' ||
       record.assertions.exactCopy.length === 0 ||
+      record.assertions.resolvedTheme?.backgroundColor === undefined ||
+      record.assertions.resolvedTheme.backgroundColor === '' ||
+      record.assertions.resolvedTheme.color === '' ||
+      record.assertions.resolvedTheme.colorScheme === '' ||
       record.diagnostics.consoleMessages.length !== 0 ||
       record.diagnostics.pageErrors.length !== 0 ||
       record.diagnostics.requestFailures.length !== 0 ||

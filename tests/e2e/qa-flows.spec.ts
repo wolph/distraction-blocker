@@ -708,6 +708,9 @@ async function captureTask7OptionsMatrix(input: {
         expect(categoryStateGaps).toHaveLength(7);
         for (const gap of categoryStateGaps) expect(gap).toBeGreaterThanOrEqual(0);
 
+        await input.page.evaluate((): void =>
+          window.scrollTo(0, document.documentElement.scrollHeight),
+        );
         await showSocial.click();
         await input.page.getByRole('checkbox', { name: 'facebook.com' }).uncheck();
         await socialRow.getByRole('checkbox', { name: 'Social media' }).check();
@@ -752,6 +755,10 @@ async function captureTask7OptionsMatrix(input: {
         expect(contentBodyScroll.overflowY).toBe('auto');
         expect(contentBodyScroll.scrollHeight).toBeGreaterThan(contentBodyScroll.clientHeight);
         await expectWithinViewport(saveBar);
+        const dirtyBottomGap: number = await saveBar.evaluate(
+          (element: Element): number => window.innerHeight - element.getBoundingClientRect().bottom,
+        );
+        expect(Math.abs(dirtyBottomGap)).toBeLessThanOrEqual(1);
         await input.capture.capture(
           input.page,
           'options',
@@ -784,6 +791,11 @@ async function captureTask7OptionsMatrix(input: {
           await expect(saveBar.getByText('Saving changes')).toBeVisible();
           const pendingIntersections = await task7VisibleContentIntersections(input.page);
           expect(pendingIntersections.targets).toEqual([]);
+          const pendingBottomGap: number = await saveBar.evaluate(
+            (element: Element): number =>
+              window.innerHeight - element.getBoundingClientRect().bottom,
+          );
+          expect(Math.abs(pendingBottomGap)).toBeLessThanOrEqual(1);
           await input.capture.capture(
             input.page,
             'options',
@@ -806,6 +818,11 @@ async function captureTask7OptionsMatrix(input: {
           await expect(saveBar.getByRole('alert')).toHaveText('Task 7 synthetic save rejection.');
           const errorIntersections = await task7VisibleContentIntersections(input.page);
           expect(errorIntersections.targets).toEqual([]);
+          const errorBottomGap: number = await saveBar.evaluate(
+            (element: Element): number =>
+              window.innerHeight - element.getBoundingClientRect().bottom,
+          );
+          expect(Math.abs(errorBottomGap)).toBeLessThanOrEqual(1);
           await input.capture.capture(
             input.page,
             'options',
@@ -824,6 +841,8 @@ async function captureTask7OptionsMatrix(input: {
           );
           geometry.push({
             errorIntersections: errorIntersections.targets,
+            errorBottomGap,
+            pendingBottomGap,
             pendingIntersections: pendingIntersections.targets,
             state: 'save-pending-error',
             themeCase: themeCase.id,
@@ -843,7 +862,7 @@ async function captureTask7OptionsMatrix(input: {
           categoryStateGaps,
           cleanSaveBar: { bounds: cleanSaveBarBounds, position: cleanPosition },
           clientWidth: documentGeometry.clientWidth,
-          dirtySaveBar: { ...dirtyBounds.bar, position: 'sticky' },
+          dirtySaveBar: { ...dirtyBounds.bar, bottomGap: dirtyBottomGap, position: 'sticky' },
           dirtyTarget: dirtyBounds.target,
           intersections: {
             cleanCategories: false,
@@ -1245,27 +1264,52 @@ async function captureTask7StoppedOverlayMatrix(input: {
   return geometry;
 }
 
-test('Task 7 dirty save bar leaves every visible Options target unobscured at 768', async ({
+test('Task 7 save bar stays bottom-anchored and unobscured after internal-scroll transition', async ({
   context,
   extensionId,
 }) => {
   const page: Page = await context.newPage();
   try {
-    await page.setViewportSize({ height: 800, width: 768 });
-    await page.goto(`chrome-extension://${extensionId}/src/options/options.html#blocking`);
-    await applyTask7ThemeCase(
-      page,
-      { colorScheme: 'dark', id: 'auto-dark', theme: 'auto' },
-      'options',
-    );
-    const socialRow: Locator = page.locator('.cat-row').filter({ hasText: 'Social media' });
-    await socialRow.getByRole('button', { name: 'Show Social media sites' }).click();
-    await page.getByRole('checkbox', { name: 'facebook.com' }).uncheck();
-    const saveBar: Locator = page.locator('.dirty-save-bar');
-    await expect(saveBar).toHaveClass(/dirty-save-bar--sticky/);
+    for (const viewport of TASK7_PAGE_VIEWPORTS) {
+      await test.step(`${String(viewport.width)} dirty, pending, and error anchoring`, async () => {
+        await page.setViewportSize(viewport);
+        await page.goto(`chrome-extension://${extensionId}/src/options/options.html#blocking`);
+        await applyTask7ThemeCase(
+          page,
+          { colorScheme: 'dark', id: 'auto-dark', theme: 'auto' },
+          'options',
+        );
+        await page.evaluate((): void => window.scrollTo(0, document.documentElement.scrollHeight));
+        const socialRow: Locator = page.locator('.cat-row').filter({ hasText: 'Social media' });
+        await socialRow.getByRole('button', { name: 'Show Social media sites' }).click();
+        await page.getByRole('checkbox', { name: 'facebook.com' }).uncheck();
+        const saveBar: Locator = page.locator('.dirty-save-bar');
+        await expect(saveBar).toHaveClass(/dirty-save-bar--sticky/);
+        const expectAnchored = async (): Promise<void> => {
+          const bottomGap: number = await saveBar.evaluate(
+            (element: Element): number =>
+              window.innerHeight - element.getBoundingClientRect().bottom,
+          );
+          expect(Math.abs(bottomGap)).toBeLessThanOrEqual(1);
+          expect((await task7VisibleContentIntersections(page)).targets).toEqual([]);
+        };
+        await expectAnchored();
 
-    const intersections = await task7VisibleContentIntersections(page);
-    expect(intersections.targets).toEqual([]);
+        await installTask7DeferredSaveFailure(page);
+        let failureFinished: boolean = false;
+        try {
+          await saveBar.getByRole('button', { name: 'Save changes' }).click();
+          await expect(saveBar.getByText('Saving changes')).toBeVisible();
+          await expectAnchored();
+          await finishTask7DeferredSaveFailure(page);
+          failureFinished = true;
+          await expect(saveBar.getByRole('alert')).toHaveText('Task 7 synthetic save rejection.');
+          await expectAnchored();
+        } finally {
+          if (!failureFinished) await finishTask7DeferredSaveFailure(page).catch((): void => {});
+        }
+      });
+    }
   } finally {
     await page.close();
   }

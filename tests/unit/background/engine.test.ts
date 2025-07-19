@@ -942,6 +942,18 @@ describe('Engine', () => {
     await expect(snapshot).resolves.toMatchObject({ phase: 'idle' });
   });
 
+  it('drains an admitted persisted snapshot when a data-clear barrier starts synchronously', async (): Promise<void> => {
+    const h: Harness = makeEngine();
+
+    const snapshot: Promise<SessionSnapshot> = h.engine.snapshotPersisted();
+    const clearing: Promise<void> = h.engine.runWithDataClearBarrier(
+      (): Promise<void> => Promise.resolve(),
+    );
+
+    await expect(snapshot).resolves.toMatchObject({ phase: 'idle' });
+    await expect(clearing).resolves.toBeUndefined();
+  });
+
   it('holds a scheduled Hard start behind inbound mirror I/O across its clock boundary', async (): Promise<void> => {
     let releaseMirror: () => void = (): void => undefined;
     let signalMirrorStarted: () => void = (): void => undefined;

@@ -1,11 +1,22 @@
+import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
 import {
   assertTask7DevInventoryParity,
+  stopTask7Vite,
+  type Task7StoppableProcess,
   task7ViteStartupState,
 } from '../../../scripts/task7-dev-evidence';
 
 const validRecord = {
-  assertions: { exactCopy: ['A moment to decide'], forceEndControlCount: 0 },
+  assertions: {
+    exactCopy: ['A moment to decide'],
+    forceEndControlCount: 0,
+    resolvedTheme: {
+      backgroundColor: 'rgb(247, 250, 248)',
+      color: 'rgb(22, 33, 26)',
+      colorScheme: 'light',
+    },
+  },
   buildSource: 'dev' as const,
   bytes: 123,
   colorScheme: 'light' as const,
@@ -22,6 +33,24 @@ const validRecord = {
 };
 
 describe('Task 7 development evidence inventory', () => {
+  class FakeViteProcess extends EventEmitter implements Task7StoppableProcess {
+    exitCode: number | null = null;
+    readonly signals: NodeJS.Signals[] = [];
+
+    constructor(private readonly exitOn: NodeJS.Signals | null) {
+      super();
+    }
+
+    kill(signal: NodeJS.Signals): boolean {
+      this.signals.push(signal);
+      if (signal === this.exitOn) {
+        this.exitCode = 0;
+        queueMicrotask((): boolean => this.emit('exit', 0, signal));
+      }
+      return true;
+    }
+  }
+
   it('does not accept an unrelated listener as the owned Vite server', (): void => {
     expect(task7ViteStartupState({ exitCode: null, output: '', responseReady: true })).toBe(
       'starting',
@@ -56,7 +85,7 @@ describe('Task 7 development evidence inventory', () => {
     expect((): void =>
       assertTask7DevInventoryParity(
         [validRecord.file],
-        [{ ...validRecord, assertions: { exactCopy: [] } }],
+        [{ ...validRecord, assertions: { ...validRecord.assertions, exactCopy: [] } }],
       ),
     ).toThrow(/metadata|assertion|exact copy/i);
     expect((): void =>
@@ -73,5 +102,30 @@ describe('Task 7 development evidence inventory', () => {
         ],
       ),
     ).toThrow(/metadata|diagnostic/i);
+    expect((): void =>
+      assertTask7DevInventoryParity(
+        [validRecord.file],
+        [
+          {
+            ...validRecord,
+            assertions: { exactCopy: ['copy'] } as typeof validRecord.assertions,
+          },
+        ],
+      ),
+    ).toThrow(/metadata|assertion|theme/i);
+  });
+
+  it('awaits graceful Vite exit and escalates only after a bounded timeout', async (): Promise<void> => {
+    const graceful: FakeViteProcess = new FakeViteProcess('SIGTERM');
+    await expect(stopTask7Vite(graceful, 5)).resolves.toBeUndefined();
+    expect(graceful.signals).toEqual(['SIGTERM']);
+
+    const escalated: FakeViteProcess = new FakeViteProcess('SIGKILL');
+    await expect(stopTask7Vite(escalated, 5)).resolves.toBeUndefined();
+    expect(escalated.signals).toEqual(['SIGTERM', 'SIGKILL']);
+
+    const stuck: FakeViteProcess = new FakeViteProcess(null);
+    await expect(stopTask7Vite(stuck, 5)).rejects.toThrow(/did not exit/i);
+    expect(stuck.signals).toEqual(['SIGTERM', 'SIGKILL']);
   });
 });
