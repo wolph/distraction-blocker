@@ -475,7 +475,6 @@ export class Engine {
   }
 
   private async snapshotPersistedNow(): Promise<SessionSnapshot> {
-    this.assertRuntimeMutationAllowed();
     const now: number = this.ports.now();
     this.catchUp(now);
     if (this.dirty) await this.commit(now);
