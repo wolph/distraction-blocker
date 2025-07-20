@@ -67,6 +67,45 @@ function bundleWith(days: DailyAgg[]): StatsBundle {
 }
 
 describe('BarChart', () => {
+  it('keeps a keyboard-closed table closed during same-width resize callbacks', () => {
+    const callbacks: ResizeObserverCallback[] = [];
+    const originalResizeObserver: typeof ResizeObserver | undefined = globalThis.ResizeObserver;
+    class TestResizeObserver implements ResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        callbacks.push(callback);
+      }
+
+      disconnect(): void {}
+      observe(): void {}
+      unobserve(): void {}
+    }
+    globalThis.ResizeObserver = TestResizeObserver;
+    try {
+      const { container } = render(
+        <BarChart
+          data={[{ label: 'a', value: 1 }]}
+          format={(value: number): string => String(value)}
+        />,
+      );
+      const details: HTMLDetailsElement = container.querySelector(
+        '.chart-table',
+      ) as HTMLDetailsElement;
+      expect(details.open).toBe(true);
+
+      details.open = false;
+      callbacks[0]?.(
+        [{ contentRect: { width: 375 } } as ResizeObserverEntry],
+        {} as ResizeObserver,
+      );
+
+      expect(details.open).toBe(false);
+    } finally {
+      if (originalResizeObserver === undefined)
+        Reflect.deleteProperty(globalThis, 'ResizeObserver');
+      else globalThis.ResizeObserver = originalResizeObserver;
+    }
+  });
+
   it('renders one mark per datum with proportional heights', () => {
     const { container } = render(
       <BarChart

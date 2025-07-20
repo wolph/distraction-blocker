@@ -22,18 +22,22 @@ export function ChartTable(props: ChartTableProps): JSX.Element {
     ) {
       return undefined;
     }
+    let belowThreshold: boolean | null = null;
     const update: (width: number) => void = (width: number): void => {
-      if (width <= (props.autoOpenBelow ?? 0)) {
-        if (!details.open) {
+      const below: boolean = width <= (props.autoOpenBelow ?? 0);
+      if (below) {
+        if (belowThreshold !== true && !details.open) {
           details.open = true;
           details.dataset.autoOpened = 'true';
         }
+        belowThreshold = true;
         return;
       }
-      if (details.dataset.autoOpened === 'true') {
+      if (belowThreshold === true && details.dataset.autoOpened === 'true') {
         details.open = false;
         delete details.dataset.autoOpened;
       }
+      belowThreshold = false;
     };
     const observer: ResizeObserver = new ResizeObserver((entries: ResizeObserverEntry[]): void => {
       const entry: ResizeObserverEntry | undefined = entries[0];
