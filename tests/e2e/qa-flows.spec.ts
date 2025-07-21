@@ -27,6 +27,15 @@ import {
   startTestSession,
   test,
 } from './fixtures';
+import {
+  assertStatsVisualInventoryCoverage,
+  captureStatsVisualMatrix,
+  diagnosticCounts,
+  type StatsVisualCaptureResult,
+  type StatsVisualEvidenceRecord,
+  type StatsVisualThemeCase,
+  seedProductionStatsVisualState,
+} from './stats-visual-evidence';
 import { auditTask7Diagnostics, type Task7DiagnosticsAudit } from './task7-diagnostics';
 import {
   assertTask7BuildProvenance,
@@ -1530,6 +1539,89 @@ test('Task 7 production evidence matrix is reproducible', async ({
         persistentEvidence: persistentEvidenceDir !== undefined,
         provenance: { after: provenanceAfter, before: provenanceBefore },
         syncQuotaFiller: syncFiller,
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
+});
+
+test('Task 5 Stats responsive evidence matrix is reproducible', async ({
+  context,
+  extPage,
+  extensionId,
+  worker,
+}, testInfo) => {
+  test.setTimeout(360_000);
+  const requestedEvidenceDir: string | undefined = process.env.STATS_EVIDENCE_DIR;
+  const evidenceDir: string =
+    requestedEvidenceDir === undefined
+      ? testInfo.outputPath('stats-task5-production-evidence')
+      : path.resolve(requestedEvidenceDir);
+  if (
+    requestedEvidenceDir !== undefined &&
+    evidenceDir !== path.resolve('artifacts/stats-task5/production')
+  ) {
+    throw new Error(
+      `Stats Task 5 production evidence must use ${path.resolve('artifacts/stats-task5/production')}.`,
+    );
+  }
+  const requestedCuratedImage: string | undefined = process.env.STATS_CURATED_IMAGE;
+  const curatedImagePath: string | undefined =
+    requestedCuratedImage === undefined ? undefined : path.resolve(requestedCuratedImage);
+  if (
+    curatedImagePath !== undefined &&
+    curatedImagePath !== path.resolve('docs/images/focus-lock/stats.png')
+  ) {
+    throw new Error(
+      `Stats Task 5 curated image must use ${path.resolve('docs/images/focus-lock/stats.png')}.`,
+    );
+  }
+  await mkdir(evidenceDir, { recursive: true });
+  const diagnostics: BrowserDiagnostics = browserDiagnosticsFor(context);
+  const statsPage: Page = await context.newPage();
+  let result: StatsVisualCaptureResult;
+  try {
+    result = await captureStatsVisualMatrix({
+      applyTheme: async (page: Page, themeCase: StatsVisualThemeCase): Promise<void> =>
+        await applyTask7ThemeCase(page, themeCase, 'stats'),
+      beforeState: async (state) => await seedProductionStatsVisualState(extPage, worker, state),
+      buildSource: 'production',
+      ...(curatedImagePath === undefined ? {} : { curatedImagePath }),
+      diagnostics: () => diagnosticCounts(diagnostics),
+      evidenceDir,
+      page: statsPage,
+      statsUrl: `chrome-extension://${extensionId}/src/stats/stats.html`,
+    });
+  } finally {
+    await statsPage.close();
+  }
+  const inventory: StatsVisualEvidenceRecord[] = [...result.records].sort(
+    (left: StatsVisualEvidenceRecord, right: StatsVisualEvidenceRecord): number =>
+      left.file.localeCompare(right.file),
+  );
+  expect(inventory).toHaveLength(216);
+  expect((): void => assertStatsVisualInventoryCoverage(inventory, 'production')).not.toThrow();
+  expect(diagnosticCounts(diagnostics)).toEqual({
+    blockedRequests: 0,
+    consoleErrors: 0,
+    pageErrors: 0,
+    requestErrors: 0,
+    workerErrors: 0,
+  });
+  await writeFile(
+    path.join(evidenceDir, 'stats-production-run-report.json'),
+    `${JSON.stringify(
+      {
+        browser: 'Playwright bundled Chromium with the production extension build',
+        buildSource: 'production',
+        diagnostics: diagnosticCounts(diagnostics),
+        diagnosticsBoundary: 'owned Stats page closed before report write',
+        geometry: result.geometry,
+        inventory,
+        schemaVersion: 1,
+        screenshotCount: inventory.length,
       },
       null,
       2,
