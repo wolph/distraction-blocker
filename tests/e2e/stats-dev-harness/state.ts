@@ -2,6 +2,7 @@ import { DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import type { ThemeMode } from '../../../src/shared/types';
 import {
   buildStatsVisualSeed,
+  STATS_VISUAL_SEED_AT,
   type StatsVisualSeed,
   type StatsVisualStateId,
 } from '../stats-visual-seeds';
@@ -14,7 +15,7 @@ function requestedState(): StatsVisualStateId {
   return 'no-activity-local';
 }
 
-const seed: StatsVisualSeed = buildStatsVisualSeed(requestedState(), Date.now());
+const seed: StatsVisualSeed = buildStatsVisualSeed(requestedState(), STATS_VISUAL_SEED_AT);
 const storedTheme: string | null = sessionStorage.getItem('focus-lock-stats-task5-theme');
 let theme: ThemeMode =
   storedTheme === 'dark' || storedTheme === 'light' || storedTheme === 'auto'

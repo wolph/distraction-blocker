@@ -18,6 +18,8 @@ export interface StatsVisualSeed {
   storageMode: StorageMode;
 }
 
+export const STATS_VISUAL_SEED_AT: number = Date.parse('2026-09-01T10:00:00.000Z');
+
 export const STATS_VISUAL_STATES: readonly StatsVisualState[] = [
   { id: 'no-activity-local', hasSessions: false, storageMode: 'local' },
   { id: 'one-active-hour-sync', hasSessions: true, storageMode: 'sync' },

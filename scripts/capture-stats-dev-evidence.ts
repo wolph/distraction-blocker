@@ -1,18 +1,26 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { type Browser, type BrowserContext, chromium, type Page } from '@playwright/test';
 import type * as StatsVisualEvidenceModule from '../tests/e2e/stats-visual-evidence';
 import type {
+  StatsVisualCaptureResult,
   StatsVisualDiagnosticCounts,
   StatsVisualEvidenceRecord,
   StatsVisualThemeCase,
 } from '../tests/e2e/stats-visual-evidence';
 import type { StatsVisualStateId } from '../tests/e2e/stats-visual-seeds';
 import type * as Task7EvidenceModule from '../tests/e2e/task7-evidence';
+import type * as StatsSafeOutputModule from './stats-safe-output';
+import type { StatsEvidenceRun } from './stats-safe-output';
 import type * as Task7DevEvidenceModule from './task7-dev-evidence';
 
-const { assertStatsVisualInventoryCoverage, captureStatsVisualMatrix } = (await import(
+const {
+  assertStatsVisualDiagnostics,
+  assertStatsVisualEvidenceDirectory,
+  assertStatsVisualInventoryCoverage,
+  captureStatsVisualMatrix,
+} = (await import(
   new URL('../tests/e2e/stats-visual-evidence.ts', import.meta.url).href
 )) as typeof StatsVisualEvidenceModule;
 const { assertTask7ResolvedTheme } = (await import(
@@ -21,6 +29,9 @@ const { assertTask7ResolvedTheme } = (await import(
 const { stopTask7Vite, task7ViteStartupState } = (await import(
   new URL('./task7-dev-evidence.ts', import.meta.url).href
 )) as typeof Task7DevEvidenceModule;
+const { abandonStatsEvidenceRun, beginStatsEvidenceRun, publishStatsEvidenceRun } = (await import(
+  new URL('./stats-safe-output.ts', import.meta.url).href
+)) as typeof StatsSafeOutputModule;
 
 const PORT: number = 4178;
 const BASE_URL: string = `http://127.0.0.1:${String(PORT)}`;
@@ -150,42 +161,67 @@ async function main(): Promise<void> {
   if (outputDir !== approvedDir) {
     throw new Error(`Stats Task 5 development evidence must use ${approvedDir}.`);
   }
-  await mkdir(outputDir, { recursive: true });
-  const server: ChildProcessWithoutNullStreams = await startVite();
+  const evidenceRun: StatsEvidenceRun = await beginStatsEvidenceRun({
+    approvedBoundaryDirectory: path.dirname(approvedDir),
+    reportFile: 'stats-dev-run-report.json',
+    targetDirectory: outputDir,
+    targetName: path.basename(approvedDir),
+  });
+  let server: ChildProcessWithoutNullStreams | null = null;
   let browser: Browser | null = null;
+  const diagnostics: DevDiagnostics = emptyDiagnostics();
+  let result: StatsVisualCaptureResult | null = null;
   try {
-    browser = await chromium.launch({ headless: true });
-    const context: BrowserContext = await browser.newContext();
-    const page: Page = await context.newPage();
-    const diagnostics: DevDiagnostics = emptyDiagnostics();
-    monitorDevPage(page, diagnostics);
-    const result = await captureStatsVisualMatrix({
-      applyTheme,
-      buildSource: 'dev',
-      diagnostics: (): StatsVisualDiagnosticCounts => counts(diagnostics),
-      evidenceDir: outputDir,
-      page,
-      statsUrl: (state: StatsVisualStateId): string =>
-        `${BASE_URL}/tests/e2e/stats-dev-harness/stats.html?state=${state}`,
-    });
-    await page.close();
-    await context.close();
-    assertStatsVisualInventoryCoverage(result.records, 'dev');
-    const inventory: StatsVisualEvidenceRecord[] = [...result.records].sort(
-      (left: StatsVisualEvidenceRecord, right: StatsVisualEvidenceRecord): number =>
-        left.file.localeCompare(right.file),
-    );
+    try {
+      server = await startVite();
+      browser = await chromium.launch({ headless: true });
+      const context: BrowserContext = await browser.newContext();
+      const page: Page = await context.newPage();
+      monitorDevPage(page, diagnostics);
+      result = await captureStatsVisualMatrix({
+        applyTheme,
+        buildSource: 'dev',
+        diagnostics: (): StatsVisualDiagnosticCounts => counts(diagnostics),
+        evidenceDir: evidenceRun.stagingDirectory,
+        page,
+        statsUrl: (state: StatsVisualStateId): string =>
+          `${BASE_URL}/tests/e2e/stats-dev-harness/stats.html?state=${state}`,
+      });
+      await page.close();
+      await context.close();
+    } finally {
+      try {
+        await browser?.close();
+      } finally {
+        if (server !== null) await stopTask7Vite(server);
+      }
+    }
+  } catch (error: unknown) {
+    await abandonStatsEvidenceRun(evidenceRun);
+    throw error;
+  }
+  if (result === null) throw new Error('Stats development capture did not produce a result.');
+  const finalDiagnostics: StatsVisualDiagnosticCounts = counts(diagnostics);
+  assertStatsVisualDiagnostics(finalDiagnostics);
+  assertStatsVisualInventoryCoverage(result.records, 'dev');
+  const inventory: StatsVisualEvidenceRecord[] = [...result.records].sort(
+    (left: StatsVisualEvidenceRecord, right: StatsVisualEvidenceRecord): number =>
+      left.file.localeCompare(right.file),
+  );
+  await assertStatsVisualEvidenceDirectory(evidenceRun.stagingDirectory, inventory);
+  try {
     await writeFile(
-      path.join(outputDir, 'stats-dev-run-report.json'),
+      path.join(evidenceRun.stagingDirectory, 'stats-dev-run-report.json'),
       `${JSON.stringify(
         {
           browser: 'Playwright bundled Chromium',
           buildSource: 'dev',
-          diagnostics: counts(diagnostics),
-          diagnosticsBoundary: 'owned context closed before report write',
+          diagnostics: finalDiagnostics,
+          diagnosticsBoundary:
+            'owned page, context, browser, and Vite process closed before report write',
           geometry: result.geometry,
           inventory,
-          schemaVersion: 1,
+          schemaVersion: 2,
           screenshotCount: inventory.length,
           sourceHarness: 'tests/e2e/stats-dev-harness/stats.html',
         },
@@ -194,14 +230,12 @@ async function main(): Promise<void> {
       )}\n`,
       'utf8',
     );
-    process.stdout.write(`Stats Task 5 dev evidence: ${String(inventory.length)} screenshots\n`);
-  } finally {
-    try {
-      await browser?.close();
-    } finally {
-      await stopTask7Vite(server);
-    }
+    await publishStatsEvidenceRun(evidenceRun);
+  } catch (error: unknown) {
+    await abandonStatsEvidenceRun(evidenceRun);
+    throw error;
   }
+  process.stdout.write(`Stats Task 5 dev evidence: ${String(inventory.length)} screenshots\n`);
 }
 
 await main();

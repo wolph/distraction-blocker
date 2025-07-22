@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   BrowserContext,
@@ -9,6 +9,12 @@ import type {
   Page,
   Worker,
 } from '@playwright/test';
+import {
+  abandonStatsEvidenceRun,
+  beginStatsEvidenceRun,
+  publishStatsEvidenceRun,
+  type StatsEvidenceRun,
+} from '../../scripts/stats-safe-output';
 import type { ListsConfig, SessionSnapshot, Settings, ThemeMode } from '../../src/shared/types';
 import {
   assertNoUnexpectedBrowserDiagnostics,
@@ -28,7 +34,9 @@ import {
   test,
 } from './fixtures';
 import {
+  assertStatsVisualEvidenceDirectory,
   assertStatsVisualInventoryCoverage,
+  assertStatsVisualSeedParity,
   captureStatsVisualMatrix,
   diagnosticCounts,
   type StatsVisualCaptureResult,
@@ -1578,7 +1586,12 @@ test('Task 5 Stats responsive evidence matrix is reproducible', async ({
       `Stats Task 5 curated image must use ${path.resolve('docs/images/focus-lock/stats.png')}.`,
     );
   }
-  await mkdir(evidenceDir, { recursive: true });
+  const evidenceRun: StatsEvidenceRun = await beginStatsEvidenceRun({
+    approvedBoundaryDirectory: path.dirname(evidenceDir),
+    reportFile: 'stats-production-run-report.json',
+    targetDirectory: evidenceDir,
+    targetName: path.basename(evidenceDir),
+  });
   const diagnostics: BrowserDiagnostics = browserDiagnosticsFor(context);
   const statsPage: Page = await context.newPage();
   let result: StatsVisualCaptureResult;
@@ -1588,21 +1601,35 @@ test('Task 5 Stats responsive evidence matrix is reproducible', async ({
         await applyTask7ThemeCase(page, themeCase, 'stats'),
       beforeState: async (state) => await seedProductionStatsVisualState(extPage, worker, state),
       buildSource: 'production',
-      ...(curatedImagePath === undefined ? {} : { curatedImagePath }),
       diagnostics: () => diagnosticCounts(diagnostics),
-      evidenceDir,
+      evidenceDir: evidenceRun.stagingDirectory,
       page: statsPage,
       statsUrl: `chrome-extension://${extensionId}/src/stats/stats.html`,
     });
-  } finally {
+  } catch (error: unknown) {
     await statsPage.close();
+    await context.close();
+    await abandonStatsEvidenceRun(evidenceRun);
+    throw error;
   }
+  await statsPage.close();
+  await context.close();
   const inventory: StatsVisualEvidenceRecord[] = [...result.records].sort(
     (left: StatsVisualEvidenceRecord, right: StatsVisualEvidenceRecord): number =>
       left.file.localeCompare(right.file),
   );
   expect(inventory).toHaveLength(216);
   expect((): void => assertStatsVisualInventoryCoverage(inventory, 'production')).not.toThrow();
+  await assertStatsVisualEvidenceDirectory(evidenceRun.stagingDirectory, inventory);
+  if (requestedEvidenceDir !== undefined) {
+    const devReportPath: string = path.resolve(
+      'artifacts/stats-task5/dev/stats-dev-run-report.json',
+    );
+    const devReport = JSON.parse(await readFile(devReportPath, 'utf8')) as {
+      inventory: StatsVisualEvidenceRecord[];
+    };
+    expect((): void => assertStatsVisualSeedParity(devReport.inventory, inventory)).not.toThrow();
+  }
   expect(diagnosticCounts(diagnostics)).toEqual({
     blockedRequests: 0,
     consoleErrors: 0,
@@ -1611,16 +1638,16 @@ test('Task 5 Stats responsive evidence matrix is reproducible', async ({
     workerErrors: 0,
   });
   await writeFile(
-    path.join(evidenceDir, 'stats-production-run-report.json'),
+    path.join(evidenceRun.stagingDirectory, 'stats-production-run-report.json'),
     `${JSON.stringify(
       {
         browser: 'Playwright bundled Chromium with the production extension build',
         buildSource: 'production',
         diagnostics: diagnosticCounts(diagnostics),
-        diagnosticsBoundary: 'owned Stats page closed before report write',
+        diagnosticsBoundary: 'owned Stats page and browser context closed before report write',
         geometry: result.geometry,
         inventory,
-        schemaVersion: 1,
+        schemaVersion: 2,
         screenshotCount: inventory.length,
       },
       null,
@@ -1628,6 +1655,19 @@ test('Task 5 Stats responsive evidence matrix is reproducible', async ({
     )}\n`,
     'utf8',
   );
+  await publishStatsEvidenceRun(evidenceRun);
+  if (curatedImagePath !== undefined) {
+    const curatedRecord: StatsVisualEvidenceRecord | undefined = inventory.find(
+      (record: StatsVisualEvidenceRecord): boolean =>
+        record.state === 'all-hours-boundaries-local' &&
+        record.themeCase === 'dark-light-media' &&
+        record.viewport.width === 1280 &&
+        record.scope === 'full',
+    );
+    if (curatedRecord === undefined)
+      throw new Error('The curated Stats evidence record is missing.');
+    await copyFile(path.join(evidenceDir, curatedRecord.file), curatedImagePath);
+  }
 });
 test('completion clears browser effects and reaches sound and notification APIs', async ({
   context,

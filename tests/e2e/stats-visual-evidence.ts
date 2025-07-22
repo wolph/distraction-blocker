@@ -2,13 +2,17 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { Locator, Page, Worker } from '@playwright/test';
+import type * as StatsEvidenceIntegrityModule from '../../scripts/stats-evidence-integrity';
 import type { BrowserDiagnostics } from './browser-diagnostics';
 import type * as StatsVisualSeedsModule from './stats-visual-seeds';
 import type { StatsVisualSeed, StatsVisualStateId } from './stats-visual-seeds';
 
-const { buildStatsVisualSeed, STATS_VISUAL_STATES } = (await import(
+const { buildStatsVisualSeed, STATS_VISUAL_SEED_AT, STATS_VISUAL_STATES } = (await import(
   new URL('./stats-visual-seeds.ts', import.meta.url).href
 )) as typeof StatsVisualSeedsModule;
+const { assertStatsEvidenceDiskParity, statsPngDimensions } = (await import(
+  new URL('../../scripts/stats-evidence-integrity.ts', import.meta.url).href
+)) as typeof StatsEvidenceIntegrityModule;
 
 export { STATS_VISUAL_STATES };
 
@@ -29,13 +33,21 @@ export interface StatsVisualThemeCase {
 
 export interface StatsVisualEvidenceRecord {
   buildSource: StatsVisualBuildSource;
-  bytes?: number;
+  bytes: number;
   file: string;
-  sha256?: string;
+  image: { height: number; width: number };
   scope: StatsVisualCaptureScope;
+  seed: StatsVisualSeedIdentity;
+  sha256: string;
   state: StatsVisualStateId;
   themeCase: StatsVisualThemeCase['id'];
   viewport: { height: number; width: number };
+}
+
+export interface StatsVisualSeedIdentity {
+  at: number;
+  sha256: string;
+  state: StatsVisualStateId;
 }
 
 export interface StatsVisualDiagnosticCounts {
@@ -50,12 +62,18 @@ export interface StatsVisualGeometry {
   chartTextFontSizes: number[];
   diagnostics: StatsVisualDiagnosticCounts;
   disclosureCount: number;
+  disclosureRowCounts: number[];
   disclosuresKeyboardUsable: boolean;
   documentHorizontalOverflow: number;
   hasSessions: boolean;
+  sessionArticleWidths: Array<{ clientWidth: number; scrollWidth: number }>;
+  sessionArticlesClientWidth: number | null;
   sessionArticlesDisplay: string | null;
   sessionArticlesHorizontalOverflow: number | null;
+  sessionArticlesScrollWidth: number | null;
+  sessionTableClientWidth: number | null;
   sessionTableDisplay: string | null;
+  sessionTableScrollWidth: number | null;
   viewport: { height: number; width: number };
 }
 
@@ -94,6 +112,18 @@ function evidenceKey(record: StatsVisualEvidenceRecord): string {
   return `${record.buildSource}/${record.state}/${record.themeCase}/${String(record.viewport.width)}/${record.scope}`;
 }
 
+export function statsVisualSeedIdentity(
+  state: StatsVisualStateId,
+  seed: StatsVisualSeed,
+  at: number = STATS_VISUAL_SEED_AT,
+): StatsVisualSeedIdentity {
+  return {
+    at,
+    sha256: createHash('sha256').update(JSON.stringify({ at, seed, state })).digest('hex'),
+    state,
+  };
+}
+
 export function assertStatsVisualInventoryCoverage(
   inventory: readonly StatsVisualEvidenceRecord[],
   buildSource: StatsVisualBuildSource,
@@ -124,6 +154,77 @@ export function assertStatsVisualInventoryCoverage(
       `Stats visual inventory differs. Missing: ${missing.join(', ') || 'none'}. Unexpected: ${unexpected.join(', ') || 'none'}.`,
     );
   }
+  for (const record of inventory) {
+    const expectedFile: string = statsEvidenceFile(
+      buildSource,
+      record.state,
+      STATS_VISUAL_THEME_CASES.find(
+        (themeCase: StatsVisualThemeCase): boolean => themeCase.id === record.themeCase,
+      ) as StatsVisualThemeCase,
+      record.viewport,
+      record.scope,
+    );
+    const expectedViewport = STATS_VISUAL_VIEWPORTS.find(
+      (viewport): boolean => viewport.width === record.viewport.width,
+    );
+    if (
+      expectedViewport === undefined ||
+      expectedViewport.height !== record.viewport.height ||
+      record.file !== expectedFile ||
+      !Number.isInteger(record.bytes) ||
+      record.bytes < 1 ||
+      !/^[a-f0-9]{64}$/.test(record.sha256) ||
+      record.seed.at !== STATS_VISUAL_SEED_AT ||
+      record.seed.state !== record.state ||
+      !/^[a-f0-9]{64}$/.test(record.seed.sha256) ||
+      record.image.height < 1 ||
+      record.image.width < 1 ||
+      record.image.width > record.viewport.width ||
+      (record.scope === 'full' &&
+        (record.image.width !== record.viewport.width ||
+          record.image.height < record.viewport.height))
+    ) {
+      throw new Error(`Stats visual evidence metadata is invalid for ${record.file}.`);
+    }
+  }
+}
+
+export async function assertStatsVisualEvidenceDirectory(
+  evidenceDir: string,
+  inventory: readonly StatsVisualEvidenceRecord[],
+): Promise<void> {
+  await assertStatsEvidenceDiskParity(evidenceDir, inventory);
+}
+
+function seedIdentityByState(
+  inventory: readonly StatsVisualEvidenceRecord[],
+): Map<StatsVisualStateId, string> {
+  const identities: Map<StatsVisualStateId, string> = new Map();
+  for (const record of inventory) {
+    const serialized: string = JSON.stringify(record.seed);
+    const previous: string | undefined = identities.get(record.state);
+    if (previous !== undefined && previous !== serialized) {
+      throw new Error(`Stats seed identity differs within ${record.state}.`);
+    }
+    identities.set(record.state, serialized);
+  }
+  return identities;
+}
+
+export function assertStatsVisualSeedParity(
+  dev: readonly StatsVisualEvidenceRecord[],
+  production: readonly StatsVisualEvidenceRecord[],
+): void {
+  const devIdentities: Map<StatsVisualStateId, string> = seedIdentityByState(dev);
+  const productionIdentities: Map<StatsVisualStateId, string> = seedIdentityByState(production);
+  for (const state of STATS_VISUAL_STATES) {
+    if (
+      devIdentities.get(state.id) === undefined ||
+      devIdentities.get(state.id) !== productionIdentities.get(state.id)
+    ) {
+      throw new Error(`Stats dev and production seed parity failed for ${state.id}.`);
+    }
+  }
 }
 
 export function diagnosticCounts(diagnostics: BrowserDiagnostics): StatsVisualDiagnosticCounts {
@@ -136,6 +237,17 @@ export function diagnosticCounts(diagnostics: BrowserDiagnostics): StatsVisualDi
   };
 }
 
+export function assertStatsVisualDiagnostics(diagnostics: StatsVisualDiagnosticCounts): void {
+  const nonZeroDiagnostic: [string, number] | undefined = Object.entries(diagnostics).find(
+    ([, count]: [string, number]): boolean => count !== 0,
+  );
+  if (nonZeroDiagnostic !== undefined) {
+    throw new Error(
+      `Stats visual diagnostics are not empty: ${nonZeroDiagnostic[0]}=${String(nonZeroDiagnostic[1])}.`,
+    );
+  }
+}
+
 export function assertStatsVisualGeometry(geometry: StatsVisualGeometry): void {
   const minimumFontSize: number = Math.min(...geometry.chartTextFontSizes);
   if (!Number.isFinite(minimumFontSize) || minimumFontSize < 12) {
@@ -146,34 +258,66 @@ export function assertStatsVisualGeometry(geometry: StatsVisualGeometry): void {
       `Stats document has ${String(geometry.documentHorizontalOverflow)} px horizontal overflow.`,
     );
   }
-  if (geometry.disclosureCount < 1 || !geometry.disclosuresKeyboardUsable) {
+  if (
+    geometry.disclosureCount < 1 ||
+    geometry.disclosureRowCounts.length !== geometry.disclosureCount ||
+    geometry.disclosureRowCounts.some((count: number): boolean => count < 1) ||
+    !geometry.disclosuresKeyboardUsable
+  ) {
     throw new Error(
       `Stats table disclosures are not all keyboard usable: ${String(geometry.disclosureCount)} disclosures.`,
     );
   }
-  if (geometry.viewport.width <= 600) {
+  if (geometry.hasSessions && geometry.viewport.width <= 768) {
     if (geometry.hasSessions && geometry.sessionTableDisplay !== 'none') {
-      throw new Error('The wide session table is visible at the mobile width.');
+      throw new Error('The wide session table is visible at a responsive article width.');
     }
     if (geometry.hasSessions && geometry.sessionArticlesDisplay === 'none') {
-      throw new Error('Mobile session articles are hidden.');
+      throw new Error('Responsive session articles are hidden.');
+    }
+    if (geometry.sessionTableClientWidth !== 0 || geometry.sessionTableScrollWidth !== 0) {
+      throw new Error('The hidden responsive session table still occupies scrollable width.');
     }
     if (
       geometry.hasSessions &&
       geometry.sessionArticlesHorizontalOverflow !== null &&
       geometry.sessionArticlesHorizontalOverflow !== 0
     ) {
-      throw new Error('Mobile session articles require sideways scrolling.');
+      throw new Error('Responsive session articles require sideways scrolling.');
+    }
+    const overflowingArticle: { clientWidth: number; scrollWidth: number } | undefined =
+      geometry.sessionArticleWidths.find(
+        (article: { clientWidth: number; scrollWidth: number }): boolean =>
+          article.scrollWidth > article.clientWidth,
+      );
+    if (
+      geometry.sessionArticlesClientWidth === null ||
+      geometry.sessionArticlesScrollWidth === null ||
+      geometry.sessionArticlesScrollWidth > geometry.sessionArticlesClientWidth ||
+      overflowingArticle !== undefined
+    ) {
+      throw new Error('A responsive session article requires sideways scrolling.');
     }
   }
-  const nonZeroDiagnostic: [string, number] | undefined = Object.entries(geometry.diagnostics).find(
-    ([, count]: [string, number]): boolean => count !== 0,
-  );
-  if (nonZeroDiagnostic !== undefined) {
-    throw new Error(
-      `Stats visual diagnostics are not empty: ${nonZeroDiagnostic[0]}=${String(nonZeroDiagnostic[1])}.`,
-    );
+  if (geometry.hasSessions && geometry.viewport.width > 768) {
+    if (geometry.sessionTableDisplay === 'none' || geometry.sessionArticlesDisplay !== 'none') {
+      throw new Error('The desktop session table is not the sole visible representation.');
+    }
+    if (
+      geometry.sessionArticlesClientWidth !== 0 ||
+      geometry.sessionArticlesScrollWidth !== 0 ||
+      geometry.sessionArticleWidths.some(
+        (article: { clientWidth: number; scrollWidth: number }): boolean =>
+          article.clientWidth !== 0 || article.scrollWidth !== 0,
+      ) ||
+      geometry.sessionTableClientWidth === null ||
+      geometry.sessionTableScrollWidth === null ||
+      geometry.sessionTableScrollWidth > geometry.sessionTableClientWidth
+    ) {
+      throw new Error('The desktop session table requires sideways scrolling.');
+    }
   }
+  assertStatsVisualDiagnostics(geometry.diagnostics);
 }
 
 export type ApplyStatsVisualTheme = (page: Page, themeCase: StatsVisualThemeCase) => Promise<void>;
@@ -188,7 +332,7 @@ export interface StatsVisualCaptureResult {
   records: StatsVisualEvidenceRecord[];
 }
 
-function statsEvidenceFile(
+export function statsEvidenceFile(
   buildSource: StatsVisualBuildSource,
   state: StatsVisualStateId,
   themeCase: StatsVisualThemeCase,
@@ -202,6 +346,7 @@ async function captureStatsVisualTarget(input: {
   buildSource: StatsVisualBuildSource;
   evidenceDir: string;
   scope: StatsVisualCaptureScope;
+  seed: StatsVisualSeedIdentity;
   state: StatsVisualStateId;
   target: Locator | Page;
   themeCase: StatsVisualThemeCase;
@@ -222,11 +367,14 @@ async function captureStatsVisualTarget(input: {
     await input.target.screenshot({ animations: 'disabled', fullPage: true, path: absolutePath });
   }
   const payload: Buffer = await readFile(absolutePath);
+  const image: { height: number; width: number } = statsPngDimensions(payload);
   return {
     buildSource: input.buildSource,
     bytes: (await stat(absolutePath)).size,
     file,
+    image,
     scope: input.scope,
+    seed: input.seed,
     sha256: createHash('sha256').update(payload).digest('hex'),
     state: input.state,
     themeCase: input.themeCase.id,
@@ -238,7 +386,7 @@ export async function seedProductionStatsVisualState(
   controlPage: Page,
   worker: Worker,
   state: StatsVisualStateId,
-  now: number = Date.now(),
+  now: number = STATS_VISUAL_SEED_AT,
 ): Promise<StatsVisualSeed> {
   const seed: StatsVisualSeed = buildStatsVisualSeed(state, now);
   const response: unknown = await controlPage.evaluate(
@@ -375,26 +523,41 @@ async function statsVisualGeometry(
       const root: HTMLElement = document.documentElement;
       const sessionTable: HTMLElement | null = document.querySelector('.session-table-wrap');
       const sessionArticles: HTMLElement | null = document.querySelector('.session-articles');
-      const articleOverflow: number | null =
-        sessionArticles === null
-          ? null
-          : Math.max(
-              0,
-              ...Array.from(sessionArticles.querySelectorAll<HTMLElement>('.session-article')).map(
-                (article: HTMLElement): number => article.scrollWidth - article.clientWidth,
-              ),
-            );
+      const articleWidths: Array<{ clientWidth: number; scrollWidth: number }> = [];
+      let articleOverflow: number | null = sessionArticles === null ? null : 0;
+      if (sessionArticles !== null) {
+        for (const article of sessionArticles.querySelectorAll<HTMLElement>('.session-article')) {
+          articleWidths.push({
+            clientWidth: article.clientWidth,
+            scrollWidth: article.scrollWidth,
+          });
+          articleOverflow = Math.max(
+            articleOverflow ?? 0,
+            article.scrollWidth - article.clientWidth,
+          );
+        }
+      }
+      const disclosureRowCounts: number[] = [];
+      for (const body of document.querySelectorAll<HTMLTableSectionElement>('.chart-table tbody')) {
+        disclosureRowCounts.push(body.rows.length);
+      }
       return {
         chartTextFontSizes,
         diagnostics: counts,
         disclosureCount: document.querySelectorAll('.chart-table > summary').length,
+        disclosureRowCounts,
         disclosuresKeyboardUsable: keyboard,
         documentHorizontalOverflow: root.scrollWidth - root.clientWidth,
         hasSessions: sessions,
+        sessionArticleWidths: articleWidths,
+        sessionArticlesClientWidth: sessionArticles?.clientWidth ?? null,
         sessionArticlesDisplay:
           sessionArticles === null ? null : getComputedStyle(sessionArticles).display,
         sessionArticlesHorizontalOverflow: articleOverflow,
+        sessionArticlesScrollWidth: sessionArticles?.scrollWidth ?? null,
+        sessionTableClientWidth: sessionTable?.clientWidth ?? null,
         sessionTableDisplay: sessionTable === null ? null : getComputedStyle(sessionTable).display,
+        sessionTableScrollWidth: sessionTable?.scrollWidth ?? null,
         viewport: { height: window.innerHeight, width: window.innerWidth },
       };
     },
@@ -452,6 +615,7 @@ async function captureStatsVisualScopes(input: {
   buildSource: StatsVisualBuildSource;
   evidenceDir: string;
   page: Page;
+  seed: StatsVisualSeedIdentity;
   state: StatsVisualStateId;
   themeCase: StatsVisualThemeCase;
   viewport: { height: number; width: number };
@@ -462,7 +626,7 @@ async function captureStatsVisualScopes(input: {
       : input.page.getByText('Stats appear after your first session.');
   const heatStrip: Locator = cardWithHeading(input.page, 'Attempts by hour, this machine only');
   const sessions: Locator = cardWithHeading(input.page, 'Recent sessions on this machine');
-  const tables: Locator = input.page.locator('.chart-table').first();
+  const tables: Locator = input.page.locator('.charts');
   const targets: Readonly<Record<StatsVisualCaptureScope, Locator | Page>> = {
     charts: input.page.locator('.charts'),
     full: input.page,
@@ -474,12 +638,36 @@ async function captureStatsVisualScopes(input: {
   const records: StatsVisualEvidenceRecord[] = [];
   for (const scope of STATS_VISUAL_CAPTURE_SCOPES) {
     const target: Locator | Page = targets[scope];
+    if (scope === 'tables') {
+      const tableAudit: { disclosureCount: number; rowCounts: number[] } =
+        await input.page.evaluate((): { disclosureCount: number; rowCounts: number[] } => {
+          const disclosures: HTMLDetailsElement[] = Array.from(
+            document.querySelectorAll<HTMLDetailsElement>('.chart-table'),
+          );
+          for (const disclosure of disclosures) disclosure.open = true;
+          const rowCounts: number[] = [];
+          for (const disclosure of disclosures) {
+            rowCounts.push(disclosure.querySelectorAll('tbody tr').length);
+          }
+          return { disclosureCount: disclosures.length, rowCounts };
+        });
+      if (
+        tableAudit.disclosureCount < 1 ||
+        tableAudit.rowCounts.length !== tableAudit.disclosureCount ||
+        tableAudit.rowCounts.some((count: number): boolean => count < 1)
+      ) {
+        throw new Error(
+          `Stats focused table evidence has empty tables: ${JSON.stringify(tableAudit)}.`,
+        );
+      }
+    }
     if ('page' in target) await target.scrollIntoViewIfNeeded();
     records.push(
       await captureStatsVisualTarget({
         buildSource: input.buildSource,
         evidenceDir: input.evidenceDir,
         scope,
+        seed: input.seed,
         state: input.state,
         target,
         themeCase: input.themeCase,
@@ -505,8 +693,9 @@ export async function captureStatsVisualMatrix(input: {
   for (const state of STATS_VISUAL_STATES) {
     const seed: StatsVisualSeed =
       input.beforeState === undefined
-        ? buildStatsVisualSeed(state.id, Date.now())
+        ? buildStatsVisualSeed(state.id, STATS_VISUAL_SEED_AT)
         : await input.beforeState(state.id);
+    const seedIdentity: StatsVisualSeedIdentity = statsVisualSeedIdentity(state.id, seed);
     for (const themeCase of STATS_VISUAL_THEME_CASES) {
       for (const viewport of STATS_VISUAL_VIEWPORTS) {
         await input.page.setViewportSize(viewport);
@@ -548,6 +737,7 @@ export async function captureStatsVisualMatrix(input: {
             buildSource: input.buildSource,
             evidenceDir: input.evidenceDir,
             page: input.page,
+            seed: seedIdentity,
             state: state.id,
             themeCase,
             viewport,
