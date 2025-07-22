@@ -339,17 +339,17 @@ describe('SessionLog', () => {
     expect(article.textContent).toContain('completed');
   });
 
-  it('switches from the desktop table to articles below 600px without a mobile scroller', () => {
+  it('switches from the desktop table to articles through the 768px tablet width', () => {
     const css: string = readFileSync(resolve(process.cwd(), 'src/stats/stats.css'), 'utf8');
     expect(css).toMatch(/\.session-articles\s*\{[^}]*display:\s*none/s);
     expect(css).toMatch(
-      /@media\s*\(max-width:\s*600px\)[\s\S]*?\.session-table-wrap\s*\{[^}]*display:\s*none/s,
+      /@media\s*\(max-width:\s*768px\)[\s\S]*?\.session-table-wrap\s*\{[^}]*display:\s*none/s,
     );
     expect(css).toMatch(
-      /@media\s*\(max-width:\s*600px\)[\s\S]*?\.session-articles\s*\{[^}]*display:\s*grid/s,
+      /@media\s*\(max-width:\s*768px\)[\s\S]*?\.session-articles\s*\{[^}]*display:\s*grid/s,
     );
     const mobileBlock: string | undefined = css.match(
-      /@media\s*\(max-width:\s*600px\)\s*\{[\s\S]*?\n\}/,
+      /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\n\}/,
     )?.[0];
     expect(mobileBlock).toBeDefined();
     expect(mobileBlock).not.toMatch(/overflow-x:\s*(auto|scroll)/);
