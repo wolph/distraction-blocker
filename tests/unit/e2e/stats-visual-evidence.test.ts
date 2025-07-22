@@ -2,12 +2,14 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { PNG } from 'pngjs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { isStatsBundle } from '../../../src/shared/runtime-validation';
 import {
   assertStatsVisualEvidenceDirectory,
   assertStatsVisualGeometry,
   assertStatsVisualInventoryCoverage,
+  assertStatsVisualRenderedParity,
   assertStatsVisualSeedParity,
   expectedStatsVisualEvidenceCount,
   STATS_VISUAL_CAPTURE_SCOPES,
@@ -29,11 +31,14 @@ afterEach(async (): Promise<void> => {
   );
 });
 
-function pngHeader(width: number, height: number): Buffer {
-  const payload: Buffer = Buffer.alloc(24);
-  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(payload);
-  payload.writeUInt32BE(width, 16);
-  payload.writeUInt32BE(height, 20);
+const PNG_CACHE: Map<string, Buffer> = new Map();
+
+function validPng(width: number, height: number): Buffer {
+  const key: string = `${String(width)}x${String(height)}`;
+  const cached: Buffer | undefined = PNG_CACHE.get(key);
+  if (cached !== undefined) return cached;
+  const payload: Buffer = PNG.sync.write(new PNG({ height, width }));
+  PNG_CACHE.set(key, payload);
   return payload;
 }
 
@@ -42,6 +47,9 @@ describe('Stats visual seed matrix', () => {
     const now: number = STATS_VISUAL_SEED_AT;
     for (const state of STATS_VISUAL_STATES) {
       expect(isStatsBundle(buildStatsVisualSeed(state.id, now).bundle), state.id).toBe(true);
+      const streak = buildStatsVisualSeed(state.id, now).bundle.streak;
+      expect(streak.activeMonth, state.id).toBe('2026-09');
+      expect(streak.activeDays, state.id).toEqual([]);
     }
   });
 
@@ -81,7 +89,7 @@ function completeInventory(): StatsVisualEvidenceRecord[] {
       STATS_VISUAL_VIEWPORTS.flatMap((viewport) =>
         STATS_VISUAL_CAPTURE_SCOPES.map((scope) => {
           const file: string = `stats-production-${state.id}-${themeCase.id}-${String(viewport.width)}-${scope}.png`;
-          const payload: Buffer = pngHeader(viewport.width, viewport.height);
+          const payload: Buffer = validPng(viewport.width, viewport.height);
           return {
             buildSource: 'production' as const,
             bytes: payload.byteLength,
@@ -143,7 +151,7 @@ describe('Stats visual evidence inventory', () => {
     const directory: string = await mkdtemp(path.join(tmpdir(), 'stats-evidence-integrity-'));
     fixtures.push(directory);
     const record: StatsVisualEvidenceRecord = completeInventory()[0] as StatsVisualEvidenceRecord;
-    const payload: Buffer = pngHeader(record.image.width, record.image.height);
+    const payload: Buffer = validPng(record.image.width, record.image.height);
     await writeFile(path.join(directory, record.file), payload);
     await expect(assertStatsVisualEvidenceDirectory(directory, [record])).resolves.toBeUndefined();
 
@@ -153,7 +161,7 @@ describe('Stats visual evidence inventory', () => {
     );
     await rm(path.join(directory, 'stale.png'));
     const corrupt: Buffer = Buffer.from(await readFile(path.join(directory, record.file)));
-    corrupt[0] = 0;
+    corrupt[corrupt.length - 5] = (corrupt[corrupt.length - 5] ?? 0) ^ 1;
     await writeFile(path.join(directory, record.file), corrupt);
     await expect(assertStatsVisualEvidenceDirectory(directory, [record])).rejects.toThrow(
       /PNG|signature/i,
@@ -176,6 +184,26 @@ describe('Stats visual evidence inventory', () => {
     };
     expect(() => assertStatsVisualSeedParity(dev, production)).toThrow(/seed|parity/i);
   });
+
+  it('requires exact rendered-state parity for every state, theme, and viewport', () => {
+    const snapshots = STATS_VISUAL_STATES.flatMap((state) =>
+      STATS_VISUAL_THEME_CASES.flatMap((themeCase) =>
+        STATS_VISUAL_VIEWPORTS.map((viewport) => ({
+          renderedState: { sha256: 'c'.repeat(64), snapshot: 'same' },
+          state: state.id,
+          themeCase: themeCase.id,
+          viewport,
+        })),
+      ),
+    );
+    expect(() => assertStatsVisualRenderedParity(snapshots, snapshots)).not.toThrow();
+    const changed = snapshots.map((snapshot, index) =>
+      index === 0
+        ? { ...snapshot, renderedState: { sha256: 'd'.repeat(64), snapshot: 'different' } }
+        : snapshot,
+    );
+    expect(() => assertStatsVisualRenderedParity(snapshots, changed)).toThrow(/rendered|parity/i);
+  });
 });
 
 function validGeometry(width: 375 | 768 | 1280 = 375): StatsVisualGeometry {
@@ -194,6 +222,7 @@ function validGeometry(width: 375 | 768 | 1280 = 375): StatsVisualGeometry {
     disclosuresKeyboardUsable: true,
     documentHorizontalOverflow: 0,
     hasSessions: true,
+    renderedState: { sha256: 'c'.repeat(64), snapshot: 'same' },
     sessionArticleWidths: responsiveArticles
       ? [{ clientWidth: width - 72, scrollWidth: width - 72 }]
       : [{ clientWidth: 0, scrollWidth: 0 }],

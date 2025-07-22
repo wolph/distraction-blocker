@@ -14,6 +14,7 @@ import type * as Task7EvidenceModule from '../tests/e2e/task7-evidence';
 import type * as StatsSafeOutputModule from './stats-safe-output';
 import type { StatsEvidenceRun } from './stats-safe-output';
 import type * as Task7DevEvidenceModule from './task7-dev-evidence';
+import type * as StatsVerifierModule from './verify-stats-evidence';
 
 const {
   assertStatsVisualDiagnostics,
@@ -29,9 +30,13 @@ const { assertTask7ResolvedTheme } = (await import(
 const { stopTask7Vite, task7ViteStartupState } = (await import(
   new URL('./task7-dev-evidence.ts', import.meta.url).href
 )) as typeof Task7DevEvidenceModule;
-const { abandonStatsEvidenceRun, beginStatsEvidenceRun, publishStatsEvidenceRun } = (await import(
-  new URL('./stats-safe-output.ts', import.meta.url).href
-)) as typeof StatsSafeOutputModule;
+const { beginStatsEvidenceRun, cleanupFailedStatsEvidenceRun, publishVerifiedStatsEvidenceRun } =
+  (await import(
+    new URL('./stats-safe-output.ts', import.meta.url).href
+  )) as typeof StatsSafeOutputModule;
+const { verifyStatsEvidenceDirectory } = (await import(
+  new URL('./verify-stats-evidence.ts', import.meta.url).href
+)) as typeof StatsVerifierModule;
 
 const PORT: number = 4178;
 const BASE_URL: string = `http://127.0.0.1:${String(PORT)}`;
@@ -162,7 +167,8 @@ async function main(): Promise<void> {
     throw new Error(`Stats Task 5 development evidence must use ${approvedDir}.`);
   }
   const evidenceRun: StatsEvidenceRun = await beginStatsEvidenceRun({
-    approvedBoundaryDirectory: path.dirname(approvedDir),
+    approvedBoundaryRelativePath: 'artifacts/stats-task5',
+    repositoryRoot: process.cwd(),
     reportFile: 'stats-dev-run-report.json',
     targetDirectory: outputDir,
     targetName: path.basename(approvedDir),
@@ -171,6 +177,7 @@ async function main(): Promise<void> {
   let browser: Browser | null = null;
   const diagnostics: DevDiagnostics = emptyDiagnostics();
   let result: StatsVisualCaptureResult | null = null;
+  let published: boolean = false;
   try {
     try {
       server = await startVite();
@@ -196,20 +203,15 @@ async function main(): Promise<void> {
         if (server !== null) await stopTask7Vite(server);
       }
     }
-  } catch (error: unknown) {
-    await abandonStatsEvidenceRun(evidenceRun);
-    throw error;
-  }
-  if (result === null) throw new Error('Stats development capture did not produce a result.');
-  const finalDiagnostics: StatsVisualDiagnosticCounts = counts(diagnostics);
-  assertStatsVisualDiagnostics(finalDiagnostics);
-  assertStatsVisualInventoryCoverage(result.records, 'dev');
-  const inventory: StatsVisualEvidenceRecord[] = [...result.records].sort(
-    (left: StatsVisualEvidenceRecord, right: StatsVisualEvidenceRecord): number =>
-      left.file.localeCompare(right.file),
-  );
-  await assertStatsVisualEvidenceDirectory(evidenceRun.stagingDirectory, inventory);
-  try {
+    if (result === null) throw new Error('Stats development capture did not produce a result.');
+    const finalDiagnostics: StatsVisualDiagnosticCounts = counts(diagnostics);
+    assertStatsVisualDiagnostics(finalDiagnostics);
+    assertStatsVisualInventoryCoverage(result.records, 'dev');
+    const inventory: StatsVisualEvidenceRecord[] = [...result.records].sort(
+      (left: StatsVisualEvidenceRecord, right: StatsVisualEvidenceRecord): number =>
+        left.file.localeCompare(right.file),
+    );
+    await assertStatsVisualEvidenceDirectory(evidenceRun.stagingDirectory, inventory);
     await writeFile(
       path.join(evidenceRun.stagingDirectory, 'stats-dev-run-report.json'),
       `${JSON.stringify(
@@ -221,7 +223,7 @@ async function main(): Promise<void> {
             'owned page, context, browser, and Vite process closed before report write',
           geometry: result.geometry,
           inventory,
-          schemaVersion: 2,
+          schemaVersion: 3,
           screenshotCount: inventory.length,
           sourceHarness: 'tests/e2e/stats-dev-harness/stats.html',
         },
@@ -230,12 +232,24 @@ async function main(): Promise<void> {
       )}\n`,
       'utf8',
     );
-    await publishStatsEvidenceRun(evidenceRun);
-  } catch (error: unknown) {
-    await abandonStatsEvidenceRun(evidenceRun);
-    throw error;
+    await publishVerifiedStatsEvidenceRun(
+      evidenceRun,
+      'stats-dev-run-report.json',
+      async (evidenceDirectory: string): Promise<void> => {
+        await verifyStatsEvidenceDirectory({
+          buildSource: 'dev',
+          evidenceDirectory,
+          reportFile: 'stats-dev-run-report.json',
+        });
+      },
+    );
+    published = true;
+    process.stdout.write(`Stats Task 5 dev evidence: ${String(inventory.length)} screenshots\n`);
+  } finally {
+    if (!published) {
+      await cleanupFailedStatsEvidenceRun(evidenceRun, 'stats-dev-run-report.json');
+    }
   }
-  process.stdout.write(`Stats Task 5 dev evidence: ${String(inventory.length)} screenshots\n`);
 }
 
 await main();

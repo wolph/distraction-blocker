@@ -1,18 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import { lstat, mkdtemp, realpath, rename, rm, unlink } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, mkdtemp, realpath, rename, rm, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 const STAGING_PREFIX: string = '.stats-evidence-staging-';
 
 export interface StatsEvidenceRun {
-  approvedBoundaryDirectory: string;
+  approvedBoundaryRelativePath: string;
+  repositoryRoot: string;
   stagingDirectory: string;
   targetDirectory: string;
   targetName: string;
 }
 
 export interface BeginStatsEvidenceRunInput {
-  approvedBoundaryDirectory: string;
+  approvedBoundaryRelativePath: string;
+  repositoryRoot: string;
   reportFile: string;
   targetDirectory: string;
   targetName: string;
@@ -33,8 +35,12 @@ async function existingRealDirectory(directory: string): Promise<boolean> {
   }
 }
 
-async function assertExistingAncestorsReal(boundary: string, target: string): Promise<void> {
-  const resolvedBoundary: string = path.resolve(boundary);
+async function validatePathFromRepositoryRoot(
+  repositoryRoot: string,
+  target: string,
+  createMissing: boolean,
+): Promise<void> {
+  const resolvedBoundary: string = path.resolve(repositoryRoot);
   const resolvedTarget: string = path.resolve(target);
   const relative: string = path.relative(resolvedBoundary, resolvedTarget);
   if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
@@ -44,7 +50,10 @@ async function assertExistingAncestorsReal(boundary: string, target: string): Pr
   let candidate: string = resolvedBoundary;
   const boundaryMetadata = await lstat(candidate);
   if (boundaryMetadata.isSymbolicLink() || !boundaryMetadata.isDirectory()) {
-    throw new Error('Stats evidence approved boundary must be a real directory.');
+    throw new Error('Stats evidence repository root must be a real directory.');
+  }
+  if ((await realpath(candidate)) !== candidate) {
+    throw new Error('Stats evidence repository root must not be a symlink alias.');
   }
   for (const segment of segments) {
     candidate = path.join(candidate, segment);
@@ -63,7 +72,13 @@ async function assertExistingAncestorsReal(boundary: string, target: string): Pr
         'code' in error &&
         error.code === 'ENOENT'
       ) {
-        return;
+        if (!createMissing) return;
+        await mkdir(candidate);
+        const created = await lstat(candidate);
+        if (created.isSymbolicLink() || !created.isDirectory()) {
+          throw new Error(`Stats evidence created ancestor is unsafe: ${candidate}.`);
+        }
+        continue;
       }
       throw error;
     }
@@ -71,13 +86,13 @@ async function assertExistingAncestorsReal(boundary: string, target: string): Pr
 }
 
 async function assertDirectoryResolvesExactly(
-  boundary: string,
+  repositoryRoot: string,
   directory: string,
   label: string,
 ): Promise<void> {
-  await assertExistingAncestorsReal(boundary, directory);
-  const realBoundary: string = await realpath(boundary);
-  const relative: string = path.relative(path.resolve(boundary), path.resolve(directory));
+  await validatePathFromRepositoryRoot(repositoryRoot, directory, false);
+  const realBoundary: string = await realpath(repositoryRoot);
+  const relative: string = path.relative(path.resolve(repositoryRoot), path.resolve(directory));
   if ((await realpath(directory)) !== path.join(realBoundary, relative)) {
     throw new Error(`Stats evidence ${label} does not resolve to its approved real path.`);
   }
@@ -86,9 +101,17 @@ async function assertDirectoryResolvesExactly(
 function assertApprovedTarget(input: BeginStatsEvidenceRunInput): {
   boundary: string;
   reportFile: string;
+  repositoryRoot: string;
   target: string;
 } {
-  const boundary: string = path.resolve(input.approvedBoundaryDirectory);
+  const repositoryRoot: string = path.resolve(input.repositoryRoot);
+  if (
+    path.isAbsolute(input.approvedBoundaryRelativePath) ||
+    input.approvedBoundaryRelativePath.split(path.sep).includes('..')
+  ) {
+    throw new Error('Stats evidence boundary must be repository-relative.');
+  }
+  const boundary: string = path.join(repositoryRoot, input.approvedBoundaryRelativePath);
   if (path.basename(input.targetName) !== input.targetName || input.targetName.length === 0) {
     throw new Error('Stats evidence target name must be one approved directory basename.');
   }
@@ -100,7 +123,7 @@ function assertApprovedTarget(input: BeginStatsEvidenceRunInput): {
   if (path.basename(input.reportFile) !== input.reportFile || !input.reportFile.endsWith('.json')) {
     throw new Error('Stats evidence report filename must be one JSON basename.');
   }
-  return { boundary, reportFile: input.reportFile, target };
+  return { boundary, reportFile: input.reportFile, repositoryRoot, target };
 }
 
 export async function beginStatsEvidenceRun(
@@ -108,8 +131,8 @@ export async function beginStatsEvidenceRun(
 ): Promise<StatsEvidenceRun> {
   const validated = assertApprovedTarget(input);
   const parent: string = path.dirname(validated.target);
-  await assertExistingAncestorsReal(validated.boundary, parent);
-  await assertDirectoryResolvesExactly(validated.boundary, parent, 'target parent');
+  await validatePathFromRepositoryRoot(validated.repositoryRoot, parent, true);
+  await assertDirectoryResolvesExactly(validated.repositoryRoot, parent, 'target parent');
   if (await existingRealDirectory(validated.target)) {
     try {
       await unlink(path.join(validated.target, validated.reportFile));
@@ -123,7 +146,8 @@ export async function beginStatsEvidenceRun(
   }
   const stagingDirectory: string = await mkdtemp(path.join(parent, STAGING_PREFIX));
   return {
-    approvedBoundaryDirectory: validated.boundary,
+    approvedBoundaryRelativePath: input.approvedBoundaryRelativePath,
+    repositoryRoot: validated.repositoryRoot,
     stagingDirectory,
     targetDirectory: validated.target,
     targetName: input.targetName,
@@ -132,8 +156,11 @@ export async function beginStatsEvidenceRun(
 
 async function assertRunBoundary(run: StatsEvidenceRun): Promise<void> {
   if (
-    path.join(path.resolve(run.approvedBoundaryDirectory), run.targetName) !==
-      path.resolve(run.targetDirectory) ||
+    path.join(
+      path.resolve(run.repositoryRoot),
+      run.approvedBoundaryRelativePath,
+      run.targetName,
+    ) !== path.resolve(run.targetDirectory) ||
     path.dirname(path.resolve(run.stagingDirectory)) !==
       path.dirname(path.resolve(run.targetDirectory)) ||
     !path.basename(run.stagingDirectory).startsWith(STAGING_PREFIX)
@@ -141,7 +168,7 @@ async function assertRunBoundary(run: StatsEvidenceRun): Promise<void> {
     throw new Error('Stats evidence staging boundary is invalid.');
   }
   await assertDirectoryResolvesExactly(
-    run.approvedBoundaryDirectory,
+    run.repositoryRoot,
     path.dirname(run.targetDirectory),
     'target parent',
   );
@@ -150,7 +177,7 @@ async function assertRunBoundary(run: StatsEvidenceRun): Promise<void> {
     throw new Error('Stats evidence staging path must be a real directory.');
   }
   await assertDirectoryResolvesExactly(
-    run.approvedBoundaryDirectory,
+    run.repositoryRoot,
     run.stagingDirectory,
     'staging directory',
   );
@@ -159,6 +186,91 @@ async function assertRunBoundary(run: StatsEvidenceRun): Promise<void> {
 export async function abandonStatsEvidenceRun(run: StatsEvidenceRun): Promise<void> {
   await assertRunBoundary(run);
   await rm(run.stagingDirectory, { recursive: true });
+}
+
+export async function cleanupFailedStatsEvidenceRun(
+  run: StatsEvidenceRun,
+  reportFile: string,
+): Promise<void> {
+  await assertDirectoryResolvesExactly(
+    run.repositoryRoot,
+    path.dirname(run.targetDirectory),
+    'target parent',
+  );
+  if (await existingRealDirectory(run.targetDirectory)) {
+    try {
+      await unlink(path.join(run.targetDirectory, reportFile));
+    } catch (error: unknown) {
+      if (
+        !(typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT')
+      ) {
+        throw error;
+      }
+    }
+  }
+  try {
+    const metadata = await lstat(run.stagingDirectory);
+    if (metadata.isSymbolicLink()) {
+      await unlink(run.stagingDirectory);
+    } else {
+      await abandonStatsEvidenceRun(run);
+    }
+  } catch (error: unknown) {
+    if (
+      !(typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT')
+    ) {
+      throw error;
+    }
+  }
+}
+
+export async function atomicallyReplaceStatsCuratedImage(input: {
+  approvedRelativePath: string;
+  repositoryRoot: string;
+  sourceFile: string;
+  targetFile: string;
+}): Promise<void> {
+  const expectedTarget: string = path.join(
+    path.resolve(input.repositoryRoot),
+    input.approvedRelativePath,
+  );
+  if (path.resolve(input.targetFile) !== expectedTarget) {
+    throw new Error('Stats curated image target is not approved.');
+  }
+  const parent: string = path.dirname(expectedTarget);
+  await validatePathFromRepositoryRoot(input.repositoryRoot, parent, false);
+  await assertDirectoryResolvesExactly(input.repositoryRoot, parent, 'curated image parent');
+  const temporary: string = `${expectedTarget}.staging-${randomUUID()}`;
+  const backup: string = `${expectedTarget}.replaced-${randomUUID()}`;
+  try {
+    await copyFile(input.sourceFile, temporary);
+    const targetExists: boolean = await existingRealDirectory(expectedTarget).catch(
+      (): boolean => false,
+    );
+    let existingFile: boolean = false;
+    try {
+      const metadata = await lstat(expectedTarget);
+      existingFile = metadata.isFile() && !metadata.isSymbolicLink();
+      if (!existingFile) throw new Error('Stats curated image target must be a real file.');
+    } catch (error: unknown) {
+      if (
+        !(typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT')
+      ) {
+        throw error;
+      }
+    }
+    if (targetExists) throw new Error('Stats curated image target must not be a directory.');
+    if (existingFile) await rename(expectedTarget, backup);
+    try {
+      await rename(temporary, expectedTarget);
+    } catch (error: unknown) {
+      if (existingFile) await rename(backup, expectedTarget);
+      throw error;
+    }
+    if (existingFile) await rm(backup);
+  } finally {
+    await rm(temporary, { force: true });
+  }
 }
 
 export async function publishStatsEvidenceRun(run: StatsEvidenceRun): Promise<void> {
@@ -177,4 +289,19 @@ export async function publishStatsEvidenceRun(run: StatsEvidenceRun): Promise<vo
     throw error;
   }
   await rm(backup, { recursive: true });
+}
+
+export async function publishVerifiedStatsEvidenceRun(
+  run: StatsEvidenceRun,
+  reportFile: string,
+  verify: (directory: string) => Promise<void>,
+): Promise<void> {
+  try {
+    await verify(run.stagingDirectory);
+    await publishStatsEvidenceRun(run);
+    await verify(run.targetDirectory);
+  } catch (error: unknown) {
+    await cleanupFailedStatsEvidenceRun(run, reportFile);
+    throw error;
+  }
 }

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { PNG } from 'pngjs';
 
 export interface StatsEvidenceFileMetadata {
   bytes: number;
@@ -10,33 +11,25 @@ export interface StatsEvidenceFileMetadata {
 }
 
 export function statsPngDimensions(payload: Uint8Array): { height: number; width: number } {
-  const signature: readonly number[] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-  if (
-    payload.byteLength < 24 ||
-    signature.some((byte: number, index: number): boolean => payload[index] !== byte)
-  ) {
-    throw new Error('Invalid Stats evidence PNG signature.');
+  try {
+    const decoded: PNG = PNG.sync.read(Buffer.from(payload), { checkCRC: true });
+    if (decoded.height < 1 || decoded.width < 1) throw new Error('empty dimensions');
+    return { height: decoded.height, width: decoded.width };
+  } catch (error: unknown) {
+    throw new Error('Invalid Stats evidence PNG data, dimensions, or CRC.', { cause: error });
   }
-  const view: DataView = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-  const dimensions: { height: number; width: number } = {
-    height: view.getUint32(20),
-    width: view.getUint32(16),
-  };
-  if (dimensions.height < 1 || dimensions.width < 1) {
-    throw new Error('Invalid Stats evidence PNG dimensions.');
-  }
-  return dimensions;
 }
 
 export async function assertStatsEvidenceDiskParity(
   evidenceDir: string,
   inventory: readonly StatsEvidenceFileMetadata[],
+  additionalFiles: readonly string[] = [],
 ): Promise<void> {
   const expectedFiles: string[] = inventory.map(
     (record: StatsEvidenceFileMetadata): string => record.file,
   );
   const actualFiles: string[] = (await readdir(evidenceDir)).sort();
-  const sortedExpected: string[] = [...expectedFiles].sort();
+  const sortedExpected: string[] = [...expectedFiles, ...additionalFiles].sort();
   if (new Set(expectedFiles).size !== expectedFiles.length) {
     throw new Error('Stats evidence directory inventory contains duplicate filenames.');
   }

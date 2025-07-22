@@ -88,13 +88,16 @@ function bundle(now: number, days: DailyAgg[], events: EventRecord[]): StatsBund
     (total: number, day: DailyAgg): number => total + day.focusMs,
     0,
   );
+  const currentMonth: string = localDate(now, 0).slice(0, 7);
+  const previousMonth: string = localDate(now, 1).slice(0, 7);
   return {
     days,
     months: [],
     recentSessions,
     streak: {
-      activeDays: days.length === 0 ? [] : [previousDate.getDate()],
-      activeMonth: localDate(now, 1).slice(0, 7),
+      activeDays:
+        days.length === 0 || previousMonth !== currentMonth ? [] : [previousDate.getDate()],
+      activeMonth: currentMonth,
       current: days.length === 0 ? 0 : 1,
       freezeTokens: days.length === 0 ? 0 : 1,
       lastCountedDate: days.length === 0 ? null : localDate(now, 1),

@@ -66,6 +66,7 @@ export interface StatsVisualGeometry {
   disclosuresKeyboardUsable: boolean;
   documentHorizontalOverflow: number;
   hasSessions: boolean;
+  renderedState: { sha256: string; snapshot: string };
   sessionArticleWidths: Array<{ clientWidth: number; scrollWidth: number }>;
   sessionArticlesClientWidth: number | null;
   sessionArticlesDisplay: string | null;
@@ -74,6 +75,13 @@ export interface StatsVisualGeometry {
   sessionTableClientWidth: number | null;
   sessionTableDisplay: string | null;
   sessionTableScrollWidth: number | null;
+  viewport: { height: number; width: number };
+}
+
+export interface StatsVisualRenderedRecord {
+  renderedState: { sha256: string; snapshot: string };
+  state: StatsVisualStateId;
+  themeCase: StatsVisualThemeCase['id'];
   viewport: { height: number; width: number };
 }
 
@@ -223,6 +231,33 @@ export function assertStatsVisualSeedParity(
       devIdentities.get(state.id) !== productionIdentities.get(state.id)
     ) {
       throw new Error(`Stats dev and production seed parity failed for ${state.id}.`);
+    }
+  }
+}
+
+export function assertStatsVisualRenderedParity(
+  dev: readonly StatsVisualRenderedRecord[],
+  production: readonly StatsVisualRenderedRecord[],
+): void {
+  const key = (record: StatsVisualRenderedRecord): string =>
+    `${record.state}/${record.themeCase}/${String(record.viewport.width)}x${String(record.viewport.height)}`;
+  const devMap: Map<string, StatsVisualRenderedRecord> = new Map(
+    dev.map((record: StatsVisualRenderedRecord): [string, StatsVisualRenderedRecord] => [
+      key(record),
+      record,
+    ]),
+  );
+  if (devMap.size !== dev.length || production.length !== dev.length) {
+    throw new Error('Stats rendered parity inventory differs.');
+  }
+  for (const record of production) {
+    const expected: StatsVisualRenderedRecord | undefined = devMap.get(key(record));
+    if (
+      expected === undefined ||
+      expected.renderedState.sha256 !== record.renderedState.sha256 ||
+      expected.renderedState.snapshot !== record.renderedState.snapshot
+    ) {
+      throw new Error(`Stats rendered parity failed for ${key(record)}.`);
     }
   }
 }
@@ -496,8 +531,8 @@ async function statsVisualGeometry(
   diagnostics: StatsVisualDiagnosticCounts,
 ): Promise<StatsVisualGeometry> {
   const keyboardUsable: boolean = await disclosuresKeyboardUsable(page);
-  return await page.evaluate(
-    ({ diagnosticCounts: counts, keyboard, sessions }): StatsVisualGeometry => {
+  const observed = await page.evaluate(
+    ({ diagnosticCounts: counts, keyboard, sessions }) => {
       const visible: (element: Element) => boolean = (element: Element): boolean => {
         const bounds: DOMRect = element.getBoundingClientRect();
         const style: CSSStyleDeclaration = getComputedStyle(element);
@@ -541,6 +576,22 @@ async function statsVisualGeometry(
       for (const body of document.querySelectorAll<HTMLTableSectionElement>('.chart-table tbody')) {
         disclosureRowCounts.push(body.rows.length);
       }
+      const normalizedText = (element: Element): string =>
+        (element.textContent ?? '').replace(/\s+/g, ' ').trim();
+      const renderedSnapshot: string = JSON.stringify({
+        bodyText: (document.body.innerText ?? '').replace(/\s+/g, ' ').trim(),
+        cards: Array.from(document.querySelectorAll('.card')).map(normalizedText),
+        details: Array.from(document.querySelectorAll<HTMLDetailsElement>('.chart-table')).map(
+          (detail: HTMLDetailsElement) => ({ open: detail.open, text: normalizedText(detail) }),
+        ),
+        resolvedTheme: {
+          background: getComputedStyle(document.body).backgroundColor,
+          color: getComputedStyle(document.body).color,
+          colorScheme: getComputedStyle(document.documentElement).colorScheme,
+          theme: document.documentElement.dataset.theme ?? '',
+        },
+        tables: Array.from(document.querySelectorAll('.chart-table tbody tr')).map(normalizedText),
+      });
       return {
         chartTextFontSizes,
         diagnostics: counts,
@@ -549,6 +600,7 @@ async function statsVisualGeometry(
         disclosuresKeyboardUsable: keyboard,
         documentHorizontalOverflow: root.scrollWidth - root.clientWidth,
         hasSessions: sessions,
+        renderedSnapshot,
         sessionArticleWidths: articleWidths,
         sessionArticlesClientWidth: sessionArticles?.clientWidth ?? null,
         sessionArticlesDisplay:
@@ -563,6 +615,14 @@ async function statsVisualGeometry(
     },
     { diagnosticCounts: diagnostics, keyboard: keyboardUsable, sessions: hasSessions },
   );
+  const { renderedSnapshot, ...geometry } = observed;
+  return {
+    ...geometry,
+    renderedState: {
+      sha256: createHash('sha256').update(renderedSnapshot).digest('hex'),
+      snapshot: renderedSnapshot,
+    },
+  };
 }
 
 function cardWithHeading(page: Page, heading: string): Locator {
