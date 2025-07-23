@@ -7,7 +7,12 @@ import type { BrowserDiagnostics } from './browser-diagnostics';
 import type * as StatsVisualSeedsModule from './stats-visual-seeds';
 import type { StatsVisualSeed, StatsVisualStateId } from './stats-visual-seeds';
 
-const { buildStatsVisualSeed, STATS_VISUAL_SEED_AT, STATS_VISUAL_STATES } = (await import(
+const {
+  buildStatsVisualSeed,
+  STATS_VISUAL_CLOCK_AUDIT_AT,
+  STATS_VISUAL_SEED_AT,
+  STATS_VISUAL_STATES,
+} = (await import(
   new URL('./stats-visual-seeds.ts', import.meta.url).href
 )) as typeof StatsVisualSeedsModule;
 const { assertStatsEvidenceDiskParity, statsPngDimensions } = (await import(
@@ -60,6 +65,7 @@ export interface StatsVisualDiagnosticCounts {
 
 export interface StatsVisualGeometry {
   chartTextFontSizes: number[];
+  clock: StatsVisualClockAudit;
   diagnostics: StatsVisualDiagnosticCounts;
   disclosureCount: number;
   disclosureRowCounts: number[];
@@ -76,6 +82,11 @@ export interface StatsVisualGeometry {
   sessionTableDisplay: string | null;
   sessionTableScrollWidth: number | null;
   viewport: { height: number; width: number };
+}
+
+export interface StatsVisualClockAudit {
+  beforeFreeze: number;
+  now: number;
 }
 
 export interface StatsVisualRenderedRecord {
@@ -241,13 +252,23 @@ export function assertStatsVisualRenderedParity(
 ): void {
   const key = (record: StatsVisualRenderedRecord): string =>
     `${record.state}/${record.themeCase}/${String(record.viewport.width)}x${String(record.viewport.height)}`;
-  const devMap: Map<string, StatsVisualRenderedRecord> = new Map(
-    dev.map((record: StatsVisualRenderedRecord): [string, StatsVisualRenderedRecord] => [
-      key(record),
-      record,
-    ]),
-  );
-  if (devMap.size !== dev.length || production.length !== dev.length) {
+  const index = (
+    records: readonly StatsVisualRenderedRecord[],
+  ): Map<string, StatsVisualRenderedRecord> =>
+    new Map(
+      records.map((record: StatsVisualRenderedRecord): [string, StatsVisualRenderedRecord] => [
+        key(record),
+        record,
+      ]),
+    );
+  const devMap: Map<string, StatsVisualRenderedRecord> = index(dev);
+  const productionMap: Map<string, StatsVisualRenderedRecord> = index(production);
+  if (
+    devMap.size !== dev.length ||
+    productionMap.size !== production.length ||
+    productionMap.size !== devMap.size ||
+    [...devMap.keys()].some((recordKey: string): boolean => !productionMap.has(recordKey))
+  ) {
     throw new Error('Stats rendered parity inventory differs.');
   }
   for (const record of production) {
@@ -260,6 +281,31 @@ export function assertStatsVisualRenderedParity(
       throw new Error(`Stats rendered parity failed for ${key(record)}.`);
     }
   }
+}
+
+export async function installStatsVisualPageClock(page: Page): Promise<void> {
+  await page.addInitScript(
+    ({ auditAt, frozenAt }): void => {
+      Date.now = (): number => auditAt;
+      (
+        globalThis as typeof globalThis & { __focusLockStatsClockBeforeFreeze?: number }
+      ).__focusLockStatsClockBeforeFreeze = Date.now();
+      Date.now = (): number => frozenAt;
+    },
+    { auditAt: STATS_VISUAL_CLOCK_AUDIT_AT, frozenAt: STATS_VISUAL_SEED_AT },
+  );
+}
+
+export async function freezeStatsVisualWorkerClock(worker: Worker): Promise<StatsVisualClockAudit> {
+  return await worker.evaluate(
+    ({ auditAt, frozenAt }): StatsVisualClockAudit => {
+      Date.now = (): number => auditAt;
+      const beforeFreeze: number = Date.now();
+      Date.now = (): number => frozenAt;
+      return { beforeFreeze, now: Date.now() };
+    },
+    { auditAt: STATS_VISUAL_CLOCK_AUDIT_AT, frozenAt: STATS_VISUAL_SEED_AT },
+  );
 }
 
 export function diagnosticCounts(diagnostics: BrowserDiagnostics): StatsVisualDiagnosticCounts {
@@ -284,6 +330,12 @@ export function assertStatsVisualDiagnostics(diagnostics: StatsVisualDiagnosticC
 }
 
 export function assertStatsVisualGeometry(geometry: StatsVisualGeometry): void {
+  if (
+    geometry.clock.beforeFreeze !== STATS_VISUAL_CLOCK_AUDIT_AT ||
+    geometry.clock.now !== STATS_VISUAL_SEED_AT
+  ) {
+    throw new Error('Stats visual page clock is not frozen at the evidence timestamp.');
+  }
   const minimumFontSize: number = Math.min(...geometry.chartTextFontSizes);
   if (!Number.isFinite(minimumFontSize) || minimumFontSize < 12) {
     throw new Error(`Stats chart text is below 12 CSS px: ${String(minimumFontSize)}.`);
@@ -424,6 +476,10 @@ export async function seedProductionStatsVisualState(
   now: number = STATS_VISUAL_SEED_AT,
 ): Promise<StatsVisualSeed> {
   const seed: StatsVisualSeed = buildStatsVisualSeed(state, now);
+  const workerNow: number = await worker.evaluate((): number => Date.now());
+  if (workerNow !== now) {
+    throw new Error(`Stats evidence worker clock drifted to ${String(workerNow)}.`);
+  }
   const response: unknown = await controlPage.evaluate(
     async (storageMode: 'local' | 'sync'): Promise<unknown> =>
       await chrome.runtime.sendMessage({
@@ -594,6 +650,12 @@ async function statsVisualGeometry(
       });
       return {
         chartTextFontSizes,
+        clock: {
+          beforeFreeze:
+            (globalThis as typeof globalThis & { __focusLockStatsClockBeforeFreeze?: number })
+              .__focusLockStatsClockBeforeFreeze ?? Number.NaN,
+          now: Date.now(),
+        },
         diagnostics: counts,
         disclosureCount: document.querySelectorAll('.chart-table > summary').length,
         disclosureRowCounts,
@@ -698,6 +760,17 @@ async function captureStatsVisualScopes(input: {
   const records: StatsVisualEvidenceRecord[] = [];
   for (const scope of STATS_VISUAL_CAPTURE_SCOPES) {
     const target: Locator | Page = targets[scope];
+    if (scope === 'full') {
+      await input.page.evaluate(async (): Promise<void> => {
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+        window.scrollTo({ left: 0, top: 0 });
+        await new Promise<void>((resolve: () => void): void => {
+          requestAnimationFrame((): void => {
+            requestAnimationFrame(resolve);
+          });
+        });
+      });
+    }
     if (scope === 'tables') {
       const tableAudit: { disclosureCount: number; rowCounts: number[] } =
         await input.page.evaluate((): { disclosureCount: number; rowCounts: number[] } => {

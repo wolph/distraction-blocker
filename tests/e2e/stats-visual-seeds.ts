@@ -19,6 +19,7 @@ export interface StatsVisualSeed {
 }
 
 export const STATS_VISUAL_SEED_AT: number = Date.parse('2026-09-01T10:00:00.000Z');
+export const STATS_VISUAL_CLOCK_AUDIT_AT: number = Date.parse('2026-10-02T10:00:00.000Z');
 
 export const STATS_VISUAL_STATES: readonly StatsVisualState[] = [
   { id: 'no-activity-local', hasSessions: false, storageMode: 'local' },

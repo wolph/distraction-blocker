@@ -108,6 +108,9 @@ async function extensionLaunch(
 ): Promise<ExtensionLaunch> {
   const dist: string = resolveExtensionDist(distOverride);
   const args: string[] = extensionArgs(dist);
+  if (process.env.STATS_EVIDENCE_DIR !== undefined) {
+    args.push('--disable-gpu', '--disable-gpu-compositing');
+  }
   if (restoreLastSession) args.push('--restore-last-session');
   const context: BrowserContext = await chromium.launchPersistentContext(profileDir, {
     channel: 'chromium',

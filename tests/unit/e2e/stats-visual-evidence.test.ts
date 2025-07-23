@@ -19,7 +19,11 @@ import {
   type StatsVisualEvidenceRecord,
   type StatsVisualGeometry,
 } from '../../e2e/stats-visual-evidence';
-import { buildStatsVisualSeed, STATS_VISUAL_SEED_AT } from '../../e2e/stats-visual-seeds';
+import {
+  buildStatsVisualSeed,
+  STATS_VISUAL_CLOCK_AUDIT_AT,
+  STATS_VISUAL_SEED_AT,
+} from '../../e2e/stats-visual-seeds';
 
 const fixtures: string[] = [];
 
@@ -203,6 +207,17 @@ describe('Stats visual evidence inventory', () => {
         : snapshot,
     );
     expect(() => assertStatsVisualRenderedParity(snapshots, changed)).toThrow(/rendered|parity/i);
+    const duplicateProduction = [...snapshots];
+    duplicateProduction[duplicateProduction.length - 1] =
+      duplicateProduction[0] as (typeof snapshots)[number];
+    expect(() => assertStatsVisualRenderedParity(snapshots, duplicateProduction)).toThrow(
+      /rendered|parity|inventory/i,
+    );
+    const duplicateDev = [...snapshots];
+    duplicateDev[duplicateDev.length - 1] = duplicateDev[0] as (typeof snapshots)[number];
+    expect(() => assertStatsVisualRenderedParity(duplicateDev, snapshots)).toThrow(
+      /rendered|parity|inventory/i,
+    );
   });
 });
 
@@ -210,6 +225,7 @@ function validGeometry(width: 375 | 768 | 1280 = 375): StatsVisualGeometry {
   const responsiveArticles: boolean = width <= 768;
   return {
     chartTextFontSizes: [12, 13],
+    clock: { beforeFreeze: STATS_VISUAL_CLOCK_AUDIT_AT, now: STATS_VISUAL_SEED_AT },
     diagnostics: {
       blockedRequests: 0,
       consoleErrors: 0,
@@ -247,6 +263,10 @@ describe('Stats visual geometry audit', () => {
 
   it.each([
     ['font size', { chartTextFontSizes: [11.99] }],
+    [
+      'page clock',
+      { clock: { beforeFreeze: STATS_VISUAL_CLOCK_AUDIT_AT, now: STATS_VISUAL_CLOCK_AUDIT_AT } },
+    ],
     ['document overflow', { documentHorizontalOverflow: 1 }],
     ['session overflow', { sessionArticlesHorizontalOverflow: 1 }],
     ['session article width', { sessionArticleWidths: [{ clientWidth: 303, scrollWidth: 304 }] }],

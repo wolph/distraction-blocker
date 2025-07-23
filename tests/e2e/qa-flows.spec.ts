@@ -42,7 +42,10 @@ import {
   assertStatsVisualSeedParity,
   captureStatsVisualMatrix,
   diagnosticCounts,
+  freezeStatsVisualWorkerClock,
+  installStatsVisualPageClock,
   type StatsVisualCaptureResult,
+  type StatsVisualClockAudit,
   type StatsVisualEvidenceRecord,
   type StatsVisualThemeCase,
   seedProductionStatsVisualState,
@@ -1600,7 +1603,9 @@ test('Task 5 Stats responsive evidence matrix is reproducible', async ({
     targetName: path.basename(evidenceDir),
   });
   const diagnostics: BrowserDiagnostics = browserDiagnosticsFor(context);
+  const workerClock: StatsVisualClockAudit = await freezeStatsVisualWorkerClock(worker);
   const statsPage: Page = await context.newPage();
+  await installStatsVisualPageClock(statsPage);
   let result: StatsVisualCaptureResult | null = null;
   let published: boolean = false;
   try {
@@ -1660,6 +1665,7 @@ test('Task 5 Stats responsive evidence matrix is reproducible', async ({
           inventory,
           schemaVersion: 3,
           screenshotCount: inventory.length,
+          workerClock,
         },
         null,
         2,

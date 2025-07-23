@@ -21,6 +21,7 @@ const {
   assertStatsVisualEvidenceDirectory,
   assertStatsVisualInventoryCoverage,
   captureStatsVisualMatrix,
+  installStatsVisualPageClock,
 } = (await import(
   new URL('../tests/e2e/stats-visual-evidence.ts', import.meta.url).href
 )) as typeof StatsVisualEvidenceModule;
@@ -181,9 +182,13 @@ async function main(): Promise<void> {
   try {
     try {
       server = await startVite();
-      browser = await chromium.launch({ headless: true });
+      browser = await chromium.launch({
+        args: ['--disable-gpu', '--disable-gpu-compositing'],
+        headless: true,
+      });
       const context: BrowserContext = await browser.newContext();
       const page: Page = await context.newPage();
+      await installStatsVisualPageClock(page);
       monitorDevPage(page, diagnostics);
       result = await captureStatsVisualMatrix({
         applyTheme,
