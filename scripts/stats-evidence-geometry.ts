@@ -118,6 +118,20 @@ function validateSessionWidths(geometry: JsonRecord, label: string): void {
   jsonNullableNumber(geometry.sessionTableScrollWidth, `${label}.sessionTableScrollWidth`);
 }
 
+function validateStateSessionContract(geometry: JsonRecord, label: string): void {
+  const stateId: string = jsonString(geometry.state, `${label}.state`);
+  const state: (typeof STATS_VISUAL_STATES)[number] | undefined = STATS_VISUAL_STATES.find(
+    (candidate): boolean => candidate.id === stateId,
+  );
+  if (state === undefined) {
+    throw new Error(`${label}.state is not a declared Stats visual state.`);
+  }
+  const hasSessions: boolean = jsonBoolean(geometry.hasSessions, `${label}.hasSessions`);
+  if (hasSessions !== state.hasSessions) {
+    throw new Error(`${label}.hasSessions differs from the declared Stats visual state.`);
+  }
+}
+
 function validateGeometry(
   value: unknown,
   index: number,
@@ -136,10 +150,9 @@ function validateGeometry(
   }
   jsonBoolean(geometry.disclosuresKeyboardUsable, `${label}.disclosuresKeyboardUsable`);
   jsonFiniteNumber(geometry.documentHorizontalOverflow, `${label}.documentHorizontalOverflow`);
-  jsonBoolean(geometry.hasSessions, `${label}.hasSessions`);
+  validateStateSessionContract(geometry, label);
   validateRenderedSnapshot(geometry.renderedState, `${label}.renderedState`);
   validateSessionWidths(geometry, label);
-  jsonString(geometry.state, `${label}.state`);
   jsonString(geometry.themeCase, `${label}.themeCase`);
   validateStatsViewport(geometry.viewport, `${label}.viewport`);
   const typed = geometry as unknown as StatsVisualCaptureResult['geometry'][number];

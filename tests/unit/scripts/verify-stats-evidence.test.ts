@@ -30,7 +30,7 @@ afterEach(async (): Promise<void> => {
   );
 });
 
-function geometry(width: 375 | 768 | 1280): StatsVisualGeometry {
+function geometry(width: 375 | 768 | 1280, hasSessions: boolean): StatsVisualGeometry {
   const responsive: boolean = width <= 768;
   const snapshot: string = JSON.stringify({
     bodyText: 'same',
@@ -53,18 +53,20 @@ function geometry(width: 375 | 768 | 1280): StatsVisualGeometry {
     disclosureRowCounts: [7, 7, 6, 24],
     disclosuresKeyboardUsable: true,
     documentHorizontalOverflow: 0,
-    hasSessions: true,
+    hasSessions,
     renderedState: { sha256: createHash('sha256').update(snapshot).digest('hex'), snapshot },
-    sessionArticleWidths: responsive
-      ? [{ clientWidth: width - 72, scrollWidth: width - 72 }]
-      : [{ clientWidth: 0, scrollWidth: 0 }],
-    sessionArticlesClientWidth: responsive ? width - 72 : 0,
-    sessionArticlesDisplay: responsive ? 'grid' : 'none',
-    sessionArticlesHorizontalOverflow: 0,
-    sessionArticlesScrollWidth: responsive ? width - 72 : 0,
-    sessionTableClientWidth: responsive ? 0 : width - 72,
-    sessionTableDisplay: responsive ? 'none' : 'block',
-    sessionTableScrollWidth: responsive ? 0 : width - 72,
+    sessionArticleWidths: !hasSessions
+      ? []
+      : responsive
+        ? [{ clientWidth: width - 72, scrollWidth: width - 72 }]
+        : [{ clientWidth: 0, scrollWidth: 0 }],
+    sessionArticlesClientWidth: !hasSessions ? null : responsive ? width - 72 : 0,
+    sessionArticlesDisplay: !hasSessions ? null : responsive ? 'grid' : 'none',
+    sessionArticlesHorizontalOverflow: hasSessions ? 0 : null,
+    sessionArticlesScrollWidth: !hasSessions ? null : responsive ? width - 72 : 0,
+    sessionTableClientWidth: !hasSessions ? null : responsive ? 0 : width - 72,
+    sessionTableDisplay: !hasSessions ? null : responsive ? 'none' : 'block',
+    sessionTableScrollWidth: !hasSessions ? null : responsive ? 0 : width - 72,
     viewport: { height: width === 375 ? 667 : 800, width },
   };
 }
@@ -127,7 +129,7 @@ async function fixture(): Promise<{
     geometry: STATS_VISUAL_STATES.flatMap((state) =>
       STATS_VISUAL_THEME_CASES.flatMap((themeCase) =>
         STATS_VISUAL_VIEWPORTS.map((viewport) => ({
-          ...geometry(viewport.width as 375 | 768 | 1280),
+          ...geometry(viewport.width as 375 | 768 | 1280, state.hasSessions),
           state: state.id,
           themeCase: themeCase.id,
         })),
@@ -171,6 +173,26 @@ describe('Stats evidence report JSON boundary', () => {
         (
           (report.geometry as StatsVisualGeometry[])[0] as StatsVisualGeometry
         ).documentHorizontalOverflow = 999;
+      },
+      (report): void => {
+        const record = (report.geometry as Array<StatsVisualGeometry & { state: string }>).find(
+          (entry): boolean =>
+            entry.state === 'one-active-hour-sync' && entry.viewport.width === 768,
+        );
+        if (record !== undefined) record.hasSessions = false;
+      },
+      (report): void => {
+        const record = (report.geometry as Array<StatsVisualGeometry & { state: string }>).find(
+          (entry): boolean =>
+            entry.state === 'all-hours-boundaries-local' && entry.viewport.width === 1280,
+        );
+        if (record !== undefined) record.hasSessions = false;
+      },
+      (report): void => {
+        const record = (report.geometry as Array<StatsVisualGeometry & { state: string }>).find(
+          (entry): boolean => entry.state === 'no-activity-local' && entry.viewport.width === 768,
+        );
+        if (record !== undefined) record.hasSessions = true;
       },
       (report): void => {
         const records = report.geometry as unknown[];
