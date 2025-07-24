@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { PNG } from 'pngjs';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const fixtures: string[] = [];
@@ -15,6 +16,35 @@ function fixture(): string {
 
 function generate(cwd: string): ReturnType<typeof spawnSync> {
   return spawnSync(process.execPath, [SCRIPT_PATH], { cwd, encoding: 'utf8' });
+}
+
+type VisibleBounds = {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+};
+
+function visibleBounds(png: PNG): VisibleBounds {
+  const bounds: VisibleBounds = {
+    minX: png.width,
+    minY: png.height,
+    maxX: -1,
+    maxY: -1,
+  };
+
+  for (let y: number = 0; y < png.height; y += 1) {
+    for (let x: number = 0; x < png.width; x += 1) {
+      const alpha: number = png.data.at((y * png.width + x) * 4 + 3) ?? 0;
+      if (alpha === 0) continue;
+      bounds.minX = Math.min(bounds.minX, x);
+      bounds.minY = Math.min(bounds.minY, y);
+      bounds.maxX = Math.max(bounds.maxX, x);
+      bounds.maxY = Math.max(bounds.maxY, y);
+    }
+  }
+
+  return bounds;
 }
 
 afterEach((): void => {
@@ -46,6 +76,39 @@ describe('icon generation', () => {
     writeFileSync(iconPath, Buffer.from('stale'));
     expect(generate(path).status).toBe(0);
     expect(readFileSync(iconPath)).toEqual(expected);
+  });
+
+  it('keeps the 128 px visible mark inside the centered 96 px store safe area', (): void => {
+    const path: string = fixture();
+    const iconDirectory: string = join(path, 'assets', 'icons');
+    mkdirSync(iconDirectory, { recursive: true });
+    cpSync('assets/icons/padlock.svg', join(iconDirectory, 'padlock.svg'));
+
+    expect(generate(path).status).toBe(0);
+
+    const icon: Buffer = readFileSync(join(iconDirectory, 'idle-128.png'));
+    const png: PNG = PNG.sync.read(icon);
+    const bounds: VisibleBounds = visibleBounds(png);
+    const safeAreaInset: number = (png.width - 96) / 2;
+    const measurements: string = JSON.stringify({
+      ...bounds,
+      width: bounds.maxX - bounds.minX + 1,
+      height: bounds.maxY - bounds.minY + 1,
+    });
+
+    expect({ width: png.width, height: png.height, colorType: icon.at(25) }).toEqual({
+      width: 128,
+      height: 128,
+      colorType: 6,
+    });
+    expect(bounds.maxX, `no visible pixels found: ${measurements}`).toBeGreaterThanOrEqual(0);
+    expect(
+      bounds.minX >= safeAreaInset &&
+        bounds.minY >= safeAreaInset &&
+        bounds.maxX < png.width - safeAreaInset &&
+        bounds.maxY < png.height - safeAreaInset,
+      `visible bounds must fit x/y ${safeAreaInset}..${png.width - safeAreaInset - 1}: ${measurements}`,
+    ).toBe(true);
   });
 
   it('exits nonzero when the canonical source is absent', (): void => {
