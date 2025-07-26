@@ -29,6 +29,7 @@ import { createPermissionGrantDist, resolveExtensionDist } from './extension-dis
 import { startServer, type TestServer } from './server';
 
 interface ExtFixtures {
+  extensionTimezone: string | undefined;
   context: BrowserContext;
   worker: Worker;
   extensionId: string;
@@ -105,6 +106,7 @@ async function extensionLaunch(
   restoreLastSession: boolean,
   distOverride?: string,
   diagnostics: BrowserDiagnostics = createBrowserDiagnostics(),
+  timezoneId?: string,
 ): Promise<ExtensionLaunch> {
   const dist: string = resolveExtensionDist(distOverride);
   const args: string[] = extensionArgs(dist);
@@ -112,9 +114,23 @@ async function extensionLaunch(
     args.push('--disable-gpu', '--disable-gpu-compositing');
   }
   if (restoreLastSession) args.push('--restore-last-session');
+  const browserEnvironment: Record<string, string> | undefined =
+    timezoneId === undefined
+      ? undefined
+      : {
+          ...Object.fromEntries(
+            Object.entries(process.env).filter(
+              (entry: [string, string | undefined]): entry is [string, string] =>
+                entry[1] !== undefined,
+            ),
+          ),
+          TZ: timezoneId,
+        };
   const context: BrowserContext = await chromium.launchPersistentContext(profileDir, {
     channel: 'chromium',
     args,
+    env: browserEnvironment,
+    timezoneId,
   });
   monitorBrowserContext(context, diagnostics);
   return await closeContextOnSetupFailure(context, async (): Promise<ExtensionLaunch> => {
@@ -222,12 +238,14 @@ async function grantProfileWebsiteAccess(
   baseDist: string,
   grantDist: string,
   diagnostics: BrowserDiagnostics,
+  timezoneId?: string,
 ): Promise<void> {
   const optionalLaunch: ExtensionLaunch = await extensionLaunch(
     profileDir,
     false,
     baseDist,
     diagnostics,
+    timezoneId,
   );
   await sendExtensionRequest(optionalLaunch.extPage, { type: 'getSetupState' });
   await optionalLaunch.context.close();
@@ -236,6 +254,7 @@ async function grantProfileWebsiteAccess(
     false,
     grantDist,
     diagnostics,
+    timezoneId,
   );
   await sendExtensionRequest(grantingLaunch.extPage, { type: 'reconcileWebsiteAccess' });
   await grantingLaunch.context.close();
@@ -246,9 +265,16 @@ async function completedExtensionLaunch(
   baseDist: string,
   grantDist: string,
   diagnostics: BrowserDiagnostics,
+  timezoneId?: string,
 ): Promise<ExtensionLaunch> {
-  await grantProfileWebsiteAccess(profileDir, baseDist, grantDist, diagnostics);
-  const launch: ExtensionLaunch = await extensionLaunch(profileDir, false, baseDist, diagnostics);
+  await grantProfileWebsiteAccess(profileDir, baseDist, grantDist, diagnostics, timezoneId);
+  const launch: ExtensionLaunch = await extensionLaunch(
+    profileDir,
+    false,
+    baseDist,
+    diagnostics,
+    timezoneId,
+  );
   const reconciled = await sendExtensionRequest(launch.extPage, {
     type: 'reconcileWebsiteAccess',
   });
@@ -282,8 +308,8 @@ async function completedExtensionLaunch(
 }
 
 export const test = base.extend<ExtFixtures>({
-  // biome-ignore lint/correctness/noEmptyPattern: playwright fixture signature
-  context: async ({}, use, testInfo) => {
+  extensionTimezone: [undefined, { option: true }],
+  context: async ({ extensionTimezone }, use, testInfo) => {
     const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
     const profileDir: string = testInfo.outputPath('default-profile');
     const baseDist: string = resolveExtensionDist();
@@ -296,6 +322,7 @@ export const test = base.extend<ExtFixtures>({
       baseDist,
       grantDist,
       diagnostics,
+      extensionTimezone,
     );
     fixtureDiagnostics.set(launch.context, diagnostics);
     try {
@@ -333,8 +360,7 @@ export const test = base.extend<ExtFixtures>({
     });
     await server.close();
   },
-  // biome-ignore lint/correctness/noEmptyPattern: playwright fixture signature
-  restartableExtension: async ({}, use, testInfo) => {
+  restartableExtension: async ({ extensionTimezone }, use, testInfo) => {
     const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
     const profileDir: string = testInfo.outputPath('restart-profile');
     const baseDist: string = resolveExtensionDist();
@@ -347,6 +373,7 @@ export const test = base.extend<ExtFixtures>({
       baseDist,
       grantDist,
       diagnostics,
+      extensionTimezone,
     );
     await prepared.context.close();
     let current: ExtensionLaunch | null = null;
@@ -358,7 +385,7 @@ export const test = base.extend<ExtFixtures>({
     };
     const launch = async (): Promise<ExtensionLaunch> => {
       if (current !== null) throw new Error('close the isolated browser before relaunching it');
-      current = await extensionLaunch(profileDir, true, baseDist, diagnostics);
+      current = await extensionLaunch(profileDir, true, baseDist, diagnostics, extensionTimezone);
       return current;
     };
 
@@ -368,8 +395,7 @@ export const test = base.extend<ExtFixtures>({
       await closeAndAssertBrowserDiagnostics(close, diagnostics);
     }
   },
-  // biome-ignore lint/correctness/noEmptyPattern: playwright fixture signature
-  freshInstallExtension: async ({}, use, testInfo) => {
+  freshInstallExtension: async ({ extensionTimezone }, use, testInfo) => {
     const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
     const profileDir: string = testInfo.outputPath('fresh-install-profile');
     const baseDist: string = resolveExtensionDist();
@@ -395,6 +421,7 @@ export const test = base.extend<ExtFixtures>({
         true,
         baseDist,
         diagnostics,
+        extensionTimezone,
       );
       const onboardingPage: Page = await baseLaunch.context.newPage();
       await onboardingPage.goto(
@@ -433,7 +460,13 @@ export const test = base.extend<ExtFixtures>({
       );
     const grantWebsiteAccess = async (): Promise<FreshInstallLaunch> => {
       await close();
-      await grantProfileWebsiteAccess(profileDir, baseDist, grantDist, diagnostics);
+      await grantProfileWebsiteAccess(
+        profileDir,
+        baseDist,
+        grantDist,
+        diagnostics,
+        extensionTimezone,
+      );
       return await launch();
     };
     const revokeWebsiteAccess = async (): Promise<void> => {

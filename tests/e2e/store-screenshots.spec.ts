@@ -74,13 +74,42 @@ const STORE_IMAGE_SIZE: Readonly<{ height: number; width: number }> = {
 };
 const STORE_INTENTION: string = 'Finish the release notes';
 const STORE_TIMEZONE: string = 'Europe/Amsterdam';
-// Set UPDATE_STORE_SCREENSHOTS=1 to atomically replace tracked PNGs. Unset compares only.
+const HOSTILE_TIMEZONE: string = 'Pacific/Pago_Pago';
+const EXPECTED_HOST_TIMEZONE_ENV: string = 'STORE_SCREENSHOT_EXPECT_HOST_TIMEZONE';
+// Set UPDATE_STORE_SCREENSHOTS=1 to replace tracked PNGs after every capture validates. Unset compares only.
 const UPDATE_SCREENSHOTS_ENV: string = 'UPDATE_STORE_SCREENSHOTS';
+
+test.use({ extensionTimezone: STORE_TIMEZONE });
 
 function parseScreenshotUpdateMode(value: string | undefined): boolean {
   if (value === undefined) return false;
   if (value === '1') return true;
   throw new Error(`${UPDATE_SCREENSHOTS_ENV} must be unset or exactly 1`);
+}
+
+interface ScreenshotFileOperations {
+  readdir(directory: string): Promise<string[]>;
+  readFile(file: string): Promise<Buffer>;
+  rename(source: string, target: string): Promise<void>;
+  rm(file: string, options: { force: boolean }): Promise<void>;
+  writeFile(file: string, payload: Buffer, options: { flag: 'wx' }): Promise<void>;
+}
+
+const SCREENSHOT_FILE_OPERATIONS: ScreenshotFileOperations = {
+  readdir: async (directory: string): Promise<string[]> => await readdir(directory),
+  readFile: async (file: string): Promise<Buffer> => await readFile(file),
+  rename: async (source: string, target: string): Promise<void> => await rename(source, target),
+  rm: async (file: string, options: { force: boolean }): Promise<void> => await rm(file, options),
+  writeFile: async (file: string, payload: Buffer, options: { flag: 'wx' }): Promise<void> =>
+    await writeFile(file, payload, options),
+};
+
+function requireExactScreenshotFilenames(entries: readonly string[], location: string): void {
+  const actual: string[] = [...entries].sort();
+  const expected: string[] = [...SCREENSHOT_FILES];
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`${location} screenshot inventory is not exact: ${JSON.stringify(actual)}`);
+  }
 }
 
 async function assertScreenshotInventory(directory: string): Promise<void> {
@@ -176,51 +205,171 @@ async function setCaptureTimezone(page: Page): Promise<CDPSession> {
   return session;
 }
 
-async function publishCapturedScreenshots(
+async function assertWorkerTimezone(worker: Worker): Promise<void> {
+  expect(
+    await worker.evaluate((): string => Intl.DateTimeFormat().resolvedOptions().timeZone),
+  ).toBe(STORE_TIMEZONE);
+}
+
+interface ScreenshotCapturePayload {
+  file: string;
+  original: Buffer;
+  payload: Buffer;
+}
+
+interface StagedScreenshot {
+  rollback: string;
+  target: string;
+  temporary: string;
+}
+
+async function loadScreenshotPublication(
   captureDirectory: string,
   canonicalDirectory: string,
-  updateCanonical: boolean,
-): Promise<void> {
-  if (updateCanonical) {
-    const captures: readonly { file: string; payload: Buffer }[] = await Promise.all(
-      SCREENSHOT_FILES.map(
-        async (file: string): Promise<{ file: string; payload: Buffer }> => ({
-          file,
-          payload: await readFile(path.join(captureDirectory, file)),
-        }),
-      ),
-    );
-    const staged: readonly { target: string; temporary: string }[] = await Promise.all(
-      captures.map(async ({ file, payload }): Promise<{ target: string; temporary: string }> => {
-        const target: string = path.join(canonicalDirectory, file);
-        const temporary: string = path.join(canonicalDirectory, `.${file}.${randomUUID()}.tmp`);
-        await writeFile(temporary, payload, { flag: 'wx' });
-        return { target, temporary };
+  operations: ScreenshotFileOperations,
+): Promise<readonly ScreenshotCapturePayload[]> {
+  const [captureEntries, canonicalEntries]: [string[], string[]] = await Promise.all([
+    operations.readdir(captureDirectory),
+    operations.readdir(canonicalDirectory),
+  ]);
+  requireExactScreenshotFilenames(captureEntries, 'captured');
+  requireExactScreenshotFilenames(canonicalEntries, 'canonical');
+  return await Promise.all(
+    SCREENSHOT_FILES.map(
+      async (file: string): Promise<ScreenshotCapturePayload> => ({
+        file,
+        original: await operations.readFile(path.join(canonicalDirectory, file)),
+        payload: await operations.readFile(path.join(captureDirectory, file)),
       }),
-    );
-    try {
-      for (const { target, temporary } of staged) await rename(temporary, target);
-    } finally {
-      await Promise.all(
-        staged.map(({ temporary }): Promise<void> => rm(temporary, { force: true })),
-      );
+    ),
+  );
+}
+
+function screenshotStagingPaths(
+  captures: readonly ScreenshotCapturePayload[],
+  canonicalDirectory: string,
+): readonly StagedScreenshot[] {
+  return captures.map(
+    ({ file }): StagedScreenshot => ({
+      rollback: path.join(canonicalDirectory, `.${file}.${randomUUID()}.rollback`),
+      target: path.join(canonicalDirectory, file),
+      temporary: path.join(canonicalDirectory, `.${file}.${randomUUID()}.tmp`),
+    }),
+  );
+}
+
+async function removeScreenshotStaging(
+  staged: readonly StagedScreenshot[],
+  operations: ScreenshotFileOperations,
+): Promise<void> {
+  await Promise.all(
+    staged.flatMap(({ rollback, temporary }): Promise<void>[] => [
+      operations.rm(temporary, { force: true }),
+      operations.rm(rollback, { force: true }),
+    ]),
+  );
+}
+
+async function stageAndValidateScreenshots(
+  captures: readonly ScreenshotCapturePayload[],
+  staged: readonly StagedScreenshot[],
+  operations: ScreenshotFileOperations,
+): Promise<void> {
+  for (let index: number = 0; index < staged.length; index += 1) {
+    const capture = captures[index];
+    const stage = staged[index];
+    if (capture === undefined || stage === undefined) {
+      throw new Error('store screenshot staging indexes diverged');
     }
-    return;
+    await operations.writeFile(stage.temporary, capture.payload, { flag: 'wx' });
+    await operations.writeFile(stage.rollback, capture.original, { flag: 'wx' });
   }
-  for (const file of SCREENSHOT_FILES) {
-    const [capture, canonical]: [Buffer, Buffer] = await Promise.all([
-      readFile(path.join(captureDirectory, file)),
-      readFile(path.join(canonicalDirectory, file)),
+  for (let index: number = 0; index < staged.length; index += 1) {
+    const capture = captures[index];
+    const stage = staged[index];
+    if (capture === undefined || stage === undefined) {
+      throw new Error('store screenshot validation indexes diverged');
+    }
+    const [stagedPayload, stagedOriginal]: [Buffer, Buffer] = await Promise.all([
+      operations.readFile(stage.temporary),
+      operations.readFile(stage.rollback),
     ]);
-    if (!capture.equals(canonical)) {
-      throw new Error(`${file} differs from the tracked canonical PNG`);
+    if (!stagedPayload.equals(capture.payload) || !stagedOriginal.equals(capture.original)) {
+      throw new Error(`${capture.file} staging byte validation failed`);
     }
   }
 }
 
+async function restoreScreenshotPublication(
+  staged: readonly StagedScreenshot[],
+  operations: ScreenshotFileOperations,
+): Promise<unknown[]> {
+  const errors: unknown[] = [];
+  for (const { rollback, target } of staged) {
+    try {
+      await operations.rename(rollback, target);
+    } catch (error: unknown) {
+      errors.push(error);
+    }
+  }
+  return errors;
+}
+
+// Handled filesystem errors trigger full-set rollback. Five renames cannot be process-kill atomic.
+async function publishCapturedScreenshots(
+  captureDirectory: string,
+  canonicalDirectory: string,
+  updateCanonical: boolean,
+  operations: ScreenshotFileOperations = SCREENSHOT_FILE_OPERATIONS,
+): Promise<void> {
+  if (!updateCanonical) {
+    for (const file of SCREENSHOT_FILES) {
+      const [capture, canonical]: [Buffer, Buffer] = await Promise.all([
+        operations.readFile(path.join(captureDirectory, file)),
+        operations.readFile(path.join(canonicalDirectory, file)),
+      ]);
+      if (!capture.equals(canonical)) {
+        throw new Error(`${file} differs from the tracked canonical PNG`);
+      }
+    }
+    return;
+  }
+
+  const captures: readonly ScreenshotCapturePayload[] = await loadScreenshotPublication(
+    captureDirectory,
+    canonicalDirectory,
+    operations,
+  );
+  const staged: readonly StagedScreenshot[] = screenshotStagingPaths(captures, canonicalDirectory);
+  try {
+    await stageAndValidateScreenshots(captures, staged, operations);
+  } catch (stagingError: unknown) {
+    await removeScreenshotStaging(staged, operations);
+    throw stagingError;
+  }
+  try {
+    for (const { target, temporary } of staged) await operations.rename(temporary, target);
+  } catch (publicationError: unknown) {
+    const rollbackErrors: unknown[] = await restoreScreenshotPublication(staged, operations);
+    if (rollbackErrors.length === 0) {
+      await removeScreenshotStaging(staged, operations);
+      throw publicationError;
+    }
+    throw new AggregateError(
+      [publicationError, ...rollbackErrors],
+      'store screenshot publication failed and runtime rollback was incomplete',
+    );
+  }
+  await removeScreenshotStaging(staged, operations);
+}
+
 async function runHostileTimezoneCapture(outputDirectory: string): Promise<string> {
   const executable: string = path.join(REPOSITORY_ROOT, 'node_modules/.bin/playwright');
-  const environment: NodeJS.ProcessEnv = { ...process.env, TZ: 'UTC' };
+  const environment: NodeJS.ProcessEnv = {
+    ...process.env,
+    [EXPECTED_HOST_TIMEZONE_ENV]: HOSTILE_TIMEZONE,
+    TZ: HOSTILE_TIMEZONE,
+  };
   delete environment[UPDATE_SCREENSHOTS_ENV];
   const args: readonly string[] = [
     'test',
@@ -246,7 +395,7 @@ async function runHostileTimezoneCapture(outputDirectory: string): Promise<strin
     child.on('error', reject);
     child.on('close', (code: number | null): void => {
       if (code === 0) resolve(output);
-      else reject(new Error(`UTC capture exited ${String(code)}\n${output}`));
+      else reject(new Error(`${HOSTILE_TIMEZONE} capture exited ${String(code)}\n${output}`));
     });
   });
 }
@@ -345,6 +494,71 @@ async function settleSync(controlPage: Page): Promise<void> {
     .toBe('idle');
 }
 
+interface ZonedDateTimeParts {
+  day: number;
+  hour: number;
+  minute: number;
+  month: number;
+  year: number;
+}
+
+function zonedDateTimeParts(at: number, timezone: string): ZonedDateTimeParts {
+  const values: Partial<ZonedDateTimeParts> = {};
+  const formatter: Intl.DateTimeFormat = new Intl.DateTimeFormat('en-CA', {
+    day: '2-digit',
+    hour: '2-digit',
+    hourCycle: 'h23',
+    minute: '2-digit',
+    month: '2-digit',
+    timeZone: timezone,
+    year: 'numeric',
+  });
+  for (const part of formatter.formatToParts(at)) {
+    if (part.type === 'year' || part.type === 'month' || part.type === 'day') {
+      values[part.type] = Number(part.value);
+    }
+    if (part.type === 'hour' || part.type === 'minute') values[part.type] = Number(part.value);
+  }
+  if (
+    values.year === undefined ||
+    values.month === undefined ||
+    values.day === undefined ||
+    values.hour === undefined ||
+    values.minute === undefined
+  ) {
+    throw new Error(`could not derive date parts in ${timezone}`);
+  }
+  return values as ZonedDateTimeParts;
+}
+
+function zonedDateKey(at: number, timezone: string): string {
+  const parts: ZonedDateTimeParts = zonedDateTimeParts(at, timezone);
+  return `${String(parts.year)}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+}
+
+function zonedTimestamp(dateKey: string, hour: number, minute: number, timezone: string): number {
+  const [yearText, monthText, dayText]: string[] = dateKey.split('-');
+  const year: number = Number(yearText);
+  const month: number = Number(monthText);
+  const day: number = Number(dayText);
+  const expected: ZonedDateTimeParts = { day, hour, minute, month, year };
+  const expectedAsUtc: number = Date.UTC(year, month - 1, day, hour, minute);
+  let candidate: number = expectedAsUtc;
+  for (let attempt: number = 0; attempt < 4; attempt += 1) {
+    const actual: ZonedDateTimeParts = zonedDateTimeParts(candidate, timezone);
+    const actualAsUtc: number = Date.UTC(
+      actual.year,
+      actual.month - 1,
+      actual.day,
+      actual.hour,
+      actual.minute,
+    );
+    candidate += expectedAsUtc - actualAsUtc;
+  }
+  expect(zonedDateTimeParts(candidate, timezone)).toEqual(expected);
+  return candidate;
+}
+
 async function seedStoreStats(controlPage: Page, worker: Worker): Promise<void> {
   const setup = await sendExtensionRequest(controlPage, { type: 'getSetupState' });
   expect(setup).toMatchObject({
@@ -353,10 +567,7 @@ async function seedStoreStats(controlPage: Page, worker: Worker): Promise<void> 
     syncWriteStatus: 'idle',
   });
   const seed: StatsVisualSeed = buildStatsVisualSeed('one-active-hour-sync', STATS_VISUAL_SEED_AT);
-  const currentDate: Date = new Date(STATS_VISUAL_SEED_AT);
-  const currentDateKey: string = `${String(currentDate.getFullYear())}-${String(
-    currentDate.getMonth() + 1,
-  ).padStart(2, '0')}-${String(currentDate.getDate()).padStart(2, '0')}`;
+  const currentDateKey: string = zonedDateKey(STATS_VISUAL_SEED_AT, STORE_TIMEZONE);
   const seededDay = seed.bundle.days[0];
   if (seededDay === undefined) throw new Error('store Stats seed is missing its active day');
   seededDay.date = currentDateKey;
@@ -365,15 +576,24 @@ async function seedStoreStats(controlPage: Page, worker: Worker): Promise<void> 
   seed.bundle.streak = {
     ...seed.bundle.streak,
     activeDays: [],
+    activeMonth: currentDateKey.slice(0, 7),
     current: 0,
     freezeTokens: 0,
     lastCountedDate: null,
   };
   for (const event of seed.events) {
-    if (event.t === 'sessionStarted') event.durationMin = 20;
-    if (event.t === 'sessionCompleted') event.focusedMs = 20 * 60_000;
+    if (event.t === 'sessionStarted') {
+      event.at = zonedTimestamp(currentDateKey, 8, 30, STORE_TIMEZONE);
+      event.durationMin = 20;
+    }
+    if (event.t === 'attempt') {
+      event.at = zonedTimestamp(currentDateKey, 9, 10, STORE_TIMEZONE);
+    }
+    if (event.t === 'sessionCompleted') {
+      event.at = zonedTimestamp(currentDateKey, 9, 30, STORE_TIMEZONE);
+      event.focusedMs = 20 * 60_000;
+    }
   }
-  for (const event of seed.events) event.at += 24 * 60 * 60_000;
   seed.bundle.recentSessions = [...seed.events].reverse();
   seed.bundle.totals = {
     attemptsToday: 1,
@@ -452,7 +672,7 @@ test('default screenshot publication compares complete bytes without changing ca
   );
 });
 
-test('explicit update publication atomically replaces a safe canonical fixture', async ({
+test('explicit update publication replaces a safe canonical fixture after staging', async ({
   browserName: _browserName,
 }, testInfo: TestInfo): Promise<void> => {
   const captureDirectory: string = testInfo.outputPath('captured');
@@ -474,6 +694,82 @@ test('explicit update publication atomically replaces a safe canonical fixture',
   await Promise.all(
     SCREENSHOT_FILES.map(async (file: string): Promise<void> => {
       expect(await readFile(path.join(canonicalDirectory, file), 'utf8')).toBe(`updated:${file}`);
+    }),
+  );
+});
+
+test('update publication restores the complete canonical set after a later replacement fails', async ({
+  browserName: _browserName,
+}, testInfo: TestInfo): Promise<void> => {
+  const captureDirectory: string = testInfo.outputPath('captured');
+  const canonicalDirectory: string = testInfo.outputPath('canonical');
+  await Promise.all([
+    mkdir(captureDirectory, { recursive: true }),
+    mkdir(canonicalDirectory, { recursive: true }),
+  ]);
+  await Promise.all(
+    SCREENSHOT_FILES.flatMap((file: string): Promise<void>[] => [
+      writeFile(path.join(captureDirectory, file), `updated:${file}`),
+      writeFile(path.join(canonicalDirectory, file), `old:${file}`),
+    ]),
+  );
+  let replacementCount: number = 0;
+  const failingOperations: ScreenshotFileOperations = {
+    ...SCREENSHOT_FILE_OPERATIONS,
+    rename: async (source: string, target: string): Promise<void> => {
+      if (source.endsWith('.tmp') && SCREENSHOT_FILES.includes(path.basename(target))) {
+        replacementCount += 1;
+        if (replacementCount === 4) throw new Error('deliberate fourth replacement failure');
+      }
+      await rename(source, target);
+    },
+  };
+
+  await expect(
+    publishCapturedScreenshots(captureDirectory, canonicalDirectory, true, failingOperations),
+  ).rejects.toThrow('deliberate fourth replacement failure');
+
+  expect((await readdir(canonicalDirectory)).sort()).toEqual([...SCREENSHOT_FILES]);
+  await Promise.all(
+    SCREENSHOT_FILES.map(async (file: string): Promise<void> => {
+      expect(await readFile(path.join(canonicalDirectory, file), 'utf8')).toBe(`old:${file}`);
+    }),
+  );
+});
+
+test('update staging leaves the canonical set untouched after a later write fails', async ({
+  browserName: _browserName,
+}, testInfo: TestInfo): Promise<void> => {
+  const captureDirectory: string = testInfo.outputPath('captured');
+  const canonicalDirectory: string = testInfo.outputPath('canonical');
+  await Promise.all([
+    mkdir(captureDirectory, { recursive: true }),
+    mkdir(canonicalDirectory, { recursive: true }),
+  ]);
+  await Promise.all(
+    SCREENSHOT_FILES.flatMap((file: string): Promise<void>[] => [
+      writeFile(path.join(captureDirectory, file), `updated:${file}`),
+      writeFile(path.join(canonicalDirectory, file), `old:${file}`),
+    ]),
+  );
+  let stagingWriteCount: number = 0;
+  const failingOperations: ScreenshotFileOperations = {
+    ...SCREENSHOT_FILE_OPERATIONS,
+    writeFile: async (file: string, payload: Buffer, options: { flag: 'wx' }): Promise<void> => {
+      stagingWriteCount += 1;
+      if (stagingWriteCount === 7) throw new Error('deliberate seventh staging write failure');
+      await SCREENSHOT_FILE_OPERATIONS.writeFile(file, payload, options);
+    },
+  };
+
+  await expect(
+    publishCapturedScreenshots(captureDirectory, canonicalDirectory, true, failingOperations),
+  ).rejects.toThrow('deliberate seventh staging write failure');
+
+  expect((await readdir(canonicalDirectory)).sort()).toEqual([...SCREENSHOT_FILES]);
+  await Promise.all(
+    SCREENSHOT_FILES.map(async (file: string): Promise<void> => {
+      expect(await readFile(path.join(canonicalDirectory, file), 'utf8')).toBe(`old:${file}`);
     }),
   );
 });
@@ -513,16 +809,19 @@ test('screenshot integrity rejects a transparent interior pixel', async ({
   );
 });
 
-test('hostile UTC host timezone reproduces every tracked canonical byte', async ({
+test('hostile Pago Pago host timezone reproduces every Amsterdam canonical byte', async ({
   browserName: _browserName,
 }, testInfo: TestInfo): Promise<void> => {
+  expect(zonedDateKey(STATS_VISUAL_SEED_AT, HOSTILE_TIMEZONE)).not.toBe(
+    zonedDateKey(STATS_VISUAL_SEED_AT, STORE_TIMEZONE),
+  );
   const before: Buffer[] = await Promise.all(
     SCREENSHOT_FILES.map(
       (file: string): Promise<Buffer> => readFile(path.join(SCREENSHOT_DIRECTORY, file)),
     ),
   );
 
-  const output: string = await runHostileTimezoneCapture(testInfo.outputPath('utc-child'));
+  const output: string = await runHostileTimezoneCapture(testInfo.outputPath('pago-pago-child'));
 
   expect(output).toContain('1 passed');
   const after: Buffer[] = await Promise.all(
@@ -546,6 +845,11 @@ test('captures five truthful release states with category membership in the popu
   siteUrl,
   worker,
 }): Promise<void> => {
+  const expectedHostTimezone: string | undefined = process.env[EXPECTED_HOST_TIMEZONE_ENV];
+  if (expectedHostTimezone !== undefined) {
+    expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe(expectedHostTimezone);
+  }
+  await assertWorkerTimezone(worker);
   const updateCanonical: boolean = parseScreenshotUpdateMode(process.env[UPDATE_SCREENSHOTS_ENV]);
   const captureDirectory: string = test.info().outputPath('captured-store-screenshots');
   test.info().annotations.push({
@@ -644,6 +948,7 @@ test('captures five truthful release states with category membership in the popu
 
   await test.step('02 starts the seeded draft and captures a real existing-page block verdict', async (): Promise<void> => {
     const blockedLaunch = await restartableExtension.launch();
+    await assertWorkerTimezone(blockedLaunch.worker);
     await freezeWorkerClock(blockedLaunch.worker);
     await requireAck(
       await sendExtensionRequest(blockedLaunch.extPage, { type: 'updateSettings', settings }),
@@ -753,6 +1058,7 @@ test('captures five truthful release states with category membership in the popu
 
   await test.step('03 captures the real onboarding permission step while retaining the seeded category choice', async (): Promise<void> => {
     const launch = await freshInstallExtension.launch();
+    await assertWorkerTimezone(launch.worker);
     const onboardingTimezoneSession: CDPSession = await setCaptureTimezone(launch.onboardingPage);
     await launch.onboardingPage.setViewportSize(PAGE_CAPTURE.viewport);
     await installPageClock(launch.onboardingPage);
