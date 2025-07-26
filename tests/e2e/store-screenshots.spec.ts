@@ -1,6 +1,9 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { CDPSession, Page, Worker } from '@playwright/test';
+import { fileURLToPath } from 'node:url';
+import type { CDPSession, Page, TestInfo, Worker } from '@playwright/test';
 import { PNG } from 'pngjs';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, rulesFromLists } from '../../src/shared/constants';
 import type { Ack } from '../../src/shared/messages';
@@ -14,7 +17,9 @@ import {
   type StatsVisualSeed,
 } from './stats-visual-seeds';
 
-const SCREENSHOT_DIRECTORY: string = path.resolve('store/assets/screenshots');
+const REPOSITORY_ROOT: string = fileURLToPath(new URL('../../', import.meta.url));
+const SCREENSHOT_DIRECTORY: string = path.join(REPOSITORY_ROOT, 'store/assets/screenshots');
+const STORE_SCREENSHOT_SPEC: string = fileURLToPath(import.meta.url);
 const SCREENSHOT_FILES: readonly string[] = [
   '01-start-session.png',
   '02-blocked-page.png',
@@ -68,13 +73,22 @@ const STORE_IMAGE_SIZE: Readonly<{ height: number; width: number }> = {
   width: 1280,
 };
 const STORE_INTENTION: string = 'Finish the release notes';
+const STORE_TIMEZONE: string = 'Europe/Amsterdam';
+// Set UPDATE_STORE_SCREENSHOTS=1 to atomically replace tracked PNGs. Unset compares only.
+const UPDATE_SCREENSHOTS_ENV: string = 'UPDATE_STORE_SCREENSHOTS';
 
-async function assertScreenshotInventory(): Promise<void> {
-  const entries: string[] = (await readdir(SCREENSHOT_DIRECTORY)).sort();
+function parseScreenshotUpdateMode(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  if (value === '1') return true;
+  throw new Error(`${UPDATE_SCREENSHOTS_ENV} must be unset or exactly 1`);
+}
+
+async function assertScreenshotInventory(directory: string): Promise<void> {
+  const entries: string[] = (await readdir(directory)).sort();
   expect(entries).toEqual([...SCREENSHOT_FILES]);
 
   for (const file of SCREENSHOT_FILES) {
-    const payload: Buffer = await readFile(path.join(SCREENSHOT_DIRECTORY, file));
+    const payload: Buffer = await readFile(path.join(directory, file));
     expect(payload.subarray(0, 8)).toEqual(
       Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     );
@@ -83,6 +97,14 @@ async function assertScreenshotInventory(): Promise<void> {
       height: 800,
       width: 1280,
     });
+    for (let alphaOffset: number = 3; alphaOffset < image.data.length; alphaOffset += 4) {
+      if (image.data[alphaOffset] !== 255) {
+        const pixelIndex: number = (alphaOffset - 3) / 4;
+        throw new Error(
+          `${file} must be fully opaque at every decoded pixel; pixel ${String(pixelIndex)} has alpha ${String(image.data[alphaOffset])}`,
+        );
+      }
+    }
     const cornerPixelOffsets: readonly number[] = [
       3,
       (image.width - 1) * 4 + 3,
@@ -98,6 +120,7 @@ async function assertScreenshotInventory(): Promise<void> {
 
 async function captureStoreScreenshot(
   page: Page,
+  directory: string,
   file: string,
   geometry: CaptureGeometry,
 ): Promise<void> {
@@ -114,6 +137,9 @@ async function captureStoreScreenshot(
     await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' });
     await page.evaluate(async (): Promise<void> => {
       await document.fonts.ready;
+      await new Promise<void>((resolve: () => void): void => {
+        requestAnimationFrame((): number => requestAnimationFrame(resolve));
+      });
     });
     const viewport: { deviceScaleFactor: number; height: number; width: number } =
       await storeViewportMetadata(page);
@@ -132,12 +158,97 @@ async function captureStoreScreenshot(
       fromSurface: true,
     });
     const payload: Buffer = Buffer.from(screenshot.data, 'base64');
-    await writeFile(path.join(SCREENSHOT_DIRECTORY, file), payload);
+    await writeFile(path.join(directory, file), payload);
     const image: PNG = PNG.sync.read(payload);
     expect({ height: image.height, width: image.width }, file).toEqual(STORE_IMAGE_SIZE);
   } finally {
     await session.detach();
   }
+}
+
+async function setCaptureTimezone(page: Page): Promise<CDPSession> {
+  const session: CDPSession = await page.context().newCDPSession(page);
+  await session.send('Emulation.setTimezoneOverride', { timezoneId: STORE_TIMEZONE });
+  const timezone: string = await page.evaluate(
+    (): string => Intl.DateTimeFormat().resolvedOptions().timeZone,
+  );
+  expect(timezone).toBe(STORE_TIMEZONE);
+  return session;
+}
+
+async function publishCapturedScreenshots(
+  captureDirectory: string,
+  canonicalDirectory: string,
+  updateCanonical: boolean,
+): Promise<void> {
+  if (updateCanonical) {
+    const captures: readonly { file: string; payload: Buffer }[] = await Promise.all(
+      SCREENSHOT_FILES.map(
+        async (file: string): Promise<{ file: string; payload: Buffer }> => ({
+          file,
+          payload: await readFile(path.join(captureDirectory, file)),
+        }),
+      ),
+    );
+    const staged: readonly { target: string; temporary: string }[] = await Promise.all(
+      captures.map(async ({ file, payload }): Promise<{ target: string; temporary: string }> => {
+        const target: string = path.join(canonicalDirectory, file);
+        const temporary: string = path.join(canonicalDirectory, `.${file}.${randomUUID()}.tmp`);
+        await writeFile(temporary, payload, { flag: 'wx' });
+        return { target, temporary };
+      }),
+    );
+    try {
+      for (const { target, temporary } of staged) await rename(temporary, target);
+    } finally {
+      await Promise.all(
+        staged.map(({ temporary }): Promise<void> => rm(temporary, { force: true })),
+      );
+    }
+    return;
+  }
+  for (const file of SCREENSHOT_FILES) {
+    const [capture, canonical]: [Buffer, Buffer] = await Promise.all([
+      readFile(path.join(captureDirectory, file)),
+      readFile(path.join(canonicalDirectory, file)),
+    ]);
+    if (!capture.equals(canonical)) {
+      throw new Error(`${file} differs from the tracked canonical PNG`);
+    }
+  }
+}
+
+async function runHostileTimezoneCapture(outputDirectory: string): Promise<string> {
+  const executable: string = path.join(REPOSITORY_ROOT, 'node_modules/.bin/playwright');
+  const environment: NodeJS.ProcessEnv = { ...process.env, TZ: 'UTC' };
+  delete environment[UPDATE_SCREENSHOTS_ENV];
+  const args: readonly string[] = [
+    'test',
+    `--config=${path.join(REPOSITORY_ROOT, 'playwright.config.ts')}`,
+    STORE_SCREENSHOT_SPEC,
+    '--grep=captures five truthful release states',
+    `--output=${outputDirectory}`,
+    '--reporter=line',
+    '--workers=1',
+  ];
+  return await new Promise<string>((resolve, reject): void => {
+    const child: ChildProcessWithoutNullStreams = spawn(executable, args, {
+      cwd: REPOSITORY_ROOT,
+      env: environment,
+    });
+    let output: string = '';
+    child.stdout.on('data', (chunk: Buffer): void => {
+      output += chunk.toString();
+    });
+    child.stderr.on('data', (chunk: Buffer): void => {
+      output += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code: number | null): void => {
+      if (code === 0) resolve(output);
+      else reject(new Error(`UTC capture exited ${String(code)}\n${output}`));
+    });
+  });
 }
 
 async function freezeIsolatedPageWorlds(
@@ -303,8 +414,127 @@ async function seedStoreStats(controlPage: Page, worker: Worker): Promise<void> 
   });
 }
 
+test('default screenshot publication compares complete bytes without changing canonical files', async ({
+  browserName: _browserName,
+}, testInfo: TestInfo): Promise<void> => {
+  const captureDirectory: string = testInfo.outputPath('captured');
+  const canonicalDirectory: string = testInfo.outputPath('canonical');
+  await Promise.all([mkdir(captureDirectory, { recursive: true }), mkdir(canonicalDirectory)]);
+  await Promise.all(
+    SCREENSHOT_FILES.flatMap((file: string): Promise<void>[] => {
+      const payload: Buffer = Buffer.from(`canonical:${file}`);
+      return [
+        writeFile(path.join(captureDirectory, file), payload),
+        writeFile(path.join(canonicalDirectory, file), payload),
+      ];
+    }),
+  );
+  const before: Buffer[] = await Promise.all(
+    SCREENSHOT_FILES.map(
+      (file: string): Promise<Buffer> => readFile(path.join(canonicalDirectory, file)),
+    ),
+  );
+
+  await publishCapturedScreenshots(captureDirectory, canonicalDirectory, false);
+
+  const after: Buffer[] = await Promise.all(
+    SCREENSHOT_FILES.map(
+      (file: string): Promise<Buffer> => readFile(path.join(canonicalDirectory, file)),
+    ),
+  );
+  expect(after).toEqual(before);
+  await writeFile(path.join(captureDirectory, SCREENSHOT_FILES[0] as string), 'drift');
+  await expect(
+    publishCapturedScreenshots(captureDirectory, canonicalDirectory, false),
+  ).rejects.toThrow('differs from the tracked canonical PNG');
+  expect(await readFile(path.join(canonicalDirectory, SCREENSHOT_FILES[0] as string))).toEqual(
+    before[0],
+  );
+});
+
+test('explicit update publication atomically replaces a safe canonical fixture', async ({
+  browserName: _browserName,
+}, testInfo: TestInfo): Promise<void> => {
+  const captureDirectory: string = testInfo.outputPath('captured');
+  const canonicalDirectory: string = testInfo.outputPath('canonical');
+  await Promise.all([
+    mkdir(captureDirectory, { recursive: true }),
+    mkdir(canonicalDirectory, { recursive: true }),
+  ]);
+  await Promise.all(
+    SCREENSHOT_FILES.flatMap((file: string): Promise<void>[] => [
+      writeFile(path.join(captureDirectory, file), `updated:${file}`),
+      writeFile(path.join(canonicalDirectory, file), `old:${file}`),
+    ]),
+  );
+
+  await publishCapturedScreenshots(captureDirectory, canonicalDirectory, true);
+
+  expect((await readdir(canonicalDirectory)).sort()).toEqual([...SCREENSHOT_FILES]);
+  await Promise.all(
+    SCREENSHOT_FILES.map(async (file: string): Promise<void> => {
+      expect(await readFile(path.join(canonicalDirectory, file), 'utf8')).toBe(`updated:${file}`);
+    }),
+  );
+});
+
+test('screenshot update mode rejects every value except the documented 1', (): void => {
+  expect(parseScreenshotUpdateMode(undefined)).toBe(false);
+  expect(parseScreenshotUpdateMode('1')).toBe(true);
+  for (const invalid of ['', '0', 'true', 'yes']) {
+    expect((): boolean => parseScreenshotUpdateMode(invalid)).toThrow(
+      `${UPDATE_SCREENSHOTS_ENV} must be unset or exactly 1`,
+    );
+  }
+});
+
+test('screenshot integrity rejects a transparent interior pixel', async ({
+  browserName: _browserName,
+}, testInfo: TestInfo): Promise<void> => {
+  const fixtureDirectory: string = testInfo.outputPath('transparent-fixture');
+  await mkdir(fixtureDirectory, { recursive: true });
+  await Promise.all(
+    SCREENSHOT_FILES.map(async (file: string): Promise<void> => {
+      await writeFile(
+        path.join(fixtureDirectory, file),
+        await readFile(path.join(SCREENSHOT_DIRECTORY, file)),
+      );
+    }),
+  );
+  const target: string = path.join(fixtureDirectory, SCREENSHOT_FILES[0] as string);
+  const image: PNG = PNG.sync.read(await readFile(target));
+  const centerAlphaOffset: number =
+    (Math.floor(image.height / 2) * image.width + Math.floor(image.width / 2)) * 4 + 3;
+  image.data[centerAlphaOffset] = 0;
+  await writeFile(target, PNG.sync.write(image));
+
+  await expect(assertScreenshotInventory(fixtureDirectory)).rejects.toThrow(
+    'must be fully opaque at every decoded pixel',
+  );
+});
+
+test('hostile UTC host timezone reproduces every tracked canonical byte', async ({
+  browserName: _browserName,
+}, testInfo: TestInfo): Promise<void> => {
+  const before: Buffer[] = await Promise.all(
+    SCREENSHOT_FILES.map(
+      (file: string): Promise<Buffer> => readFile(path.join(SCREENSHOT_DIRECTORY, file)),
+    ),
+  );
+
+  const output: string = await runHostileTimezoneCapture(testInfo.outputPath('utc-child'));
+
+  expect(output).toContain('1 passed');
+  const after: Buffer[] = await Promise.all(
+    SCREENSHOT_FILES.map(
+      (file: string): Promise<Buffer> => readFile(path.join(SCREENSHOT_DIRECTORY, file)),
+    ),
+  );
+  expect(after).toEqual(before);
+});
+
 test('store screenshot inventory is exact, intact, opaque, and 1280 by 800', async (): Promise<void> => {
-  await assertScreenshotInventory();
+  await assertScreenshotInventory(SCREENSHOT_DIRECTORY);
 });
 
 test('captures five truthful release states with category membership in the popup and permission copy in onboarding', async ({
@@ -316,12 +546,15 @@ test('captures five truthful release states with category membership in the popu
   siteUrl,
   worker,
 }): Promise<void> => {
+  const updateCanonical: boolean = parseScreenshotUpdateMode(process.env[UPDATE_SCREENSHOTS_ENV]);
+  const captureDirectory: string = test.info().outputPath('captured-store-screenshots');
   test.info().annotations.push({
     type: 'capture-geometry',
     description:
       'Popup and block use 960x600 CSS at DPR 4/3. Onboarding uses 800x500 CSS at DPR 1.6. Privacy uses 1088x680 CSS at DPR 20/17. Stats uses 1472x920 CSS at DPR 20/23. Every PNG is 1280x800.',
   });
-  await mkdir(SCREENSHOT_DIRECTORY, { recursive: true });
+  await mkdir(captureDirectory, { recursive: true });
+  await assertScreenshotInventory(SCREENSHOT_DIRECTORY);
   await settleSync(extPage);
   const lists: ListsConfig = storeLists();
   const settings: Settings = storeSettings();
@@ -339,6 +572,7 @@ test('captures five truthful release states with category membership in the popu
   await freezeWorkerClock(worker);
 
   await test.step('01 uses the 25-minute Friction draft to show effective category membership', async (): Promise<void> => {
+    const timezoneSession: CDPSession = await setCaptureTimezone(extPage);
     await extPage.setViewportSize(POPUP_CAPTURE.viewport);
     await installPageClock(extPage);
     await extPage.goto(`chrome-extension://${extensionId}/src/popup/popup.html`);
@@ -399,7 +633,13 @@ test('captures five truthful release states with category membership in the popu
       body: Buffer.from(JSON.stringify(popupGeometry, null, 2)),
       contentType: 'application/json',
     });
-    await captureStoreScreenshot(extPage, SCREENSHOT_FILES[0] as string, POPUP_CAPTURE);
+    await captureStoreScreenshot(
+      extPage,
+      captureDirectory,
+      SCREENSHOT_FILES[0] as string,
+      POPUP_CAPTURE,
+    );
+    await timezoneSession.detach();
   });
 
   await test.step('02 starts the seeded draft and captures a real existing-page block verdict', async (): Promise<void> => {
@@ -424,6 +664,7 @@ test('captures five truthful release states with category membership in the popu
       strictness: 'friction',
     };
     const blockedPage: Page = await blockedLaunch.context.newPage();
+    const blockedTimezoneSession: CDPSession = await setCaptureTimezone(blockedPage);
     await blockedPage.setViewportSize(DETAIL_CAPTURE.viewport);
     const accessibilitySession = await blockedLaunch.context.newCDPSession(blockedPage);
     const isolatedContextIds: Set<number> = new Set<number>();
@@ -486,6 +727,7 @@ test('captures five truthful release states with category membership in the popu
         })
         .toEqual(
           expect.arrayContaining([
+            'Locked until 12:25',
             '25:00',
             STORE_INTENTION,
             'Blocked by your block list: blocked.example',
@@ -498,13 +740,20 @@ test('captures five truthful release states with category membership in the popu
     await blockedPage.evaluate((): void => {
       if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     });
-    await captureStoreScreenshot(blockedPage, SCREENSHOT_FILES[1] as string, DETAIL_CAPTURE);
+    await captureStoreScreenshot(
+      blockedPage,
+      captureDirectory,
+      SCREENSHOT_FILES[1] as string,
+      DETAIL_CAPTURE,
+    );
+    await blockedTimezoneSession.detach();
     await blockedPage.close();
     await restartableExtension.close();
   });
 
   await test.step('03 captures the real onboarding permission step while retaining the seeded category choice', async (): Promise<void> => {
     const launch = await freshInstallExtension.launch();
+    const onboardingTimezoneSession: CDPSession = await setCaptureTimezone(launch.onboardingPage);
     await launch.onboardingPage.setViewportSize(PAGE_CAPTURE.viewport);
     await installPageClock(launch.onboardingPage);
     const loaded = await sendExtensionRequest(launch.extPage, { type: 'getOnboardingDraft' });
@@ -548,13 +797,16 @@ test('captures five truthful release states with category membership in the popu
     });
     await captureStoreScreenshot(
       launch.onboardingPage,
+      captureDirectory,
       SCREENSHOT_FILES[2] as string,
       PAGE_CAPTURE,
     );
+    await onboardingTimezoneSession.detach();
   });
 
   await test.step('04 captures representative synchronized totals with explicit machine-only panels', async (): Promise<void> => {
     const statsPage: Page = await context.newPage();
+    const statsTimezoneSession: CDPSession = await setCaptureTimezone(statsPage);
     await installStatsVisualPageClock(statsPage);
     await statsPage.setViewportSize(STATS_CAPTURE.viewport);
     await statsPage.goto(`chrome-extension://${extensionId}/src/stats/stats.html`);
@@ -575,7 +827,13 @@ test('captures five truthful release states with category membership in the popu
     ).toHaveCount(1);
     await expect(statsPage.getByText('Prepare the release summary')).toHaveCount(2);
     await statsPage.evaluate((): void => window.scrollTo(0, 24));
-    await captureStoreScreenshot(statsPage, SCREENSHOT_FILES[3] as string, STATS_CAPTURE);
+    await captureStoreScreenshot(
+      statsPage,
+      captureDirectory,
+      SCREENSHOT_FILES[3] as string,
+      STATS_CAPTURE,
+    );
+    await statsTimezoneSession.detach();
     await statsPage.close();
   });
 
@@ -587,6 +845,7 @@ test('captures five truthful release states with category membership in the popu
       )
       .toBe('idle');
     const optionsPage: Page = await context.newPage();
+    const optionsTimezoneSession: CDPSession = await setCaptureTimezone(optionsPage);
     await optionsPage.setViewportSize(TALL_CAPTURE.viewport);
     await installPageClock(optionsPage);
     await optionsPage.goto(`chrome-extension://${extensionId}/src/options/options.html#privacy`);
@@ -599,6 +858,25 @@ test('captures five truthful release states with category membership in the popu
     await expect(optionsPage.getByText('Chrome Sync is on.')).toBeVisible();
     await expect(optionsPage.getByRole('heading', { name: 'Synced' })).toBeVisible();
     await expect(optionsPage.getByRole('heading', { name: 'Local only' })).toBeVisible();
+    const syncedScope = optionsPage.locator('.privacy-data-scope', {
+      has: optionsPage.getByRole('heading', { name: 'Synced' }),
+    });
+    await expect(syncedScope.getByRole('listitem')).toHaveText([
+      'Settings',
+      'Block and allow lists',
+      'Pause balance',
+      'Streaks',
+      'Domain-level blocked-attempt aggregates',
+    ]);
+    const localOnlyScope = optionsPage.locator('.privacy-data-scope', {
+      has: optionsPage.getByRole('heading', { name: 'Local only' }),
+    });
+    await expect(localOnlyScope.getByRole('listitem')).toHaveText([
+      'Full URLs',
+      'Focus intentions',
+      'Detailed session events',
+      'Active runtime session',
+    ]);
     await expect(
       optionsPage.getByText('Nothing is sent to the Focus Lock developer.'),
     ).toBeVisible();
@@ -612,12 +890,20 @@ test('captures five truthful release states with category membership in the popu
       if (privacyHeading === undefined) throw new Error('Privacy and data heading is unavailable');
       window.scrollTo(0, Math.max(0, privacyHeading.offsetTop - 56));
     });
-    await captureStoreScreenshot(optionsPage, SCREENSHOT_FILES[4] as string, TALL_CAPTURE);
+    await captureStoreScreenshot(
+      optionsPage,
+      captureDirectory,
+      SCREENSHOT_FILES[4] as string,
+      TALL_CAPTURE,
+    );
+    await optionsTimezoneSession.detach();
     await optionsPage.close();
   });
 
-  await assertScreenshotInventory();
+  await assertScreenshotInventory(captureDirectory);
   assertNoUnexpectedBrowserDiagnostics(browserDiagnosticsFor(context));
   assertNoUnexpectedBrowserDiagnostics(freshInstallExtension.diagnostics);
   assertNoUnexpectedBrowserDiagnostics(restartableExtension.diagnostics);
+  await publishCapturedScreenshots(captureDirectory, SCREENSHOT_DIRECTORY, updateCanonical);
+  await assertScreenshotInventory(SCREENSHOT_DIRECTORY);
 });
