@@ -1,26 +1,28 @@
 {
   "dependencies": {
-    "preact": "10.26.9",
+    "preact": "10.27.0",
     "tldts": "7.0.10"
   },
   "description": "Focus Lock: focus sessions that lock distracting sites, with earned pauses.",
   "devDependencies": {
-    "@biomejs/biome": "2.1.1",
-    "@crxjs/vite-plugin": "2.0.2",
+    "@biomejs/biome": "2.1.3",
+    "@crxjs/vite-plugin": "2.0.3",
     "@playwright/test": "1.54.1",
     "@preact/preset-vite": "2.10.2",
     "@resvg/resvg-js": "2.6.2",
     "@testing-library/preact": "3.2.4",
-    "@types/chrome": "0.1.0",
+    "@types/chrome": "0.1.1",
     "@types/pngjs": "6.0.5",
     "css-tree": "3.1.0",
     "html-validate": "9.7.1",
     "jsdom": "26.1.0",
     "pngjs": "7.0.0",
     "typescript": "5.8.3",
-    "vite": "7.0.4",
+    "vite": "7.0.6",
     "vitest": "3.2.4",
-    "yaml": "2.8.0"
+    "yaml": "2.8.0",
+    "yauzl": "3.2.0",
+    "yazl": "3.3.1"
   },
   "engines": {
     "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
@@ -38,6 +40,8 @@
     "lint": "biome check .",
     "pages:build": "node scripts/build-pages.mjs",
     "pages:validate": "npm run pages:build && node scripts/validate-pages.mjs && html-validate 'dist-pages/**/*.html'",
+    "store:package": "npm run build && node scripts/validate-store-package.mjs --zip",
+    "store:validate": "node scripts/validate-store-package.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

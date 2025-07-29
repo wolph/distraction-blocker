@@ -1,0 +1,736 @@
+import { createHash } from 'node:crypto';
+import { linkSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  type ArchiveEntryFixture,
+  createFixture,
+  distArchiveEntries,
+  readSubmissionManifest,
+  runValidator,
+  validManifest,
+  validSubmissionManifest,
+  write,
+  writeArchive,
+  writeJson,
+  writePackageManifest,
+  writePng,
+} from './store-package-fixture';
+
+const SCRIPT_PATH: string = resolve('scripts/validate-store-package.mjs');
+const fixtures: string[] = [];
+
+function fixture(): string {
+  const path: string = mkdtempSync(join(tmpdir(), 'focus-lock-store-package-'));
+  fixtures.push(path);
+  createFixture(path);
+  return path;
+}
+
+function validate(cwd: string, args: string[] = []): ReturnType<typeof runValidator> {
+  return runValidator(SCRIPT_PATH, cwd, args);
+}
+
+function output(result: ReturnType<typeof runValidator>): string {
+  return `${result.stdout}\n${result.stderr}`;
+}
+
+function expectValidationFailure(cwd: string, message: RegExp, args: string[] = []): void {
+  const result: ReturnType<typeof runValidator> = validate(cwd, args);
+  expect(result.status).not.toBe(0);
+  expect(output(result)).not.toMatch(/MODULE_NOT_FOUND/u);
+  expect(output(result)).toMatch(message);
+}
+
+function mutateSubmission(
+  root: string,
+  mutate: (submission: Record<string, unknown>) => void,
+): void {
+  const submission: Record<string, unknown> = readSubmissionManifest(root) as unknown as Record<
+    string,
+    unknown
+  >;
+  mutate(submission);
+  writeJson(join(root, 'store', 'submission-manifest.json'), submission);
+}
+
+function mutateManifest(root: string, mutate: (manifest: Record<string, unknown>) => void): void {
+  const manifest: Record<string, unknown> = validManifest();
+  mutate(manifest);
+  writeJson(join(root, 'dist', 'manifest.json'), manifest);
+}
+
+function packageArchive(root: string, entries: ArchiveEntryFixture[]): void {
+  const zipPath: string = writeArchive(root, entries);
+  writePackageManifest(root, zipPath);
+}
+
+afterEach((): void => {
+  for (const path of fixtures.splice(0)) rmSync(path, { recursive: true, force: true });
+});
+
+describe('submission manifest and assets', (): void => {
+  it('accepts a valid release fixture with optional all-sites access and a public key', (): void => {
+    const result: ReturnType<typeof runValidator> = validate(fixture());
+    expect(result.status, output(result)).toBe(0);
+  });
+
+  it('allows the optional marquee asset to be omitted', (): void => {
+    const root: string = fixture();
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      delete submission.marquee;
+    });
+    rmSync(join(root, 'store', 'assets', 'marquee-1400x560.png'));
+    const result: ReturnType<typeof runValidator> = validate(root);
+    expect(result.status, output(result)).toBe(0);
+  });
+
+  it.each([
+    ['schemaVersion', '1'],
+    ['version', 1],
+    ['shortDescription', null],
+    ['privacyPolicyUrl', []],
+    ['permissions', 'storage'],
+    ['optionalHostPermissions', {}],
+    ['screenshots', null],
+    ['smallPromo', 440],
+    ['marquee', true],
+    ['icon128', false],
+    ['transportAllowlist', {}],
+  ])('rejects an invalid %s type', (key: string, value: unknown): void => {
+    const root: string = fixture();
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      submission[key] = value;
+    });
+    expectValidationFailure(root, new RegExp(key, 'i'));
+  });
+
+  it.each([
+    'schemaVersion',
+    'version',
+    'shortDescription',
+    'privacyPolicyUrl',
+    'permissions',
+    'optionalHostPermissions',
+    'screenshots',
+    'smallPromo',
+    'icon128',
+    'transportAllowlist',
+  ])('rejects a missing %s key', (key: string): void => {
+    const root: string = fixture();
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      delete submission[key];
+    });
+    expectValidationFailure(root, new RegExp(key, 'i'));
+  });
+
+  it('rejects an extra submission manifest key', (): void => {
+    const root: string = fixture();
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      submission.supportUrl = 'https://example.com';
+    });
+    expectValidationFailure(root, /keys|extra|supportUrl/i);
+  });
+
+  it('rejects an unsupported submission schema version', (): void => {
+    const root: string = fixture();
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      submission.schemaVersion = 2;
+    });
+    expectValidationFailure(root, /schemaVersion/i);
+  });
+
+  it('rejects malformed transport allowlist entries', (): void => {
+    const root: string = fixture();
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      submission.transportAllowlist = [
+        {
+          file: 'src/background/index.ts',
+          identifier: 'fetch',
+          justification: 'reviewed',
+          extra: true,
+        },
+      ];
+    });
+    expectValidationFailure(root, /transportAllowlist/i);
+  });
+
+  it('rejects a missing screenshot', (): void => {
+    const root: string = fixture();
+    rmSync(join(root, 'store', 'assets', 'screenshots', '03-onboarding.png'));
+    expectValidationFailure(root, /03-onboarding\.png|screenshot/i);
+  });
+
+  it('rejects an extra screenshot in the manifest', (): void => {
+    const root: string = fixture();
+    writePng(join(root, 'store', 'assets', 'screenshots', '06-extra.png'), 1280, 800);
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      submission.screenshots = [
+        ...(submission.screenshots as string[]),
+        'store/assets/screenshots/06-extra.png',
+      ];
+    });
+    expectValidationFailure(root, /screenshots/i);
+  });
+
+  it('rejects an unlisted screenshot file', (): void => {
+    const root: string = fixture();
+    writePng(join(root, 'store', 'assets', 'screenshots', '06-extra.png'), 1280, 800);
+    expectValidationFailure(root, /06-extra\.png|screenshots/i);
+  });
+
+  it('rejects reordered screenshots', (): void => {
+    const root: string = fixture();
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      const screenshots: string[] = submission.screenshots as string[];
+      submission.screenshots = [screenshots[1], screenshots[0], ...screenshots.slice(2)];
+    });
+    expectValidationFailure(root, /screenshots/i);
+  });
+
+  it.each([
+    ['screenshot', 'store/assets/screenshots/02-blocked-page.png', 1279, 800],
+    ['small promo', 'store/assets/small-promo-440x280.png', 441, 280],
+    ['marquee', 'store/assets/marquee-1400x560.png', 1400, 559],
+    ['icon', 'assets/icons/idle-128.png', 128, 127],
+  ])(
+    'rejects wrong %s dimensions',
+    (_asset: string, path: string, width: number, height: number): void => {
+      const root: string = fixture();
+      writePng(join(root, path), width, height);
+      expectValidationFailure(root, /dimensions|width|height/i);
+    },
+  );
+
+  it.each(['crc', 'truncated', 'trailing'])('rejects a PNG with %s data', (fault: string): void => {
+    const root: string = fixture();
+    const path: string = join(root, 'store', 'assets', 'small-promo-440x280.png');
+    const original: Buffer = readFileSync(path);
+    if (fault === 'crc') {
+      const corrupt: Buffer = Buffer.from(original);
+      corrupt[29] = (corrupt[29] ?? 0) ^ 1;
+      write(path, corrupt);
+    } else if (fault === 'truncated') {
+      write(path, original.subarray(0, original.length - 8));
+    } else {
+      write(path, Buffer.concat([original, Buffer.from('trailing')]));
+    }
+    expectValidationFailure(root, /PNG|CRC|trailing|truncated|asset/i);
+  });
+
+  it('rejects an asset path that escapes the project root', (): void => {
+    const root: string = fixture();
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      submission.icon128 = '../outside.png';
+    });
+    expectValidationFailure(root, /icon128|outside|relative|escape/i);
+  });
+
+  it('rejects a symbolic-link asset', (): void => {
+    const root: string = fixture();
+    const iconPath: string = join(root, 'assets', 'icons', 'idle-128.png');
+    const targetPath: string = join(root, 'outside.png');
+    writePng(targetPath, 128, 128);
+    rmSync(iconPath);
+    symlinkSync(targetPath, iconPath);
+    expectValidationFailure(root, /symbolic link|symlink/i);
+  });
+
+  it('rejects a hard-linked asset', (): void => {
+    const root: string = fixture();
+    const iconPath: string = join(root, 'assets', 'icons', 'idle-128.png');
+    const targetPath: string = join(root, 'outside.png');
+    rmSync(iconPath);
+    writePng(targetPath, 128, 128);
+    linkSync(targetPath, iconPath);
+    expectValidationFailure(root, /hard link/i);
+  });
+});
+
+describe('built manifest and transport policy', (): void => {
+  it('rejects a version mismatch', (): void => {
+    const root: string = fixture();
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      submission.version = '0.2.0';
+    });
+    expectValidationFailure(root, /version/i);
+  });
+
+  it('rejects a non-Chrome version before it reaches the ZIP path', (): void => {
+    const root: string = fixture();
+    mutateManifest(root, (manifest: Record<string, unknown>): void => {
+      manifest.version = '../outside';
+    });
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      submission.version = '../outside';
+    });
+    expectValidationFailure(root, /version.*numeric|Chrome.*version/i);
+  });
+
+  it('rejects a short-description mismatch', (): void => {
+    const root: string = fixture();
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      submission.shortDescription = 'Stale description';
+    });
+    expectValidationFailure(root, /shortDescription|description/i);
+  });
+
+  it('rejects an absent or wrong privacy URL', (): void => {
+    const root: string = fixture();
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      submission.privacyPolicyUrl = '';
+    });
+    expectValidationFailure(root, /privacyPolicyUrl|privacy/i);
+  });
+
+  it.each(['permissions', 'optionalHostPermissions'])(
+    'rejects a %s mismatch',
+    (field: string): void => {
+      const root: string = fixture();
+      mutateSubmission(root, (submission: Record<string, unknown>): void => {
+        submission[field] = [...(submission[field] as string[]), 'bookmarks'];
+      });
+      expectValidationFailure(root, new RegExp(field, 'i'));
+    },
+  );
+
+  it('rejects required all-sites host permissions', (): void => {
+    const root: string = fixture();
+    mutateManifest(root, (manifest: Record<string, unknown>): void => {
+      manifest.host_permissions = ['<all_urls>'];
+    });
+    expectValidationFailure(root, /required.*all-sites|host_permissions|optional/i);
+  });
+
+  it('rejects static content scripts with all-sites matches', (): void => {
+    const root: string = fixture();
+    mutateManifest(root, (manifest: Record<string, unknown>): void => {
+      manifest.content_scripts = [{ matches: ['http://*/*', 'https://*/*'], js: ['content.js'] }];
+    });
+    expectValidationFailure(root, /content_scripts|all-sites|optional/i);
+  });
+
+  it.each([
+    ['host_permissions', '<all_urls>'],
+    ['content_scripts', {}],
+    ['icons', []],
+  ])('rejects an invalid built manifest %s container', (field: string, value: unknown): void => {
+    const root: string = fixture();
+    mutateManifest(root, (manifest: Record<string, unknown>): void => {
+      manifest[field] = value;
+    });
+    expectValidationFailure(root, new RegExp(`${field}.*(array|object)`, 'i'));
+  });
+
+  it.each([
+    ['fetch', "fetch('https://example.com/data');"],
+    ['XMLHttpRequest', 'new XMLHttpRequest();'],
+    ['WebSocket', "new WebSocket('wss://example.com/socket');"],
+    ['EventSource', "new EventSource('https://example.com/events');"],
+    ['sendBeacon', "navigator.sendBeacon('https://example.com/data', 'x');"],
+  ])('rejects authored source transport %s', (identifier: string, source: string): void => {
+    const root: string = fixture();
+    write(join(root, 'src', 'transport.ts'), `${source}\n`);
+    expectValidationFailure(root, new RegExp(identifier, 'i'));
+  });
+
+  it.each([
+    ['fetch', "fetch('https://example.com/data');"],
+    ['XMLHttpRequest', 'new XMLHttpRequest();'],
+    ['WebSocket', "new WebSocket('wss://example.com/socket');"],
+    ['EventSource', "new EventSource('https://example.com/events');"],
+    ['sendBeacon', "navigator.sendBeacon('https://example.com/data', 'x');"],
+  ])('rejects shipped JavaScript transport %s', (identifier: string, source: string): void => {
+    const root: string = fixture();
+    write(join(root, 'dist', 'assets', 'transport.js'), `${source}\n`);
+    expectValidationFailure(root, new RegExp(identifier, 'i'));
+  });
+
+  it('rejects transport code in shipped inline scripts', (): void => {
+    const root: string = fixture();
+    write(
+      join(root, 'dist', 'src', 'popup', 'popup.html'),
+      '<!doctype html><html><body><script>navigator.sendBeacon("/data")</script></body></html>',
+    );
+    expectValidationFailure(root, /sendBeacon/i);
+  });
+
+  it('rejects computed access to a forbidden transport API', (): void => {
+    const root: string = fixture();
+    write(join(root, 'src', 'computed-transport.ts'), "globalThis['fetch']('/data');\n");
+    expectValidationFailure(root, /fetch/i);
+  });
+
+  it('rejects transport code after a string ending in an escaped backslash', (): void => {
+    const root: string = fixture();
+    write(join(root, 'src', 'escaped-string.ts'), "const slash = '\\\\'; fetch('/data');\n");
+    expectValidationFailure(root, /fetch/i);
+  });
+
+  it('rejects transport code inside a template interpolation', (): void => {
+    const root: string = fixture();
+    const source: string = ['const data = `', '$', "{fetch('/data')}`;\n"].join('');
+    write(join(root, 'src', 'template-transport.ts'), source);
+    expectValidationFailure(root, /fetch/i);
+  });
+
+  it('rejects transport code after a regular expression containing slashes', (): void => {
+    const root: string = fixture();
+    write(
+      join(root, 'src', 'regex-transport.ts'),
+      "const url = /https?:\\/\\//u; fetch('/data');\n",
+    );
+    expectValidationFailure(root, /fetch/i);
+  });
+
+  it('allows an exact observed transport allowlist entry', (): void => {
+    const root: string = fixture();
+    write(
+      join(root, 'src', 'reviewed-navigation.ts'),
+      "fetch('https://example.com/navigation');\n",
+    );
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      submission.transportAllowlist = [
+        {
+          file: 'src/reviewed-navigation.ts',
+          identifier: 'fetch',
+          justification: 'Reviewed browser navigation only',
+        },
+      ];
+    });
+    const result: ReturnType<typeof runValidator> = validate(root);
+    expect(result.status, output(result)).toBe(0);
+  });
+
+  it('rejects a stale transport allowlist entry', (): void => {
+    const root: string = fixture();
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      submission.transportAllowlist = [
+        {
+          file: 'src/background/index.ts',
+          identifier: 'fetch',
+          justification: 'No longer present',
+        },
+      ];
+    });
+    expectValidationFailure(root, /stale|not observed|transportAllowlist/i);
+  });
+
+  it('does not scan tests, scripts, Markdown, CSS, or harmless literals', (): void => {
+    const root: string = fixture();
+    const harmless: string =
+      "const labels = 'fetch XMLHttpRequest WebSocket EventSource sendBeacon https://example.com';\n";
+    write(join(root, 'src', 'labels.ts'), harmless);
+    write(join(root, 'src', 'template-labels.ts'), 'const labels = `fetch WebSocket`;\n');
+    write(
+      join(root, 'src', 'remote-code-copy.ts'),
+      "const example = \"import('https://example.com/app.js')\";\n// import('https://example.com/comment.js')\n",
+    );
+    write(join(root, 'tests', 'transport.test.ts'), "fetch('https://example.com');\n");
+    write(join(root, 'scripts', 'transport.mjs'), "fetch('https://example.com');\n");
+    write(join(root, 'README.md'), 'fetch XMLHttpRequest WebSocket EventSource sendBeacon\n');
+    write(
+      join(root, 'src', 'style.css'),
+      '/* fetch XMLHttpRequest WebSocket EventSource sendBeacon */\n',
+    );
+    const result: ReturnType<typeof runValidator> = validate(root);
+    expect(result.status, output(result)).toBe(0);
+  });
+
+  it.each(['manifest worker', 'remote script', 'dynamic import'])(
+    'rejects remote executable code in %s',
+    (kind: string): void => {
+      const root: string = fixture();
+      if (kind === 'manifest worker') {
+        mutateManifest(root, (manifest: Record<string, unknown>): void => {
+          manifest.background = { service_worker: 'https://example.com/worker.js' };
+        });
+      } else if (kind === 'remote script') {
+        write(
+          join(root, 'dist', 'src', 'popup', 'popup.html'),
+          '<!doctype html><html><body><script src="https://example.com/app.js"></script></body></html>',
+        );
+      } else {
+        write(join(root, 'dist', 'assets', 'popup.js'), "import('https://example.com/app.js');\n");
+      }
+      expectValidationFailure(root, /remote executable|remote code|https:\/\//i);
+    },
+  );
+});
+
+describe('dist tree and ZIP validation', (): void => {
+  it.each([
+    '.env',
+    'signing.pem',
+    'private.key',
+    'bundle.js.map',
+    'feature.test.js',
+    'feature.spec.js',
+  ])('rejects forbidden dist file %s', (name: string): void => {
+    const root: string = fixture();
+    write(join(root, 'dist', name), 'forbidden\n');
+    expectValidationFailure(root, /forbidden|secret|source map|test/i);
+  });
+
+  it('rejects Chrome Web Store listing assets copied into dist', (): void => {
+    const root: string = fixture();
+    write(join(root, 'dist', 'store', 'assets', 'small-promo-440x280.png'), 'listing asset');
+    expectValidationFailure(root, /forbidden|store asset|listing asset/i);
+  });
+
+  it('rejects a symbolic link in dist', (): void => {
+    const root: string = fixture();
+    write(join(root, 'outside.js'), 'outside\n');
+    symlinkSync(join(root, 'outside.js'), join(root, 'dist', 'linked.js'));
+    expectValidationFailure(root, /symbolic link|symlink/i);
+  });
+
+  it('rejects a hard link in dist', (): void => {
+    const root: string = fixture();
+    linkSync(join(root, 'dist', 'assets', 'background.js'), join(root, 'dist', 'linked.js'));
+    expectValidationFailure(root, /hard link/i);
+  });
+
+  it('rejects a symbolic-link ancestor in dist', (): void => {
+    const root: string = fixture();
+    const target: string = join(root, 'outside-assets');
+    write(join(target, 'outside.js'), 'outside\n');
+    rmSync(join(root, 'dist', 'assets'), { recursive: true });
+    symlinkSync(target, join(root, 'dist', 'assets'));
+    expectValidationFailure(root, /symbolic link|symlink|outside/i);
+  });
+
+  it('validates an exact regular-file ZIP inventory and matching package manifest', (): void => {
+    const root: string = fixture();
+    packageArchive(root, distArchiveEntries(root));
+    const result: ReturnType<typeof runValidator> = validate(root);
+    expect(result.status, output(result)).toBe(0);
+  });
+
+  it('rejects a package manifest that points at a missing ZIP', (): void => {
+    const root: string = fixture();
+    writeJson(join(root, 'release', 'package-manifest.json'), {
+      version: '0.1.0',
+      zipPath: 'release/focus-lock-0.1.0.zip',
+      sha256: '0'.repeat(64),
+    });
+    expectValidationFailure(root, /missing.*ZIP|focus-lock-0\.1\.0\.zip/i);
+  });
+
+  it('rejects a current-version ZIP without its package manifest', (): void => {
+    const root: string = fixture();
+    writeArchive(root, distArchiveEntries(root));
+    expectValidationFailure(root, /missing.*package manifest|package-manifest\.json/i);
+  });
+
+  it.each([
+    ['version', '0.2.0'],
+    ['zipPath', 'release/other.zip'],
+    ['sha256', '0'.repeat(64)],
+  ])('rejects a package manifest %s mismatch', (key: string, value: string): void => {
+    const root: string = fixture();
+    const zipPath: string = writeArchive(root, distArchiveEntries(root));
+    writePackageManifest(root, zipPath);
+    const packagePath: string = join(root, 'release', 'package-manifest.json');
+    const packageManifest: Record<string, unknown> = JSON.parse(
+      readFileSync(packagePath, 'utf8'),
+    ) as Record<string, unknown>;
+    packageManifest[key] = value;
+    writeJson(packagePath, packageManifest);
+    expectValidationFailure(root, new RegExp(key, 'i'));
+  });
+
+  it.each([
+    ['missing key', { version: '0.1.0', zipPath: 'release/focus-lock-0.1.0.zip' }],
+    [
+      'extra key',
+      {
+        version: '0.1.0',
+        zipPath: 'release/focus-lock-0.1.0.zip',
+        sha256: '0'.repeat(64),
+        size: 1,
+      },
+    ],
+  ])('rejects a package manifest with a %s', (_case: string, value: object): void => {
+    const root: string = fixture();
+    writeJson(join(root, 'release', 'package-manifest.json'), value);
+    expectValidationFailure(root, /package manifest|keys|sha256/i);
+  });
+
+  it.each([
+    [
+      'duplicate',
+      (entries: ArchiveEntryFixture[]): ArchiveEntryFixture[] => [
+        ...entries,
+        entries[0] as ArchiveEntryFixture,
+      ],
+    ],
+    [
+      'absolute',
+      (entries: ArchiveEntryFixture[]): ArchiveEntryFixture[] => [
+        { ...(entries[0] as ArchiveEntryFixture), name: '/manifest.json' },
+        ...entries.slice(1),
+      ],
+    ],
+    [
+      'dot-dot',
+      (entries: ArchiveEntryFixture[]): ArchiveEntryFixture[] => [
+        { ...(entries[0] as ArchiveEntryFixture), name: '../escape.js' },
+        ...entries.slice(1),
+      ],
+    ],
+    [
+      'backslash',
+      (entries: ArchiveEntryFixture[]): ArchiveEntryFixture[] => [
+        { ...(entries[0] as ArchiveEntryFixture), name: 'assets\\background.js' },
+        ...entries.slice(1),
+      ],
+    ],
+    [
+      'directory',
+      (entries: ArchiveEntryFixture[]): ArchiveEntryFixture[] => [
+        ...entries,
+        { name: 'empty/', mode: 0o040755 },
+      ],
+    ],
+    [
+      'symlink',
+      (entries: ArchiveEntryFixture[]): ArchiveEntryFixture[] => [
+        ...entries,
+        { name: 'linked.js', contents: 'target.js', mode: 0o120777 },
+      ],
+    ],
+    [
+      'non-regular',
+      (entries: ArchiveEntryFixture[]): ArchiveEntryFixture[] => [
+        ...entries,
+        { name: 'pipe', mode: 0o010644 },
+      ],
+    ],
+    [
+      'nested root',
+      (entries: ArchiveEntryFixture[]): ArchiveEntryFixture[] =>
+        entries.map(
+          (entry: ArchiveEntryFixture): ArchiveEntryFixture => ({
+            ...entry,
+            name: `dist/${entry.name}`,
+          }),
+        ),
+    ],
+    ['missing entry', (entries: ArchiveEntryFixture[]): ArchiveEntryFixture[] => entries.slice(1)],
+    [
+      'extra entry',
+      (entries: ArchiveEntryFixture[]): ArchiveEntryFixture[] => [
+        ...entries,
+        { name: 'store/assets/promo.png', contents: 'extra' },
+      ],
+    ],
+    [
+      'byte mismatch',
+      (entries: ArchiveEntryFixture[]): ArchiveEntryFixture[] =>
+        entries.map(
+          (entry: ArchiveEntryFixture, index: number): ArchiveEntryFixture =>
+            index === 0 ? { ...entry, contents: 'stale bytes' } : entry,
+        ),
+    ],
+  ])(
+    'rejects a ZIP with %s',
+    (_case: string, mutate: (entries: ArchiveEntryFixture[]) => ArchiveEntryFixture[]): void => {
+      const root: string = fixture();
+      packageArchive(root, mutate(distArchiveEntries(root)));
+      expectValidationFailure(root, /ZIP|archive|entry|inventory|regular|match|unsafe|invalid/i);
+    },
+  );
+
+  it('rejects an oversized ZIP entry before extraction', (): void => {
+    const root: string = fixture();
+    const entries: ArchiveEntryFixture[] = distArchiveEntries(root);
+    entries[0] = {
+      ...(entries[0] as ArchiveEntryFixture),
+      contents: 'x',
+      declaredUncompressedSize: 17 * 1024 * 1024,
+    };
+    packageArchive(root, entries);
+    expectValidationFailure(root, /size|large|limit|ZIP/i);
+  });
+
+  it('rejects a suspicious ZIP compression ratio', (): void => {
+    const root: string = fixture();
+    const entries: ArchiveEntryFixture[] = distArchiveEntries(root);
+    entries[0] = {
+      ...(entries[0] as ArchiveEntryFixture),
+      contents: Buffer.alloc(2 * 1024 * 1024),
+      compress: true,
+    };
+    packageArchive(root, entries);
+    expectValidationFailure(root, /compression|ratio|ZIP/i);
+  });
+
+  it('rejects a ZIP entry with a mismatched CRC-32 checksum', (): void => {
+    const root: string = fixture();
+    const entries: ArchiveEntryFixture[] = distArchiveEntries(root);
+    entries[0] = {
+      ...(entries[0] as ArchiveEntryFixture),
+      declaredCrc32: 0,
+    };
+    packageArchive(root, entries);
+    expectValidationFailure(root, /CRC|checksum|ZIP/i);
+  });
+});
+
+describe('package creation and repository integration', (): void => {
+  it('rejects unknown CLI arguments', (): void => {
+    expectValidationFailure(fixture(), /unknown.*argument|usage/i, ['--output', 'release.zip']);
+  });
+
+  it('creates byte-reproducible validated ZIPs and exact package metadata', (): void => {
+    const root: string = fixture();
+    const first: ReturnType<typeof runValidator> = runValidator(SCRIPT_PATH, root, ['--zip'], {
+      TZ: 'UTC',
+    });
+    expect(first.status, output(first)).toBe(0);
+    const zipPath: string = join(root, 'release', 'focus-lock-0.1.0.zip');
+    const firstZip: Buffer = readFileSync(zipPath);
+    const firstHash: string = createHash('sha256').update(firstZip).digest('hex');
+
+    const second: ReturnType<typeof runValidator> = runValidator(SCRIPT_PATH, root, ['--zip'], {
+      TZ: 'America/Los_Angeles',
+    });
+    expect(second.status, output(second)).toBe(0);
+    const secondZip: Buffer = readFileSync(zipPath);
+    const secondHash: string = createHash('sha256').update(secondZip).digest('hex');
+    expect(secondZip).toEqual(firstZip);
+    expect(secondHash).toBe(firstHash);
+    expect(
+      JSON.parse(readFileSync(join(root, 'release', 'package-manifest.json'), 'utf8')),
+    ).toEqual({
+      version: '0.1.0',
+      zipPath: 'release/focus-lock-0.1.0.zip',
+      sha256: firstHash,
+    });
+  });
+
+  it('defines exact package scripts, release ignore, and Vite polyfill configuration', (): void => {
+    const packageJson: Record<string, unknown> = JSON.parse(
+      readFileSync(resolve('package.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    const scripts: Record<string, unknown> = packageJson.scripts as Record<string, unknown>;
+    expect(scripts['store:validate']).toBe('node scripts/validate-store-package.mjs');
+    expect(scripts['store:package']).toBe(
+      'npm run build && node scripts/validate-store-package.mjs --zip',
+    );
+    expect(readFileSync(resolve('.gitignore'), 'utf8').split(/\r?\n/u)).toContain('release/');
+    expect(readFileSync(resolve('vite.config.ts'), 'utf8')).toMatch(
+      /modulePreload:\s*\{\s*polyfill:\s*false\s*\}/u,
+    );
+  });
+
+  it('keeps the repository submission transport allowlist empty', (): void => {
+    expect(validSubmissionManifest().transportAllowlist).toEqual([]);
+    const actual: Record<string, unknown> = JSON.parse(
+      readFileSync(resolve('store/submission-manifest.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    expect(actual.transportAllowlist).toEqual([]);
+  });
+});

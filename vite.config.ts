@@ -6,6 +6,7 @@ import manifest from './manifest.config';
 export default defineConfig({
   plugins: [preact(), crx({ manifest })],
   build: {
+    modulePreload: { polyfill: false },
     rollupOptions: {
       // Pages that are not manifest entries: CRXJS only emits manifest
       // targets, so the stats tab and the offscreen audio document are
