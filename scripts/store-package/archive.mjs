@@ -21,23 +21,47 @@ const MAX_ARCHIVE_TOTAL_SIZE = 64 * 1024 * 1024;
 const MAX_COMPRESSION_RATIO = 200;
 const FIXED_ARCHIVE_MTIME = new Date(2000, 0, 1, 0, 0, 0, 0);
 const REGULAR_FILE_MODE = 0o100644;
+const FIXED_DOS_DATE = ((2000 - 1980) << 9) | (1 << 5) | 1;
+const FIXED_DOS_TIME = 0;
+const UTF8_FILE_NAME_FLAG = 0x0800;
+const DEFLATE_COMPRESSION_METHOD = 8;
 
 function validateArchiveEntryName(fileName) {
   validateRelativePath(fileName, 'ZIP entry');
   assert(!/^[a-z]:/iu.test(fileName), `ZIP entry has an absolute drive path: ${fileName}`);
 }
 
-function archiveEntryMode(entry) {
-  return (entry.externalFileAttributes >>> 16) & 0xffff;
-}
-
 function validateArchiveEntryMetadata(entry, seen, totals) {
   validateArchiveEntryName(entry.fileName);
   assert(!seen.has(entry.fileName), `Duplicate ZIP entry: ${entry.fileName}`);
+  const previousFileName = [...seen].at(-1);
+  assert(
+    previousFileName === undefined || previousFileName < entry.fileName,
+    `ZIP entry order must be sorted: ${entry.fileName} follows ${previousFileName}`,
+  );
   seen.add(entry.fileName);
   assert(!entry.fileName.endsWith('/'), `ZIP directories are forbidden: ${entry.fileName}`);
-  const mode = archiveEntryMode(entry);
-  assert((mode & 0o170000) === 0o100000, `ZIP entry is not a regular file: ${entry.fileName}`);
+  assert(
+    entry.externalFileAttributes === (REGULAR_FILE_MODE << 16) >>> 0,
+    `ZIP entry mode must be exactly 100644: ${entry.fileName}`,
+  );
+  assert(
+    entry.generalPurposeBitFlag === UTF8_FILE_NAME_FLAG,
+    `ZIP entry has non-generator general-purpose flags: ${entry.fileName}`,
+  );
+  assert(
+    entry.compressionMethod === DEFLATE_COMPRESSION_METHOD,
+    `ZIP entry must use the generator compression method: ${entry.fileName}`,
+  );
+  assert(
+    entry.lastModFileDate === FIXED_DOS_DATE && entry.lastModFileTime === FIXED_DOS_TIME,
+    `ZIP entry must use the fixed generator timestamp: ${entry.fileName}`,
+  );
+  assert(
+    entry.extraFieldRaw.length === 0,
+    `ZIP entry extra fields are forbidden: ${entry.fileName}`,
+  );
+  assert(entry.fileCommentRaw.length === 0, `ZIP entry comments are forbidden: ${entry.fileName}`);
   assert(!entry.isEncrypted(), `Encrypted ZIP entry is forbidden: ${entry.fileName}`);
   assert(
     entry.uncompressedSize <= MAX_ARCHIVE_ENTRY_SIZE,
@@ -57,7 +81,47 @@ function validateArchiveEntryMetadata(entry, seen, totals) {
   }
 }
 
-function readArchiveEntry(zipFile, entry) {
+function readLocalFileHeader(zipFile, entry) {
+  return new Promise((resolveHeader, rejectHeader) => {
+    zipFile.readLocalFileHeader(entry, { minimal: false }, (error, header) => {
+      if (error !== null) rejectHeader(error);
+      else resolveHeader(header);
+    });
+  });
+}
+
+function validateLocalFileHeader(header, entry) {
+  assert(
+    header.fileName.equals(entry.fileNameRaw),
+    `ZIP local file name does not match its directory entry: ${entry.fileName}`,
+  );
+  assert(
+    header.generalPurposeBitFlag === UTF8_FILE_NAME_FLAG,
+    `ZIP local header has non-generator general-purpose flags: ${entry.fileName}`,
+  );
+  assert(
+    header.compressionMethod === DEFLATE_COMPRESSION_METHOD,
+    `ZIP local header must use the generator compression method: ${entry.fileName}`,
+  );
+  assert(
+    header.lastModFileDate === FIXED_DOS_DATE && header.lastModFileTime === FIXED_DOS_TIME,
+    `ZIP local header must use the fixed generator timestamp: ${entry.fileName}`,
+  );
+  assert(
+    header.extraField.length === 0,
+    `ZIP local header extra fields are forbidden: ${entry.fileName}`,
+  );
+  assert(header.crc32 === entry.crc32, `ZIP local header CRC-32 mismatch: ${entry.fileName}`);
+  assert(
+    header.compressedSize === entry.compressedSize &&
+      header.uncompressedSize === entry.uncompressedSize,
+    `ZIP local header size mismatch: ${entry.fileName}`,
+  );
+}
+
+async function readArchiveEntry(zipFile, entry) {
+  const localHeader = await readLocalFileHeader(zipFile, entry);
+  validateLocalFileHeader(localHeader, entry);
   return new Promise((resolveEntry, rejectEntry) => {
     zipFile.openReadStream(entry, (error, stream) => {
       if (error !== null) {

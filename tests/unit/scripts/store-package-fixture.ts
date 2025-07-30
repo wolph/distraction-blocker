@@ -47,6 +47,12 @@ export interface ArchiveEntryFixture {
   contents?: Buffer | string;
   mode?: number;
   compress?: boolean;
+  generalPurposeBitFlag?: number;
+  lastModFileTime?: number;
+  lastModFileDate?: number;
+  localExtra?: Buffer;
+  centralExtra?: Buffer;
+  fileComment?: Buffer | string;
   declaredCrc32?: number;
   declaredUncompressedSize?: number;
 }
@@ -170,7 +176,7 @@ function crc32(buffer: Buffer): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function dosDate(): number {
+function fixedDosDate(): number {
   return ((2000 - 1980) << 9) | (1 << 5) | 1;
 }
 
@@ -184,49 +190,58 @@ export function archiveBuffer(entries: ArchiveEntryFixture[]): Buffer {
     const uncompressed: Buffer = Buffer.isBuffer(entry.contents)
       ? entry.contents
       : Buffer.from(entry.contents ?? '');
-    const compressed: Buffer = entry.compress
+    const shouldCompress: boolean = entry.compress ?? true;
+    const compressed: Buffer = shouldCompress
       ? deflateRawSync(uncompressed, { level: 9 })
       : uncompressed;
-    const compressionMethod: number = entry.compress ? 8 : 0;
+    const compressionMethod: number = shouldCompress ? 8 : 0;
     const checksum: number = entry.declaredCrc32 ?? crc32(uncompressed);
     const mode: number = entry.mode ?? 0o100644;
     const declaredUncompressedSize: number = entry.declaredUncompressedSize ?? uncompressed.length;
+    const generalPurposeBitFlag: number = entry.generalPurposeBitFlag ?? 0x0800;
+    const lastModFileTime: number = entry.lastModFileTime ?? 0;
+    const lastModFileDate: number = entry.lastModFileDate ?? fixedDosDate();
+    const localExtra: Buffer = entry.localExtra ?? Buffer.alloc(0);
+    const centralExtra: Buffer = entry.centralExtra ?? Buffer.alloc(0);
+    const fileComment: Buffer = Buffer.isBuffer(entry.fileComment)
+      ? entry.fileComment
+      : Buffer.from(entry.fileComment ?? '', 'utf8');
 
     const localHeader: Buffer = Buffer.alloc(30);
     localHeader.writeUInt32LE(0x04034b50, 0);
     localHeader.writeUInt16LE(20, 4);
-    localHeader.writeUInt16LE(0x0800, 6);
+    localHeader.writeUInt16LE(generalPurposeBitFlag, 6);
     localHeader.writeUInt16LE(compressionMethod, 8);
-    localHeader.writeUInt16LE(0, 10);
-    localHeader.writeUInt16LE(dosDate(), 12);
+    localHeader.writeUInt16LE(lastModFileTime, 10);
+    localHeader.writeUInt16LE(lastModFileDate, 12);
     localHeader.writeUInt32LE(checksum, 14);
     localHeader.writeUInt32LE(compressed.length, 18);
     localHeader.writeUInt32LE(declaredUncompressedSize, 22);
     localHeader.writeUInt16LE(name.length, 26);
-    localHeader.writeUInt16LE(0, 28);
-    localParts.push(localHeader, name, compressed);
+    localHeader.writeUInt16LE(localExtra.length, 28);
+    localParts.push(localHeader, name, localExtra, compressed);
 
     const centralHeader: Buffer = Buffer.alloc(46);
     centralHeader.writeUInt32LE(0x02014b50, 0);
     centralHeader.writeUInt16LE(0x0314, 4);
     centralHeader.writeUInt16LE(20, 6);
-    centralHeader.writeUInt16LE(0x0800, 8);
+    centralHeader.writeUInt16LE(generalPurposeBitFlag, 8);
     centralHeader.writeUInt16LE(compressionMethod, 10);
-    centralHeader.writeUInt16LE(0, 12);
-    centralHeader.writeUInt16LE(dosDate(), 14);
+    centralHeader.writeUInt16LE(lastModFileTime, 12);
+    centralHeader.writeUInt16LE(lastModFileDate, 14);
     centralHeader.writeUInt32LE(checksum, 16);
     centralHeader.writeUInt32LE(compressed.length, 20);
     centralHeader.writeUInt32LE(declaredUncompressedSize, 24);
     centralHeader.writeUInt16LE(name.length, 28);
-    centralHeader.writeUInt16LE(0, 30);
-    centralHeader.writeUInt16LE(0, 32);
+    centralHeader.writeUInt16LE(centralExtra.length, 30);
+    centralHeader.writeUInt16LE(fileComment.length, 32);
     centralHeader.writeUInt16LE(0, 34);
     centralHeader.writeUInt16LE(0, 36);
     centralHeader.writeUInt32LE((mode << 16) >>> 0, 38);
     centralHeader.writeUInt32LE(localOffset, 42);
-    centralParts.push(centralHeader, name);
+    centralParts.push(centralHeader, name, centralExtra, fileComment);
 
-    localOffset += localHeader.length + name.length + compressed.length;
+    localOffset += localHeader.length + name.length + localExtra.length + compressed.length;
   }
 
   const centralDirectory: Buffer = Buffer.concat(centralParts);

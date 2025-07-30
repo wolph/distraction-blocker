@@ -16,6 +16,7 @@ const TRANSPORT_IDENTIFIERS = new Set([
   'EventSource',
   'sendBeacon',
 ]);
+const COMPUTED_TRANSPORT_RECEIVERS = new Set(['globalThis', 'window', 'self', 'navigator']);
 const SOURCE_EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.jsx', '.mjs', '.ts', '.tsx']);
 const SHIPPED_EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.htm', '.html', '.js', '.mjs']);
 
@@ -42,7 +43,7 @@ export function validateTransportAllowlist(value) {
 }
 
 function remoteUrl(value) {
-  return typeof value === 'string' && /^(https?|wss?):\/\//iu.test(value);
+  return typeof value === 'string' && /^(?:(?:https?|wss?):)?\/\//iu.test(value);
 }
 
 function isEscaped(characters, index) {
@@ -95,7 +96,7 @@ function maskCodeCharacter(context, index) {
   else if (character === '"') startQuotedRegion(context, index, 'double-quote');
   else if (character === '`') {
     context.output[index] = ' ';
-    context.templates.push({ start: index, interpolated: false });
+    context.templates.push({ start: index });
     context.state = 'template';
   } else if (context.interpolations.length > 0 && character === '{') {
     context.interpolations[context.interpolations.length - 1].depth += 1;
@@ -138,7 +139,6 @@ function maskNonCodeCharacter(context, index) {
     !isEscaped(context.characters, index)
   ) {
     context.output[index + 1] = ' ';
-    context.templates[context.templates.length - 1].interpolated = true;
     context.interpolations.push({ depth: 0 });
     context.state = 'code';
     return index + 1;
@@ -154,7 +154,7 @@ function maskNonCodeCharacter(context, index) {
     !isEscaped(context.characters, index)
   ) {
     const template = context.templates.pop();
-    if (context.retainRemoteUrls && !template.interpolated) {
+    if (context.retainRemoteUrls) {
       retainRemoteUrlMarker(context.output, context.characters, template.start, index);
     }
     context.state = 'code';
@@ -183,9 +183,9 @@ function maskedJavaScript(source, retainRemoteUrls) {
 
 function retainRemoteUrlMarker(output, characters, start, end) {
   const contents = characters.slice(start + 1, end).join('');
-  if (!/^(https?|wss?):\/\//iu.test(contents)) return;
+  if (!/^(?:(?:https?|wss?):)?\/\//iu.test(contents)) return;
   const marker = 'REMOTE';
-  for (let offset = 0; offset < marker.length && start + offset <= end; offset += 1) {
+  for (let offset = 0; offset < marker.length; offset += 1) {
     output[start + offset] = marker[offset];
   }
 }
@@ -196,13 +196,19 @@ function retainTransportPropertyMarker(output, characters, start, end) {
   let previous = start - 1;
   while (previous >= 0 && /\s/u.test(characters[previous])) previous -= 1;
   if (characters[previous] !== '[') return;
+  previous -= 1;
+  while (previous >= 0 && /\s/u.test(characters[previous])) previous -= 1;
+  const receiverEnd = previous + 1;
+  while (previous >= 0 && /[$A-Z_a-z0-9]/u.test(characters[previous])) previous -= 1;
+  const receiver = characters.slice(previous + 1, receiverEnd).join('');
+  if (!COMPUTED_TRANSPORT_RECEIVERS.has(receiver)) return;
   for (let offset = 0; offset < contents.length; offset += 1) {
     output[start + offset] = contents[offset];
   }
 }
 
 function containsRemoteExecutableCode(source) {
-  return /(?:\bimport\s*(?:\(|[^;\n]*?\bfrom\s*)|\bexport[^;\n]*?\bfrom\s*|\bimportScripts\s*\(|\bnew\s+(?:Shared)?Worker\s*\()\s*REMOTE\b/iu.test(
+  return /(?:\bimport\s*(?:\(\s*|[^;\n]*?\bfrom\s*)?|\bexport[^;\n]*?\bfrom\s*|\bimportScripts\s*\(|\bnew\s+(?:Shared)?Worker\s*\()\s*REMOTE\b/iu.test(
     maskedJavaScript(source, true),
   );
 }

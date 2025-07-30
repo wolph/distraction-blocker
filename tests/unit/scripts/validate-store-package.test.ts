@@ -356,10 +356,20 @@ describe('built manifest and transport policy', (): void => {
     expectValidationFailure(root, /sendBeacon/i);
   });
 
-  it('rejects computed access to a forbidden transport API', (): void => {
+  it.each(['globalThis', 'window', 'self'])(
+    'rejects %s computed access to a forbidden transport API',
+    (receiver: string): void => {
+      const root: string = fixture();
+      write(join(root, 'src', 'computed-transport.ts'), `${receiver}['fetch']('/data');\n`);
+      expectValidationFailure(root, /fetch/i);
+    },
+  );
+
+  it('allows a harmless computed transport label', (): void => {
     const root: string = fixture();
-    write(join(root, 'src', 'computed-transport.ts'), "globalThis['fetch']('/data');\n");
-    expectValidationFailure(root, /fetch/i);
+    write(join(root, 'src', 'labels.ts'), "const label = labels['fetch'];\n");
+    const result: ReturnType<typeof runValidator> = validate(root);
+    expect(result.status, output(result)).toBe(0);
   });
 
   it('rejects transport code after a string ending in an escaped backslash', (): void => {
@@ -457,6 +467,31 @@ describe('built manifest and transport policy', (): void => {
       expectValidationFailure(root, /remote executable|remote code|https:\/\//i);
     },
   );
+
+  it('rejects a bare static HTTPS import', (): void => {
+    const root: string = fixture();
+    write(join(root, 'dist', 'assets', 'remote.js'), "import 'https://example.com/app.js';\n");
+    expectValidationFailure(root, /remote executable|remote code|https:\/\//i);
+  });
+
+  it('rejects an interpolated remote dynamic import', (): void => {
+    const root: string = fixture();
+    const source: string = [
+      "const host = 'example.com'; import(`https://",
+      '$',
+      '{host}/app.js`);\n',
+    ].join('');
+    write(join(root, 'dist', 'assets', 'remote.js'), source);
+    expectValidationFailure(root, /remote executable|remote code|https:\/\//i);
+  });
+
+  it('rejects a protocol-relative remote executable URL', (): void => {
+    const root: string = fixture();
+    mutateManifest(root, (manifest: Record<string, unknown>): void => {
+      manifest.background = { service_worker: '//example.com/worker.js' };
+    });
+    expectValidationFailure(root, /remote executable|remote code|example\.com/i);
+  });
 });
 
 describe('dist tree and ZIP validation', (): void => {
@@ -523,6 +558,41 @@ describe('dist tree and ZIP validation', (): void => {
     writeArchive(root, distArchiveEntries(root));
     expectValidationFailure(root, /missing.*package manifest|package-manifest\.json/i);
   });
+
+  it('rejects a ZIP whose entries are not sorted', (): void => {
+    const root: string = fixture();
+    packageArchive(root, distArchiveEntries(root).reverse());
+    expectValidationFailure(root, /ZIP.*order|sorted/i);
+  });
+
+  it('rejects a ZIP entry without the fixed 100644 mode', (): void => {
+    const root: string = fixture();
+    const entries: ArchiveEntryFixture[] = distArchiveEntries(root);
+    entries[0] = { ...(entries[0] as ArchiveEntryFixture), mode: 0o100600 };
+    packageArchive(root, entries);
+    expectValidationFailure(root, /ZIP.*mode|100644/i);
+  });
+
+  it.each([
+    ['timestamp', { lastModFileDate: ((2001 - 1980) << 9) | (1 << 5) | 1 }],
+    ['compression method', { compress: false }],
+    ['general-purpose flags', { generalPurposeBitFlag: 0 }],
+    ['local extra field', { localExtra: Buffer.from([0xfe, 0xca, 0, 0]) }],
+    ['central extra field', { centralExtra: Buffer.from([0xfe, 0xca, 0, 0]) }],
+    ['file comment', { fileComment: 'comment' }],
+  ])(
+    'rejects a ZIP entry with non-generator %s metadata',
+    (_case: string, mutation: Partial<ArchiveEntryFixture>): void => {
+      const root: string = fixture();
+      const entries: ArchiveEntryFixture[] = distArchiveEntries(root);
+      entries[0] = { ...(entries[0] as ArchiveEntryFixture), ...mutation };
+      packageArchive(root, entries);
+      expectValidationFailure(
+        root,
+        /ZIP.*(timestamp|compression|flag|extra|comment|metadata)|deterministic/i,
+      );
+    },
+  );
 
   it.each([
     ['version', '0.2.0'],
