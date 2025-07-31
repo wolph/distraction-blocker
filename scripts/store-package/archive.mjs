@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { crc32 as calculateCrc32 } from 'node:zlib';
 import yauzl from 'yauzl';
@@ -8,7 +7,9 @@ import yazl from 'yazl';
 import {
   assert,
   assertString,
+  ensureOutputDirectory,
   objectKeysAre,
+  prepareOutputFile,
   readJson,
   readRequiredFile,
   sha256,
@@ -18,6 +19,7 @@ import {
 const MAX_ARCHIVE_ENTRIES = 5_000;
 const MAX_ARCHIVE_ENTRY_SIZE = 16 * 1024 * 1024;
 const MAX_ARCHIVE_TOTAL_SIZE = 64 * 1024 * 1024;
+const MAX_ARCHIVE_COMPRESSED_SIZE = 64 * 1024 * 1024;
 const MAX_COMPRESSION_RATIO = 200;
 const FIXED_ARCHIVE_MTIME = new Date(2000, 0, 1, 0, 0, 0, 0);
 const REGULAR_FILE_MODE = 0o100644;
@@ -250,7 +252,12 @@ export async function validatePackageManifest(rootDirectory, manifest, distFiles
     /^[0-9a-f]{64}$/u.test(packageManifest.sha256),
     'Package manifest sha256 must be lowercase hex',
   );
-  const zip = readRequiredFile(rootDirectory, packageManifest.zipPath, 'ZIP archive');
+  const zip = readRequiredFile(
+    rootDirectory,
+    packageManifest.zipPath,
+    'ZIP archive',
+    MAX_ARCHIVE_COMPRESSED_SIZE,
+  );
   assert(sha256(zip) === packageManifest.sha256, 'Package manifest sha256 mismatch');
   await inspectAndCompareArchive(zip, distFiles);
 }
@@ -290,11 +297,15 @@ function packageManifestBuffer(version, zipPath, checksum) {
 }
 
 export async function createReleasePackage(rootDirectory, manifest, distFiles) {
-  const releaseDirectory = join(rootDirectory, 'release');
-  mkdirSync(releaseDirectory, { recursive: true });
+  ensureOutputDirectory(rootDirectory, 'release');
   const zipName = `focus-lock-${manifest.version}.zip`;
   const zipRelativePath = `release/${zipName}`;
-  const zipPath = join(releaseDirectory, zipName);
+  const zipPath = prepareOutputFile(rootDirectory, zipRelativePath, 'ZIP output');
+  const packageManifestPath = prepareOutputFile(
+    rootDirectory,
+    'release/package-manifest.json',
+    'package manifest output',
+  );
   const temporaryZipPath = `${zipPath}.tmp-${process.pid}-${randomUUID()}`;
   try {
     const archive = await createArchive(distFiles);
@@ -304,7 +315,7 @@ export async function createReleasePackage(rootDirectory, manifest, distFiles) {
     renameSync(temporaryZipPath, zipPath);
     const checksum = sha256(inspectedArchive);
     writeAtomically(
-      join(releaseDirectory, 'package-manifest.json'),
+      packageManifestPath,
       packageManifestBuffer(manifest.version, zipRelativePath, checksum),
     );
     return { zipRelativePath, checksum };

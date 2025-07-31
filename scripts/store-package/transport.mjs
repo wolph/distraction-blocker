@@ -1,13 +1,8 @@
 import { existsSync } from 'node:fs';
 import { extname, join } from 'node:path';
+import { parse } from '@babel/parser';
 import { JSDOM } from 'jsdom';
-import {
-  assert,
-  assertString,
-  objectKeysAre,
-  validateRelativePath,
-  walkRegularFiles,
-} from './files.mjs';
+import { assert, walkRegularFiles } from './files.mjs';
 
 const TRANSPORT_IDENTIFIERS = new Set([
   'fetch',
@@ -17,29 +12,16 @@ const TRANSPORT_IDENTIFIERS = new Set([
   'sendBeacon',
 ]);
 const COMPUTED_TRANSPORT_RECEIVERS = new Set(['globalThis', 'window', 'self', 'navigator']);
+const REMOTE_WORKER_CONSTRUCTORS = new Set(['Worker', 'SharedWorker']);
 const SOURCE_EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.jsx', '.mjs', '.ts', '.tsx']);
 const SHIPPED_EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.htm', '.html', '.js', '.mjs']);
 
 export function validateTransportAllowlist(value) {
   assert(Array.isArray(value), 'transportAllowlist must be an array');
-  const seen = new Set();
-  for (const entry of value) {
-    objectKeysAre(entry, ['file', 'identifier', 'justification'], [], 'transportAllowlist entry');
-    validateRelativePath(entry.file, 'transportAllowlist file');
-    assert(
-      entry.file.startsWith('src/') || entry.file.startsWith('dist/'),
-      `transportAllowlist file must be in src or dist: ${entry.file}`,
-    );
-    assert(
-      TRANSPORT_IDENTIFIERS.has(entry.identifier),
-      `transportAllowlist identifier is invalid: ${entry.identifier}`,
-    );
-    assertString(entry.justification, 'transportAllowlist justification');
-    const key = `${entry.file}:${entry.identifier}`;
-    assert(!seen.has(key), `Duplicate transportAllowlist entry: ${key}`);
-    seen.add(key);
-  }
-  return seen;
+  assert(
+    value.length === 0,
+    'transportAllowlist must remain empty because product-data transport is forbidden',
+  );
 }
 
 function remoteUrl(value) {
@@ -96,7 +78,6 @@ function maskCodeCharacter(context, index) {
   else if (character === '"') startQuotedRegion(context, index, 'double-quote');
   else if (character === '`') {
     context.output[index] = ' ';
-    context.templates.push({ start: index });
     context.state = 'template';
   } else if (context.interpolations.length > 0 && character === '{') {
     context.interpolations[context.interpolations.length - 1].depth += 1;
@@ -113,11 +94,7 @@ function maskCodeCharacter(context, index) {
 }
 
 function closeQuotedRegion(context, index) {
-  if (context.retainRemoteUrls) {
-    retainRemoteUrlMarker(context.output, context.characters, context.stringStart, index);
-  } else {
-    retainTransportPropertyMarker(context.output, context.characters, context.stringStart, index);
-  }
+  retainTransportPropertyMarker(context.output, context.characters, context.stringStart, index);
   context.stringStart = -1;
   context.state = 'code';
 }
@@ -153,24 +130,18 @@ function maskNonCodeCharacter(context, index) {
     character === '`' &&
     !isEscaped(context.characters, index)
   ) {
-    const template = context.templates.pop();
-    if (context.retainRemoteUrls) {
-      retainRemoteUrlMarker(context.output, context.characters, template.start, index);
-    }
     context.state = 'code';
   }
   return index;
 }
 
-function maskedJavaScript(source, retainRemoteUrls) {
+function maskedJavaScript(source) {
   const context = {
     characters: [...source],
     output: [...source],
     state: 'code',
     stringStart: -1,
-    templates: [],
     interpolations: [],
-    retainRemoteUrls,
   };
   for (let index = 0; index < context.characters.length; index += 1) {
     index =
@@ -179,15 +150,6 @@ function maskedJavaScript(source, retainRemoteUrls) {
         : maskNonCodeCharacter(context, index);
   }
   return context.output.join('');
-}
-
-function retainRemoteUrlMarker(output, characters, start, end) {
-  const contents = characters.slice(start + 1, end).join('');
-  if (!/^(?:(?:https?|wss?):)?\/\//iu.test(contents)) return;
-  const marker = 'REMOTE';
-  for (let offset = 0; offset < marker.length; offset += 1) {
-    output[start + offset] = marker[offset];
-  }
 }
 
 function retainTransportPropertyMarker(output, characters, start, end) {
@@ -207,18 +169,131 @@ function retainTransportPropertyMarker(output, characters, start, end) {
   }
 }
 
-function containsRemoteExecutableCode(source) {
-  return /(?:\bimport\s*(?:\(\s*|[^;\n]*?\bfrom\s*)?|\bexport[^;\n]*?\bfrom\s*|\bimportScripts\s*\(|\bnew\s+(?:Shared)?Worker\s*\()\s*REMOTE\b/iu.test(
-    maskedJavaScript(source, true),
-  );
+function parserPlugins(filePath) {
+  const extension = extname(filePath).toLowerCase();
+  if (extension === '.tsx') return ['typescript', 'jsx'];
+  if (extension === '.ts') return ['typescript'];
+  if (extension === '.jsx') return ['jsx'];
+  return [];
+}
+
+function parseExecutableSource(source, filePath) {
+  try {
+    return parse(source, {
+      sourceType: 'unambiguous',
+      sourceFilename: filePath,
+      plugins: parserPlugins(filePath),
+    }).program;
+  } catch (error) {
+    throw new Error(
+      `Could not inspect executable source ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function visitAst(node, visitor) {
+  visitor(node);
+  for (const value of Object.values(node)) {
+    if (Array.isArray(value)) {
+      for (const child of value) {
+        if (child !== null && typeof child === 'object' && typeof child.type === 'string') {
+          visitAst(child, visitor);
+        }
+      }
+    } else if (value !== null && typeof value === 'object' && typeof value.type === 'string') {
+      visitAst(value, visitor);
+    }
+  }
+}
+
+function unwrapExpression(node) {
+  let current = node;
+  while (
+    ['TSAsExpression', 'TSSatisfiesExpression', 'TSTypeAssertion', 'TSNonNullExpression'].includes(
+      current?.type,
+    )
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function remoteReference(node, remoteConstants) {
+  const expression = unwrapExpression(node);
+  if (expression?.type === 'StringLiteral' && remoteUrl(expression.value)) return expression.value;
+  if (expression?.type === 'TemplateLiteral') {
+    const prefix = expression.quasis[0]?.value?.cooked ?? expression.quasis[0]?.value?.raw;
+    if (remoteUrl(prefix)) return prefix;
+  }
+  if (expression?.type === 'Identifier' && remoteConstants.has(expression.name)) {
+    return expression.name;
+  }
+  return null;
+}
+
+function collectRemoteConstants(program) {
+  const initializers = new Map();
+  visitAst(program, (node) => {
+    if (node.type !== 'VariableDeclaration' || node.kind !== 'const') return;
+    for (const declaration of node.declarations) {
+      if (declaration.id?.type === 'Identifier' && declaration.init !== null) {
+        initializers.set(declaration.id.name, declaration.init);
+      }
+    }
+  });
+  const remoteConstants = new Set();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [name, initializer] of initializers) {
+      if (remoteConstants.has(name) || remoteReference(initializer, remoteConstants) === null)
+        continue;
+      remoteConstants.add(name);
+      changed = true;
+    }
+  }
+  return remoteConstants;
+}
+
+function remoteExecutableReference(node, remoteConstants) {
+  if (['ImportDeclaration', 'ExportNamedDeclaration', 'ExportAllDeclaration'].includes(node.type)) {
+    return remoteReference(node.source, remoteConstants);
+  }
+  if (node.type === 'ImportExpression') return remoteReference(node.source, remoteConstants);
+  if (
+    node.type === 'CallExpression' &&
+    (node.callee?.type === 'Import' ||
+      (node.callee?.type === 'Identifier' && node.callee.name === 'importScripts'))
+  ) {
+    return remoteReference(node.arguments[0], remoteConstants);
+  }
+  if (
+    node.type === 'NewExpression' &&
+    node.callee?.type === 'Identifier' &&
+    REMOTE_WORKER_CONSTRUCTORS.has(node.callee.name)
+  ) {
+    return remoteReference(node.arguments[0], remoteConstants);
+  }
+  return null;
+}
+
+function findRemoteExecutableReference(source, filePath) {
+  const program = parseExecutableSource(source, filePath);
+  const remoteConstants = collectRemoteConstants(program);
+  let reference = null;
+  visitAst(program, (node) => {
+    if (reference === null) reference = remoteExecutableReference(node, remoteConstants);
+  });
+  return reference;
 }
 
 function inspectJavaScript(source, filePath) {
+  const remoteReference = findRemoteExecutableReference(source, filePath);
   assert(
-    !containsRemoteExecutableCode(source),
-    `Remote executable code URL is forbidden in ${filePath}`,
+    remoteReference === null,
+    `Remote executable code URL is forbidden in ${filePath}: ${remoteReference}`,
   );
-  const executableText = maskedJavaScript(source, false);
+  const executableText = maskedJavaScript(source);
   const observations = new Set();
   for (const identifier of TRANSPORT_IDENTIFIERS) {
     const pattern = new RegExp(`\\b${identifier}\\b`, 'u');
@@ -266,18 +341,12 @@ function scanExecutableFiles(rootDirectory, directory, extensions, pathPrefix) {
 }
 
 export function validateTransportPolicy(rootDirectory, submission) {
-  const allowed = validateTransportAllowlist(submission.transportAllowlist);
+  validateTransportAllowlist(submission.transportAllowlist);
   const observed = new Set([
     ...scanExecutableFiles(rootDirectory, 'src', SOURCE_EXECUTABLE_EXTENSIONS, 'src'),
     ...scanExecutableFiles(rootDirectory, 'dist', SHIPPED_EXECUTABLE_EXTENSIONS, 'dist'),
   ]);
   for (const observation of observed) {
-    assert(
-      allowed.has(observation),
-      `Unreviewed product-data transport identifier: ${observation}`,
-    );
-  }
-  for (const entry of allowed) {
-    assert(observed.has(entry), `Stale transportAllowlist entry was not observed: ${entry}`);
+    assert(false, `Forbidden product-data transport identifier: ${observation}`);
   }
 }

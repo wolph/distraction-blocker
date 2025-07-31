@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
-import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 export function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -65,11 +65,47 @@ function inspectRequiredPath(rootDirectory, relativePath, label) {
   return { absolutePath, stat: lstatSync(absolutePath) };
 }
 
-export function readRequiredFile(rootDirectory, relativePath, label = 'file') {
+export function readRequiredFile(rootDirectory, relativePath, label = 'file', maximumSize = null) {
   const { absolutePath, stat } = inspectRequiredPath(rootDirectory, relativePath, label);
   assert(stat.isFile(), `${label} is not a regular file: ${relativePath}`);
   assert(stat.nlink === 1, `${label} must not be a hard link: ${relativePath}`);
+  if (maximumSize !== null) {
+    assert(
+      stat.size <= maximumSize,
+      `${label} exceeds compressed size limit of ${maximumSize} bytes: ${relativePath}`,
+    );
+  }
   return readFileSync(absolutePath);
+}
+
+export function ensureOutputDirectory(rootDirectory, relativeDirectory) {
+  validateRelativePath(relativeDirectory, 'Output directory');
+  const absoluteDirectory = join(rootDirectory, relativeDirectory);
+  if (!existsSync(absoluteDirectory)) mkdirSync(absoluteDirectory, { mode: 0o700 });
+  const { absolutePath, stat } = inspectRequiredPath(
+    rootDirectory,
+    relativeDirectory,
+    'output directory',
+  );
+  assert(stat.isDirectory(), `Output path is not a directory: ${relativeDirectory}`);
+  return absolutePath;
+}
+
+export function prepareOutputFile(rootDirectory, relativePath, label) {
+  validateRelativePath(relativePath, label);
+  const parentDirectory = dirname(relativePath).split(sep).join('/');
+  const { stat: parentStat } = inspectRequiredPath(
+    rootDirectory,
+    parentDirectory,
+    'output directory',
+  );
+  assert(parentStat.isDirectory(), `Output parent is not a directory: ${parentDirectory}`);
+  const absolutePath = join(rootDirectory, relativePath);
+  if (!existsSync(absolutePath)) return absolutePath;
+  const inspected = inspectRequiredPath(rootDirectory, relativePath, label);
+  assert(inspected.stat.isFile(), `${label} is not a regular file: ${relativePath}`);
+  assert(inspected.stat.nlink === 1, `${label} must not be a hard link: ${relativePath}`);
+  return inspected.absolutePath;
 }
 
 export function readJson(rootDirectory, relativePath, label) {

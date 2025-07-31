@@ -1,5 +1,14 @@
 import { createHash } from 'node:crypto';
-import { linkSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import {
+  existsSync,
+  linkSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  truncateSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -394,7 +403,7 @@ describe('built manifest and transport policy', (): void => {
     expectValidationFailure(root, /fetch/i);
   });
 
-  it('allows an exact observed transport allowlist entry', (): void => {
+  it('rejects every non-empty transport allowlist', (): void => {
     const root: string = fixture();
     write(
       join(root, 'src', 'reviewed-navigation.ts'),
@@ -409,8 +418,7 @@ describe('built manifest and transport policy', (): void => {
         },
       ];
     });
-    const result: ReturnType<typeof runValidator> = validate(root);
-    expect(result.status, output(result)).toBe(0);
+    expectValidationFailure(root, /transportAllowlist.*empty|transport.*forbidden/i);
   });
 
   it('rejects a stale transport allowlist entry', (): void => {
@@ -474,6 +482,15 @@ describe('built manifest and transport policy', (): void => {
     expectValidationFailure(root, /remote executable|remote code|https:\/\//i);
   });
 
+  it('rejects a multiline static HTTPS import', (): void => {
+    const root: string = fixture();
+    write(
+      join(root, 'dist', 'assets', 'remote.js'),
+      "import {\n  remoteFeature,\n} from 'https://example.com/app.js';\n",
+    );
+    expectValidationFailure(root, /remote executable|remote code|https:\/\//i);
+  });
+
   it('rejects an interpolated remote dynamic import', (): void => {
     const root: string = fixture();
     const source: string = [
@@ -491,6 +508,24 @@ describe('built manifest and transport policy', (): void => {
       manifest.background = { service_worker: '//example.com/worker.js' };
     });
     expectValidationFailure(root, /remote executable|remote code|example\.com/i);
+  });
+
+  it('rejects a remote dynamic import through a const URL', (): void => {
+    const root: string = fixture();
+    write(
+      join(root, 'dist', 'assets', 'remote.js'),
+      "const remoteUrl = 'https://example.com/app.js';\nvoid import(remoteUrl);\n",
+    );
+    expectValidationFailure(root, /remote executable|remote code|remoteUrl/i);
+  });
+
+  it('rejects a remote Worker through a const URL', (): void => {
+    const root: string = fixture();
+    write(
+      join(root, 'dist', 'assets', 'remote.js'),
+      "const remoteUrl = 'https://example.com/worker.js';\nnew Worker(remoteUrl);\n",
+    );
+    expectValidationFailure(root, /remote executable|remote code|remoteUrl/i);
   });
 });
 
@@ -725,6 +760,20 @@ describe('dist tree and ZIP validation', (): void => {
     expectValidationFailure(root, /size|large|limit|ZIP/i);
   });
 
+  it('rejects an oversized compressed ZIP before reading it', (): void => {
+    const root: string = fixture();
+    const zipPath: string = join(root, 'release', 'focus-lock-0.1.0.zip');
+    write(zipPath, '');
+    truncateSync(zipPath, 64 * 1024 * 1024 + 1);
+    writeJson(join(root, 'release', 'package-manifest.json'), {
+      version: '0.1.0',
+      zipPath: 'release/focus-lock-0.1.0.zip',
+      sha256: '0'.repeat(64),
+    });
+
+    expectValidationFailure(root, /ZIP.*compressed size|ZIP.*size limit/i);
+  });
+
   it('rejects a suspicious ZIP compression ratio', (): void => {
     const root: string = fixture();
     const entries: ArchiveEntryFixture[] = distArchiveEntries(root);
@@ -753,6 +802,45 @@ describe('package creation and repository integration', (): void => {
   it('rejects unknown CLI arguments', (): void => {
     expectValidationFailure(fixture(), /unknown.*argument|usage/i, ['--output', 'release.zip']);
   });
+
+  it('rejects a release-directory symlink before creating external files', (): void => {
+    const root: string = fixture();
+    const outside: string = mkdtempSync(join(tmpdir(), 'focus-lock-store-package-outside-'));
+    fixtures.push(outside);
+    symlinkSync(outside, join(root, 'release'));
+
+    const result: ReturnType<typeof runValidator> = validate(root, ['--zip']);
+
+    expect(result.status).not.toBe(0);
+    expect(output(result)).toMatch(/release|output|symbolic link|symlink/i);
+    expect(existsSync(join(outside, 'focus-lock-0.1.0.zip'))).toBe(false);
+    expect(existsSync(join(outside, 'package-manifest.json'))).toBe(false);
+    expect(lstatSync(join(root, 'release')).isSymbolicLink()).toBe(true);
+  });
+
+  it.each([
+    ['focus-lock-0.1.0.zip', 'ZIP'],
+    ['package-manifest.json', 'package manifest'],
+  ])(
+    'rejects a symlinked %s output without replacing it',
+    (fileName: string, label: string): void => {
+      const root: string = fixture();
+      const outside: string = mkdtempSync(join(tmpdir(), 'focus-lock-store-package-target-'));
+      fixtures.push(outside);
+      const externalTarget: string = join(outside, fileName);
+      write(externalTarget, 'user data\n');
+      write(join(root, 'release', '.keep'), '');
+      const outputPath: string = join(root, 'release', fileName);
+      symlinkSync(externalTarget, outputPath);
+
+      const result: ReturnType<typeof runValidator> = validate(root, ['--zip']);
+
+      expect(result.status).not.toBe(0);
+      expect(output(result)).toMatch(new RegExp(`${label}|output|symbolic link|symlink`, 'i'));
+      expect(readFileSync(externalTarget, 'utf8')).toBe('user data\n');
+      expect(lstatSync(outputPath).isSymbolicLink()).toBe(true);
+    },
+  );
 
   it('creates byte-reproducible validated ZIPs and exact package metadata', (): void => {
     const root: string = fixture();
