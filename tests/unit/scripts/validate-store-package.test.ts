@@ -374,6 +374,20 @@ describe('built manifest and transport policy', (): void => {
     },
   );
 
+  it.each([
+    [
+      'an aliased global receiver with a computed property',
+      "const browserGlobal = globalThis; browserGlobal['fetch']('/data');\n",
+    ],
+    ['a template-literal property', "globalThis[`fetch`]('/data');\n"],
+    ['an escaped identifier', "f\\u0065tch('/data');\n"],
+    ['a called property on an arbitrary receiver', "labels['fetch']('/data');\n"],
+  ])('rejects transport through %s', (_case: string, source: string): void => {
+    const root: string = fixture();
+    write(join(root, 'src', 'transport.ts'), source);
+    expectValidationFailure(root, /fetch|transport/i);
+  });
+
   it('allows a harmless computed transport label', (): void => {
     const root: string = fixture();
     write(join(root, 'src', 'labels.ts'), "const label = labels['fetch'];\n");
@@ -526,6 +540,56 @@ describe('built manifest and transport policy', (): void => {
       "const remoteUrl = 'https://example.com/worker.js';\nnew Worker(remoteUrl);\n",
     );
     expectValidationFailure(root, /remote executable|remote code|remoteUrl/i);
+  });
+
+  it('rejects a remote Worker URL created with new URL', (): void => {
+    const root: string = fixture();
+    write(
+      join(root, 'dist', 'assets', 'remote.js'),
+      "const workerUrl = new URL('https://example.com/worker.js', import.meta.url);\nnew Worker(workerUrl);\n",
+    );
+    expectValidationFailure(root, /remote executable|remote code|workerUrl/i);
+  });
+
+  it('rejects a local path resolved against a remote URL base', (): void => {
+    const root: string = fixture();
+    write(
+      join(root, 'dist', 'assets', 'remote.js'),
+      "new Worker(new URL('./worker.js', 'https://example.com/'));\n",
+    );
+    expectValidationFailure(root, /remote executable|remote code|Worker/i);
+  });
+
+  it.each([
+    ['dynamic import', "let modulePath = './module.js'; void import(modulePath);\n"],
+    ['importScripts', "let scriptPath = './helper.js'; importScripts(scriptPath);\n"],
+    ['Worker', "let workerPath = './worker.js'; new Worker(workerPath);\n"],
+    ['SharedWorker', "let workerPath = './worker.js'; new SharedWorker(workerPath);\n"],
+    ['member operand', "const paths = { worker: './worker.js' }; new Worker(paths.worker);\n"],
+  ])('rejects an unknown %s executable operand', (_case: string, source: string): void => {
+    const root: string = fixture();
+    write(join(root, 'dist', 'assets', 'unknown.js'), source);
+    expectValidationFailure(root, /unknown|unverifiable|executable.*operand|cannot prove/i);
+  });
+
+  it('resolves shadowed executable bindings in lexical scope', (): void => {
+    const root: string = fixture();
+    write(
+      join(root, 'dist', 'assets', 'local.js'),
+      "function start() { const workerUrl = './worker.js'; new Worker(workerUrl); }\nconst workerUrl = 'https://example.com/remote.js';\nvoid start;\nvoid workerUrl;\n",
+    );
+    const result: ReturnType<typeof runValidator> = validate(root);
+    expect(result.status, output(result)).toBe(0);
+  });
+
+  it('allows executable operands only when they are proven local', (): void => {
+    const root: string = fixture();
+    write(
+      join(root, 'dist', 'assets', 'local.js'),
+      "const workerUrl = new URL('./worker.js', import.meta.url);\nconst modulePath = './module.js';\nnew Worker(workerUrl);\nnew SharedWorker('./shared-worker.js');\nvoid import(modulePath);\nimportScripts('./helper.js');\n",
+    );
+    const result: ReturnType<typeof runValidator> = validate(root);
+    expect(result.status, output(result)).toBe(0);
   });
 });
 
