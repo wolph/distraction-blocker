@@ -67,6 +67,25 @@ function staticPropertyName(memberPath) {
   return null;
 }
 
+function destructuredPropertyName(binding, localName) {
+  const patternPath = binding.path.get('id');
+  if (!patternPath.isObjectPattern()) return null;
+  for (const propertyPath of patternPath.get('properties')) {
+    if (!propertyPath.isObjectProperty()) continue;
+    let valuePath = propertyPath.get('value');
+    if (valuePath.isAssignmentPattern()) valuePath = valuePath.get('left');
+    if (!valuePath.isIdentifier({ name: localName })) continue;
+    const keyPath = propertyPath.get('key');
+    if (!propertyPath.node.computed && keyPath.isIdentifier()) return keyPath.node.name;
+    if (keyPath.isStringLiteral()) return keyPath.node.value;
+    if (keyPath.isTemplateLiteral() && keyPath.node.expressions.length === 0) {
+      return keyPath.node.quasis[0]?.value.cooked ?? keyPath.node.quasis[0]?.value.raw ?? null;
+    }
+    return null;
+  }
+  return null;
+}
+
 function callableName(path, names, seenBindings = new Set()) {
   const current = unwrapPath(path);
   if (!current?.node) return null;
@@ -76,6 +95,10 @@ function callableName(path, names, seenBindings = new Set()) {
     if (!binding) return names.has(name) ? name : null;
     if (seenBindings.has(binding) || !binding.constant || !binding.path.isVariableDeclarator()) {
       return null;
+    }
+    const destructuredName = destructuredPropertyName(binding, name);
+    if (binding.path.get('id').isObjectPattern()) {
+      return destructuredName !== null && names.has(destructuredName) ? destructuredName : null;
     }
     const initializer = binding.path.get('init');
     if (!initializer?.node) return null;
@@ -185,7 +208,13 @@ function inspectCall(path, filePath, observations) {
   }
   const importScriptsName = callableName(calleePath, IMPORT_SCRIPTS);
   if (importScriptsName !== null) {
-    validateExecutableOperand(path.get('arguments')[0], filePath, importScriptsName);
+    const argumentPaths = path.get('arguments');
+    if (argumentPaths.length === 0) {
+      validateExecutableOperand(undefined, filePath, importScriptsName);
+    }
+    for (const argumentPath of argumentPaths) {
+      validateExecutableOperand(argumentPath, filePath, importScriptsName);
+    }
     return;
   }
   const transportName = callableName(calleePath, TRANSPORT_IDENTIFIERS);

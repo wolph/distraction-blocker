@@ -388,6 +388,18 @@ describe('built manifest and transport policy', (): void => {
     expectValidationFailure(root, /fetch|transport/i);
   });
 
+  it.each([
+    ['a destructured global alias', "const { fetch: request } = globalThis; request('/data');\n"],
+    [
+      'a destructured global alias with a default',
+      "const { fetch: request = () => undefined } = globalThis; request('/data');\n",
+    ],
+  ])('rejects transport through %s', (_case: string, source: string): void => {
+    const root: string = fixture();
+    write(join(root, 'src', 'destructured-transport.ts'), source);
+    expectValidationFailure(root, /fetch|transport/i);
+  });
+
   it('allows a harmless computed transport label', (): void => {
     const root: string = fixture();
     write(join(root, 'src', 'labels.ts'), "const label = labels['fetch'];\n");
@@ -542,6 +554,21 @@ describe('built manifest and transport policy', (): void => {
     expectValidationFailure(root, /remote executable|remote code|remoteUrl/i);
   });
 
+  it.each([
+    [
+      'a destructured global alias',
+      "const { Worker: W } = globalThis; new W('https://example.com/worker.js');\n",
+    ],
+    [
+      'a destructured global alias with a default',
+      "const { Worker: W = class {} } = globalThis; new W('https://example.com/worker.js');\n",
+    ],
+  ])('rejects a remote Worker through %s', (_case: string, source: string): void => {
+    const root: string = fixture();
+    write(join(root, 'dist', 'assets', 'remote.js'), source);
+    expectValidationFailure(root, /remote executable|remote code|Worker/i);
+  });
+
   it('rejects a remote Worker URL created with new URL', (): void => {
     const root: string = fixture();
     write(
@@ -563,6 +590,7 @@ describe('built manifest and transport policy', (): void => {
   it.each([
     ['dynamic import', "let modulePath = './module.js'; void import(modulePath);\n"],
     ['importScripts', "let scriptPath = './helper.js'; importScripts(scriptPath);\n"],
+    ['missing importScripts', 'importScripts();\n'],
     ['Worker', "let workerPath = './worker.js'; new Worker(workerPath);\n"],
     ['SharedWorker', "let workerPath = './worker.js'; new SharedWorker(workerPath);\n"],
     ['member operand', "const paths = { worker: './worker.js' }; new Worker(paths.worker);\n"],
@@ -570,6 +598,15 @@ describe('built manifest and transport policy', (): void => {
     const root: string = fixture();
     write(join(root, 'dist', 'assets', 'unknown.js'), source);
     expectValidationFailure(root, /unknown|unverifiable|executable.*operand|cannot prove/i);
+  });
+
+  it('rejects any remote importScripts argument', (): void => {
+    const root: string = fixture();
+    write(
+      join(root, 'dist', 'assets', 'remote.js'),
+      "importScripts('./local.js', 'https://example.com/remote.js');\n",
+    );
+    expectValidationFailure(root, /remote executable|remote code|importScripts/i);
   });
 
   it('resolves shadowed executable bindings in lexical scope', (): void => {
