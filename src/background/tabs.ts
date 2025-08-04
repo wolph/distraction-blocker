@@ -93,6 +93,7 @@ interface RemovedTabClaim {
 }
 
 const activeTabOperationLeases: Map<number, TabOperationLeaseState> = new Map();
+const pendingTabReadinessLeases: Map<number, TabOperationLeaseState> = new Map();
 let tabOperationSequence: number = 0;
 
 function acquireTabOperationLease(tabId: number): () => void {
@@ -109,6 +110,24 @@ function acquireTabOperationLease(tabId: number): () => void {
     leaseState.count -= 1;
     if (leaseState.count === 0 && activeTabOperationLeases.get(tabId) === leaseState) {
       activeTabOperationLeases.delete(tabId);
+    }
+  };
+}
+
+function acquireTabReadinessLease(tabId: number): () => void {
+  let leaseState: TabOperationLeaseState | undefined = pendingTabReadinessLeases.get(tabId);
+  if (leaseState === undefined) {
+    leaseState = { count: 0 };
+    pendingTabReadinessLeases.set(tabId, leaseState);
+  }
+  leaseState.count += 1;
+  let released: boolean = false;
+  return (): void => {
+    if (released) return;
+    released = true;
+    leaseState.count -= 1;
+    if (leaseState.count === 0 && pendingTabReadinessLeases.get(tabId) === leaseState) {
+      pendingTabReadinessLeases.delete(tabId);
     }
   };
 }
@@ -137,6 +156,7 @@ export function invalidateRemovedTab(tabId: number): Promise<void> {
   const inherited: InheritedMuteClaim | undefined = inheritedMuteClaims.get(tabId);
   inheritedMuteClaims.delete(tabId);
   activeTabOperationLeases.delete(tabId);
+  pendingTabReadinessLeases.delete(tabId);
 
   const claims: RemovedTabClaim[] = [];
   if (continuation !== undefined) {
@@ -370,7 +390,7 @@ async function applyTabEffectsNow(
 async function queueResolvedTabApply(
   engine: Engine,
   tabId: number,
-  attemptKind: 'navigation' | 'existing',
+  attemptKind: 'navigation' | 'existing' | null,
   resolveInput: (taskVersion: number) => Promise<TabApplyInput | null>,
   options: ResolvedTabApplyOptions = {},
   operationVersion: number = beginTabOperation(tabId),
@@ -395,7 +415,7 @@ async function queueResolvedTabApply(
         if (input === null || !operationIsCurrent()) return null;
         if (options.requireCurrentTask && tabTaskVersions.get(tabId) !== taskVersion) return null;
         const verdict: Verdict = engine.verdictFor(input.url);
-        if (!verdict.blocked || recordedAttemptUrl === input.url) {
+        if (!verdict.blocked || attemptKind === null || recordedAttemptUrl === input.url) {
           return { input, persistence: null };
         }
         const persistence: Promise<void> = recordAttemptWithLease(
@@ -425,7 +445,9 @@ async function queueResolvedTabApply(
         if (input === null || !operationIsCurrent()) return true;
         if (options.requireCurrentTask && tabTaskVersions.get(tabId) !== taskVersion) return true;
         const verdict: Verdict = engine.verdictFor(input.url);
-        if (verdict.blocked && recordedAttemptUrl !== input.url) return false;
+        if (attemptKind !== null && verdict.blocked && recordedAttemptUrl !== input.url) {
+          return false;
+        }
         let effectsAccepted: boolean = false;
         await applyTabEffectsNow(
           engine,
@@ -1112,6 +1134,9 @@ export function applyBlockingFactory(
           const activeOperationTabIdsAtStart: Set<number> = new Set(
             activeTabOperationLeases.keys(),
           );
+          const pendingReadinessTabIdsAtStart: Set<number> = new Set(
+            pendingTabReadinessLeases.keys(),
+          );
           const tabs: chrome.tabs.Tab[] = await chrome.tabs.query({});
           const queriedTabIds: number[] = [
             ...new Set(
@@ -1145,50 +1170,55 @@ export function applyBlockingFactory(
           };
           reconcileTabsWithLease(e, new Map(), protectedTabIds(), lease);
 
-          const applyTasks: Promise<void>[] = queriedTabIds.map((tabId: number): Promise<void> => {
-            const releaseOperationLease: () => void = acquireTabOperationLease(tabId);
-            try {
-              return queueResolvedTabApply(
-                e,
-                tabId,
-                'existing',
-                async (taskVersion: number): Promise<TabApplyInput | null> => {
-                  const liveTab: LiveTabIdentity | null = await readStableLiveTabIdentity(e, tabId);
-                  if (liveTab === null || tabTaskVersions.get(tabId) !== taskVersion) return null;
-                  return {
-                    url: liveTab.identity.url,
-                    mutedNow: liveTab.tab.mutedInfo?.muted ?? false,
-                    mutedByExtension: liveTab.tab.mutedInfo?.extensionId === chrome.runtime.id,
-                    documentId: liveTab.identity.documentId,
-                  };
-                },
-                {
-                  beforeEffects: (input: TabApplyInput): void => {
-                    const liveState: LiveTabState = {
-                      url: input.url,
-                      mutedByExtension: input.mutedByExtension,
-                      documentId: input.documentId,
-                    };
-                    reconcileTabsWithLease(
+          const applyTasks: Promise<void>[] = queriedTabIds
+            .filter((tabId: number): boolean => !pendingReadinessTabIdsAtStart.has(tabId))
+            .map((tabId: number): Promise<void> => {
+              const releaseOperationLease: () => void = acquireTabOperationLease(tabId);
+              try {
+                return queueResolvedTabApply(
+                  e,
+                  tabId,
+                  null,
+                  async (taskVersion: number): Promise<TabApplyInput | null> => {
+                    const liveTab: LiveTabIdentity | null = await readStableLiveTabIdentity(
                       e,
-                      new Map([[tabId, liveState]]),
-                      protectedTabIds(tabId),
-                      lease,
+                      tabId,
                     );
+                    if (liveTab === null || tabTaskVersions.get(tabId) !== taskVersion) return null;
+                    return {
+                      url: liveTab.identity.url,
+                      mutedNow: liveTab.tab.mutedInfo?.muted ?? false,
+                      mutedByExtension: liveTab.tab.mutedInfo?.extensionId === chrome.runtime.id,
+                      documentId: liveTab.identity.documentId,
+                    };
                   },
-                  isCurrent: sweepIsCurrent,
-                  lease,
-                  requireCurrentTask: true,
-                  validateDocument: true,
-                },
-                sweepOperationVersion,
-                queriedTabUrls.get(tabId) ?? null,
-              ).finally(releaseOperationLease);
-            } catch (error: unknown) {
-              releaseOperationLease();
-              throw error;
-            }
-          });
+                  {
+                    beforeEffects: (input: TabApplyInput): void => {
+                      const liveState: LiveTabState = {
+                        url: input.url,
+                        mutedByExtension: input.mutedByExtension,
+                        documentId: input.documentId,
+                      };
+                      reconcileTabsWithLease(
+                        e,
+                        new Map([[tabId, liveState]]),
+                        protectedTabIds(tabId),
+                        lease,
+                      );
+                    },
+                    isCurrent: sweepIsCurrent,
+                    lease,
+                    requireCurrentTask: true,
+                    validateDocument: true,
+                  },
+                  sweepOperationVersion,
+                  queriedTabUrls.get(tabId) ?? null,
+                ).finally(releaseOperationLease);
+              } catch (error: unknown) {
+                releaseOperationLease();
+                throw error;
+              }
+            });
           await Promise.all(applyTasks);
           if (!sweepIsCurrent()) continue;
           const cleanupVersions: Map<number, number> = new Map(tabTaskVersions);
@@ -1232,60 +1262,65 @@ export function registerTabListeners(
   ): void => {
     if (details.frameId !== 0) return;
     const releaseOperationLease: () => void = acquireTabOperationLease(details.tabId);
+    const releaseReadinessLease: () => void = acquireTabReadinessLease(details.tabId);
     const operationVersion: number = beginTabOperation(details.tabId, details.url);
     let readiness: Promise<Engine>;
     try {
       readiness = ready();
     } catch (error: unknown) {
+      releaseReadinessLease();
       releaseOperationLease();
       reportError(error);
       return;
     }
     void readiness
-      .then(
-        (engine: Engine): Promise<void> =>
-          engine.runWithRuntimeMutationLeaseOrBlockingSweep(
-            async (lease: BlockingSweepLease): Promise<void> => {
-              await cancelMuteContinuation(details.tabId, lease);
-              await queueResolvedTabApply(
-                engine,
-                details.tabId,
-                attemptKind,
-                async (): Promise<TabApplyInput | null> => {
-                  const liveTab: LiveTabIdentity | null = await readStableLiveTabIdentity(
-                    engine,
-                    details.tabId,
-                  );
-                  if (liveTab === null || liveTab.identity.url !== details.url) return null;
-                  const eventDocumentId: string | null = details.documentId ?? null;
-                  if (eventDocumentId !== null && liveTab.identity.documentId !== eventDocumentId) {
-                    return null;
+      .then((engine: Engine): Promise<void> => {
+        releaseReadinessLease();
+        return engine.runWithRuntimeMutationLeaseOrBlockingSweep(
+          async (lease: BlockingSweepLease): Promise<void> => {
+            await cancelMuteContinuation(details.tabId, lease);
+            await queueResolvedTabApply(
+              engine,
+              details.tabId,
+              attemptKind,
+              async (): Promise<TabApplyInput | null> => {
+                const liveTab: LiveTabIdentity | null = await readStableLiveTabIdentity(
+                  engine,
+                  details.tabId,
+                );
+                if (liveTab === null || liveTab.identity.url !== details.url) return null;
+                const eventDocumentId: string | null = details.documentId ?? null;
+                if (eventDocumentId !== null && liveTab.identity.documentId !== eventDocumentId) {
+                  return null;
+                }
+                return {
+                  url: liveTab.identity.url,
+                  mutedNow: liveTab.tab.mutedInfo?.muted ?? false,
+                  mutedByExtension: liveTab.tab.mutedInfo?.extensionId === chrome.runtime.id,
+                  documentId: liveTab.identity.documentId,
+                };
+              },
+              {
+                beforeEffects: (input: TabApplyInput): void => {
+                  if (input.mutedByExtension) {
+                    engine.rebindTab(details.tabId, input.url, lease);
                   }
-                  return {
-                    url: liveTab.identity.url,
-                    mutedNow: liveTab.tab.mutedInfo?.muted ?? false,
-                    mutedByExtension: liveTab.tab.mutedInfo?.extensionId === chrome.runtime.id,
-                    documentId: liveTab.identity.documentId,
-                  };
                 },
-                {
-                  beforeEffects: (input: TabApplyInput): void => {
-                    if (input.mutedByExtension) {
-                      engine.rebindTab(details.tabId, input.url, lease);
-                    }
-                  },
-                  afterEffects: async (): Promise<void> => engine.flushRuntime(lease),
-                  lease,
-                  validateDocument: true,
-                },
-                operationVersion,
-                details.url,
-              );
-            },
-          ),
-      )
+                afterEffects: async (): Promise<void> => engine.flushRuntime(lease),
+                lease,
+                validateDocument: true,
+              },
+              operationVersion,
+              details.url,
+            );
+          },
+        );
+      })
       .catch(reportError)
-      .finally(releaseOperationLease);
+      .finally((): void => {
+        releaseReadinessLease();
+        releaseOperationLease();
+      });
   };
 
   chrome.webNavigation.onCommitted.addListener(
