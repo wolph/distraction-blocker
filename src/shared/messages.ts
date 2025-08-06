@@ -6,6 +6,7 @@ import type {
   MonthlyAgg,
   OnboardingDraft,
   SessionConfig,
+  SessionConfigV2,
   SessionSnapshot,
   Settings,
   SetupState,
@@ -14,6 +15,78 @@ import type {
   ThemeMode,
   Verdict,
 } from './types';
+
+export interface SessionStartRequestV2 {
+  type: 'startSession';
+  config: SessionConfigV2;
+}
+
+export type TransitionFailureReasonV2 =
+  | 'website-access-lost'
+  | 'content-registration-failed'
+  | 'alarm-failed'
+  | 'tab-enforcement-failed';
+
+export type StartSessionResultCodeV2 =
+  | 'ok'
+  | 'invalid-request'
+  | TransitionFailureReasonV2
+  | 'transition-cleanup-pending'
+  | 'closure-cleanup-pending'
+  | 'data-clear-pending';
+
+export type SessionCommandResultCodeV2 =
+  | 'ok'
+  | 'no-active-session'
+  | 'end-not-allowed'
+  | 'no-active-gate'
+  | 'gate-not-ready'
+  | 'confirmation-mismatch'
+  | 'transition-cleanup-pending'
+  | 'closure-cleanup-pending'
+  | 'data-clear-pending';
+
+export type RetryCleanupResultCodeV2 = 'ok' | 'retry-not-available';
+
+export type CommandResultCodeV2 =
+  | StartSessionResultCodeV2
+  | SessionCommandResultCodeV2
+  | RetryCleanupResultCodeV2;
+
+export type CommandResponseV2<Code extends CommandResultCodeV2> =
+  | { ok: true; code: Extract<Code, 'ok'> }
+  | { ok: false; code: Exclude<Code, 'ok'>; error: string };
+
+type StartRejectionWithoutCleanupV2 = {
+  ok: false;
+  code:
+    | 'invalid-request'
+    | 'transition-cleanup-pending'
+    | 'closure-cleanup-pending'
+    | 'data-clear-pending';
+  error: string;
+  cleanupPending?: never;
+};
+
+type TransitionFailureBeforeEffectsV2 = {
+  ok: false;
+  code: TransitionFailureReasonV2;
+  error: string;
+  cleanupPending?: never;
+};
+
+type TransitionFailureWithCleanupV2 = {
+  ok: false;
+  code: TransitionFailureReasonV2;
+  error: string;
+  cleanupPending: true;
+};
+
+export type StartSessionResponseV2 =
+  | { ok: true; code: 'ok' }
+  | StartRejectionWithoutCleanupV2
+  | TransitionFailureBeforeEffectsV2
+  | TransitionFailureWithCleanupV2;
 
 export type SoundId = 'sessionComplete' | 'breakStart' | 'breakEnd' | 'scheduleStart';
 

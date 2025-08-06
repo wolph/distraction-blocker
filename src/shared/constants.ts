@@ -5,6 +5,7 @@ import type {
   Rule,
   SessionRuleSnapshot,
   SessionSnapshot,
+  SessionSnapshotV2,
   Settings,
   SetupState,
 } from './types';
@@ -163,6 +164,9 @@ export const EVENT_LOG_CAP: number = 50_000;
 export const TOP_SITES_DAILY: number = 20;
 export const TOP_SITES_MONTHLY: number = 10;
 export const MAX_FREEZE_TOKENS: number = 2;
+export const RUNTIME_SCHEMA_VERSION_V2: 2 = 2;
+export const HANDLED_SCHEDULE_OCCURRENCE_RETENTION_MS: number = 14 * 24 * 60 * 60 * 1_000;
+export const MAX_HANDLED_SCHEDULE_OCCURRENCES: number = 256;
 
 export function cancelPhrase(intention: string): string {
   const goal: string = intention.trim();
@@ -188,6 +192,32 @@ export function emptySnapshot(at: number): SessionSnapshot {
     phaseStartedAt: null,
     phaseEndsAt: null,
     sessionEndsAt: null,
+    cycleIndex: 0,
+    bankMs: 0,
+    bankAccrualPerMs: 0,
+    bankCapMs: DEFAULT_SETTINGS.pause.capMs,
+    pauseCostMs: DEFAULT_SETTINGS.pause.pauseMs,
+    unlockCostMs: DEFAULT_SETTINGS.pause.unlockMs,
+    activeUnlocks: [],
+    gate: null,
+    attemptsToday: 0,
+    scheduleActive: false,
+    nextSchedule: null,
+  };
+}
+
+export function emptySnapshotV2(at: number): SessionSnapshotV2 {
+  return {
+    at,
+    theme: DEFAULT_SETTINGS.theme,
+    lifecycle: { kind: 'idle', endAuthority: { kind: 'hidden' } },
+    phase: 'idle',
+    config: null,
+    startedAt: null,
+    phaseStartedAt: null,
+    phaseEndsAt: null,
+    sessionEndsAt: null,
+    sessionFocusedMs: 0,
     cycleIndex: 0,
     bankMs: 0,
     bankAccrualPerMs: 0,

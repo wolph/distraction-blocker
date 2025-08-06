@@ -33,6 +33,12 @@ export const LOCAL_LISTS: string = 'lists';
 export const LOCAL_BANK: string = 'bank';
 export const LOCAL_STREAK: string = 'streak';
 
+export const LOCAL_V2_SESSION_AUTHORITY_KEYS: readonly [string, string, string] = [
+  LOCAL_RUNTIME,
+  LOCAL_EVENTS,
+  LOCAL_DATA_CLEAR_JOURNAL,
+];
+
 export function syncListCategoryKey(categoryId: string): string {
   return `${SYNC_LIST_CATEGORY_PREFIX}${categoryId}`;
 }

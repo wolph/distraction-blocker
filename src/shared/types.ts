@@ -107,7 +107,7 @@ export interface CycleConfig {
   longEvery: number;
 }
 
-export interface SessionConfig {
+export interface NormalizedSessionConfigV1 {
   mode: SessionMode;
   strictness: Strictness;
   /** total session length in minutes, fractional allowed (tests use 0.1) */
@@ -119,11 +119,13 @@ export interface SessionConfig {
   rules: SessionRuleSnapshot;
 }
 
+export type SessionConfig = NormalizedSessionConfigV1;
+
 /** Persisted machine state. Pure functions in src/core/session.ts own all transitions. */
-export interface SessionState {
+export interface NormalizedSessionStateV1 {
   /** Stable identity for this session. Missing only on legacy persisted state. */
   sessionId?: string;
-  config: SessionConfig;
+  config: NormalizedSessionConfigV1;
   startedAt: number;
   sessionEndsAt: number;
   phase: 'focus' | 'break' | 'paused';
@@ -136,6 +138,86 @@ export interface SessionState {
   /** focus ms completed so far, maintained by advance(), excludes breaks and pauses */
   focusedMs: number;
 }
+
+export type SessionState = NormalizedSessionStateV1;
+
+export type PredecessorSessionRuleSnapshotV1 = Omit<SessionRuleSnapshot, 'baselineCategories'>;
+
+export type PersistedLegacySessionConfigV1 = Omit<NormalizedSessionConfigV1, 'rules'> & {
+  rules?: SessionRuleSnapshot | PredecessorSessionRuleSnapshotV1;
+};
+
+export type PersistedLegacySessionStateV1 = Omit<NormalizedSessionStateV1, 'config'> & {
+  config: PersistedLegacySessionConfigV1;
+};
+
+export type LocalDate = string;
+
+export interface ScheduleOccurrenceRef {
+  version: 1;
+  token: string;
+  entryId: string;
+  localStartDate: LocalDate;
+}
+
+export interface HandledScheduleOccurrence {
+  version: 1;
+  token: string;
+  entryId: string;
+  localStartDate: LocalDate;
+  handledAt: number;
+  reason: 'started' | 'closure-overlap';
+  expiresAt: number;
+}
+
+export type SessionDuration = { kind: 'timed'; minutes: number } | { kind: 'until-stopped' };
+
+export type ScheduleDuration = { kind: 'window' } | { kind: 'until-stopped' };
+
+export interface SessionConfigV2 {
+  mode: SessionMode;
+  strictness: Strictness;
+  duration: SessionDuration;
+  cycling: CycleConfig | null;
+  intention: string;
+  source: 'manual' | 'schedule';
+  scheduleOccurrence: ScheduleOccurrenceRef | null;
+  rules: SessionRuleSnapshot;
+}
+
+export interface PausedFromStateV2 {
+  phase: 'focus' | 'break';
+  phaseEndsAt: number | null;
+}
+
+export interface SessionStateV2 {
+  version: 2;
+  sessionId: string;
+  config: SessionConfigV2;
+  startedAt: number;
+  sessionEndsAt: number | null;
+  phase: 'focus' | 'break' | 'paused';
+  phaseStartedAt: number;
+  phaseEndsAt: number | null;
+  cycleIndex: number;
+  pausedFrom: PausedFromStateV2 | null;
+  focusedMs: number;
+}
+
+export interface ScheduleEntryV2 {
+  id: string;
+  days: number[];
+  start: string;
+  end: string;
+  duration: ScheduleDuration;
+  mode: SessionMode;
+  strictness: Strictness;
+  cycling: CycleConfig | null;
+  intention: string;
+  enabled: boolean;
+}
+
+export type SettingsV2 = Omit<Settings, 'schedule'> & { schedule: ScheduleEntryV2[] };
 
 export type GateKind = 'pause' | 'unlockSite' | 'cancel';
 
@@ -155,11 +237,11 @@ export interface SiteUnlock {
 }
 
 /** Read model broadcast to every UI surface. The worker is the only writer. */
-export interface SessionSnapshot {
+export interface NormalizedSessionSnapshotV1 {
   at: number;
   theme: ThemeMode;
   phase: Phase;
-  config: SessionConfig | null;
+  config: NormalizedSessionConfigV1 | null;
   startedAt: number | null;
   phaseStartedAt: number | null;
   phaseEndsAt: number | null;
@@ -170,6 +252,79 @@ export interface SessionSnapshot {
   bankAccrualPerMs: number;
   bankCapMs: number;
   /** current costs of the two spends, so UIs can render affordability countdowns */
+  pauseCostMs: number;
+  unlockCostMs: number;
+  activeUnlocks: SiteUnlock[];
+  gate: GateState | null;
+  attemptsToday: number;
+  scheduleActive: boolean;
+  nextSchedule: { entryId: string; startsAt: number } | null;
+}
+
+export type SessionSnapshot = NormalizedSessionSnapshotV1;
+
+export type EndAuthorityV2 =
+  | { kind: 'hidden' }
+  | { kind: 'immediate'; actionLabel: 'End session' }
+  | {
+      kind: 'friction-gate';
+      gate: null;
+      copy: { actionLabel: 'End session' };
+      actions: { open: 'open-end-gate' };
+    }
+  | {
+      kind: 'friction-gate';
+      gate: GateState & { kind: 'cancel' };
+      copy: {
+        title: 'End this session';
+        back: 'Never mind, back to work';
+        phraseLabel: 'Type this to confirm:';
+        confirm: 'End the session';
+        intentionReminder: string | null;
+      };
+      actions: {
+        abandon: 'abandon-gate';
+        confirm: 'confirm-gate';
+      };
+    };
+
+export type SessionLifecycleV2 =
+  | { kind: 'idle'; endAuthority: { kind: 'hidden' } }
+  | {
+      kind: 'starting';
+      operationId: string;
+      transition: 'start' | 'resume';
+      endAuthority: EndAuthorityV2;
+    }
+  | {
+      kind: 'cleanup';
+      journal: 'transition' | 'closure';
+      id: string;
+      endAuthority: { kind: 'hidden' };
+    }
+  | { kind: 'active'; endAuthority: EndAuthorityV2 }
+  | {
+      kind: 'error';
+      code: 'transition-cleanup-failed' | 'closure-cleanup-failed';
+      retryAvailable: true;
+      endAuthority: { kind: 'hidden' };
+    };
+
+export interface SessionSnapshotV2 {
+  at: number;
+  theme: ThemeMode;
+  lifecycle: SessionLifecycleV2;
+  phase: Phase;
+  config: SessionConfigV2 | null;
+  startedAt: number | null;
+  phaseStartedAt: number | null;
+  phaseEndsAt: number | null;
+  sessionEndsAt: number | null;
+  sessionFocusedMs: number;
+  cycleIndex: number;
+  bankMs: number;
+  bankAccrualPerMs: number;
+  bankCapMs: number;
   pauseCostMs: number;
   unlockCostMs: number;
   activeUnlocks: SiteUnlock[];
@@ -202,7 +357,7 @@ export interface SoundSettings {
   scheduleStart: boolean;
 }
 
-export interface ScheduleEntry {
+export interface NormalizedScheduleEntryV1 {
   id: string;
   /** 0 = Sunday through 6 = Saturday, Date.getDay convention */
   days: number[];
@@ -215,6 +370,8 @@ export interface ScheduleEntry {
   intention: string;
   enabled: boolean;
 }
+
+export type ScheduleEntry = NormalizedScheduleEntryV1;
 
 export interface Settings {
   theme: ThemeMode;
@@ -285,7 +442,7 @@ export interface StreakState {
   activeMonth: string;
 }
 
-export type EventRecord =
+export type LegacyEventRecord =
   | {
       t: 'sessionStarted';
       at: number;
@@ -314,6 +471,50 @@ export type EventRecord =
   | { t: 'budgetEarned'; at: number; ms: number; sessionId?: string }
   | { t: 'pauseTaken'; at: number; ms: number; sessionId?: string }
   | { t: 'unlockTaken'; at: number; host: string; ms: number; sessionId?: string };
+
+export type EventRecord = LegacyEventRecord;
+
+export type SessionEndReasonV2 =
+  | 'timer-completed'
+  | 'manual-completed'
+  | 'manual-canceled'
+  | 'website-access-lost'
+  | 'content-registration-failed'
+  | 'alarm-failed'
+  | 'tab-enforcement-failed'
+  | 'invalid-active-state';
+
+export type SessionOutcomeV2 = 'completed' | 'canceled';
+
+export interface SessionStartedEventV2 {
+  version: 2;
+  t: 'sessionStarted';
+  eventId: string;
+  at: number;
+  sessionId: string;
+  source: 'manual' | 'schedule';
+  mode: SessionMode;
+  strictness: Strictness;
+  duration: SessionDuration;
+  intention: string;
+  scheduleOccurrence: ScheduleOccurrenceRef | null;
+}
+
+export interface SessionEndedEventV2 {
+  version: 2;
+  t: 'sessionEnded';
+  eventId: string;
+  at: number;
+  sessionId: string;
+  outcome: SessionOutcomeV2;
+  reason: SessionEndReasonV2;
+  focusedMs: number;
+  duration: SessionDuration;
+  source: 'manual' | 'schedule';
+  scheduleOccurrence: ScheduleOccurrenceRef | null;
+}
+
+export type SessionEventRecordV2 = LegacyEventRecord | SessionStartedEventV2 | SessionEndedEventV2;
 
 export interface Verdict {
   blocked: boolean;
