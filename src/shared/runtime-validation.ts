@@ -28,8 +28,13 @@ import type {
   OnboardingDraft,
   PauseEconomy,
   Rule,
+  ScheduleDuration,
   ScheduleEntry,
+  ScheduleOccurrenceRef,
   SessionConfig,
+  SessionConfigV2,
+  SessionDuration,
+  SessionRuleSnapshot,
   SessionSnapshot,
   Settings,
   SetupState,
@@ -288,6 +293,104 @@ function isPositiveInteger(value: unknown): value is number {
 
 function isNonBlankString(value: unknown): value is string {
   return typeof value === 'string' && /\S/.test(value);
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string' && UUID_RE.test(value);
+}
+
+function isSafeTimestamp(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function exactValueEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!isDenseArray(left) || !isDenseArray(right) || left.length !== right.length) return false;
+    return left.every((item: unknown, index: number): boolean =>
+      exactValueEqual(item, right[index]),
+    );
+  }
+  if (!isRecord(left) || !isRecord(right)) return false;
+  const leftKeys: string[] = Reflect.ownKeys(left).filter(
+    (key: PropertyKey): key is string => typeof key === 'string',
+  );
+  const rightKeys: string[] = Reflect.ownKeys(right).filter(
+    (key: PropertyKey): key is string => typeof key === 'string',
+  );
+  if (
+    leftKeys.length !== Reflect.ownKeys(left).length ||
+    rightKeys.length !== Reflect.ownKeys(right).length ||
+    leftKeys.length !== rightKeys.length ||
+    !leftKeys.every((key: string): boolean => rightKeys.includes(key))
+  ) {
+    return false;
+  }
+  return leftKeys.every((key: string): boolean => exactValueEqual(left[key], right[key]));
+}
+
+function isCanonicalSessionRuleSnapshotValue(value: unknown): value is SessionRuleSnapshot {
+  const normalized: SessionRuleSnapshot | null = normalizeSessionRules(value);
+  return normalized !== null && exactValueEqual(value, normalized);
+}
+
+export function isCanonicalSessionRuleSnapshot(value: unknown): value is SessionRuleSnapshot {
+  return safelyValidate((): boolean => isCanonicalSessionRuleSnapshotValue(value));
+}
+
+function isLocalDateValue(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [yearText, monthText, dayText]: string[] = value.split('-');
+  const year: number = Number(yearText);
+  const month: number = Number(monthText);
+  const day: number = Number(dayText);
+  const candidate: Date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    candidate.getUTCFullYear() === year &&
+    candidate.getUTCMonth() === month - 1 &&
+    candidate.getUTCDate() === day
+  );
+}
+
+function isSessionDurationValue(value: unknown): value is SessionDuration {
+  return (
+    isRecord(value) &&
+    ((hasExactKeys(value, ['kind', 'minutes']) &&
+      value.kind === 'timed' &&
+      isRelativeMinuteDuration(value.minutes)) ||
+      (hasExactKeys(value, ['kind']) && value.kind === 'until-stopped'))
+  );
+}
+
+export function isSessionDuration(value: unknown): value is SessionDuration {
+  return safelyValidate((): boolean => isSessionDurationValue(value));
+}
+
+function isScheduleDurationValue(value: unknown): value is ScheduleDuration {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['kind']) &&
+    (value.kind === 'window' || value.kind === 'until-stopped')
+  );
+}
+
+export function isScheduleDuration(value: unknown): value is ScheduleDuration {
+  return safelyValidate((): boolean => isScheduleDurationValue(value));
+}
+
+function isScheduleOccurrenceRefValue(value: unknown): value is ScheduleOccurrenceRef {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['version', 'token', 'entryId', 'localStartDate']) &&
+    value.version === 1 &&
+    isNonBlankString(value.entryId) &&
+    isLocalDateValue(value.localStartDate) &&
+    value.token === `${value.entryId}@${value.localStartDate}`
+  );
+}
+
+export function isScheduleOccurrenceRef(value: unknown): value is ScheduleOccurrenceRef {
+  return safelyValidate((): boolean => isScheduleOccurrenceRefValue(value));
 }
 
 function isNullableString(value: unknown): value is string | null {
@@ -569,6 +672,43 @@ function isSessionConfig(value: unknown): value is SessionConfig {
     (value.source === 'manual' && value.scheduleEntryId === null) ||
     (value.source === 'schedule' && isNonBlankString(value.scheduleEntryId))
   );
+}
+
+function isSessionConfigV2Value(value: unknown): value is SessionConfigV2 {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'mode',
+      'strictness',
+      'duration',
+      'cycling',
+      'intention',
+      'source',
+      'scheduleOccurrence',
+      'rules',
+    ]) ||
+    (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
+    (value.strictness !== 'flexible' &&
+      value.strictness !== 'friction' &&
+      value.strictness !== 'hard') ||
+    !isSessionDurationValue(value.duration) ||
+    (value.cycling !== null && !isCycleConfigValue(value.cycling)) ||
+    typeof value.intention !== 'string' ||
+    (value.source !== 'manual' && value.source !== 'schedule') ||
+    !isCanonicalSessionRuleSnapshotValue(value.rules)
+  ) {
+    return false;
+  }
+  if (value.duration.kind === 'until-stopped') {
+    if (value.strictness !== 'flexible' || value.cycling !== null) return false;
+  }
+  return value.source === 'manual'
+    ? value.scheduleOccurrence === null
+    : isScheduleOccurrenceRefValue(value.scheduleOccurrence);
+}
+
+export function isSessionConfigV2(value: unknown): value is SessionConfigV2 {
+  return safelyValidate((): boolean => isSessionConfigV2Value(value));
 }
 
 function isGate(value: unknown): value is GateState {
