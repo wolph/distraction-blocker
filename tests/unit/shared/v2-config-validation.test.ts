@@ -87,4 +87,39 @@ describe('v2 configuration validation', (): void => {
     expect(isCanonicalSessionRuleSnapshot(rawNormalizableRules)).toBe(false);
     expect(isSessionConfigV2({ ...MANUAL_TIMED_CONFIG, rules: rawNormalizableRules })).toBe(false);
   });
+
+  it('rejects rule arrays with extra string own keys', (): void => {
+    const rules: typeof MANUAL_TIMED_CONFIG.rules = structuredClone(MANUAL_TIMED_CONFIG.rules);
+    Object.defineProperty(rules.sessionAllowlist, 'extra', { value: true });
+
+    expect(isCanonicalSessionRuleSnapshot(rules)).toBe(false);
+  });
+
+  it('rejects rule arrays with symbol own keys', (): void => {
+    const rules: typeof MANUAL_TIMED_CONFIG.rules = structuredClone(MANUAL_TIMED_CONFIG.rules);
+    Object.defineProperty(rules.sessionAllowlist, Symbol('extra'), { value: true });
+
+    expect(isCanonicalSessionRuleSnapshot(rules)).toBe(false);
+  });
+
+  it('does not trust overridden rule-array iteration methods', (): void => {
+    const rules: typeof MANUAL_TIMED_CONFIG.rules = structuredClone(MANUAL_TIMED_CONFIG.rules);
+    Object.defineProperty(rules.sessionAllowlist, 'every', {
+      value: (): boolean => true,
+    });
+
+    expect(isCanonicalSessionRuleSnapshot(rules)).toBe(false);
+  });
+
+  it('rejects throwing rule-array iteration getters without throwing', (): void => {
+    const rules: typeof MANUAL_TIMED_CONFIG.rules = structuredClone(MANUAL_TIMED_CONFIG.rules);
+    Object.defineProperty(rules.sessionAllowlist, Symbol.iterator, {
+      get: (): never => {
+        throw new Error('hostile iterator');
+      },
+    });
+
+    expect((): boolean => isCanonicalSessionRuleSnapshot(rules)).not.toThrow();
+    expect(isCanonicalSessionRuleSnapshot(rules)).toBe(false);
+  });
 });

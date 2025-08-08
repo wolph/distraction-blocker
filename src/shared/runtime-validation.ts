@@ -295,21 +295,38 @@ function isNonBlankString(value: unknown): value is string {
   return typeof value === 'string' && /\S/.test(value);
 }
 
-function isUuid(value: unknown): value is string {
-  return typeof value === 'string' && UUID_RE.test(value);
-}
-
-function isSafeTimestamp(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+function exactDenseArrayLength(value: unknown[]): number | null {
+  const lengthDescriptor: PropertyDescriptor | undefined = Reflect.getOwnPropertyDescriptor(
+    value,
+    'length',
+  );
+  if (
+    lengthDescriptor === undefined ||
+    typeof lengthDescriptor.value !== 'number' ||
+    !Number.isSafeInteger(lengthDescriptor.value) ||
+    lengthDescriptor.value < 0
+  ) {
+    return null;
+  }
+  const length: number = lengthDescriptor.value;
+  if (Reflect.ownKeys(value).length !== length + 1) return null;
+  for (let index: number = 0; index < length; index++) {
+    if (!Object.hasOwn(value, index)) return null;
+  }
+  return length;
 }
 
 function exactValueEqual(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
   if (Array.isArray(left) || Array.isArray(right)) {
-    if (!isDenseArray(left) || !isDenseArray(right) || left.length !== right.length) return false;
-    return left.every((item: unknown, index: number): boolean =>
-      exactValueEqual(item, right[index]),
-    );
+    if (!Array.isArray(left) || !Array.isArray(right)) return false;
+    const leftLength: number | null = exactDenseArrayLength(left);
+    const rightLength: number | null = exactDenseArrayLength(right);
+    if (leftLength === null || rightLength === null || leftLength !== rightLength) return false;
+    for (let index: number = 0; index < leftLength; index++) {
+      if (!exactValueEqual(left[index], right[index])) return false;
+    }
+    return true;
   }
   if (!isRecord(left) || !isRecord(right)) return false;
   const leftKeys: string[] = Reflect.ownKeys(left).filter(
