@@ -25,21 +25,26 @@ import type {
   GateState,
   InstallMarker,
   ListsConfig,
+  NormalizedScheduleEntryV1,
   OnboardingDraft,
   PauseEconomy,
   Rule,
   ScheduleDuration,
   ScheduleEntry,
+  ScheduleEntryV2,
   ScheduleOccurrenceRef,
   SessionConfig,
   SessionConfigV2,
   SessionDuration,
+  SessionMode,
   SessionRuleSnapshot,
   SessionSnapshot,
   Settings,
+  SettingsV2,
   SetupState,
   SiteUnlock,
   StreakState,
+  Strictness,
 } from './types';
 
 type UnknownRecord = Record<string, unknown>;
@@ -486,6 +491,46 @@ function isScheduleEntry(value: unknown): value is ScheduleEntry {
   return validateEntry(entry) === null;
 }
 
+function isScheduleEntryV2Value(value: unknown): value is ScheduleEntryV2 {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'id',
+      'days',
+      'start',
+      'end',
+      'duration',
+      'mode',
+      'strictness',
+      'cycling',
+      'intention',
+      'enabled',
+    ]) ||
+    !isScheduleDurationValue(value.duration)
+  ) {
+    return false;
+  }
+  const legacyShape: NormalizedScheduleEntryV1 = {
+    id: value.id as string,
+    days: value.days as number[],
+    start: value.start as string,
+    end: value.end as string,
+    mode: value.mode as SessionMode,
+    strictness: value.strictness as Strictness,
+    cycling: value.cycling as CycleConfig | null,
+    intention: value.intention as string,
+    enabled: value.enabled as boolean,
+  };
+  if (!isScheduleEntry(legacyShape)) return false;
+  return (
+    value.duration.kind === 'window' || (value.strictness === 'flexible' && value.cycling === null)
+  );
+}
+
+export function isScheduleEntryV2(value: unknown): value is ScheduleEntryV2 {
+  return safelyValidate((): boolean => isScheduleEntryV2Value(value));
+}
+
 function isSchedule(value: unknown): value is ScheduleEntry[] {
   if (!isDenseArray(value)) return false;
   const ids: Set<string> = new Set<string>();
@@ -603,6 +648,40 @@ function isSettingsValue(value: unknown): value is Settings {
 
 export function isSettings(value: unknown): value is Settings {
   return safelyValidate((): boolean => isSettingsValue(value));
+}
+
+function parseStoredScheduleEntryV2(value: unknown): ScheduleEntryV2 | null {
+  if (isScheduleEntryV2Value(value)) return structuredClone(value);
+  if (!isScheduleEntry(value)) return null;
+  return { ...structuredClone(value), duration: { kind: 'window' } };
+}
+
+export function parseStoredSettingsV2(value: unknown): SettingsV2 | null {
+  try {
+    if (!isRecord(value) || !isDenseArray(value.schedule)) return null;
+    const baseCandidate: UnknownRecord = structuredClone(value);
+    baseCandidate.schedule = [];
+    if (!isSettingsValue(baseCandidate)) return null;
+    const schedule: ScheduleEntryV2[] = [];
+    for (const candidate of value.schedule) {
+      const parsed: ScheduleEntryV2 | null = parseStoredScheduleEntryV2(candidate);
+      if (parsed === null) return null;
+      schedule.push(parsed);
+    }
+    const ids: Set<string> = new Set<string>();
+    for (let index: number = 0; index < schedule.length; index++) {
+      const entry: ScheduleEntryV2 = schedule[index] as ScheduleEntryV2;
+      if (ids.has(entry.id)) return null;
+      ids.add(entry.id);
+      for (let priorIndex: number = 0; priorIndex < index; priorIndex++) {
+        const prior: ScheduleEntryV2 = schedule[priorIndex] as ScheduleEntryV2;
+        if (scheduleEntriesOverlap(prior, entry)) return null;
+      }
+    }
+    return { ...(structuredClone(baseCandidate) as Settings), schedule };
+  } catch {
+    return null;
+  }
 }
 
 function isValidRuleHost(value: unknown): value is string {
