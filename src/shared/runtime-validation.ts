@@ -50,6 +50,23 @@ import type {
 type UnknownRecord = Record<string, unknown>;
 
 const MONTH_RE: RegExp = /^(\d{4})-(0[1-9]|1[0-2])$/;
+const SETTINGS_KEYS: readonly string[] = [
+  'theme',
+  'presetsMin',
+  'defaultMode',
+  'defaultStrictness',
+  'defaultCycling',
+  'cyclingOnByDefault',
+  'pause',
+  'gate',
+  'badgeCountdown',
+  'sessionCompleteNotification',
+  'sounds',
+  'schedule',
+  'streakGoalMin',
+  'streakFreezeIntervalDays',
+  'retentionDays',
+];
 const UUID_RE: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -601,26 +618,7 @@ function isSoundSettings(value: unknown): boolean {
 }
 
 function isSettingsValue(value: unknown): value is Settings {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, [
-      'theme',
-      'presetsMin',
-      'defaultMode',
-      'defaultStrictness',
-      'defaultCycling',
-      'cyclingOnByDefault',
-      'pause',
-      'gate',
-      'badgeCountdown',
-      'sessionCompleteNotification',
-      'sounds',
-      'schedule',
-      'streakGoalMin',
-      'streakFreezeIntervalDays',
-      'retentionDays',
-    ])
-  ) {
+  if (!isRecord(value) || !hasExactKeys(value, SETTINGS_KEYS)) {
     return false;
   }
   return (
@@ -651,19 +649,32 @@ export function isSettings(value: unknown): value is Settings {
 }
 
 function parseStoredScheduleEntryV2(value: unknown): ScheduleEntryV2 | null {
-  if (isScheduleEntryV2Value(value)) return structuredClone(value);
-  if (!isScheduleEntry(value)) return null;
-  return { ...structuredClone(value), duration: { kind: 'window' } };
+  try {
+    const candidate: unknown = structuredClone(value);
+    if (isScheduleEntryV2Value(candidate)) return candidate;
+    if (!isScheduleEntry(candidate)) return null;
+    return { ...candidate, duration: { kind: 'window' } };
+  } catch {
+    return null;
+  }
 }
 
 export function parseStoredSettingsV2(value: unknown): SettingsV2 | null {
   try {
-    if (!isRecord(value) || !isDenseArray(value.schedule)) return null;
-    const baseCandidate: UnknownRecord = structuredClone(value);
-    baseCandidate.schedule = [];
+    if (!isRecord(value) || !hasExactKeys(value, SETTINGS_KEYS)) return null;
+    const storedSchedule: unknown = value.schedule;
+    if (!isDenseArray(storedSchedule)) return null;
+    const baseSource: UnknownRecord = {};
+    for (let keyIndex: number = 0; keyIndex < SETTINGS_KEYS.length; keyIndex++) {
+      const key: string = SETTINGS_KEYS[keyIndex] as string;
+      if (key !== 'schedule') baseSource[key] = value[key];
+    }
+    baseSource.schedule = [];
+    const baseCandidate: UnknownRecord = structuredClone(baseSource);
     if (!isSettingsValue(baseCandidate)) return null;
     const schedule: ScheduleEntryV2[] = [];
-    for (const candidate of value.schedule) {
+    for (let index: number = 0; index < storedSchedule.length; index++) {
+      const candidate: unknown = storedSchedule[index];
       const parsed: ScheduleEntryV2 | null = parseStoredScheduleEntryV2(candidate);
       if (parsed === null) return null;
       schedule.push(parsed);
@@ -678,7 +689,7 @@ export function parseStoredSettingsV2(value: unknown): SettingsV2 | null {
         if (scheduleEntriesOverlap(prior, entry)) return null;
       }
     }
-    return { ...(structuredClone(baseCandidate) as Settings), schedule };
+    return { ...(baseCandidate as Settings), schedule };
   } catch {
     return null;
   }

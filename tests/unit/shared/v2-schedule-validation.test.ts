@@ -59,4 +59,73 @@ describe('v2 schedule validation and v1 Settings compatibility', (): void => {
       }),
     ).toBeNull();
   });
+
+  it('parses a stable entry snapshot before a stateful getter changes', (): void => {
+    const entry: Record<string, unknown> = structuredClone(WINDOW_ENTRY) as unknown as Record<
+      string,
+      unknown
+    >;
+    let reads: number = 0;
+    Object.defineProperty(entry, 'mode', {
+      configurable: true,
+      enumerable: true,
+      get: (): string => {
+        reads += 1;
+        return reads === 1 ? 'blacklist' : 'invalid';
+      },
+    });
+
+    const parsed: SettingsV2 | null = parseStoredSettingsV2({
+      ...DEFAULT_SETTINGS,
+      schedule: [entry],
+    });
+
+    expect(parsed?.schedule[0]?.mode).toBe('blacklist');
+    expect(isScheduleEntryV2(parsed?.schedule[0])).toBe(true);
+    expect(entry.mode).toBe('invalid');
+  });
+
+  it.each([
+    { key: 'extra', enumerable: false },
+    { key: Symbol('extra'), enumerable: true },
+  ])('rejects an extra Settings root key %# before cloning', ({ key, enumerable }): void => {
+    const stored: Record<PropertyKey, unknown> = structuredClone(
+      DEFAULT_SETTINGS,
+    ) as unknown as Record<PropertyKey, unknown>;
+    Object.defineProperty(stored, key, { enumerable, value: true });
+
+    expect(parseStoredSettingsV2(stored)).toBeNull();
+  });
+
+  it('returns null instead of throwing when root or entry cloning invokes a throwing getter', (): void => {
+    const throwingRoot: Record<string, unknown> = structuredClone(
+      DEFAULT_SETTINGS,
+    ) as unknown as Record<string, unknown>;
+    Object.defineProperty(throwingRoot, 'schedule', {
+      enumerable: true,
+      get: (): never => {
+        throw new Error('root getter');
+      },
+    });
+    const throwingEntry: Record<string, unknown> = structuredClone(
+      WINDOW_ENTRY,
+    ) as unknown as Record<string, unknown>;
+    Object.defineProperty(throwingEntry, 'mode', {
+      enumerable: true,
+      get: (): never => {
+        throw new Error('entry getter');
+      },
+    });
+    let rootResult: SettingsV2 | null | undefined;
+    let entryResult: SettingsV2 | null | undefined;
+
+    expect((): void => {
+      rootResult = parseStoredSettingsV2(throwingRoot);
+    }).not.toThrow();
+    expect((): void => {
+      entryResult = parseStoredSettingsV2({ ...DEFAULT_SETTINGS, schedule: [throwingEntry] });
+    }).not.toThrow();
+    expect(rootResult).toBeNull();
+    expect(entryResult).toBeNull();
+  });
 });
