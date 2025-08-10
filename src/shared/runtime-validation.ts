@@ -50,6 +50,29 @@ import type {
 type UnknownRecord = Record<string, unknown>;
 
 const MONTH_RE: RegExp = /^(\d{4})-(0[1-9]|1[0-2])$/;
+const SCHEDULE_ENTRY_V1_KEYS: readonly string[] = [
+  'id',
+  'days',
+  'start',
+  'end',
+  'mode',
+  'strictness',
+  'cycling',
+  'intention',
+  'enabled',
+];
+const SCHEDULE_ENTRY_V2_KEYS: readonly string[] = [
+  'id',
+  'days',
+  'start',
+  'end',
+  'duration',
+  'mode',
+  'strictness',
+  'cycling',
+  'intention',
+  'enabled',
+];
 const SETTINGS_KEYS: readonly string[] = [
   'theme',
   'presetsMin',
@@ -466,17 +489,7 @@ export function isCycleConfig(value: unknown): value is CycleConfig {
 function isScheduleEntry(value: unknown): value is ScheduleEntry {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, [
-      'id',
-      'days',
-      'start',
-      'end',
-      'mode',
-      'strictness',
-      'cycling',
-      'intention',
-      'enabled',
-    ]) ||
+    !hasExactKeys(value, SCHEDULE_ENTRY_V1_KEYS) ||
     !isNonBlankString(value.id) ||
     !isDenseArray(value.days) ||
     value.days.length === 0 ||
@@ -511,18 +524,7 @@ function isScheduleEntry(value: unknown): value is ScheduleEntry {
 function isScheduleEntryV2Value(value: unknown): value is ScheduleEntryV2 {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, [
-      'id',
-      'days',
-      'start',
-      'end',
-      'duration',
-      'mode',
-      'strictness',
-      'cycling',
-      'intention',
-      'enabled',
-    ]) ||
+    !hasExactKeys(value, SCHEDULE_ENTRY_V2_KEYS) ||
     !isScheduleDurationValue(value.duration)
   ) {
     return false;
@@ -650,6 +652,12 @@ export function isSettings(value: unknown): value is Settings {
 
 function parseStoredScheduleEntryV2(value: unknown): ScheduleEntryV2 | null {
   try {
+    if (
+      !isRecord(value) ||
+      (!hasExactKeys(value, SCHEDULE_ENTRY_V1_KEYS) && !hasExactKeys(value, SCHEDULE_ENTRY_V2_KEYS))
+    ) {
+      return null;
+    }
     const candidate: unknown = structuredClone(value);
     if (isScheduleEntryV2Value(candidate)) return candidate;
     if (!isScheduleEntry(candidate)) return null;

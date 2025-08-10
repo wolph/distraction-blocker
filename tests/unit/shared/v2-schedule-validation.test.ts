@@ -4,6 +4,20 @@ import { isScheduleEntryV2, parseStoredSettingsV2 } from '../../../src/shared/ru
 import type { SettingsV2 } from '../../../src/shared/types';
 import { sparseArray, WINDOW_ENTRY } from './v2-runtime-fixtures';
 
+type EntryExtraCase = readonly [
+  label: string,
+  shape: 'v1' | 'v2',
+  key: PropertyKey,
+  enumerable: boolean,
+];
+
+const ENTRY_EXTRA_CASES: EntryExtraCase[] = [
+  ['v1 non-enumerable string extra', 'v1', 'extra', false],
+  ['v1 Symbol extra', 'v1', Symbol('extra'), true],
+  ['v2 non-enumerable string extra', 'v2', 'extra', false],
+  ['v2 Symbol extra', 'v2', Symbol('extra'), true],
+];
+
 describe('v2 schedule validation and v1 Settings compatibility', (): void => {
   it('accepts exact v2 window and forced indefinite entries', (): void => {
     expect(isScheduleEntryV2(WINDOW_ENTRY)).toBe(true);
@@ -84,6 +98,19 @@ describe('v2 schedule validation and v1 Settings compatibility', (): void => {
     expect(isScheduleEntryV2(parsed?.schedule[0])).toBe(true);
     expect(entry.mode).toBe('invalid');
   });
+
+  it.each(ENTRY_EXTRA_CASES)(
+    'rejects %s before cloning',
+    (_label: string, shape: 'v1' | 'v2', key: PropertyKey, enumerable: boolean): void => {
+      const entry: Record<PropertyKey, unknown> = structuredClone(
+        WINDOW_ENTRY,
+      ) as unknown as Record<PropertyKey, unknown>;
+      if (shape === 'v1') delete entry.duration;
+      Object.defineProperty(entry, key, { enumerable, value: true });
+
+      expect(parseStoredSettingsV2({ ...DEFAULT_SETTINGS, schedule: [entry] })).toBeNull();
+    },
+  );
 
   it.each([
     { key: 'extra', enumerable: false },
