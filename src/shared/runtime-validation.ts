@@ -36,9 +36,11 @@ import type {
   SessionConfig,
   SessionConfigV2,
   SessionDuration,
+  SessionEndedEventV2,
   SessionMode,
   SessionRuleSnapshot,
   SessionSnapshot,
+  SessionStartedEventV2,
   Settings,
   SettingsV2,
   SetupState,
@@ -350,6 +352,14 @@ function isNonNegativeInteger(value: unknown): value is number {
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string' && UUID_RE.test(value);
+}
+
+function isSafeTimestamp(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function isNonBlankString(value: unknown): value is string {
@@ -1001,6 +1011,116 @@ function isEventRecordValue(value: unknown): value is EventRecord {
 
 export function isEventRecord(value: unknown): value is EventRecord {
   return safelyValidate((): boolean => isEventRecordValue(value));
+}
+
+function validSourceOccurrence(
+  source: unknown,
+  occurrence: unknown,
+  allowMissingInvalidScheduled: boolean,
+): boolean {
+  if (source === 'manual') return occurrence === null;
+  if (source !== 'schedule') return false;
+  return (
+    isScheduleOccurrenceRefValue(occurrence) ||
+    (allowMissingInvalidScheduled && occurrence === null)
+  );
+}
+
+export function isSessionStartedEventV2(value: unknown): value is SessionStartedEventV2 {
+  return safelyValidate((): boolean => {
+    if (
+      !isRecord(value) ||
+      !hasExactKeys(value, [
+        'version',
+        't',
+        'eventId',
+        'at',
+        'sessionId',
+        'source',
+        'mode',
+        'strictness',
+        'duration',
+        'intention',
+        'scheduleOccurrence',
+      ]) ||
+      value.version !== 2 ||
+      value.t !== 'sessionStarted' ||
+      !isUuid(value.sessionId) ||
+      value.eventId !== `${value.sessionId}:start` ||
+      !isSafeTimestamp(value.at) ||
+      (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
+      (value.strictness !== 'flexible' &&
+        value.strictness !== 'friction' &&
+        value.strictness !== 'hard') ||
+      !isSessionDurationValue(value.duration) ||
+      typeof value.intention !== 'string' ||
+      !validSourceOccurrence(value.source, value.scheduleOccurrence, false)
+    ) {
+      return false;
+    }
+    return value.duration.kind !== 'until-stopped' || value.strictness === 'flexible';
+  });
+}
+
+function isEndReasonOutcomeDurationValid(value: UnknownRecord): boolean {
+  switch (value.reason) {
+    case 'timer-completed':
+      return (
+        value.outcome === 'completed' && isRecord(value.duration) && value.duration.kind === 'timed'
+      );
+    case 'manual-completed':
+      return (
+        value.outcome === 'completed' &&
+        isRecord(value.duration) &&
+        value.duration.kind === 'until-stopped'
+      );
+    case 'manual-canceled':
+      return (
+        value.outcome === 'canceled' && isRecord(value.duration) && value.duration.kind === 'timed'
+      );
+    case 'website-access-lost':
+    case 'content-registration-failed':
+    case 'alarm-failed':
+    case 'tab-enforcement-failed':
+    case 'invalid-active-state':
+      return value.outcome === 'canceled';
+    default:
+      return false;
+  }
+}
+
+export function isSessionEndedEventV2(value: unknown): value is SessionEndedEventV2 {
+  return safelyValidate((): boolean => {
+    if (
+      !isRecord(value) ||
+      !hasExactKeys(value, [
+        'version',
+        't',
+        'eventId',
+        'at',
+        'sessionId',
+        'outcome',
+        'reason',
+        'focusedMs',
+        'duration',
+        'source',
+        'scheduleOccurrence',
+      ]) ||
+      value.version !== 2 ||
+      value.t !== 'sessionEnded' ||
+      !isUuid(value.sessionId) ||
+      value.eventId !== `${value.sessionId}:end` ||
+      !isSafeTimestamp(value.at) ||
+      !isSafeTimestamp(value.focusedMs) ||
+      !isSessionDurationValue(value.duration) ||
+      !isEndReasonOutcomeDurationValid(value)
+    ) {
+      return false;
+    }
+    const missingInvalidScheduled: boolean =
+      value.reason === 'invalid-active-state' && value.outcome === 'canceled';
+    return validSourceOccurrence(value.source, value.scheduleOccurrence, missingInvalidScheduled);
+  });
 }
 
 function isStatsBundleValue(value: unknown): value is StatsBundle {
