@@ -48,6 +48,7 @@ import type {
 } from './types';
 
 type UnknownRecord = Record<string, unknown>;
+type StoredScheduleEntryShape = 'v1' | 'v2';
 
 const MONTH_RE: RegExp = /^(\d{4})-(0[1-9]|1[0-2])$/;
 const SCHEDULE_ENTRY_V1_KEYS: readonly string[] = [
@@ -122,6 +123,21 @@ function hasExactKeys(value: UnknownRecord, keys: readonly string[]): boolean {
   } catch {
     return false;
   }
+}
+
+function exactKeysMatch(actual: readonly PropertyKey[], expected: readonly string[]): boolean {
+  return (
+    actual.length === expected.length &&
+    actual.every((key: PropertyKey): boolean => typeof key === 'string' && expected.includes(key))
+  );
+}
+
+function storedScheduleEntryShape(value: unknown): StoredScheduleEntryShape | null {
+  if (!isRecord(value)) return null;
+  const keys: PropertyKey[] = Reflect.ownKeys(value);
+  if (exactKeysMatch(keys, SCHEDULE_ENTRY_V1_KEYS)) return 'v1';
+  if (exactKeysMatch(keys, SCHEDULE_ENTRY_V2_KEYS)) return 'v2';
+  return null;
 }
 
 export function isSetupState(value: unknown): value is SetupState {
@@ -652,14 +668,10 @@ export function isSettings(value: unknown): value is Settings {
 
 function parseStoredScheduleEntryV2(value: unknown): ScheduleEntryV2 | null {
   try {
-    if (
-      !isRecord(value) ||
-      (!hasExactKeys(value, SCHEDULE_ENTRY_V1_KEYS) && !hasExactKeys(value, SCHEDULE_ENTRY_V2_KEYS))
-    ) {
-      return null;
-    }
+    const sourceShape: StoredScheduleEntryShape | null = storedScheduleEntryShape(value);
+    if (sourceShape === null) return null;
     const candidate: unknown = structuredClone(value);
-    if (isScheduleEntryV2Value(candidate)) return candidate;
+    if (sourceShape === 'v2') return isScheduleEntryV2Value(candidate) ? candidate : null;
     if (!isScheduleEntry(candidate)) return null;
     return { ...candidate, duration: { kind: 'window' } };
   } catch {

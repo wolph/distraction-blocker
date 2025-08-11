@@ -112,6 +112,37 @@ describe('v2 schedule validation and v1 Settings compatibility', (): void => {
     },
   );
 
+  it('does not reclassify a v2 entry when cloning drops its hidden duration', (): void => {
+    const entry: Record<string, unknown> = structuredClone(WINDOW_ENTRY) as unknown as Record<
+      string,
+      unknown
+    >;
+    Object.defineProperty(entry, 'duration', {
+      configurable: true,
+      enumerable: false,
+      value: entry.duration,
+      writable: true,
+    });
+
+    expect(parseStoredSettingsV2({ ...DEFAULT_SETTINGS, schedule: [entry] })).toBeNull();
+  });
+
+  it('rejects a v1 entry when cloning drops a hidden required field', (): void => {
+    const entry: Record<string, unknown> = structuredClone(WINDOW_ENTRY) as unknown as Record<
+      string,
+      unknown
+    >;
+    delete entry.duration;
+    Object.defineProperty(entry, 'enabled', {
+      configurable: true,
+      enumerable: false,
+      value: entry.enabled,
+      writable: true,
+    });
+
+    expect(parseStoredSettingsV2({ ...DEFAULT_SETTINGS, schedule: [entry] })).toBeNull();
+  });
+
   it.each([
     { key: 'extra', enumerable: false },
     { key: Symbol('extra'), enumerable: true },
