@@ -127,6 +127,24 @@ function hasExactKeys(value: UnknownRecord, keys: readonly string[]): boolean {
   }
 }
 
+function exactOwnDataSnapshot(value: unknown, keys: readonly string[]): UnknownRecord | null {
+  try {
+    if (!isRecord(value) || !hasExactKeys(value, keys)) return null;
+    const snapshot: UnknownRecord = {};
+    for (const key of keys) {
+      const descriptor: PropertyDescriptor | undefined = Reflect.getOwnPropertyDescriptor(
+        value,
+        key,
+      );
+      if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) return null;
+      snapshot[key] = descriptor.value;
+    }
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
 function exactKeysMatch(actual: readonly PropertyKey[], expected: readonly string[]): boolean {
   return (
     actual.length === expected.length &&
@@ -441,13 +459,12 @@ function isLocalDateValue(value: unknown): value is string {
 }
 
 function isSessionDurationValue(value: unknown): value is SessionDuration {
-  return (
-    isRecord(value) &&
-    ((hasExactKeys(value, ['kind', 'minutes']) &&
-      value.kind === 'timed' &&
-      isRelativeMinuteDuration(value.minutes)) ||
-      (hasExactKeys(value, ['kind']) && value.kind === 'until-stopped'))
-  );
+  const timed: UnknownRecord | null = exactOwnDataSnapshot(value, ['kind', 'minutes']);
+  if (timed !== null && timed.kind === 'timed' && isRelativeMinuteDuration(timed.minutes)) {
+    return true;
+  }
+  const indefinite: UnknownRecord | null = exactOwnDataSnapshot(value, ['kind']);
+  return indefinite !== null && indefinite.kind === 'until-stopped';
 }
 
 export function isSessionDuration(value: unknown): value is SessionDuration {
@@ -467,13 +484,18 @@ export function isScheduleDuration(value: unknown): value is ScheduleDuration {
 }
 
 function isScheduleOccurrenceRefValue(value: unknown): value is ScheduleOccurrenceRef {
+  const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, [
+    'version',
+    'token',
+    'entryId',
+    'localStartDate',
+  ]);
   return (
-    isRecord(value) &&
-    hasExactKeys(value, ['version', 'token', 'entryId', 'localStartDate']) &&
-    value.version === 1 &&
-    isNonBlankString(value.entryId) &&
-    isLocalDateValue(value.localStartDate) &&
-    value.token === `${value.entryId}@${value.localStartDate}`
+    candidate !== null &&
+    candidate.version === 1 &&
+    isNonBlankString(candidate.entryId) &&
+    isLocalDateValue(candidate.localStartDate) &&
+    candidate.token === `${candidate.entryId}@${candidate.localStartDate}`
   );
 }
 
@@ -1028,37 +1050,37 @@ function validSourceOccurrence(
 
 export function isSessionStartedEventV2(value: unknown): value is SessionStartedEventV2 {
   return safelyValidate((): boolean => {
+    const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, [
+      'version',
+      't',
+      'eventId',
+      'at',
+      'sessionId',
+      'source',
+      'mode',
+      'strictness',
+      'duration',
+      'intention',
+      'scheduleOccurrence',
+    ]);
     if (
-      !isRecord(value) ||
-      !hasExactKeys(value, [
-        'version',
-        't',
-        'eventId',
-        'at',
-        'sessionId',
-        'source',
-        'mode',
-        'strictness',
-        'duration',
-        'intention',
-        'scheduleOccurrence',
-      ]) ||
-      value.version !== 2 ||
-      value.t !== 'sessionStarted' ||
-      !isUuid(value.sessionId) ||
-      value.eventId !== `${value.sessionId}:start` ||
-      !isSafeTimestamp(value.at) ||
-      (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
-      (value.strictness !== 'flexible' &&
-        value.strictness !== 'friction' &&
-        value.strictness !== 'hard') ||
-      !isSessionDurationValue(value.duration) ||
-      typeof value.intention !== 'string' ||
-      !validSourceOccurrence(value.source, value.scheduleOccurrence, false)
+      candidate === null ||
+      candidate.version !== 2 ||
+      candidate.t !== 'sessionStarted' ||
+      !isUuid(candidate.sessionId) ||
+      candidate.eventId !== `${candidate.sessionId}:start` ||
+      !isSafeTimestamp(candidate.at) ||
+      (candidate.mode !== 'blacklist' && candidate.mode !== 'whitelist') ||
+      (candidate.strictness !== 'flexible' &&
+        candidate.strictness !== 'friction' &&
+        candidate.strictness !== 'hard') ||
+      !isSessionDurationValue(candidate.duration) ||
+      typeof candidate.intention !== 'string' ||
+      !validSourceOccurrence(candidate.source, candidate.scheduleOccurrence, false)
     ) {
       return false;
     }
-    return value.duration.kind !== 'until-stopped' || value.strictness === 'flexible';
+    return candidate.duration.kind !== 'until-stopped' || candidate.strictness === 'flexible';
   });
 }
 
@@ -1091,35 +1113,41 @@ function isEndReasonOutcomeDurationValid(value: UnknownRecord): boolean {
 
 export function isSessionEndedEventV2(value: unknown): value is SessionEndedEventV2 {
   return safelyValidate((): boolean => {
+    const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, [
+      'version',
+      't',
+      'eventId',
+      'at',
+      'sessionId',
+      'outcome',
+      'reason',
+      'focusedMs',
+      'duration',
+      'source',
+      'scheduleOccurrence',
+    ]);
     if (
-      !isRecord(value) ||
-      !hasExactKeys(value, [
-        'version',
-        't',
-        'eventId',
-        'at',
-        'sessionId',
-        'outcome',
-        'reason',
-        'focusedMs',
-        'duration',
-        'source',
-        'scheduleOccurrence',
-      ]) ||
-      value.version !== 2 ||
-      value.t !== 'sessionEnded' ||
-      !isUuid(value.sessionId) ||
-      value.eventId !== `${value.sessionId}:end` ||
-      !isSafeTimestamp(value.at) ||
-      !isSafeTimestamp(value.focusedMs) ||
-      !isSessionDurationValue(value.duration) ||
-      !isEndReasonOutcomeDurationValid(value)
+      candidate === null ||
+      candidate.version !== 2 ||
+      candidate.t !== 'sessionEnded' ||
+      !isUuid(candidate.sessionId) ||
+      candidate.eventId !== `${candidate.sessionId}:end` ||
+      !isSafeTimestamp(candidate.at) ||
+      !isSafeTimestamp(candidate.focusedMs) ||
+      !isSessionDurationValue(candidate.duration) ||
+      !isEndReasonOutcomeDurationValid(candidate)
     ) {
       return false;
     }
     const missingInvalidScheduled: boolean =
-      value.reason === 'invalid-active-state' && value.outcome === 'canceled';
-    return validSourceOccurrence(value.source, value.scheduleOccurrence, missingInvalidScheduled);
+      candidate.reason === 'invalid-active-state' &&
+      candidate.outcome === 'canceled' &&
+      candidate.duration.kind === 'timed';
+    return validSourceOccurrence(
+      candidate.source,
+      candidate.scheduleOccurrence,
+      missingInvalidScheduled,
+    );
   });
 }
 

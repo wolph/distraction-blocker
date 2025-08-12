@@ -99,6 +99,12 @@ describe('v2 event validation', (): void => {
     expect(isSessionEndedEventV2({ ...scheduledWithoutOccurrence, outcome: 'completed' })).toBe(
       false,
     );
+    expect(
+      isSessionEndedEventV2({
+        ...scheduledWithoutOccurrence,
+        duration: { kind: 'until-stopped' },
+      }),
+    ).toBe(false);
   });
 
   it('accepts scheduled events only with their exact occurrence', (): void => {
@@ -156,6 +162,67 @@ describe('v2 event validation', (): void => {
         ...STARTED,
         source: 'schedule',
         scheduleOccurrence: nestedOccurrence,
+      }),
+    ).toBe(false);
+  });
+
+  it('rejects self-mutating root event fields', (): void => {
+    const started: Record<string, unknown> = { ...STARTED };
+    let sessionIdReads: number = 0;
+    Object.defineProperty(started, 'sessionId', {
+      enumerable: true,
+      get: (): string => {
+        sessionIdReads += 1;
+        return sessionIdReads <= 2 ? STARTED.sessionId : 'not-a-uuid';
+      },
+    });
+
+    const ended: Record<string, unknown> = {
+      ...ENDED,
+      outcome: 'canceled',
+      duration: { kind: 'timed', minutes: 25 },
+      source: 'schedule',
+      scheduleOccurrence: null,
+    };
+    let reasonReads: number = 0;
+    Object.defineProperty(ended, 'reason', {
+      enumerable: true,
+      get: (): string => {
+        reasonReads += 1;
+        return reasonReads === 1 ? 'website-access-lost' : 'invalid-active-state';
+      },
+    });
+
+    expect(isSessionStartedEventV2(started)).toBe(false);
+    expect(isSessionEndedEventV2(ended)).toBe(false);
+  });
+
+  it('rejects self-mutating nested event fields', (): void => {
+    const duration: Record<string, unknown> = { minutes: 25 };
+    let durationKindReads: number = 0;
+    Object.defineProperty(duration, 'kind', {
+      enumerable: true,
+      get: (): string => {
+        durationKindReads += 1;
+        return durationKindReads === 1 ? 'timed' : 'until-stopped';
+      },
+    });
+    const occurrence: Record<string, unknown> = { ...OCCURRENCE };
+    let entryIdReads: number = 0;
+    Object.defineProperty(occurrence, 'entryId', {
+      enumerable: true,
+      get: (): string => {
+        entryIdReads += 1;
+        return entryIdReads <= 2 ? OCCURRENCE.entryId : 'other';
+      },
+    });
+
+    expect(isSessionStartedEventV2({ ...STARTED, duration })).toBe(false);
+    expect(
+      isSessionEndedEventV2({
+        ...ENDED,
+        source: 'schedule',
+        scheduleOccurrence: occurrence,
       }),
     ).toBe(false);
   });
