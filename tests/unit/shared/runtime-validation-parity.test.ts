@@ -12,6 +12,7 @@ import type { StatsBundle } from '../../../src/shared/messages';
 import {
   ackError,
   isAck,
+  isCanonicalSessionRuleSnapshot,
   isCycleConfig,
   isDeviceId,
   isEventRecord,
@@ -19,12 +20,20 @@ import {
   isListsConfig,
   isPauseEconomy,
   isRetrySyncResponse,
+  isScheduleDuration,
+  isScheduleEntryV2,
+  isScheduleOccurrenceRef,
+  isSessionConfigV2,
+  isSessionDuration,
+  isSessionEndedEventV2,
   isSessionSnapshot,
+  isSessionStartedEventV2,
   isSettings,
   isSetupState,
   isStatsBundle,
   isWebsiteAccessReconciliation,
   parseEventExportResponse,
+  parseStoredSettingsV2,
 } from '../../../src/shared/runtime-validation';
 import {
   LOCAL_BANK,
@@ -48,6 +57,7 @@ import type {
   SessionConfig,
   SessionRuleSnapshot,
   SessionSnapshot,
+  SettingsV2,
   SetupState,
   SiteUnlock,
 } from '../../../src/shared/types';
@@ -536,7 +546,28 @@ describe('exported runtime validators are total for hostile unknowns', (): void 
       isDeviceId,
       isAck,
       isWebsiteAccessReconciliation,
+      isCanonicalSessionRuleSnapshot,
+      isSessionDuration,
+      isScheduleDuration,
+      isScheduleOccurrenceRef,
+      isSessionConfigV2,
+      isScheduleEntryV2,
+      isSessionStartedEventV2,
+      isSessionEndedEventV2,
     ];
+
+    expect(booleanValidators).toEqual(
+      expect.arrayContaining([
+        isCanonicalSessionRuleSnapshot,
+        isSessionDuration,
+        isScheduleDuration,
+        isScheduleOccurrenceRef,
+        isSessionConfigV2,
+        isScheduleEntryV2,
+        isSessionStartedEventV2,
+        isSessionEndedEventV2,
+      ]),
+    );
 
     for (const validate of booleanValidators) {
       expect((): boolean => validate(hostile)).not.toThrow();
@@ -546,6 +577,8 @@ describe('exported runtime validators are total for hostile unknowns', (): void 
     expect(ackError(hostile, 'malformed')).toBe('malformed');
     expect((): EventRecord[] | null => parseEventExportResponse(hostile)).not.toThrow();
     expect(parseEventExportResponse(hostile)).toBeNull();
+    expect((): SettingsV2 | null => parseStoredSettingsV2(hostile)).not.toThrow();
+    expect(parseStoredSettingsV2(hostile)).toBeNull();
   });
 
   it('returns rejection values when property access and reflection throw', (): void => {
