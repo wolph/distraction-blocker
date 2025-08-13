@@ -226,4 +226,35 @@ describe('v2 event validation', (): void => {
       }),
     ).toBe(false);
   });
+
+  it('rejects a start duration Proxy whose reads disagree with its data descriptors', (): void => {
+    const duration: unknown = new Proxy<Record<string, unknown>>(
+      { kind: 'until-stopped' },
+      {
+        get: (
+          target: Record<string, unknown>,
+          property: PropertyKey,
+          receiver: unknown,
+        ): unknown => (property === 'kind' ? 'timed' : Reflect.get(target, property, receiver)),
+      },
+    );
+
+    expect(isSessionStartedEventV2({ ...STARTED, duration })).toBe(false);
+  });
+
+  it('rejects an end duration Proxy whose reads disagree with its data descriptors', (): void => {
+    const duration: unknown = new Proxy<Record<string, unknown>>(
+      { kind: 'timed', minutes: 25 },
+      {
+        get: (
+          target: Record<string, unknown>,
+          property: PropertyKey,
+          receiver: unknown,
+        ): unknown =>
+          property === 'kind' ? 'until-stopped' : Reflect.get(target, property, receiver),
+      },
+    );
+
+    expect(isSessionEndedEventV2({ ...ENDED, duration })).toBe(false);
+  });
 });

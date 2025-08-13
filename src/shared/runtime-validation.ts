@@ -145,6 +145,15 @@ function exactOwnDataSnapshot(value: unknown, keys: readonly string[]): UnknownR
   }
 }
 
+function isStructuredCloneableData(value: unknown): boolean {
+  try {
+    structuredClone(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function exactKeysMatch(actual: readonly PropertyKey[], expected: readonly string[]): boolean {
   return (
     actual.length === expected.length &&
@@ -458,13 +467,29 @@ function isLocalDateValue(value: unknown): value is string {
   );
 }
 
-function isSessionDurationValue(value: unknown): value is SessionDuration {
+function sessionDurationSnapshot(value: unknown): SessionDuration | null {
   const timed: UnknownRecord | null = exactOwnDataSnapshot(value, ['kind', 'minutes']);
-  if (timed !== null && timed.kind === 'timed' && isRelativeMinuteDuration(timed.minutes)) {
-    return true;
+  if (
+    timed !== null &&
+    timed.kind === 'timed' &&
+    isRelativeMinuteDuration(timed.minutes) &&
+    isStructuredCloneableData(value)
+  ) {
+    return { kind: 'timed', minutes: timed.minutes };
   }
   const indefinite: UnknownRecord | null = exactOwnDataSnapshot(value, ['kind']);
-  return indefinite !== null && indefinite.kind === 'until-stopped';
+  if (
+    indefinite !== null &&
+    indefinite.kind === 'until-stopped' &&
+    isStructuredCloneableData(value)
+  ) {
+    return { kind: 'until-stopped' };
+  }
+  return null;
+}
+
+function isSessionDurationValue(value: unknown): value is SessionDuration {
+  return sessionDurationSnapshot(value) !== null;
 }
 
 export function isSessionDuration(value: unknown): value is SessionDuration {
@@ -1063,6 +1088,7 @@ export function isSessionStartedEventV2(value: unknown): value is SessionStarted
       'intention',
       'scheduleOccurrence',
     ]);
+    const duration: SessionDuration | null = sessionDurationSnapshot(candidate?.duration);
     if (
       candidate === null ||
       candidate.version !== 2 ||
@@ -1074,32 +1100,25 @@ export function isSessionStartedEventV2(value: unknown): value is SessionStarted
       (candidate.strictness !== 'flexible' &&
         candidate.strictness !== 'friction' &&
         candidate.strictness !== 'hard') ||
-      !isSessionDurationValue(candidate.duration) ||
+      duration === null ||
       typeof candidate.intention !== 'string' ||
-      !validSourceOccurrence(candidate.source, candidate.scheduleOccurrence, false)
+      !validSourceOccurrence(candidate.source, candidate.scheduleOccurrence, false) ||
+      !isStructuredCloneableData(value)
     ) {
       return false;
     }
-    return candidate.duration.kind !== 'until-stopped' || candidate.strictness === 'flexible';
+    return duration.kind !== 'until-stopped' || candidate.strictness === 'flexible';
   });
 }
 
-function isEndReasonOutcomeDurationValid(value: UnknownRecord): boolean {
+function isEndReasonOutcomeDurationValid(value: UnknownRecord, duration: SessionDuration): boolean {
   switch (value.reason) {
     case 'timer-completed':
-      return (
-        value.outcome === 'completed' && isRecord(value.duration) && value.duration.kind === 'timed'
-      );
+      return value.outcome === 'completed' && duration.kind === 'timed';
     case 'manual-completed':
-      return (
-        value.outcome === 'completed' &&
-        isRecord(value.duration) &&
-        value.duration.kind === 'until-stopped'
-      );
+      return value.outcome === 'completed' && duration.kind === 'until-stopped';
     case 'manual-canceled':
-      return (
-        value.outcome === 'canceled' && isRecord(value.duration) && value.duration.kind === 'timed'
-      );
+      return value.outcome === 'canceled' && duration.kind === 'timed';
     case 'website-access-lost':
     case 'content-registration-failed':
     case 'alarm-failed':
@@ -1126,6 +1145,7 @@ export function isSessionEndedEventV2(value: unknown): value is SessionEndedEven
       'source',
       'scheduleOccurrence',
     ]);
+    const duration: SessionDuration | null = sessionDurationSnapshot(candidate?.duration);
     if (
       candidate === null ||
       candidate.version !== 2 ||
@@ -1134,15 +1154,16 @@ export function isSessionEndedEventV2(value: unknown): value is SessionEndedEven
       candidate.eventId !== `${candidate.sessionId}:end` ||
       !isSafeTimestamp(candidate.at) ||
       !isSafeTimestamp(candidate.focusedMs) ||
-      !isSessionDurationValue(candidate.duration) ||
-      !isEndReasonOutcomeDurationValid(candidate)
+      duration === null ||
+      !isEndReasonOutcomeDurationValid(candidate, duration) ||
+      !isStructuredCloneableData(value)
     ) {
       return false;
     }
     const missingInvalidScheduled: boolean =
       candidate.reason === 'invalid-active-state' &&
       candidate.outcome === 'canceled' &&
-      candidate.duration.kind === 'timed';
+      duration.kind === 'timed';
     return validSourceOccurrence(
       candidate.source,
       candidate.scheduleOccurrence,
