@@ -27,6 +27,7 @@ import type {
   ListsConfig,
   NormalizedScheduleEntryV1,
   OnboardingDraft,
+  PausedFromStateV2,
   PauseEconomy,
   Rule,
   ScheduleDuration,
@@ -41,6 +42,7 @@ import type {
   SessionRuleSnapshot,
   SessionSnapshot,
   SessionStartedEventV2,
+  SessionStateV2,
   Settings,
   SettingsV2,
   SetupState,
@@ -152,6 +154,27 @@ function isStructuredCloneableData(value: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+function hasOnlyOwnDataPropertiesDeep(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet<object>(),
+): boolean {
+  if (value === null || typeof value !== 'object') return typeof value !== 'function';
+  if (seen.has(value)) return true;
+  seen.add(value);
+  const keys: PropertyKey[] = Reflect.ownKeys(value);
+  for (const key of keys) {
+    const descriptor: PropertyDescriptor | undefined = Reflect.getOwnPropertyDescriptor(value, key);
+    if (
+      descriptor === undefined ||
+      !Object.hasOwn(descriptor, 'value') ||
+      !hasOnlyOwnDataPropertiesDeep(descriptor.value, seen)
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function exactKeysMatch(actual: readonly PropertyKey[], expected: readonly string[]): boolean {
@@ -893,6 +916,97 @@ function isSessionConfigV2Value(value: unknown): value is SessionConfigV2 {
 
 export function isSessionConfigV2(value: unknown): value is SessionConfigV2 {
   return safelyValidate((): boolean => isSessionConfigV2Value(value));
+}
+
+function isPausedFromStateV2Value(value: unknown): value is PausedFromStateV2 {
+  const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, ['phase', 'phaseEndsAt']);
+  return (
+    candidate !== null &&
+    (candidate.phase === 'focus' || candidate.phase === 'break') &&
+    (candidate.phaseEndsAt === null || isSafeTimestamp(candidate.phaseEndsAt)) &&
+    isStructuredCloneableData(value)
+  );
+}
+
+function isSessionStateV2Value(value: unknown): value is SessionStateV2 {
+  const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, [
+    'version',
+    'sessionId',
+    'config',
+    'startedAt',
+    'sessionEndsAt',
+    'phase',
+    'phaseStartedAt',
+    'phaseEndsAt',
+    'cycleIndex',
+    'pausedFrom',
+    'focusedMs',
+  ]);
+  const config: UnknownRecord | null = exactOwnDataSnapshot(candidate?.config, [
+    'mode',
+    'strictness',
+    'duration',
+    'cycling',
+    'intention',
+    'source',
+    'scheduleOccurrence',
+    'rules',
+  ]);
+  if (
+    candidate === null ||
+    config === null ||
+    !hasOnlyOwnDataPropertiesDeep(value) ||
+    candidate.version !== 2 ||
+    !isUuid(candidate.sessionId) ||
+    !isSessionConfigV2Value(config) ||
+    !isSafeTimestamp(candidate.startedAt) ||
+    !isSafeTimestamp(candidate.phaseStartedAt) ||
+    candidate.phaseStartedAt < candidate.startedAt ||
+    !isNonNegativeInteger(candidate.cycleIndex) ||
+    !isSafeTimestamp(candidate.focusedMs) ||
+    (candidate.phase !== 'focus' && candidate.phase !== 'break' && candidate.phase !== 'paused') ||
+    !isStructuredCloneableData(value)
+  ) {
+    return false;
+  }
+  const indefinite: boolean = config.duration.kind === 'until-stopped';
+  if (indefinite) {
+    if (candidate.sessionEndsAt !== null || candidate.phase === 'break') return false;
+    if (candidate.phase === 'focus') {
+      return candidate.phaseEndsAt === null && candidate.pausedFrom === null;
+    }
+    return (
+      isSafeTimestamp(candidate.phaseEndsAt) &&
+      candidate.phaseEndsAt >= candidate.phaseStartedAt &&
+      isPausedFromStateV2Value(candidate.pausedFrom) &&
+      candidate.pausedFrom.phase === 'focus' &&
+      candidate.pausedFrom.phaseEndsAt === null
+    );
+  }
+  if (
+    !isSafeTimestamp(candidate.sessionEndsAt) ||
+    candidate.sessionEndsAt < candidate.startedAt ||
+    !isSafeTimestamp(candidate.phaseEndsAt) ||
+    candidate.phaseEndsAt < candidate.phaseStartedAt ||
+    candidate.phaseEndsAt > candidate.sessionEndsAt
+  ) {
+    return false;
+  }
+  if (candidate.phase === 'focus') return candidate.pausedFrom === null;
+  if (candidate.phase === 'break') {
+    return config.cycling !== null && candidate.pausedFrom === null;
+  }
+  return (
+    isPausedFromStateV2Value(candidate.pausedFrom) &&
+    isSafeTimestamp(candidate.pausedFrom.phaseEndsAt) &&
+    candidate.pausedFrom.phaseEndsAt >= candidate.phaseStartedAt &&
+    candidate.pausedFrom.phaseEndsAt <= candidate.sessionEndsAt &&
+    (candidate.pausedFrom.phase !== 'break' || config.cycling !== null)
+  );
+}
+
+export function isSessionStateV2(value: unknown): value is SessionStateV2 {
+  return safelyValidate((): boolean => isSessionStateV2Value(value));
 }
 
 function isGate(value: unknown): value is GateState {
