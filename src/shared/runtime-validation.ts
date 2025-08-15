@@ -21,6 +21,7 @@ import {
 import type {
   CategoryId,
   CycleConfig,
+  EndAuthorityV2,
   EventRecord,
   GateState,
   InstallMarker,
@@ -38,6 +39,7 @@ import type {
   SessionConfigV2,
   SessionDuration,
   SessionEndedEventV2,
+  SessionLifecycleV2,
   SessionMode,
   SessionRuleSnapshot,
   SessionSnapshot,
@@ -1007,6 +1009,146 @@ function isSessionStateV2Value(value: unknown): value is SessionStateV2 {
 
 export function isSessionStateV2(value: unknown): value is SessionStateV2 {
   return safelyValidate((): boolean => isSessionStateV2Value(value));
+}
+
+function isExactGateState(value: unknown): value is GateState {
+  const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, [
+    'kind',
+    'host',
+    'openedAt',
+    'readyAt',
+    'requiredPhrase',
+  ]);
+  return (
+    candidate !== null &&
+    hasOnlyOwnDataPropertiesDeep(value) &&
+    isStructuredCloneableData(value) &&
+    isGate(candidate) &&
+    isSafeTimestamp(candidate.openedAt) &&
+    isSafeTimestamp(candidate.readyAt)
+  );
+}
+
+function isHiddenAuthority(value: unknown): value is { kind: 'hidden' } {
+  const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, ['kind']);
+  return (
+    candidate !== null &&
+    candidate.kind === 'hidden' &&
+    hasOnlyOwnDataPropertiesDeep(value) &&
+    isStructuredCloneableData(value)
+  );
+}
+
+function isEndAuthorityV2Value(value: unknown): value is EndAuthorityV2 {
+  if (!hasOnlyOwnDataPropertiesDeep(value) || !isStructuredCloneableData(value)) return false;
+
+  const hidden: UnknownRecord | null = exactOwnDataSnapshot(value, ['kind']);
+  if (hidden !== null) return hidden.kind === 'hidden';
+
+  const immediate: UnknownRecord | null = exactOwnDataSnapshot(value, ['kind', 'actionLabel']);
+  if (immediate !== null) {
+    return immediate.kind === 'immediate' && immediate.actionLabel === 'End session';
+  }
+
+  const friction: UnknownRecord | null = exactOwnDataSnapshot(value, [
+    'kind',
+    'gate',
+    'copy',
+    'actions',
+  ]);
+  if (friction === null || friction.kind !== 'friction-gate') return false;
+
+  if (friction.gate === null) {
+    const copy: UnknownRecord | null = exactOwnDataSnapshot(friction.copy, ['actionLabel']);
+    const actions: UnknownRecord | null = exactOwnDataSnapshot(friction.actions, ['open']);
+    return (
+      copy !== null &&
+      copy.actionLabel === 'End session' &&
+      actions !== null &&
+      actions.open === 'open-end-gate'
+    );
+  }
+
+  const copy: UnknownRecord | null = exactOwnDataSnapshot(friction.copy, [
+    'title',
+    'back',
+    'phraseLabel',
+    'confirm',
+    'intentionReminder',
+  ]);
+  const actions: UnknownRecord | null = exactOwnDataSnapshot(friction.actions, [
+    'abandon',
+    'confirm',
+  ]);
+  return (
+    isExactGateState(friction.gate) &&
+    friction.gate.kind === 'cancel' &&
+    copy !== null &&
+    copy.title === 'End this session' &&
+    copy.back === 'Never mind, back to work' &&
+    copy.phraseLabel === 'Type this to confirm:' &&
+    copy.confirm === 'End the session' &&
+    isNullableString(copy.intentionReminder) &&
+    actions !== null &&
+    actions.abandon === 'abandon-gate' &&
+    actions.confirm === 'confirm-gate'
+  );
+}
+
+export function isSessionLifecycleV2(value: unknown): value is SessionLifecycleV2 {
+  return safelyValidate((): boolean => {
+    if (!hasOnlyOwnDataPropertiesDeep(value) || !isStructuredCloneableData(value)) return false;
+
+    const simple: UnknownRecord | null = exactOwnDataSnapshot(value, ['kind', 'endAuthority']);
+    if (simple !== null) {
+      if (simple.kind === 'idle') return isHiddenAuthority(simple.endAuthority);
+      return simple.kind === 'active' && isEndAuthorityV2Value(simple.endAuthority);
+    }
+
+    const starting: UnknownRecord | null = exactOwnDataSnapshot(value, [
+      'kind',
+      'operationId',
+      'transition',
+      'endAuthority',
+    ]);
+    if (starting !== null) {
+      return (
+        starting.kind === 'starting' &&
+        isUuid(starting.operationId) &&
+        (starting.transition === 'start' || starting.transition === 'resume') &&
+        isEndAuthorityV2Value(starting.endAuthority)
+      );
+    }
+
+    const cleanup: UnknownRecord | null = exactOwnDataSnapshot(value, [
+      'kind',
+      'journal',
+      'id',
+      'endAuthority',
+    ]);
+    if (cleanup !== null) {
+      return (
+        cleanup.kind === 'cleanup' &&
+        (cleanup.journal === 'transition' || cleanup.journal === 'closure') &&
+        isUuid(cleanup.id) &&
+        isHiddenAuthority(cleanup.endAuthority)
+      );
+    }
+
+    const error: UnknownRecord | null = exactOwnDataSnapshot(value, [
+      'kind',
+      'code',
+      'retryAvailable',
+      'endAuthority',
+    ]);
+    return (
+      error !== null &&
+      error.kind === 'error' &&
+      (error.code === 'transition-cleanup-failed' || error.code === 'closure-cleanup-failed') &&
+      error.retryAvailable === true &&
+      isHiddenAuthority(error.endAuthority)
+    );
+  });
 }
 
 function isGate(value: unknown): value is GateState {
