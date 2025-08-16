@@ -71,8 +71,10 @@ describe('v2 persisted session state matrix', (): void => {
         source: 'schedule',
         scheduleOccurrence: OCCURRENCE,
       },
-      sessionEndsAt: NOW + 60_001,
-      phaseEndsAt: NOW + 60_001,
+      startedAt: 0,
+      sessionEndsAt: 60_001,
+      phaseStartedAt: 0,
+      phaseEndsAt: 60_001,
     },
   ])('accepts legal state %#', (value: unknown): void => {
     expect(isSessionStateV2(value)).toBe(true);

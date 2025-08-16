@@ -984,7 +984,8 @@ function isSessionStateV2Value(value: unknown): value is SessionStateV2 {
       candidate.pausedFrom.phaseEndsAt === null
     );
   }
-  const expectedSessionEndsAt: number = candidate.startedAt + config.duration.minutes * 60_000;
+  const durationMs: number = Math.round(config.duration.minutes * 60_000);
+  const expectedSessionEndsAt: number = candidate.startedAt + durationMs;
   if (
     !isSafeTimestamp(expectedSessionEndsAt) ||
     candidate.sessionEndsAt !== expectedSessionEndsAt ||
