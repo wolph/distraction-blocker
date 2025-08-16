@@ -5,6 +5,7 @@ import {
   MANUAL_INDEFINITE_CONFIG,
   MANUAL_TIMED_CONFIG,
   NOW,
+  OCCURRENCE,
   SESSION_ID,
 } from './v2-runtime-fixtures';
 
@@ -62,6 +63,17 @@ describe('v2 persisted session state matrix', (): void => {
     },
     INDEFINITE_FOCUS_STATE,
     INDEFINITE_PAUSED_STATE,
+    {
+      ...TIMED_FOCUS_STATE,
+      config: {
+        ...MANUAL_TIMED_CONFIG,
+        duration: { kind: 'timed', minutes: 60_001 / 60_000 },
+        source: 'schedule',
+        scheduleOccurrence: OCCURRENCE,
+      },
+      sessionEndsAt: NOW + 60_001,
+      phaseEndsAt: NOW + 60_001,
+    },
   ])('accepts legal state %#', (value: unknown): void => {
     expect(isSessionStateV2(value)).toBe(true);
   });
@@ -71,6 +83,20 @@ describe('v2 persisted session state matrix', (): void => {
     { ...TIMED_FOCUS_STATE, sessionId: 'not-a-uuid' },
     { ...TIMED_FOCUS_STATE, sessionEndsAt: null },
     { ...TIMED_FOCUS_STATE, phaseEndsAt: null },
+    {
+      ...TIMED_FOCUS_STATE,
+      config: {
+        ...MANUAL_TIMED_CONFIG,
+        duration: { kind: 'timed', minutes: 50 },
+      },
+    },
+    {
+      ...TIMED_FOCUS_STATE,
+      startedAt: Number.MAX_SAFE_INTEGER - 1,
+      sessionEndsAt: Number.MAX_SAFE_INTEGER,
+      phaseStartedAt: Number.MAX_SAFE_INTEGER - 1,
+      phaseEndsAt: Number.MAX_SAFE_INTEGER,
+    },
     {
       ...TIMED_FOCUS_STATE,
       config: {

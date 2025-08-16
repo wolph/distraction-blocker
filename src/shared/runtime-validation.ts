@@ -971,8 +971,7 @@ function isSessionStateV2Value(value: unknown): value is SessionStateV2 {
   ) {
     return false;
   }
-  const indefinite: boolean = config.duration.kind === 'until-stopped';
-  if (indefinite) {
+  if (config.duration.kind === 'until-stopped') {
     if (candidate.sessionEndsAt !== null || candidate.phase === 'break') return false;
     if (candidate.phase === 'focus') {
       return candidate.phaseEndsAt === null && candidate.pausedFrom === null;
@@ -985,9 +984,11 @@ function isSessionStateV2Value(value: unknown): value is SessionStateV2 {
       candidate.pausedFrom.phaseEndsAt === null
     );
   }
+  const expectedSessionEndsAt: number = candidate.startedAt + config.duration.minutes * 60_000;
   if (
+    !isSafeTimestamp(expectedSessionEndsAt) ||
+    candidate.sessionEndsAt !== expectedSessionEndsAt ||
     !isSafeTimestamp(candidate.sessionEndsAt) ||
-    candidate.sessionEndsAt < candidate.startedAt ||
     !isSafeTimestamp(candidate.phaseEndsAt) ||
     candidate.phaseEndsAt < candidate.phaseStartedAt ||
     candidate.phaseEndsAt > candidate.sessionEndsAt
