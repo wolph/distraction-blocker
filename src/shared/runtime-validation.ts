@@ -1,7 +1,7 @@
 import { normalizeSessionRules, validateRule } from '../core/matcher';
 import { scheduleEntriesOverlap, validateEntry } from '../core/schedule';
 import { isDailyDate, parseDailyAgg, parseMonthlyAgg } from '../core/stats';
-import { CATEGORY_IDS, MAX_FREEZE_TOKENS } from './constants';
+import { CATEGORY_IDS, cancelPhrase, MAX_FREEZE_TOKENS } from './constants';
 import type {
   Ack,
   OnboardingCleanupResponse,
@@ -30,6 +30,7 @@ import type {
   OnboardingDraft,
   PausedFromStateV2,
   PauseEconomy,
+  Phase,
   Rule,
   ScheduleDuration,
   ScheduleEntry,
@@ -43,6 +44,7 @@ import type {
   SessionMode,
   SessionRuleSnapshot,
   SessionSnapshot,
+  SessionSnapshotV2,
   SessionStartedEventV2,
   SessionStateV2,
   Settings,
@@ -144,6 +146,17 @@ function exactOwnDataSnapshot(value: unknown, keys: readonly string[]): UnknownR
       snapshot[key] = descriptor.value;
     }
     return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+function stableExactOwnDataSnapshot(value: unknown, keys: readonly string[]): UnknownRecord | null {
+  try {
+    const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, keys);
+    if (candidate === null || !hasOnlyOwnDataPropertiesDeep(value)) return null;
+    structuredClone(value);
+    return candidate;
   } catch {
     return null;
   }
@@ -1151,6 +1164,186 @@ export function isSessionLifecycleV2(value: unknown): value is SessionLifecycleV
       isHiddenAuthority(error.endAuthority)
     );
   });
+}
+
+function isExactSiteUnlock(value: unknown, at: number): value is SiteUnlock {
+  const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, ['host', 'until']);
+  return (
+    candidate !== null &&
+    isNonBlankString(candidate.host) &&
+    isSafeTimestamp(candidate.until) &&
+    candidate.until > at
+  );
+}
+
+function isExactActiveUnlocks(value: unknown, at: number): value is SiteUnlock[] {
+  if (!Array.isArray(value)) return false;
+  const length: number | null = exactDenseArrayLength(value);
+  if (length === null) return false;
+  for (let index: number = 0; index < length; index++) {
+    if (!isExactSiteUnlock(value[index], at)) return false;
+  }
+  return true;
+}
+
+function isPhaseValue(value: unknown): value is Phase {
+  return value === 'idle' || value === 'focus' || value === 'break' || value === 'paused';
+}
+
+function intentionReminder(config: SessionConfigV2): string | null {
+  const intention: string = config.intention.trim();
+  return intention === '' ? null : intention;
+}
+
+function authorityMatchesConfigAndGate(
+  authority: EndAuthorityV2,
+  config: SessionConfigV2,
+  gate: GateState | null,
+): boolean {
+  const cancelGate: (GateState & { kind: 'cancel' }) | null =
+    gate?.kind === 'cancel' ? { ...gate, kind: 'cancel' } : null;
+  if (config.duration.kind === 'until-stopped' || config.strictness === 'flexible') {
+    return authority.kind === 'immediate' && cancelGate === null;
+  }
+  if (config.strictness === 'hard') return authority.kind === 'hidden' && cancelGate === null;
+  if (authority.kind !== 'friction-gate') return false;
+  if (cancelGate === null) return authority.gate === null;
+  const requiredPhrase: string | null = authority.gate?.requiredPhrase ?? null;
+  return (
+    authority.gate !== null &&
+    exactValueEqual(authority.gate, cancelGate) &&
+    (requiredPhrase === null || requiredPhrase === cancelPhrase(config.intention)) &&
+    authority.copy.intentionReminder === intentionReminder(config)
+  );
+}
+
+function isExactNextSchedule(value: unknown, at: number): boolean {
+  if (value === null) return true;
+  const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, ['entryId', 'startsAt']);
+  return (
+    candidate !== null &&
+    isNonBlankString(candidate.entryId) &&
+    isSafeTimestamp(candidate.startsAt) &&
+    candidate.startsAt > at
+  );
+}
+
+const SESSION_SNAPSHOT_V2_KEYS: readonly string[] = [
+  'at',
+  'theme',
+  'lifecycle',
+  'phase',
+  'config',
+  'startedAt',
+  'phaseStartedAt',
+  'phaseEndsAt',
+  'sessionEndsAt',
+  'sessionFocusedMs',
+  'cycleIndex',
+  'bankMs',
+  'bankAccrualPerMs',
+  'bankCapMs',
+  'pauseCostMs',
+  'unlockCostMs',
+  'activeUnlocks',
+  'gate',
+  'attemptsToday',
+  'scheduleActive',
+  'nextSchedule',
+];
+
+function isSessionSnapshotV2Value(value: unknown): value is SessionSnapshotV2 {
+  const candidate: UnknownRecord | null = stableExactOwnDataSnapshot(
+    value,
+    SESSION_SNAPSHOT_V2_KEYS,
+  );
+  if (
+    candidate === null ||
+    !isSafeTimestamp(candidate.at) ||
+    !isThemeMode(candidate.theme) ||
+    !isSessionLifecycleV2(candidate.lifecycle) ||
+    !isPhaseValue(candidate.phase) ||
+    !isSafeTimestamp(candidate.sessionFocusedMs) ||
+    !isNonNegativeInteger(candidate.cycleIndex) ||
+    !isNonNegativeNumber(candidate.bankMs) ||
+    !isNonNegativeNumber(candidate.bankAccrualPerMs) ||
+    !isSafeTimestamp(candidate.bankCapMs) ||
+    candidate.bankMs > candidate.bankCapMs ||
+    !isRelativeMillisecondDuration(candidate.pauseCostMs, true) ||
+    !isRelativeMillisecondDuration(candidate.unlockCostMs, true) ||
+    !isExactActiveUnlocks(candidate.activeUnlocks, candidate.at) ||
+    (candidate.gate !== null &&
+      (!isExactGateState(candidate.gate) || candidate.gate.openedAt > candidate.at)) ||
+    !isNonNegativeInteger(candidate.attemptsToday) ||
+    typeof candidate.scheduleActive !== 'boolean' ||
+    !isExactNextSchedule(candidate.nextSchedule, candidate.at)
+  ) {
+    return false;
+  }
+
+  if (candidate.lifecycle.kind !== 'active') {
+    return (
+      candidate.phase === 'idle' &&
+      candidate.config === null &&
+      candidate.startedAt === null &&
+      candidate.phaseStartedAt === null &&
+      candidate.phaseEndsAt === null &&
+      candidate.sessionEndsAt === null &&
+      candidate.sessionFocusedMs === 0 &&
+      candidate.cycleIndex === 0 &&
+      candidate.bankAccrualPerMs === 0 &&
+      candidate.gate === null &&
+      candidate.scheduleActive === false &&
+      candidate.activeUnlocks.length === 0
+    );
+  }
+
+  if (
+    candidate.phase === 'idle' ||
+    !isSessionConfigV2Value(candidate.config) ||
+    !isSafeTimestamp(candidate.startedAt) ||
+    !isSafeTimestamp(candidate.phaseStartedAt) ||
+    candidate.startedAt > candidate.at ||
+    candidate.phaseStartedAt < candidate.startedAt ||
+    candidate.phaseStartedAt > candidate.at ||
+    candidate.sessionFocusedMs > candidate.at - candidate.startedAt ||
+    (candidate.phase !== 'focus' && candidate.bankAccrualPerMs !== 0) ||
+    candidate.scheduleActive !== (candidate.config.source === 'schedule') ||
+    !authorityMatchesConfigAndGate(
+      candidate.lifecycle.endAuthority,
+      candidate.config,
+      candidate.gate,
+    )
+  ) {
+    return false;
+  }
+
+  if (candidate.config.duration.kind === 'until-stopped') {
+    if (candidate.sessionEndsAt !== null || candidate.phase === 'break') return false;
+    return candidate.phase === 'focus'
+      ? candidate.phaseEndsAt === null
+      : isSafeTimestamp(candidate.phaseEndsAt) &&
+          candidate.phaseEndsAt > candidate.at &&
+          candidate.phaseEndsAt >= candidate.phaseStartedAt;
+  }
+
+  const durationMs: number = Math.round(candidate.config.duration.minutes * 60_000);
+  const expectedSessionEndsAt: number = candidate.startedAt + durationMs;
+  return (
+    isSafeTimestamp(expectedSessionEndsAt) &&
+    candidate.sessionEndsAt === expectedSessionEndsAt &&
+    isSafeTimestamp(candidate.sessionEndsAt) &&
+    isSafeTimestamp(candidate.phaseEndsAt) &&
+    candidate.sessionEndsAt > candidate.at &&
+    candidate.phaseEndsAt >= candidate.phaseStartedAt &&
+    candidate.phaseEndsAt > candidate.at &&
+    candidate.phaseEndsAt <= candidate.sessionEndsAt &&
+    (candidate.phase !== 'break' || candidate.config.cycling !== null)
+  );
+}
+
+export function isSessionSnapshotV2(value: unknown): value is SessionSnapshotV2 {
+  return safelyValidate((): boolean => isSessionSnapshotV2Value(value));
 }
 
 function isGate(value: unknown): value is GateState {

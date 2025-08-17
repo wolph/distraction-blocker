@@ -36,6 +36,14 @@ export const OPEN_FRICTION_AUTHORITY: Extract<
 };
 
 export function activeSnapshotV2(config: SessionConfigV2 = MANUAL_TIMED_CONFIG): SessionSnapshotV2 {
+  const sessionEndsAt: number | null =
+    config.duration.kind === 'timed' ? NOW + Math.round(config.duration.minutes * 60_000) : null;
+  const phaseEndsAt: number | null =
+    config.duration.kind === 'until-stopped'
+      ? null
+      : config.cycling === null
+        ? sessionEndsAt
+        : NOW + Math.round(config.cycling.focusMin * 60_000);
   return {
     ...emptySnapshotV2(NOW + 10_000),
     lifecycle: {
@@ -51,8 +59,8 @@ export function activeSnapshotV2(config: SessionConfigV2 = MANUAL_TIMED_CONFIG):
     config,
     startedAt: NOW,
     phaseStartedAt: NOW,
-    phaseEndsAt: config.duration.kind === 'timed' ? NOW + 25 * 60_000 : null,
-    sessionEndsAt: config.duration.kind === 'timed' ? NOW + 25 * 60_000 : null,
+    phaseEndsAt,
+    sessionEndsAt,
     sessionFocusedMs: 10_000,
   };
 }
