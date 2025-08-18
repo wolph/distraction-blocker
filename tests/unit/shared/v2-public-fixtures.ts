@@ -43,7 +43,10 @@ export function activeSnapshotV2(config: SessionConfigV2 = MANUAL_TIMED_CONFIG):
       ? null
       : config.cycling === null
         ? sessionEndsAt
-        : NOW + Math.round(config.cycling.focusMin * 60_000);
+        : Math.min(
+            NOW + Math.round(config.cycling.focusMin * 60_000),
+            NOW + Math.round(config.duration.minutes * 60_000),
+          );
   return {
     ...emptySnapshotV2(NOW + 10_000),
     lifecycle: {

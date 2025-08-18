@@ -153,10 +153,10 @@ function exactOwnDataSnapshot(value: unknown, keys: readonly string[]): UnknownR
 
 function stableExactOwnDataSnapshot(value: unknown, keys: readonly string[]): UnknownRecord | null {
   try {
-    const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, keys);
-    if (candidate === null || !hasOnlyOwnDataPropertiesDeep(value)) return null;
-    structuredClone(value);
-    return candidate;
+    const cloned: unknown = structuredClone(value);
+    if (!hasOnlyOwnDataPropertiesDeep(value)) return null;
+    if (!exactValueEqual(value, cloned)) return null;
+    return exactOwnDataSnapshot(cloned, keys);
   } catch {
     return null;
   }
@@ -176,6 +176,7 @@ function hasOnlyOwnDataPropertiesDeep(
   seen: WeakSet<object> = new WeakSet<object>(),
 ): boolean {
   if (value === null || typeof value !== 'object') return typeof value !== 'function';
+  if (Array.isArray(value) && Object.getPrototypeOf(value) !== Array.prototype) return false;
   if (seen.has(value)) return true;
   seen.add(value);
   const keys: PropertyKey[] = Reflect.ownKeys(value);
@@ -1307,6 +1308,10 @@ function isSessionSnapshotV2Value(value: unknown): value is SessionSnapshotV2 {
     candidate.phaseStartedAt < candidate.startedAt ||
     candidate.phaseStartedAt > candidate.at ||
     candidate.sessionFocusedMs > candidate.at - candidate.startedAt ||
+    (candidate.phase === 'focus' &&
+      candidate.sessionFocusedMs < candidate.at - candidate.phaseStartedAt) ||
+    (candidate.phase !== 'focus' &&
+      candidate.sessionFocusedMs > candidate.phaseStartedAt - candidate.startedAt) ||
     (candidate.phase !== 'focus' && candidate.bankAccrualPerMs !== 0) ||
     candidate.scheduleActive !== (candidate.config.source === 'schedule') ||
     !authorityMatchesConfigAndGate(

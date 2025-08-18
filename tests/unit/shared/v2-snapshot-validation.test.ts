@@ -50,6 +50,10 @@ function withGate(snapshot: SessionSnapshotV2, gate: GateState): SessionSnapshot
 describe('v2 public snapshot validation', (): void => {
   it('accepts exact idle, timed, cycling, and indefinite snapshots', (): void => {
     const cycling: SessionSnapshotV2 = activeSnapshotV2(CYCLING_50_CONFIG);
+    const shortCycling: SessionSnapshotV2 = activeSnapshotV2({
+      ...CYCLING_50_CONFIG,
+      duration: { kind: 'timed', minutes: 10 },
+    });
 
     expect(isSessionSnapshotV2(emptySnapshotV2(NOW))).toBe(true);
     expect(isSessionSnapshotV2(activeSnapshotV2())).toBe(true);
@@ -57,6 +61,9 @@ describe('v2 public snapshot validation', (): void => {
     expect(cycling.phaseEndsAt).toBe(NOW + 25 * 60_000);
     expect(cycling.sessionEndsAt).toBe(NOW + 50 * 60_000);
     expect(isSessionSnapshotV2(cycling)).toBe(true);
+    expect(shortCycling.phaseEndsAt).toBe(NOW + 10 * 60_000);
+    expect(shortCycling.sessionEndsAt).toBe(NOW + 10 * 60_000);
+    expect(isSessionSnapshotV2(shortCycling)).toBe(true);
     expect(
       isSessionSnapshotV2(
         activeSnapshotV2({
@@ -261,6 +268,10 @@ describe('v2 public snapshot validation', (): void => {
     const withSymbol: SiteUnlock = { ...stale, until: NOW + 20_000 };
     Object.defineProperty(withSymbol, Symbol('extra'), { value: true, enumerable: true });
     const sparse: SiteUnlock[] = new Array<SiteUnlock>(1);
+    const nullPrototype: SiteUnlock[] = [{ ...stale, until: NOW + 20_000 }];
+    Object.setPrototypeOf(nullPrototype, null);
+    const customPrototype: SiteUnlock[] = [{ ...stale, until: NOW + 20_000 }];
+    Object.setPrototypeOf(customPrototype, Object.create(Array.prototype));
     const overriddenEvery: SiteUnlock[] = [{ ...stale, until: NOW + 20_000 }];
     Object.defineProperty(overriddenEvery, 'every', {
       value: (): boolean => true,
@@ -271,6 +282,12 @@ describe('v2 public snapshot validation', (): void => {
     expect(isSessionSnapshotV2({ ...activeSnapshotV2(), activeUnlocks: [withExtra] })).toBe(false);
     expect(isSessionSnapshotV2({ ...activeSnapshotV2(), activeUnlocks: [withSymbol] })).toBe(false);
     expect(isSessionSnapshotV2({ ...activeSnapshotV2(), activeUnlocks: sparse })).toBe(false);
+    expect(isSessionSnapshotV2({ ...activeSnapshotV2(), activeUnlocks: nullPrototype })).toBe(
+      false,
+    );
+    expect(isSessionSnapshotV2({ ...activeSnapshotV2(), activeUnlocks: customPrototype })).toBe(
+      false,
+    );
     expect(isSessionSnapshotV2({ ...activeSnapshotV2(), activeUnlocks: overriddenEvery })).toBe(
       false,
     );
@@ -377,6 +394,52 @@ describe('v2 public snapshot validation', (): void => {
         activeUnlocks: [new Proxy({ host: 'example.com', until: NOW + 20_000 }, {})],
       }),
     ).toBe(false);
+  });
+
+  it('rejects a nested proxy that mutates the root between boundary reads', (): void => {
+    const snapshot: SessionSnapshotV2 | Record<string, unknown> = {
+      ...activeSnapshotV2(),
+      nextSchedule: null,
+    };
+    const scheduleTarget: { entryId: string; startsAt: number } = {
+      entryId: 'weekday',
+      startsAt: NOW + 20_000,
+    };
+    const scheduleProxy: { entryId: string; startsAt: number } = new Proxy(scheduleTarget, {
+      ownKeys: (target: { entryId: string; startsAt: number }): ArrayLike<string | symbol> => {
+        snapshot.config = 17;
+        snapshot.nextSchedule = null;
+        return Reflect.ownKeys(target);
+      },
+    });
+    snapshot.nextSchedule = scheduleProxy;
+
+    expect(isSessionSnapshotV2(snapshot)).toBe(false);
+    expect(snapshot.config).toEqual(MANUAL_TIMED_CONFIG);
+  });
+
+  it('rejects impossible settled-focus projections', (): void => {
+    const paused: SessionSnapshotV2 = {
+      ...activeSnapshotV2(MANUAL_INDEFINITE_CONFIG),
+      phase: 'paused',
+      phaseStartedAt: NOW + 10_000,
+      phaseEndsAt: NOW + 20_000,
+      bankAccrualPerMs: 0,
+    };
+    const breaking: SessionSnapshotV2 = {
+      ...activeSnapshotV2(CYCLING_50_CONFIG),
+      at: NOW + 25 * 60_000 + 10_000,
+      phase: 'break',
+      phaseStartedAt: NOW + 25 * 60_000,
+      phaseEndsAt: NOW + 30 * 60_000,
+      sessionFocusedMs: 25 * 60_000,
+      cycleIndex: 1,
+      bankAccrualPerMs: 0,
+    };
+
+    expect(isSessionSnapshotV2({ ...activeSnapshotV2(), sessionFocusedMs: 0 })).toBe(false);
+    expect(isSessionSnapshotV2({ ...paused, sessionFocusedMs: 10_001 })).toBe(false);
+    expect(isSessionSnapshotV2({ ...breaking, sessionFocusedMs: 25 * 60_000 + 1 })).toBe(false);
   });
 
   it.each([
