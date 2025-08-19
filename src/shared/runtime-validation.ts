@@ -155,9 +155,15 @@ function stableExactOwnDataSnapshot(value: unknown, keys: readonly string[]): Un
   try {
     const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, keys);
     if (candidate === null || !hasOnlyOwnDataPropertiesDeep(candidate)) return null;
-    structuredClone(candidate);
-    structuredClone(value);
-    return candidate;
+    const clonedCandidate: unknown = structuredClone(candidate);
+    const clonedValue: unknown = structuredClone(value);
+    if (
+      !exactValueEqual(candidate, clonedCandidate) ||
+      !exactValueEqual(clonedCandidate, clonedValue)
+    ) {
+      return null;
+    }
+    return exactOwnDataSnapshot(clonedCandidate, keys);
   } catch {
     return null;
   }

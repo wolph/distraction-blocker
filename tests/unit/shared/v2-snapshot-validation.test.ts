@@ -432,6 +432,27 @@ describe('v2 public snapshot validation', (): void => {
     expect(snapshot.config).toBe(17);
   });
 
+  it('rejects a nested proxy that diverges the captured candidate from the root', (): void => {
+    const snapshot: Record<string, unknown> = { ...activeSnapshotV2(), nextSchedule: null };
+    const config: Record<string, unknown> = {
+      ...MANUAL_TIMED_CONFIG,
+      duration: null,
+    };
+    const durationTarget: { kind: 'timed'; minutes: number } = { kind: 'timed', minutes: 25 };
+    const durationProxy: { kind: 'timed'; minutes: number } = new Proxy(durationTarget, {
+      ownKeys: (target: { kind: 'timed'; minutes: number }): ArrayLike<string | symbol> => {
+        config.duration = { kind: 'timed', minutes: 25 };
+        snapshot.nextSchedule = 17;
+        return Reflect.ownKeys(target);
+      },
+    });
+    config.duration = durationProxy;
+    snapshot.config = config;
+
+    expect(isSessionSnapshotV2(snapshot)).toBe(false);
+    expect(snapshot.nextSchedule).toBe(17);
+  });
+
   it('rejects impossible settled-focus projections', (): void => {
     const paused: SessionSnapshotV2 = {
       ...activeSnapshotV2(MANUAL_INDEFINITE_CONFIG),
