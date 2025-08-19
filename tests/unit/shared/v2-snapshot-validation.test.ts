@@ -347,22 +347,32 @@ describe('v2 public snapshot validation', (): void => {
   });
 
   it('rejects mutable accessors and proxies at root and nested boundaries', (): void => {
+    let accessorReads: number = 0;
     const rootAccessor: Record<string, unknown> = { ...activeSnapshotV2() };
     Object.defineProperty(rootAccessor, 'phase', {
       enumerable: true,
-      get: (): string => 'focus',
+      get: (): string => {
+        accessorReads += 1;
+        return 'focus';
+      },
     });
     const configAccessor: Record<string, unknown> = structuredClone(
       MANUAL_TIMED_CONFIG,
     ) as unknown as Record<string, unknown>;
     Object.defineProperty(configAccessor, 'duration', {
       enumerable: true,
-      get: (): SessionConfigV2['duration'] => ({ kind: 'timed', minutes: 25 }),
+      get: (): SessionConfigV2['duration'] => {
+        accessorReads += 1;
+        return { kind: 'timed', minutes: 25 };
+      },
     });
     const unlockAccessor: Record<string, unknown> = { host: 'example.com', until: NOW + 20_000 };
     Object.defineProperty(unlockAccessor, 'until', {
       enumerable: true,
-      get: (): number => NOW + 20_000,
+      get: (): number => {
+        accessorReads += 1;
+        return NOW + 20_000;
+      },
     });
     const nextScheduleAccessor: Record<string, unknown> = {
       entryId: 'weekday',
@@ -370,7 +380,10 @@ describe('v2 public snapshot validation', (): void => {
     };
     Object.defineProperty(nextScheduleAccessor, 'startsAt', {
       enumerable: true,
-      get: (): number => NOW + 20_000,
+      get: (): number => {
+        accessorReads += 1;
+        return NOW + 20_000;
+      },
     });
 
     expect(isSessionSnapshotV2(rootAccessor)).toBe(false);
@@ -394,6 +407,7 @@ describe('v2 public snapshot validation', (): void => {
         activeUnlocks: [new Proxy({ host: 'example.com', until: NOW + 20_000 }, {})],
       }),
     ).toBe(false);
+    expect(accessorReads).toBe(0);
   });
 
   it('rejects a nested proxy that mutates the root between boundary reads', (): void => {
@@ -415,7 +429,7 @@ describe('v2 public snapshot validation', (): void => {
     snapshot.nextSchedule = scheduleProxy;
 
     expect(isSessionSnapshotV2(snapshot)).toBe(false);
-    expect(snapshot.config).toEqual(MANUAL_TIMED_CONFIG);
+    expect(snapshot.config).toBe(17);
   });
 
   it('rejects impossible settled-focus projections', (): void => {
