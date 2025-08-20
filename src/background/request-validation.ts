@@ -1,14 +1,18 @@
 import { normalizeSessionRules, validateRule } from '../core/matcher';
 import { scheduleEntriesOverlap, validateEntry } from '../core/schedule';
 import { CATEGORY_IDS } from '../shared/constants';
-import type { Request } from '../shared/messages';
+import type { Request, SessionStartRequestV2 } from '../shared/messages';
 import {
   isPositiveMinuteValue,
   isRelativeMillisecondDuration,
   isRelativeMinuteDuration,
   isSafeDayCount,
 } from '../shared/numeric-validation';
-import { isOnboardingDraft } from '../shared/runtime-validation';
+import {
+  isOnboardingDraft,
+  isSessionConfigV2,
+  isSessionDuration,
+} from '../shared/runtime-validation';
 import { SYNC_SETTINGS } from '../shared/storage-keys';
 import type {
   CategoryId,
@@ -17,6 +21,8 @@ import type {
   Rule,
   ScheduleEntry,
   SessionConfig,
+  SessionConfigV2,
+  SessionDuration,
   SessionRuleSnapshot,
   Settings,
 } from '../shared/types';
@@ -43,6 +49,138 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
       return typeof key === 'string' && keys.includes(key);
     })
   );
+}
+
+function exactOwnDataSnapshot(
+  value: unknown,
+  keys: readonly string[],
+): Record<string, unknown> | null {
+  try {
+    if (!isRecord(value) || !hasExactKeys(value, keys)) return null;
+    const snapshot: Record<string, unknown> = {};
+    for (const key of keys) {
+      const descriptor: PropertyDescriptor | undefined = Reflect.getOwnPropertyDescriptor(
+        value,
+        key,
+      );
+      if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) return null;
+      snapshot[key] = descriptor.value;
+    }
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+function hasOnlyOwnDataPropertiesDeep(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet<object>(),
+): boolean {
+  if (value === null || typeof value !== 'object') return typeof value !== 'function';
+  if (Array.isArray(value) && Object.getPrototypeOf(value) !== Array.prototype) return false;
+  if (seen.has(value)) return true;
+  seen.add(value);
+  const keys: PropertyKey[] = Reflect.ownKeys(value);
+  for (const key of keys) {
+    const descriptor: PropertyDescriptor | undefined = Reflect.getOwnPropertyDescriptor(value, key);
+    if (
+      descriptor === undefined ||
+      !Object.hasOwn(descriptor, 'value') ||
+      !hasOnlyOwnDataPropertiesDeep(descriptor.value, seen)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function exactDenseArrayLength(value: unknown[]): number | null {
+  const keys: PropertyKey[] = Reflect.ownKeys(value);
+  if (keys.some((key: PropertyKey): boolean => typeof key === 'symbol')) return null;
+  const lengthDescriptor: PropertyDescriptor | undefined = Reflect.getOwnPropertyDescriptor(
+    value,
+    'length',
+  );
+  if (
+    lengthDescriptor === undefined ||
+    !Object.hasOwn(lengthDescriptor, 'value') ||
+    !Number.isSafeInteger(lengthDescriptor.value) ||
+    lengthDescriptor.value < 0
+  ) {
+    return null;
+  }
+  const length: number = lengthDescriptor.value;
+  if (keys.length !== length + 1) return null;
+  for (let index: number = 0; index < length; index++) {
+    if (!Object.hasOwn(value, index)) return null;
+  }
+  return length;
+}
+
+function exactValueEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right)) return false;
+    const leftLength: number | null = exactDenseArrayLength(left);
+    const rightLength: number | null = exactDenseArrayLength(right);
+    if (leftLength === null || rightLength === null || leftLength !== rightLength) return false;
+    for (let index: number = 0; index < leftLength; index++) {
+      if (!exactValueEqual(left[index], right[index])) return false;
+    }
+    return true;
+  }
+  if (!isRecord(left) || !isRecord(right)) return false;
+  const leftKeys: PropertyKey[] = Reflect.ownKeys(left);
+  const rightKeys: PropertyKey[] = Reflect.ownKeys(right);
+  if (
+    leftKeys.length !== rightKeys.length ||
+    leftKeys.some((key: PropertyKey): boolean => typeof key !== 'string') ||
+    rightKeys.some((key: PropertyKey): boolean => typeof key !== 'string')
+  ) {
+    return false;
+  }
+  for (const key of leftKeys) {
+    if (typeof key !== 'string' || !rightKeys.includes(key)) return false;
+    const leftDescriptor: PropertyDescriptor | undefined = Reflect.getOwnPropertyDescriptor(
+      left,
+      key,
+    );
+    const rightDescriptor: PropertyDescriptor | undefined = Reflect.getOwnPropertyDescriptor(
+      right,
+      key,
+    );
+    if (
+      leftDescriptor === undefined ||
+      rightDescriptor === undefined ||
+      !Object.hasOwn(leftDescriptor, 'value') ||
+      !Object.hasOwn(rightDescriptor, 'value') ||
+      !exactValueEqual(leftDescriptor.value, rightDescriptor.value)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function stableExactOwnDataSnapshot(
+  value: unknown,
+  keys: readonly string[],
+): Record<string, unknown> | null {
+  try {
+    const candidate: Record<string, unknown> | null = exactOwnDataSnapshot(value, keys);
+    if (candidate === null || !hasOnlyOwnDataPropertiesDeep(candidate)) return null;
+    const clonedCandidate: unknown = structuredClone(candidate);
+    const clonedValue: unknown = structuredClone(value);
+    if (
+      !exactValueEqual(candidate, clonedCandidate) ||
+      !exactValueEqual(clonedCandidate, clonedValue)
+    ) {
+      return null;
+    }
+    return exactOwnDataSnapshot(clonedCandidate, keys);
+  } catch {
+    return null;
+  }
 }
 
 function isNonNegativeNumber(value: unknown): value is number {
@@ -115,6 +253,57 @@ function isCycleConfig(value: unknown): value is CycleConfig {
     isRelativeMinuteDuration(value.longBreakMin) &&
     isPositiveInteger(value.longEvery)
   );
+}
+
+export function parseSessionStartRequestV2(value: unknown): SessionStartRequestV2 | null {
+  try {
+    const request: Record<string, unknown> | null = stableExactOwnDataSnapshot(value, [
+      'type',
+      'config',
+    ]);
+    if (request === null || request.type !== 'startSession') return null;
+    const configInput: Record<string, unknown> | null = stableExactOwnDataSnapshot(request.config, [
+      'mode',
+      'strictness',
+      'duration',
+      'cycling',
+      'intention',
+      'source',
+      'scheduleOccurrence',
+      'rules',
+    ]);
+    if (
+      configInput === null ||
+      (configInput.mode !== 'blacklist' && configInput.mode !== 'whitelist') ||
+      (configInput.strictness !== 'flexible' &&
+        configInput.strictness !== 'friction' &&
+        configInput.strictness !== 'hard') ||
+      !isSessionDuration(configInput.duration) ||
+      (configInput.cycling !== null && !isCycleConfig(configInput.cycling)) ||
+      typeof configInput.intention !== 'string' ||
+      configInput.source !== 'manual' ||
+      configInput.scheduleOccurrence !== null
+    ) {
+      return null;
+    }
+    const rules: SessionRuleSnapshot | null = normalizeSessionRules(configInput.rules);
+    if (rules === null) return null;
+    const duration: SessionDuration = structuredClone(configInput.duration);
+    const config: SessionConfigV2 = {
+      mode: configInput.mode,
+      strictness: configInput.strictness,
+      duration,
+      cycling: configInput.cycling === null ? null : structuredClone(configInput.cycling),
+      intention: configInput.intention,
+      source: 'manual',
+      scheduleOccurrence: null,
+      rules,
+    };
+    if (!isSessionConfigV2(config)) return null;
+    return { type: 'startSession', config };
+  } catch {
+    return null;
+  }
 }
 
 function parseSessionConfig(value: unknown): SessionConfig | null {
