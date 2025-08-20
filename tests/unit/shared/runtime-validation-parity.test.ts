@@ -26,8 +26,11 @@ import {
   isSessionConfigV2,
   isSessionDuration,
   isSessionEndedEventV2,
+  isSessionLifecycleV2,
   isSessionSnapshot,
+  isSessionSnapshotV2,
   isSessionStartedEventV2,
+  isSessionStateV2,
   isSettings,
   isSetupState,
   isStatsBundle,
@@ -554,6 +557,9 @@ describe('exported runtime validators are total for hostile unknowns', (): void 
       isScheduleEntryV2,
       isSessionStartedEventV2,
       isSessionEndedEventV2,
+      isSessionStateV2,
+      isSessionLifecycleV2,
+      isSessionSnapshotV2,
     ];
 
     expect(booleanValidators).toEqual(
@@ -566,6 +572,9 @@ describe('exported runtime validators are total for hostile unknowns', (): void 
         isScheduleEntryV2,
         isSessionStartedEventV2,
         isSessionEndedEventV2,
+        isSessionStateV2,
+        isSessionLifecycleV2,
+        isSessionSnapshotV2,
       ]),
     );
 

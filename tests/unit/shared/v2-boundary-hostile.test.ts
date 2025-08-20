@@ -7,7 +7,10 @@ import {
   isSessionConfigV2,
   isSessionDuration,
   isSessionEndedEventV2,
+  isSessionLifecycleV2,
+  isSessionSnapshotV2,
   isSessionStartedEventV2,
+  isSessionStateV2,
   parseStoredSettingsV2,
 } from '../../../src/shared/runtime-validation';
 import type { SettingsV2 } from '../../../src/shared/types';
@@ -36,6 +39,9 @@ describe('v2 validator hostile inputs', (): void => {
       isScheduleEntryV2,
       isSessionStartedEventV2,
       isSessionEndedEventV2,
+      isSessionStateV2,
+      isSessionLifecycleV2,
+      isSessionSnapshotV2,
     ];
 
     for (const hostile of [revocable.proxy, throwing]) {

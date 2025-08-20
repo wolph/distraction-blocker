@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { cancelPhrase, emptySnapshotV2 } from '../../../src/shared/constants';
-import { isSessionSnapshotV2 } from '../../../src/shared/runtime-validation';
+import { isSessionSnapshotV2, isSessionStateV2 } from '../../../src/shared/runtime-validation';
 import type {
   EndAuthorityV2,
   GateState,
@@ -45,6 +45,17 @@ function withGate(snapshot: SessionSnapshotV2, gate: GateState): SessionSnapshot
     },
     gate,
   };
+}
+
+function nestedHostile(): unknown {
+  return new Proxy<Record<string, unknown>>(
+    {},
+    {
+      ownKeys: (): never => {
+        throw new Error('nested ownKeys trap');
+      },
+    },
+  );
 }
 
 describe('v2 public snapshot validation', (): void => {
@@ -528,5 +539,49 @@ describe('v2 public snapshot validation', (): void => {
         gate: OPEN_FRICTION_AUTHORITY.gate,
       }),
     ).toBe(false);
+  });
+
+  it('rejects nested hostile lifecycle, config, state, and unlock values', (): void => {
+    const hostileEndAuthority: unknown = nestedHostile();
+    const hostileDuration: unknown = nestedHostile();
+    const hostilePausedFrom: unknown = nestedHostile();
+    const hostileUnlock: unknown = nestedHostile();
+
+    const cases: unknown[] = [
+      {
+        ...activeSnapshotV2(),
+        lifecycle: { kind: 'active', endAuthority: hostileEndAuthority },
+      },
+      {
+        ...activeSnapshotV2(),
+        config: { ...MANUAL_TIMED_CONFIG, duration: hostileDuration },
+      },
+      {
+        version: 2,
+        sessionId: SESSION_ID,
+        config: MANUAL_TIMED_CONFIG,
+        startedAt: NOW,
+        sessionEndsAt: NOW + 25 * 60_000,
+        phase: 'paused',
+        phaseStartedAt: NOW + 60_000,
+        phaseEndsAt: NOW + 6 * 60_000,
+        cycleIndex: 0,
+        pausedFrom: hostilePausedFrom,
+        focusedMs: 60_000,
+      },
+      {
+        ...activeSnapshotV2(),
+        activeUnlocks: [hostileUnlock],
+      },
+    ];
+
+    expect((): boolean => isSessionSnapshotV2(cases[0])).not.toThrow();
+    expect(isSessionSnapshotV2(cases[0])).toBe(false);
+    expect((): boolean => isSessionSnapshotV2(cases[1])).not.toThrow();
+    expect(isSessionSnapshotV2(cases[1])).toBe(false);
+    expect((): boolean => isSessionStateV2(cases[2])).not.toThrow();
+    expect(isSessionStateV2(cases[2])).toBe(false);
+    expect((): boolean => isSessionSnapshotV2(cases[3])).not.toThrow();
+    expect(isSessionSnapshotV2(cases[3])).toBe(false);
   });
 });
