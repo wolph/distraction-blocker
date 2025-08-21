@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isCanonicalSessionRuleSnapshot,
+  isCycleConfig,
   isScheduleDuration,
   isScheduleOccurrenceRef,
   isSessionConfigV2,
@@ -60,6 +61,19 @@ describe('v2 configuration validation', (): void => {
     },
   ])('accepts canonical config %#', (value: unknown): void => {
     expect(isSessionConfigV2(value)).toBe(true);
+    expect(isSessionConfigV2(structuredClone(value))).toBe(true);
+  });
+
+  it('preserves fractional scheduled durations across structured cloning', (): void => {
+    const config: unknown = {
+      ...MANUAL_TIMED_CONFIG,
+      source: 'schedule',
+      scheduleOccurrence: OCCURRENCE,
+      duration: { kind: 'timed', minutes: 0.25 },
+    };
+
+    expect(isSessionConfigV2(config)).toBe(true);
+    expect(isSessionConfigV2(structuredClone(config))).toBe(true);
   });
 
   it.each([
@@ -86,6 +100,40 @@ describe('v2 configuration validation', (): void => {
     expect(isCanonicalSessionRuleSnapshot(MANUAL_TIMED_CONFIG.rules)).toBe(true);
     expect(isCanonicalSessionRuleSnapshot(rawNormalizableRules)).toBe(false);
     expect(isSessionConfigV2({ ...MANUAL_TIMED_CONFIG, rules: rawNormalizableRules })).toBe(false);
+  });
+
+  it('rejects non-enumerable expected fields that structured cloning would discard', (): void => {
+    const duration: Record<string, unknown> = { kind: 'timed', minutes: 25 };
+    Object.defineProperty(duration, 'minutes', { value: 25, enumerable: false });
+
+    const cycling: Record<string, unknown> = {
+      focusMin: 25,
+      shortBreakMin: 5,
+      longBreakMin: 15,
+      longEvery: 4,
+    };
+    Object.defineProperty(cycling, 'longEvery', { value: 4, enumerable: false });
+
+    const rules: object = structuredClone(MANUAL_TIMED_CONFIG.rules);
+    Object.defineProperty(rules, 'baselineRevision', {
+      value: MANUAL_TIMED_CONFIG.rules.baselineRevision,
+      enumerable: false,
+    });
+
+    const config: object = structuredClone(MANUAL_TIMED_CONFIG);
+    Object.defineProperty(config, 'intention', {
+      value: MANUAL_TIMED_CONFIG.intention,
+      enumerable: false,
+    });
+
+    expect(isSessionDuration(duration)).toBe(false);
+    expect(isSessionDuration(structuredClone(duration))).toBe(false);
+    expect(isCycleConfig(cycling)).toBe(false);
+    expect(isCycleConfig(structuredClone(cycling))).toBe(false);
+    expect(isCanonicalSessionRuleSnapshot(rules)).toBe(false);
+    expect(isCanonicalSessionRuleSnapshot(structuredClone(rules))).toBe(false);
+    expect(isSessionConfigV2(config)).toBe(false);
+    expect(isSessionConfigV2(structuredClone(config))).toBe(false);
   });
 
   it('rejects rule arrays with extra string own keys', (): void => {

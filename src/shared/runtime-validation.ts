@@ -99,6 +99,32 @@ const SETTINGS_KEYS: readonly string[] = [
   'streakFreezeIntervalDays',
   'retentionDays',
 ];
+const SESSION_RULE_SNAPSHOT_KEYS: readonly string[] = [
+  'baselineRevision',
+  'baselineCategories',
+  'categories',
+  'exclusions',
+  'permanentBlacklist',
+  'permanentAllowlist',
+  'sessionBlacklist',
+  'sessionAllowlist',
+];
+const CYCLE_CONFIG_KEYS: readonly string[] = [
+  'focusMin',
+  'shortBreakMin',
+  'longBreakMin',
+  'longEvery',
+];
+const SESSION_CONFIG_V2_KEYS: readonly string[] = [
+  'mode',
+  'strictness',
+  'duration',
+  'cycling',
+  'intention',
+  'source',
+  'scheduleOccurrence',
+  'rules',
+];
 const UUID_RE: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -491,8 +517,13 @@ function exactValueEqual(left: unknown, right: unknown): boolean {
 }
 
 function isCanonicalSessionRuleSnapshotValue(value: unknown): value is SessionRuleSnapshot {
-  const normalized: SessionRuleSnapshot | null = normalizeSessionRules(value);
-  return normalized !== null && exactValueEqual(value, normalized);
+  const candidate: UnknownRecord | null = stableExactOwnDataSnapshot(
+    value,
+    SESSION_RULE_SNAPSHOT_KEYS,
+  );
+  if (candidate === null) return false;
+  const normalized: SessionRuleSnapshot | null = normalizeSessionRules(candidate);
+  return normalized !== null && exactValueEqual(candidate, normalized);
 }
 
 export function isCanonicalSessionRuleSnapshot(value: unknown): value is SessionRuleSnapshot {
@@ -514,21 +545,12 @@ function isLocalDateValue(value: unknown): value is string {
 }
 
 function sessionDurationSnapshot(value: unknown): SessionDuration | null {
-  const timed: UnknownRecord | null = exactOwnDataSnapshot(value, ['kind', 'minutes']);
-  if (
-    timed !== null &&
-    timed.kind === 'timed' &&
-    isRelativeMinuteDuration(timed.minutes) &&
-    isStructuredCloneableData(value)
-  ) {
+  const timed: UnknownRecord | null = stableExactOwnDataSnapshot(value, ['kind', 'minutes']);
+  if (timed !== null && timed.kind === 'timed' && isRelativeMinuteDuration(timed.minutes)) {
     return { kind: 'timed', minutes: timed.minutes };
   }
-  const indefinite: UnknownRecord | null = exactOwnDataSnapshot(value, ['kind']);
-  if (
-    indefinite !== null &&
-    indefinite.kind === 'until-stopped' &&
-    isStructuredCloneableData(value)
-  ) {
+  const indefinite: UnknownRecord | null = stableExactOwnDataSnapshot(value, ['kind']);
+  if (indefinite !== null && indefinite.kind === 'until-stopped') {
     return { kind: 'until-stopped' };
   }
   return null;
@@ -591,13 +613,13 @@ function isRule(value: unknown): value is Rule {
 }
 
 function isCycleConfigValue(value: unknown): value is CycleConfig {
+  const candidate: UnknownRecord | null = stableExactOwnDataSnapshot(value, CYCLE_CONFIG_KEYS);
   return (
-    isRecord(value) &&
-    hasExactKeys(value, ['focusMin', 'shortBreakMin', 'longBreakMin', 'longEvery']) &&
-    isRelativeMinuteDuration(value.focusMin) &&
-    isRelativeMinuteDuration(value.shortBreakMin) &&
-    isRelativeMinuteDuration(value.longBreakMin) &&
-    isPositiveInteger(value.longEvery)
+    candidate !== null &&
+    isRelativeMinuteDuration(candidate.focusMin) &&
+    isRelativeMinuteDuration(candidate.shortBreakMin) &&
+    isRelativeMinuteDuration(candidate.longBreakMin) &&
+    isPositiveInteger(candidate.longEvery)
   );
 }
 
@@ -905,36 +927,28 @@ function isSessionConfig(value: unknown): value is SessionConfig {
 }
 
 function isSessionConfigV2Value(value: unknown): value is SessionConfigV2 {
+  const candidate: UnknownRecord | null = stableExactOwnDataSnapshot(value, SESSION_CONFIG_V2_KEYS);
+  const duration: SessionDuration | null = sessionDurationSnapshot(candidate?.duration);
   if (
-    !isRecord(value) ||
-    !hasExactKeys(value, [
-      'mode',
-      'strictness',
-      'duration',
-      'cycling',
-      'intention',
-      'source',
-      'scheduleOccurrence',
-      'rules',
-    ]) ||
-    (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
-    (value.strictness !== 'flexible' &&
-      value.strictness !== 'friction' &&
-      value.strictness !== 'hard') ||
-    !isSessionDurationValue(value.duration) ||
-    (value.cycling !== null && !isCycleConfigValue(value.cycling)) ||
-    typeof value.intention !== 'string' ||
-    (value.source !== 'manual' && value.source !== 'schedule') ||
-    !isCanonicalSessionRuleSnapshotValue(value.rules)
+    candidate === null ||
+    (candidate.mode !== 'blacklist' && candidate.mode !== 'whitelist') ||
+    (candidate.strictness !== 'flexible' &&
+      candidate.strictness !== 'friction' &&
+      candidate.strictness !== 'hard') ||
+    duration === null ||
+    (candidate.cycling !== null && !isCycleConfigValue(candidate.cycling)) ||
+    typeof candidate.intention !== 'string' ||
+    (candidate.source !== 'manual' && candidate.source !== 'schedule') ||
+    !isCanonicalSessionRuleSnapshotValue(candidate.rules)
   ) {
     return false;
   }
-  if (value.duration.kind === 'until-stopped') {
-    if (value.strictness !== 'flexible' || value.cycling !== null) return false;
+  if (duration.kind === 'until-stopped') {
+    if (candidate.strictness !== 'flexible' || candidate.cycling !== null) return false;
   }
-  return value.source === 'manual'
-    ? value.scheduleOccurrence === null
-    : isScheduleOccurrenceRefValue(value.scheduleOccurrence);
+  return candidate.source === 'manual'
+    ? candidate.scheduleOccurrence === null
+    : isScheduleOccurrenceRefValue(candidate.scheduleOccurrence);
 }
 
 export function isSessionConfigV2(value: unknown): value is SessionConfigV2 {
