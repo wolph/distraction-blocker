@@ -28,6 +28,16 @@ function requestWithSessionAllowlist(sessionAllowlist: unknown): unknown {
   };
 }
 
+function requestWithExclusions(exclusions: unknown): unknown {
+  return {
+    ...REQUEST,
+    config: {
+      ...REQUEST.config,
+      rules: { ...REQUEST.config.rules, exclusions },
+    },
+  };
+}
+
 describe('parseSessionStartRequestV2', (): void => {
   it('accepts and clones the exact manual until-stopped request', (): void => {
     const parsed: SessionStartRequestV2 | null = parseSessionStartRequestV2(REQUEST);
@@ -320,5 +330,68 @@ describe('parseSessionStartRequestV2', (): void => {
     expect(parseSessionStartRequestV2(requestWithSessionAllowlist(proxyArray))).toBeNull();
     expect(getterCalls).toBe(0);
     expect(proxyTarget).toHaveLength(1);
+  });
+
+  it.each([
+    new Map<string, string[]>([['social', ['blocked.example']]]),
+    new Set<string>(['social']),
+    new Date('2026-09-02T00:00:00Z'),
+    /social/,
+    new (class EmptyExclusions {})(),
+  ])('rejects non-plain raw rule records %#', (exclusions: unknown): void => {
+    expect(parseSessionStartRequestV2(requestWithExclusions(exclusions))).toBeNull();
+  });
+
+  it('rejects a shared-reference data graph', (): void => {
+    const sharedCategories: SessionStartRequestV2['config']['rules']['categories'] = {
+      ...REQUEST.config.rules.categories,
+    };
+
+    expect(
+      parseSessionStartRequestV2({
+        ...REQUEST,
+        config: {
+          ...REQUEST.config,
+          rules: {
+            ...REQUEST.config.rules,
+            baselineCategories: sharedCategories,
+            categories: sharedCategories,
+          },
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('rejects a cyclic graph', (): void => {
+    const intention: Record<string, unknown> = {};
+    intention.self = intention;
+
+    expect(
+      parseSessionStartRequestV2({
+        ...REQUEST,
+        config: { ...REQUEST.config, intention },
+      }),
+    ).toBeNull();
+  });
+
+  it('rejects invalid scalar fields before traversing the nested graph', (): void => {
+    let graphVisits: number = 0;
+    const rules: unknown = new Proxy<Record<string, unknown>>(
+      {},
+      {
+        getPrototypeOf: (): never => {
+          graphVisits += 1;
+          throw new Error('nested graph visited');
+        },
+      },
+    );
+
+    expect(
+      parseSessionStartRequestV2({
+        ...REQUEST,
+        config: { ...REQUEST.config, intention: {}, rules },
+      }),
+    ).toBeNull();
+    expect(graphVisits).toBe(0);
   });
 });

@@ -77,8 +77,12 @@ function hasOnlyOwnDataPropertiesDeep(
   seen: WeakSet<object> = new WeakSet<object>(),
 ): boolean {
   if (value === null || typeof value !== 'object') return typeof value !== 'function';
-  if (Array.isArray(value) && Object.getPrototypeOf(value) !== Array.prototype) return false;
-  if (seen.has(value)) return true;
+  if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype) return false;
+  } else if (Object.getPrototypeOf(value) !== Object.prototype) {
+    return false;
+  }
+  if (seen.has(value)) return false;
   seen.add(value);
   const keys: PropertyKey[] = Reflect.ownKeys(value);
   for (const key of keys) {
@@ -255,34 +259,66 @@ function isCycleConfig(value: unknown): value is CycleConfig {
   );
 }
 
+const SESSION_CONFIG_V2_KEYS: readonly string[] = [
+  'mode',
+  'strictness',
+  'duration',
+  'cycling',
+  'intention',
+  'source',
+  'scheduleOccurrence',
+  'rules',
+];
+
+type ManualSessionConfigEnvelope = Record<string, unknown> & {
+  mode: 'blacklist' | 'whitelist';
+  strictness: 'flexible' | 'friction' | 'hard';
+  intention: string;
+  source: 'manual';
+  scheduleOccurrence: null;
+};
+
+function isManualSessionConfigEnvelope(
+  value: Record<string, unknown>,
+): value is ManualSessionConfigEnvelope {
+  return (
+    (value.mode === 'blacklist' || value.mode === 'whitelist') &&
+    (value.strictness === 'flexible' ||
+      value.strictness === 'friction' ||
+      value.strictness === 'hard') &&
+    typeof value.intention === 'string' &&
+    value.source === 'manual' &&
+    value.scheduleOccurrence === null
+  );
+}
+
 export function parseSessionStartRequestV2(value: unknown): SessionStartRequestV2 | null {
   try {
+    const requestCandidate: Record<string, unknown> | null = exactOwnDataSnapshot(value, [
+      'type',
+      'config',
+    ]);
+    if (requestCandidate === null || requestCandidate.type !== 'startSession') return null;
+    const configCandidate: Record<string, unknown> | null = exactOwnDataSnapshot(
+      requestCandidate.config,
+      SESSION_CONFIG_V2_KEYS,
+    );
+    if (configCandidate === null || !isManualSessionConfigEnvelope(configCandidate)) return null;
+
     const request: Record<string, unknown> | null = stableExactOwnDataSnapshot(value, [
       'type',
       'config',
     ]);
     if (request === null || request.type !== 'startSession') return null;
-    const configInput: Record<string, unknown> | null = stableExactOwnDataSnapshot(request.config, [
-      'mode',
-      'strictness',
-      'duration',
-      'cycling',
-      'intention',
-      'source',
-      'scheduleOccurrence',
-      'rules',
-    ]);
+    const configInput: Record<string, unknown> | null = exactOwnDataSnapshot(
+      request.config,
+      SESSION_CONFIG_V2_KEYS,
+    );
     if (
       configInput === null ||
-      (configInput.mode !== 'blacklist' && configInput.mode !== 'whitelist') ||
-      (configInput.strictness !== 'flexible' &&
-        configInput.strictness !== 'friction' &&
-        configInput.strictness !== 'hard') ||
+      !isManualSessionConfigEnvelope(configInput) ||
       !isSessionDuration(configInput.duration) ||
-      (configInput.cycling !== null && !isCycleConfig(configInput.cycling)) ||
-      typeof configInput.intention !== 'string' ||
-      configInput.source !== 'manual' ||
-      configInput.scheduleOccurrence !== null
+      (configInput.cycling !== null && !isCycleConfig(configInput.cycling))
     ) {
       return null;
     }
