@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { parseSessionStartRequestV2 } from '../../../src/background/request-validation';
 import { DEFAULT_LISTS, rulesFromLists } from '../../../src/shared/constants';
 import type { SessionStartRequestV2 } from '../../../src/shared/messages';
@@ -393,5 +393,32 @@ describe('parseSessionStartRequestV2', (): void => {
       }),
     ).toBeNull();
     expect(graphVisits).toBe(0);
+  });
+
+  it('does not scan a wide key list once per compared key', (): void => {
+    const width: number = 2_000;
+    const exclusions: Record<string, unknown> = {};
+    for (let index: number = 0; index < width; index++) {
+      exclusions[`invalid-${index}`] = [];
+    }
+    const nativeIncludes: typeof Array.prototype.includes = Array.prototype.includes;
+    let wideIncludesCalls: number = 0;
+    const includesSpy: ReturnType<typeof vi.spyOn> = vi
+      .spyOn(Array.prototype, 'includes')
+      .mockImplementation(function includes(
+        this: unknown[],
+        searchElement: unknown,
+        fromIndex?: number,
+      ): boolean {
+        if (this.length === width) wideIncludesCalls += 1;
+        return nativeIncludes.call(this, searchElement, fromIndex);
+      });
+
+    try {
+      expect(parseSessionStartRequestV2(requestWithExclusions(exclusions))).toBeNull();
+      expect(wideIncludesCalls).toBe(0);
+    } finally {
+      includesSpy.mockRestore();
+    }
   });
 });

@@ -143,8 +143,9 @@ function exactValueEqual(left: unknown, right: unknown): boolean {
   ) {
     return false;
   }
+  const rightKeySet: Set<PropertyKey> = new Set<PropertyKey>(rightKeys);
   for (const key of leftKeys) {
-    if (typeof key !== 'string' || !rightKeys.includes(key)) return false;
+    if (typeof key !== 'string' || !rightKeySet.has(key)) return false;
     const leftDescriptor: PropertyDescriptor | undefined = Reflect.getOwnPropertyDescriptor(
       left,
       key,
