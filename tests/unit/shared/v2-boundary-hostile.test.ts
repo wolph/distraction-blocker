@@ -17,6 +17,17 @@ import {
 import type { SettingsV2 } from '../../../src/shared/types';
 import { MANUAL_TIMED_CONFIG } from './v2-runtime-fixtures';
 
+function withClassPrototype(value: object): object {
+  class BoundaryRecord {}
+
+  return Object.assign(new BoundaryRecord(), value);
+}
+
+function withCustomPrototype(value: object): object {
+  const prototype: object = { boundaryRecord: true };
+  return Object.assign(Object.create(prototype) as object, value);
+}
+
 describe('v2 validator hostile inputs', (): void => {
   it('returns rejection values for revoked and throwing proxies', (): void => {
     const revocable: { proxy: object; revoke: () => void } = Proxy.revocable<object>({}, {});
@@ -169,4 +180,54 @@ describe('v2 validator hostile inputs', (): void => {
     expect(cyclingReads).toBe(0);
     expect(ruleReads).toBe(0);
   });
+
+  it.each([
+    ['duration class', isSessionDuration, withClassPrototype({ kind: 'timed', minutes: 25 })],
+    [
+      'duration custom prototype',
+      isSessionDuration,
+      withCustomPrototype({ kind: 'timed', minutes: 25 }),
+    ],
+    [
+      'cycling class',
+      isCycleConfig,
+      withClassPrototype({
+        focusMin: 25,
+        shortBreakMin: 5,
+        longBreakMin: 15,
+        longEvery: 4,
+      }),
+    ],
+    [
+      'cycling custom prototype',
+      isCycleConfig,
+      withCustomPrototype({
+        focusMin: 25,
+        shortBreakMin: 5,
+        longBreakMin: 15,
+        longEvery: 4,
+      }),
+    ],
+    [
+      'rules class',
+      isCanonicalSessionRuleSnapshot,
+      withClassPrototype(structuredClone(MANUAL_TIMED_CONFIG.rules)),
+    ],
+    [
+      'rules custom prototype',
+      isCanonicalSessionRuleSnapshot,
+      withCustomPrototype(structuredClone(MANUAL_TIMED_CONFIG.rules)),
+    ],
+    ['config class', isSessionConfigV2, withClassPrototype(structuredClone(MANUAL_TIMED_CONFIG))],
+    [
+      'config custom prototype',
+      isSessionConfigV2,
+      withCustomPrototype(structuredClone(MANUAL_TIMED_CONFIG)),
+    ],
+  ])(
+    'rejects clone-unstable %s records',
+    (_label: string, validate: (value: unknown) => boolean, value: object): void => {
+      expect(validate(value)).toBe(false);
+    },
+  );
 });

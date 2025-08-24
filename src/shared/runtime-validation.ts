@@ -180,7 +180,7 @@ function exactOwnDataSnapshot(value: unknown, keys: readonly string[]): UnknownR
 function stableExactOwnDataSnapshot(value: unknown, keys: readonly string[]): UnknownRecord | null {
   try {
     const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, keys);
-    if (candidate === null || !hasOnlyOwnDataPropertiesDeep(candidate)) return null;
+    if (candidate === null || !hasOnlyOwnDataPropertiesDeep(value)) return null;
     const clonedCandidate: unknown = structuredClone(candidate);
     const clonedValue: unknown = structuredClone(value);
     if (
@@ -209,7 +209,11 @@ function hasOnlyOwnDataPropertiesDeep(
   seen: WeakSet<object> = new WeakSet<object>(),
 ): boolean {
   if (value === null || typeof value !== 'object') return typeof value !== 'function';
-  if (Array.isArray(value) && Object.getPrototypeOf(value) !== Array.prototype) return false;
+  if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype) return false;
+  } else if (Object.getPrototypeOf(value) !== Object.prototype) {
+    return false;
+  }
   if (seen.has(value)) return true;
   seen.add(value);
   const keys: PropertyKey[] = Reflect.ownKeys(value);
