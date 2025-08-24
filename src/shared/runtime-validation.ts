@@ -125,7 +125,25 @@ const SESSION_CONFIG_V2_KEYS: readonly string[] = [
   'scheduleOccurrence',
   'rules',
 ];
+const MAX_EXACT_DATA_DEPTH: number = 128;
+const MAX_EXACT_DATA_NODES: number = 10_000;
+const MAX_EXACT_DATA_KEYS: number = 20_000;
 const UUID_RE: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+interface DeepOwnDataSnapshot {
+  value: unknown;
+}
+
+interface DeepOwnDataContext {
+  snapshots: WeakMap<object, object>;
+  visiting: WeakSet<object>;
+  nodes: number;
+  keys: number;
+}
+
+interface ExactValueContext {
+  pairs: WeakMap<object, WeakSet<object>>;
+}
 
 function isRecord(value: unknown): value is UnknownRecord {
   try {
@@ -179,17 +197,9 @@ function exactOwnDataSnapshot(value: unknown, keys: readonly string[]): UnknownR
 
 function stableExactOwnDataSnapshot(value: unknown, keys: readonly string[]): UnknownRecord | null {
   try {
-    const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, keys);
-    if (candidate === null || !hasOnlyOwnDataPropertiesDeep(value)) return null;
-    const clonedCandidate: unknown = structuredClone(candidate);
-    const clonedValue: unknown = structuredClone(value);
-    if (
-      !exactValueEqual(candidate, clonedCandidate) ||
-      !exactValueEqual(clonedCandidate, clonedValue)
-    ) {
-      return null;
-    }
-    return exactOwnDataSnapshot(clonedCandidate, keys);
+    if (exactOwnDataSnapshot(value, keys) === null) return null;
+    const snapshot: DeepOwnDataSnapshot | null = deepOwnDataSnapshot(value);
+    return snapshot === null ? null : exactOwnDataSnapshot(snapshot.value, keys);
   } catch {
     return null;
   }
@@ -490,34 +500,159 @@ function exactDenseArrayLength(value: unknown[]): number | null {
   return length;
 }
 
-function exactValueEqual(left: unknown, right: unknown): boolean {
+function deepOwnDataSnapshot(
+  value: unknown,
+  context: DeepOwnDataContext = newDeepOwnDataContext(),
+  depth: number = 0,
+): DeepOwnDataSnapshot | null {
+  if (value === null || typeof value !== 'object') {
+    return typeof value === 'function' || typeof value === 'symbol' ? null : { value };
+  }
+  if (depth > MAX_EXACT_DATA_DEPTH || context.visiting.has(value)) return null;
+  const existing: object | undefined = context.snapshots.get(value);
+  if (existing !== undefined) return { value: existing };
+
+  const array: boolean = Array.isArray(value);
+  if (!hasExactDataPrototype(value, array)) return null;
+  context.nodes += 1;
+  if (context.nodes > MAX_EXACT_DATA_NODES) return null;
+  const ownKeys: PropertyKey[] = Reflect.ownKeys(value);
+  context.keys += ownKeys.length;
+  if (
+    context.keys > MAX_EXACT_DATA_KEYS ||
+    ownKeys.some((key: PropertyKey): boolean => typeof key !== 'string')
+  ) {
+    return null;
+  }
+  return detachOwnDataObject(value, array, ownKeys, context, depth);
+}
+
+function newDeepOwnDataContext(): DeepOwnDataContext {
+  return {
+    snapshots: new WeakMap<object, object>(),
+    visiting: new WeakSet<object>(),
+    nodes: 0,
+    keys: 0,
+  };
+}
+
+function hasExactDataPrototype(value: object, array: boolean): boolean {
+  return array
+    ? Object.getPrototypeOf(value) === Array.prototype
+    : Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function detachOwnDataObject(
+  value: object,
+  array: boolean,
+  ownKeys: readonly PropertyKey[],
+  context: DeepOwnDataContext,
+  depth: number,
+): DeepOwnDataSnapshot | null {
+  const detached: object = array ? [] : {};
+  context.snapshots.set(value, detached);
+  context.visiting.add(value);
+  let lengthDescriptor: PropertyDescriptor | null = null;
+  for (const key of ownKeys) {
+    const descriptor: PropertyDescriptor | undefined = Reflect.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) return null;
+    const child: DeepOwnDataSnapshot | null = deepOwnDataSnapshot(
+      descriptor.value,
+      context,
+      depth + 1,
+    );
+    if (child === null) return null;
+    const detachedDescriptor: PropertyDescriptor = { ...descriptor, value: child.value };
+    if (array && key === 'length') {
+      lengthDescriptor = detachedDescriptor;
+    } else if (!Reflect.defineProperty(detached, key, detachedDescriptor)) {
+      return null;
+    }
+  }
+  if (lengthDescriptor !== null && !Reflect.defineProperty(detached, 'length', lengthDescriptor)) {
+    return null;
+  }
+  context.visiting.delete(value);
+
+  const liveClone: unknown = structuredClone(value);
+  return exactValueEqual(detached, liveClone) ? { value: detached } : null;
+}
+
+function exactValueEqual(
+  left: unknown,
+  right: unknown,
+  context: ExactValueContext = {
+    pairs: new WeakMap<object, WeakSet<object>>(),
+  },
+): boolean {
   if (Object.is(left, right)) return true;
   if (Array.isArray(left) || Array.isArray(right)) {
     if (!Array.isArray(left) || !Array.isArray(right)) return false;
-    const leftLength: number | null = exactDenseArrayLength(left);
-    const rightLength: number | null = exactDenseArrayLength(right);
-    if (leftLength === null || rightLength === null || leftLength !== rightLength) return false;
-    for (let index: number = 0; index < leftLength; index++) {
-      if (!exactValueEqual(left[index], right[index])) return false;
-    }
-    return true;
+    return exactArraysEqual(left, right, context);
   }
   if (!isRecord(left) || !isRecord(right)) return false;
-  const leftKeys: string[] = Reflect.ownKeys(left).filter(
-    (key: PropertyKey): key is string => typeof key === 'string',
-  );
-  const rightKeys: string[] = Reflect.ownKeys(right).filter(
-    (key: PropertyKey): key is string => typeof key === 'string',
-  );
+  return exactRecordsEqual(left, right, context);
+}
+
+function exactArraysEqual(left: unknown[], right: unknown[], context: ExactValueContext): boolean {
+  if (exactPairSeen(left, right, context)) return true;
+  const leftLength: number | null = exactDenseArrayLength(left);
+  const rightLength: number | null = exactDenseArrayLength(right);
+  if (leftLength === null || rightLength === null || leftLength !== rightLength) return false;
+  for (let index: number = 0; index < leftLength; index++) {
+    if (!exactValueEqual(left[index], right[index], context)) return false;
+  }
+  return true;
+}
+
+function exactRecordsEqual(
+  left: UnknownRecord,
+  right: UnknownRecord,
+  context: ExactValueContext,
+): boolean {
+  if (exactPairSeen(left, right, context)) return true;
+  const leftKeys: PropertyKey[] = Reflect.ownKeys(left);
+  const rightKeys: PropertyKey[] = Reflect.ownKeys(right);
   if (
-    leftKeys.length !== Reflect.ownKeys(left).length ||
-    rightKeys.length !== Reflect.ownKeys(right).length ||
     leftKeys.length !== rightKeys.length ||
-    !leftKeys.every((key: string): boolean => rightKeys.includes(key))
+    leftKeys.some((key: PropertyKey): boolean => typeof key !== 'string') ||
+    rightKeys.some((key: PropertyKey): boolean => typeof key !== 'string')
   ) {
     return false;
   }
-  return leftKeys.every((key: string): boolean => exactValueEqual(left[key], right[key]));
+  const rightKeySet: Set<PropertyKey> = new Set<PropertyKey>(rightKeys);
+  for (const key of leftKeys) {
+    if (typeof key !== 'string' || !rightKeySet.has(key)) return false;
+    const leftDescriptor: PropertyDescriptor | undefined = Reflect.getOwnPropertyDescriptor(
+      left,
+      key,
+    );
+    const rightDescriptor: PropertyDescriptor | undefined = Reflect.getOwnPropertyDescriptor(
+      right,
+      key,
+    );
+    if (
+      leftDescriptor === undefined ||
+      rightDescriptor === undefined ||
+      !Object.hasOwn(leftDescriptor, 'value') ||
+      !Object.hasOwn(rightDescriptor, 'value') ||
+      !exactValueEqual(leftDescriptor.value, rightDescriptor.value, context)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function exactPairSeen(left: object, right: object, context: ExactValueContext): boolean {
+  const rights: WeakSet<object> | undefined = context.pairs.get(left);
+  if (rights?.has(right) === true) return true;
+  if (rights === undefined) {
+    context.pairs.set(left, new WeakSet<object>([right]));
+  } else {
+    rights.add(right);
+  }
+  return false;
 }
 
 function isCanonicalSessionRuleSnapshotValue(value: unknown): value is SessionRuleSnapshot {

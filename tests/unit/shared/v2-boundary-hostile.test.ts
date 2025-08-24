@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   isCanonicalSessionRuleSnapshot,
   isCycleConfig,
@@ -179,6 +179,73 @@ describe('v2 validator hostile inputs', (): void => {
     expect(isSessionConfigV2({ ...MANUAL_TIMED_CONFIG, rules })).toBe(false);
     expect(cyclingReads).toBe(0);
     expect(ruleReads).toBe(0);
+  });
+
+  it('does not execute a getter installed by a later sibling proxy', (): void => {
+    let getterCalls: number = 0;
+    const duration: Record<string, unknown> = { kind: 'timed', minutes: 25 };
+    const rulesTarget: typeof MANUAL_TIMED_CONFIG.rules = structuredClone(
+      MANUAL_TIMED_CONFIG.rules,
+    );
+    const rules: unknown = new Proxy(rulesTarget, {
+      getPrototypeOf: (target: typeof rulesTarget): object | null => {
+        Object.defineProperty(duration, 'minutes', {
+          configurable: true,
+          enumerable: true,
+          get: (): number => {
+            getterCalls += 1;
+            return 25;
+          },
+        });
+        return Reflect.getPrototypeOf(target);
+      },
+    });
+
+    expect(isSessionConfigV2({ ...MANUAL_TIMED_CONFIG, duration, rules })).toBe(false);
+    expect(getterCalls).toBe(0);
+  });
+
+  it('bounds exact comparison work for a shared depth-20 graph', (): void => {
+    let graph: object = {};
+    for (let depth: number = 0; depth < 20; depth++) {
+      graph = { left: graph, right: graph };
+    }
+    const nativeOwnKeys: typeof Reflect.ownKeys = Reflect.ownKeys;
+    let ownKeyCalls: number = 0;
+    const ownKeysSpy: ReturnType<typeof vi.spyOn> = vi
+      .spyOn(Reflect, 'ownKeys')
+      .mockImplementation((target: object): (string | symbol)[] => {
+        ownKeyCalls += 1;
+        return nativeOwnKeys(target);
+      });
+
+    try {
+      expect(isSessionConfigV2({ ...MANUAL_TIMED_CONFIG, intention: graph })).toBe(false);
+      expect(ownKeyCalls).toBeLessThan(1_000);
+    } finally {
+      ownKeysSpy.mockRestore();
+    }
+  });
+
+  it('stops descriptor traversal when a nested record exceeds the key budget', (): void => {
+    const wide: Record<string, number> = {};
+    for (let index: number = 0; index < 50_000; index++) wide[`key-${index}`] = index;
+    const nativeDescriptor: typeof Reflect.getOwnPropertyDescriptor =
+      Reflect.getOwnPropertyDescriptor;
+    let descriptorCalls: number = 0;
+    const descriptorSpy: ReturnType<typeof vi.spyOn> = vi
+      .spyOn(Reflect, 'getOwnPropertyDescriptor')
+      .mockImplementation((target: object, key: PropertyKey): PropertyDescriptor | undefined => {
+        descriptorCalls += 1;
+        return nativeDescriptor(target, key);
+      });
+
+    try {
+      expect(isSessionConfigV2({ ...MANUAL_TIMED_CONFIG, intention: wide })).toBe(false);
+      expect(descriptorCalls).toBeLessThan(1_000);
+    } finally {
+      descriptorSpy.mockRestore();
+    }
   });
 
   it.each([
