@@ -76,6 +76,20 @@ describe('v2 configuration validation', (): void => {
     expect(isSessionConfigV2(structuredClone(config))).toBe(true);
   });
 
+  it('accepts 6700 canonical rules without an invented validator quota', (): void => {
+    const rules: typeof MANUAL_TIMED_CONFIG.rules = {
+      ...structuredClone(MANUAL_TIMED_CONFIG.rules),
+      permanentBlacklist: Array.from({ length: 6_700 }, (_value: unknown, index: number) => ({
+        kind: 'regex' as const,
+        pattern: `blocked-${index}`,
+      })),
+    };
+    const config: unknown = { ...MANUAL_TIMED_CONFIG, rules };
+
+    expect(isCanonicalSessionRuleSnapshot(rules)).toBe(true);
+    expect(isSessionConfigV2(config)).toBe(true);
+  });
+
   it.each([
     { ...MANUAL_INDEFINITE_CONFIG, strictness: 'friction' },
     { ...MANUAL_INDEFINITE_CONFIG, strictness: 'hard' },

@@ -126,8 +126,6 @@ const SESSION_CONFIG_V2_KEYS: readonly string[] = [
   'rules',
 ];
 const MAX_EXACT_DATA_DEPTH: number = 128;
-const MAX_EXACT_DATA_NODES: number = 10_000;
-const MAX_EXACT_DATA_KEYS: number = 20_000;
 const UUID_RE: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface DeepOwnDataSnapshot {
@@ -137,8 +135,6 @@ interface DeepOwnDataSnapshot {
 interface DeepOwnDataContext {
   snapshots: WeakMap<object, object>;
   visiting: WeakSet<object>;
-  nodes: number;
-  keys: number;
 }
 
 interface ExactValueContext {
@@ -514,14 +510,8 @@ function deepOwnDataSnapshot(
 
   const array: boolean = Array.isArray(value);
   if (!hasExactDataPrototype(value, array)) return null;
-  context.nodes += 1;
-  if (context.nodes > MAX_EXACT_DATA_NODES) return null;
   const ownKeys: PropertyKey[] = Reflect.ownKeys(value);
-  context.keys += ownKeys.length;
-  if (
-    context.keys > MAX_EXACT_DATA_KEYS ||
-    ownKeys.some((key: PropertyKey): boolean => typeof key !== 'string')
-  ) {
+  if (ownKeys.some((key: PropertyKey): boolean => typeof key !== 'string')) {
     return null;
   }
   return detachOwnDataObject(value, array, ownKeys, context, depth);
@@ -531,8 +521,6 @@ function newDeepOwnDataContext(): DeepOwnDataContext {
   return {
     snapshots: new WeakMap<object, object>(),
     visiting: new WeakSet<object>(),
-    nodes: 0,
-    keys: 0,
   };
 }
 
@@ -704,11 +692,8 @@ export function isSessionDuration(value: unknown): value is SessionDuration {
 }
 
 function isScheduleDurationValue(value: unknown): value is ScheduleDuration {
-  return (
-    isRecord(value) &&
-    hasExactKeys(value, ['kind']) &&
-    (value.kind === 'window' || value.kind === 'until-stopped')
-  );
+  const candidate: UnknownRecord | null = stableExactOwnDataSnapshot(value, ['kind']);
+  return candidate !== null && (candidate.kind === 'window' || candidate.kind === 'until-stopped');
 }
 
 export function isScheduleDuration(value: unknown): value is ScheduleDuration {
@@ -716,7 +701,7 @@ export function isScheduleDuration(value: unknown): value is ScheduleDuration {
 }
 
 function isScheduleOccurrenceRefValue(value: unknown): value is ScheduleOccurrenceRef {
-  const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, [
+  const candidate: UnknownRecord | null = stableExactOwnDataSnapshot(value, [
     'version',
     'token',
     'entryId',
@@ -802,27 +787,25 @@ function isScheduleEntry(value: unknown): value is ScheduleEntry {
 }
 
 function isScheduleEntryV2Value(value: unknown): value is ScheduleEntryV2 {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, SCHEDULE_ENTRY_V2_KEYS) ||
-    !isScheduleDurationValue(value.duration)
-  ) {
+  const candidate: UnknownRecord | null = stableExactOwnDataSnapshot(value, SCHEDULE_ENTRY_V2_KEYS);
+  if (candidate === null || !isScheduleDurationValue(candidate.duration)) {
     return false;
   }
   const legacyShape: NormalizedScheduleEntryV1 = {
-    id: value.id as string,
-    days: value.days as number[],
-    start: value.start as string,
-    end: value.end as string,
-    mode: value.mode as SessionMode,
-    strictness: value.strictness as Strictness,
-    cycling: value.cycling as CycleConfig | null,
-    intention: value.intention as string,
-    enabled: value.enabled as boolean,
+    id: candidate.id as string,
+    days: candidate.days as number[],
+    start: candidate.start as string,
+    end: candidate.end as string,
+    mode: candidate.mode as SessionMode,
+    strictness: candidate.strictness as Strictness,
+    cycling: candidate.cycling as CycleConfig | null,
+    intention: candidate.intention as string,
+    enabled: candidate.enabled as boolean,
   };
   if (!isScheduleEntry(legacyShape)) return false;
   return (
-    value.duration.kind === 'window' || (value.strictness === 'flexible' && value.cycling === null)
+    candidate.duration.kind === 'window' ||
+    (candidate.strictness === 'flexible' && candidate.cycling === null)
   );
 }
 
@@ -1095,17 +1078,19 @@ export function isSessionConfigV2(value: unknown): value is SessionConfigV2 {
 }
 
 function isPausedFromStateV2Value(value: unknown): value is PausedFromStateV2 {
-  const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, ['phase', 'phaseEndsAt']);
+  const candidate: UnknownRecord | null = stableExactOwnDataSnapshot(value, [
+    'phase',
+    'phaseEndsAt',
+  ]);
   return (
     candidate !== null &&
     (candidate.phase === 'focus' || candidate.phase === 'break') &&
-    (candidate.phaseEndsAt === null || isSafeTimestamp(candidate.phaseEndsAt)) &&
-    isStructuredCloneableData(value)
+    (candidate.phaseEndsAt === null || isSafeTimestamp(candidate.phaseEndsAt))
   );
 }
 
 function isSessionStateV2Value(value: unknown): value is SessionStateV2 {
-  const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, [
+  const candidate: UnknownRecord | null = stableExactOwnDataSnapshot(value, [
     'version',
     'sessionId',
     'config',
@@ -1118,20 +1103,9 @@ function isSessionStateV2Value(value: unknown): value is SessionStateV2 {
     'pausedFrom',
     'focusedMs',
   ]);
-  const config: UnknownRecord | null = exactOwnDataSnapshot(candidate?.config, [
-    'mode',
-    'strictness',
-    'duration',
-    'cycling',
-    'intention',
-    'source',
-    'scheduleOccurrence',
-    'rules',
-  ]);
+  const config: unknown = candidate?.config;
   if (
     candidate === null ||
-    config === null ||
-    !hasOnlyOwnDataPropertiesDeep(value) ||
     candidate.version !== 2 ||
     !isUuid(candidate.sessionId) ||
     !isSessionConfigV2Value(config) ||
@@ -1140,8 +1114,7 @@ function isSessionStateV2Value(value: unknown): value is SessionStateV2 {
     candidate.phaseStartedAt < candidate.startedAt ||
     !isNonNegativeInteger(candidate.cycleIndex) ||
     !isSafeTimestamp(candidate.focusedMs) ||
-    (candidate.phase !== 'focus' && candidate.phase !== 'break' && candidate.phase !== 'paused') ||
-    !isStructuredCloneableData(value)
+    (candidate.phase !== 'focus' && candidate.phase !== 'break' && candidate.phase !== 'paused')
   ) {
     return false;
   }
@@ -1273,15 +1246,16 @@ function isEndAuthorityV2Value(value: unknown): value is EndAuthorityV2 {
 
 export function isSessionLifecycleV2(value: unknown): value is SessionLifecycleV2 {
   return safelyValidate((): boolean => {
-    if (!hasOnlyOwnDataPropertiesDeep(value) || !isStructuredCloneableData(value)) return false;
-
-    const simple: UnknownRecord | null = exactOwnDataSnapshot(value, ['kind', 'endAuthority']);
+    const simple: UnknownRecord | null = stableExactOwnDataSnapshot(value, [
+      'kind',
+      'endAuthority',
+    ]);
     if (simple !== null) {
       if (simple.kind === 'idle') return isHiddenAuthority(simple.endAuthority);
       return simple.kind === 'active' && isEndAuthorityV2Value(simple.endAuthority);
     }
 
-    const starting: UnknownRecord | null = exactOwnDataSnapshot(value, [
+    const starting: UnknownRecord | null = stableExactOwnDataSnapshot(value, [
       'kind',
       'operationId',
       'transition',
@@ -1296,7 +1270,7 @@ export function isSessionLifecycleV2(value: unknown): value is SessionLifecycleV
       );
     }
 
-    const cleanup: UnknownRecord | null = exactOwnDataSnapshot(value, [
+    const cleanup: UnknownRecord | null = stableExactOwnDataSnapshot(value, [
       'kind',
       'journal',
       'id',
@@ -1311,7 +1285,7 @@ export function isSessionLifecycleV2(value: unknown): value is SessionLifecycleV
       );
     }
 
-    const error: UnknownRecord | null = exactOwnDataSnapshot(value, [
+    const error: UnknownRecord | null = stableExactOwnDataSnapshot(value, [
       'kind',
       'code',
       'retryAvailable',
@@ -1691,7 +1665,7 @@ function validSourceOccurrence(
 
 export function isSessionStartedEventV2(value: unknown): value is SessionStartedEventV2 {
   return safelyValidate((): boolean => {
-    const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, [
+    const candidate: UnknownRecord | null = stableExactOwnDataSnapshot(value, [
       'version',
       't',
       'eventId',
@@ -1718,8 +1692,7 @@ export function isSessionStartedEventV2(value: unknown): value is SessionStarted
         candidate.strictness !== 'hard') ||
       duration === null ||
       typeof candidate.intention !== 'string' ||
-      !validSourceOccurrence(candidate.source, candidate.scheduleOccurrence, false) ||
-      !isStructuredCloneableData(value)
+      !validSourceOccurrence(candidate.source, candidate.scheduleOccurrence, false)
     ) {
       return false;
     }
@@ -1748,7 +1721,7 @@ function isEndReasonOutcomeDurationValid(value: UnknownRecord, duration: Session
 
 export function isSessionEndedEventV2(value: unknown): value is SessionEndedEventV2 {
   return safelyValidate((): boolean => {
-    const candidate: UnknownRecord | null = exactOwnDataSnapshot(value, [
+    const candidate: UnknownRecord | null = stableExactOwnDataSnapshot(value, [
       'version',
       't',
       'eventId',
@@ -1771,8 +1744,7 @@ export function isSessionEndedEventV2(value: unknown): value is SessionEndedEven
       !isSafeTimestamp(candidate.at) ||
       !isSafeTimestamp(candidate.focusedMs) ||
       duration === null ||
-      !isEndReasonOutcomeDurationValid(candidate, duration) ||
-      !isStructuredCloneableData(value)
+      !isEndReasonOutcomeDurationValid(candidate, duration)
     ) {
       return false;
     }

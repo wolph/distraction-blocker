@@ -14,8 +14,17 @@ import {
   isSessionStateV2,
   parseStoredSettingsV2,
 } from '../../../src/shared/runtime-validation';
-import type { SettingsV2 } from '../../../src/shared/types';
-import { MANUAL_TIMED_CONFIG } from './v2-runtime-fixtures';
+import type { SessionStateV2, SettingsV2 } from '../../../src/shared/types';
+import { activeSnapshotV2, HIDDEN_AUTHORITY } from './v2-public-fixtures';
+import {
+  ENDED,
+  MANUAL_TIMED_CONFIG,
+  NOW,
+  OCCURRENCE,
+  SESSION_ID,
+  STARTED,
+  WINDOW_ENTRY,
+} from './v2-runtime-fixtures';
 
 function withClassPrototype(value: object): object {
   class BoundaryRecord {}
@@ -27,6 +36,20 @@ function withCustomPrototype(value: object): object {
   const prototype: object = { boundaryRecord: true };
   return Object.assign(Object.create(prototype) as object, value);
 }
+
+const TIMED_FOCUS_STATE: SessionStateV2 = {
+  version: 2,
+  sessionId: SESSION_ID,
+  config: MANUAL_TIMED_CONFIG,
+  startedAt: NOW,
+  sessionEndsAt: NOW + 25 * 60_000,
+  phase: 'focus',
+  phaseStartedAt: NOW,
+  phaseEndsAt: NOW + 25 * 60_000,
+  cycleIndex: 0,
+  pausedFrom: null,
+  focusedMs: 0,
+};
 
 describe('v2 validator hostile inputs', (): void => {
   it('returns rejection values for revoked and throwing proxies', (): void => {
@@ -205,6 +228,89 @@ describe('v2 validator hostile inputs', (): void => {
     expect(getterCalls).toBe(0);
   });
 
+  it('does not execute getters installed across state, lifecycle, and event boundaries', (): void => {
+    const getterCounts: number[] = [0, 0, 0, 0];
+
+    const state: Record<string, unknown> = { ...structuredClone(TIMED_FOCUS_STATE) };
+    state.pausedFrom = new Proxy(
+      { phase: 'focus', phaseEndsAt: NOW + 25 * 60_000 },
+      {
+        getPrototypeOf: (target: object): object | null => {
+          installCountingGetter(state, 'startedAt', NOW, getterCounts, 0);
+          return Reflect.getPrototypeOf(target);
+        },
+      },
+    );
+    expect(isSessionStateV2(state)).toBe(false);
+
+    const lifecycle: Record<string, unknown> = {
+      kind: 'active',
+      endAuthority: null,
+    };
+    lifecycle.endAuthority = new Proxy(
+      { kind: 'hidden' },
+      {
+        getPrototypeOf: (target: object): object | null => {
+          installCountingGetter(lifecycle, 'kind', 'active', getterCounts, 1);
+          return Reflect.getPrototypeOf(target);
+        },
+      },
+    );
+    expect(isSessionLifecycleV2(lifecycle)).toBe(false);
+
+    const startedDuration: Record<string, unknown> = { kind: 'timed', minutes: 25 };
+    const startedOccurrence: unknown = getterInstallingOwnKeysProxy(
+      structuredClone(OCCURRENCE),
+      (): void => installCountingGetter(startedDuration, 'minutes', 25, getterCounts, 2),
+    );
+    expect(
+      isSessionStartedEventV2({
+        ...STARTED,
+        duration: startedDuration,
+        source: 'schedule',
+        scheduleOccurrence: startedOccurrence,
+      }),
+    ).toBe(false);
+
+    const endedDuration: Record<string, unknown> = { kind: 'timed', minutes: 25 };
+    const endedOccurrence: unknown = getterInstallingOwnKeysProxy(
+      structuredClone(OCCURRENCE),
+      (): void => installCountingGetter(endedDuration, 'minutes', 25, getterCounts, 3),
+    );
+    expect(
+      isSessionEndedEventV2({
+        ...ENDED,
+        outcome: 'completed',
+        reason: 'timer-completed',
+        duration: endedDuration,
+        source: 'schedule',
+        scheduleOccurrence: endedOccurrence,
+      }),
+    ).toBe(false);
+
+    expect(getterCounts).toEqual([0, 0, 0, 0]);
+  });
+
+  it('rejects transparent roots for every exported v2 boundary validator', (): void => {
+    const cases: ReadonlyArray<readonly [(value: unknown) => boolean, object]> = [
+      [isCanonicalSessionRuleSnapshot, MANUAL_TIMED_CONFIG.rules],
+      [isSessionDuration, MANUAL_TIMED_CONFIG.duration],
+      [isScheduleDuration, { kind: 'window' }],
+      [isScheduleOccurrenceRef, OCCURRENCE],
+      [isSessionConfigV2, MANUAL_TIMED_CONFIG],
+      [isScheduleEntryV2, WINDOW_ENTRY],
+      [isSessionStartedEventV2, STARTED],
+      [isSessionEndedEventV2, ENDED],
+      [isSessionStateV2, TIMED_FOCUS_STATE],
+      [isSessionLifecycleV2, { kind: 'idle', endAuthority: HIDDEN_AUTHORITY }],
+      [isSessionSnapshotV2, activeSnapshotV2()],
+    ];
+
+    for (const [validate, value] of cases) {
+      expect(validate(new Proxy(structuredClone(value), {}))).toBe(false);
+    }
+  });
+
   it('bounds exact comparison work for a shared depth-20 graph', (): void => {
     let graph: object = {};
     for (let depth: number = 0; depth < 20; depth++) {
@@ -227,9 +333,10 @@ describe('v2 validator hostile inputs', (): void => {
     }
   });
 
-  it('stops descriptor traversal when a nested record exceeds the key budget', (): void => {
+  it('keeps descriptor traversal linear for a wide invalid nested record', (): void => {
+    const width: number = 50_000;
     const wide: Record<string, number> = {};
-    for (let index: number = 0; index < 50_000; index++) wide[`key-${index}`] = index;
+    for (let index: number = 0; index < width; index++) wide[`key-${index}`] = index;
     const nativeDescriptor: typeof Reflect.getOwnPropertyDescriptor =
       Reflect.getOwnPropertyDescriptor;
     let descriptorCalls: number = 0;
@@ -242,7 +349,7 @@ describe('v2 validator hostile inputs', (): void => {
 
     try {
       expect(isSessionConfigV2({ ...MANUAL_TIMED_CONFIG, intention: wide })).toBe(false);
-      expect(descriptorCalls).toBeLessThan(1_000);
+      expect(descriptorCalls).toBeLessThan(width * 6);
     } finally {
       descriptorSpy.mockRestore();
     }
@@ -298,3 +405,29 @@ describe('v2 validator hostile inputs', (): void => {
     },
   );
 });
+
+function installCountingGetter(
+  target: object,
+  key: string,
+  value: unknown,
+  counts: number[],
+  index: number,
+): void {
+  Object.defineProperty(target, key, {
+    configurable: true,
+    enumerable: true,
+    get: (): unknown => {
+      counts[index] = (counts[index] ?? 0) + 1;
+      return value;
+    },
+  });
+}
+
+function getterInstallingOwnKeysProxy<T extends object>(target: T, install: () => void): T {
+  return new Proxy(target, {
+    ownKeys: (proxyTarget: T): (string | symbol)[] => {
+      install();
+      return Reflect.ownKeys(proxyTarget);
+    },
+  });
+}
