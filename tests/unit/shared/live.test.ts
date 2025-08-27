@@ -92,21 +92,15 @@ describe('v2 live clock projection', (): void => {
     expect(projectedSessionFocusedMsV2(v2Snap, 5_000)).toBe(9_000);
   });
 
-  it('falls back to the settled snapshot timestamp for invalid clocks', (): void => {
-    expect(projectedSessionFocusedMsV2(v2Snap, Number.NaN)).toBe(9_000);
-    expect(projectedSessionFocusedMsV2(v2Snap, Number.POSITIVE_INFINITY)).toBe(9_000);
-    expect(projectedSessionFocusedMsV2(v2Snap, -1)).toBe(9_000);
-  });
-
-  it('does not inflate finite countdowns after rollback or invalid clocks', (): void => {
+  it('uses the supplied current time for finite countdowns', (): void => {
     const timed: SessionSnapshotV2 = {
       ...v2Snap,
       config: { ...v2Config, duration: { kind: 'timed', minutes: 1 } },
       phaseEndsAt: 60_000,
       sessionEndsAt: 70_000,
     };
-    expect(remainingPhaseMsV2(timed, 5_000)).toBe(50_000);
-    expect(remainingSessionMsV2(timed, Number.NaN)).toBe(60_000);
+    expect(remainingPhaseMsV2(timed, 5_000)).toBe(55_000);
+    expect(remainingSessionMsV2(timed, 5_000)).toBe(65_000);
   });
 
   it('caps timed focus at both phase and session ends', (): void => {

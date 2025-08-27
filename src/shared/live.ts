@@ -17,19 +17,14 @@ export function phaseProgress(snap: SessionSnapshot, nowMs: number): number {
   return Math.min(1, Math.max(0, (nowMs - snap.phaseStartedAt) / span));
 }
 
-function settledNow(snap: SessionSnapshotV2, nowMs: number): number {
-  if (!Number.isSafeInteger(nowMs) || nowMs < snap.at) return snap.at;
-  return nowMs;
-}
-
 export function remainingPhaseMsV2(snap: SessionSnapshotV2, nowMs: number): number | null {
   if (snap.phaseEndsAt === null) return null;
-  return Math.max(0, snap.phaseEndsAt - settledNow(snap, nowMs));
+  return Math.max(0, snap.phaseEndsAt - nowMs);
 }
 
 export function remainingSessionMsV2(snap: SessionSnapshotV2, nowMs: number): number | null {
   if (snap.sessionEndsAt === null) return null;
-  return Math.max(0, snap.sessionEndsAt - settledNow(snap, nowMs));
+  return Math.max(0, snap.sessionEndsAt - nowMs);
 }
 
 export function projectedSessionFocusedMsV2(snap: SessionSnapshotV2, nowMs: number): number {
@@ -37,7 +32,7 @@ export function projectedSessionFocusedMsV2(snap: SessionSnapshotV2, nowMs: numb
     return snap.sessionFocusedMs;
   }
   const projectionStart: number = Math.max(snap.at, snap.phaseStartedAt ?? snap.at);
-  let projectionEnd: number = Math.max(projectionStart, settledNow(snap, nowMs));
+  let projectionEnd: number = Math.max(projectionStart, nowMs);
   if (snap.phaseEndsAt !== null) projectionEnd = Math.min(projectionEnd, snap.phaseEndsAt);
   if (snap.sessionEndsAt !== null) projectionEnd = Math.min(projectionEnd, snap.sessionEndsAt);
   return snap.sessionFocusedMs + Math.max(0, projectionEnd - projectionStart);
