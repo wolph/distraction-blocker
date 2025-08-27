@@ -74,7 +74,7 @@ describe('v2 schedule validation and v1 Settings compatibility', (): void => {
     ).toBeNull();
   });
 
-  it('parses a stable entry snapshot before a stateful getter changes', (): void => {
+  it('rejects a stateful entry getter without invoking it', (): void => {
     const entry: Record<string, unknown> = structuredClone(WINDOW_ENTRY) as unknown as Record<
       string,
       unknown
@@ -89,14 +89,8 @@ describe('v2 schedule validation and v1 Settings compatibility', (): void => {
       },
     });
 
-    const parsed: SettingsV2 | null = parseStoredSettingsV2({
-      ...DEFAULT_SETTINGS,
-      schedule: [entry],
-    });
-
-    expect(parsed?.schedule[0]?.mode).toBe('blacklist');
-    expect(isScheduleEntryV2(parsed?.schedule[0])).toBe(true);
-    expect(entry.mode).toBe('invalid');
+    expect(parseStoredSettingsV2({ ...DEFAULT_SETTINGS, schedule: [entry] })).toBeNull();
+    expect(reads).toBe(0);
   });
 
   it.each(ENTRY_EXTRA_CASES)(
@@ -185,5 +179,68 @@ describe('v2 schedule validation and v1 Settings compatibility', (): void => {
     }).not.toThrow();
     expect(rootResult).toBeNull();
     expect(entryResult).toBeNull();
+  });
+
+  it('rejects transparent proxies at the Settings root and schedule array boundary', (): void => {
+    const rootProxy: unknown = new Proxy(structuredClone(DEFAULT_SETTINGS), {});
+    const scheduleProxy: unknown[] = new Proxy<unknown[]>([], {});
+
+    expect(parseStoredSettingsV2(rootProxy)).toBeNull();
+    expect(
+      parseStoredSettingsV2({ ...structuredClone(DEFAULT_SETTINGS), schedule: scheduleProxy }),
+    ).toBeNull();
+  });
+
+  it.each(['theme', 'schedule'] as const)(
+    'rejects a non-enumerable required Settings field: %s',
+    (field: 'theme' | 'schedule'): void => {
+      const stored: Record<string, unknown> = structuredClone(
+        DEFAULT_SETTINGS,
+      ) as unknown as Record<string, unknown>;
+      Object.defineProperty(stored, field, {
+        configurable: true,
+        enumerable: false,
+        value: stored[field],
+        writable: true,
+      });
+
+      expect(parseStoredSettingsV2(stored)).toBeNull();
+    },
+  );
+
+  it('rejects Settings and schedule-array accessors without invoking them', (): void => {
+    let rootReads: number = 0;
+    const rootAccessor: Record<string, unknown> = structuredClone(
+      DEFAULT_SETTINGS,
+    ) as unknown as Record<string, unknown>;
+    Object.defineProperty(rootAccessor, 'theme', {
+      configurable: true,
+      enumerable: true,
+      get: (): string => {
+        rootReads += 1;
+        return 'auto';
+      },
+    });
+
+    let arrayReads: number = 0;
+    const accessorSchedule: unknown[] = [WINDOW_ENTRY];
+    Object.defineProperty(accessorSchedule, 0, {
+      configurable: true,
+      enumerable: true,
+      get: (): typeof WINDOW_ENTRY => {
+        arrayReads += 1;
+        return WINDOW_ENTRY;
+      },
+    });
+
+    expect(parseStoredSettingsV2(rootAccessor)).toBeNull();
+    expect(
+      parseStoredSettingsV2({
+        ...structuredClone(DEFAULT_SETTINGS),
+        schedule: accessorSchedule,
+      }),
+    ).toBeNull();
+    expect(rootReads).toBe(0);
+    expect(arrayReads).toBe(0);
   });
 });

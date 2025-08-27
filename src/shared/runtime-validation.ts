@@ -928,16 +928,11 @@ function parseStoredScheduleEntryV2(value: unknown): ScheduleEntryV2 | null {
 
 export function parseStoredSettingsV2(value: unknown): SettingsV2 | null {
   try {
-    if (!isRecord(value) || !hasExactKeys(value, SETTINGS_KEYS)) return null;
-    const storedSchedule: unknown = value.schedule;
+    const stableSettings: UnknownRecord | null = stableExactOwnDataSnapshot(value, SETTINGS_KEYS);
+    if (stableSettings === null) return null;
+    const storedSchedule: unknown = stableSettings.schedule;
     if (!isDenseArray(storedSchedule)) return null;
-    const baseSource: UnknownRecord = {};
-    for (let keyIndex: number = 0; keyIndex < SETTINGS_KEYS.length; keyIndex++) {
-      const key: string = SETTINGS_KEYS[keyIndex] as string;
-      if (key !== 'schedule') baseSource[key] = value[key];
-    }
-    baseSource.schedule = [];
-    const baseCandidate: UnknownRecord = structuredClone(baseSource);
+    const baseCandidate: UnknownRecord = { ...stableSettings, schedule: [] };
     if (!isSettingsValue(baseCandidate)) return null;
     const schedule: ScheduleEntryV2[] = [];
     for (let index: number = 0; index < storedSchedule.length; index++) {
@@ -956,7 +951,8 @@ export function parseStoredSettingsV2(value: unknown): SettingsV2 | null {
         if (scheduleEntriesOverlap(prior, entry)) return null;
       }
     }
-    return { ...(baseCandidate as Settings), schedule };
+    const normalized: SettingsV2 = { ...(baseCandidate as Settings), schedule };
+    return structuredClone(normalized);
   } catch {
     return null;
   }
