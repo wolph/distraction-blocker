@@ -51,6 +51,7 @@ import {
   LOCAL_STREAK,
 } from '../../../src/shared/storage-keys';
 import type {
+  CycleConfig,
   DailyAgg,
   EventRecord,
   InstallMarker,
@@ -60,6 +61,7 @@ import type {
   SessionConfig,
   SessionRuleSnapshot,
   SessionSnapshot,
+  Settings,
   SettingsV2,
   SetupState,
   SiteUnlock,
@@ -496,6 +498,36 @@ describe('runtime and worker request validation parity', (): void => {
       expect(isSessionSnapshot(activeSnapshot(value))).toBe(workerAccepted);
     },
   );
+});
+
+describe('v1 cycling compatibility', (): void => {
+  it('preserves transparent Proxy acceptance across cycle, settings, session, and schedule paths', (): void => {
+    const cycling: CycleConfig = new Proxy<CycleConfig>({ ...DEFAULT_SETTINGS.defaultCycling }, {});
+    const config: SessionConfig = { ...CONFIG, cycling };
+    const settings: Settings = {
+      ...DEFAULT_SETTINGS,
+      defaultCycling: cycling,
+      schedule: [
+        {
+          id: 'weekday',
+          days: [1],
+          start: '09:00',
+          end: '10:00',
+          mode: 'blacklist',
+          strictness: 'flexible',
+          cycling,
+          intention: '',
+          enabled: true,
+        },
+      ],
+    };
+
+    expect(isCycleConfig(cycling)).toBe(true);
+    expect(parseRequest({ type: 'updateSettings', settings })).not.toBeNull();
+    expect(isSettings(settings)).toBe(true);
+    expect(parseRequest({ type: 'startSession', config })).not.toBeNull();
+    expect(isSessionSnapshot(activeSnapshot(config))).toBe(true);
+  });
 });
 
 describe('exported runtime validators are total for hostile unknowns', (): void => {

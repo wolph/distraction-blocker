@@ -138,10 +138,12 @@ describe('v2 validator hostile inputs', (): void => {
       },
     });
 
-    expect(isCycleConfig(cycling)).toBe(false);
+    expect(isCycleConfig(cycling)).toBe(true);
+    expect(isSessionConfigV2({ ...MANUAL_TIMED_CONFIG, cycling })).toBe(false);
+    expect(isScheduleEntryV2({ ...WINDOW_ENTRY, cycling })).toBe(false);
     expect(isCanonicalSessionRuleSnapshot(rules)).toBe(false);
     expect(isSessionConfigV2(config)).toBe(false);
-    expect(cyclingReads).toBe(0);
+    expect(cyclingReads).toBe(1);
     expect(ruleReads).toBe(0);
     expect(configReads).toBe(0);
   });
@@ -167,10 +169,11 @@ describe('v2 validator hostile inputs', (): void => {
       rules,
     };
 
-    expect(isCycleConfig(cycling)).toBe(false);
+    expect(isCycleConfig(cycling)).toBe(true);
     expect(isCanonicalSessionRuleSnapshot(rules)).toBe(false);
     expect(isSessionConfigV2(rootConfig)).toBe(false);
     expect(isSessionConfigV2(nestedCyclingConfig)).toBe(false);
+    expect(isScheduleEntryV2({ ...WINDOW_ENTRY, cycling })).toBe(false);
     expect(isSessionConfigV2(nestedRulesConfig)).toBe(false);
   });
 
@@ -363,26 +366,6 @@ describe('v2 validator hostile inputs', (): void => {
       withCustomPrototype({ kind: 'timed', minutes: 25 }),
     ],
     [
-      'cycling class',
-      isCycleConfig,
-      withClassPrototype({
-        focusMin: 25,
-        shortBreakMin: 5,
-        longBreakMin: 15,
-        longEvery: 4,
-      }),
-    ],
-    [
-      'cycling custom prototype',
-      isCycleConfig,
-      withCustomPrototype({
-        focusMin: 25,
-        shortBreakMin: 5,
-        longBreakMin: 15,
-        longEvery: 4,
-      }),
-    ],
-    [
       'rules class',
       isCanonicalSessionRuleSnapshot,
       withClassPrototype(structuredClone(MANUAL_TIMED_CONFIG.rules)),
@@ -402,6 +385,34 @@ describe('v2 validator hostile inputs', (): void => {
     'rejects clone-unstable %s records',
     (_label: string, validate: (value: unknown) => boolean, value: object): void => {
       expect(validate(value)).toBe(false);
+    },
+  );
+
+  it.each([
+    [
+      'class',
+      withClassPrototype({
+        focusMin: 25,
+        shortBreakMin: 5,
+        longBreakMin: 15,
+        longEvery: 4,
+      }),
+    ],
+    [
+      'custom prototype',
+      withCustomPrototype({
+        focusMin: 25,
+        shortBreakMin: 5,
+        longBreakMin: 15,
+        longEvery: 4,
+      }),
+    ],
+  ])(
+    'preserves baseline v1 cycling acceptance for a %s record',
+    (_label: string, cycling: object): void => {
+      expect(isCycleConfig(cycling)).toBe(true);
+      expect(isSessionConfigV2({ ...MANUAL_TIMED_CONFIG, cycling })).toBe(false);
+      expect(isScheduleEntryV2({ ...WINDOW_ENTRY, cycling })).toBe(false);
     },
   );
 });

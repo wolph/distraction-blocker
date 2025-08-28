@@ -737,6 +737,17 @@ function isRule(value: unknown): value is Rule {
 }
 
 function isCycleConfigValue(value: unknown): value is CycleConfig {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, CYCLE_CONFIG_KEYS) &&
+    isRelativeMinuteDuration(value.focusMin) &&
+    isRelativeMinuteDuration(value.shortBreakMin) &&
+    isRelativeMinuteDuration(value.longBreakMin) &&
+    isPositiveInteger(value.longEvery)
+  );
+}
+
+function isCycleConfigV2Value(value: unknown): value is CycleConfig {
   const candidate: UnknownRecord | null = stableExactOwnDataSnapshot(value, CYCLE_CONFIG_KEYS);
   return (
     candidate !== null &&
@@ -788,7 +799,11 @@ function isScheduleEntry(value: unknown): value is ScheduleEntry {
 
 function isScheduleEntryV2Value(value: unknown): value is ScheduleEntryV2 {
   const candidate: UnknownRecord | null = stableExactOwnDataSnapshot(value, SCHEDULE_ENTRY_V2_KEYS);
-  if (candidate === null || !isScheduleDurationValue(candidate.duration)) {
+  if (
+    candidate === null ||
+    !isScheduleDurationValue(candidate.duration) ||
+    (candidate.cycling !== null && !isCycleConfigV2Value(candidate.cycling))
+  ) {
     return false;
   }
   const legacyShape: NormalizedScheduleEntryV1 = {
@@ -1054,7 +1069,7 @@ function isSessionConfigV2Value(value: unknown): value is SessionConfigV2 {
       candidate.strictness !== 'friction' &&
       candidate.strictness !== 'hard') ||
     duration === null ||
-    (candidate.cycling !== null && !isCycleConfigValue(candidate.cycling)) ||
+    (candidate.cycling !== null && !isCycleConfigV2Value(candidate.cycling)) ||
     typeof candidate.intention !== 'string' ||
     (candidate.source !== 'manual' && candidate.source !== 'schedule') ||
     !isCanonicalSessionRuleSnapshotValue(candidate.rules)

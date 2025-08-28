@@ -142,8 +142,9 @@ describe('v2 configuration validation', (): void => {
 
     expect(isSessionDuration(duration)).toBe(false);
     expect(isSessionDuration(structuredClone(duration))).toBe(false);
-    expect(isCycleConfig(cycling)).toBe(false);
+    expect(isCycleConfig(cycling)).toBe(true);
     expect(isCycleConfig(structuredClone(cycling))).toBe(false);
+    expect(isSessionConfigV2({ ...MANUAL_TIMED_CONFIG, cycling })).toBe(false);
     expect(isCanonicalSessionRuleSnapshot(rules)).toBe(false);
     expect(isCanonicalSessionRuleSnapshot(structuredClone(rules))).toBe(false);
     expect(isSessionConfigV2(config)).toBe(false);
