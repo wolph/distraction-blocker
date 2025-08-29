@@ -74,7 +74,8 @@ function exactOwnDataSnapshot(
 
 function hasOnlyOwnDataPropertiesDeep(
   value: unknown,
-  seen: WeakSet<object> = new WeakSet<object>(),
+  visiting: WeakSet<object> = new WeakSet<object>(),
+  complete: WeakSet<object> = new WeakSet<object>(),
 ): boolean {
   if (value === null || typeof value !== 'object') return typeof value !== 'function';
   if (Array.isArray(value)) {
@@ -82,19 +83,22 @@ function hasOnlyOwnDataPropertiesDeep(
   } else if (Object.getPrototypeOf(value) !== Object.prototype) {
     return false;
   }
-  if (seen.has(value)) return false;
-  seen.add(value);
+  if (complete.has(value)) return true;
+  if (visiting.has(value)) return false;
+  visiting.add(value);
   const keys: PropertyKey[] = Reflect.ownKeys(value);
   for (const key of keys) {
     const descriptor: PropertyDescriptor | undefined = Reflect.getOwnPropertyDescriptor(value, key);
     if (
       descriptor === undefined ||
       !Object.hasOwn(descriptor, 'value') ||
-      !hasOnlyOwnDataPropertiesDeep(descriptor.value, seen)
+      !hasOnlyOwnDataPropertiesDeep(descriptor.value, visiting, complete)
     ) {
       return false;
     }
   }
+  visiting.delete(value);
+  complete.add(value);
   return true;
 }
 
@@ -121,19 +125,38 @@ function exactDenseArrayLength(value: unknown[]): number | null {
   return length;
 }
 
-function exactValueEqual(left: unknown, right: unknown): boolean {
+function wasPairCompared(
+  left: object,
+  right: object,
+  compared: WeakMap<object, WeakSet<object>>,
+): boolean {
+  const existing: WeakSet<object> | undefined = compared.get(left);
+  if (existing?.has(right) === true) return true;
+  const matches: WeakSet<object> = existing ?? new WeakSet<object>();
+  matches.add(right);
+  if (existing === undefined) compared.set(left, matches);
+  return false;
+}
+
+function exactValueEqual(
+  left: unknown,
+  right: unknown,
+  compared: WeakMap<object, WeakSet<object>> = new WeakMap<object, WeakSet<object>>(),
+): boolean {
   if (Object.is(left, right)) return true;
   if (Array.isArray(left) || Array.isArray(right)) {
     if (!Array.isArray(left) || !Array.isArray(right)) return false;
+    if (wasPairCompared(left, right, compared)) return true;
     const leftLength: number | null = exactDenseArrayLength(left);
     const rightLength: number | null = exactDenseArrayLength(right);
     if (leftLength === null || rightLength === null || leftLength !== rightLength) return false;
     for (let index: number = 0; index < leftLength; index++) {
-      if (!exactValueEqual(left[index], right[index])) return false;
+      if (!exactValueEqual(left[index], right[index], compared)) return false;
     }
     return true;
   }
   if (!isRecord(left) || !isRecord(right)) return false;
+  if (wasPairCompared(left, right, compared)) return true;
   const leftKeys: PropertyKey[] = Reflect.ownKeys(left);
   const rightKeys: PropertyKey[] = Reflect.ownKeys(right);
   if (
@@ -159,7 +182,7 @@ function exactValueEqual(left: unknown, right: unknown): boolean {
       rightDescriptor === undefined ||
       !Object.hasOwn(leftDescriptor, 'value') ||
       !Object.hasOwn(rightDescriptor, 'value') ||
-      !exactValueEqual(leftDescriptor.value, rightDescriptor.value)
+      !exactValueEqual(leftDescriptor.value, rightDescriptor.value, compared)
     ) {
       return false;
     }

@@ -342,24 +342,42 @@ describe('parseSessionStartRequestV2', (): void => {
     expect(parseSessionStartRequestV2(requestWithExclusions(exclusions))).toBeNull();
   });
 
-  it('rejects a shared-reference data graph', (): void => {
+  it('accepts aliased category records in canonical manual rules', (): void => {
     const sharedCategories: SessionStartRequestV2['config']['rules']['categories'] = {
       ...REQUEST.config.rules.categories,
     };
-
-    expect(
-      parseSessionStartRequestV2({
-        ...REQUEST,
-        config: {
-          ...REQUEST.config,
-          rules: {
-            ...REQUEST.config.rules,
-            baselineCategories: sharedCategories,
-            categories: sharedCategories,
-          },
+    const request: SessionStartRequestV2 = {
+      ...REQUEST,
+      config: {
+        ...REQUEST.config,
+        rules: {
+          ...REQUEST.config.rules,
+          baselineCategories: sharedCategories,
+          categories: sharedCategories,
         },
-      }),
-    ).toBeNull();
+      },
+    };
+
+    expect(isSessionConfigV2(request.config)).toBe(true);
+    expect(parseSessionStartRequestV2(request)).toEqual(request);
+  });
+
+  it('accepts aliased empty rule lists in canonical manual rules', (): void => {
+    const sharedRules: [] = [];
+    const request: SessionStartRequestV2 = {
+      ...REQUEST,
+      config: {
+        ...REQUEST.config,
+        rules: {
+          ...REQUEST.config.rules,
+          permanentBlacklist: sharedRules,
+          permanentAllowlist: sharedRules,
+        },
+      },
+    };
+
+    expect(isSessionConfigV2(request.config)).toBe(true);
+    expect(parseSessionStartRequestV2(request)).toEqual(request);
   });
 
   it('rejects a cyclic graph', (): void => {
@@ -419,6 +437,31 @@ describe('parseSessionStartRequestV2', (): void => {
       expect(wideIncludesCalls).toBe(0);
     } finally {
       includesSpy.mockRestore();
+    }
+  });
+
+  it('visits a shared invalid data graph a bounded number of times', (): void => {
+    let shared: Record<string, unknown> = { leaf: true };
+    for (let depth: number = 0; depth < 18; depth++) {
+      shared = { left: shared, right: shared };
+    }
+    const nativeDescriptor: typeof Reflect.getOwnPropertyDescriptor =
+      Reflect.getOwnPropertyDescriptor;
+    let descriptorReads: number = 0;
+    const descriptorSpy: ReturnType<typeof vi.spyOn> = vi
+      .spyOn(Reflect, 'getOwnPropertyDescriptor')
+      .mockImplementation(
+        (target: object, propertyKey: PropertyKey): PropertyDescriptor | undefined => {
+          descriptorReads += 1;
+          return nativeDescriptor(target, propertyKey);
+        },
+      );
+
+    try {
+      expect(parseSessionStartRequestV2(requestWithExclusions(shared))).toBeNull();
+      expect(descriptorReads).toBeLessThan(2_000);
+    } finally {
+      descriptorSpy.mockRestore();
     }
   });
 });
