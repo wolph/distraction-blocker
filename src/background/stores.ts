@@ -52,8 +52,11 @@ import {
   isListSyncKey,
   LIST_SYNC_KEYS,
 } from './list-sync-codec';
+import type { DeferredBlockClaim, RuntimeTabState } from './runtime-leaf-types';
 import { storageValuesEqual } from './storage-value-equality';
 import type { SyncJournal } from './sync-writer';
+
+export type { DeferredBlockClaim, RuntimeTabState } from './runtime-leaf-types';
 
 const TIME_RE: RegExp = /^([01]\d|2[0-3]):([0-5]\d)$/;
 let eventAppendQueue: Promise<void> = Promise.resolve();
@@ -88,16 +91,6 @@ export interface RuntimeState {
   commitCheckpoint: RuntimeCommitCheckpoint | null;
 }
 
-export interface DeferredBlockClaim {
-  attemptAt: number;
-  documentId?: string;
-  kind: 'navigation' | 'existing';
-  sessionId: string;
-  stage: 'attempt' | 'stopped';
-  tabId: number;
-  url: string;
-}
-
 export type LegacySessionConfig = Omit<SessionConfig, 'rules'>;
 
 export type PredecessorSessionRuleSnapshot = Omit<SessionRuleSnapshot, 'baselineCategories'>;
@@ -123,12 +116,6 @@ export interface RuntimeCommitCheckpoint {
   syncBank: boolean;
   aggregateSets?: Record<string, DailyAgg>;
   aggregateRemoves?: string[];
-}
-
-export interface RuntimeTabState {
-  muteUrl: string | null;
-  priorMuted: boolean | null;
-  stoppedDocumentId: string | null;
 }
 
 export function emptyRuntime(now: number): RuntimeState {
