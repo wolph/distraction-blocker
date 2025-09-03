@@ -1,0 +1,288 @@
+import { normalizeSessionRules } from '../core/matcher';
+import { exactDataEqual } from './exact-data';
+import { isRelativeMinuteDuration } from './numeric-validation';
+import type {
+  CycleConfig,
+  GateState,
+  PausedFromStateV2,
+  ScheduleOccurrenceRef,
+  SessionConfigV2,
+  SessionDuration,
+  SessionRuleSnapshot,
+  SessionStateV2,
+  SiteUnlock,
+} from './types';
+
+type UnknownRecord = Record<string, unknown>;
+
+const SESSION_RULE_SNAPSHOT_KEYS: readonly string[] = [
+  'baselineRevision',
+  'baselineCategories',
+  'categories',
+  'exclusions',
+  'permanentBlacklist',
+  'permanentAllowlist',
+  'sessionBlacklist',
+  'sessionAllowlist',
+];
+const CYCLE_CONFIG_KEYS: readonly string[] = [
+  'focusMin',
+  'shortBreakMin',
+  'longBreakMin',
+  'longEvery',
+];
+const SESSION_CONFIG_V2_KEYS: readonly string[] = [
+  'mode',
+  'strictness',
+  'duration',
+  'cycling',
+  'intention',
+  'source',
+  'scheduleOccurrence',
+  'rules',
+];
+const SESSION_STATE_V2_KEYS: readonly string[] = [
+  'version',
+  'sessionId',
+  'config',
+  'startedAt',
+  'sessionEndsAt',
+  'phase',
+  'phaseStartedAt',
+  'phaseEndsAt',
+  'cycleIndex',
+  'pausedFrom',
+  'focusedMs',
+];
+const UUID_RE: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Accepts only already-detached exact plain data from snapshotExactData. */
+export function validateDetachedCanonicalSessionRuleSnapshot(
+  value: unknown,
+): value is SessionRuleSnapshot {
+  const candidate: UnknownRecord | null = exactRecord(value, SESSION_RULE_SNAPSHOT_KEYS);
+  if (candidate === null) return false;
+  const normalized: SessionRuleSnapshot | null = normalizeSessionRules(candidate);
+  return normalized !== null && exactDataEqual(candidate, normalized);
+}
+
+/** Accepts only already-detached exact plain data from snapshotExactData. */
+export function validateDetachedCycleConfigV2(value: unknown): value is CycleConfig {
+  const candidate: UnknownRecord | null = exactRecord(value, CYCLE_CONFIG_KEYS);
+  return (
+    candidate !== null &&
+    isRelativeMinuteDuration(candidate.focusMin) &&
+    isRelativeMinuteDuration(candidate.shortBreakMin) &&
+    isRelativeMinuteDuration(candidate.longBreakMin) &&
+    isPositiveInteger(candidate.longEvery)
+  );
+}
+
+/** Accepts only already-detached exact plain data from snapshotExactData. */
+export function validateDetachedSessionDuration(value: unknown): value is SessionDuration {
+  const timed: UnknownRecord | null = exactRecord(value, ['kind', 'minutes']);
+  if (timed !== null) {
+    return timed.kind === 'timed' && isRelativeMinuteDuration(timed.minutes);
+  }
+  const indefinite: UnknownRecord | null = exactRecord(value, ['kind']);
+  return indefinite !== null && indefinite.kind === 'until-stopped';
+}
+
+/** Accepts only already-detached exact plain data from snapshotExactData. */
+export function validateDetachedScheduleOccurrenceRef(
+  value: unknown,
+): value is ScheduleOccurrenceRef {
+  const candidate: UnknownRecord | null = exactRecord(value, [
+    'version',
+    'token',
+    'entryId',
+    'localStartDate',
+  ]);
+  return (
+    candidate !== null &&
+    candidate.version === 1 &&
+    isNonBlankString(candidate.entryId) &&
+    isLocalDateValue(candidate.localStartDate) &&
+    candidate.token === `${candidate.entryId}@${candidate.localStartDate}`
+  );
+}
+
+/** Accepts only already-detached exact plain data from snapshotExactData. */
+export function validateDetachedSessionConfigV2(value: unknown): value is SessionConfigV2 {
+  const candidate: UnknownRecord | null = exactRecord(value, SESSION_CONFIG_V2_KEYS);
+  const duration: unknown = candidate?.duration;
+  if (
+    candidate === null ||
+    (candidate.mode !== 'blacklist' && candidate.mode !== 'whitelist') ||
+    (candidate.strictness !== 'flexible' &&
+      candidate.strictness !== 'friction' &&
+      candidate.strictness !== 'hard') ||
+    !validateDetachedSessionDuration(duration) ||
+    (candidate.cycling !== null && !validateDetachedCycleConfigV2(candidate.cycling)) ||
+    typeof candidate.intention !== 'string' ||
+    (candidate.source !== 'manual' && candidate.source !== 'schedule') ||
+    !validateDetachedCanonicalSessionRuleSnapshot(candidate.rules)
+  ) {
+    return false;
+  }
+  if (duration.kind === 'until-stopped') {
+    if (candidate.strictness !== 'flexible' || candidate.cycling !== null) return false;
+  }
+  return candidate.source === 'manual'
+    ? candidate.scheduleOccurrence === null
+    : validateDetachedScheduleOccurrenceRef(candidate.scheduleOccurrence);
+}
+
+/** Accepts only already-detached exact plain data from snapshotExactData. */
+export function validateDetachedPausedFromStateV2(value: unknown): value is PausedFromStateV2 {
+  const candidate: UnknownRecord | null = exactRecord(value, ['phase', 'phaseEndsAt']);
+  return (
+    candidate !== null &&
+    (candidate.phase === 'focus' || candidate.phase === 'break') &&
+    (candidate.phaseEndsAt === null || isSafeTimestamp(candidate.phaseEndsAt))
+  );
+}
+
+/** Accepts only already-detached exact plain data from snapshotExactData. */
+export function validateDetachedSessionStateV2(value: unknown): value is SessionStateV2 {
+  const candidate: UnknownRecord | null = exactRecord(value, SESSION_STATE_V2_KEYS);
+  const config: unknown = candidate?.config;
+  if (
+    candidate === null ||
+    candidate.version !== 2 ||
+    !isUuid(candidate.sessionId) ||
+    !validateDetachedSessionConfigV2(config) ||
+    !isSafeTimestamp(candidate.startedAt) ||
+    !isSafeTimestamp(candidate.phaseStartedAt) ||
+    candidate.phaseStartedAt < candidate.startedAt ||
+    !isNonNegativeInteger(candidate.cycleIndex) ||
+    !isSafeTimestamp(candidate.focusedMs) ||
+    (candidate.phase !== 'focus' && candidate.phase !== 'break' && candidate.phase !== 'paused')
+  ) {
+    return false;
+  }
+  if (config.duration.kind === 'until-stopped') {
+    if (candidate.sessionEndsAt !== null || candidate.phase === 'break') return false;
+    if (candidate.phase === 'focus') {
+      return candidate.phaseEndsAt === null && candidate.pausedFrom === null;
+    }
+    return (
+      isSafeTimestamp(candidate.phaseEndsAt) &&
+      candidate.phaseEndsAt >= candidate.phaseStartedAt &&
+      validateDetachedPausedFromStateV2(candidate.pausedFrom) &&
+      candidate.pausedFrom.phase === 'focus' &&
+      candidate.pausedFrom.phaseEndsAt === null
+    );
+  }
+  const durationMs: number = Math.round(config.duration.minutes * 60_000);
+  const expectedSessionEndsAt: number = candidate.startedAt + durationMs;
+  if (
+    !isSafeTimestamp(expectedSessionEndsAt) ||
+    candidate.sessionEndsAt !== expectedSessionEndsAt ||
+    !isSafeTimestamp(candidate.sessionEndsAt) ||
+    !isSafeTimestamp(candidate.phaseEndsAt) ||
+    candidate.phaseEndsAt < candidate.phaseStartedAt ||
+    candidate.phaseEndsAt > candidate.sessionEndsAt
+  ) {
+    return false;
+  }
+  if (candidate.phase === 'focus') return candidate.pausedFrom === null;
+  if (candidate.phase === 'break') {
+    return config.cycling !== null && candidate.pausedFrom === null;
+  }
+  return (
+    validateDetachedPausedFromStateV2(candidate.pausedFrom) &&
+    isSafeTimestamp(candidate.pausedFrom.phaseEndsAt) &&
+    candidate.pausedFrom.phaseEndsAt >= candidate.phaseStartedAt &&
+    candidate.pausedFrom.phaseEndsAt <= candidate.sessionEndsAt &&
+    (candidate.pausedFrom.phase !== 'break' || config.cycling !== null)
+  );
+}
+
+/** Accepts only already-detached exact plain data from snapshotExactData. */
+export function validateDetachedGateState(value: unknown): value is GateState {
+  const candidate: UnknownRecord | null = exactRecord(value, [
+    'kind',
+    'host',
+    'openedAt',
+    'readyAt',
+    'requiredPhrase',
+  ]);
+  if (
+    candidate === null ||
+    (candidate.kind !== 'pause' &&
+      candidate.kind !== 'unlockSite' &&
+      candidate.kind !== 'cancel') ||
+    !isNullableString(candidate.host) ||
+    !isSafeTimestamp(candidate.openedAt) ||
+    !isSafeTimestamp(candidate.readyAt) ||
+    candidate.readyAt < candidate.openedAt ||
+    !isNullableString(candidate.requiredPhrase)
+  ) {
+    return false;
+  }
+  return candidate.kind === 'unlockSite'
+    ? isNonBlankString(candidate.host)
+    : candidate.host === null;
+}
+
+/** Accepts only already-detached exact plain data from snapshotExactData. */
+export function validateDetachedSiteUnlock(value: unknown): value is SiteUnlock {
+  const candidate: UnknownRecord | null = exactRecord(value, ['host', 'until']);
+  return candidate !== null && isNonBlankString(candidate.host) && isSafeTimestamp(candidate.until);
+}
+
+function exactRecord(value: unknown, keys: readonly string[]): UnknownRecord | null {
+  if (!isRecord(value) || !hasExactKeys(value, keys)) return null;
+  return value;
+}
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: UnknownRecord, keys: readonly string[]): boolean {
+  const actual: PropertyKey[] = Reflect.ownKeys(value);
+  return (
+    actual.length === keys.length &&
+    actual.every((key: PropertyKey): boolean => typeof key === 'string' && keys.includes(key))
+  );
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string' && UUID_RE.test(value);
+}
+
+function isSafeTimestamp(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isNonBlankString(value: unknown): value is string {
+  return typeof value === 'string' && /\S/.test(value);
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
+}
+
+function isLocalDateValue(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [yearText, monthText, dayText]: string[] = value.split('-');
+  const year: number = Number(yearText);
+  const month: number = Number(monthText);
+  const day: number = Number(dayText);
+  const candidate: Date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    candidate.getUTCFullYear() === year &&
+    candidate.getUTCMonth() === month - 1 &&
+    candidate.getUTCDate() === day
+  );
+}
