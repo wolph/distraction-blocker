@@ -232,16 +232,17 @@ export function validateDetachedSiteUnlock(value: unknown): value is SiteUnlock 
   return candidate !== null && isNonBlankString(candidate.host) && isSafeTimestamp(candidate.until);
 }
 
-function exactRecord(value: unknown, keys: readonly string[]): UnknownRecord | null {
+/** Detached exact record gate: rejects unknown keys, symbol keys, and non-plain containers. */
+export function exactRecord(value: unknown, keys: readonly string[]): UnknownRecord | null {
   if (!isRecord(value) || !hasExactKeys(value, keys)) return null;
   return value;
 }
 
-function isRecord(value: unknown): value is UnknownRecord {
+export function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function hasExactKeys(value: UnknownRecord, keys: readonly string[]): boolean {
+export function hasExactKeys(value: UnknownRecord, keys: readonly string[]): boolean {
   const actual: PropertyKey[] = Reflect.ownKeys(value);
   return (
     actual.length === keys.length &&
@@ -253,19 +254,19 @@ function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
-function isNonNegativeInteger(value: unknown): value is number {
+export function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
-function isUuid(value: unknown): value is string {
+export function isUuid(value: unknown): value is string {
   return typeof value === 'string' && UUID_RE.test(value);
 }
 
-function isSafeTimestamp(value: unknown): value is number {
+export function isSafeTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
-function isNonBlankString(value: unknown): value is string {
+export function isNonBlankString(value: unknown): value is string {
   return typeof value === 'string' && /\S/.test(value);
 }
 

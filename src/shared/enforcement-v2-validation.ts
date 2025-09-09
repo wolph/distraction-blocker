@@ -10,6 +10,12 @@ import { exactDataEqual, snapshotExactData } from './exact-data';
 import { isRelativeMillisecondDuration } from './numeric-validation';
 import type { SessionDuration, Strictness, ThemeMode, Verdict } from './types';
 import {
+  exactRecord,
+  isNonBlankString,
+  isNonNegativeInteger,
+  isRecord,
+  isSafeTimestamp,
+  isUuid,
   validateDetachedGateState,
   validateDetachedSessionDuration,
   validateDetachedSiteUnlock,
@@ -146,7 +152,6 @@ const VERDICT_REASONS: ReadonlySet<string> = new Set<string>([
   'default',
 ]);
 const CATEGORY_ID_VALUES: ReadonlySet<string> = new Set<string>(CATEGORY_IDS);
-const UUID_RE: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function parseDocumentOverlayView(value: unknown): DocumentOverlayView | null {
   const snapshot: unknown = snapshotExactData(value)?.value;
@@ -427,22 +432,6 @@ function hasStoppedPageCopy(stoppedPage: boolean, copy: unknown): boolean {
   return stoppedPage ? copy === STOPPED_PAGE_COPY : copy === null;
 }
 
-function exactRecord(value: unknown, keys: readonly string[]): UnknownRecord | null {
-  return isRecord(value) && hasExactKeys(value, keys) ? value : null;
-}
-
-function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function hasExactKeys(value: UnknownRecord, keys: readonly string[]): boolean {
-  const actual: PropertyKey[] = Reflect.ownKeys(value);
-  return (
-    actual.length === keys.length &&
-    actual.every((key: PropertyKey): boolean => typeof key === 'string' && keys.includes(key))
-  );
-}
-
 function isDenseArray(value: unknown): value is unknown[] {
   if (!Array.isArray(value)) return false;
   for (let index: number = 0; index < value.length; index++) {
@@ -463,24 +452,8 @@ function isStrictness(value: unknown): value is Strictness {
   return value === 'flexible' || value === 'friction' || value === 'hard';
 }
 
-function isUuid(value: unknown): value is string {
-  return typeof value === 'string' && UUID_RE.test(value);
-}
-
-function isSafeTimestamp(value: unknown): value is number {
-  return isNonNegativeInteger(value);
-}
-
-function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
 function isFiniteNonNegativeNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
-}
-
-function isNonBlankString(value: unknown): value is string {
-  return typeof value === 'string' && /\S/.test(value);
 }
 
 function isNullableNonBlankString(value: unknown): value is string | null {
