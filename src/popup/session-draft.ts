@@ -24,8 +24,8 @@ export interface SessionDraft {
   rules: SessionRuleSnapshot;
 }
 
-export interface DraftUpdate {
-  draft: SessionDraft;
+export interface DraftUpdate<T = SessionDraft> {
+  draft: T;
   error: string | null;
 }
 
@@ -44,7 +44,10 @@ export function createSessionDraft(settings: Settings, lists: ListsConfig): Sess
   };
 }
 
-export function toggleDraftCategory(draft: SessionDraft, id: CategoryId): SessionDraft {
+export function toggleDraftCategory<const T extends { rules: SessionRuleSnapshot }>(
+  draft: T,
+  id: CategoryId,
+): T {
   return {
     ...draft,
     rules: {
@@ -57,7 +60,10 @@ export function toggleDraftCategory(draft: SessionDraft, id: CategoryId): Sessio
   };
 }
 
-export function rebaseSessionDraft(draft: SessionDraft, lists: ListsConfig): SessionDraft {
+export function rebaseSessionDraft<const T extends { rules: SessionRuleSnapshot }>(
+  draft: T,
+  lists: ListsConfig,
+): T {
   const baseline: SessionRuleSnapshot = rulesFromLists(lists);
   const categories: Record<CategoryId, boolean> = { ...baseline.categories };
   for (const id of CATEGORY_IDS) {
@@ -76,7 +82,10 @@ export function rebaseSessionDraft(draft: SessionDraft, lists: ListsConfig): Ses
   };
 }
 
-export function addDraftAllowHost(draft: SessionDraft, raw: string): DraftUpdate {
+export function addDraftAllowHost<const T extends { rules: SessionRuleSnapshot }>(
+  draft: T,
+  raw: string,
+): DraftUpdate<T> {
   const host: string | null = normalizeSessionHostInput(raw);
   if (host === null) {
     return {
