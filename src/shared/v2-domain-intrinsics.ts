@@ -250,6 +250,23 @@ export function hasExactKeys(value: UnknownRecord, keys: readonly string[]): boo
   );
 }
 
+/** Detached exact array gate: rejects non-arrays and sparse holes. */
+export function isDenseArray(value: unknown): value is unknown[] {
+  if (!Array.isArray(value)) return false;
+  for (let index: number = 0; index < value.length; index++) {
+    if (!Object.hasOwn(value, index)) return false;
+  }
+  return true;
+}
+
+/** Dense-array gate plus per-entry validation for already-detached exact plain data. */
+export function everyDenseEntry<T>(
+  value: unknown,
+  validateEntry: (entry: unknown) => entry is T,
+): value is T[] {
+  return isDenseArray(value) && value.every((entry: unknown): boolean => validateEntry(entry));
+}
+
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }

@@ -1,9 +1,11 @@
 import {
+  canonicalSessionIdentity,
   validateDetachedDocumentEnforcementCommandFields,
   validateDetachedVerdict,
 } from '../shared/enforcement-v2-validation';
 import { snapshotExactData } from '../shared/exact-data';
 import {
+  everyDenseEntry,
   exactRecord,
   isNonBlankString,
   isNonNegativeInteger,
@@ -26,8 +28,6 @@ interface CheckpointHeader {
   enforcementEpoch: string;
   sessionId: string;
   basePolicyRevision: number;
-  registrationAuditedAt: number;
-  completedAt: number;
 }
 
 /** The wire command keys plus the worker-owned tab authority this file adds. */
@@ -193,8 +193,8 @@ export function validateDetachedEnforcementCheckpoint(
   const documents: unknown = candidate.documents;
   const exclusions: unknown = candidate.exclusions;
   if (
-    !everyDetachedEntry(documents, validateDetachedDocumentEnforcementAck) ||
-    !everyDetachedEntry(exclusions, validateDetachedEnforcementTargetExclusion)
+    !everyDenseEntry(documents, validateDetachedDocumentEnforcementAck) ||
+    !everyDenseEntry(exclusions, validateDetachedEnforcementTargetExclusion)
   ) {
     return false;
   }
@@ -223,20 +223,14 @@ function checkpointHeader(candidate: UnknownRecord): CheckpointHeader | null {
   ) {
     return null;
   }
-  return {
-    operationId,
-    enforcementEpoch,
-    sessionId,
-    basePolicyRevision,
-    registrationAuditedAt,
-    completedAt,
-  };
+  return { operationId, enforcementEpoch, sessionId, basePolicyRevision };
 }
 
 /**
  * Every acknowledgement repeats the checkpoint's operation authority, shares the one operation-time
- * runtime revision, lands inside the audit window, and holds a unique target identity. The
- * checkpoint stores no current runtime revision, so none is compared here.
+ * runtime revision, and holds a unique target identity. The checkpoint stores no current runtime
+ * revision, so none is compared here, and `handledAt` is a content-script clock reading that no
+ * rule bounds by the checkpoint's own audit and completion times.
  */
 function acknowledgementsAgree(
   header: CheckpointHeader,
@@ -251,9 +245,7 @@ function acknowledgementsAgree(
       acknowledgement.basePolicyRevision !== header.basePolicyRevision ||
       acknowledgement.runtimeRevision !== operationRevision ||
       canonicalSessionIdentity(acknowledgement.sessionId, acknowledgement.reservedSessionId) !==
-        header.sessionId ||
-      acknowledgement.handledAt < header.registrationAuditedAt ||
-      acknowledgement.handledAt > header.completedAt
+        header.sessionId
     ) {
       return false;
     }
@@ -278,26 +270,8 @@ function exclusionsAgree(
   return identities.size === exclusions.length;
 }
 
-/** Returns the single non-null session identity, or null unless exactly one is a UUID. */
-function canonicalSessionIdentity(sessionId: unknown, reservedSessionId: unknown): string | null {
-  if (sessionId === null) return isUuid(reservedSessionId) ? reservedSessionId : null;
-  return isUuid(sessionId) && reservedSessionId === null ? sessionId : null;
-}
-
 function documentIdentity(tabId: number, documentId: string | null): string {
   return `${tabId}:${documentId}`;
-}
-
-/** Dense-array gate plus per-entry validation for already-detached exact plain data. */
-function everyDetachedEntry<T>(
-  value: unknown,
-  validateEntry: (entry: unknown) => entry is T,
-): value is T[] {
-  if (!Array.isArray(value)) return false;
-  for (let index: number = 0; index < value.length; index++) {
-    if (!Object.hasOwn(value, index) || !validateEntry(value[index])) return false;
-  }
-  return true;
 }
 
 function isCheckpointKind(value: unknown): value is EnforcementCheckpoint['kind'] {

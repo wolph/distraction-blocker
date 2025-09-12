@@ -623,20 +623,29 @@ describe('background enforcement checkpoint parsing', (): void => {
     ]);
   });
 
-  it('bounds acknowledgement times by the audit and completion times', (): void => {
-    const boundary: EnforcementCheckpoint = checkpoint({
+  it('requires the audit time to precede the completion time', (): void => {
+    expectRejected(parseEnforcementCheckpoint, [
+      checkpoint({ registrationAuditedAt: COMPLETED_AT + 1, documents: [], exclusions: [] }),
+    ]);
+  });
+
+  it('accepts acknowledgements handled outside the audit and completion times', (): void => {
+    const early: EnforcementCheckpoint = checkpoint({
+      documents: [enforcementAck({ handledAt: AUDITED_AT - 1 })],
+    });
+    const late: EnforcementCheckpoint = checkpoint({
+      documents: [enforcementAck({ handledAt: COMPLETED_AT + 1 })],
+    });
+    const spread: EnforcementCheckpoint = checkpoint({
       documents: [
-        enforcementAck({ handledAt: AUDITED_AT }),
-        secondAck({ handledAt: COMPLETED_AT }),
+        enforcementAck({ handledAt: AUDITED_AT - 60_000 }),
+        secondAck({ handledAt: COMPLETED_AT + 60_000 }),
       ],
     });
 
-    expect(parseEnforcementCheckpoint(boundary)).toEqual(boundary);
-    expectRejected(parseEnforcementCheckpoint, [
-      checkpoint({ documents: [enforcementAck({ handledAt: AUDITED_AT - 1 })] }),
-      checkpoint({ documents: [enforcementAck({ handledAt: COMPLETED_AT + 1 })] }),
-      checkpoint({ registrationAuditedAt: COMPLETED_AT + 1, documents: [], exclusions: [] }),
-    ]);
+    for (const value of [early, late, spread]) {
+      expect(parseEnforcementCheckpoint(value)).toEqual(value);
+    }
   });
 
   it('rejects invalid checkpoint identity, kind, time, and generation leaves', (): void => {

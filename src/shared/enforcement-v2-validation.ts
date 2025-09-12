@@ -11,6 +11,7 @@ import { isRelativeMillisecondDuration } from './numeric-validation';
 import type { SessionDuration, Strictness, ThemeMode, Verdict } from './types';
 import {
   exactRecord,
+  isDenseArray,
   isNonBlankString,
   isNonNegativeInteger,
   isRecord,
@@ -205,7 +206,7 @@ export function validateDetachedDocumentEnforcementCommandFields(value: unknown)
     value.command !== 'apply-enforcement' ||
     !isUuid(value.operationId) ||
     !isUuid(value.enforcementEpoch) ||
-    !hasSingleSessionIdentity(value.sessionId, value.reservedSessionId) ||
+    canonicalSessionIdentity(value.sessionId, value.reservedSessionId) === null ||
     !isNonNegativeInteger(value.basePolicyRevision) ||
     !isNonNegativeInteger(value.runtimeRevision) ||
     !isNonBlankString(value.documentId) ||
@@ -223,6 +224,18 @@ export function validateDetachedDocumentEnforcementCommandFields(value: unknown)
   );
 }
 
+/**
+ * Returns the single non-null session identity, or null unless exactly one of the pair is a UUID.
+ * Provisional rows carry the reserved identity and durable rows carry the session identity.
+ */
+export function canonicalSessionIdentity(
+  sessionId: unknown,
+  reservedSessionId: unknown,
+): string | null {
+  if (sessionId === null) return isUuid(reservedSessionId) ? reservedSessionId : null;
+  return isUuid(sessionId) && reservedSessionId === null ? sessionId : null;
+}
+
 function validateDetachedCommandPresentation(
   presentation: EnforcementPresentation,
   verdict: Verdict,
@@ -237,12 +250,6 @@ function validateDetachedCommandPresentation(
     return false;
   }
   return overlay.presentation === 'starting' || overlay.sessionId === sessionId;
-}
-
-function hasSingleSessionIdentity(sessionId: unknown, reservedSessionId: unknown): boolean {
-  return sessionId === null
-    ? isUuid(reservedSessionId)
-    : isUuid(sessionId) && reservedSessionId === null;
 }
 
 function validateDetachedStartingOverlay(value: UnknownRecord): boolean {
@@ -430,14 +437,6 @@ function validateDetachedStatusCopy(
 
 function hasStoppedPageCopy(stoppedPage: boolean, copy: unknown): boolean {
   return stoppedPage ? copy === STOPPED_PAGE_COPY : copy === null;
-}
-
-function isDenseArray(value: unknown): value is unknown[] {
-  if (!Array.isArray(value)) return false;
-  for (let index: number = 0; index < value.length; index++) {
-    if (!Object.hasOwn(value, index)) return false;
-  }
-  return true;
 }
 
 function isEnforcementPresentation(value: unknown): value is EnforcementPresentation {
