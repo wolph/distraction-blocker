@@ -12,6 +12,7 @@ import {
   effectiveCycling,
   effectiveStrictness,
   effectiveTimedMinutes,
+  restoreTimedDuration,
   type StartDraft,
   selectTimedPreset,
   selectUntilStopped,
@@ -50,6 +51,11 @@ function timedDraft(): StartDraft {
   );
 }
 
+/** Only a hand-built draft can lack both a preset and a usable custom value. */
+function presetLessDraft(customMin: string): StartDraft {
+  return { ...baseDraft(), duration: { kind: 'timed', presetMin: null, customMin } };
+}
+
 describe('createStartDraft', (): void => {
   it('mirrors the v1 draft defaults and opens on the middle preset', (): void => {
     const draft: StartDraft = baseDraft();
@@ -85,7 +91,10 @@ describe('selectUntilStopped', (): void => {
     const timed: StartDraft = timedDraft();
     const indefinite: StartDraft = selectUntilStopped(timed);
 
-    expect(indefinite.duration).toEqual({ kind: 'until-stopped' });
+    expect(indefinite.duration).toEqual({
+      kind: 'until-stopped',
+      timed: { presetMin: 50, customMin: '' },
+    });
     expect(indefinite.timedStrictness).toBe('hard');
     expect(indefinite.timedCycling).toEqual(CUSTOM_CYCLE);
     expect(effectiveStrictness(indefinite)).toBe('flexible');
@@ -105,13 +114,34 @@ describe('selectUntilStopped', (): void => {
     expect(effectiveTimedMinutes(back)).toBe(15);
   });
 
-  it('restores the timed draft through custom minutes', (): void => {
+  it('restores the timed draft through custom minutes and keeps the stored preset', (): void => {
     const back: StartDraft = setCustomMinutes(selectUntilStopped(timedDraft()), '40');
+    const cleared: StartDraft = setCustomMinutes(back, '');
 
-    expect(back.duration.kind).toBe('timed');
+    expect(back.duration).toEqual({ kind: 'timed', presetMin: 50, customMin: '40' });
     expect(effectiveStrictness(back)).toBe('hard');
     expect(effectiveCycling(back)).toEqual(CUSTOM_CYCLE);
     expect(effectiveTimedMinutes(back)).toBe(40);
+    expect(cleared.duration).toEqual({ kind: 'timed', presetMin: 50, customMin: '' });
+    expect(effectiveTimedMinutes(cleared)).toBe(50);
+  });
+
+  it('brings the stored preset and custom minutes back verbatim', (): void => {
+    const timed: StartDraft = setCustomMinutes(timedDraft(), '35');
+    const restored: StartDraft = restoreTimedDuration(selectUntilStopped(timed));
+
+    expect(restored.duration).toEqual({ kind: 'timed', presetMin: 50, customMin: '35' });
+    expect(restored.timedStrictness).toBe('hard');
+    expect(restored.timedCycling).toEqual(CUSTOM_CYCLE);
+    expect(effectiveStrictness(restored)).toBe('hard');
+    expect(effectiveCycling(restored)).toEqual(CUSTOM_CYCLE);
+    expect(effectiveTimedMinutes(restored)).toBe(35);
+  });
+
+  it('leaves a timed draft alone when restored', (): void => {
+    const timed: StartDraft = setCustomMinutes(timedDraft(), '35');
+
+    expect(restoreTimedDuration(timed)).toBe(timed);
   });
 
   it('preserves the then-current timed draft when selected twice', (): void => {
@@ -121,7 +151,12 @@ describe('selectUntilStopped', (): void => {
 
     expect(twice.timedStrictness).toBe('hard');
     expect(twice.timedCycling).toEqual(CUSTOM_CYCLE);
+    expect(twice.duration).toEqual({
+      kind: 'until-stopped',
+      timed: { presetMin: 50, customMin: '35' },
+    });
     expect(twice).toEqual(once);
+    expect(restoreTimedDuration(twice)).toEqual(restoreTimedDuration(once));
     expect(selectTimedPreset(twice, 25)).toEqual(selectTimedPreset(once, 25));
   });
 });
@@ -142,10 +177,15 @@ describe('effectiveTimedMinutes', (): void => {
   });
 
   it('has no minutes without a preset or a usable custom value', (): void => {
+    expect(effectiveTimedMinutes(presetLessDraft('   '))).toBeNull();
+    expect(effectiveTimedMinutes(presetLessDraft(''))).toBeNull();
+  });
+
+  it('keeps the stored preset when the custom field is cleared after a detour', (): void => {
     const blank: StartDraft = setCustomMinutes(selectUntilStopped(baseDraft()), '   ');
 
-    expect(blank.duration).toEqual({ kind: 'timed', presetMin: null, customMin: '   ' });
-    expect(effectiveTimedMinutes(blank)).toBeNull();
+    expect(blank.duration).toEqual({ kind: 'timed', presetMin: 25, customMin: '   ' });
+    expect(effectiveTimedMinutes(blank)).toBe(25);
   });
 });
 
@@ -222,7 +262,7 @@ describe('toSessionConfigV2', (): void => {
     expect(toSessionConfigV2(setCustomMinutes(draft, '-5'))).toBeNull();
     expect(toSessionConfigV2(setCustomMinutes(draft, '1e400'))).toBeNull();
     expect(toSessionConfigV2(setCustomMinutes(draft, 'NaN'))).toBeNull();
-    expect(toSessionConfigV2(setCustomMinutes(selectUntilStopped(draft), '  '))).toBeNull();
+    expect(toSessionConfigV2(presetLessDraft('  '))).toBeNull();
   });
 });
 

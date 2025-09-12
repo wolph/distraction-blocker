@@ -13,13 +13,15 @@ import type {
 import { createSessionDraft, type SessionDraft } from './session-draft';
 
 /**
- * The current duration selection. The timed variant carries the unsent preset and
- * custom-minute draft, so an until-stopped detour never rewrites the timed session
- * type or cycle choice held on the draft itself.
+ * The current duration selection. The until-stopped variant carries the unsent timed
+ * preset and custom-minute draft, so a detour through Until stopped never destroys the
+ * timed duration, session type, or cycle choice the user had chosen.
  */
 export type DraftDuration =
   | { kind: 'timed'; presetMin: number | null; customMin: string }
-  | { kind: 'until-stopped' };
+  | { kind: 'until-stopped'; timed: { presetMin: number | null; customMin: string } };
+
+type TimedDurationDraft = { presetMin: number | null; customMin: string };
 
 export interface StartDraft {
   mode: SessionMode;
@@ -51,19 +53,33 @@ export function createStartDraft(settings: SettingsV2, lists: ListsConfig): Star
   };
 }
 
+/** The timed duration the draft holds, whether selected or stored behind Until stopped. */
+function timedDurationOf(duration: DraftDuration): TimedDurationDraft {
+  return duration.kind === 'timed'
+    ? { presetMin: duration.presetMin, customMin: duration.customMin }
+    : duration.timed;
+}
+
+/** Stores the timed duration. Selecting Until stopped again keeps the stored one. */
 export function selectUntilStopped(draft: StartDraft): StartDraft {
   if (draft.duration.kind === 'until-stopped') return draft;
-  return { ...draft, duration: { kind: 'until-stopped' } };
+  return { ...draft, duration: { kind: 'until-stopped', timed: timedDurationOf(draft.duration) } };
+}
+
+/** Brings the stored timed duration back verbatim. A no-op on a timed draft. */
+export function restoreTimedDuration(draft: StartDraft): StartDraft {
+  if (draft.duration.kind === 'timed') return draft;
+  return { ...draft, duration: { kind: 'timed', ...draft.duration.timed } };
 }
 
 export function selectTimedPreset(draft: StartDraft, minutes: number): StartDraft {
   return { ...draft, duration: { kind: 'timed', presetMin: minutes, customMin: '' } };
 }
 
+/** Restores the stored timed duration first, so the selected preset survives the detour. */
 export function setCustomMinutes(draft: StartDraft, raw: string): StartDraft {
-  const presetMin: number | null =
-    draft.duration.kind === 'timed' ? draft.duration.presetMin : null;
-  return { ...draft, duration: { kind: 'timed', presetMin, customMin: raw } };
+  const timed: TimedDurationDraft = timedDurationOf(draft.duration);
+  return { ...draft, duration: { kind: 'timed', presetMin: timed.presetMin, customMin: raw } };
 }
 
 export function setTimedStrictness(draft: StartDraft, strictness: Strictness): StartDraft {
