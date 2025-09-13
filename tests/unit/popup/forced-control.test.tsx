@@ -1,0 +1,139 @@
+/** @vitest-environment jsdom */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import './chrome-fake';
+
+import { act, cleanup, fireEvent, render } from '@testing-library/preact';
+import type { VNode } from 'preact';
+import { afterEach, describe, expect, it, type Mock, type MockInstance, vi } from 'vitest';
+import { ForcedControl } from '../../../src/popup/ForcedControl';
+import { UNTIL_STOPPED_DISCLOSURE } from '../../../src/shared/session-copy';
+
+const GROUP_LABEL: string = 'Session type';
+
+function forcedChoice(onClick: () => void): VNode {
+  return (
+    <ForcedControl label={GROUP_LABEL} explanation={UNTIL_STOPPED_DISCLOSURE}>
+      <button type="button" onClick={onClick}>
+        Flexible
+      </button>
+    </ForcedControl>
+  );
+}
+
+afterEach((): void => {
+  vi.useRealTimers();
+  cleanup();
+});
+
+describe('ForcedControl', (): void => {
+  it('exposes a focusable aria-disabled group described by the explanation', (): void => {
+    const onClick: Mock = vi.fn();
+    const view = render(forcedChoice(onClick));
+
+    const group: HTMLElement = view.getByRole('group', { name: GROUP_LABEL });
+    expect(group.tagName).toBe('DIV');
+    expect(group.getAttribute('aria-disabled')).toBe('true');
+    expect(group.tabIndex).toBe(0);
+
+    const describedBy: string = group.getAttribute('aria-describedby') ?? '';
+    expect(describedBy).not.toBe('');
+    expect(document.getElementById(describedBy)?.textContent).toBe(UNTIL_STOPPED_DISCLOSURE);
+  });
+
+  it('never renders a native disabled attribute', (): void => {
+    const onClick: Mock = vi.fn();
+    const view = render(forcedChoice(onClick));
+
+    expect(view.container.querySelectorAll('[disabled]')).toHaveLength(0);
+  });
+
+  it('discloses the explanation on hover and hides it again when the pointer leaves', (): void => {
+    vi.useFakeTimers();
+    const onClick: Mock = vi.fn();
+    const view = render(forcedChoice(onClick));
+    const group: HTMLElement = view.getByRole('group', { name: GROUP_LABEL });
+
+    fireEvent.pointerEnter(group);
+    expect(view.getByRole('tooltip').textContent).toContain(UNTIL_STOPPED_DISCLOSURE);
+
+    fireEvent.pointerLeave(group);
+    act((): void => {
+      vi.advanceTimersByTime(150);
+    });
+    expect(view.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('discloses the explanation when keyboard focus reaches the group', async (): Promise<void> => {
+    const onClick: Mock = vi.fn();
+    const view = render(forcedChoice(onClick));
+    const group: HTMLElement = view.getByRole('group', { name: GROUP_LABEL });
+
+    group.focus();
+
+    expect(document.activeElement).toBe(group);
+    const tooltip: HTMLElement = await view.findByRole('tooltip');
+    expect(tooltip.textContent).toContain(UNTIL_STOPPED_DISCLOSURE);
+  });
+
+  it('opens the help popover on click while preventing the child value change', (): void => {
+    const onClick: Mock = vi.fn();
+    const view = render(forcedChoice(onClick));
+    const child: HTMLElement = view.getByRole('button', { name: 'Flexible' });
+    const click: MouseEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
+    const stopPropagation: MockInstance<() => void> = vi.spyOn(click, 'stopPropagation');
+
+    fireEvent(child, click);
+
+    expect(onClick).not.toHaveBeenCalled();
+    expect(click.defaultPrevented).toBe(true);
+    expect(stopPropagation).toHaveBeenCalled();
+    expect(view.getByRole('tooltip').textContent).toContain(UNTIL_STOPPED_DISCLOSURE);
+  });
+
+  it('opens the help popover on Enter', (): void => {
+    const onClick: Mock = vi.fn();
+    const view = render(forcedChoice(onClick));
+    const group: HTMLElement = view.getByRole('group', { name: GROUP_LABEL });
+
+    fireEvent.keyDown(group, { key: 'Enter' });
+
+    expect(onClick).not.toHaveBeenCalled();
+    expect(view.getByRole('tooltip').textContent).toContain(UNTIL_STOPPED_DISCLOSURE);
+  });
+
+  it('never invokes a hostile child handler that throws on click', (): void => {
+    const hostile: Mock = vi.fn((): never => {
+      throw new Error('forced child must never run');
+    });
+    const view = render(
+      <ForcedControl label={GROUP_LABEL} explanation={UNTIL_STOPPED_DISCLOSURE}>
+        <button type="button" onClick={(): void => hostile()}>
+          Hard lock
+        </button>
+      </ForcedControl>,
+    );
+
+    fireEvent.click(view.getByRole('button', { name: 'Hard lock' }));
+
+    expect(hostile).not.toHaveBeenCalled();
+  });
+
+  it('keeps the help trigger itself interactive', (): void => {
+    const onClick: Mock = vi.fn();
+    const view = render(forcedChoice(onClick));
+
+    fireEvent.click(view.getByRole('button', { name: GROUP_LABEL }));
+
+    expect(view.getByRole('tooltip').textContent).toContain(UNTIL_STOPPED_DISCLOSURE);
+  });
+
+  it('styles the forced wrapper and hides the described explanation', (): void => {
+    const css: string = readFileSync(resolve('src/popup/popup.css'), 'utf8');
+
+    expect(css).toMatch(/\.forced-control\s*\{[^}]*cursor:\s*not-allowed/s);
+    expect(css).toMatch(/\.forced-control:focus-visible\s*\{[^}]*outline:\s*2px solid/s);
+    expect(css).toMatch(/\.forced-control__body\s*\{[^}]*pointer-events:\s*none/s);
+    expect(css).toMatch(/\.forced-control__explanation\s*\{[^}]*position:\s*absolute/s);
+  });
+});

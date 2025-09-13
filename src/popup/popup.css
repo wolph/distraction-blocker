@@ -253,6 +253,7 @@ body {
 }
 
 .chip-row,
+.duration-control,
 .pill-row {
   display: flex;
   flex-wrap: wrap;
@@ -382,6 +383,42 @@ body {
   font-weight: 500;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+/* A forced control stays readable and focusable, and refuses every value change. */
+.forced-control {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  border-radius: 8px;
+  cursor: not-allowed;
+}
+
+.forced-control:focus-visible {
+  outline: 2px solid var(--focus-color);
+  outline-offset: 2px;
+}
+
+.forced-control__body {
+  min-width: 0;
+  flex: 1;
+  opacity: 0.65;
+  pointer-events: none;
+}
+
+.forced-control__help {
+  display: flex;
+  align-items: center;
+}
+
+/* The screen-reader copy behind aria-describedby, mirrored by the help popover. */
+.forced-control__explanation {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .mode-control {
