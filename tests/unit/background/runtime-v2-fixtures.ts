@@ -18,6 +18,7 @@ import type {
   PendingClosure,
   PostCleanupClosure,
 } from '../../../src/background/runtime-v2-types';
+import { HANDLED_SCHEDULE_OCCURRENCE_RETENTION_MS } from '../../../src/shared/constants';
 import type {
   BankState,
   DailyAgg,
@@ -46,7 +47,6 @@ export const LOCAL_DATE: string = '2026-09-02';
 export const ENTRY_ID: string = 'weekday';
 export const AGGREGATE_KEY: string = `agg:device-1:${LOCAL_DATE}`;
 export const ARCHIVE_AGGREGATE_KEY: string = `archive:clock-rebase:device-1:${LOCAL_DATE}:1:rebase`;
-export const HANDLED_OCCURRENCE_TTL_MS: number = 14 * 24 * 60 * 60 * 1000;
 
 // Cleanup fixtures.
 
@@ -220,7 +220,7 @@ export function handledOccurrence(
     localStartDate: LOCAL_DATE,
     handledAt: NOW,
     reason: 'closure-overlap',
-    expiresAt: NOW + HANDLED_OCCURRENCE_TTL_MS,
+    expiresAt: NOW + HANDLED_SCHEDULE_OCCURRENCE_RETENTION_MS,
     ...overrides,
   };
 }

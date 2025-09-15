@@ -20,6 +20,7 @@ import type {
   ClosureProjection,
   PostCleanupClosure,
 } from '../../../src/background/runtime-v2-types';
+import { HANDLED_SCHEDULE_OCCURRENCE_RETENTION_MS } from '../../../src/shared/constants';
 import type { SessionEndedEventV2 } from '../../../src/shared/types';
 import {
   AGGREGATE_KEY,
@@ -42,7 +43,6 @@ import {
   dailyAgg,
   documentKey,
   EPOCH_ID,
-  HANDLED_OCCURRENCE_TTL_MS,
   handledOccurrence,
   migrationInvalidActiveClosure,
   migrationInvalidActiveEndEvent,
@@ -615,7 +615,7 @@ describe('background closure projection parsing', (): void => {
       handledOccurrences: [
         handledOccurrence({
           handledAt: NOW + 5_000,
-          expiresAt: NOW + 5_000 + HANDLED_OCCURRENCE_TTL_MS,
+          expiresAt: NOW + 5_000 + HANDLED_SCHEDULE_OCCURRENCE_RETENTION_MS,
         }),
       ],
     });

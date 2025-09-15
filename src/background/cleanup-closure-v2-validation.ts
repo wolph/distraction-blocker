@@ -1,4 +1,5 @@
 import { parseDailyAgg } from '../core/stats';
+import { HANDLED_SCHEDULE_OCCURRENCE_RETENTION_MS } from '../shared/constants';
 import { exactDataEqual, snapshotExactData } from '../shared/exact-data';
 import { isEventRecord, isSessionEndedEventV2 } from '../shared/runtime-validation';
 import type {
@@ -42,7 +43,6 @@ interface ClearBatchHeader {
 }
 
 const MAX_AUTOMATIC_CLEANUP_ATTEMPT: number = 12;
-const HANDLED_OCCURRENCE_TTL_MS: number = 14 * 24 * 60 * 60 * 1000;
 const RETRY_KEYS: readonly string[] = ['batch', 'automaticAttempt', 'nextAttemptAt', 'lastError'];
 const TAB_CLAIM_KEYS: readonly string[] = ['tabId', 'state'];
 const TAB_STATE_KEYS: readonly string[] = ['muteUrl', 'priorMuted', 'stoppedDocumentId'];
@@ -282,7 +282,7 @@ export function validateDetachedHandledScheduleOccurrence(
     typeof candidate.reason !== 'string' ||
     !HANDLED_OCCURRENCE_REASONS.has(candidate.reason) ||
     !isSafeTimestamp(candidate.expiresAt) ||
-    candidate.expiresAt !== handledAt + HANDLED_OCCURRENCE_TTL_MS
+    candidate.expiresAt !== handledAt + HANDLED_SCHEDULE_OCCURRENCE_RETENTION_MS
   ) {
     return false;
   }
