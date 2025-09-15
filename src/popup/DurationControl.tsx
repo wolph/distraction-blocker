@@ -1,7 +1,7 @@
 import type { VNode } from 'preact';
 import { UNTIL_STOPPED_LABEL } from '../shared/session-copy';
 import { Chip } from './form-controls';
-import type { DraftDuration } from './start-draft';
+import { type DraftDuration, timedDurationOf } from './start-draft';
 
 /** Preset labels, matching the timed duration row the popup already ships. */
 const PRESET_LABELS: readonly [string, string, string] = [
@@ -14,15 +14,6 @@ export interface DurationControlProps {
   presets: readonly [number, number, number];
   value: DraftDuration;
   onChange(next: DraftDuration): void;
-}
-
-type TimedDurationDraft = { presetMin: number | null; customMin: string };
-
-/** The timed duration on show, whether it is selected or stored behind Until stopped. */
-function timedDurationOf(value: DraftDuration): TimedDurationDraft {
-  return value.kind === 'timed'
-    ? { presetMin: value.presetMin, customMin: value.customMin }
-    : value.timed;
 }
 
 /**

@@ -406,6 +406,11 @@ body {
   pointer-events: none;
 }
 
+/* Help a forced child carries explains its value, so it keeps taking pointer events. */
+.forced-control__body .help-popover {
+  pointer-events: auto;
+}
+
 .forced-control__help {
   display: flex;
   align-items: center;

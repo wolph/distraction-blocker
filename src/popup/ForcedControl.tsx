@@ -21,10 +21,16 @@ export function ForcedControl({ label, explanation, children }: ForcedControlPro
   const helpRef = useRef<HTMLSpanElement | null>(null);
   const explanationId: string = `forced-control-${useId()}`;
 
-  /** True while the event target sits in this control's help popover, which stays live. */
+  /**
+   * True while the event target sits in a help popover, this control's own or one carried
+   * by a forced child. Help changes no value, so it stays reachable by pointer and click.
+   */
   const isHelpTarget: (target: EventTarget | null) => boolean = (
     target: EventTarget | null,
-  ): boolean => target instanceof Node && (helpRef.current?.contains(target) ?? false);
+  ): boolean => {
+    if (target instanceof Node && (helpRef.current?.contains(target) ?? false)) return true;
+    return target instanceof Element && target.closest(HELP_ROOT_SELECTOR) !== null;
+  };
 
   /**
    * HelpPopover opens from pointer and focus events on its own root, which sits inside

@@ -21,7 +21,7 @@ export type DraftDuration =
   | { kind: 'timed'; presetMin: number | null; customMin: string }
   | { kind: 'until-stopped'; timed: { presetMin: number | null; customMin: string } };
 
-type TimedDurationDraft = { presetMin: number | null; customMin: string };
+export type TimedDurationDraft = { presetMin: number | null; customMin: string };
 
 export interface StartDraft {
   mode: SessionMode;
@@ -54,7 +54,7 @@ export function createStartDraft(settings: SettingsV2, lists: ListsConfig): Star
 }
 
 /** The timed duration the draft holds, whether selected or stored behind Until stopped. */
-function timedDurationOf(duration: DraftDuration): TimedDurationDraft {
+export function timedDurationOf(duration: DraftDuration): TimedDurationDraft {
   return duration.kind === 'timed'
     ? { presetMin: duration.presetMin, customMin: duration.customMin }
     : duration.timed;

@@ -7,6 +7,7 @@ import { act, cleanup, fireEvent, render } from '@testing-library/preact';
 import type { VNode } from 'preact';
 import { afterEach, describe, expect, it, type Mock, type MockInstance, vi } from 'vitest';
 import { ForcedControl } from '../../../src/popup/ForcedControl';
+import { HelpPopover } from '../../../src/shared/HelpPopover';
 import { UNTIL_STOPPED_DISCLOSURE } from '../../../src/shared/session-copy';
 
 const GROUP_LABEL: string = 'Session type';
@@ -128,12 +129,31 @@ describe('ForcedControl', (): void => {
     expect(view.getByRole('tooltip').textContent).toContain(UNTIL_STOPPED_DISCLOSURE);
   });
 
+  it('keeps help a forced child carries reachable while its value button stays blocked', (): void => {
+    const onClick: Mock = vi.fn();
+    const view = render(
+      <ForcedControl label={GROUP_LABEL} explanation={UNTIL_STOPPED_DISCLOSURE}>
+        <HelpPopover label="Flexible help">Choose your own rules.</HelpPopover>
+        <button type="button" onClick={onClick}>
+          Flexible
+        </button>
+      </ForcedControl>,
+    );
+
+    fireEvent.click(view.getByRole('button', { name: 'Flexible help' }));
+    expect(view.getByRole('tooltip').textContent).toContain('Choose your own rules.');
+
+    fireEvent.click(view.getByRole('button', { name: 'Flexible' }));
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
   it('styles the forced wrapper and hides the described explanation', (): void => {
     const css: string = readFileSync(resolve('src/popup/popup.css'), 'utf8');
 
     expect(css).toMatch(/\.forced-control\s*\{[^}]*cursor:\s*not-allowed/s);
     expect(css).toMatch(/\.forced-control:focus-visible\s*\{[^}]*outline:\s*2px solid/s);
     expect(css).toMatch(/\.forced-control__body\s*\{[^}]*pointer-events:\s*none/s);
+    expect(css).toMatch(/\.forced-control__body\s+\.help-popover\s*\{[^}]*pointer-events:\s*auto/s);
     expect(css).toMatch(/\.forced-control__explanation\s*\{[^}]*position:\s*absolute/s);
   });
 });
