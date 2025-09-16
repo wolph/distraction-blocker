@@ -15,22 +15,26 @@ const HELP_ROOT_SELECTOR: string = '.help-popover';
  * change. Native disabled controls drop hover, keyboard focus, and click disclosure, so
  * the wrapper is a focusable `aria-disabled` group instead: hover, keyboard focus, click,
  * and Enter all reach the same explanation, which `aria-describedby` also carries.
+ *
+ * A forced child may carry its own help, and in `SessionTypeControl` that help trigger is
+ * also the value button. So no child action ever runs, not even a help trigger's. A click
+ * or Enter on a nested popover discloses that popover instead, which keeps the per-choice
+ * explanation reachable without letting the choice change.
  */
 export function ForcedControl({ label, explanation, children }: ForcedControlProps): VNode {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const helpRef = useRef<HTMLSpanElement | null>(null);
   const explanationId: string = `forced-control-${useId()}`;
 
-  /**
-   * True while the event target sits in a help popover, this control's own or one carried
-   * by a forced child. Help changes no value, so it stays reachable by pointer and click.
-   */
-  const isHelpTarget: (target: EventTarget | null) => boolean = (
+  /** True while the event target sits in this control's own help, which stays live. */
+  const isOwnHelpTarget: (target: EventTarget | null) => boolean = (
     target: EventTarget | null,
-  ): boolean => {
-    if (target instanceof Node && (helpRef.current?.contains(target) ?? false)) return true;
-    return target instanceof Element && target.closest(HELP_ROOT_SELECTOR) !== null;
-  };
+  ): boolean => target instanceof Node && (helpRef.current?.contains(target) ?? false);
+
+  /** The help popover a forced child carries around the event target, if it carries one. */
+  const nestedHelpRootOf: (target: EventTarget | null) => Element | null = (
+    target: EventTarget | null,
+  ): Element | null => (target instanceof Element ? target.closest(HELP_ROOT_SELECTOR) : null);
 
   /**
    * HelpPopover opens from pointer and focus events on its own root, which sits inside
@@ -47,18 +51,35 @@ export function ForcedControl({ label, explanation, children }: ForcedControlPro
     trigger?.click();
   };
 
+  /**
+   * Discloses the help that explains the blocked control: the popover a forced child
+   * carries, opened through the same synthetic hover or focus channel used for the
+   * wrapper's own help, or the wrapper's explanation when the child carries none.
+   */
+  const discloseHelpFor: (target: EventTarget | null, channel: string) => void = (
+    target: EventTarget | null,
+    channel: string,
+  ): void => {
+    const nested: Element | null = nestedHelpRootOf(target);
+    if (nested === null) {
+      openHelp();
+      return;
+    }
+    nested.dispatchEvent(new Event(channel));
+  };
+
   /** Capture phase: the child never sees the event, so no value can change. */
   const blockChildInteraction: (event: MouseEvent) => void = (event: MouseEvent): void => {
-    if (isHelpTarget(event.target)) return;
+    if (isOwnHelpTarget(event.target)) return;
     event.preventDefault();
     event.stopPropagation();
-    openHelp();
+    discloseHelpFor(event.target, 'pointerenter');
   };
 
   const openHelpFromEnter: (event: KeyboardEvent) => void = (event: KeyboardEvent): void => {
-    if (event.key !== 'Enter' || isHelpTarget(event.target)) return;
+    if (event.key !== 'Enter' || isOwnHelpTarget(event.target)) return;
     event.preventDefault();
-    openHelp();
+    discloseHelpFor(event.target, 'focusin');
   };
 
   const closeHelpOnFocusExit: (event: FocusEvent) => void = (event: FocusEvent): void => {

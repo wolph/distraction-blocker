@@ -7,10 +7,12 @@ import { act, cleanup, fireEvent, render } from '@testing-library/preact';
 import type { VNode } from 'preact';
 import { afterEach, describe, expect, it, type Mock, type MockInstance, vi } from 'vitest';
 import { ForcedControl } from '../../../src/popup/ForcedControl';
-import { HelpPopover } from '../../../src/shared/HelpPopover';
+import { SessionTypeControl } from '../../../src/popup/SessionTypeControl';
 import { UNTIL_STOPPED_DISCLOSURE } from '../../../src/shared/session-copy';
+import type { Strictness } from '../../../src/shared/types';
 
 const GROUP_LABEL: string = 'Session type';
+const FRICTION_CONSEQUENCE: string = 'Ending early requires a 10-second wait.';
 
 function forcedChoice(onClick: () => void): VNode {
   return (
@@ -18,6 +20,23 @@ function forcedChoice(onClick: () => void): VNode {
       <button type="button" onClick={onClick}>
         Flexible
       </button>
+    </ForcedControl>
+  );
+}
+
+/**
+ * SessionTypeControl fuses each choice's help trigger with its value button, so it is the
+ * hostile composition for a forced wrapper: the disclosure must open, the value must not.
+ */
+function forcedSessionType(onChange: (value: Strictness) => void): VNode {
+  return (
+    <ForcedControl label={GROUP_LABEL} explanation={UNTIL_STOPPED_DISCLOSURE}>
+      <SessionTypeControl
+        value="flexible"
+        frictionDelayMs={10_000}
+        requireTypedPhrase={false}
+        onChange={onChange}
+      />
     </ForcedControl>
   );
 }
@@ -129,22 +148,24 @@ describe('ForcedControl', (): void => {
     expect(view.getByRole('tooltip').textContent).toContain(UNTIL_STOPPED_DISCLOSURE);
   });
 
-  it('keeps help a forced child carries reachable while its value button stays blocked', (): void => {
-    const onClick: Mock = vi.fn();
-    const view = render(
-      <ForcedControl label={GROUP_LABEL} explanation={UNTIL_STOPPED_DISCLOSURE}>
-        <HelpPopover label="Flexible help">Choose your own rules.</HelpPopover>
-        <button type="button" onClick={onClick}>
-          Flexible
-        </button>
-      </ForcedControl>,
-    );
+  it('discloses a forced choice help on click without changing the value', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(forcedSessionType(onChange));
 
-    fireEvent.click(view.getByRole('button', { name: 'Flexible help' }));
-    expect(view.getByRole('tooltip').textContent).toContain('Choose your own rules.');
+    fireEvent.click(view.getByRole('button', { name: 'Friction' }));
 
-    fireEvent.click(view.getByRole('button', { name: 'Flexible' }));
-    expect(onClick).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(view.getByRole('tooltip').textContent).toContain(FRICTION_CONSEQUENCE);
+  });
+
+  it('discloses a forced choice help on Enter without changing the value', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(forcedSessionType(onChange));
+
+    fireEvent.keyDown(view.getByRole('button', { name: 'Friction' }), { key: 'Enter' });
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(view.getByRole('tooltip').textContent).toContain(FRICTION_CONSEQUENCE);
   });
 
   it('styles the forced wrapper and hides the described explanation', (): void => {
