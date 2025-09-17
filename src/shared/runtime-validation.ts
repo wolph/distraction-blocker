@@ -26,6 +26,7 @@ import type {
   EventRecord,
   GateState,
   InstallMarker,
+  LegacyEventRecord,
   ListsConfig,
   NormalizedScheduleEntryV1,
   OnboardingDraft,
@@ -40,6 +41,7 @@ import type {
   SessionConfigV2,
   SessionDuration,
   SessionEndedEventV2,
+  SessionEventRecordV2,
   SessionLifecycleV2,
   SessionMode,
   SessionRuleSnapshot,
@@ -1324,8 +1326,12 @@ function isEventRecordValue(value: unknown): value is EventRecord {
   }
 }
 
-export function isEventRecord(value: unknown): value is EventRecord {
+export function isLegacyEventRecord(value: unknown): value is LegacyEventRecord {
   return safelyValidate((): boolean => isEventRecordValue(value));
+}
+
+export function isEventRecord(value: unknown): value is EventRecord {
+  return isLegacyEventRecord(value);
 }
 
 function validSourceOccurrence(
@@ -1442,6 +1448,28 @@ export function isSessionEndedEventV2(value: unknown): value is SessionEndedEven
       missingInvalidScheduled,
     );
   });
+}
+
+/**
+ * A record that announces version 2 is judged only by the version 2 guards. Legacy history never
+ * carries a `version` field, so a legacy shape wearing `version: 2` is a forged claim, not history.
+ */
+function declaresEventVersion2(value: unknown): boolean {
+  return isRecord(value) && value.version === 2;
+}
+
+/**
+ * The stored event union: both version 2 session events plus the complete legacy history. Legacy
+ * runs last and never delegates to `isEventRecord`, so the later cutover can point `isEventRecord`
+ * at this guard without mutual recursion.
+ */
+export function isSessionEventRecordV2(value: unknown): value is SessionEventRecordV2 {
+  return safelyValidate(
+    (): boolean =>
+      isSessionStartedEventV2(value) ||
+      isSessionEndedEventV2(value) ||
+      (!declaresEventVersion2(value) && isLegacyEventRecord(value)),
+  );
 }
 
 function isStatsBundleValue(value: unknown): value is StatsBundle {

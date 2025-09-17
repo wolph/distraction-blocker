@@ -1,10 +1,60 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  isEventRecord,
+  isLegacyEventRecord,
   isSessionEndedEventV2,
+  isSessionEventRecordV2,
   isSessionStartedEventV2,
 } from '../../../src/shared/runtime-validation';
-import type { SessionEndedEventV2 } from '../../../src/shared/types';
-import { ENDED, OCCURRENCE, STARTED } from './v2-runtime-fixtures';
+import type { LegacyEventRecord, SessionEndedEventV2 } from '../../../src/shared/types';
+import { ENDED, OCCURRENCE, SESSION_ID, STARTED } from './v2-runtime-fixtures';
+
+const LEGACY_START: LegacyEventRecord = {
+  t: 'sessionStarted',
+  at: 1,
+  source: 'manual',
+  mode: 'blacklist',
+  strictness: 'hard',
+  durationMin: 25,
+  intention: 'Ship the release',
+  sessionId: SESSION_ID,
+};
+const LEGACY_IDENTITY: LegacyEventRecord = {
+  t: 'sessionIdentityAssigned',
+  at: 4,
+  startedAt: 1,
+  sessionId: SESSION_ID,
+};
+const LEGACY_EARNED: LegacyEventRecord = {
+  t: 'budgetEarned',
+  at: 9,
+  ms: 5_000,
+  sessionId: SESSION_ID,
+};
+
+const LEGACY_VARIANTS: readonly LegacyEventRecord[] = [
+  LEGACY_START,
+  { t: 'sessionCompleted', at: 2, focusedMs: 1_000, sessionId: SESSION_ID },
+  { t: 'sessionCanceled', at: 3, focusedMs: 2_000, sessionId: SESSION_ID },
+  LEGACY_IDENTITY,
+  { t: 'phase', at: 5, from: 'focus', to: 'break', sessionId: SESSION_ID },
+  {
+    t: 'attempt',
+    at: 6,
+    url: 'https://example.com/feed',
+    host: 'example.com',
+    tabId: 7,
+    kind: 'navigation',
+    sessionId: SESSION_ID,
+  },
+  { t: 'gateOpened', at: 7, gate: 'pause', sessionId: SESSION_ID },
+  { t: 'gateResisted', at: 8, gate: 'cancel', sessionId: SESSION_ID },
+  LEGACY_EARNED,
+  { t: 'pauseTaken', at: 10, ms: 6_000, sessionId: SESSION_ID },
+  { t: 'unlockTaken', at: 11, host: 'example.com', ms: 7_000, sessionId: SESSION_ID },
+];
 
 describe('v2 event validation', (): void => {
   it('accepts exact start and manual-completion events', (): void => {
@@ -256,5 +306,62 @@ describe('v2 event validation', (): void => {
     );
 
     expect(isSessionEndedEventV2({ ...ENDED, duration })).toBe(false);
+  });
+});
+
+describe('v2 event record union validation', (): void => {
+  it.each(LEGACY_VARIANTS)('accepts the legacy variant %#', (event: LegacyEventRecord): void => {
+    expect(isSessionEventRecordV2(event)).toBe(true);
+  });
+
+  it('accepts both version 2 events', (): void => {
+    expect(isSessionEventRecordV2(STARTED)).toBe(true);
+    expect(isSessionEventRecordV2(ENDED)).toBe(true);
+  });
+
+  it('rejects a legacy start carrying version 2 without an event ID', (): void => {
+    expect(isSessionEventRecordV2({ ...LEGACY_START, version: 2 })).toBe(false);
+    expect(isSessionEventRecordV2({ ...LEGACY_EARNED, version: 2 })).toBe(false);
+  });
+
+  it.each([null, undefined, 42, '{}', { t: 'unknown', at: 1 }])(
+    'rejects the malformed union candidate %#',
+    (value: unknown): void => {
+      expect(isSessionEventRecordV2(value)).toBe(false);
+    },
+  );
+
+  it.each(LEGACY_VARIANTS)(
+    'agrees with the legacy guard on the legacy variant %#',
+    (event: LegacyEventRecord): void => {
+      expect(isLegacyEventRecord(event)).toBe(isEventRecord(event));
+      expect(isLegacyEventRecord(event)).toBe(true);
+    },
+  );
+
+  it.each([
+    { ...LEGACY_START, durationMin: -1 },
+    { ...LEGACY_IDENTITY, sessionId: ' ' },
+    { ...LEGACY_EARNED, at: Number.NaN },
+    { t: 'unknown', at: 1 },
+    null,
+  ])('agrees with the legacy guard on the rejected value %#', (value: unknown): void => {
+    expect(isLegacyEventRecord(value)).toBe(isEventRecord(value));
+    expect(isLegacyEventRecord(value)).toBe(false);
+  });
+
+  it('rejects both version 2 events from the legacy guard', (): void => {
+    expect(isLegacyEventRecord(STARTED)).toBe(false);
+    expect(isLegacyEventRecord(ENDED)).toBe(false);
+  });
+
+  it('never references the legacy entry point from the union guard', (): void => {
+    const source: string = readFileSync(resolve('src/shared/runtime-validation.ts'), 'utf8');
+    const start: number = source.indexOf('export function isSessionEventRecordV2');
+    expect(start).toBeGreaterThan(-1);
+    const end: number = source.indexOf('\n}\n', start);
+    expect(end).toBeGreaterThan(start);
+
+    expect(source.slice(start, end)).not.toMatch(/\bisEventRecord\b/u);
   });
 });
