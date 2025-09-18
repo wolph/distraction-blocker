@@ -1,7 +1,14 @@
-import type { DocumentEnforcementCommand } from '../shared/enforcement-v2';
+import type {
+  DocumentEnforcementCommand,
+  ResetEnforcementEpochCommand,
+} from '../shared/enforcement-v2';
 import type { Verdict } from '../shared/types';
 
 export interface FrozenDocumentCommand extends DocumentEnforcementCommand {
+  tabId: number;
+}
+
+export interface FrozenEpochResetCommand extends ResetEnforcementEpochCommand {
   tabId: number;
 }
 

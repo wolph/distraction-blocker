@@ -111,3 +111,103 @@ export interface DocumentEnforcementCommand {
   verdict: Verdict;
   overlay: DocumentOverlayView | null;
 }
+
+export interface ResetEnforcementEpochCommand {
+  version: 1;
+  command: 'reset-enforcement-epoch';
+  operationId: string;
+  enforcementEpoch: string;
+  documentId: string;
+  expectedUrl: string;
+}
+
+export type DocumentContentCommand = ResetEnforcementEpochCommand | DocumentEnforcementCommand;
+
+export interface ContentEnforcementTuple {
+  enforcementEpoch: string;
+  sessionId: string | null;
+  reservedSessionId: string | null;
+  basePolicyRevision: number;
+  runtimeRevision: number;
+}
+
+export interface ContentEnforcementState {
+  enforcementEpoch: string | null;
+  retiredEnforcementEpochs: string[];
+  tuple: ContentEnforcementTuple | null;
+  presentation: EnforcementPresentation | null;
+  verdict: Verdict | null;
+  overlay: DocumentOverlayView | null;
+}
+
+export type ContentEnforcementResponse =
+  | {
+      version: 1;
+      disposition: 'applied';
+      operationId: string;
+      enforcementEpoch: string;
+      sessionId: string | null;
+      reservedSessionId: string | null;
+      basePolicyRevision: number;
+      runtimeRevision: number;
+      documentId: string;
+      observedUrl: string;
+      presentation: EnforcementPresentation;
+      verdict: Verdict;
+      overlay: DocumentOverlayView | null;
+      handledAt: number;
+    }
+  | {
+      version: 1;
+      disposition: 'stale-command';
+      operationId: string;
+      enforcementEpoch: string;
+      documentId: string;
+      observedUrl: string;
+      requested: {
+        enforcementEpoch: string;
+        sessionId: string | null;
+        reservedSessionId: string | null;
+        basePolicyRevision: number;
+        runtimeRevision: number;
+      };
+      current: {
+        enforcementEpoch: string;
+        sessionId: string | null;
+        reservedSessionId: string | null;
+        basePolicyRevision: number;
+        runtimeRevision: number;
+      };
+      handledAt: number;
+    }
+  | {
+      version: 1;
+      disposition: 'reset-required';
+      operationId: string;
+      enforcementEpoch: string;
+      documentId: string;
+      observedUrl: string;
+      requestedEpoch: string;
+      currentEpoch: string | null;
+      handledAt: number;
+    }
+  | {
+      version: 1;
+      disposition: 'epoch-reset';
+      operationId: string;
+      enforcementEpoch: string;
+      documentId: string;
+      observedUrl: string;
+      handledAt: number;
+    }
+  | {
+      version: 1;
+      disposition: 'epoch-reset-rejected';
+      operationId: string;
+      enforcementEpoch: string;
+      currentEpoch: string;
+      reason: 'retired-epoch';
+      documentId: string;
+      observedUrl: string;
+      handledAt: number;
+    };

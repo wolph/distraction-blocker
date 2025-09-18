@@ -1,9 +1,13 @@
 import { CATEGORY_IDS } from './constants';
 import type {
   ActiveOverlayCopy,
+  ContentEnforcementResponse,
+  ContentEnforcementTuple,
+  DocumentContentCommand,
   DocumentEnforcementCommand,
   DocumentOverlayView,
   EnforcementPresentation,
+  ResetEnforcementEpochCommand,
   StartingOverlayCopy,
 } from './enforcement-v2';
 import { exactDataEqual, snapshotExactData } from './exact-data';
@@ -107,6 +111,79 @@ const COMMAND_KEYS: readonly string[] = [
   'verdict',
   'overlay',
 ];
+const RESET_COMMAND_KEYS: readonly string[] = [
+  'version',
+  'command',
+  'operationId',
+  'enforcementEpoch',
+  'documentId',
+  'expectedUrl',
+];
+const CONTENT_TUPLE_KEYS: readonly string[] = [
+  'enforcementEpoch',
+  'sessionId',
+  'reservedSessionId',
+  'basePolicyRevision',
+  'runtimeRevision',
+];
+const APPLIED_RESPONSE_KEYS: readonly string[] = [
+  'version',
+  'disposition',
+  'operationId',
+  'enforcementEpoch',
+  'sessionId',
+  'reservedSessionId',
+  'basePolicyRevision',
+  'runtimeRevision',
+  'documentId',
+  'observedUrl',
+  'presentation',
+  'verdict',
+  'overlay',
+  'handledAt',
+];
+const STALE_COMMAND_RESPONSE_KEYS: readonly string[] = [
+  'version',
+  'disposition',
+  'operationId',
+  'enforcementEpoch',
+  'documentId',
+  'observedUrl',
+  'requested',
+  'current',
+  'handledAt',
+];
+const RESET_REQUIRED_RESPONSE_KEYS: readonly string[] = [
+  'version',
+  'disposition',
+  'operationId',
+  'enforcementEpoch',
+  'documentId',
+  'observedUrl',
+  'requestedEpoch',
+  'currentEpoch',
+  'handledAt',
+];
+const EPOCH_RESET_RESPONSE_KEYS: readonly string[] = [
+  'version',
+  'disposition',
+  'operationId',
+  'enforcementEpoch',
+  'documentId',
+  'observedUrl',
+  'handledAt',
+];
+const EPOCH_RESET_REJECTED_RESPONSE_KEYS: readonly string[] = [
+  'version',
+  'disposition',
+  'operationId',
+  'enforcementEpoch',
+  'currentEpoch',
+  'reason',
+  'documentId',
+  'observedUrl',
+  'handledAt',
+];
 const STARTING_TITLE: StartingOverlayCopy['title'] = 'Focus Lock is starting';
 const STARTING_DETAIL: StartingOverlayCopy['detail'] = 'Applying your selected rules.';
 const STOPPED_PAGE_COPY: NonNullable<StartingOverlayCopy['stoppedPage']> =
@@ -162,6 +239,24 @@ export function parseDocumentOverlayView(value: unknown): DocumentOverlayView | 
 export function parseDocumentEnforcementCommand(value: unknown): DocumentEnforcementCommand | null {
   const snapshot: unknown = snapshotExactData(value)?.value;
   return validateDetachedDocumentEnforcementCommand(snapshot) ? snapshot : null;
+}
+
+export function parseResetEnforcementEpochCommand(
+  value: unknown,
+): ResetEnforcementEpochCommand | null {
+  const snapshot: unknown = snapshotExactData(value)?.value;
+  return validateDetachedResetEnforcementEpochCommand(snapshot) ? snapshot : null;
+}
+
+export function parseDocumentContentCommand(value: unknown): DocumentContentCommand | null {
+  const snapshot: unknown = snapshotExactData(value)?.value;
+  if (validateDetachedResetEnforcementEpochCommand(snapshot)) return snapshot;
+  return validateDetachedDocumentEnforcementCommand(snapshot) ? snapshot : null;
+}
+
+export function parseContentEnforcementResponse(value: unknown): ContentEnforcementResponse | null {
+  const snapshot: unknown = snapshotExactData(value)?.value;
+  return validateDetachedContentEnforcementResponse(snapshot) ? snapshot : null;
 }
 
 /** Accepts only already-detached exact plain data from snapshotExactData. */
@@ -224,6 +319,27 @@ export function validateDetachedDocumentEnforcementCommandFields(value: unknown)
   );
 }
 
+/** Accepts only already-detached exact plain data from snapshotExactData. */
+export function validateDetachedContentEnforcementResponse(
+  value: unknown,
+): value is ContentEnforcementResponse {
+  if (!isRecord(value)) return false;
+  switch (value.disposition) {
+    case 'applied':
+      return validateDetachedAppliedResponse(value);
+    case 'stale-command':
+      return validateDetachedStaleCommandResponse(value);
+    case 'reset-required':
+      return validateDetachedResetRequiredResponse(value);
+    case 'epoch-reset':
+      return validateDetachedResponseEnvelope(value, EPOCH_RESET_RESPONSE_KEYS) !== null;
+    case 'epoch-reset-rejected':
+      return validateDetachedEpochResetRejectedResponse(value);
+    default:
+      return false;
+  }
+}
+
 /**
  * Returns the single non-null session identity, or null unless exactly one of the pair is a UUID.
  * Provisional rows carry the reserved identity and durable rows carry the session identity.
@@ -234,6 +350,140 @@ export function canonicalSessionIdentity(
 ): string | null {
   if (sessionId === null) return isUuid(reservedSessionId) ? reservedSessionId : null;
   return isUuid(sessionId) && reservedSessionId === null ? sessionId : null;
+}
+
+function validateDetachedResetEnforcementEpochCommand(
+  value: unknown,
+): value is ResetEnforcementEpochCommand {
+  const candidate: UnknownRecord | null = exactRecord(value, RESET_COMMAND_KEYS);
+  return (
+    candidate !== null &&
+    candidate.version === 1 &&
+    candidate.command === 'reset-enforcement-epoch' &&
+    isUuid(candidate.operationId) &&
+    isUuid(candidate.enforcementEpoch) &&
+    isNonBlankString(candidate.documentId) &&
+    isNonBlankString(candidate.expectedUrl)
+  );
+}
+
+/** Returns the response record when every field shared by all dispositions is valid. */
+function validateDetachedResponseEnvelope(
+  value: unknown,
+  keys: readonly string[],
+): UnknownRecord | null {
+  const candidate: UnknownRecord | null = exactRecord(value, keys);
+  if (
+    candidate === null ||
+    candidate.version !== 1 ||
+    !isUuid(candidate.operationId) ||
+    !isUuid(candidate.enforcementEpoch) ||
+    !isNonBlankString(candidate.documentId) ||
+    !isNonBlankString(candidate.observedUrl) ||
+    !isSafeTimestamp(candidate.handledAt)
+  ) {
+    return null;
+  }
+  return candidate;
+}
+
+function validateDetachedAppliedResponse(value: unknown): boolean {
+  const candidate: UnknownRecord | null = validateDetachedResponseEnvelope(
+    value,
+    APPLIED_RESPONSE_KEYS,
+  );
+  if (candidate === null) return false;
+  const presentation: unknown = candidate.presentation;
+  const verdict: unknown = candidate.verdict;
+  if (
+    canonicalSessionIdentity(candidate.sessionId, candidate.reservedSessionId) === null ||
+    !isNonNegativeInteger(candidate.basePolicyRevision) ||
+    !isNonNegativeInteger(candidate.runtimeRevision) ||
+    !isEnforcementPresentation(presentation) ||
+    !validateDetachedVerdict(verdict)
+  ) {
+    return false;
+  }
+  return validateDetachedCommandPresentation(
+    presentation,
+    verdict,
+    candidate.overlay,
+    candidate.sessionId,
+  );
+}
+
+function validateDetachedStaleCommandResponse(value: unknown): boolean {
+  const candidate: UnknownRecord | null = validateDetachedResponseEnvelope(
+    value,
+    STALE_COMMAND_RESPONSE_KEYS,
+  );
+  if (candidate === null) return false;
+  const requested: unknown = candidate.requested;
+  const current: unknown = candidate.current;
+  if (
+    !validateDetachedContentTuple(requested) ||
+    !validateDetachedContentTuple(current) ||
+    requested.enforcementEpoch !== candidate.enforcementEpoch ||
+    current.enforcementEpoch !== candidate.enforcementEpoch
+  ) {
+    return false;
+  }
+  return isStrictlyLowerTuple(requested, current);
+}
+
+function validateDetachedResetRequiredResponse(value: unknown): boolean {
+  const candidate: UnknownRecord | null = validateDetachedResponseEnvelope(
+    value,
+    RESET_REQUIRED_RESPONSE_KEYS,
+  );
+  if (candidate === null || candidate.requestedEpoch !== candidate.enforcementEpoch) return false;
+  const currentEpoch: unknown = candidate.currentEpoch;
+  if (currentEpoch === null) return true;
+  return isUuid(currentEpoch) && currentEpoch !== candidate.requestedEpoch;
+}
+
+function validateDetachedEpochResetRejectedResponse(value: unknown): boolean {
+  const candidate: UnknownRecord | null = validateDetachedResponseEnvelope(
+    value,
+    EPOCH_RESET_REJECTED_RESPONSE_KEYS,
+  );
+  return (
+    candidate !== null &&
+    candidate.reason === 'retired-epoch' &&
+    isUuid(candidate.currentEpoch) &&
+    candidate.currentEpoch !== candidate.enforcementEpoch
+  );
+}
+
+/** Accepts only already-detached exact plain data from snapshotExactData. */
+function validateDetachedContentTuple(value: unknown): value is ContentEnforcementTuple {
+  const candidate: UnknownRecord | null = exactRecord(value, CONTENT_TUPLE_KEYS);
+  return (
+    candidate !== null &&
+    isUuid(candidate.enforcementEpoch) &&
+    canonicalSessionIdentity(candidate.sessionId, candidate.reservedSessionId) !== null &&
+    isNonNegativeInteger(candidate.basePolicyRevision) &&
+    isNonNegativeInteger(candidate.runtimeRevision)
+  );
+}
+
+/**
+ * Orders two same-epoch tuples by (basePolicyRevision, runtimeRevision). A lower base revision
+ * names an earlier base policy, which always began with its own reserved session, so its identity
+ * may differ. An equal base revision is the same session and only its runtime revision may differ.
+ */
+function isStrictlyLowerTuple(
+  requested: ContentEnforcementTuple,
+  current: ContentEnforcementTuple,
+): boolean {
+  if (requested.basePolicyRevision !== current.basePolicyRevision) {
+    return requested.basePolicyRevision < current.basePolicyRevision;
+  }
+  return (
+    canonicalSessionIdentity(requested.sessionId, requested.reservedSessionId) ===
+      canonicalSessionIdentity(current.sessionId, current.reservedSessionId) &&
+    requested.runtimeRevision < current.runtimeRevision
+  );
 }
 
 function validateDetachedCommandPresentation(
