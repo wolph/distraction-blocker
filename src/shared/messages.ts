@@ -244,3 +244,42 @@ export async function sendRequest<T extends Request['type']>(
 ): Promise<ResponseMap[T]> {
   return (await chrome.runtime.sendMessage(req)) as ResponseMap[T];
 }
+
+/**
+ * Additive v2 session command channel. It stays separate from the live `Request`
+ * union so v2 popup surfaces can send session commands while every v1 caller keeps
+ * its exact types. The cutover slice merges these members into `Request` and
+ * `ResponseMap` and retires `sendSessionRequestV2`.
+ */
+export type SessionRequestV2 =
+  | { type: 'startSession'; config: SessionConfigV2 }
+  | { type: 'requestSessionEnd' }
+  | { type: 'openEndGate' }
+  | { type: 'abandonGate' }
+  | { type: 'confirmGate'; typedPhrase: string | null }
+  | { type: 'openGate'; gate: 'pause' | 'unlockSite'; host: string | null }
+  | { type: 'resumeFromPause' }
+  | { type: 'startNextFocusEarly' }
+  | { type: 'retryTransitionCleanup' }
+  | { type: 'retryClosureCleanup' }
+  | { type: 'retryDataClear' };
+
+export interface SessionResponseMapV2 {
+  startSession: StartSessionResponseV2;
+  requestSessionEnd: CommandResponseV2<SessionCommandResultCodeV2>;
+  openEndGate: CommandResponseV2<SessionCommandResultCodeV2>;
+  abandonGate: CommandResponseV2<SessionCommandResultCodeV2>;
+  confirmGate: CommandResponseV2<SessionCommandResultCodeV2>;
+  openGate: CommandResponseV2<SessionCommandResultCodeV2>;
+  resumeFromPause: CommandResponseV2<SessionCommandResultCodeV2>;
+  startNextFocusEarly: CommandResponseV2<SessionCommandResultCodeV2>;
+  retryTransitionCleanup: CommandResponseV2<RetryCleanupResultCodeV2>;
+  retryClosureCleanup: CommandResponseV2<RetryCleanupResultCodeV2>;
+  retryDataClear: CommandResponseV2<RetryCleanupResultCodeV2>;
+}
+
+export async function sendSessionRequestV2<T extends SessionRequestV2['type']>(
+  request: Extract<SessionRequestV2, { type: T }>,
+): Promise<SessionResponseMapV2[T]> {
+  return (await chrome.runtime.sendMessage(request)) as SessionResponseMapV2[T];
+}
