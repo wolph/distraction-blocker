@@ -4,7 +4,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
-function canonicalStorageValue(value: unknown): unknown {
+/** Sorts object keys at every depth so two equal storage values serialize to the same text. */
+export function canonicalStorageValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalStorageValue);
   if (!isPlainObject(value)) return value;
   return Object.fromEntries(

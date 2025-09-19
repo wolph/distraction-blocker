@@ -9,6 +9,7 @@ import { type ExactDataSnapshot, snapshotExactData } from '../shared/exact-data'
 import { isSessionEventRecordV2 } from '../shared/runtime-validation';
 import { LOCAL_EVENTS } from '../shared/storage-keys';
 import type { SessionEventRecordV2 } from '../shared/types';
+import { canonicalStorageValue } from './storage-value-equality';
 
 let eventAppendQueueV2: Promise<void> = Promise.resolve();
 
@@ -87,20 +88,5 @@ function parseStoredEventV2(value: unknown): SessionEventRecordV2 | null {
 }
 
 function canonicalEventJson(value: unknown): string {
-  return JSON.stringify(canonicalEventValue(value));
-}
-
-function canonicalEventValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalEventValue);
-  if (typeof value !== 'object' || value === null) return value;
-  return Object.fromEntries(
-    Object.entries(value)
-      .sort(([left]: [string, unknown], [right]: [string, unknown]): number =>
-        left === right ? 0 : left < right ? -1 : 1,
-      )
-      .map(([key, nested]: [string, unknown]): [string, unknown] => [
-        key,
-        canonicalEventValue(nested),
-      ]),
-  );
+  return JSON.stringify(canonicalStorageValue(value));
 }
