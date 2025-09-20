@@ -42,7 +42,7 @@ interface ClearBatchHeader {
   clearRuntimeRevision: number;
 }
 
-const MAX_AUTOMATIC_CLEANUP_ATTEMPT: number = 12;
+export const MAX_AUTOMATIC_CLEANUP_ATTEMPT: number = 12;
 const RETRY_KEYS: readonly string[] = ['batch', 'automaticAttempt', 'nextAttemptAt', 'lastError'];
 const TAB_CLAIM_KEYS: readonly string[] = ['tabId', 'state'];
 const TAB_STATE_KEYS: readonly string[] = ['muteUrl', 'priorMuted', 'stoppedDocumentId'];
@@ -393,7 +393,7 @@ function isAscending(values: readonly number[]): boolean {
 }
 
 /** Returns the detached map when every key is exactly the identity of the entry it stores. */
-function detachedIdentityMap<T extends { tabId: number; documentId: string }>(
+export function detachedIdentityMap<T extends { tabId: number; documentId: string }>(
   value: unknown,
   validateEntry: (entry: unknown) => entry is T,
 ): Record<string, T> | null {

@@ -3,34 +3,53 @@
  * call and never calls a production builder, so a test can mutate what it receives and a rejection
  * case can differ from the accepted one by exactly one field.
  *
- * Sections: identities, cleanup, closure. Later tasks append transition and runtime sections.
+ * Sections: identities, cleanup, closure, transition. A later task appends the runtime section.
  */
 
-import type { FrozenDocumentCommand } from '../../../src/background/enforcement-persistence-v2';
+import type {
+  DocumentEnforcementAck,
+  EnforcementCheckpoint,
+  FrozenDocumentCommand,
+} from '../../../src/background/enforcement-persistence-v2';
 import type { RuntimeTabState } from '../../../src/background/runtime-leaf-types';
 import type {
+  CandidateScheduleWindow,
   CleanupEnforcementTarget,
   CleanupProgress,
   CleanupRetryState,
   CleanupSeed,
   CleanupTabClaim,
   ClosureProjection,
+  FrozenTransitionView,
   PendingClosure,
+  PendingEnforcementTransition,
   PostCleanupClosure,
+  PreparedTargetReservation,
+  SessionStartCandidate,
+  TransitionStage,
 } from '../../../src/background/runtime-v2-types';
 import { HANDLED_SCHEDULE_OCCURRENCE_RETENTION_MS } from '../../../src/shared/constants';
+import type { ActiveOverlayCopy, DocumentOverlayView } from '../../../src/shared/enforcement-v2';
 import type {
   BankState,
+  CategoryId,
   DailyAgg,
   HandledScheduleOccurrence,
   LegacyEventRecord,
   ScheduleOccurrenceRef,
   SessionEndedEventV2,
+  SessionRuleSnapshot,
+  Verdict,
 } from '../../../src/shared/types';
 
 export type PreparedClosureV2 = Extract<PendingClosure, { stage: 'prepared' }>;
 export type CleanupClosureV2 = Extract<PendingClosure, { stage: 'cleanup' }>;
 export type BudgetEarnedEvent = Extract<LegacyEventRecord, { t: 'budgetEarned' }>;
+export type StartingOverlay = Extract<DocumentOverlayView, { presentation: 'starting' }>;
+export type ActiveOverlay = Extract<DocumentOverlayView, { presentation: 'active' }>;
+export type TransitionKind = PendingEnforcementTransition['kind'];
+export type TransitionCleanupFrom = NonNullable<PendingEnforcementTransition['cleanupFrom']>;
+export type TransitionCleanupCause = NonNullable<PendingEnforcementTransition['cleanupCause']>;
 
 export const NOW: number = 1_750_000_000_000;
 export const CLOSED_AT: number = NOW + 30_000;
@@ -115,7 +134,7 @@ export function clearCommand(
     enforcementEpoch: EPOCH_ID,
     sessionId: SESSION_ID,
     reservedSessionId: null,
-    basePolicyRevision: 4,
+    basePolicyRevision: BASE_POLICY_REVISION,
     runtimeRevision: CLEAR_RUNTIME_REVISION,
     documentId: 'document-1',
     expectedUrl: TARGET_URL,
@@ -308,4 +327,560 @@ export function migrationInvalidActiveClosure(): CleanupClosureV2 {
     }),
     cleanupProgress: cleanupProgress({ clearRuntimeRevision: 1 }),
   });
+}
+
+// Transition fixtures.
+
+export const TRANSITION_ID: string = '40000000-0000-4000-8000-000000000001';
+export const STARTING_OPERATION_ID: string = '50000000-0000-4000-8000-000000000001';
+export const ACTIVE_OPERATION_ID: string = '50000000-0000-4000-8000-000000000002';
+export const BASE_POLICY_REVISION: number = 4;
+export const TARGET_GENERATION: number = 3;
+/** Local 2026-09-02 09:30, so the captured window agrees with LOCAL_DATE in any test timezone. */
+export const REQUESTED_AT: number = new Date(2026, 8, 2, 9, 30, 0, 0).getTime();
+export const ACTIVATION_AT: number = REQUESTED_AT + 5_000;
+export const WINDOW_STARTS_AT: number = new Date(2026, 8, 2, 9, 0, 0, 0).getTime();
+export const WINDOW_ENDS_AT: number = new Date(2026, 8, 2, 17, 0, 0, 0).getTime();
+export const START_STARTING_REVISION: number = 0;
+export const START_ACTIVE_REVISION: number = 1;
+export const RESUME_STARTING_REVISION: number = 7;
+export const RESUME_ACTIVE_REVISION: number = 8;
+export const PROVENANCE: string = 'Blocked by Social media: example.com';
+const FOCUS_MS: number = 1_500_000;
+const CLOSING_CLEANUP_CAUSES: readonly string[] = [
+  'timer-completed',
+  'manual-end',
+  'transition-failed',
+];
+const COMMITTED_STAGES: readonly string[] = [
+  'committed-pending-verification',
+  'alarm-ready',
+  'active-verified',
+];
+
+export function blockedVerdict(overrides: Partial<Verdict> = {}): Verdict {
+  return {
+    blocked: true,
+    reason: 'category',
+    categoryId: 'social',
+    matchedPattern: 'example.com',
+    ...overrides,
+  };
+}
+
+export function allowedVerdict(overrides: Partial<Verdict> = {}): Verdict {
+  return {
+    blocked: false,
+    reason: 'default',
+    categoryId: null,
+    matchedPattern: null,
+    ...overrides,
+  };
+}
+
+export function sessionCategories(): Record<CategoryId, boolean> {
+  return {
+    social: true,
+    video: false,
+    news: false,
+    mail: false,
+    shopping: false,
+    gaming: false,
+    forums: false,
+  };
+}
+
+/** The exact snapshot `normalizeSessionRules` returns for itself, written out rather than built. */
+export function canonicalRules(overrides: Partial<SessionRuleSnapshot> = {}): SessionRuleSnapshot {
+  return {
+    baselineRevision: 'baseline-1',
+    baselineCategories: sessionCategories(),
+    categories: sessionCategories(),
+    exclusions: {},
+    permanentBlacklist: [],
+    permanentAllowlist: [],
+    sessionBlacklist: [],
+    sessionAllowlist: [],
+    ...overrides,
+  };
+}
+
+export function candidateScheduleWindow(
+  overrides: Partial<CandidateScheduleWindow> = {},
+): CandidateScheduleWindow {
+  return { windowStartsAt: WINDOW_STARTS_AT, windowEndsAt: WINDOW_ENDS_AT, ...overrides };
+}
+
+export function manualCandidate(
+  overrides: Partial<SessionStartCandidate> = {},
+): SessionStartCandidate {
+  return {
+    mode: 'blacklist',
+    strictness: 'friction',
+    duration: { kind: 'manual-timed', minutes: 25 },
+    cycling: null,
+    intention: 'Finish the release notes',
+    source: 'manual',
+    scheduleOccurrence: null,
+    scheduleWindow: null,
+    rules: canonicalRules(),
+    ...overrides,
+  };
+}
+
+export function untilStoppedCandidate(
+  overrides: Partial<SessionStartCandidate> = {},
+): SessionStartCandidate {
+  return manualCandidate({
+    strictness: 'flexible',
+    duration: { kind: 'until-stopped' },
+    cycling: null,
+    ...overrides,
+  });
+}
+
+export function scheduleCandidate(
+  overrides: Partial<SessionStartCandidate> = {},
+): SessionStartCandidate {
+  return manualCandidate({
+    duration: { kind: 'schedule-window' },
+    source: 'schedule',
+    scheduleOccurrence: scheduleOccurrence(),
+    scheduleWindow: candidateScheduleWindow(),
+    ...overrides,
+  });
+}
+
+export function startingOverlay(overrides: Partial<StartingOverlay> = {}): StartingOverlay {
+  return {
+    version: 1,
+    presentation: 'starting',
+    capturedAt: REQUESTED_AT,
+    theme: 'dark',
+    stoppedPage: false,
+    copy: {
+      title: 'Focus Lock is starting',
+      detail: 'Applying your selected rules.',
+      verdictProvenance: PROVENANCE,
+      stoppedPage: null,
+    },
+    actions: { end: 'hidden' },
+    ...overrides,
+  };
+}
+
+export function activeCopy(overrides: Partial<ActiveOverlayCopy> = {}): ActiveOverlayCopy {
+  return {
+    status: { kind: 'timed', text: 'Focus Lock is active for 25:00 more.' },
+    lockedUntil: 'Locked until 09:55',
+    intention: 'Finish the release notes',
+    attempts: '2 attempts blocked today',
+    verdictProvenance: PROVENANCE,
+    stoppedPage: null,
+    bankUnit: 'pause banked',
+    pauseAction: 'Pause blocking for 1 min',
+    unlockAction: 'Unlock this site for 2 min',
+    endAction: 'End session',
+    bankWaitFallback: 'earn pause time by focusing',
+    bankWaitPrefix: 'ready in',
+    gateTitle: null,
+    gateBack: 'Never mind, back to work',
+    gatePhraseLabel: 'Type this to confirm:',
+    gateConfirm: null,
+    transportError: 'Focus Lock could not update this action. Try again.',
+    ...overrides,
+  };
+}
+
+export function activeOverlay(
+  overrides: Partial<ActiveOverlay> = {},
+  capturedAt: number = ACTIVATION_AT,
+): ActiveOverlay {
+  return {
+    version: 1,
+    presentation: 'active',
+    theme: 'dark',
+    sessionId: SESSION_ID,
+    phase: 'focus',
+    mode: 'blacklist',
+    strictness: 'friction',
+    duration: { kind: 'timed', minutes: 25 },
+    timing: {
+      capturedAt,
+      phaseStartedAt: capturedAt,
+      phaseEndsAt: capturedAt + FOCUS_MS,
+      sessionEndsAt: capturedAt + FOCUS_MS,
+    },
+    economy: {
+      bankMs: 60_000,
+      bankAccrualPerMs: 1 / 6,
+      bankCapMs: 300_000,
+      pauseCostMs: 60_000,
+      unlockCostMs: 120_000,
+    },
+    gate: null,
+    activeUnlocks: [{ host: 'example.com', until: capturedAt + 30_000 }],
+    attemptsToday: 2,
+    stoppedPage: false,
+    actions: { state: 'ready', end: 'request-end', pause: 'request-gate', unlock: 'request-gate' },
+    copy: activeCopy(),
+    ...overrides,
+  };
+}
+
+/** Indefinite focus: no phase or session end, no timed status copy, and no immediate End action. */
+export function untilStoppedActiveOverlay(
+  overrides: Partial<ActiveOverlay> = {},
+  capturedAt: number = ACTIVATION_AT,
+): ActiveOverlay {
+  return activeOverlay(
+    {
+      strictness: 'flexible',
+      duration: { kind: 'until-stopped' },
+      timing: {
+        capturedAt,
+        phaseStartedAt: capturedAt,
+        phaseEndsAt: null,
+        sessionEndsAt: null,
+      },
+      actions: { state: 'ready', end: 'hidden', pause: 'request-gate', unlock: 'request-gate' },
+      copy: activeCopy({
+        status: {
+          kind: 'until-stopped',
+          text: 'Focus Lock is active until you end it from the popup.',
+        },
+        lockedUntil: null,
+      }),
+      ...overrides,
+    },
+    capturedAt,
+  );
+}
+
+export function startingCommand(
+  overrides: Partial<FrozenDocumentCommand> = {},
+): FrozenDocumentCommand {
+  return {
+    version: 1,
+    command: 'apply-enforcement',
+    operationId: STARTING_OPERATION_ID,
+    enforcementEpoch: EPOCH_ID,
+    sessionId: null,
+    reservedSessionId: SESSION_ID,
+    basePolicyRevision: BASE_POLICY_REVISION,
+    runtimeRevision: START_STARTING_REVISION,
+    documentId: 'document-1',
+    expectedUrl: TARGET_URL,
+    presentation: 'starting',
+    verdict: blockedVerdict(),
+    overlay: startingOverlay(),
+    tabId: 11,
+    ...overrides,
+  };
+}
+
+export function activeCommand(
+  overrides: Partial<FrozenDocumentCommand> = {},
+): FrozenDocumentCommand {
+  return startingCommand({
+    operationId: ACTIVE_OPERATION_ID,
+    sessionId: SESSION_ID,
+    reservedSessionId: null,
+    runtimeRevision: START_ACTIVE_REVISION,
+    presentation: 'active',
+    overlay: activeOverlay(),
+    ...overrides,
+  });
+}
+
+/** One blocked document that carries the frozen overlay and one allowed document that does not. */
+export function startingCommandMap(
+  overrides: Partial<FrozenDocumentCommand> = {},
+  capturedAt: number = REQUESTED_AT,
+): Record<string, FrozenDocumentCommand> {
+  return {
+    [documentKey(11, 'document-1')]: startingCommand({
+      overlay: startingOverlay({ capturedAt }),
+      ...overrides,
+    }),
+    [documentKey(12, 'document-2')]: startingCommand({
+      tabId: 12,
+      documentId: 'document-2',
+      expectedUrl: SECOND_TARGET_URL,
+      verdict: allowedVerdict(),
+      overlay: null,
+      ...overrides,
+    }),
+  };
+}
+
+export function activeCommandMap(
+  overrides: Partial<FrozenDocumentCommand> = {},
+  capturedAt: number = ACTIVATION_AT,
+  overlay: ActiveOverlay = activeOverlay({}, capturedAt),
+): Record<string, FrozenDocumentCommand> {
+  return {
+    [documentKey(11, 'document-1')]: activeCommand({
+      overlay,
+      ...overrides,
+    }),
+    [documentKey(12, 'document-2')]: activeCommand({
+      tabId: 12,
+      documentId: 'document-2',
+      expectedUrl: SECOND_TARGET_URL,
+      verdict: allowedVerdict(),
+      overlay: null,
+      ...overrides,
+    }),
+  };
+}
+
+export function frozenStartingView(
+  kind: TransitionKind = 'start',
+  overrides: Partial<FrozenTransitionView> = {},
+): FrozenTransitionView {
+  const capturedAt: number = overrides.capturedAt ?? REQUESTED_AT;
+  const operationId: string = overrides.operationId ?? STARTING_OPERATION_ID;
+  const runtimeRevision: number = overrides.runtimeRevision ?? startingRevision(kind);
+  return {
+    capturedAt,
+    operationId,
+    enforcementEpoch: EPOCH_ID,
+    basePolicyRevision: BASE_POLICY_REVISION,
+    runtimeRevision,
+    documents: startingCommandMap(
+      { operationId, runtimeRevision, ...sessionIdentity(kind === 'resume') },
+      capturedAt,
+    ),
+    ...overrides,
+  };
+}
+
+export function frozenActiveView(
+  kind: TransitionKind = 'start',
+  overrides: Partial<FrozenTransitionView> = {},
+): FrozenTransitionView {
+  const capturedAt: number = overrides.capturedAt ?? ACTIVATION_AT;
+  const operationId: string = overrides.operationId ?? ACTIVE_OPERATION_ID;
+  const runtimeRevision: number = overrides.runtimeRevision ?? activeRevision(kind);
+  return {
+    capturedAt,
+    operationId,
+    enforcementEpoch: EPOCH_ID,
+    basePolicyRevision: BASE_POLICY_REVISION,
+    runtimeRevision,
+    documents: activeCommandMap({ operationId, runtimeRevision }, capturedAt),
+    ...overrides,
+  };
+}
+
+export function preparedReservation(
+  overrides: Partial<PreparedTargetReservation> = {},
+): PreparedTargetReservation {
+  return {
+    tabId: 11,
+    documentId: 'document-1',
+    expectedUrl: TARGET_URL,
+    commandKey: documentKey(11, 'document-1'),
+    ...overrides,
+  };
+}
+
+export function preparedReservationMap(): Record<string, PreparedTargetReservation> {
+  return {
+    [documentKey(11, 'document-1')]: preparedReservation(),
+    [documentKey(12, 'document-2')]: preparedReservation({
+      tabId: 12,
+      documentId: 'document-2',
+      expectedUrl: SECOND_TARGET_URL,
+      commandKey: documentKey(12, 'document-2'),
+    }),
+  };
+}
+
+export function enforcementAck(
+  overrides: Partial<DocumentEnforcementAck> = {},
+): DocumentEnforcementAck {
+  return {
+    version: 1,
+    operationId: STARTING_OPERATION_ID,
+    enforcementEpoch: EPOCH_ID,
+    sessionId: SESSION_ID,
+    reservedSessionId: null,
+    basePolicyRevision: BASE_POLICY_REVISION,
+    runtimeRevision: START_ACTIVE_REVISION,
+    tabId: 11,
+    documentId: 'document-1',
+    url: TARGET_URL,
+    verdict: blockedVerdict(),
+    handledAt: ACTIVATION_AT,
+    ...overrides,
+  };
+}
+
+export function transitionCheckpoint(
+  overrides: Partial<EnforcementCheckpoint> = {},
+): EnforcementCheckpoint {
+  const operationId: string = overrides.operationId ?? STARTING_OPERATION_ID;
+  return {
+    version: 1,
+    operationId,
+    enforcementEpoch: EPOCH_ID,
+    sessionId: SESSION_ID,
+    basePolicyRevision: BASE_POLICY_REVISION,
+    kind: 'activation',
+    registrationAuditedAt: REQUESTED_AT + 1_000,
+    completedAt: REQUESTED_AT + 2_000,
+    targetGeneration: TARGET_GENERATION,
+    documents: [enforcementAck({ operationId })],
+    exclusions: [],
+    ...overrides,
+  };
+}
+
+/** A start reserves its identity before commit, so its starting acknowledgements are reserved. */
+export function transitionStartingCheckpoint(kind: TransitionKind): EnforcementCheckpoint {
+  const reserved: boolean = kind === 'start';
+  return transitionCheckpoint({
+    operationId: STARTING_OPERATION_ID,
+    kind: reserved ? 'activation' : 'resume-strengthening',
+    documents: [
+      enforcementAck({
+        operationId: STARTING_OPERATION_ID,
+        runtimeRevision: startingRevision(kind),
+        ...sessionIdentity(!reserved),
+      }),
+    ],
+  });
+}
+
+export function transitionActiveCheckpoint(kind: TransitionKind): EnforcementCheckpoint {
+  return transitionCheckpoint({
+    operationId: ACTIVE_OPERATION_ID,
+    kind: kind === 'start' ? 'activation' : 'resume-strengthening',
+    registrationAuditedAt: ACTIVATION_AT + 1_000,
+    completedAt: ACTIVATION_AT + 2_000,
+    documents: [
+      enforcementAck({ operationId: ACTIVE_OPERATION_ID, runtimeRevision: activeRevision(kind) }),
+    ],
+  });
+}
+
+export function pendingTransition(
+  kind: TransitionKind,
+  stage: Exclude<TransitionStage, 'cleanup'>,
+  overrides: Partial<PendingEnforcementTransition> = {},
+): PendingEnforcementTransition {
+  return {
+    version: 1,
+    kind,
+    stage,
+    transitionId: TRANSITION_ID,
+    startingOperationId: STARTING_OPERATION_ID,
+    activeOperationId: ACTIVE_OPERATION_ID,
+    enforcementEpoch: EPOCH_ID,
+    basePolicyRevision: BASE_POLICY_REVISION,
+    runtimeRevision: startingRevision(kind),
+    sessionId: SESSION_ID,
+    trigger: kind === 'start' ? 'manual' : 'pause-expired',
+    requestedAt: REQUESTED_AT,
+    candidate: kind === 'start' ? manualCandidate() : null,
+    priorPhase: kind === 'start' ? null : 'paused',
+    activationAt: null,
+    verificationStartedAt: null,
+    freshnessAttempts: 0,
+    targetGeneration: TARGET_GENERATION,
+    preparedTargetReservations: {},
+    startingView: frozenStartingView(kind),
+    activeView: null,
+    startingCheckpoint: null,
+    checkpoint: null,
+    alarmNames: [],
+    failure: null,
+    cleanupProgress: null,
+    cleanupFrom: null,
+    cleanupCause: null,
+    postCleanupClosure: null,
+    ...transitionStagePatch(kind, stage),
+    ...overrides,
+  };
+}
+
+export function cleanupTransition(
+  kind: TransitionKind,
+  cleanupFrom: TransitionCleanupFrom,
+  cleanupCause: TransitionCleanupCause,
+  overrides: Partial<PendingEnforcementTransition> = {},
+): PendingEnforcementTransition {
+  const durable: boolean = kind === 'resume' || COMMITTED_STAGES.includes(cleanupFrom);
+  return {
+    ...pendingTransition(kind, cleanupFrom),
+    stage: 'cleanup',
+    runtimeRevision: CLEAR_RUNTIME_REVISION,
+    preparedTargetReservations: {},
+    failure: cleanupCause === 'transition-failed' ? 'tab-enforcement-failed' : null,
+    cleanupProgress: cleanupProgress({
+      clearCommands: clearCommandMap({
+        operationId: CLEANUP_OPERATION_ID,
+        runtimeRevision: CLEAR_RUNTIME_REVISION,
+        ...sessionIdentity(durable),
+      }),
+    }),
+    cleanupFrom,
+    cleanupCause,
+    postCleanupClosure: CLOSING_CLEANUP_CAUSES.includes(cleanupCause) ? postCleanupClosure() : null,
+    ...overrides,
+  };
+}
+
+function startingRevision(kind: TransitionKind): number {
+  return kind === 'start' ? START_STARTING_REVISION : RESUME_STARTING_REVISION;
+}
+
+function activeRevision(kind: TransitionKind): number {
+  return kind === 'start' ? START_ACTIVE_REVISION : RESUME_ACTIVE_REVISION;
+}
+
+/** A committed row names the durable session, a pre-commit start names only its reserved one. */
+function sessionIdentity(durable: boolean): Partial<FrozenDocumentCommand> {
+  return durable
+    ? { sessionId: SESSION_ID, reservedSessionId: null }
+    : { sessionId: null, reservedSessionId: SESSION_ID };
+}
+
+function transitionStagePatch(
+  kind: TransitionKind,
+  stage: Exclude<TransitionStage, 'cleanup'>,
+): Partial<PendingEnforcementTransition> {
+  switch (stage) {
+    case 'prepared':
+    case 'registration-audited':
+      return { preparedTargetReservations: preparedReservationMap() };
+    case 'starting-verified':
+      return { startingCheckpoint: transitionStartingCheckpoint(kind) };
+    case 'committed-pending-verification':
+      return committedTransitionPatch(kind, 0);
+    case 'alarm-ready':
+      return committedTransitionPatch(kind, 1);
+    case 'active-verified':
+      return {
+        ...committedTransitionPatch(kind, 2),
+        checkpoint: transitionActiveCheckpoint(kind),
+      };
+  }
+}
+
+function committedTransitionPatch(
+  kind: TransitionKind,
+  freshnessAttempts: number,
+): Partial<PendingEnforcementTransition> {
+  return {
+    runtimeRevision: activeRevision(kind),
+    activationAt: ACTIVATION_AT,
+    verificationStartedAt: ACTIVATION_AT,
+    freshnessAttempts,
+    activeView: frozenActiveView(kind),
+    startingCheckpoint: transitionStartingCheckpoint(kind),
+    alarmNames: ['phase'],
+  };
 }
