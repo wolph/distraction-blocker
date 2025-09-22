@@ -447,14 +447,23 @@ describe('background transition candidate', (): void => {
     ]);
   });
 
-  it('requires a window-timed activation to stay inside its captured bound', (): void => {
+  it('requires a window-timed activation to stay inside its captured bounds', (): void => {
     const window: ReturnType<typeof candidateScheduleWindow> = candidateScheduleWindow();
 
     expectRejected([
       pendingTransition('start', 'alarm-ready', {
         trigger: 'schedule',
         candidate: scheduleCandidate({
-          scheduleWindow: candidateScheduleWindow({ windowEndsAt: ACTIVATION_AT }),
+          scheduleWindow: candidateScheduleWindow({ windowEndsAt: ACTIVATION_AT - 1 }),
+        }),
+      }),
+      pendingTransition('start', 'alarm-ready', {
+        trigger: 'schedule',
+        candidate: scheduleCandidate({
+          scheduleWindow: candidateScheduleWindow({
+            windowStartsAt: ACTIVATION_AT + 1,
+            windowEndsAt: ACTIVATION_AT + 2,
+          }),
         }),
       }),
     ]);
@@ -463,6 +472,18 @@ describe('background transition candidate', (): void => {
         trigger: 'schedule',
         candidate: scheduleCandidate({
           scheduleWindow: candidateScheduleWindow({ windowEndsAt: ACTIVATION_AT + 1 }),
+        }),
+      }),
+      pendingTransition('start', 'alarm-ready', {
+        trigger: 'schedule',
+        candidate: scheduleCandidate({
+          scheduleWindow: candidateScheduleWindow({ windowEndsAt: ACTIVATION_AT }),
+        }),
+      }),
+      pendingTransition('start', 'alarm-ready', {
+        trigger: 'schedule',
+        candidate: scheduleCandidate({
+          scheduleWindow: candidateScheduleWindow({ windowStartsAt: ACTIVATION_AT }),
         }),
       }),
       indefiniteStart('alarm-ready', {

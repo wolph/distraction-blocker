@@ -214,7 +214,7 @@ export function validateDetachedPendingEnforcementTransition(
   if (views === null) return false;
   return (
     validateTransitionVerification(candidate, expectation) &&
-    windowRemainsOpen(request.start, candidate.activationAt) &&
+    activationWithinWindow(request.start, candidate.activationAt) &&
     validateTransitionReservations(candidate, header, expectation, views.startingView) &&
     validateTransitionCheckpoints(candidate, header, expectation) &&
     validateTransitionAlarmNames(candidate.alarmNames, expectation, request.start) &&
@@ -373,8 +373,15 @@ function validateDetachedCandidateScheduleWindow(value: unknown): value is Candi
   );
 }
 
-/** A window-timed session ends at its captured bound, so activation must precede that bound. */
-function windowRemainsOpen(start: SessionStartCandidate | null, activationAt: unknown): boolean {
+/**
+ * A window-timed session runs between its captured bounds, so its activation sits inside them. The
+ * upper bound is inclusive because the half-open recheck ran strictly before activation was
+ * captured, which leaves the bound itself a legal capture instant.
+ */
+function activationWithinWindow(
+  start: SessionStartCandidate | null,
+  activationAt: unknown,
+): boolean {
   if (
     start === null ||
     start.duration.kind !== 'schedule-window' ||
@@ -383,7 +390,11 @@ function windowRemainsOpen(start: SessionStartCandidate | null, activationAt: un
   ) {
     return true;
   }
-  return typeof activationAt === 'number' && activationAt < start.scheduleWindow.windowEndsAt;
+  return (
+    typeof activationAt === 'number' &&
+    start.scheduleWindow.windowStartsAt <= activationAt &&
+    activationAt <= start.scheduleWindow.windowEndsAt
+  );
 }
 
 /** Returns both frozen views once each agrees with its operation, or null when either does not. */
@@ -654,7 +665,11 @@ function cleanupCauseAgrees(cause: string, kind: string, committedSource: boolea
   }
 }
 
-/** A transition failure always names its cause, and only an abandoned start may also name one. */
+/**
+ * A transition failure always names its cause, and only an abandoned start may also name one. A
+ * pre-commit resume enforcement failure therefore stores `resume-restore` with a null `failure`,
+ * per design lines 961 and 962, and the runtime records why in the closure reason instead.
+ */
 function cleanupFailureAgrees(failure: unknown, cause: string): boolean {
   if (failure === null) return cause !== 'transition-failed';
   if (typeof failure !== 'string' || !FAILURE_REASONS.has(failure)) return false;
