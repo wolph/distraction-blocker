@@ -165,6 +165,8 @@ export const TOP_SITES_DAILY: number = 20;
 export const TOP_SITES_MONTHLY: number = 10;
 export const MAX_FREEZE_TOKENS: number = 2;
 export const RUNTIME_SCHEMA_VERSION_V2: 2 = 2;
+/** The spec's 12-attempt cleanup schedule: one batch makes at most this many automatic attempts. */
+export const CLEANUP_MAX_AUTOMATIC_ATTEMPTS: number = 12;
 export const HANDLED_SCHEDULE_OCCURRENCE_RETENTION_MS: number = 14 * 24 * 60 * 60 * 1_000;
 export const MAX_HANDLED_SCHEDULE_OCCURRENCES: number = 256;
 
