@@ -320,13 +320,13 @@ describe('canonicalSessionIdentityV2', () => {
     );
   });
 
-  it('separates a reserved identity from the same string promoted to a session identity', () => {
+  it('is one identity across the reserved field and the durable field', () => {
     const reserved: ContentEnforcementTuple = tuple({
       sessionId: null,
       reservedSessionId: SESSION_ID,
     });
 
-    expect(canonicalSessionIdentityV2(reserved)).not.toBe(canonicalSessionIdentityV2(tuple()));
+    expect(canonicalSessionIdentityV2(reserved)).toBe(canonicalSessionIdentityV2(tuple()));
   });
 
   it('separates two different session identities', () => {
@@ -456,6 +456,25 @@ describe('handleContentCommandV2 epoch handshake', () => {
     expect(result.render).toBe('none');
   });
 
+  it('answers reset-required for an enforcement command naming a retired epoch', () => {
+    const state: ContentEnforcementState = resetTo(EPOCH_B, stateWith(enforcementCommand()));
+
+    const result: ContentCommandResultV2 = handleContentCommandV2(
+      state,
+      enforcementCommand({ operationId: OPERATION_B }),
+      OBSERVED_URL,
+      NOW + 4,
+    );
+    const response: ContentEnforcementResponse = parsedResponse(result);
+
+    expect(response.disposition).toBe('reset-required');
+    if (response.disposition !== 'reset-required') throw new Error('expected reset-required');
+    expect(response.requestedEpoch).toBe(EPOCH_A);
+    expect(response.currentEpoch).toBe(EPOCH_B);
+    expect(result.state).toEqual(state);
+    expect(result.render).toBe('none');
+  });
+
   it('answers reset-required with the current epoch for a different non-retired epoch', () => {
     const state: ContentEnforcementState = stateWith(enforcementCommand());
 
@@ -575,18 +594,37 @@ describe('handleContentCommandV2 tuple comparison', () => {
     expect(result.render).toBe('apply');
   });
 
-  it('rejects an equal base revision whose identity moved to the reserved field', () => {
-    const state: ContentEnforcementState = stateWith(enforcementCommand());
+  it('applies the durable promotion of a reserved identity at the same base revision', () => {
+    const state: ContentEnforcementState = stateWith(startingCommand({ runtimeRevision: 0 }));
 
     const result: ContentCommandResultV2 = handleContentCommandV2(
       state,
-      startingCommand({ operationId: OPERATION_B, runtimeRevision: 9 }),
+      enforcementCommand({ operationId: OPERATION_B, runtimeRevision: 1 }),
       OBSERVED_URL,
       NOW + 9,
     );
 
-    expect(result.response).toBeNull();
-    expect(result.render).toBe('none');
+    expect(parsedResponse(result).disposition).toBe('applied');
+    expect(result.state.tuple).toEqual(tuple({ runtimeRevision: 1 }));
+    expect(result.state.presentation).toBe('active');
+    expect(result.render).toBe('apply');
+  });
+
+  it('compares a reservation against its promotion by tuple, not by field', () => {
+    const state: ContentEnforcementState = stateWith(enforcementCommand({ runtimeRevision: 1 }));
+
+    const result: ContentCommandResultV2 = handleContentCommandV2(
+      state,
+      startingCommand({ operationId: OPERATION_B, runtimeRevision: 0 }),
+      OBSERVED_URL,
+      NOW + 9,
+    );
+    const response: ContentEnforcementResponse = parsedResponse(result);
+
+    expect(response.disposition).toBe('stale-command');
+    if (response.disposition !== 'stale-command') throw new Error('expected stale-command');
+    expect(response.requested.reservedSessionId).toBe(SESSION_ID);
+    expect(response.current.sessionId).toBe(SESSION_ID);
     expect(result.state).toEqual(state);
   });
 
@@ -833,6 +871,9 @@ describe('handleContentCommandV2 echoes and detachment', () => {
     expect(result.state).toEqual(state);
     expect(result.state.retiredEnforcementEpochs).not.toBe(state.retiredEnforcementEpochs);
     expect(result.state.tuple).not.toBe(state.tuple);
+    // The stored view is a module-owned snapshot nothing mutates, so it is shared on purpose.
+    expect(result.state.overlay).toBe(state.overlay);
+    expect(result.state.verdict).toBe(state.verdict);
   });
 
   it('answers applied again for a byte-identical replay after a worker restart', () => {
@@ -904,6 +945,24 @@ describe('handleContentCommandV2 hostile input', () => {
       hostile,
       OBSERVED_URL,
       NOW + 23,
+    );
+
+    expect(result.response).toBeNull();
+    expect(result.render).toBe('none');
+    expect(result.state).toEqual(state);
+  });
+
+  it('rejects a command missing the fields every response echoes', () => {
+    const state: ContentEnforcementState = stateWith(enforcementCommand());
+    const hostile: DocumentContentCommand = {
+      command: 'apply-enforcement',
+    } as unknown as DocumentContentCommand;
+
+    const result: ContentCommandResultV2 = handleContentCommandV2(
+      state,
+      hostile,
+      OBSERVED_URL,
+      NOW + 24,
     );
 
     expect(result.response).toBeNull();

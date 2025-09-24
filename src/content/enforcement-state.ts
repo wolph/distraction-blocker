@@ -11,10 +11,11 @@ import type {
   DocumentEnforcementCommand,
   ResetEnforcementEpochCommand,
 } from '../shared/enforcement-v2';
+import { canonicalSessionIdentity } from '../shared/enforcement-v2-validation';
 import { CoreError } from '../shared/errors';
 import { type ExactDataSnapshot, exactDataEqual, snapshotExactData } from '../shared/exact-data';
 import type { Verdict } from '../shared/types';
-import { isRecord } from '../shared/v2-domain-intrinsics';
+import { isNonBlankString, isRecord } from '../shared/v2-domain-intrinsics';
 
 export interface ContentCommandResultV2 {
   state: ContentEnforcementState;
@@ -57,13 +58,13 @@ export function compareEnforcementTuplesV2(
 }
 
 /**
- * Returns the identity key of a tuple. Exactly one identity field of a parsed command is non-null,
- * so the key names both the identity string and the field carrying it. A provisional reserved
- * identity and its promoted durable identity are therefore different keys, and a promotion that
- * fails to advance its revision cannot pass as the tuple content already applied.
+ * Returns the canonical identity of a tuple: the single non-null identity string, whichever field
+ * carries it. Durable activation promotes the reserved string to `sessionId`, so a reservation and
+ * its promotion are one identity and differ only by tuple. The shared helper owns that rule and
+ * answers null for the pair the command parser already excludes, which becomes the empty identity.
  */
 export function canonicalSessionIdentityV2(tuple: ContentEnforcementTuple): string {
-  return `session:${tuple.sessionId ?? ''}|reserved:${tuple.reservedSessionId ?? ''}`;
+  return canonicalSessionIdentity(tuple.sessionId, tuple.reservedSessionId) ?? '';
 }
 
 export function handleContentCommandV2(
@@ -91,10 +92,21 @@ function detachCommand(command: DocumentContentCommand): DocumentContentCommand 
   return snapshot.value;
 }
 
-/** The caller parses before dispatch, so an exact snapshot carrying a command tag is that command. */
+/**
+ * The caller parses before dispatch, so an exact snapshot carrying a command tag is that command.
+ * The three fields every response echoes are still checked, so no answer this module builds can be
+ * a response the landed parser rejects.
+ */
 function hasContentCommandTag(value: unknown): value is DocumentContentCommand {
   if (!isRecord(value)) return false;
-  return value.command === 'reset-enforcement-epoch' || value.command === 'apply-enforcement';
+  if (value.command !== 'reset-enforcement-epoch' && value.command !== 'apply-enforcement') {
+    return false;
+  }
+  return (
+    isNonBlankString(value.operationId) &&
+    isNonBlankString(value.enforcementEpoch) &&
+    isNonBlankString(value.documentId)
+  );
 }
 
 function handleResetCommand(
@@ -285,8 +297,9 @@ function rejected(state: ContentEnforcementState): ContentCommandResultV2 {
 }
 
 /**
- * Returns a new state container. Stored verdicts and views are exact-data snapshots this module
- * never mutates, so a result that changes nothing shares those values with the previous state.
+ * Returns a new state container with its own retired-epoch array and tuple. The presentation,
+ * verdict, and view are exact-data snapshots this module never mutates and the renderer only
+ * reads, so a result that changes nothing shares those three values with the previous state.
  */
 function detachedState(state: ContentEnforcementState): ContentEnforcementState {
   return {
