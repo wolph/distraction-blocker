@@ -3,15 +3,19 @@
  * call and never calls a production builder, so a test can mutate what it receives and a rejection
  * case can differ from the accepted one by exactly one field.
  *
- * Sections: identities, cleanup, closure, transition. A later task appends the runtime section.
+ * Sections: identities, cleanup, closure, transition, runtime.
  */
 
 import type {
   DocumentEnforcementAck,
+  DocumentEpochResetAck,
   EnforcementCheckpoint,
   FrozenDocumentCommand,
 } from '../../../src/background/enforcement-persistence-v2';
-import type { RuntimeTabState } from '../../../src/background/runtime-leaf-types';
+import type {
+  DeferredBlockClaim,
+  RuntimeTabState,
+} from '../../../src/background/runtime-leaf-types';
 import type {
   CandidateScheduleWindow,
   CleanupEnforcementTarget,
@@ -25,6 +29,9 @@ import type {
   PendingEnforcementTransition,
   PostCleanupClosure,
   PreparedTargetReservation,
+  RuntimeCommitCheckpointV2,
+  RuntimeDomainProjectionV2,
+  RuntimeStateV2,
   SessionStartCandidate,
   TransitionStage,
 } from '../../../src/background/runtime-v2-types';
@@ -37,8 +44,11 @@ import type {
   HandledScheduleOccurrence,
   LegacyEventRecord,
   ScheduleOccurrenceRef,
+  SessionConfigV2,
   SessionEndedEventV2,
   SessionRuleSnapshot,
+  SessionStartedEventV2,
+  SessionStateV2,
   Verdict,
 } from '../../../src/shared/types';
 
@@ -883,4 +893,418 @@ function committedTransitionPatch(
     startingCheckpoint: transitionStartingCheckpoint(kind),
     alarmNames: ['phase'],
   };
+}
+
+// Runtime fixtures.
+
+export const PUBLISHED_REVISION: number = START_ACTIVE_REVISION;
+/** A resumed session started well before the transition that resumes it. */
+export const RESUMED_STARTED_AT: number = ACTIVATION_AT - 600_000;
+/** The logical end every runtime closure fixture projects, on the transition timeline. */
+export const RUNTIME_CLOSED_AT: number = ACTIVATION_AT + 60_000;
+export const MAX_HANDLED_SCHEDULE_OCCURRENCES: number = 256;
+export const ATTEMPT_DEBOUNCE_KEY: string = `11:${TARGET_URL}`;
+
+export function sessionConfigV2(overrides: Partial<SessionConfigV2> = {}): SessionConfigV2 {
+  return {
+    mode: 'blacklist',
+    strictness: 'friction',
+    duration: { kind: 'timed', minutes: 25 },
+    cycling: null,
+    intention: 'Finish the release notes',
+    source: 'manual',
+    scheduleOccurrence: null,
+    rules: canonicalRules(),
+    ...overrides,
+  };
+}
+
+/** The timed focus a committed start commits, so its start and phase both begin at activation. */
+export function timedFocusSession(overrides: Partial<SessionStateV2> = {}): SessionStateV2 {
+  return {
+    version: 2,
+    sessionId: SESSION_ID,
+    config: sessionConfigV2(),
+    startedAt: ACTIVATION_AT,
+    sessionEndsAt: ACTIVATION_AT + FOCUS_MS,
+    phase: 'focus',
+    phaseStartedAt: ACTIVATION_AT,
+    phaseEndsAt: ACTIVATION_AT + FOCUS_MS,
+    cycleIndex: 0,
+    pausedFrom: null,
+    focusedMs: 0,
+    ...overrides,
+  };
+}
+
+/** Indefinite focus: no session or phase end, Flexible strictness, and no cycling. */
+export function untilStoppedFocusSession(overrides: Partial<SessionStateV2> = {}): SessionStateV2 {
+  return timedFocusSession({
+    config: sessionConfigV2({ strictness: 'flexible', duration: { kind: 'until-stopped' } }),
+    sessionEndsAt: null,
+    phaseEndsAt: null,
+    ...overrides,
+  });
+}
+
+/** The durable pause a resume transition leaves in place until it commits. */
+export function pausedSession(overrides: Partial<SessionStateV2> = {}): SessionStateV2 {
+  return timedFocusSession({
+    startedAt: RESUMED_STARTED_AT,
+    sessionEndsAt: RESUMED_STARTED_AT + FOCUS_MS,
+    phase: 'paused',
+    phaseStartedAt: RESUMED_STARTED_AT + 60_000,
+    phaseEndsAt: RESUMED_STARTED_AT + 120_000,
+    pausedFrom: { phase: 'focus', phaseEndsAt: RESUMED_STARTED_AT + FOCUS_MS },
+    focusedMs: 60_000,
+    ...overrides,
+  });
+}
+
+/** A break needs its cycling config, and carries no paused-from record. */
+export function breakSession(overrides: Partial<SessionStateV2> = {}): SessionStateV2 {
+  return pausedSession({
+    config: sessionConfigV2({
+      cycling: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 },
+    }),
+    phase: 'break',
+    pausedFrom: null,
+    ...overrides,
+  });
+}
+
+/** The same durable session after a resume commit: focus restarted at the captured activation. */
+export function resumedFocusSession(overrides: Partial<SessionStateV2> = {}): SessionStateV2 {
+  return pausedSession({
+    phase: 'focus',
+    phaseStartedAt: ACTIVATION_AT,
+    phaseEndsAt: RESUMED_STARTED_AT + FOCUS_MS,
+    pausedFrom: null,
+    ...overrides,
+  });
+}
+
+export function sessionStartedEvent(
+  overrides: Partial<SessionStartedEventV2> = {},
+): SessionStartedEventV2 {
+  return {
+    version: 2,
+    t: 'sessionStarted',
+    eventId: `${SESSION_ID}:start`,
+    at: ACTIVATION_AT,
+    sessionId: SESSION_ID,
+    source: 'manual',
+    mode: 'blacklist',
+    strictness: 'flexible',
+    duration: { kind: 'until-stopped' },
+    intention: 'Finish the release notes',
+    scheduleOccurrence: null,
+    ...overrides,
+  };
+}
+
+export function epochResetAck(
+  overrides: Partial<DocumentEpochResetAck> = {},
+): DocumentEpochResetAck {
+  return {
+    version: 1,
+    operationId: OTHER_OPERATION_ID,
+    enforcementEpoch: EPOCH_ID,
+    tabId: 11,
+    documentId: 'document-1',
+    url: TARGET_URL,
+    handledAt: REQUESTED_AT,
+    ...overrides,
+  };
+}
+
+export function epochResetAckMap(
+  overrides: Partial<DocumentEpochResetAck> = {},
+): Record<string, DocumentEpochResetAck> {
+  return { [documentKey(11, 'document-1')]: epochResetAck(overrides) };
+}
+
+export function deferredBlockClaim(
+  overrides: Partial<DeferredBlockClaim> = {},
+): DeferredBlockClaim {
+  return {
+    attemptAt: ACTIVATION_AT,
+    documentId: 'document-1',
+    kind: 'navigation',
+    sessionId: SESSION_ID,
+    stage: 'stopped',
+    tabId: 11,
+    url: TARGET_URL,
+    ...overrides,
+  };
+}
+
+/** The live engine key. No stored rule constrains it, so fixtures simply keep its shape. */
+export function deferredClaimKey(claim: DeferredBlockClaim): string {
+  return `${claim.sessionId}:${claim.tabId}:${claim.url}:${claim.kind}:${claim.documentId ?? ''}`;
+}
+
+export function deferredBlockClaimMap(
+  overrides: Partial<DeferredBlockClaim> = {},
+): Record<string, DeferredBlockClaim> {
+  const claim: DeferredBlockClaim = deferredBlockClaim(overrides);
+  return { [deferredClaimKey(claim)]: claim };
+}
+
+/** Distinct handled tokens, for the deterministic 256-record retention cap. */
+export function handledOccurrenceLog(count: number): HandledScheduleOccurrence[] {
+  return Array.from(
+    { length: count },
+    (_unused: unknown, index: number): HandledScheduleOccurrence =>
+      handledOccurrence({ entryId: `entry-${index}`, token: `entry-${index}@${LOCAL_DATE}` }),
+  );
+}
+
+/** A closure projection on the runtime timeline, so its logical end follows the session start. */
+export function runtimeClosureProjection(
+  overrides: Partial<ClosureProjection> = {},
+): ClosureProjection {
+  return closureProjection({
+    endEvent: sessionEndedEvent({ at: RUNTIME_CLOSED_AT }),
+    ...overrides,
+  });
+}
+
+export function emptyRuntimeV2(overrides: Partial<RuntimeStateV2> = {}): RuntimeStateV2 {
+  return {
+    runtimeSchemaVersion: 2,
+    session: null,
+    gate: null,
+    unlocks: [],
+    tabStates: {},
+    accruedFocusMs: 0,
+    attemptDebounce: {},
+    deferredBlockClaims: {},
+    removedTabTombstones: {},
+    scheduleUnavailableNoticeToken: null,
+    handledScheduleOccurrences: [],
+    enforcementEpoch: EPOCH_ID,
+    epochResetAcks: {},
+    basePolicyRevision: BASE_POLICY_REVISION,
+    runtimeRevision: 0,
+    documentCommands: {},
+    enforcementCheckpoint: null,
+    pendingEnforcementTransition: null,
+    pendingClosure: null,
+    date: LOCAL_DATE,
+    todayAgg: null,
+    lastPruneDate: null,
+    commitCheckpoint: null,
+    ...overrides,
+  };
+}
+
+/** The published focus a finished start leaves: durable session, checkpoint, current commands. */
+export function publishedFocusRuntime(overrides: Partial<RuntimeStateV2> = {}): RuntimeStateV2 {
+  return emptyRuntimeV2({
+    session: timedFocusSession(),
+    gate: null,
+    unlocks: [{ host: 'example.com', until: ACTIVATION_AT + 30_000 }],
+    tabStates: { 11: runtimeTabState() },
+    accruedFocusMs: 45_000,
+    attemptDebounce: { [ATTEMPT_DEBOUNCE_KEY]: ACTIVATION_AT },
+    deferredBlockClaims: deferredBlockClaimMap(),
+    removedTabTombstones: { 13: true },
+    scheduleUnavailableNoticeToken: `${ENTRY_ID}@${LOCAL_DATE}`,
+    handledScheduleOccurrences: [handledOccurrence({ reason: 'started' })],
+    epochResetAcks: epochResetAckMap(),
+    runtimeRevision: PUBLISHED_REVISION,
+    documentCommands: activeCommandMap({
+      operationId: ACTIVE_OPERATION_ID,
+      runtimeRevision: PUBLISHED_REVISION,
+    }),
+    enforcementCheckpoint: transitionActiveCheckpoint('start'),
+    todayAgg: dailyAgg(),
+    lastPruneDate: LOCAL_DATE,
+    ...overrides,
+  });
+}
+
+/** Pause and break publish with no focus checkpoint and an explicitly cleared document set. */
+export function pausedRuntime(overrides: Partial<RuntimeStateV2> = {}): RuntimeStateV2 {
+  return publishedFocusRuntime({
+    session: pausedSession(),
+    enforcementCheckpoint: null,
+    documentCommands: clearCommandMap({
+      operationId: OTHER_OPERATION_ID,
+      runtimeRevision: PUBLISHED_REVISION,
+    }),
+    ...overrides,
+  });
+}
+
+export function breakRuntime(overrides: Partial<RuntimeStateV2> = {}): RuntimeStateV2 {
+  return pausedRuntime({ session: breakSession(), ...overrides });
+}
+
+/**
+ * A migrated active session before standalone recovery: journal-free focus with no checkpoint and
+ * no document commands yet. Its accrued watermark already leads the session's settled focus.
+ */
+export function migratedActiveFocusRuntime(
+  overrides: Partial<RuntimeStateV2> = {},
+): RuntimeStateV2 {
+  return publishedFocusRuntime({
+    session: timedFocusSession({ focusedMs: 30_000 }),
+    accruedFocusMs: 45_000,
+    enforcementCheckpoint: null,
+    epochResetAcks: {},
+    runtimeRevision: 0,
+    documentCommands: {},
+    ...overrides,
+  });
+}
+
+/** A closing transition cleanup whose projected end follows the activation it cleans up. */
+export function transitionPostCleanupClosure(
+  overrides: Partial<PostCleanupClosure> = {},
+): PostCleanupClosure {
+  return postCleanupClosure({ projection: runtimeClosureProjection(), ...overrides });
+}
+
+/**
+ * Runtime around one stored transition. The frozen views own the transition commands, so runtime
+ * keeps none of its own until cleanup replaces them with the exact clear batch.
+ */
+export function transitionRuntime(
+  transition: PendingEnforcementTransition,
+  overrides: Partial<RuntimeStateV2> = {},
+): RuntimeStateV2 {
+  return emptyRuntimeV2({
+    session: transitionSession(transition),
+    accruedFocusMs: 45_000,
+    handledScheduleOccurrences: [handledOccurrence({ reason: 'started' })],
+    basePolicyRevision: transitionBaseRevision(transition),
+    runtimeRevision: transition.runtimeRevision,
+    documentCommands: transition.cleanupProgress?.clearCommands ?? {},
+    pendingEnforcementTransition: transition,
+    ...overrides,
+  });
+}
+
+/** The durable session stays while a prepared closure waits for its commit checkpoint. */
+export function preparedClosureRuntime(overrides: Partial<RuntimeStateV2> = {}): RuntimeStateV2 {
+  return publishedFocusRuntime({
+    session: untilStoppedFocusSession({ focusedMs: 30_000 }),
+    documentCommands: activeCommandMap(
+      { operationId: ACTIVE_OPERATION_ID, runtimeRevision: PUBLISHED_REVISION },
+      ACTIVATION_AT,
+      untilStoppedActiveOverlay(),
+    ),
+    pendingClosure: preparedClosure({ projection: runtimeClosureProjection() }),
+    ...overrides,
+  });
+}
+
+/** Logical closure has committed: no session, the clear batch, and the projected handled records. */
+export function cleanupClosureRuntime(overrides: Partial<RuntimeStateV2> = {}): RuntimeStateV2 {
+  return emptyRuntimeV2({
+    handledScheduleOccurrences: [handledOccurrence()],
+    runtimeRevision: CLEAR_RUNTIME_REVISION,
+    documentCommands: clearCommandMap({
+      operationId: CLEANUP_OPERATION_ID,
+      runtimeRevision: CLEAR_RUNTIME_REVISION,
+    }),
+    pendingClosure: cleanupClosure({ projection: runtimeClosureProjection() }),
+    ...overrides,
+  });
+}
+
+/** The projection a stored commit checkpoint repeats for every runtime field it owns. */
+export function runtimeDomainProjection(runtime: RuntimeStateV2): RuntimeDomainProjectionV2 {
+  return {
+    session: structuredClone(runtime.session),
+    gate: structuredClone(runtime.gate),
+    unlocks: structuredClone(runtime.unlocks),
+    accruedFocusMs: runtime.accruedFocusMs,
+    handledScheduleOccurrences: structuredClone(runtime.handledScheduleOccurrences),
+    enforcementEpoch: runtime.enforcementEpoch,
+    epochResetAcks: structuredClone(runtime.epochResetAcks),
+    basePolicyRevision: runtime.basePolicyRevision,
+    runtimeRevision: runtime.runtimeRevision,
+    documentCommands: structuredClone(runtime.documentCommands),
+    enforcementCheckpoint: structuredClone(runtime.enforcementCheckpoint),
+    pendingEnforcementTransition: structuredClone(runtime.pendingEnforcementTransition),
+    pendingClosure: structuredClone(runtime.pendingClosure),
+  };
+}
+
+export function runtimeCommitCheckpoint(
+  runtime: RuntimeStateV2,
+  overrides: Partial<RuntimeCommitCheckpointV2> = {},
+): RuntimeCommitCheckpointV2 {
+  return {
+    version: 2,
+    checkpointId: `${SESSION_ID}:closure`,
+    projection: runtimeDomainProjection(runtime),
+    bank: bankState(),
+    events: [
+      budgetEarnedEvent(),
+      sessionStartedEvent(),
+      sessionEndedEvent({ at: RUNTIME_CLOSED_AT }),
+    ],
+    syncBank: true,
+    aggregateSets: { [AGGREGATE_KEY]: dailyAgg() },
+    aggregateRemoves: [AGGREGATE_KEY],
+    ...overrides,
+  };
+}
+
+/** A runtime whose stored checkpoint still owes its event, bank, and aggregate replay. */
+export function commitCheckpointRuntime(
+  runtime: RuntimeStateV2 = cleanupClosureRuntime(),
+  overrides: Partial<RuntimeCommitCheckpointV2> = {},
+): RuntimeStateV2 {
+  return { ...runtime, commitCheckpoint: runtimeCommitCheckpoint(runtime, overrides) };
+}
+
+/** The durable session each stage of the machine leaves in runtime. */
+function transitionSession(transition: PendingEnforcementTransition): SessionStateV2 | null {
+  const retained: string = retainedStage(transition);
+  if (transition.stage !== 'cleanup') {
+    return COMMITTED_STAGES.includes(retained)
+      ? committedTransitionSession(transition.kind)
+      : preCommitTransitionSession(transition);
+  }
+  if (transition.postCleanupClosure !== null) {
+    return COMMITTED_STAGES.includes(retained)
+      ? committedTransitionSession(transition.kind)
+      : preCommitTransitionSession(transition);
+  }
+  return transition.cleanupCause === 'start-abandon' ? null : priorPhaseSession(transition);
+}
+
+function committedTransitionSession(kind: TransitionKind): SessionStateV2 {
+  return kind === 'start' ? timedFocusSession() : resumedFocusSession();
+}
+
+function preCommitTransitionSession(
+  transition: PendingEnforcementTransition,
+): SessionStateV2 | null {
+  return transition.kind === 'start' ? null : priorPhaseSession(transition);
+}
+
+function priorPhaseSession(transition: PendingEnforcementTransition): SessionStateV2 {
+  return transition.priorPhase === 'break' ? breakSession() : pausedSession();
+}
+
+/** A cleanup row keeps the fields of the stage it left, which `cleanupFrom` names. */
+function retainedStage(transition: PendingEnforcementTransition): string {
+  return transition.stage === 'cleanup' ? (transition.cleanupFrom ?? '') : transition.stage;
+}
+
+/**
+ * A pre-commit start reserves the next base policy revision, so durable runtime still holds the
+ * previous one until commit. No top-level rule compares the two, and the fixture keeps that shape.
+ */
+function transitionBaseRevision(transition: PendingEnforcementTransition): number {
+  const committed: boolean = COMMITTED_STAGES.includes(retainedStage(transition));
+  return transition.kind === 'start' && !committed
+    ? BASE_POLICY_REVISION - 1
+    : BASE_POLICY_REVISION;
 }

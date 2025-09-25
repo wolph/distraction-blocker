@@ -1,0 +1,566 @@
+import { isDailyDate, parseDailyAgg } from '../core/stats';
+import { exactDataEqual, snapshotExactData } from '../shared/exact-data';
+import { isSessionEventRecordV2 } from '../shared/runtime-validation';
+import type { DailyAgg, HandledScheduleOccurrence, SessionStateV2 } from '../shared/types';
+import {
+  everyDenseEntry,
+  exactRecord,
+  isNonBlankString,
+  isNonNegativeInteger,
+  isRecord,
+  isSafeTimestamp,
+  isUuid,
+  validateDetachedGateState,
+  validateDetachedSessionStateV2,
+  validateDetachedSiteUnlock,
+} from '../shared/v2-domain-intrinsics';
+import {
+  detachedIdentityMap,
+  validateDetachedAggregateRemoves,
+  validateDetachedAggregateSets,
+  validateDetachedBankState,
+  validateDetachedHandledScheduleOccurrence,
+  validateDetachedPendingClosure,
+  validateDetachedRuntimeTabState,
+} from './cleanup-closure-v2-validation';
+import type {
+  DocumentEpochResetAck,
+  EnforcementCheckpoint,
+  FrozenDocumentCommand,
+} from './enforcement-persistence-v2';
+import {
+  validateDetachedDocumentEpochResetAck,
+  validateDetachedEnforcementCheckpoint,
+  validateDetachedFrozenDocumentCommand,
+} from './enforcement-persistence-v2-validation';
+import type { DeferredBlockClaim, RuntimeTabState } from './runtime-leaf-types';
+import type {
+  CleanupProgress,
+  PendingClosure,
+  PendingEnforcementTransition,
+  RuntimeCommitCheckpointV2,
+  RuntimeStateV2,
+} from './runtime-v2-types';
+import { validateDetachedPendingEnforcementTransition } from './transition-v2-validation';
+
+type UnknownRecord = Record<string, unknown>;
+
+/** The validated top-level values the whole-runtime relationships read. */
+interface RuntimeAuthority {
+  session: SessionStateV2 | null;
+  handledScheduleOccurrences: HandledScheduleOccurrence[];
+  enforcementEpoch: string;
+  epochResetAcks: Record<string, DocumentEpochResetAck>;
+  basePolicyRevision: number;
+  runtimeRevision: number;
+  documentCommands: Record<string, FrozenDocumentCommand>;
+  enforcementCheckpoint: EnforcementCheckpoint | null;
+  transition: PendingEnforcementTransition | null;
+  closure: PendingClosure | null;
+  commitCheckpoint: RuntimeCommitCheckpointV2 | null;
+}
+
+/** The deterministic retention cap on stored handled schedule occurrences. */
+const MAX_HANDLED_SCHEDULE_OCCURRENCES: number = 256;
+const RUNTIME_KEYS: readonly string[] = [
+  'runtimeSchemaVersion',
+  'session',
+  'gate',
+  'unlocks',
+  'tabStates',
+  'accruedFocusMs',
+  'attemptDebounce',
+  'deferredBlockClaims',
+  'removedTabTombstones',
+  'scheduleUnavailableNoticeToken',
+  'handledScheduleOccurrences',
+  'enforcementEpoch',
+  'epochResetAcks',
+  'basePolicyRevision',
+  'runtimeRevision',
+  'documentCommands',
+  'enforcementCheckpoint',
+  'pendingEnforcementTransition',
+  'pendingClosure',
+  'date',
+  'todayAgg',
+  'lastPruneDate',
+  'commitCheckpoint',
+];
+/** Every projected key names the identical top-level runtime field. */
+const PROJECTION_KEYS: readonly string[] = [
+  'session',
+  'gate',
+  'unlocks',
+  'accruedFocusMs',
+  'handledScheduleOccurrences',
+  'enforcementEpoch',
+  'epochResetAcks',
+  'basePolicyRevision',
+  'runtimeRevision',
+  'documentCommands',
+  'enforcementCheckpoint',
+  'pendingEnforcementTransition',
+  'pendingClosure',
+];
+const COMMIT_CHECKPOINT_KEYS: readonly string[] = [
+  'version',
+  'checkpointId',
+  'projection',
+  'bank',
+  'events',
+  'syncBank',
+  'aggregateSets',
+  'aggregateRemoves',
+];
+const DEFERRED_CLAIM_KEYS: readonly string[] = [
+  'attemptAt',
+  'kind',
+  'sessionId',
+  'stage',
+  'tabId',
+  'url',
+];
+const DAILY_AGG_REQUIRED_KEYS: readonly string[] = [
+  'date',
+  'focusMs',
+  'sessionsStarted',
+  'sessionsCompleted',
+  'attempts',
+  'attemptsOther',
+  'pausesTaken',
+  'pauseMsSpent',
+  'unlocksTaken',
+  'resisted',
+];
+const DAILY_AGG_OPTIONAL_KEYS: readonly string[] = ['pauseMsEarned', 'unlockMsSpent'];
+/** The stages that hold a durable focus session captured at the transition's own activation. */
+const COMMITTED_TRANSITION_STAGES: ReadonlySet<string> = new Set<string>([
+  'committed-pending-verification',
+  'alarm-ready',
+  'active-verified',
+]);
+
+export function parseRuntimeStateV2(value: unknown): RuntimeStateV2 | null {
+  const snapshot: unknown = snapshotExactData(value)?.value;
+  return validateDetachedRuntimeStateV2(snapshot) ? snapshot : null;
+}
+
+/**
+ * Accepts only already-detached exact plain data from snapshotExactData. Each subtree is validated
+ * by the predicate that owns it, so this adds the top-level leaves plus the relationships only
+ * whole-runtime authority can see.
+ */
+function validateDetachedRuntimeStateV2(value: unknown): value is RuntimeStateV2 {
+  const candidate: UnknownRecord | null = exactRecord(value, RUNTIME_KEYS);
+  if (candidate === null || candidate.runtimeSchemaVersion !== 2) return false;
+  const authority: RuntimeAuthority | null = runtimeAuthority(candidate);
+  if (authority === null) return false;
+  return (
+    resetAcksAgree(authority) &&
+    documentCommandsAgree(authority) &&
+    enforcementCheckpointAgrees(authority) &&
+    transitionAgrees(authority) &&
+    closureAgrees(authority) &&
+    commitCheckpointProjectsRuntime(authority, candidate)
+  );
+}
+
+/** Returns the runtime's own authority, or null when any leaf is out of domain. */
+function runtimeAuthority(candidate: UnknownRecord): RuntimeAuthority | null {
+  const session: unknown = candidate.session;
+  const handledScheduleOccurrences: unknown = candidate.handledScheduleOccurrences;
+  const enforcementEpoch: unknown = candidate.enforcementEpoch;
+  const basePolicyRevision: unknown = candidate.basePolicyRevision;
+  const runtimeRevision: unknown = candidate.runtimeRevision;
+  if (
+    !validateDetachedRuntimeLeaves(candidate) ||
+    !isNullOr(session, validateDetachedSessionStateV2) ||
+    !validateDetachedHandledOccurrenceLog(handledScheduleOccurrences) ||
+    !isUuid(enforcementEpoch) ||
+    !isNonNegativeInteger(basePolicyRevision) ||
+    !isNonNegativeInteger(runtimeRevision)
+  ) {
+    return null;
+  }
+  const epochResetAcks: Record<string, DocumentEpochResetAck> | null = detachedIdentityMap(
+    candidate.epochResetAcks,
+    validateDetachedDocumentEpochResetAck,
+  );
+  const documentCommands: Record<string, FrozenDocumentCommand> | null = detachedIdentityMap(
+    candidate.documentCommands,
+    validateDetachedFrozenDocumentCommand,
+  );
+  const enforcementCheckpoint: unknown = candidate.enforcementCheckpoint;
+  const transition: unknown = candidate.pendingEnforcementTransition;
+  const closure: unknown = candidate.pendingClosure;
+  const commitCheckpoint: unknown = candidate.commitCheckpoint;
+  if (
+    epochResetAcks === null ||
+    documentCommands === null ||
+    !isNullOr(enforcementCheckpoint, validateDetachedEnforcementCheckpoint) ||
+    !isNullOr(transition, validateDetachedPendingEnforcementTransition) ||
+    !isNullOr(closure, validateDetachedPendingClosure) ||
+    !isNullOr(commitCheckpoint, validateDetachedRuntimeCommitCheckpoint)
+  ) {
+    return null;
+  }
+  return {
+    session,
+    handledScheduleOccurrences,
+    enforcementEpoch,
+    epochResetAcks,
+    basePolicyRevision,
+    runtimeRevision,
+    documentCommands,
+    enforcementCheckpoint,
+    transition,
+    closure,
+    commitCheckpoint,
+  };
+}
+
+/** The leaves no later relationship reads, in the order the stored record declares them. */
+function validateDetachedRuntimeLeaves(candidate: UnknownRecord): boolean {
+  const date: unknown = candidate.date;
+  const todayAgg: unknown = candidate.todayAgg;
+  if (
+    !isNullOr(candidate.gate, validateDetachedGateState) ||
+    !everyDenseEntry(candidate.unlocks, validateDetachedSiteUnlock) ||
+    !validateDetachedRuntimeTabStates(candidate.tabStates) ||
+    !isNonNegativeInteger(candidate.accruedFocusMs) ||
+    !validateDetachedAttemptDebounce(candidate.attemptDebounce) ||
+    !validateDetachedDeferredBlockClaims(candidate.deferredBlockClaims) ||
+    !validateDetachedRemovedTabTombstones(candidate.removedTabTombstones) ||
+    !isNullOr(candidate.scheduleUnavailableNoticeToken, isNonBlankString) ||
+    !isDailyDate(date) ||
+    !isNullOr(candidate.lastPruneDate, isDailyDate)
+  ) {
+    return false;
+  }
+  return todayAgg === null || validateDetachedDailyAgg(todayAgg, date);
+}
+
+/**
+ * Accepts only already-detached exact plain data from snapshotExactData. The projection repeats
+ * validated top-level fields, so its exact key set is checked here and its values are checked by
+ * the structural equality every projected field owes the runtime around it.
+ */
+function validateDetachedRuntimeCommitCheckpoint(
+  value: unknown,
+): value is RuntimeCommitCheckpointV2 {
+  const candidate: UnknownRecord | null = exactRecord(value, COMMIT_CHECKPOINT_KEYS);
+  return (
+    candidate !== null &&
+    candidate.version === 2 &&
+    typeof candidate.checkpointId === 'string' &&
+    exactRecord(candidate.projection, PROJECTION_KEYS) !== null &&
+    validateDetachedBankState(candidate.bank) &&
+    everyDenseEntry(candidate.events, isSessionEventRecordV2) &&
+    typeof candidate.syncBank === 'boolean' &&
+    validateDetachedAggregateSets(candidate.aggregateSets) &&
+    validateDetachedAggregateRemoves(candidate.aggregateRemoves)
+  );
+}
+
+/**
+ * Records are unique by token and stay under the deterministic retention cap. Stored order is
+ * whatever the last merge and prune produced, so no ordering rule applies to the log itself.
+ */
+function validateDetachedHandledOccurrenceLog(
+  value: unknown,
+): value is HandledScheduleOccurrence[] {
+  if (
+    !everyDenseEntry(value, validateDetachedHandledScheduleOccurrence) ||
+    value.length > MAX_HANDLED_SCHEDULE_OCCURRENCES
+  ) {
+    return false;
+  }
+  const tokens: Set<string> = new Set<string>(
+    value.map((occurrence: HandledScheduleOccurrence): string => occurrence.token),
+  );
+  return tokens.size === value.length;
+}
+
+/** Every stored acknowledgement is current-epoch authority, and carries no runtime revision. */
+function resetAcksAgree(authority: RuntimeAuthority): boolean {
+  return Object.values(authority.epochResetAcks).every(
+    (ack: DocumentEpochResetAck): boolean => ack.enforcementEpoch === authority.enforcementEpoch,
+  );
+}
+
+/** The current command map is one frozen batch under the current epoch and runtime revision. */
+function documentCommandsAgree(authority: RuntimeAuthority): boolean {
+  return Object.values(authority.documentCommands).every(
+    (command: FrozenDocumentCommand): boolean =>
+      command.enforcementEpoch === authority.enforcementEpoch &&
+      command.runtimeRevision === authority.runtimeRevision,
+  );
+}
+
+/**
+ * A stored focus checkpoint is publishable authority for the durable session it names. It repeats
+ * the runtime epoch and base policy revision, and its acknowledged revisions are never compared
+ * with the current runtime revision. A pending transition is deliberately not publishable, so a
+ * transition carries none, which is also what keeps a recovery-kind checkpoint standalone.
+ */
+function enforcementCheckpointAgrees(authority: RuntimeAuthority): boolean {
+  const checkpoint: EnforcementCheckpoint | null = authority.enforcementCheckpoint;
+  const session: SessionStateV2 | null = authority.session;
+  if (checkpoint === null) return true;
+  return (
+    authority.transition === null &&
+    session !== null &&
+    session.phase === 'focus' &&
+    checkpoint.sessionId === session.sessionId &&
+    checkpoint.enforcementEpoch === authority.enforcementEpoch &&
+    checkpoint.basePolicyRevision === authority.basePolicyRevision
+  );
+}
+
+/** A stored transition is the current runtime authority and never coexists with a closure. */
+function transitionAgrees(authority: RuntimeAuthority): boolean {
+  const transition: PendingEnforcementTransition | null = authority.transition;
+  if (transition === null) return true;
+  const progress: CleanupProgress | null = transition.cleanupProgress;
+  if (
+    authority.closure !== null ||
+    transition.enforcementEpoch !== authority.enforcementEpoch ||
+    transition.runtimeRevision !== authority.runtimeRevision ||
+    (progress !== null && !exactDataEqual(authority.documentCommands, progress.clearCommands))
+  ) {
+    return false;
+  }
+  return transition.stage === 'cleanup'
+    ? cleanupTransitionSessionAgrees(transition, authority.session)
+    : transitionStageSessionAgrees(transition, authority.session);
+}
+
+/**
+ * A pre-commit start has no session yet, a pre-commit resume still holds its saved pause or break,
+ * and every committed stage holds the focus session that its captured activation started.
+ */
+function transitionStageSessionAgrees(
+  transition: PendingEnforcementTransition,
+  session: SessionStateV2 | null,
+): boolean {
+  if (!COMMITTED_TRANSITION_STAGES.has(transition.stage)) {
+    return transition.kind === 'start' ? session === null : retainsPriorPhase(transition, session);
+  }
+  if (
+    session === null ||
+    session.phase !== 'focus' ||
+    session.sessionId !== transition.sessionId ||
+    session.phaseStartedAt !== transition.activationAt
+  ) {
+    return false;
+  }
+  return transition.kind === 'resume' || session.startedAt === transition.activationAt;
+}
+
+/**
+ * Cleanup keeps the session its cause implies. Abandonment leaves none, restoration keeps the exact
+ * saved phase, and a closing cause keeps the matching durable session frozen at the projected
+ * logical end until the one-checkpoint handoff installs the closure.
+ */
+function cleanupTransitionSessionAgrees(
+  transition: PendingEnforcementTransition,
+  session: SessionStateV2 | null,
+): boolean {
+  const closure: PendingEnforcementTransition['postCleanupClosure'] = transition.postCleanupClosure;
+  if (closure === null) {
+    return transition.cleanupCause === 'start-abandon'
+      ? session === null
+      : retainsPriorPhase(transition, session);
+  }
+  return (
+    session !== null &&
+    session.sessionId === transition.sessionId &&
+    session.phaseStartedAt <= closure.projection.endedAt
+  );
+}
+
+function retainsPriorPhase(
+  transition: PendingEnforcementTransition,
+  session: SessionStateV2 | null,
+): boolean {
+  return (
+    session !== null &&
+    session.sessionId === transition.sessionId &&
+    session.phase === transition.priorPhase
+  );
+}
+
+/**
+ * A prepared closure still owns its durable session, because logical closure has not committed. A
+ * cleanup closure has committed it away and owns the current clear batch and handled records.
+ */
+function closureAgrees(authority: RuntimeAuthority): boolean {
+  const closure: PendingClosure | null = authority.closure;
+  if (closure === null) return true;
+  const sessionId: string = closure.projection.sessionId;
+  if (closure.stage === 'prepared') return preparedClosureSessionAgrees(authority, sessionId);
+  const progress: CleanupProgress = closure.cleanupProgress;
+  return (
+    authority.session === null &&
+    authority.runtimeRevision === progress.clearRuntimeRevision &&
+    exactDataEqual(authority.documentCommands, progress.clearCommands) &&
+    closureClearCommandsAgree(authority, progress, sessionId) &&
+    exactDataEqual(authority.handledScheduleOccurrences, closure.projection.handledOccurrences)
+  );
+}
+
+/** The prior session stays durable unless a stored commit checkpoint already projects it gone. */
+function preparedClosureSessionAgrees(authority: RuntimeAuthority, sessionId: string): boolean {
+  const session: SessionStateV2 | null = authority.session;
+  if (session !== null) return session.sessionId === sessionId;
+  return authority.commitCheckpoint?.projection.session === null;
+}
+
+/**
+ * Every closure clear command is current runtime authority for the closed durable session. The
+ * null reserved identity restates what a durable session ID already forces on a canonical command.
+ */
+function closureClearCommandsAgree(
+  authority: RuntimeAuthority,
+  progress: CleanupProgress,
+  sessionId: string,
+): boolean {
+  return Object.values(progress.clearCommands).every(
+    (command: FrozenDocumentCommand): boolean =>
+      command.sessionId === sessionId &&
+      command.reservedSessionId === null &&
+      command.enforcementEpoch === authority.enforcementEpoch &&
+      command.basePolicyRevision === authority.basePolicyRevision &&
+      command.runtimeRevision === progress.clearRuntimeRevision &&
+      command.operationId === progress.cleanupOperationId,
+  );
+}
+
+/**
+ * The runtime stored around a v2 commit checkpoint equals its projection for every projected field.
+ * Set and remove collections carry no invented disjointness rule.
+ */
+function commitCheckpointProjectsRuntime(
+  authority: RuntimeAuthority,
+  candidate: UnknownRecord,
+): boolean {
+  const checkpoint: RuntimeCommitCheckpointV2 | null = authority.commitCheckpoint;
+  if (checkpoint === null) return true;
+  return Object.entries(checkpoint.projection).every(
+    ([key, projected]: [string, unknown]): boolean => exactDataEqual(projected, candidate[key]),
+  );
+}
+
+/** Accepts only already-detached exact plain data keyed by canonical decimal tab IDs. */
+function validateDetachedRuntimeTabStates(
+  value: unknown,
+): value is Record<number, RuntimeTabState> {
+  const entries: Array<[number, unknown]> | null = detachedTabIdEntries(value);
+  if (entries === null) return false;
+  return entries.every(([, state]: [number, unknown]): boolean =>
+    validateDetachedRuntimeTabState(state),
+  );
+}
+
+/** A tombstone is the marker itself: the tab ID key and the exact literal `true`. */
+function validateDetachedRemovedTabTombstones(value: unknown): value is Record<number, true> {
+  const entries: Array<[number, unknown]> | null = detachedTabIdEntries(value);
+  if (entries === null) return false;
+  return entries.every(([, marker]: [number, unknown]): boolean => marker === true);
+}
+
+/** Debounce marks are wall-clock instants under the attempt keys the engine owns. */
+function validateDetachedAttemptDebounce(value: unknown): value is Record<string, number> {
+  if (!isRecord(value)) return false;
+  const keys: string[] | null = detachedRecordKeys(value);
+  if (keys === null) return false;
+  return keys.every((key: string): boolean => isSafeTimestamp(value[key]));
+}
+
+/** Accepts only already-detached exact plain data from snapshotExactData. */
+function validateDetachedDeferredBlockClaims(
+  value: unknown,
+): value is Record<string, DeferredBlockClaim> {
+  if (!isRecord(value)) return false;
+  const keys: string[] | null = detachedRecordKeys(value);
+  if (keys === null) return false;
+  return keys.every((key: string): boolean => validateDetachedDeferredBlockClaim(value[key]));
+}
+
+/**
+ * Accepts only already-detached exact plain data from snapshotExactData. A stopped claim names the
+ * navigation document it stopped, so it is the only claim that carries the optional document ID.
+ */
+function validateDetachedDeferredBlockClaim(value: unknown): value is DeferredBlockClaim {
+  if (!isRecord(value)) return false;
+  const keys: string[] | null = detachedRecordKeys(value);
+  if (keys === null || !hasDeferredClaimKeys(keys)) return false;
+  const documentId: boolean = keys.includes('documentId');
+  if (
+    !isSafeTimestamp(value.attemptAt) ||
+    (value.kind !== 'navigation' && value.kind !== 'existing') ||
+    !isNonBlankString(value.sessionId) ||
+    (value.stage !== 'attempt' && value.stage !== 'stopped') ||
+    !isNonNegativeInteger(value.tabId) ||
+    !isNonBlankString(value.url) ||
+    (documentId && !isNonBlankString(value.documentId))
+  ) {
+    return false;
+  }
+  return value.stage !== 'stopped' || (value.kind === 'navigation' && documentId);
+}
+
+function hasDeferredClaimKeys(keys: readonly string[]): boolean {
+  return (
+    DEFERRED_CLAIM_KEYS.every((key: string): boolean => keys.includes(key)) &&
+    keys.every((key: string): boolean => DEFERRED_CLAIM_KEYS.includes(key) || key === 'documentId')
+  );
+}
+
+/**
+ * Accepts only already-detached exact plain data from snapshotExactData. The stored aggregate keeps
+ * the existing daily domain and gains the exact-key rejection every v2 schema requires.
+ */
+function validateDetachedDailyAgg(value: unknown, date: string): value is DailyAgg {
+  const keys: string[] | null = detachedRecordKeys(value);
+  if (keys === null) return false;
+  const allowed: boolean = keys.every(
+    (key: string): boolean =>
+      DAILY_AGG_REQUIRED_KEYS.includes(key) || DAILY_AGG_OPTIONAL_KEYS.includes(key),
+  );
+  return (
+    allowed &&
+    DAILY_AGG_REQUIRED_KEYS.every((key: string): boolean => keys.includes(key)) &&
+    parseDailyAgg(value, date) !== null
+  );
+}
+
+/** Returns the record's own string keys, or null for a symbol key or a non-record container. */
+function detachedRecordKeys(value: unknown): string[] | null {
+  if (!isRecord(value)) return null;
+  const keys: PropertyKey[] = Reflect.ownKeys(value);
+  if (keys.some((key: PropertyKey): boolean => typeof key !== 'string')) return null;
+  return keys as string[];
+}
+
+/** Tab-keyed runtime maps use the canonical decimal tab ID, so no other spelling is accepted. */
+function detachedTabIdEntries(value: unknown): Array<[number, unknown]> | null {
+  if (!isRecord(value)) return null;
+  const keys: string[] | null = detachedRecordKeys(value);
+  if (keys === null) return null;
+  const entries: Array<[number, unknown]> = [];
+  for (const key of keys) {
+    const tabId: number = Number(key);
+    if (!isNonNegativeInteger(tabId) || String(tabId) !== key) return null;
+    entries.push([tabId, value[key]]);
+  }
+  return entries;
+}
+
+function isNullOr<T>(
+  value: unknown,
+  validate: (candidate: unknown) => candidate is T,
+): value is T | null {
+  return value === null || validate(value);
+}
