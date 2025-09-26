@@ -987,3 +987,44 @@ body {
 .gate-confirm:disabled {
   cursor: default;
 }
+
+.clock-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 2px;
+}
+
+.clock-stack__row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.clock-stack__value {
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.clock-stack__row--secondary .clock-stack__value {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+.clock-stack__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+.clock-stack__note {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--focus-text);
+}

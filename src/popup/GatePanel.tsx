@@ -1,11 +1,18 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useRef, useState } from 'preact/hooks';
-import type { Ack } from '../shared/messages';
+import type { Ack, CommandResponseV2, SessionCommandResultCodeV2 } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import { ackError } from '../shared/runtime-validation';
 import type { GateKind, GateState } from '../shared/types';
 
-type GateRequest = { type: 'abandonGate' } | { type: 'confirmGate'; typedPhrase: string | null };
+export type GateRequest =
+  | { type: 'abandonGate' }
+  | { type: 'confirmGate'; typedPhrase: string | null };
+
+/** Both transports answer this panel: v1 with an Ack, v2 with a coded command result. */
+export type GateCommandSender = (
+  request: GateRequest,
+) => Promise<Ack | CommandResponseV2<SessionCommandResultCodeV2>>;
 
 const CONFIRM_LABELS: Record<GateKind, string> = {
   pause: 'Take the pause',
@@ -17,15 +24,20 @@ const CONFIRM_LABELS: Record<GateKind, string> = {
  * Deliberation gate. The worker owns the timing: this panel only renders
  * gate state and refuses to enable confirm before readyAt.
  */
+export interface GatePanelProps {
+  gate: GateState;
+  now: number;
+  intention: string;
+  /** v2 surfaces pass the v2 session channel. v1 callers keep the live sendRequest. */
+  sendCommand?: GateCommandSender;
+}
+
 export function GatePanel({
   gate,
   now,
   intention,
-}: {
-  gate: GateState;
-  now: number;
-  intention: string;
-}): VNode {
+  sendCommand = sendRequest,
+}: GatePanelProps): VNode {
   const [typed, setTyped]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
   const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
     string | null
@@ -36,7 +48,8 @@ export function GatePanel({
 
   const totalS: number = Math.max(1, Math.round((gate.readyAt - gate.openedAt) / 1000));
   const elapsedS: number = Math.min(totalS, Math.max(0, Math.floor((now - gate.openedAt) / 1000)));
-  const ready: boolean = now >= gate.readyAt;
+  /** A gate whose ready moment precedes its opening is not a deliberation window. */
+  const ready: boolean = gate.readyAt >= gate.openedAt && now >= gate.readyAt;
   const phraseOk: boolean = gate.requiredPhrase === null || typed === gate.requiredPhrase;
 
   const requestGateUpdate: (request: GateRequest) => Promise<void> = async (
@@ -47,8 +60,12 @@ export function GatePanel({
     setError(null);
     setPending(true);
     try {
-      const ack: Ack = await sendRequest(request);
-      const responseError: string | null = ackError(ack, 'Could not update the gate. Try again.');
+      const response: Ack | CommandResponseV2<SessionCommandResultCodeV2> =
+        await sendCommand(request);
+      const responseError: string | null = ackError(
+        response,
+        'Could not update the gate. Try again.',
+      );
       if (responseError !== null) setError(responseError);
     } catch {
       setError('Could not update the gate. Try again.');
