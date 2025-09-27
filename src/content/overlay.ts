@@ -6,13 +6,13 @@ import { applyTheme } from '../shared/theme';
 import { formatClock } from '../shared/time';
 import type { GateKind, GateState, SessionSnapshot, Verdict } from '../shared/types';
 import { verdictLabel } from '../shared/verdict-label';
+import { OVERLAY_STYLES, OVERLAY_TICK_MS } from './overlay-styles';
 
 /** The block overlay. One closed shadow root, rendered from the worker's
  * SessionSnapshot. This module displays state, it never decides it. */
 
 const RING_RADIUS: number = 28;
-const RING_CIRCUMFERENCE: number = 2 * Math.PI * RING_RADIUS;
-const TICK_MS: number = 250;
+export const RING_CIRCUMFERENCE: number = 2 * Math.PI * RING_RADIUS;
 const TRANSPORT_ERROR: string = 'Could not reach Focus Lock. Try again.';
 const SCROLL_KEYS: ReadonlySet<string> = new Set<string>([
   ' ',
@@ -51,10 +51,13 @@ interface GateRefs {
   phrase: HTMLInputElement | null;
 }
 
-interface Mounted {
+export interface OverlayHostElements {
   host: HTMLElement;
   root: ShadowRoot;
   container: HTMLElement;
+}
+
+interface Mounted extends OverlayHostElements {
   timer: number;
   verdict: Verdict;
   snapshot: SessionSnapshot;
@@ -78,7 +81,7 @@ const PADLOCK_PATH: string =
   '2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 1 1 6 0v3H9zm3 4a1.5 1.5 ' +
   '0 0 1 .75 2.8V19a.75.75 0 0 1-1.5 0v-2.2A1.5 1.5 0 0 1 12 14z';
 
-function padlockSvg(): SVGSVGElement {
+export function padlockSvg(): SVGSVGElement {
   const svg: SVGSVGElement = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('class', 'padlock');
   svg.setAttribute('viewBox', '0 0 24 24');
@@ -91,161 +94,6 @@ function padlockSvg(): SVGSVGElement {
   return svg;
 }
 
-const OVERLAY_CSS: string = `
-:host,
-:host([data-theme="light"]) {
-  color-scheme: light;
-  --overlay-bg: rgba(248, 250, 252, 0.98);
-  --overlay-opaque: #f8fafc;
-  --overlay-text: #0f172a;
-  --overlay-muted: #475569;
-  --overlay-subtle: #64748b;
-  --overlay-intention: #1e293b;
-  --overlay-meter: rgba(100, 116, 139, 0.25);
-  --overlay-pill: rgba(100, 116, 139, 0.14);
-  --overlay-pill-hover: rgba(100, 116, 139, 0.22);
-  --overlay-bank: #166534;
-  --overlay-input-bg: rgba(255, 255, 255, 0.92);
-  --overlay-input-border: rgba(71, 85, 105, 0.4);
-  --overlay-error-border: #d97706;
-  --overlay-error-bg: #fffbeb;
-  --overlay-error-text: #78350f;
-}
-@media (prefers-color-scheme: dark) {
-  :host([data-theme="auto"]) {
-    color-scheme: dark;
-    --overlay-bg: rgba(15, 23, 42, 0.97);
-    --overlay-opaque: #0f172a;
-    --overlay-text: #f8fafc;
-    --overlay-muted: #94a3b8;
-    --overlay-subtle: #94a3b8;
-    --overlay-intention: #e2e8f0;
-    --overlay-meter: rgba(148, 163, 184, 0.25);
-    --overlay-pill: rgba(148, 163, 184, 0.18);
-    --overlay-pill-hover: rgba(148, 163, 184, 0.3);
-    --overlay-bank: #86efac;
-    --overlay-input-bg: rgba(15, 23, 42, 0.6);
-    --overlay-input-border: rgba(148, 163, 184, 0.4);
-    --overlay-error-border: rgba(251, 191, 36, 0.45);
-    --overlay-error-bg: rgba(120, 53, 15, 0.35);
-    --overlay-error-text: #fde68a;
-  }
-}
-:host([data-theme="dark"]) {
-  color-scheme: dark;
-  --overlay-bg: rgba(15, 23, 42, 0.97);
-  --overlay-opaque: #0f172a;
-  --overlay-text: #f8fafc;
-  --overlay-muted: #94a3b8;
-  --overlay-subtle: #94a3b8;
-  --overlay-intention: #e2e8f0;
-  --overlay-meter: rgba(148, 163, 184, 0.25);
-  --overlay-pill: rgba(148, 163, 184, 0.18);
-  --overlay-pill-hover: rgba(148, 163, 184, 0.3);
-  --overlay-bank: #86efac;
-  --overlay-input-bg: rgba(15, 23, 42, 0.6);
-  --overlay-input-border: rgba(148, 163, 184, 0.4);
-  --overlay-error-border: rgba(251, 191, 36, 0.45);
-  --overlay-error-bg: rgba(120, 53, 15, 0.35);
-  --overlay-error-text: #fde68a;
-}
-* { margin: 0; padding: 0; box-sizing: border-box; }
-.backdrop {
-  position: fixed; inset: 0;
-  background: var(--overlay-bg);
-  color: var(--overlay-text);
-  font-family: system-ui, -apple-system, sans-serif;
-  display: flex; align-items: center; justify-content: center;
-  text-align: center;
-}
-.backdrop:focus { outline: none; }
-.backdrop.opaque { background: var(--overlay-opaque); }
-.notloaded { font-size: 0.9rem; color: var(--overlay-muted); }
-.panel {
-  max-width: 40rem; padding: 2rem;
-  display: flex; flex-direction: column; align-items: center; gap: 0.9rem;
-}
-.padlock { width: 3.5rem; height: 3.5rem; }
-.until { font-size: 1rem; color: var(--overlay-muted); }
-.clock {
-  font-size: 4.5rem; font-weight: 700; line-height: 1;
-  font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
-  animation: pulse 2.4s ease-in-out infinite;
-}
-.intention { font-size: 1.5rem; font-weight: 600; color: var(--overlay-intention); overflow-wrap: anywhere; }
-.attempts { font-size: 0.9rem; color: var(--overlay-subtle); }
-.provenance {
-  max-width: 100%; font-size: 0.85rem; color: var(--overlay-subtle); overflow-wrap: anywhere;
-}
-.meter {
-  width: 16rem; height: 0.5rem; border-radius: 999px;
-  background: var(--overlay-meter); overflow: hidden;
-}
-.meter-fill {
-  height: 100%; border-radius: 999px; background: #22c55e;
-  transition: width ${TICK_MS}ms linear;
-}
-.bank { font-size: 0.9rem; color: var(--overlay-bank); font-variant-numeric: tabular-nums; }
-button { font: inherit; cursor: pointer; border: none; }
-button:disabled { cursor: default; }
-.buttons {
-  display: flex; flex-direction: column; gap: 0.6rem; align-items: center; margin-top: 0.4rem;
-}
-.pill {
-  border-radius: 999px; padding: 0.6rem 1.4rem;
-  background: var(--overlay-pill); color: var(--overlay-text); font-size: 1rem;
-}
-.pill:hover:not(:disabled) { background: var(--overlay-pill-hover); }
-.pill:disabled { opacity: 0.55; }
-.ready { display: block; font-size: 0.75rem; color: var(--overlay-muted); }
-.ready[hidden] { display: none; }
-.linkish {
-  background: none; color: var(--overlay-muted); text-decoration: underline;
-  font-size: 0.9rem; padding: 0.4rem;
-}
-.gate { display: flex; flex-direction: column; align-items: center; gap: 0.9rem; margin-top: 0.4rem; }
-.gate-title { font-size: 1.1rem; color: var(--overlay-intention); }
-.gate-said { font-size: 1rem; color: var(--overlay-muted); }
-.ring-wrap { position: relative; width: 4rem; height: 4rem; }
-.ring { transform: rotate(-90deg); }
-.ring-track { fill: none; stroke: var(--overlay-meter); stroke-width: 4; }
-.ring-fill {
-  fill: none; stroke: #22c55e; stroke-width: 4; stroke-linecap: round;
-  transition: stroke-dashoffset ${TICK_MS}ms linear;
-}
-.ring-count {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  font-size: 1.2rem; font-variant-numeric: tabular-nums; color: var(--overlay-intention);
-}
-.primary {
-  background: #22c55e; color: #052e16; font-weight: 700;
-  font-size: 1.25rem; padding: 1rem 2.2rem; border-radius: 999px;
-}
-.primary:hover:not(:disabled) { background: #4ade80; }
-.primary:disabled { cursor: default; opacity: 0.55; }
-.phrase-label { font-size: 0.9rem; color: var(--overlay-muted); }
-.phrase-text { font-size: 0.95rem; color: var(--overlay-intention); font-style: italic; overflow-wrap: anywhere; }
-.phrase {
-  font: inherit; padding: 0.5rem 0.8rem; border-radius: 0.5rem;
-  border: 1px solid var(--overlay-input-border);
-  background: var(--overlay-input-bg); color: var(--overlay-text); width: 22rem; max-width: 90vw;
-}
-.action-error {
-  max-width: 28rem;
-  padding: 0.65rem 0.9rem;
-  border: 1px solid var(--overlay-error-border);
-  border-radius: 0.5rem;
-  background: var(--overlay-error-bg);
-  color: var(--overlay-error-text);
-  font-size: 0.9rem;
-}
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.82; } }
-@media (prefers-reduced-motion: reduce) {
-  .clock { animation: none; }
-  .meter-fill, .ring-fill { transition: none; }
-}
-`;
-
 export function showOverlay(verdict: Verdict, snapshot: SessionSnapshot, stopped?: boolean): void {
   if (mounted === null) mounted = mount();
   applyTheme(mounted.host, snapshot.theme);
@@ -255,25 +103,23 @@ export function showOverlay(verdict: Verdict, snapshot: SessionSnapshot, stopped
   mounted.stopped = stopped ?? false;
   render(mounted);
   if (mounted.actionPending) disableAllActions(mounted);
-  focusInitial(mounted);
+  focusInitialControl(mounted.root, mounted.container);
 }
 
 export function hideOverlay(_snapshot: SessionSnapshot): void {
   if (mounted === null) return;
   window.clearInterval(mounted.timer);
-  mounted.host.remove();
+  unmountOverlayHost(mounted.host);
   mounted = null;
-  if (import.meta.env.MODE === 'test') {
-    (globalThis as { __focusLockShadow?: ShadowRoot }).__focusLockShadow = undefined;
-  }
 }
 
-function mount(): Mounted {
+/** The shared closed-shadow host: overlay styles, dialog backdrop, and interaction trap. */
+export function mountOverlayHost(): OverlayHostElements {
   const host: HTMLElement = document.createElement('focus-lock-overlay');
   applyHostStyle(host);
   const root: ShadowRoot = host.attachShadow({ mode: 'closed' });
   const style: HTMLStyleElement = document.createElement('style');
-  style.textContent = OVERLAY_CSS;
+  style.textContent = OVERLAY_STYLES;
   const container: HTMLElement = document.createElement('div');
   container.className = 'backdrop';
   container.setAttribute('role', 'dialog');
@@ -283,15 +129,27 @@ function mount(): Mounted {
   root.append(style, container);
   trapInteraction(host, root);
   document.documentElement.appendChild(host);
-  const timer: number = window.setInterval(tick, TICK_MS);
   if (import.meta.env.MODE === 'test') {
     (globalThis as { __focusLockShadow?: ShadowRoot }).__focusLockShadow = root;
   }
+  return { host, root, container };
+}
+
+/** Removes a mounted host and drops the closed-root handle the tests read. */
+export function unmountOverlayHost(host: HTMLElement): void {
+  host.remove();
+  if (import.meta.env.MODE === 'test') {
+    (globalThis as { __focusLockShadow?: ShadowRoot }).__focusLockShadow = undefined;
+  }
+}
+
+function mount(): Mounted {
+  const { host, root, container }: OverlayHostElements = mountOverlayHost();
   return {
     host,
     root,
     container,
-    timer,
+    timer: window.setInterval(tick, OVERLAY_TICK_MS),
     verdict: { blocked: true, reason: 'default', categoryId: null, matchedPattern: null },
     snapshot: null as unknown as SessionSnapshot, // overwritten by showOverlay before any render
     stopped: false,
@@ -368,12 +226,13 @@ function shouldPreventKeyboardScroll(event: KeyboardEvent): boolean {
   return !(space && effectiveTarget.closest('button') !== null);
 }
 
-function focusInitial(m: Mounted): void {
-  if (m.root.activeElement !== null) return;
-  const target: HTMLElement | null = m.root.querySelector<HTMLElement>(
+/** Focuses the first enabled control, or the dialog itself when a page has none. */
+export function focusInitialControl(root: ShadowRoot, fallback: HTMLElement): void {
+  if (root.activeElement !== null) return;
+  const target: HTMLElement | null = root.querySelector<HTMLElement>(
     'button:not([disabled]):not([hidden])',
   );
-  (target ?? m.container).focus();
+  (target ?? fallback).focus();
 }
 
 function render(m: Mounted): void {
@@ -587,7 +446,12 @@ function buildGate(m: Mounted, gate: GateState, snap: SessionSnapshot, now: numb
   return wrap;
 }
 
-function buildRing(): { waitWrap: HTMLElement; ringFill: SVGCircleElement; count: HTMLElement } {
+/** The gate countdown ring. Both renderers read the same stroke geometry from the shared CSS. */
+export function buildRing(): {
+  waitWrap: HTMLElement;
+  ringFill: SVGCircleElement;
+  count: HTMLElement;
+} {
   const waitWrap: HTMLElement = document.createElement('div');
   waitWrap.className = 'ring-wrap';
   const svg: SVGSVGElement = document.createElementNS(SVG_NS, 'svg');
