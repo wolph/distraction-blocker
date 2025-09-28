@@ -1125,15 +1125,17 @@ export function publishedFocusRuntime(overrides: Partial<RuntimeStateV2> = {}): 
   });
 }
 
+/** The clear batch a paused or break runtime keeps until cleanup or closure replaces it. */
+export function retainedClearCommandMap(): Record<string, FrozenDocumentCommand> {
+  return clearCommandMap({ operationId: OTHER_OPERATION_ID, runtimeRevision: PUBLISHED_REVISION });
+}
+
 /** Pause and break publish with no focus checkpoint and an explicitly cleared document set. */
 export function pausedRuntime(overrides: Partial<RuntimeStateV2> = {}): RuntimeStateV2 {
   return publishedFocusRuntime({
     session: pausedSession(),
     enforcementCheckpoint: null,
-    documentCommands: clearCommandMap({
-      operationId: OTHER_OPERATION_ID,
-      runtimeRevision: PUBLISHED_REVISION,
-    }),
+    documentCommands: retainedClearCommandMap(),
     ...overrides,
   });
 }
@@ -1168,8 +1170,9 @@ export function transitionPostCleanupClosure(
 }
 
 /**
- * Runtime around one stored transition. The frozen views own the transition commands, so runtime
- * keeps none of its own until cleanup replaces them with the exact clear batch.
+ * Runtime around one stored transition. The frozen views own the transition commands, so a
+ * transition never rewrites the runtime map: a resume keeps the batch its paused or break runtime
+ * published at the older revision, and only cleanup replaces it with the exact clear batch.
  */
 export function transitionRuntime(
   transition: PendingEnforcementTransition,
@@ -1181,7 +1184,7 @@ export function transitionRuntime(
     handledScheduleOccurrences: [handledOccurrence({ reason: 'started' })],
     basePolicyRevision: transitionBaseRevision(transition),
     runtimeRevision: transition.runtimeRevision,
-    documentCommands: transition.cleanupProgress?.clearCommands ?? {},
+    documentCommands: transitionCommandMap(transition),
     pendingEnforcementTransition: transition,
     ...overrides,
   });
@@ -1261,6 +1264,17 @@ export function commitCheckpointRuntime(
   overrides: Partial<RuntimeCommitCheckpointV2> = {},
 ): RuntimeStateV2 {
   return { ...runtime, commitCheckpoint: runtimeCommitCheckpoint(runtime, overrides) };
+}
+
+/**
+ * A resume begins from a durable pause or break, so it inherits that runtime's retained clear batch
+ * at its own older revision. A start begins from an idle runtime, which owns no commands.
+ */
+function transitionCommandMap(
+  transition: PendingEnforcementTransition,
+): Record<string, FrozenDocumentCommand> {
+  if (transition.cleanupProgress !== null) return transition.cleanupProgress.clearCommands;
+  return transition.kind === 'resume' ? retainedClearCommandMap() : {};
 }
 
 /** The durable session each stage of the machine leaves in runtime. */

@@ -1,7 +1,7 @@
-import { isDailyDate, parseDailyAgg } from '../core/stats';
+import { isDailyDate } from '../core/stats';
 import { exactDataEqual, snapshotExactData } from '../shared/exact-data';
 import { isSessionEventRecordV2 } from '../shared/runtime-validation';
-import type { DailyAgg, HandledScheduleOccurrence, SessionStateV2 } from '../shared/types';
+import type { HandledScheduleOccurrence, SessionStateV2 } from '../shared/types';
 import {
   everyDenseEntry,
   exactRecord,
@@ -19,6 +19,7 @@ import {
   validateDetachedAggregateRemoves,
   validateDetachedAggregateSets,
   validateDetachedBankState,
+  validateDetachedDailyAgg,
   validateDetachedHandledScheduleOccurrence,
   validateDetachedPendingClosure,
   validateDetachedRuntimeTabState,
@@ -121,19 +122,6 @@ const DEFERRED_CLAIM_KEYS: readonly string[] = [
   'tabId',
   'url',
 ];
-const DAILY_AGG_REQUIRED_KEYS: readonly string[] = [
-  'date',
-  'focusMs',
-  'sessionsStarted',
-  'sessionsCompleted',
-  'attempts',
-  'attemptsOther',
-  'pausesTaken',
-  'pauseMsSpent',
-  'unlocksTaken',
-  'resisted',
-];
-const DAILY_AGG_OPTIONAL_KEYS: readonly string[] = ['pauseMsEarned', 'unlockMsSpent'];
 /** The stages that hold a durable focus session captured at the transition's own activation. */
 const COMMITTED_TRANSITION_STAGES: ReadonlySet<string> = new Set<string>([
   'committed-pending-verification',
@@ -289,12 +277,19 @@ function resetAcksAgree(authority: RuntimeAuthority): boolean {
   );
 }
 
-/** The current command map is one frozen batch under the current epoch and runtime revision. */
+/**
+ * Every stored command carries the current epoch. The revision equality holds only while the map is
+ * the current authority. A pre-commit or committed transition freezes its own replacement view and
+ * raises the top revision to it without touching the map, so the retained batch legitimately keeps
+ * the older revision until cleanup entry or closure commit replaces it.
+ */
 function documentCommandsAgree(authority: RuntimeAuthority): boolean {
+  const transition: PendingEnforcementTransition | null = authority.transition;
+  const currentAuthority: boolean = transition === null || transition.stage === 'cleanup';
   return Object.values(authority.documentCommands).every(
     (command: FrozenDocumentCommand): boolean =>
       command.enforcementEpoch === authority.enforcementEpoch &&
-      command.runtimeRevision === authority.runtimeRevision,
+      (!currentAuthority || command.runtimeRevision === authority.runtimeRevision),
   );
 }
 
@@ -515,24 +510,6 @@ function hasDeferredClaimKeys(keys: readonly string[]): boolean {
   return (
     DEFERRED_CLAIM_KEYS.every((key: string): boolean => keys.includes(key)) &&
     keys.every((key: string): boolean => DEFERRED_CLAIM_KEYS.includes(key) || key === 'documentId')
-  );
-}
-
-/**
- * Accepts only already-detached exact plain data from snapshotExactData. The stored aggregate keeps
- * the existing daily domain and gains the exact-key rejection every v2 schema requires.
- */
-function validateDetachedDailyAgg(value: unknown, date: string): value is DailyAgg {
-  const keys: string[] | null = detachedRecordKeys(value);
-  if (keys === null) return false;
-  const allowed: boolean = keys.every(
-    (key: string): boolean =>
-      DAILY_AGG_REQUIRED_KEYS.includes(key) || DAILY_AGG_OPTIONAL_KEYS.includes(key),
-  );
-  return (
-    allowed &&
-    DAILY_AGG_REQUIRED_KEYS.every((key: string): boolean => keys.includes(key)) &&
-    parseDailyAgg(value, date) !== null
   );
 }
 

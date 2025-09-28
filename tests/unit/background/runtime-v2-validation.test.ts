@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { FrozenDocumentCommand } from '../../../src/background/enforcement-persistence-v2';
 import type { DeferredBlockClaim } from '../../../src/background/runtime-leaf-types';
 import type {
   PendingEnforcementTransition,
@@ -52,6 +53,7 @@ import {
   publishedFocusRuntime,
   RUNTIME_CLOSED_AT,
   resumedFocusSession,
+  retainedClearCommandMap,
   runtimeClosureProjection,
   runtimeCommitCheckpoint,
   runtimeTabState,
@@ -493,6 +495,29 @@ describe('background runtime epoch, revision, and checkpoint relationships', ():
       }),
     ]);
     expectAccepted([emptyRuntimeV2({ runtimeRevision: 12, documentCommands: {} })]);
+  });
+
+  it('accepts a resume transition over the retained batch at its older revision', (): void => {
+    const runtime: RuntimeStateV2 = transitionRuntime(pendingTransition('resume', 'prepared'));
+    const commands: FrozenDocumentCommand[] = Object.values(runtime.documentCommands);
+
+    expect(commands.length).toBeGreaterThan(0);
+    for (const command of commands) {
+      expect(command.runtimeRevision).toBeLessThan(runtime.runtimeRevision);
+    }
+    expectAccepted([runtime, transitionRuntime(pendingTransition('resume', 'active-verified'))]);
+    expectRejected([
+      transitionRuntime(pendingTransition('resume', 'prepared'), {
+        documentCommands: clearCommandMap({
+          operationId: OTHER_OPERATION_ID,
+          runtimeRevision: PUBLISHED_REVISION,
+          enforcementEpoch: OTHER_EPOCH_ID,
+        }),
+      }),
+      cleanupTransitionRuntime('resume', 'prepared', 'resume-restore', {
+        documentCommands: retainedClearCommandMap(),
+      }),
+    ]);
   });
 
   it('requires the stored transition to carry the current epoch and revision', (): void => {

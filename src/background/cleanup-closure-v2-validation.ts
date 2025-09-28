@@ -1,5 +1,8 @@
 import { parseDailyAgg } from '../core/stats';
-import { HANDLED_SCHEDULE_OCCURRENCE_RETENTION_MS } from '../shared/constants';
+import {
+  CLEANUP_MAX_AUTOMATIC_ATTEMPTS,
+  HANDLED_SCHEDULE_OCCURRENCE_RETENTION_MS,
+} from '../shared/constants';
 import { exactDataEqual, snapshotExactData } from '../shared/exact-data';
 import { isEventRecord, isSessionEndedEventV2 } from '../shared/runtime-validation';
 import type {
@@ -42,7 +45,7 @@ interface ClearBatchHeader {
   clearRuntimeRevision: number;
 }
 
-export const MAX_AUTOMATIC_CLEANUP_ATTEMPT: number = 12;
+export const MAX_AUTOMATIC_CLEANUP_ATTEMPT: number = CLEANUP_MAX_AUTOMATIC_ATTEMPTS;
 const RETRY_KEYS: readonly string[] = ['batch', 'automaticAttempt', 'nextAttemptAt', 'lastError'];
 const TAB_CLAIM_KEYS: readonly string[] = ['tabId', 'state'];
 const TAB_STATE_KEYS: readonly string[] = ['muteUrl', 'priorMuted', 'stoppedDocumentId'];
@@ -90,7 +93,7 @@ const HANDLED_OCCURRENCE_KEYS: readonly string[] = [
   'expiresAt',
 ];
 const BANK_KEYS: readonly string[] = ['balanceMs'];
-const DAILY_AGG_REQUIRED_KEYS: readonly string[] = [
+export const DAILY_AGG_REQUIRED_KEYS: readonly string[] = [
   'date',
   'focusMs',
   'sessionsStarted',
@@ -102,7 +105,7 @@ const DAILY_AGG_REQUIRED_KEYS: readonly string[] = [
   'unlocksTaken',
   'resisted',
 ];
-const DAILY_AGG_OPTIONAL_KEYS: readonly string[] = ['pauseMsEarned', 'unlockMsSpent'];
+export const DAILY_AGG_OPTIONAL_KEYS: readonly string[] = ['pauseMsEarned', 'unlockMsSpent'];
 const AGGREGATE_SET_KEY_RE: RegExp = /^agg:[^:]+:(\d{4}-\d{2}-\d{2})$/;
 const ARCHIVE_AGGREGATE_KEY_RE: RegExp =
   /^archive:clock-rebase:[^:]+:(\d{4}-\d{2}-\d{2}):\d+:[^:]+$/;
@@ -533,7 +536,12 @@ function hasUniqueOccurrenceTokens(occurrences: readonly HandledScheduleOccurren
   return tokens.size === occurrences.length;
 }
 
-function validateDetachedDailyAgg(value: unknown, date: string): value is DailyAgg {
+/**
+ * Accepts only already-detached exact plain data from snapshotExactData. The stored aggregate keeps
+ * the existing daily domain and gains the exact-key rejection every v2 schema requires. The runtime
+ * boundary reuses it for `todayAgg`, whose expected date is the runtime's own date watermark.
+ */
+export function validateDetachedDailyAgg(value: unknown, date: string): value is DailyAgg {
   if (!isRecord(value) || !hasDailyAggKeys(value)) return false;
   return parseDailyAgg(value, date) !== null;
 }
