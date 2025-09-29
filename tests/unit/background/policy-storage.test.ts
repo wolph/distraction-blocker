@@ -32,6 +32,8 @@ import {
   LOCAL_POLICY_COMMIT,
   LOCAL_POLICY_GENERATION_PREFIX,
   LOCAL_RUNTIME,
+  LOCAL_RUNTIME_MIGRATION,
+  LOCAL_RUNTIME_SCHEMA,
   LOCAL_SETTINGS,
   LOCAL_SETUP,
   LOCAL_STREAK,
@@ -2985,6 +2987,8 @@ describe('PolicyStorage', (): void => {
     const local: FakeStorage = fakeStorage({
       ...localPolicy(setup),
       [LOCAL_RUNTIME]: emptyRuntime(now),
+      [LOCAL_RUNTIME_SCHEMA]: { runtimeSchemaVersion: 2 },
+      [LOCAL_RUNTIME_MIGRATION]: { version: 1, phase: 'projected' },
       [LOCAL_CACHES]: { matcher: true },
       [LOCAL_DEVICE_ID]: 'device-id',
       'agg:device-id:2026-08-31': emptyDaily('2026-08-31'),
@@ -3012,6 +3016,8 @@ describe('PolicyStorage', (): void => {
     expect(local.state.values.unrelated).toBe('keep');
     expect(local.state.values[LOCAL_SETTINGS]).toBeUndefined();
     expect(local.state.values[LOCAL_RUNTIME]).toBeUndefined();
+    expect(local.state.values[LOCAL_RUNTIME_SCHEMA]).toBeUndefined();
+    expect(local.state.values[LOCAL_RUNTIME_MIGRATION]).toBeUndefined();
     expect(local.state.values[LOCAL_CACHES]).toBeUndefined();
     expect(local.state.values[LOCAL_DEVICE_ID]).toBeUndefined();
     expect(local.state.values['agg:device-id:2026-08-31']).toBeUndefined();

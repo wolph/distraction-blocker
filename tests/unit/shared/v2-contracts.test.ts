@@ -169,7 +169,13 @@ describe('additive v2 contracts', (): void => {
   });
 
   it('keeps v2 runtime authority on existing local keys', (): void => {
-    expect(LOCAL_V2_SESSION_AUTHORITY_KEYS).toEqual(['runtime', 'events', 'dataClearJournal']);
+    expect(LOCAL_V2_SESSION_AUTHORITY_KEYS).toEqual([
+      'runtime',
+      'events',
+      'dataClearJournal',
+      'runtimeSchema',
+      'runtimeMigration',
+    ]);
     expect(LOCAL_V2_SESSION_AUTHORITY_KEYS).not.toContain('settings');
     expect(LOCAL_V2_SESSION_AUTHORITY_KEYS).not.toContain('bank');
   });

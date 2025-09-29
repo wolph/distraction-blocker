@@ -12,6 +12,8 @@ export function syncMonthKey(deviceId: string, month: string): string {
 }
 
 export const LOCAL_RUNTIME: string = 'runtime';
+export const LOCAL_RUNTIME_SCHEMA: string = 'runtimeSchema';
+export const LOCAL_RUNTIME_MIGRATION: string = 'runtimeMigration';
 export const LOCAL_EVENTS: string = 'events';
 export const LOCAL_DEVICE_ID: string = 'deviceId';
 export const LOCAL_SYNC_JOURNAL: string = 'syncJournal';
@@ -33,10 +35,12 @@ export const LOCAL_LISTS: string = 'lists';
 export const LOCAL_BANK: string = 'bank';
 export const LOCAL_STREAK: string = 'streak';
 
-export const LOCAL_V2_SESSION_AUTHORITY_KEYS: readonly [string, string, string] = [
+export const LOCAL_V2_SESSION_AUTHORITY_KEYS: readonly [string, string, string, string, string] = [
   LOCAL_RUNTIME,
   LOCAL_EVENTS,
   LOCAL_DATA_CLEAR_JOURNAL,
+  LOCAL_RUNTIME_SCHEMA,
+  LOCAL_RUNTIME_MIGRATION,
 ];
 
 export function syncListCategoryKey(categoryId: string): string {

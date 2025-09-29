@@ -1,0 +1,140 @@
+/**
+ * The v2 runtime storage boundary: the empty runtime, the schema marker, stored-authority
+ * classification, and the validated save.
+ *
+ * Every write goes through `parseRuntimeStateV2` first, so a value this module persists is always a
+ * value the reader accepts. Every read classifies before anything downstream may act on it, so a
+ * hostile or half-migrated stored value can never reach the domain as authority. All runtime
+ * authority lives in `chrome.storage.local`, and nothing here writes Sync.
+ */
+
+import { CoreError } from '../shared/errors';
+import { type ExactDataSnapshot, exactDataEqual, snapshotExactData } from '../shared/exact-data';
+import { LOCAL_RUNTIME, LOCAL_RUNTIME_SCHEMA } from '../shared/storage-keys';
+import { localDateStr } from '../shared/time';
+import { isRecord } from '../shared/v2-domain-intrinsics';
+import type { RuntimeStateV2 } from './runtime-v2-types';
+import { parseRuntimeStateV2 } from './runtime-v2-validation';
+import { readStoredRuntimeRaw } from './stores';
+
+/**
+ * The keys a v1 runtime never carried. Their presence on an unversioned value means the stored
+ * shape is a mixed graph, which the v1 reader must refuse rather than migrate.
+ */
+const V2_ONLY_RUNTIME_KEYS: readonly string[] = [
+  'enforcementEpoch',
+  'epochResetAcks',
+  'basePolicyRevision',
+  'runtimeRevision',
+  'documentCommands',
+  'enforcementCheckpoint',
+  'pendingEnforcementTransition',
+  'pendingClosure',
+  'handledScheduleOccurrences',
+];
+
+export interface RuntimeSchemaMarkerV2 {
+  runtimeSchemaVersion: 2;
+}
+
+export type StoredRuntimeAuthority =
+  | { kind: 'absent' }
+  | { kind: 'v2'; runtime: RuntimeStateV2 }
+  | { kind: 'legacy'; raw: unknown }
+  | { kind: 'rejected'; reason: 'marker-without-v2' | 'invalid-v2' };
+
+/** The idle v2 runtime a clean install and a rejected stored runtime both boot from. */
+export function emptyRuntimeV2(now: number, enforcementEpoch: string): RuntimeStateV2 {
+  return {
+    runtimeSchemaVersion: 2,
+    session: null,
+    gate: null,
+    unlocks: [],
+    tabStates: {},
+    accruedFocusMs: 0,
+    attemptDebounce: {},
+    deferredBlockClaims: {},
+    removedTabTombstones: {},
+    scheduleUnavailableNoticeToken: null,
+    handledScheduleOccurrences: [],
+    enforcementEpoch,
+    epochResetAcks: {},
+    basePolicyRevision: 0,
+    runtimeRevision: 0,
+    documentCommands: {},
+    enforcementCheckpoint: null,
+    pendingEnforcementTransition: null,
+    pendingClosure: null,
+    date: localDateStr(now),
+    todayAgg: null,
+    lastPruneDate: null,
+    commitCheckpoint: null,
+  };
+}
+
+/**
+ * The marker is exactly one field of exact plain data, so an extra key, an accessor, or any exotic
+ * host object is not the marker.
+ */
+export function isRuntimeSchemaMarkerV2(value: unknown): value is RuntimeSchemaMarkerV2 {
+  const snapshot: ExactDataSnapshot | null = snapshotExactData(value);
+  return snapshot !== null && exactDataEqual(snapshot.value, { runtimeSchemaVersion: 2 });
+}
+
+/**
+ * The stored runtime is authority only when the v2 parser accepts it. Absence is not a v1 shape, so
+ * an interrupted migration write or a partial local removal boots empty instead of rejecting. Once
+ * the marker exists without a valid v2 runtime, unversioned v1 is refused rather than migrated
+ * again, and a value that mixes v1 and v2 keys is never accepted as either shape.
+ */
+export function classifyStoredRuntime(
+  raw: unknown,
+  marker: RuntimeSchemaMarkerV2 | null,
+): StoredRuntimeAuthority {
+  const runtime: RuntimeStateV2 | null = parseRuntimeStateV2(raw);
+  if (runtime !== null) return { kind: 'v2', runtime };
+  if (raw === undefined) return { kind: 'absent' };
+
+  const snapshot: ExactDataSnapshot | null = snapshotExactData(raw);
+  if (snapshot === null) return { kind: 'rejected', reason: 'invalid-v2' };
+  if (isRecord(snapshot.value) && declaresV2Shape(snapshot.value)) {
+    return { kind: 'rejected', reason: 'invalid-v2' };
+  }
+  if (marker !== null) return { kind: 'rejected', reason: 'marker-without-v2' };
+  return { kind: 'legacy', raw };
+}
+
+export async function readRuntimeSchemaMarker(): Promise<RuntimeSchemaMarkerV2 | null> {
+  const stored: Record<string, unknown> = await chrome.storage.local.get(LOCAL_RUNTIME_SCHEMA);
+  return isRuntimeSchemaMarkerV2(stored[LOCAL_RUNTIME_SCHEMA]) ? { runtimeSchemaVersion: 2 } : null;
+}
+
+/**
+ * Resolves the committed policy generation pointer exactly like `loadRuntime`, so callers must run
+ * this only after `policyStorage.initialize()` has settled that pointer.
+ */
+export async function loadRuntimeAuthority(): Promise<StoredRuntimeAuthority> {
+  const raw: unknown = await readStoredRuntimeRaw();
+  const marker: RuntimeSchemaMarkerV2 | null = await readRuntimeSchemaMarker();
+  return classifyStoredRuntime(raw, marker);
+}
+
+export async function saveRuntimeV2(runtime: RuntimeStateV2): Promise<void> {
+  const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(runtime);
+  if (parsed === null) {
+    throw new CoreError('invalid-rule', 'runtime v2 failed validation before save');
+  }
+  await chrome.storage.local.set({ [LOCAL_RUNTIME]: parsed });
+}
+
+export async function persistRuntimeSchemaMarker(): Promise<void> {
+  await chrome.storage.local.set({ [LOCAL_RUNTIME_SCHEMA]: { runtimeSchemaVersion: 2 } });
+}
+
+/** A stored value that names a schema version or carries a v2-only key is not unversioned v1. */
+function declaresV2Shape(snapshot: Record<string, unknown>): boolean {
+  return (
+    Object.hasOwn(snapshot, 'runtimeSchemaVersion') ||
+    V2_ONLY_RUNTIME_KEYS.some((key: string): boolean => Object.hasOwn(snapshot, key))
+  );
+}

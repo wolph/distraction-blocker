@@ -353,11 +353,11 @@ function journalValue(journal: SyncJournal | undefined, key: string, stored: unk
   return Object.hasOwn(journal.sets, key) ? journal.sets[key] : stored;
 }
 
-export async function loadRuntime(now: number): Promise<ParsedRuntimeState> {
+/** The stored runtime value behind the committed policy generation pointer, exactly as written. */
+export async function readStoredRuntimeRaw(): Promise<unknown> {
   const pointerStored: Record<string, unknown> =
     await chrome.storage.local.get(LOCAL_POLICY_COMMIT);
   const pointer: unknown = pointerStored[LOCAL_POLICY_COMMIT];
-  let raw: unknown;
   if (
     isRecord(pointer) &&
     pointer.source === 'generation' &&
@@ -374,11 +374,13 @@ export async function loadRuntime(now: number): Promise<ParsedRuntimeState> {
     ) {
       throw new Error('committed runtime generation is missing or invalid');
     }
-    raw = generation.runtime;
-  } else {
-    raw = (await chrome.storage.local.get(LOCAL_RUNTIME))[LOCAL_RUNTIME];
+    return generation.runtime;
   }
-  return mergeRuntime(raw, now);
+  return (await chrome.storage.local.get(LOCAL_RUNTIME))[LOCAL_RUNTIME];
+}
+
+export async function loadRuntime(now: number): Promise<ParsedRuntimeState> {
+  return mergeRuntime(await readStoredRuntimeRaw(), now);
 }
 
 export function mergeRuntime(raw: unknown, now: number): ParsedRuntimeState {
