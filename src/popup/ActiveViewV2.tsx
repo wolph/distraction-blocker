@@ -16,7 +16,7 @@ import { formatClock } from '../shared/time';
 import type { EndAuthorityV2, GateState, SessionSnapshotV2 } from '../shared/types';
 import { ClockStack } from './ClockStack';
 import { commandErrorMessage } from './command-errors';
-import { GatePanel, type GateRequest } from './GatePanel';
+import { type GateCommandErrorMapper, GatePanel, type GateRequest } from './GatePanel';
 
 /** Shown when a spend, resume, or break command does not come back accepted. */
 const ACTION_FAILED_COPY: string = 'Could not request that action. Try again.';
@@ -207,6 +207,17 @@ export function ActiveViewV2({ snapshot, now }: ActiveViewV2Props): VNode {
   ): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
     request.type === 'abandonGate' ? sendSessionRequestV2(request) : sendSessionRequestV2(request);
 
+  /**
+   * Boundary cast: the panel hands back whatever the transport answered, and
+   * `commandErrorMessage` is the validator built for that untrusted value. `ackError`
+   * cannot do it, because it rejects any answer carrying the v2 `code` key.
+   */
+  const mapGateError: GateCommandErrorMapper = (
+    response: unknown,
+    fallback: string,
+  ): string | null =>
+    commandErrorMessage(response as CommandResponseV2<SessionCommandResultCodeV2>, fallback);
+
   const affordability: (costMs: number) => { affordable: boolean; countdown: string | null } = (
     costMs: number,
   ): { affordable: boolean; countdown: string | null } => {
@@ -339,6 +350,7 @@ export function ActiveViewV2({ snapshot, now }: ActiveViewV2Props): VNode {
           now={now}
           intention={intention}
           sendCommand={sendGateCommand}
+          commandError={mapGateError}
         />
       ) : phaseControls !== null || endControl !== null ? (
         <div class="actions">

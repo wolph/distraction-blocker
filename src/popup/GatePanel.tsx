@@ -14,6 +14,13 @@ export type GateCommandSender = (
   request: GateRequest,
 ) => Promise<Ack | CommandResponseV2<SessionCommandResultCodeV2>>;
 
+/**
+ * Maps one transport answer to its message, or null when the command was accepted.
+ * The shapes differ per transport, so the sender's mapper travels with it: `ackError`
+ * rejects any v1 Ack carrying extra keys, which every coded v2 answer does.
+ */
+export type GateCommandErrorMapper = (response: unknown, fallback: string) => string | null;
+
 const CONFIRM_LABELS: Record<GateKind, string> = {
   pause: 'Take the pause',
   unlockSite: 'Unlock this site',
@@ -30,6 +37,8 @@ export interface GatePanelProps {
   intention: string;
   /** v2 surfaces pass the v2 session channel. v1 callers keep the live sendRequest. */
   sendCommand?: GateCommandSender;
+  /** Must match the sender: `commandErrorMessage` for v2, `ackError` for v1. */
+  commandError?: GateCommandErrorMapper;
 }
 
 export function GatePanel({
@@ -37,6 +46,7 @@ export function GatePanel({
   now,
   intention,
   sendCommand = sendRequest,
+  commandError = ackError,
 }: GatePanelProps): VNode {
   const [typed, setTyped]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
   const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
@@ -62,7 +72,7 @@ export function GatePanel({
     try {
       const response: Ack | CommandResponseV2<SessionCommandResultCodeV2> =
         await sendCommand(request);
-      const responseError: string | null = ackError(
+      const responseError: string | null = commandError(
         response,
         'Could not update the gate. Try again.',
       );

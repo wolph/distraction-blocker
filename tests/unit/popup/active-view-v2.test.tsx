@@ -146,6 +146,14 @@ function sessionRequests(): AnyRequest[] {
     .filter((request: AnyRequest): boolean => request.type !== 'getStats');
 }
 
+/**
+ * Resolves once the clicked control is enabled again, which happens in the same commit
+ * as any error state. Asserting no alert before that would pass on a pending command.
+ */
+async function settled(button: HTMLButtonElement): Promise<void> {
+  await waitFor((): void => expect(button.disabled).toBe(false));
+}
+
 beforeEach((): void => {
   resetChromeFake();
   sendMessageMock.mockImplementation(async (request: AnyRequest): Promise<unknown> => {
@@ -181,10 +189,15 @@ describe('ActiveViewV2', (): void => {
 
   it('spends pause and unlock through the v2 channel', async (): Promise<void> => {
     const pauseView = render(h(ActiveViewV2, { snapshot: focusSnap(), now: NOW }));
-    fireEvent.click(pauseView.getByRole('button', { name: /Pause blocking for 5 min/ }));
+    const pause: HTMLButtonElement = pauseView.getByRole('button', {
+      name: /Pause blocking for 5 min/,
+    }) as HTMLButtonElement;
+    fireEvent.click(pause);
     await waitFor((): void => {
       expect(sessionRequests()).toEqual([{ type: 'openGate', gate: 'pause', host: null }]);
     });
+    await settled(pause);
+    expect(pauseView.queryByRole('alert')).toBeNull();
     pauseView.unmount();
     sendMessageMock.mockClear();
 
@@ -199,20 +212,29 @@ describe('ActiveViewV2', (): void => {
         { type: 'openGate', gate: 'unlockSite', host: 'youtube.com' },
       ]);
     });
+    await settled(unlock);
+    expect(unlockView.queryByRole('alert')).toBeNull();
   });
 
   it('ends immediately from focus through requestSessionEnd', async (): Promise<void> => {
-    const { getByRole } = render(h(ActiveViewV2, { snapshot: focusSnap(IMMEDIATE), now: NOW }));
+    const { getByRole, queryByRole } = render(
+      h(ActiveViewV2, { snapshot: focusSnap(IMMEDIATE), now: NOW }),
+    );
+    const end: HTMLButtonElement = getByRole('button', {
+      name: END_SESSION_LABEL,
+    }) as HTMLButtonElement;
 
-    fireEvent.click(getByRole('button', { name: END_SESSION_LABEL }));
+    fireEvent.click(end);
 
     await waitFor((): void => {
       expect(sessionRequests()).toEqual([{ type: 'requestSessionEnd' }]);
     });
+    await settled(end);
+    expect(queryByRole('alert')).toBeNull();
   });
 
   it('shows End alongside Resume now during an indefinite pause', async (): Promise<void> => {
-    const { getByRole, getByText } = render(
+    const { getByRole, getByText, queryByRole } = render(
       h(ActiveViewV2, { snapshot: indefinitePauseSnap(), now: NOW }),
     );
 
@@ -220,32 +242,49 @@ describe('ActiveViewV2', (): void => {
     expect(getByText(FOCUS_TIME_LABEL)).toBeTruthy();
     expect(getByRole('button', { name: 'Resume now' })).toBeTruthy();
 
-    fireEvent.click(getByRole('button', { name: END_SESSION_LABEL }));
+    const end: HTMLButtonElement = getByRole('button', {
+      name: END_SESSION_LABEL,
+    }) as HTMLButtonElement;
+    fireEvent.click(end);
     await waitFor((): void => {
       expect(sessionRequests()).toEqual([{ type: 'requestSessionEnd' }]);
     });
+    await settled(end);
+    expect(queryByRole('alert')).toBeNull();
   });
 
   it('resumes from an indefinite pause through resumeFromPause', async (): Promise<void> => {
-    const { getByRole } = render(h(ActiveViewV2, { snapshot: indefinitePauseSnap(), now: NOW }));
+    const { getByRole, queryByRole } = render(
+      h(ActiveViewV2, { snapshot: indefinitePauseSnap(), now: NOW }),
+    );
+    const resume: HTMLButtonElement = getByRole('button', {
+      name: 'Resume now',
+    }) as HTMLButtonElement;
 
-    fireEvent.click(getByRole('button', { name: 'Resume now' }));
+    fireEvent.click(resume);
 
     await waitFor((): void => {
       expect(sessionRequests()).toEqual([{ type: 'resumeFromPause' }]);
     });
+    await settled(resume);
+    expect(queryByRole('alert')).toBeNull();
   });
 
   it('opens the End gate instead of ending for a closed friction authority', async (): Promise<void> => {
-    const { getByRole } = render(
+    const { getByRole, queryByRole } = render(
       h(ActiveViewV2, { snapshot: focusSnap(CLOSED_FRICTION), now: NOW }),
     );
+    const end: HTMLButtonElement = getByRole('button', {
+      name: END_SESSION_LABEL,
+    }) as HTMLButtonElement;
 
-    fireEvent.click(getByRole('button', { name: END_SESSION_LABEL }));
+    fireEvent.click(end);
 
     await waitFor((): void => {
       expect(sessionRequests()).toEqual([{ type: 'openEndGate' }]);
     });
+    await settled(end);
+    expect(queryByRole('alert')).toBeNull();
   });
 
   it('renders the persisted cancel gate and sends its commands through the v2 channel', async (): Promise<void> => {
@@ -256,18 +295,44 @@ describe('ActiveViewV2', (): void => {
     expect(view.getByText('Type: let me stop')).toBeTruthy();
 
     fireEvent.input(view.getByRole('textbox'), { target: { value: 'let me stop' } });
-    fireEvent.click(view.getByRole('button', { name: 'End the session' }));
+    const confirm: HTMLButtonElement = view.getByRole('button', {
+      name: 'End the session',
+    }) as HTMLButtonElement;
+    fireEvent.click(confirm);
     await waitFor((): void => {
       expect(sessionRequests()).toEqual([{ type: 'confirmGate', typedPhrase: 'let me stop' }]);
     });
+    await settled(confirm);
+    expect(view.queryByRole('alert')).toBeNull();
 
-    fireEvent.click(view.getByRole('button', { name: 'Never mind, back to work' }));
+    const abandon: HTMLButtonElement = view.getByRole('button', {
+      name: 'Never mind, back to work',
+    }) as HTMLButtonElement;
+    fireEvent.click(abandon);
     await waitFor((): void => {
       expect(sessionRequests()).toEqual([
         { type: 'confirmGate', typedPhrase: 'let me stop' },
         { type: 'abandonGate' },
       ]);
     });
+    await settled(abandon);
+    expect(view.queryByRole('alert')).toBeNull();
+  });
+
+  it('shows the worker text for a rejected gate command', async (): Promise<void> => {
+    sendMessageMock.mockImplementation(async (request: AnyRequest): Promise<unknown> => {
+      if (request.type === 'getStats') return statsBundle;
+      return {
+        ok: false,
+        code: 'gate-not-ready',
+        error: 'Wait for the delay to finish.',
+      };
+    });
+    const view = render(h(ActiveViewV2, { snapshot: focusSnap(openFriction()), now: NOW + 9_000 }));
+
+    fireEvent.click(view.getByRole('button', { name: 'End the session' }));
+
+    expect(await view.findByText('Wait for the delay to finish.')).toBeTruthy();
   });
 
   it('hides every End control for a hidden authority', (): void => {
@@ -334,11 +399,16 @@ describe('ActiveViewV2', (): void => {
     const ready = render(
       h(ActiveViewV2, { snapshot: breakSnap(MIN_BREAK_BEFORE_EARLY_MS), now: NOW }),
     );
-    fireEvent.click(ready.getByRole('button', { name: 'Start next focus early' }));
+    const startEarly: HTMLButtonElement = ready.getByRole('button', {
+      name: 'Start next focus early',
+    }) as HTMLButtonElement;
+    fireEvent.click(startEarly);
 
     await waitFor((): void => {
       expect(sessionRequests()).toEqual([{ type: 'startNextFocusEarly' }]);
     });
+    await settled(startEarly);
+    expect(ready.queryByRole('alert')).toBeNull();
   });
 
   it('renders a gate whose readyAt precedes openedAt with confirm still disabled', (): void => {
