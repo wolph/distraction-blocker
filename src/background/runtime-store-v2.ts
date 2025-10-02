@@ -83,9 +83,14 @@ export function isRuntimeSchemaMarkerV2(value: unknown): value is RuntimeSchemaM
 
 /**
  * The stored runtime is authority only when the v2 parser accepts it. Absence is not a v1 shape, so
- * an interrupted migration write or a partial local removal boots empty instead of rejecting. Once
- * the marker exists without a valid v2 runtime, unversioned v1 is refused rather than migrated
- * again, and a value that mixes v1 and v2 keys is never accepted as either shape.
+ * an interrupted migration write or a partial local removal boots empty instead of rejecting, and a
+ * value that mixes v1 and v2 keys is never accepted as either shape.
+ *
+ * This reads the marker alone. `marker-without-v2` therefore means only that a marker sits over a
+ * runtime this reader cannot parse as v2. The spec's cutoff is conditional on the marker existing
+ * *without a valid migration checkpoint*, so the caller owes the other half: resolve the stored
+ * `LOCAL_RUNTIME_MIGRATION` checkpoint first and replay a valid one, and treat this verdict as the
+ * refusal to migrate unversioned v1 again only when no valid checkpoint is there to replay.
  */
 export function classifyStoredRuntime(
   raw: unknown,
@@ -114,8 +119,11 @@ export async function readRuntimeSchemaMarker(): Promise<RuntimeSchemaMarkerV2 |
  * this only after `policyStorage.initialize()` has settled that pointer.
  */
 export async function loadRuntimeAuthority(): Promise<StoredRuntimeAuthority> {
-  const raw: unknown = await readStoredRuntimeRaw();
+  // The two reads are not atomic, so the marker comes first. A migration landing between them then
+  // pairs a new runtime with an old marker, and a parseable v2 runtime wins before the marker is
+  // consulted. The other order would pair an old runtime with a new marker and reject it.
   const marker: RuntimeSchemaMarkerV2 | null = await readRuntimeSchemaMarker();
+  const raw: unknown = await readStoredRuntimeRaw();
   return classifyStoredRuntime(raw, marker);
 }
 
@@ -125,10 +133,6 @@ export async function saveRuntimeV2(runtime: RuntimeStateV2): Promise<void> {
     throw new CoreError('invalid-rule', 'runtime v2 failed validation before save');
   }
   await chrome.storage.local.set({ [LOCAL_RUNTIME]: parsed });
-}
-
-export async function persistRuntimeSchemaMarker(): Promise<void> {
-  await chrome.storage.local.set({ [LOCAL_RUNTIME_SCHEMA]: { runtimeSchemaVersion: 2 } });
 }
 
 /** A stored value that names a schema version or carries a v2-only key is not unversioned v1. */

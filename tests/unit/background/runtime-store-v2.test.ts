@@ -4,7 +4,6 @@ import {
   emptyRuntimeV2,
   isRuntimeSchemaMarkerV2,
   loadRuntimeAuthority,
-  persistRuntimeSchemaMarker,
   type RuntimeSchemaMarkerV2,
   readRuntimeSchemaMarker,
   type StoredRuntimeAuthority,
@@ -216,6 +215,9 @@ describe('stored runtime classification', (): void => {
     },
   );
 
+  // The marker is only half of the spec's cutoff. The caller must resolve a stored
+  // LOCAL_RUNTIME_MIGRATION checkpoint first and replay a valid one, and may read this verdict as a
+  // refusal to migrate unversioned v1 again only when no valid checkpoint exists.
   it('rejects unversioned v1 once the schema marker exists', (): void => {
     expect(classifyStoredRuntime(legacyRuntime(), MARKER)).toEqual({
       kind: 'rejected',
@@ -270,14 +272,16 @@ describe('runtime schema marker', (): void => {
     expect(isRuntimeSchemaMarkerV2(value)).toBe(false);
   });
 
-  it('persists and reads back the marker through local storage only', async (): Promise<void> => {
-    const stub: StorageStub = stubStorage();
+  // Nothing here writes the marker. One local set stores it beside its migration checkpoint, and
+  // that combined write belongs to the migration boot reader, not to this store.
+  it('reads back a stored marker without writing anything', async (): Promise<void> => {
+    const stub: StorageStub = stubStorage({
+      [LOCAL_RUNTIME_SCHEMA]: { runtimeSchemaVersion: 2 },
+    });
 
-    await persistRuntimeSchemaMarker();
-
-    expect(stub.localSets).toEqual([{ [LOCAL_RUNTIME_SCHEMA]: { runtimeSchemaVersion: 2 } }]);
-    expect(stub.syncSet).not.toHaveBeenCalled();
     await expect(readRuntimeSchemaMarker()).resolves.toEqual(MARKER);
+    expect(stub.localSets).toEqual([]);
+    expect(stub.syncSet).not.toHaveBeenCalled();
   });
 
   it.each<[string, Record<string, unknown>]>([
@@ -317,6 +321,8 @@ describe('runtime authority loading', (): void => {
     await expect(loadRuntimeAuthority()).resolves.toEqual({ kind: 'v2', runtime });
   });
 
+  // Same caller obligation as the classifier: this verdict is about the marker, not about whether
+  // a recorded migration is still replayable.
   it('applies the marker cutoff to the generation-resolved raw value', async (): Promise<void> => {
     stubStorage({
       [LOCAL_POLICY_COMMIT]: {

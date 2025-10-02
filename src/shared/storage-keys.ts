@@ -12,6 +12,11 @@ export function syncMonthKey(deviceId: string, month: string): string {
 }
 
 export const LOCAL_RUNTIME: string = 'runtime';
+/**
+ * The v2 schema marker and the migration checkpoint behind it. The marker is never written alone:
+ * one `chrome.storage.local.set` call stores both keys, so a marker can never outlive the
+ * checkpoint that explains it and strand a live v1 runtime behind a cutoff it cannot answer.
+ */
 export const LOCAL_RUNTIME_SCHEMA: string = 'runtimeSchema';
 export const LOCAL_RUNTIME_MIGRATION: string = 'runtimeMigration';
 export const LOCAL_EVENTS: string = 'events';
