@@ -13,6 +13,9 @@ import { CoreError } from '../shared/errors';
 import { exactDataEqual } from '../shared/exact-data';
 import type { BankState, DailyAgg, SessionEventRecordV2 } from '../shared/types';
 import type {
+  CleanupProgress,
+  PendingClosure,
+  PendingEnforcementTransition,
   RuntimeCommitCheckpointV2,
   RuntimeDomainProjectionV2,
   RuntimeStateV2,
@@ -98,8 +101,9 @@ export function applyRuntimeCheckpointV2(
 }
 
 /**
- * One durable commit. The composed runtime is validated before the first write, so a checkpoint that
- * could not be replayed never becomes durable, and no port runs for a rejected commit.
+ * One durable commit. Both the runtime that carries the checkpoint and the runtime that replay will
+ * leave behind are validated before the first write, so a checkpoint no replay could ever finish
+ * never becomes durable, and no port runs for a rejected commit.
  */
 export async function commitRuntimeCheckpointV2(
   ports: RuntimeCheckpointPortsV2,
@@ -112,6 +116,7 @@ export async function commitRuntimeCheckpointV2(
       'a commit checkpoint never lowers the monotonic runtime revision',
     );
   }
+  assertCleanupBatchAdvance(runtimeCleanupBatch(runtime), projectedCleanupBatch(input.projection));
   const checkpoint: RuntimeCommitCheckpointV2 = {
     version: 2,
     checkpointId: input.checkpointId,
@@ -126,6 +131,10 @@ export async function commitRuntimeCheckpointV2(
     composedCheckpointRuntime(runtime, checkpoint),
     'a commit checkpoint must compose a valid runtime',
   );
+  validatedRuntime(
+    { ...withCheckpoint, commitCheckpoint: null },
+    'a commit checkpoint must clear to a valid runtime',
+  );
   await ports.saveRuntime(withCheckpoint);
   return replayRuntimeCheckpointV2(ports, withCheckpoint);
 }
@@ -133,6 +142,11 @@ export async function commitRuntimeCheckpointV2(
 /**
  * Finishes whatever the stored checkpoint still owes. Reapplying the projection first is what makes
  * a replay after a partial write converge, and clearing the checkpoint last is what ends the commit.
+ *
+ * The caller passes a runtime `parseRuntimeStateV2` already accepted, because replay flushes before
+ * it validates. A validated store cannot hand this function a drifted runtime either, since the
+ * parser makes a stored runtime that disagrees with its own projection invalid, so the reapplication
+ * below repairs only an unvalidated or hand-built runtime.
  */
 export async function replayRuntimeCheckpointV2(
   ports: RuntimeCheckpointPortsV2,
@@ -142,7 +156,7 @@ export async function replayRuntimeCheckpointV2(
   if (checkpoint === null) return runtime;
   const projected: RuntimeStateV2 = runtimeMatchesProjectionV2(runtime, checkpoint.projection)
     ? runtime
-    : applyRuntimeCheckpointV2(runtime, checkpoint);
+    : composedCheckpointRuntime(runtime, checkpoint);
   await ports.appendEvents(checkpoint.events);
   await ports.saveBank(checkpoint.bank, checkpoint.syncBank);
   for (const [key, value] of sortedAggregateSets(checkpoint.aggregateSets)) {
@@ -165,6 +179,43 @@ function sortedAggregateSets(aggregateSets: Record<string, DailyAgg>): Array<[st
     ([left]: [string, DailyAgg], [right]: [string, DailyAgg]): number =>
       left === right ? 0 : left < right ? -1 : 1,
   );
+}
+
+/**
+ * A replacement cleanup batch is a new operation ID, a new retry batch, or a new clear revision. The
+ * spec gives a manual retry one durable checkpoint that assigns a new UUID and advances the clear
+ * revision, so a replacement that reuses its revision would leave an in-flight command from the
+ * abandoned batch carrying the same revision tuple as the new one, which content cannot tell apart.
+ */
+function assertCleanupBatchAdvance(
+  before: CleanupProgress | null,
+  after: CleanupProgress | null,
+): void {
+  if (before === null || after === null) return;
+  const replaced: boolean =
+    after.cleanupOperationId !== before.cleanupOperationId ||
+    after.retry.batch !== before.retry.batch ||
+    after.clearRuntimeRevision !== before.clearRuntimeRevision;
+  if (replaced && after.clearRuntimeRevision <= before.clearRuntimeRevision) {
+    throw new CoreError('invalid-rule', 'a replacement cleanup batch advances the clear revision');
+  }
+}
+
+function runtimeCleanupBatch(runtime: RuntimeStateV2): CleanupProgress | null {
+  return cleanupBatch(runtime.pendingClosure, runtime.pendingEnforcementTransition);
+}
+
+function projectedCleanupBatch(projection: RuntimeDomainProjectionV2): CleanupProgress | null {
+  return cleanupBatch(projection.pendingClosure, projection.pendingEnforcementTransition);
+}
+
+/** A runtime carries at most one journal, so at most one cleanup batch is installed at a time. */
+function cleanupBatch(
+  closure: PendingClosure | null,
+  transition: PendingEnforcementTransition | null,
+): CleanupProgress | null {
+  if (closure !== null && closure.stage === 'cleanup') return closure.cleanupProgress;
+  return transition === null ? null : transition.cleanupProgress;
 }
 
 function composedCheckpointRuntime(

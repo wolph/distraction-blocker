@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { replaceCleanupBatchV2 } from '../../../src/background/cleanup-progress-v2';
+import {
+  beginManualCleanupBatchV2,
+  recordCleanupAttemptFailureV2,
+  replaceCleanupBatchV2,
+} from '../../../src/background/cleanup-progress-v2';
 import { mergeEventLogV2 } from '../../../src/background/event-log-v2';
 import {
   applyRuntimeCheckpointV2,
@@ -12,6 +16,7 @@ import {
 } from '../../../src/background/runtime-checkpoint-v2';
 import type {
   CleanupProgress,
+  PendingEnforcementTransition,
   RuntimeCommitCheckpointV2,
   RuntimeDomainProjectionV2,
   RuntimeStateV2,
@@ -25,9 +30,11 @@ import {
   AGGREGATE_KEY,
   bankState,
   budgetEarnedEvent,
+  CLEANUP_OPERATION_ID,
   CLEAR_RUNTIME_REVISION,
   type CleanupClosureV2,
   cleanupClosureRuntime,
+  cleanupTransition,
   commitCheckpointRuntime,
   dailyAgg,
   LOCAL_DATE,
@@ -40,6 +47,7 @@ import {
   runtimeDomainProjection,
   sessionEndedEvent,
   sessionStartedEvent,
+  transitionRuntime,
 } from './runtime-v2-fixtures';
 
 const PROJECTED_FIELDS: readonly string[] = [
@@ -159,9 +167,43 @@ function commitInput(
   };
 }
 
-function expectInvalidRule(error: unknown): void {
+function expectInvalidRule(error: unknown, message?: string): void {
   expect(error).toBeInstanceOf(CoreError);
   expect((error as CoreError).code).toBe('invalid-rule');
+  if (message !== undefined) expect((error as CoreError).message).toBe(message);
+}
+
+/** Runs a commit that must be refused before any port call, and returns the harness it did not use. */
+async function expectRefusedCommit(
+  fake: Harness,
+  runtime: RuntimeStateV2,
+  input: RuntimeCommitInputV2,
+  message: string,
+): Promise<void> {
+  await commitRuntimeCheckpointV2(fake.ports, runtime, input).then(
+    (): void => expect.unreachable('expected an invalid-rule CoreError'),
+    (error: unknown): void => expectInvalidRule(error, message),
+  );
+
+  expect(fake.names).toEqual([]);
+  expect(fake.runtimeWrites).toEqual([]);
+}
+
+function closureBatch(runtime: RuntimeStateV2): CleanupProgress {
+  return (runtime.pendingClosure as CleanupClosureV2).cleanupProgress;
+}
+
+/** A projection that installs one cleanup batch: progress, its commands, and the runtime revision. */
+function closureBatchProjection(
+  runtime: RuntimeStateV2,
+  progress: CleanupProgress,
+): RuntimeDomainProjectionV2 {
+  return {
+    ...runtimeDomainProjection(runtime),
+    runtimeRevision: progress.clearRuntimeRevision,
+    documentCommands: progress.clearCommands,
+    pendingClosure: { ...(runtime.pendingClosure as CleanupClosureV2), cleanupProgress: progress },
+  };
 }
 
 function wideAggregate(): DailyAgg {
@@ -391,34 +433,56 @@ describe('checkpoint commit', (): void => {
       checkpoint: RuntimeCommitCheckpointV2,
     ) => RuntimeCommitCheckpointV2): Promise<void> => {
       const runtime: RuntimeStateV2 = cleanupClosureRuntime();
-      const fake: Harness = harness();
 
-      await commitRuntimeCheckpointV2(
-        fake.ports,
+      await expectRefusedCommit(
+        harness(),
         runtime,
         commitInput(corrupt(runtimeCommitCheckpoint(runtime))),
-      ).then(
-        (): void => expect.unreachable('expected an invalid-rule CoreError'),
-        (error: unknown): void => expectInvalidRule(error),
+        'a commit checkpoint must compose a valid runtime',
       );
-
-      expect(fake.names).toEqual([]);
     },
   );
 
   it('refuses a projection that lowers the runtime revision', async (): Promise<void> => {
     const runtime: RuntimeStateV2 = cleanupClosureRuntime();
     const checkpoint: RuntimeCommitCheckpointV2 = runtimeCommitCheckpoint(runtime);
-    const fake: Harness = harness();
 
-    await commitRuntimeCheckpointV2(fake.ports, runtime, {
-      ...commitInput(checkpoint),
-      projection: { ...checkpoint.projection, runtimeRevision: runtime.runtimeRevision - 1 },
-    }).then(
-      (): void => expect.unreachable('expected an invalid-rule CoreError'),
-      (error: unknown): void => expectInvalidRule(error),
+    await expectRefusedCommit(
+      harness(),
+      runtime,
+      {
+        ...commitInput(checkpoint),
+        projection: { ...checkpoint.projection, runtimeRevision: runtime.runtimeRevision - 1 },
+      },
+      'a commit checkpoint never lowers the monotonic runtime revision',
+    );
+  });
+
+  it('refuses a checkpoint whose cleared runtime would be invalid', async (): Promise<void> => {
+    const before: RuntimeStateV2 = preparedClosureRuntime();
+    const checkpoint: RuntimeCommitCheckpointV2 = runtimeCommitCheckpoint(before, {
+      projection: {
+        ...runtimeDomainProjection(before),
+        session: null,
+        enforcementCheckpoint: null,
+      },
+    });
+    const composed: RuntimeStateV2 = applyRuntimeCheckpointV2(before, checkpoint);
+
+    // A prepared closure may lose its session only while a checkpoint projects that loss, so this
+    // composes a valid runtime that no replay could ever clear.
+    expect(parseRuntimeStateV2(composed)).not.toBeNull();
+    expect(parseRuntimeStateV2({ ...composed, commitCheckpoint: null })).toBeNull();
+
+    const fake: Harness = harness();
+    await expectRefusedCommit(
+      fake,
+      before,
+      commitInput(checkpoint),
+      'a commit checkpoint must clear to a valid runtime',
     );
 
+    expect(await replayRuntimeCheckpointV2(fake.ports, before)).toBe(before);
     expect(fake.names).toEqual([]);
   });
 });
@@ -434,13 +498,16 @@ describe('checkpoint replay', (): void => {
     expect(fake.names).toEqual([]);
   });
 
-  it('reapplies the projection when the stored runtime drifted from it', async (): Promise<void> => {
+  it('repairs a hand-built runtime that drifted from its checkpoint', async (): Promise<void> => {
     const stored: RuntimeStateV2 = commitCheckpointRuntime();
     const drifted: RuntimeStateV2 = { ...stored, accruedFocusMs: stored.accruedFocusMs + 5_000 };
     const checkpoint: RuntimeCommitCheckpointV2 =
       stored.commitCheckpoint as RuntimeCommitCheckpointV2;
     const fake: Harness = harness();
 
+    // A validated store cannot produce this runtime: the parser refuses a stored runtime that
+    // disagrees with its own checkpoint projection, so the repair path below is defensive only.
+    expect(parseRuntimeStateV2(drifted)).toBeNull();
     expect(runtimeMatchesProjectionV2(drifted, checkpoint.projection)).toBe(false);
 
     const replayed: RuntimeStateV2 = await replayRuntimeCheckpointV2(fake.ports, drifted);
@@ -524,20 +591,13 @@ describe('checkpoint replay', (): void => {
 describe('cleanup batch revisions', (): void => {
   it('advances the clear revision through one checkpoint and replays idempotently', async (): Promise<void> => {
     const base: RuntimeStateV2 = cleanupClosureRuntime();
-    const closure: CleanupClosureV2 = base.pendingClosure as CleanupClosureV2;
-    const replaced: CleanupProgress = replaceCleanupBatchV2(closure.cleanupProgress, {
+    const replaced: CleanupProgress = replaceCleanupBatchV2(closureBatch(base), {
       cleanupOperationId: OTHER_OPERATION_ID,
       clearRuntimeRevision: CLEAR_RUNTIME_REVISION + 1,
       at: NOW,
     });
-    const projection: RuntimeDomainProjectionV2 = {
-      ...runtimeDomainProjection(base),
-      runtimeRevision: CLEAR_RUNTIME_REVISION + 1,
-      documentCommands: replaced.clearCommands,
-      pendingClosure: { ...closure, cleanupProgress: replaced },
-    };
     const checkpoint: RuntimeCommitCheckpointV2 = runtimeCommitCheckpoint(base, {
-      projection,
+      projection: closureBatchProjection(base, replaced),
       events: [sessionStartedEvent(), sessionEndedEvent({ at: RUNTIME_CLOSED_AT })],
     });
     const fake: Harness = harness();
@@ -554,11 +614,8 @@ describe('cleanup batch revisions', (): void => {
       expect(command.runtimeRevision).toBe(CLEAR_RUNTIME_REVISION + 1);
       expect(command.operationId).toBe(OTHER_OPERATION_ID);
     }
-    const committedClosure: CleanupClosureV2 = committed.pendingClosure as CleanupClosureV2;
-    expect(committedClosure.cleanupProgress.clearRuntimeRevision).toBe(CLEAR_RUNTIME_REVISION + 1);
-    expect(committedClosure.cleanupProgress.retry.batch).toBe(
-      closure.cleanupProgress.retry.batch + 1,
-    );
+    expect(closureBatch(committed).clearRuntimeRevision).toBe(CLEAR_RUNTIME_REVISION + 1);
+    expect(closureBatch(committed).retry.batch).toBe(closureBatch(base).retry.batch + 1);
     expect(parseRuntimeStateV2(committed)).not.toBeNull();
 
     const durable: RuntimeStateV2 = fake.runtimeWrites[0] as RuntimeStateV2;
@@ -568,6 +625,104 @@ describe('cleanup batch revisions', (): void => {
     expect(replayed).toEqual(committed);
     expect(replayed.runtimeRevision).toBe(CLEAR_RUNTIME_REVISION + 1);
     expect(recovered.log.events).toEqual(checkpoint.events);
+  });
+
+  it('refuses a replacement batch that reuses its clear revision', async (): Promise<void> => {
+    const base: RuntimeStateV2 = cleanupClosureRuntime();
+    const replaced: CleanupProgress = replaceCleanupBatchV2(closureBatch(base), {
+      cleanupOperationId: OTHER_OPERATION_ID,
+      clearRuntimeRevision: CLEAR_RUNTIME_REVISION,
+      at: NOW,
+    });
+
+    expect(replaced.clearRuntimeRevision).toBe(closureBatch(base).clearRuntimeRevision);
+
+    await expectRefusedCommit(
+      harness(),
+      base,
+      commitInput(
+        runtimeCommitCheckpoint(base, { projection: closureBatchProjection(base, replaced) }),
+      ),
+      'a replacement cleanup batch advances the clear revision',
+    );
+  });
+
+  it('refuses a new retry batch at the same clear revision', async (): Promise<void> => {
+    const base: RuntimeStateV2 = cleanupClosureRuntime();
+    const bumped: CleanupProgress = {
+      ...closureBatch(base),
+      retry: beginManualCleanupBatchV2(closureBatch(base).retry, NOW),
+    };
+
+    expect(bumped.retry.batch).toBe(closureBatch(base).retry.batch + 1);
+    expect(bumped.cleanupOperationId).toBe(closureBatch(base).cleanupOperationId);
+
+    await expectRefusedCommit(
+      harness(),
+      base,
+      commitInput(
+        runtimeCommitCheckpoint(base, { projection: closureBatchProjection(base, bumped) }),
+      ),
+      'a replacement cleanup batch advances the clear revision',
+    );
+  });
+
+  it('refuses a transition batch replacement that reuses its clear revision', async (): Promise<void> => {
+    const transition: PendingEnforcementTransition = cleanupTransition(
+      'start',
+      'starting-verified',
+      'start-abandon',
+    );
+    const progress: CleanupProgress = transition.cleanupProgress as CleanupProgress;
+    const base: RuntimeStateV2 = transitionRuntime(transition);
+    const replaced: CleanupProgress = replaceCleanupBatchV2(progress, {
+      cleanupOperationId: OTHER_OPERATION_ID,
+      clearRuntimeRevision: progress.clearRuntimeRevision,
+      at: NOW,
+    });
+
+    await expectRefusedCommit(
+      harness(),
+      base,
+      commitInput(
+        runtimeCommitCheckpoint(base, {
+          projection: {
+            ...runtimeDomainProjection(base),
+            documentCommands: replaced.clearCommands,
+            pendingEnforcementTransition: { ...transition, cleanupProgress: replaced },
+          },
+        }),
+      ),
+      'a replacement cleanup batch advances the clear revision',
+    );
+  });
+
+  it('accepts a recorded attempt failure inside the same batch', async (): Promise<void> => {
+    const base: RuntimeStateV2 = cleanupClosureRuntime();
+    const retried: CleanupProgress = {
+      ...closureBatch(base),
+      retry: recordCleanupAttemptFailureV2(
+        closureBatch(base).retry,
+        NOW,
+        'clear command was not acknowledged',
+      ),
+    };
+    const fake: Harness = harness();
+
+    const committed: RuntimeStateV2 = await commitRuntimeCheckpointV2(
+      fake.ports,
+      base,
+      commitInput(
+        runtimeCommitCheckpoint(base, { projection: closureBatchProjection(base, retried) }),
+      ),
+    );
+
+    expect(committed.runtimeRevision).toBe(CLEAR_RUNTIME_REVISION);
+    const committedBatch: CleanupProgress = closureBatch(committed);
+    expect(committedBatch.retry).toEqual(retried.retry);
+    expect(committedBatch.retry.batch).toBe(closureBatch(base).retry.batch);
+    expect(committedBatch.cleanupOperationId).toBe(CLEANUP_OPERATION_ID);
+    expect(fake.names[0]).toBe('saveRuntime');
   });
 
   it('accepts a checkpoint that keeps the runtime revision', async (): Promise<void> => {
