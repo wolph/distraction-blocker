@@ -37,6 +37,12 @@ import { validateDetachedFrozenDocumentCommand } from './enforcement-persistence
 type ActiveOverlayView = Extract<DocumentOverlayView, { presentation: 'active' }>;
 type ActiveStatusCopy = ActiveOverlayCopy['status'];
 
+/** The status sentence and the bare wall clock behind it always travel together. */
+interface ActiveLeadCopy {
+  status: ActiveStatusCopy;
+  lockedUntil: string | null;
+}
+
 const STARTING_TITLE: StartingOverlayCopy['title'] = 'Focus Lock is starting';
 const STARTING_DETAIL: StartingOverlayCopy['detail'] = 'Applying your selected rules.';
 const STOPPED_PAGE_COPY: NonNullable<StartingOverlayCopy['stoppedPage']> =
@@ -280,14 +286,11 @@ function activeCopy(
   duration: SessionDuration,
   gate: GateState | null,
 ): ActiveOverlayCopy {
-  const lockedUntil: string | null =
-    duration.kind === 'timed'
-      ? formatLockedUntilV2(input.session.sessionEndsAt ?? Number.NaN)
-      : null;
+  const lead: ActiveLeadCopy = leadCopy(duration, input.session.sessionEndsAt);
   return {
     ...FIXED_ACTIVE_COPY,
-    status: statusCopy(duration, lockedUntil),
-    lockedUntil,
+    status: lead.status,
+    lockedUntil: lead.lockedUntil,
     intention: trimmedIntention(input.session.config.intention),
     attempts: attemptsCopy(input.attemptsToday),
     verdictProvenance: verdictLabel(input.verdict),
@@ -299,16 +302,21 @@ function activeCopy(
   };
 }
 
-function statusCopy(duration: SessionDuration, lockedUntil: string | null): ActiveStatusCopy {
-  if (duration.kind === 'until-stopped' || lockedUntil === null) {
-    return { kind: 'until-stopped', text: UNTIL_STOPPED_STATUS };
+/**
+ * The status sentence the page leads with, and the bare wall clock behind a timed one. A timed
+ * session with no end has no honest sentence, so it raises instead of borrowing the indefinite one.
+ */
+function leadCopy(duration: SessionDuration, sessionEndsAt: number | null): ActiveLeadCopy {
+  if (duration.kind === 'until-stopped') {
+    return { status: { kind: 'until-stopped', text: UNTIL_STOPPED_STATUS }, lockedUntil: null };
   }
-  return { kind: 'timed', text: `Locked until ${lockedUntil}` };
+  const lockedUntil: string = formatLockedUntilV2(sessionEndsAt ?? Number.NaN);
+  return { status: { kind: 'timed', text: `Locked until ${lockedUntil}` }, lockedUntil };
 }
 
 function gateTitleCopy(gate: GateState): string {
   if (gate.kind === 'pause') return 'Take a pause?';
-  if (gate.kind === 'unlockSite') return `Unlock ${gate.host ?? ''}?`;
+  if (gate.kind === 'unlockSite') return `Unlock ${gate.host ?? 'this site'}?`;
   return 'End this session';
 }
 

@@ -136,8 +136,10 @@ function appendStartingPage(panel: HTMLElement, view: StartingOverlayView): void
 }
 
 /**
- * A timed page leads with its preformatted locked-until line above a live clock. An until-stopped
- * page has no end to count down to, so its status copy takes that lead line and the clock is gone.
+ * The status sentence leads both pages. A timed page says the wall clock it is locked until and
+ * counts down below it, while an until-stopped page says the popup owns its ending and has no
+ * clock. `copy.lockedUntil` is the bare wall clock behind the timed sentence, so it is never
+ * rendered on its own: rendering it would drop the label the worker already wrote.
  */
 function appendActivePage(
   overlay: MountedOverlay,
@@ -145,9 +147,7 @@ function appendActivePage(
   view: ActiveOverlayView,
   now: number,
 ): void {
-  const lead: string | null =
-    view.copy.status.kind === 'until-stopped' ? view.copy.status.text : view.copy.lockedUntil;
-  if (lead !== null) appendLine(panel, 'until', lead);
+  appendLine(panel, 'until', view.copy.status.text);
   if (view.timing.phaseEndsAt !== null) {
     overlay.clock = appendLine(panel, 'clock', formatClock(view.timing.phaseEndsAt - now));
   }

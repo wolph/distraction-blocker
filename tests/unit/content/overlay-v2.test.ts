@@ -3,10 +3,18 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Mock } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ActiveViewInputV2 } from '../../../src/background/overlay-view-v2';
+import { buildActiveOverlayView } from '../../../src/background/overlay-view-v2';
 import { clearDocumentOverlay, renderDocumentOverlay } from '../../../src/content/overlay-v2';
+import { DEFAULT_LISTS, rulesFromLists } from '../../../src/shared/constants';
 import type { DocumentOverlayView } from '../../../src/shared/enforcement-v2';
 import { formatClock } from '../../../src/shared/time';
-import type { GateState, Verdict } from '../../../src/shared/types';
+import type {
+  GateState,
+  SessionConfigV2,
+  SessionStateV2,
+  Verdict,
+} from '../../../src/shared/types';
 
 type StartingOverlay = Extract<DocumentOverlayView, { presentation: 'starting' }>;
 type ActiveOverlay = Extract<DocumentOverlayView, { presentation: 'active' }>;
@@ -42,8 +50,8 @@ function affordableEconomy(overrides: Partial<ActiveEconomy> = {}): ActiveEconom
 
 function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
   return {
-    status: { kind: 'timed', text: 'Focus Lock is active for 1:00 more.' },
-    lockedUntil: 'Locked until 14:35',
+    status: { kind: 'timed', text: 'Locked until 14:35' },
+    lockedUntil: '14:35',
     intention: 'Finish the release notes',
     attempts: '2 attempts blocked today',
     verdictProvenance: PROVENANCE,
@@ -228,6 +236,7 @@ describe('renderDocumentOverlay active view', () => {
     renderDocumentOverlay(activeOverlay(), BLOCKED_VERDICT);
 
     expect(text('.until')).toBe('Locked until 14:35');
+    expect(text('.until')).not.toBe('14:35');
     expect(text('.clock')).toBe(formatClock(60_000));
     expect(text('.intention')).toBe('Finish the release notes');
     expect(text('.attempts')).toBe('2 attempts blocked today');
@@ -468,5 +477,85 @@ describe('overlay-v2 actions', () => {
     expect(shadowRoot().querySelector('.action-error[role="alert"]')?.textContent).toBe(
       TRANSPORT_ERROR,
     );
+  });
+});
+
+/**
+ * The worker owns every word on this page, so one test drives the real builders through the real
+ * renderer. A convention change on either side breaks here instead of on a user's blocked page.
+ */
+describe('renderDocumentOverlay against the worker builders', () => {
+  const LOCKED_AT: number = new Date(2026, 8, 3, 14, 0).getTime();
+
+  function builderConfig(overrides: Partial<SessionConfigV2> = {}): SessionConfigV2 {
+    return {
+      mode: 'blacklist',
+      strictness: 'flexible',
+      duration: { kind: 'timed', minutes: 35 },
+      cycling: null,
+      intention: 'Finish the release notes',
+      source: 'manual',
+      scheduleOccurrence: null,
+      rules: rulesFromLists(DEFAULT_LISTS),
+      ...overrides,
+    };
+  }
+
+  function builderSession(overrides: Partial<SessionConfigV2> = {}): SessionStateV2 {
+    return {
+      version: 2,
+      sessionId: SESSION_ID,
+      config: builderConfig(overrides),
+      startedAt: LOCKED_AT - 60_000,
+      sessionEndsAt: new Date(2026, 8, 3, 14, 35).getTime(),
+      phase: 'focus',
+      phaseStartedAt: LOCKED_AT - 60_000,
+      phaseEndsAt: LOCKED_AT + 60_000,
+      cycleIndex: 0,
+      pausedFrom: null,
+      focusedMs: 60_000,
+    };
+  }
+
+  function builderInput(session: SessionStateV2): ActiveViewInputV2 {
+    return {
+      capturedAt: LOCKED_AT,
+      theme: 'dark',
+      session,
+      economy: affordableEconomy(),
+      gate: null,
+      activeUnlocks: [],
+      attemptsToday: 2,
+      stoppedPage: false,
+      verdict: BLOCKED_VERDICT,
+    };
+  }
+
+  it('leads a timed page with the sentence the worker wrote, never the bare clock', () => {
+    vi.setSystemTime(LOCKED_AT);
+    const view: DocumentOverlayView = buildActiveOverlayView(builderInput(builderSession()));
+
+    renderDocumentOverlay(view, BLOCKED_VERDICT);
+
+    expect(text('.until')).toBe('Locked until 14:35');
+    expect(text('.until')).not.toBe('14:35');
+    expect(text('.clock')).toBe(formatClock(60_000));
+  });
+
+  it('leads an until-stopped page with the popup-only sentence and no clock', () => {
+    vi.setSystemTime(LOCKED_AT);
+    const view: DocumentOverlayView = buildActiveOverlayView(
+      builderInput({
+        ...builderSession({ duration: { kind: 'until-stopped' } }),
+        sessionEndsAt: null,
+        phaseEndsAt: null,
+      }),
+    );
+
+    renderDocumentOverlay(view, BLOCKED_VERDICT);
+
+    expect(text('.until')).toBe(UNTIL_STOPPED_TEXT);
+    expect(shadowRoot().textContent).not.toContain('Locked until');
+    expect(shadowRoot().querySelector('.clock')).toBeNull();
   });
 });
