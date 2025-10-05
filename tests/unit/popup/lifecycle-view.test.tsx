@@ -4,7 +4,11 @@ import './chrome-fake';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { LifecycleView, type LifecycleViewProps } from '../../../src/popup/LifecycleView';
+import {
+  LifecycleView,
+  type LifecycleViewProps,
+  RETRY_FAILED_COPY,
+} from '../../../src/popup/LifecycleView';
 import { DEFAULT_LISTS, emptySnapshotV2, rulesFromLists } from '../../../src/shared/constants';
 import type { SessionRequestV2 } from '../../../src/shared/messages';
 import {
@@ -161,7 +165,7 @@ describe('LifecycleView starting', (): void => {
 
     expect(rendered.getByText('End this session')).toBeTruthy();
     expect(rendered.getByText('You said: write the report')).toBeTruthy();
-    expect(rendered.getByText('Type: let me stop')).toBeTruthy();
+    expect(rendered.getByText('Type this to confirm: let me stop')).toBeTruthy();
     expect(rendered.queryByRole('button', { name: END_SESSION_LABEL })).toBeNull();
     expect(rendered.getByRole('button', { name: 'Never mind, back to work' })).toBeTruthy();
 
@@ -176,6 +180,17 @@ describe('LifecycleView starting', (): void => {
     });
     await settled(confirm);
     expect(rendered.queryByRole('alert')).toBeNull();
+  });
+
+  it('shows the persisted delay before the gate is ready', (): void => {
+    const rendered = view(startingSnap(openFriction()), IDLE_CLEAR, NOW);
+
+    expect(rendered.container.querySelector('.gate-wait')?.textContent).toBe(
+      'A moment to decide: 2 of 10 s',
+    );
+    expect(
+      (rendered.getByRole('button', { name: 'End the session' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 
   it('clears the typed phrase when a different cancel gate opens', (): void => {
@@ -288,6 +303,17 @@ describe('LifecycleView cleanup errors', (): void => {
     });
     await settled(retry);
     expect(queryByRole('alert')).toBeNull();
+  });
+
+  it('falls back to its own copy when the retry transport fails', async (): Promise<void> => {
+    sendMessageMock.mockImplementation(async (): Promise<unknown> => {
+      throw new Error('port closed');
+    });
+    const { findByRole, getByRole } = view(errorSnap('transition-cleanup-failed'));
+
+    fireEvent.click(getByRole('button', { name: RETRY_CLEANUP_LABEL }));
+
+    expect((await findByRole('alert')).textContent).toBe(RETRY_FAILED_COPY);
   });
 
   it('shows the worker text when a retry is not available', async (): Promise<void> => {

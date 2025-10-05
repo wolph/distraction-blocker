@@ -3,20 +3,22 @@ import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'p
 import { getDomain } from 'tldts';
 import { msUntilNextEarnedMinute } from '../core/budget';
 import { MIN_BREAK_BEFORE_EARLY_MS } from '../shared/constants';
-import type {
-  CommandResponseV2,
-  SessionCommandResultCodeV2,
-  SessionRequestV2,
-  StatsBundle,
-} from '../shared/messages';
-import { sendRequest, sendSessionRequestV2 } from '../shared/messages';
+import type { StatsBundle } from '../shared/messages';
+import { sendRequest } from '../shared/messages';
 import { isStatsBundle } from '../shared/runtime-validation';
-import { END_FAILED_COPY, END_SESSION_LABEL } from '../shared/session-copy';
 import { formatClock } from '../shared/time';
 import type { EndAuthorityV2, GateState, SessionSnapshotV2 } from '../shared/types';
 import { ClockStack } from './ClockStack';
-import { commandErrorMessage } from './command-errors';
-import { type GateCommandErrorMapper, GatePanel, type GateRequest } from './GatePanel';
+import { GatePanel } from './GatePanel';
+import {
+  endControl,
+  gateIdentity,
+  gatePhraseLabel,
+  mapGateError,
+  sendGateCommand,
+  useV2Command,
+  type V2Command,
+} from './v2-command';
 
 /** Shown when a spend, resume, or break command does not come back accepted. */
 const ACTION_FAILED_COPY: string = 'Could not request that action. Try again.';
@@ -26,19 +28,6 @@ type ActiveHostState =
   | { status: 'ready'; host: string }
   | { status: 'unsupported' }
   | { status: 'error' };
-
-/** The v2 session commands this view sends. Gate updates and retries belong elsewhere. */
-type ActiveCommandV2 = Extract<
-  SessionRequestV2,
-  {
-    type:
-      | 'requestSessionEnd'
-      | 'openEndGate'
-      | 'openGate'
-      | 'resumeFromPause'
-      | 'startNextFocusEarly';
-  }
->;
 
 /** Duplicated from the v1 ActiveView. The cutover deletes the v1 copy. */
 function useActiveHost(): ActiveHostState {
@@ -106,20 +95,9 @@ function extrapolatedBankV2(snapshot: SessionSnapshotV2, nowMs: number): number 
   return Math.min(snapshot.bankCapMs, grown);
 }
 
-function gateIdentity(gate: GateState): string {
-  return JSON.stringify([gate.kind, gate.host, gate.openedAt, gate.readyAt, gate.requiredPhrase]);
-}
-
 /** The open cancel gate carried by End authority, absent for every other authority. */
 function endGateOf(authority: EndAuthorityV2): GateState | null {
   return authority.kind === 'friction-gate' ? authority.gate : null;
-}
-
-/** The command a visible End control sends, null when this authority hides End. */
-function endCommandOf(authority: EndAuthorityV2): ActiveCommandV2 | null {
-  if (authority.kind === 'immediate') return { type: 'requestSessionEnd' };
-  if (authority.kind === 'friction-gate' && authority.gate === null) return { type: 'openEndGate' };
-  return null;
 }
 
 function SpendButton({
@@ -151,72 +129,24 @@ export interface ActiveViewV2Props {
 }
 
 export function ActiveViewV2({ snapshot, now }: ActiveViewV2Props): VNode {
-  const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
-    string | null
-  >(null);
-  const [actionPending, setActionPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
-    useState<boolean>(false);
-  const actionInFlight: { current: boolean } = useRef<boolean>(false);
   const viewRef: { current: HTMLElement | null } = useRef<HTMLElement | null>(null);
+  /** Disabling in the same tick keeps a second click from racing the pending commit. */
+  const command: V2Command = useV2Command({
+    onBegin: (): void => {
+      for (const button of viewRef.current?.querySelectorAll<HTMLButtonElement>('button') ?? []) {
+        button.disabled = true;
+      }
+    },
+  });
   const activeSite: ActiveHostState = useActiveHost();
   const activeHost: string | null = activeSite.status === 'ready' ? activeSite.host : null;
   const focusedToday: { ms: number | null; error: boolean } = useFocusedTodayMs();
-
-  const beginAction: () => boolean = (): boolean => {
-    if (actionInFlight.current) return false;
-    actionInFlight.current = true;
-    for (const button of viewRef.current?.querySelectorAll<HTMLButtonElement>('button') ?? []) {
-      button.disabled = true;
-    }
-    setError(null);
-    setActionPending(true);
-    return true;
-  };
 
   const bankMs: number = extrapolatedBankV2(snapshot, now);
   const bankFill: number = snapshot.bankCapMs > 0 ? Math.min(1, bankMs / snapshot.bankCapMs) : 0;
   const intention: string = snapshot.config?.intention ?? '';
   const authority: EndAuthorityV2 = snapshot.lifecycle.endAuthority;
-  const endCommand: ActiveCommandV2 | null = endCommandOf(authority);
   const activeGate: GateState | null = snapshot.gate ?? endGateOf(authority);
-
-  /** Every session command shares one in-flight lock and one coded error path. */
-  const act: (request: ActiveCommandV2, fallback: string) => Promise<void> = async (
-    request: ActiveCommandV2,
-    fallback: string,
-  ): Promise<void> => {
-    if (!beginAction()) return;
-    try {
-      const response: CommandResponseV2<SessionCommandResultCodeV2> =
-        await sendSessionRequestV2(request);
-      const message: string | null = commandErrorMessage(response, fallback);
-      if (message !== null) setError(message);
-    } catch {
-      setError(fallback);
-    } finally {
-      actionInFlight.current = false;
-      setActionPending(false);
-    }
-  };
-
-  /** Narrowed per member so each call resolves its own mapped v2 response type. */
-  const sendGateCommand: (
-    request: GateRequest,
-  ) => Promise<CommandResponseV2<SessionCommandResultCodeV2>> = (
-    request: GateRequest,
-  ): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
-    request.type === 'abandonGate' ? sendSessionRequestV2(request) : sendSessionRequestV2(request);
-
-  /**
-   * Boundary cast: the panel hands back whatever the transport answered, and
-   * `commandErrorMessage` is the validator built for that untrusted value. `ackError`
-   * cannot do it, because it rejects any answer carrying the v2 `code` key.
-   */
-  const mapGateError: GateCommandErrorMapper = (
-    response: unknown,
-    fallback: string,
-  ): string | null =>
-    commandErrorMessage(response as CommandResponseV2<SessionCommandResultCodeV2>, fallback);
 
   const affordability: (costMs: number) => { affordable: boolean; countdown: string | null } = (
     costMs: number,
@@ -247,7 +177,7 @@ export function ActiveViewV2({ snapshot, now }: ActiveViewV2Props): VNode {
     countdown: string | null;
   }): string | null =>
     value.affordable ? null : (value.countdown ?? 'earn pause time by focusing');
-  const pendingReason: string | null = actionPending ? 'Action in progress' : null;
+  const pendingReason: string | null = command.pending ? 'Action in progress' : null;
   const activeSiteReason: string | null =
     activeSite.status === 'loading'
       ? 'Checking the active site'
@@ -265,25 +195,15 @@ export function ActiveViewV2({ snapshot, now }: ActiveViewV2Props): VNode {
     snapshot.phaseStartedAt !== null &&
     now - snapshot.phaseStartedAt >= MIN_BREAK_BEFORE_EARLY_MS;
 
-  const endControl: VNode | null =
-    endCommand === null ? null : (
-      <button
-        type="button"
-        class="cancel-link"
-        disabled={actionPending}
-        onClick={(): void => void act(endCommand, END_FAILED_COPY)}
-      >
-        {END_SESSION_LABEL}
-      </button>
-    );
+  const endAction: VNode | null = endControl(authority, command);
 
   const phaseControls: VNode | null =
     snapshot.phase === 'paused' ? (
       <button
         type="button"
         class="start-button"
-        disabled={actionPending}
-        onClick={(): void => void act({ type: 'resumeFromPause' }, ACTION_FAILED_COPY)}
+        disabled={command.pending}
+        onClick={(): void => void command.run({ type: 'resumeFromPause' }, ACTION_FAILED_COPY)}
       >
         Resume now
       </button>
@@ -292,8 +212,10 @@ export function ActiveViewV2({ snapshot, now }: ActiveViewV2Props): VNode {
         <button
           type="button"
           class="spend-button"
-          disabled={actionPending}
-          onClick={(): void => void act({ type: 'startNextFocusEarly' }, ACTION_FAILED_COPY)}
+          disabled={command.pending}
+          onClick={(): void =>
+            void command.run({ type: 'startNextFocusEarly' }, ACTION_FAILED_COPY)
+          }
         >
           Start next focus early
         </button>
@@ -305,7 +227,10 @@ export function ActiveViewV2({ snapshot, now }: ActiveViewV2Props): VNode {
           sub={activeHost}
           disabledReason={unlockDisabledReason}
           onClick={(): void =>
-            void act({ type: 'openGate', gate: 'unlockSite', host: activeHost }, ACTION_FAILED_COPY)
+            void command.run(
+              { type: 'openGate', gate: 'unlockSite', host: activeHost },
+              ACTION_FAILED_COPY,
+            )
           }
         />
         <SpendButton
@@ -313,7 +238,7 @@ export function ActiveViewV2({ snapshot, now }: ActiveViewV2Props): VNode {
           sub={null}
           disabledReason={pauseDisabledReason}
           onClick={(): void =>
-            void act({ type: 'openGate', gate: 'pause', host: null }, ACTION_FAILED_COPY)
+            void command.run({ type: 'openGate', gate: 'pause', host: null }, ACTION_FAILED_COPY)
           }
         />
       </>
@@ -349,18 +274,19 @@ export function ActiveViewV2({ snapshot, now }: ActiveViewV2Props): VNode {
           gate={activeGate}
           now={now}
           intention={intention}
+          phraseLabel={gatePhraseLabel(authority, activeGate)}
           sendCommand={sendGateCommand}
           commandError={mapGateError}
         />
-      ) : phaseControls !== null || endControl !== null ? (
+      ) : phaseControls !== null || endAction !== null ? (
         <div class="actions">
           {phaseControls}
-          {endControl}
+          {endAction}
         </div>
       ) : null}
-      {error !== null ? (
+      {command.error !== null ? (
         <p class="form-error" role="alert">
-          {error}
+          {command.error}
         </p>
       ) : null}
     </section>

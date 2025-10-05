@@ -27,6 +27,9 @@ const CONFIRM_LABELS: Record<GateKind, string> = {
   cancel: 'End the session',
 };
 
+/** The v1 wording for the typed confirmation prompt. v2 authority copy overrides it. */
+export const DEFAULT_PHRASE_LABEL: string = 'Type:';
+
 /**
  * Deliberation gate. The worker owns the timing: this panel only renders
  * gate state and refuses to enable confirm before readyAt.
@@ -39,6 +42,8 @@ export interface GatePanelProps {
   sendCommand?: GateCommandSender;
   /** Must match the sender: `commandErrorMessage` for v2, `ackError` for v1. */
   commandError?: GateCommandErrorMapper;
+  /** v2 surfaces pass the End authority's exact `copy.phraseLabel`. */
+  phraseLabel?: string;
 }
 
 export function GatePanel({
@@ -47,6 +52,7 @@ export function GatePanel({
   intention,
   sendCommand = sendRequest,
   commandError = ackError,
+  phraseLabel = DEFAULT_PHRASE_LABEL,
 }: GatePanelProps): VNode {
   const [typed, setTyped]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
   const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
@@ -109,7 +115,9 @@ export function GatePanel({
       </button>
       {gate.requiredPhrase !== null ? (
         <label class="gate-phrase">
-          <span class="radio-hint">Type: {gate.requiredPhrase}</span>
+          <span class="radio-hint">
+            {phraseLabel} {gate.requiredPhrase}
+          </span>
           <input
             type="text"
             value={typed}

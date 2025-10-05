@@ -292,7 +292,7 @@ describe('ActiveViewV2', (): void => {
     const view = render(h(ActiveViewV2, { snapshot: focusSnap(authority), now: NOW + 9_000 }));
 
     expect(view.queryByRole('button', { name: END_SESSION_LABEL })).toBeNull();
-    expect(view.getByText('Type: let me stop')).toBeTruthy();
+    expect(view.getByText('Type this to confirm: let me stop')).toBeTruthy();
 
     fireEvent.input(view.getByRole('textbox'), { target: { value: 'let me stop' } });
     const confirm: HTMLButtonElement = view.getByRole('button', {

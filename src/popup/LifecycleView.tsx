@@ -1,17 +1,8 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useRef, useState } from 'preact/hooks';
-import type {
-  CommandResponseV2,
-  RetryCleanupResultCodeV2,
-  SessionCommandResultCodeV2,
-  SessionRequestV2,
-} from '../shared/messages';
-import { sendSessionRequestV2 } from '../shared/messages';
+import type { SessionRequestV2 } from '../shared/messages';
 import {
   DATA_CLEAR_ERROR_COPY,
   DATA_CLEAR_PENDING_COPY,
-  END_FAILED_COPY,
-  END_SESSION_LABEL,
   POPUP_CLOSURE_CLEANUP_COPY,
   POPUP_CLOSURE_ERROR_COPY,
   POPUP_STARTING_COPY,
@@ -19,46 +10,70 @@ import {
   POPUP_TRANSITION_ERROR_COPY,
   RETRY_CLEANUP_LABEL,
 } from '../shared/session-copy';
-import type { EndAuthorityV2, GateState, SessionSnapshotV2, SetupState } from '../shared/types';
-import { commandErrorMessage } from './command-errors';
-import { type GateCommandErrorMapper, GatePanel, type GateRequest } from './GatePanel';
+import type {
+  EndAuthorityV2,
+  GateState,
+  SessionLifecycleV2,
+  SessionSnapshotV2,
+  SetupState,
+} from '../shared/types';
+import { GatePanel } from './GatePanel';
+import {
+  endControl,
+  gateIdentity,
+  gatePhraseLabel,
+  mapGateError,
+  sendGateCommand,
+  useV2Command,
+  type V2Command,
+} from './v2-command';
 
 /** Shown when a retry answer is not an exact accepted result. */
-const RETRY_FAILED_COPY: string = 'Could not retry cleanup. Try again.';
+export const RETRY_FAILED_COPY: string = 'Could not retry cleanup. Try again.';
 
 const HIDDEN_AUTHORITY: EndAuthorityV2 = { kind: 'hidden' };
 
-/** The v2 commands this view sends. Spends, phases, and starts belong elsewhere. */
-type LifecycleCommandV2 = Extract<
+/** The retries this view offers. Every other v2 command belongs to another surface. */
+type RetryCommandV2 = Extract<
   SessionRequestV2,
-  {
-    type:
-      | 'requestSessionEnd'
-      | 'openEndGate'
-      | 'retryTransitionCleanup'
-      | 'retryClosureCleanup'
-      | 'retryDataClear';
-  }
+  { type: 'retryTransitionCleanup' | 'retryClosureCleanup' | 'retryDataClear' }
 >;
 
-type LifecycleResponseV2 = CommandResponseV2<SessionCommandResultCodeV2 | RetryCleanupResultCodeV2>;
+type CleanupJournal = Extract<SessionLifecycleV2, { kind: 'cleanup' }>['journal'];
+type CleanupErrorCode = Extract<SessionLifecycleV2, { kind: 'error' }>['code'];
+
+/** Both cleanup journals. A new journal kind breaks this record. */
+const CLEANUP_COPY: Readonly<Record<CleanupJournal, string>> = {
+  transition: POPUP_TRANSITION_CLEANUP_COPY,
+  closure: POPUP_CLOSURE_CLEANUP_COPY,
+};
+
+/** Both exhausted cleanup errors and their retries. A new code breaks this record. */
+const CLEANUP_ERROR_ROWS: Readonly<
+  Record<CleanupErrorCode, { copy: string; retry: RetryCommandV2 }>
+> = {
+  'transition-cleanup-failed': {
+    copy: POPUP_TRANSITION_ERROR_COPY,
+    retry: { type: 'retryTransitionCleanup' },
+  },
+  'closure-cleanup-failed': {
+    copy: POPUP_CLOSURE_ERROR_COPY,
+    retry: { type: 'retryClosureCleanup' },
+  },
+};
 
 /** One rendered lifecycle row: its exact copy, its End authority, and its retry. */
 interface LifecycleBody {
   copy: string;
   authority: EndAuthorityV2;
-  retry: LifecycleCommandV2 | null;
+  retry: RetryCommandV2 | null;
 }
 
 interface EndGateView {
   gate: GateState;
   title: string;
+  phraseLabel: string | undefined;
   intention: string;
-}
-
-/** Duplicated from ActiveViewV2: a reopened gate must not inherit the typed phrase. */
-function gateIdentity(gate: GateState): string {
-  return JSON.stringify([gate.kind, gate.host, gate.openedAt, gate.readyAt, gate.requiredPhrase]);
 }
 
 export interface LifecycleViewProps {
@@ -87,27 +102,16 @@ function dataClearBody(dataClear: LifecycleViewProps['dataClear']): LifecycleBod
 
 /** null while idle or active, which are owned by the start form and the active view. */
 function lifecycleBody(snapshot: SessionSnapshotV2): LifecycleBody | null {
-  const lifecycle: SessionSnapshotV2['lifecycle'] = snapshot.lifecycle;
+  const lifecycle: SessionLifecycleV2 = snapshot.lifecycle;
   if (lifecycle.kind === 'starting') {
     return { copy: POPUP_STARTING_COPY, authority: lifecycle.endAuthority, retry: null };
   }
   if (lifecycle.kind === 'cleanup') {
-    const copy: string =
-      lifecycle.journal === 'closure' ? POPUP_CLOSURE_CLEANUP_COPY : POPUP_TRANSITION_CLEANUP_COPY;
-    return { copy, authority: HIDDEN_AUTHORITY, retry: null };
+    return { copy: CLEANUP_COPY[lifecycle.journal], authority: HIDDEN_AUTHORITY, retry: null };
   }
   if (lifecycle.kind === 'error') {
-    return lifecycle.code === 'transition-cleanup-failed'
-      ? {
-          copy: POPUP_TRANSITION_ERROR_COPY,
-          authority: HIDDEN_AUTHORITY,
-          retry: { type: 'retryTransitionCleanup' },
-        }
-      : {
-          copy: POPUP_CLOSURE_ERROR_COPY,
-          authority: HIDDEN_AUTHORITY,
-          retry: { type: 'retryClosureCleanup' },
-        };
+    const row: { copy: string; retry: RetryCommandV2 } = CLEANUP_ERROR_ROWS[lifecycle.code];
+    return { copy: row.copy, authority: HIDDEN_AUTHORITY, retry: row.retry };
   }
   return null;
 }
@@ -121,15 +125,9 @@ function endGateView(authority: EndAuthorityV2): EndGateView | null {
   return {
     gate: authority.gate,
     title: authority.copy.title,
+    phraseLabel: gatePhraseLabel(authority, authority.gate),
     intention: authority.copy.intentionReminder ?? '',
   };
-}
-
-/** Duplicated from ActiveViewV2. The cutover shares one End authority helper. */
-function endCommandOf(authority: EndAuthorityV2): LifecycleCommandV2 | null {
-  if (authority.kind === 'immediate') return { type: 'requestSessionEnd' };
-  if (authority.kind === 'friction-gate' && authority.gate === null) return { type: 'openEndGate' };
-  return null;
 }
 
 /**
@@ -138,76 +136,22 @@ function endCommandOf(authority: EndAuthorityV2): LifecycleCommandV2 | null {
  * to the start form and the active view, so this view renders nothing for them.
  */
 export function LifecycleView({ snapshot, now, dataClear }: LifecycleViewProps): VNode | null {
-  const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
-    string | null
-  >(null);
-  const [pending, setPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
-    useState<boolean>(false);
-  const commandInFlight: { current: boolean } = useRef<boolean>(false);
-
-  /** Every command shares one in-flight lock and one coded error path. */
-  const act: (request: LifecycleCommandV2, fallback: string) => Promise<void> = async (
-    request: LifecycleCommandV2,
-    fallback: string,
-  ): Promise<void> => {
-    if (commandInFlight.current) return;
-    commandInFlight.current = true;
-    setError(null);
-    setPending(true);
-    try {
-      const response: LifecycleResponseV2 = await sendSessionRequestV2(request);
-      const message: string | null = commandErrorMessage(response, fallback);
-      if (message !== null) setError(message);
-    } catch {
-      setError(fallback);
-    } finally {
-      commandInFlight.current = false;
-      setPending(false);
-    }
-  };
-
-  const sendGateCommand: (
-    request: GateRequest,
-  ) => Promise<CommandResponseV2<SessionCommandResultCodeV2>> = (
-    request: GateRequest,
-  ): Promise<CommandResponseV2<SessionCommandResultCodeV2>> => sendSessionRequestV2(request);
-
-  /**
-   * Boundary cast: the panel hands back whatever the transport answered, and
-   * `commandErrorMessage` is the validator built for that untrusted value.
-   */
-  const mapGateError: GateCommandErrorMapper = (
-    response: unknown,
-    fallback: string,
-  ): string | null =>
-    commandErrorMessage(response as CommandResponseV2<SessionCommandResultCodeV2>, fallback);
+  const command: V2Command = useV2Command();
 
   const body: LifecycleBody | null = dataClearBody(dataClear) ?? lifecycleBody(snapshot);
   if (body === null) return null;
 
   const endGate: EndGateView | null = endGateView(body.authority);
-  const endCommand: LifecycleCommandV2 | null = endCommandOf(body.authority);
-  const retryCommand: LifecycleCommandV2 | null = body.retry;
-
-  const endControl: VNode | null =
-    endCommand === null ? null : (
-      <button
-        type="button"
-        class="cancel-link"
-        disabled={pending}
-        onClick={(): void => void act(endCommand, END_FAILED_COPY)}
-      >
-        {END_SESSION_LABEL}
-      </button>
-    );
+  const endAction: VNode | null = endControl(body.authority, command);
+  const retryCommand: RetryCommandV2 | null = body.retry;
 
   const retryControl: VNode | null =
     retryCommand === null ? null : (
       <button
         type="button"
         class="start-button"
-        disabled={pending}
-        onClick={(): void => void act(retryCommand, RETRY_FAILED_COPY)}
+        disabled={command.pending}
+        onClick={(): void => void command.run(retryCommand, RETRY_FAILED_COPY)}
       >
         {RETRY_CLEANUP_LABEL}
       </button>
@@ -215,7 +159,9 @@ export function LifecycleView({ snapshot, now, dataClear }: LifecycleViewProps):
 
   return (
     <section class="view lifecycle-view">
-      <p class="lifecycle-view__copy">{body.copy}</p>
+      <p class="lifecycle-view__copy" role="status">
+        {body.copy}
+      </p>
       {endGate !== null ? (
         <>
           <h2 class="lifecycle-view__title">{endGate.title}</h2>
@@ -224,19 +170,20 @@ export function LifecycleView({ snapshot, now, dataClear }: LifecycleViewProps):
             gate={endGate.gate}
             now={now}
             intention={endGate.intention}
+            phraseLabel={endGate.phraseLabel}
             sendCommand={sendGateCommand}
             commandError={mapGateError}
           />
         </>
-      ) : retryControl !== null || endControl !== null ? (
+      ) : retryControl !== null || endAction !== null ? (
         <div class="actions">
           {retryControl}
-          {endControl}
+          {endAction}
         </div>
       ) : null}
-      {error !== null ? (
+      {command.error !== null ? (
         <p class="form-error" role="alert">
-          {error}
+          {command.error}
         </p>
       ) : null}
     </section>
