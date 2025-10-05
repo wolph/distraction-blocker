@@ -18,6 +18,7 @@ import {
   isDenseArray,
   isNonBlankString,
   isNonNegativeInteger,
+  isNullableNonBlankString,
   isRecord,
   isSafeTimestamp,
   isUuid,
@@ -45,7 +46,6 @@ interface ClearBatchHeader {
   clearRuntimeRevision: number;
 }
 
-export const MAX_AUTOMATIC_CLEANUP_ATTEMPT: number = CLEANUP_MAX_AUTOMATIC_ATTEMPTS;
 const RETRY_KEYS: readonly string[] = ['batch', 'automaticAttempt', 'nextAttemptAt', 'lastError'];
 const TAB_CLAIM_KEYS: readonly string[] = ['tabId', 'state'];
 const TAB_STATE_KEYS: readonly string[] = ['muteUrl', 'priorMuted', 'stoppedDocumentId'];
@@ -182,12 +182,12 @@ export function validateDetachedCleanupRetryState(value: unknown): value is Clea
     candidate === null ||
     !isNonNegativeInteger(candidate.batch) ||
     !isNonNegativeInteger(automaticAttempt) ||
-    automaticAttempt > MAX_AUTOMATIC_CLEANUP_ATTEMPT ||
+    automaticAttempt > CLEANUP_MAX_AUTOMATIC_ATTEMPTS ||
     (candidate.lastError !== null && !isNonBlankString(candidate.lastError))
   ) {
     return false;
   }
-  return automaticAttempt === MAX_AUTOMATIC_CLEANUP_ATTEMPT
+  return automaticAttempt === CLEANUP_MAX_AUTOMATIC_ATTEMPTS
     ? candidate.nextAttemptAt === null
     : isSafeTimestamp(candidate.nextAttemptAt);
 }
@@ -567,8 +567,4 @@ function isAggregateRemoveKey(value: unknown): value is string {
 
 function documentIdentity(tabId: number, documentId: string): string {
   return `${tabId}:${documentId}`;
-}
-
-function isNullableNonBlankString(value: unknown): value is string | null {
-  return value === null || isNonBlankString(value);
 }

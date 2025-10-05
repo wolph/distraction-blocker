@@ -287,6 +287,10 @@ export function isNonBlankString(value: unknown): value is string {
   return typeof value === 'string' && /\S/.test(value);
 }
 
+export function isNullableNonBlankString(value: unknown): value is string | null {
+  return value === null || isNonBlankString(value);
+}
+
 function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === 'string';
 }

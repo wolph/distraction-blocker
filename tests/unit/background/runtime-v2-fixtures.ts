@@ -35,12 +35,16 @@ import type {
   SessionStartCandidate,
   TransitionStage,
 } from '../../../src/background/runtime-v2-types';
-import { HANDLED_SCHEDULE_OCCURRENCE_RETENTION_MS } from '../../../src/shared/constants';
+import {
+  HANDLED_SCHEDULE_OCCURRENCE_RETENTION_MS,
+  MAX_HANDLED_SCHEDULE_OCCURRENCES,
+} from '../../../src/shared/constants';
 import type { ActiveOverlayCopy, DocumentOverlayView } from '../../../src/shared/enforcement-v2';
 import type {
   BankState,
   CategoryId,
   DailyAgg,
+  GateState,
   HandledScheduleOccurrence,
   LegacyEventRecord,
   ScheduleOccurrenceRef,
@@ -567,6 +571,37 @@ export function untilStoppedActiveOverlay(
   );
 }
 
+/**
+ * The cancel gate a committed Friction End persists. It opens at a command time after activation,
+ * while the replacement active view keeps the frozen `capturedAt` anchor the transition captured.
+ */
+export function cancelGateState(overrides: Partial<GateState> = {}): GateState {
+  return {
+    kind: 'cancel',
+    host: null,
+    openedAt: ACTIVATION_AT + 3_000,
+    readyAt: ACTIVATION_AT + 8_000,
+    requiredPhrase: 'end my session',
+    ...overrides,
+  };
+}
+
+/** The replacement active view a committed Friction transition freezes when End opens its gate. */
+export function gatedActiveOverlay(
+  overrides: Partial<ActiveOverlay> = {},
+  capturedAt: number = ACTIVATION_AT,
+): ActiveOverlay {
+  return activeOverlay(
+    {
+      gate: cancelGateState(),
+      actions: { state: 'gate', end: 'hidden', pause: 'hidden', unlock: 'hidden' },
+      copy: activeCopy({ gateTitle: 'End this session?', gateConfirm: 'End the session' }),
+      ...overrides,
+    },
+    capturedAt,
+  );
+}
+
 export function startingCommand(
   overrides: Partial<FrozenDocumentCommand> = {},
 ): FrozenDocumentCommand {
@@ -902,7 +937,7 @@ export const PUBLISHED_REVISION: number = START_ACTIVE_REVISION;
 export const RESUMED_STARTED_AT: number = ACTIVATION_AT - 600_000;
 /** The logical end every runtime closure fixture projects, on the transition timeline. */
 export const RUNTIME_CLOSED_AT: number = ACTIVATION_AT + 60_000;
-export const MAX_HANDLED_SCHEDULE_OCCURRENCES: number = 256;
+export { MAX_HANDLED_SCHEDULE_OCCURRENCES };
 export const ATTEMPT_DEBOUNCE_KEY: string = `11:${TARGET_URL}`;
 
 export function sessionConfigV2(overrides: Partial<SessionConfigV2> = {}): SessionConfigV2 {
@@ -1314,11 +1349,12 @@ function retainedStage(transition: PendingEnforcementTransition): string {
 
 /**
  * A pre-commit start reserves the next base policy revision, so durable runtime still holds the
- * previous one until commit. No top-level rule compares the two, and the fixture keeps that shape.
+ * previous one until commit stores it, or until abandonment persists it with the clear batch.
  */
 function transitionBaseRevision(transition: PendingEnforcementTransition): number {
-  const committed: boolean = COMMITTED_STAGES.includes(retainedStage(transition));
-  return transition.kind === 'start' && !committed
-    ? BASE_POLICY_REVISION - 1
-    : BASE_POLICY_REVISION;
+  const reserving: boolean =
+    transition.kind === 'start' &&
+    transition.stage !== 'cleanup' &&
+    !COMMITTED_STAGES.includes(transition.stage);
+  return reserving ? BASE_POLICY_REVISION - 1 : BASE_POLICY_REVISION;
 }

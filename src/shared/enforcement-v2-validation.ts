@@ -18,6 +18,7 @@ import {
   isDenseArray,
   isNonBlankString,
   isNonNegativeInteger,
+  isNullableNonBlankString,
   isRecord,
   isSafeTimestamp,
   isUuid,
@@ -212,7 +213,8 @@ const FIXED_ACTIVE_COPY: Readonly<
   gatePhraseLabel: 'Type this to confirm:',
   transportError: 'Focus Lock could not update this action. Try again.',
 };
-const CANONICAL_CLEAR_VERDICT: Verdict = {
+/** The one verdict every clear command carries. Producers import it so no copy can drift. */
+export const CANONICAL_CLEAR_VERDICT: Verdict = {
   blocked: false,
   reason: 'no-session',
   categoryId: null,
@@ -547,9 +549,7 @@ function validateDetachedActiveOverlay(value: UnknownRecord): boolean {
   if (capturedAt === null) return false;
 
   const gate: unknown = value.gate;
-  if (gate !== null) {
-    if (!validateDetachedGateState(gate) || gate.openedAt > capturedAt) return false;
-  }
+  if (gate !== null && !validateDetachedGateState(gate)) return false;
 
   const gated: boolean = gate !== null;
   return (
@@ -598,7 +598,7 @@ function activeTimingCapturedAt(timing: UnknownRecord, duration: SessionDuration
   const phaseEndsAt: unknown = timing.phaseEndsAt;
   const sessionEndsAt: unknown = timing.sessionEndsAt;
   if (!isSafeTimestamp(phaseEndsAt) || !isSafeTimestamp(sessionEndsAt)) return null;
-  return capturedAt < phaseEndsAt && phaseEndsAt <= sessionEndsAt ? capturedAt : null;
+  return capturedAt <= phaseEndsAt && phaseEndsAt <= sessionEndsAt ? capturedAt : null;
 }
 
 function validateDetachedActiveEconomy(value: unknown): boolean {
@@ -703,8 +703,4 @@ function isStrictness(value: unknown): value is Strictness {
 
 function isFiniteNonNegativeNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
-}
-
-function isNullableNonBlankString(value: unknown): value is string | null {
-  return value === null || isNonBlankString(value);
 }

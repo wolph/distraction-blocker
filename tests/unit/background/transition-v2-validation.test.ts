@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_AUTOMATIC_CLEANUP_ATTEMPT } from '../../../src/background/cleanup-closure-v2-validation';
 import type { FrozenDocumentCommand } from '../../../src/background/enforcement-persistence-v2';
 import type {
   FrozenTransitionView,
@@ -10,6 +9,7 @@ import {
   parsePendingEnforcementTransition,
   validateDetachedPendingEnforcementTransition,
 } from '../../../src/background/transition-v2-validation';
+import { CLEANUP_MAX_AUTOMATIC_ATTEMPTS } from '../../../src/shared/constants';
 import type { SessionEndedEventV2 } from '../../../src/shared/types';
 import {
   ACTIVATION_AT,
@@ -32,6 +32,7 @@ import {
   documentKey,
   frozenActiveView,
   frozenStartingView,
+  gatedActiveOverlay,
   LOCAL_DATE,
   manualCandidate,
   OTHER_EPOCH_ID,
@@ -201,7 +202,7 @@ describe('background transition stage fixtures', (): void => {
             reservedSessionId: SESSION_ID,
           }),
           retry: cleanupRetryState({
-            automaticAttempt: MAX_AUTOMATIC_CLEANUP_ATTEMPT,
+            automaticAttempt: CLEANUP_MAX_AUTOMATIC_ATTEMPTS,
             nextAttemptAt: null,
           }),
         }),
@@ -466,18 +467,19 @@ describe('background transition candidate', (): void => {
           }),
         }),
       }),
+      // The captured window is half-open, so the upper bound itself is not a legal activation.
+      pendingTransition('start', 'alarm-ready', {
+        trigger: 'schedule',
+        candidate: scheduleCandidate({
+          scheduleWindow: candidateScheduleWindow({ windowEndsAt: ACTIVATION_AT }),
+        }),
+      }),
     ]);
     expectAccepted([
       pendingTransition('start', 'alarm-ready', {
         trigger: 'schedule',
         candidate: scheduleCandidate({
           scheduleWindow: candidateScheduleWindow({ windowEndsAt: ACTIVATION_AT + 1 }),
-        }),
-      }),
-      pendingTransition('start', 'alarm-ready', {
-        trigger: 'schedule',
-        candidate: scheduleCandidate({
-          scheduleWindow: candidateScheduleWindow({ windowEndsAt: ACTIVATION_AT }),
         }),
       }),
       pendingTransition('start', 'alarm-ready', {
@@ -704,6 +706,46 @@ describe('background transition frozen views', (): void => {
     for (const stage of COMMITTED_STAGES) {
       expectRejected([pendingTransition('start', stage, { activeView: null })]);
     }
+  });
+});
+
+describe('background transition cleanup operation', (): void => {
+  it('rejects a cleanup operation that reuses a verification operation', (): void => {
+    for (const operationId of [STARTING_OPERATION_ID, ACTIVE_OPERATION_ID]) {
+      expectRejected([
+        cleanupTransition('start', 'prepared', 'start-abandon', {
+          cleanupProgress: cleanupProgress({
+            cleanupOperationId: operationId,
+            clearCommands: clearCommandMap({
+              operationId,
+              runtimeRevision: CLEAR_RUNTIME_REVISION,
+              sessionId: null,
+              reservedSessionId: SESSION_ID,
+            }),
+          }),
+        }),
+      ]);
+    }
+  });
+});
+
+describe('background transition friction gate', (): void => {
+  it('accepts a committed transition whose active view carries a later cancel gate', (): void => {
+    // Spec 1020-1023: Friction End persists the cancel gate and freezes a replacement active view.
+    // The view keeps `capturedAt: activationAt`, so `gate.openedAt` is legitimately later.
+    const gated: PendingEnforcementTransition = pendingTransition(
+      'start',
+      'committed-pending-verification',
+      {
+        candidate: manualCandidate({ strictness: 'friction' }),
+        activeView: frozenActiveView('start', {
+          documents: activeCommandMap({}, ACTIVATION_AT, gatedActiveOverlay()),
+        }),
+      },
+    );
+
+    expectAccepted([gated]);
+    expect(gatedActiveOverlay().gate?.openedAt).toBeGreaterThan(ACTIVATION_AT);
   });
 });
 

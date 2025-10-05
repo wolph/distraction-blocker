@@ -374,9 +374,9 @@ function validateDetachedCandidateScheduleWindow(value: unknown): value is Candi
 }
 
 /**
- * A window-timed session runs between its captured bounds, so its activation sits inside them. The
- * upper bound is inclusive because the half-open recheck ran strictly before activation was
- * captured, which leaves the bound itself a legal capture instant.
+ * A window-timed session runs between its captured bounds, so its activation sits inside the
+ * half-open window the pre-commit recheck applied: `windowStartsAt <= activationAt < windowEndsAt`.
+ * The bound itself would derive a zero-length session, which is not a duration this domain has.
  */
 function activationWithinWindow(
   start: SessionStartCandidate | null,
@@ -393,7 +393,7 @@ function activationWithinWindow(
   return (
     typeof activationAt === 'number' &&
     start.scheduleWindow.windowStartsAt <= activationAt &&
-    activationAt <= start.scheduleWindow.windowEndsAt
+    activationAt < start.scheduleWindow.windowEndsAt
   );
 }
 
@@ -637,11 +637,23 @@ function validateTransitionCleanup(
     !cleanupFailureAgrees(candidate.failure, cause) ||
     !validateDetachedCleanupProgress(progress) ||
     progress.clearRuntimeRevision !== header.runtimeRevision ||
+    !allocatesNewCleanupOperation(progress, header) ||
     !clearsTransitionSession(progress, header, expectation.committed)
   ) {
     return false;
   }
   return postCleanupClosureAgrees(candidate.postCleanupClosure, cause, header.sessionId);
+}
+
+/** Cleanup allocates a new operation ID, so it never reuses either verification operation. */
+function allocatesNewCleanupOperation(
+  progress: CleanupProgress,
+  header: TransitionHeader,
+): boolean {
+  return (
+    progress.cleanupOperationId !== header.startingOperationId &&
+    progress.cleanupOperationId !== header.activeOperationId
+  );
 }
 
 /**

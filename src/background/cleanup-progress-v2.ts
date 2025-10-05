@@ -8,7 +8,10 @@
  */
 
 import { CLEANUP_MAX_AUTOMATIC_ATTEMPTS } from '../shared/constants';
-import { canonicalSessionIdentity } from '../shared/enforcement-v2-validation';
+import {
+  CANONICAL_CLEAR_VERDICT,
+  canonicalSessionIdentity,
+} from '../shared/enforcement-v2-validation';
 import { CoreError } from '../shared/errors';
 import { type ExactDataSnapshot, snapshotExactData } from '../shared/exact-data';
 import type { Verdict } from '../shared/types';
@@ -45,13 +48,12 @@ export const CLEANUP_RETRY_DELAYS_MS: readonly number[] = [
 /** Attempts 8 through 12 are six hours apart. */
 const CLEANUP_LONG_RETRY_DELAY_MS: number = 6 * 60 * 60_000;
 
-/** The one verdict a clear command may carry. Every command gets its own copy. */
-export const NO_SESSION_VERDICT: Verdict = {
-  blocked: false,
-  reason: 'no-session',
-  categoryId: null,
-  matchedPattern: null,
-};
+/**
+ * The one verdict a clear command may carry, re-exported under the name this module's callers use.
+ * It is the validator's comparison authority itself, so no producer copy can drift from it. Every
+ * command still gets its own copy of the value.
+ */
+export const NO_SESSION_VERDICT: Verdict = CANONICAL_CLEAR_VERDICT;
 
 export interface ClearCommandIdentityV2 {
   operationId: string;

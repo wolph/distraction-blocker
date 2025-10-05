@@ -21,6 +21,7 @@ import {
   CLEANUP_OPERATION_ID,
   CLEAR_RUNTIME_REVISION,
   type CleanupClosureV2,
+  cancelGateState,
   cleanupClosure,
   cleanupClosureRuntime,
   cleanupTransition,
@@ -35,10 +36,13 @@ import {
   emptyRuntimeV2,
   epochResetAck,
   epochResetAckMap,
+  frozenActiveView,
+  gatedActiveOverlay,
   handledOccurrence,
   handledOccurrenceLog,
   LOCAL_DATE,
   MAX_HANDLED_SCHEDULE_OCCURRENCES,
+  manualCandidate,
   migratedActiveFocusRuntime,
   NOW,
   OTHER_EPOCH_ID,
@@ -520,6 +524,46 @@ describe('background runtime epoch, revision, and checkpoint relationships', ():
     ]);
   });
 
+  it('accepts a committed Friction transition whose view carries a later cancel gate', (): void => {
+    // Spec 1020-1023: Friction End persists the cancel gate and freezes a replacement active view
+    // that keeps `capturedAt: activationAt`, so `gate.openedAt` is legitimately later.
+    const gated: PendingEnforcementTransition = pendingTransition('start', 'alarm-ready', {
+      candidate: manualCandidate({ strictness: 'friction' }),
+      activeView: frozenActiveView('start', {
+        documents: activeCommandMap({}, ACTIVATION_AT, gatedActiveOverlay()),
+      }),
+    });
+
+    expect(cancelGateState().openedAt).toBeGreaterThan(ACTIVATION_AT);
+    expectAccepted([transitionRuntime(gated)]);
+  });
+
+  it('requires the base policy revision the content compares against', (): void => {
+    expectRejected([
+      publishedFocusRuntime({
+        documentCommands: activeCommandMap({
+          operationId: ACTIVE_OPERATION_ID,
+          runtimeRevision: PUBLISHED_REVISION,
+          basePolicyRevision: BASE_POLICY_REVISION + 1,
+        }),
+      }),
+      transitionRuntime(pendingTransition('start', 'alarm-ready'), {
+        basePolicyRevision: BASE_POLICY_REVISION + 1,
+      }),
+      transitionRuntime(pendingTransition('resume', 'prepared'), {
+        basePolicyRevision: BASE_POLICY_REVISION + 1,
+        documentCommands: {},
+      }),
+      cleanupTransitionRuntime('start', 'prepared', 'start-abandon', {
+        basePolicyRevision: BASE_POLICY_REVISION + 1,
+      }),
+    ]);
+    // A pre-commit start reserves the next base, so its transition legitimately leads the runtime.
+    const reserving: RuntimeStateV2 = transitionRuntime(pendingTransition('start', 'prepared'));
+    expect(reserving.basePolicyRevision).toBeLessThan(BASE_POLICY_REVISION);
+    expectAccepted([reserving]);
+  });
+
   it('requires the stored transition to carry the current epoch and revision', (): void => {
     const transition: PendingEnforcementTransition = pendingTransition('start', 'alarm-ready');
 
@@ -638,6 +682,36 @@ describe('background runtime session and journal relationships', (): void => {
     ]);
   });
 
+  it('lets the maintenance tick prune a projected handled record during cleanup', (): void => {
+    const first: HandledScheduleOccurrence = handledOccurrence({
+      entryId: 'entry-0',
+      token: `entry-0@${LOCAL_DATE}`,
+    });
+    const second: HandledScheduleOccurrence = handledOccurrence({
+      entryId: 'entry-1',
+      token: `entry-1@${LOCAL_DATE}`,
+    });
+    const closure: CleanupClosureV2 = cleanupClosure({
+      projection: runtimeClosureProjection({ handledOccurrences: [first, second] }),
+    });
+
+    expectAccepted([
+      cleanupClosureRuntime({ pendingClosure: closure, handledScheduleOccurrences: [second] }),
+      cleanupClosureRuntime({ pendingClosure: closure, handledScheduleOccurrences: [first] }),
+      cleanupClosureRuntime({ pendingClosure: closure, handledScheduleOccurrences: [] }),
+    ]);
+    expectRejected([
+      cleanupClosureRuntime({
+        pendingClosure: closure,
+        handledScheduleOccurrences: [first, handledOccurrence()],
+      }),
+      cleanupClosureRuntime({
+        pendingClosure: closure,
+        handledScheduleOccurrences: [{ ...first, reason: 'started' }],
+      }),
+    ]);
+  });
+
   it('projects handled records only for a cleanup closure', (): void => {
     const first: HandledScheduleOccurrence = handledOccurrence({
       entryId: 'entry-0',
@@ -652,7 +726,6 @@ describe('background runtime session and journal relationships', (): void => {
     });
 
     expectRejected([
-      cleanupClosureRuntime({ handledScheduleOccurrences: [] }),
       cleanupClosureRuntime({
         pendingClosure: closure,
         handledScheduleOccurrences: [second, first],

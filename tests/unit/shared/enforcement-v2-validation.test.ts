@@ -323,13 +323,22 @@ describe('shared enforcement v2 overlay parsing', (): void => {
     ]);
   });
 
+  it('accepts a first freeze at the phase boundary', (): void => {
+    const timing: ActiveTiming = activeOverlay().timing;
+    const atBoundary: ActiveOverlay = activeOverlay({
+      timing: { ...timing, phaseEndsAt: NOW, sessionEndsAt: NOW },
+    });
+
+    expect(parseDocumentOverlayView(atBoundary)).not.toBeNull();
+  });
+
   it('enforces timed timing and copy', (): void => {
     const timing: ActiveTiming = activeOverlay().timing;
 
     expectOverlayRejected([
       activeOverlay({ timing: { ...timing, phaseEndsAt: null } }),
       activeOverlay({ timing: { ...timing, sessionEndsAt: null } }),
-      activeOverlay({ timing: { ...timing, phaseEndsAt: NOW } }),
+      activeOverlay({ timing: { ...timing, phaseEndsAt: NOW - 1 } }),
       activeOverlay({ timing: { ...timing, sessionEndsAt: NOW + 30_000 } }),
       activeOverlay({ timing: { ...timing, phaseStartedAt: NOW + 1 } }),
       activeOverlay({ copy: activeCopy({ lockedUntil: null }) }),
@@ -430,18 +439,25 @@ describe('shared enforcement v2 overlay parsing', (): void => {
     ]);
   });
 
-  it('enforces gate and unlock freshness against capturedAt', (): void => {
+  it('enforces unlock freshness against capturedAt and lets a gate open later', (): void => {
     const fresh: SiteUnlock = { host: 'example.com', until: NOW + 1 };
 
     expectOverlayRejected([
-      gatedOverlay({ ...PAUSE_GATE, openedAt: NOW + 1 }),
       activeOverlay({ activeUnlocks: [{ host: 'example.com', until: NOW }] }),
       activeOverlay({ activeUnlocks: [{ host: 'example.com', until: NOW - 1 }] }),
       activeOverlay({ activeUnlocks: [fresh, { host: 'other.example', until: NOW - 1 }] }),
       activeOverlay({ activeUnlocks: [{ host: '   ', until: NOW + 1 }] }),
     ]);
-    expect(parseDocumentOverlayView(gatedOverlay({ ...PAUSE_GATE, openedAt: NOW }))).not.toBeNull();
     expect(parseDocumentOverlayView(activeOverlay({ activeUnlocks: [fresh] }))).not.toBeNull();
+    // `capturedAt` is a frozen anchor, not a clock reading. A Friction End opens its cancel gate
+    // after activation and the replacement view keeps the anchor, so a later gate is legal.
+    for (const openedAt of [NOW - 500, NOW, NOW + 1, NOW + 30_000]) {
+      const gate: GateState = { ...CANCEL_GATE, openedAt, readyAt: openedAt + 5_000 };
+      const gated: ActiveOverlay = gatedOverlay(gate, {
+        copy: activeCopy({ gateTitle: 'End this session', gateConfirm: 'End the session' }),
+      });
+      expect(parseDocumentOverlayView(gated)).not.toBeNull();
+    }
   });
 
   it('enforces timestamp, count, cap, and cost numeric domains', (): void => {

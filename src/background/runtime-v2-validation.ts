@@ -1,4 +1,5 @@
 import { isDailyDate } from '../core/stats';
+import { MAX_HANDLED_SCHEDULE_OCCURRENCES } from '../shared/constants';
 import { exactDataEqual, snapshotExactData } from '../shared/exact-data';
 import { isSessionEventRecordV2 } from '../shared/runtime-validation';
 import type { HandledScheduleOccurrence, SessionStateV2 } from '../shared/types';
@@ -61,8 +62,6 @@ interface RuntimeAuthority {
   commitCheckpoint: RuntimeCommitCheckpointV2 | null;
 }
 
-/** The deterministic retention cap on stored handled schedule occurrences. */
-const MAX_HANDLED_SCHEDULE_OCCURRENCES: number = 256;
 const RUNTIME_KEYS: readonly string[] = [
   'runtimeSchemaVersion',
   'session',
@@ -278,10 +277,10 @@ function resetAcksAgree(authority: RuntimeAuthority): boolean {
 }
 
 /**
- * Every stored command carries the current epoch. The revision equality holds only while the map is
- * the current authority. A pre-commit or committed transition freezes its own replacement view and
- * raises the top revision to it without touching the map, so the retained batch legitimately keeps
- * the older revision until cleanup entry or closure commit replaces it.
+ * Every stored command carries the current epoch. The revision and base policy equalities hold only
+ * while the map is the current authority. A pre-commit or committed transition freezes its own
+ * replacement view and raises the top revision to it without touching the map, so the retained
+ * batch legitimately keeps the older tuple until cleanup entry or closure commit replaces it.
  */
 function documentCommandsAgree(authority: RuntimeAuthority): boolean {
   const transition: PendingEnforcementTransition | null = authority.transition;
@@ -289,7 +288,9 @@ function documentCommandsAgree(authority: RuntimeAuthority): boolean {
   return Object.values(authority.documentCommands).every(
     (command: FrozenDocumentCommand): boolean =>
       command.enforcementEpoch === authority.enforcementEpoch &&
-      (!currentAuthority || command.runtimeRevision === authority.runtimeRevision),
+      (!currentAuthority ||
+        (command.runtimeRevision === authority.runtimeRevision &&
+          command.basePolicyRevision === authority.basePolicyRevision)),
   );
 }
 
@@ -322,6 +323,7 @@ function transitionAgrees(authority: RuntimeAuthority): boolean {
     authority.closure !== null ||
     transition.enforcementEpoch !== authority.enforcementEpoch ||
     transition.runtimeRevision !== authority.runtimeRevision ||
+    !transitionBaseRevisionAgrees(transition, authority.basePolicyRevision) ||
     (progress !== null && !exactDataEqual(authority.documentCommands, progress.clearCommands))
   ) {
     return false;
@@ -329,6 +331,23 @@ function transitionAgrees(authority: RuntimeAuthority): boolean {
   return transition.stage === 'cleanup'
     ? cleanupTransitionSessionAgrees(transition, authority.session)
     : transitionStageSessionAgrees(transition, authority.session);
+}
+
+/**
+ * Commit stores the base policy revision the transition reserved, and abandonment persists it with
+ * the clear batch so later content commands stay monotonic, so from either write onward the durable
+ * runtime carries it. A pre-commit start stage is the one place whose reservation legitimately
+ * leads the durable base, and a pre-commit resume never moved it.
+ */
+function transitionBaseRevisionAgrees(
+  transition: PendingEnforcementTransition,
+  basePolicyRevision: number,
+): boolean {
+  const reserving: boolean =
+    transition.kind === 'start' &&
+    transition.stage !== 'cleanup' &&
+    !COMMITTED_TRANSITION_STAGES.has(transition.stage);
+  return reserving || transition.basePolicyRevision === basePolicyRevision;
 }
 
 /**
@@ -401,8 +420,27 @@ function closureAgrees(authority: RuntimeAuthority): boolean {
     authority.runtimeRevision === progress.clearRuntimeRevision &&
     exactDataEqual(authority.documentCommands, progress.clearCommands) &&
     closureClearCommandsAgree(authority, progress, sessionId) &&
-    exactDataEqual(authority.handledScheduleOccurrences, closure.projection.handledOccurrences)
+    projectsHandledRecords(authority, closure.projection.handledOccurrences)
   );
+}
+
+/**
+ * Logical closure wrote its handled records, so the top-level log holds no record the immutable
+ * projection does not, structurally and in the projection's own order. It may hold fewer: the
+ * maintenance tick prunes an expired record while a multi-day cleanup is still retrying, and that
+ * prune must not make the journal that owns the browser cleanup unparseable.
+ */
+function projectsHandledRecords(
+  authority: RuntimeAuthority,
+  projected: readonly HandledScheduleOccurrence[],
+): boolean {
+  let next: number = 0;
+  for (const record of authority.handledScheduleOccurrences) {
+    while (next < projected.length && !exactDataEqual(projected[next], record)) next += 1;
+    if (next === projected.length) return false;
+    next += 1;
+  }
+  return true;
 }
 
 /** The prior session stays durable unless a stored commit checkpoint already projects it gone. */
