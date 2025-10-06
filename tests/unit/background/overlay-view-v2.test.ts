@@ -360,6 +360,29 @@ describe('buildActiveOverlayView gate rows', () => {
     expect(validateDetachedDocumentOverlayView(view)).toBe(true);
   });
 
+  it('builds a cancel gate opened after the frozen capture time', () => {
+    // `capturedAt` is a frozen anchor, not a clock reading. A committed Friction End opens its
+    // cancel gate later and freezes a replacement view that keeps the original anchor.
+    const later: GateState = gateState({
+      kind: 'cancel',
+      requiredPhrase: 'I am ending this session',
+      openedAt: NOW + 3_000,
+      readyAt: NOW + 8_000,
+    });
+    const view: ActiveOverlay = activeView({ gate: later });
+
+    expect(view.gate).toEqual(later);
+    expect(view.timing.capturedAt).toBe(NOW);
+    expect(validateDetachedDocumentOverlayView(view)).toBe(true);
+  });
+
+  it('builds a first freeze exactly at the phase end', () => {
+    const view: ActiveOverlay = activeView({ capturedAt: NOW + 60_000 });
+
+    expect(view.timing.capturedAt).toBe(view.timing.phaseEndsAt);
+    expect(validateDetachedDocumentOverlayView(view)).toBe(true);
+  });
+
   it('names the unlock gate by host and the cancel gate by session', () => {
     const unlock: ActiveOverlay = activeView({
       gate: gateState({
@@ -435,16 +458,9 @@ describe('buildActiveOverlayView refusals', () => {
     );
   });
 
-  it('refuses a capture time at or after the phase end', () => {
+  it('refuses a capture time after the phase end', () => {
     expectInvalidRule(
       (): DocumentOverlayView => buildActiveOverlayView(activeInput({ capturedAt: NOW + 61_000 })),
-    );
-  });
-
-  it('refuses a gate opened after the capture time', () => {
-    expectInvalidRule(
-      (): DocumentOverlayView =>
-        buildActiveOverlayView(activeInput({ gate: gateState({ openedAt: NOW + 1 }) })),
     );
   });
 
