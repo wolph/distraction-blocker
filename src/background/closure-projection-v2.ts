@@ -62,6 +62,13 @@ export interface ClosureProjectionInputV2 {
   pauseEconomy: PauseEconomy;
   accruedFocusMs: number;
   todayAgg: DailyAgg | null;
+  /**
+   * The stored daily aggregates this closure may add focus to, keyed by `syncAggKey`. A closure
+   * that crosses a local midnight lands focus on a date the runtime already finished and wrote, and
+   * `aggregateSets` is an absolute value, so seeding such a date empty would erase that whole day.
+   * The caller reads those keys before preparing the closure.
+   */
+  priorAggregates: Record<string, DailyAgg>;
   runtimeDate: string;
   deviceId: string;
   currentHandledOccurrences: readonly HandledScheduleOccurrence[];
@@ -255,7 +262,7 @@ function buildClosureAggregatesV2(
   );
 }
 
-/** The runtime aggregate seeds its own date. Every other date starts from an empty day. */
+/** One seeded aggregate per touched date, built once and then added to in place. */
 function seedClosureAggregateV2(
   aggregates: Map<string, DailyAgg>,
   input: ClosureProjectionInputV2,
@@ -264,12 +271,34 @@ function seedClosureAggregateV2(
   const key: string = syncAggKey(input.deviceId, date);
   const known: DailyAgg | undefined = aggregates.get(key);
   if (known !== undefined) return known;
-  const seeded: DailyAgg =
-    date === input.runtimeDate && input.todayAgg !== null
-      ? structuredClone(input.todayAgg)
-      : emptyDaily(date);
+  const seeded: DailyAgg = closureAggregateSeedV2(input, key, date);
   aggregates.set(key, seeded);
   return seeded;
+}
+
+/**
+ * The live runtime aggregate seeds its own date, a stored aggregate seeds any other date, and only
+ * a date with nothing stored yet starts empty. A date earlier than the runtime date has already
+ * been finished and written, so the caller must supply it: seeding it empty would replace that
+ * day's attempts, sessions, and earlier focus with this closure's split alone.
+ */
+function closureAggregateSeedV2(
+  input: ClosureProjectionInputV2,
+  key: string,
+  date: string,
+): DailyAgg {
+  if (date === input.runtimeDate && input.todayAgg !== null) {
+    return structuredClone(input.todayAgg);
+  }
+  const prior: DailyAgg | undefined = input.priorAggregates[key];
+  if (prior !== undefined) {
+    if (prior.date !== date) invalidClosure(`the stored aggregate ${key} belongs to another date`);
+    return structuredClone(prior);
+  }
+  if (date < input.runtimeDate) {
+    invalidClosure(`settling focus on ${date} needs the stored aggregate ${key}`);
+  }
+  return emptyDaily(date);
 }
 
 /**

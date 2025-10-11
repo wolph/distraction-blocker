@@ -41,6 +41,12 @@ const PROJECTED_KEYS: readonly ProjectedKeyV2[] = [
 
 type ProjectedKeyV2 = keyof RuntimeDomainProjectionV2;
 
+/** The installed cleanup batch plus the journal that owns it, which retry batches never cross. */
+interface CleanupBatchV2 {
+  kind: 'closure' | 'transition';
+  progress: CleanupProgress;
+}
+
 export interface RuntimeCheckpointPortsV2 {
   saveRuntime(runtime: RuntimeStateV2): Promise<void>;
   appendEvents(events: readonly SessionEventRecordV2[]): Promise<void>;
@@ -116,6 +122,12 @@ export async function commitRuntimeCheckpointV2(
       'a commit checkpoint never lowers the monotonic runtime revision',
     );
   }
+  if (input.projection.basePolicyRevision < runtime.basePolicyRevision) {
+    throw new CoreError(
+      'invalid-rule',
+      'a commit checkpoint never lowers the monotonic base policy revision',
+    );
+  }
   assertCleanupBatchAdvance(runtimeCleanupBatch(runtime), projectedCleanupBatch(input.projection));
   const checkpoint: RuntimeCommitCheckpointV2 = {
     version: 2,
@@ -182,30 +194,46 @@ function sortedAggregateSets(aggregateSets: Record<string, DailyAgg>): Array<[st
 }
 
 /**
- * A replacement cleanup batch is a new operation ID, a new retry batch, or a new clear revision. The
- * spec gives a manual retry one durable checkpoint that assigns a new UUID and advances the clear
- * revision, so a replacement that reuses its revision would leave an in-flight command from the
+ * One cleanup journal owns one operation ID. Every automatic attempt in that batch reuses the ID,
+ * the clear revision, and the frozen commands, so a repeated content clear is idempotent, and a
+ * manual retry spends one durable checkpoint on a new UUID, a higher clear revision, and the next
+ * retry batch. A replacement that reused its revision would leave an in-flight command from the
  * abandoned batch carrying the same revision tuple as the new one, which content cannot tell apart.
+ *
+ * A transition that hands its cleanup to a closure is the one replacement that crosses journals. It
+ * still advances beyond the transition's clear revision, but it starts its own retry counting, so
+ * the batch rule applies only within one journal kind.
  */
 function assertCleanupBatchAdvance(
-  before: CleanupProgress | null,
-  after: CleanupProgress | null,
+  before: CleanupBatchV2 | null,
+  after: CleanupBatchV2 | null,
 ): void {
   if (before === null || after === null) return;
-  const replaced: boolean =
-    after.cleanupOperationId !== before.cleanupOperationId ||
-    after.retry.batch !== before.retry.batch ||
-    after.clearRuntimeRevision !== before.clearRuntimeRevision;
-  if (replaced && after.clearRuntimeRevision <= before.clearRuntimeRevision) {
+  const from: CleanupProgress = before.progress;
+  const to: CleanupProgress = after.progress;
+  if (to.cleanupOperationId === from.cleanupOperationId) {
+    if (to.clearRuntimeRevision !== from.clearRuntimeRevision) {
+      throw new CoreError('invalid-rule', 'an automatic cleanup retry keeps its clear revision');
+    }
+    if (to.retry.batch !== from.retry.batch) {
+      throw new CoreError('invalid-rule', 'a new cleanup retry batch allocates a new operation ID');
+    }
+    return;
+  }
+  if (to.clearRuntimeRevision <= from.clearRuntimeRevision) {
     throw new CoreError('invalid-rule', 'a replacement cleanup batch advances the clear revision');
+  }
+  if (before.kind !== after.kind) return;
+  if (to.retry.batch !== from.retry.batch + 1 || to.retry.automaticAttempt !== 0) {
+    throw new CoreError('invalid-rule', 'a replacement cleanup batch begins the next retry batch');
   }
 }
 
-function runtimeCleanupBatch(runtime: RuntimeStateV2): CleanupProgress | null {
+function runtimeCleanupBatch(runtime: RuntimeStateV2): CleanupBatchV2 | null {
   return cleanupBatch(runtime.pendingClosure, runtime.pendingEnforcementTransition);
 }
 
-function projectedCleanupBatch(projection: RuntimeDomainProjectionV2): CleanupProgress | null {
+function projectedCleanupBatch(projection: RuntimeDomainProjectionV2): CleanupBatchV2 | null {
   return cleanupBatch(projection.pendingClosure, projection.pendingEnforcementTransition);
 }
 
@@ -213,9 +241,12 @@ function projectedCleanupBatch(projection: RuntimeDomainProjectionV2): CleanupPr
 function cleanupBatch(
   closure: PendingClosure | null,
   transition: PendingEnforcementTransition | null,
-): CleanupProgress | null {
-  if (closure !== null && closure.stage === 'cleanup') return closure.cleanupProgress;
-  return transition === null ? null : transition.cleanupProgress;
+): CleanupBatchV2 | null {
+  if (closure !== null && closure.stage === 'cleanup') {
+    return { kind: 'closure', progress: closure.cleanupProgress };
+  }
+  if (transition === null || transition.cleanupProgress === null) return null;
+  return { kind: 'transition', progress: transition.cleanupProgress };
 }
 
 function composedCheckpointRuntime(

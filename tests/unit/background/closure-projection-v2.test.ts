@@ -179,6 +179,7 @@ function projectionInput(
     pauseEconomy: PAUSE_ECONOMY,
     accruedFocusMs: 0,
     todayAgg: null,
+    priorAggregates: {},
     runtimeDate: LOCAL_DATE,
     deviceId: DEVICE_ID,
     currentHandledOccurrences: [],
@@ -224,6 +225,18 @@ function handledSeries(count: number, firstHandledAt: number): HandledScheduleOc
       });
     },
   );
+}
+
+/** A closure whose focus crosses local midnight after the runtime already rolled its own date. */
+function crossingInput(
+  overrides: Partial<ClosureProjectionInputV2> = {},
+): ClosureProjectionInputV2 {
+  return projectionInput({
+    session: sessionState({ startedAt: EVENING_START_AT, phaseStartedAt: EVENING_START_AT }),
+    endedAt: CROSSING_END_AT,
+    runtimeDate: NEXT_DATE,
+    ...overrides,
+  });
 }
 
 function earnedMsFor(bank: BankState, focusDeltaMs: number): number {
@@ -466,6 +479,47 @@ describe('v2 closure aggregate projection', (): void => {
         sessionsCompleted: 1,
       },
     });
+  });
+
+  it('adds the split focus to the stored aggregate of an earlier local date', (): void => {
+    const priorKey: string = syncAggKey(DEVICE_ID, LOCAL_DATE);
+    const prior: DailyAgg = dailyAgg();
+    const result: ClosureProjectionResultV2 = buildClosureProjectionV2(
+      crossingInput({ priorAggregates: { [priorKey]: prior } }),
+    );
+
+    // The runtime rolled its date at the local midnight this closure crosses, so the earlier day is
+    // already stored and must keep every counter it finished with.
+    expect(result.projection.aggregateSets[priorKey]).toEqual({
+      ...dailyAgg(),
+      focusMs: dailyAgg().focusMs + (LOCAL_MIDNIGHT - EVENING_START_AT),
+    });
+    expect(result.projection.aggregateSets[syncAggKey(DEVICE_ID, NEXT_DATE)]).toEqual({
+      ...emptyDaily(NEXT_DATE),
+      focusMs: CROSSING_END_AT - LOCAL_MIDNIGHT,
+      sessionsCompleted: 1,
+    });
+
+    prior.focusMs = 999;
+    expect(result.projection.aggregateSets[priorKey]?.focusMs).toBe(
+      dailyAgg().focusMs + (LOCAL_MIDNIGHT - EVENING_START_AT),
+    );
+  });
+
+  it('refuses to settle focus on an earlier local date with no stored aggregate', (): void => {
+    expect((): unknown => buildClosureProjectionV2(crossingInput())).toThrowError(
+      expect.objectContaining({ code: 'invalid-rule' }),
+    );
+  });
+
+  it('refuses a stored aggregate filed under another date', (): void => {
+    const priorKey: string = syncAggKey(DEVICE_ID, LOCAL_DATE);
+
+    expect((): unknown =>
+      buildClosureProjectionV2(
+        crossingInput({ priorAggregates: { [priorKey]: dailyAgg({ date: NEXT_DATE }) } }),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'invalid-rule' }));
   });
 
   it('leaves the completion counter unchanged on a canceled closure', (): void => {
