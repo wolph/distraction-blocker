@@ -437,7 +437,6 @@ describe('v2 content transport send', (): void => {
       ['basePolicyRevision', active, appliedFor(active, { basePolicyRevision: 5 })],
       ['runtimeRevision', active, appliedFor(active, { runtimeRevision: 8 })],
       ['documentId', active, appliedFor(active, { documentId: OTHER_DOCUMENT_ID })],
-      ['observedUrl', active, appliedFor(active, { observedUrl: OTHER_URL })],
       [
         'presentation',
         active,
@@ -536,7 +535,7 @@ describe('v2 content transport send', (): void => {
     expect(detailOf(wrongForReset)).toContain('applied');
   });
 
-  it('classifies receiver-absent rejections and reports every other error', async (): Promise<void> => {
+  it('classifies a receiver-absent rejection from both senders', async (): Promise<void> => {
     const command: FrozenDocumentCommand = documentCommand();
     const reset: FrozenEpochResetCommand = resetCommand();
     const absent: readonly unknown[] = [
@@ -553,15 +552,36 @@ describe('v2 content transport send', (): void => {
         kind: 'no-receiver',
       });
     }
+  });
 
-    const closed: Error = new Error('No tab with id: 7.');
-    expect(isNoReceiverError(closed)).toBe(false);
-    const failed: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
-      throwingPort(closed),
+  it('classifies a vanished target as closed rather than a fatal mismatch', async (): Promise<void> => {
+    const command: FrozenDocumentCommand = documentCommand();
+    const reset: FrozenEpochResetCommand = resetCommand();
+    const gone: readonly Error[] = [
+      new Error('No tab with id: 7.'),
+      new Error('The tab was closed.'),
+      new Error('The message port closed before a response was received.'),
+    ];
+
+    for (const error of gone) {
+      expect(isNoReceiverError(error)).toBe(false);
+      expect(await sendDocumentEnforcementCommand(throwingPort(error), command)).toEqual({
+        kind: 'closed',
+      });
+      expect(await sendEpochResetCommand(throwingPort(error), reset)).toEqual({ kind: 'closed' });
+    }
+  });
+
+  it('reports every other rejection as a mismatch carrying its text', async (): Promise<void> => {
+    const command: FrozenDocumentCommand = documentCommand();
+    const reset: FrozenEpochResetCommand = resetCommand();
+
+    const unnamed: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
+      throwingPort(new Error('Frame with ID 0 was removed.')),
       command,
     );
-    expect(failed.kind).toBe('mismatch');
-    expect(detailOf(failed)).toContain('No tab with id: 7.');
+    expect(unnamed.kind).toBe('mismatch');
+    expect(detailOf(unnamed)).toContain('Frame with ID 0 was removed.');
 
     const thrownText: EpochResetOutcomeV2 = await sendEpochResetCommand(
       throwingPort('boom'),
@@ -570,6 +590,28 @@ describe('v2 content transport send', (): void => {
     expect(thrownText.kind).toBe('mismatch');
     expect(detailOf(thrownText)).toContain('boom');
     expect(isNoReceiverError('boom')).toBe(false);
+  });
+
+  it('treats an exact answer for another URL as a changed target', async (): Promise<void> => {
+    const command: FrozenDocumentCommand = documentCommand();
+    const outcome: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
+      fakePort(appliedFor(command, { observedUrl: OTHER_URL })).ports,
+      command,
+    );
+
+    expect(outcome).toEqual({ kind: 'changed', observedUrl: OTHER_URL });
+    expect(outcome).not.toHaveProperty('ack');
+  });
+
+  it('prefers the mismatch when a changed URL arrives with a broken echo', async (): Promise<void> => {
+    const command: FrozenDocumentCommand = documentCommand();
+    const outcome: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
+      fakePort(appliedFor(command, { observedUrl: OTHER_URL, runtimeRevision: 8 })).ports,
+      command,
+    );
+
+    expect(outcome.kind).toBe('mismatch');
+    expect(detailOf(outcome)).toContain('runtimeRevision');
   });
 
   it('wraps an exact epoch reset and reports a retired-epoch rejection', async (): Promise<void> => {

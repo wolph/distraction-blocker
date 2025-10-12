@@ -3,6 +3,22 @@
  * exact worker outcome. The worker owns the tab, so `tabId` is stripped before the send and added
  * back only when wrapping an acknowledgement. Nothing here reads a browser API, a clock, or
  * storage, and nothing retries: a caller owns the reissue policy for every outcome below.
+ *
+ * This module owns the whole runtime-error vocabulary, so a caller never inspects an error message.
+ * The outcomes fall into four classes, each naming one row of the spec's target-classification
+ * table, and the resolver that consumes them reads their meaning here:
+ *
+ * 1. Acknowledged, the Enforceable row. `applied` and `reset` carry an exact acknowledgement built
+ *    from the frozen command. Only these two may enter a checkpoint.
+ * 2. Closed, the Closed row. `closed` means the tab disappeared during the send. Remove the target
+ *    from the set and carry on: this is not fatal.
+ * 3. Reevaluate, the Changed row and ordinary protocol drift. `changed` means the document answered
+ *    for a URL other than the one this command named, so no acknowledgement is wrapped and the
+ *    replacement target belongs to the next pass. `stale` and `reset-required` are runtime drift and
+ *    a missing epoch handshake: reread durable runtime and reissue, or reset the epoch first.
+ * 4. Unexpectedly unreachable, the fatal row. `no-receiver` is an ordinary enforceable document with
+ *    no listener, and `mismatch` is an answer the frozen command cannot explain. Both are
+ *    `tab-enforcement-failed` for the caller.
  */
 
 import type {
@@ -44,12 +60,21 @@ export type DocumentCommandOutcomeV2 =
   | { kind: 'applied'; ack: DocumentEnforcementAck }
   | { kind: 'stale'; response: StaleCommandResponse }
   | { kind: 'reset-required'; currentEpoch: string | null }
+  | { kind: 'changed'; observedUrl: string }
+  | { kind: 'closed' }
   | { kind: 'no-receiver' }
   | { kind: 'mismatch'; detail: string };
 
 export type EpochResetOutcomeV2 =
   | { kind: 'reset'; ack: DocumentEpochResetAck }
   | { kind: 'rejected'; currentEpoch: string }
+  | { kind: 'closed' }
+  | { kind: 'no-receiver' }
+  | { kind: 'mismatch'; detail: string };
+
+/** A send failure classifies the target itself, so both senders share these three answers. */
+type SendFailureOutcomeV2 =
+  | { kind: 'closed' }
   | { kind: 'no-receiver' }
   | { kind: 'mismatch'; detail: string };
 
@@ -57,6 +82,16 @@ export type EpochResetOutcomeV2 =
 const NO_RECEIVER_MESSAGES: readonly string[] = [
   'Could not establish connection',
   'Receiving end does not exist',
+];
+/**
+ * The runtime's answer when the target went away mid-send. The first two are the strings v1 already
+ * treats as ignorable in `isIgnorableInjectionFailure`, and the third is what a document torn down
+ * while the send is in flight produces.
+ */
+const CLOSED_TARGET_MESSAGES: readonly string[] = [
+  'No tab with id',
+  'The tab was closed',
+  'The message port closed before a response was received',
 ];
 const REJECTED_DETAIL: string = 'the document rejected the command and answered nothing';
 const UNPARSABLE_DETAIL: string = 'the answer is not an exact content enforcement response';
@@ -66,8 +101,7 @@ const UNPARSABLE_DETAIL: string = 'the answer is not an exact content enforcemen
  * included, stays a reported mismatch so the caller can decide what it means for its target.
  */
 export function isNoReceiverError(error: unknown): boolean {
-  const message: string = errorText(error);
-  return NO_RECEIVER_MESSAGES.some((fragment: string): boolean => message.includes(fragment));
+  return hasAnyFragment(errorText(error), NO_RECEIVER_MESSAGES);
 }
 
 /**
@@ -83,9 +117,7 @@ export async function sendDocumentEnforcementCommand(
   try {
     raw = await ports.sendToDocument(command.tabId, command.documentId, wireCommand(command));
   } catch (error: unknown) {
-    return isNoReceiverError(error)
-      ? { kind: 'no-receiver' }
-      : { kind: 'mismatch', detail: errorText(error) };
+    return sendFailureOutcome(error);
   }
   const response: ContentEnforcementResponse | null = parseContentEnforcementResponse(raw);
   if (response === null) {
@@ -113,9 +145,7 @@ export async function sendEpochResetCommand(
   try {
     raw = await ports.sendToDocument(command.tabId, command.documentId, wireResetCommand(command));
   } catch (error: unknown) {
-    return isNoReceiverError(error)
-      ? { kind: 'no-receiver' }
-      : { kind: 'mismatch', detail: errorText(error) };
+    return sendFailureOutcome(error);
   }
   const response: ContentEnforcementResponse | null = parseContentEnforcementResponse(raw);
   if (response === null) {
@@ -145,6 +175,10 @@ function appliedOutcome(
 ): DocumentCommandOutcomeV2 {
   const field: string | null = appliedMismatchField(command, response);
   if (field !== null) return fieldMismatch(response.disposition, field);
+  // An otherwise exact answer for another URL is a target that navigated, not a broken document.
+  if (response.observedUrl !== command.expectedUrl) {
+    return { kind: 'changed', observedUrl: response.observedUrl };
+  }
   const ack: unknown = snapshotExactData({
     version: 1,
     operationId: command.operationId,
@@ -167,7 +201,8 @@ function appliedOutcome(
 
 /**
  * The first field of the command the response failed to echo, or null when the answer is exact.
- * Verdict and view are compared structurally against the frozen operation-time values.
+ * Verdict and view are compared structurally against the frozen operation-time values. The observed
+ * URL is deliberately absent: a document that navigated is the Changed row, not a mismatch.
  */
 function appliedMismatchField(
   command: FrozenDocumentCommand,
@@ -180,7 +215,6 @@ function appliedMismatchField(
   if (response.basePolicyRevision !== command.basePolicyRevision) return 'basePolicyRevision';
   if (response.runtimeRevision !== command.runtimeRevision) return 'runtimeRevision';
   if (response.documentId !== command.documentId) return 'documentId';
-  if (response.observedUrl !== command.expectedUrl) return 'observedUrl';
   if (response.presentation !== command.presentation) return 'presentation';
   if (!exactDataEqual(response.verdict, command.verdict)) return 'verdict';
   if (!exactDataEqual(response.overlay, command.overlay)) return 'overlay';
@@ -265,6 +299,21 @@ function unexpectedDisposition(
 
 function ackContractDetail(disposition: string): string {
   return `${disposition} answer does not wrap into an exact acknowledgement`;
+}
+
+/**
+ * Classifies a rejected send. A missing listener and a vanished tab are different target rows, so
+ * neither is reported as a mismatch: only an error this module cannot name is fatal.
+ */
+function sendFailureOutcome(error: unknown): SendFailureOutcomeV2 {
+  const message: string = errorText(error);
+  if (hasAnyFragment(message, NO_RECEIVER_MESSAGES)) return { kind: 'no-receiver' };
+  if (hasAnyFragment(message, CLOSED_TARGET_MESSAGES)) return { kind: 'closed' };
+  return { kind: 'mismatch', detail: message };
+}
+
+function hasAnyFragment(message: string, fragments: readonly string[]): boolean {
+  return fragments.some((fragment: string): boolean => message.includes(fragment));
 }
 
 function errorText(error: unknown): string {
