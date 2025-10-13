@@ -218,6 +218,42 @@ export interface RuntimeCommitCheckpointV2 {
   aggregateRemoves: string[];
 }
 
+/** The audit record of the one focus credit a v1 to v2 migration applies, settled once. */
+export interface LegacyMigrationFocusSettlement {
+  settledAt: number;
+  settledThrough: number;
+  phaseAtMigration: 'focus' | 'break' | 'paused';
+  focusedMsBefore: number;
+  creditedFocusMs: number;
+  focusedMsAfter: number;
+}
+
+/** The closure an invalid v1 active state migrates into, captured before the checkpoint write. */
+export interface MigrationCleanupPlan {
+  version: 1;
+  settlement: LegacyMigrationFocusSettlement;
+  projection: ClosureProjection;
+  cleanupSeed: CleanupSeed;
+  cleanupProgress: CleanupProgress;
+}
+
+/**
+ * The one durable record of a v1 to v2 migration. The checkpoint and its marker are stored in the
+ * same local runtime generation and validated as one value, so a marker never outlives the
+ * checkpoint that explains it.
+ */
+export interface RuntimeMigrationCheckpointV1ToV2 {
+  version: 1;
+  fromRuntimeSchemaVersion: 1;
+  toRuntimeSchemaVersion: 2;
+  migratedAt: number;
+  assignedSessionId: string | null;
+  identityEvent: Extract<LegacyEventRecord, { t: 'sessionIdentityAssigned' }> | null;
+  projectedRuntime: RuntimeStateV2;
+  cleanupPlan: MigrationCleanupPlan | null;
+  marker: { runtimeSchemaVersion: 2 };
+}
+
 export interface RuntimeStateV2 {
   runtimeSchemaVersion: 2;
   session: SessionStateV2 | null;

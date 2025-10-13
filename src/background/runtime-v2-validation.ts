@@ -1,8 +1,8 @@
 import { isDailyDate } from '../core/stats';
 import { MAX_HANDLED_SCHEDULE_OCCURRENCES } from '../shared/constants';
 import { exactDataEqual, snapshotExactData } from '../shared/exact-data';
-import { isSessionEventRecordV2 } from '../shared/runtime-validation';
-import type { HandledScheduleOccurrence, SessionStateV2 } from '../shared/types';
+import { isEventRecord, isSessionEventRecordV2 } from '../shared/runtime-validation';
+import type { HandledScheduleOccurrence, LegacyEventRecord, SessionStateV2 } from '../shared/types';
 import {
   everyDenseEntry,
   exactRecord,
@@ -20,6 +20,9 @@ import {
   validateDetachedAggregateRemoves,
   validateDetachedAggregateSets,
   validateDetachedBankState,
+  validateDetachedCleanupProgress,
+  validateDetachedCleanupSeed,
+  validateDetachedClosureProjection,
   validateDetachedDailyAgg,
   validateDetachedHandledScheduleOccurrence,
   validateDetachedPendingClosure,
@@ -38,9 +41,13 @@ import {
 import type { DeferredBlockClaim, RuntimeTabState } from './runtime-leaf-types';
 import type {
   CleanupProgress,
+  ClosureProjection,
+  LegacyMigrationFocusSettlement,
+  MigrationCleanupPlan,
   PendingClosure,
   PendingEnforcementTransition,
   RuntimeCommitCheckpointV2,
+  RuntimeMigrationCheckpointV1ToV2,
   RuntimeStateV2,
 } from './runtime-v2-types';
 import { validateDetachedPendingEnforcementTransition } from './transition-v2-validation';
@@ -121,6 +128,38 @@ const DEFERRED_CLAIM_KEYS: readonly string[] = [
   'tabId',
   'url',
 ];
+const MIGRATION_CHECKPOINT_KEYS: readonly string[] = [
+  'version',
+  'fromRuntimeSchemaVersion',
+  'toRuntimeSchemaVersion',
+  'migratedAt',
+  'assignedSessionId',
+  'identityEvent',
+  'projectedRuntime',
+  'cleanupPlan',
+  'marker',
+];
+const MIGRATION_CLEANUP_PLAN_KEYS: readonly string[] = [
+  'version',
+  'settlement',
+  'projection',
+  'cleanupSeed',
+  'cleanupProgress',
+];
+const MIGRATION_SETTLEMENT_KEYS: readonly string[] = [
+  'settledAt',
+  'settledThrough',
+  'phaseAtMigration',
+  'focusedMsBefore',
+  'creditedFocusMs',
+  'focusedMsAfter',
+];
+const IDENTITY_EVENT_KEYS: readonly string[] = ['t', 'at', 'startedAt', 'sessionId'];
+const MIGRATION_PHASES: ReadonlySet<string> = new Set<string>(['focus', 'break', 'paused']);
+/** A migrated active session, and invalid-active cleanup, both reserve exactly one revision. */
+const MIGRATION_ACTIVE_REVISION: number = 1;
+/** An idle v1 profile migrates to a runtime that has issued no policy and no command. */
+const MIGRATION_IDLE_REVISION: number = 0;
 /** The stages that hold a durable focus session captured at the transition's own activation. */
 const COMMITTED_TRANSITION_STAGES: ReadonlySet<string> = new Set<string>([
   'committed-pending-verification',
@@ -131,6 +170,203 @@ const COMMITTED_TRANSITION_STAGES: ReadonlySet<string> = new Set<string>([
 export function parseRuntimeStateV2(value: unknown): RuntimeStateV2 | null {
   const snapshot: unknown = snapshotExactData(value)?.value;
   return validateDetachedRuntimeStateV2(snapshot) ? snapshot : null;
+}
+
+export function parseRuntimeMigrationCheckpointV1ToV2(
+  value: unknown,
+): RuntimeMigrationCheckpointV1ToV2 | null {
+  const snapshot: unknown = snapshotExactData(value)?.value;
+  return validateDetachedMigrationCheckpoint(snapshot) ? snapshot : null;
+}
+
+/**
+ * Accepts only already-detached exact plain data from snapshotExactData. The checkpoint and its
+ * marker are stored in one generation and validated as one value, so the projected runtime goes
+ * through the same detached runtime rules `parseRuntimeStateV2` applies rather than a forked copy.
+ */
+function validateDetachedMigrationCheckpoint(
+  value: unknown,
+): value is RuntimeMigrationCheckpointV1ToV2 {
+  const candidate: UnknownRecord | null = exactRecord(value, MIGRATION_CHECKPOINT_KEYS);
+  const migratedAt: unknown = candidate?.migratedAt;
+  const projectedRuntime: unknown = candidate?.projectedRuntime;
+  if (
+    candidate === null ||
+    candidate.version !== 1 ||
+    candidate.fromRuntimeSchemaVersion !== 1 ||
+    candidate.toRuntimeSchemaVersion !== 2 ||
+    !isSafeTimestamp(migratedAt) ||
+    !isRuntimeSchemaMarkerValue(candidate.marker) ||
+    !validateDetachedRuntimeStateV2(projectedRuntime) ||
+    !projectsMigratedRuntime(projectedRuntime) ||
+    !identityAgrees(candidate, migratedAt)
+  ) {
+    return false;
+  }
+  const plan: unknown = candidate.cleanupPlan;
+  if (plan === null) return projectsMigratedDefaults(projectedRuntime);
+  return (
+    validateDetachedMigrationCleanupPlan(plan, migratedAt) &&
+    projectsCleanupPlan(projectedRuntime, plan)
+  );
+}
+
+/**
+ * `runtime-store-v2.ts` owns the standalone marker guard, and it imports this module's parser, so
+ * the shape is restated here rather than imported back across that edge.
+ */
+function isRuntimeSchemaMarkerValue(value: unknown): boolean {
+  const marker: UnknownRecord | null = exactRecord(value, ['runtimeSchemaVersion']);
+  return marker !== null && marker.runtimeSchemaVersion === 2;
+}
+
+/**
+ * Every migration writes a fresh epoch with no reset acknowledgements, replays nothing else through
+ * a nested commit checkpoint, and never invents a pending transition.
+ */
+function projectsMigratedRuntime(runtime: RuntimeStateV2): boolean {
+  return (
+    runtime.commitCheckpoint === null &&
+    runtime.pendingEnforcementTransition === null &&
+    Object.keys(runtime.epochResetAcks).length === 0
+  );
+}
+
+/**
+ * A migration that had to derive a session UUID records it once, together with the identity event
+ * that announces it at the same migration instant. A migration that reused a durable UUID, or that
+ * had no session at all, records neither.
+ */
+function identityAgrees(candidate: UnknownRecord, migratedAt: number): boolean {
+  const assignedSessionId: unknown = candidate.assignedSessionId;
+  const identityEvent: unknown = candidate.identityEvent;
+  if (assignedSessionId === null) return identityEvent === null;
+  if (!isUuid(assignedSessionId) || !validateDetachedIdentityEvent(identityEvent)) return false;
+  return identityEvent.sessionId === assignedSessionId && identityEvent.at === migratedAt;
+}
+
+/** Accepts only already-detached exact plain data from snapshotExactData. */
+function validateDetachedIdentityEvent(
+  value: unknown,
+): value is Extract<LegacyEventRecord, { t: 'sessionIdentityAssigned' }> {
+  const candidate: UnknownRecord | null = exactRecord(value, IDENTITY_EVENT_KEYS);
+  return (
+    candidate !== null && candidate.t === 'sessionIdentityAssigned' && isEventRecord(candidate)
+  );
+}
+
+/**
+ * Without a cleanup plan the projection is the migrated runtime itself. An idle profile has issued
+ * nothing, and a migrated active session reserves one base policy and one runtime revision and
+ * waits for standalone recovery to create its first commands and checkpoint. The closure a
+ * migration can produce always arrives with its plan, so a projected closure here has no authority.
+ */
+function projectsMigratedDefaults(runtime: RuntimeStateV2): boolean {
+  const revision: number =
+    runtime.session === null ? MIGRATION_IDLE_REVISION : MIGRATION_ACTIVE_REVISION;
+  return (
+    runtime.pendingClosure === null &&
+    runtime.enforcementCheckpoint === null &&
+    Object.keys(runtime.documentCommands).length === 0 &&
+    runtime.basePolicyRevision === revision &&
+    runtime.runtimeRevision === revision
+  );
+}
+
+/**
+ * The plan is the checkpoint's own copy of the closure the projected runtime carries, so the
+ * runtime holds no session and no checkpoint, exactly that closure at `cleanup`, and the reserved
+ * base policy and clear revisions. Its top runtime revision follows from the clear revision, which
+ * the runtime rules already tie to a cleanup closure.
+ */
+function projectsCleanupPlan(runtime: RuntimeStateV2, plan: MigrationCleanupPlan): boolean {
+  const closure: PendingClosure | null = runtime.pendingClosure;
+  if (
+    runtime.session !== null ||
+    runtime.enforcementCheckpoint !== null ||
+    closure === null ||
+    closure.stage !== 'cleanup' ||
+    runtime.basePolicyRevision !== MIGRATION_ACTIVE_REVISION ||
+    plan.cleanupProgress.clearRuntimeRevision !== MIGRATION_ACTIVE_REVISION
+  ) {
+    return false;
+  }
+  return (
+    exactDataEqual(closure.projection, plan.projection) &&
+    exactDataEqual(closure.cleanupSeed, plan.cleanupSeed) &&
+    exactDataEqual(closure.cleanupProgress, plan.cleanupProgress)
+  );
+}
+
+/** Accepts only already-detached exact plain data from snapshotExactData. */
+function validateDetachedMigrationCleanupPlan(
+  value: unknown,
+  migratedAt: number,
+): value is MigrationCleanupPlan {
+  const candidate: UnknownRecord | null = exactRecord(value, MIGRATION_CLEANUP_PLAN_KEYS);
+  const projection: unknown = candidate?.projection;
+  const settlement: unknown = candidate?.settlement;
+  if (
+    candidate === null ||
+    candidate.version !== 1 ||
+    !validateDetachedClosureProjection(projection) ||
+    !validateDetachedCleanupSeed(candidate.cleanupSeed) ||
+    !validateDetachedCleanupProgress(candidate.cleanupProgress) ||
+    !validateDetachedMigrationSettlement(settlement)
+  ) {
+    return false;
+  }
+  return (
+    closesInvalidActiveState(projection, migratedAt) &&
+    settlementAgrees(settlement, projection, migratedAt)
+  );
+}
+
+/** Migration closes an invalid legacy active state, and only that, at the migration instant. */
+function closesInvalidActiveState(projection: ClosureProjection, migratedAt: number): boolean {
+  return (
+    projection.reason === 'invalid-active-state' &&
+    projection.outcome === 'canceled' &&
+    projection.completionIncrement === 0 &&
+    projection.endedAt === migratedAt
+  );
+}
+
+/**
+ * The settlement is the audit record of the one focus credit migration applies, so it settles at
+ * the migration instant, never counts past it, and adds up to the focus the projection settled. A
+ * durable focus phase is the only phase that credits anything.
+ */
+function settlementAgrees(
+  settlement: LegacyMigrationFocusSettlement,
+  projection: ClosureProjection,
+  migratedAt: number,
+): boolean {
+  return (
+    settlement.settledAt === migratedAt &&
+    settlement.settledThrough <= migratedAt &&
+    settlement.focusedMsBefore + settlement.creditedFocusMs === settlement.focusedMsAfter &&
+    settlement.focusedMsAfter === projection.focusedMs &&
+    (settlement.phaseAtMigration === 'focus' || settlement.creditedFocusMs === 0)
+  );
+}
+
+/** Accepts only already-detached exact plain data from snapshotExactData. */
+function validateDetachedMigrationSettlement(
+  value: unknown,
+): value is LegacyMigrationFocusSettlement {
+  const candidate: UnknownRecord | null = exactRecord(value, MIGRATION_SETTLEMENT_KEYS);
+  const phaseAtMigration: unknown = candidate?.phaseAtMigration;
+  return (
+    candidate !== null &&
+    isSafeTimestamp(candidate.settledAt) &&
+    isSafeTimestamp(candidate.settledThrough) &&
+    typeof phaseAtMigration === 'string' &&
+    MIGRATION_PHASES.has(phaseAtMigration) &&
+    isSafeTimestamp(candidate.focusedMsBefore) &&
+    isSafeTimestamp(candidate.creditedFocusMs) &&
+    isSafeTimestamp(candidate.focusedMsAfter)
+  );
 }
 
 /**

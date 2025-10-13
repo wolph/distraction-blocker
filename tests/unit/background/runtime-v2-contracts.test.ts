@@ -17,12 +17,15 @@ import type {
   CleanupTabClaim,
   ClosureProjection,
   FrozenTransitionView,
+  LegacyMigrationFocusSettlement,
+  MigrationCleanupPlan,
   PendingClosure,
   PendingEnforcementTransition,
   PostCleanupClosure,
   PreparedTargetReservation,
   RuntimeCommitCheckpointV2,
   RuntimeDomainProjectionV2,
+  RuntimeMigrationCheckpointV1ToV2,
   RuntimeStateV2,
   SessionStartCandidate,
   StartDurationPlan,
@@ -293,5 +296,34 @@ describe('background runtime v2 leaf contracts', (): void => {
       commitCheckpoint: RuntimeCommitCheckpointV2 | null;
     }>();
     expectTypeOf<Extract<'scheduleActiveEntryId', keyof RuntimeStateV2>>().toEqualTypeOf<never>();
+  });
+
+  it('pins the v1 to v2 migration checkpoint contracts', (): void => {
+    expectTypeOf<LegacyMigrationFocusSettlement>().toEqualTypeOf<{
+      settledAt: number;
+      settledThrough: number;
+      phaseAtMigration: 'focus' | 'break' | 'paused';
+      focusedMsBefore: number;
+      creditedFocusMs: number;
+      focusedMsAfter: number;
+    }>();
+    expectTypeOf<MigrationCleanupPlan>().toEqualTypeOf<{
+      version: 1;
+      settlement: LegacyMigrationFocusSettlement;
+      projection: ClosureProjection;
+      cleanupSeed: CleanupSeed;
+      cleanupProgress: CleanupProgress;
+    }>();
+    expectTypeOf<RuntimeMigrationCheckpointV1ToV2>().toEqualTypeOf<{
+      version: 1;
+      fromRuntimeSchemaVersion: 1;
+      toRuntimeSchemaVersion: 2;
+      migratedAt: number;
+      assignedSessionId: string | null;
+      identityEvent: Extract<LegacyEventRecord, { t: 'sessionIdentityAssigned' }> | null;
+      projectedRuntime: RuntimeStateV2;
+      cleanupPlan: MigrationCleanupPlan | null;
+      marker: { runtimeSchemaVersion: 2 };
+    }>();
   });
 });

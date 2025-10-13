@@ -25,12 +25,15 @@ import type {
   CleanupTabClaim,
   ClosureProjection,
   FrozenTransitionView,
+  LegacyMigrationFocusSettlement,
+  MigrationCleanupPlan,
   PendingClosure,
   PendingEnforcementTransition,
   PostCleanupClosure,
   PreparedTargetReservation,
   RuntimeCommitCheckpointV2,
   RuntimeDomainProjectionV2,
+  RuntimeMigrationCheckpointV1ToV2,
   RuntimeStateV2,
   SessionStartCandidate,
   TransitionStage,
@@ -64,6 +67,7 @@ export type ActiveOverlay = Extract<DocumentOverlayView, { presentation: 'active
 export type TransitionKind = PendingEnforcementTransition['kind'];
 export type TransitionCleanupFrom = NonNullable<PendingEnforcementTransition['cleanupFrom']>;
 export type TransitionCleanupCause = NonNullable<PendingEnforcementTransition['cleanupCause']>;
+export type MigrationIdentityEvent = Extract<LegacyEventRecord, { t: 'sessionIdentityAssigned' }>;
 
 export const NOW: number = 1_750_000_000_000;
 export const CLOSED_AT: number = NOW + 30_000;
@@ -1357,4 +1361,146 @@ function transitionBaseRevision(transition: PendingEnforcementTransition): numbe
     transition.stage !== 'cleanup' &&
     !COMMITTED_STAGES.includes(transition.stage);
   return reserving ? BASE_POLICY_REVISION - 1 : BASE_POLICY_REVISION;
+}
+
+// Migration fixtures.
+
+/** Migration captures one instant, and every settled and projected value is stamped with it. */
+export const MIGRATED_AT: number = RUNTIME_CLOSED_AT;
+/** A migrated active session reserves one base policy and one runtime revision. */
+export const MIGRATION_ACTIVE_REVISION: number = 1;
+/** An idle v1 profile migrates to a runtime that has issued nothing yet. */
+export const MIGRATION_IDLE_REVISION: number = 0;
+
+/** The closure a v1 invalid active state migrates into, canceled at the migration instant. */
+export function migrationClosureProjection(
+  overrides: Partial<ClosureProjection> = {},
+): ClosureProjection {
+  const endEvent: SessionEndedEventV2 =
+    overrides.endEvent ?? migrationInvalidActiveEndEvent({ at: MIGRATED_AT });
+  return closureProjection({
+    endEvent,
+    events: [budgetEarnedEvent({ at: MIGRATED_AT - 1_000 }), endEvent],
+    handledOccurrences: [],
+    aggregateSets: { [AGGREGATE_KEY]: dailyAgg({ sessionsCompleted: 0 }) },
+    ...overrides,
+  });
+}
+
+/** Invalid-active cleanup begins at clear revision one under the reserved base policy revision. */
+export function migrationCleanupProgress(
+  overrides: Partial<CleanupProgress> = {},
+): CleanupProgress {
+  return cleanupProgress({
+    clearRuntimeRevision: MIGRATION_ACTIVE_REVISION,
+    clearCommands: migrationClearCommandMap(),
+    ...overrides,
+  });
+}
+
+export function migrationClearCommandMap(): Record<string, FrozenDocumentCommand> {
+  return clearCommandMap({
+    operationId: CLEANUP_OPERATION_ID,
+    runtimeRevision: MIGRATION_ACTIVE_REVISION,
+    basePolicyRevision: MIGRATION_ACTIVE_REVISION,
+  });
+}
+
+export function migrationCleanupClosure(
+  overrides: Partial<CleanupClosureV2> = {},
+): CleanupClosureV2 {
+  return cleanupClosure({
+    projection: migrationClosureProjection(),
+    cleanupProgress: migrationCleanupProgress(),
+    ...overrides,
+  });
+}
+
+export function migrationSettlement(
+  overrides: Partial<LegacyMigrationFocusSettlement> = {},
+): LegacyMigrationFocusSettlement {
+  return {
+    settledAt: MIGRATED_AT,
+    settledThrough: MIGRATED_AT - 5_000,
+    phaseAtMigration: 'focus',
+    focusedMsBefore: 20_000,
+    creditedFocusMs: 10_000,
+    focusedMsAfter: 30_000,
+    ...overrides,
+  };
+}
+
+/** The plan is the checkpoint's own copy of the closure, built separately so equality is real. */
+export function migrationCleanupPlan(
+  overrides: Partial<MigrationCleanupPlan> = {},
+): MigrationCleanupPlan {
+  return {
+    version: 1,
+    settlement: migrationSettlement(),
+    projection: migrationClosureProjection(),
+    cleanupSeed: cleanupSeed(),
+    cleanupProgress: migrationCleanupProgress(),
+    ...overrides,
+  };
+}
+
+/** An idle v1 profile: no session, no journal, a fresh epoch, and nothing issued yet. */
+export function migrationIdleRuntime(overrides: Partial<RuntimeStateV2> = {}): RuntimeStateV2 {
+  return emptyRuntimeV2({
+    basePolicyRevision: MIGRATION_IDLE_REVISION,
+    runtimeRevision: MIGRATION_IDLE_REVISION,
+    ...overrides,
+  });
+}
+
+/** A valid migrated active session, before standalone recovery creates its document commands. */
+export function migrationActiveRuntime(overrides: Partial<RuntimeStateV2> = {}): RuntimeStateV2 {
+  return emptyRuntimeV2({
+    session: timedFocusSession({ focusedMs: 30_000 }),
+    accruedFocusMs: 30_000,
+    basePolicyRevision: MIGRATION_ACTIVE_REVISION,
+    runtimeRevision: MIGRATION_ACTIVE_REVISION,
+    todayAgg: dailyAgg(),
+    ...overrides,
+  });
+}
+
+/** An invalid v1 active state: the session is gone and its cleanup closure is already installed. */
+export function migrationCleanupRuntime(overrides: Partial<RuntimeStateV2> = {}): RuntimeStateV2 {
+  return emptyRuntimeV2({
+    basePolicyRevision: MIGRATION_ACTIVE_REVISION,
+    runtimeRevision: MIGRATION_ACTIVE_REVISION,
+    documentCommands: migrationClearCommandMap(),
+    pendingClosure: migrationCleanupClosure(),
+    ...overrides,
+  });
+}
+
+export function migrationIdentityEvent(
+  overrides: Partial<MigrationIdentityEvent> = {},
+): MigrationIdentityEvent {
+  return {
+    t: 'sessionIdentityAssigned',
+    at: MIGRATED_AT,
+    startedAt: ACTIVATION_AT,
+    sessionId: SESSION_ID,
+    ...overrides,
+  };
+}
+
+export function migrationCheckpoint(
+  overrides: Partial<RuntimeMigrationCheckpointV1ToV2> = {},
+): RuntimeMigrationCheckpointV1ToV2 {
+  return {
+    version: 1,
+    fromRuntimeSchemaVersion: 1,
+    toRuntimeSchemaVersion: 2,
+    migratedAt: MIGRATED_AT,
+    assignedSessionId: null,
+    identityEvent: null,
+    projectedRuntime: migrationIdleRuntime(),
+    cleanupPlan: null,
+    marker: { runtimeSchemaVersion: 2 },
+    ...overrides,
+  };
 }
