@@ -114,18 +114,21 @@ function selectWindow(draft: EntryDraft): EntryDraft {
   };
 }
 
+/**
+ * An indefinite entry submits Flexible with cycles off, so a session type or cycle edit
+ * reaches only the held timed choices. The invariant `isScheduleEntryV2` enforces at the
+ * boundary holds here structurally, and the forced wrapper stays a UX affordance.
+ */
 function setStrictness(draft: EntryDraft, strictness: Strictness): EntryDraft {
-  return {
-    entry: { ...draft.entry, strictness },
-    timed: { ...draft.timed, strictness },
-  };
+  const timed: TimedChoices = { ...draft.timed, strictness };
+  if (draft.entry.duration.kind === 'until-stopped') return { entry: draft.entry, timed };
+  return { entry: { ...draft.entry, strictness }, timed };
 }
 
 function setCycling(draft: EntryDraft, cycling: CycleConfig | null): EntryDraft {
-  return {
-    entry: { ...draft.entry, cycling },
-    timed: { ...draft.timed, cycling },
-  };
+  const timed: TimedChoices = { ...draft.timed, cycling };
+  if (draft.entry.duration.kind === 'until-stopped') return { entry: draft.entry, timed };
+  return { entry: { ...draft.entry, cycling }, timed };
 }
 
 function overlapError(candidate: ScheduleEntryV2, entries: ScheduleEntryV2[]): string | null {
@@ -258,7 +261,7 @@ function EntryForm(props: EntryFormProps): VNode {
           }}
         />
       </label>
-      <fieldset class="schedule-duration" aria-label="Duration">
+      <fieldset class="schedule-duration">
         <legend>Duration</legend>
         <label class="check">
           <input
@@ -454,7 +457,9 @@ export function ScheduleV2(props: ScheduleV2Props): VNode {
               <input
                 type="checkbox"
                 checked={entry.enabled}
-                onClick={(): void => {
+                onClick={(event: Event): void => {
+                  // A refused toggle must not leave the browser's flip on screen.
+                  event.preventDefault();
                   setEnabled(entry.id, !entry.enabled);
                 }}
               />

@@ -210,6 +210,9 @@ describe('SessionStatus disclosure', (): void => {
   });
 
   it('carries the forced wrapper styles in the Options stylesheet', (): void => {
+    const view = render(<SessionStatus snapshot={indefiniteActive()} />);
+    expect(view.getByRole('status').classList.contains('session-status')).toBe(true);
+
     const css: string = readFileSync(resolve('src/options/options.css'), 'utf8');
 
     expect(css).toMatch(/\.forced-control\s*\{[^}]*cursor:\s*not-allowed/s);

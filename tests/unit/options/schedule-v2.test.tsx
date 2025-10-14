@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, within } from '@testing-library/preact';
 import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
 import { ScheduleV2 } from '../../../src/options/ScheduleV2';
 import { DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import { isScheduleEntryV2 } from '../../../src/shared/runtime-validation';
 import {
   SCHEDULE_UNTIL_STOPPED_COPY,
   SCHEDULE_WINDOW_LABEL,
@@ -98,6 +99,7 @@ describe('ScheduleV2 duration choices', (): void => {
     expect(saved[0]?.duration).toEqual({ kind: 'until-stopped' });
     expect(saved[0]?.strictness).toBe('flexible');
     expect(saved[0]?.cycling).toBeNull();
+    expect(isScheduleEntryV2(saved[0])).toBe(true);
   });
 
   it('refuses a session type or cycle change while the entry is indefinite', (): void => {
@@ -113,6 +115,47 @@ describe('ScheduleV2 duration choices', (): void => {
     const saved: ScheduleEntryV2[] = savedEntries(onChange);
     expect(saved[0]?.strictness).toBe('flexible');
     expect(saved[0]?.cycling).toBeNull();
+  });
+
+  it('keeps an indefinite entry Flexible when the forced wrapper is bypassed', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(<ScheduleV2 entries={[]} defaults={DEFAULTS} onChange={onChange} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+    fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
+
+    // Out of the wrapper, so no capture-phase block stands between the click and the draft.
+    const hard: HTMLElement = view.getByRole('radio', { name: /Hard/ });
+    document.body.appendChild(hard);
+    fireEvent.click(hard);
+    fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
+
+    const saved: ScheduleEntryV2[] = savedEntries(onChange);
+    expect(saved[0]?.duration).toEqual({ kind: 'until-stopped' });
+    expect(saved[0]?.strictness).toBe('flexible');
+    expect(saved[0]?.cycling).toBeNull();
+    expect(isScheduleEntryV2(saved[0])).toBe(true);
+    hard.remove();
+  });
+
+  it('retains a bypassed session type edit for the timed duration', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(<ScheduleV2 entries={[]} defaults={DEFAULTS} onChange={onChange} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+    fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
+
+    const hard: HTMLElement = view.getByRole('radio', { name: /Hard/ });
+    document.body.appendChild(hard);
+    fireEvent.click(hard);
+    hard.remove();
+    fireEvent.click(view.getByRole('radio', { name: SCHEDULE_WINDOW_LABEL }));
+    fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
+
+    const saved: ScheduleEntryV2[] = savedEntries(onChange);
+    expect(saved[0]?.duration).toEqual({ kind: 'window' });
+    expect(saved[0]?.strictness).toBe('hard');
+    expect(isScheduleEntryV2(saved[0])).toBe(true);
   });
 
   it('restores the unsent timed draft when the duration toggles back', (): void => {
@@ -137,6 +180,7 @@ describe('ScheduleV2 duration choices', (): void => {
     expect(saved[0]?.duration).toEqual({ kind: 'window' });
     expect(saved[0]?.strictness).toBe('hard');
     expect(saved[0]?.cycling).toEqual(DEFAULTS.defaultCycling);
+    expect(isScheduleEntryV2(saved[0])).toBe(true);
   });
 
   it('uses the current schedule defaults when a saved indefinite entry becomes timed', (): void => {
@@ -262,6 +306,12 @@ describe('ScheduleV2 rows and validation', (): void => {
   });
 
   it('carries the schedule duration styles in the Options stylesheet', (): void => {
+    const view = render(<ScheduleV2 entries={[]} defaults={DEFAULTS} onChange={vi.fn()} />);
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+    expect(
+      view.getByRole('group', { name: 'Duration' }).classList.contains('schedule-duration'),
+    ).toBe(true);
+
     const css: string = readFileSync(resolve('src/options/options.css'), 'utf8');
 
     expect(css).toMatch(/\.schedule-duration\s*\{/s);

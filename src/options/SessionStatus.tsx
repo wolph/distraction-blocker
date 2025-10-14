@@ -28,9 +28,9 @@ const FIXED_COPY: Readonly<Record<FixedLifecycleKind, string | null>> = {
  * which boundary validation rejects upstream, reads as still starting rather than throwing.
  */
 function activeCopy(snapshot: SessionSnapshotV2): string {
-  const duration: SessionSnapshotV2['config'] = snapshot.config;
-  if (duration === null) return SETTINGS_STARTING_COPY;
-  if (duration.duration.kind === 'until-stopped') return SETTINGS_INDEFINITE_COPY;
+  const config: SessionSnapshotV2['config'] = snapshot.config;
+  if (config === null) return SETTINGS_STARTING_COPY;
+  if (config.duration.kind === 'until-stopped') return SETTINGS_INDEFINITE_COPY;
   if (snapshot.sessionEndsAt === null) return SETTINGS_STARTING_COPY;
   return settingsTimedCopy(formatTimeOfDay(snapshot.sessionEndsAt));
 }
