@@ -1,7 +1,15 @@
 /**
  * The five static alarm singletons, the exact `phase` alarm plan, and the read-back every owned
- * alarm write must pass. Pure functions over an injected port: nothing here touches a chrome API,
- * a clock, or storage, so the worker owns both the port and what an `alarm-failed` outcome means.
+ * alarm write must pass. Pure functions over an injected `AlarmPortsV2`: nothing here touches a
+ * chrome API, a clock, or storage, so the worker owns both the port and what an `alarm-failed`
+ * outcome means.
+ *
+ * Every creation here is followed by a `get` that validates the exact intended role and time, as
+ * the spec requires of all alarm creation. A one-shot alarm must read back at exactly its requested
+ * time and with no period. The periodic tick has no caller-chosen time, so its verifiable half is
+ * existence plus its exact period. `ensureTickAlarmV2` therefore answers `'ready' | 'alarm-failed'`
+ * like `ensurePhaseAlarmV2`, not `void`: a consumer that ignores the answer keeps a worker whose
+ * periodic maintenance may never have been registered.
  */
 
 import { CoreError } from '../shared/errors';
@@ -25,10 +33,22 @@ export type AlarmNameV2 =
   | typeof CLOSURE_CLEANUP_ALARM
   | typeof DATA_CLEAR_RETRY_ALARM;
 
+/** One read-back row. `periodInMinutes` is null for a one-shot alarm. */
+export interface ScheduledAlarmV2 {
+  scheduledTime: number;
+  periodInMinutes: number | null;
+}
+
+/**
+ * The alarm surface this module drives. The adapter that wraps `chrome.alarms` owns two mappings:
+ * a missing alarm, which the Chrome API resolves as `undefined`, must become `null`, and an absent
+ * `periodInMinutes` on a one-shot alarm must become `null`. Reporting `undefined` for either would
+ * fail every read-back here and route the worker into cleanup forever.
+ */
 export interface AlarmPortsV2 {
   create(name: AlarmNameV2, when: number): Promise<void>;
   createPeriodic(name: AlarmNameV2, periodInMinutes: number): Promise<void>;
-  get(name: AlarmNameV2): Promise<{ scheduledTime: number } | null>;
+  get(name: AlarmNameV2): Promise<ScheduledAlarmV2 | null>;
   clear(name: AlarmNameV2): Promise<void>;
 }
 
@@ -66,22 +86,22 @@ export function planPhaseAlarmV2(session: SessionStateV2): number | null {
 }
 
 /**
- * Creates one owned alarm and confirms it by reading it back at exactly the requested time. A
- * browser that rounded, dropped, or refused the write reports false, and the caller enters its
- * cleanup path rather than trusting an alarm it never verified.
+ * Creates one owned one-shot alarm and confirms it by reading it back at exactly the requested time
+ * and in its one-shot role. A browser that rounded, dropped, refused, or made it periodic reports
+ * false, and the caller enters its cleanup path rather than trusting an alarm it never verified.
  */
-export async function createAlarmWithReadBackV2(
+export function createAlarmWithReadBackV2(
   ports: AlarmPortsV2,
   name: AlarmNameV2,
   when: number,
 ): Promise<boolean> {
-  try {
-    await ports.create(name, when);
-    const alarm: { scheduledTime: number } | null = await ports.get(name);
-    return alarm !== null && alarm.scheduledTime === when;
-  } catch {
-    return false;
-  }
+  return createWithReadBack(
+    ports,
+    name,
+    (): Promise<void> => ports.create(name, when),
+    (alarm: ScheduledAlarmV2): boolean =>
+      alarm.scheduledTime === when && alarm.periodInMinutes === null,
+  );
 }
 
 /** Clears one owned alarm and confirms its absence. A surviving alarm reports false. */
@@ -117,11 +137,36 @@ export async function ensurePhaseAlarmV2(
 }
 
 /**
- * Creates the periodic tick at install and every boot. Creation replaces by name, so calling it on
- * a worker that already has one is a no-op with the same period.
+ * Creates the periodic tick at install and every boot, then reads it back. Creation replaces by
+ * name, so calling it on a worker that already has one is idempotent. A periodic alarm has no
+ * caller-chosen time, so the read-back validates the half that is verifiable: the alarm exists and
+ * carries exactly the one-minute period. Anything else answers `alarm-failed`, so a silent no-op
+ * cannot leave the worker without periodic maintenance and schedule checks.
  */
-export async function ensureTickAlarmV2(ports: AlarmPortsV2): Promise<void> {
-  await ports.createPeriodic(TICK_ALARM, TICK_PERIOD_MINUTES);
+export async function ensureTickAlarmV2(ports: AlarmPortsV2): Promise<'ready' | 'alarm-failed'> {
+  const created: boolean = await createWithReadBack(
+    ports,
+    TICK_ALARM,
+    (): Promise<void> => ports.createPeriodic(TICK_ALARM, TICK_PERIOD_MINUTES),
+    (alarm: ScheduledAlarmV2): boolean => alarm.periodInMinutes === TICK_PERIOD_MINUTES,
+  );
+  return created ? 'ready' : 'alarm-failed';
+}
+
+/** Creates through the caller's port call, then reports whether the read-back proves the intent. */
+async function createWithReadBack(
+  ports: AlarmPortsV2,
+  name: AlarmNameV2,
+  create: () => Promise<void>,
+  matches: (alarm: ScheduledAlarmV2) => boolean,
+): Promise<boolean> {
+  try {
+    await create();
+    const alarm: ScheduledAlarmV2 | null = await ports.get(name);
+    return alarm !== null && matches(alarm);
+  } catch {
+    return false;
+  }
 }
 
 function finiteBoundary(value: number | null, field: string): number {

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { AlarmNameV2, AlarmPortsV2 } from '../../../src/background/alarms-v2';
+import type {
+  AlarmNameV2,
+  AlarmPortsV2,
+  ScheduledAlarmV2,
+} from '../../../src/background/alarms-v2';
 import {
   CLOSURE_CLEANUP_ALARM,
   clearAlarmWithReadBackV2,
@@ -32,12 +36,13 @@ interface AlarmCallV2 {
 
 interface TrackedAlarmPortsV2 extends AlarmPortsV2 {
   calls: AlarmCallV2[];
-  scheduled: Map<AlarmNameV2, number>;
+  scheduled: Map<AlarmNameV2, ScheduledAlarmV2>;
 }
 
 interface PortOverridesV2 {
   create?: (name: AlarmNameV2, when: number) => Promise<void>;
-  get?: (name: AlarmNameV2) => Promise<{ scheduledTime: number } | null>;
+  createPeriodic?: (name: AlarmNameV2, periodInMinutes: number) => Promise<void>;
+  get?: (name: AlarmNameV2) => Promise<ScheduledAlarmV2 | null>;
   clear?: (name: AlarmNameV2) => Promise<void>;
 }
 
@@ -47,26 +52,28 @@ const WHEN: number = 1_750_000_000_000;
 /** An in-memory alarms port that records every call, with per-test failure injection. */
 function trackedPorts(overrides: PortOverridesV2 = {}): TrackedAlarmPortsV2 {
   const calls: AlarmCallV2[] = [];
-  const scheduled: Map<AlarmNameV2, number> = new Map<AlarmNameV2, number>();
+  const scheduled: Map<AlarmNameV2, ScheduledAlarmV2> = new Map<AlarmNameV2, ScheduledAlarmV2>();
   return {
     calls,
     scheduled,
     create(name: AlarmNameV2, when: number): Promise<void> {
       calls.push({ op: 'create', name, when, periodInMinutes: null });
       if (overrides.create !== undefined) return overrides.create(name, when);
-      scheduled.set(name, when);
+      scheduled.set(name, { scheduledTime: when, periodInMinutes: null });
       return Promise.resolve();
     },
     createPeriodic(name: AlarmNameV2, periodInMinutes: number): Promise<void> {
       calls.push({ op: 'createPeriodic', name, when: null, periodInMinutes });
-      scheduled.set(name, PERIODIC_SCHEDULED_TIME);
+      if (overrides.createPeriodic !== undefined) {
+        return overrides.createPeriodic(name, periodInMinutes);
+      }
+      scheduled.set(name, { scheduledTime: PERIODIC_SCHEDULED_TIME, periodInMinutes });
       return Promise.resolve();
     },
-    get(name: AlarmNameV2): Promise<{ scheduledTime: number } | null> {
+    get(name: AlarmNameV2): Promise<ScheduledAlarmV2 | null> {
       calls.push({ op: 'get', name, when: null, periodInMinutes: null });
       if (overrides.get !== undefined) return overrides.get(name);
-      const scheduledTime: number | undefined = scheduled.get(name);
-      return Promise.resolve(scheduledTime === undefined ? null : { scheduledTime });
+      return Promise.resolve(scheduled.get(name) ?? null);
     },
     clear(name: AlarmNameV2): Promise<void> {
       calls.push({ op: 'clear', name, when: null, periodInMinutes: null });
@@ -89,8 +96,8 @@ function indefinitePauseSession(phaseEndsAt: number): SessionStateV2 {
   });
 }
 
-describe('alarm names', () => {
-  it('are the five static singletons of the inventory table', () => {
+describe('alarm names', (): void => {
+  it('are the five static singletons of the inventory table', (): void => {
     expect(TICK_ALARM).toBe('tick');
     expect(PHASE_ALARM).toBe('phase');
     expect(TRANSITION_CLEANUP_ALARM).toBe('transition-cleanup');
@@ -98,7 +105,7 @@ describe('alarm names', () => {
     expect(DATA_CLEAR_RETRY_ALARM).toBe('data-clear-retry');
   });
 
-  it('parse back to themselves', () => {
+  it('parse back to themselves', (): void => {
     const names: readonly AlarmNameV2[] = [
       TICK_ALARM,
       PHASE_ALARM,
@@ -112,7 +119,7 @@ describe('alarm names', () => {
     }
   });
 
-  it('rejects every other name', () => {
+  it('rejects every other name', (): void => {
     const rejected: readonly string[] = [
       '',
       ' ',
@@ -131,8 +138,8 @@ describe('alarm names', () => {
   });
 });
 
-describe('planPhaseAlarmV2', () => {
-  it('plans the earlier of the phase end and the session end for timed focus', () => {
+describe('planPhaseAlarmV2', (): void => {
+  it('plans the earlier of the phase end and the session end for timed focus', (): void => {
     const session: SessionStateV2 = timedFocusSession({
       phaseEndsAt: WHEN + 60_000,
       sessionEndsAt: WHEN + 120_000,
@@ -141,7 +148,7 @@ describe('planPhaseAlarmV2', () => {
     expect(planPhaseAlarmV2(session)).toBe(WHEN + 60_000);
   });
 
-  it('plans the earlier of the break end and the session end for a timed break', () => {
+  it('plans the earlier of the break end and the session end for a timed break', (): void => {
     const session: SessionStateV2 = breakSession({
       phaseEndsAt: WHEN + 30_000,
       sessionEndsAt: WHEN + 120_000,
@@ -150,7 +157,7 @@ describe('planPhaseAlarmV2', () => {
     expect(planPhaseAlarmV2(session)).toBe(WHEN + 30_000);
   });
 
-  it('plans the earlier of the pause expiry and the session end for a timed pause', () => {
+  it('plans the earlier of the pause expiry and the session end for a timed pause', (): void => {
     const session: SessionStateV2 = pausedSession({
       phaseEndsAt: WHEN + 90_000,
       sessionEndsAt: WHEN + 120_000,
@@ -159,15 +166,15 @@ describe('planPhaseAlarmV2', () => {
     expect(planPhaseAlarmV2(session)).toBe(WHEN + 90_000);
   });
 
-  it('plans no alarm for indefinite focus', () => {
+  it('plans no alarm for indefinite focus', (): void => {
     expect(planPhaseAlarmV2(untilStoppedFocusSession())).toBeNull();
   });
 
-  it('plans the finite pause expiry for an indefinite pause', () => {
+  it('plans the finite pause expiry for an indefinite pause', (): void => {
     expect(planPhaseAlarmV2(indefinitePauseSession(WHEN + 45_000))).toBe(WHEN + 45_000);
   });
 
-  it('takes the session end when the phase end runs past it', () => {
+  it('takes the session end when the phase end runs past it', (): void => {
     const session: SessionStateV2 = timedFocusSession({
       phaseEndsAt: WHEN + 600_000,
       sessionEndsAt: WHEN + 120_000,
@@ -176,7 +183,7 @@ describe('planPhaseAlarmV2', () => {
     expect(planPhaseAlarmV2(session)).toBe(WHEN + 120_000);
   });
 
-  it('throws an invalid-rule CoreError for a non-finite end', () => {
+  it('throws an invalid-rule CoreError for a non-finite end', (): void => {
     const hostile: readonly SessionStateV2[] = [
       timedFocusSession({ phaseEndsAt: null }),
       timedFocusSession({ sessionEndsAt: null }),
@@ -202,8 +209,8 @@ describe('planPhaseAlarmV2', () => {
   });
 });
 
-describe('createAlarmWithReadBackV2', () => {
-  it('creates, reads back, and accepts only the exact scheduled time', async () => {
+describe('createAlarmWithReadBackV2', (): void => {
+  it('creates, reads back, and accepts only the exact scheduled time', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts();
 
     const created: boolean = await createAlarmWithReadBackV2(ports, PHASE_ALARM, WHEN);
@@ -218,24 +225,33 @@ describe('createAlarmWithReadBackV2', () => {
     });
   });
 
-  it('rejects a read-back the browser rounded to the next minute', async () => {
+  it('rejects a read-back the browser rounded to the next minute', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts({
-      get: (): Promise<{ scheduledTime: number } | null> =>
-        Promise.resolve({ scheduledTime: WHEN + 1 }),
+      get: (): Promise<ScheduledAlarmV2 | null> =>
+        Promise.resolve({ scheduledTime: WHEN + 1, periodInMinutes: null }),
     });
 
     expect(await createAlarmWithReadBackV2(ports, PHASE_ALARM, WHEN)).toBe(false);
   });
 
-  it('rejects a missing read-back', async () => {
+  it('rejects a read-back that came back periodic instead of one-shot', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts({
-      get: (): Promise<{ scheduledTime: number } | null> => Promise.resolve(null),
+      get: (): Promise<ScheduledAlarmV2 | null> =>
+        Promise.resolve({ scheduledTime: WHEN, periodInMinutes: 1 }),
     });
 
     expect(await createAlarmWithReadBackV2(ports, PHASE_ALARM, WHEN)).toBe(false);
   });
 
-  it('reports a throwing create without reading back', async () => {
+  it('rejects a missing read-back', async (): Promise<void> => {
+    const ports: TrackedAlarmPortsV2 = trackedPorts({
+      get: (): Promise<ScheduledAlarmV2 | null> => Promise.resolve(null),
+    });
+
+    expect(await createAlarmWithReadBackV2(ports, PHASE_ALARM, WHEN)).toBe(false);
+  });
+
+  it('reports a throwing create without reading back', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts({
       create: (): Promise<void> => Promise.reject(new Error('alarms unavailable')),
     });
@@ -244,18 +260,17 @@ describe('createAlarmWithReadBackV2', () => {
     expect(ops(ports)).toEqual(['create']);
   });
 
-  it('reports a throwing read-back', async () => {
+  it('reports a throwing read-back', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts({
-      get: (): Promise<{ scheduledTime: number } | null> =>
-        Promise.reject(new Error('alarms unavailable')),
+      get: (): Promise<ScheduledAlarmV2 | null> => Promise.reject(new Error('alarms unavailable')),
     });
 
     expect(await createAlarmWithReadBackV2(ports, PHASE_ALARM, WHEN)).toBe(false);
   });
 });
 
-describe('clearAlarmWithReadBackV2', () => {
-  it('clears and confirms absence', async () => {
+describe('clearAlarmWithReadBackV2', (): void => {
+  it('clears and confirms absence', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts();
     await createAlarmWithReadBackV2(ports, PHASE_ALARM, WHEN);
     ports.calls.length = 0;
@@ -267,17 +282,17 @@ describe('clearAlarmWithReadBackV2', () => {
     expect(ports.scheduled.has(PHASE_ALARM)).toBe(false);
   });
 
-  it('reports an alarm that survived the clear', async () => {
+  it('reports an alarm that survived the clear', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts({
       clear: (): Promise<void> => Promise.resolve(),
-      get: (): Promise<{ scheduledTime: number } | null> =>
-        Promise.resolve({ scheduledTime: WHEN }),
+      get: (): Promise<ScheduledAlarmV2 | null> =>
+        Promise.resolve({ scheduledTime: WHEN, periodInMinutes: null }),
     });
 
     expect(await clearAlarmWithReadBackV2(ports, PHASE_ALARM)).toBe(false);
   });
 
-  it('reports a throwing clear without reading back', async () => {
+  it('reports a throwing clear without reading back', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts({
       clear: (): Promise<void> => Promise.reject(new Error('alarms unavailable')),
     });
@@ -287,8 +302,8 @@ describe('clearAlarmWithReadBackV2', () => {
   });
 });
 
-describe('ensurePhaseAlarmV2', () => {
-  it('clears and reads back when no session owns the alarm', async () => {
+describe('ensurePhaseAlarmV2', (): void => {
+  it('clears and reads back when no session owns the alarm', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts();
     await createAlarmWithReadBackV2(ports, PHASE_ALARM, WHEN);
     ports.calls.length = 0;
@@ -300,7 +315,7 @@ describe('ensurePhaseAlarmV2', () => {
     expect(ports.scheduled.has(PHASE_ALARM)).toBe(false);
   });
 
-  it('clears for an indefinite focus session, which owns no phase alarm', async () => {
+  it('clears for an indefinite focus session, which owns no phase alarm', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts();
 
     const outcome: 'ready' | 'alarm-failed' = await ensurePhaseAlarmV2(
@@ -313,7 +328,7 @@ describe('ensurePhaseAlarmV2', () => {
     expect(ports.calls[0]?.name).toBe(PHASE_ALARM);
   });
 
-  it('creates the planned boundary and reads it back for a timed session', async () => {
+  it('creates the planned boundary and reads it back for a timed session', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts();
     const session: SessionStateV2 = timedFocusSession({
       phaseEndsAt: WHEN + 60_000,
@@ -325,13 +340,26 @@ describe('ensurePhaseAlarmV2', () => {
     expect(outcome).toBe('ready');
     expect(ops(ports)).toEqual(['create', 'get']);
     expect(ports.calls[0]?.when).toBe(planPhaseAlarmV2(session));
-    expect(ports.scheduled.get(PHASE_ALARM)).toBe(WHEN + 60_000);
+    expect(ports.scheduled.get(PHASE_ALARM)?.scheduledTime).toBe(WHEN + 60_000);
   });
 
-  it('reports alarm-failed when the created alarm reads back at another time', async () => {
+  it('creates the pause expiry for an indefinite pause, the one indefinite shape that owns one', async (): Promise<void> => {
+    const ports: TrackedAlarmPortsV2 = trackedPorts();
+
+    const outcome: 'ready' | 'alarm-failed' = await ensurePhaseAlarmV2(
+      ports,
+      indefinitePauseSession(WHEN + 45_000),
+    );
+
+    expect(outcome).toBe('ready');
+    expect(ops(ports)).toEqual(['create', 'get']);
+    expect(ports.scheduled.get(PHASE_ALARM)?.scheduledTime).toBe(WHEN + 45_000);
+  });
+
+  it('reports alarm-failed when the created alarm reads back at another time', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts({
-      get: (): Promise<{ scheduledTime: number } | null> =>
-        Promise.resolve({ scheduledTime: WHEN }),
+      get: (): Promise<ScheduledAlarmV2 | null> =>
+        Promise.resolve({ scheduledTime: WHEN, periodInMinutes: null }),
     });
 
     const outcome: 'ready' | 'alarm-failed' = await ensurePhaseAlarmV2(
@@ -342,17 +370,17 @@ describe('ensurePhaseAlarmV2', () => {
     expect(outcome).toBe('alarm-failed');
   });
 
-  it('reports alarm-failed when a clear cannot be confirmed', async () => {
+  it('reports alarm-failed when a clear cannot be confirmed', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts({
       clear: (): Promise<void> => Promise.resolve(),
-      get: (): Promise<{ scheduledTime: number } | null> =>
-        Promise.resolve({ scheduledTime: WHEN }),
+      get: (): Promise<ScheduledAlarmV2 | null> =>
+        Promise.resolve({ scheduledTime: WHEN, periodInMinutes: null }),
     });
 
     expect(await ensurePhaseAlarmV2(ports, null)).toBe('alarm-failed');
   });
 
-  it('is idempotent across a restart: the same session plans and reads back the same time twice', async () => {
+  it('is idempotent across a restart: the same session plans and reads back the same time twice', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts();
     const session: SessionStateV2 = timedFocusSession({
       phaseEndsAt: WHEN + 60_000,
@@ -368,7 +396,7 @@ describe('ensurePhaseAlarmV2', () => {
     expect(ports.scheduled.size).toBe(1);
   });
 
-  it('propagates the plan failure for a session with a non-finite end', async () => {
+  it('propagates the plan failure for a session with a non-finite end', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts();
 
     await expect(
@@ -378,30 +406,75 @@ describe('ensurePhaseAlarmV2', () => {
   });
 });
 
-describe('ensureTickAlarmV2', () => {
-  it('creates the one-minute periodic tick', async () => {
+describe('ensureTickAlarmV2', (): void => {
+  it('creates the one-minute periodic tick and reads it back', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts();
 
-    await ensureTickAlarmV2(ports);
+    const outcome: 'ready' | 'alarm-failed' = await ensureTickAlarmV2(ports);
 
-    expect(ports.calls).toEqual([
-      { op: 'createPeriodic', name: TICK_ALARM, when: null, periodInMinutes: 1 },
-    ]);
+    expect(outcome).toBe('ready');
+    expect(ops(ports)).toEqual(['createPeriodic', 'get']);
+    expect(ports.calls[0]).toEqual({
+      op: 'createPeriodic',
+      name: TICK_ALARM,
+      when: null,
+      periodInMinutes: 1,
+    });
   });
 
-  it('replaces the tick by name on every boot', async () => {
+  it('replaces the tick by name on every boot', async (): Promise<void> => {
     const ports: TrackedAlarmPortsV2 = trackedPorts();
 
-    await ensureTickAlarmV2(ports);
-    await ensureTickAlarmV2(ports);
+    const first: 'ready' | 'alarm-failed' = await ensureTickAlarmV2(ports);
+    const second: 'ready' | 'alarm-failed' = await ensureTickAlarmV2(ports);
 
-    expect(ops(ports)).toEqual(['createPeriodic', 'createPeriodic']);
+    expect([first, second]).toEqual(['ready', 'ready']);
+    expect(ops(ports)).toEqual(['createPeriodic', 'get', 'createPeriodic', 'get']);
     expect(ports.scheduled.size).toBe(1);
+  });
+
+  it('reports alarm-failed when the tick is missing from the read-back', async (): Promise<void> => {
+    const ports: TrackedAlarmPortsV2 = trackedPorts({
+      createPeriodic: (): Promise<void> => Promise.resolve(),
+      get: (): Promise<ScheduledAlarmV2 | null> => Promise.resolve(null),
+    });
+
+    expect(await ensureTickAlarmV2(ports)).toBe('alarm-failed');
+    expect(ops(ports)).toEqual(['createPeriodic', 'get']);
+  });
+
+  it('reports alarm-failed when the tick reads back with another period', async (): Promise<void> => {
+    const ports: TrackedAlarmPortsV2 = trackedPorts({
+      createPeriodic: (): Promise<void> => Promise.resolve(),
+      get: (): Promise<ScheduledAlarmV2 | null> =>
+        Promise.resolve({ scheduledTime: PERIODIC_SCHEDULED_TIME, periodInMinutes: 5 }),
+    });
+
+    expect(await ensureTickAlarmV2(ports)).toBe('alarm-failed');
+  });
+
+  it('reports alarm-failed when the tick reads back as a one-shot alarm', async (): Promise<void> => {
+    const ports: TrackedAlarmPortsV2 = trackedPorts({
+      createPeriodic: (): Promise<void> => Promise.resolve(),
+      get: (): Promise<ScheduledAlarmV2 | null> =>
+        Promise.resolve({ scheduledTime: PERIODIC_SCHEDULED_TIME, periodInMinutes: null }),
+    });
+
+    expect(await ensureTickAlarmV2(ports)).toBe('alarm-failed');
+  });
+
+  it('reports a throwing periodic create without reading back', async (): Promise<void> => {
+    const ports: TrackedAlarmPortsV2 = trackedPorts({
+      createPeriodic: (): Promise<void> => Promise.reject(new Error('alarms unavailable')),
+    });
+
+    expect(await ensureTickAlarmV2(ports)).toBe('alarm-failed');
+    expect(ops(ports)).toEqual(['createPeriodic']);
   });
 });
 
-describe('session fixture sanity', () => {
-  it('keeps the timed configuration the plan branches on', () => {
+describe('session fixture sanity', (): void => {
+  it('keeps the timed configuration the plan branches on', (): void => {
     expect(sessionConfigV2().duration).toEqual({ kind: 'timed', minutes: 25 });
     expect(untilStoppedFocusSession().config.duration).toEqual({ kind: 'until-stopped' });
   });

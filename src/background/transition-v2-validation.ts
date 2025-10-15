@@ -14,6 +14,7 @@ import {
   validateDetachedCycleConfigV2,
   validateDetachedScheduleOccurrenceRef,
 } from '../shared/v2-domain-intrinsics';
+import { PHASE_ALARM } from './alarms-v2';
 import {
   detachedIdentityMap,
   validateDetachedCleanupProgress,
@@ -78,8 +79,6 @@ interface TransitionRequest {
   start: SessionStartCandidate | null;
 }
 
-/** The only alarm a transition creates and therefore owns. Indefinite focus creates none. */
-const PHASE_ALARM_NAME: string = 'phase';
 const TRANSITION_KEYS: readonly string[] = [
   'version',
   'kind',
@@ -598,8 +597,9 @@ function checkpointAgrees(
 }
 
 /**
- * A transition owns the single `phase` alarm it creates at commit. Indefinite focus owns none, and
- * a resume cannot see its durable duration from the journal, so either inventory is legal there.
+ * A transition owns the single `phase` alarm it creates at commit, named by the one constant
+ * `alarms-v2` owns. Indefinite focus owns none, and a resume cannot see its durable duration from
+ * the journal, so either inventory is legal there.
  */
 function validateTransitionAlarmNames(
   value: unknown,
@@ -609,7 +609,7 @@ function validateTransitionAlarmNames(
   if (!everyDenseEntry(value, isNonBlankString)) return false;
   if (!expectation.committed) return value.length === 0;
   if (value.length > 1) return false;
-  if (value.some((name: string): boolean => name !== PHASE_ALARM_NAME)) return false;
+  if (value.some((name: string): boolean => name !== PHASE_ALARM)) return false;
   if (start === null) return true;
   return value.length === (start.duration.kind === 'until-stopped' ? 0 : 1);
 }
