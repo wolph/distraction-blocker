@@ -154,9 +154,12 @@ export async function enumerateEnforcementTargetsV2(
   for (const row of rows) {
     if (!isRecord(row) || !isNonNegativeInteger(row.tabId)) continue;
     const tabId: number = row.tabId;
-    const url: unknown = row.url;
-    if (typeof url !== 'string' || !hasAnyPrefix(url, HTTP_PREFIXES)) {
-      targets.push({ kind: 'outside', tabId });
+    const url: string | null = typeof row.url === 'string' ? row.url : null;
+    // The classifier owns what "outside" means. A tab outside the target set is never asked for a
+    // document, so a hostile URL is classified on its type and read no further.
+    const outside: TargetClassificationV2 = classifyEnforcementTargetV2(tabId, url, null);
+    if (outside.kind === 'outside' || url === null) {
+      targets.push(outside);
       continue;
     }
     targets.push(classifyEnforcementTargetV2(tabId, url, await documentIdOf(ports, tabId)));
@@ -166,9 +169,8 @@ export async function enumerateEnforcementTargetsV2(
 
 /**
  * Runs one bounded stabilization sweep. Each pass applies the driver's frozen command to every
- * enforceable target, then rereads the target set: the pass is stable only when that reread has no
- * pending document left and every then-current enforceable target carries an acknowledgement from
- * this same pass. A closed target simply disappears from the reread and is dropped.
+ * enforceable target, then rereads the target set and decides stability from that reread alone. A
+ * closed target simply disappears from the reread and is dropped.
  */
 export async function runEnforcementPassV2(
   ports: EnforcementTargetPortsV2,
@@ -189,16 +191,9 @@ export async function runEnforcementPassV2(
     pending = current.filter(
       (target: TargetClassificationV2): boolean => target.kind === 'changed',
     );
-    const documents: DocumentEnforcementAck[] = [];
-    const settled: boolean =
-      pending.length === 0 &&
-      enforceableOf(current).every((target: EnforceableTargetV2): boolean => {
-        const ack: DocumentEnforcementAck | undefined = acknowledged.get(targetKey(target));
-        if (ack === undefined) return false;
-        documents.push(ack);
-        return true;
-      });
-    if (settled) {
+    const documents: DocumentEnforcementAck[] | null =
+      pending.length === 0 ? settledDocumentsV2(current, acknowledged) : null;
+    if (documents !== null) {
       return {
         kind: 'stable',
         documents,
@@ -324,6 +319,38 @@ function unstableDetail(pending: readonly TargetClassificationV2[]): string {
   const first: TargetClassificationV2 | undefined = pending[0];
   if (first === undefined) return `the enforceable target set did not stabilize in ${passes}`;
   return `tab ${first.tabId} has no top-frame document after ${passes}`;
+}
+
+/**
+ * The acknowledgements that make this pass stable, or null when it is not. Every then-current
+ * enforceable target must carry an acknowledgement from this pass for the URL it still shows: a
+ * document that kept its ID but moved its URL is a Changed target, and its acknowledgement attests
+ * a verdict computed for a page this tab has left. The whole set must also attest one operation,
+ * base revision, and runtime revision, which is the rest of the spec's success condition.
+ */
+function settledDocumentsV2(
+  current: readonly TargetClassificationV2[],
+  acknowledged: ReadonlyMap<string, DocumentEnforcementAck>,
+): DocumentEnforcementAck[] | null {
+  const documents: DocumentEnforcementAck[] = [];
+  for (const target of enforceableOf(current)) {
+    const ack: DocumentEnforcementAck | undefined = acknowledged.get(targetKey(target));
+    if (ack === undefined || ack.url !== target.url) return null;
+    documents.push(ack);
+  }
+  return hasOneVerificationIdentityV2(documents) ? documents : null;
+}
+
+/** One stable pass attests one operation, base revision, and runtime revision across its set. */
+function hasOneVerificationIdentityV2(documents: readonly DocumentEnforcementAck[]): boolean {
+  const first: DocumentEnforcementAck | undefined = documents[0];
+  if (first === undefined) return true;
+  return documents.every(
+    (ack: DocumentEnforcementAck): boolean =>
+      ack.operationId === first.operationId &&
+      ack.basePolicyRevision === first.basePolicyRevision &&
+      ack.runtimeRevision === first.runtimeRevision,
+  );
 }
 
 function enforceableOf(targets: readonly TargetClassificationV2[]): EnforceableTargetV2[] {

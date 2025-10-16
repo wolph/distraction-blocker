@@ -44,6 +44,7 @@ import { exactDataEqual } from '../../../src/shared/exact-data';
 import type { Verdict } from '../../../src/shared/types';
 
 type EnforceableTarget = Extract<TargetClassificationV2, { kind: 'enforceable' }>;
+type StablePassV2 = Extract<EnforcementPassResultV2, { kind: 'stable' }>;
 type TabRow = { tabId: number; url: string | null };
 
 const NOW: number = 1_750_000_000_000;
@@ -51,6 +52,7 @@ const SESSION_ID: string = '10000000-0000-4000-8000-000000000001';
 const OPERATION_ID: string = '20000000-0000-4000-8000-000000000001';
 const RESET_OPERATION_ID: string = '20000000-0000-4000-8000-000000000002';
 const EPOCH_ID: string = '30000000-0000-4000-8000-000000000001';
+const STALE_RUNTIME_REVISION: number = 9;
 const BLOCKED_VERDICT: Verdict = {
   blocked: true,
   reason: 'category',
@@ -87,6 +89,7 @@ interface FakeWorld {
   now: number;
   queries: number;
   generationReads: number;
+  runtimeRevision: number;
   events: string[];
   sent: SentMessage[];
   epochAcks: Set<string>;
@@ -99,6 +102,11 @@ interface FakeWorld {
 
 function targetKey(tabId: number, documentId: string): string {
   return `${tabId}:${documentId}`;
+}
+
+/** A frozen command belongs to the exact target it was built for, URL and revision included. */
+function commandKey(target: EnforceableTarget, runtimeRevision: number): string {
+  return `${targetKey(target.tabId, target.documentId)}:${target.url}:${runtimeRevision}`;
 }
 
 function startingView(): DocumentOverlayView {
@@ -248,6 +256,7 @@ function makeWorld(options: WorldOptions = {}): FakeWorld {
     now: NOW,
     queries: 0,
     generationReads: 0,
+    runtimeRevision: 0,
     events: [],
     sent: [],
     epochAcks: new Set<string>(options.acked ?? []),
@@ -257,7 +266,7 @@ function makeWorld(options: WorldOptions = {}): FakeWorld {
     ports: {} as EnforcementTargetPortsV2,
     driver: {} as SweepDriverV2,
   };
-  const answer = options.answer ?? defaultAnswer;
+  const answer: NonNullable<WorldOptions['answer']> = options.answer ?? defaultAnswer;
   world.ports = {
     queryTopFrameTabs: async (): Promise<TabRow[]> => {
       world.queries += 1;
@@ -290,10 +299,10 @@ function makeWorld(options: WorldOptions = {}): FakeWorld {
   };
   world.driver = {
     commandFor: async (target: EnforceableTarget): Promise<FrozenDocumentCommand> => {
-      const key: string = targetKey(target.tabId, target.documentId);
+      const key: string = commandKey(target, world.runtimeRevision);
       const existing: FrozenDocumentCommand | undefined = world.commands.get(key);
       if (existing !== undefined) return existing;
-      const built: FrozenDocumentCommand = frozenCommand(target);
+      const built: FrozenDocumentCommand = frozenCommand(target, world.runtimeRevision);
       world.commands.set(key, built);
       return built;
     },
@@ -308,10 +317,13 @@ function makeWorld(options: WorldOptions = {}): FakeWorld {
       world.events.push(`record:${targetKey(ack.tabId, ack.documentId)}`);
     },
     onStale: async (target: EnforceableTarget): Promise<FrozenDocumentCommand> => {
-      const key: string = targetKey(target.tabId, target.documentId);
+      // The worker rereads durable runtime, so every later command in this sweep carries the
+      // higher revision too.
+      world.runtimeRevision = STALE_RUNTIME_REVISION;
+      const key: string = commandKey(target, STALE_RUNTIME_REVISION);
       const existing: FrozenDocumentCommand | undefined = world.staleCommands.get(key);
       if (existing !== undefined) return existing;
-      const built: FrozenDocumentCommand = frozenCommand(target, 9);
+      const built: FrozenDocumentCommand = frozenCommand(target, STALE_RUNTIME_REVISION);
       world.staleCommands.set(key, built);
       return built;
     },
@@ -482,7 +494,9 @@ describe('runEnforcementPassV2 handshake and acknowledgement', () => {
   it('skips the handshake for a document that already acknowledged the epoch', async (): Promise<void> => {
     const world: FakeWorld = makeWorld({ acked: ['7:document-7'] });
 
-    const stable = stableResult(await runEnforcementPassV2(world.ports, world.driver));
+    const stable: StablePassV2 = stableResult(
+      await runEnforcementPassV2(world.ports, world.driver),
+    );
 
     expect(world.events).toEqual(['apply-enforcement:7:document-7']);
     expect(world.recordedAcks).toEqual([]);
@@ -507,7 +521,9 @@ describe('runEnforcementPassV2 handshake and acknowledgement', () => {
       },
     });
 
-    const stable = stableResult(await runEnforcementPassV2(world.ports, world.driver));
+    const stable: StablePassV2 = stableResult(
+      await runEnforcementPassV2(world.ports, world.driver),
+    );
 
     expect(staleAnswers).toBe(1);
     expect(world.sent).toHaveLength(2);
@@ -532,7 +548,9 @@ describe('runEnforcementPassV2 handshake and acknowledgement', () => {
       },
     });
 
-    const stable = stableResult(await runEnforcementPassV2(world.ports, world.driver));
+    const stable: StablePassV2 = stableResult(
+      await runEnforcementPassV2(world.ports, world.driver),
+    );
 
     expect(world.events).toEqual([
       'apply-enforcement:7:document-7',
@@ -552,7 +570,9 @@ describe('runEnforcementPassV2 handshake and acknowledgement', () => {
       },
     });
 
-    const stable = stableResult(await runEnforcementPassV2(world.ports, world.driver));
+    const stable: StablePassV2 = stableResult(
+      await runEnforcementPassV2(world.ports, world.driver),
+    );
     const enforcementSends: SentMessage[] = world.sent.filter((sent: SentMessage): boolean =>
       isEnforcementMessage(sent.message),
     );
@@ -574,7 +594,9 @@ describe('runEnforcementPassV2 stabilization', () => {
       documentIds: { 7: 'document-7', 8: 'document-8', 9: null },
     });
 
-    const stable = stableResult(await runEnforcementPassV2(world.ports, world.driver));
+    const stable: StablePassV2 = stableResult(
+      await runEnforcementPassV2(world.ports, world.driver),
+    );
     const expected: EnforcementTargetExclusion[] = [
       {
         tabId: 8,
@@ -613,7 +635,9 @@ describe('runEnforcementPassV2 stabilization', () => {
       },
     });
 
-    const stable = stableResult(await runEnforcementPassV2(world.ports, world.driver));
+    const stable: StablePassV2 = stableResult(
+      await runEnforcementPassV2(world.ports, world.driver),
+    );
 
     expect(stable.documents.map((ack: DocumentEnforcementAck): number => ack.tabId)).toEqual([7]);
   });
@@ -630,7 +654,9 @@ describe('runEnforcementPassV2 stabilization', () => {
       },
     });
 
-    const stable = stableResult(await runEnforcementPassV2(world.ports, world.driver));
+    const stable: StablePassV2 = stableResult(
+      await runEnforcementPassV2(world.ports, world.driver),
+    );
 
     expect(world.queries).toBe(2);
     expect(stable.documents.map((ack: DocumentEnforcementAck): number => ack.tabId)).toEqual([7]);
@@ -647,12 +673,68 @@ describe('runEnforcementPassV2 stabilization', () => {
       },
     });
 
-    const stable = stableResult(await runEnforcementPassV2(world.ports, world.driver));
+    const stable: StablePassV2 = stableResult(
+      await runEnforcementPassV2(world.ports, world.driver),
+    );
 
     expect(world.queries).toBe(4);
     expect(stable.documents).toHaveLength(1);
     expect(stable.documents[0]?.documentId).toBe('document-8');
     expect(stable.documents[0]?.url).toBe('https://example.com/next');
+  });
+
+  it('is not stable when a document keeps its ID but moves its URL', async (): Promise<void> => {
+    const world: FakeWorld = makeWorld({
+      acked: ['7:document-7'],
+      onQuery: (index: number, state: FakeWorld): void => {
+        // A same-document navigation: the document ID survives, the URL does not.
+        if (index === 2) state.tabs = [{ tabId: 7, url: 'https://example.com/next' }];
+      },
+    });
+
+    const stable: StablePassV2 = stableResult(
+      await runEnforcementPassV2(world.ports, world.driver),
+    );
+
+    expect(world.queries).toBe(4);
+    expect(stable.documents).toHaveLength(1);
+    expect(stable.documents[0]?.documentId).toBe('document-7');
+    expect(stable.documents[0]?.url).toBe('https://example.com/next');
+  });
+
+  it('is not stable while one pass holds more than one runtime revision', async (): Promise<void> => {
+    let staleAnswers: number = 0;
+    const world: FakeWorld = makeWorld({
+      tabs: [
+        { tabId: 7, url: 'https://example.com/path' },
+        { tabId: 8, url: 'https://other.example/path' },
+      ],
+      documentIds: { 7: 'document-7', 8: 'document-8' },
+      acked: ['7:document-7', '8:document-8'],
+      answer: async (
+        message: DocumentContentCommand,
+        tabId: number,
+        documentId: string,
+        state: FakeWorld,
+      ): Promise<unknown> => {
+        // Only the second target has drifted, so the first pass acknowledges two revisions.
+        if (tabId === 8 && isEnforcementMessage(message) && message.runtimeRevision === 0) {
+          staleAnswers += 1;
+          return staleAnswer(message, state.now);
+        }
+        return defaultAnswer(message, tabId, documentId, state);
+      },
+    });
+
+    const stable: StablePassV2 = stableResult(
+      await runEnforcementPassV2(world.ports, world.driver),
+    );
+
+    expect(staleAnswers).toBe(1);
+    expect(world.queries).toBe(4);
+    expect(
+      stable.documents.map((ack: DocumentEnforcementAck): number => ack.runtimeRevision),
+    ).toEqual([STALE_RUNTIME_REVISION, STALE_RUNTIME_REVISION]);
   });
 
   it('retries a stable tab with no document ID and fails after the third pass', async (): Promise<void> => {
@@ -676,7 +758,9 @@ describe('runEnforcementPassV2 stabilization', () => {
       },
     });
 
-    const stable = stableResult(await runEnforcementPassV2(world.ports, world.driver));
+    const stable: StablePassV2 = stableResult(
+      await runEnforcementPassV2(world.ports, world.driver),
+    );
 
     expect(stable.documents).toHaveLength(1);
     expect(stable.documents[0]?.documentId).toBe('document-7');
@@ -706,7 +790,9 @@ describe('runEnforcementPassV2 transport classification rows', () => {
       },
     });
 
-    const stable = stableResult(await runEnforcementPassV2(world.ports, world.driver));
+    const stable: StablePassV2 = stableResult(
+      await runEnforcementPassV2(world.ports, world.driver),
+    );
 
     expect(stable.documents.map((ack: DocumentEnforcementAck): number => ack.tabId)).toEqual([7]);
     expect(world.queries).toBe(2);
@@ -730,7 +816,9 @@ describe('runEnforcementPassV2 transport classification rows', () => {
       },
     });
 
-    const stable = stableResult(await runEnforcementPassV2(world.ports, world.driver));
+    const stable: StablePassV2 = stableResult(
+      await runEnforcementPassV2(world.ports, world.driver),
+    );
 
     expect(world.queries).toBe(4);
     expect(stable.documents).toHaveLength(1);
