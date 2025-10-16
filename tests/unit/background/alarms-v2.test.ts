@@ -19,6 +19,7 @@ import {
 } from '../../../src/background/alarms-v2';
 import { CoreError } from '../../../src/shared/errors';
 import type { SessionStateV2 } from '../../../src/shared/types';
+import { validateDetachedSessionStateV2 } from '../../../src/shared/v2-domain-intrinsics';
 import {
   breakSession,
   pausedSession,
@@ -48,6 +49,7 @@ interface PortOverridesV2 {
 
 const PERIODIC_SCHEDULED_TIME: number = 1_750_000_060_000;
 const WHEN: number = 1_750_000_000_000;
+const INDEFINITE_PAUSE_ENDS_AT: number = untilStoppedFocusSession().phaseStartedAt + 45_000;
 
 /** An in-memory alarms port that records every call, with per-test failure injection. */
 function trackedPorts(overrides: PortOverridesV2 = {}): TrackedAlarmPortsV2 {
@@ -88,7 +90,11 @@ function ops(ports: TrackedAlarmPortsV2): string[] {
   return ports.calls.map((call: AlarmCallV2): string => call.op);
 }
 
-function indefinitePauseSession(phaseEndsAt: number): SessionStateV2 {
+/**
+ * The one indefinite shape that owns a `phase` alarm. Its expiry sits after the fixture's own
+ * phase start, so the default session is a shape the landed session-state validator accepts.
+ */
+function indefinitePauseSession(phaseEndsAt: number = INDEFINITE_PAUSE_ENDS_AT): SessionStateV2 {
   return untilStoppedFocusSession({
     phase: 'paused',
     phaseEndsAt,
@@ -171,7 +177,7 @@ describe('planPhaseAlarmV2', (): void => {
   });
 
   it('plans the finite pause expiry for an indefinite pause', (): void => {
-    expect(planPhaseAlarmV2(indefinitePauseSession(WHEN + 45_000))).toBe(WHEN + 45_000);
+    expect(planPhaseAlarmV2(indefinitePauseSession())).toBe(INDEFINITE_PAUSE_ENDS_AT);
   });
 
   it('takes the session end when the phase end runs past it', (): void => {
@@ -348,12 +354,12 @@ describe('ensurePhaseAlarmV2', (): void => {
 
     const outcome: 'ready' | 'alarm-failed' = await ensurePhaseAlarmV2(
       ports,
-      indefinitePauseSession(WHEN + 45_000),
+      indefinitePauseSession(),
     );
 
     expect(outcome).toBe('ready');
     expect(ops(ports)).toEqual(['create', 'get']);
-    expect(ports.scheduled.get(PHASE_ALARM)?.scheduledTime).toBe(WHEN + 45_000);
+    expect(ports.scheduled.get(PHASE_ALARM)?.scheduledTime).toBe(INDEFINITE_PAUSE_ENDS_AT);
   });
 
   it('reports alarm-failed when the created alarm reads back at another time', async (): Promise<void> => {
@@ -470,6 +476,30 @@ describe('ensureTickAlarmV2', (): void => {
 
     expect(await ensureTickAlarmV2(ports)).toBe('alarm-failed');
     expect(ops(ports)).toEqual(['createPeriodic']);
+  });
+});
+
+describe('session shapes the plan branches on', (): void => {
+  it('are durable sessions the landed session-state validator accepts', (): void => {
+    const durable: readonly SessionStateV2[] = [
+      timedFocusSession(),
+      breakSession(),
+      pausedSession(),
+      untilStoppedFocusSession(),
+      indefinitePauseSession(),
+    ];
+
+    for (const session of durable) {
+      expect(validateDetachedSessionStateV2(session)).toBe(true);
+    }
+  });
+
+  it('plan the boundary each durable shape owns', (): void => {
+    expect(planPhaseAlarmV2(timedFocusSession())).toBe(timedFocusSession().sessionEndsAt);
+    expect(planPhaseAlarmV2(pausedSession())).toBe(pausedSession().phaseEndsAt);
+    expect(planPhaseAlarmV2(breakSession())).toBe(breakSession().phaseEndsAt);
+    expect(planPhaseAlarmV2(untilStoppedFocusSession())).toBeNull();
+    expect(planPhaseAlarmV2(indefinitePauseSession())).toBe(INDEFINITE_PAUSE_ENDS_AT);
   });
 });
 
