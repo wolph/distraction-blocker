@@ -8,6 +8,7 @@ import type {
 } from '../../../src/background/runtime-v2-types';
 import { parseRuntimeMigrationCheckpointV1ToV2 } from '../../../src/background/runtime-v2-validation';
 import {
+  ACTIVATION_AT,
   CLEANUP_OPERATION_ID,
   cleanupProgress,
   cleanupRetryState,
@@ -86,6 +87,18 @@ function cleanupCheckpoint(
   return migrationCheckpoint({
     projectedRuntime: migrationCleanupRuntime(),
     cleanupPlan: migrationCleanupPlan(),
+    ...overrides,
+  });
+}
+
+/** The checkpoint a derived UUID produces: the session it names plus the event announcing it. */
+function identityCheckpoint(
+  overrides: Partial<RuntimeMigrationCheckpointV1ToV2> = {},
+): RuntimeMigrationCheckpointV1ToV2 {
+  return migrationCheckpoint({
+    projectedRuntime: migrationActiveRuntime(),
+    assignedSessionId: SESSION_ID,
+    identityEvent: migrationIdentityEvent(),
     ...overrides,
   });
 }
@@ -236,34 +249,55 @@ describe('migration checkpoint leaves', (): void => {
 
   it('requires the assigned UUID and its identity event to agree', (): void => {
     expectRejected([
-      migrationCheckpoint({ assignedSessionId: SESSION_ID, identityEvent: null }),
-      migrationCheckpoint({ assignedSessionId: null, identityEvent: migrationIdentityEvent() }),
-      migrationCheckpoint({
+      identityCheckpoint({ identityEvent: null }),
+      identityCheckpoint({ assignedSessionId: null }),
+      identityCheckpoint({
         assignedSessionId: 'not-a-uuid',
         identityEvent: migrationIdentityEvent({ sessionId: 'not-a-uuid' }),
       }),
-      migrationCheckpoint({
-        assignedSessionId: SESSION_ID,
+      identityCheckpoint({
         identityEvent: migrationIdentityEvent({ sessionId: OTHER_SESSION_ID }),
       }),
-      migrationCheckpoint({
-        assignedSessionId: SESSION_ID,
-        identityEvent: migrationIdentityEvent({ at: MIGRATED_AT + 1 }),
-      }),
-      withKey(migrationCheckpoint({ assignedSessionId: SESSION_ID }), 'identityEvent', {
+      identityCheckpoint({ identityEvent: migrationIdentityEvent({ at: MIGRATED_AT + 1 }) }),
+      withKey(identityCheckpoint(), 'identityEvent', {
         ...migrationIdentityEvent(),
         extra: 1,
       }),
-      withKey(migrationCheckpoint({ assignedSessionId: SESSION_ID }), 'identityEvent', {
+      withKey(identityCheckpoint(), 'identityEvent', {
         t: 'sessionCanceled',
         at: MIGRATED_AT,
         focusedMs: 0,
       }),
       withKey(
-        migrationCheckpoint({ assignedSessionId: SESSION_ID }),
+        identityCheckpoint(),
         'identityEvent',
         withoutKey(migrationIdentityEvent(), 'startedAt'),
       ),
+    ]);
+  });
+
+  it('requires the assigned UUID to name the session the checkpoint carries', (): void => {
+    expectRejected([
+      // The projection announces one UUID and projects a session with another.
+      identityCheckpoint({
+        projectedRuntime: migrationActiveRuntime({
+          session: timedFocusSession({ sessionId: OTHER_SESSION_ID, focusedMs: 30_000 }),
+        }),
+      }),
+      // The identity event binds a start instant the projected session does not have.
+      identityCheckpoint({
+        identityEvent: migrationIdentityEvent({ startedAt: ACTIVATION_AT - 1_000 }),
+      }),
+      // An idle migration projects no session, so its assignment names nothing.
+      migrationCheckpoint({
+        assignedSessionId: SESSION_ID,
+        identityEvent: migrationIdentityEvent(),
+      }),
+      // The plan closes one session and the checkpoint announces another.
+      cleanupCheckpoint({
+        assignedSessionId: OTHER_SESSION_ID,
+        identityEvent: migrationIdentityEvent({ sessionId: OTHER_SESSION_ID }),
+      }),
     ]);
   });
 });

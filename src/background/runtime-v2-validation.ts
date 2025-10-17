@@ -198,16 +198,21 @@ function validateDetachedMigrationCheckpoint(
     !isSafeTimestamp(migratedAt) ||
     !isRuntimeSchemaMarkerValue(candidate.marker) ||
     !validateDetachedRuntimeStateV2(projectedRuntime) ||
-    !projectsMigratedRuntime(projectedRuntime) ||
-    !identityAgrees(candidate, migratedAt)
+    !projectsMigratedRuntime(projectedRuntime)
   ) {
     return false;
   }
   const plan: unknown = candidate.cleanupPlan;
-  if (plan === null) return projectsMigratedDefaults(projectedRuntime);
+  if (plan === null) {
+    return (
+      projectsMigratedDefaults(projectedRuntime) &&
+      identityAgrees(candidate, migratedAt, projectedRuntime, null)
+    );
+  }
   return (
     validateDetachedMigrationCleanupPlan(plan, migratedAt) &&
-    projectsCleanupPlan(projectedRuntime, plan)
+    projectsCleanupPlan(projectedRuntime, plan) &&
+    identityAgrees(candidate, migratedAt, projectedRuntime, plan)
   );
 }
 
@@ -234,18 +239,49 @@ function projectsMigratedRuntime(runtime: RuntimeStateV2): boolean {
 
 /**
  * A migration that had to derive a session UUID records it once, together with the identity event
- * that announces it at the same migration instant. A migration that reused a durable UUID, or that
- * had no session at all, records neither.
+ * that announces it at the same migration instant and names the session it was derived for. A
+ * migration that reused a durable UUID, or that had no session at all, records neither.
  */
-function identityAgrees(candidate: UnknownRecord, migratedAt: number): boolean {
+function identityAgrees(
+  candidate: UnknownRecord,
+  migratedAt: number,
+  runtime: RuntimeStateV2,
+  plan: MigrationCleanupPlan | null,
+): boolean {
   const assignedSessionId: unknown = candidate.assignedSessionId;
   const identityEvent: unknown = candidate.identityEvent;
   if (assignedSessionId === null) return identityEvent === null;
   if (!isUuid(assignedSessionId) || !validateDetachedIdentityEvent(identityEvent)) return false;
-  return identityEvent.sessionId === assignedSessionId && identityEvent.at === migratedAt;
+  if (identityEvent.sessionId !== assignedSessionId || identityEvent.at !== migratedAt) {
+    return false;
+  }
+  return namesMigratedSession(identityEvent, assignedSessionId, runtime, plan);
 }
 
-/** Accepts only already-detached exact plain data from snapshotExactData. */
+/**
+ * The assigned UUID names the one session this checkpoint carries: the session its plan closes, or
+ * the session it projects, whose `startedAt` the identity event binds. A migration that projects
+ * neither has nothing to name, so it assigns nothing.
+ */
+function namesMigratedSession(
+  identityEvent: Extract<LegacyEventRecord, { t: 'sessionIdentityAssigned' }>,
+  assignedSessionId: string,
+  runtime: RuntimeStateV2,
+  plan: MigrationCleanupPlan | null,
+): boolean {
+  if (plan !== null) return plan.projection.sessionId === assignedSessionId;
+  const session: SessionStateV2 | null = runtime.session;
+  return (
+    session !== null &&
+    session.sessionId === assignedSessionId &&
+    identityEvent.startedAt === session.startedAt
+  );
+}
+
+/**
+ * Accepts only already-detached exact plain data from snapshotExactData. The key gate adds exact-key
+ * rejection to `isEventRecord`, which accepts the v1 records that carry extra keys.
+ */
 function validateDetachedIdentityEvent(
   value: unknown,
 ): value is Extract<LegacyEventRecord, { t: 'sessionIdentityAssigned' }> {
