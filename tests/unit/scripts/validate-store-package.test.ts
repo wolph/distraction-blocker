@@ -80,10 +80,11 @@ afterEach((): void => {
 });
 
 describe('submission manifest and assets', (): void => {
+  // Builds a complete release fixture on disk, so it needs more than the default timeout.
   it('accepts a valid release fixture with optional all-sites access and a public key', (): void => {
     const result: ReturnType<typeof runValidator> = validate(fixture());
     expect(result.status, output(result)).toBe(0);
-  });
+  }, 30_000);
 
   it('allows the optional marquee asset to be omitted', (): void => {
     const root: string = fixture();

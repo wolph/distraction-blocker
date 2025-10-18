@@ -145,6 +145,7 @@ async function fixture(): Promise<{
 }
 
 describe('Stats evidence report JSON boundary', () => {
+  // Verifies a real evidence fixture on disk, so it needs more than the default timeout.
   it('rejects diagnostics, geometry, key-set, and type mutations', async () => {
     const current = await fixture();
     await writeFile(
@@ -227,5 +228,5 @@ describe('Stats evidence report JSON boundary', () => {
         }),
       ).rejects.toThrow();
     }
-  });
+  }, 30_000);
 });
