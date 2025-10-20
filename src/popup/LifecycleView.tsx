@@ -13,6 +13,7 @@ import {
 import type {
   EndAuthorityV2,
   GateState,
+  SessionConfigV2,
   SessionLifecycleV2,
   SessionSnapshotV2,
   SetupState,
@@ -21,6 +22,7 @@ import { GatePanel } from './GatePanel';
 import {
   endControl,
   gateIdentity,
+  gateIntention,
   gatePhraseLabel,
   mapGateError,
   sendGateCommand,
@@ -120,13 +122,16 @@ function lifecycleBody(snapshot: SessionSnapshotV2): LifecycleBody | null {
  * The authority is the only gate source here: a starting snapshot may still carry a
  * pause or unlock gate, which this view must never render.
  */
-function endGateView(authority: EndAuthorityV2): EndGateView | null {
+function endGateView(
+  authority: EndAuthorityV2,
+  config: SessionConfigV2 | null,
+): EndGateView | null {
   if (authority.kind !== 'friction-gate' || authority.gate === null) return null;
   return {
     gate: authority.gate,
     title: authority.copy.title,
     phraseLabel: gatePhraseLabel(authority, authority.gate),
-    intention: authority.copy.intentionReminder ?? '',
+    intention: gateIntention(authority, authority.gate, config),
   };
 }
 
@@ -141,7 +146,7 @@ export function LifecycleView({ snapshot, now, dataClear }: LifecycleViewProps):
   const body: LifecycleBody | null = dataClearBody(dataClear) ?? lifecycleBody(snapshot);
   if (body === null) return null;
 
-  const endGate: EndGateView | null = endGateView(body.authority);
+  const endGate: EndGateView | null = endGateView(body.authority, snapshot.config);
   const endAction: VNode | null = endControl(body.authority, command);
   const retryCommand: RetryCommandV2 | null = body.retry;
 

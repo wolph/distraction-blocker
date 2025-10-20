@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { badgeForV2, iconSpecV2 } from '../../../src/background/badge-v2';
-import type { IconSpec } from '../../../src/background/icon';
-import { DEFAULT_LISTS, emptySnapshotV2, rulesFromLists } from '../../../src/shared/constants';
+import { badgeFor, type IconSpec, iconSpec } from '../../../src/background/icon';
+import {
+  DEFAULT_LISTS,
+  emptySnapshot,
+  emptySnapshotV2,
+  rulesFromLists,
+} from '../../../src/shared/constants';
 import { formatBadge } from '../../../src/shared/time';
 import type {
   SessionConfigV2,
   SessionLifecycleV2,
+  SessionSnapshot,
   SessionSnapshotV2,
 } from '../../../src/shared/types';
 
@@ -217,5 +223,26 @@ describe('iconSpecV2', (): void => {
   it('clamps the ring progress into zero through one', (): void => {
     expect(iconSpecV2({ ...timedFocus(), at: NOW + 60 * MIN }).progress).toBe(1);
     expect(iconSpecV2({ ...timedFocus(), at: NOW - 60 * MIN }).progress).toBe(0);
+  });
+
+  it('draws and counts the same as v1 for a single-phase timed focus', (): void => {
+    const v2: SessionSnapshotV2 = {
+      ...timedFocus(),
+      phaseEndsAt: NOW + 45 * MIN,
+      sessionEndsAt: NOW + 45 * MIN,
+    };
+    const v1: SessionSnapshot = {
+      ...emptySnapshot(NOW),
+      phase: 'focus',
+      startedAt: NOW - 5 * MIN,
+      phaseStartedAt: NOW - 5 * MIN,
+      phaseEndsAt: NOW + 45 * MIN,
+      sessionEndsAt: NOW + 45 * MIN,
+    };
+
+    expect(iconSpecV2(v2)).toEqual(iconSpec(v1));
+    // Only a session whose phase ends with it agrees on the badge. A cycling session
+    // diverges by design, because v2 counts the whole session down and v1 the phase.
+    expect(badgeForV2(v2, true)).toEqual(badgeFor(v1, true));
   });
 });

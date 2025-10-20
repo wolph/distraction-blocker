@@ -1,4 +1,4 @@
-import type { ComponentChildren, VNode } from 'preact';
+import type { ComponentChildren, RefObject, VNode } from 'preact';
 import { useId, useRef } from 'preact/hooks';
 import { HelpPopover } from '../shared/HelpPopover';
 
@@ -22,8 +22,8 @@ const HELP_ROOT_SELECTOR: string = '.help-popover';
  * explanation reachable without letting the choice change.
  */
 export function ForcedControl({ label, explanation, children }: ForcedControlProps): VNode {
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const helpRef = useRef<HTMLSpanElement | null>(null);
+  const rootRef: RefObject<HTMLDivElement> = useRef<HTMLDivElement | null>(null);
+  const helpRef: RefObject<HTMLSpanElement> = useRef<HTMLSpanElement | null>(null);
   const explanationId: string = `forced-control-${useId()}`;
 
   /** True while the event target sits in this control's own help, which stays live. */
@@ -112,7 +112,14 @@ export function ForcedControl({ label, explanation, children }: ForcedControlPro
       <span ref={helpRef} class="forced-control__help">
         <HelpPopover label={label}>{explanation}</HelpPopover>
       </span>
-      <span id={explanationId} class="forced-control__explanation">
+      {/*
+       * The explanation is `aria-describedby` copy only, so it is hidden from the
+       * reading order to keep the popover from announcing it a second time. Focusable
+       * children keep their own tab stops and announce as enabled, which a screen-reader
+       * pass should settle before the cutover: making them inert would also take the
+       * help they carry out of the keyboard path.
+       */}
+      <span id={explanationId} class="forced-control__explanation" aria-hidden="true">
         {explanation}
       </span>
     </div>

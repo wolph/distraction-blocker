@@ -80,15 +80,18 @@ export interface StartFormV2Props {
   startsDisabled?: boolean;
 }
 
-/** Routes the duration control's next value onto the reversible draft helpers. */
+/**
+ * Routes the duration control's next value onto the reversible draft helpers. Every timed
+ * value returns the stored timed duration first, so the pressed Until stopped chip lands
+ * on `restoreTimedDuration` and a preset or a typed minute is the edit that follows it.
+ */
 function applyDraftDuration(draft: StartDraft, next: DraftDuration): StartDraft {
   if (next.kind === 'until-stopped') return selectUntilStopped(draft);
-  if (next.customMin === '') {
-    return next.presetMin === null
-      ? restoreTimedDuration(draft)
-      : selectTimedPreset(draft, next.presetMin);
+  const restored: StartDraft = restoreTimedDuration(draft);
+  if (next.presetMin !== null && next.customMin === '') {
+    return selectTimedPreset(restored, next.presetMin);
   }
-  return setCustomMinutes(restoreTimedDuration(draft), next.customMin);
+  return setCustomMinutes(restored, next.customMin);
 }
 
 /**
@@ -116,6 +119,9 @@ export function StartFormV2({
   const [draft, setDraft]: [StartDraft, Dispatch<StateUpdater<StartDraft>>] = useState<StartDraft>(
     (): StartDraft => createStartDraft(settings, lists),
   );
+  /** The lists the draft is rebased onto, which a stale start refreshes from the worker. */
+  const [activeLists, setActiveLists]: [ListsConfig, Dispatch<StateUpdater<ListsConfig>>] =
+    useState<ListsConfig>(lists);
   const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
     string | null
   >(null);
@@ -123,6 +129,7 @@ export function StartFormV2({
     useState<boolean>(false);
 
   useEffect((): void => {
+    setActiveLists(lists);
     setDraft((current: StartDraft): StartDraft => rebaseSessionDraft(current, lists));
   }, [lists]);
 
@@ -136,6 +143,7 @@ export function StartFormV2({
       setError(STALE_LISTS_UNAVAILABLE_COPY);
       return;
     }
+    setActiveLists(refreshed);
     setDraft((current: StartDraft): StartDraft => rebaseSessionDraft(current, refreshed));
     setError(STALE_SESSION_RULES_ERROR);
   };
@@ -164,7 +172,7 @@ export function StartFormV2({
         setError(message);
         return;
       }
-      setDraft(createStartDraft(settings, lists));
+      setDraft(createStartDraft(settings, activeLists));
     } catch {
       setError(START_FAILED_COPY);
     } finally {

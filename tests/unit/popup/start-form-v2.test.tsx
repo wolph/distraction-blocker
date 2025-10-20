@@ -124,6 +124,36 @@ describe('StartFormV2 duration and forced controls', (): void => {
     expect(view.getByRole('button', { name: TIMED_START_LABEL })).toBeTruthy();
   });
 
+  it('restores typed custom minutes through the pressed Until stopped chip', (): void => {
+    const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
+
+    fireEvent.input(view.getByLabelText('Custom minutes'), { target: { value: '45' } });
+    fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
+
+    expect(view.getByRole('button', { name: START_UNTIL_STOPPED_LABEL })).toBeTruthy();
+    expect((view.getByLabelText('Custom minutes') as HTMLInputElement).value).toBe('45');
+
+    fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
+
+    expect((view.getByLabelText('Custom minutes') as HTMLInputElement).value).toBe('45');
+    expect(view.getByRole('button', { name: 'Start 45 min - Block selected sites' })).toBeTruthy();
+  });
+
+  it('restores a non-default session type and cycle choice after the detour', (): void => {
+    const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Hard lock' }));
+    fireEvent.click(view.getByRole('checkbox'));
+    fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
+    fireEvent.click(view.getByRole('button', { name: '25 focus' }));
+
+    expect(view.getByRole('button', { name: 'Hard lock' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    expect((view.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+    expect(view.getByRole('button', { name: TIMED_START_LABEL })).toBeTruthy();
+  });
+
   it('keeps the stored preset when custom minutes are typed during the detour', (): void => {
     const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
@@ -278,6 +308,8 @@ describe('StartFormV2 start command', (): void => {
         }),
       );
     });
+    // The reset after the accepted start uses the refreshed lists, not the stale prop.
+    expect(view.getByText('fresh.example')).toBeTruthy();
   });
 
   it('resets the form to Settings defaults after a successful start', async (): Promise<void> => {

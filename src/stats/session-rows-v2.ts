@@ -9,13 +9,18 @@ import type {
 const MAX_ROWS: number = 20;
 
 /**
- * Wording for rows the v2 reason table cannot describe. A legacy terminal carries no
- * reason, and a row closed without any end event carries no evidence of one, so both
- * keep the v1 session log's words rather than claiming a reason nobody recorded.
+ * Wording for rows the v2 reason table cannot describe. A legacy terminal event carries
+ * no reason, so it keeps the v1 session log's lowercase words rather than claiming one.
  */
 const LEGACY_COMPLETED_OUTCOME: string = 'completed';
-const ENDED_EARLY_OUTCOME: string = 'ended early';
-const RUNNING_OUTCOME: string = 'running';
+const LEGACY_ENDED_EARLY_OUTCOME: string = 'ended early';
+
+/**
+ * A row closed without any end event has no reason either, but it sits in the same
+ * column as the v2 reason table, so it takes that table's casing.
+ */
+const ENDED_EARLY_OUTCOME: string = 'Ended early';
+const RUNNING_OUTCOME: string = 'Running';
 
 export interface SessionRowV2 {
   startedAt: number;
@@ -158,7 +163,7 @@ export function pairSessionRowsV2(events: readonly SessionEventRecordV2[]): Sess
       rows.push(closed(open, LEGACY_COMPLETED_OUTCOME, 'completed', event.focusedMs));
       opens.splice(openIndex, 1);
     } else if (event.t === 'sessionCanceled') {
-      rows.push(closed(open, ENDED_EARLY_OUTCOME, 'ended', event.focusedMs));
+      rows.push(closed(open, LEGACY_ENDED_EARLY_OUTCOME, 'ended', event.focusedMs));
       opens.splice(openIndex, 1);
     }
   }

@@ -13,6 +13,7 @@ import { GatePanel } from './GatePanel';
 import {
   endControl,
   gateIdentity,
+  gateIntention,
   gatePhraseLabel,
   mapGateError,
   sendGateCommand,
@@ -273,7 +274,7 @@ export function ActiveViewV2({ snapshot, now }: ActiveViewV2Props): VNode {
           key={gateIdentity(activeGate)}
           gate={activeGate}
           now={now}
-          intention={intention}
+          intention={gateIntention(authority, activeGate, snapshot.config)}
           phraseLabel={gatePhraseLabel(authority, activeGate)}
           sendCommand={sendGateCommand}
           commandError={mapGateError}

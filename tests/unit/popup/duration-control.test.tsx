@@ -92,7 +92,7 @@ describe('DurationControl', (): void => {
     });
   });
 
-  it('keeps the stored timed duration when Until stopped is already selected', (): void => {
+  it('hands the stored timed duration back when the pressed chip is clicked', (): void => {
     const onChange: Mock = vi.fn();
     const view = render(
       <DurationControl presets={PRESETS} value={untilStopped(15, '7')} onChange={onChange} />,
@@ -100,13 +100,10 @@ describe('DurationControl', (): void => {
 
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
 
-    expect(onChange).toHaveBeenCalledWith({
-      kind: 'until-stopped',
-      timed: { presetMin: 15, customMin: '7' },
-    });
+    expect(onChange).toHaveBeenCalledWith({ kind: 'timed', presetMin: 15, customMin: '7' });
   });
 
-  it('presses Until stopped alone and empties the custom input while it is selected', (): void => {
+  it('presses Until stopped alone and keeps showing the stored custom minutes', (): void => {
     const onChange: Mock = vi.fn();
     const view = render(
       <DurationControl presets={PRESETS} value={untilStopped(25, '42')} onChange={onChange} />,
@@ -117,7 +114,20 @@ describe('DurationControl', (): void => {
       .getAllByRole('button')
       .map((chip: HTMLElement): string | null => chip.getAttribute('aria-pressed'));
     expect(pressed).toEqual(['false', 'false', 'false', 'true']);
+    expect((view.getByLabelText('Custom minutes') as HTMLInputElement).value).toBe('42');
+  });
+
+  it('shows an empty custom field when Until stopped stores no typed minutes', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(
+      <DurationControl presets={PRESETS} value={untilStopped(25, '')} onChange={onChange} />,
+    );
+
     expect((view.getByLabelText('Custom minutes') as HTMLInputElement).value).toBe('');
+
+    fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
+
+    expect(onChange).toHaveBeenCalledWith({ kind: 'timed', presetMin: 25, customMin: '' });
   });
 
   it('presses no preset while custom minutes are typed', (): void => {

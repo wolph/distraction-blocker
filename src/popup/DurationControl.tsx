@@ -1,7 +1,7 @@
 import type { VNode } from 'preact';
 import { UNTIL_STOPPED_LABEL } from '../shared/session-copy';
 import { Chip } from './form-controls';
-import { type DraftDuration, timedDurationOf } from './start-draft';
+import { type DraftDuration, type TimedDurationDraft, timedDurationOf } from './start-draft';
 
 /** Preset labels, matching the timed duration row the popup already ships. */
 const PRESET_LABELS: readonly [string, string, string] = [
@@ -18,13 +18,14 @@ export interface DurationControlProps {
 
 /**
  * The integrated duration row: timed presets, custom minutes, and Until stopped as one
- * chip group. Until stopped carries the timed draft along, so returning to a timed
- * duration restores the preset and the typed minutes the user had chosen.
+ * chip group. Until stopped carries the timed draft along and keeps showing its custom
+ * minutes, and the pressed chip is the return gesture that hands that draft back.
  */
 export function DurationControl({ presets, value, onChange }: DurationControlProps): VNode {
-  const customMin: string = value.kind === 'timed' ? value.customMin : '';
+  const timed: TimedDurationDraft = timedDurationOf(value);
+  const indefinite: boolean = value.kind === 'until-stopped';
   const presetSelected: (min: number) => boolean = (min: number): boolean =>
-    value.kind === 'timed' && value.customMin.trim() === '' && value.presetMin === min;
+    !indefinite && timed.customMin.trim() === '' && timed.presetMin === min;
 
   return (
     <fieldset class="duration-control" aria-label="Session length">
@@ -45,19 +46,21 @@ export function DurationControl({ presets, value, onChange }: DurationControlPro
         inputMode="numeric"
         aria-label="Custom minutes"
         placeholder="min"
-        value={customMin}
+        value={timed.customMin}
         onInput={(event: Event): void =>
           onChange({
             kind: 'timed',
-            presetMin: timedDurationOf(value).presetMin,
+            presetMin: timed.presetMin,
             customMin: (event.currentTarget as HTMLInputElement).value,
           })
         }
       />
       <Chip
         label={UNTIL_STOPPED_LABEL}
-        selected={value.kind === 'until-stopped'}
-        onClick={(): void => onChange({ kind: 'until-stopped', timed: timedDurationOf(value) })}
+        selected={indefinite}
+        onClick={(): void =>
+          onChange(indefinite ? { kind: 'timed', ...timed } : { kind: 'until-stopped', timed })
+        }
       />
     </fieldset>
   );

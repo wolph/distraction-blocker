@@ -138,6 +138,25 @@ describe('ScheduleV2 duration choices', (): void => {
     hard.remove();
   });
 
+  it('keeps an indefinite entry cycle-free when the forced wrapper is bypassed', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(<ScheduleV2 entries={[]} defaults={DEFAULTS} onChange={onChange} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+    fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
+
+    const cycles: HTMLElement = view.getByRole('checkbox', { name: /Cycle focus and breaks/ });
+    document.body.appendChild(cycles);
+    fireEvent.click(cycles);
+    cycles.remove();
+    fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
+
+    const saved: ScheduleEntryV2[] = savedEntries(onChange);
+    expect(saved[0]?.duration).toEqual({ kind: 'until-stopped' });
+    expect(saved[0]?.cycling).toBeNull();
+    expect(isScheduleEntryV2(saved[0])).toBe(true);
+  });
+
   it('retains a bypassed session type edit for the timed duration', (): void => {
     const onChange: Mock = vi.fn();
     const view = render(<ScheduleV2 entries={[]} defaults={DEFAULTS} onChange={onChange} />);
@@ -310,6 +329,10 @@ describe('ScheduleV2 rows and validation', (): void => {
     fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
     expect(
       view.getByRole('group', { name: 'Duration' }).classList.contains('schedule-duration'),
+    ).toBe(true);
+    fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
+    expect(
+      view.getByText(SCHEDULE_UNTIL_STOPPED_COPY).classList.contains('schedule-duration-note'),
     ).toBe(true);
 
     const css: string = readFileSync(resolve('src/options/options.css'), 'utf8');

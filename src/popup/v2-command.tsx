@@ -1,4 +1,4 @@
-import { h, type JSX } from 'preact';
+import type { JSX } from 'preact';
 import { type Dispatch, type StateUpdater, useRef, useState } from 'preact/hooks';
 import type {
   CommandResponseV2,
@@ -8,7 +8,7 @@ import type {
 } from '../shared/messages';
 import { sendSessionRequestV2 } from '../shared/messages';
 import { END_FAILED_COPY, END_SESSION_LABEL } from '../shared/session-copy';
-import type { EndAuthorityV2, GateState } from '../shared/types';
+import type { EndAuthorityV2, GateState, SessionConfigV2 } from '../shared/types';
 import { commandErrorMessage } from './command-errors';
 import type { GateCommandErrorMapper, GateRequest } from './GatePanel';
 
@@ -74,6 +74,21 @@ export function gatePhraseLabel(authority: EndAuthorityV2, gate: GateState): str
 }
 
 /**
+ * The cancel gate reminds the user of the intention the worker persisted with the End
+ * authority. A pause or unlock gate carries no persisted copy, so it shows the session's
+ * own intention.
+ */
+export function gateIntention(
+  authority: EndAuthorityV2,
+  gate: GateState,
+  config: SessionConfigV2 | null,
+): string {
+  return authority.kind === 'friction-gate' && authority.gate !== null && gate.kind === 'cancel'
+    ? (authority.copy.intentionReminder ?? '')
+    : (config?.intention ?? '');
+}
+
+/**
  * One in-flight lock, one pending flag, and one coded error path for every v2 session
  * command. An accepted answer clears the error, a known rejected code reports the
  * worker's own text, and anything else reports the caller's fallback.
@@ -114,14 +129,14 @@ export function useV2Command(options: V2CommandOptions = {}): V2Command {
 export function endControl(authority: EndAuthorityV2, command: V2Command): JSX.Element | null {
   const request: V2EndCommand | null = endCommandOf(authority);
   if (request === null) return null;
-  return h(
-    'button',
-    {
-      type: 'button',
-      class: 'cancel-link',
-      disabled: command.pending,
-      onClick: (): void => void command.run(request, END_FAILED_COPY),
-    },
-    END_SESSION_LABEL,
+  return (
+    <button
+      type="button"
+      class="cancel-link"
+      disabled={command.pending}
+      onClick={(): void => void command.run(request, END_FAILED_COPY)}
+    >
+      {END_SESSION_LABEL}
+    </button>
   );
 }

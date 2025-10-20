@@ -9,6 +9,7 @@ import type {
   SessionOutcomeV2,
   SessionStartedEventV2,
 } from '../../../src/shared/types';
+import { pairSessions, type SessionRow } from '../../../src/stats/SessionLog';
 import { pairSessionRowsV2, type SessionRowV2 } from '../../../src/stats/session-rows-v2';
 
 const MIN: number = 60_000;
@@ -220,6 +221,29 @@ describe('pairSessionRowsV2', (): void => {
     expect(canceled[0]?.focusedMs).toBe(8 * MIN);
   });
 
+  it('reads an equivalent legacy input the way the v1 session log does', (): void => {
+    const legacy: LegacyEventRecord[] = [
+      legacyStart(T9, 25, 'thesis chapter'),
+      { t: 'pauseTaken', at: T9 + 5 * MIN, ms: 5 * MIN },
+      { t: 'unlockTaken', at: T9 + 6 * MIN, ms: 5 * MIN, host: 'news.example' },
+      { t: 'sessionCompleted', at: T925, focusedMs: 20 * MIN },
+    ];
+    const v2Row: SessionRowV2 | undefined = pairSessionRowsV2(newestFirst(legacy))[0];
+    const v1Row: SessionRow | undefined = pairSessions([...legacy].reverse())[0];
+
+    expect(v1Row).toBeDefined();
+    expect(v2Row).toMatchObject({
+      startedAt: v1Row?.startedAt,
+      intention: v1Row?.intention,
+      source: v1Row?.source,
+      outcome: v1Row?.outcome,
+      focusedMs: v1Row?.focusedMs,
+      pauseMs: v1Row?.pauseMs,
+      unlockMs: v1Row?.unlockMs,
+    });
+    expect(v2Row?.plan).toBe(statsPlanLabelV2({ kind: 'timed', minutes: v1Row?.plannedMin ?? 0 }));
+  });
+
   it('runs a dangling newest start and ends a displaced one with unknown focus', (): void => {
     const rows: SessionRowV2[] = pairSessionRowsV2(
       newestFirst([
@@ -232,14 +256,14 @@ describe('pairSessionRowsV2', (): void => {
     expect(rows[0]).toMatchObject({
       startedAt: T13,
       intention: 'still going',
-      outcome: 'running',
+      outcome: 'Running',
       outcomeKind: 'running',
       focusedMs: null,
     });
     expect(rows[1]).toMatchObject({
       startedAt: T9,
       intention: 'displaced',
-      outcome: 'ended early',
+      outcome: 'Ended early',
       outcomeKind: 'ended',
       focusedMs: null,
     });

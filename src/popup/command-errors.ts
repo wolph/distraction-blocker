@@ -6,6 +6,7 @@ import type {
   StartSessionResponseV2,
   TransitionFailureReasonV2,
 } from '../shared/messages';
+import { hasExactKeys, isRecord } from '../shared/v2-domain-intrinsics';
 
 /** Shown when the worker's start answer is not an exact data response. */
 export const START_FAILED_COPY: string = 'Could not start session. Try again.';
@@ -50,18 +51,6 @@ const COMMAND_FAILURE_CODES: Readonly<Record<CommandFailureCode, true>> = {
 };
 
 const NO_CLEANUP_PENDING_CODES: CodeSet = {};
-
-function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** The snapshot holds plain data keys only, so own key equality is the exact check. */
-function hasExactKeys(value: UnknownRecord, keys: readonly string[]): boolean {
-  const own: string[] = Object.keys(value);
-  return (
-    own.length === keys.length && keys.every((key: string): boolean => Object.hasOwn(value, key))
-  );
-}
 
 function isKnownCode(codes: CodeSet, code: unknown): boolean {
   return typeof code === 'string' && Object.hasOwn(codes, code);
