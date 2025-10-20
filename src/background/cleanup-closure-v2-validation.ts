@@ -4,7 +4,7 @@ import {
   HANDLED_SCHEDULE_OCCURRENCE_RETENTION_MS,
 } from '../shared/constants';
 import { exactDataEqual, snapshotExactData } from '../shared/exact-data';
-import { isEventRecord, isSessionEndedEventV2 } from '../shared/runtime-validation';
+import { closureIdFor, isEventRecord, isSessionEndedEventV2 } from '../shared/runtime-validation';
 import type {
   BankState,
   DailyAgg,
@@ -324,7 +324,7 @@ export function validateDetachedClosureProjection(value: unknown): value is Clos
   if (
     candidate === null ||
     !isUuid(sessionId) ||
-    candidate.closureId !== `${sessionId}:close` ||
+    candidate.closureId !== closureIdFor(sessionId) ||
     !isSafeTimestamp(candidate.endedAt) ||
     !isSafeTimestamp(candidate.focusedMs) ||
     !isSessionEndedEventV2(endEvent) ||

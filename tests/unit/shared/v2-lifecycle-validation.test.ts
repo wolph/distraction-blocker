@@ -39,7 +39,7 @@ describe('v2 public lifecycle validation', (): void => {
     {
       kind: 'cleanup',
       journal: 'closure',
-      id: SESSION_ID,
+      id: `${SESSION_ID}:close`,
       endAuthority: HIDDEN_AUTHORITY,
     },
     { kind: 'active', endAuthority: CLOSED_FRICTION_AUTHORITY },
@@ -92,6 +92,32 @@ describe('v2 public lifecycle validation', (): void => {
       kind: 'cleanup',
       journal: 'transition',
       id: 'not-a-uuid',
+      endAuthority: HIDDEN_AUTHORITY,
+    },
+    // A transition journal is named by its own UUID, never by a closure identity.
+    {
+      kind: 'cleanup',
+      journal: 'transition',
+      id: `${SESSION_ID}:close`,
+      endAuthority: HIDDEN_AUTHORITY,
+    },
+    // A closure journal is named by its `closureId`, so a bare UUID or another suffix is not one.
+    {
+      kind: 'cleanup',
+      journal: 'closure',
+      id: SESSION_ID,
+      endAuthority: HIDDEN_AUTHORITY,
+    },
+    {
+      kind: 'cleanup',
+      journal: 'closure',
+      id: `${SESSION_ID}:closed`,
+      endAuthority: HIDDEN_AUTHORITY,
+    },
+    {
+      kind: 'cleanup',
+      journal: 'closure',
+      id: ':close',
       endAuthority: HIDDEN_AUTHORITY,
     },
     {

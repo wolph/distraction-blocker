@@ -504,7 +504,7 @@ describe('v2 public snapshot validation', (): void => {
     {
       kind: 'cleanup',
       journal: 'closure',
-      id: SESSION_ID,
+      id: `${SESSION_ID}:close`,
       endAuthority: HIDDEN_AUTHORITY,
     },
     {

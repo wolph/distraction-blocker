@@ -430,6 +430,29 @@ function isUuid(value: unknown): value is string {
   return typeof value === 'string' && UUID_RE.test(value);
 }
 
+/** The one closure journal identity: the closed session's UUID plus this suffix. */
+const CLOSURE_ID_SUFFIX: string = ':close';
+
+/** Builds a closure journal identity. `ClosureProjection.closureId` is exactly this value. */
+export function closureIdFor(sessionId: string): string {
+  return `${sessionId}${CLOSURE_ID_SUFFIX}`;
+}
+
+/** Accepts exactly one UUID followed by the closure suffix, and nothing else. */
+export function isClosureId(value: unknown): value is string {
+  if (typeof value !== 'string' || !value.endsWith(CLOSURE_ID_SUFFIX)) return false;
+  return isUuid(value.slice(0, value.length - CLOSURE_ID_SUFFIX.length));
+}
+
+/**
+ * Each cleanup journal is named by its own durable identity. A transition owns a UUID. A closure
+ * owns its `closureId`, which is the closed session's UUID followed by the suffix below.
+ */
+function isCleanupJournalId(journal: unknown, id: unknown): boolean {
+  if (journal === 'transition') return isUuid(id);
+  return journal === 'closure' && isClosureId(id);
+}
+
 function isSafeTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
@@ -965,8 +988,7 @@ export function isSessionLifecycleV2(value: unknown): value is SessionLifecycleV
     if (cleanup !== null) {
       return (
         cleanup.kind === 'cleanup' &&
-        (cleanup.journal === 'transition' || cleanup.journal === 'closure') &&
-        isUuid(cleanup.id) &&
+        isCleanupJournalId(cleanup.journal, cleanup.id) &&
         isHiddenAuthority(cleanup.endAuthority)
       );
     }

@@ -306,7 +306,7 @@ describe('projectLifecycleV2 lifecycle table', (): void => {
     expect(lifecycleOf(scheduled)).toEqual({
       kind: 'cleanup',
       journal: 'closure',
-      id: SESSION_ID,
+      id: `${SESSION_ID}:close`,
       endAuthority: { kind: 'hidden' },
     });
     expect(lifecycleOf(exhausted)).toEqual({
@@ -321,7 +321,7 @@ describe('projectLifecycleV2 lifecycle table', (): void => {
     expect(lifecycleOf(preparedClosureRuntime())).toEqual({
       kind: 'cleanup',
       journal: 'closure',
-      id: SESSION_ID,
+      id: `${SESSION_ID}:close`,
       endAuthority: { kind: 'hidden' },
     });
   });

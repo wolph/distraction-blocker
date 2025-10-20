@@ -255,8 +255,7 @@ function transitionCleanupLifecycle(transition: PendingEnforcementTransition): S
 
 /**
  * A durable closure always wins over the older session, so a prepared closure already reports the
- * closure copy. The public identifier is the closed session, because `closureId` is
- * `${sessionId}:close` and the lifecycle contract requires a bare UUID.
+ * closure copy. The public identifier is the journal's own `closureId`.
  */
 function closureLifecycle(closure: PendingClosure): SessionLifecycleV2 {
   if (closure.stage === 'cleanup' && closure.cleanupProgress.retry.nextAttemptAt === null) {
@@ -270,7 +269,7 @@ function closureLifecycle(closure: PendingClosure): SessionLifecycleV2 {
   return {
     kind: 'cleanup',
     journal: 'closure',
-    id: closure.projection.sessionId,
+    id: closure.projection.closureId,
     endAuthority: HIDDEN_AUTHORITY,
   };
 }
