@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { splitFocusByLocalDateV2 } from '../../../src/background/closure-projection-v2';
 import {
@@ -50,6 +50,7 @@ type LegacyPortName =
   | 'saveBank'
   | 'saveAggregate'
   | 'removeAggregate'
+  | 'persistSyncJournal'
   | 'saveLegacyRuntime';
 
 interface BankWrite {
@@ -70,36 +71,47 @@ interface LegacyHarness {
   bankWrites: BankWrite[];
   aggregateWrites: AggregateWrite[];
   aggregateRemoves: string[];
+  journalFlushes: number;
 }
 
-function harness(): LegacyHarness {
+function harness(failPort: LegacyPortName | null = null): LegacyHarness {
   const names: LegacyPortName[] = [];
   const runtimeWrites: RuntimeState[] = [];
   const eventBatches: LegacyEventRecord[][] = [];
   const bankWrites: BankWrite[] = [];
   const aggregateWrites: AggregateWrite[] = [];
   const aggregateRemoves: string[] = [];
+  const journal: { flushes: number } = { flushes: 0 };
+
+  function record(name: LegacyPortName): void {
+    names.push(name);
+    if (name === failPort) throw new Error(`${name} rejected`);
+  }
 
   const ports: LegacyReplayPortsV1 = {
     saveLegacyRuntime: async (runtime: RuntimeState): Promise<void> => {
-      names.push('saveLegacyRuntime');
+      record('saveLegacyRuntime');
       runtimeWrites.push(runtime);
     },
     appendLegacyEvents: async (events: readonly LegacyEventRecord[]): Promise<void> => {
-      names.push('appendLegacyEvents');
+      record('appendLegacyEvents');
       eventBatches.push([...events]);
     },
     saveBank: async (bank: BankState, syncBank: boolean): Promise<void> => {
-      names.push('saveBank');
+      record('saveBank');
       bankWrites.push({ bank, syncBank });
     },
     saveAggregate: async (key: string, value: DailyAgg): Promise<void> => {
-      names.push('saveAggregate');
+      record('saveAggregate');
       aggregateWrites.push({ key, value });
     },
     removeAggregate: async (key: string): Promise<void> => {
-      names.push('removeAggregate');
+      record('removeAggregate');
       aggregateRemoves.push(key);
+    },
+    persistSyncJournal: async (): Promise<void> => {
+      record('persistSyncJournal');
+      journal.flushes += 1;
     },
   };
 
@@ -111,6 +123,9 @@ function harness(): LegacyHarness {
     bankWrites,
     aggregateWrites,
     aggregateRemoves,
+    get journalFlushes(): number {
+      return journal.flushes;
+    },
   };
 }
 
@@ -235,6 +250,7 @@ describe('legacy checkpoint replay', (): void => {
       'saveBank',
       'saveAggregate',
       'removeAggregate',
+      'persistSyncJournal',
       'saveLegacyRuntime',
     ]);
     expect(fake.eventBatches).toEqual([legacyEvents()]);
@@ -261,6 +277,7 @@ describe('legacy checkpoint replay', (): void => {
       'appendLegacyEvents',
       'saveAggregate',
       'removeAggregate',
+      'persistSyncJournal',
       'saveLegacyRuntime',
     ]);
     expect(fake.bankWrites).toEqual([]);
@@ -276,7 +293,12 @@ describe('legacy checkpoint replay', (): void => {
 
     await replayLegacyRuntimeCheckpointV1(fake.ports, runtime);
 
-    expect(fake.names).toEqual(['appendLegacyEvents', 'saveBank', 'saveLegacyRuntime']);
+    expect(fake.names).toEqual([
+      'appendLegacyEvents',
+      'saveBank',
+      'persistSyncJournal',
+      'saveLegacyRuntime',
+    ]);
     expect(fake.eventBatches).toEqual([[]]);
     expect(fake.aggregateWrites).toEqual([]);
     expect(fake.aggregateRemoves).toEqual([]);
@@ -327,7 +349,7 @@ describe('legacy checkpoint replay', (): void => {
     );
 
     expect(replayed.commitCheckpoint).toBeNull();
-    expect(fake.names).toHaveLength(5);
+    expect(fake.names).toHaveLength(6);
   });
 
   it('issues the same calls when the same checkpoint replays twice', async (): Promise<void> => {
@@ -348,6 +370,64 @@ describe('legacy checkpoint replay', (): void => {
     expect(second.runtimeWrites).toEqual(first.runtimeWrites);
   });
 
+  it('flushes the sync journal before the write that clears the checkpoint', async (): Promise<void> => {
+    const fake: LegacyHarness = harness();
+
+    await replayLegacyRuntimeCheckpointV1(fake.ports, checkpointRuntime(legacyCheckpoint()));
+
+    expect(fake.names.indexOf('persistSyncJournal')).toBeLessThan(
+      fake.names.indexOf('saveLegacyRuntime'),
+    );
+    expect(fake.journalFlushes).toBe(1);
+  });
+
+  it('replays the whole flush after a crash in the journal barrier', async (): Promise<void> => {
+    const runtime: RuntimeState = checkpointRuntime(legacyCheckpoint());
+    const crashed: LegacyHarness = harness('persistSyncJournal');
+
+    await expect(replayLegacyRuntimeCheckpointV1(crashed.ports, runtime)).rejects.toThrow(
+      'persistSyncJournal rejected',
+    );
+
+    expect(crashed.runtimeWrites).toEqual([]);
+    expect(runtime.commitCheckpoint).not.toBeNull();
+
+    const recovered: LegacyHarness = harness();
+    const replayed: RuntimeState = await replayLegacyRuntimeCheckpointV1(recovered.ports, runtime);
+
+    expect(recovered.names).toEqual([
+      'appendLegacyEvents',
+      'saveBank',
+      'saveAggregate',
+      'removeAggregate',
+      'persistSyncJournal',
+      'saveLegacyRuntime',
+    ]);
+    expect(replayed.commitCheckpoint).toBeNull();
+  });
+
+  it('replays the journal again after a crash between the barrier and the clear', async (): Promise<void> => {
+    const runtime: RuntimeState = checkpointRuntime(legacyCheckpoint());
+    const crashed: LegacyHarness = harness('saveLegacyRuntime');
+
+    await expect(replayLegacyRuntimeCheckpointV1(crashed.ports, runtime)).rejects.toThrow(
+      'saveLegacyRuntime rejected',
+    );
+
+    expect(crashed.journalFlushes).toBe(1);
+    expect(crashed.runtimeWrites).toEqual([]);
+    expect(runtime.commitCheckpoint).not.toBeNull();
+
+    const recovered: LegacyHarness = harness();
+    await replayLegacyRuntimeCheckpointV1(recovered.ports, runtime);
+
+    expect(recovered.journalFlushes).toBe(1);
+    expect(recovered.names.indexOf('persistSyncJournal')).toBeLessThan(
+      recovered.names.indexOf('saveLegacyRuntime'),
+    );
+    expect(recovered.runtimeWrites).toHaveLength(1);
+  });
+
   it('fails with an invalid-rule error when the runtime cannot be detached', async (): Promise<void> => {
     const hostile: RuntimeState = checkpointRuntime(legacyCheckpoint());
     Object.assign(hostile, { attemptDebounce: { broken: ((): void => {}) as unknown as number } });
@@ -366,6 +446,7 @@ describe('legacy checkpoint replay', (): void => {
       'saveBank',
       'saveAggregate',
       'removeAggregate',
+      'persistSyncJournal',
     ]);
     expect(fake.runtimeWrites).toEqual([]);
   });
@@ -393,6 +474,38 @@ describe('legacy focus settlement', (): void => {
       creditedFocusMs: 30 * MINUTE_MS,
       focusedMsAfter: 30 * MINUTE_MS,
     });
+    expect(result.accruedFocusMsAfter).toBe(30 * MINUTE_MS);
+  });
+
+  it('returns the watermark the projected runtime adopts', (): void => {
+    const settled: LegacySettlementResultV1 = settleLegacySessionV1(
+      settlementInput({
+        session: focusSession({ focusedMs: 10 * MINUTE_MS }),
+        accruedFocusMs: 10 * MINUTE_MS,
+      }),
+    );
+
+    expect(settled.accruedFocusMsAfter).toBe(settled.settlement.focusedMsAfter);
+
+    // The migrated runtime carries the settled focus and this watermark, so settling it again at
+    // the same instant credits nothing and banks nothing.
+    const replayed: LegacySettlementResultV1 = settleLegacySessionV1(
+      settlementInput({
+        session: focusSession({
+          focusedMs: settled.settlement.focusedMsAfter,
+          phaseStartedAt: settled.settlement.settledThrough,
+        }),
+        accruedFocusMs: settled.accruedFocusMsAfter,
+        bank: settled.bankAfter,
+        migratedAt: START_AT + 30 * MINUTE_MS,
+      }),
+    );
+
+    expect(replayed.settlement.creditedFocusMs).toBe(0);
+
+    expect(replayed.bankAfter).toEqual(settled.bankAfter);
+    expect(replayed.earnedMs).toBe(0);
+    expect(replayed.aggregateSets).toEqual({});
   });
 
   it('credits only through the fixed session end', (): void => {
@@ -466,6 +579,32 @@ describe('legacy focus settlement', (): void => {
     expect(result.settlement.settledThrough).toBe(START_AT + 30 * MINUTE_MS);
     expect(result.bankAfter).toEqual(accrue({ balanceMs: 0 }, 20 * MINUTE_MS, PAUSE_ECONOMY));
     expect(result.aggregateSets[LOCAL_KEY]?.focusMs).toBe(20 * MINUTE_MS);
+  });
+
+  it('ends a non-focus split window where the focus stopped, not where the phase did', (): void => {
+    const stored: DailyAgg = storedDay(LOCAL_DATE);
+    const result: LegacySettlementResultV1 = settleLegacySessionV1(
+      settlementInput({
+        session: focusSession({
+          phase: 'break',
+          startedAt: LOCAL_MIDNIGHT - 40 * MINUTE_MS,
+          phaseStartedAt: LOCAL_MIDNIGHT + 10 * MINUTE_MS,
+          phaseEndsAt: LOCAL_MIDNIGHT + 40 * MINUTE_MS,
+          sessionEndsAt: LOCAL_MIDNIGHT + 90 * MINUTE_MS,
+          focusedMs: 30 * MINUTE_MS,
+        }),
+        accruedFocusMs: 0,
+        runtimeDate: NEXT_DATE,
+        todayAgg: emptyDaily(NEXT_DATE),
+        priorAggregates: { [LOCAL_KEY]: stored },
+        migratedAt: LOCAL_MIDNIGHT + 60 * MINUTE_MS,
+      }),
+    );
+
+    expect(result.settlement.settledThrough).toBe(LOCAL_MIDNIGHT + 40 * MINUTE_MS);
+    expect(result.settlement.creditedFocusMs).toBe(0);
+    expect(result.aggregateSets[LOCAL_KEY]?.focusMs).toBe(stored.focusMs + 20 * MINUTE_MS);
+    expect(result.aggregateSets[NEXT_KEY]?.focusMs).toBe(10 * MINUTE_MS);
   });
 
   it('settles a pause whose end runs past the session end', (): void => {
@@ -637,6 +776,8 @@ describe('legacy focus settlement', (): void => {
     settlementInput({ deviceId: '' }),
     settlementInput({ migratedAt: Number.MAX_SAFE_INTEGER + 1 }),
     settlementInput({ todayAgg: emptyDaily(NEXT_DATE) }),
+    settlementInput({ runtimeDate: 'garbage', todayAgg: null }),
+    settlementInput({ bank: { balanceMs: Number.NaN } }),
   ])('refuses the hostile settlement input %#', (input: LegacySettlementInputV1): void => {
     expectInvalidRule((): LegacySettlementResultV1 => settleLegacySessionV1(input));
   });
@@ -644,7 +785,10 @@ describe('legacy focus settlement', (): void => {
 
 describe('legacy settlement source', (): void => {
   it('carries the reversible erratum comment exactly once', (): void => {
-    const source: string = readFileSync(resolve('src/background/legacy-runtime-v1.ts'), 'utf8');
+    const source: string = readFileSync(
+      fileURLToPath(new URL('../../../src/background/legacy-runtime-v1.ts', import.meta.url)),
+      'utf8',
+    );
 
     expect(source.split(ERRATUM_COMMENT)).toHaveLength(2);
     expect(source).toContain('function legacySettlementBoundsV1(');

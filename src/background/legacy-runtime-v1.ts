@@ -8,7 +8,7 @@
  */
 
 import { accrue } from '../core/budget';
-import { capAttempts, emptyDaily } from '../core/stats';
+import { capAttempts, emptyDaily, isDailyDate } from '../core/stats';
 import { TOP_SITES_DAILY } from '../shared/constants';
 import { CoreError } from '../shared/errors';
 import { syncAggKey } from '../shared/storage-keys';
@@ -30,6 +30,8 @@ export interface LegacyReplayPortsV1 {
   saveBank(bank: BankState, syncBank: boolean): Promise<void>;
   saveAggregate(key: string, value: DailyAgg): Promise<void>;
   removeAggregate(key: string): Promise<void>;
+  /** The v1 sync barrier. It is durable before the write that clears the checkpoint. */
+  persistSyncJournal(): Promise<void>;
 }
 
 export interface LegacySettlementInputV1 {
@@ -51,6 +53,8 @@ export interface LegacySettlementResultV1 {
   earnedMs: number;
   aggregateSets: Record<string, DailyAgg>;
   todayAgg: DailyAgg;
+  /** The watermark the projected runtime adopts, so a migrated session is never rebanked. */
+  accruedFocusMsAfter: number;
 }
 
 /** What the settlement owes the bank and the date-split aggregates, computed once. */
@@ -62,8 +66,10 @@ interface LegacySettlementBoundsV1 {
 
 /**
  * Finishes a durable v1 commit with v1 semantics: the full event list, the bank only when the
- * checkpoint marked it dirty, every aggregate set and removal, and then the runtime with the
- * checkpoint cleared. Replaying twice issues the same calls, so a crash anywhere repeats safely.
+ * checkpoint marked it dirty, every aggregate set and removal, the sync journal, and then the
+ * runtime with the checkpoint cleared. Replaying twice issues the same calls, so a crash anywhere
+ * repeats safely. The journal barrier sits before the clearing write for the same reason the whole
+ * order does: after that write no checkpoint is left to replay the sync publication from.
  *
  * The caller passes a runtime `stores.loadRuntime` already parsed, because replay flushes what the
  * checkpoint holds without revalidating it.
@@ -82,6 +88,7 @@ export async function replayLegacyRuntimeCheckpointV1(
   for (const key of checkpoint.aggregateRemoves ?? []) {
     await ports.removeAggregate(key);
   }
+  await ports.persistSyncJournal();
   const cleared: RuntimeState = detachedLegacyRuntime({ ...runtime, commitCheckpoint: null });
   await ports.saveLegacyRuntime(cleared);
   return cleared;
@@ -119,6 +126,7 @@ export function settleLegacySessionV1(input: LegacySettlementInputV1): LegacySet
     earnedMs: Math.max(0, bankAfter.balanceMs - input.bank.balanceMs),
     aggregateSets: aggregates.sets,
     todayAgg: aggregates.todayAgg,
+    accruedFocusMsAfter: focusedMsAfter,
   };
 }
 
@@ -145,7 +153,7 @@ interface LegacyAggregateResultV1 {
 }
 
 /**
- * The banked delta lands on every local date it covers, ending at the last settled instant. The
+ * The banked delta lands on every local date it covers, ending at the last focus instant. The
  * runtime date is always seeded so the caller has a current aggregate, but only a date the split
  * actually touched becomes a write.
  */
@@ -155,9 +163,10 @@ function buildLegacySettlementAggregatesV1(
 ): LegacyAggregateResultV1 {
   const aggregates: Map<string, DailyAgg> = new Map<string, DailyAgg>();
   const touched: Set<string> = new Set<string>();
+  const windowEnd: number = legacySplitWindowEndV1(input.session, bounds.settledThrough);
   const splits: FocusDateSplitV2[] = splitFocusByLocalDateV2(
-    bounds.settledThrough - bounds.bankDeltaMs,
-    bounds.settledThrough,
+    windowEnd - bounds.bankDeltaMs,
+    windowEnd,
   );
   for (const split of splits) {
     const aggregate: DailyAgg = seedLegacyAggregateV1(aggregates, input, split.date);
@@ -175,6 +184,15 @@ function buildLegacySettlementAggregatesV1(
     sets[key] = key === runtimeKey ? runtimeAggregate : capAttempts(aggregate, TOP_SITES_DAILY);
   }
   return { sets, todayAgg: structuredClone(runtimeAggregate) };
+}
+
+/**
+ * Focus credit ends at the last focus instant, which is the settled bound during focus and the
+ * instant the phase began otherwise. This matches `settlementEndV2` in `closure-projection-v2.ts`,
+ * so the two modules agree about when unsettled focus happened. The banked amount is unaffected.
+ */
+function legacySplitWindowEndV1(session: NormalizedSessionStateV1, settledThrough: number): number {
+  return session.phase === 'focus' ? settledThrough : session.phaseStartedAt;
 }
 
 /** One seeded aggregate per touched date, built once and then added to in place. */
@@ -249,6 +267,12 @@ function assertLegacySettlementInput(input: LegacySettlementInputV1): void {
   }
   if (!isNonBlankString(input.deviceId)) {
     invalidLegacy('a legacy settlement aggregate needs a device ID');
+  }
+  if (!isDailyDate(input.runtimeDate)) {
+    invalidLegacy('the runtime date must be a local YYYY-MM-DD date');
+  }
+  if (!Number.isFinite(input.bank.balanceMs) || input.bank.balanceMs < 0) {
+    invalidLegacy('the legacy bank balance must be a non-negative finite number');
   }
   if (input.migratedAt < input.session.phaseStartedAt) {
     invalidLegacy('migration time cannot precede the current phase start');
