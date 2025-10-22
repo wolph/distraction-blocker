@@ -42,6 +42,7 @@ import {
 
 type AppliedResponse = Extract<ContentEnforcementResponse, { disposition: 'applied' }>;
 type StaleCommandResponse = Extract<ContentEnforcementResponse, { disposition: 'stale-command' }>;
+type ResetRequiredResponse = Extract<ContentEnforcementResponse, { disposition: 'reset-required' }>;
 type EpochResetResponse = Extract<ContentEnforcementResponse, { disposition: 'epoch-reset' }>;
 type EpochResetRejectedResponse = Extract<
   ContentEnforcementResponse,
@@ -125,11 +126,7 @@ export async function sendDocumentEnforcementCommand(
   }
   if (response.disposition === 'applied') return appliedOutcome(command, response);
   if (response.disposition === 'stale-command') return staleOutcome(command, response);
-  if (response.disposition === 'reset-required') {
-    return response.requestedEpoch === command.enforcementEpoch
-      ? { kind: 'reset-required', currentEpoch: response.currentEpoch }
-      : fieldMismatch(response.disposition, 'requestedEpoch');
-  }
+  if (response.disposition === 'reset-required') return resetRequiredOutcome(command, response);
   return unexpectedDisposition(response.disposition, 'apply-enforcement');
 }
 
@@ -226,6 +223,8 @@ function staleOutcome(
   command: FrozenDocumentCommand,
   response: StaleCommandResponse,
 ): DocumentCommandOutcomeV2 {
+  const echoed: string | null = echoedCommandField(command, response);
+  if (echoed !== null) return fieldMismatch(response.disposition, echoed);
   const sent: StaleCommandResponse['requested'] = {
     enforcementEpoch: command.enforcementEpoch,
     sessionId: command.sessionId,
@@ -236,6 +235,37 @@ function staleOutcome(
   return exactDataEqual(response.requested, sent)
     ? { kind: 'stale', response }
     : fieldMismatch(response.disposition, 'requested tuple');
+}
+
+/**
+ * A reset-required answer sends this document back through the handshake, so it must be about the
+ * command that was handed to it. The observed URL is deliberately not compared: a document that
+ * answered for another URL is the Changed row, which only an applied answer can report.
+ */
+function resetRequiredOutcome(
+  command: FrozenDocumentCommand,
+  response: ResetRequiredResponse,
+): DocumentCommandOutcomeV2 {
+  const echoed: string | null = echoedCommandField(command, response);
+  if (echoed !== null) return fieldMismatch(response.disposition, echoed);
+  return response.requestedEpoch === command.enforcementEpoch
+    ? { kind: 'reset-required', currentEpoch: response.currentEpoch }
+    : fieldMismatch(response.disposition, 'requestedEpoch');
+}
+
+/**
+ * The identity fields every disposition echoes from the command it answered. An answer about a
+ * different operation or document is evidence about something else, whatever it claims. The epoch
+ * is left to each disposition's own comparison, which the response validator already ties to the
+ * echoed `enforcementEpoch`.
+ */
+function echoedCommandField(
+  command: FrozenDocumentCommand,
+  response: StaleCommandResponse | ResetRequiredResponse,
+): string | null {
+  if (response.operationId !== command.operationId) return 'operationId';
+  if (response.documentId !== command.documentId) return 'documentId';
+  return null;
 }
 
 function epochResetOutcome(

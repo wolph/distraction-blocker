@@ -490,6 +490,40 @@ describe('v2 content transport send', (): void => {
     expect(detailOf(drifted)).toContain('requested');
   });
 
+  it('refuses a stale answer about another operation or document', async (): Promise<void> => {
+    const command: FrozenDocumentCommand = documentCommand();
+    const foreignOperation: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
+      fakePort(staleFor(command, { operationId: OTHER_OPERATION_ID })).ports,
+      command,
+    );
+    const foreignDocument: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
+      fakePort(staleFor(command, { documentId: OTHER_DOCUMENT_ID })).ports,
+      command,
+    );
+
+    expect(foreignOperation.kind).toBe('mismatch');
+    expect(detailOf(foreignOperation)).toContain('operationId');
+    expect(foreignDocument.kind).toBe('mismatch');
+    expect(detailOf(foreignDocument)).toContain('documentId');
+  });
+
+  it('refuses a reset-required about another operation or document', async (): Promise<void> => {
+    const command: FrozenDocumentCommand = documentCommand();
+    const foreignOperation: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
+      fakePort(resetRequiredFor(command, { operationId: OTHER_OPERATION_ID })).ports,
+      command,
+    );
+    const foreignDocument: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
+      fakePort(resetRequiredFor(command, { documentId: OTHER_DOCUMENT_ID })).ports,
+      command,
+    );
+
+    expect(foreignOperation.kind).toBe('mismatch');
+    expect(detailOf(foreignOperation)).toContain('operationId');
+    expect(foreignDocument.kind).toBe('mismatch');
+    expect(detailOf(foreignDocument)).toContain('documentId');
+  });
+
   it('reports the current epoch of a reset-required that echoes the sent epoch', async (): Promise<void> => {
     const command: FrozenDocumentCommand = documentCommand();
     const fresh: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(

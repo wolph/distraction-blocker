@@ -6,36 +6,21 @@ import { applyTheme } from '../shared/theme';
 import { formatClock } from '../shared/time';
 import type { GateKind, GateState, SessionSnapshot, Verdict } from '../shared/types';
 import { verdictLabel } from '../shared/verdict-label';
-import { OVERLAY_STYLES, OVERLAY_TICK_MS } from './overlay-styles';
+import {
+  buildRing,
+  focusInitialControl,
+  mountOverlayHost,
+  type OverlayHostElements,
+  padlockSvg,
+  RING_CIRCUMFERENCE,
+  unmountOverlayHost,
+} from './overlay-host';
+import { OVERLAY_TICK_MS } from './overlay-styles';
 
-/** The block overlay. One closed shadow root, rendered from the worker's
- * SessionSnapshot. This module displays state, it never decides it. */
+/** The v1 block overlay, rendered from the worker's SessionSnapshot into the shared shadow host
+ * that `overlay-host.ts` owns. This module displays state, it never decides it. */
 
-const RING_RADIUS: number = 28;
-export const RING_CIRCUMFERENCE: number = 2 * Math.PI * RING_RADIUS;
 const TRANSPORT_ERROR: string = 'Could not reach Focus Lock. Try again.';
-const SCROLL_KEYS: ReadonlySet<string> = new Set<string>([
-  ' ',
-  'Spacebar',
-  'PageUp',
-  'PageDown',
-  'Home',
-  'End',
-  'ArrowUp',
-  'ArrowDown',
-  'ArrowLeft',
-  'ArrowRight',
-]);
-const RANGE_KEYS: ReadonlySet<string> = new Set<string>([
-  'PageUp',
-  'PageDown',
-  'Home',
-  'End',
-  'ArrowUp',
-  'ArrowDown',
-  'ArrowLeft',
-  'ArrowRight',
-]);
 
 interface SpendRef {
   button: HTMLButtonElement;
@@ -49,12 +34,6 @@ interface GateRefs {
   waitWrap: HTMLElement;
   confirm: HTMLButtonElement;
   phrase: HTMLInputElement | null;
-}
-
-export interface OverlayHostElements {
-  host: HTMLElement;
-  root: ShadowRoot;
-  container: HTMLElement;
 }
 
 interface Mounted extends OverlayHostElements {
@@ -74,26 +53,6 @@ interface Mounted extends OverlayHostElements {
 
 let mounted: Mounted | null = null;
 
-const SVG_NS: 'http://www.w3.org/2000/svg' = 'http://www.w3.org/2000/svg';
-
-const PADLOCK_PATH: string =
-  'M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 ' +
-  '2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 1 1 6 0v3H9zm3 4a1.5 1.5 ' +
-  '0 0 1 .75 2.8V19a.75.75 0 0 1-1.5 0v-2.2A1.5 1.5 0 0 1 12 14z';
-
-export function padlockSvg(): SVGSVGElement {
-  const svg: SVGSVGElement = document.createElementNS(SVG_NS, 'svg');
-  svg.setAttribute('class', 'padlock');
-  svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('fill', '#22c55e');
-  svg.setAttribute('fill-rule', 'evenodd');
-  svg.setAttribute('aria-hidden', 'true');
-  const path: SVGPathElement = document.createElementNS(SVG_NS, 'path');
-  path.setAttribute('d', PADLOCK_PATH);
-  svg.appendChild(path);
-  return svg;
-}
-
 export function showOverlay(verdict: Verdict, snapshot: SessionSnapshot, stopped?: boolean): void {
   if (mounted === null) mounted = mount();
   applyTheme(mounted.host, snapshot.theme);
@@ -111,36 +70,6 @@ export function hideOverlay(_snapshot: SessionSnapshot): void {
   window.clearInterval(mounted.timer);
   unmountOverlayHost(mounted.host);
   mounted = null;
-}
-
-/** The shared closed-shadow host: overlay styles, dialog backdrop, and interaction trap. */
-export function mountOverlayHost(): OverlayHostElements {
-  const host: HTMLElement = document.createElement('focus-lock-overlay');
-  applyHostStyle(host);
-  const root: ShadowRoot = host.attachShadow({ mode: 'closed' });
-  const style: HTMLStyleElement = document.createElement('style');
-  style.textContent = OVERLAY_STYLES;
-  const container: HTMLElement = document.createElement('div');
-  container.className = 'backdrop';
-  container.setAttribute('role', 'dialog');
-  container.setAttribute('aria-modal', 'true');
-  container.setAttribute('aria-label', 'Focus Lock');
-  container.tabIndex = -1;
-  root.append(style, container);
-  trapInteraction(host, root);
-  document.documentElement.appendChild(host);
-  if (import.meta.env.MODE === 'test') {
-    (globalThis as { __focusLockShadow?: ShadowRoot }).__focusLockShadow = root;
-  }
-  return { host, root, container };
-}
-
-/** Removes a mounted host and drops the closed-root handle the tests read. */
-export function unmountOverlayHost(host: HTMLElement): void {
-  host.remove();
-  if (import.meta.env.MODE === 'test') {
-    (globalThis as { __focusLockShadow?: ShadowRoot }).__focusLockShadow = undefined;
-  }
 }
 
 function mount(): Mounted {
@@ -162,77 +91,6 @@ function mount(): Mounted {
     actionPending: false,
     actionError: null,
   };
-}
-
-function applyHostStyle(host: HTMLElement): void {
-  host.style.setProperty('all', 'initial', 'important');
-  host.style.setProperty('position', 'fixed', 'important');
-  host.style.setProperty('inset', '0', 'important');
-  host.style.setProperty('z-index', '2147483647', 'important');
-  host.style.setProperty('display', 'block', 'important');
-  host.style.setProperty('direction', 'ltr', 'important');
-  host.style.setProperty('unicode-bidi', 'isolate', 'important');
-}
-
-function trapInteraction(host: HTMLElement, root: ShadowRoot): void {
-  host.addEventListener('wheel', (ev: WheelEvent): void => ev.preventDefault(), {
-    passive: false,
-  });
-  host.addEventListener('touchmove', (ev: TouchEvent): void => ev.preventDefault(), {
-    passive: false,
-  });
-  root.addEventListener('keydown', (event: Event): void => {
-    const ev: KeyboardEvent = event as KeyboardEvent;
-    if (ev.key !== 'Tab') {
-      if (shouldPreventKeyboardScroll(ev)) ev.preventDefault();
-      return;
-    }
-    const focusables: HTMLElement[] = Array.from(
-      root.querySelectorAll<HTMLElement>('button:not([disabled]):not([hidden]), input'),
-    );
-    if (focusables.length === 0) {
-      ev.preventDefault();
-      root.querySelector<HTMLElement>('[role="dialog"]')?.focus();
-      return;
-    }
-    const first: HTMLElement = focusables[0] as HTMLElement;
-    const last: HTMLElement = focusables[focusables.length - 1] as HTMLElement;
-    const active: Element | null = root.activeElement;
-    if (ev.shiftKey && (active === first || active === null)) {
-      ev.preventDefault();
-      last.focus();
-    } else if (!ev.shiftKey && (active === last || active === null)) {
-      ev.preventDefault();
-      first.focus();
-    }
-  });
-}
-
-function shouldPreventKeyboardScroll(event: KeyboardEvent): boolean {
-  if (!SCROLL_KEYS.has(event.key)) return false;
-  const path: EventTarget[] = event.composedPath();
-  const effectiveTarget: EventTarget | null = path[0] ?? event.target;
-  if (!(effectiveTarget instanceof Element)) return true;
-  const editable: Element | null = effectiveTarget.closest(
-    'input, textarea, select, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]',
-  );
-  if (editable instanceof HTMLInputElement) {
-    if (editable.type === 'range') return !RANGE_KEYS.has(event.key);
-    return event.key === 'PageUp' || event.key === 'PageDown';
-  }
-  if (editable instanceof HTMLSelectElement) return false;
-  if (editable !== null) return event.key === 'PageUp' || event.key === 'PageDown';
-  const space: boolean = event.key === ' ' || event.key === 'Spacebar';
-  return !(space && effectiveTarget.closest('button') !== null);
-}
-
-/** Focuses the first enabled control, or the dialog itself when a page has none. */
-export function focusInitialControl(root: ShadowRoot, fallback: HTMLElement): void {
-  if (root.activeElement !== null) return;
-  const target: HTMLElement | null = root.querySelector<HTMLElement>(
-    'button:not([disabled]):not([hidden])',
-  );
-  (target ?? fallback).focus();
 }
 
 function render(m: Mounted): void {
@@ -444,37 +302,6 @@ function buildGate(m: Mounted, gate: GateState, snap: SessionSnapshot, now: numb
   m.gate = { ringFill, count, waitWrap, confirm, phrase };
   updateGate(m, snap, now);
   return wrap;
-}
-
-/** The gate countdown ring. Both renderers read the same stroke geometry from the shared CSS. */
-export function buildRing(): {
-  waitWrap: HTMLElement;
-  ringFill: SVGCircleElement;
-  count: HTMLElement;
-} {
-  const waitWrap: HTMLElement = document.createElement('div');
-  waitWrap.className = 'ring-wrap';
-  const svg: SVGSVGElement = document.createElementNS(SVG_NS, 'svg');
-  svg.setAttribute('class', 'ring');
-  svg.setAttribute('viewBox', '0 0 64 64');
-  svg.setAttribute('width', '64');
-  svg.setAttribute('height', '64');
-  const track: SVGCircleElement = document.createElementNS(SVG_NS, 'circle');
-  track.setAttribute('class', 'ring-track');
-  const ringFill: SVGCircleElement = document.createElementNS(SVG_NS, 'circle');
-  ringFill.setAttribute('class', 'ring-fill');
-  for (const circle of [track, ringFill]) {
-    circle.setAttribute('cx', '32');
-    circle.setAttribute('cy', '32');
-    circle.setAttribute('r', String(RING_RADIUS));
-  }
-  ringFill.setAttribute('stroke-dasharray', String(RING_CIRCUMFERENCE));
-  ringFill.setAttribute('stroke-dashoffset', String(RING_CIRCUMFERENCE));
-  svg.append(track, ringFill);
-  const count: HTMLElement = document.createElement('div');
-  count.className = 'ring-count';
-  waitWrap.append(svg, count);
-  return { waitWrap, ringFill, count };
 }
 
 function appendPhrase(wrap: HTMLElement, gate: GateState): HTMLInputElement | null {

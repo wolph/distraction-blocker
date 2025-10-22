@@ -20,7 +20,7 @@ import {
   padlockSvg,
   RING_CIRCUMFERENCE,
   unmountOverlayHost,
-} from './overlay';
+} from './overlay-host';
 import { OVERLAY_TICK_MS } from './overlay-styles';
 
 type ActiveOverlayView = Extract<DocumentOverlayView, { presentation: 'active' }>;
