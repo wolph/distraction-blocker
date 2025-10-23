@@ -9,7 +9,11 @@ import {
 import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import { cancelPhrase, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import { CoreError } from '../../../src/shared/errors';
-import { isSessionLifecycleV2, isSessionSnapshotV2 } from '../../../src/shared/runtime-validation';
+import {
+  intentionReminderFor,
+  isSessionLifecycleV2,
+  isSessionSnapshotV2,
+} from '../../../src/shared/runtime-validation';
 import { END_SESSION_LABEL } from '../../../src/shared/session-copy';
 import type {
   BankState,
@@ -109,13 +113,27 @@ function publishedWith(
   });
 }
 
+/** A transition cleanup whose twelfth automatic attempt has passed, so no retry is scheduled. */
+function exhaustedTransitionCleanupRuntime(): RuntimeStateV2 {
+  return transitionRuntime(
+    cleanupTransition('start', 'prepared', 'start-abandon', {
+      cleanupProgress: cleanupProgress({
+        clearRuntimeRevision: CLEAR_RUNTIME_REVISION,
+        retry: cleanupRetryState({ automaticAttempt: 12, nextAttemptAt: null }),
+        clearCommands: cleanupProgress().clearCommands,
+      }),
+    }),
+  );
+}
+
 /** A committed transition over the durable focus session its commit created. */
 function committedRuntime(
   stage: CommittedStage,
   strictness: Strictness,
   overrides: Partial<RuntimeStateV2> = {},
+  kind: 'start' | 'resume' = 'start',
 ): RuntimeStateV2 {
-  return transitionRuntime(pendingTransition('start', stage), {
+  return transitionRuntime(pendingTransition(kind, stage), {
     session: timedFocusSession({ config: sessionConfigV2({ strictness, intention: INTENTION }) }),
     ...overrides,
   });
@@ -166,6 +184,18 @@ describe('endAuthorityV2', (): void => {
     });
   });
 
+  it('projects the reminder the snapshot guard cross-checks it against', (): void => {
+    const gate: GateState = cancelGateState();
+
+    for (const intention of [`  ${INTENTION}  `, '   ', '', '\n\t']) {
+      const authority: EndAuthorityV2 = endAuthorityV2('friction', gate, intention);
+
+      expect(
+        authority.kind === 'friction-gate' && authority.gate !== null && authority.copy,
+      ).toMatchObject({ intentionReminder: intentionReminderFor(intention) });
+    }
+  });
+
   it('reports a blank intention as no reminder', (): void => {
     const gate: GateState = cancelGateState();
     const blank: EndAuthorityV2 = endAuthorityV2('friction', gate, '   ');
@@ -188,6 +218,15 @@ describe('projectLifecycleV2 lifecycle table', (): void => {
     });
   });
 
+  it('never lets a consumer mutate the hidden authority every row shares', (): void => {
+    const first: SessionLifecycleV2 = lifecycleOf(emptyRuntimeV2());
+
+    expect((): void => {
+      Object.assign(first.endAuthority, { kind: 'immediate' });
+    }).toThrow(TypeError);
+    expect(lifecycleOf(emptyRuntimeV2()).endAuthority).toEqual({ kind: 'hidden' });
+  });
+
   it('hides End for every pre-commit transition stage', (): void => {
     for (const stage of PRE_COMMIT_STAGES) {
       for (const kind of ['start', 'resume'] as const) {
@@ -207,6 +246,12 @@ describe('projectLifecycleV2 lifecycle table', (): void => {
         kind: 'starting',
         operationId: ACTIVE_OPERATION_ID,
         transition: 'start',
+        endAuthority: { kind: 'immediate', actionLabel: 'End session' },
+      });
+      expect(lifecycleOf(committedRuntime(stage, 'flexible', {}, 'resume'))).toEqual({
+        kind: 'starting',
+        operationId: ACTIVE_OPERATION_ID,
+        transition: 'resume',
         endAuthority: { kind: 'immediate', actionLabel: 'End session' },
       });
       expect(lifecycleOf(committedRuntime(stage, 'hard')).endAuthority).toEqual({ kind: 'hidden' });
@@ -237,15 +282,7 @@ describe('projectLifecycleV2 lifecycle table', (): void => {
     const scheduled: RuntimeStateV2 = transitionRuntime(
       cleanupTransition('start', 'prepared', 'start-abandon'),
     );
-    const exhausted: RuntimeStateV2 = transitionRuntime(
-      cleanupTransition('start', 'prepared', 'start-abandon', {
-        cleanupProgress: cleanupProgress({
-          clearRuntimeRevision: CLEAR_RUNTIME_REVISION,
-          retry: cleanupRetryState({ automaticAttempt: 12, nextAttemptAt: null }),
-          clearCommands: cleanupProgress().clearCommands,
-        }),
-      }),
-    );
+    const exhausted: RuntimeStateV2 = exhaustedTransitionCleanupRuntime();
 
     expect(lifecycleOf(scheduled)).toEqual({
       kind: 'cleanup',
@@ -452,6 +489,8 @@ describe('buildSessionSnapshotV2', (): void => {
       snapshotOf(transitionRuntime(pendingTransition('start', 'prepared'))),
       snapshotOf(committedRuntime('alarm-ready', 'friction', { gate: cancelGateState() })),
       snapshotOf(cleanupClosureRuntime()),
+      snapshotOf(transitionRuntime(cleanupTransition('start', 'prepared', 'start-abandon'))),
+      snapshotOf(exhaustedTransitionCleanupRuntime()),
       snapshotOf(migratedActiveFocusRuntime()),
     ];
 

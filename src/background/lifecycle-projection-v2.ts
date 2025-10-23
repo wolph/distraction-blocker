@@ -11,6 +11,7 @@
 
 import { focusedMsAtV2 } from '../core/session-v2';
 import { CoreError } from '../shared/errors';
+import { intentionReminderFor } from '../shared/runtime-validation';
 import type {
   BankState,
   DailyAgg,
@@ -28,6 +29,7 @@ import type {
   PendingClosure,
   PendingEnforcementTransition,
   RuntimeStateV2,
+  TransitionStage,
 } from './runtime-v2-types';
 
 export interface SnapshotInputV2 {
@@ -48,9 +50,9 @@ const GATE_TITLE: 'End this session' = 'End this session';
 const GATE_BACK: 'Never mind, back to work' = 'Never mind, back to work';
 const GATE_PHRASE_LABEL: 'Type this to confirm:' = 'Type this to confirm:';
 const GATE_CONFIRM: 'End the session' = 'End the session';
-const HIDDEN_AUTHORITY: { kind: 'hidden' } = { kind: 'hidden' };
+const HIDDEN_AUTHORITY: { kind: 'hidden' } = Object.freeze({ kind: 'hidden' });
 /** The stages whose durable session is committed, so its strictness already governs End. */
-const COMMITTED_TRANSITION_STAGES: ReadonlySet<string> = new Set<string>([
+const COMMITTED_TRANSITION_STAGES: ReadonlySet<TransitionStage> = new Set<TransitionStage>([
   'committed-pending-verification',
   'alarm-ready',
   'active-verified',
@@ -85,7 +87,7 @@ export function endAuthorityV2(
       back: GATE_BACK,
       phraseLabel: GATE_PHRASE_LABEL,
       confirm: GATE_CONFIRM,
-      intentionReminder: intentionReminder(intention),
+      intentionReminder: intentionReminderFor(intention),
     },
     actions: { abandon: 'abandon-gate', confirm: 'confirm-gate' },
   };
@@ -96,6 +98,9 @@ export function endAuthorityV2(
  * needs the enforcement checkpoint that proves its documents were verified under the current epoch
  * and base policy revision. Pause and break publish a non-blocking phase and hold no focus
  * checkpoint at all.
+ *
+ * This answers only the durable half of publishability. Verifying the owned alarms the spec also
+ * requires belongs to the caller, so a true answer here is necessary but not sufficient.
  */
 export function isPublishableSessionV2(runtime: RuntimeStateV2): boolean {
   const session: SessionStateV2 | null = runtime.session;
@@ -137,6 +142,9 @@ export function projectLifecycleV2(runtime: RuntimeStateV2): SessionLifecycleV2 
  * Builds the public snapshot at one observation instant. Active focus settles through `at`; every
  * other lifecycle reports the idle shape, because the worker never projects clocks or config from a
  * session the public lifecycle is not reporting as active.
+ *
+ * The caller settles the runtime through `at` first. A session observed past its own durable
+ * boundary is not settled, and the snapshot built from it fails `isSessionSnapshotV2`.
  */
 export function buildSessionSnapshotV2(input: SnapshotInputV2): SessionSnapshotV2 {
   const { runtime, settings, bank, at, nextSchedule }: SnapshotInputV2 = input;
@@ -317,11 +325,6 @@ function checkpointPublishes(
 function openCancelGate(gate: GateState | null): (GateState & { kind: 'cancel' }) | null {
   if (gate === null || gate.kind !== 'cancel') return null;
   return { ...structuredClone(gate), kind: 'cancel' };
-}
-
-function intentionReminder(intention: string): string | null {
-  const goal: string = intention.trim();
-  return goal === '' ? null : goal;
 }
 
 /** An unlock that has already expired at the observation instant is no longer active. */

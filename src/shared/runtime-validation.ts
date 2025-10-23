@@ -1027,9 +1027,18 @@ function isPhaseValue(value: unknown): value is Phase {
   return value === 'idle' || value === 'focus' || value === 'break' || value === 'paused';
 }
 
+/**
+ * The one intention reminder rule: the trimmed intention, or null when nothing is left. The public
+ * Friction End authority carries this value and `authorityMatchesConfigAndGate` cross-checks it, so
+ * the projection that builds the authority calls this function rather than repeating the rule.
+ */
+export function intentionReminderFor(intention: string): string | null {
+  const goal: string = intention.trim();
+  return goal === '' ? null : goal;
+}
+
 function intentionReminder(config: SessionConfigV2): string | null {
-  const intention: string = config.intention.trim();
-  return intention === '' ? null : intention;
+  return intentionReminderFor(config.intention);
 }
 
 function authorityMatchesConfigAndGate(
