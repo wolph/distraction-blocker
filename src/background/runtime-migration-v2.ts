@@ -267,7 +267,9 @@ function invalidActiveCheckpoint(
     ...carriedRuntimeV2(input),
     gate: null,
     unlocks: [],
-    accruedFocusMs: 0,
+    // The settlement already banked this focus, so the projected runtime adopts its watermark and
+    // no replay, retry, or recovery of the same closure can bank it a second time.
+    accruedFocusMs: settled.accruedFocusMsAfter,
     todayAgg: structuredClone(settled.todayAgg),
     basePolicyRevision: MIGRATION_ACTIVE_REVISION,
     runtimeRevision: MIGRATION_ACTIVE_REVISION,

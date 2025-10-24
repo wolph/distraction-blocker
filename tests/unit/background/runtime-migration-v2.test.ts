@@ -498,6 +498,18 @@ describe('invalid active state migration', (): void => {
     expect(plan.projection.events).toEqual([plan.projection.endEvent]);
   });
 
+  it('adopts the settled watermark so the banked focus cannot be banked again', (): void => {
+    const session: NormalizedSessionStateV1 = legacySession({ config: scheduledConfig() });
+    const checkpoint: RuntimeMigrationCheckpointV1ToV2 = invalidActiveCheckpoint(session, {
+      runtime: legacyRuntime({ session, accruedFocusMs: 5 * MINUTE_MS }),
+    });
+    const plan: MigrationCleanupPlan = checkpoint.cleanupPlan as MigrationCleanupPlan;
+
+    expect(plan.settlement.focusedMsAfter).toBe(30 * MINUTE_MS);
+    expect(checkpoint.projectedRuntime.accruedFocusMs).toBe(plan.settlement.focusedMsAfter);
+    expect(checkpoint.projectedRuntime.accruedFocusMs).toBe(plan.projection.focusedMs);
+  });
+
   it('carries the settled aggregate as the projected runtime aggregate', (): void => {
     const session: NormalizedSessionStateV1 = legacySession({ config: scheduledConfig() });
     const stored: DailyAgg = { ...emptyAggregate(), focusMs: 5 * MINUTE_MS, sessionsStarted: 1 };
@@ -560,7 +572,6 @@ describe('invalid active state migration', (): void => {
     expect(runtime.enforcementCheckpoint).toBeNull();
     expect(runtime.gate).toBeNull();
     expect(runtime.unlocks).toEqual([]);
-    expect(runtime.accruedFocusMs).toBe(0);
     expect(runtime.handledScheduleOccurrences).toEqual([]);
   });
 
