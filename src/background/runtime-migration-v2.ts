@@ -17,6 +17,7 @@ import {
 } from '../shared/runtime-validation';
 import type {
   BankState,
+  DailyAgg,
   LegacyEventRecord,
   NormalizedSessionConfigV1,
   NormalizedSessionStateV1,
@@ -57,6 +58,13 @@ export interface MigrationInputV2 {
   cleanupOperationId: string;
   /** The caller allocates this once, and only when the legacy session lacks its own UUID. */
   assignedSessionId: string | null;
+  /**
+   * Stored aggregates keyed by `syncAggKey` for every local date the legacy settlement can split.
+   * A date already finished must be seeded from its stored aggregate, and a stale future
+   * `runtime.date` after a backward clock or westward timezone change makes that reachable, so the
+   * caller loads the whole range rather than letting the settlement refuse an earlier date.
+   */
+  priorAggregates: Record<string, DailyAgg>;
 }
 
 /** The migrated session the checkpoint carries, before the projection is assembled around it. */
@@ -136,12 +144,24 @@ export function migrateLegacySessionStateV1(
     sessionEndsAt: session.sessionEndsAt,
     phase: session.phase,
     phaseStartedAt: session.phaseStartedAt,
-    phaseEndsAt: session.phaseEndsAt,
+    phaseEndsAt: clampedPhaseEndV1(session),
     cycleIndex: session.cycleIndex,
     pausedFrom: session.pausedFrom === null ? null : { ...session.pausedFrom },
     focusedMs: session.focusedMs,
   };
   return isSessionStateV2(migrated) ? migrated : null;
+}
+
+/**
+ * v1 could begin a pause whose end ran past the fixed session end, which the v2 session contract
+ * refuses. The pause is clamped to that end exactly as `beginPauseV2` clamps a new one, so a session
+ * paused in its final minutes migrates instead of being force-closed. A clamp that still leaves an
+ * invalid state falls through to the invalid-active route like any other unmigratable session.
+ */
+function clampedPhaseEndV1(session: NormalizedSessionStateV1): number {
+  return session.phase === 'paused'
+    ? Math.min(session.phaseEndsAt, session.sessionEndsAt)
+    : session.phaseEndsAt;
 }
 
 /**
@@ -257,9 +277,7 @@ function invalidActiveCheckpoint(
     todayAgg: input.runtime.todayAgg,
     runtimeDate: input.runtime.date,
     deviceId: input.deviceId,
-    // The v1 writer updates `date` and `accruedFocusMs` together, so the uncredited focus this
-    // settles never starts before the runtime date and never needs an earlier stored aggregate.
-    priorAggregates: {},
+    priorAggregates: input.priorAggregates,
     migratedAt: input.migratedAt,
   });
   const plan: MigrationCleanupPlan = migrationCleanupPlan(input, legacy, migrated, settled);
@@ -267,9 +285,9 @@ function invalidActiveCheckpoint(
     ...carriedRuntimeV2(input),
     gate: null,
     unlocks: [],
-    // The settlement already banked this focus, so the projected runtime adopts its watermark and
-    // no replay, retry, or recovery of the same closure can bank it a second time.
-    accruedFocusMs: settled.accruedFocusMsAfter,
+    // The session is logically closed, and v1 resets this watermark at every no-session site, so
+    // the next session starts crediting from zero rather than from a closed session's focus.
+    accruedFocusMs: 0,
     todayAgg: structuredClone(settled.todayAgg),
     basePolicyRevision: MIGRATION_ACTIVE_REVISION,
     runtimeRevision: MIGRATION_ACTIVE_REVISION,

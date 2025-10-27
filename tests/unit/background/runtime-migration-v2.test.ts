@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   buildRuntimeMigrationCheckpointV1ToV2,
@@ -34,7 +34,7 @@ import type {
 
 type LegacyActiveSession = NormalizedSessionStateV1 & { sessionId: string };
 
-const MODULE_PATH: string = 'src/background/runtime-migration-v2.ts';
+const MODULE_URL: URL = new URL('../../../src/background/runtime-migration-v2.ts', import.meta.url);
 const DEVICE_ID: string = 'device-1';
 const SESSION_ID: string = '10000000-0000-4000-8000-000000000001';
 const ASSIGNED_SESSION_ID: string = '10000000-0000-4000-8000-000000000002';
@@ -159,6 +159,7 @@ function migrationInput(overrides: Partial<MigrationInputV2> = {}): MigrationInp
     enforcementEpoch: EPOCH_ID,
     cleanupOperationId: CLEANUP_OPERATION_ID,
     assignedSessionId: null,
+    priorAggregates: {},
     ...overrides,
   };
 }
@@ -266,9 +267,28 @@ describe('legacy config and state migration', (): void => {
     expect(migrated?.pausedFrom).toEqual(paused.pausedFrom);
   });
 
+  it('clamps a legacy pause that ran past the fixed session end', (): void => {
+    const pausedLate: LegacyActiveSession = legacySession({
+      phase: 'paused',
+      phaseStartedAt: START_AT + 47 * MINUTE_MS,
+      phaseEndsAt: START_AT + 57 * MINUTE_MS,
+      pausedFrom: { phase: 'focus', phaseEndsAt: START_AT + DURATION_MIN * MINUTE_MS },
+      focusedMs: 47 * MINUTE_MS,
+    });
+    const migrated: SessionStateV2 | null = migrateLegacySessionStateV1(pausedLate, null);
+
+    expect(pausedLate.phaseEndsAt).toBeGreaterThan(pausedLate.sessionEndsAt);
+    expect(migrated?.phaseEndsAt).toBe(pausedLate.sessionEndsAt);
+    expect(migrated?.pausedFrom).toEqual(pausedLate.pausedFrom);
+  });
+
   it('rejects a legacy state that fails the v2 session contract', (): void => {
     expect(
       migrateLegacySessionStateV1(legacySession({ sessionEndsAt: START_AT + MINUTE_MS }), null),
+    ).toBeNull();
+    // Only a pause may overrun the fixed end in v1, so a focus phase past it stays unmigratable.
+    expect(
+      migrateLegacySessionStateV1(legacySession({ phaseEndsAt: START_AT + 60 * MINUTE_MS }), null),
     ).toBeNull();
     expect(
       migrateLegacySessionStateV1(legacySession({ phase: 'break', pausedFrom: null }), null),
@@ -365,6 +385,23 @@ describe('migration checkpoint builder', (): void => {
     expect(checkpoint.assignedSessionId).toBeNull();
     expect(checkpoint.identityEvent).toBeNull();
     expect(checkpoint.cleanupPlan).toBeNull();
+  });
+
+  it('migrates a session paused in its final minutes instead of closing it', (): void => {
+    const pausedLate: NormalizedSessionStateV1 = legacySession({
+      phase: 'paused',
+      phaseStartedAt: START_AT + 47 * MINUTE_MS,
+      phaseEndsAt: START_AT + 57 * MINUTE_MS,
+      pausedFrom: { phase: 'focus', phaseEndsAt: START_AT + DURATION_MIN * MINUTE_MS },
+      focusedMs: 47 * MINUTE_MS,
+    });
+    const checkpoint: RuntimeMigrationCheckpointV1ToV2 = buildRuntimeMigrationCheckpointV1ToV2(
+      activeInput(pausedLate),
+    );
+
+    expect(checkpoint.cleanupPlan).toBeNull();
+    expect(checkpoint.projectedRuntime.session?.phase).toBe('paused');
+    expect(checkpoint.projectedRuntime.session?.phaseEndsAt).toBe(pausedLate.sessionEndsAt);
   });
 
   it('announces a derived UUID for a legacy session that never had one', (): void => {
@@ -498,16 +535,26 @@ describe('invalid active state migration', (): void => {
     expect(plan.projection.events).toEqual([plan.projection.endEvent]);
   });
 
-  it('adopts the settled watermark so the banked focus cannot be banked again', (): void => {
+  it('settles an earlier date from the aggregate the caller supplies', (): void => {
     const session: NormalizedSessionStateV1 = legacySession({ config: scheduledConfig() });
-    const checkpoint: RuntimeMigrationCheckpointV1ToV2 = invalidActiveCheckpoint(session, {
-      runtime: legacyRuntime({ session, accruedFocusMs: 5 * MINUTE_MS }),
+    // A backward clock or a westward timezone change leaves a stale future runtime date behind,
+    // and the settled split then lands on a date the runtime already considers finished.
+    const staleFuture: RuntimeState = legacyRuntime({ session, date: '2026-09-04' });
+    const stored: DailyAgg = { ...emptyAggregate(), focusMs: 5 * MINUTE_MS, sessionsStarted: 1 };
+    const plan: MigrationCleanupPlan = cleanupPlanOf(session, {
+      runtime: staleFuture,
+      priorAggregates: { [AGGREGATE_KEY]: stored },
     });
-    const plan: MigrationCleanupPlan = checkpoint.cleanupPlan as MigrationCleanupPlan;
 
-    expect(plan.settlement.focusedMsAfter).toBe(30 * MINUTE_MS);
-    expect(checkpoint.projectedRuntime.accruedFocusMs).toBe(plan.settlement.focusedMsAfter);
-    expect(checkpoint.projectedRuntime.accruedFocusMs).toBe(plan.projection.focusedMs);
+    expect(plan.projection.aggregateSets[AGGREGATE_KEY]?.focusMs).toBe(35 * MINUTE_MS);
+    expect(plan.projection.aggregateSets[AGGREGATE_KEY]?.sessionsStarted).toBe(1);
+    expectCoreError(
+      (): unknown =>
+        buildRuntimeMigrationCheckpointV1ToV2(
+          activeInput(session, { runtime: staleFuture, priorAggregates: {} }),
+        ),
+      /needs the stored aggregate/,
+    );
   });
 
   it('carries the settled aggregate as the projected runtime aggregate', (): void => {
@@ -572,6 +619,7 @@ describe('invalid active state migration', (): void => {
     expect(runtime.enforcementCheckpoint).toBeNull();
     expect(runtime.gate).toBeNull();
     expect(runtime.unlocks).toEqual([]);
+    expect(runtime.accruedFocusMs).toBe(0);
     expect(runtime.handledScheduleOccurrences).toEqual([]);
   });
 
@@ -648,16 +696,13 @@ describe('migration checkpoint boundary', (): void => {
   });
 
   it('never reads Settings', (): void => {
-    const source: string = readFileSync(resolve(process.cwd(), MODULE_PATH), 'utf8');
-    const imports: string[] = source
-      .split('\n')
-      .filter((line: string): boolean => line.startsWith('import '));
-    const valueImports: string[] = imports.filter(
-      (line: string): boolean => !line.startsWith('import type '),
-    );
+    const source: string = readFileSync(fileURLToPath(MODULE_URL), 'utf8');
+    // A wrapped import keeps its specifier on the closing line, so the whole source is scanned with
+    // every type-only import removed first. What remains is exactly the value imports.
+    const valueImports: string = source.replace(/import type[\s\S]*?;/g, '');
 
-    expect(valueImports.some((line: string): boolean => line.includes('./stores'))).toBe(false);
-    expect(imports.some((line: string): boolean => line.includes('policy-storage'))).toBe(false);
+    expect(valueImports.includes("'./stores'")).toBe(false);
+    expect(source.includes('policy-storage')).toBe(false);
     expect(source.includes('DEFAULT_SETTINGS')).toBe(false);
     expect(source.includes('loadSettings')).toBe(false);
   });
