@@ -59,15 +59,6 @@ export type RuntimeBootResultV2 =
   | { kind: 'migrated'; runtime: RuntimeStateV2; migrated: true }
   | { kind: 'rejected'; runtime: RuntimeStateV2; reason: 'marker-without-v2' | 'invalid-v2' };
 
-/**
- * Task 3's `MigrationInputV2` does not carry `priorAggregates` yet. The reader loads the map the
- * legacy settlement needs and passes it under that exact name, so the builder receives it unchanged
- * the moment the field lands and no date the settlement splits is ever seeded empty.
- */
-interface MigrationInputWithAggregatesV2 extends MigrationInputV2 {
-  priorAggregates: Record<string, DailyAgg>;
-}
-
 /** The reported value is a diagnostic, not authority, so it is bounded before it leaves here. */
 const REJECTED_VALUE_MAX_CHARS: number = 4096;
 /**
@@ -137,7 +128,7 @@ async function migrateLegacyRuntime(
     replayed,
     now,
   );
-  const input: MigrationInputWithAggregatesV2 = {
+  const input: MigrationInputV2 = {
     runtime: replayed,
     bank: ports.bank(),
     pauseEconomy: ports.pauseEconomy(),

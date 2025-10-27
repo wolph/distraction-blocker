@@ -257,6 +257,21 @@ function legacySession(
   };
 }
 
+function storedAggregate(date: string, focusMs: number): DailyAgg {
+  return {
+    date,
+    focusMs,
+    sessionsStarted: 1,
+    sessionsCompleted: 0,
+    attempts: {},
+    attemptsOther: 0,
+    pausesTaken: 0,
+    pauseMsSpent: 0,
+    unlocksTaken: 0,
+    resisted: 0,
+  };
+}
+
 function legacyRuntime(overrides: Partial<RuntimeState> = {}): RuntimeState {
   return {
     session: null,
@@ -503,6 +518,24 @@ describe('v2 boot legacy migration', (): void => {
       syncAggKey(DEVICE_ID, localDateStr(startedAt + DAY_MS)),
       syncAggKey(DEVICE_ID, LOCAL_DATE),
     ]);
+  });
+
+  it('hands the loaded aggregates to the legacy settlement', async (): Promise<void> => {
+    const key: string = syncAggKey(DEVICE_ID, LOCAL_DATE);
+    // A backward clock leaves the runtime dated ahead of the date this settlement has to split, so
+    // the settlement refuses to seed that date empty and needs the stored aggregate the reader loads.
+    const storage: BootStorage = emptyStorage({
+      runtime: { ...invalidScheduledRuntime(), date: '2026-09-04' },
+      aggregates: { [key]: storedAggregate(LOCAL_DATE, 5 * MINUTE_MS) },
+    });
+    const test: BootHarness = harness(storage);
+
+    const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
+
+    expect(result.kind).toBe('migrated');
+    expect(test.aggregateKeyReads[0]).toEqual([key]);
+    expect(storage.aggregates[key]?.focusMs).toBe(35 * MINUTE_MS);
+    expect(storage.aggregates[key]?.sessionsStarted).toBe(1);
   });
 
   it('completes absent captured rules from the persisted lists snapshot', async (): Promise<void> => {
