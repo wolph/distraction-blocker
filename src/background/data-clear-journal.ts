@@ -30,6 +30,7 @@ import {
 import { freshCleanupRetryStateV2 } from './cleanup-progress-v2';
 import type { DocumentEpochResetAck, FrozenEpochResetCommand } from './enforcement-persistence-v2';
 import { validateDetachedDocumentEpochResetAck } from './enforcement-persistence-v2-validation';
+import { emptyRuntimeV2 } from './runtime-store-v2';
 import type {
   CleanupEnforcementTarget,
   CleanupRetryState,
@@ -199,6 +200,8 @@ const INSTALL_REASONS: ReadonlySet<string> = new Set<string>([
 ]);
 const DEFERRAL_REASONS: ReadonlySet<string> = new Set<string>(['no-document-id', 'no-receiver']);
 const EXCLUSION_REASONS: ReadonlySet<string> = new Set<string>(['known-unsupported', 'closed']);
+/** The builder's instant only fills `date`, which the cleared comparison replaces. */
+const CLEARED_PROJECTION_INSTANT_MS: number = 0;
 const SETUP_STORAGE_ERRORS: ReadonlySet<string> = new Set<string>([
   'legacy-migration-failed',
   'sync-publish-failed',
@@ -303,6 +306,8 @@ export function appendInstallLifecycleIntent(
 export function projectAllDataClearPublicState(
   journal: DataClearJournal | null,
 ): AllDataClearPublicState {
+  // The synced-policy and local-history journals keep their own public surface in Setup, so this
+  // all-data read model reports idle for them rather than borrowing their phase.
   if (journal === null || journal.scope !== 'all') {
     return { status: 'idle', scope: null, phase: null };
   }
@@ -321,6 +326,9 @@ export function nextFinalMarkerProjection(
   const current: FinalInstallMarkerProjection | null = journal.finalInstallMarkerProjection;
   if (current === null) invalidJournal('a marker transform needs a final marker projection');
   const record: PendingInstallLifecycleIntent = detachedIntent(intent);
+  if (journal.pendingInstallLifecycleIntents[0]?.eventId !== record.eventId) {
+    invalidJournal('a marker transform applies only to the first pending lifecycle intent');
+  }
   const next: FinalInstallMarkerProjection = {
     ...current,
     latestReason: record.reason === 'update' ? 'update' : 'install',
@@ -428,7 +436,7 @@ function validateDetachedResetProjections(
 ): boolean {
   return (
     validateDetachedResetRuntimeProjection(candidate.runtimeProjection, resetEpoch) &&
-    isSetupState(candidate.setupProjection) &&
+    validateDetachedResetSetupProjection(candidate.setupProjection) &&
     validateDetachedCleanMarkerProjection(candidate.installMarkerProjection) &&
     validateDetachedFinalMarkerProjection(candidate.finalInstallMarkerProjection) &&
     validateDetachedResetProgress(candidate.resetProgress, resetEpoch, resetOperationId)
@@ -441,18 +449,41 @@ function validateDetachedResetRuntimeProjection(
   resetEpoch: string,
 ): value is RuntimeStateV2 {
   const runtime: RuntimeStateV2 | null = parseRuntimeStateV2(value);
+  return runtime !== null && isClearedRuntimeProjection(runtime, resetEpoch);
+}
+
+/**
+ * Spec line 1317: the runtime projection "contains no user history, uses `resetEpoch` as
+ * `enforcementEpoch`, has zero base and runtime revisions, and has empty reset acknowledgements and
+ * document commands". A cleared projection is therefore exactly the idle runtime a clean install
+ * boots from, under the reset epoch, so it is compared against `emptyRuntimeV2` itself rather than
+ * against a second field list that could drift from the value the producer writes.
+ *
+ * `date` is the only field the projection carries. It is the local day the clear advanced, and a
+ * stored-value parser has no clock to recompute it, so the runtime's own day is substituted before
+ * the comparison. Every other field, including `todayAgg` blocked-host counts, `unlocks`,
+ * `attemptDebounce`, `tabStates`, `gate`, and `lastPruneDate`, must be at its empty value.
+ */
+function isClearedRuntimeProjection(runtime: RuntimeStateV2, resetEpoch: string): boolean {
+  const cleared: RuntimeStateV2 = {
+    ...emptyRuntimeV2(CLEARED_PROJECTION_INSTANT_MS, resetEpoch),
+    date: runtime.date,
+  };
+  return exactDataEqual(runtime, cleared);
+}
+
+/**
+ * Spec line 1317: the Setup projection is "the final clean Setup with idle `dataClear`". A stored
+ * projection that still reports a clear in progress, or a retained storage error, would be
+ * materialized as the post-clear Setup and leave the UI reporting a clear no journal can finish.
+ */
+function validateDetachedResetSetupProjection(value: unknown): value is SetupState {
+  if (!isSetupState(value)) return false;
   return (
-    runtime !== null &&
-    runtime.session === null &&
-    runtime.pendingEnforcementTransition === null &&
-    runtime.pendingClosure === null &&
-    runtime.enforcementCheckpoint === null &&
-    runtime.commitCheckpoint === null &&
-    Object.keys(runtime.epochResetAcks).length === 0 &&
-    Object.keys(runtime.documentCommands).length === 0 &&
-    runtime.basePolicyRevision === 0 &&
-    runtime.runtimeRevision === 0 &&
-    runtime.enforcementEpoch === resetEpoch
+    value.storageError === null &&
+    value.dataClear.status === 'idle' &&
+    value.dataClear.scope === null &&
+    value.dataClear.phase === null
   );
 }
 

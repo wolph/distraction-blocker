@@ -28,20 +28,36 @@ import type {
   DocumentEpochResetAck,
   FrozenEpochResetCommand,
 } from '../../../src/background/enforcement-persistence-v2';
+import { emptyRuntimeV2 as emptyStoreRuntimeV2 } from '../../../src/background/runtime-store-v2';
 import type { CleanupRetryState, RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validation';
 import { DEFAULT_SETUP } from '../../../src/shared/constants';
 import { CoreError } from '../../../src/shared/errors';
+import { isSetupState } from '../../../src/shared/runtime-validation';
 import {
+  ATTEMPT_DEBOUNCE_KEY,
+  CLEANUP_OPERATION_ID,
+  cancelGateState,
+  cleanupClosureRuntime,
   cleanupRetryState,
+  cleanupTransition,
+  clearCommandMap,
+  dailyAgg,
+  deferredBlockClaimMap,
   documentKey,
+  ENTRY_ID,
   emptyRuntimeV2,
   epochResetAck,
+  handledOccurrence,
+  LOCAL_DATE,
   NOW,
+  publishedFocusRuntime,
   runtimeCommitCheckpoint,
+  runtimeTabState,
   SECOND_TARGET_URL,
   TARGET_URL,
   timedFocusSession,
+  transitionRuntime,
 } from './runtime-v2-fixtures';
 
 type UnknownRecord = Record<string, unknown>;
@@ -429,6 +445,38 @@ describe('data clear journal parsing', (): void => {
       'a commit checkpoint',
       resetRuntime({ commitCheckpoint: runtimeCommitCheckpoint(resetRuntime()) }),
     ],
+    // Spec line 1317: no user history survives the clear.
+    ['a blocked-host aggregate', resetRuntime({ todayAgg: dailyAgg() })],
+    ['an unlocked host', resetRuntime({ unlocks: [{ host: 'example.com', until: NOW + 60_000 }] })],
+    ['a debounced attempt', resetRuntime({ attemptDebounce: { [ATTEMPT_DEBOUNCE_KEY]: NOW } })],
+    ['a tab claim', resetRuntime({ tabStates: { 11: runtimeTabState() } })],
+    ['an open gate', resetRuntime({ gate: cancelGateState() })],
+    ['a handled occurrence', resetRuntime({ handledScheduleOccurrences: [handledOccurrence()] })],
+    ['a deferred block claim', resetRuntime({ deferredBlockClaims: deferredBlockClaimMap() })],
+    ['a removed tab tombstone', resetRuntime({ removedTabTombstones: { 13: true } })],
+    ['accrued focus', resetRuntime({ accruedFocusMs: 45_000 })],
+    [
+      'a schedule notice token',
+      resetRuntime({ scheduleUnavailableNoticeToken: `${ENTRY_ID}@${LOCAL_DATE}` }),
+    ],
+    ['a prune watermark', resetRuntime({ lastPruneDate: LOCAL_DATE })],
+    [
+      'a document command',
+      resetRuntime({
+        documentCommands: clearCommandMap({
+          operationId: CLEANUP_OPERATION_ID,
+          enforcementEpoch: RESET_EPOCH,
+          basePolicyRevision: 0,
+          runtimeRevision: 0,
+        }),
+      }),
+    ],
+    [
+      'a pending transition',
+      transitionRuntime(cleanupTransition('start', 'starting-verified', 'start-abandon')),
+    ],
+    ['a pending closure', cleanupClosureRuntime()],
+    ['a published focus checkpoint', publishedFocusRuntime()],
   ])(
     'rejects a browser reset runtime projection with %s',
     (_label: string, runtime: RuntimeStateV2): void => {
@@ -437,6 +485,27 @@ describe('data clear journal parsing', (): void => {
       expectRejected([withKey(browserResetJournal(), 'runtimeProjection', runtime)]);
     },
   );
+
+  it('accepts exactly the cleared runtime a clean install boots from', (): void => {
+    const cleared: RuntimeStateV2 = resetRuntime();
+
+    expect(cleared).toEqual({
+      ...emptyStoreRuntimeV2(NOW, RESET_EPOCH),
+      date: cleared.date,
+    });
+    expect(parseDataClearJournal(browserResetJournal())).not.toBeNull();
+  });
+
+  it.each([
+    ['a legacy projection setup', { ...DEFAULT_SETUP, storageError: 'local-clear-failed' }],
+    [
+      'a setup still reporting a clear',
+      { ...DEFAULT_SETUP, dataClear: { status: 'pending', scope: 'all', phase: 'local' } },
+    ],
+  ])('rejects a browser reset setup projection with %s', (_label: string, setup: unknown): void => {
+    expect(isSetupState(setup)).toBe(true);
+    expectRejected([withKey(browserResetJournal(), 'setupProjection', setup)]);
+  });
 
   it.each([
     ['a legacy profile', cleanMarker({ profile: 'legacy' } as never)],
@@ -808,9 +877,15 @@ describe('final marker projection', (): void => {
   ] as const)(
     'maps the %s reason to %s',
     (reason: PendingInstallLifecycleIntent['reason'], latestReason: FinalInstallMarkerProjection['latestReason']): void => {
+      const record: PendingInstallLifecycleIntent = intent({
+        reason,
+        currentVersion: '2.0.0',
+        previousVersion: '1.9.9',
+      });
+
       const next: FinalInstallMarkerProjection = nextFinalMarkerProjection(
-        browserResetJournal(),
-        intent({ reason, currentVersion: '2.0.0', previousVersion: '1.9.9' }),
+        browserResetJournal({ pendingInstallLifecycleIntents: [record] }),
+        record,
       );
 
       expect(next).toEqual({
@@ -824,7 +899,11 @@ describe('final marker projection', (): void => {
 
   it('refuses a journal without a final marker projection', (): void => {
     expectInvalidRule(
-      (): FinalInstallMarkerProjection => nextFinalMarkerProjection(remoteJournal(), intent()),
+      (): FinalInstallMarkerProjection =>
+        nextFinalMarkerProjection(
+          remoteJournal({ pendingInstallLifecycleIntents: [intent()] }),
+          intent(),
+        ),
     );
   });
 
@@ -832,6 +911,23 @@ describe('final marker projection', (): void => {
     expectInvalidRule(
       (): FinalInstallMarkerProjection =>
         nextFinalMarkerProjection(browserResetJournal(), intent({ currentVersion: ' ' })),
+    );
+  });
+
+  it('refuses an intent that is not the first pending record', (): void => {
+    const first: PendingInstallLifecycleIntent = intent({ eventId: INTENT_A, observedAt: NOW });
+    const second: PendingInstallLifecycleIntent = intent({
+      eventId: INTENT_B,
+      observedAt: NOW + 1,
+      reason: 'update',
+    });
+    const journal: AllDataClearJournalV2 = browserResetJournal({
+      pendingInstallLifecycleIntents: [first, second],
+    });
+
+    expect(nextFinalMarkerProjection(journal, first).latestReason).toBe('install');
+    expectInvalidRule(
+      (): FinalInstallMarkerProjection => nextFinalMarkerProjection(journal, second),
     );
   });
 });
@@ -956,8 +1052,6 @@ describe('data clear journal source boundary', (): void => {
       'utf8',
     );
 
-    expect(source).not.toMatch(/from\s+'\.\/main'/u);
-    expect(source).not.toMatch(/from\s+'\.\/policy-storage'/u);
-    expect(source).not.toMatch(/from\s+'\.\/engine'/u);
+    expect(source).not.toMatch(/from\s+['"][^'"]*\/?(main|policy-storage|engine)['"]/u);
   });
 });
