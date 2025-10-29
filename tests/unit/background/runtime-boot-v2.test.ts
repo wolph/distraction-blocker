@@ -331,6 +331,10 @@ function legacyCheckpoint(): RuntimeCommitCheckpoint {
   };
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function callsAfter(calls: readonly string[], name: string): string[] {
   const index: number = calls.indexOf(name);
   return index < 0 ? [] : calls.slice(index + 1);
@@ -654,6 +658,24 @@ describe('v2 boot rejected authority', (): void => {
     expect(test.storage.runtime).toEqual(result.runtime);
     expect(test.errors).toHaveLength(1);
     expect(test.errors[0]).toBeInstanceOf(CoreError);
+    expect(errorMessage(test.errors[0])).toContain('invalid-v2');
+    expect(errorMessage(test.errors[0])).toContain('"session":"broken"');
+  });
+
+  it('reports the refused value truncated and never parks it elsewhere', async (): Promise<void> => {
+    const oversized: unknown = {
+      runtimeSchemaVersion: 2,
+      session: 'x'.repeat(8_192),
+    };
+    const test: BootHarness = harness(emptyStorage({ runtime: oversized }));
+
+    await bootRuntimeAuthorityV2(test.ports);
+    const message: string = errorMessage(test.errors[0]);
+
+    expect(message.length).toBeLessThan(4_400);
+    expect(message.endsWith('...')).toBe(true);
+    expect(test.storage.migration).toBeUndefined();
+    expect(test.storage.marker).toBeUndefined();
   });
 
   it('reports the marker cutoff when no checkpoint explains it', async (): Promise<void> => {

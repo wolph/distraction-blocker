@@ -211,6 +211,7 @@ describe('stored runtime classification', (): void => {
       expect(classifyStoredRuntime(raw, null)).toEqual({
         kind: 'rejected',
         reason: 'invalid-v2',
+        raw,
       });
     },
   );
@@ -219,9 +220,12 @@ describe('stored runtime classification', (): void => {
   // LOCAL_RUNTIME_MIGRATION checkpoint first and replay a valid one, and may read this verdict as a
   // refusal to migrate unversioned v1 again only when no valid checkpoint exists.
   it('rejects unversioned v1 once the schema marker exists', (): void => {
-    expect(classifyStoredRuntime(legacyRuntime(), MARKER)).toEqual({
+    const raw: RuntimeState = legacyRuntime();
+
+    expect(classifyStoredRuntime(raw, MARKER)).toEqual({
       kind: 'rejected',
       reason: 'marker-without-v2',
+      raw,
     });
   });
 
@@ -236,6 +240,7 @@ describe('stored runtime classification', (): void => {
       expect(classifyStoredRuntime(raw, marker)).toEqual({
         kind: 'rejected',
         reason: 'invalid-v2',
+        raw,
       });
     },
   );
@@ -249,8 +254,11 @@ describe('stored runtime classification', (): void => {
   ])('classifies %s without throwing and never as v2', (_label: string, raw: unknown): void => {
     const authority: StoredRuntimeAuthority = classifyStoredRuntime(raw, null);
 
-    expect(authority).toEqual({ kind: 'rejected', reason: 'invalid-v2' });
-    expect(authority.kind).not.toBe('v2');
+    // The refused value is carried by identity, not compared field by field: it is exactly the
+    // hostile graph the boot reader must be able to report without traversing it.
+    expect(authority.kind).toBe('rejected');
+    expect(authority.kind === 'rejected' ? authority.reason : null).toBe('invalid-v2');
+    expect(authority.kind === 'rejected' ? authority.raw : null).toBe(raw);
   });
 });
 
@@ -341,6 +349,7 @@ describe('runtime authority loading', (): void => {
     await expect(loadRuntimeAuthority()).resolves.toEqual({
       kind: 'rejected',
       reason: 'marker-without-v2',
+      raw: legacyRuntime(),
     });
   });
 

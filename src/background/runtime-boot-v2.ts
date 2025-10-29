@@ -89,7 +89,7 @@ export async function bootRuntimeAuthorityV2(
         migrated: false,
       };
     case 'rejected':
-      return rejectedBoot(ports, authority.reason, storedMigration);
+      return rejectedBoot(ports, authority, storedMigration);
     case 'absent':
       return { kind: 'v2', runtime: await freshRuntime(ports), migrated: false };
     default:
@@ -248,11 +248,11 @@ function assignedSessionIdFor(ports: RuntimeBootPortsV2, runtime: RuntimeState):
  */
 async function rejectedBoot(
   ports: RuntimeBootPortsV2,
-  reason: 'marker-without-v2' | 'invalid-v2',
+  authority: Extract<StoredRuntimeAuthority, { kind: 'rejected' }>,
   storedMigration: unknown,
 ): Promise<RuntimeBootResultV2> {
-  ports.reportError(new CoreError('invalid-rule', rejectionMessage(reason, storedMigration)));
-  return { kind: 'rejected', runtime: await freshRuntime(ports), reason };
+  ports.reportError(new CoreError('invalid-rule', rejectionMessage(authority, storedMigration)));
+  return { kind: 'rejected', runtime: await freshRuntime(ports), reason: authority.reason };
 }
 
 async function freshRuntime(ports: RuntimeBootPortsV2): Promise<RuntimeStateV2> {
@@ -265,11 +265,20 @@ function migratedBoot(runtime: RuntimeStateV2): RuntimeBootResultV2 {
   return { kind: 'migrated', runtime, migrated: true };
 }
 
-function rejectionMessage(reason: string, storedMigration: unknown): string {
-  const detail: string | null = truncatedJson(storedMigration);
-  return detail === null
-    ? `stored runtime authority rejected as ${reason}`
-    : `stored runtime authority rejected as ${reason}: ${detail}`;
+/**
+ * Names both values that could have caused the refusal, so the report identifies the offending data
+ * rather than only its verdict. Neither is parked under another storage key.
+ */
+function rejectionMessage(
+  authority: Extract<StoredRuntimeAuthority, { kind: 'rejected' }>,
+  storedMigration: unknown,
+): string {
+  const parts: string[] = [`stored runtime authority rejected as ${authority.reason}`];
+  const runtime: string | null = truncatedJson(authority.raw);
+  const migration: string | null = truncatedJson(storedMigration);
+  if (runtime !== null) parts.push(`runtime ${runtime}`);
+  if (migration !== null) parts.push(`migration checkpoint ${migration}`);
+  return parts.join('. ');
 }
 
 /** Serializes a rejected value for the report. It is hostile input, so nothing here may throw. */

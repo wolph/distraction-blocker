@@ -41,7 +41,12 @@ export type StoredRuntimeAuthority =
   | { kind: 'absent' }
   | { kind: 'v2'; runtime: RuntimeStateV2 }
   | { kind: 'legacy'; raw: unknown }
-  | { kind: 'rejected'; reason: 'marker-without-v2' | 'invalid-v2' };
+  /**
+   * `raw` is the stored value this verdict refused. It exists so the boot reader can report what it
+   * threw away, is unvalidated and possibly hostile, and must never be read as authority or
+   * traversed outside a serializer that cannot throw.
+   */
+  | { kind: 'rejected'; reason: 'marker-without-v2' | 'invalid-v2'; raw: unknown };
 
 /** The idle v2 runtime a clean install and a rejected stored runtime both boot from. */
 export function emptyRuntimeV2(now: number, enforcementEpoch: string): RuntimeStateV2 {
@@ -101,11 +106,11 @@ export function classifyStoredRuntime(
   if (raw === undefined) return { kind: 'absent' };
 
   const snapshot: ExactDataSnapshot | null = snapshotExactData(raw);
-  if (snapshot === null) return { kind: 'rejected', reason: 'invalid-v2' };
+  if (snapshot === null) return { kind: 'rejected', reason: 'invalid-v2', raw };
   if (isRecord(snapshot.value) && declaresV2Shape(snapshot.value)) {
-    return { kind: 'rejected', reason: 'invalid-v2' };
+    return { kind: 'rejected', reason: 'invalid-v2', raw };
   }
-  if (marker !== null) return { kind: 'rejected', reason: 'marker-without-v2' };
+  if (marker !== null) return { kind: 'rejected', reason: 'marker-without-v2', raw };
   return { kind: 'legacy', raw };
 }
 
