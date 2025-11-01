@@ -34,6 +34,13 @@ export interface LegacyReplayPortsV1 {
   persistSyncJournal(): Promise<void>;
 }
 
+/** What one replay left durable, so the caller never has to guess which bank is current. */
+export interface LegacyReplayResultV1 {
+  runtime: RuntimeState;
+  /** The bank this replay stored, or null when the checkpoint had none to flush. */
+  bank: BankState | null;
+}
+
 export interface LegacySettlementInputV1 {
   session: NormalizedSessionStateV1;
   bank: BankState;
@@ -77,11 +84,12 @@ interface LegacySettlementBoundsV1 {
 export async function replayLegacyRuntimeCheckpointV1(
   ports: LegacyReplayPortsV1,
   runtime: RuntimeState,
-): Promise<RuntimeState> {
+): Promise<LegacyReplayResultV1> {
   const checkpoint: RuntimeCommitCheckpoint | null = runtime.commitCheckpoint;
-  if (checkpoint === null) return runtime;
+  if (checkpoint === null) return { runtime, bank: null };
   await ports.appendLegacyEvents(checkpoint.events);
-  if (checkpoint.syncBank) await ports.saveBank(checkpoint.bank, checkpoint.syncBank);
+  const bank: BankState | null = checkpoint.syncBank ? checkpoint.bank : null;
+  if (bank !== null) await ports.saveBank(bank, checkpoint.syncBank);
   for (const [key, value] of sortedLegacyAggregateSets(checkpoint.aggregateSets)) {
     await ports.saveAggregate(key, capAttempts(value, TOP_SITES_DAILY));
   }
@@ -91,13 +99,17 @@ export async function replayLegacyRuntimeCheckpointV1(
   await ports.persistSyncJournal();
   const cleared: RuntimeState = detachedLegacyRuntime({ ...runtime, commitCheckpoint: null });
   await ports.saveLegacyRuntime(cleared);
-  return cleared;
+  return { runtime: cleared, bank };
 }
 
 /**
  * Settles the one focus credit migration applies. Only a durable focus phase credits anything, the
  * credit stops at the earliest fixed boundary, and the bank and aggregates receive the focus the v1
  * watermark had not credited yet, so nothing is banked twice.
+ *
+ * A `migratedAt` behind the current phase start is a backward clock change, not invalid input. It
+ * credits zero and settles nothing rather than refusing, because refusing would leave every boot
+ * with no runtime at all until the clock caught up.
  */
 export function settleLegacySessionV1(input: LegacySettlementInputV1): LegacySettlementResultV1 {
   assertLegacySettlementInput(input);
@@ -164,8 +176,10 @@ function buildLegacySettlementAggregatesV1(
   const aggregates: Map<string, DailyAgg> = new Map<string, DailyAgg>();
   const touched: Set<string> = new Set<string>();
   const windowEnd: number = legacySplitWindowEndV1(input.session, bounds.settledThrough);
+  // A wall clock behind the phase start is tolerated rather than refused, exactly as spec 1629's
+  // `max(0, ...)` and v1's own `focusedMsAt` tolerate it, so the window start is clamped too.
   const splits: FocusDateSplitV2[] = splitFocusByLocalDateV2(
-    windowEnd - bounds.bankDeltaMs,
+    Math.max(0, windowEnd - bounds.bankDeltaMs),
     windowEnd,
   );
   for (const split of splits) {
@@ -273,9 +287,6 @@ function assertLegacySettlementInput(input: LegacySettlementInputV1): void {
   }
   if (!Number.isFinite(input.bank.balanceMs) || input.bank.balanceMs < 0) {
     invalidLegacy('the legacy bank balance must be a non-negative finite number');
-  }
-  if (input.migratedAt < input.session.phaseStartedAt) {
-    invalidLegacy('migration time cannot precede the current phase start');
   }
   if (input.todayAgg !== null && input.todayAgg.date !== input.runtimeDate) {
     invalidLegacy('the runtime aggregate must belong to the runtime date');

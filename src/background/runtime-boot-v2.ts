@@ -12,7 +12,6 @@
  */
 
 import { CoreError } from '../shared/errors';
-import { exactDataEqual } from '../shared/exact-data';
 import { LOCAL_RUNTIME_MIGRATION, LOCAL_RUNTIME_SCHEMA, syncAggKey } from '../shared/storage-keys';
 import { localDateStr } from '../shared/time';
 import type {
@@ -22,7 +21,11 @@ import type {
   PauseEconomy,
   SessionEventRecordV2,
 } from '../shared/types';
-import { type LegacyReplayPortsV1, replayLegacyRuntimeCheckpointV1 } from './legacy-runtime-v1';
+import {
+  type LegacyReplayPortsV1,
+  type LegacyReplayResultV1,
+  replayLegacyRuntimeCheckpointV1,
+} from './legacy-runtime-v1';
 import { type RuntimeCheckpointPortsV2, replayRuntimeCheckpointV2 } from './runtime-checkpoint-v2';
 import {
   buildRuntimeMigrationCheckpointV1ToV2,
@@ -48,6 +51,11 @@ export interface RuntimeBootPortsV2 extends RuntimeCheckpointPortsV2, LegacyRepl
   loadAggregates(keys: readonly string[]): Promise<Record<string, DailyAgg>>;
   /** The persisted lists snapshot the legacy rules migration completes a config from, never Settings. */
   lists(): ListsConfig;
+  /**
+   * The bank as it stood when the boot began. It is a snapshot: a caller may bind it to a value
+   * parsed once, so nothing after a replay may trust it. Every step that needs the current balance
+   * takes it from the replay that stored it.
+   */
   bank(): BankState;
   pauseEconomy(): PauseEconomy;
   deviceId(): string;
@@ -122,21 +130,23 @@ async function migrateLegacyRuntime(
 ): Promise<RuntimeStateV2> {
   const now: number = ports.now();
   const normalized: RuntimeState = migrateRuntimeRules(mergeRuntime(raw, now), ports.lists());
-  const replayed: RuntimeState = await replayLegacyRuntimeCheckpointV1(ports, normalized);
+  const replayed: LegacyReplayResultV1 = await replayLegacyRuntimeCheckpointV1(ports, normalized);
   const priorAggregates: Record<string, DailyAgg> = await loadSettlementAggregates(
     ports,
-    replayed,
+    replayed.runtime,
     now,
   );
   const input: MigrationInputV2 = {
-    runtime: replayed,
-    bank: ports.bank(),
+    runtime: replayed.runtime,
+    // The replay may have stored a newer bank than the boot-time snapshot, and the settlement must
+    // build on what is durable, or it would overwrite the credit the crashed v1 commit earned.
+    bank: replayed.bank ?? ports.bank(),
     pauseEconomy: ports.pauseEconomy(),
     deviceId: ports.deviceId(),
     migratedAt: now,
     enforcementEpoch: ports.newId(),
     cleanupOperationId: ports.newId(),
-    assignedSessionId: assignedSessionIdFor(ports, replayed),
+    assignedSessionId: assignedSessionIdFor(ports, replayed.runtime),
     priorAggregates,
   };
   const checkpoint: RuntimeMigrationCheckpointV1ToV2 = buildRuntimeMigrationCheckpointV1ToV2(input);
@@ -163,14 +173,16 @@ async function replayMigrationCheckpoint(
   return runtime;
 }
 
-/** The settled bank reaches storage only when it still differs from what the bank already holds. */
+/**
+ * The settled bank is written unconditionally, exactly as `replayRuntimeCheckpointV2` writes its
+ * own. Comparing it with a boot-time snapshot would skip the write whenever that snapshot went
+ * stale, and writing the same balance twice is idempotent.
+ */
 async function replayMigrationCleanupPlan(
   ports: RuntimeBootPortsV2,
   plan: MigrationCleanupPlan,
 ): Promise<void> {
-  if (!exactDataEqual(plan.projection.bankAfter, ports.bank())) {
-    await ports.saveBank(plan.projection.bankAfter, true);
-  }
+  await ports.saveBank(plan.projection.bankAfter, true);
   // The settlement already capped every aggregate it produced, so these are stored as they are.
   for (const [key, value] of sortedAggregateSets(plan.projection.aggregateSets)) {
     await ports.saveAggregate(key, value);

@@ -101,6 +101,8 @@ const MIGRATION_WRITE_PORTS: readonly string[] = [
   'writeMigrationCheckpointAndMarker',
   'saveRuntime',
   'appendEvents',
+  // The legacy replay owns the first bank write, so the settled one is only reached as the second.
+  'saveBank#2',
   'saveAggregate',
   'clearMigrationCheckpoint',
 ];
@@ -118,10 +120,16 @@ function emptyStorage(overrides: Partial<BootStorage> = {}): BootStorage {
   };
 }
 
+/**
+ * `failing` names the port that throws once. `saveBank#2` fails the second call of that port, which
+ * is how the v2-side write is reached past the legacy one. `frozenBank` binds `bank()` to a
+ * snapshot taken before the boot, the way Main parses the bank once at startup.
+ */
 function harness(
   storage: BootStorage,
   failing: string | null = null,
   lists: ListsConfig = DEFAULT_LISTS,
+  frozenBank: BankState | null = null,
 ): BootHarness {
   const calls: string[] = [];
   const errors: unknown[] = [];
@@ -130,9 +138,15 @@ function harness(
   const issuedIds: string[] = [];
   let nextId: number = 0;
 
+  const occurrences: Map<string, number> = new Map<string, number>();
+
   function record(name: string): void {
     calls.push(name);
-    if (name === failing) throw new CoreError('invalid-rule', `port ${name} failed`);
+    const occurrence: number = (occurrences.get(name) ?? 0) + 1;
+    occurrences.set(name, occurrence);
+    if (name === failing || `${name}#${occurrence}` === failing) {
+      throw new CoreError('invalid-rule', `port ${name} failed`);
+    }
   }
 
   const ports: RuntimeBootPortsV2 = {
@@ -211,7 +225,7 @@ function harness(
       storage.syncJournalWrites += 1;
     },
     lists: (): ListsConfig => lists,
-    bank: (): BankState => storage.bank,
+    bank: (): BankState => frozenBank ?? storage.bank,
     pauseEconomy: (): PauseEconomy => PAUSE_ECONOMY,
     deviceId: (): string => DEVICE_ID,
     reportError: (error: unknown): void => {
@@ -522,6 +536,59 @@ describe('v2 boot legacy migration', (): void => {
       syncAggKey(DEVICE_ID, localDateStr(startedAt + DAY_MS)),
       syncAggKey(DEVICE_ID, LOCAL_DATE),
     ]);
+  });
+
+  it('settles from the bank the legacy replay left durable', async (): Promise<void> => {
+    const storage: BootStorage = emptyStorage({
+      runtime: { ...invalidScheduledRuntime(), commitCheckpoint: legacyCheckpoint() },
+    });
+    // Main parses the bank once at startup, so the port cannot observe the replay's own write.
+    const test: BootHarness = harness(storage, null, DEFAULT_LISTS, { balanceMs: 0 });
+
+    const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
+
+    expect(result.kind).toBe('migrated');
+    expect(test.bankWrites[0]?.bank).toEqual({ balanceMs: 2_000 });
+    // 30 minutes of settled focus earns 5 minutes on top of the credit the crashed v1 commit left.
+    expect(test.bankWrites.at(-1)?.bank).toEqual({ balanceMs: 302_000 });
+    expect(test.bankWrites.at(-1)?.syncBank).toBe(true);
+    expect(storage.bank).toEqual({ balanceMs: 302_000 });
+  });
+
+  it('rewrites the settled bank on a replay that already stored it', async (): Promise<void> => {
+    const storage: BootStorage = emptyStorage({ runtime: invalidScheduledRuntime() });
+    const crashed: BootHarness = harness(storage, 'clearMigrationCheckpoint');
+    await expect(bootRuntimeAuthorityV2(crashed.ports)).rejects.toThrow(CoreError);
+    const settled: BankState = { ...storage.bank };
+    const resumed: BootHarness = harness(storage);
+
+    // The stored bank already equals the settled balance, and the replay still writes it, because
+    // comparing it with a snapshot is what would skip the write once that snapshot went stale.
+    await bootRuntimeAuthorityV2(resumed.ports);
+
+    expect(settled.balanceMs).toBeGreaterThan(0);
+    expect(resumed.bankWrites).toEqual([{ bank: settled, syncBank: true }]);
+  });
+
+  it('migrates when the wall clock sits behind the legacy phase start', async (): Promise<void> => {
+    const startedAhead: number = NOW + 10 * MINUTE_MS;
+    const session: NormalizedSessionStateV1 = legacySession({
+      config: legacyConfig({ source: 'schedule', scheduleEntryId: ENTRY_ID }),
+      startedAt: startedAhead,
+      sessionEndsAt: startedAhead + DURATION_MIN * MINUTE_MS,
+      phaseStartedAt: startedAhead,
+      phaseEndsAt: startedAhead + DURATION_MIN * MINUTE_MS,
+    });
+    const test: BootHarness = harness(
+      emptyStorage({ runtime: legacyRuntime({ session, scheduleActiveEntryId: ENTRY_ID }) }),
+    );
+
+    const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
+
+    expect(result.kind).toBe('migrated');
+    expect(result.runtime.pendingClosure?.stage).toBe('cleanup');
+    expect(test.errors).toEqual([]);
+    expect(test.storage.bank).toEqual({ balanceMs: 0 });
   });
 
   it('hands the loaded aggregates to the legacy settlement', async (): Promise<void> => {

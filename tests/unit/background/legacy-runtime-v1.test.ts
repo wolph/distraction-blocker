@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { splitFocusByLocalDateV2 } from '../../../src/background/closure-projection-v2';
 import {
   type LegacyReplayPortsV1,
+  type LegacyReplayResultV1,
   type LegacySettlementInputV1,
   type LegacySettlementResultV1,
   replayLegacyRuntimeCheckpointV1,
@@ -210,7 +211,7 @@ function legacyCheckpoint(
   };
 }
 
-function checkpointRuntime(checkpoint: RuntimeCommitCheckpoint): RuntimeState {
+function checkpointRuntime(checkpoint: RuntimeCommitCheckpoint | null): RuntimeState {
   return {
     ...emptyRuntime(START_AT),
     todayAgg: storedDay(LOCAL_DATE),
@@ -234,7 +235,7 @@ describe('legacy checkpoint replay', (): void => {
     const runtime: RuntimeState = emptyRuntime(START_AT);
     const fake: LegacyHarness = harness();
 
-    expect(await replayLegacyRuntimeCheckpointV1(fake.ports, runtime)).toBe(runtime);
+    expect((await replayLegacyRuntimeCheckpointV1(fake.ports, runtime)).runtime).toBe(runtime);
     expect(fake.names).toEqual([]);
   });
 
@@ -243,7 +244,8 @@ describe('legacy checkpoint replay', (): void => {
     const runtime: RuntimeState = checkpointRuntime(checkpoint);
     const fake: LegacyHarness = harness();
 
-    const replayed: RuntimeState = await replayLegacyRuntimeCheckpointV1(fake.ports, runtime);
+    const replayed: RuntimeState = (await replayLegacyRuntimeCheckpointV1(fake.ports, runtime))
+      .runtime;
 
     expect(fake.names).toEqual([
       'appendLegacyEvents',
@@ -263,6 +265,27 @@ describe('legacy checkpoint replay', (): void => {
     expect(fake.runtimeWrites).toEqual([replayed]);
     expect(replayed.todayAgg).toEqual(runtime.todayAgg);
     expect(runtime.commitCheckpoint).toEqual(checkpoint);
+  });
+
+  it('returns the bank it left durable so no caller has to guess', async (): Promise<void> => {
+    const fake: LegacyHarness = harness();
+    const dirty: LegacyReplayResultV1 = await replayLegacyRuntimeCheckpointV1(
+      fake.ports,
+      checkpointRuntime(legacyCheckpoint()),
+    );
+    const clean: LegacyReplayResultV1 = await replayLegacyRuntimeCheckpointV1(
+      harness().ports,
+      checkpointRuntime(legacyCheckpoint({ syncBank: false })),
+    );
+    const nothing: LegacyReplayResultV1 = await replayLegacyRuntimeCheckpointV1(
+      harness().ports,
+      checkpointRuntime(null),
+    );
+
+    expect(dirty.bank).toEqual({ balanceMs: 120_000 });
+    expect(fake.bankWrites[0]?.bank).toEqual(dirty.bank);
+    expect(clean.bank).toBeNull();
+    expect(nothing.bank).toBeNull();
   });
 
   it('skips the bank write when the checkpoint did not mark it dirty', async (): Promise<void> => {
@@ -343,10 +366,9 @@ describe('legacy checkpoint replay', (): void => {
     );
     const fake: LegacyHarness = harness();
 
-    const replayed: RuntimeState = await replayLegacyRuntimeCheckpointV1(
-      fake.ports,
-      checkpointRuntime(guarded),
-    );
+    const replayed: RuntimeState = (
+      await replayLegacyRuntimeCheckpointV1(fake.ports, checkpointRuntime(guarded))
+    ).runtime;
 
     expect(replayed.commitCheckpoint).toBeNull();
     expect(fake.names).toHaveLength(6);
@@ -357,8 +379,10 @@ describe('legacy checkpoint replay', (): void => {
     const first: LegacyHarness = harness();
     const second: LegacyHarness = harness();
 
-    const firstRun: RuntimeState = await replayLegacyRuntimeCheckpointV1(first.ports, runtime);
-    const secondRun: RuntimeState = await replayLegacyRuntimeCheckpointV1(second.ports, runtime);
+    const firstRun: RuntimeState = (await replayLegacyRuntimeCheckpointV1(first.ports, runtime))
+      .runtime;
+    const secondRun: RuntimeState = (await replayLegacyRuntimeCheckpointV1(second.ports, runtime))
+      .runtime;
 
     expect(secondRun).toEqual(firstRun);
     expect(second.names).toEqual(first.names);
@@ -393,7 +417,8 @@ describe('legacy checkpoint replay', (): void => {
     expect(runtime.commitCheckpoint).not.toBeNull();
 
     const recovered: LegacyHarness = harness();
-    const replayed: RuntimeState = await replayLegacyRuntimeCheckpointV1(recovered.ports, runtime);
+    const replayed: RuntimeState = (await replayLegacyRuntimeCheckpointV1(recovered.ports, runtime))
+      .runtime;
 
     expect(recovered.names).toEqual([
       'appendLegacyEvents',
@@ -455,7 +480,8 @@ describe('legacy checkpoint replay', (): void => {
     const runtime: RuntimeState = checkpointRuntime(legacyCheckpoint());
     const fake: LegacyHarness = harness();
 
-    const replayed: RuntimeState = await replayLegacyRuntimeCheckpointV1(fake.ports, runtime);
+    const replayed: RuntimeState = (await replayLegacyRuntimeCheckpointV1(fake.ports, runtime))
+      .runtime;
     if (replayed.todayAgg !== null) replayed.todayAgg.focusMs = 1;
 
     expect(runtime.todayAgg).toEqual(storedDay(LOCAL_DATE));
@@ -767,8 +793,50 @@ describe('legacy focus settlement', (): void => {
     expect(result.settlement.focusedMsAfter).toBe(30 * MINUTE_MS);
   });
 
+  it('credits nothing when the wall clock sits behind the phase start', (): void => {
+    // A backward clock change is not hostile input. Refusing it would leave every boot with no
+    // runtime at all until the clock passed the phase start again.
+    const result: LegacySettlementResultV1 = settleLegacySessionV1(
+      settlementInput({ migratedAt: START_AT - 60_000, session: focusSession({ focusedMs: 0 }) }),
+    );
+
+    expect(result.settlement.settledThrough).toBe(START_AT - 60_000);
+    expect(result.settlement.creditedFocusMs).toBe(0);
+    expect(result.settlement.focusedMsAfter).toBe(0);
+    expect(result.bankAfter).toEqual({ balanceMs: 0 });
+    expect(result.aggregateSets).toEqual({});
+  });
+
+  it('clamps a split window that a stale watermark would push below zero', (): void => {
+    // A break phase near the epoch with uncredited focus larger than the window end is the one
+    // shape that pushes the split start negative. The amount banked is unaffected by the clamp.
+    const epochDate: string = localDateStr(0);
+    const session: NormalizedSessionStateV1 = focusSession({
+      startedAt: 0,
+      phase: 'break',
+      phaseStartedAt: 1_000,
+      phaseEndsAt: 2_000,
+      sessionEndsAt: 3_000,
+      focusedMs: 5_000,
+      config: legacyConfig({
+        cycling: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 },
+      }),
+    });
+    const result: LegacySettlementResultV1 = settleLegacySessionV1(
+      settlementInput({
+        session,
+        migratedAt: 2_500,
+        priorAggregates: { [syncAggKey(DEVICE_ID, epochDate)]: storedDay(epochDate) },
+      }),
+    );
+
+    expect(result.settlement.creditedFocusMs).toBe(0);
+    expect(result.aggregateSets[syncAggKey(DEVICE_ID, epochDate)]?.focusMs).toBe(
+      storedDay(epochDate).focusMs + 1_000,
+    );
+  });
+
   it.each([
-    settlementInput({ migratedAt: START_AT - 1 }),
     settlementInput({ accruedFocusMs: Number.NaN }),
     settlementInput({ accruedFocusMs: Number.POSITIVE_INFINITY }),
     settlementInput({ accruedFocusMs: -1 }),
