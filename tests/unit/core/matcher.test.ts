@@ -12,11 +12,13 @@ import {
   validateRule,
 } from '../../../src/core/matcher';
 import { DEFAULT_LISTS, rulesFromLists } from '../../../src/shared/constants';
+import { validateDetachedVerdict } from '../../../src/shared/enforcement-v2-validation';
 import type {
   CategoryList,
   ListsConfig,
   SessionRuleSnapshot,
   SiteUnlock,
+  Verdict,
 } from '../../../src/shared/types';
 
 const CATS: CategoryList[] = [{ id: 'social', title: 'Social', hosts: ['facebook.com', 'x.com'] }];
@@ -288,6 +290,102 @@ describe('session-local rule snapshots', (): void => {
     expect(matcher.hosts.has('docs.python.org')).toBe(true);
     expect(evaluateUrl(matcher, 'https://docs.python.org/3/', NONE, NOW).blocked).toBe(false);
     expect(rules).toEqual(before);
+  });
+});
+
+describe('custom-list block provenance', () => {
+  const SESSION_HOST: string = 'reddit.com';
+  const PERMANENT_HOST: string = 'news.ycombinator.com';
+  const PERMANENT_REGEX: string = 'youtube\\.com/shorts';
+
+  function sessionRules(partial: Partial<SessionRuleSnapshot>): SessionRuleSnapshot {
+    return { ...rulesFromLists(DEFAULT_LISTS), ...partial };
+  }
+
+  it('names the session blacklist entry that matched', (): void => {
+    const matcher = compileSessionMatcher(
+      sessionRules({ sessionBlacklist: [{ kind: 'host', pattern: SESSION_HOST }] }),
+      CATS,
+      'blacklist',
+    );
+
+    for (const url of [`https://${SESSION_HOST}/r/all`, `https://old.${SESSION_HOST}/`]) {
+      const verdict: Verdict = evaluateUrl(matcher, url, NONE, NOW);
+
+      expect(verdict).toEqual({
+        blocked: true,
+        reason: 'custom',
+        categoryId: null,
+        matchedPattern: SESSION_HOST,
+      });
+      expect(typeof verdict.matchedPattern).toBe('string');
+    }
+  });
+
+  it('names the permanent blacklist entry that matched, host or regex', (): void => {
+    const matcher = compileSessionMatcher(
+      sessionRules({
+        permanentBlacklist: [
+          { kind: 'host', pattern: PERMANENT_HOST },
+          { kind: 'regex', pattern: PERMANENT_REGEX },
+        ],
+      }),
+      CATS,
+      'blacklist',
+    );
+
+    expect(evaluateUrl(matcher, `https://${PERMANENT_HOST}/item?id=1`, NONE, NOW)).toEqual({
+      blocked: true,
+      reason: 'custom',
+      categoryId: null,
+      matchedPattern: PERMANENT_HOST,
+    });
+    expect(evaluateUrl(matcher, 'https://www.youtube.com/shorts/abc', NONE, NOW)).toEqual({
+      blocked: true,
+      reason: 'custom',
+      categoryId: null,
+      matchedPattern: PERMANENT_REGEX,
+    });
+  });
+
+  /**
+   * The v2 enforcement boundary freezes this verdict into a document command, and its validator
+   * rejects an absent or non-string `matchedPattern`. A custom-list block must therefore never
+   * report the field as undefined.
+   */
+  it('produces a v2-valid verdict for every custom-list block shape', (): void => {
+    const session = compileSessionMatcher(
+      sessionRules({
+        sessionBlacklist: [{ kind: 'host', pattern: SESSION_HOST }],
+        permanentBlacklist: [
+          { kind: 'host', pattern: PERMANENT_HOST },
+          { kind: 'regex', pattern: PERMANENT_REGEX },
+        ],
+      }),
+      CATS,
+      'blacklist',
+    );
+    const listed = compileMatcher(
+      lists({ custom: [{ kind: 'host', pattern: SESSION_HOST }] }),
+      CATS,
+      'blacklist',
+    );
+    const blocks: ReadonlyArray<readonly [ReturnType<typeof compileMatcher>, string]> = [
+      [session, `https://${SESSION_HOST}/r/all`],
+      [session, `https://old.${SESSION_HOST}/`],
+      [session, `https://${PERMANENT_HOST}/item?id=1`],
+      [session, 'https://www.youtube.com/shorts/abc'],
+      [listed, `https://${SESSION_HOST}/`],
+    ];
+
+    for (const [matcher, url] of blocks) {
+      const verdict: Verdict = evaluateUrl(matcher, url, NONE, NOW);
+
+      expect(verdict.reason).toBe('custom');
+      expect(verdict.blocked).toBe(true);
+      expect(verdict.matchedPattern).not.toBeUndefined();
+      expect(validateDetachedVerdict(verdict)).toBe(true);
+    }
   });
 });
 
