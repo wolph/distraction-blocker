@@ -12,20 +12,45 @@
  */
 
 import { CoreError } from '../shared/errors';
+import type { RetryCleanupResultCodeV2 } from '../shared/messages';
 import { syncAggKey } from '../shared/storage-keys';
 import type { DailyAgg, SessionEndReasonV2, SessionStateV2 } from '../shared/types';
 import {
+  type AlarmNameV2,
+  clearAlarmWithReadBackV2,
+  createAlarmWithReadBackV2,
+  ensurePhaseAlarmV2,
+  parseAlarmNameV2,
+  TRANSITION_CLEANUP_ALARM,
+} from './alarms-v2';
+import {
+  addCleanupTargetV2,
   buildCleanupProgressV2,
   buildCleanupSeedV2,
   documentCommandKeyV2,
+  mergeCleanupTabClaimV2,
+  recordCleanupAttemptFailureV2,
+  replaceCleanupBatchV2,
+  resolveCleanupTabV2,
 } from './cleanup-progress-v2';
 import { buildClosureProjectionV2, splitFocusByLocalDateV2 } from './closure-projection-v2';
-import type { FrozenDocumentCommand } from './enforcement-persistence-v2';
+import {
+  type DocumentCommandOutcomeV2,
+  type EpochResetOutcomeV2,
+  sendDocumentEnforcementCommand,
+  sendEpochResetCommand,
+} from './content-transport-v2';
+import type { DocumentEpochResetAck, FrozenDocumentCommand } from './enforcement-persistence-v2';
+import { classifyEnforcementTargetV2, type TargetClassificationV2 } from './enforcement-targets-v2';
+import { buildFrozenEpochResetCommandV2 } from './overlay-view-v2';
+import { projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
 import type {
   CleanupEnforcementTarget,
   CleanupProgress,
+  CleanupRetryState,
   CleanupSeed,
+  CleanupTabClaim,
   ClosureProjection,
   PendingEnforcementTransition,
   PostCleanupClosure,
@@ -37,6 +62,19 @@ import { parseRuntimeStateV2 } from './runtime-v2-validation';
 export type TransitionCleanupCauseV2 = NonNullable<PendingEnforcementTransition['cleanupCause']>;
 export type TransitionCleanupSourceV2 = NonNullable<PendingEnforcementTransition['cleanupFrom']>;
 
+/** The logical end a closing cause captures. The reason is what tells the user why it ended. */
+export interface PostCleanupClosureCaptureV2 {
+  endedAt: number;
+  reason: SessionEndReasonV2;
+}
+
+/** The browser effects one cleanup attempt performs. Everything else here is pure state. */
+export interface CleanupEffectPortsV2 {
+  restoreTabClaims(claims: readonly CleanupTabClaim[]): Promise<number[]>;
+  reloadStoppedDocuments(claims: readonly CleanupTabClaim[]): Promise<void>;
+  requestBlankBadge(): void;
+}
+
 export interface TransitionCleanupEntryV2 {
   cause: TransitionCleanupCauseV2;
   failure: TransitionFailureReason | null;
@@ -44,6 +82,8 @@ export interface TransitionCleanupEntryV2 {
   endedAt: number;
 }
 
+/** The entry's own retry batch. A manual retry begins the next one. */
+const FIRST_CLEANUP_BATCH: number = 1;
 /** Exactly the causes that must close a durable session, so exactly these capture a closure. */
 const CLOSING_CAUSES: ReadonlySet<TransitionCleanupCauseV2> = new Set<TransitionCleanupCauseV2>([
   'timer-completed',
@@ -86,7 +126,7 @@ export async function enterTransitionCleanupV2(
     },
     seed,
     at: ports.now(),
-    batch: 0,
+    batch: FIRST_CLEANUP_BATCH,
   });
   const closure: PostCleanupClosure | null = await captureClosure(ports, runtime, entry, seed);
   const next: RuntimeStateV2 = cleanupRuntime(runtime, transition, entry, {
@@ -253,3 +293,424 @@ async function settledAggregates(
 
 /** Re-exported so the runner and Task 3 agree on the one document key spelling. */
 export { documentCommandKeyV2 };
+
+/**
+ * One cleanup attempt. It clears the alarms the transition owns, blanks the badge, reissues the
+ * exact frozen clear commands, restores the tab claims it captured, and then either resolves the
+ * transition or records the failure and schedules the next attempt.
+ *
+ * Nothing here regenerates a command. Every send is the value the entry froze, which is what makes
+ * an automatic retry and a restart indistinguishable to a document.
+ */
+export async function runTransitionCleanupAttemptV2(
+  ports: RuntimePortsV2,
+  effects: CleanupEffectPortsV2,
+): Promise<RuntimeStateV2> {
+  const transition: PendingEnforcementTransition = cleanupTransitionOf(ports);
+  const progress: CleanupProgress = requireProgress(transition);
+  const failure: string | null = await performCleanupEffects(ports, effects, transition, progress);
+  if (failure !== null) return recordAttemptFailure(ports, failure);
+  return resolveCleanup(ports);
+}
+
+/**
+ * Runs the browser side of one attempt and returns the first fatal detail, or null when the
+ * attempt is clean. A closed or changed target is not a failure: it disappears from the next
+ * reread, and a missing acknowledgement is never treated as success.
+ */
+async function performCleanupEffects(
+  ports: RuntimePortsV2,
+  effects: CleanupEffectPortsV2,
+  transition: PendingEnforcementTransition,
+  progress: CleanupProgress,
+): Promise<string | null> {
+  for (const name of transition.alarmNames) {
+    const alarm: AlarmNameV2 | null = parseAlarmNameV2(name);
+    if (alarm === null) return `cleanup cannot clear the unknown alarm ${name}`;
+    if (!(await clearAlarmWithReadBackV2(ports.alarms, alarm))) {
+      return `cleanup could not clear the ${alarm} alarm`;
+    }
+  }
+  effects.requestBlankBadge();
+  const cleared: string | null = await reissueClearCommands(ports, progress);
+  if (cleared !== null) return cleared;
+  const resolved: number[] = await effects.restoreTabClaims(progress.tabClaims);
+  await effects.reloadStoppedDocuments(progress.tabClaims);
+  await recordResolvedTabs(ports, resolved);
+  return null;
+}
+
+/** Resets any target that has not acknowledged this epoch, then sends its frozen clear command. */
+async function reissueClearCommands(
+  ports: RuntimePortsV2,
+  progress: CleanupProgress,
+): Promise<string | null> {
+  const runtime: RuntimeStateV2 = ports.runtime();
+  for (const [key, command] of Object.entries(progress.clearCommands)) {
+    const ack: DocumentEpochResetAck | undefined = runtime.epochResetAcks[key];
+    if (ack === undefined || ack.enforcementEpoch !== runtime.enforcementEpoch) {
+      const reset: EpochResetOutcomeV2 = await sendEpochResetCommand(
+        ports.transport,
+        buildFrozenEpochResetCommandV2({
+          tabId: command.tabId,
+          documentId: command.documentId,
+          expectedUrl: command.expectedUrl,
+          operationId: progress.cleanupOperationId,
+          enforcementEpoch: command.enforcementEpoch,
+        }),
+      );
+      if (reset.kind === 'closed') continue;
+      if (reset.kind !== 'reset') return `cleanup reset for ${key} answered ${reset.kind}`;
+      await recordCleanupEpochAck(ports, reset.ack);
+    }
+    const outcome: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
+      ports.transport,
+      command,
+    );
+    if (outcome.kind === 'applied' || outcome.kind === 'closed' || outcome.kind === 'changed') {
+      continue;
+    }
+    // Nothing may outrank the clear revision, so a stale answer during cleanup is fatal too.
+    return `cleanup clear for ${key} answered ${outcome.kind}`;
+  }
+  return null;
+}
+
+/** Resolves the transition the clean attempt earned, by the cause that entered cleanup. */
+async function resolveCleanup(ports: RuntimePortsV2): Promise<RuntimeStateV2> {
+  const transition: PendingEnforcementTransition = cleanupTransitionOf(ports);
+  const closure: PostCleanupClosure | null = transition.postCleanupClosure;
+  if (closure !== null) return handOffClosure(ports, transition, closure);
+  if (transition.cleanupCause === 'resume-restore') return restoreResume(ports);
+  return clearTransition(ports, `${transition.sessionId}:abandon`);
+}
+
+/**
+ * Restores the pause or break a pre-commit resume left. The saved phase alarm is recreated and read
+ * back before the commit, so the restored session is never durable without the boundary it needs.
+ * An arrived fixed end upgrades to timer completion instead of restoring.
+ */
+async function restoreResume(ports: RuntimePortsV2): Promise<RuntimeStateV2> {
+  const runtime: RuntimeStateV2 = ports.runtime();
+  const session: SessionStateV2 | null = runtime.session;
+  if (session === null) {
+    throw new CoreError('invalid-rule', 'a resume restore lost the session it restores');
+  }
+  const now: number = ports.now();
+  if (session.sessionEndsAt !== null && session.sessionEndsAt <= now) {
+    return upgradeToTimerCompletion(ports, session.sessionEndsAt);
+  }
+  if ((await ensurePhaseAlarmV2(ports.alarms, session)) === 'alarm-failed') {
+    return recordAttemptFailure(ports, 'cleanup could not restore the saved phase alarm');
+  }
+  return clearTransition(ports, `${session.sessionId}:restore`);
+}
+
+/**
+ * A resume whose fixed end arrived during cleanup has nothing to restore, so it captures timer
+ * completion at the exact end and hands that closure off through the same one-checkpoint path.
+ */
+async function upgradeToTimerCompletion(
+  ports: RuntimePortsV2,
+  endedAt: number,
+): Promise<RuntimeStateV2> {
+  const runtime: RuntimeStateV2 = ports.runtime();
+  const transition: PendingEnforcementTransition = cleanupTransitionOf(ports);
+  const seed: CleanupSeed = buildCleanupSeedV2(transition.alarmNames, runtime.tabStates);
+  const closure: PostCleanupClosure | null = await captureClosure(
+    ports,
+    runtime,
+    { cause: 'timer-completed', failure: null, endedAt },
+    seed,
+  );
+  if (closure === null) {
+    throw new CoreError('invalid-rule', 'timer completion did not capture its closure');
+  }
+  const upgraded: PendingEnforcementTransition = {
+    ...structuredClone(transition),
+    cleanupCause: 'timer-completed',
+    postCleanupClosure: structuredClone(closure),
+  };
+  await ports.writeRuntime(
+    validated({ ...structuredClone(runtime), pendingEnforcementTransition: upgraded }),
+  );
+  return handOffClosure(ports, upgraded, closure);
+}
+
+/**
+ * The one checkpoint that crosses journals. It allocates the closure's own cleanup batch above the
+ * transition's clear revision, carries the verified claims and resolved tabs forward, replaces the
+ * runtime command map, flushes the projected events, bank, and aggregates, installs the closure at
+ * `cleanup`, and clears the transition. The projection itself is copied byte for byte.
+ */
+async function handOffClosure(
+  ports: RuntimePortsV2,
+  transition: PendingEnforcementTransition,
+  closure: PostCleanupClosure,
+): Promise<RuntimeStateV2> {
+  const runtime: RuntimeStateV2 = ports.runtime();
+  const transitionProgress: CleanupProgress = requireProgress(transition);
+  const clearRuntimeRevision: number = transitionProgress.clearRuntimeRevision + 1;
+  const projection: ClosureProjection = closure.projection;
+  let progress: CleanupProgress = buildCleanupProgressV2({
+    cleanupOperationId: ports.newId(),
+    clearRuntimeRevision,
+    targets: Object.values(transitionProgress.targets).map(
+      (target: CleanupEnforcementTarget): CleanupEnforcementTarget => structuredClone(target),
+    ),
+    identity: {
+      enforcementEpoch: runtime.enforcementEpoch,
+      basePolicyRevision: runtime.basePolicyRevision,
+      sessionId: projection.sessionId,
+      reservedSessionId: null,
+    },
+    seed: closure.cleanupSeed,
+    at: ports.now(),
+    batch: FIRST_CLEANUP_BATCH,
+  });
+  for (const claim of transitionProgress.tabClaims) {
+    progress = mergeCleanupTabClaimV2(progress, claim);
+  }
+  for (const tabId of transitionProgress.resolvedTabIds) {
+    progress = resolveCleanupTabV2(progress, tabId);
+  }
+  const next: RuntimeStateV2 = validated({
+    ...structuredClone(runtime),
+    session: null,
+    gate: null,
+    unlocks: [],
+    runtimeRevision: clearRuntimeRevision,
+    documentCommands: structuredClone(progress.clearCommands),
+    enforcementCheckpoint: null,
+    handledScheduleOccurrences: structuredClone(projection.handledOccurrences),
+    pendingEnforcementTransition: null,
+    pendingClosure: {
+      version: 1,
+      stage: 'cleanup',
+      projection: structuredClone(projection),
+      cleanupSeed: structuredClone(closure.cleanupSeed),
+      cleanupProgress: structuredClone(progress),
+    },
+  });
+  return ports.commit({
+    checkpointId: projection.closureId,
+    projection: projectRuntimeDomainV2(next),
+    bank: structuredClone(projection.bankAfter),
+    events: structuredClone(projection.events),
+    syncBank: true,
+    aggregateSets: structuredClone(projection.aggregateSets),
+    aggregateRemoves: [...projection.aggregateRemoves],
+  });
+}
+
+/** Clears a resolved transition that owes no closure, retaining the durable clear tuple. */
+async function clearTransition(
+  ports: RuntimePortsV2,
+  checkpointId: string,
+): Promise<RuntimeStateV2> {
+  const runtime: RuntimeStateV2 = ports.runtime();
+  const next: RuntimeStateV2 = validated({
+    ...structuredClone(runtime),
+    pendingEnforcementTransition: null,
+  });
+  return ports.commit({
+    checkpointId,
+    projection: projectRuntimeDomainV2(next),
+    bank: ports.bank(),
+    events: [],
+    syncBank: false,
+    aggregateSets: {},
+    aggregateRemoves: [],
+  });
+}
+
+/**
+ * Records one failed attempt and schedules the next. The twelfth failure leaves `nextAttemptAt`
+ * null and creates no alarm, which is what lifecycle reads as `transition-cleanup-failed`.
+ */
+async function recordAttemptFailure(
+  ports: RuntimePortsV2,
+  detail: string,
+): Promise<RuntimeStateV2> {
+  const runtime: RuntimeStateV2 = ports.runtime();
+  const transition: PendingEnforcementTransition = cleanupTransitionOf(ports);
+  const progress: CleanupProgress = requireProgress(transition);
+  const retry: CleanupRetryState = recordCleanupAttemptFailureV2(
+    progress.retry,
+    ports.now(),
+    detail,
+  );
+  const next: RuntimeStateV2 = validated({
+    ...structuredClone(runtime),
+    pendingEnforcementTransition: {
+      ...structuredClone(transition),
+      cleanupProgress: { ...structuredClone(progress), retry },
+    },
+  });
+  await ports.writeRuntime(next);
+  if (retry.nextAttemptAt !== null) {
+    await createAlarmWithReadBackV2(ports.alarms, TRANSITION_CLEANUP_ALARM, retry.nextAttemptAt);
+  }
+  return next;
+}
+
+/** Records the tabs whose captured effects were verified clean, so a retry leaves them alone. */
+async function recordResolvedTabs(
+  ports: RuntimePortsV2,
+  resolved: readonly number[],
+): Promise<void> {
+  if (resolved.length === 0) return;
+  const runtime: RuntimeStateV2 = ports.runtime();
+  const transition: PendingEnforcementTransition = cleanupTransitionOf(ports);
+  let progress: CleanupProgress = requireProgress(transition);
+  for (const tabId of resolved) progress = resolveCleanupTabV2(progress, tabId);
+  await ports.writeRuntime(
+    validated({
+      ...structuredClone(runtime),
+      pendingEnforcementTransition: {
+        ...structuredClone(transition),
+        cleanupProgress: structuredClone(progress),
+      },
+    }),
+  );
+}
+
+/** One acknowledgement becomes durable before the enforcement command it authorizes is sent. */
+async function recordCleanupEpochAck(
+  ports: RuntimePortsV2,
+  ack: DocumentEpochResetAck,
+): Promise<void> {
+  const runtime: RuntimeStateV2 = ports.runtime();
+  await ports.writeRuntime(
+    validated({
+      ...structuredClone(runtime),
+      epochResetAcks: {
+        ...structuredClone(runtime.epochResetAcks),
+        [documentCommandKeyV2(ack.tabId, ack.documentId)]: structuredClone(ack),
+      },
+    }),
+  );
+}
+
+/**
+ * The manual retry the popup offers once a batch is exhausted. One durable write allocates a new
+ * operation, advances the clear revision, replaces every frozen command and the runtime map, and
+ * begins the next batch. Targets, claims, resolved IDs, and the closure projection do not move.
+ */
+export async function retryTransitionCleanupV2(
+  ports: RuntimePortsV2,
+): Promise<{ runtime: RuntimeStateV2; code: RetryCleanupResultCodeV2 }> {
+  const runtime: RuntimeStateV2 = ports.runtime();
+  const transition: PendingEnforcementTransition | null = runtime.pendingEnforcementTransition;
+  const progress: CleanupProgress | null = transition?.cleanupProgress ?? null;
+  if (
+    transition === null ||
+    transition.stage !== 'cleanup' ||
+    progress === null ||
+    progress.retry.nextAttemptAt !== null
+  ) {
+    return { runtime, code: 'retry-not-available' };
+  }
+  const at: number = ports.now();
+  const replaced: CleanupProgress = replaceCleanupBatchV2(progress, {
+    cleanupOperationId: ports.newId(),
+    clearRuntimeRevision: progress.clearRuntimeRevision + 1,
+    at,
+  });
+  const next: RuntimeStateV2 = validated({
+    ...structuredClone(runtime),
+    runtimeRevision: replaced.clearRuntimeRevision,
+    documentCommands: structuredClone(replaced.clearCommands),
+    pendingEnforcementTransition: {
+      ...structuredClone(transition),
+      runtimeRevision: replaced.clearRuntimeRevision,
+      cleanupProgress: structuredClone(replaced),
+    },
+  });
+  await ports.writeRuntime(next);
+  return { runtime: next, code: 'ok' };
+}
+
+/**
+ * Adds a target discovered while cleanup is running. The target and its frozen clear command are
+ * durable before the first send, under the batch's existing operation and clear revision, so a
+ * newly found document never outranks the commands already in flight.
+ */
+export async function handleCleanupNavigationV2(
+  ports: RuntimePortsV2,
+  target: { tabId: number; documentId: string; url: string },
+): Promise<void> {
+  if (typeof target.documentId !== 'string' || target.documentId.trim() === '') {
+    throw new CoreError('invalid-rule', 'a cleanup target needs a document ID');
+  }
+  const classified: TargetClassificationV2 = classifyEnforcementTargetV2(
+    target.tabId,
+    target.url,
+    target.documentId,
+  );
+  if (classified.kind !== 'enforceable') return;
+  const runtime: RuntimeStateV2 = ports.runtime();
+  const transition: PendingEnforcementTransition = cleanupTransitionOf(ports);
+  const progress: CleanupProgress = requireProgress(transition);
+  const key: string = documentCommandKeyV2(classified.tabId, classified.documentId);
+  const known: FrozenDocumentCommand | undefined = progress.clearCommands[key];
+  const next: CleanupProgress =
+    known === undefined
+      ? addCleanupTargetV2(
+          progress,
+          {
+            tabId: classified.tabId,
+            documentId: classified.documentId,
+            expectedUrl: classified.url,
+          },
+          {
+            enforcementEpoch: runtime.enforcementEpoch,
+            basePolicyRevision: runtime.basePolicyRevision,
+            ...clearedIdentity(transition),
+          },
+        )
+      : progress;
+  if (known === undefined) {
+    await ports.writeRuntime(
+      validated({
+        ...structuredClone(runtime),
+        documentCommands: structuredClone(next.clearCommands),
+        pendingEnforcementTransition: {
+          ...structuredClone(transition),
+          cleanupProgress: structuredClone(next),
+        },
+      }),
+    );
+  }
+  const command: FrozenDocumentCommand | undefined = next.clearCommands[key];
+  if (command === undefined) {
+    throw new CoreError('invalid-rule', 'the cleanup batch lost its new clear command');
+  }
+  await sendDocumentEnforcementCommand(ports.transport, command);
+}
+
+/** The durable transition this file acts on: one that is already in cleanup with its progress. */
+function cleanupTransitionOf(ports: RuntimePortsV2): PendingEnforcementTransition {
+  const transition: PendingEnforcementTransition | null =
+    ports.runtime().pendingEnforcementTransition;
+  if (transition === null || transition.stage !== 'cleanup') {
+    throw new CoreError('invalid-rule', 'this step needs a transition already in cleanup');
+  }
+  return transition;
+}
+
+function requireProgress(transition: PendingEnforcementTransition): CleanupProgress {
+  const progress: CleanupProgress | null = transition.cleanupProgress;
+  if (progress === null) {
+    throw new CoreError('invalid-rule', 'a cleanup transition needs its durable progress');
+  }
+  return progress;
+}
+
+function validated(runtime: RuntimeStateV2): RuntimeStateV2 {
+  const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(runtime);
+  if (parsed === null) {
+    throw new CoreError('invalid-rule', 'transition cleanup built an invalid runtime');
+  }
+  return parsed;
+}
