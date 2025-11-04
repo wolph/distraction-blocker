@@ -3,6 +3,7 @@ import { PHASE_ALARM } from '../../../src/background/alarms-v2';
 import type { FrozenDocumentCommand } from '../../../src/background/enforcement-persistence-v2';
 import type { RuntimeCommitInputV2 } from '../../../src/background/runtime-checkpoint-v2';
 import type {
+  FrozenTransitionView,
   PendingEnforcementTransition,
   RuntimeStateV2,
   SessionStartCandidate,
@@ -17,6 +18,7 @@ import {
   transitionMatcherV2,
 } from '../../../src/background/transition-runner-v2';
 import { validateDetachedPendingEnforcementTransition } from '../../../src/background/transition-v2-validation';
+import type { CompiledMatcher } from '../../../src/core/matcher';
 import type {
   DocumentContentCommand,
   DocumentEnforcementCommand,
@@ -25,6 +27,8 @@ import { CoreError } from '../../../src/shared/errors';
 import {
   appliedResponseFor,
   createRuntimePortsFakeV2,
+  type FakeSendV2,
+  type FakeTabRowV2,
   noReceiverResponder,
   type RuntimePortsFakeV2,
   silentResponder,
@@ -647,5 +651,138 @@ describe('driveTransitionV2 restart recovery', (): void => {
       )
       .find((message): boolean => message.presentation === 'active');
     expect(replayed?.runtimeRevision).toBe(before.activeView?.runtimeRevision);
+  });
+});
+
+describe('driveTransitionV2 concurrent navigation', (): void => {
+  const LATE_URL: string = 'https://instagram.com/explore';
+  const LATE_DOC: string = 'document-13';
+  const LATE_KEY: string = documentKey(13, LATE_DOC);
+  const GROWN: readonly FakeTabRowV2[] = [
+    { tabId: 11, url: TAB_URL, documentId: DOC_ONE },
+    { tabId: 12, url: OTHER_URL, documentId: DOC_TWO },
+    { tabId: 13, url: LATE_URL, documentId: LATE_DOC },
+  ];
+
+  /** True once any frozen view of this write carries the late document. */
+  function carriesLate(runtime: RuntimeStateV2): boolean {
+    const transition: PendingEnforcementTransition | null = runtime.pendingEnforcementTransition;
+    if (transition === null) return false;
+    return (
+      transition.startingView.documents[LATE_KEY] !== undefined ||
+      transition.activeView?.documents[LATE_KEY] !== undefined
+    );
+  }
+
+  /**
+   * Lands one navigation write while the named stage is awaiting a port, which is the interleaving
+   * each stage's reread exists to survive.
+   */
+  function navigateDuring(
+    stage: string,
+    ports: () => RuntimePortsFakeV2,
+    matcher: () => CompiledMatcher,
+  ): () => Promise<void> {
+    let done: boolean = false;
+    return async (): Promise<void> => {
+      if (done || ports().current().pendingEnforcementTransition?.stage !== stage) return;
+      done = true;
+      ports().setTabs(GROWN);
+      ports().bumpGeneration();
+      await handleTransitionNavigationV2(ports(), matcher(), {
+        tabId: 13,
+        documentId: LATE_DOC,
+        url: LATE_URL,
+      });
+    };
+  }
+
+  it.each([
+    ['prepared', 'onAudit'],
+    ['starting-verified', 'onQueryTabs'],
+    ['committed-pending-verification', 'onAlarmCreate'],
+  ])(
+    'keeps a navigation that landed while %s was awaiting',
+    async (stage: string, hook: string): Promise<void> => {
+      let ports: RuntimePortsFakeV2 | null = null;
+      let compiled: CompiledMatcher | null = null;
+      const navigate: () => Promise<void> = navigateDuring(
+        stage,
+        (): RuntimePortsFakeV2 => ports as RuntimePortsFakeV2,
+        (): CompiledMatcher => compiled as CompiledMatcher,
+      );
+      ports = fakeFor(seedRuntime(), {
+        ids: [...IDS, CLEANUP_OPERATION_ID, OTHER_OPERATION_ID],
+        [hook]: navigate,
+      });
+      const prepared: PreparedTransitionV2 = await prepareStartTransitionV2(
+        ports,
+        manualCandidate(),
+        'manual',
+      );
+      compiled = prepared.matcher;
+      const result: TransitionDriveResultV2 = await driveTransitionV2(ports, prepared.matcher);
+      const first: number = ports.writes.findIndex(carriesLate);
+      const revisions: number[] = ports.writes.map(
+        (runtime: RuntimeStateV2): number => runtime.runtimeRevision,
+      );
+
+      expect(result.kind).toBe('published');
+      expect(first).toBeGreaterThanOrEqual(0);
+      // Once the document is durable, no later write may drop it: that is what a stage writing
+      // from a stale snapshot would do.
+      for (let index: number = first; index < ports.writes.length; index++) {
+        const runtime: RuntimeStateV2 = ports.writes[index] as RuntimeStateV2;
+        if (runtime.pendingEnforcementTransition === null) continue;
+        expect(carriesLate(runtime)).toBe(true);
+      }
+      for (let index: number = 1; index < revisions.length; index++) {
+        expect(revisions[index] ?? 0).toBeGreaterThanOrEqual(revisions[index - 1] ?? 0);
+      }
+    },
+  );
+
+  it('advances the revision and persists a replacement view for a document found mid-sweep', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(seedRuntime());
+    const prepared: PreparedTransitionV2 = await prepareStartTransitionV2(
+      fake,
+      manualCandidate(),
+      'manual',
+    );
+    const before: PendingEnforcementTransition = storedTransition(fake);
+    const baseRevision: number = before.startingView.runtimeRevision;
+    const existing: readonly string[] = Object.keys(before.startingView.documents);
+    // The first enumeration of the audited sweep sees a third tab, so its document is new to the
+    // frozen view and must be persisted under a higher revision before anything is sent to it.
+    const grown: readonly FakeTabRowV2[] = [
+      { tabId: 11, url: TAB_URL, documentId: DOC_ONE },
+      { tabId: 12, url: OTHER_URL, documentId: DOC_TWO },
+      { tabId: 13, url: LATE_URL, documentId: LATE_DOC },
+    ];
+    fake.scriptTabSets([grown]);
+    fake.setTabs(grown);
+    const result: TransitionDriveResultV2 = await driveTransitionV2(fake, prepared.matcher);
+    const key: string = documentKey(13, LATE_DOC);
+    const replacement: RuntimeStateV2 | undefined = fake.writes.find(
+      (runtime: RuntimeStateV2): boolean =>
+        runtime.pendingEnforcementTransition?.startingView.documents[key] !== undefined,
+    );
+    const view: FrozenTransitionView | undefined =
+      replacement?.pendingEnforcementTransition?.startingView;
+
+    expect(result.kind).toBe('published');
+    expect(view?.runtimeRevision).toBe(baseRevision + 1);
+    for (const existingKey of existing) {
+      expect(view?.documents[existingKey]?.runtimeRevision).toBe(baseRevision + 1);
+    }
+    expect(replacement?.documentCommands).toEqual(view?.documents);
+    expect(replacement?.runtimeRevision).toBe(baseRevision + 1);
+    const writeIndex: number = fake.writes.indexOf(replacement as RuntimeStateV2);
+    const sendIndex: number = fake.sends.findIndex(
+      (send: FakeSendV2): boolean => send.documentId === LATE_DOC,
+    );
+    expect(writeIndex).toBeGreaterThanOrEqual(0);
+    expect(sendIndex).toBeGreaterThanOrEqual(0);
+    expect(fake.writes.length).toBeGreaterThan(writeIndex);
   });
 });

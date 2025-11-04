@@ -76,6 +76,10 @@ export interface RuntimePortsFakeOptionsV2 {
   alarmReadBack?: 'exact' | 'missing' | 'other-time';
   /** Runs when an alarm is created, so a test can move the clock during the alarm stage. */
   onAlarmCreate?: () => void;
+  /** Runs while `auditEnforcement` is in flight, for interleaving a write during that await. */
+  onAudit?: () => Promise<void> | void;
+  /** Runs while `queryTopFrameTabs` is in flight, for interleaving a write during that await. */
+  onQueryTabs?: () => Promise<void> | void;
 }
 
 export interface RuntimePortsFakeV2 extends RuntimePortsV2 {
@@ -171,13 +175,14 @@ export function createRuntimePortsFakeV2(
       'ready' | 'website-access-lost' | 'content-registration-failed'
     > => {
       fake.auditCalls += 1;
+      await options.onAudit?.();
       return state.audit;
     },
     compileMatcher: (rules: SessionRuleSnapshot, mode: SessionMode): CompiledMatcher =>
       compileSessionMatcher(rules, ALL_CATEGORIES, mode),
     verdictFor: (matcher: CompiledMatcher, url: string, unlocks: readonly SiteUnlock[]): Verdict =>
       evaluateUrl(matcher, url, [...unlocks], state.now),
-    targets: targetPorts(state),
+    targets: targetPorts(state, options.onQueryTabs),
     transport: transportPorts(state, sends),
     alarms: alarmPorts(state, alarmCalls, options.onAlarmCreate),
     theme: (): ThemeMode => options.theme ?? 'dark',
@@ -307,9 +312,13 @@ interface FakeStateV2 {
   byOperation: Map<string, FakeResponderV2>;
 }
 
-function targetPorts(state: FakeStateV2): EnforcementTargetPortsV2 {
+function targetPorts(
+  state: FakeStateV2,
+  onQueryTabs?: () => Promise<void> | void,
+): EnforcementTargetPortsV2 {
   return {
     queryTopFrameTabs: async (): Promise<Array<{ tabId: number; url: string | null }>> => {
+      await onQueryTabs?.();
       const set: FakeTabRowV2[] = state.tabSets.shift() ?? state.tabs;
       return set.map((row: FakeTabRowV2): { tabId: number; url: string | null } => ({
         tabId: row.tabId,

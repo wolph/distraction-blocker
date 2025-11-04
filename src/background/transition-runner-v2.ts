@@ -8,6 +8,11 @@
  * advances the runtime revision and persists a complete replacement view before its first send.
  * And every failure leaves through `enterTransitionCleanupV2`, which is the only writer that moves
  * a transition out of its stage without publishing.
+ *
+ * `driveTransitionV2` and `handleTransitionNavigationV2` are the two entry points, and the caller
+ * must serialize them against each other. They both write the durable row, so a navigation that
+ * landed while a stage was awaiting a port is only safe because every stage rereads the durable
+ * state after its await and writes from that, never from the snapshot it started with.
  */
 
 import type { CompiledMatcher } from '../core/matcher';
@@ -32,6 +37,11 @@ import type {
 } from '../shared/types';
 import { ensurePhaseAlarmV2, PHASE_ALARM } from './alarms-v2';
 import { documentCommandKeyV2 } from './cleanup-progress-v2';
+import {
+  type EpochResetOutcomeV2,
+  sendDocumentEnforcementCommand,
+  sendEpochResetCommand,
+} from './content-transport-v2';
 import type {
   DocumentEnforcementAck,
   DocumentEpochResetAck,
@@ -66,11 +76,9 @@ import type {
   RuntimeStateV2,
   SessionStartCandidate,
   StartDurationPlan,
-  TransitionStage,
 } from './runtime-v2-types';
 import { parseRuntimeStateV2 } from './runtime-v2-validation';
-import { enterTransitionCleanupV2 } from './transition-cleanup-v2';
-import { validateDetachedPendingEnforcementTransition } from './transition-v2-validation';
+import { enterTransitionCleanupV2, handleCleanupNavigationV2 } from './transition-cleanup-v2';
 
 export interface PreparedTransitionV2 {
   runtime: RuntimeStateV2;
@@ -91,6 +99,8 @@ const PRE_COMMIT_STAGES: ReadonlySet<string> = new Set<string>([
   'starting-verified',
 ]);
 const MINUTE_MS: number = 60_000;
+/** A commit refreezes only while a navigation keeps advancing the view it must sit above. */
+const MAX_COMMIT_FREEZE_ATTEMPTS: number = 4;
 
 /**
  * Validates the request, compiles its matcher, reserves every identity, and freezes the starting
@@ -266,13 +276,13 @@ async function stepTransition(
 ): Promise<'continue' | 'cleanup'> {
   switch (transition.stage) {
     case 'prepared':
-      return auditStage(ports, runtime, transition);
+      return auditStage(ports, transition);
     case 'registration-audited':
       return startingSweepStage(ports, matcher, transition);
     case 'starting-verified':
       return commitStage(ports, matcher, runtime, transition);
     case 'committed-pending-verification':
-      return alarmStage(ports, runtime, transition);
+      return alarmStage(ports, runtime);
     default:
       return freshnessStage(ports, matcher, runtime, transition);
   }
@@ -285,7 +295,6 @@ async function stepTransition(
  */
 async function auditStage(
   ports: RuntimePortsV2,
-  runtime: RuntimeStateV2,
   transition: PendingEnforcementTransition,
 ): Promise<'continue' | 'cleanup'> {
   const audit: 'ready' | 'website-access-lost' | 'content-registration-failed' =
@@ -298,7 +307,10 @@ async function auditStage(
     });
     return 'cleanup';
   }
-  await writeStage(ports, runtime, { ...transition, stage: 'registration-audited' }, {});
+  // A navigation may have queued a target while the audit was in flight, so the row this writes is
+  // the durable one as of now, not the snapshot the loop read before awaiting.
+  const current: PendingEnforcementTransition = durableTransition(ports);
+  await writeStage(ports, ports.runtime(), { ...current, stage: 'registration-audited' }, {});
   return 'continue';
 }
 
@@ -373,36 +385,67 @@ async function commitStage(
     start === null
       ? resumedSession(runtime, activationAt)
       : startSessionV2(configFor(start, activationAt), activationAt, transition.sessionId);
-  const runtimeRevision: number = transition.startingView.runtimeRevision + 1;
-  const activeView: FrozenTransitionView = await freezeActiveView(ports, matcher, {
-    runtime,
+  const frozen: FrozenActiveCommitV2 = await freezeCommitView(
+    ports,
+    matcher,
     session,
-    capturedAt: activationAt,
-    operationId: transition.activeOperationId,
-    enforcementEpoch: transition.enforcementEpoch,
-    basePolicyRevision: transition.basePolicyRevision,
-    runtimeRevision,
-  });
+    activationAt,
+  );
+  const settled: PendingEnforcementTransition = durableTransition(ports);
   const committed: PendingEnforcementTransition = {
-    ...transition,
+    ...settled,
     stage: 'committed-pending-verification',
-    runtimeRevision,
+    runtimeRevision: frozen.runtimeRevision,
     preparedTargetReservations: {},
     activationAt,
     verificationStartedAt: activationAt,
     freshnessAttempts: 0,
-    activeView,
+    activeView: frozen.view,
     alarmNames: session.phaseEndsAt === null ? [] : [PHASE_ALARM],
   };
-  await commitTransition(ports, runtime, committed, session, activationAt);
+  await commitTransition(ports, ports.runtime(), committed, session, activationAt);
   return 'continue';
+}
+
+interface FrozenActiveCommitV2 {
+  view: FrozenTransitionView;
+  runtimeRevision: number;
+}
+
+/**
+ * Freezes the active view the commit will publish, at a revision strictly above the starting view
+ * it replaces. Freezing awaits the target ports, so a navigation can advance the starting view
+ * while this runs; the loop then refreezes at the new revision rather than committing below it.
+ * The caller serializes the two entry points, so this settles immediately in practice.
+ */
+async function freezeCommitView(
+  ports: RuntimePortsV2,
+  matcher: CompiledMatcher,
+  session: SessionStateV2,
+  activationAt: number,
+): Promise<FrozenActiveCommitV2> {
+  for (let attempt: number = 0; attempt < MAX_COMMIT_FREEZE_ATTEMPTS; attempt++) {
+    const before: PendingEnforcementTransition = durableTransition(ports);
+    const runtimeRevision: number = before.startingView.runtimeRevision + 1;
+    const view: FrozenTransitionView = await freezeActiveView(ports, matcher, {
+      runtime: ports.runtime(),
+      session,
+      capturedAt: activationAt,
+      operationId: before.activeOperationId,
+      enforcementEpoch: before.enforcementEpoch,
+      basePolicyRevision: before.basePolicyRevision,
+      runtimeRevision,
+    });
+    const after: PendingEnforcementTransition = durableTransition(ports);
+    if (after.startingView.runtimeRevision < runtimeRevision) return { view, runtimeRevision };
+  }
+  throw new CoreError('invalid-rule', 'the starting view kept advancing during the session commit');
 }
 
 /** Creates and reads back the phase alarm the committed session owns, then records that fact. */
 async function alarmStage(
   ports: RuntimePortsV2,
   runtime: RuntimeStateV2,
-  transition: PendingEnforcementTransition,
 ): Promise<'continue' | 'cleanup'> {
   const settled: 'ready' | 'alarm-failed' = await ensurePhaseAlarmV2(ports.alarms, runtime.session);
   if (settled === 'alarm-failed') {
@@ -413,7 +456,8 @@ async function alarmStage(
     });
     return 'cleanup';
   }
-  await writeStage(ports, runtime, { ...transition, stage: 'alarm-ready' }, {});
+  const current: PendingEnforcementTransition = durableTransition(ports);
+  await writeStage(ports, ports.runtime(), { ...current, stage: 'alarm-ready' }, {});
   return 'continue';
 }
 
@@ -531,6 +575,8 @@ async function commitTransition(
   const next: RuntimeStateV2 = {
     ...structuredClone(runtime),
     session: structuredClone(session),
+    // The phase just changed, so a gate opened against the phase this transition replaced no
+    // longer has anything to deliberate about.
     gate: null,
     basePolicyRevision: transition.basePolicyRevision,
     runtimeRevision: transition.runtimeRevision,
@@ -687,8 +733,12 @@ export async function handleTransitionNavigationV2(
   );
   if (classified.kind !== 'enforceable') return;
   const transition: PendingEnforcementTransition = durableTransition(ports);
-  if (transition.stage === 'cleanup') return;
-  ports.targets.readTargetGeneration();
+  // The target generation counter belongs to the tab layer, which advances it on the navigation
+  // itself under the tab-operation lease. This handler only records what it reads.
+  if (transition.stage === 'cleanup') {
+    await handleCleanupNavigationV2(ports, target);
+    return;
+  }
   if (transition.stage === 'prepared') {
     await queuePreparedTarget(ports, matcher, classified);
     return;
@@ -698,12 +748,12 @@ export async function handleTransitionNavigationV2(
   const command: FrozenDocumentCommand = await driver.commandFor(classified);
   if (!driver.hasEpochAck(classified.tabId, classified.documentId)) {
     const reset: FrozenEpochResetCommand = await driver.resetFor(classified);
-    const { sendEpochResetCommand } = await import('./content-transport-v2');
-    const outcome = await sendEpochResetCommand(driver.transport, reset);
+    const outcome: EpochResetOutcomeV2 = await sendEpochResetCommand(driver.transport, reset);
     if (outcome.kind !== 'reset') return;
     await driver.recordEpochAck(outcome.ack);
   }
-  const { sendDocumentEnforcementCommand } = await import('./content-transport-v2');
+  // The verification pass that follows owns the verdict for this target: it re-enumerates the
+  // document and fails the transition if the send did not take, so nothing is decided here.
   await sendDocumentEnforcementCommand(driver.transport, command);
 }
 
@@ -1138,20 +1188,3 @@ function requireValid(runtime: RuntimeStateV2): RuntimeStateV2 {
   }
   return parsed;
 }
-
-/** Every stage row is validated as a transition before it becomes part of a runtime write. */
-export function assertValidTransitionV2(transition: PendingEnforcementTransition): void {
-  if (!validateDetachedPendingEnforcementTransition(structuredClone(transition))) {
-    throw new CoreError('invalid-rule', 'the transition runner built an invalid transition');
-  }
-}
-
-/** The stages this runner recognizes, for the controller that routes a durable row back to it. */
-export const DRIVEABLE_TRANSITION_STAGES: ReadonlySet<TransitionStage> = new Set<TransitionStage>([
-  'prepared',
-  'registration-audited',
-  'starting-verified',
-  'committed-pending-verification',
-  'alarm-ready',
-  'active-verified',
-]);
