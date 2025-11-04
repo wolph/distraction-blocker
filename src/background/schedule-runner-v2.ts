@@ -1,0 +1,269 @@
+/**
+ * The serialized schedule check and the next-schedule read model.
+ *
+ * Two rules shape this file. A schedule check never touches a session: it starts one only from a
+ * fully idle runtime, so an open entry can never restrengthen, reconfigure, or relock a session that
+ * is already running or still finishing. And an occurrence is identified by its token, so the same
+ * window is suppressed for the rest of its life once it has been started or covered by a closure,
+ * which is what keeps a repeated local hour, an edited entry, and a manual end from relocking it.
+ *
+ * The runner performs no browser effect of its own beyond the notification and sound the product
+ * behavior names. Every durable change goes through the runtime ports.
+ */
+
+import { nextStart } from '../core/schedule';
+import {
+  pruneHandledScheduleOccurrencesV2,
+  type ResolvedScheduleOccurrenceV2,
+  resolveOpenScheduleOccurrencesV2,
+  selectScheduleCandidateV2,
+} from '../core/schedule-v2';
+import { rulesFromLists } from '../shared/constants';
+import { CoreError } from '../shared/errors';
+import { exactDataEqual } from '../shared/exact-data';
+import { SCHEDULE_STARTED_TITLE, SCHEDULE_UNTIL_STOPPED_BODY } from '../shared/session-copy';
+import { localDateStr } from '../shared/time';
+import type {
+  HandledScheduleOccurrence,
+  ListsConfig,
+  ScheduleEntryV2,
+  SettingsV2,
+} from '../shared/types';
+import type { RuntimePortsV2 } from './runtime-ports-v2';
+import type { RuntimeStateV2, SessionStartCandidate } from './runtime-v2-types';
+import {
+  driveTransitionV2,
+  type PreparedTransitionV2,
+  prepareStartTransitionV2,
+  type TransitionDriveResultV2,
+} from './transition-runner-v2';
+
+export interface ScheduleRunnerPortsV2 {
+  settings(): SettingsV2;
+  lists(): ListsConfig;
+  websiteBlockingReady(): boolean;
+  notify(title: string, body: string): void;
+  playSound(sound: 'scheduleStart'): void;
+}
+
+export interface ScheduleCheckResultV2 {
+  runtime: RuntimeStateV2;
+  started: boolean;
+}
+
+export interface NextScheduleInfoV2 {
+  entryId: string;
+  startsAt: number;
+}
+
+/**
+ * The shipped v1 notification for an occurrence that could not lock anything, repeated here
+ * verbatim. It belongs in `session-copy.ts` once the cutover slice owns the notification port.
+ */
+const UNAVAILABLE_TITLE: string = 'Focus schedule could not start';
+const UNAVAILABLE_BODY: string =
+  'Website blocking is not enabled. Finish setup or grant website access, then try again.';
+
+export function scheduleWindowBody(entry: ScheduleEntryV2): string {
+  return `Locked until ${entry.end}.`;
+}
+
+/**
+ * Runs one schedule check. It returns without a write while any session, transition, or closure
+ * exists, which is the whole of the "schedule checks do nothing while a session or any journal
+ * exists" rule: the check is a start path and nothing else.
+ *
+ * The caller serializes this against every other runtime command, because it prepares and drives a
+ * transition whose entry points require that.
+ */
+export async function runScheduleCheckV2(
+  ports: RuntimePortsV2,
+  schedule: ScheduleRunnerPortsV2,
+): Promise<ScheduleCheckResultV2> {
+  const runtime: RuntimeStateV2 = ports.runtime();
+  if (
+    runtime.session !== null ||
+    runtime.pendingEnforcementTransition !== null ||
+    runtime.pendingClosure !== null
+  ) {
+    return { runtime, started: false };
+  }
+  const now: number = ports.now();
+  const entries: readonly ScheduleEntryV2[] = schedule.settings().schedule;
+  assertOneCandidatePerToken(entries, now);
+  const candidate: ResolvedScheduleOccurrenceV2 | null = selectScheduleCandidateV2(
+    entries,
+    runtime.handledScheduleOccurrences,
+    now,
+  );
+  if (candidate === null) {
+    return { runtime: await withNoticeToken(ports, runtime, null), started: false };
+  }
+  if (!schedule.websiteBlockingReady()) {
+    return {
+      runtime: await reportUnavailable(ports, schedule, runtime, candidate),
+      started: false,
+    };
+  }
+  return startFromSchedule(ports, schedule, runtime, candidate);
+}
+
+/**
+ * The next start the popup and badge report. A live handled record hides its own occurrence, so an
+ * occurrence the user just ended by hand is never announced as the next start, and the search
+ * continues to the following one. An expired record hides nothing.
+ */
+export function nextScheduleInfoV2(
+  entries: readonly ScheduleEntryV2[],
+  handledOccurrences: readonly HandledScheduleOccurrence[],
+  now: number,
+): NextScheduleInfoV2 | null {
+  const handledTokens: Set<string> = liveHandledTokens(handledOccurrences, now);
+  // Every skipped start consumes one distinct live token, so the search needs no more steps than
+  // there are live records, plus the one step that returns.
+  let at: number = now;
+  for (let step: number = 0; step <= handledTokens.size; step++) {
+    // `nextStart` is the shared v1 resolver, so it answers with the v1 entry shape it was given.
+    const next: ReturnType<typeof nextStart> = nextStart([...entries], new Date(at));
+    if (next === null) return null;
+    const startsAt: number = next.startsAt.getTime();
+    const token: string = occurrenceToken(next.entry.id, startsAt);
+    if (!handledTokens.has(token)) return { entryId: next.entry.id, startsAt };
+    at = startsAt;
+  }
+  return null;
+}
+
+/**
+ * Drops every handled record the retention window has passed. The same runtime comes back when
+ * nothing changed, so a tick that finds nothing to prune writes nothing.
+ */
+export function pruneHandledOccurrencesOnTickV2(
+  runtime: RuntimeStateV2,
+  now: number,
+): RuntimeStateV2 {
+  const pruned: HandledScheduleOccurrence[] = pruneHandledScheduleOccurrencesV2(
+    runtime.handledScheduleOccurrences,
+    now,
+  );
+  if (exactDataEqual(pruned, runtime.handledScheduleOccurrences)) return runtime;
+  return { ...runtime, handledScheduleOccurrences: pruned };
+}
+
+/**
+ * A scheduled start is one transition like any other. The captured window and the occurrence travel
+ * with the candidate, so every later recheck reads them instead of rereading mutable Settings.
+ */
+async function startFromSchedule(
+  ports: RuntimePortsV2,
+  schedule: ScheduleRunnerPortsV2,
+  runtime: RuntimeStateV2,
+  candidate: ResolvedScheduleOccurrenceV2,
+): Promise<ScheduleCheckResultV2> {
+  // A window that starts leaves no unavailable notice behind, so the token is cleared first and
+  // the transition preparation reads the runtime this write left durable.
+  await withNoticeToken(ports, runtime, null);
+  const start: SessionStartCandidate = scheduleStartCandidate(candidate, schedule.lists());
+  const prepared: PreparedTransitionV2 = await prepareStartTransitionV2(ports, start, 'schedule');
+  const driven: TransitionDriveResultV2 = await driveTransitionV2(ports, prepared.matcher);
+  if (driven.kind !== 'published') return { runtime: driven.runtime, started: false };
+  schedule.playSound('scheduleStart');
+  schedule.notify(SCHEDULE_STARTED_TITLE, scheduleStartBody(candidate.entry));
+  return { runtime: driven.runtime, started: true };
+}
+
+/**
+ * An indefinite entry starts a Flexible session with no cycling whatever the entry stored, because
+ * an until-stopped session has no other legal shape and the user must always be able to end it.
+ */
+function scheduleStartCandidate(
+  candidate: ResolvedScheduleOccurrenceV2,
+  lists: ListsConfig,
+): SessionStartCandidate {
+  const entry: ScheduleEntryV2 = candidate.entry;
+  const indefinite: boolean = entry.duration.kind === 'until-stopped';
+  return {
+    mode: entry.mode,
+    strictness: indefinite ? 'flexible' : entry.strictness,
+    duration: indefinite ? { kind: 'until-stopped' } : { kind: 'schedule-window' },
+    cycling: indefinite ? null : structuredClone(entry.cycling),
+    intention: entry.intention,
+    source: 'schedule',
+    scheduleOccurrence: structuredClone(candidate.occurrence),
+    scheduleWindow: {
+      windowStartsAt: candidate.windowStartsAt,
+      windowEndsAt: candidate.windowEndsAt,
+    },
+    rules: rulesFromLists(lists),
+  };
+}
+
+function scheduleStartBody(entry: ScheduleEntryV2): string {
+  return entry.duration.kind === 'until-stopped'
+    ? SCHEDULE_UNTIL_STOPPED_BODY
+    : scheduleWindowBody(entry);
+}
+
+/**
+ * One notification per occurrence, tracked by the occurrence token itself. A repeated check inside
+ * the same window is silent, and the next occurrence notifies again.
+ */
+async function reportUnavailable(
+  ports: RuntimePortsV2,
+  schedule: ScheduleRunnerPortsV2,
+  runtime: RuntimeStateV2,
+  candidate: ResolvedScheduleOccurrenceV2,
+): Promise<RuntimeStateV2> {
+  const token: string = candidate.occurrence.token;
+  if (runtime.scheduleUnavailableNoticeToken === token) return runtime;
+  const next: RuntimeStateV2 = await withNoticeToken(ports, runtime, token);
+  schedule.notify(UNAVAILABLE_TITLE, UNAVAILABLE_BODY);
+  return next;
+}
+
+/** Writes the notice token only when it actually changes, so a quiet check stays quiet. */
+async function withNoticeToken(
+  ports: RuntimePortsV2,
+  runtime: RuntimeStateV2,
+  token: string | null,
+): Promise<RuntimeStateV2> {
+  if (runtime.scheduleUnavailableNoticeToken === token) return runtime;
+  const next: RuntimeStateV2 = { ...runtime, scheduleUnavailableNoticeToken: token };
+  await ports.writeRuntime(next);
+  return ports.runtime();
+}
+
+/**
+ * Two enabled entries that resolve to one token would make the same window both handled and open,
+ * so the stored settings are already invalid. `parseStoredSettingsV2` rejects overlapping entries
+ * upstream, and this refuses the value rather than picking one of the two.
+ */
+function assertOneCandidatePerToken(entries: readonly ScheduleEntryV2[], now: number): void {
+  const seen: Set<string> = new Set<string>();
+  for (const resolved of resolveOpenScheduleOccurrencesV2(entries, now)) {
+    const token: string = resolved.occurrence.token;
+    if (seen.has(token)) {
+      throw new CoreError(
+        'invalid-schedule',
+        `two open schedule entries share the occurrence token ${token}`,
+      );
+    }
+    seen.add(token);
+  }
+}
+
+function liveHandledTokens(
+  handledOccurrences: readonly HandledScheduleOccurrence[],
+  now: number,
+): Set<string> {
+  const tokens: Set<string> = new Set<string>();
+  for (const occurrence of handledOccurrences) {
+    if (occurrence.expiresAt > now) tokens.add(occurrence.token);
+  }
+  return tokens;
+}
+
+/** The occurrence identity of one start instant, the same shape the resolver stores. */
+function occurrenceToken(entryId: string, startsAt: number): string {
+  return `${entryId}@${localDateStr(startsAt)}`;
+}
