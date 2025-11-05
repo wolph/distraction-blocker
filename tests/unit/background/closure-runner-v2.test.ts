@@ -1,0 +1,493 @@
+import { describe, expect, it } from 'vitest';
+import { CLOSURE_CLEANUP_ALARM, PHASE_ALARM } from '../../../src/background/alarms-v2';
+import {
+  closeSessionV2,
+  commitClosureV2,
+  prepareClosureV2,
+  retryClosureCleanupV2,
+  runClosureCleanupAttemptV2,
+} from '../../../src/background/closure-runner-v2';
+import type { RuntimeCommitInputV2 } from '../../../src/background/runtime-checkpoint-v2';
+import type { RuntimePortsV2 } from '../../../src/background/runtime-ports-v2';
+import type {
+  CleanupProgress,
+  CleanupTabClaim,
+  ClosureProjection,
+  PendingClosure,
+  RuntimeStateV2,
+} from '../../../src/background/runtime-v2-types';
+import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validation';
+import type { CleanupEffectPortsV2 } from '../../../src/background/transition-cleanup-v2';
+import { emptyDaily } from '../../../src/core/stats';
+import { CLEANUP_MAX_AUTOMATIC_ATTEMPTS } from '../../../src/shared/constants';
+import { CoreError } from '../../../src/shared/errors';
+import { syncAggKey } from '../../../src/shared/storage-keys';
+import { localDateStr } from '../../../src/shared/time';
+import type { DailyAgg, SessionEndReasonV2, SessionStateV2 } from '../../../src/shared/types';
+import {
+  createRuntimePortsFakeV2,
+  type FakeSendV2,
+  noReceiverResponder,
+  type RuntimePortsFakeV2,
+} from './runtime-ports-fake';
+import {
+  ACTIVATION_AT,
+  CLEANUP_OPERATION_ID,
+  dailyAgg,
+  LOCAL_DATE,
+  OTHER_OPERATION_ID,
+  publishedFocusRuntime,
+  runtimeTabState,
+  timedFocusSession,
+  untilStoppedFocusSession,
+} from './runtime-v2-fixtures';
+
+const DOC_ONE: string = 'document-1';
+const DEVICE_ID: string = 'device-1';
+const MINUTE_MS: number = 60_000;
+const ENDED_AT: number = ACTIVATION_AT + 10 * MINUTE_MS;
+const CLOSURE_OPERATION: string = '90000000-0000-4000-8000-000000000001';
+const MIDNIGHT: number = new Date(2026, 8, 3, 0, 0, 0, 0).getTime();
+const NEXT_DATE: string = localDateStr(MIDNIGHT);
+const CROSSING_ENDED_AT: number = MIDNIGHT + 20 * MINUTE_MS;
+
+/** A timed session that runs into the evening, so its settled focus lands on the earlier day. */
+function crossingSession(): SessionStateV2 {
+  const base: SessionStateV2 = timedFocusSession();
+  const span: number = (base.sessionEndsAt ?? 0) - base.startedAt;
+  const startedAt: number = MIDNIGHT - 40 * MINUTE_MS;
+  return timedFocusSession({
+    startedAt,
+    phaseStartedAt: startedAt,
+    sessionEndsAt: startedAt + span,
+    phaseEndsAt: startedAt + span,
+  });
+}
+const NEXT_OPERATION: string = '90000000-0000-4000-8000-000000000002';
+
+function effectsFake(): CleanupEffectPortsV2 & { badges: number; reloaded: number } {
+  const record = {
+    badges: 0,
+    reloaded: 0,
+    restoreTabClaims: async (claims: readonly CleanupTabClaim[]): Promise<number[]> =>
+      claims.map((claim: CleanupTabClaim): number => claim.tabId),
+    reloadStoppedDocuments: async (): Promise<void> => {
+      record.reloaded += 1;
+    },
+    requestBlankBadge: (): void => {
+      record.badges += 1;
+    },
+  };
+  return record;
+}
+
+function unresolvedEffects(): CleanupEffectPortsV2 {
+  return {
+    restoreTabClaims: async (): Promise<number[]> => [],
+    reloadStoppedDocuments: async (): Promise<void> => {},
+    requestBlankBadge: (): void => {},
+  };
+}
+
+function closingRuntime(overrides: Partial<RuntimeStateV2> = {}): RuntimeStateV2 {
+  return publishedFocusRuntime({
+    session: timedFocusSession(),
+    tabStates: { 11: runtimeTabState() },
+    ...overrides,
+  });
+}
+
+function fakeFor(
+  runtime: RuntimeStateV2,
+  options: Parameters<typeof createRuntimePortsFakeV2>[1] = {},
+): RuntimePortsFakeV2 {
+  return createRuntimePortsFakeV2(runtime, {
+    now: ENDED_AT,
+    ids: [CLOSURE_OPERATION, NEXT_OPERATION, OTHER_OPERATION_ID, CLEANUP_OPERATION_ID],
+    deviceId: DEVICE_ID,
+    tabs: [{ tabId: 11, url: 'https://facebook.com/feed', documentId: DOC_ONE }],
+    ...options,
+  });
+}
+
+function preparedClosureOf(runtime: RuntimeStateV2): PendingClosure {
+  const closure: PendingClosure | null = runtime.pendingClosure;
+  if (closure === null) throw new Error('the runtime carries no closure');
+  return closure;
+}
+
+function cleanupProgressOf(runtime: RuntimeStateV2): CleanupProgress {
+  const closure: PendingClosure = preparedClosureOf(runtime);
+  if (closure.stage !== 'cleanup') throw new Error('the closure is not in cleanup');
+  return closure.cleanupProgress;
+}
+
+async function prepared(
+  fake: RuntimePortsFakeV2,
+  reason: SessionEndReasonV2 = 'timer-completed',
+  endedAt: number = ENDED_AT,
+): Promise<RuntimeStateV2> {
+  return prepareClosureV2(fake, { endedAt, reason });
+}
+
+async function inCleanup(
+  fake: RuntimePortsFakeV2,
+  reason: SessionEndReasonV2 = 'timer-completed',
+): Promise<RuntimeStateV2> {
+  await prepared(fake, reason);
+  return commitClosureV2(fake);
+}
+
+describe('prepareClosureV2', (): void => {
+  it('loads every settled date before it writes the prepared closure', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    const loads: string[][] = [];
+    const ports: RuntimePortsV2 = {
+      ...fake,
+      loadAggregates: async (keys: readonly string[]): Promise<Record<string, DailyAgg>> => {
+        loads.push([...keys]);
+        expect(fake.writes).toHaveLength(0);
+        return fake.loadAggregates(keys);
+      },
+    };
+
+    const next: RuntimeStateV2 = await prepareClosureV2(ports, {
+      endedAt: ENDED_AT,
+      reason: 'timer-completed',
+    });
+
+    expect(loads).toHaveLength(1);
+    expect(loads[0]).toContain(syncAggKey(DEVICE_ID, LOCAL_DATE));
+    expect(next.pendingClosure?.stage).toBe('prepared');
+    expect(next.session).toEqual(closingRuntime().session);
+    expect(parseRuntimeStateV2(next)).not.toBeNull();
+  });
+
+  it('keeps the enforcement checkpoint and captures the phase alarm and claims', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+
+    const next: RuntimeStateV2 = await prepared(fake);
+    const closure: PendingClosure = preparedClosureOf(next);
+
+    expect(next.enforcementCheckpoint).toEqual(closingRuntime().enforcementCheckpoint);
+    expect(closure.cleanupSeed.alarmNames).toEqual([PHASE_ALARM]);
+    expect(closure.cleanupSeed.tabClaims).toEqual([{ tabId: 11, state: runtimeTabState() }]);
+    expect(closure.cleanupProgress).toBeNull();
+  });
+
+  it('captures no phase alarm for an indefinite focus session', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(
+      closingRuntime({ session: untilStoppedFocusSession() }),
+    );
+
+    const next: RuntimeStateV2 = await prepared(fake, 'manual-completed');
+
+    expect(preparedClosureOf(next).cleanupSeed.alarmNames).toEqual([]);
+  });
+
+  it('keeps a finished day the settled focus reaches back into', async (): Promise<void> => {
+    const session: SessionStateV2 = crossingSession();
+    const settledMs: number = (session.sessionEndsAt ?? 0) - session.phaseStartedAt;
+    const stored: DailyAgg = dailyAgg({ attempts: { 'example.com': 4 }, sessionsStarted: 2 });
+    const fake: RuntimePortsFakeV2 = fakeFor(
+      closingRuntime({
+        session,
+        accruedFocusMs: 0,
+        date: NEXT_DATE,
+        todayAgg: emptyDaily(NEXT_DATE),
+      }),
+      {
+        now: CROSSING_ENDED_AT,
+        aggregates: { [syncAggKey(DEVICE_ID, LOCAL_DATE)]: stored },
+      },
+    );
+
+    const next: RuntimeStateV2 = await prepared(fake, 'timer-completed', CROSSING_ENDED_AT);
+    const projection: ClosureProjection = preparedClosureOf(next).projection;
+    const earlier: DailyAgg | undefined =
+      projection.aggregateSets[syncAggKey(DEVICE_ID, LOCAL_DATE)];
+
+    expect(earlier?.attempts).toEqual({ 'example.com': 4 });
+    expect(earlier?.sessionsStarted).toBe(2);
+    expect(earlier?.pauseMsEarned).toBe(stored.pauseMsEarned);
+    expect(earlier?.focusMs).toBe(stored.focusMs + settledMs);
+  });
+
+  it.each([
+    ['no durable session', closingRuntime({ session: null, enforcementCheckpoint: null })],
+    ['a closure already prepared', null],
+  ])(
+    'refuses a closure with %s',
+    async (label: string, runtime: RuntimeStateV2 | null): Promise<void> => {
+      const fake: RuntimePortsFakeV2 = fakeFor(runtime ?? closingRuntime());
+      if (runtime === null) await prepared(fake);
+
+      await expect(prepared(fake)).rejects.toThrow(CoreError);
+      expect(label).toBeTruthy();
+    },
+  );
+});
+
+describe('commitClosureV2', (): void => {
+  it('commits the frozen projection in one checkpoint', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    const before: RuntimeStateV2 = await prepared(fake);
+    const projection: ClosureProjection = preparedClosureOf(before).projection;
+
+    const next: RuntimeStateV2 = await commitClosureV2(fake);
+    const commit: RuntimeCommitInputV2 | undefined = fake.commits[0];
+    const progress: CleanupProgress = cleanupProgressOf(next);
+
+    expect(fake.commits).toHaveLength(1);
+    expect(commit?.checkpointId).toBe(projection.closureId);
+    expect(commit?.events).toEqual(projection.events);
+    expect(commit?.bank).toEqual(projection.bankAfter);
+    expect(commit?.aggregateSets).toEqual(projection.aggregateSets);
+    expect(commit?.syncBank).toBe(true);
+    expect(next.session).toBeNull();
+    expect(next.gate).toBeNull();
+    expect(next.unlocks).toEqual([]);
+    expect(next.accruedFocusMs).toBe(0);
+    expect(next.enforcementCheckpoint).toBeNull();
+    expect(next.pendingEnforcementTransition).toBeNull();
+    expect(next.handledScheduleOccurrences).toEqual(projection.handledOccurrences);
+    expect(next.runtimeRevision).toBe(before.runtimeRevision + 1);
+    expect(next.documentCommands).toEqual(progress.clearCommands);
+    expect(progress.clearRuntimeRevision).toBe(next.runtimeRevision);
+    expect(progress.cleanupOperationId).toBe(CLOSURE_OPERATION);
+    expect(progress.tabClaims).toEqual(preparedClosureOf(before).cleanupSeed.tabClaims);
+    expect(progress.resolvedTabIds).toEqual([]);
+    expect(parseRuntimeStateV2(next)).not.toBeNull();
+  });
+
+  it('adopts the ended day aggregate as the runtime aggregate', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    const before: RuntimeStateV2 = await prepared(fake);
+    const projection: ClosureProjection = preparedClosureOf(before).projection;
+
+    const next: RuntimeStateV2 = await commitClosureV2(fake);
+
+    expect(next.date).toBe(LOCAL_DATE);
+    expect(next.todayAgg).toEqual(projection.aggregateSets[syncAggKey(DEVICE_ID, LOCAL_DATE)]);
+  });
+
+  it('rebases the runtime day when the closure ends on a later date', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(
+      closingRuntime({ session: crossingSession(), accruedFocusMs: 0 }),
+      { now: CROSSING_ENDED_AT },
+    );
+    const before: RuntimeStateV2 = await prepared(fake, 'timer-completed', CROSSING_ENDED_AT);
+    const projection: ClosureProjection = preparedClosureOf(before).projection;
+
+    const next: RuntimeStateV2 = await commitClosureV2(fake);
+
+    expect(before.date).toBe(LOCAL_DATE);
+    expect(next.date).toBe(NEXT_DATE);
+    expect(next.todayAgg).toEqual(projection.aggregateSets[syncAggKey(DEVICE_ID, NEXT_DATE)]);
+    expect(projection.aggregateSets[syncAggKey(DEVICE_ID, LOCAL_DATE)]?.focusMs).toBeGreaterThan(
+      dailyAgg().focusMs,
+    );
+    expect(parseRuntimeStateV2(next)).not.toBeNull();
+  });
+
+  it.each<[SessionEndReasonV2, number]>([
+    ['manual-completed', 1],
+    ['manual-canceled', 0],
+  ])(
+    'records the completion increment for %s',
+    async (reason: SessionEndReasonV2, increment: number): Promise<void> => {
+      const session =
+        reason === 'manual-completed' ? untilStoppedFocusSession() : timedFocusSession();
+      const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime({ session }));
+      const before: RuntimeStateV2 = await prepared(fake, reason);
+
+      await commitClosureV2(fake);
+
+      expect(preparedClosureOf(before).projection.completionIncrement).toBe(increment);
+      expect(
+        fake.commits[0]?.aggregateSets[syncAggKey(DEVICE_ID, LOCAL_DATE)]?.sessionsCompleted,
+      ).toBe(dailyAgg().sessionsCompleted + increment);
+    },
+  );
+
+  it('never rebuilds the frozen projection after a restart', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    const before: RuntimeStateV2 = await prepared(fake);
+    const restarted: RuntimePortsV2 = {
+      ...fake,
+      loadAggregates: async (): Promise<Record<string, DailyAgg>> => {
+        throw new Error('the projection was rebuilt');
+      },
+      openOccurrencesAt: (): never => {
+        throw new Error('the projection was rebuilt');
+      },
+    };
+
+    const next: RuntimeStateV2 = await commitClosureV2(restarted);
+
+    expect(cleanupProgressOf(next).clearRuntimeRevision).toBe(next.runtimeRevision);
+    expect(fake.commits[0]?.events).toEqual(preparedClosureOf(before).projection.events);
+  });
+
+  it('refuses a closure that is not prepared', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+
+    await expect(commitClosureV2(fake)).rejects.toThrow(CoreError);
+  });
+});
+
+describe('runClosureCleanupAttemptV2', (): void => {
+  it('clears the phase alarm, blanks the badge, clears documents, and removes the journal', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await inCleanup(fake);
+    const effects = effectsFake();
+
+    const next: RuntimeStateV2 = await runClosureCleanupAttemptV2(fake, effects);
+
+    expect(fake.alarmCalls).toContainEqual({ kind: 'clear', name: PHASE_ALARM });
+    expect(effects.badges).toBe(1);
+    expect(effects.reloaded).toBe(1);
+    expect(
+      fake.sends.some((send: FakeSendV2): boolean => send.message.command === 'apply-enforcement'),
+    ).toBe(true);
+    expect(next.pendingClosure).toBeNull();
+    expect(parseRuntimeStateV2(next)).not.toBeNull();
+  });
+
+  it('resets a document that has not acknowledged the epoch before clearing it', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime({ epochResetAcks: {} }));
+    await inCleanup(fake);
+
+    await runClosureCleanupAttemptV2(fake, effectsFake());
+
+    const commands: string[] = fake.sends.map((send: FakeSendV2): string => send.message.command);
+    expect(commands[0]).toBe('reset-enforcement-epoch');
+    expect(commands).toContain('apply-enforcement');
+  });
+
+  it('keeps the journal and schedules a retry when a clear finds no receiver', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await inCleanup(fake);
+    fake.respondForDocument(11, DOC_ONE, noReceiverResponder());
+
+    const next: RuntimeStateV2 = await runClosureCleanupAttemptV2(fake, effectsFake());
+    const progress: CleanupProgress = cleanupProgressOf(next);
+
+    expect(next.pendingClosure?.stage).toBe('cleanup');
+    expect(progress.retry.automaticAttempt).toBe(1);
+    expect(progress.retry.lastError).not.toBeNull();
+    expect(fake.alarmCalls).toContainEqual({ kind: 'create', name: CLOSURE_CLEANUP_ALARM });
+  });
+
+  it('treats a closed document as resolved without inventing an acknowledgement', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime({ epochResetAcks: {} }), { tabs: [] });
+    await inCleanup(fake);
+
+    const next: RuntimeStateV2 = await runClosureCleanupAttemptV2(fake, effectsFake());
+
+    expect(next.pendingClosure).toBeNull();
+    expect(Object.keys(fake.current().epochResetAcks)).toEqual([]);
+  });
+
+  it('keeps the journal while a captured claim is unresolved', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await inCleanup(fake);
+
+    const next: RuntimeStateV2 = await runClosureCleanupAttemptV2(fake, unresolvedEffects());
+
+    expect(next.pendingClosure?.stage).toBe('cleanup');
+    expect(cleanupProgressOf(next).retry.lastError).not.toBeNull();
+  });
+
+  it('stops scheduling after the twelfth failed attempt', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await inCleanup(fake);
+    fake.respondForDocument(11, DOC_ONE, noReceiverResponder());
+
+    let next: RuntimeStateV2 = fake.current();
+    for (let attempt: number = 0; attempt < CLEANUP_MAX_AUTOMATIC_ATTEMPTS; attempt++) {
+      next = await runClosureCleanupAttemptV2(fake, effectsFake());
+    }
+
+    const progress: CleanupProgress = cleanupProgressOf(next);
+    expect(progress.retry.automaticAttempt).toBe(CLEANUP_MAX_AUTOMATIC_ATTEMPTS);
+    expect(progress.retry.nextAttemptAt).toBeNull();
+    expect(
+      fake.alarmCalls.filter(
+        (call: { kind: string; name: string }): boolean =>
+          call.name === CLOSURE_CLEANUP_ALARM && call.kind === 'create',
+      ),
+    ).toHaveLength(CLEANUP_MAX_AUTOMATIC_ATTEMPTS - 1);
+  });
+
+  it('refuses to run without a cleanup closure', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+
+    await expect(runClosureCleanupAttemptV2(fake, effectsFake())).rejects.toThrow(CoreError);
+  });
+});
+
+describe('retryClosureCleanupV2', (): void => {
+  it('replaces the batch of an exhausted closure cleanup', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await inCleanup(fake);
+    fake.respondForDocument(11, DOC_ONE, noReceiverResponder());
+    for (let attempt: number = 0; attempt < CLEANUP_MAX_AUTOMATIC_ATTEMPTS; attempt++) {
+      await runClosureCleanupAttemptV2(fake, effectsFake());
+    }
+    const exhausted: CleanupProgress = cleanupProgressOf(fake.current());
+
+    const retried: { runtime: RuntimeStateV2; code: string } = await retryClosureCleanupV2(fake);
+    const progress: CleanupProgress = cleanupProgressOf(retried.runtime);
+
+    expect(retried.code).toBe('ok');
+    expect(progress.cleanupOperationId).not.toBe(exhausted.cleanupOperationId);
+    expect(progress.clearRuntimeRevision).toBe(exhausted.clearRuntimeRevision + 1);
+    expect(progress.retry.batch).toBe(exhausted.retry.batch + 1);
+    expect(retried.runtime.runtimeRevision).toBe(progress.clearRuntimeRevision);
+    expect(retried.runtime.documentCommands).toEqual(progress.clearCommands);
+    expect(parseRuntimeStateV2(retried.runtime)).not.toBeNull();
+  });
+
+  it.each([
+    ['a live batch', true],
+    ['no closure', false],
+  ])('refuses a manual retry with %s', async (_label: string, live: boolean): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    if (live) await inCleanup(fake);
+
+    const retried: { runtime: RuntimeStateV2; code: string } = await retryClosureCleanupV2(fake);
+
+    expect(retried.code).toBe('retry-not-available');
+  });
+});
+
+describe('closeSessionV2', (): void => {
+  it('prepares, commits, and runs the first attempt', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+
+    const next: RuntimeStateV2 = await closeSessionV2(fake, effectsFake(), {
+      endedAt: ENDED_AT,
+      reason: 'timer-completed',
+    });
+
+    expect(fake.stages()).toContain(null);
+    expect(fake.commits).toHaveLength(1);
+    expect(next.session).toBeNull();
+    expect(next.pendingClosure).toBeNull();
+    expect(parseRuntimeStateV2(next)).not.toBeNull();
+  });
+
+  it('leaves the closure durable when its first attempt fails', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    fake.respondForDocument(11, DOC_ONE, noReceiverResponder());
+
+    const next: RuntimeStateV2 = await closeSessionV2(fake, effectsFake(), {
+      endedAt: ENDED_AT,
+      reason: 'timer-completed',
+    });
+
+    expect(next.session).toBeNull();
+    expect(next.pendingClosure?.stage).toBe('cleanup');
+  });
+});
