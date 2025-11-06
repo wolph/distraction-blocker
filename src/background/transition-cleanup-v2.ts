@@ -9,6 +9,10 @@
  *
  * The entry is one write, and it is the last moment the durable session still exists for a closing
  * cause, which is why the closure projection is captured here rather than after the effects.
+ *
+ * The entry takes `{ cause, failure, endedAt }` and derives the end reason. An earlier brief drafted
+ * it as `{ cause, failure, closure: { endedAt, reason } | null }`; that shape is superseded by
+ * controller ruling and should not be restored.
  */
 
 import { CoreError } from '../shared/errors';
@@ -82,7 +86,12 @@ export interface TransitionCleanupEntryV2 {
   endedAt: number;
 }
 
-/** The entry's own retry batch. A manual retry begins the next one. */
+/**
+ * The entry's own retry batch, and a manual retry begins the next one. Transition cleanup numbers
+ * its batches from one per the task brief, while `freshCleanupRetryStateV2` and the migration
+ * closure number theirs from zero. Nothing reads the number except the batch-advance guard, which
+ * only compares it with the batch before it, so the two conventions coexist safely.
+ */
 const FIRST_CLEANUP_BATCH: number = 1;
 /** Exactly the causes that must close a durable session, so exactly these capture a closure. */
 const CLOSING_CAUSES: ReadonlySet<TransitionCleanupCauseV2> = new Set<TransitionCleanupCauseV2>([
@@ -308,7 +317,14 @@ export async function runTransitionCleanupAttemptV2(
 ): Promise<RuntimeStateV2> {
   const transition: PendingEnforcementTransition = cleanupTransitionOf(ports);
   const progress: CleanupProgress = requireProgress(transition);
-  const failure: string | null = await performCleanupEffects(ports, effects, transition, progress);
+  let failure: string | null;
+  try {
+    failure = await performCleanupEffects(ports, effects, transition, progress);
+  } catch (error: unknown) {
+    // A cleanup error raised while acting on the browser, a contradictory tab claim included, is
+    // this attempt's failure and is recorded as one. It never escapes as an overwrite or a throw.
+    failure = error instanceof Error ? error.message : String(error);
+  }
   if (failure !== null) return recordAttemptFailure(ports, failure);
   return resolveCleanup(ports);
 }
@@ -345,8 +361,10 @@ async function reissueClearCommands(
   ports: RuntimePortsV2,
   progress: CleanupProgress,
 ): Promise<string | null> {
-  const runtime: RuntimeStateV2 = ports.runtime();
   for (const [key, command] of Object.entries(progress.clearCommands)) {
+    // Reread per target: the acknowledgement this loop persists for one document is durable
+    // before the next document is considered.
+    const runtime: RuntimeStateV2 = ports.runtime();
     const ack: DocumentEpochResetAck | undefined = runtime.epochResetAcks[key];
     if (ack === undefined || ack.enforcementEpoch !== runtime.enforcementEpoch) {
       const reset: EpochResetOutcomeV2 = await sendEpochResetCommand(
@@ -414,25 +432,29 @@ async function upgradeToTimerCompletion(
   ports: RuntimePortsV2,
   endedAt: number,
 ): Promise<RuntimeStateV2> {
-  const runtime: RuntimeStateV2 = ports.runtime();
-  const transition: PendingEnforcementTransition = cleanupTransitionOf(ports);
-  const seed: CleanupSeed = buildCleanupSeedV2(transition.alarmNames, runtime.tabStates);
+  const seed: CleanupSeed = buildCleanupSeedV2(
+    cleanupTransitionOf(ports).alarmNames,
+    ports.runtime().tabStates,
+  );
   const closure: PostCleanupClosure | null = await captureClosure(
     ports,
-    runtime,
+    ports.runtime(),
     { cause: 'timer-completed', failure: null, endedAt },
     seed,
   );
   if (closure === null) {
     throw new CoreError('invalid-rule', 'timer completion did not capture its closure');
   }
+  // Capturing the closure reads stored aggregates, so the row this upgrade writes is reread after
+  // that await. A navigation handled meanwhile has already advanced the durable batch.
+  const current: RuntimeStateV2 = ports.runtime();
   const upgraded: PendingEnforcementTransition = {
-    ...structuredClone(transition),
+    ...structuredClone(cleanupTransitionOf(ports)),
     cleanupCause: 'timer-completed',
     postCleanupClosure: structuredClone(closure),
   };
   await ports.writeRuntime(
-    validated({ ...structuredClone(runtime), pendingEnforcementTransition: upgraded }),
+    validated({ ...structuredClone(current), pendingEnforcementTransition: upgraded }),
   );
   return handOffClosure(ports, upgraded, closure);
 }
@@ -532,6 +554,22 @@ async function recordAttemptFailure(
   ports: RuntimePortsV2,
   detail: string,
 ): Promise<RuntimeStateV2> {
+  let next: RuntimeStateV2 = await writeAttemptFailure(ports, detail);
+  for (;;) {
+    const scheduled: number | null = retryStateOf(next).nextAttemptAt;
+    if (scheduled === null) return next;
+    if (await createAlarmWithReadBackV2(ports.alarms, TRANSITION_CLEANUP_ALARM, scheduled)) {
+      return next;
+    }
+    // An alarm the browser refused is not a scheduled attempt. Recording it as one more failure is
+    // what keeps the schedule moving toward the manual retry instead of stranding this journal
+    // with a live `nextAttemptAt` that nothing will ever fire.
+    next = await writeAttemptFailure(ports, 'cleanup could not schedule its retry alarm');
+  }
+}
+
+/** Advances the retry state by one failure and persists it. */
+async function writeAttemptFailure(ports: RuntimePortsV2, detail: string): Promise<RuntimeStateV2> {
   const runtime: RuntimeStateV2 = ports.runtime();
   const transition: PendingEnforcementTransition = cleanupTransitionOf(ports);
   const progress: CleanupProgress = requireProgress(transition);
@@ -548,10 +586,16 @@ async function recordAttemptFailure(
     },
   });
   await ports.writeRuntime(next);
-  if (retry.nextAttemptAt !== null) {
-    await createAlarmWithReadBackV2(ports.alarms, TRANSITION_CLEANUP_ALARM, retry.nextAttemptAt);
-  }
   return next;
+}
+
+function retryStateOf(runtime: RuntimeStateV2): CleanupRetryState {
+  const retry: CleanupRetryState | undefined =
+    runtime.pendingEnforcementTransition?.cleanupProgress?.retry;
+  if (retry === undefined) {
+    throw new CoreError('invalid-rule', 'a cleanup attempt needs its durable retry state');
+  }
+  return retry;
 }
 
 /** Records the tabs whose captured effects were verified clean, so a retry leaves them alone. */
@@ -627,8 +671,18 @@ export async function retryTransitionCleanupV2(
       cleanupProgress: structuredClone(replaced),
     },
   });
-  await ports.writeRuntime(next);
-  return { runtime: next, code: 'ok' };
+  // Through the checkpoint rather than a plain write: `assertCleanupBatchAdvance` is written for
+  // exactly this replacement, and it only runs inside a commit. Nothing is flushed.
+  const committed: RuntimeStateV2 = await ports.commit({
+    checkpointId: `${transition.transitionId}:cleanup-retry-${replaced.retry.batch}`,
+    projection: projectRuntimeDomainV2(next),
+    bank: ports.bank(),
+    events: [],
+    syncBank: false,
+    aggregateSets: {},
+    aggregateRemoves: [],
+  });
+  return { runtime: committed, code: 'ok' };
 }
 
 /**
@@ -686,6 +740,8 @@ export async function handleCleanupNavigationV2(
   if (command === undefined) {
     throw new CoreError('invalid-rule', 'the cleanup batch lost its new clear command');
   }
+  // The next attempt owns the verdict for this target: the command is durable, so an unreachable
+  // document is simply re-sent from the frozen batch rather than judged here.
   await sendDocumentEnforcementCommand(ports.transport, command);
 }
 

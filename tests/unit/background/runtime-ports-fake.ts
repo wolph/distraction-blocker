@@ -80,6 +80,8 @@ export interface RuntimePortsFakeOptionsV2 {
   onAudit?: () => Promise<void> | void;
   /** Runs while `queryTopFrameTabs` is in flight, for interleaving a write during that await. */
   onQueryTabs?: () => Promise<void> | void;
+  /** Runs while `loadAggregates` is in flight, for interleaving a write during that await. */
+  onLoadAggregates?: () => Promise<void> | void;
 }
 
 export interface RuntimePortsFakeV2 extends RuntimePortsV2 {
@@ -195,6 +197,7 @@ export function createRuntimePortsFakeV2(
     openOccurrencesAt: (): ScheduleOccurrenceRef[] =>
       structuredClone([...(options.openOccurrences ?? [])]),
     loadAggregates: async (keys: readonly string[]): Promise<Record<string, DailyAgg>> => {
+      await options.onLoadAggregates?.();
       const found: Record<string, DailyAgg> = {};
       for (const key of keys) {
         const stored: DailyAgg | undefined = state.aggregates[key];

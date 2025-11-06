@@ -20,6 +20,7 @@ import {
 import { CLEANUP_MAX_AUTOMATIC_ATTEMPTS } from '../../../src/shared/constants';
 import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
 import { CoreError } from '../../../src/shared/errors';
+import type { SessionStateV2 } from '../../../src/shared/types';
 import {
   createRuntimePortsFakeV2,
   type FakeSendV2,
@@ -42,12 +43,16 @@ import {
 const DOC_ONE: string = 'document-1';
 const BLOCKED_URL: string = 'https://facebook.com/feed';
 
-function effectsFake(): CleanupEffectPortsV2 & { badges: number; reloaded: number } {
+function effectsFake(
+  onRestore?: () => Promise<void> | void,
+): CleanupEffectPortsV2 & { badges: number; reloaded: number } {
   const record = {
     badges: 0,
     reloaded: 0,
-    restoreTabClaims: async (claims: readonly CleanupTabClaim[]): Promise<number[]> =>
-      claims.map((claim: CleanupTabClaim): number => claim.tabId),
+    restoreTabClaims: async (claims: readonly CleanupTabClaim[]): Promise<number[]> => {
+      await onRestore?.();
+      return claims.map((claim: CleanupTabClaim): number => claim.tabId);
+    },
     reloadStoppedDocuments: async (): Promise<void> => {
       record.reloaded += 1;
     },
@@ -453,5 +458,116 @@ describe('handleCleanupNavigationV2', (): void => {
 
     expect(fake.writes).toHaveLength(writes);
     expect(fake.sends.some((send): boolean => send.documentId === 'document-13')).toBe(false);
+  });
+});
+
+describe('transition cleanup timer upgrade and retry scheduling', (): void => {
+  const LATE_URL: string = 'https://instagram.com/explore';
+  const LATE_DOC: string = 'document-13';
+  const LATE_KEY: string = documentKey(13, LATE_DOC);
+
+  /** A resume cleanup whose durable pause has already run past its fixed end. */
+  async function pastFixedEnd(
+    options: Parameters<typeof createRuntimePortsFakeV2>[1] = {},
+  ): Promise<RuntimePortsFakeV2> {
+    const session: SessionStateV2 = pausedSession();
+    const fake: RuntimePortsFakeV2 = fakeFor(
+      transitionRuntime(pendingTransition('resume', 'registration-audited'), { session }),
+      options,
+    );
+    await enterTransitionCleanupV2(fake, {
+      cause: 'resume-restore',
+      failure: null,
+      endedAt: fake.now(),
+    });
+    fake.setNow((session.sessionEndsAt ?? 0) + 1_000);
+    return fake;
+  }
+
+  it('upgrades an expired resume to timer completion and hands it off', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = await pastFixedEnd();
+    const endsAt: number = pausedSession().sessionEndsAt ?? 0;
+    const resolved: RuntimeStateV2 = await runTransitionCleanupAttemptV2(fake, effectsFake());
+    const closure: PendingClosure | null = resolved.pendingClosure;
+
+    expect(resolved.pendingEnforcementTransition).toBeNull();
+    expect(resolved.session).toBeNull();
+    expect(closure?.stage).toBe('cleanup');
+    expect(closure?.projection.reason).toBe('timer-completed');
+    expect(closure?.projection.endedAt).toBe(endsAt);
+  });
+
+  it('keeps a navigation that landed mid-attempt through the upgrade and handoff', async (): Promise<void> => {
+    // The upgrade itself has no reachable await: `resume-restore` always holds a non-blocking
+    // session, so its closure capture settles no focus and never reads stored aggregates. The
+    // reachable window is a navigation during the attempt's own effects, and neither the upgrade
+    // write nor the handoff may revert it.
+    let ports: RuntimePortsFakeV2 | null = null;
+    let done: boolean = false;
+    const navigate = async (): Promise<void> => {
+      const fake: RuntimePortsFakeV2 = ports as RuntimePortsFakeV2;
+      if (done) return;
+      done = true;
+      await handleCleanupNavigationV2(fake, { tabId: 13, documentId: LATE_DOC, url: LATE_URL });
+    };
+    ports = await pastFixedEnd({ ids: [CLEANUP_OPERATION_ID, OTHER_OPERATION_ID] });
+    const revisionBefore: number = ports.current().runtimeRevision;
+    const resolved: RuntimeStateV2 = await runTransitionCleanupAttemptV2(
+      ports,
+      effectsFake(navigate),
+    );
+    const revisions: number[] = ports.writes.map(
+      (runtime: RuntimeStateV2): number => runtime.runtimeRevision,
+    );
+    const closure: PendingClosure | null = resolved.pendingClosure;
+
+    expect(done).toBe(true);
+    expect(resolved.runtimeRevision).toBeGreaterThan(revisionBefore);
+    for (let index: number = 1; index < revisions.length; index++) {
+      expect(revisions[index] ?? 0).toBeGreaterThanOrEqual(revisions[index - 1] ?? 0);
+    }
+    if (closure?.stage !== 'cleanup') throw new Error('expected a cleanup closure');
+    expect(closure.projection.reason).toBe('timer-completed');
+    expect(closure.cleanupProgress.targets[LATE_KEY]).toBeDefined();
+  });
+
+  it('treats a refused retry alarm as one more failed attempt', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(committedRuntime(), { alarmReadBack: 'missing' });
+    await enterTransitionCleanupV2(fake, {
+      cause: 'manual-end',
+      failure: null,
+      endedAt: fake.now(),
+    });
+    fake.respondForDocument(11, DOC_ONE, noReceiverResponder());
+    await runTransitionCleanupAttemptV2(fake, effectsFake());
+    const progress: CleanupProgress = storedProgress(fake);
+
+    // One attempt failed, and every scheduling attempt after it also failed, so the schedule ran
+    // all the way to the manual retry rather than leaving a live nextAttemptAt nothing will fire.
+    expect(progress.retry.automaticAttempt).toBe(CLEANUP_MAX_AUTOMATIC_ATTEMPTS);
+    expect(progress.retry.nextAttemptAt).toBeNull();
+    expect(progress.retry.lastError).toBe('cleanup could not schedule its retry alarm');
+    expect((await retryTransitionCleanupV2(fake)).code).toBe('ok');
+  });
+
+  it('exhausts into manual retry when the last automatic alarm is refused', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(committedRuntime());
+    await enterTransitionCleanupV2(fake, {
+      cause: 'manual-end',
+      failure: null,
+      endedAt: fake.now(),
+    });
+    fake.respondForDocument(11, DOC_ONE, noReceiverResponder());
+    for (let attempt: number = 0; attempt < CLEANUP_MAX_AUTOMATIC_ATTEMPTS - 1; attempt++) {
+      await runTransitionCleanupAttemptV2(fake, effectsFake());
+    }
+    expect(storedProgress(fake).retry.nextAttemptAt).not.toBeNull();
+    fake.setAlarmReadBack('missing');
+    await runTransitionCleanupAttemptV2(fake, effectsFake());
+    const progress: CleanupProgress = storedProgress(fake);
+
+    expect(progress.retry.automaticAttempt).toBe(CLEANUP_MAX_AUTOMATIC_ATTEMPTS);
+    expect(progress.retry.nextAttemptAt).toBeNull();
+    expect((await retryTransitionCleanupV2(fake)).code).toBe('ok');
   });
 });
