@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ALL_CATEGORIES } from '../../../src/core/categories';
 import {
   buildMatcherCache,
   compileMatcher,
@@ -16,6 +17,7 @@ import { validateDetachedVerdict } from '../../../src/shared/enforcement-v2-vali
 import type {
   CategoryList,
   ListsConfig,
+  Rule,
   SessionRuleSnapshot,
   SiteUnlock,
   Verdict,
@@ -386,6 +388,92 @@ describe('custom-list block provenance', () => {
       expect(verdict.matchedPattern).not.toBeUndefined();
       expect(validateDetachedVerdict(verdict)).toBe(true);
     }
+  });
+});
+
+describe('malformed custom-list entries', () => {
+  /** The reported reproduction: a session blacklist holding bare strings instead of host rules. */
+  function malformedRules(): SessionRuleSnapshot {
+    return {
+      ...rulesFromLists(DEFAULT_LISTS),
+      categories: {
+        social: false,
+        video: false,
+        news: false,
+        mail: false,
+        shopping: false,
+        gaming: false,
+        forums: false,
+      },
+      sessionBlacklist: ['example.com'] as unknown as SessionRuleSnapshot['sessionBlacklist'],
+    };
+  }
+
+  it('never compiles a malformed entry into a catch-all regex', (): void => {
+    const matcher = compileSessionMatcher(malformedRules(), ALL_CATEGORIES, 'blacklist');
+
+    expect(matcher.hosts.get('example.com')).toBeUndefined();
+    for (const entry of matcher.regexes) {
+      expect(typeof entry.source).toBe('string');
+      expect(entry.re.test('https://unrelated.example.org/')).toBe(false);
+    }
+    expect(evaluateUrl(matcher, 'https://unrelated.example.org/', NONE, NOW).blocked).toBe(false);
+  });
+
+  it('reports no custom block with an undefined pattern', (): void => {
+    const matcher = compileSessionMatcher(malformedRules(), ALL_CATEGORIES, 'blacklist');
+    const verdict: Verdict = evaluateUrl(matcher, 'https://example.com/path', NONE, NOW);
+
+    expect(verdict.matchedPattern).not.toBeUndefined();
+    expect(validateDetachedVerdict(verdict)).toBe(true);
+  });
+
+  it('reproduces the same drop through a plain lists config', (): void => {
+    const matcher = compileMatcher(
+      lists({ custom: ['example.com'] as unknown as ListsConfig['custom'] }),
+      ALL_CATEGORIES,
+      'blacklist',
+    );
+    const verdict: Verdict = evaluateUrl(matcher, 'https://example.com/path', NONE, NOW);
+
+    expect(matcher.regexes).toEqual([]);
+    expect(verdict.matchedPattern).not.toBeUndefined();
+    expect(validateDetachedVerdict(verdict)).toBe(true);
+    expect(evaluateUrl(matcher, 'https://unrelated.example.org/', NONE, NOW).blocked).toBe(false);
+  });
+
+  it('rejects a rule whose kind or pattern is not a rule at all', (): void => {
+    const malformed: readonly unknown[] = [
+      'example.com',
+      { kind: 'host' },
+      { kind: 'regex' },
+      { kind: 'glob', pattern: 'example.com' },
+      { kind: 'regex', pattern: 42 },
+      {},
+    ];
+
+    for (const rule of malformed) {
+      expect(validateRule(rule as Rule)).not.toBeNull();
+    }
+  });
+
+  it('still accepts and names a well-formed session blacklist host', (): void => {
+    const matcher = compileSessionMatcher(
+      {
+        ...malformedRules(),
+        sessionBlacklist: [{ kind: 'host', pattern: 'example.com' }],
+      },
+      ALL_CATEGORIES,
+      'blacklist',
+    );
+
+    expect(matcher.hosts.get('example.com')).toBe('custom');
+    expect(evaluateUrl(matcher, 'https://example.com/path', NONE, NOW)).toEqual({
+      blocked: true,
+      reason: 'custom',
+      categoryId: null,
+      matchedPattern: 'example.com',
+    });
   });
 });
 

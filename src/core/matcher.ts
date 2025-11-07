@@ -98,11 +98,13 @@ function hasUnsafeHostCharacter(value: string): boolean {
 
 /** Returns an error message for an invalid rule, null when valid. */
 export function validateRule(rule: Rule): string | null {
+  if (!isRecord(rule) || typeof rule.pattern !== 'string') return 'not a valid rule';
   if (rule.kind === 'host') {
     const host: string | null = normalizeHost(rule.pattern);
     if (host === null || !HOST_RE.test(host)) return `not a valid host name: ${rule.pattern}`;
     return null;
   }
+  if (rule.kind !== 'regex') return `not a valid rule kind: ${String(rule.kind)}`;
   try {
     new RegExp(rule.pattern, 'i');
     return null;
@@ -433,7 +435,7 @@ export function compileMatcher(
       if (rule.kind === 'host') {
         const host: string | null = normalizeHost(rule.pattern);
         if (host !== null && (via === 'custom' || !hosts.has(host))) hosts.set(host, via);
-      } else {
+      } else if (rule.kind === 'regex') {
         regexes.push({ source: rule.pattern, re: new RegExp(rule.pattern, 'i'), via });
       }
     }
