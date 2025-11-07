@@ -385,6 +385,15 @@ async function commitStage(
     start === null
       ? resumedSession(runtime, activationAt)
       : startSessionV2(configFor(start, activationAt), activationAt, transition.sessionId);
+  // Every await in this stage happens before the row is reread and the projection is built, so
+  // nothing is loaded between building that projection and committing it. The aggregate read comes
+  // first, then the freeze, whose own guard settles the view above whatever the starting view is
+  // when it returns.
+  const aggregateSets: Record<string, DailyAgg> = await startedAggregate(
+    ports,
+    ports.runtime(),
+    activationAt,
+  );
   const frozen: FrozenActiveCommitV2 = await freezeCommitView(
     ports,
     matcher,
@@ -403,7 +412,7 @@ async function commitStage(
     activeView: frozen.view,
     alarmNames: session.phaseEndsAt === null ? [] : [PHASE_ALARM],
   };
-  await commitTransition(ports, ports.runtime(), committed, session, activationAt);
+  await commitTransition(ports, ports.runtime(), committed, session, activationAt, aggregateSets);
   return 'continue';
 }
 
@@ -570,6 +579,7 @@ async function commitTransition(
   transition: PendingEnforcementTransition,
   session: SessionStateV2,
   activationAt: number,
+  aggregateSets: Record<string, DailyAgg>,
 ): Promise<void> {
   const handled: HandledScheduleOccurrence[] = startedOccurrences(transition, activationAt);
   const next: RuntimeStateV2 = {
@@ -595,7 +605,7 @@ async function commitTransition(
     bank: ports.bank(),
     events: commitEvents(transition, session, activationAt),
     syncBank: false,
-    aggregateSets: await startedAggregate(ports, runtime, activationAt),
+    aggregateSets: structuredClone(aggregateSets),
     aggregateRemoves: [],
   });
 }

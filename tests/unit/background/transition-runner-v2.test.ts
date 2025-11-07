@@ -27,7 +27,7 @@ import { CoreError } from '../../../src/shared/errors';
 import {
   appliedResponseFor,
   createRuntimePortsFakeV2,
-  type FakeSendV2,
+  epochResetResponseFor,
   type FakeTabRowV2,
   noReceiverResponder,
   type RuntimePortsFakeV2,
@@ -664,16 +664,6 @@ describe('driveTransitionV2 concurrent navigation', (): void => {
     { tabId: 13, url: LATE_URL, documentId: LATE_DOC },
   ];
 
-  /** True once any frozen view of this write carries the late document. */
-  function carriesLate(runtime: RuntimeStateV2): boolean {
-    const transition: PendingEnforcementTransition | null = runtime.pendingEnforcementTransition;
-    if (transition === null) return false;
-    return (
-      transition.startingView.documents[LATE_KEY] !== undefined ||
-      transition.activeView?.documents[LATE_KEY] !== undefined
-    );
-  }
-
   /**
    * Lands one navigation write while the named stage is awaiting a port, which is the interleaving
    * each stage's reread exists to survive.
@@ -700,9 +690,10 @@ describe('driveTransitionV2 concurrent navigation', (): void => {
   it.each([
     ['prepared', 'onAudit'],
     ['starting-verified', 'onQueryTabs'],
+    ['starting-verified', 'onLoadAggregates'],
     ['committed-pending-verification', 'onAlarmCreate'],
   ])(
-    'keeps a navigation that landed while %s was awaiting',
+    'keeps a navigation that landed while %s was awaiting %s',
     async (stage: string, hook: string): Promise<void> => {
       let ports: RuntimePortsFakeV2 | null = null;
       let compiled: CompiledMatcher | null = null;
@@ -722,20 +713,27 @@ describe('driveTransitionV2 concurrent navigation', (): void => {
       );
       compiled = prepared.matcher;
       const result: TransitionDriveResultV2 = await driveTransitionV2(ports, prepared.matcher);
-      const first: number = ports.writes.findIndex(carriesLate);
       const revisions: number[] = ports.writes.map(
         (runtime: RuntimeStateV2): number => runtime.runtimeRevision,
       );
 
       expect(result.kind).toBe('published');
-      expect(first).toBeGreaterThanOrEqual(0);
-      // Once the document is durable, no later write may drop it: that is what a stage writing
-      // from a stale snapshot would do.
-      for (let index: number = first; index < ports.writes.length; index++) {
-        const runtime: RuntimeStateV2 = ports.writes[index] as RuntimeStateV2;
-        if (runtime.pendingEnforcementTransition === null) continue;
-        expect(carriesLate(runtime)).toBe(true);
+      // Once a frozen view carries the document, no later write of that same view may drop it.
+      // Checking the two views separately is what catches a stage writing one of them from a
+      // stale snapshot while the other happens to carry the document anyway.
+      let seenStarting: boolean = false;
+      let seenActive: boolean = false;
+      for (const runtime of ports.writes) {
+        const journal: PendingEnforcementTransition | null = runtime.pendingEnforcementTransition;
+        if (journal === null) continue;
+        const inStarting: boolean = journal.startingView.documents[LATE_KEY] !== undefined;
+        const inActive: boolean = journal.activeView?.documents[LATE_KEY] !== undefined;
+        if (seenStarting) expect(inStarting).toBe(true);
+        if (seenActive && journal.activeView !== null) expect(inActive).toBe(true);
+        seenStarting = seenStarting || inStarting;
+        seenActive = seenActive || inActive;
       }
+      expect(seenStarting || seenActive).toBe(true);
       for (let index: number = 1; index < revisions.length; index++) {
         expect(revisions[index] ?? 0).toBeGreaterThanOrEqual(revisions[index - 1] ?? 0);
       }
@@ -761,6 +759,14 @@ describe('driveTransitionV2 concurrent navigation', (): void => {
     ];
     fake.scriptTabSets([grown]);
     fake.setTabs(grown);
+    let writesWhenSent: number | null = null;
+    fake.respondForDocument(13, LATE_DOC, (message): unknown => {
+      // The epoch handshake precedes the frozen command, so only the enforcement send is timed.
+      if (message.command !== 'apply-enforcement')
+        return epochResetResponseFor(message, fake.now());
+      if (writesWhenSent === null) writesWhenSent = fake.writes.length;
+      return appliedResponseFor(message, fake.now());
+    });
     const result: TransitionDriveResultV2 = await driveTransitionV2(fake, prepared.matcher);
     const key: string = documentKey(13, LATE_DOC);
     const replacement: RuntimeStateV2 | undefined = fake.writes.find(
@@ -777,12 +783,11 @@ describe('driveTransitionV2 concurrent navigation', (): void => {
     }
     expect(replacement?.documentCommands).toEqual(view?.documents);
     expect(replacement?.runtimeRevision).toBe(baseRevision + 1);
+    // The replacement view must be durable before the new document hears anything, so the write
+    // count observed at send time has to be past the write that added it.
     const writeIndex: number = fake.writes.indexOf(replacement as RuntimeStateV2);
-    const sendIndex: number = fake.sends.findIndex(
-      (send: FakeSendV2): boolean => send.documentId === LATE_DOC,
-    );
     expect(writeIndex).toBeGreaterThanOrEqual(0);
-    expect(sendIndex).toBeGreaterThanOrEqual(0);
-    expect(fake.writes.length).toBeGreaterThan(writeIndex);
+    expect(writesWhenSent).not.toBeNull();
+    expect(writesWhenSent ?? 0).toBeGreaterThan(writeIndex);
   });
 });
