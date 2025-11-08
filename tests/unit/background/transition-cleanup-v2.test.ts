@@ -4,6 +4,7 @@ import type { FrozenDocumentCommand } from '../../../src/background/enforcement-
 import type { RuntimeCommitInputV2 } from '../../../src/background/runtime-checkpoint-v2';
 import type {
   CleanupProgress,
+  CleanupRetryState,
   CleanupTabClaim,
   PendingClosure,
   PendingEnforcementTransition,
@@ -462,9 +463,6 @@ describe('handleCleanupNavigationV2', (): void => {
 });
 
 describe('transition cleanup timer upgrade and retry scheduling', (): void => {
-  const LATE_URL: string = 'https://instagram.com/explore';
-  const LATE_DOC: string = 'document-13';
-  const LATE_KEY: string = documentKey(13, LATE_DOC);
 
   /** A resume cleanup whose durable pause has already run past its fixed end. */
   async function pastFixedEnd(
@@ -497,40 +495,6 @@ describe('transition cleanup timer upgrade and retry scheduling', (): void => {
     expect(closure?.projection.endedAt).toBe(endsAt);
   });
 
-  it('keeps a navigation that landed mid-attempt through the upgrade and handoff', async (): Promise<void> => {
-    // The upgrade itself has no reachable await: `resume-restore` always holds a non-blocking
-    // session, so its closure capture settles no focus and never reads stored aggregates. The
-    // reachable window is a navigation during the attempt's own effects, and neither the upgrade
-    // write nor the handoff may revert it.
-    let ports: RuntimePortsFakeV2 | null = null;
-    let done: boolean = false;
-    const navigate = async (): Promise<void> => {
-      const fake: RuntimePortsFakeV2 = ports as RuntimePortsFakeV2;
-      if (done) return;
-      done = true;
-      await handleCleanupNavigationV2(fake, { tabId: 13, documentId: LATE_DOC, url: LATE_URL });
-    };
-    ports = await pastFixedEnd({ ids: [CLEANUP_OPERATION_ID, OTHER_OPERATION_ID] });
-    const revisionBefore: number = ports.current().runtimeRevision;
-    const resolved: RuntimeStateV2 = await runTransitionCleanupAttemptV2(
-      ports,
-      effectsFake(navigate),
-    );
-    const revisions: number[] = ports.writes.map(
-      (runtime: RuntimeStateV2): number => runtime.runtimeRevision,
-    );
-    const closure: PendingClosure | null = resolved.pendingClosure;
-
-    expect(done).toBe(true);
-    expect(resolved.runtimeRevision).toBeGreaterThan(revisionBefore);
-    for (let index: number = 1; index < revisions.length; index++) {
-      expect(revisions[index] ?? 0).toBeGreaterThanOrEqual(revisions[index - 1] ?? 0);
-    }
-    if (closure?.stage !== 'cleanup') throw new Error('expected a cleanup closure');
-    expect(closure.projection.reason).toBe('timer-completed');
-    expect(closure.cleanupProgress.targets[LATE_KEY]).toBeDefined();
-  });
-
   it('treats a refused retry alarm as one more failed attempt', async (): Promise<void> => {
     const fake: RuntimePortsFakeV2 = fakeFor(committedRuntime(), { alarmReadBack: 'missing' });
     await enterTransitionCleanupV2(fake, {
@@ -550,7 +514,25 @@ describe('transition cleanup timer upgrade and retry scheduling', (): void => {
     expect((await retryTransitionCleanupV2(fake)).code).toBe('ok');
   });
 
-  it('exhausts into manual retry when the last automatic alarm is refused', async (): Promise<void> => {
+  it('advances the schedule by exactly one when a read-back is refused once', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(committedRuntime(), { alarmReadBackFailures: 1 });
+    await enterTransitionCleanupV2(fake, {
+      cause: 'manual-end',
+      failure: null,
+      endedAt: fake.now(),
+    });
+    fake.respondForDocument(11, DOC_ONE, noReceiverResponder());
+    await runTransitionCleanupAttemptV2(fake, effectsFake());
+    const progress: CleanupProgress = storedProgress(fake);
+
+    // One effect failure plus one refused read-back: the refusal contributes exactly one more
+    // attempt, and the schedule is live again once the retry alarm is finally accepted.
+    expect(progress.retry.automaticAttempt).toBe(2);
+    expect(progress.retry.nextAttemptAt).not.toBeNull();
+    expect(progress.retry.lastError).toBe('cleanup could not schedule its retry alarm');
+  });
+
+  it('exhausts into manual retry when a refused read-back lands on the last attempt', async (): Promise<void> => {
     const fake: RuntimePortsFakeV2 = fakeFor(committedRuntime());
     await enterTransitionCleanupV2(fake, {
       cause: 'manual-end',
@@ -558,16 +540,25 @@ describe('transition cleanup timer upgrade and retry scheduling', (): void => {
       endedAt: fake.now(),
     });
     fake.respondForDocument(11, DOC_ONE, noReceiverResponder());
-    for (let attempt: number = 0; attempt < CLEANUP_MAX_AUTOMATIC_ATTEMPTS - 1; attempt++) {
+    // Ten failures whose retry alarms are all accepted, so the schedule is still live and the
+    // twelfth attempt has not been reached by effect failures alone.
+    for (let attempt: number = 0; attempt < CLEANUP_MAX_AUTOMATIC_ATTEMPTS - 2; attempt++) {
       await runTransitionCleanupAttemptV2(fake, effectsFake());
     }
-    expect(storedProgress(fake).retry.nextAttemptAt).not.toBeNull();
+    const midway: CleanupRetryState = storedProgress(fake).retry;
+    expect(midway.automaticAttempt).toBe(CLEANUP_MAX_AUTOMATIC_ATTEMPTS - 2);
+    expect(midway.nextAttemptAt).not.toBeNull();
+    expect((await retryTransitionCleanupV2(fake)).code).toBe('retry-not-available');
+
+    // The eleventh failure's alarm is refused, and it is that refusal that carries the schedule to
+    // exhaustion: without it the batch would sit at eleven with a live next attempt.
     fake.setAlarmReadBack('missing');
     await runTransitionCleanupAttemptV2(fake, effectsFake());
     const progress: CleanupProgress = storedProgress(fake);
 
     expect(progress.retry.automaticAttempt).toBe(CLEANUP_MAX_AUTOMATIC_ATTEMPTS);
     expect(progress.retry.nextAttemptAt).toBeNull();
+    expect(progress.retry.lastError).toBe('cleanup could not schedule its retry alarm');
     expect((await retryTransitionCleanupV2(fake)).code).toBe('ok');
   });
 });

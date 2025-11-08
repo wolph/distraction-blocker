@@ -427,6 +427,13 @@ async function restoreResume(ports: RuntimePortsV2): Promise<RuntimeStateV2> {
 /**
  * A resume whose fixed end arrived during cleanup has nothing to restore, so it captures timer
  * completion at the exact end and hands that closure off through the same one-checkpoint path.
+ *
+ * The reread after the closure capture is structural rather than tested. `captureClosure` awaits
+ * only `ports.loadAggregates`, and `settledAggregates` skips that read whenever the settlement
+ * covers no dates; this function is reached from `restoreResume` alone, where the session is always
+ * paused or break, so the settlement window is always empty and no await occurs. The reread costs
+ * nothing and keeps the branch correct if a future caller reaches it with a focus session, but
+ * there is no interleaving a test can drive through it today.
  */
 async function upgradeToTimerCompletion(
   ports: RuntimePortsV2,

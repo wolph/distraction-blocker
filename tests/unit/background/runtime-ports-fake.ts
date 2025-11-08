@@ -74,6 +74,8 @@ export interface RuntimePortsFakeOptionsV2 {
   aggregates?: Record<string, DailyAgg>;
   /** How a created alarm reads back. `exact` is the browser behaving. */
   alarmReadBack?: 'exact' | 'missing' | 'other-time';
+  /** Refuses exactly this many read-backs first, then behaves per `alarmReadBack`. */
+  alarmReadBackFailures?: number;
   /** Runs when an alarm is created, so a test can move the clock during the alarm stage. */
   onAlarmCreate?: () => void;
   /** Runs while `auditEnforcement` is in flight, for interleaving a write during that await. */
@@ -128,6 +130,7 @@ export function createRuntimePortsFakeV2(
     generation: options.generation ?? 0,
     aggregates: structuredClone(options.aggregates ?? {}),
     alarmReadBack: options.alarmReadBack ?? 'exact',
+    alarmReadBackFailures: options.alarmReadBackFailures ?? 0,
     alarms: new Map<AlarmNameV2, ScheduledAlarmV2>(),
     byDocument: new Map<string, FakeResponderV2>(),
     byOperation: new Map<string, FakeResponderV2>(),
@@ -310,6 +313,7 @@ interface FakeStateV2 {
   generation: number;
   aggregates: Record<string, DailyAgg>;
   alarmReadBack: 'exact' | 'missing' | 'other-time';
+  alarmReadBackFailures: number;
   alarms: Map<AlarmNameV2, ScheduledAlarmV2>;
   byDocument: Map<string, FakeResponderV2>;
   byOperation: Map<string, FakeResponderV2>;
@@ -378,7 +382,14 @@ function alarmPorts(
     },
     get: async (name: AlarmNameV2): Promise<ScheduledAlarmV2 | null> => {
       const stored: ScheduledAlarmV2 | undefined = state.alarms.get(name);
-      if (stored === undefined || state.alarmReadBack === 'missing') return null;
+      // An absent alarm reads back as absent, which is how a clear confirms itself. The scripted
+      // failures apply only to reading back an alarm that was just created.
+      if (stored === undefined) return null;
+      if (state.alarmReadBackFailures > 0) {
+        state.alarmReadBackFailures -= 1;
+        return null;
+      }
+      if (state.alarmReadBack === 'missing') return null;
       if (state.alarmReadBack === 'other-time') {
         return { ...stored, scheduledTime: stored.scheduledTime + 1 };
       }
