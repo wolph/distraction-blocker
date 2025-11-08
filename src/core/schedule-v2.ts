@@ -126,7 +126,7 @@ export function resolveOpenScheduleOccurrencesV2(
     }
 
     const clonedEntry: ScheduleEntryV2 = structuredClone(entry);
-    const token: string = `${entry.id}@${localStartDate}`;
+    const token: string = scheduleOccurrenceTokenV2(entry.id, localStartDate);
     resolved.push({
       entry: clonedEntry,
       occurrence: {
@@ -141,6 +141,19 @@ export function resolveOpenScheduleOccurrencesV2(
   }
 
   return resolved.sort(compareResolvedOccurrences);
+}
+
+/**
+ * The one occurrence identity grammar: an entry and the local day its window opened on. Every
+ * producer and the stored-value validator spell it this way, so it lives here once.
+ */
+export function scheduleOccurrenceTokenV2(entryId: string, localStartDate: string): string {
+  return `${entryId}@${localStartDate}`;
+}
+
+/** The local day an instant belongs to, in the same date arithmetic the resolver uses. */
+export function localStartDateForV2(at: number): string {
+  return localDateString(new Date(at));
 }
 
 export function selectScheduleCandidateV2(

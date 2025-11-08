@@ -10,6 +10,12 @@ import {
   type ScheduleRunnerPortsV2,
   scheduleWindowBody,
 } from '../../../src/background/schedule-runner-v2';
+import {
+  localStartDateForV2,
+  type ResolvedScheduleOccurrenceV2,
+  resolveOpenScheduleOccurrencesV2,
+  scheduleOccurrenceTokenV2,
+} from '../../../src/core/schedule-v2';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, rulesFromLists } from '../../../src/shared/constants';
 import { CoreError } from '../../../src/shared/errors';
 import {
@@ -468,6 +474,44 @@ describe('next schedule read model', (): void => {
         beforeStart,
       ),
     ).toEqual({ entryId: ENTRY_ID, startsAt: WINDOW_STARTS_AT });
+  });
+
+  it('derives the same token the resolver stores for that start', (): void => {
+    const entries: readonly ScheduleEntryV2[] = [windowEntry({ start: '09:00', end: '17:00' })];
+    const beforeStart: number = new Date(2026, 8, 3, 8, 0, 0, 0).getTime();
+    // The handled record comes from the resolver itself, so this compares the runner's derived
+    // token with a stored one instead of two copies of a hand-built constant.
+    const resolved: readonly ResolvedScheduleOccurrenceV2[] = resolveOpenScheduleOccurrencesV2(
+      entries,
+      NOW,
+    );
+    const stored: string | undefined = resolved[0]?.occurrence.token;
+
+    expect(stored).toBeDefined();
+    expect(nextScheduleInfoV2(entries, [handledFor(stored ?? '')], beforeStart)).toEqual({
+      entryId: ENTRY_ID,
+      startsAt: new Date(2026, 8, 4, 9, 0, 0, 0).getTime(),
+    });
+  });
+
+  it('skips two consecutive handled starts and reports the third', (): void => {
+    const entries: readonly ScheduleEntryV2[] = [windowEntry({ start: '09:00', end: '17:00' })];
+    const beforeStart: number = new Date(2026, 8, 3, 8, 0, 0, 0).getTime();
+    const first: string = scheduleOccurrenceTokenV2(
+      ENTRY_ID,
+      localStartDateForV2(WINDOW_STARTS_AT),
+    );
+    const second: string = scheduleOccurrenceTokenV2(
+      ENTRY_ID,
+      localStartDateForV2(WINDOW_STARTS_AT + DAY_MS),
+    );
+
+    expect(
+      nextScheduleInfoV2(entries, [handledFor(first), handledFor(second)], beforeStart),
+    ).toEqual({
+      entryId: ENTRY_ID,
+      startsAt: new Date(2026, 8, 5, 9, 0, 0, 0).getTime(),
+    });
   });
 
   it('reports nothing when no entry is enabled', (): void => {

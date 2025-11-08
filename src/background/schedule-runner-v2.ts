@@ -13,16 +13,17 @@
 
 import { nextStart } from '../core/schedule';
 import {
+  localStartDateForV2,
   pruneHandledScheduleOccurrencesV2,
   type ResolvedScheduleOccurrenceV2,
   resolveOpenScheduleOccurrencesV2,
+  scheduleOccurrenceTokenV2,
   selectScheduleCandidateV2,
 } from '../core/schedule-v2';
 import { rulesFromLists } from '../shared/constants';
 import { CoreError } from '../shared/errors';
 import { exactDataEqual } from '../shared/exact-data';
 import { SCHEDULE_STARTED_TITLE, SCHEDULE_UNTIL_STOPPED_BODY } from '../shared/session-copy';
-import { localDateStr } from '../shared/time';
 import type {
   HandledScheduleOccurrence,
   ListsConfig,
@@ -161,7 +162,8 @@ async function startFromSchedule(
   candidate: ResolvedScheduleOccurrenceV2,
 ): Promise<ScheduleCheckResultV2> {
   // A window that starts leaves no unavailable notice behind, so the token is cleared first and
-  // the transition preparation reads the runtime this write left durable.
+  // the transition preparation reads the runtime this write left durable. A preparation that throws
+  // leaves that clear durable, which only means the next unavailable window notifies again.
   await withNoticeToken(ports, runtime, null);
   const start: SessionStartCandidate = scheduleStartCandidate(candidate, schedule.lists());
   const prepared: PreparedTransitionV2 = await prepareStartTransitionV2(ports, start, 'schedule');
@@ -263,7 +265,10 @@ function liveHandledTokens(
   return tokens;
 }
 
-/** The occurrence identity of one start instant, the same shape the resolver stores. */
+/**
+ * The occurrence identity of one start instant, built from the resolver's own token grammar and its
+ * own local-date arithmetic, so a derived token and a stored one cannot drift apart.
+ */
 function occurrenceToken(entryId: string, startsAt: number): string {
-  return `${entryId}@${localDateStr(startsAt)}`;
+  return scheduleOccurrenceTokenV2(entryId, localStartDateForV2(startsAt));
 }

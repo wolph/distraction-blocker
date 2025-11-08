@@ -4,9 +4,12 @@ import { describe, expect, it } from 'vitest';
 import {
   capturedScheduleWindowContainsV2,
   createHandledScheduleOccurrenceV2,
+  localStartDateForV2,
   mergeHandledScheduleOccurrencesV2,
   pruneHandledScheduleOccurrencesV2,
+  type ResolvedScheduleOccurrenceV2,
   resolveOpenScheduleOccurrencesV2,
+  scheduleOccurrenceTokenV2,
   selectScheduleCandidateV2,
 } from '../../../src/core/schedule-v2';
 import {
@@ -116,6 +119,34 @@ function handledRecord(
     expiresAt,
   };
 }
+
+describe('v2 occurrence identity', (): void => {
+  it('builds the token every producer and the stored-value validator spell the same way', (): void => {
+    const startsAt: number = new Date(2026, 7, 28, 9, 0).getTime();
+
+    expect(localStartDateForV2(startsAt)).toBe('2026-08-28');
+    expect(scheduleOccurrenceTokenV2('weekday', localStartDateForV2(startsAt))).toBe(
+      'weekday@2026-08-28',
+    );
+  });
+
+  it('is the identity the resolver stores for the window it opened', (): void => {
+    const fridayStart: number = new Date(2026, 7, 28, 9, 0).getTime();
+    const resolved: ResolvedScheduleOccurrenceV2[] = resolveOpenScheduleOccurrencesV2(
+      [entry()],
+      fridayStart,
+    );
+    const first: ResolvedScheduleOccurrenceV2 | undefined = resolved[0];
+
+    expect(first).toBeDefined();
+    expect(first?.occurrence.token).toBe(
+      scheduleOccurrenceTokenV2(
+        first?.occurrence.entryId ?? '',
+        localStartDateForV2(first?.windowStartsAt ?? 0),
+      ),
+    );
+  });
+});
 
 describe('v2 schedule occurrence resolution', (): void => {
   it('uses an inclusive local start and exclusive local end', (): void => {
