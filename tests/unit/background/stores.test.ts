@@ -459,10 +459,7 @@ describe('storage default merging', () => {
     });
     expect(settings).not.toHaveProperty('unknownField');
     expect(lists).toEqual({
-      custom: [
-        { kind: 'host', pattern: 'blocked.example' },
-        { kind: 'regex', pattern: '' },
-      ],
+      custom: [{ kind: 'host', pattern: 'blocked.example' }],
       whitelist: [],
       categories: { ...DEFAULT_LISTS.categories, social: true },
       exclusions: { social: ['facebook.com'] },

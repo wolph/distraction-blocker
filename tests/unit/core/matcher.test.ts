@@ -457,6 +457,41 @@ describe('malformed custom-list entries', () => {
     }
   });
 
+  it('drops an empty or whitespace-only regex entry instead of blocking everything', (): void => {
+    for (const pattern of ['', '   ', '\t\n']) {
+      const matcher = compileMatcher(
+        lists({ custom: [{ kind: 'regex', pattern }] }),
+        ALL_CATEGORIES,
+        'blacklist',
+      );
+      const verdict: Verdict = evaluateUrl(matcher, 'https://unrelated.example.org/', NONE, NOW);
+
+      expect(validateRule({ kind: 'regex', pattern })).not.toBeNull();
+      expect(matcher.regexes).toEqual([]);
+      expect(verdict.blocked).toBe(false);
+      expect(validateDetachedVerdict(verdict)).toBe(true);
+    }
+  });
+
+  /** A deliberately broad regex is user intent, so only the empty pattern is rejected. */
+  it('keeps a broad but deliberate regex', (): void => {
+    for (const pattern of ['(?:)', '.*']) {
+      const matcher = compileMatcher(
+        lists({ custom: [{ kind: 'regex', pattern }] }),
+        ALL_CATEGORIES,
+        'blacklist',
+      );
+
+      expect(validateRule({ kind: 'regex', pattern })).toBeNull();
+      expect(evaluateUrl(matcher, 'https://unrelated.example.org/', NONE, NOW)).toEqual({
+        blocked: true,
+        reason: 'custom',
+        categoryId: null,
+        matchedPattern: pattern,
+      });
+    }
+  });
+
   it('still accepts and names a well-formed session blacklist host', (): void => {
     const matcher = compileSessionMatcher(
       {

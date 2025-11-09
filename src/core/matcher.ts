@@ -105,6 +105,7 @@ export function validateRule(rule: Rule): string | null {
     return null;
   }
   if (rule.kind !== 'regex') return `not a valid rule kind: ${String(rule.kind)}`;
+  if (rule.pattern.trim() === '') return 'not a valid regex: the pattern is empty';
   try {
     new RegExp(rule.pattern, 'i');
     return null;
