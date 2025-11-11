@@ -463,7 +463,6 @@ describe('handleCleanupNavigationV2', (): void => {
 });
 
 describe('transition cleanup timer upgrade and retry scheduling', (): void => {
-
   /** A resume cleanup whose durable pause has already run past its fixed end. */
   async function pastFixedEnd(
     options: Parameters<typeof createRuntimePortsFakeV2>[1] = {},
