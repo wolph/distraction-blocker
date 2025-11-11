@@ -34,10 +34,12 @@ import {
   ACTIVATION_AT,
   CLEANUP_OPERATION_ID,
   dailyAgg,
+  documentKey,
   LOCAL_DATE,
   OTHER_OPERATION_ID,
   publishedFocusRuntime,
   runtimeTabState,
+  SESSION_ID,
   timedFocusSession,
   untilStoppedFocusSession,
 } from './runtime-v2-fixtures';
@@ -420,6 +422,115 @@ describe('runClosureCleanupAttemptV2', (): void => {
     ).toHaveLength(CLEANUP_MAX_AUTOMATIC_ATTEMPTS - 1);
   });
 
+  it('advances the schedule by one attempt when the browser accepts the alarm', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await inCleanup(fake);
+    fake.respondForDocument(11, DOC_ONE, noReceiverResponder());
+
+    const next: RuntimeStateV2 = await runClosureCleanupAttemptV2(fake, effectsFake());
+
+    expect(cleanupProgressOf(next).retry.automaticAttempt).toBe(1);
+    expect(cleanupProgressOf(next).retry.nextAttemptAt).not.toBeNull();
+    expect(
+      fake.alarmCalls.filter(
+        (call: { kind: string; name: string }): boolean =>
+          call.name === CLOSURE_CLEANUP_ALARM && call.kind === 'create',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('burns the schedule down to the manual retry when the browser refuses the alarm', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await inCleanup(fake);
+    fake.respondForDocument(11, DOC_ONE, noReceiverResponder());
+    fake.setAlarmReadBack('missing');
+
+    const next: RuntimeStateV2 = await runClosureCleanupAttemptV2(fake, effectsFake());
+    const progress: CleanupProgress = cleanupProgressOf(next);
+
+    // A refused alarm is not a scheduled attempt, so it is recorded as one more failure until the
+    // schedule reaches the exhausted state a manual retry answers.
+    expect(progress.retry.automaticAttempt).toBe(CLEANUP_MAX_AUTOMATIC_ATTEMPTS);
+    expect(progress.retry.nextAttemptAt).toBeNull();
+    expect(progress.retry.lastError).toContain('could not schedule its retry alarm');
+    expect(next.pendingClosure?.stage).toBe('cleanup');
+  });
+
+  it('lets a refused alarm be the failure that exhausts the batch', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await inCleanup(fake);
+    fake.respondForDocument(11, DOC_ONE, noReceiverResponder());
+    for (let attempt: number = 0; attempt < CLEANUP_MAX_AUTOMATIC_ATTEMPTS - 2; attempt++) {
+      await runClosureCleanupAttemptV2(fake, effectsFake());
+    }
+    expect(cleanupProgressOf(fake.current()).retry.automaticAttempt).toBe(
+      CLEANUP_MAX_AUTOMATIC_ATTEMPTS - 2,
+    );
+    fake.setAlarmReadBack('missing');
+
+    const next: RuntimeStateV2 = await runClosureCleanupAttemptV2(fake, effectsFake());
+    const progress: CleanupProgress = cleanupProgressOf(next);
+
+    expect(progress.retry.automaticAttempt).toBe(CLEANUP_MAX_AUTOMATIC_ATTEMPTS);
+    expect(progress.retry.nextAttemptAt).toBeNull();
+  });
+
+  it('merges a claim discovered since the closure committed', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await inCleanup(fake);
+    const runtime: RuntimeStateV2 = fake.current();
+    await fake.writeRuntime({
+      ...runtime,
+      tabStates: { ...runtime.tabStates, 12: runtimeTabState({ stoppedDocumentId: 'document-2' }) },
+    });
+
+    const next: RuntimeStateV2 = await runClosureCleanupAttemptV2(fake, unresolvedEffects());
+    const claims: CleanupTabClaim[] = cleanupProgressOf(next).tabClaims;
+
+    expect(claims.map((claim: CleanupTabClaim): number => claim.tabId)).toEqual([11, 12]);
+    expect(next.pendingClosure?.stage).toBe('cleanup');
+  });
+
+  it('fails the attempt when a discovered claim contradicts the captured one', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await inCleanup(fake);
+    const runtime: RuntimeStateV2 = fake.current();
+    await fake.writeRuntime({
+      ...runtime,
+      tabStates: { 11: runtimeTabState({ muteUrl: 'https://example.com/other' }) },
+    });
+
+    const next: RuntimeStateV2 = await runClosureCleanupAttemptV2(fake, effectsFake());
+    const progress: CleanupProgress = cleanupProgressOf(next);
+
+    expect(progress.retry.lastError).toContain('contradictory claim');
+    expect(progress.tabClaims).toEqual([{ tabId: 11, state: runtimeTabState() }]);
+    expect(next.pendingClosure?.stage).toBe('cleanup');
+  });
+
+  it('keys and clears a document discovered during the attempt', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await inCleanup(fake);
+    const discoveredKey: string = documentKey(12, 'document-2');
+    fake.setTabs([
+      { tabId: 11, url: 'https://facebook.com/feed', documentId: DOC_ONE },
+      { tabId: 12, url: 'https://news.example.com/story', documentId: 'document-2' },
+    ]);
+
+    const next: RuntimeStateV2 = await runClosureCleanupAttemptV2(fake, unresolvedEffects());
+    const progress: CleanupProgress = cleanupProgressOf(next);
+
+    expect(Object.keys(progress.clearCommands)).toContain(discoveredKey);
+    expect(progress.targets[discoveredKey]?.expectedUrl).toBe('https://news.example.com/story');
+    expect(progress.clearCommands[discoveredKey]?.runtimeRevision).toBe(
+      progress.clearRuntimeRevision,
+    );
+    expect(next.documentCommands[discoveredKey]).toEqual(progress.clearCommands[discoveredKey]);
+    expect(fake.sends.some((send: FakeSendV2): boolean => send.documentId === 'document-2')).toBe(
+      true,
+    );
+  });
+
   it('refuses to run without a cleanup closure', async (): Promise<void> => {
     const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
 
@@ -441,6 +552,13 @@ describe('retryClosureCleanupV2', (): void => {
     const progress: CleanupProgress = cleanupProgressOf(retried.runtime);
 
     expect(retried.code).toBe('ok');
+    // Through the checkpoint, so `assertCleanupBatchAdvance` sees the replacement batch.
+    expect(fake.commits).toHaveLength(2);
+    expect(fake.commits[1]?.checkpointId).toBe(
+      `${SESSION_ID}:close:cleanup-retry-${progress.retry.batch}`,
+    );
+    expect(fake.commits[1]?.events).toEqual([]);
+    expect(fake.commits[1]?.syncBank).toBe(false);
     expect(progress.cleanupOperationId).not.toBe(exhausted.cleanupOperationId);
     expect(progress.clearRuntimeRevision).toBe(exhausted.clearRuntimeRevision + 1);
     expect(progress.retry.batch).toBe(exhausted.retry.batch + 1);

@@ -26,9 +26,11 @@ import {
   planPhaseAlarmV2,
 } from './alarms-v2';
 import {
+  addCleanupTargetV2,
   buildCleanupProgressV2,
   buildCleanupSeedV2,
   documentCommandKeyV2,
+  mergeCleanupTabClaimV2,
   recordCleanupAttemptFailureV2,
   replaceCleanupBatchV2,
   resolveCleanupTabV2,
@@ -40,7 +42,7 @@ import {
   sendDocumentEnforcementCommand,
   sendEpochResetCommand,
 } from './content-transport-v2';
-import type { DocumentEpochResetAck } from './enforcement-persistence-v2';
+import type { DocumentEpochResetAck, FrozenDocumentCommand } from './enforcement-persistence-v2';
 import {
   enumerateEnforcementTargetsV2,
   type TargetClassificationV2,
@@ -193,10 +195,91 @@ export async function runClosureCleanupAttemptV2(
   ports: RuntimePortsV2,
   effects: CleanupEffectPortsV2,
 ): Promise<RuntimeStateV2> {
-  const closure: CleanupClosureV2 = cleanupClosureOf(ports);
-  const failure: string | null = await performClosureEffects(ports, effects, closure);
+  const merged: string | null = await mergeDiscoveredClaims(ports);
+  if (merged !== null) return recordAttemptFailure(ports, merged);
+  const failure: string | null = await performClosureEffects(
+    ports,
+    effects,
+    cleanupClosureOf(ports),
+  );
   if (failure !== null) return recordAttemptFailure(ports, failure);
+  const discovered: string | null = await clearDiscoveredDocuments(ports);
+  if (discovered !== null) return recordAttemptFailure(ports, discovered);
   return removeClosureJournal(ports);
+}
+
+/**
+ * Spec: before each cleanup write, a newly discovered owned claim is merged idempotently by tab ID
+ * into the progress claims only. Saved ownership wins, a saved null may be filled once, and
+ * contradictory ownership is a cleanup error rather than an overwrite, so it fails this attempt
+ * instead of rewriting what the closure captured.
+ */
+async function mergeDiscoveredClaims(ports: RuntimePortsV2): Promise<string | null> {
+  const closure: CleanupClosureV2 = cleanupClosureOf(ports);
+  const runtime: RuntimeStateV2 = ports.runtime();
+  let progress: CleanupProgress = closure.cleanupProgress;
+  try {
+    for (const [key, state] of Object.entries(runtime.tabStates)) {
+      progress = mergeCleanupTabClaimV2(progress, { tabId: Number(key), state });
+    }
+  } catch (error: unknown) {
+    return error instanceof CoreError
+      ? `closure cleanup found a contradictory claim: ${error.message}`
+      : 'closure cleanup could not merge a discovered claim';
+  }
+  if (exactDataEqual(progress.tabClaims, closure.cleanupProgress.tabClaims)) return null;
+  await ports.writeRuntime(
+    validated({
+      ...structuredClone(runtime),
+      pendingClosure: { ...structuredClone(closure), cleanupProgress: structuredClone(progress) },
+    }),
+  );
+  return null;
+}
+
+/**
+ * Spec: a newly discovered cleanup document is persisted under the existing clear revision in the
+ * target, progress command, and runtime command maps before its first send, and a document whose
+ * identity changed gets a new keyed target. Enumerating after the frozen batch ran is what finds
+ * both, because a moved document answers `changed` and then reappears here under its new key.
+ */
+async function clearDiscoveredDocuments(ports: RuntimePortsV2): Promise<string | null> {
+  const classified: TargetClassificationV2[] = await enumerateEnforcementTargetsV2(ports.targets);
+  for (const target of classified) {
+    if (target.kind !== 'enforceable') continue;
+    const closure: CleanupClosureV2 = cleanupClosureOf(ports);
+    const progress: CleanupProgress = closure.cleanupProgress;
+    const key: string = documentCommandKeyV2(target.tabId, target.documentId);
+    if (Object.hasOwn(progress.clearCommands, key)) continue;
+    const runtime: RuntimeStateV2 = ports.runtime();
+    const added: CleanupProgress = addCleanupTargetV2(
+      progress,
+      { tabId: target.tabId, documentId: target.documentId, expectedUrl: target.url },
+      {
+        enforcementEpoch: runtime.enforcementEpoch,
+        basePolicyRevision: runtime.basePolicyRevision,
+        sessionId: closure.projection.sessionId,
+        reservedSessionId: null,
+      },
+    );
+    await ports.writeRuntime(
+      validated({
+        ...structuredClone(runtime),
+        documentCommands: structuredClone(added.clearCommands),
+        pendingClosure: { ...structuredClone(closure), cleanupProgress: structuredClone(added) },
+      }),
+    );
+    const command: FrozenDocumentCommand | undefined = added.clearCommands[key];
+    if (command === undefined) return `closure cleanup lost the clear command for ${key}`;
+    const outcome: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
+      ports.transport,
+      command,
+    );
+    if (outcome.kind !== 'applied' && outcome.kind !== 'closed' && outcome.kind !== 'changed') {
+      return `closure clear for ${key} answered ${outcome.kind}`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -227,8 +310,18 @@ export async function retryClosureCleanupV2(
     documentCommands: structuredClone(replaced.clearCommands),
     pendingClosure: { ...structuredClone(closure), cleanupProgress: structuredClone(replaced) },
   });
-  await ports.writeRuntime(next);
-  return { runtime: next, code: 'ok' };
+  // Through the checkpoint rather than a plain write: `assertCleanupBatchAdvance` is written for
+  // exactly this replacement, and it only runs inside a commit. Nothing is flushed.
+  const committed: RuntimeStateV2 = await ports.commit({
+    checkpointId: `${closure.projection.closureId}:cleanup-retry-${replaced.retry.batch}`,
+    projection: projectRuntimeDomainV2(next),
+    bank: ports.bank(),
+    events: [],
+    syncBank: false,
+    aggregateSets: {},
+    aggregateRemoves: [],
+  });
+  return { runtime: committed, code: 'ok' };
 }
 
 /** The whole close: freeze the end, commit it, and run the first cleanup attempt. */
@@ -419,6 +512,22 @@ async function recordAttemptFailure(
   ports: RuntimePortsV2,
   detail: string,
 ): Promise<RuntimeStateV2> {
+  let next: RuntimeStateV2 = await writeAttemptFailure(ports, detail);
+  for (;;) {
+    const scheduled: number | null = closureRetryStateOf(next).nextAttemptAt;
+    if (scheduled === null) return next;
+    if (await createAlarmWithReadBackV2(ports.alarms, CLOSURE_CLEANUP_ALARM, scheduled)) {
+      return next;
+    }
+    // An alarm the browser refused is not a scheduled attempt. Recording it as one more failure is
+    // what keeps the schedule moving toward the manual retry instead of stranding this journal
+    // with a live `nextAttemptAt` that nothing will ever fire.
+    next = await writeAttemptFailure(ports, 'closure cleanup could not schedule its retry alarm');
+  }
+}
+
+/** One durable failed attempt, with no alarm of its own. The caller owns the scheduling loop. */
+async function writeAttemptFailure(ports: RuntimePortsV2, detail: string): Promise<RuntimeStateV2> {
   const closure: CleanupClosureV2 = cleanupClosureOf(ports);
   const retry: CleanupRetryState = recordCleanupAttemptFailureV2(
     closure.cleanupProgress.retry,
@@ -433,10 +542,15 @@ async function recordAttemptFailure(
     },
   });
   await ports.writeRuntime(next);
-  if (retry.nextAttemptAt !== null) {
-    await createAlarmWithReadBackV2(ports.alarms, CLOSURE_CLEANUP_ALARM, retry.nextAttemptAt);
-  }
   return next;
+}
+
+function closureRetryStateOf(runtime: RuntimeStateV2): CleanupRetryState {
+  const closure: PendingClosure | null = runtime.pendingClosure;
+  if (closure === null || closure.stage !== 'cleanup') {
+    throw invalidClosure('a closure cleanup attempt needs its durable retry state');
+  }
+  return closure.cleanupProgress.retry;
 }
 
 /** Records the tabs whose captured effects were verified clean, so a retry leaves them alone. */
