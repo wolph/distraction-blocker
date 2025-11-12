@@ -3,12 +3,15 @@ import { PHASE_ALARM } from '../../../src/background/alarms-v2';
 import type { FrozenDocumentCommand } from '../../../src/background/enforcement-persistence-v2';
 import { type RecoveryResultV2, recoverRuntimeV2 } from '../../../src/background/recovery-v2';
 import type {
+  CleanupProgress,
+  CleanupRetryState,
   CleanupTabClaim,
   PendingClosure,
   PendingEnforcementTransition,
   RuntimeStateV2,
 } from '../../../src/background/runtime-v2-types';
 import type { CleanupEffectPortsV2 } from '../../../src/background/transition-cleanup-v2';
+import { CLEANUP_MAX_AUTOMATIC_ATTEMPTS } from '../../../src/shared/constants';
 import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
 import { CoreError } from '../../../src/shared/errors';
 import {
@@ -125,6 +128,33 @@ function portsReturning(ports: RuntimePortsFakeV2, runtime: RuntimeStateV2): Run
   return { ...ports, runtime: (): RuntimeStateV2 => runtime };
 }
 
+/** The same cleanup transition with its next attempt moved past the recovery instant. */
+function notDueTransitionRuntime(): RuntimeStateV2 {
+  const waiting: PendingEnforcementTransition = cleanupTransition(
+    'start',
+    'prepared',
+    'start-abandon',
+  );
+  const progress: CleanupProgress = waiting.cleanupProgress as CleanupProgress;
+  return transitionRuntime({
+    ...waiting,
+    cleanupProgress: {
+      ...progress,
+      retry: { ...progress.retry, nextAttemptAt: RECOVERY_AT + MINUTE_MS },
+    },
+  });
+}
+
+/** The retry state of whichever journal the runtime carries. */
+function retryOf(runtime: RuntimeStateV2): CleanupRetryState {
+  const progress: CleanupProgress | null =
+    (runtime.pendingClosure?.cleanupProgress as CleanupProgress | undefined) ??
+    runtime.pendingEnforcementTransition?.cleanupProgress ??
+    null;
+  if (progress === null) throw new Error('expected a cleanup journal with a retry state');
+  return progress.retry;
+}
+
 /** The same cleanup closure with its next attempt moved past the recovery instant. */
 function notDueClosureRuntime(): RuntimeStateV2 {
   const runtime: RuntimeStateV2 = cleanupClosureRuntime();
@@ -179,6 +209,37 @@ describe('recovery journal order', (): void => {
     expect(test.ports.sends).toHaveLength(0);
     expect(test.ports.writes).toHaveLength(0);
     expect(test.ports.alarmCalls).toContainEqual({ kind: 'create', name: 'closure-cleanup' });
+  });
+
+  it('waits for the retry alarm when a cleanup transition is not due', async (): Promise<void> => {
+    const test: RecoveryHarness = harness(notDueTransitionRuntime());
+
+    const result: RecoveryResultV2 = await recoverRuntimeV2(test.ports, test.effects);
+
+    expect(result.kind).toBe('transition');
+    expect(test.ports.sends).toHaveLength(0);
+    expect(test.ports.writes).toHaveLength(0);
+    expect(test.ports.alarmCalls).toContainEqual({ kind: 'create', name: 'transition-cleanup' });
+  });
+
+  it('spends an attempt for every retry alarm the browser refuses', async (): Promise<void> => {
+    for (const [label, runtime] of [
+      ['closure', notDueClosureRuntime()],
+      ['transition', notDueTransitionRuntime()],
+    ] as ReadonlyArray<[string, RuntimeStateV2]>) {
+      const test: RecoveryHarness = harness(runtime, { alarmReadBack: 'missing' });
+
+      const result: RecoveryResultV2 = await recoverRuntimeV2(test.ports, test.effects);
+      const retry: CleanupRetryState = retryOf(result.runtime);
+
+      // A refused alarm is a failed attempt, so the batch spends itself down to the exhausted
+      // state the manual retry answers rather than waiting on an alarm that does not exist.
+      expect(retry.automaticAttempt, label).toBe(CLEANUP_MAX_AUTOMATIC_ATTEMPTS);
+      expect(retry.nextAttemptAt, label).toBeNull();
+      expect(retry.lastError, label).toContain('could not schedule');
+      expect(test.ports.writes.length, label).toBeGreaterThan(0);
+      expect(test.ports.sends, label).toHaveLength(0);
+    }
   });
 
   it('reissues the frozen clear commands when the batch is due', async (): Promise<void> => {

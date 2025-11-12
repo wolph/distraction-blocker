@@ -18,12 +18,17 @@ import { advanceSessionV2, type SessionAdvanceResultV2 } from '../core/session-v
 import { CoreError } from '../shared/errors';
 import type { SessionEndReasonV2, SessionStateV2, Verdict } from '../shared/types';
 import {
+  type AlarmNameV2,
   CLOSURE_CLEANUP_ALARM,
   createAlarmWithReadBackV2,
   ensurePhaseAlarmV2,
   TRANSITION_CLEANUP_ALARM,
 } from './alarms-v2';
-import { documentCommandKeyV2, NO_SESSION_VERDICT } from './cleanup-progress-v2';
+import {
+  documentCommandKeyV2,
+  NO_SESSION_VERDICT,
+  recordCleanupAttemptFailureV2,
+} from './cleanup-progress-v2';
 import { closeSessionV2, commitClosureV2, runClosureCleanupAttemptV2 } from './closure-runner-v2';
 import type {
   DocumentEpochResetAck,
@@ -74,6 +79,9 @@ export type RecoveryResultV2 =
 
 /** The one target shape a sweep acts on, named the same way the transition runner names it. */
 type EnforceableTargetV2 = Extract<TargetClassificationV2, { kind: 'enforceable' }>;
+
+/** Which journal a cleanup batch belongs to, which is what names its retry alarm. */
+type CleanupJournalV2 = 'closure' | 'transition';
 
 /** The identity one standalone recovery reserves once and every command it freezes repeats. */
 interface RecoveryIdentityV2 {
@@ -128,10 +136,7 @@ async function recoverClosureJournal(
   }
   const progress: CleanupProgress = closure.cleanupProgress;
   assertClearBatchIsCurrent(ports.runtime(), progress);
-  if (!attemptIsDue(progress, ports.now())) {
-    await rearmRetryAlarm(ports, CLOSURE_CLEANUP_ALARM, progress);
-    return ports.runtime();
-  }
+  if (!attemptIsDue(progress, ports.now())) return rearmRetryAlarm(ports, 'closure');
   return runClosureCleanupAttemptV2(ports, effects);
 }
 
@@ -149,10 +154,7 @@ async function recoverTransitionJournal(
   if (transition.stage === 'cleanup') {
     const progress: CleanupProgress = requireProgress(transition);
     assertClearBatchIsCurrent(ports.runtime(), progress);
-    if (!attemptIsDue(progress, ports.now())) {
-      await rearmRetryAlarm(ports, TRANSITION_CLEANUP_ALARM, progress);
-      return ports.runtime();
-    }
+    if (!attemptIsDue(progress, ports.now())) return rearmRetryAlarm(ports, 'transition');
     return runTransitionCleanupAttemptV2(ports, effects);
   }
   if (PRE_COMMIT_STAGES.has(transition.stage)) {
@@ -313,6 +315,7 @@ async function freezeRecoveryCommands(
     if (target.kind !== 'enforceable') continue;
     documents[documentCommandKeyV2(target.tabId, target.documentId)] = recoveryCommand(
       ports,
+      runtime,
       matcher,
       session,
       { ...identity, runtimeRevision },
@@ -342,6 +345,7 @@ async function addRecoveryDocument(
   }
   documents[key] = recoveryCommand(
     ports,
+    runtime,
     matcher,
     session,
     { ...identity, runtimeRevision },
@@ -354,12 +358,12 @@ async function addRecoveryDocument(
 /** One frozen command. A focus session enforces its verdict, every other phase clears. */
 function recoveryCommand(
   ports: RuntimePortsV2,
+  runtime: RuntimeStateV2,
   matcher: CompiledMatcher | null,
   session: SessionStateV2,
   identity: RecoveryIdentityV2 & { runtimeRevision: number },
   target: EnforceableTargetV2,
 ): FrozenDocumentCommand {
-  const runtime: RuntimeStateV2 = ports.runtime();
   const base = {
     tabId: target.tabId,
     documentId: target.documentId,
@@ -521,21 +525,81 @@ function attemptIsDue(progress: CleanupProgress, now: number): boolean {
 
 /**
  * The retry alarm is the only thing that wakes a cleanup batch that is waiting, so a boot recreates
- * it and reads it back. A browser that refuses is reported: the periodic tick still finds the
- * journal, and inventing an extra failed attempt here would spend the batch faster than its own
- * accounting allows.
+ * it and reads it back. An alarm the browser refuses is not a scheduled attempt: it is one more
+ * failed automatic attempt, exactly as the two cleanup runners record their own, which keeps the
+ * schedule moving toward the manual retry instead of leaving a live `nextAttemptAt` that nothing
+ * will ever fire.
  */
 async function rearmRetryAlarm(
   ports: RuntimePortsV2,
-  name: typeof CLOSURE_CLEANUP_ALARM | typeof TRANSITION_CLEANUP_ALARM,
-  progress: CleanupProgress,
-): Promise<void> {
-  const nextAttemptAt: number | null = progress.retry.nextAttemptAt;
-  if (nextAttemptAt === null) return;
-  const armed: boolean = await createAlarmWithReadBackV2(ports.alarms, name, nextAttemptAt);
-  if (!armed) {
-    ports.reportError(new CoreError('invalid-rule', `recovery could not re-arm the ${name} alarm`));
+  journal: CleanupJournalV2,
+): Promise<RuntimeStateV2> {
+  const name: AlarmNameV2 =
+    journal === 'closure' ? CLOSURE_CLEANUP_ALARM : TRANSITION_CLEANUP_ALARM;
+  let runtime: RuntimeStateV2 = ports.runtime();
+  for (;;) {
+    const scheduled: number | null = journalProgress(runtime, journal).retry.nextAttemptAt;
+    if (scheduled === null) return runtime;
+    if (await createAlarmWithReadBackV2(ports.alarms, name, scheduled)) return runtime;
+    runtime = await writeRetryFailure(
+      ports,
+      journal,
+      `recovery could not schedule the ${name} alarm`,
+    );
   }
+}
+
+/** One durable failed attempt on the journal that owns the batch. The caller owns the loop. */
+async function writeRetryFailure(
+  ports: RuntimePortsV2,
+  journal: CleanupJournalV2,
+  detail: string,
+): Promise<RuntimeStateV2> {
+  const runtime: RuntimeStateV2 = ports.runtime();
+  const progress: CleanupProgress = journalProgress(runtime, journal);
+  const next: CleanupProgress = {
+    ...structuredClone(progress),
+    retry: recordCleanupAttemptFailureV2(progress.retry, ports.now(), detail),
+  };
+  await writeRuntime(ports, withJournalProgress(runtime, journal, next));
+  return ports.runtime();
+}
+
+/** The cleanup progress of one journal, which recovery has already proven is the current batch. */
+function journalProgress(runtime: RuntimeStateV2, journal: CleanupJournalV2): CleanupProgress {
+  const progress: CleanupProgress | null =
+    journal === 'closure'
+      ? ((runtime.pendingClosure?.cleanupProgress ?? null) as CleanupProgress | null)
+      : (runtime.pendingEnforcementTransition?.cleanupProgress ?? null);
+  if (progress === null) {
+    throw new CoreError('invalid-rule', `the ${journal} journal lost its cleanup progress`);
+  }
+  return progress;
+}
+
+function withJournalProgress(
+  runtime: RuntimeStateV2,
+  journal: CleanupJournalV2,
+  progress: CleanupProgress,
+): RuntimeStateV2 {
+  const closure: PendingClosure | null = runtime.pendingClosure;
+  if (journal === 'closure') {
+    if (closure === null || closure.stage !== 'cleanup') {
+      throw new CoreError('invalid-rule', 'a closure retry needs its cleanup closure');
+    }
+    return {
+      ...structuredClone(runtime),
+      pendingClosure: { ...closure, cleanupProgress: progress },
+    };
+  }
+  const transition: PendingEnforcementTransition | null = runtime.pendingEnforcementTransition;
+  if (transition === null) {
+    throw new CoreError('invalid-rule', 'a transition retry needs its cleanup transition');
+  }
+  return {
+    ...structuredClone(runtime),
+    pendingEnforcementTransition: { ...transition, cleanupProgress: progress },
+  };
 }
 
 /**
