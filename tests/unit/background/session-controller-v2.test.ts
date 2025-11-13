@@ -1,0 +1,604 @@
+import { describe, expect, it } from 'vitest';
+import {
+  PHASE_ALARM,
+  TICK_ALARM,
+  TRANSITION_CLEANUP_ALARM,
+} from '../../../src/background/alarms-v2';
+import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
+import { SessionControllerV2 } from '../../../src/background/session-controller-v2';
+import type {
+  CommandResponseV2,
+  SessionCommandResultCodeV2,
+  StartSessionResponseV2,
+} from '../../../src/shared/messages';
+import { isSessionSnapshotV2 } from '../../../src/shared/runtime-validation';
+import type { SessionConfigV2, SessionSnapshotV2, SessionStateV2 } from '../../../src/shared/types';
+import {
+  type ControllerEffectsFakeV2,
+  createControllerEffectsFakeV2,
+  createRuntimePortsFakeV2,
+  createScheduleRunnerPortsFakeV2,
+  type RuntimePortsFakeV2,
+  type ScheduleRunnerPortsFakeV2,
+} from './runtime-ports-fake';
+import {
+  ACTIVATION_AT,
+  ACTIVE_OPERATION_ID,
+  breakRuntime,
+  breakSession,
+  CLEANUP_OPERATION_ID,
+  cleanupClosureRuntime,
+  cleanupTransition,
+  documentKey,
+  emptyRuntimeV2,
+  OTHER_OPERATION_ID,
+  pausedRuntime,
+  pausedSession,
+  pendingTransition,
+  publishedFocusRuntime,
+  SESSION_ID,
+  STARTING_OPERATION_ID,
+  sessionConfigV2,
+  TRANSITION_ID,
+  timedFocusSession,
+  transitionPostCleanupClosure,
+  transitionRuntime,
+  untilStoppedFocusSession,
+} from './runtime-v2-fixtures';
+
+const BLOCKED_URL: string = 'https://facebook.com/feed';
+const DOC_ONE: string = 'document-1';
+const AT: number = ACTIVATION_AT + 60_000;
+/** Enough scripted UUIDs for a start, its cleanup, and several live-view operations. */
+const IDS: readonly string[] = [
+  SESSION_ID,
+  TRANSITION_ID,
+  STARTING_OPERATION_ID,
+  ACTIVE_OPERATION_ID,
+  CLEANUP_OPERATION_ID,
+  OTHER_OPERATION_ID,
+  '60000000-0000-4000-8000-000000000001',
+  '60000000-0000-4000-8000-000000000002',
+  '60000000-0000-4000-8000-000000000003',
+  '60000000-0000-4000-8000-000000000004',
+  '60000000-0000-4000-8000-000000000005',
+  '60000000-0000-4000-8000-000000000006',
+];
+
+interface HarnessV2 {
+  controller: SessionControllerV2;
+  ports: RuntimePortsFakeV2;
+  schedule: ScheduleRunnerPortsFakeV2;
+  effects: ControllerEffectsFakeV2;
+}
+
+function harness(
+  runtime: RuntimeStateV2 = emptyRuntimeV2({ runtimeRevision: 0 }),
+  options: Parameters<typeof createRuntimePortsFakeV2>[1] = {},
+): HarnessV2 {
+  const ports: RuntimePortsFakeV2 = createRuntimePortsFakeV2(runtime, {
+    now: AT,
+    ids: [...IDS],
+    tabs: [{ tabId: 11, url: BLOCKED_URL, documentId: DOC_ONE }],
+    ...options,
+  });
+  const schedule: ScheduleRunnerPortsFakeV2 = createScheduleRunnerPortsFakeV2();
+  const effects: ControllerEffectsFakeV2 = createControllerEffectsFakeV2();
+  return {
+    controller: new SessionControllerV2(ports, schedule, effects),
+    ports,
+    schedule,
+    effects,
+  };
+}
+
+function flexibleConfig(overrides: Partial<SessionConfigV2> = {}): SessionConfigV2 {
+  return sessionConfigV2({ strictness: 'flexible', ...overrides });
+}
+
+/** Opens a gate, waits past its delay, and confirms it with the phrase it persisted. */
+async function confirmOpenGate(
+  controller: SessionControllerV2,
+  ports: RuntimePortsFakeV2,
+): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
+  ports.advance(60_000);
+  return controller.confirmGate(ports.current().gate?.requiredPhrase ?? null);
+}
+
+describe('SessionControllerV2 startSession', (): void => {
+  it('converts the config to a manual candidate and publishes', async (): Promise<void> => {
+    const { controller, ports } = harness();
+    const response: StartSessionResponseV2 = await controller.startSession(flexibleConfig());
+    const prepared = ports.writes[0]?.pendingEnforcementTransition;
+
+    expect(response).toEqual({ ok: true, code: 'ok' });
+    expect(prepared?.kind).toBe('start');
+    expect(prepared?.trigger).toBe('manual');
+    expect(prepared?.candidate?.source).toBe('manual');
+    expect(prepared?.candidate?.scheduleOccurrence).toBeNull();
+    expect(prepared?.candidate?.scheduleWindow).toBeNull();
+    expect(prepared?.candidate?.duration).toEqual({ kind: 'manual-timed', minutes: 25 });
+    expect(prepared?.candidate?.mode).toBe(flexibleConfig().mode);
+    expect(ports.current().pendingEnforcementTransition).toBeNull();
+    expect(ports.current().session?.sessionId).toBe(SESSION_ID);
+  });
+
+  it('converts an indefinite config to an until-stopped plan', async (): Promise<void> => {
+    const { controller, ports } = harness();
+    await controller.startSession(
+      flexibleConfig({ duration: { kind: 'until-stopped' }, cycling: null }),
+    );
+
+    expect(ports.writes[0]?.pendingEnforcementTransition?.candidate?.duration).toEqual({
+      kind: 'until-stopped',
+    });
+    expect(ports.current().session?.sessionEndsAt).toBeNull();
+  });
+
+  it('rejects a config the boundary refuses without writing', async (): Promise<void> => {
+    const { controller, ports } = harness();
+    const hostile: SessionConfigV2 = {
+      ...flexibleConfig(),
+      rules: new Proxy(flexibleConfig().rules, {}),
+    };
+    const response: StartSessionResponseV2 = await controller.startSession(hostile);
+
+    expect(response.ok).toBe(false);
+    expect(response.code).toBe('invalid-request');
+    expect(ports.writes).toHaveLength(0);
+    expect(ports.sends).toHaveLength(0);
+  });
+
+  it('answers the failure code with no cleanupPending when nothing was sent', async (): Promise<void> => {
+    const { controller, ports, effects } = harness(emptyRuntimeV2({ runtimeRevision: 0 }), {
+      audit: 'website-access-lost',
+    });
+    await controller.recover();
+    const response: StartSessionResponseV2 = await controller.startSession(flexibleConfig());
+
+    expect(response.ok).toBe(false);
+    expect(response.code).toBe('website-access-lost');
+    expect('cleanupPending' in response ? response.cleanupPending : undefined).toBeUndefined();
+    // No enforcement was ever sent, so nothing under a starting or active presentation went out.
+    // The clear batch the entry freezes is a separate concern, recorded in the task report.
+    for (const send of ports.sends) {
+      const message = send.message;
+      if (message.command !== 'apply-enforcement') continue;
+      expect(message.presentation).toBe('clear');
+    }
+    // The reservation-release cleanup ran to its resolution inside the command, so the lifecycle
+    // the popup reads next is idle rather than a cleanup the user cannot act on.
+    expect(ports.current().pendingEnforcementTransition).toBeNull();
+    expect(controller.snapshot(ports.now()).lifecycle.kind).toBe('idle');
+    expect(effects.broadcasts.length).toBeGreaterThan(0);
+  });
+
+  it('refuses a start while either journal exists', async (): Promise<void> => {
+    const transition = harness(
+      transitionRuntime(cleanupTransition('start', 'prepared', 'start-abandon')),
+    );
+    expect((await transition.controller.startSession(flexibleConfig())).code).toBe(
+      'transition-cleanup-pending',
+    );
+
+    const closure = harness(cleanupClosureRuntime());
+    expect((await closure.controller.startSession(flexibleConfig())).code).toBe(
+      'closure-cleanup-pending',
+    );
+  });
+});
+
+describe('SessionControllerV2 end and gate commands', (): void => {
+  it('closes a published Flexible session at the request time', async (): Promise<void> => {
+    const { controller, ports } = harness(
+      publishedFocusRuntime({
+        session: timedFocusSession({ config: flexibleConfig() }),
+      }),
+    );
+    const response: CommandResponseV2<SessionCommandResultCodeV2> =
+      await controller.requestSessionEnd();
+
+    expect(response).toEqual({ ok: true, code: 'ok' });
+    expect(ports.current().session).toBeNull();
+  });
+
+  it('uses manual-completed for an indefinite session and plays no completion sound', async (): Promise<void> => {
+    const { controller, ports, effects } = harness(
+      publishedFocusRuntime({
+        session: untilStoppedFocusSession({
+          config: flexibleConfig({ duration: { kind: 'until-stopped' } }),
+        }),
+      }),
+    );
+    await controller.requestSessionEnd();
+    const reasons: string[] = ports.commits.flatMap((commit): string[] =>
+      commit.events
+        .filter((event): boolean => event.t === 'sessionEnded')
+        .map((event): string => ('reason' in event ? String(event.reason) : '')),
+    );
+
+    expect(reasons).toContain('manual-completed');
+    expect(effects.sounds).not.toContain('sessionComplete');
+    expect(effects.notices).toHaveLength(0);
+  });
+
+  it('refuses End for Hard and Friction and answers no-active-session when idle', async (): Promise<void> => {
+    for (const strictness of ['hard', 'friction'] as const) {
+      const { controller } = harness(
+        publishedFocusRuntime({
+          session: timedFocusSession({ config: sessionConfigV2({ strictness }) }),
+        }),
+      );
+      expect((await controller.requestSessionEnd()).code).toBe('end-not-allowed');
+    }
+    expect((await harness().controller.requestSessionEnd()).code).toBe('no-active-session');
+    expect((await harness(cleanupClosureRuntime()).controller.requestSessionEnd()).code).toBe(
+      'no-active-session',
+    );
+  });
+
+  it('reports transition cleanup while that journal exists', async (): Promise<void> => {
+    const { controller } = harness(
+      transitionRuntime(
+        cleanupTransition('start', 'alarm-ready', 'manual-end', {
+          postCleanupClosure: transitionPostCleanupClosure(),
+        }),
+        { session: timedFocusSession() },
+      ),
+    );
+    expect((await controller.requestSessionEnd()).code).toBe('transition-cleanup-pending');
+  });
+
+  it('opens the Friction cancel gate under a fresh operation and a higher revision', async (): Promise<void> => {
+    const { controller, ports } = harness(
+      publishedFocusRuntime({
+        session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
+      }),
+    );
+    const before: number = ports.current().runtimeRevision;
+    const response: CommandResponseV2<SessionCommandResultCodeV2> = await controller.openEndGate();
+    const after: RuntimeStateV2 = ports.current();
+
+    expect(response).toEqual({ ok: true, code: 'ok' });
+    expect(after.gate?.kind).toBe('cancel');
+    expect(after.runtimeRevision).toBeGreaterThan(before);
+    for (const command of Object.values(after.documentCommands)) {
+      expect(command.runtimeRevision).toBe(after.runtimeRevision);
+      expect(command.operationId).not.toBe(ACTIVE_OPERATION_ID);
+    }
+    // A live update never rewrites the base-policy checkpoint.
+    expect(after.enforcementCheckpoint?.operationId).toBe(ACTIVE_OPERATION_ID);
+    expect((await controller.openEndGate()).code).toBe('ok');
+  });
+
+  it('refuses the End gate for other strictness', async (): Promise<void> => {
+    for (const strictness of ['flexible', 'hard'] as const) {
+      const { controller } = harness(
+        publishedFocusRuntime({
+          session: timedFocusSession({ config: sessionConfigV2({ strictness }) }),
+        }),
+      );
+      expect((await controller.openEndGate()).code).toBe('end-not-allowed');
+    }
+  });
+
+  it('abandons a gate with no change to the verification budget', async (): Promise<void> => {
+    expect((await harness(publishedFocusRuntime()).controller.abandonGate()).code).toBe(
+      'no-active-gate',
+    );
+
+    const { controller, ports } = harness(
+      publishedFocusRuntime({
+        session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
+      }),
+    );
+    await controller.openEndGate();
+    const response: CommandResponseV2<SessionCommandResultCodeV2> = await controller.abandonGate();
+
+    expect(response).toEqual({ ok: true, code: 'ok' });
+    expect(ports.current().gate).toBeNull();
+    // A gate command during a committed transition is refused, because refreezing the active view
+    // it would have to advance is the transition runner's work and it exports no entry for it.
+    const committed = harness(
+      transitionRuntime(pendingTransition('start', 'alarm-ready'), {
+        session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
+      }),
+    );
+    const before = committed.ports.current().pendingEnforcementTransition;
+    expect((await committed.controller.openEndGate()).code).toBe('end-not-allowed');
+    const after = committed.ports.current().pendingEnforcementTransition;
+    expect(after?.freshnessAttempts).toBe(before?.freshnessAttempts);
+    expect(after?.verificationStartedAt).toBe(before?.verificationStartedAt);
+  });
+
+  it('gates confirmation on readiness and the typed phrase', async (): Promise<void> => {
+    const { controller, ports } = harness(
+      publishedFocusRuntime({
+        session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
+      }),
+    );
+    await controller.openEndGate();
+    expect((await controller.confirmGate(null)).code).toBe('gate-not-ready');
+    ports.advance(60_000);
+    expect((await controller.confirmGate('the wrong phrase')).code).toBe('confirmation-mismatch');
+    expect((await controller.confirmGate(ports.current().gate?.requiredPhrase ?? null)).code).toBe(
+      'ok',
+    );
+    expect(ports.current().session).toBeNull();
+  });
+
+  it('spends the bank and begins a pause with a read-back alarm before the commit', async (): Promise<void> => {
+    const { controller, ports, effects } = harness(publishedFocusRuntime(), {
+      bank: { balanceMs: 600_000 },
+    });
+    expect((await controller.openGate('pause', null)).code).toBe('ok');
+    const response: CommandResponseV2<SessionCommandResultCodeV2> = await confirmOpenGate(
+      controller,
+      ports,
+    );
+
+    expect(response).toEqual({ ok: true, code: 'ok' });
+    expect(ports.current().session?.phase).toBe('paused');
+    expect(ports.current().enforcementCheckpoint).toBeNull();
+    expect(effects.clears).toBeGreaterThan(0);
+    expect(
+      ports.alarmCalls.some((call): boolean => call.kind === 'create' && call.name === PHASE_ALARM),
+    ).toBe(true);
+  });
+
+  it('leaves focus durable when the pause alarm cannot be read back', async (): Promise<void> => {
+    const { controller, ports } = harness(publishedFocusRuntime(), {
+      bank: { balanceMs: 600_000 },
+      alarmReadBack: 'missing',
+    });
+    await controller.openGate('pause', null);
+    await confirmOpenGate(controller, ports);
+
+    expect(ports.current().session?.phase).not.toBe('paused');
+  });
+
+  it('adds a site unlock for an unlock gate', async (): Promise<void> => {
+    const { controller, ports } = harness(publishedFocusRuntime(), {
+      bank: { balanceMs: 600_000 },
+    });
+    expect((await controller.openGate('unlockSite', 'facebook.com')).code).toBe('ok');
+    expect((await confirmOpenGate(controller, ports)).code).toBe('ok');
+
+    expect(ports.current().unlocks.some((unlock): boolean => unlock.host === 'facebook.com')).toBe(
+      true,
+    );
+    expect(ports.current().gate).toBeNull();
+  });
+
+  it('resumes from a pause and starts the next focus early from a break', async (): Promise<void> => {
+    const paused = harness(pausedRuntime());
+    expect((await paused.controller.resumeFromPause()).code).toBe('ok');
+    expect(paused.ports.current().session?.phase).toBe('focus');
+
+    // The core requires two minutes of break before an early focus and the boundary must still be
+    // ahead, so the fixture's break runs long enough for both.
+    const longBreak: SessionStateV2 = breakSession({
+      phaseEndsAt: breakSession().phaseStartedAt + 600_000,
+    });
+    const onBreak = harness(breakRuntime({ session: longBreak }), {
+      now: longBreak.phaseStartedAt + 150_000,
+    });
+    expect((await onBreak.controller.startNextFocusEarly()).code).toBe('ok');
+    expect(onBreak.ports.current().session?.phase).toBe('focus');
+  });
+
+  it('answers retry codes for the wrong journal and a live batch', async (): Promise<void> => {
+    const idle = harness();
+    expect((await idle.controller.retryTransitionCleanup()).code).toBe('retry-not-available');
+    expect((await idle.controller.retryClosureCleanup()).code).toBe('retry-not-available');
+
+    const live = harness(
+      transitionRuntime(cleanupTransition('start', 'prepared', 'start-abandon')),
+    );
+    expect((await live.controller.retryClosureCleanup()).code).toBe('retry-not-available');
+    expect((await live.controller.retryTransitionCleanup()).code).toBe('retry-not-available');
+  });
+});
+
+describe('SessionControllerV2 alarms and ticks', (): void => {
+  it('ignores an unknown or hostile alarm name', async (): Promise<void> => {
+    const { controller, ports } = harness(publishedFocusRuntime());
+    await controller.handleAlarm('not-an-alarm');
+    await controller.handleAlarm(`${TICK_ALARM} `);
+    expect(ports.writes).toHaveLength(0);
+  });
+
+  it('runs a tick that publishes the current projection', async (): Promise<void> => {
+    const { controller, effects } = harness();
+    await controller.recover();
+    await controller.handleAlarm(TICK_ALARM);
+    expect(effects.broadcasts.length).toBeGreaterThan(0);
+    expect(effects.badges.length).toBeGreaterThan(0);
+  });
+
+  it('settles the durable session and expires what the instant expires', async (): Promise<void> => {
+    // The local date rollover is not the controller's: `runtime.date` and `todayAgg` belong to the
+    // retained Engine and `RuntimePortsV2` exposes no port for them. See the task report.
+    const session: SessionStateV2 = timedFocusSession();
+    const { controller, ports } = harness(
+      publishedFocusRuntime({
+        session,
+        unlocks: [{ host: 'expired.example', until: session.phaseStartedAt + 1_000 }],
+      }),
+      { now: session.phaseStartedAt + 120_000 },
+    );
+    await controller.recover();
+    await controller.tick();
+    const after: RuntimeStateV2 = ports.current();
+
+    expect(after.unlocks).toEqual([]);
+    expect(after.session?.phaseStartedAt).toBe(session.phaseStartedAt);
+    expect(controller.snapshot(ports.now()).sessionFocusedMs).toBeGreaterThan(0);
+  });
+
+  it('dispatches a cleanup alarm only to its own journal', async (): Promise<void> => {
+    const transition = harness(
+      transitionRuntime(cleanupTransition('start', 'prepared', 'start-abandon')),
+    );
+    await transition.controller.handleAlarm(TRANSITION_CLEANUP_ALARM);
+    expect(transition.ports.writes.length).toBeGreaterThan(0);
+
+    const closure = harness(cleanupClosureRuntime());
+    const before: number = closure.ports.writes.length;
+    await closure.controller.handleAlarm(TRANSITION_CLEANUP_ALARM);
+    expect(closure.ports.writes).toHaveLength(before);
+  });
+
+  it('retries a due cleanup from a tick, because tick reads the durable journal', async (): Promise<void> => {
+    const { controller, ports } = harness(
+      transitionRuntime(cleanupTransition('start', 'prepared', 'start-abandon')),
+    );
+    await controller.tick();
+    expect(ports.sends.length).toBeGreaterThan(0);
+  });
+});
+
+describe('SessionControllerV2 navigation and documents', (): void => {
+  const target: { tabId: number; documentId: string; url: string } = {
+    tabId: 11,
+    documentId: DOC_ONE,
+    url: BLOCKED_URL,
+  };
+
+  it('records an attempt only for a blocked verdict with a non-null kind', async (): Promise<void> => {
+    const { controller, effects } = harness(publishedFocusRuntime());
+    await controller.handleNavigation(target, 'navigation');
+    expect(effects.attempts).toEqual([{ url: BLOCKED_URL, tabId: 11, kind: 'navigation' }]);
+
+    const sweeping = harness(publishedFocusRuntime());
+    await sweeping.controller.handleNavigation(target, null);
+    expect(sweeping.effects.attempts).toHaveLength(0);
+  });
+
+  it('returns the reset command before the newest persisted command', async (): Promise<void> => {
+    const { controller, ports } = harness(publishedFocusRuntime({ epochResetAcks: {} }));
+    const commands = await controller.documentCommandsFor(target, null);
+
+    expect(commands[0]?.command).toBe('reset-enforcement-epoch');
+    expect(commands[1]?.command).toBe('apply-enforcement');
+    expect(ports.current().documentCommands[documentKey(11, DOC_ONE)]).toBeDefined();
+  });
+
+  it('applies the attempt rule to documentCommandsFor as well', async (): Promise<void> => {
+    const { controller, effects } = harness(publishedFocusRuntime());
+    await controller.documentCommandsFor(target, 'existing');
+    expect(effects.attempts).toEqual([{ url: BLOCKED_URL, tabId: 11, kind: 'existing' }]);
+  });
+
+  it('sources stoppedPage from the durable tab claim', async (): Promise<void> => {
+    const { controller } = harness(
+      publishedFocusRuntime({
+        documentCommands: {},
+        tabStates: { 11: { muteUrl: null, priorMuted: null, stoppedDocumentId: DOC_ONE } },
+      }),
+    );
+    const commands = await controller.documentCommandsFor(target, null);
+    const applied = commands.find((command): boolean => command.command === 'apply-enforcement');
+
+    expect(applied?.command === 'apply-enforcement' ? applied.overlay?.stoppedPage : null).toBe(
+      true,
+    );
+  });
+
+  it('refreshes every live view under a new operation and a higher revision', async (): Promise<void> => {
+    const { controller, ports } = harness(publishedFocusRuntime());
+    const before: RuntimeStateV2 = ports.current();
+    await controller.refreshLiveViews();
+    const after: RuntimeStateV2 = ports.current();
+
+    expect(after.runtimeRevision).toBeGreaterThan(before.runtimeRevision);
+    expect(after.enforcementCheckpoint).toEqual(before.enforcementCheckpoint);
+    for (const command of Object.values(after.documentCommands)) {
+      expect(command.runtimeRevision).toBe(after.runtimeRevision);
+    }
+  });
+});
+
+describe('SessionControllerV2 publication and serialization', (): void => {
+  it('builds a valid snapshot and never broadcasts before recover', async (): Promise<void> => {
+    const { controller, ports, effects } = harness(publishedFocusRuntime());
+    const snapshot: SessionSnapshotV2 = controller.snapshot(ports.now());
+
+    expect(isSessionSnapshotV2(snapshot)).toBe(true);
+    expect(effects.broadcasts).toHaveLength(0);
+    await controller.recover();
+    expect(effects.broadcasts.length).toBeGreaterThan(0);
+    expect(controller.hasActiveSession()).toBe(true);
+  });
+
+  it('projects starting for a committed transition', (): void => {
+    const { controller, ports } = harness(
+      transitionRuntime(pendingTransition('start', 'alarm-ready'), {
+        session: timedFocusSession(),
+      }),
+    );
+    const snapshot: SessionSnapshotV2 = controller.snapshot(ports.now());
+
+    expect(snapshot.lifecycle.kind).toBe('starting');
+    expect(snapshot.phase).toBe('idle');
+    expect(isSessionSnapshotV2(snapshot)).toBe(true);
+  });
+
+  it('serializes two concurrent end requests into one closure', async (): Promise<void> => {
+    const { controller, ports } = harness(
+      publishedFocusRuntime({ session: timedFocusSession({ config: flexibleConfig() }) }),
+    );
+    const [first, second] = await Promise.all([
+      controller.requestSessionEnd(),
+      controller.requestSessionEnd(),
+    ]);
+    const codes: string[] = [first.code, second.code].sort();
+
+    expect(codes).toEqual(['no-active-session', 'ok']);
+    expect(ports.current().session).toBeNull();
+  });
+});
+
+describe('SessionControllerV2 recovery', (): void => {
+  it('recovers each journal stage and publishes the recovered lifecycle', async (): Promise<void> => {
+    const runtimes: readonly RuntimeStateV2[] = [
+      emptyRuntimeV2({ runtimeRevision: 0 }),
+      publishedFocusRuntime(),
+      transitionRuntime(pendingTransition('start', 'prepared')),
+      cleanupClosureRuntime(),
+    ];
+
+    for (const runtime of runtimes) {
+      const { controller, ports, effects } = harness(runtime);
+      await controller.recover();
+      const last: SessionSnapshotV2 | undefined = effects.broadcasts[effects.broadcasts.length - 1];
+
+      expect(effects.broadcasts.length).toBeGreaterThan(0);
+      expect(last?.lifecycle.kind).toBe(controller.snapshot(ports.now()).lifecycle.kind);
+      expect(isSessionSnapshotV2(last as SessionSnapshotV2)).toBe(true);
+    }
+  });
+
+  it('answers every command with a code rather than throwing across the boundary', async (): Promise<void> => {
+    const { controller } = harness(
+      transitionRuntime(cleanupTransition('resume', 'prepared', 'resume-restore'), {
+        session: pausedSession(),
+      }),
+    );
+    const responses: ReadonlyArray<CommandResponseV2<SessionCommandResultCodeV2>> =
+      await Promise.all([
+        controller.requestSessionEnd(),
+        controller.openEndGate(),
+        controller.abandonGate(),
+        controller.confirmGate(null),
+        controller.openGate('pause', null),
+        controller.resumeFromPause(),
+        controller.startNextFocusEarly(),
+      ]);
+
+    for (const response of responses) {
+      expect(typeof response.code).toBe('string');
+      expect(response.ok).toBe(false);
+    }
+  });
+});

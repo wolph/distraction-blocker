@@ -19,21 +19,26 @@ import type { ContentTransportPortsV2 } from '../../../src/background/content-tr
 import type { EnforcementTargetPortsV2 } from '../../../src/background/enforcement-targets-v2';
 import type { RuntimeCommitInputV2 } from '../../../src/background/runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from '../../../src/background/runtime-ports-v2';
-import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
+import type { CleanupTabClaim, RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validation';
+import type { ScheduleRunnerPortsV2 } from '../../../src/background/schedule-runner-v2';
 import { ALL_CATEGORIES } from '../../../src/core/categories';
 import type { CompiledMatcher } from '../../../src/core/matcher';
 import { compileSessionMatcher, evaluateUrl } from '../../../src/core/matcher';
-import { DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
+import type { SoundId } from '../../../src/shared/messages';
 import type {
   BankState,
   DailyAgg,
   GateSettings,
+  ListsConfig,
   PauseEconomy,
   ScheduleOccurrenceRef,
   SessionMode,
   SessionRuleSnapshot,
+  SessionSnapshotV2,
+  SettingsV2,
   SiteUnlock,
   ThemeMode,
   Verdict,
@@ -408,4 +413,114 @@ function requireValidRuntime(runtime: RuntimeStateV2, detail: string): RuntimeSt
   expect(parsed, detail).not.toBeNull();
   if (parsed === null) throw new Error(detail);
   return parsed;
+}
+
+/** The schedule ports the controller hands to the schedule runner. */
+export interface ScheduleRunnerPortsFakeV2 extends ScheduleRunnerPortsV2 {
+  notices: Array<{ title: string; body: string }>;
+  sounds: string[];
+  setSettings(settings: SettingsV2): void;
+  setReady(ready: boolean): void;
+}
+
+export function createScheduleRunnerPortsFakeV2(
+  settings: SettingsV2 = { ...DEFAULT_SETTINGS, schedule: [] },
+  ready: boolean = true,
+): ScheduleRunnerPortsFakeV2 {
+  let current: SettingsV2 = structuredClone(settings);
+  let blockingReady: boolean = ready;
+  const notices: Array<{ title: string; body: string }> = [];
+  const sounds: string[] = [];
+  return {
+    notices,
+    sounds,
+    settings: (): SettingsV2 => structuredClone(current),
+    lists: (): ListsConfig => structuredClone(DEFAULT_LISTS),
+    websiteBlockingReady: (): boolean => blockingReady,
+    notify: (title: string, body: string): void => {
+      notices.push({ title, body });
+    },
+    playSound: (sound: 'scheduleStart'): void => {
+      sounds.push(sound);
+    },
+    setSettings: (next: SettingsV2): void => {
+      current = structuredClone(next);
+    },
+    setReady: (next: boolean): void => {
+      blockingReady = next;
+    },
+  };
+}
+
+/** Everything the controller does to the browser, recorded in order. */
+export interface ControllerEffectsFakeV2 {
+  broadcasts: SessionSnapshotV2[];
+  badges: SessionSnapshotV2[];
+  sounds: SoundId[];
+  notices: Array<{ title: string; body: string }>;
+  clears: number;
+  attempts: Array<{ url: string; tabId: number; kind: 'navigation' | 'existing' }>;
+  restored: number[][];
+  reloads: number;
+  blankBadges: number;
+  /** Runs inside `restoreTabClaims`, for interleaving a write during a cleanup attempt. */
+  onRestore?: () => Promise<void> | void;
+  restoreTabClaims(claims: readonly CleanupTabClaim[]): Promise<number[]>;
+  reloadStoppedDocuments(claims: readonly CleanupTabClaim[]): Promise<void>;
+  requestBlankBadge(): void;
+  broadcast(snapshot: SessionSnapshotV2): void;
+  updateBadge(snapshot: SessionSnapshotV2): void;
+  playSound(sound: SoundId): void;
+  notify(title: string, body: string): void;
+  clearBlockingForNonBlockingPhase(): Promise<void>;
+  recordAttempt(url: string, tabId: number, kind: 'navigation' | 'existing'): Promise<void>;
+}
+
+export function createControllerEffectsFakeV2(): ControllerEffectsFakeV2 {
+  const fake: ControllerEffectsFakeV2 = {
+    broadcasts: [],
+    badges: [],
+    sounds: [],
+    notices: [],
+    clears: 0,
+    attempts: [],
+    restored: [],
+    reloads: 0,
+    blankBadges: 0,
+    restoreTabClaims: async (claims: readonly CleanupTabClaim[]): Promise<number[]> => {
+      await fake.onRestore?.();
+      const resolved: number[] = claims.map((claim: CleanupTabClaim): number => claim.tabId);
+      fake.restored.push(resolved);
+      return resolved;
+    },
+    reloadStoppedDocuments: async (): Promise<void> => {
+      fake.reloads += 1;
+    },
+    requestBlankBadge: (): void => {
+      fake.blankBadges += 1;
+    },
+    broadcast: (snapshot: SessionSnapshotV2): void => {
+      fake.broadcasts.push(structuredClone(snapshot));
+    },
+    updateBadge: (snapshot: SessionSnapshotV2): void => {
+      fake.badges.push(structuredClone(snapshot));
+    },
+    playSound: (sound: SoundId): void => {
+      fake.sounds.push(sound);
+    },
+    notify: (title: string, body: string): void => {
+      fake.notices.push({ title, body });
+    },
+    clearBlockingForNonBlockingPhase: async (): Promise<void> => {
+      fake.clears += 1;
+    },
+    recordAttempt: async (
+      url: string,
+      tabId: number,
+      kind: 'navigation' | 'existing',
+    ): Promise<void> => {
+      fake.attempts.push({ url, tabId, kind });
+    },
+  };
+  return fake;
 }
