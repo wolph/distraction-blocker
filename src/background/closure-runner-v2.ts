@@ -195,17 +195,34 @@ export async function runClosureCleanupAttemptV2(
   ports: RuntimePortsV2,
   effects: CleanupEffectPortsV2,
 ): Promise<RuntimeStateV2> {
+  cleanupClosureOf(ports);
+  let failure: string | null;
+  try {
+    failure = await runClosureAttemptEffects(ports, effects);
+  } catch (error: unknown) {
+    // A cleanup error raised while acting on the browser, a claim or target built from live
+    // enumeration data included, is this attempt's failure and is recorded as one. It never
+    // escapes as a throw.
+    failure = error instanceof Error ? error.message : String(error);
+  }
+  if (failure !== null) return recordAttemptFailure(ports, failure);
+  return removeClosureJournal(ports);
+}
+
+/** The three ordered steps of one attempt: merge what is new, clear, then clear what appeared. */
+async function runClosureAttemptEffects(
+  ports: RuntimePortsV2,
+  effects: CleanupEffectPortsV2,
+): Promise<string | null> {
   const merged: string | null = await mergeDiscoveredClaims(ports);
-  if (merged !== null) return recordAttemptFailure(ports, merged);
+  if (merged !== null) return merged;
   const failure: string | null = await performClosureEffects(
     ports,
     effects,
     cleanupClosureOf(ports),
   );
-  if (failure !== null) return recordAttemptFailure(ports, failure);
-  const discovered: string | null = await clearDiscoveredDocuments(ports);
-  if (discovered !== null) return recordAttemptFailure(ports, discovered);
-  return removeClosureJournal(ports);
+  if (failure !== null) return failure;
+  return clearDiscoveredDocuments(ports);
 }
 
 /**
@@ -270,14 +287,9 @@ async function clearDiscoveredDocuments(ports: RuntimePortsV2): Promise<string |
       }),
     );
     const command: FrozenDocumentCommand | undefined = added.clearCommands[key];
-    if (command === undefined) return `closure cleanup lost the clear command for ${key}`;
-    const outcome: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
-      ports.transport,
-      command,
-    );
-    if (outcome.kind !== 'applied' && outcome.kind !== 'closed' && outcome.kind !== 'changed') {
-      return `closure clear for ${key} answered ${outcome.kind}`;
-    }
+    if (command === undefined) invalidClosure('the closure batch lost its new clear command');
+    const failure: string | null = await resetAndClearDocument(ports, added, key, command);
+    if (failure !== null) return failure;
   }
   return null;
 }
@@ -444,34 +456,50 @@ async function reissueClearCommands(
   progress: CleanupProgress,
 ): Promise<string | null> {
   for (const [key, command] of Object.entries(progress.clearCommands)) {
-    const runtime: RuntimeStateV2 = ports.runtime();
-    const ack: DocumentEpochResetAck | undefined = runtime.epochResetAcks[key];
-    if (ack === undefined || ack.enforcementEpoch !== runtime.enforcementEpoch) {
-      const reset: EpochResetOutcomeV2 = await sendEpochResetCommand(
-        ports.transport,
-        buildFrozenEpochResetCommandV2({
-          tabId: command.tabId,
-          documentId: command.documentId,
-          expectedUrl: command.expectedUrl,
-          operationId: progress.cleanupOperationId,
-          enforcementEpoch: command.enforcementEpoch,
-        }),
-      );
-      if (reset.kind === 'closed') continue;
-      if (reset.kind !== 'reset') return `closure reset for ${key} answered ${reset.kind}`;
-      await recordClosureEpochAck(ports, reset.ack);
-    }
-    const outcome: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
-      ports.transport,
-      command,
-    );
-    if (outcome.kind === 'applied' || outcome.kind === 'closed' || outcome.kind === 'changed') {
-      continue;
-    }
-    // Nothing may outrank the clear revision, so a stale answer during cleanup is fatal too.
-    return `closure clear for ${key} answered ${outcome.kind}`;
+    const failure: string | null = await resetAndClearDocument(ports, progress, key, command);
+    if (failure !== null) return failure;
   }
   return null;
+}
+
+/**
+ * Spec step 6 for one document: reset it when it has not acknowledged the current epoch, and only
+ * then send its exact frozen clear. Every reachable document owes that handshake, the ones this
+ * batch froze and the ones the attempt discovers alike, so both loops come through here.
+ */
+async function resetAndClearDocument(
+  ports: RuntimePortsV2,
+  progress: CleanupProgress,
+  key: string,
+  command: FrozenDocumentCommand,
+): Promise<string | null> {
+  const runtime: RuntimeStateV2 = ports.runtime();
+  const ack: DocumentEpochResetAck | undefined = runtime.epochResetAcks[key];
+  if (ack === undefined || ack.enforcementEpoch !== runtime.enforcementEpoch) {
+    const reset: EpochResetOutcomeV2 = await sendEpochResetCommand(
+      ports.transport,
+      buildFrozenEpochResetCommandV2({
+        tabId: command.tabId,
+        documentId: command.documentId,
+        expectedUrl: command.expectedUrl,
+        operationId: progress.cleanupOperationId,
+        enforcementEpoch: command.enforcementEpoch,
+      }),
+    );
+    // A closed document owes nothing further this attempt, and its claim decides its resolution.
+    if (reset.kind === 'closed') return null;
+    if (reset.kind !== 'reset') return `closure reset for ${key} answered ${reset.kind}`;
+    await recordClosureEpochAck(ports, reset.ack);
+  }
+  const outcome: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
+    ports.transport,
+    command,
+  );
+  if (outcome.kind === 'applied' || outcome.kind === 'closed' || outcome.kind === 'changed') {
+    return null;
+  }
+  // Nothing may outrank the clear revision, so a stale answer during cleanup is fatal too.
+  return `closure clear for ${key} answered ${outcome.kind}`;
 }
 
 /**

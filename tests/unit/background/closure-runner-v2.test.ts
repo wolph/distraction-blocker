@@ -531,6 +531,59 @@ describe('runClosureCleanupAttemptV2', (): void => {
     );
   });
 
+  it('resets a discovered document before it sends that document its clear', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await inCleanup(fake);
+    fake.setTabs([
+      { tabId: 11, url: 'https://facebook.com/feed', documentId: DOC_ONE },
+      { tabId: 12, url: 'https://news.example.com/story', documentId: 'document-2' },
+    ]);
+
+    await runClosureCleanupAttemptV2(fake, unresolvedEffects());
+
+    // A document discovered during the attempt has no acknowledgement by construction, so it owes
+    // the same epoch handshake the frozen batch owes before any clear reaches it.
+    const discovered: FakeSendV2[] = fake.sends.filter(
+      (send: FakeSendV2): boolean => send.documentId === 'document-2',
+    );
+    expect(discovered.map((send: FakeSendV2): string => send.message.command)).toEqual([
+      'reset-enforcement-epoch',
+      'apply-enforcement',
+    ]);
+    expect(discovered[0]?.message.enforcementEpoch).toBe(fake.current().enforcementEpoch);
+    expect(Object.keys(fake.current().epochResetAcks)).toContain(documentKey(12, 'document-2'));
+  });
+
+  it("records a write that throws mid-attempt as this attempt's failure", async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await inCleanup(fake);
+    const runtime: RuntimeStateV2 = fake.current();
+    await fake.writeRuntime({
+      ...runtime,
+      tabStates: { ...runtime.tabStates, 12: runtimeTabState({ stoppedDocumentId: 'document-2' }) },
+    });
+    let refuseNextWrite: boolean = true;
+    const ports: RuntimePortsV2 = {
+      ...fake,
+      writeRuntime: async (next: RuntimeStateV2): Promise<void> => {
+        if (refuseNextWrite) {
+          refuseNextWrite = false;
+          throw new Error('runtime write refused');
+        }
+        return fake.writeRuntime(next);
+      },
+    };
+
+    const next: RuntimeStateV2 = await runClosureCleanupAttemptV2(ports, effectsFake());
+    const progress: CleanupProgress = cleanupProgressOf(next);
+
+    expect(progress.retry.automaticAttempt).toBe(1);
+    expect(progress.retry.lastError).toContain('runtime write refused');
+    expect(progress.retry.nextAttemptAt).not.toBeNull();
+    expect(fake.alarmCalls).toContainEqual({ kind: 'create', name: CLOSURE_CLEANUP_ALARM });
+    expect(next.pendingClosure?.stage).toBe('cleanup');
+  });
+
   it('refuses to run without a cleanup closure', async (): Promise<void> => {
     const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
 
