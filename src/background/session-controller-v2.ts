@@ -27,6 +27,7 @@ import type {
   SoundId,
   StartSessionResponseV2,
 } from '../shared/messages';
+import { localDateStr, localMidnightAfter } from '../shared/time';
 import type {
   GateState,
   SessionConfigV2,
@@ -45,7 +46,11 @@ import {
   runClosureCleanupAttemptV2,
 } from './closure-runner-v2';
 import { sendDocumentEnforcementCommand, sendEpochResetCommand } from './content-transport-v2';
-import type { DocumentEnforcementAck, FrozenDocumentCommand } from './enforcement-persistence-v2';
+import type {
+  DocumentEnforcementAck,
+  EnforcementCheckpoint,
+  FrozenDocumentCommand,
+} from './enforcement-persistence-v2';
 import { classifyEnforcementTargetV2, type TargetClassificationV2 } from './enforcement-targets-v2';
 import { buildSessionSnapshotV2 } from './lifecycle-projection-v2';
 import {
@@ -76,6 +81,7 @@ import {
   type PreparedTransitionV2,
   prepareResumeTransitionV2,
   prepareStartTransitionV2,
+  refreezeTransitionViewV2,
   type TransitionDriveResultV2,
   transitionMatcherV2,
 } from './transition-runner-v2';
@@ -153,6 +159,7 @@ export class SessionControllerV2 {
   async tick(): Promise<void> {
     await this.enqueue(async (): Promise<void> => {
       await this.retryOwedClosure();
+      await this.rollLocalDate();
       await this.settleThroughNow();
       await this.runDueCleanup();
       await this.runScheduleCheck();
@@ -419,23 +426,46 @@ export class SessionControllerV2 {
     });
   }
 
-  /** Stores an acknowledgement only when it answers the current epoch and a persisted command. */
+  /**
+   * Records one exact applied acknowledgement. Only the enforcement checkpoint carries per-target
+   * records (spec 734: the applied response, wrapped with the worker-owned tab ID, is what enters
+   * it), so a matching ack updates that target's record in place through a checkpoint-preserving
+   * write. An ack for another epoch, another operation, another revision, or a document the
+   * checkpoint does not name is dropped: the runners own operation-time acknowledgement, and this
+   * path never invents a record the checkpoint did not already have.
+   */
   async recordDocumentAck(ack: DocumentEnforcementAck): Promise<void> {
     await this.enqueue(async (): Promise<void> => {
       const runtime: RuntimeStateV2 = this.ports.runtime();
+      const checkpoint: EnforcementCheckpoint | null = runtime.enforcementCheckpoint;
       const key: string = documentCommandKeyV2(ack.tabId, ack.documentId);
       const command: FrozenDocumentCommand | undefined = runtime.documentCommands[key];
       if (
-        ack.enforcementEpoch !== runtime.enforcementEpoch ||
+        checkpoint === null ||
         command === undefined ||
+        ack.enforcementEpoch !== runtime.enforcementEpoch ||
         command.operationId !== ack.operationId ||
-        command.runtimeRevision !== ack.runtimeRevision
+        command.runtimeRevision !== ack.runtimeRevision ||
+        checkpoint.operationId !== ack.operationId
       ) {
         return;
       }
+      // A target the checkpoint never verified gains no record here: the runners own which
+      // documents one operation acknowledged, and this path only refreshes what they wrote.
+      const named: boolean = checkpoint.documents.some(
+        (stored: DocumentEnforcementAck): boolean =>
+          stored.tabId === ack.tabId && stored.documentId === ack.documentId,
+      );
+      if (!named) return;
+      const documents: DocumentEnforcementAck[] = checkpoint.documents.map(
+        (stored: DocumentEnforcementAck): DocumentEnforcementAck =>
+          stored.tabId === ack.tabId && stored.documentId === ack.documentId
+            ? structuredClone(ack)
+            : structuredClone(stored),
+      );
       await this.write({
         ...structuredClone(runtime),
-        epochResetAcks: structuredClone(runtime.epochResetAcks),
+        enforcementCheckpoint: { ...structuredClone(checkpoint), documents },
       });
     });
   }
@@ -512,19 +542,10 @@ export class SessionControllerV2 {
     return this.ports.runtime().pendingEnforcementTransition?.stage === 'cleanup';
   }
 
-  /**
-   * The journal guards every gate command shares. A live update advances the runtime tuple, and a
-   * committed transition pins that tuple to its frozen active view, so the replacement view has to
-   * be refrozen with it. `transition-runner-v2.ts` exports no entry for that, so a gate command is
-   * refused while a transition is running rather than writing a row the boundary would reject. See
-   * the task report.
-   */
+  /** The journal guards every gate command shares. Only Hard refuses End (spec 1021). */
   private gateGuard(session: SessionStateV2 | null): CommandResultV2 | null {
     if (this.inTransitionCleanup()) return failure('transition-cleanup-pending');
     if (this.ports.runtime().pendingClosure !== null) return failure('closure-cleanup-pending');
-    if (this.ports.runtime().pendingEnforcementTransition !== null) {
-      return failure('end-not-allowed');
-    }
     if (session === null) return failure('no-active-session');
     return null;
   }
@@ -556,6 +577,16 @@ export class SessionControllerV2 {
    * carried through untouched.
    */
   private async commitLiveViews(base: RuntimeStateV2): Promise<void> {
+    if (base.pendingEnforcementTransition !== null) {
+      // A running transition owns its frozen view, so the runner refreezes it under the new tuple
+      // and the verification budget is left exactly as it was.
+      await refreezeTransitionViewV2(this.ports, transitionMatcherV2(this.ports), base);
+      for (const command of Object.values(this.ports.runtime().documentCommands)) {
+        await sendDocumentEnforcementCommand(this.ports.transport, command);
+      }
+      this.publish();
+      return;
+    }
     const session: SessionStateV2 | null = base.session;
     const runtimeRevision: number = base.runtimeRevision + 1;
     const operationId: string = this.ports.newId();
@@ -694,13 +725,39 @@ export class SessionControllerV2 {
   }
 
   /**
-   * Settles the durable session through now and expires what the instant expires. The local date
-   * rollover is not settled here: `runtime.date` and `todayAgg` belong to the retained Engine,
-   * which `RuntimePortsV2` does not expose, so the cutover must bind that port before a tick can
-   * cross a midnight. See the task report.
+   * Walks every finished local day before the current instant is settled, exactly as the v1
+   * catch-up loop does. Focus is settled through each midnight first, so a closure delta can never
+   * land on a day this loop has already closed, and then the Engine's own bookkeeping closes that
+   * day through `rolloverCheck`. A `date` in the future rebases backward, which the Engine also
+   * owns, so one call at today's boundary hands it that work.
+   */
+  private async rollLocalDate(): Promise<void> {
+    const now: number = this.ports.now();
+    const today: string = localDateStr(now);
+    if (this.ports.runtime().date > today) {
+      await this.ports.rolloverCheck(now);
+      return;
+    }
+    for (let day: number = 0; day < MAX_ROLLOVER_DAYS; day++) {
+      const runtime: RuntimeStateV2 = this.ports.runtime();
+      if (runtime.date >= today) return;
+      const boundary: number = localMidnightAfter(runtime.date);
+      await this.settleThrough(boundary);
+      await this.ports.rolloverCheck(boundary);
+      if (this.ports.runtime().date === runtime.date) return;
+    }
+  }
+
+  /**
+   * Settles the durable session through now and expires what the instant expires. The daily
+   * aggregate and bank bookkeeping stay with the retained Engine, which `rolloverCheck` drives.
    */
   private async settleThroughNow(): Promise<void> {
-    const now: number = this.ports.now();
+    await this.settleThrough(this.ports.now());
+  }
+
+  /** Settles the durable session and expiries through one instant. */
+  private async settleThrough(now: number): Promise<void> {
     const runtime: RuntimeStateV2 = pruneHandledOccurrencesOnTickV2(this.ports.runtime(), now);
     const session: SessionStateV2 | null = runtime.session;
     const expired: RuntimeStateV2 = {
@@ -967,6 +1024,8 @@ function evaluatedVerdictOf(
   );
 }
 
+/** A tick never walks more finished days than this, so a broken clock cannot spin the loop. */
+const MAX_ROLLOVER_DAYS: number = 400;
 /** A gate the user walked away from expires after this long, matching the v1 engine. */
 const GATE_EXPIRY_MS: number = 10 * 60_000;
 const CLEAR_VERDICT: Verdict = {

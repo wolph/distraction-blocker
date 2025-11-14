@@ -54,5 +54,11 @@ export interface RuntimePortsV2 {
   openOccurrencesAt(at: number): ScheduleOccurrenceRef[];
   /** Stored daily aggregates by `syncAggKey`. A key with no stored value is omitted. */
   loadAggregates(keys: readonly string[]): Promise<Record<string, DailyAgg>>;
+  /**
+   * Rolls the daily aggregate bookkeeping over one finished local day, at that day's midnight.
+   * Daily aggregates, the streak, and the bank stay with the retained Engine, so the controller's
+   * tick settles focus through each boundary and asks this port to close the day it just left.
+   */
+  rolloverCheck(boundary: number): Promise<void>;
   reportError(error: unknown): void;
 }

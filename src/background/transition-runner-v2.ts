@@ -724,6 +724,110 @@ async function failVerification(ports: RuntimePortsV2): Promise<'cleanup'> {
 }
 
 /**
+ * Refreezes the whole current frozen view of a running transition under one new operation and the
+ * next runtime revision, and persists it with the runtime command map in the same write.
+ *
+ * A committed live change, a Friction gate open or abandon, is what needs this: the runtime tuple
+ * advances, and a committed transition pins that tuple to its active view, so the replacement view
+ * has to move with it. The verification budget is untouched, so a restarted pass reissues the
+ * replacement view without extending its attempt count or its ten-second deadline (spec 775).
+ */
+export async function refreezeTransitionViewV2(
+  ports: RuntimePortsV2,
+  matcher: CompiledMatcher,
+  base: RuntimeStateV2,
+): Promise<RuntimeStateV2> {
+  const transition: PendingEnforcementTransition = durableTransition(ports);
+  if (transition.stage === 'cleanup') {
+    throw new CoreError('invalid-rule', 'a cleanup transition reissues its clear batch instead');
+  }
+  const phase: SweepPhaseV2 = PRE_COMMIT_STAGES.has(transition.stage) ? 'starting' : 'active';
+  const view: FrozenTransitionView =
+    phase === 'starting' ? transition.startingView : requireActiveView(transition);
+  const runtimeRevision: number = base.runtimeRevision + 1;
+  const operationId: string = ports.newId();
+  const documents: Record<string, FrozenDocumentCommand> = {};
+  for (const [key, command] of Object.entries(view.documents)) {
+    documents[key] = refrozenCommand(ports, matcher, base, command, {
+      operationId,
+      runtimeRevision,
+      capturedAt: view.capturedAt,
+    });
+  }
+  const replacement: FrozenTransitionView = {
+    ...structuredClone(view),
+    operationId,
+    runtimeRevision,
+    documents,
+  };
+  const next: PendingEnforcementTransition =
+    phase === 'starting'
+      ? {
+          ...structuredClone(transition),
+          runtimeRevision,
+          startingOperationId: operationId,
+          startingView: replacement,
+        }
+      : {
+          ...structuredClone(transition),
+          runtimeRevision,
+          activeOperationId: operationId,
+          activeView: replacement,
+        };
+  return writeStage(ports, base, next, { runtimeRevision, documentCommands: documents });
+}
+
+/** One replacement command at the same target, the new tuple, and the view's frozen capture. */
+function refrozenCommand(
+  ports: RuntimePortsV2,
+  matcher: CompiledMatcher,
+  runtime: RuntimeStateV2,
+  previous: FrozenDocumentCommand,
+  tuple: { operationId: string; runtimeRevision: number; capturedAt: number },
+): FrozenDocumentCommand {
+  const target: EnforceableTargetV2 = {
+    kind: 'enforceable',
+    tabId: previous.tabId,
+    documentId: previous.documentId,
+    url: previous.expectedUrl,
+  };
+  const identity: ViewIdentityV2 = {
+    runtime,
+    capturedAt: tuple.capturedAt,
+    operationId: tuple.operationId,
+    enforcementEpoch: previous.enforcementEpoch,
+    basePolicyRevision: previous.basePolicyRevision,
+    runtimeRevision: tuple.runtimeRevision,
+    sessionId: previous.sessionId ?? previous.reservedSessionId ?? '',
+    durable: previous.sessionId !== null,
+  };
+  if (previous.presentation === 'starting')
+    return startingCommand(ports, matcher, identity, target);
+  return activeCommand(
+    ports,
+    matcher,
+    {
+      runtime,
+      session: requireSession(runtime),
+      capturedAt: tuple.capturedAt,
+      operationId: tuple.operationId,
+      enforcementEpoch: previous.enforcementEpoch,
+      basePolicyRevision: previous.basePolicyRevision,
+      runtimeRevision: tuple.runtimeRevision,
+    },
+    target,
+  );
+}
+
+function requireActiveView(transition: PendingEnforcementTransition): FrozenTransitionView {
+  const view: FrozenTransitionView | null = transition.activeView;
+  if (view === null) {
+    throw new CoreError('invalid-rule', 'a committed transition needs its frozen active view');
+  }
+  return view;
+}
+
+/**
  * Handles one navigation seen while a transition is running. Every stage advances the target
  * generation and persists whatever the target needs before anything is sent, and `prepared` only
  * queues, because nothing may be sent before the audit is durable.

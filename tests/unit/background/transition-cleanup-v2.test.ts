@@ -199,6 +199,39 @@ describe('enterTransitionCleanupV2', (): void => {
     }
   });
 
+  it('releases reservations with an empty batch after an audit failure', async (): Promise<void> => {
+    // Spec 766: no clear is sent before registration is audited, so there is nothing to clear.
+    for (const failure of ['website-access-lost', 'content-registration-failed'] as const) {
+      const fake: RuntimePortsFakeV2 = fakeFor(preCommitRuntime());
+      await enterTransitionCleanupV2(fake, {
+        cause: 'start-abandon',
+        failure,
+        endedAt: fake.now(),
+      });
+      const progress: CleanupProgress = storedProgress(fake);
+
+      expect(progress.targets).toEqual({});
+      expect(progress.clearCommands).toEqual({});
+      expect(storedTransition(fake).preparedTargetReservations).toEqual({});
+      expect(fake.current().documentCommands).toEqual({});
+
+      const resolved: RuntimeStateV2 = await runTransitionCleanupAttemptV2(fake, effectsFake());
+      expect(fake.sends).toHaveLength(0);
+      expect(resolved.pendingEnforcementTransition).toBeNull();
+    }
+  });
+
+  it('keeps the frozen batch for a failure after the audit', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(preCommitRuntime());
+    await enterTransitionCleanupV2(fake, {
+      cause: 'start-abandon',
+      failure: 'tab-enforcement-failed',
+      endedAt: fake.now(),
+    });
+
+    expect(Object.keys(storedProgress(fake).clearCommands).length).toBeGreaterThan(0);
+  });
+
   it('refuses a transition-failed cleanup that names no failure', async (): Promise<void> => {
     const fake: RuntimePortsFakeV2 = fakeFor(committedRuntime());
     await expect(

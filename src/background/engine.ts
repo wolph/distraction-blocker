@@ -37,7 +37,7 @@ import { CoreError } from '../shared/errors';
 import { type Ack, type SoundId, STALE_SESSION_RULES_ERROR } from '../shared/messages';
 import { isListsConfig } from '../shared/runtime-validation';
 import { syncAggKey } from '../shared/storage-keys';
-import { localDateStr, localMonthStr } from '../shared/time';
+import { localDateStr, localMidnightAfter, localMonthStr } from '../shared/time';
 import type {
   BankState,
   DailyAgg,
@@ -2450,10 +2450,4 @@ function focusedMsAt(session: SessionState, now: number): number {
 
 function sessionIdentity(session: SessionState | null): { sessionId?: string } {
   return session?.sessionId === undefined ? {} : { sessionId: session.sessionId };
-}
-
-function localMidnightAfter(date: string): number {
-  const midnight: Date = new Date(`${date}T00:00:00`);
-  midnight.setDate(midnight.getDate() + 1);
-  return midnight.getTime();
 }

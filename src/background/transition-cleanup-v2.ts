@@ -127,7 +127,7 @@ export async function enterTransitionCleanupV2(
   const progress: CleanupProgress = buildCleanupProgressV2({
     cleanupOperationId: ports.newId(),
     clearRuntimeRevision,
-    targets: clearTargetsOf(transition),
+    targets: clearTargetsOf(transition, entry),
     identity: {
       enforcementEpoch: runtime.enforcementEpoch,
       basePolicyRevision: transition.basePolicyRevision,
@@ -202,8 +202,27 @@ function retainedSession(
   return cause === 'start-abandon' ? null : structuredClone(runtime.session);
 }
 
-/** The clear batch covers exactly the documents the transition's newest frozen view addressed. */
-function clearTargetsOf(transition: PendingEnforcementTransition): CleanupEnforcementTarget[] {
+/** The two audit answers, which fail before registration is audited and so before any send. */
+const AUDIT_FAILURES: ReadonlySet<string> = new Set<string>([
+  'website-access-lost',
+  'content-registration-failed',
+]);
+
+/**
+ * The clear batch covers exactly the documents the transition's newest frozen view addressed, with
+ * one exception: an audit failure happens before registration is audited, so no document has been
+ * sent anything (spec 766) and there is nothing to clear. That entry releases its reservations with
+ * an empty batch instead of clearing targets that never heard from this transition.
+ */
+function clearTargetsOf(
+  transition: PendingEnforcementTransition,
+  entry: TransitionCleanupEntryV2,
+): CleanupEnforcementTarget[] {
+  if (entry.failure !== null && AUDIT_FAILURES.has(entry.failure)) return [];
+  return frozenTargetsOf(transition);
+}
+
+function frozenTargetsOf(transition: PendingEnforcementTransition): CleanupEnforcementTarget[] {
   const view: Record<string, FrozenDocumentCommand> =
     transition.activeView?.documents ?? transition.startingView.documents;
   return Object.values(view).map(

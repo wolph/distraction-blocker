@@ -5,6 +5,7 @@ import {
   TRANSITION_CLEANUP_ALARM,
 } from '../../../src/background/alarms-v2';
 import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
+import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validation';
 import { SessionControllerV2 } from '../../../src/background/session-controller-v2';
 import type {
   CommandResponseV2,
@@ -12,6 +13,7 @@ import type {
   StartSessionResponseV2,
 } from '../../../src/shared/messages';
 import { isSessionSnapshotV2 } from '../../../src/shared/runtime-validation';
+import { localDateStr, localMidnightAfter } from '../../../src/shared/time';
 import type { SessionConfigV2, SessionSnapshotV2, SessionStateV2 } from '../../../src/shared/types';
 import {
   type ControllerEffectsFakeV2,
@@ -31,6 +33,7 @@ import {
   cleanupTransition,
   documentKey,
   emptyRuntimeV2,
+  OTHER_EPOCH_ID,
   OTHER_OPERATION_ID,
   pausedRuntime,
   pausedSession,
@@ -297,18 +300,47 @@ describe('SessionControllerV2 end and gate commands', (): void => {
 
     expect(response).toEqual({ ok: true, code: 'ok' });
     expect(ports.current().gate).toBeNull();
-    // A gate command during a committed transition is refused, because refreezing the active view
-    // it would have to advance is the transition runner's work and it exports no entry for it.
+    // Spec 1021: a committed Friction transition persists its gate and refreezes the active view,
+    // and neither the attempt count nor the ten-second budget moves.
     const committed = harness(
       transitionRuntime(pendingTransition('start', 'alarm-ready'), {
         session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
       }),
     );
     const before = committed.ports.current().pendingEnforcementTransition;
-    expect((await committed.controller.openEndGate()).code).toBe('end-not-allowed');
-    const after = committed.ports.current().pendingEnforcementTransition;
-    expect(after?.freshnessAttempts).toBe(before?.freshnessAttempts);
-    expect(after?.verificationStartedAt).toBe(before?.verificationStartedAt);
+    expect((await committed.controller.openEndGate()).code).toBe('ok');
+    const opened: RuntimeStateV2 = committed.ports.current();
+    const afterOpen = opened.pendingEnforcementTransition;
+
+    expect(parseRuntimeStateV2(opened)).not.toBeNull();
+    expect(opened.gate?.kind).toBe('cancel');
+    expect(afterOpen?.activeView?.runtimeRevision).toBe(
+      (before?.activeView?.runtimeRevision ?? 0) + 1,
+    );
+    expect(opened.runtimeRevision).toBe(afterOpen?.activeView?.runtimeRevision);
+    expect(opened.documentCommands).toEqual(afterOpen?.activeView?.documents);
+    expect(afterOpen?.freshnessAttempts).toBe(before?.freshnessAttempts);
+    expect(afterOpen?.verificationStartedAt).toBe(before?.verificationStartedAt);
+
+    expect((await committed.controller.abandonGate()).code).toBe('ok');
+    const abandoned: RuntimeStateV2 = committed.ports.current();
+    expect(abandoned.gate).toBeNull();
+    expect(parseRuntimeStateV2(abandoned)).not.toBeNull();
+    expect(abandoned.pendingEnforcementTransition?.stage).toBe('alarm-ready');
+    expect(abandoned.pendingEnforcementTransition?.freshnessAttempts).toBe(
+      before?.freshnessAttempts,
+    );
+    expect(abandoned.pendingEnforcementTransition?.verificationStartedAt).toBe(
+      before?.verificationStartedAt,
+    );
+
+    // Hard is the one strictness that refuses End outright.
+    const hard = harness(
+      transitionRuntime(pendingTransition('start', 'alarm-ready'), {
+        session: timedFocusSession({ config: sessionConfigV2({ strictness: 'hard' }) }),
+      }),
+    );
+    expect((await hard.controller.openEndGate()).code).toBe('end-not-allowed');
   });
 
   it('gates confirmation on readiness and the typed phrase', async (): Promise<void> => {
@@ -416,6 +448,43 @@ describe('SessionControllerV2 alarms and ticks', (): void => {
     expect(effects.badges.length).toBeGreaterThan(0);
   });
 
+  it('walks each finished local day, settling before it asks the Engine to close it', async (): Promise<void> => {
+    const session: SessionStateV2 = timedFocusSession();
+    const today: string = localDateStr(session.phaseStartedAt);
+    const twoDaysBack: string = localDateStr(session.phaseStartedAt - 2 * 86_400_000);
+    const oneDayBack: string = localDateStr(session.phaseStartedAt - 86_400_000);
+    const single = harness(publishedFocusRuntime({ session, date: oneDayBack, todayAgg: null }), {
+      now: session.phaseStartedAt + 60_000,
+    });
+    single.ports.onRolloverAdvanceDate = true;
+    await single.controller.tick();
+    expect(single.ports.rollovers).toEqual([localMidnightAfter(oneDayBack)]);
+    expect(single.ports.current().date).toBe(today);
+
+    const double = harness(publishedFocusRuntime({ session, date: twoDaysBack, todayAgg: null }), {
+      now: session.phaseStartedAt + 60_000,
+    });
+    double.ports.onRolloverAdvanceDate = true;
+    await double.controller.tick();
+    expect(double.ports.rollovers).toEqual([
+      localMidnightAfter(twoDaysBack),
+      localMidnightAfter(oneDayBack),
+    ]);
+    expect(double.ports.current().date).toBe(today);
+  });
+
+  it('hands a future date backward to the Engine in one call', async (): Promise<void> => {
+    const session: SessionStateV2 = timedFocusSession();
+    const ahead: string = localDateStr(session.phaseStartedAt + 3 * 86_400_000);
+    const { controller, ports } = harness(
+      publishedFocusRuntime({ session, date: ahead, todayAgg: null }),
+      { now: session.phaseStartedAt + 60_000 },
+    );
+    await controller.tick();
+
+    expect(ports.rollovers).toEqual([session.phaseStartedAt + 60_000]);
+  });
+
   it('settles the durable session and expires what the instant expires', async (): Promise<void> => {
     // The local date rollover is not the controller's: `runtime.date` and `todayAgg` belong to the
     // retained Engine and `RuntimePortsV2` exposes no port for them. See the task report.
@@ -503,6 +572,35 @@ describe('SessionControllerV2 navigation and documents', (): void => {
     expect(applied?.command === 'apply-enforcement' ? applied.overlay?.stoppedPage : null).toBe(
       true,
     );
+  });
+
+  it('refreshes a checkpoint record only for a target the checkpoint already named', async (): Promise<void> => {
+    const { controller, ports } = harness(publishedFocusRuntime());
+    const command = ports.current().documentCommands[documentKey(11, DOC_ONE)];
+    const named = ports.current().enforcementCheckpoint?.documents[0];
+    if (command === undefined || named === undefined) throw new Error('expected a verified target');
+    const refreshed = {
+      ...structuredClone(named),
+      tabId: command.tabId,
+      documentId: command.documentId,
+      url: command.expectedUrl,
+      operationId: command.operationId,
+      enforcementEpoch: command.enforcementEpoch,
+      basePolicyRevision: command.basePolicyRevision,
+      runtimeRevision: command.runtimeRevision,
+      verdict: structuredClone(command.verdict),
+      handledAt: ports.now(),
+    };
+    await controller.recordDocumentAck(refreshed);
+    expect(ports.current().enforcementCheckpoint?.documents).toContainEqual(refreshed);
+
+    // An ack for a document the checkpoint never verified adds nothing.
+    const before: RuntimeStateV2 = ports.current();
+    await controller.recordDocumentAck({ ...refreshed, tabId: 99, documentId: 'document-99' });
+    expect(ports.current().enforcementCheckpoint).toEqual(before.enforcementCheckpoint);
+    // Nor does one for another epoch.
+    await controller.recordDocumentAck({ ...refreshed, enforcementEpoch: OTHER_EPOCH_ID });
+    expect(ports.current().enforcementCheckpoint).toEqual(before.enforcementCheckpoint);
   });
 
   it('refreshes every live view under a new operation and a higher revision', async (): Promise<void> => {

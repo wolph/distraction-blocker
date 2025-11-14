@@ -28,6 +28,7 @@ import { compileSessionMatcher, evaluateUrl } from '../../../src/core/matcher';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
 import type { SoundId } from '../../../src/shared/messages';
+import { localDateStr } from '../../../src/shared/time';
 import type {
   BankState,
   DailyAgg,
@@ -97,6 +98,10 @@ export interface RuntimePortsFakeV2 extends RuntimePortsV2 {
   commits: RuntimeCommitInputV2[];
   sends: FakeSendV2[];
   errors: unknown[];
+  /** Every boundary the controller asked the Engine to roll over, in order. */
+  rollovers: number[];
+  /** When true, `rolloverCheck` rebases `date` the way the retained Engine would. */
+  onRolloverAdvanceDate?: boolean;
   auditCalls: number;
   alarmCalls: Array<{ kind: 'create' | 'createPeriodic' | 'clear'; name: AlarmNameV2 }>;
   setNow(at: number): void;
@@ -146,6 +151,7 @@ export function createRuntimePortsFakeV2(
   const commits: RuntimeCommitInputV2[] = [];
   const sends: FakeSendV2[] = [];
   const errors: unknown[] = [];
+  const rollovers: number[] = [];
   const alarmCalls: Array<{ kind: 'create' | 'createPeriodic' | 'clear'; name: AlarmNameV2 }> = [];
 
   const fake: RuntimePortsFakeV2 = {
@@ -153,6 +159,7 @@ export function createRuntimePortsFakeV2(
     commits,
     sends,
     errors,
+    rollovers,
     auditCalls: 0,
     alarmCalls,
 
@@ -212,6 +219,17 @@ export function createRuntimePortsFakeV2(
         if (stored !== undefined) found[key] = structuredClone(stored);
       }
       return found;
+    },
+    rolloverCheck: async (boundary: number): Promise<void> => {
+      rollovers.push(boundary);
+      // The retained Engine owns `date` and `todayAgg`. A test that wants the loop to make
+      // progress asks the fake to stand in for that bookkeeping.
+      if (!fake.onRolloverAdvanceDate) return;
+      state.runtime = requireValidRuntime(
+        { ...structuredClone(state.runtime), date: localDateStr(boundary) },
+        'rolloverCheck produced an invalid runtime',
+      );
+      writes.push(structuredClone(state.runtime));
     },
     reportError: (error: unknown): void => {
       errors.push(error);
