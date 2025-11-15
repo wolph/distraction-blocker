@@ -37,7 +37,11 @@ import {
   replaceCleanupBatchV2,
   resolveCleanupTabV2,
 } from './cleanup-progress-v2';
-import { buildClosureProjectionV2, splitFocusByLocalDateV2 } from './closure-projection-v2';
+import {
+  buildClosureProjectionV2,
+  manualEndReasonV2,
+  splitFocusByLocalDateV2,
+} from './closure-projection-v2';
 import {
   type DocumentCommandOutcomeV2,
   type EpochResetOutcomeV2,
@@ -296,9 +300,7 @@ function closureReason(
     }
     return entry.failure;
   }
-  if (entry.cause === 'manual-end' && session.config.duration.kind !== 'until-stopped') {
-    return 'manual-canceled';
-  }
+  if (entry.cause === 'manual-end') return manualEndReasonV2(session.config.duration);
   const reason: SessionEndReasonV2 | undefined = CLOSURE_REASONS[entry.cause];
   if (reason === undefined) {
     throw new CoreError('invalid-rule', `${entry.cause} does not close a session`);

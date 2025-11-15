@@ -27,6 +27,7 @@ import type { CompiledMatcher } from '../../../src/core/matcher';
 import { compileSessionMatcher, evaluateUrl } from '../../../src/core/matcher';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
+import { CoreError } from '../../../src/shared/errors';
 import type { SoundId } from '../../../src/shared/messages';
 import { localDateStr } from '../../../src/shared/time';
 import type {
@@ -90,6 +91,11 @@ export interface RuntimePortsFakeOptionsV2 {
   onQueryTabs?: () => Promise<void> | void;
   /** Runs while `loadAggregates` is in flight, for interleaving a write during that await. */
   onLoadAggregates?: () => Promise<void> | void;
+  /**
+   * Rejects every `writeRuntime` with the `CoreError` the runners' own `requireValid` raises, which
+   * is what a durable write that will not land looks like from inside a command.
+   */
+  failWrites?: boolean;
 }
 
 export interface RuntimePortsFakeV2 extends RuntimePortsV2 {
@@ -104,6 +110,12 @@ export interface RuntimePortsFakeV2 extends RuntimePortsV2 {
   onRolloverAdvanceDate?: boolean;
   auditCalls: number;
   alarmCalls: Array<{ kind: 'create' | 'createPeriodic' | 'clear'; name: AlarmNameV2 }>;
+  /**
+   * How many runtimes had landed at each alarm call, aligned with `alarmCalls` by index. It is what
+   * pins an alarm against the write it must precede, and it stays out of `alarmCalls` so the
+   * recorded call shape keeps comparing equal to a plain `{ kind, name }`.
+   */
+  alarmCallWrites: number[];
   setNow(at: number): void;
   advance(ms: number): void;
   setTabs(tabs: readonly FakeTabRowV2[]): void;
@@ -141,6 +153,7 @@ export function createRuntimePortsFakeV2(
     aggregates: structuredClone(options.aggregates ?? {}),
     alarmReadBack: options.alarmReadBack ?? 'exact',
     alarmReadBackFailures: options.alarmReadBackFailures ?? 0,
+    bank: structuredClone(options.bank ?? { balanceMs: 0 }),
     alarms: new Map<AlarmNameV2, ScheduledAlarmV2>(),
     byDocument: new Map<string, FakeResponderV2>(),
     byOperation: new Map<string, FakeResponderV2>(),
@@ -153,6 +166,7 @@ export function createRuntimePortsFakeV2(
   const errors: unknown[] = [];
   const rollovers: number[] = [];
   const alarmCalls: Array<{ kind: 'create' | 'createPeriodic' | 'clear'; name: AlarmNameV2 }> = [];
+  const alarmCallWrites: number[] = [];
 
   const fake: RuntimePortsFakeV2 = {
     writes,
@@ -162,6 +176,7 @@ export function createRuntimePortsFakeV2(
     rollovers,
     auditCalls: 0,
     alarmCalls,
+    alarmCallWrites,
 
     now: (): number => state.now,
     newId: (): string => {
@@ -171,11 +186,15 @@ export function createRuntimePortsFakeV2(
     },
     runtime: (): RuntimeStateV2 => structuredClone(state.runtime),
     writeRuntime: async (next: RuntimeStateV2): Promise<void> => {
+      if (options.failWrites === true) {
+        throw new CoreError('invalid-rule', 'the storage boundary refused the runtime write');
+      }
       state.runtime = requireValidRuntime(next, 'writeRuntime received an invalid runtime');
       writes.push(structuredClone(state.runtime));
     },
     commit: async (input: RuntimeCommitInputV2): Promise<RuntimeStateV2> => {
       commits.push(structuredClone(input));
+      if (input.syncBank) state.bank = structuredClone(input.bank);
       // Production writes the checkpointed runtime and then replays until the checkpoint clears,
       // so the durable value a caller receives is the projection with no checkpoint left. One
       // write is recorded per commit, and `commits` holds the batch the checkpoint carried.
@@ -201,12 +220,14 @@ export function createRuntimePortsFakeV2(
       evaluateUrl(matcher, url, [...unlocks], state.now),
     targets: targetPorts(state, options.onQueryTabs),
     transport: transportPorts(state, sends),
-    alarms: alarmPorts(state, alarmCalls, options.onAlarmCreate),
+    alarms: alarmPorts(state, alarmCalls, options.onAlarmCreate, (): void => {
+      alarmCallWrites.push(writes.length);
+    }),
     theme: (): ThemeMode => options.theme ?? 'dark',
     economy: (): PauseEconomy => structuredClone(options.economy ?? DEFAULT_SETTINGS.pause),
     gateSettings: (): GateSettings =>
       structuredClone(options.gateSettings ?? DEFAULT_SETTINGS.gate),
-    bank: (): BankState => structuredClone(options.bank ?? { balanceMs: 0 }),
+    bank: (): BankState => structuredClone(state.bank),
     deviceId: (): string => options.deviceId ?? DEFAULT_DEVICE_ID,
     attemptsToday: (): number => options.attemptsToday ?? 0,
     openOccurrencesAt: (): ScheduleOccurrenceRef[] =>
@@ -337,6 +358,7 @@ interface FakeStateV2 {
   aggregates: Record<string, DailyAgg>;
   alarmReadBack: 'exact' | 'missing' | 'other-time';
   alarmReadBackFailures: number;
+  bank: BankState;
   alarms: Map<AlarmNameV2, ScheduledAlarmV2>;
   byDocument: Map<string, FakeResponderV2>;
   byOperation: Map<string, FakeResponderV2>;
@@ -391,16 +413,19 @@ function transportPorts(state: FakeStateV2, sends: FakeSendV2[]): ContentTranspo
 function alarmPorts(
   state: FakeStateV2,
   alarmCalls: Array<{ kind: 'create' | 'createPeriodic' | 'clear'; name: AlarmNameV2 }>,
-  onCreate?: () => void,
+  onCreate: (() => void) | undefined,
+  recordWrites: () => void,
 ): AlarmPortsV2 {
   return {
     create: async (name: AlarmNameV2, when: number): Promise<void> => {
       alarmCalls.push({ kind: 'create', name });
+      recordWrites();
       state.alarms.set(name, { scheduledTime: when, periodInMinutes: null });
       onCreate?.();
     },
     createPeriodic: async (name: AlarmNameV2, periodInMinutes: number): Promise<void> => {
       alarmCalls.push({ kind: 'createPeriodic', name });
+      recordWrites();
       state.alarms.set(name, { scheduledTime: state.now, periodInMinutes });
     },
     get: async (name: AlarmNameV2): Promise<ScheduledAlarmV2 | null> => {
@@ -420,6 +445,7 @@ function alarmPorts(
     },
     clear: async (name: AlarmNameV2): Promise<void> => {
       alarmCalls.push({ kind: 'clear', name });
+      recordWrites();
       state.alarms.delete(name);
     },
   };

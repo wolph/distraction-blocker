@@ -29,16 +29,21 @@ import type {
 } from '../shared/messages';
 import { localDateStr, localMidnightAfter } from '../shared/time';
 import type {
+  BankState,
+  GateKind,
   GateState,
+  PauseEconomy,
   SessionConfigV2,
+  SessionEventRecordV2,
   SessionSnapshotV2,
   SessionStateV2,
   SettingsV2,
   SiteUnlock,
   Verdict,
 } from '../shared/types';
-import { parseAlarmNameV2 } from './alarms-v2';
+import { ensurePhaseAlarmV2, parseAlarmNameV2 } from './alarms-v2';
 import { documentCommandKeyV2 } from './cleanup-progress-v2';
+import { manualEndReasonV2 } from './closure-projection-v2';
 import {
   closeSessionV2,
   prepareClosureV2,
@@ -59,6 +64,7 @@ import {
   buildFrozenEpochResetCommandV2,
 } from './overlay-view-v2';
 import { recoverRuntimeV2 } from './recovery-v2';
+import { projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
 import type { RuntimeStateV2, SessionStartCandidate } from './runtime-v2-types';
 import { parseRuntimeStateV2 } from './runtime-v2-validation';
@@ -235,13 +241,16 @@ export class SessionControllerV2 {
       }
       const gate: GateState | null = this.ports.runtime().gate;
       if (gate !== null) return gate.kind === 'cancel' ? OK : failure('end-not-allowed');
-      await this.commitLiveGate({
-        kind: 'cancel',
-        host: null,
-        openedAt: this.ports.now(),
-        readyAt: this.ports.now() + this.ports.gateSettings().delayMs,
-        requiredPhrase: cancelPhrase(session.config.intention),
-      });
+      await this.commitLiveGate(
+        {
+          kind: 'cancel',
+          host: null,
+          openedAt: this.ports.now(),
+          readyAt: this.ports.now() + this.ports.gateSettings().delayMs,
+          requiredPhrase: cancelPhrase(session.config.intention),
+        },
+        this.gateEvent('gateOpened', 'cancel', session),
+      );
       return OK;
     });
   }
@@ -253,17 +262,26 @@ export class SessionControllerV2 {
       const guard: CommandResultV2 | null = this.gateGuard(session);
       if (guard !== null) return guard;
       if (session === null || session.phase !== 'focus') return failure('no-active-session');
+      // A pause changes the phase and an unlock changes the economy, both of which a running
+      // transition owns until it publishes, so neither gate opens while one is durable.
+      if (this.ports.runtime().pendingEnforcementTransition !== null) {
+        return failure('end-not-allowed');
+      }
       if (this.ports.runtime().gate !== null) return failure('end-not-allowed');
       if (gate === 'unlockSite' && (host === null || host.trim() === '')) {
         return failure('end-not-allowed');
       }
-      await this.commitLiveGate({
-        kind: gate,
-        host: gate === 'unlockSite' ? host : null,
-        openedAt: this.ports.now(),
-        readyAt: this.ports.now() + this.ports.gateSettings().delayMs,
-        requiredPhrase: gate === 'pause' ? pausePhrase() : `I am allowing this site: ${host ?? ''}`,
-      });
+      await this.commitLiveGate(
+        {
+          kind: gate,
+          host: gate === 'unlockSite' ? host : null,
+          openedAt: this.ports.now(),
+          readyAt: this.ports.now() + this.ports.gateSettings().delayMs,
+          requiredPhrase:
+            gate === 'pause' ? pausePhrase() : `I am allowing this site: ${host ?? ''}`,
+        },
+        this.gateEvent('gateOpened', gate, session),
+      );
       return OK;
     });
   }
@@ -271,10 +289,14 @@ export class SessionControllerV2 {
   /** Clears the gate, records the resistance, and refreshes the live views. */
   async abandonGate(): Promise<CommandResultV2> {
     return this.command(async (): Promise<CommandResultV2> => {
-      if (this.inTransitionCleanup()) return failure('transition-cleanup-pending');
-      if (this.ports.runtime().pendingClosure !== null) return failure('closure-cleanup-pending');
-      if (this.ports.runtime().gate === null) return failure('no-active-gate');
-      await this.commitLiveGate(null);
+      const guard: CommandResultV2 | null = this.gateGuard(this.ports.runtime().session);
+      if (guard !== null) return guard;
+      const open: GateState | null = this.ports.runtime().gate;
+      if (open === null) return failure('no-active-gate');
+      await this.commitLiveGate(
+        null,
+        this.gateEvent('gateResisted', open.kind, this.ports.runtime().session),
+      );
       return OK;
     });
   }
@@ -309,6 +331,10 @@ export class SessionControllerV2 {
   async startNextFocusEarly(): Promise<CommandResultV2> {
     return this.command(async (): Promise<CommandResultV2> => {
       const session: SessionStateV2 | null = this.ports.runtime().session;
+      // A live journal answers before the core rule does, so the popup reports the cleanup that is
+      // actually blocking the command rather than the break rule underneath it.
+      const guard: CommandResultV2 | null = this.gateGuard(session);
+      if (guard !== null) return guard;
       if (session === null) return failure('no-active-session');
       try {
         assertCanStartNextFocusEarlyV2(session, this.ports.now());
@@ -487,7 +513,10 @@ export class SessionControllerV2 {
         await this.retryOwedClosure();
         return await work();
       } catch (error: unknown) {
-        if (error instanceof CoreError) {
+        // Only a genuine missing session becomes a code. Everything else propagates, because the
+        // brief requires a failed durable closure write to keep the session active and throw, so
+        // the router rejects the message and the popup can offer the retry.
+        if (error instanceof CoreError && this.ports.runtime().session === null) {
           this.ports.reportError(error);
           return failure('no-active-session');
         }
@@ -558,17 +587,40 @@ export class SessionControllerV2 {
     } else {
       await closeSessionV2(this.ports, this.effects, {
         endedAt,
-        reason:
-          session.config.duration.kind === 'until-stopped' ? 'manual-completed' : 'manual-canceled',
+        reason: manualEndReasonV2(session.config.duration),
       });
     }
     this.publish();
   }
 
   /** Persists one gate value and refreshes every live view under a fresh operation. */
-  private async commitLiveGate(gate: GateState | null): Promise<void> {
+  private async commitLiveGate(
+    gate: GateState | null,
+    events: SessionEventRecordV2[],
+    bank?: BankState,
+  ): Promise<void> {
     const runtime: RuntimeStateV2 = this.ports.runtime();
-    await this.commitLiveViews({ ...structuredClone(runtime), gate: structuredClone(gate) });
+    await this.commitLiveViews(
+      { ...structuredClone(runtime), gate: structuredClone(gate) },
+      events,
+      bank,
+    );
+  }
+
+  /** The legacy gate event one gate command records, tagged with the session that owns it. */
+  private gateEvent(
+    t: 'gateOpened' | 'gateResisted',
+    gate: GateKind,
+    session: SessionStateV2 | null,
+  ): SessionEventRecordV2[] {
+    return [
+      {
+        t,
+        at: this.ports.now(),
+        gate,
+        ...(session === null ? {} : { sessionId: session.sessionId }),
+      },
+    ];
   }
 
   /**
@@ -576,7 +628,11 @@ export class SessionControllerV2 {
    * current document under one fresh operation, and then the sends. The base-policy checkpoint is
    * carried through untouched.
    */
-  private async commitLiveViews(base: RuntimeStateV2): Promise<void> {
+  private async commitLiveViews(
+    base: RuntimeStateV2,
+    events: SessionEventRecordV2[] = [],
+    bank?: BankState,
+  ): Promise<void> {
     if (base.pendingEnforcementTransition !== null) {
       // A running transition owns its frozen view, so the runner refreezes it under the new tuple
       // and the verification budget is left exactly as it was.
@@ -597,8 +653,20 @@ export class SessionControllerV2 {
         runtimeRevision,
       });
     }
-    const next: RuntimeStateV2 = { ...base, runtimeRevision, documentCommands };
-    await this.write(next);
+    const next: RuntimeStateV2 = validRuntime({
+      ...base,
+      runtimeRevision,
+      documentCommands,
+    });
+    await this.ports.commit({
+      checkpointId: `${next.enforcementEpoch}:live-${runtimeRevision}`,
+      projection: projectRuntimeDomainV2(next),
+      bank: bank ?? this.ports.bank(),
+      events: structuredClone(events),
+      syncBank: bank !== undefined,
+      aggregateSets: {},
+      aggregateRemoves: [],
+    });
     for (const command of Object.values(documentCommands)) {
       await sendDocumentEnforcementCommand(this.ports.transport, command);
     }
@@ -663,38 +731,66 @@ export class SessionControllerV2 {
    * before the paused state is durable, so a refused alarm leaves the focus phase untouched.
    */
   private async spendGate(gate: GateState, session: SessionStateV2): Promise<CommandResultV2> {
-    const economy = this.ports.economy();
+    const economy: PauseEconomy = this.ports.economy();
     const now: number = this.ports.now();
-    if (gate.kind === 'pause') {
-      const paused: SessionStateV2 = beginPauseV2(session, now, economy.pauseMs);
-      const settled: 'ready' | 'alarm-failed' = await this.ensurePhaseAlarm(paused);
-      if (settled === 'alarm-failed') {
-        await this.restoreFocusAlarm(session);
-        return failure('end-not-allowed');
-      }
-      await this.write({
-        ...structuredClone(this.ports.runtime()),
-        session: structuredClone(paused),
-        gate: null,
-        enforcementCheckpoint: null,
-      });
-      await this.effects.clearBlockingForNonBlockingPhase();
-      this.publish();
-      return OK;
-    }
+    const cost: number = gate.kind === 'pause' ? economy.pauseMs : economy.unlockMs;
+    const balance: number = this.ports.bank().balanceMs;
+    if (balance < cost) return failure('end-not-allowed');
+    const spent: BankState = { balanceMs: balance - cost };
+    if (gate.kind === 'pause') return this.spendPause(session, spent, cost, now);
     const host: string | null = gate.host;
     if (host === null) return failure('end-not-allowed');
     const runtime: RuntimeStateV2 = this.ports.runtime();
-    await this.commitLiveViews({
+    await this.commitLiveViews(
+      {
+        ...structuredClone(runtime),
+        gate: null,
+        unlocks: [...structuredClone(runtime.unlocks), { host, until: now + cost }],
+      },
+      [{ t: 'unlockTaken', at: now, host, ms: cost, sessionId: session.sessionId }],
+      spent,
+    );
+    return OK;
+  }
+
+  /**
+   * Buys one pause. The replacement boundary is created and read back before the spend becomes
+   * durable, so a refused alarm costs the user nothing and leaves the focus phase untouched. The
+   * paused state, the cleared checkpoint, the charge, and the `pauseTaken` event are one checkpoint.
+   */
+  private async spendPause(
+    session: SessionStateV2,
+    spent: BankState,
+    cost: number,
+    now: number,
+  ): Promise<CommandResultV2> {
+    const paused: SessionStateV2 = beginPauseV2(session, now, cost);
+    if ((await this.ensurePhaseAlarm(paused)) === 'alarm-failed') {
+      await this.restoreFocusAlarm(session);
+      return failure('end-not-allowed');
+    }
+    const runtime: RuntimeStateV2 = this.ports.runtime();
+    const next: RuntimeStateV2 = validRuntime({
       ...structuredClone(runtime),
+      session: structuredClone(paused),
       gate: null,
-      unlocks: [...structuredClone(runtime.unlocks), { host, until: now + economy.unlockMs }],
+      enforcementCheckpoint: null,
     });
+    await this.ports.commit({
+      checkpointId: `${paused.sessionId}:pause-${paused.phaseStartedAt}`,
+      projection: projectRuntimeDomainV2(next),
+      bank: spent,
+      events: [{ t: 'pauseTaken', at: now, ms: cost, sessionId: paused.sessionId }],
+      syncBank: true,
+      aggregateSets: {},
+      aggregateRemoves: [],
+    });
+    await this.effects.clearBlockingForNonBlockingPhase();
+    this.publish();
     return OK;
   }
 
   private async ensurePhaseAlarm(session: SessionStateV2): Promise<'ready' | 'alarm-failed'> {
-    const { ensurePhaseAlarmV2 } = await import('./alarms-v2');
     return ensurePhaseAlarmV2(this.ports.alarms, session);
   }
 
@@ -966,11 +1062,7 @@ export class SessionControllerV2 {
   }
 
   private async write(runtime: RuntimeStateV2): Promise<void> {
-    const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(runtime);
-    if (parsed === null) {
-      throw new CoreError('invalid-rule', 'the session controller built an invalid runtime');
-    }
-    await this.ports.writeRuntime(parsed);
+    await this.ports.writeRuntime(validRuntime(runtime));
   }
 
   private async writeIfChanged(runtime: RuntimeStateV2): Promise<void> {
@@ -1022,6 +1114,15 @@ function evaluatedVerdictOf(
     url,
     runtime.unlocks,
   );
+}
+
+/** Nothing this controller hands a port is allowed to be a runtime the boundary would reject. */
+function validRuntime(runtime: RuntimeStateV2): RuntimeStateV2 {
+  const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(runtime);
+  if (parsed === null) {
+    throw new CoreError('invalid-rule', 'the session controller built an invalid runtime');
+  }
+  return parsed;
 }
 
 /** A tick never walks more finished days than this, so a broken clock cannot spin the loop. */
