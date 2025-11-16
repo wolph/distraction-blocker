@@ -364,19 +364,37 @@ describe('SessionControllerV2 end and gate commands', (): void => {
       const before = ports.current().pendingEnforcementTransition;
       expect(before?.checkpoint).not.toBeNull();
       expect((await controller.openEndGate()).code).toBe('ok');
+      const sentBefore: number = ports.sends.length;
       if (command === 'abandon') expect((await controller.abandonGate()).code).toBe('ok');
 
       const after: RuntimeStateV2 = ports.current();
       const restarted = after.pendingEnforcementTransition;
-      expect(parseRuntimeStateV2(after)).not.toBeNull();
       // The refreeze replaced the operation the candidate checkpoint attested, so the checkpoint is
       // discarded and the pass restarts from the stage that does not require it.
+      expect(parseRuntimeStateV2(after)).not.toBeNull();
       expect(restarted?.stage).toBe('alarm-ready');
       expect(restarted?.checkpoint).toBeNull();
+      // The restart runs on the remainder of the original budget, never a fresh one.
       expect(restarted?.freshnessAttempts).toBe(before?.freshnessAttempts);
       expect(restarted?.verificationStartedAt).toBe(before?.verificationStartedAt);
-      expect(restarted?.activeView?.runtimeRevision).toBe(after.runtimeRevision);
+      expect(
+        ports.writes.every(
+          (write): boolean =>
+            (write.pendingEnforcementTransition?.verificationStartedAt ??
+              before?.verificationStartedAt) === before?.verificationStartedAt,
+        ),
+      ).toBe(true);
+      // The pass reissues the replacement view: the sends carry the refrozen operation, and the
+      // durable row a next drive reads is the one holding it.
+      const operationId: string | undefined = restarted?.activeView?.operationId;
+      expect(operationId).not.toBe(before?.activeOperationId);
       expect(after.documentCommands).toEqual(restarted?.activeView?.documents);
+      expect(after.runtimeRevision).toBe(restarted?.activeView?.runtimeRevision);
+      const reissued = ports.sends.slice(command === 'abandon' ? sentBefore : 0);
+      expect(reissued.length).toBeGreaterThan(0);
+      expect(reissued.every((sent): boolean => sent.message.operationId === operationId)).toBe(
+        true,
+      );
       if (command === 'abandon') expect(after.gate).toBeNull();
       else expect(after.gate?.kind).toBe('cancel');
     }

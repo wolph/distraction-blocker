@@ -640,6 +640,10 @@ export class SessionControllerV2 {
       // The refreeze writes the runtime, not the journal, so a gate event or a spend needs its own
       // checkpoint over the row the refreeze just left. It replays that row unchanged.
       if (events.length > 0 || bank !== undefined) await this.commitLive(events, bank);
+      // Spec 1021: the restarted pass reissues the replacement view. The runner already stepped the
+      // stage back off any checkpoint the refreeze invalidated and carried the attempt count and
+      // the ten-second deadline through, so the pass that reads this row resumes on what is left of
+      // the original budget rather than a fresh one.
       for (const command of Object.values(this.ports.runtime().documentCommands)) {
         await sendDocumentEnforcementCommand(this.ports.transport, command);
       }
