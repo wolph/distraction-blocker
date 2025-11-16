@@ -354,6 +354,64 @@ describe('SessionControllerV2 end and gate commands', (): void => {
     expect((await hard.controller.openEndGate()).code).toBe('end-not-allowed');
   });
 
+  it('restarts the verification pass when a gate lands at active-verified', async (): Promise<void> => {
+    for (const command of ['open', 'abandon'] as const) {
+      const { controller, ports } = harness(
+        transitionRuntime(pendingTransition('start', 'active-verified'), {
+          session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
+        }),
+      );
+      const before = ports.current().pendingEnforcementTransition;
+      expect(before?.checkpoint).not.toBeNull();
+      expect((await controller.openEndGate()).code).toBe('ok');
+      if (command === 'abandon') expect((await controller.abandonGate()).code).toBe('ok');
+
+      const after: RuntimeStateV2 = ports.current();
+      const restarted = after.pendingEnforcementTransition;
+      expect(parseRuntimeStateV2(after)).not.toBeNull();
+      // The refreeze replaced the operation the candidate checkpoint attested, so the checkpoint is
+      // discarded and the pass restarts from the stage that does not require it.
+      expect(restarted?.stage).toBe('alarm-ready');
+      expect(restarted?.checkpoint).toBeNull();
+      expect(restarted?.freshnessAttempts).toBe(before?.freshnessAttempts);
+      expect(restarted?.verificationStartedAt).toBe(before?.verificationStartedAt);
+      expect(restarted?.activeView?.runtimeRevision).toBe(after.runtimeRevision);
+      expect(after.documentCommands).toEqual(restarted?.activeView?.documents);
+      if (command === 'abandon') expect(after.gate).toBeNull();
+      else expect(after.gate?.kind).toBe('cancel');
+    }
+  });
+
+  it('restarts a pre-commit pass when a live refresh lands at starting-verified', async (): Promise<void> => {
+    const { controller, ports } = harness(
+      transitionRuntime(pendingTransition('start', 'starting-verified')),
+    );
+    const before = ports.current().pendingEnforcementTransition;
+    await controller.refreshLiveViews();
+
+    const after: RuntimeStateV2 = ports.current();
+    const restarted = after.pendingEnforcementTransition;
+    expect(parseRuntimeStateV2(after)).not.toBeNull();
+    expect(restarted?.stage).toBe('registration-audited');
+    expect(restarted?.startingCheckpoint).toBeNull();
+    expect(restarted?.freshnessAttempts).toBe(before?.freshnessAttempts);
+    expect(restarted?.startingView?.runtimeRevision).toBe(after.runtimeRevision);
+  });
+
+  it('records gate events raised during a committed transition', async (): Promise<void> => {
+    const { controller, ports } = harness(
+      transitionRuntime(pendingTransition('start', 'alarm-ready'), {
+        session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
+      }),
+    );
+    expect((await controller.openEndGate()).code).toBe('ok');
+    expect((await controller.abandonGate()).code).toBe('ok');
+
+    expect(eventsOf(ports, 'gateOpened')).toHaveLength(1);
+    expect(eventsOf(ports, 'gateResisted')).toHaveLength(1);
+    expect(parseRuntimeStateV2(ports.current())).not.toBeNull();
+  });
+
   it('ends a committed transition through its cleanup journal, not as no-active-session', async (): Promise<void> => {
     const { controller, ports } = harness(
       transitionRuntime(pendingTransition('start', 'alarm-ready'), {

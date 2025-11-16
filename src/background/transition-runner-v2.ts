@@ -760,7 +760,7 @@ export async function refreezeTransitionViewV2(
     runtimeRevision,
     documents,
   };
-  const next: PendingEnforcementTransition =
+  const moved: PendingEnforcementTransition =
     phase === 'starting'
       ? {
           ...structuredClone(transition),
@@ -774,7 +774,31 @@ export async function refreezeTransitionViewV2(
           activeOperationId: operationId,
           activeView: replacement,
         };
-  return writeStage(ports, base, next, { runtimeRevision, documentCommands: documents });
+  return writeStage(ports, base, restartedPass(moved, phase), {
+    runtimeRevision,
+    documentCommands: documents,
+  });
+}
+
+/**
+ * A stored checkpoint attests one operation, and the refreeze just replaced the operation the
+ * stage's checkpoint is bound to. Keeping it would leave the row naming an operation no longer in
+ * the view, which the stage matrix rejects, so the pass restarts instead: the checkpoint is
+ * discarded and the stage steps back to the last one that does not require it (spec 1021). The
+ * attempt count and `verificationStartedAt` are left exactly as they were, so the restarted pass
+ * runs on the remainder of the original budget rather than a fresh one.
+ */
+function restartedPass(
+  transition: PendingEnforcementTransition,
+  phase: SweepPhaseV2,
+): PendingEnforcementTransition {
+  if (phase === 'active' && transition.stage === 'active-verified') {
+    return { ...transition, stage: 'alarm-ready', checkpoint: null };
+  }
+  if (phase === 'starting' && transition.stage === 'starting-verified') {
+    return { ...transition, stage: 'registration-audited', startingCheckpoint: null };
+  }
+  return transition;
 }
 
 /** One replacement command at the same target, the new tuple, and the view's frozen capture. */

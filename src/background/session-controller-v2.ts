@@ -637,6 +637,9 @@ export class SessionControllerV2 {
       // A running transition owns its frozen view, so the runner refreezes it under the new tuple
       // and the verification budget is left exactly as it was.
       await refreezeTransitionViewV2(this.ports, transitionMatcherV2(this.ports), base);
+      // The refreeze writes the runtime, not the journal, so a gate event or a spend needs its own
+      // checkpoint over the row the refreeze just left. It replays that row unchanged.
+      if (events.length > 0 || bank !== undefined) await this.commitLive(events, bank);
       for (const command of Object.values(this.ports.runtime().documentCommands)) {
         await sendDocumentEnforcementCommand(this.ports.transport, command);
       }
@@ -671,6 +674,20 @@ export class SessionControllerV2 {
       await sendDocumentEnforcementCommand(this.ports.transport, command);
     }
     this.publish();
+  }
+
+  /** One checkpoint over the current durable row, for the events and the charge it carries. */
+  private async commitLive(events: SessionEventRecordV2[], bank?: BankState): Promise<void> {
+    const current: RuntimeStateV2 = this.ports.runtime();
+    await this.ports.commit({
+      checkpointId: `${current.enforcementEpoch}:live-${current.runtimeRevision}`,
+      projection: projectRuntimeDomainV2(current),
+      bank: bank ?? this.ports.bank(),
+      events: structuredClone(events),
+      syncBank: bank !== undefined,
+      aggregateSets: {},
+      aggregateRemoves: [],
+    });
   }
 
   /** One replacement command for a live update, at the same target and the new tuple. */
