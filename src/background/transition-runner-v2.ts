@@ -801,7 +801,12 @@ function restartedPass(
   const restarted: boolean =
     transition.stage === 'active-verified' && stepped.stage === 'alarm-ready';
   if (!restarted || !verificationRestartPermittedV2(transition, now)) return stepped;
-  if (stepped.freshnessAttempts === 0) return stepped;
+  // `active-verified` is the one stage the matrix gives a minimum of one attempt, so the count the
+  // restart hands back always exists. An invariant rather than a clamp, because a zero here would
+  // mean the stage matrix moved under this function.
+  if (stepped.freshnessAttempts === 0) {
+    throw new CoreError('invalid-rule', 'active-verified always counts at least one attempt');
+  }
   return { ...stepped, freshnessAttempts: stepped.freshnessAttempts - 1 };
 }
 
@@ -824,7 +829,7 @@ function steppedBack(
  * count is three or the ten-second deadline has arrived, so a gate action at that point refreezes
  * the view the documents hold but never revives a transition whose budget is already spent.
  */
-export function verificationRestartPermittedV2(
+function verificationRestartPermittedV2(
   transition: PendingEnforcementTransition,
   now: number,
 ): boolean {
