@@ -4,7 +4,10 @@ import {
   TICK_ALARM,
   TRANSITION_CLEANUP_ALARM,
 } from '../../../src/background/alarms-v2';
-import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
+import type {
+  PendingEnforcementTransition,
+  RuntimeStateV2,
+} from '../../../src/background/runtime-v2-types';
 import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validation';
 import { SessionControllerV2 } from '../../../src/background/session-controller-v2';
 import { DEFAULT_SETTINGS } from '../../../src/shared/constants';
@@ -40,9 +43,11 @@ import {
   pausedSession,
   pendingTransition,
   publishedFocusRuntime,
+  SECOND_TARGET_URL,
   SESSION_ID,
   STARTING_OPERATION_ID,
   sessionConfigV2,
+  TARGET_URL,
   TRANSITION_ID,
   timedFocusSession,
   transitionPostCleanupClosure,
@@ -354,49 +359,147 @@ describe('SessionControllerV2 end and gate commands', (): void => {
     expect((await hard.controller.openEndGate()).code).toBe('end-not-allowed');
   });
 
+  /** A committed transition whose frozen view matches the live tabs, inside its ten-second budget. */
+  function restartHarness(options: Parameters<typeof createRuntimePortsFakeV2>[1] = {}): HarnessV2 {
+    return harness(
+      transitionRuntime(pendingTransition('start', 'active-verified'), {
+        session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
+      }),
+      {
+        now: ACTIVATION_AT + 5_000,
+        tabs: [
+          { tabId: 11, url: TARGET_URL, documentId: DOC_ONE },
+          { tabId: 12, url: SECOND_TARGET_URL, documentId: 'document-2' },
+        ],
+        ...options,
+      },
+    );
+  }
+
+  /** Every freshness attempt count a write recorded, so the restart can be pinned to one attempt. */
+  function attemptCounts(ports: RuntimePortsFakeV2): number[] {
+    return ports.writes.flatMap((write): number[] =>
+      write.pendingEnforcementTransition === null
+        ? []
+        : [write.pendingEnforcementTransition.freshnessAttempts],
+    );
+  }
+
   it('restarts the verification pass when a gate lands at active-verified', async (): Promise<void> => {
     for (const command of ['open', 'abandon'] as const) {
-      const { controller, ports } = harness(
-        transitionRuntime(pendingTransition('start', 'active-verified'), {
-          session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
-        }),
-      );
+      const { controller, ports } = restartHarness();
       const before = ports.current().pendingEnforcementTransition;
+      const attempts: number = before?.freshnessAttempts ?? 0;
+      const writesBefore: number = ports.writes.length;
       expect(before?.checkpoint).not.toBeNull();
-      expect((await controller.openEndGate()).code).toBe('ok');
-      const sentBefore: number = ports.sends.length;
-      if (command === 'abandon') expect((await controller.abandonGate()).code).toBe('ok');
+      // Both commands are issued before the restarted pass can run, so the row under test is the
+      // one the last gate action left.
+      const issued: Array<Promise<CommandResponseV2<SessionCommandResultCodeV2>>> = [
+        controller.openEndGate(),
+      ];
+      if (command === 'abandon') issued.push(controller.abandonGate());
+      for (const response of await Promise.all(issued)) expect(response.code).toBe('ok');
+      // Flushing the queue lets the pass the command enqueued run to its end.
+      await controller.tick();
 
-      const after: RuntimeStateV2 = ports.current();
-      const restarted = after.pendingEnforcementTransition;
+      const rows = ports.writes
+        .slice(writesBefore)
+        .map((write): PendingEnforcementTransition | null => write.pendingEnforcementTransition);
+      const stepped = rows.filter((row): boolean => row?.stage === 'alarm-ready');
       // The refreeze replaced the operation the candidate checkpoint attested, so the checkpoint is
       // discarded and the pass restarts from the stage that does not require it.
-      expect(parseRuntimeStateV2(after)).not.toBeNull();
-      expect(restarted?.stage).toBe('alarm-ready');
-      expect(restarted?.checkpoint).toBeNull();
-      // The restart runs on the remainder of the original budget, never a fresh one.
-      expect(restarted?.freshnessAttempts).toBe(before?.freshnessAttempts);
-      expect(restarted?.verificationStartedAt).toBe(before?.verificationStartedAt);
+      expect(stepped.length).toBeGreaterThan(0);
+      expect(stepped[0]?.checkpoint).toBeNull();
+      // The count goes back by the attempt the restart re-spends, so the runner's increment lands
+      // on the original number rather than a new one.
+      expect(stepped[0]?.freshnessAttempts).toBe(attempts - 1);
+      expect(stepped[0]?.verificationStartedAt).toBe(before?.verificationStartedAt);
+      expect(eventsOf(ports, command === 'abandon' ? 'gateResisted' : 'gateOpened')).toHaveLength(
+        1,
+      );
+
+      // The restarted pass ran against the replacement view and finished on the same attempt.
+      const operationId: string | undefined = stepped.at(-1)?.activeView?.operationId;
+      expect(operationId).not.toBe(before?.activeOperationId);
+      expect(ports.sends.some((sent): boolean => sent.message.operationId === operationId)).toBe(
+        true,
+      );
+      expect(
+        rows.some(
+          (row): boolean => row?.stage === 'active-verified' && row.freshnessAttempts === attempts,
+        ),
+      ).toBe(true);
+      expect(Math.max(...attemptCounts(ports))).toBe(attempts);
       expect(
         ports.writes.every(
           (write): boolean =>
-            (write.pendingEnforcementTransition?.verificationStartedAt ??
-              before?.verificationStartedAt) === before?.verificationStartedAt,
+            write.pendingEnforcementTransition === null ||
+            write.pendingEnforcementTransition.verificationStartedAt ===
+              before?.verificationStartedAt,
         ),
       ).toBe(true);
-      // The pass reissues the replacement view: the sends carry the refrozen operation, and the
-      // durable row a next drive reads is the one holding it.
-      const operationId: string | undefined = restarted?.activeView?.operationId;
-      expect(operationId).not.toBe(before?.activeOperationId);
-      expect(after.documentCommands).toEqual(restarted?.activeView?.documents);
-      expect(after.runtimeRevision).toBe(restarted?.activeView?.runtimeRevision);
-      const reissued = ports.sends.slice(command === 'abandon' ? sentBefore : 0);
-      expect(reissued.length).toBeGreaterThan(0);
-      expect(reissued.every((sent): boolean => sent.message.operationId === operationId)).toBe(
-        true,
-      );
-      if (command === 'abandon') expect(after.gate).toBeNull();
-      else expect(after.gate?.kind).toBe('cancel');
+      // A finished pass publishes, and the gate the user is deliberating over survives it.
+      expect(parseRuntimeStateV2(ports.current())).not.toBeNull();
+      expect(ports.current().pendingEnforcementTransition).toBeNull();
+      if (command === 'abandon') expect(ports.current().gate).toBeNull();
+      else expect(ports.current().gate?.kind).toBe('cancel');
+    }
+  });
+
+  it('never revives a transition whose freshness budget is already spent', async (): Promise<void> => {
+    const spent: ReadonlyArray<[string, HarnessV2]> = [
+      // The deadline arrived: this harness runs a minute past `verificationStartedAt`.
+      [
+        'deadline',
+        harness(
+          transitionRuntime(pendingTransition('start', 'active-verified'), {
+            session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
+          }),
+          {
+            tabs: [
+              { tabId: 11, url: TARGET_URL, documentId: DOC_ONE },
+              { tabId: 12, url: SECOND_TARGET_URL, documentId: 'document-2' },
+            ],
+          },
+        ),
+      ],
+      // The count is already three, which spec 775 refuses even inside the ten seconds.
+      [
+        'attempts',
+        harness(
+          transitionRuntime(
+            pendingTransition('start', 'active-verified', { freshnessAttempts: 3 }),
+            {
+              session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
+            },
+          ),
+          {
+            now: ACTIVATION_AT + 5_000,
+            tabs: [
+              { tabId: 11, url: TARGET_URL, documentId: DOC_ONE },
+              { tabId: 12, url: SECOND_TARGET_URL, documentId: 'document-2' },
+            ],
+          },
+        ),
+      ],
+    ];
+    for (const [label, { controller, ports }] of spent) {
+      const before = ports.current().pendingEnforcementTransition;
+      expect((await controller.openEndGate()).code, label).toBe('ok');
+      const stepped = ports.current().pendingEnforcementTransition;
+      // The row still has to be valid, so the invalidated checkpoint goes; the attempt count does
+      // not, because no attempt is coming.
+      expect(stepped?.stage, label).toBe('alarm-ready');
+      expect(stepped?.checkpoint, label).toBeNull();
+      expect(stepped?.freshnessAttempts, label).toBe(before?.freshnessAttempts);
+
+      const sentBefore: number = ports.sends.length;
+      await controller.tick();
+
+      // No pass ran: nothing was reissued and the journal is byte-for-byte the row the gate left.
+      expect(ports.sends.length, label).toBe(sentBefore);
+      expect(ports.current().pendingEnforcementTransition, label).toEqual(stepped);
+      expect(ports.current().gate?.kind, label).toBe('cancel');
     }
   });
 

@@ -66,7 +66,11 @@ import {
 import { recoverRuntimeV2 } from './recovery-v2';
 import { projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
-import type { RuntimeStateV2, SessionStartCandidate } from './runtime-v2-types';
+import type {
+  PendingEnforcementTransition,
+  RuntimeStateV2,
+  SessionStartCandidate,
+} from './runtime-v2-types';
 import { parseRuntimeStateV2 } from './runtime-v2-validation';
 import {
   nextScheduleInfoV2,
@@ -90,6 +94,7 @@ import {
   refreezeTransitionViewV2,
   type TransitionDriveResultV2,
   transitionMatcherV2,
+  verificationRestartPermittedV2,
 } from './transition-runner-v2';
 
 export interface SessionControllerEffectsV2 extends CleanupEffectPortsV2 {
@@ -648,6 +653,7 @@ export class SessionControllerV2 {
         await sendDocumentEnforcementCommand(this.ports.transport, command);
       }
       this.publish();
+      this.restartVerificationPass();
       return;
     }
     const session: SessionStateV2 | null = base.session;
@@ -678,6 +684,33 @@ export class SessionControllerV2 {
       await sendDocumentEnforcementCommand(this.ports.transport, command);
     }
     this.publish();
+  }
+
+  /**
+   * Spec 1021: a gate open or abandon restarts the current verification pass against the
+   * replacement frozen view. The pass runs as its own unit on the same queue, so it starts right
+   * after this command answers rather than making the popup wait out the ten-second budget, and the
+   * runner reads the durable row the refreeze left instead of anything captured here. A budget that
+   * is already spent gets no restart, because a gate action must not revive a dead transition.
+   */
+  private restartVerificationPass(): void {
+    void this.enqueue(async (): Promise<void> => {
+      // The row is read when the pass starts, not when it was enqueued, because the commands ahead
+      // of it in the queue may have ended the transition or spent the last of its budget.
+      const current: PendingEnforcementTransition | null =
+        this.ports.runtime().pendingEnforcementTransition;
+      if (current === null || !verificationRestartPermittedV2(current, this.ports.now())) return;
+      try {
+        const driven: TransitionDriveResultV2 = await driveTransitionV2(
+          this.ports,
+          transitionMatcherV2(this.ports),
+        );
+        if (driven.kind === 'cleanup') await this.runTransitionCleanupIfOwned();
+      } catch (error: unknown) {
+        this.ports.reportError(error);
+      }
+      this.publish();
+    });
   }
 
   /** One checkpoint over the current durable row, for the events and the charge it carries. */

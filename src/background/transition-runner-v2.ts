@@ -774,7 +774,7 @@ export async function refreezeTransitionViewV2(
           activeOperationId: operationId,
           activeView: replacement,
         };
-  return writeStage(ports, base, restartedPass(moved, phase), {
+  return writeStage(ports, base, restartedPass(moved, phase, ports.now()), {
     runtimeRevision,
     documentCommands: documents,
   });
@@ -791,6 +791,24 @@ export async function refreezeTransitionViewV2(
 function restartedPass(
   transition: PendingEnforcementTransition,
   phase: SweepPhaseV2,
+  now: number,
+): PendingEnforcementTransition {
+  const stepped: PendingEnforcementTransition = steppedBack(transition, phase);
+  // Stepping off `active-verified` throws away a completed attempt, and spec 1021 forbids the
+  // restart extending the original one, so that attempt's count comes back with it. The runner
+  // increments before every pass, so the re-run lands on the number it already had. A refreeze at
+  // any other stage discards no attempt and touches no count.
+  const restarted: boolean =
+    transition.stage === 'active-verified' && stepped.stage === 'alarm-ready';
+  if (!restarted || !verificationRestartPermittedV2(transition, now)) return stepped;
+  if (stepped.freshnessAttempts === 0) return stepped;
+  return { ...stepped, freshnessAttempts: stepped.freshnessAttempts - 1 };
+}
+
+/** The stage the restart runs from, off any checkpoint the replaced operation invalidated. */
+function steppedBack(
+  transition: PendingEnforcementTransition,
+  phase: SweepPhaseV2,
 ): PendingEnforcementTransition {
   if (phase === 'active' && transition.stage === 'active-verified') {
     return { ...transition, stage: 'alarm-ready', checkpoint: null };
@@ -799,6 +817,24 @@ function restartedPass(
     return { ...transition, stage: 'registration-audited', startingCheckpoint: null };
   }
   return transition;
+}
+
+/**
+ * Whether a restarted verification pass may begin at all. Spec 775: no attempt begins once the
+ * count is three or the ten-second deadline has arrived, so a gate action at that point refreezes
+ * the view the documents hold but never revives a transition whose budget is already spent.
+ */
+export function verificationRestartPermittedV2(
+  transition: PendingEnforcementTransition,
+  now: number,
+): boolean {
+  if (transition.stage === 'cleanup') return false;
+  const verificationStartedAt: number | null = transition.verificationStartedAt;
+  if (verificationStartedAt === null) return true;
+  return freshnessBudgetPermitsV2(
+    { verificationStartedAt, freshnessAttempts: transition.freshnessAttempts },
+    now,
+  );
 }
 
 /** One replacement command at the same target, the new tuple, and the view's frozen capture. */

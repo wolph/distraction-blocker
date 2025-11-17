@@ -194,7 +194,9 @@ export function createRuntimePortsFakeV2(
     },
     commit: async (input: RuntimeCommitInputV2): Promise<RuntimeStateV2> => {
       commits.push(structuredClone(input));
-      if (input.syncBank) state.bank = structuredClone(input.bank);
+      // Production writes the bank the checkpoint carries whatever `syncBank` says, so the fake
+      // does too: `syncBank` selects the sync mirror, not whether the local bank lands.
+      state.bank = structuredClone(input.bank);
       // Production writes the checkpointed runtime and then replays until the checkpoint clears,
       // so the durable value a caller receives is the projection with no checkpoint left. One
       // write is recorded per commit, and `commits` holds the batch the checkpoint carried.
