@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { TRANSITION_CLEANUP_ALARM } from '../../../src/background/alarms-v2';
 import type { FrozenDocumentCommand } from '../../../src/background/enforcement-persistence-v2';
 import type { RuntimeCommitInputV2 } from '../../../src/background/runtime-checkpoint-v2';
+import type { RuntimePortsV2 } from '../../../src/background/runtime-ports-v2';
 import type {
   CleanupProgress,
   CleanupRetryState,
   CleanupTabClaim,
   PendingClosure,
   PendingEnforcementTransition,
+  PostCleanupClosure,
   RuntimeStateV2,
 } from '../../../src/background/runtime-v2-types';
 import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validation';
@@ -18,10 +20,13 @@ import {
   retryTransitionCleanupV2,
   runTransitionCleanupAttemptV2,
 } from '../../../src/background/transition-cleanup-v2';
+import { emptyDaily } from '../../../src/core/stats';
 import { CLEANUP_MAX_AUTOMATIC_ATTEMPTS } from '../../../src/shared/constants';
 import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
 import { CoreError } from '../../../src/shared/errors';
-import type { SessionStateV2 } from '../../../src/shared/types';
+import { syncAggKey } from '../../../src/shared/storage-keys';
+import { localDateStr } from '../../../src/shared/time';
+import type { DailyAgg, SessionStateV2 } from '../../../src/shared/types';
 import {
   createRuntimePortsFakeV2,
   type FakeSendV2,
@@ -476,6 +481,32 @@ describe('handleCleanupNavigationV2', (): void => {
     expect(parseRuntimeStateV2(fake.current())).not.toBeNull();
   });
 
+  it('resets the discovered document before it sends that document its clear', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(committedRuntime());
+    await enterTransitionCleanupV2(fake, {
+      cause: 'manual-end',
+      failure: null,
+      endedAt: fake.now(),
+    });
+
+    await handleCleanupNavigationV2(fake, {
+      tabId: 12,
+      documentId: 'document-12',
+      url: 'https://news.example.com/story',
+    });
+
+    // A document found by navigation has never acknowledged this epoch, so its clear is only
+    // legal after the handshake every other clear in the batch performs.
+    const discovered: FakeSendV2[] = fake.sends.filter(
+      (send: FakeSendV2): boolean => send.documentId === 'document-12',
+    );
+    expect(discovered.map((send: FakeSendV2): string => send.message.command)).toEqual([
+      'reset-enforcement-epoch',
+      'apply-enforcement',
+    ]);
+    expect(Object.keys(fake.current().epochResetAcks)).toContain(documentKey(12, 'document-12'));
+  });
+
   it('ignores a target outside the enforceable set', async (): Promise<void> => {
     const fake: RuntimePortsFakeV2 = fakeFor(committedRuntime());
     await enterTransitionCleanupV2(fake, {
@@ -492,6 +523,59 @@ describe('handleCleanupNavigationV2', (): void => {
 
     expect(fake.writes).toHaveLength(writes);
     expect(fake.sends.some((send): boolean => send.documentId === 'document-13')).toBe(false);
+  });
+});
+
+describe('transition cleanup closure capture', (): void => {
+  it('loads the end day even when the retained phase settles no focus', async (): Promise<void> => {
+    // A paused retained session settles nothing, and the worker day has already rolled, so the
+    // projection needs a stored aggregate for a day earlier than `runtime.date`. Loading it is
+    // what keeps the capture from throwing and from replacing that finished day.
+    const endedAt: number = ACTIVATION_AT + 30_000;
+    const endedDate: string = localDateStr(endedAt);
+    const rolledDate: string = localDateStr(endedAt + 86_400_000);
+    const stored: DailyAgg = {
+      ...emptyDaily(endedDate),
+      focusMs: 600_000,
+      sessionsStarted: 2,
+      attempts: { 'example.com': 3 },
+    };
+    const loads: string[][] = [];
+    const fake: RuntimePortsFakeV2 = fakeFor(
+      transitionRuntime(pendingTransition('resume', 'registration-audited'), {
+        session: pausedSession(),
+        tabStates: { 11: { muteUrl: BLOCKED_URL, priorMuted: false, stoppedDocumentId: DOC_ONE } },
+        date: rolledDate,
+        todayAgg: emptyDaily(rolledDate),
+      }),
+      { aggregates: { [syncAggKey('device-1', endedDate)]: stored } },
+    );
+    const accrued: number = fake.current().accruedFocusMs;
+    const ports: RuntimePortsV2 = {
+      ...fake,
+      loadAggregates: async (keys: readonly string[]): Promise<Record<string, DailyAgg>> => {
+        loads.push([...keys]);
+        return fake.loadAggregates(keys);
+      },
+    };
+
+    await enterTransitionCleanupV2(ports, {
+      cause: 'timer-completed',
+      failure: null,
+      endedAt,
+    });
+
+    const closure: PostCleanupClosure | null = storedTransition(fake).postCleanupClosure;
+    const ended: DailyAgg | undefined =
+      closure?.projection.aggregateSets[syncAggKey('device-1', endedDate)];
+    expect(loads[0]).toContain(syncAggKey('device-1', endedDate));
+    expect(ended?.attempts).toEqual(stored.attempts);
+    expect(ended?.sessionsStarted).toBe(stored.sessionsStarted);
+    // The finished day kept its own focus and gained only what this closure settled, which is what
+    // seeding it empty would have destroyed.
+    const settled: number = Math.max(0, (closure?.projection.focusedMs ?? 0) - accrued);
+    expect(ended?.focusMs).toBe(stored.focusMs + settled);
+    expect(ended?.sessionsCompleted).toBe(stored.sessionsCompleted + 1);
   });
 });
 

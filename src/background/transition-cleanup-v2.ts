@@ -17,46 +17,34 @@
 
 import { CoreError } from '../shared/errors';
 import type { RetryCleanupResultCodeV2 } from '../shared/messages';
-import { syncAggKey } from '../shared/storage-keys';
-import type { DailyAgg, SessionEndReasonV2, SessionStateV2 } from '../shared/types';
+import type { SessionEndReasonV2, SessionStateV2 } from '../shared/types';
 import {
   type AlarmNameV2,
   clearAlarmWithReadBackV2,
-  createAlarmWithReadBackV2,
   ensurePhaseAlarmV2,
   parseAlarmNameV2,
-  TRANSITION_CLEANUP_ALARM,
 } from './alarms-v2';
 import {
-  addCleanupTargetV2,
   buildCleanupProgressV2,
   buildCleanupSeedV2,
   documentCommandKeyV2,
   mergeCleanupTabClaimV2,
-  recordCleanupAttemptFailureV2,
   replaceCleanupBatchV2,
   resolveCleanupTabV2,
 } from './cleanup-progress-v2';
 import {
-  buildClosureProjectionV2,
-  manualEndReasonV2,
-  splitFocusByLocalDateV2,
-} from './closure-projection-v2';
-import {
-  type DocumentCommandOutcomeV2,
-  type EpochResetOutcomeV2,
-  sendDocumentEnforcementCommand,
-  sendEpochResetCommand,
-} from './content-transport-v2';
-import type { DocumentEpochResetAck, FrozenDocumentCommand } from './enforcement-persistence-v2';
-import { classifyEnforcementTargetV2, type TargetClassificationV2 } from './enforcement-targets-v2';
-import { buildFrozenEpochResetCommandV2 } from './overlay-view-v2';
+  journalProgressV2,
+  recordCleanupFailureAndRearmV2,
+  resetAndClearDocumentV2,
+  settledAggregatesV2,
+} from './cleanup-shared-v2';
+import { buildClosureProjectionV2, manualEndReasonV2 } from './closure-projection-v2';
+import type { FrozenDocumentCommand } from './enforcement-persistence-v2';
 import { projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
 import type {
   CleanupEnforcementTarget,
   CleanupProgress,
-  CleanupRetryState,
   CleanupSeed,
   CleanupTabClaim,
   ClosureProjection,
@@ -276,7 +264,7 @@ async function captureClosure(
     pauseEconomy: ports.economy(),
     accruedFocusMs: runtime.accruedFocusMs,
     todayAgg: runtime.todayAgg,
-    priorAggregates: await settledAggregates(ports, session, entry.endedAt),
+    priorAggregates: await settledAggregatesV2(ports, runtime, session, entry.endedAt),
     runtimeDate: runtime.date,
     deviceId: ports.deviceId(),
     currentHandledOccurrences: runtime.handledScheduleOccurrences,
@@ -308,19 +296,6 @@ function closureReason(
   return reason;
 }
 
-/** Reads back every stored day the settled focus lands on, so no finished day is overwritten. */
-async function settledAggregates(
-  ports: RuntimePortsV2,
-  session: SessionStateV2,
-  endedAt: number,
-): Promise<Record<string, DailyAgg>> {
-  const from: number = session.phase === 'focus' ? session.phaseStartedAt : endedAt;
-  const keys: string[] = splitFocusByLocalDateV2(from, endedAt).map((split): string =>
-    syncAggKey(ports.deviceId(), split.date),
-  );
-  return keys.length === 0 ? {} : ports.loadAggregates(keys);
-}
-
 /** Re-exported so the runner and Task 3 agree on the one document key spelling. */
 export { documentCommandKeyV2 };
 
@@ -337,16 +312,17 @@ export async function runTransitionCleanupAttemptV2(
   effects: CleanupEffectPortsV2,
 ): Promise<RuntimeStateV2> {
   const transition: PendingEnforcementTransition = cleanupTransitionOf(ports);
-  const progress: CleanupProgress = requireProgress(transition);
+  const _progress: CleanupProgress = requireProgress(transition);
   let failure: string | null;
   try {
-    failure = await performCleanupEffects(ports, effects, transition, progress);
+    failure = await performCleanupEffects(ports, effects, transition);
   } catch (error: unknown) {
     // A cleanup error raised while acting on the browser, a contradictory tab claim included, is
     // this attempt's failure and is recorded as one. It never escapes as an overwrite or a throw.
     failure = error instanceof Error ? error.message : String(error);
   }
-  if (failure !== null) return recordAttemptFailure(ports, failure);
+  if (failure !== null)
+    return recordCleanupFailureAndRearmV2(ports, 'transition', failure, 'cleanup');
   return resolveCleanup(ports);
 }
 
@@ -359,7 +335,6 @@ async function performCleanupEffects(
   ports: RuntimePortsV2,
   effects: CleanupEffectPortsV2,
   transition: PendingEnforcementTransition,
-  progress: CleanupProgress,
 ): Promise<string | null> {
   for (const name of transition.alarmNames) {
     const alarm: AlarmNameV2 | null = parseAlarmNameV2(name);
@@ -369,10 +344,19 @@ async function performCleanupEffects(
     }
   }
   effects.requestBlankBadge();
-  const cleared: string | null = await reissueClearCommands(ports, progress);
+  // Reread after every await: an epoch acknowledgement write lands between these steps, and a
+  // snapshot taken before them would be a stale copy of the row this attempt is acting on.
+  const cleared: string | null = await reissueClearCommands(
+    ports,
+    journalProgressV2(ports.runtime(), 'transition'),
+  );
   if (cleared !== null) return cleared;
-  const resolved: number[] = await effects.restoreTabClaims(progress.tabClaims);
-  await effects.reloadStoppedDocuments(progress.tabClaims);
+  const claims: readonly CleanupTabClaim[] = journalProgressV2(
+    ports.runtime(),
+    'transition',
+  ).tabClaims;
+  const resolved: number[] = await effects.restoreTabClaims(claims);
+  await effects.reloadStoppedDocuments(claims);
   await recordResolvedTabs(ports, resolved);
   return null;
 }
@@ -383,34 +367,14 @@ async function reissueClearCommands(
   progress: CleanupProgress,
 ): Promise<string | null> {
   for (const [key, command] of Object.entries(progress.clearCommands)) {
-    // Reread per target: the acknowledgement this loop persists for one document is durable
-    // before the next document is considered.
-    const runtime: RuntimeStateV2 = ports.runtime();
-    const ack: DocumentEpochResetAck | undefined = runtime.epochResetAcks[key];
-    if (ack === undefined || ack.enforcementEpoch !== runtime.enforcementEpoch) {
-      const reset: EpochResetOutcomeV2 = await sendEpochResetCommand(
-        ports.transport,
-        buildFrozenEpochResetCommandV2({
-          tabId: command.tabId,
-          documentId: command.documentId,
-          expectedUrl: command.expectedUrl,
-          operationId: progress.cleanupOperationId,
-          enforcementEpoch: command.enforcementEpoch,
-        }),
-      );
-      if (reset.kind === 'closed') continue;
-      if (reset.kind !== 'reset') return `cleanup reset for ${key} answered ${reset.kind}`;
-      await recordCleanupEpochAck(ports, reset.ack);
-    }
-    const outcome: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
-      ports.transport,
+    const failure: string | null = await resetAndClearDocumentV2(
+      ports,
+      progress,
+      key,
       command,
+      'cleanup',
     );
-    if (outcome.kind === 'applied' || outcome.kind === 'closed' || outcome.kind === 'changed') {
-      continue;
-    }
-    // Nothing may outrank the clear revision, so a stale answer during cleanup is fatal too.
-    return `cleanup clear for ${key} answered ${outcome.kind}`;
+    if (failure !== null) return failure;
   }
   return null;
 }
@@ -440,7 +404,12 @@ async function restoreResume(ports: RuntimePortsV2): Promise<RuntimeStateV2> {
     return upgradeToTimerCompletion(ports, session.sessionEndsAt);
   }
   if ((await ensurePhaseAlarmV2(ports.alarms, session)) === 'alarm-failed') {
-    return recordAttemptFailure(ports, 'cleanup could not restore the saved phase alarm');
+    return recordCleanupFailureAndRearmV2(
+      ports,
+      'transition',
+      'cleanup could not restore the saved phase alarm',
+      'cleanup',
+    );
   }
   return clearTransition(ports, `${session.sessionId}:restore`);
 }
@@ -574,58 +543,6 @@ async function clearTransition(
   });
 }
 
-/**
- * Records one failed attempt and schedules the next. The twelfth failure leaves `nextAttemptAt`
- * null and creates no alarm, which is what lifecycle reads as `transition-cleanup-failed`.
- */
-async function recordAttemptFailure(
-  ports: RuntimePortsV2,
-  detail: string,
-): Promise<RuntimeStateV2> {
-  let next: RuntimeStateV2 = await writeAttemptFailure(ports, detail);
-  for (;;) {
-    const scheduled: number | null = retryStateOf(next).nextAttemptAt;
-    if (scheduled === null) return next;
-    if (await createAlarmWithReadBackV2(ports.alarms, TRANSITION_CLEANUP_ALARM, scheduled)) {
-      return next;
-    }
-    // An alarm the browser refused is not a scheduled attempt. Recording it as one more failure is
-    // what keeps the schedule moving toward the manual retry instead of stranding this journal
-    // with a live `nextAttemptAt` that nothing will ever fire.
-    next = await writeAttemptFailure(ports, 'cleanup could not schedule its retry alarm');
-  }
-}
-
-/** Advances the retry state by one failure and persists it. */
-async function writeAttemptFailure(ports: RuntimePortsV2, detail: string): Promise<RuntimeStateV2> {
-  const runtime: RuntimeStateV2 = ports.runtime();
-  const transition: PendingEnforcementTransition = cleanupTransitionOf(ports);
-  const progress: CleanupProgress = requireProgress(transition);
-  const retry: CleanupRetryState = recordCleanupAttemptFailureV2(
-    progress.retry,
-    ports.now(),
-    detail,
-  );
-  const next: RuntimeStateV2 = validated({
-    ...structuredClone(runtime),
-    pendingEnforcementTransition: {
-      ...structuredClone(transition),
-      cleanupProgress: { ...structuredClone(progress), retry },
-    },
-  });
-  await ports.writeRuntime(next);
-  return next;
-}
-
-function retryStateOf(runtime: RuntimeStateV2): CleanupRetryState {
-  const retry: CleanupRetryState | undefined =
-    runtime.pendingEnforcementTransition?.cleanupProgress?.retry;
-  if (retry === undefined) {
-    throw new CoreError('invalid-rule', 'a cleanup attempt needs its durable retry state');
-  }
-  return retry;
-}
-
 /** Records the tabs whose captured effects were verified clean, so a retry leaves them alone. */
 async function recordResolvedTabs(
   ports: RuntimePortsV2,
@@ -642,23 +559,6 @@ async function recordResolvedTabs(
       pendingEnforcementTransition: {
         ...structuredClone(transition),
         cleanupProgress: structuredClone(progress),
-      },
-    }),
-  );
-}
-
-/** One acknowledgement becomes durable before the enforcement command it authorizes is sent. */
-async function recordCleanupEpochAck(
-  ports: RuntimePortsV2,
-  ack: DocumentEpochResetAck,
-): Promise<void> {
-  const runtime: RuntimeStateV2 = ports.runtime();
-  await ports.writeRuntime(
-    validated({
-      ...structuredClone(runtime),
-      epochResetAcks: {
-        ...structuredClone(runtime.epochResetAcks),
-        [documentCommandKeyV2(ack.tabId, ack.documentId)]: structuredClone(ack),
       },
     }),
   );
@@ -714,64 +614,11 @@ export async function retryTransitionCleanupV2(
 }
 
 /**
- * Adds a target discovered while cleanup is running. The target and its frozen clear command are
- * durable before the first send, under the batch's existing operation and clear revision, so a
- * newly found document never outranks the commands already in flight.
+ * The cleanup navigation entry the controller calls. It lives in the shared cleanup leaf because a
+ * navigation belongs to whichever journal owns the durable batch, and it is re-exported here so the
+ * call site that has always imported it from this module keeps working.
  */
-export async function handleCleanupNavigationV2(
-  ports: RuntimePortsV2,
-  target: { tabId: number; documentId: string; url: string },
-): Promise<void> {
-  if (typeof target.documentId !== 'string' || target.documentId.trim() === '') {
-    throw new CoreError('invalid-rule', 'a cleanup target needs a document ID');
-  }
-  const classified: TargetClassificationV2 = classifyEnforcementTargetV2(
-    target.tabId,
-    target.url,
-    target.documentId,
-  );
-  if (classified.kind !== 'enforceable') return;
-  const runtime: RuntimeStateV2 = ports.runtime();
-  const transition: PendingEnforcementTransition = cleanupTransitionOf(ports);
-  const progress: CleanupProgress = requireProgress(transition);
-  const key: string = documentCommandKeyV2(classified.tabId, classified.documentId);
-  const known: FrozenDocumentCommand | undefined = progress.clearCommands[key];
-  const next: CleanupProgress =
-    known === undefined
-      ? addCleanupTargetV2(
-          progress,
-          {
-            tabId: classified.tabId,
-            documentId: classified.documentId,
-            expectedUrl: classified.url,
-          },
-          {
-            enforcementEpoch: runtime.enforcementEpoch,
-            basePolicyRevision: runtime.basePolicyRevision,
-            ...clearedIdentity(transition),
-          },
-        )
-      : progress;
-  if (known === undefined) {
-    await ports.writeRuntime(
-      validated({
-        ...structuredClone(runtime),
-        documentCommands: structuredClone(next.clearCommands),
-        pendingEnforcementTransition: {
-          ...structuredClone(transition),
-          cleanupProgress: structuredClone(next),
-        },
-      }),
-    );
-  }
-  const command: FrozenDocumentCommand | undefined = next.clearCommands[key];
-  if (command === undefined) {
-    throw new CoreError('invalid-rule', 'the cleanup batch lost its new clear command');
-  }
-  // The next attempt owns the verdict for this target: the command is durable, so an unreachable
-  // document is simply re-sent from the frozen batch rather than judged here.
-  await sendDocumentEnforcementCommand(ports.transport, command);
-}
+export { handleCleanupNavigationV2 } from './cleanup-shared-v2';
 
 /** The durable transition this file acts on: one that is already in cleanup with its progress. */
 function cleanupTransitionOf(ports: RuntimePortsV2): PendingEnforcementTransition {

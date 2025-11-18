@@ -9,7 +9,6 @@
  * the attempt, retry, and removal rules below are the only ones the runtime ever applies to it.
  */
 
-import { focusedMsAtV2 } from '../core/session-v2';
 import { CoreError } from '../shared/errors';
 import { exactDataEqual } from '../shared/exact-data';
 import type { RetryCleanupResultCodeV2 } from '../shared/messages';
@@ -18,9 +17,7 @@ import { localDateStr } from '../shared/time';
 import type { DailyAgg, SessionEndReasonV2, SessionStateV2 } from '../shared/types';
 import {
   type AlarmNameV2,
-  CLOSURE_CLEANUP_ALARM,
   clearAlarmWithReadBackV2,
-  createAlarmWithReadBackV2,
   PHASE_ALARM,
   parseAlarmNameV2,
   planPhaseAlarmV2,
@@ -31,29 +28,26 @@ import {
   buildCleanupSeedV2,
   documentCommandKeyV2,
   mergeCleanupTabClaimV2,
-  recordCleanupAttemptFailureV2,
   replaceCleanupBatchV2,
   resolveCleanupTabV2,
 } from './cleanup-progress-v2';
-import { buildClosureProjectionV2, splitFocusByLocalDateV2 } from './closure-projection-v2';
 import {
-  type DocumentCommandOutcomeV2,
-  type EpochResetOutcomeV2,
-  sendDocumentEnforcementCommand,
-  sendEpochResetCommand,
-} from './content-transport-v2';
-import type { DocumentEpochResetAck, FrozenDocumentCommand } from './enforcement-persistence-v2';
+  journalProgressV2,
+  recordCleanupFailureAndRearmV2,
+  resetAndClearDocumentV2,
+  settledAggregatesV2,
+} from './cleanup-shared-v2';
+import { buildClosureProjectionV2 } from './closure-projection-v2';
+import type { FrozenDocumentCommand } from './enforcement-persistence-v2';
 import {
   enumerateEnforcementTargetsV2,
   type TargetClassificationV2,
 } from './enforcement-targets-v2';
-import { buildFrozenEpochResetCommandV2 } from './overlay-view-v2';
 import { projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
 import type {
   CleanupEnforcementTarget,
   CleanupProgress,
-  CleanupRetryState,
   CleanupSeed,
   CleanupTabClaim,
   ClosureProjection,
@@ -96,7 +90,7 @@ export async function prepareClosureV2(
     throw invalidClosure('a transition closes its own session through its cleanup handoff');
   }
   const seed: CleanupSeed = buildCleanupSeedV2(closureAlarmNames(session), runtime.tabStates);
-  const priorAggregates: Record<string, DailyAgg> = await settledAggregates(
+  const priorAggregates: Record<string, DailyAgg> = await settledAggregatesV2(
     ports,
     runtime,
     session,
@@ -205,7 +199,8 @@ export async function runClosureCleanupAttemptV2(
     // escapes as a throw.
     failure = error instanceof Error ? error.message : String(error);
   }
-  if (failure !== null) return recordAttemptFailure(ports, failure);
+  if (failure !== null)
+    return recordCleanupFailureAndRearmV2(ports, 'closure', failure, 'closure cleanup');
   return removeClosureJournal(ports);
 }
 
@@ -288,7 +283,13 @@ async function clearDiscoveredDocuments(ports: RuntimePortsV2): Promise<string |
     );
     const command: FrozenDocumentCommand | undefined = added.clearCommands[key];
     if (command === undefined) invalidClosure('the closure batch lost its new clear command');
-    const failure: string | null = await resetAndClearDocument(ports, added, key, command);
+    const failure: string | null = await resetAndClearDocumentV2(
+      ports,
+      added,
+      key,
+      command,
+      'closure',
+    );
     if (failure !== null) return failure;
   }
   return null;
@@ -352,33 +353,6 @@ function closureAlarmNames(session: SessionStateV2): string[] {
   return planPhaseAlarmV2(session) === null ? [] : [PHASE_ALARM];
 }
 
-/**
- * Reads back every stored day the settled focus lands on, plus the day the closure ends on. The
- * interval is the one `buildClosureProjectionV2` will split: it ends at the last focus instant and
- * is exactly the unsettled focus delta long.
- */
-async function settledAggregates(
-  ports: RuntimePortsV2,
-  runtime: RuntimeStateV2,
-  session: SessionStateV2,
-  endedAt: number,
-): Promise<Record<string, DailyAgg>> {
-  const settleTo: number =
-    session.phase === 'focus'
-      ? Math.min(endedAt, session.phaseEndsAt ?? endedAt)
-      : session.phaseStartedAt;
-  const deltaMs: number = Math.max(0, focusedMsAtV2(session, endedAt) - runtime.accruedFocusMs);
-  const dates: Set<string> = new Set<string>(
-    splitFocusByLocalDateV2(settleTo - deltaMs, settleTo).map(
-      (split: { date: string }): string => split.date,
-    ),
-  );
-  dates.add(localDateStr(endedAt));
-  return ports.loadAggregates(
-    [...dates].map((date: string): string => syncAggKey(ports.deviceId(), date)),
-  );
-}
-
 /** The documents the clear batch addresses: every enforceable target the browser has right now. */
 async function currentClearTargets(ports: RuntimePortsV2): Promise<CleanupEnforcementTarget[]> {
   const classified: TargetClassificationV2[] = await enumerateEnforcementTargetsV2(ports.targets);
@@ -434,6 +408,7 @@ async function performClosureEffects(
   effects: CleanupEffectPortsV2,
   closure: CleanupClosureV2,
 ): Promise<string | null> {
+  // The seed is immutable, so its alarm names are safe to read once. Everything below rereads.
   for (const name of closure.cleanupSeed.alarmNames) {
     const alarm: AlarmNameV2 | null = parseAlarmNameV2(name);
     if (alarm === null) return `closure cleanup cannot clear the unknown alarm ${name}`;
@@ -442,10 +417,19 @@ async function performClosureEffects(
     }
   }
   effects.requestBlankBadge();
-  const cleared: string | null = await reissueClearCommands(ports, closure.cleanupProgress);
+  // Reread after every await: an epoch acknowledgement write lands between these steps, and a
+  // snapshot taken before them would be a stale copy of the row this attempt is acting on.
+  const cleared: string | null = await reissueClearCommands(
+    ports,
+    journalProgressV2(ports.runtime(), 'closure'),
+  );
   if (cleared !== null) return cleared;
-  const resolved: number[] = await effects.restoreTabClaims(closure.cleanupProgress.tabClaims);
-  await effects.reloadStoppedDocuments(closure.cleanupProgress.tabClaims);
+  const claims: readonly CleanupTabClaim[] = journalProgressV2(
+    ports.runtime(),
+    'closure',
+  ).tabClaims;
+  const resolved: number[] = await effects.restoreTabClaims(claims);
+  await effects.reloadStoppedDocuments(claims);
   await recordResolvedTabs(ports, resolved);
   return null;
 }
@@ -456,50 +440,16 @@ async function reissueClearCommands(
   progress: CleanupProgress,
 ): Promise<string | null> {
   for (const [key, command] of Object.entries(progress.clearCommands)) {
-    const failure: string | null = await resetAndClearDocument(ports, progress, key, command);
+    const failure: string | null = await resetAndClearDocumentV2(
+      ports,
+      progress,
+      key,
+      command,
+      'closure',
+    );
     if (failure !== null) return failure;
   }
   return null;
-}
-
-/**
- * Spec step 6 for one document: reset it when it has not acknowledged the current epoch, and only
- * then send its exact frozen clear. Every reachable document owes that handshake, the ones this
- * batch froze and the ones the attempt discovers alike, so both loops come through here.
- */
-async function resetAndClearDocument(
-  ports: RuntimePortsV2,
-  progress: CleanupProgress,
-  key: string,
-  command: FrozenDocumentCommand,
-): Promise<string | null> {
-  const runtime: RuntimeStateV2 = ports.runtime();
-  const ack: DocumentEpochResetAck | undefined = runtime.epochResetAcks[key];
-  if (ack === undefined || ack.enforcementEpoch !== runtime.enforcementEpoch) {
-    const reset: EpochResetOutcomeV2 = await sendEpochResetCommand(
-      ports.transport,
-      buildFrozenEpochResetCommandV2({
-        tabId: command.tabId,
-        documentId: command.documentId,
-        expectedUrl: command.expectedUrl,
-        operationId: progress.cleanupOperationId,
-        enforcementEpoch: command.enforcementEpoch,
-      }),
-    );
-    // A closed document owes nothing further this attempt, and its claim decides its resolution.
-    if (reset.kind === 'closed') return null;
-    if (reset.kind !== 'reset') return `closure reset for ${key} answered ${reset.kind}`;
-    await recordClosureEpochAck(ports, reset.ack);
-  }
-  const outcome: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
-    ports.transport,
-    command,
-  );
-  if (outcome.kind === 'applied' || outcome.kind === 'closed' || outcome.kind === 'changed') {
-    return null;
-  }
-  // Nothing may outrank the clear revision, so a stale answer during cleanup is fatal too.
-  return `closure clear for ${key} answered ${outcome.kind}`;
 }
 
 /**
@@ -514,9 +464,11 @@ async function removeClosureJournal(ports: RuntimePortsV2): Promise<RuntimeState
     (claim: CleanupTabClaim): boolean => !progress.resolvedTabIds.includes(claim.tabId),
   );
   if (unresolved.length > 0) {
-    return recordAttemptFailure(
+    return recordCleanupFailureAndRearmV2(
       ports,
+      'closure',
       `closure cleanup left ${unresolved.length} claims unresolved`,
+      'closure cleanup',
     );
   }
   const next: RuntimeStateV2 = validated({
@@ -527,58 +479,14 @@ async function removeClosureJournal(ports: RuntimePortsV2): Promise<RuntimeState
     await ports.writeRuntime(next);
   } catch (error: unknown) {
     ports.reportError(error);
-    return recordAttemptFailure(ports, 'closure cleanup could not remove its journal');
+    return recordCleanupFailureAndRearmV2(
+      ports,
+      'closure',
+      'closure cleanup could not remove its journal',
+      'closure cleanup',
+    );
   }
   return next;
-}
-
-/**
- * Records one failed attempt and schedules the next. The twelfth failure leaves `nextAttemptAt`
- * null and creates no alarm, which is the exhausted state a manual retry answers.
- */
-async function recordAttemptFailure(
-  ports: RuntimePortsV2,
-  detail: string,
-): Promise<RuntimeStateV2> {
-  let next: RuntimeStateV2 = await writeAttemptFailure(ports, detail);
-  for (;;) {
-    const scheduled: number | null = closureRetryStateOf(next).nextAttemptAt;
-    if (scheduled === null) return next;
-    if (await createAlarmWithReadBackV2(ports.alarms, CLOSURE_CLEANUP_ALARM, scheduled)) {
-      return next;
-    }
-    // An alarm the browser refused is not a scheduled attempt. Recording it as one more failure is
-    // what keeps the schedule moving toward the manual retry instead of stranding this journal
-    // with a live `nextAttemptAt` that nothing will ever fire.
-    next = await writeAttemptFailure(ports, 'closure cleanup could not schedule its retry alarm');
-  }
-}
-
-/** One durable failed attempt, with no alarm of its own. The caller owns the scheduling loop. */
-async function writeAttemptFailure(ports: RuntimePortsV2, detail: string): Promise<RuntimeStateV2> {
-  const closure: CleanupClosureV2 = cleanupClosureOf(ports);
-  const retry: CleanupRetryState = recordCleanupAttemptFailureV2(
-    closure.cleanupProgress.retry,
-    ports.now(),
-    detail,
-  );
-  const next: RuntimeStateV2 = validated({
-    ...structuredClone(ports.runtime()),
-    pendingClosure: {
-      ...structuredClone(closure),
-      cleanupProgress: { ...structuredClone(closure.cleanupProgress), retry },
-    },
-  });
-  await ports.writeRuntime(next);
-  return next;
-}
-
-function closureRetryStateOf(runtime: RuntimeStateV2): CleanupRetryState {
-  const closure: PendingClosure | null = runtime.pendingClosure;
-  if (closure === null || closure.stage !== 'cleanup') {
-    throw invalidClosure('a closure cleanup attempt needs its durable retry state');
-  }
-  return closure.cleanupProgress.retry;
 }
 
 /** Records the tabs whose captured effects were verified clean, so a retry leaves them alone. */
@@ -594,23 +502,6 @@ async function recordResolvedTabs(
     validated({
       ...structuredClone(ports.runtime()),
       pendingClosure: { ...structuredClone(closure), cleanupProgress: structuredClone(progress) },
-    }),
-  );
-}
-
-/** One acknowledgement becomes durable before the clear command it authorizes is sent. */
-async function recordClosureEpochAck(
-  ports: RuntimePortsV2,
-  ack: DocumentEpochResetAck,
-): Promise<void> {
-  const runtime: RuntimeStateV2 = ports.runtime();
-  await ports.writeRuntime(
-    validated({
-      ...structuredClone(runtime),
-      epochResetAcks: {
-        ...structuredClone(runtime.epochResetAcks),
-        [documentCommandKeyV2(ack.tabId, ack.documentId)]: structuredClone(ack),
-      },
     }),
   );
 }

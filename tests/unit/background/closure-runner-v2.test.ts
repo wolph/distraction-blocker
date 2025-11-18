@@ -17,7 +17,10 @@ import type {
   RuntimeStateV2,
 } from '../../../src/background/runtime-v2-types';
 import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validation';
-import type { CleanupEffectPortsV2 } from '../../../src/background/transition-cleanup-v2';
+import {
+  type CleanupEffectPortsV2,
+  handleCleanupNavigationV2,
+} from '../../../src/background/transition-cleanup-v2';
 import { emptyDaily } from '../../../src/core/stats';
 import { CLEANUP_MAX_AUTOMATIC_ATTEMPTS } from '../../../src/shared/constants';
 import { CoreError } from '../../../src/shared/errors';
@@ -582,6 +585,50 @@ describe('runClosureCleanupAttemptV2', (): void => {
     expect(progress.retry.nextAttemptAt).not.toBeNull();
     expect(fake.alarmCalls).toContainEqual({ kind: 'create', name: CLOSURE_CLEANUP_ALARM });
     expect(next.pendingClosure?.stage).toBe('cleanup');
+  });
+
+  it('adds and clears a document that navigates during closure cleanup', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await inCleanup(fake);
+    const before: CleanupProgress = cleanupProgressOf(fake.current());
+    const key: string = documentKey(12, 'document-2');
+
+    await handleCleanupNavigationV2(fake, {
+      tabId: 12,
+      documentId: 'document-2',
+      url: 'https://news.example.com/story',
+    });
+
+    // The controller routes every cleanup navigation to this entry, so a closure journal has to
+    // serve it: the target lands in the closure batch, not in a transition that does not exist.
+    const after: CleanupProgress = cleanupProgressOf(fake.current());
+    expect(after.targets[key]?.expectedUrl).toBe('https://news.example.com/story');
+    expect(after.clearCommands[key]?.operationId).toBe(before.cleanupOperationId);
+    expect(after.clearCommands[key]?.runtimeRevision).toBe(before.clearRuntimeRevision);
+    expect(fake.current().documentCommands[key]).toEqual(after.clearCommands[key]);
+    expect(
+      fake.sends
+        .filter((send: FakeSendV2): boolean => send.documentId === 'document-2')
+        .map((send: FakeSendV2): string => send.message.command),
+    ).toEqual(['reset-enforcement-epoch', 'apply-enforcement']);
+    expect(parseRuntimeStateV2(fake.current())).not.toBeNull();
+  });
+
+  it('ignores a navigation while no cleanup batch is durable', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await prepared(fake);
+    const writes: number = fake.writes.length;
+
+    await handleCleanupNavigationV2(fake, {
+      tabId: 12,
+      documentId: 'document-2',
+      url: 'https://news.example.com/story',
+    });
+
+    // A prepared closure owns no clear batch, and the controller routes on the journal being
+    // present rather than on its stage, so this has to be a no-op instead of a throw.
+    expect(fake.writes).toHaveLength(writes);
+    expect(fake.sends).toEqual([]);
   });
 
   it('refuses to run without a cleanup closure', async (): Promise<void> => {
