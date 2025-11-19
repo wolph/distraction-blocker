@@ -833,7 +833,8 @@ function verificationRestartPermittedV2(
   transition: PendingEnforcementTransition,
   now: number,
 ): boolean {
-  if (transition.stage === 'cleanup') return false;
+  // No cleanup clause: `refreezeTransitionViewV2` throws for a cleanup transition before its only
+  // caller reaches this, so a guard here would read as live and never fire.
   const verificationStartedAt: number | null = transition.verificationStartedAt;
   if (verificationStartedAt === null) return true;
   return freshnessBudgetPermitsV2(

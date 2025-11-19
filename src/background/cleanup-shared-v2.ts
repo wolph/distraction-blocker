@@ -121,8 +121,22 @@ export async function recordCleanupFailureAndRearmV2(
   detail: string,
   label: string,
 ): Promise<RuntimeStateV2> {
+  await writeCleanupFailureV2(ports, journal, detail);
+  return rearmCleanupAlarmV2(ports, journal, label);
+}
+
+/**
+ * Brings the journal's retry alarm in line with its durable `nextAttemptAt`, which is what a boot
+ * owes a batch that is waiting. A refused read-back is recorded as one more failed attempt, so the
+ * loop ends either with an alarm the browser confirmed or with an exhausted batch.
+ */
+export async function rearmCleanupAlarmV2(
+  ports: RuntimePortsV2,
+  journal: CleanupJournalV2,
+  label: string,
+): Promise<RuntimeStateV2> {
   const name: AlarmNameV2 = cleanupAlarmOfV2(journal);
-  let runtime: RuntimeStateV2 = await writeCleanupFailureV2(ports, journal, detail);
+  let runtime: RuntimeStateV2 = ports.runtime();
   for (;;) {
     const scheduled: number | null = journalProgressV2(runtime, journal).retry.nextAttemptAt;
     if (scheduled === null) return runtime;
