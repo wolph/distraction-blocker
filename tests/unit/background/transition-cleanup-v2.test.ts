@@ -569,6 +569,44 @@ describe('transition cleanup discovery', (): void => {
     ).toEqual(['reset-enforcement-epoch', 'apply-enforcement']);
   });
 
+  it('enumerates a post-audit batch that froze no commands', async (): Promise<void> => {
+    // Spec 766 exempts the pre-audit abandon, not an empty batch: a cleanup that got past the audit
+    // owns whatever appears while it runs, however many commands it happened to freeze.
+    const base: PendingEnforcementTransition = pendingTransition('start', 'alarm-ready');
+    const transition: PendingEnforcementTransition = {
+      ...base,
+      startingView: { ...base.startingView, documents: {} },
+      activeView: base.activeView === null ? null : { ...base.activeView, documents: {} },
+    };
+    const fake: RuntimePortsFakeV2 = fakeFor(
+      transitionRuntime(transition, { session: timedFocusSession() }),
+      { tabs: [{ tabId: 12, url: 'https://news.example.com/story', documentId: 'document-12' }] },
+    );
+    await enterTransitionCleanupV2(fake, {
+      cause: 'manual-end',
+      failure: null,
+      endedAt: fake.now(),
+    });
+    const frozen: CleanupProgress = storedProgress(fake);
+    const key: string = documentKey(12, 'document-12');
+
+    expect(frozen.clearCommands).toEqual({});
+
+    await runTransitionCleanupAttemptV2(fake, effectsFake());
+
+    const carried: RuntimeStateV2[] = fake.writes.filter((write: RuntimeStateV2): boolean =>
+      Object.hasOwn(write.documentCommands, key),
+    );
+    expect(carried.length).toBeGreaterThan(0);
+    expect(carried[0]?.documentCommands[key]?.operationId).toBe(frozen.cleanupOperationId);
+    expect(carried[0]?.documentCommands[key]?.runtimeRevision).toBe(frozen.clearRuntimeRevision);
+    expect(
+      fake.sends
+        .filter((send: FakeSendV2): boolean => send.documentId === 'document-12')
+        .map((send: FakeSendV2): string => send.message.command),
+    ).toEqual(['reset-enforcement-epoch', 'apply-enforcement']);
+  });
+
   it('fails the attempt when a discovered claim contradicts the captured one', async (): Promise<void> => {
     const fake: RuntimePortsFakeV2 = await inManualEndCleanup();
     const captured: CleanupTabClaim[] = storedProgress(fake).tabClaims;

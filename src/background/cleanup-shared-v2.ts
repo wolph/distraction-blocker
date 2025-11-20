@@ -300,11 +300,11 @@ export async function clearDiscoveredDocumentsV2(
   journal: CleanupJournalV2,
   label: string,
 ): Promise<string | null> {
-  // Spec 766: a batch that froze no commands never applied anything, so it has nothing to clear
-  // and discovery must not invent a first send for a document this cleanup never touched.
-  if (Object.keys(journalProgressV2(ports.runtime(), journal).clearCommands).length === 0) {
-    return null;
-  }
+  // Spec 766: a start abandoned before its registration audit sent nothing, so discovery must not
+  // invent a first send for a document this cleanup never touched. The exemption is that stage, not
+  // an empty batch: a post-audit batch that froze no commands still enumerates, and a closure has no
+  // audit-failure entry to exempt.
+  if (abandonedBeforeAuditV2(ports.runtime(), journal)) return null;
   const classified: TargetClassificationV2[] = await enumerateEnforcementTargetsV2(ports.targets);
   for (const target of classified) {
     if (target.kind !== 'enforceable') continue;
@@ -325,6 +325,19 @@ export async function clearDiscoveredDocumentsV2(
     if (failure !== null) return failure;
   }
   return null;
+}
+
+/** The two `auditEnforcement` answers, which are the failures that precede any send. */
+const PRE_AUDIT_FAILURES: ReadonlySet<string> = new Set<string>([
+  'website-access-lost',
+  'content-registration-failed',
+]);
+
+/** Whether this cleanup is the pre-audit abandon spec 766 exempts from every clear. */
+function abandonedBeforeAuditV2(runtime: RuntimeStateV2, journal: CleanupJournalV2): boolean {
+  if (journal === 'closure') return false;
+  const failure: string | null = runtime.pendingEnforcementTransition?.failure ?? null;
+  return failure !== null && PRE_AUDIT_FAILURES.has(failure);
 }
 
 /**
