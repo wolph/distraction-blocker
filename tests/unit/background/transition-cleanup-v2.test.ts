@@ -526,6 +526,69 @@ describe('handleCleanupNavigationV2', (): void => {
   });
 });
 
+describe('transition cleanup discovery', (): void => {
+  async function inManualEndCleanup(
+    options: Parameters<typeof createRuntimePortsFakeV2>[1] = {},
+  ): Promise<RuntimePortsFakeV2> {
+    const fake: RuntimePortsFakeV2 = fakeFor(committedRuntime(), options);
+    await enterTransitionCleanupV2(fake, {
+      cause: 'manual-end',
+      failure: null,
+      endedAt: fake.now(),
+    });
+    return fake;
+  }
+
+  it('discovers, resets, and clears a document opened after the freeze', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = await inManualEndCleanup();
+    const before: CleanupProgress = storedProgress(fake);
+    const key: string = documentKey(12, 'document-12');
+    fake.setTabs([
+      { tabId: 11, url: BLOCKED_URL, documentId: DOC_ONE },
+      { tabId: 12, url: 'https://news.example.com/story', documentId: 'document-12' },
+    ]);
+
+    await runTransitionCleanupAttemptV2(fake, effectsFake());
+
+    // Spec 1150 does not scope discovery to one journal, so the transition batch picks up a
+    // document that appeared while it was clearing, under its own operation and clear revision.
+    // A clean attempt then hands the closure off and clears the transition, so the evidence is the
+    // durable write the discovery made before its first send.
+    const carried: RuntimeStateV2[] = fake.writes.filter((write: RuntimeStateV2): boolean =>
+      Object.hasOwn(write.documentCommands, key),
+    );
+    const command: FrozenDocumentCommand | undefined = carried[0]?.documentCommands[key];
+    expect(carried.length).toBeGreaterThan(0);
+    expect(command?.expectedUrl).toBe('https://news.example.com/story');
+    expect(command?.operationId).toBe(before.cleanupOperationId);
+    expect(command?.runtimeRevision).toBe(before.clearRuntimeRevision);
+    expect(
+      fake.sends
+        .filter((send: FakeSendV2): boolean => send.documentId === 'document-12')
+        .map((send: FakeSendV2): string => send.message.command),
+    ).toEqual(['reset-enforcement-epoch', 'apply-enforcement']);
+  });
+
+  it('fails the attempt when a discovered claim contradicts the captured one', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = await inManualEndCleanup();
+    const captured: CleanupTabClaim[] = storedProgress(fake).tabClaims;
+    const runtime: RuntimeStateV2 = fake.current();
+    await fake.writeRuntime({
+      ...runtime,
+      tabStates: {
+        11: { muteUrl: 'https://example.com/other', priorMuted: false, stoppedDocumentId: DOC_ONE },
+      },
+    });
+
+    await runTransitionCleanupAttemptV2(fake, effectsFake());
+
+    const progress: CleanupProgress = storedProgress(fake);
+    expect(progress.retry.lastError).toContain('contradictory claim');
+    expect(progress.tabClaims).toEqual(captured);
+    expect(storedTransition(fake).stage).toBe('cleanup');
+  });
+});
+
 describe('transition cleanup closure capture', (): void => {
   it('loads the end day even when the retained phase settles no focus', async (): Promise<void> => {
     // A paused retained session settles nothing, and the worker day has already rolled, so the

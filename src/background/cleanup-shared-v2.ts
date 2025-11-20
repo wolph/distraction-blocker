@@ -10,6 +10,7 @@
 
 import { focusedMsAtV2 } from '../core/session-v2';
 import { CoreError } from '../shared/errors';
+import { exactDataEqual } from '../shared/exact-data';
 import { syncAggKey } from '../shared/storage-keys';
 import { localDateStr } from '../shared/time';
 import type { DailyAgg, SessionStateV2 } from '../shared/types';
@@ -22,6 +23,7 @@ import {
 import {
   addCleanupTargetV2,
   documentCommandKeyV2,
+  mergeCleanupTabClaimV2,
   recordCleanupAttemptFailureV2,
 } from './cleanup-progress-v2';
 import { splitFocusByLocalDateV2 } from './closure-projection-v2';
@@ -32,7 +34,11 @@ import {
   sendEpochResetCommand,
 } from './content-transport-v2';
 import type { DocumentEpochResetAck, FrozenDocumentCommand } from './enforcement-persistence-v2';
-import { classifyEnforcementTargetV2, type TargetClassificationV2 } from './enforcement-targets-v2';
+import {
+  classifyEnforcementTargetV2,
+  enumerateEnforcementTargetsV2,
+  type TargetClassificationV2,
+} from './enforcement-targets-v2';
 import { buildFrozenEpochResetCommandV2 } from './overlay-view-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
 import type {
@@ -251,6 +257,74 @@ export async function settledAggregatesV2(
   return ports.loadAggregates(
     [...dates].map((date: string): string => syncAggKey(ports.deviceId(), date)),
   );
+}
+
+/**
+ * Spec 1148: before each cleanup write, any newly discovered owned claim is merged idempotently by
+ * tab ID into the batch's claims only. Saved ownership wins, a saved null may be filled once, and
+ * contradictory ownership is a cleanup error rather than an overwrite, so it fails the attempt
+ * instead of rewriting what the journal captured.
+ */
+export async function mergeDiscoveredClaimsV2(
+  ports: RuntimePortsV2,
+  journal: CleanupJournalV2,
+  label: string,
+): Promise<string | null> {
+  const runtime: RuntimeStateV2 = ports.runtime();
+  const saved: CleanupProgress = journalProgressV2(runtime, journal);
+  let progress: CleanupProgress = saved;
+  try {
+    for (const [key, state] of Object.entries(runtime.tabStates)) {
+      progress = mergeCleanupTabClaimV2(progress, { tabId: Number(key), state });
+    }
+  } catch (error: unknown) {
+    return error instanceof CoreError
+      ? `${label} found a contradictory claim: ${error.message}`
+      : `${label} could not merge a discovered claim`;
+  }
+  if (exactDataEqual(progress.tabClaims, saved.tabClaims)) return null;
+  await ports.writeRuntime(
+    validatedCleanupRuntimeV2(withJournalProgressV2(runtime, journal, progress)),
+  );
+  return null;
+}
+
+/**
+ * Spec 1150: a newly discovered cleanup document is persisted under the existing clear revision in
+ * the target, progress command, and runtime command maps before its first send, and a document
+ * whose identity changed gets a new keyed target. Enumerating after the frozen batch ran is what
+ * finds both, because a moved document answers `changed` and then reappears here under its new key.
+ */
+export async function clearDiscoveredDocumentsV2(
+  ports: RuntimePortsV2,
+  journal: CleanupJournalV2,
+  label: string,
+): Promise<string | null> {
+  // Spec 766: a batch that froze no commands never applied anything, so it has nothing to clear
+  // and discovery must not invent a first send for a document this cleanup never touched.
+  if (Object.keys(journalProgressV2(ports.runtime(), journal).clearCommands).length === 0) {
+    return null;
+  }
+  const classified: TargetClassificationV2[] = await enumerateEnforcementTargetsV2(ports.targets);
+  for (const target of classified) {
+    if (target.kind !== 'enforceable') continue;
+    const key: string = documentCommandKeyV2(target.tabId, target.documentId);
+    if (Object.hasOwn(journalProgressV2(ports.runtime(), journal).clearCommands, key)) continue;
+    const command: FrozenDocumentCommand = await durableClearCommandV2(ports, journal, key, {
+      tabId: target.tabId,
+      documentId: target.documentId,
+      expectedUrl: target.url,
+    });
+    const failure: string | null = await resetAndClearDocumentV2(
+      ports,
+      journalProgressV2(ports.runtime(), journal),
+      key,
+      command,
+      label,
+    );
+    if (failure !== null) return failure;
+  }
+  return null;
 }
 
 /**

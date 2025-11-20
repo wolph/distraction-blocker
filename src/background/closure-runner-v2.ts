@@ -23,22 +23,20 @@ import {
   planPhaseAlarmV2,
 } from './alarms-v2';
 import {
-  addCleanupTargetV2,
   buildCleanupProgressV2,
   buildCleanupSeedV2,
-  documentCommandKeyV2,
-  mergeCleanupTabClaimV2,
   replaceCleanupBatchV2,
   resolveCleanupTabV2,
 } from './cleanup-progress-v2';
 import {
+  clearDiscoveredDocumentsV2,
   journalProgressV2,
+  mergeDiscoveredClaimsV2,
   recordCleanupFailureAndRearmV2,
   resetAndClearDocumentV2,
   settledAggregatesV2,
 } from './cleanup-shared-v2';
 import { buildClosureProjectionV2 } from './closure-projection-v2';
-import type { FrozenDocumentCommand } from './enforcement-persistence-v2';
 import {
   enumerateEnforcementTargetsV2,
   type TargetClassificationV2,
@@ -209,7 +207,7 @@ async function runClosureAttemptEffects(
   ports: RuntimePortsV2,
   effects: CleanupEffectPortsV2,
 ): Promise<string | null> {
-  const merged: string | null = await mergeDiscoveredClaims(ports);
+  const merged: string | null = await mergeDiscoveredClaimsV2(ports, 'closure', 'closure cleanup');
   if (merged !== null) return merged;
   const failure: string | null = await performClosureEffects(
     ports,
@@ -217,82 +215,7 @@ async function runClosureAttemptEffects(
     cleanupClosureOf(ports),
   );
   if (failure !== null) return failure;
-  return clearDiscoveredDocuments(ports);
-}
-
-/**
- * Spec: before each cleanup write, a newly discovered owned claim is merged idempotently by tab ID
- * into the progress claims only. Saved ownership wins, a saved null may be filled once, and
- * contradictory ownership is a cleanup error rather than an overwrite, so it fails this attempt
- * instead of rewriting what the closure captured.
- */
-async function mergeDiscoveredClaims(ports: RuntimePortsV2): Promise<string | null> {
-  const closure: CleanupClosureV2 = cleanupClosureOf(ports);
-  const runtime: RuntimeStateV2 = ports.runtime();
-  let progress: CleanupProgress = closure.cleanupProgress;
-  try {
-    for (const [key, state] of Object.entries(runtime.tabStates)) {
-      progress = mergeCleanupTabClaimV2(progress, { tabId: Number(key), state });
-    }
-  } catch (error: unknown) {
-    return error instanceof CoreError
-      ? `closure cleanup found a contradictory claim: ${error.message}`
-      : 'closure cleanup could not merge a discovered claim';
-  }
-  if (exactDataEqual(progress.tabClaims, closure.cleanupProgress.tabClaims)) return null;
-  await ports.writeRuntime(
-    validated({
-      ...structuredClone(runtime),
-      pendingClosure: { ...structuredClone(closure), cleanupProgress: structuredClone(progress) },
-    }),
-  );
-  return null;
-}
-
-/**
- * Spec: a newly discovered cleanup document is persisted under the existing clear revision in the
- * target, progress command, and runtime command maps before its first send, and a document whose
- * identity changed gets a new keyed target. Enumerating after the frozen batch ran is what finds
- * both, because a moved document answers `changed` and then reappears here under its new key.
- */
-async function clearDiscoveredDocuments(ports: RuntimePortsV2): Promise<string | null> {
-  const classified: TargetClassificationV2[] = await enumerateEnforcementTargetsV2(ports.targets);
-  for (const target of classified) {
-    if (target.kind !== 'enforceable') continue;
-    const closure: CleanupClosureV2 = cleanupClosureOf(ports);
-    const progress: CleanupProgress = closure.cleanupProgress;
-    const key: string = documentCommandKeyV2(target.tabId, target.documentId);
-    if (Object.hasOwn(progress.clearCommands, key)) continue;
-    const runtime: RuntimeStateV2 = ports.runtime();
-    const added: CleanupProgress = addCleanupTargetV2(
-      progress,
-      { tabId: target.tabId, documentId: target.documentId, expectedUrl: target.url },
-      {
-        enforcementEpoch: runtime.enforcementEpoch,
-        basePolicyRevision: runtime.basePolicyRevision,
-        sessionId: closure.projection.sessionId,
-        reservedSessionId: null,
-      },
-    );
-    await ports.writeRuntime(
-      validated({
-        ...structuredClone(runtime),
-        documentCommands: structuredClone(added.clearCommands),
-        pendingClosure: { ...structuredClone(closure), cleanupProgress: structuredClone(added) },
-      }),
-    );
-    const command: FrozenDocumentCommand | undefined = added.clearCommands[key];
-    if (command === undefined) invalidClosure('the closure batch lost its new clear command');
-    const failure: string | null = await resetAndClearDocumentV2(
-      ports,
-      added,
-      key,
-      command,
-      'closure',
-    );
-    if (failure !== null) return failure;
-  }
-  return null;
+  return clearDiscoveredDocumentsV2(ports, 'closure', 'closure cleanup');
 }
 
 /**

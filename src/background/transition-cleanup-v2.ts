@@ -33,7 +33,9 @@ import {
   resolveCleanupTabV2,
 } from './cleanup-progress-v2';
 import {
+  clearDiscoveredDocumentsV2,
   journalProgressV2,
+  mergeDiscoveredClaimsV2,
   recordCleanupFailureAndRearmV2,
   resetAndClearDocumentV2,
   settledAggregatesV2,
@@ -312,18 +314,37 @@ export async function runTransitionCleanupAttemptV2(
   effects: CleanupEffectPortsV2,
 ): Promise<RuntimeStateV2> {
   const transition: PendingEnforcementTransition = cleanupTransitionOf(ports);
-  const _progress: CleanupProgress = requireProgress(transition);
+  requireProgress(transition);
   let failure: string | null;
   try {
-    failure = await performCleanupEffects(ports, effects, transition);
+    failure = await runTransitionAttemptEffects(ports, effects, transition);
   } catch (error: unknown) {
     // A cleanup error raised while acting on the browser, a contradictory tab claim included, is
     // this attempt's failure and is recorded as one. It never escapes as an overwrite or a throw.
     failure = error instanceof Error ? error.message : String(error);
   }
-  if (failure !== null)
+  if (failure !== null) {
     return recordCleanupFailureAndRearmV2(ports, 'transition', failure, 'cleanup');
+  }
   return resolveCleanup(ports);
+}
+
+/**
+ * The three ordered steps of one attempt. Spec 1148 to 1155 state the discovery rules for a cleanup
+ * batch without distinguishing the journal that owns it, so this journal merges newly found claims
+ * before acting and clears newly found documents after its frozen batch, exactly as the closure
+ * journal does.
+ */
+async function runTransitionAttemptEffects(
+  ports: RuntimePortsV2,
+  effects: CleanupEffectPortsV2,
+  transition: PendingEnforcementTransition,
+): Promise<string | null> {
+  const merged: string | null = await mergeDiscoveredClaimsV2(ports, 'transition', 'cleanup');
+  if (merged !== null) return merged;
+  const failure: string | null = await performCleanupEffects(ports, effects, transition);
+  if (failure !== null) return failure;
+  return clearDiscoveredDocumentsV2(ports, 'transition', 'cleanup');
 }
 
 /**
