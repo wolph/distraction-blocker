@@ -5,7 +5,10 @@ import {
   TRANSITION_CLEANUP_ALARM,
 } from '../../../src/background/alarms-v2';
 import type { FrozenDocumentCommand } from '../../../src/background/enforcement-persistence-v2';
-import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
+import type {
+  PendingEnforcementTransition,
+  RuntimeStateV2,
+} from '../../../src/background/runtime-v2-types';
 import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validation';
 import { SessionControllerV2 } from '../../../src/background/session-controller-v2';
 import { DEFAULT_SETTINGS, GATE_EXPIRY_MS } from '../../../src/shared/constants';
@@ -378,9 +381,12 @@ describe('SessionControllerV2 end and gate commands', (): void => {
   });
 
   /** A committed transition whose frozen view matches the live tabs, inside its ten-second budget. */
-  function restartHarness(options: Parameters<typeof createRuntimePortsFakeV2>[1] = {}): HarnessV2 {
+  function restartHarness(
+    options: Parameters<typeof createRuntimePortsFakeV2>[1] = {},
+    transition: Partial<PendingEnforcementTransition> = {},
+  ): HarnessV2 {
     return harness(
-      transitionRuntime(pendingTransition('start', 'active-verified'), {
+      transitionRuntime(pendingTransition('start', 'active-verified', transition), {
         session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
       }),
       {
@@ -469,35 +475,41 @@ describe('SessionControllerV2 end and gate commands', (): void => {
     }
   });
 
-  it('never revives a transition whose freshness deadline has passed', async (): Promise<void> => {
-    // The harness clock sits a minute past `verificationStartedAt`, so the budget is already spent.
-    const { controller, ports } = restartHarness({ now: ACTIVATION_AT + 60_000 });
-    const before = ports.current().pendingEnforcementTransition;
-    expect((await controller.openEndGate()).code).toBe('ok');
+  it('never revives a transition whose freshness budget is already spent', async (): Promise<void> => {
+    // Spec 775 spends the budget two ways, and a gate action must not revive either: the deadline
+    // arrives, or the count is already three inside the ten seconds.
+    const spent: ReadonlyArray<[string, HarnessV2]> = [
+      ['deadline', restartHarness({ now: ACTIVATION_AT + 60_000 })],
+      ['attempts', restartHarness({}, { freshnessAttempts: 3 })],
+    ];
+    for (const [label, { controller, ports }] of spent) {
+      const before = ports.current().pendingEnforcementTransition;
+      expect((await controller.openEndGate()).code, label).toBe('ok');
 
-    const stepped = ports.current().pendingEnforcementTransition;
-    // The row still has to be valid, so the invalidated checkpoint goes. The attempt count does
-    // not come back, because no pass is coming to spend it.
-    expect(parseRuntimeStateV2(ports.current())).not.toBeNull();
-    expect(stepped?.stage).toBe('alarm-ready');
-    expect(stepped?.checkpoint).toBeNull();
-    expect(stepped?.freshnessAttempts).toBe(before?.freshnessAttempts);
+      const stepped = ports.current().pendingEnforcementTransition;
+      // The row still has to be valid, so the invalidated checkpoint goes. The attempt count does
+      // not come back, because no pass is coming to spend it.
+      expect(parseRuntimeStateV2(ports.current()), label).not.toBeNull();
+      expect(stepped?.stage, label).toBe('alarm-ready');
+      expect(stepped?.checkpoint, label).toBeNull();
+      expect(stepped?.freshnessAttempts, label).toBe(before?.freshnessAttempts);
 
-    await controller.recover();
+      await controller.recover();
 
-    // Spec 775: the drive begins no attempt past the deadline, so it fails the transition instead
-    // of reviving it.
-    expect(Math.max(...attemptCounts(ports))).toBe(before?.freshnessAttempts);
-    expect(ports.current().pendingEnforcementTransition?.stage ?? 'resolved').not.toBe(
-      'alarm-ready',
-    );
-    expect(
-      ports.writes.some(
-        (write): boolean =>
-          write.pendingEnforcementTransition?.stage === 'cleanup' &&
-          write.pendingEnforcementTransition.failure === 'tab-enforcement-failed',
-      ),
-    ).toBe(true);
+      // The drive begins no attempt, so it fails the transition instead of reviving it.
+      expect(Math.max(...attemptCounts(ports)), label).toBe(before?.freshnessAttempts);
+      expect(ports.current().pendingEnforcementTransition?.stage ?? 'resolved', label).not.toBe(
+        'alarm-ready',
+      );
+      expect(
+        ports.writes.some(
+          (write): boolean =>
+            write.pendingEnforcementTransition?.stage === 'cleanup' &&
+            write.pendingEnforcementTransition.failure === 'tab-enforcement-failed',
+        ),
+        label,
+      ).toBe(true);
+    }
   });
 
   it('restarts a pre-commit pass when a live refresh lands at starting-verified', async (): Promise<void> => {
