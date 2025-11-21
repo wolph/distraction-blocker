@@ -4,10 +4,11 @@ import {
   TICK_ALARM,
   TRANSITION_CLEANUP_ALARM,
 } from '../../../src/background/alarms-v2';
+import type { FrozenDocumentCommand } from '../../../src/background/enforcement-persistence-v2';
 import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validation';
 import { SessionControllerV2 } from '../../../src/background/session-controller-v2';
-import { DEFAULT_SETTINGS } from '../../../src/shared/constants';
+import { DEFAULT_SETTINGS, GATE_EXPIRY_MS } from '../../../src/shared/constants';
 import type {
   CommandResponseV2,
   SessionCommandResultCodeV2,
@@ -15,7 +16,12 @@ import type {
 } from '../../../src/shared/messages';
 import { isSessionSnapshotV2 } from '../../../src/shared/runtime-validation';
 import { localDateStr, localMidnightAfter } from '../../../src/shared/time';
-import type { SessionConfigV2, SessionSnapshotV2, SessionStateV2 } from '../../../src/shared/types';
+import type {
+  GateState,
+  SessionConfigV2,
+  SessionSnapshotV2,
+  SessionStateV2,
+} from '../../../src/shared/types';
 import {
   type ControllerEffectsFakeV2,
   createControllerEffectsFakeV2,
@@ -54,6 +60,8 @@ import {
 
 const BLOCKED_URL: string = 'https://facebook.com/feed';
 const DOC_ONE: string = 'document-1';
+/** A document the frozen fixtures do not hold, so a navigation freezes its command from the URL. */
+const DOC_BLOCKED: string = 'document-9';
 const AT: number = ACTIVATION_AT + 60_000;
 /** Enough scripted UUIDs for a start, its cleanup, and several live-view operations. */
 const IDS: readonly string[] = [
@@ -100,6 +108,19 @@ function harness(
 
 function flexibleConfig(overrides: Partial<SessionConfigV2> = {}): SessionConfigV2 {
   return sessionConfigV2({ strictness: 'flexible', ...overrides });
+}
+
+/** The runtime revision of every enforcement command the transport received, in order. */
+function sentRevisions(ports: RuntimePortsFakeV2): number[] {
+  return ports.sends.flatMap((sent): number[] =>
+    sent.message.command === 'apply-enforcement' ? [sent.message.runtimeRevision] : [],
+  );
+}
+
+/** The gate an active overlay carries, or null for any other presentation. */
+function overlayGate(command: FrozenDocumentCommand | undefined): GateState | null {
+  const overlay = command?.overlay ?? null;
+  return overlay !== null && overlay.presentation === 'active' ? overlay.gate : null;
 }
 
 /** Every legacy event of one kind the controller committed, in order. */
@@ -683,6 +704,67 @@ describe('SessionControllerV2 end and gate commands', (): void => {
     expect(ports.commits.every((commit): boolean => commit.bank.balanceMs >= before)).toBe(true);
   });
 
+  it('clears the page an unlock paid for and re-blocks it when the unlock lapses', async (): Promise<void> => {
+    const economy = { ...DEFAULT_SETTINGS.pause };
+    const { controller, ports } = harness(publishedFocusRuntime(), {
+      bank: { balanceMs: economy.unlockMs },
+      economy,
+    });
+    const key: string = documentKey(11, DOC_BLOCKED);
+    await controller.handleNavigation(
+      { tabId: 11, documentId: DOC_BLOCKED, url: BLOCKED_URL },
+      null,
+    );
+    expect(ports.current().documentCommands[key]?.verdict.blocked).toBe(true);
+
+    await controller.openGate('unlockSite', 'facebook.com');
+    expect((await confirmOpenGate(controller, ports)).code).toBe('ok');
+
+    // The live update the purchase commits re-evaluates the verdict, so the page they paid for is
+    // clear before they navigate anywhere.
+    const bought = ports.current().documentCommands[key];
+    expect(bought?.verdict.blocked).toBe(false);
+    expect(bought?.presentation).toBe('clear');
+    expect(bought?.overlay).toBeNull();
+
+    // And the expiry is the same live update in reverse.
+    ports.advance(economy.unlockMs + 1_000);
+    await controller.tick();
+    const lapsed = ports.current().documentCommands[key];
+    expect(ports.current().unlocks).toEqual([]);
+    expect(lapsed?.verdict.blocked).toBe(true);
+    expect(lapsed?.presentation).toBe('active');
+    expect(lapsed?.runtimeRevision).toBeGreaterThan(bought?.runtimeRevision ?? 0);
+    expect(sentRevisions(ports)).toContain(lapsed?.runtimeRevision);
+  });
+
+  it('takes an expired gate off the overlay and records the resistance', async (): Promise<void> => {
+    const { controller, ports } = harness(
+      publishedFocusRuntime({
+        session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
+      }),
+    );
+    const key: string = documentKey(11, DOC_BLOCKED);
+    await controller.handleNavigation(
+      { tabId: 11, documentId: DOC_BLOCKED, url: BLOCKED_URL },
+      null,
+    );
+    expect((await controller.openEndGate()).code).toBe('ok');
+    expect(overlayGate(ports.current().documentCommands[key])).not.toBeNull();
+
+    // A gate the user walked away from lapses on the shared window, not a private one.
+    ports.advance(GATE_EXPIRY_MS + ports.gateSettings().delayMs + 1_000);
+    await controller.tick();
+
+    expect(ports.current().gate).toBeNull();
+    expect(eventsOf(ports, 'gateResisted')).toHaveLength(1);
+    expect(eventsOf(ports, 'gateResisted')[0]).toMatchObject({ gate: 'cancel' });
+    // The overlay the page is still showing loses the controls the gate gave it.
+    const cleared = ports.current().documentCommands[key];
+    expect(overlayGate(cleared)).toBeNull();
+    expect(sentRevisions(ports)).toContain(cleared?.runtimeRevision);
+  });
+
   it('adds a site unlock for an unlock gate', async (): Promise<void> => {
     const { controller, ports } = harness(publishedFocusRuntime(), {
       bank: { balanceMs: 600_000 },
@@ -840,6 +922,61 @@ describe('SessionControllerV2 navigation and documents', (): void => {
     expect(sweeping.effects.attempts).toHaveLength(0);
   });
 
+  it('freezes a late document into the tuple the frozen ones already hold', async (): Promise<void> => {
+    const { controller, ports } = harness(publishedFocusRuntime());
+    const before: RuntimeStateV2 = ports.current();
+    await controller.handleNavigation(
+      { tabId: 11, documentId: DOC_BLOCKED, url: BLOCKED_URL },
+      null,
+    );
+
+    // While the command map is the current authority every command repeats the runtime revision,
+    // so a late arrival joins that revision instead of raising it out from under the others.
+    const after: RuntimeStateV2 = ports.current();
+    expect(parseRuntimeStateV2(after)).not.toBeNull();
+    expect(after.runtimeRevision).toBe(before.runtimeRevision);
+    expect(after.documentCommands[documentKey(11, DOC_BLOCKED)]?.runtimeRevision).toBe(
+      before.runtimeRevision,
+    );
+    expect(after.documentCommands[documentKey(11, DOC_ONE)]).toEqual(
+      before.documentCommands[documentKey(11, DOC_ONE)],
+    );
+  });
+
+  it('routes a navigation to the journal that owns the target', async (): Promise<void> => {
+    // A closure cleanup owns its clear batch, and a navigation joins it.
+    const closing = harness(cleanupClosureRuntime());
+    const target = { tabId: 11, documentId: DOC_BLOCKED, url: BLOCKED_URL };
+    expect(
+      Object.keys(closing.ports.current().pendingClosure?.cleanupProgress?.clearCommands ?? {}),
+    ).not.toContain(documentKey(11, DOC_BLOCKED));
+    await closing.controller.handleNavigation(target, 'navigation');
+    const closure = closing.ports.current().pendingClosure;
+
+    expect(parseRuntimeStateV2(closing.ports.current())).not.toBeNull();
+    expect(Object.keys(closure?.cleanupProgress?.clearCommands ?? {})).toContain(
+      documentKey(11, DOC_BLOCKED),
+    );
+    expect(closing.ports.sends.some((sent): boolean => sent.documentId === DOC_BLOCKED)).toBe(true);
+    // A cleanup page is not a blocked page, so nothing is recorded as an attempt.
+    expect(closing.effects.attempts).toHaveLength(0);
+
+    // A committed transition owns its frozen view, and a navigation joins that instead.
+    const starting = harness(
+      transitionRuntime(pendingTransition('start', 'alarm-ready'), {
+        session: timedFocusSession(),
+      }),
+    );
+    await starting.controller.handleNavigation(target, 'navigation');
+    const view = starting.ports.current().pendingEnforcementTransition?.activeView;
+
+    expect(parseRuntimeStateV2(starting.ports.current())).not.toBeNull();
+    expect(Object.keys(view?.documents ?? {})).toContain(documentKey(11, DOC_BLOCKED));
+    expect(starting.ports.sends.some((sent): boolean => sent.documentId === DOC_BLOCKED)).toBe(
+      true,
+    );
+  });
+
   it('returns the reset command before the newest persisted command', async (): Promise<void> => {
     const { controller, ports } = harness(publishedFocusRuntime({ epochResetAcks: {} }));
     const commands = await controller.documentCommandsFor(target, null);
@@ -927,6 +1064,79 @@ describe('SessionControllerV2 navigation and documents', (): void => {
 });
 
 describe('SessionControllerV2 publication and serialization', (): void => {
+  it('settles the read through its own instant past a finite phase end', async (): Promise<void> => {
+    // A cycling session, so the boundary one second back is a phase end rather than the session end.
+    const cycling = { focusMin: 10, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 };
+    const focusEndsAt: number = ACTIVATION_AT + 600_000;
+    const sessionEndsAt: number = timedFocusSession().sessionEndsAt ?? 0;
+    const { controller } = harness(
+      publishedFocusRuntime({
+        session: timedFocusSession({
+          config: sessionConfigV2({ cycling }),
+          phaseEndsAt: focusEndsAt,
+          sessionEndsAt,
+        }),
+      }),
+    );
+    const at: number = focusEndsAt + 1_000;
+    const snapshot: SessionSnapshotV2 = controller.snapshot(at);
+
+    // Spec 358: the read settles first, so it is the break the user is in, with focus capped at the
+    // boundary rather than still running past it.
+    expect(isSessionSnapshotV2(snapshot)).toBe(true);
+    expect(snapshot.phase).toBe('break');
+    expect(snapshot.sessionFocusedMs).toBe(focusEndsAt - ACTIVATION_AT);
+    expect(snapshot.phaseEndsAt).toBeGreaterThan(at);
+  });
+
+  it('rolls focus into its break as a live update the pages can see', async (): Promise<void> => {
+    const cycling = { focusMin: 10, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 };
+    const focusEndsAt: number = ACTIVATION_AT + 600_000;
+    const { controller, ports, effects } = harness(
+      publishedFocusRuntime({
+        unlocks: [],
+        session: timedFocusSession({
+          config: sessionConfigV2({ cycling }),
+          phaseEndsAt: focusEndsAt,
+          sessionEndsAt: timedFocusSession().sessionEndsAt ?? 0,
+        }),
+      }),
+    );
+    const key: string = documentKey(11, DOC_BLOCKED);
+    await controller.handleNavigation(
+      { tabId: 11, documentId: DOC_BLOCKED, url: BLOCKED_URL },
+      null,
+    );
+    expect(ports.current().documentCommands[key]?.verdict.blocked).toBe(true);
+
+    ports.advance(focusEndsAt + 1_000 - ports.now());
+    await controller.tick();
+
+    // The break is durable, publishable, and visible: no focus checkpoint attests a phase that
+    // ended, and every open document gets the clear the new phase means.
+    const after: RuntimeStateV2 = ports.current();
+    expect(parseRuntimeStateV2(after)).not.toBeNull();
+    expect(after.session?.phase).toBe('break');
+    expect(after.enforcementCheckpoint).toBeNull();
+    expect(after.documentCommands[key]?.presentation).toBe('clear');
+    expect(sentRevisions(ports)).toContain(after.documentCommands[key]?.runtimeRevision);
+    expect(effects.clears).toBeGreaterThan(0);
+    expect(controller.snapshot(ports.now()).lifecycle.kind).toBe('active');
+  });
+
+  it('reports the idle shape for a boundary this worker has not written yet', async (): Promise<void> => {
+    const { controller } = harness(publishedFocusRuntime());
+    const session = publishedFocusRuntime().session;
+    const past: number = (session?.sessionEndsAt ?? 0) + 1_000;
+    const snapshot: SessionSnapshotV2 = controller.snapshot(past);
+
+    // A completed timer needs a closure no read can run, and the validator rejects an active
+    // snapshot past its own end, so the read reports what the next tick will make durable.
+    expect(isSessionSnapshotV2(snapshot)).toBe(true);
+    expect(snapshot.phase).toBe('idle');
+    expect(snapshot.config).toBeNull();
+  });
+
   it('builds a valid snapshot and never broadcasts before recover', async (): Promise<void> => {
     const { controller, ports, effects } = harness(publishedFocusRuntime());
     const snapshot: SessionSnapshotV2 = controller.snapshot(ports.now());

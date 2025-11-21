@@ -17,9 +17,10 @@ import {
   beginPauseV2,
   type SessionAdvanceResultV2,
 } from '../core/session-v2';
-import { cancelPhrase, pausePhrase } from '../shared/constants';
+import { cancelPhrase, GATE_EXPIRY_MS, pausePhrase, unlockSitePhrase } from '../shared/constants';
 import type { DocumentContentCommand } from '../shared/enforcement-v2';
 import { CoreError } from '../shared/errors';
+import { exactDataEqual } from '../shared/exact-data';
 import type {
   CommandResponseV2,
   RetryCleanupResultCodeV2,
@@ -127,9 +128,12 @@ export class SessionControllerV2 {
     private readonly effects: SessionControllerEffectsV2,
   ) {}
 
-  /** The public read model at one instant. Pure: it writes nothing and publishes nothing. */
+  /**
+   * The public read model at one instant. Pure: it writes nothing and publishes nothing, and the
+   * core state is settled through `at` in memory first (spec 358).
+   */
   snapshot(at: number): SessionSnapshotV2 {
-    const runtime: RuntimeStateV2 = this.ports.runtime();
+    const runtime: RuntimeStateV2 = settledForReadV2(this.ports.runtime(), at);
     const settings: SettingsV2 = this.schedule.settings();
     const base: SessionSnapshotV2 = buildSessionSnapshotV2({
       runtime,
@@ -277,8 +281,7 @@ export class SessionControllerV2 {
           host: gate === 'unlockSite' ? host : null,
           openedAt: this.ports.now(),
           readyAt: this.ports.now() + this.ports.gateSettings().delayMs,
-          requiredPhrase:
-            gate === 'pause' ? pausePhrase() : `I am allowing this site: ${host ?? ''}`,
+          requiredPhrase: gate === 'pause' ? pausePhrase() : unlockSitePhrase(host ?? ''),
         },
         this.gateEvent('gateOpened', gate, session),
       );
@@ -701,8 +704,16 @@ export class SessionControllerV2 {
     previous: FrozenDocumentCommand,
     tuple: { operationId: string; runtimeRevision: number },
   ): FrozenDocumentCommand {
-    const verdict: Verdict = structuredClone(previous.verdict);
-    const blocked: boolean = verdict.blocked && session !== null && session.phase === 'focus';
+    // The unlocks and the matcher move under a live update, so the verdict is evaluated again
+    // rather than carried over. A purchased unlock has to clear the page it paid for, which is what
+    // the v1 sweep does when a confirmed gate sets `needsBlocking`.
+    const verdict: Verdict | null = evaluatedVerdictOf(
+      this.ports,
+      runtime,
+      session,
+      previous.expectedUrl,
+    );
+    const blocked: boolean = verdict?.blocked === true;
     return buildFrozenDocumentCommandV2({
       tabId: previous.tabId,
       documentId: previous.documentId,
@@ -713,10 +724,12 @@ export class SessionControllerV2 {
       reservedSessionId: session === null ? previous.reservedSessionId : null,
       basePolicyRevision: runtime.basePolicyRevision,
       runtimeRevision: tuple.runtimeRevision,
-      verdict: blocked ? verdict : clearVerdictOf(previous),
+      verdict: blocked && verdict !== null ? verdict : clearVerdictOf(previous),
       presentation: blocked ? 'active' : 'clear',
       overlay:
-        blocked && session !== null ? this.activeOverlayFor(runtime, session, previous) : null,
+        blocked && session !== null && verdict !== null
+          ? this.activeOverlayFor(runtime, session, previous, verdict)
+          : null,
     });
   }
 
@@ -724,6 +737,7 @@ export class SessionControllerV2 {
     runtime: RuntimeStateV2,
     session: SessionStateV2,
     previous: FrozenDocumentCommand,
+    verdict: Verdict,
   ): ReturnType<typeof buildActiveOverlayView> {
     const economy = this.ports.economy();
     return buildActiveOverlayView({
@@ -743,7 +757,7 @@ export class SessionControllerV2 {
       ),
       attemptsToday: this.ports.attemptsToday(),
       stoppedPage: runtime.tabStates[previous.tabId]?.stoppedDocumentId === previous.documentId,
-      verdict: structuredClone(previous.verdict),
+      verdict: structuredClone(verdict),
     });
   }
 
@@ -863,6 +877,11 @@ export class SessionControllerV2 {
       await this.ports.rolloverCheck(boundary);
       if (this.ports.runtime().date === runtime.date) return;
     }
+    // The bound was reached with days still owed, which only a clock that jumped more than a year
+    // can do. It converges over the next ticks, and a silent truncation would hide why.
+    this.ports.reportError(
+      new CoreError('invalid-rule', `the local-date walk stopped ${MAX_ROLLOVER_DAYS} days short`),
+    );
   }
 
   /**
@@ -877,19 +896,29 @@ export class SessionControllerV2 {
   private async settleThrough(now: number): Promise<void> {
     const runtime: RuntimeStateV2 = pruneHandledOccurrencesOnTickV2(this.ports.runtime(), now);
     const session: SessionStateV2 | null = runtime.session;
+    const gate: GateState | null = runtime.gate;
+    const lapsed: boolean = gate !== null && gate.readyAt < now - GATE_EXPIRY_MS;
+    const unlocks: SiteUnlock[] = runtime.unlocks.filter(
+      (unlock: SiteUnlock): boolean => unlock.until > now,
+    );
     const expired: RuntimeStateV2 = {
       ...structuredClone(runtime),
-      gate:
-        runtime.gate !== null && runtime.gate.readyAt < now - GATE_EXPIRY_MS ? null : runtime.gate,
-      unlocks: runtime.unlocks.filter((unlock: SiteUnlock): boolean => unlock.until > now),
+      gate: lapsed ? null : gate,
+      unlocks,
     };
+    // An expiry changes what every open document must show: a lapsed unlock re-blocks its page and
+    // a lapsed gate takes its controls off the overlay, so it goes out as a live update rather than
+    // a bare write. A gate the user let lapse is resistance, and the v1 engine records it as such.
+    const live: boolean = lapsed || unlocks.length !== runtime.unlocks.length;
+    const events: SessionEventRecordV2[] =
+      lapsed && gate !== null ? this.gateEvent('gateResisted', gate.kind, session) : [];
     if (session === null) {
-      await this.writeIfChanged(expired);
+      await this.persistSettled(expired, live, events);
       return;
     }
     const advanced: SessionAdvanceResultV2 = advanceSessionV2(session, now);
     if (advanced.kind === 'timer-completed') {
-      await this.writeIfChanged(expired);
+      await this.persistSettled(expired, live, events);
       await closeSessionV2(this.ports, this.effects, {
         endedAt: advanced.endedAt,
         reason: 'timer-completed',
@@ -897,13 +926,37 @@ export class SessionControllerV2 {
       this.completionEffects();
       return;
     }
+    const settled: RuntimeStateV2 = { ...expired, session: structuredClone(advanced.state) };
     if (advanced.kind === 'resume-required') {
-      await this.writeIfChanged({ ...expired, session: structuredClone(advanced.state) });
+      await this.persistSettled(settled, live, events);
       const onBreak: boolean = advanced.trigger === 'break-expired';
       await this.driveResume(onBreak ? 'break-expired' : 'manual', onBreak ? 'break' : 'paused');
       return;
     }
-    await this.writeIfChanged({ ...expired, session: structuredClone(advanced.state) });
+    // A settle that rolls focus into its break changes every verdict on every open page, and the
+    // focus checkpoint it leaves behind attests a phase that is over: a non-blocking phase holds
+    // none, and the boundary parser refuses the row that keeps one.
+    const rolled: boolean = advanced.state.phase !== session.phase;
+    await this.persistSettled(
+      rolled && advanced.state.phase !== 'focus'
+        ? { ...settled, enforcementCheckpoint: null }
+        : settled,
+      live || rolled,
+      events,
+    );
+    if (rolled && advanced.state.phase !== 'focus') {
+      await this.effects.clearBlockingForNonBlockingPhase();
+    }
+  }
+
+  /** One settled runtime: a live update when an expiry moved it, a bare write when nothing did. */
+  private async persistSettled(
+    next: RuntimeStateV2,
+    live: boolean,
+    events: SessionEventRecordV2[],
+  ): Promise<void> {
+    if (live) await this.commitLiveViews(next, events);
+    else await this.writeIfChanged(next);
   }
 
   /** Timer completion is the one end that announces itself, and only when enabled. */
@@ -1011,12 +1064,14 @@ export class SessionControllerV2 {
     const stored: FrozenDocumentCommand | undefined = runtime.documentCommands[key];
     if (stored !== undefined) return structuredClone(stored);
     const session: SessionStateV2 | null = runtime.session;
-    const runtimeRevision: number = runtime.runtimeRevision + 1;
+    // The new document joins the tuple the others already hold. While the command map is the
+    // current authority every stored command repeats the runtime revision, so raising it for one
+    // late arrival would invalidate every command already frozen, and the runtime with it.
+    const runtimeRevision: number = runtime.runtimeRevision;
     const operationId: string = this.ports.newId();
-    const blocked: boolean =
-      evaluatedVerdictOf(this.ports, runtime, session, target.url)?.blocked === true;
     const verdict: Verdict =
       evaluatedVerdictOf(this.ports, runtime, session, target.url) ?? CLEAR_VERDICT;
+    const blocked: boolean = verdict.blocked;
     const focused: SessionStateV2 | null =
       session !== null && session.phase === 'focus' ? session : null;
     const command: FrozenDocumentCommand = buildFrozenDocumentCommandV2({
@@ -1033,13 +1088,18 @@ export class SessionControllerV2 {
       presentation: blocked ? 'active' : 'clear',
       overlay:
         blocked && focused !== null
-          ? this.activeOverlayFor(runtime, focused, {
-              ...structuredClone(runtime.documentCommands[key] ?? EMPTY_COMMAND),
-              tabId: target.tabId,
-              documentId: target.documentId,
-              expectedUrl: target.url,
+          ? this.activeOverlayFor(
+              runtime,
+              focused,
+              {
+                ...structuredClone(runtime.documentCommands[key] ?? EMPTY_COMMAND),
+                tabId: target.tabId,
+                documentId: target.documentId,
+                expectedUrl: target.url,
+                verdict,
+              },
               verdict,
-            })
+            )
           : null,
     });
     await this.write({
@@ -1087,8 +1147,7 @@ export class SessionControllerV2 {
   }
 
   private async writeIfChanged(runtime: RuntimeStateV2): Promise<void> {
-    const current: RuntimeStateV2 = this.ports.runtime();
-    if (JSON.stringify(current) === JSON.stringify(runtime)) return;
+    if (exactDataEqual(this.ports.runtime(), runtime)) return;
     await this.write(runtime);
   }
 }
@@ -1122,6 +1181,33 @@ function owedClosureSnapshot(base: SessionSnapshotV2, sessionId: string): Sessio
   };
 }
 
+/**
+ * The runtime as one instant observes it. Spec 358 settles the core state through the snapshot `at`
+ * before an active snapshot is built, so a read that lands between a durable boundary and the tick
+ * that writes it reports the phase the user is in rather than a countdown already past zero.
+ *
+ * The settle is in memory and writes nothing, which is what keeps `snapshot` pure and callable from
+ * `publish`. A boundary this worker has not written yet leaves no active session to report: a
+ * completed timer is over, and an expired pause or break needs a resume transition that no read can
+ * run. The shared validator rejects either as an active snapshot, so both report the idle shape a
+ * null session projects, which is what the next tick makes durable.
+ */
+function settledForReadV2(runtime: RuntimeStateV2, at: number): RuntimeStateV2 {
+  const session: SessionStateV2 | null = runtime.session;
+  if (session === null) return runtime;
+  const advanced: SessionAdvanceResultV2 = advanceSessionV2(session, at);
+  if (advanced.kind !== 'active') return { ...runtime, session: null };
+  const settled: SessionStateV2 = structuredClone(advanced.state);
+  return {
+    ...runtime,
+    session: settled,
+    // A phase this settle rolled into is not the phase the durable focus checkpoint attests, and a
+    // non-blocking phase publishes without one, so the read drops it exactly as the durable phase
+    // change does.
+    enforcementCheckpoint: settled.phase === 'focus' ? runtime.enforcementCheckpoint : null,
+  };
+}
+
 /** The verdict a focus session's captured policy gives one URL, or null outside focus. */
 function evaluatedVerdictOf(
   ports: RuntimePortsV2,
@@ -1148,8 +1234,6 @@ function validRuntime(runtime: RuntimeStateV2): RuntimeStateV2 {
 
 /** A tick never walks more finished days than this, so a broken clock cannot spin the loop. */
 const MAX_ROLLOVER_DAYS: number = 400;
-/** A gate the user walked away from expires after this long, matching the v1 engine. */
-const GATE_EXPIRY_MS: number = 10 * 60_000;
 const CLEAR_VERDICT: Verdict = {
   blocked: false,
   reason: 'no-session',
