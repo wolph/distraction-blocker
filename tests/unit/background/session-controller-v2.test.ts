@@ -39,6 +39,7 @@ import {
   breakRuntime,
   breakSession,
   CLEANUP_OPERATION_ID,
+  cancelGateState,
   cleanupClosureRuntime,
   cleanupTransition,
   documentKey,
@@ -809,6 +810,52 @@ describe('SessionControllerV2 end and gate commands', (): void => {
     expect(onBreak.ports.current().session?.phase).toBe('focus');
   });
 
+  it('commits an expiry with no live update while a cleanup journal owns the map', async (): Promise<void> => {
+    const gate = cancelGateState();
+    const unlocks = [{ host: 'facebook.com', until: ACTIVATION_AT + 10_000 }];
+    const journals: ReadonlyArray<[string, RuntimeStateV2]> = [
+      [
+        'transition',
+        transitionRuntime(cleanupTransition('start', 'alarm-ready', 'manual-end'), {
+          gate,
+          unlocks,
+          pendingEnforcementTransition: cleanupTransition('start', 'alarm-ready', 'manual-end', {
+            postCleanupClosure: transitionPostCleanupClosure(),
+          }),
+        }),
+      ],
+      ['closure', cleanupClosureRuntime({ gate, unlocks })],
+    ];
+    for (const [label, runtime] of journals) {
+      const { controller, ports } = harness(runtime, { now: ACTIVATION_AT + 120_000 });
+      await controller.tick();
+
+      // The drop and its event are durable, and the map every document holds is the clear batch the
+      // journal is still retrying, so nothing was refrozen and nothing was sent.
+      const after: RuntimeStateV2 = ports.current();
+      expect(parseRuntimeStateV2(after), label).not.toBeNull();
+      expect(after.gate, label).toBeNull();
+      expect(after.unlocks, label).toEqual([]);
+      expect(eventsOf(ports, 'gateResisted'), label).toHaveLength(1);
+      expect(
+        Object.values(after.documentCommands).every(
+          (command): boolean => command.presentation === 'clear',
+        ),
+        label,
+      ).toBe(true);
+      expect(
+        ports.sends.every(
+          (sent): boolean =>
+            sent.message.command !== 'apply-enforcement' || sent.message.presentation === 'clear',
+        ),
+        label,
+      ).toBe(true);
+      // And the tick ran past the expiry into its cleanup step, which reissues the clear batch the
+      // journal owns. Before this fix the settle threw and the tick never got here.
+      expect(ports.sends.length, label).toBeGreaterThan(0);
+    }
+  });
+
   it('answers retry codes for the wrong journal and a live batch', async (): Promise<void> => {
     const idle = harness();
     expect((await idle.controller.retryTransitionCleanup()).code).toBe('retry-not-available');
@@ -953,6 +1000,26 @@ describe('SessionControllerV2 navigation and documents', (): void => {
     expect(after.documentCommands[documentKey(11, DOC_ONE)]).toEqual(
       before.documentCommands[documentKey(11, DOC_ONE)],
     );
+  });
+
+  it('freezes an allowed page as a clear command', async (): Promise<void> => {
+    const { controller, ports } = harness(publishedFocusRuntime());
+    await controller.handleNavigation(
+      { tabId: 11, documentId: DOC_BLOCKED, url: 'https://example.org/reading' },
+      null,
+    );
+
+    // A clear presentation carries the canonical clear verdict, which is the only pair the frozen
+    // command contract accepts, so an allowed page during a session freezes instead of throwing.
+    const command = ports.current().documentCommands[documentKey(11, DOC_BLOCKED)];
+    expect(command?.presentation).toBe('clear');
+    expect(command?.verdict).toEqual({
+      blocked: false,
+      reason: 'no-session',
+      categoryId: null,
+      matchedPattern: null,
+    });
+    expect(parseRuntimeStateV2(ports.current())).not.toBeNull();
   });
 
   it('routes a navigation to the journal that owns the target', async (): Promise<void> => {
@@ -1101,6 +1168,38 @@ describe('SessionControllerV2 publication and serialization', (): void => {
     expect(snapshot.phaseEndsAt).toBeGreaterThan(at);
   });
 
+  it('sends no blocking update for a session that just ran out', async (): Promise<void> => {
+    const session = timedFocusSession();
+    const { controller, ports } = harness(
+      publishedFocusRuntime({
+        session,
+        unlocks: [{ host: 'facebook.com', until: ACTIVATION_AT + 700_000 }],
+      }),
+    );
+    await controller.handleNavigation(
+      { tabId: 11, documentId: DOC_BLOCKED, url: BLOCKED_URL },
+      null,
+    );
+    const sentBefore: number = ports.sends.length;
+
+    // The unlock lapses in the same instant the timer completes.
+    ports.advance((session.sessionEndsAt ?? 0) + 1_000 - ports.now());
+    await controller.tick();
+
+    // The closure one await later replaces the whole map, so the expiry sends nothing blocking to a
+    // session that is already over.
+    expect(
+      ports.sends
+        .slice(sentBefore)
+        .every(
+          (sent): boolean =>
+            sent.message.command !== 'apply-enforcement' || sent.message.presentation === 'clear',
+        ),
+    ).toBe(true);
+    expect(ports.current().session).toBeNull();
+    expect(parseRuntimeStateV2(ports.current())).not.toBeNull();
+  });
+
   it('rolls focus into its break as a live update the pages can see', async (): Promise<void> => {
     const cycling = { focusMin: 10, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 };
     const focusEndsAt: number = ACTIVATION_AT + 600_000;
@@ -1136,15 +1235,89 @@ describe('SessionControllerV2 publication and serialization', (): void => {
     expect(controller.snapshot(ports.now()).lifecycle.kind).toBe('active');
   });
 
-  it('reports the idle shape for a boundary this worker has not written yet', async (): Promise<void> => {
-    const { controller } = harness(publishedFocusRuntime());
-    const session = publishedFocusRuntime().session;
+  it('reports the session a resume is owed to, never idle', async (): Promise<void> => {
+    const cycling = { focusMin: 10, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 };
+    const sessionEndsAt: number = timedFocusSession().sessionEndsAt ?? 0;
+    // Ten minutes of focus, then the phase that ran out while the worker slept.
+    const phaseStartedAt: number = ACTIVATION_AT + 600_000;
+    const phaseEndsAt: number = phaseStartedAt + 300_000;
+    const phases: ReadonlyArray<[string, SessionStateV2]> = [
+      [
+        'break',
+        timedFocusSession({
+          config: sessionConfigV2({ cycling }),
+          phase: 'break',
+          phaseStartedAt,
+          phaseEndsAt,
+          cycleIndex: 1,
+          focusedMs: 600_000,
+          sessionEndsAt,
+        }),
+      ],
+      [
+        'pause',
+        timedFocusSession({
+          phase: 'paused',
+          phaseStartedAt,
+          phaseEndsAt,
+          pausedFrom: { phase: 'focus', phaseEndsAt: sessionEndsAt },
+          focusedMs: 600_000,
+          sessionEndsAt,
+        }),
+      ],
+      // Asleep through a whole focus and the break behind it, so the read walks both boundaries.
+      [
+        'focus-through-break',
+        timedFocusSession({
+          config: sessionConfigV2({ cycling }),
+          phaseEndsAt: phaseStartedAt,
+          sessionEndsAt,
+        }),
+      ],
+    ];
+    for (const [label, session] of phases) {
+      const { controller, ports } = harness(
+        label === 'focus-through-break'
+          ? publishedFocusRuntime({ session })
+          : publishedFocusRuntime({ session, enforcementCheckpoint: null }),
+        { now: phaseEndsAt + 1_000 },
+      );
+      const read: SessionSnapshotV2 = controller.snapshot(ports.now());
+
+      // The boundary the tick has not written yet is one the read can walk: the resume is what the
+      // tick commits, so the read reports the session that is coming back rather than no session.
+      // It is not enforced yet, so it reports as starting, which hides End and offers no start.
+      expect(isSessionSnapshotV2(read), label).toBe(true);
+      expect(read.lifecycle.kind, label).toBe('starting');
+      expect(read.lifecycle.kind, label).not.toBe('idle');
+
+      // And the tick agrees with what the read said: the resume it drives is a focus session. The
+      // slept-through case stops at the read, because recovery cannot drive a break it has not
+      // written yet (reported, not fixed here: `recovery-v2.ts` is not this wave's file).
+      if (label === 'focus-through-break') continue;
+      await controller.recover();
+      const committed: SessionSnapshotV2 = controller.snapshot(ports.now());
+      expect(ports.current().session?.phase, label).toBe('focus');
+      expect(committed.phase, label).toBe('focus');
+      expect(committed.lifecycle.kind, label).toBe('active');
+      expect(isSessionSnapshotV2(committed), label).toBe(true);
+    }
+  });
+
+  it('reports the closure a completed timer owes rather than the idle shape', async (): Promise<void> => {
+    const { controller, ports } = harness(publishedFocusRuntime());
+    const session = ports.current().session;
     const past: number = (session?.sessionEndsAt ?? 0) + 1_000;
     const snapshot: SessionSnapshotV2 = controller.snapshot(past);
 
-    // A completed timer needs a closure no read can run, and the validator rejects an active
-    // snapshot past its own end, so the read reports what the next tick will make durable.
+    // The session ran out its own clock, which needs a closure no read can write. The read reports
+    // that closure, so the popup does not offer a start for a session that is still durable.
     expect(isSessionSnapshotV2(snapshot)).toBe(true);
+    expect(snapshot.lifecycle).toMatchObject({
+      kind: 'cleanup',
+      journal: 'closure',
+      id: `${session?.sessionId}:close`,
+    });
     expect(snapshot.phase).toBe('idle');
     expect(snapshot.config).toBeNull();
   });

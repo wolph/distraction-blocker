@@ -15,6 +15,7 @@ import {
   advanceSessionV2,
   assertCanStartNextFocusEarlyV2,
   beginPauseV2,
+  commitResumeV2,
   type SessionAdvanceResultV2,
 } from '../core/session-v2';
 import { cancelPhrase, GATE_EXPIRY_MS, pausePhrase, unlockSitePhrase } from '../shared/constants';
@@ -133,7 +134,9 @@ export class SessionControllerV2 {
    * core state is settled through `at` in memory first (spec 358).
    */
   snapshot(at: number): SessionSnapshotV2 {
-    const runtime: RuntimeStateV2 = settledForReadV2(this.ports.runtime(), at);
+    const durable: RuntimeStateV2 = this.ports.runtime();
+    const read: SettledReadV2 = settledForReadV2(durable, at);
+    const runtime: RuntimeStateV2 = read.runtime;
     const settings: SettingsV2 = this.schedule.settings();
     const base: SessionSnapshotV2 = buildSessionSnapshotV2({
       runtime,
@@ -142,9 +145,12 @@ export class SessionControllerV2 {
       at,
       nextSchedule: nextScheduleInfoV2(settings.schedule, runtime.handledScheduleOccurrences, at),
     });
-    // A closure this worker owes but could not write yet is already the truth for the user, so it
-    // is reported as the cleanup it will become rather than as the session that is still durable.
-    const owed: string | null = this.closurePending ? (runtime.session?.sessionId ?? null) : null;
+    // A closure this worker owes, or one the settle just found owing because the session ran out
+    // its own clock, is already the truth for the user. Both are reported as the cleanup they will
+    // become rather than as the session that is still durable, and the id comes from that durable
+    // session rather than the settled read, which no longer carries it.
+    const owing: boolean = this.closurePending || read.closureOwed;
+    const owed: string | null = owing ? (durable.session?.sessionId ?? null) : null;
     return owed === null ? base : owedClosureSnapshot(base, owed);
   }
 
@@ -913,12 +919,14 @@ export class SessionControllerV2 {
     const events: SessionEventRecordV2[] =
       lapsed && gate !== null ? this.gateEvent('gateResisted', gate.kind, session) : [];
     if (session === null) {
-      await this.persistSettled(expired, live, events);
+      await this.persistSettled(expired, live, events, now);
       return;
     }
     const advanced: SessionAdvanceResultV2 = advanceSessionV2(session, now);
     if (advanced.kind === 'timer-completed') {
-      await this.persistSettled(expired, live, events);
+      // The closure one await away replaces the whole command map with its clear batch, so a live
+      // update here would send every document a blocking command for a session that is over.
+      await this.persistSettled(expired, false, events, now);
       await closeSessionV2(this.ports, this.effects, {
         endedAt: advanced.endedAt,
         reason: 'timer-completed',
@@ -928,7 +936,7 @@ export class SessionControllerV2 {
     }
     const settled: RuntimeStateV2 = { ...expired, session: structuredClone(advanced.state) };
     if (advanced.kind === 'resume-required') {
-      await this.persistSettled(settled, live, events);
+      await this.persistSettled(settled, live, events, now);
       const onBreak: boolean = advanced.trigger === 'break-expired';
       await this.driveResume(onBreak ? 'break-expired' : 'manual', onBreak ? 'break' : 'paused');
       return;
@@ -943,20 +951,55 @@ export class SessionControllerV2 {
         : settled,
       live || rolled,
       events,
+      now,
     );
     if (rolled && advanced.state.phase !== 'focus') {
       await this.effects.clearBlockingForNonBlockingPhase();
     }
   }
 
-  /** One settled runtime: a live update when an expiry moved it, a bare write when nothing did. */
+  /**
+   * One settled runtime. An expiry that moved the gate or the unlocks goes out as a live update,
+   * because every open document has to see it, unless a cleanup journal owns the command map: there
+   * every document already holds the frozen clear command that journal is retrying, the boundary
+   * refuses a map that is not the clear batch, and the runner refuses to refreeze a cleanup row at
+   * all. So the drop and its event are committed on their own and nothing is sent, and the ordinary
+   * live-update path returns the moment the journal resolves.
+   */
   private async persistSettled(
     next: RuntimeStateV2,
     live: boolean,
     events: SessionEventRecordV2[],
+    now: number,
   ): Promise<void> {
-    if (live) await this.commitLiveViews(next, events);
-    else await this.writeIfChanged(next);
+    const owned: boolean =
+      next.pendingEnforcementTransition?.stage === 'cleanup' || next.pendingClosure !== null;
+    if (live && !owned) {
+      await this.commitLiveViews(next, events);
+      return;
+    }
+    if (events.length > 0) {
+      await this.commitSettled(next, events, now);
+      return;
+    }
+    await this.writeIfChanged(next);
+  }
+
+  /** One checkpoint for a settled runtime and the events it carries, with no view refrozen. */
+  private async commitSettled(
+    next: RuntimeStateV2,
+    events: SessionEventRecordV2[],
+    now: number,
+  ): Promise<void> {
+    await this.ports.commit({
+      checkpointId: `${next.enforcementEpoch}:expiry-${now}`,
+      projection: projectRuntimeDomainV2(validRuntime(next)),
+      bank: this.ports.bank(),
+      events: structuredClone(events),
+      syncBank: false,
+      aggregateSets: {},
+      aggregateRemoves: [],
+    });
   }
 
   /** Timer completion is the one end that announces itself, and only when enabled. */
@@ -1069,9 +1112,12 @@ export class SessionControllerV2 {
     // late arrival would invalidate every command already frozen, and the runtime with it.
     const runtimeRevision: number = runtime.runtimeRevision;
     const operationId: string = this.ports.newId();
-    const verdict: Verdict =
-      evaluatedVerdictOf(this.ports, runtime, session, target.url) ?? CLEAR_VERDICT;
-    const blocked: boolean = verdict.blocked;
+    const evaluated: Verdict | null = evaluatedVerdictOf(this.ports, runtime, session, target.url);
+    const blocked: boolean = evaluated?.blocked === true;
+    // A clear command carries the canonical clear verdict and nothing else. An allowed page under a
+    // live session evaluates to a verdict of its own, which the frozen command contract refuses on
+    // a clear presentation, so only a blocked page keeps the verdict it evaluated.
+    const verdict: Verdict = blocked && evaluated !== null ? evaluated : CLEAR_VERDICT;
     const focused: SessionStateV2 | null =
       session !== null && session.phase === 'focus' ? session : null;
     const command: FrozenDocumentCommand = buildFrozenDocumentCommandV2({
@@ -1181,30 +1227,61 @@ function owedClosureSnapshot(base: SessionSnapshotV2, sessionId: string): Sessio
   };
 }
 
+/** A settled read, and whether the settle found a session that has run out its own clock. */
+interface SettledReadV2 {
+  runtime: RuntimeStateV2;
+  closureOwed: boolean;
+}
+
 /**
  * The runtime as one instant observes it. Spec 358 settles the core state through the snapshot `at`
  * before an active snapshot is built, so a read that lands between a durable boundary and the tick
  * that writes it reports the phase the user is in rather than a countdown already past zero.
  *
  * The settle is in memory and writes nothing, which is what keeps `snapshot` pure and callable from
- * `publish`. A boundary this worker has not written yet leaves no active session to report: a
- * completed timer is over, and an expired pause or break needs a resume transition that no read can
- * run. The shared validator rejects either as an active snapshot, so both report the idle shape a
- * null session projects, which is what the next tick makes durable.
+ * `publish`. It walks the same boundaries the tick walks: a phase that ended rolls into the one
+ * that follows, and a pause or break that ran out resumes, because that is what the tick makes
+ * durable and a read must never answer "no session" for a session that is still running. The one
+ * boundary a read cannot walk is the session's own end, which needs a closure: that reports the
+ * cleanup the worker owes, not the idle shape.
  */
-function settledForReadV2(runtime: RuntimeStateV2, at: number): RuntimeStateV2 {
+function settledForReadV2(runtime: RuntimeStateV2, at: number): SettledReadV2 {
   const session: SessionStateV2 | null = runtime.session;
-  if (session === null) return runtime;
-  const advanced: SessionAdvanceResultV2 = advanceSessionV2(session, at);
-  if (advanced.kind !== 'active') return { ...runtime, session: null };
-  const settled: SessionStateV2 = structuredClone(advanced.state);
+  if (session === null) return { runtime, closureOwed: false };
+  let current: SessionStateV2 = session;
+  let resumed: boolean = false;
+  for (let step: number = 0; step < MAX_READ_SETTLE_STEPS; step += 1) {
+    const advanced: SessionAdvanceResultV2 = advanceSessionV2(current, at);
+    if (advanced.kind === 'timer-completed') {
+      return { runtime: { ...runtime, session: null }, closureOwed: true };
+    }
+    if (advanced.kind === 'active') {
+      return { runtime: readRuntimeOf(runtime, advanced.state, resumed), closureOwed: false };
+    }
+    // The pause or break ran out at its own boundary, and the resume the tick commits starts there.
+    current = commitResumeV2(advanced.state, advanced.boundaryAt);
+    resumed = true;
+  }
+  // More phases than any real session holds, which only a clock that jumped can produce. The
+  // session is long past its own end by then, so the read reports the closure that end owes.
+  return { runtime: { ...runtime, session: null }, closureOwed: true };
+}
+
+/** The read runtime a settled session belongs to, without the checkpoint its phase change voids. */
+function readRuntimeOf(
+  runtime: RuntimeStateV2,
+  settled: SessionStateV2,
+  resumed: boolean,
+): RuntimeStateV2 {
   return {
     ...runtime,
-    session: settled,
+    session: structuredClone(settled),
     // A phase this settle rolled into is not the phase the durable focus checkpoint attests, and a
     // non-blocking phase publishes without one, so the read drops it exactly as the durable phase
-    // change does.
-    enforcementCheckpoint: settled.phase === 'focus' ? runtime.enforcementCheckpoint : null,
+    // change does. A focus the read resumed into is not enforced yet either: its transition is what
+    // the tick runs, and until then the projection reports it as the session that is starting.
+    enforcementCheckpoint:
+      settled.phase === 'focus' && !resumed ? runtime.enforcementCheckpoint : null,
   };
 }
 
@@ -1232,6 +1309,8 @@ function validRuntime(runtime: RuntimeStateV2): RuntimeStateV2 {
   return parsed;
 }
 
+/** A read never walks more phase boundaries than this, so a broken clock cannot spin the settle. */
+const MAX_READ_SETTLE_STEPS: number = 512;
 /** A tick never walks more finished days than this, so a broken clock cannot spin the loop. */
 const MAX_ROLLOVER_DAYS: number = 400;
 const CLEAR_VERDICT: Verdict = {
