@@ -101,8 +101,14 @@ export function endAuthorityV2(
  *
  * This answers only the durable half of publishability. Verifying the owned alarms the spec also
  * requires belongs to the caller, so a true answer here is necessary but not sufficient.
+ *
+ * An observation instant adds the other half of the same question. A phase whose end is behind `at`
+ * is a phase the worker has not written its successor for yet, and what it writes next depends on
+ * when it wakes: a resume activates at that instant, not at the boundary. So a session observed past
+ * its own phase or session boundary is not publishable at that instant, and the caller gets the
+ * lifecycle of a session that exists but cannot be reported as running.
  */
-export function isPublishableSessionV2(runtime: RuntimeStateV2): boolean {
+export function isPublishableSessionV2(runtime: RuntimeStateV2, at?: number): boolean {
   const session: SessionStateV2 | null = runtime.session;
   if (
     session === null ||
@@ -111,8 +117,18 @@ export function isPublishableSessionV2(runtime: RuntimeStateV2): boolean {
   ) {
     return false;
   }
+  if (at !== undefined && boundaryPassed(session, at)) return false;
   if (session.phase !== 'focus') return runtime.enforcementCheckpoint === null;
   return checkpointPublishes(runtime.enforcementCheckpoint, runtime, session);
+}
+
+/** Whether the session's own clock has run out either boundary by the observation instant. */
+function boundaryPassed(session: SessionStateV2, at: number): boolean {
+  const phaseEndsAt: number | null = session.phaseEndsAt;
+  const sessionEndsAt: number | null = session.sessionEndsAt;
+  return (
+    (phaseEndsAt !== null && phaseEndsAt <= at) || (sessionEndsAt !== null && sessionEndsAt <= at)
+  );
 }
 
 /**
@@ -120,7 +136,7 @@ export function isPublishableSessionV2(runtime: RuntimeStateV2): boolean {
  * coexist in a runtime the boundary parser accepted, so a runtime carrying both is a reader defect
  * rather than a state this projection has an answer for.
  */
-export function projectLifecycleV2(runtime: RuntimeStateV2): SessionLifecycleV2 {
+export function projectLifecycleV2(runtime: RuntimeStateV2, at?: number): SessionLifecycleV2 {
   const transition: PendingEnforcementTransition | null = runtime.pendingEnforcementTransition;
   const closure: PendingClosure | null = runtime.pendingClosure;
   if (transition !== null && closure !== null) {
@@ -132,7 +148,7 @@ export function projectLifecycleV2(runtime: RuntimeStateV2): SessionLifecycleV2 
   if (transition !== null) return transitionLifecycle(runtime, transition);
   if (closure !== null) return closureLifecycle(closure);
   if (runtime.session === null) return { kind: 'idle', endAuthority: HIDDEN_AUTHORITY };
-  if (isPublishableSessionV2(runtime)) {
+  if (isPublishableSessionV2(runtime, at)) {
     return { kind: 'active', endAuthority: sessionAuthority(runtime, runtime.session) };
   }
   return unpublishedSessionLifecycle(runtime);
@@ -148,7 +164,7 @@ export function projectLifecycleV2(runtime: RuntimeStateV2): SessionLifecycleV2 
  */
 export function buildSessionSnapshotV2(input: SnapshotInputV2): SessionSnapshotV2 {
   const { runtime, settings, bank, at, nextSchedule }: SnapshotInputV2 = input;
-  const lifecycle: SessionLifecycleV2 = projectLifecycleV2(runtime);
+  const lifecycle: SessionLifecycleV2 = projectLifecycleV2(runtime, at);
   const session: SessionStateV2 | null = lifecycle.kind === 'active' ? runtime.session : null;
   return {
     at,

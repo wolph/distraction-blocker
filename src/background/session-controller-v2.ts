@@ -15,7 +15,6 @@ import {
   advanceSessionV2,
   assertCanStartNextFocusEarlyV2,
   beginPauseV2,
-  commitResumeV2,
   type SessionAdvanceResultV2,
 } from '../core/session-v2';
 import { cancelPhrase, GATE_EXPIRY_MS, pausePhrase, unlockSitePhrase } from '../shared/constants';
@@ -1238,50 +1237,36 @@ interface SettledReadV2 {
  * before an active snapshot is built, so a read that lands between a durable boundary and the tick
  * that writes it reports the phase the user is in rather than a countdown already past zero.
  *
- * The settle is in memory and writes nothing, which is what keeps `snapshot` pure and callable from
- * `publish`. It walks the same boundaries the tick walks: a phase that ended rolls into the one
- * that follows, and a pause or break that ran out resumes, because that is what the tick makes
- * durable and a read must never answer "no session" for a session that is still running. The one
- * boundary a read cannot walk is the session's own end, which needs a closure: that reports the
- * cleanup the worker owes, not the idle shape.
+ * The settle is in memory and writes nothing, which keeps `snapshot` pure and callable from
+ * `publish`, and it models exactly one step: the phase that runs out into the phase behind it, which
+ * the tick writes from the session's own clock. It never models a resume. The tick's resume
+ * activates at the instant the worker wakes (`transition-runner-v2.ts`), not at the boundary behind
+ * it, so a read that resumed here would invent a phase and a clock the worker will never write. A
+ * session sitting past its boundary is left exactly as it is durable, and the projection reports it
+ * as starting, because `at` is behind no phase it can publish.
+ *
+ * The session's own end is the one boundary that needs a closure rather than a phase, so that
+ * reports the cleanup the worker owes instead of the idle shape.
  */
 function settledForReadV2(runtime: RuntimeStateV2, at: number): SettledReadV2 {
   const session: SessionStateV2 | null = runtime.session;
   if (session === null) return { runtime, closureOwed: false };
-  let current: SessionStateV2 = session;
-  let resumed: boolean = false;
-  for (let step: number = 0; step < MAX_READ_SETTLE_STEPS; step += 1) {
-    const advanced: SessionAdvanceResultV2 = advanceSessionV2(current, at);
-    if (advanced.kind === 'timer-completed') {
-      return { runtime: { ...runtime, session: null }, closureOwed: true };
-    }
-    if (advanced.kind === 'active') {
-      return { runtime: readRuntimeOf(runtime, advanced.state, resumed), closureOwed: false };
-    }
-    // The pause or break ran out at its own boundary, and the resume the tick commits starts there.
-    current = commitResumeV2(advanced.state, advanced.boundaryAt);
-    resumed = true;
+  const advanced: SessionAdvanceResultV2 = advanceSessionV2(session, at);
+  if (advanced.kind === 'timer-completed') {
+    return { runtime: { ...runtime, session: null }, closureOwed: true };
   }
-  // More phases than any real session holds, which only a clock that jumped can produce. The
-  // session is long past its own end by then, so the read reports the closure that end owes.
-  return { runtime: { ...runtime, session: null }, closureOwed: true };
-}
-
-/** The read runtime a settled session belongs to, without the checkpoint its phase change voids. */
-function readRuntimeOf(
-  runtime: RuntimeStateV2,
-  settled: SessionStateV2,
-  resumed: boolean,
-): RuntimeStateV2 {
+  if (advanced.kind !== 'active') return { runtime, closureOwed: false };
+  const settled: SessionStateV2 = structuredClone(advanced.state);
   return {
-    ...runtime,
-    session: structuredClone(settled),
-    // A phase this settle rolled into is not the phase the durable focus checkpoint attests, and a
-    // non-blocking phase publishes without one, so the read drops it exactly as the durable phase
-    // change does. A focus the read resumed into is not enforced yet either: its transition is what
-    // the tick runs, and until then the projection reports it as the session that is starting.
-    enforcementCheckpoint:
-      settled.phase === 'focus' && !resumed ? runtime.enforcementCheckpoint : null,
+    runtime: {
+      ...runtime,
+      session: settled,
+      // A phase this settle rolled into is not the phase the durable focus checkpoint attests, and a
+      // non-blocking phase publishes without one, so the read drops it exactly as the durable phase
+      // change does.
+      enforcementCheckpoint: settled.phase === 'focus' ? runtime.enforcementCheckpoint : null,
+    },
+    closureOwed: false,
   };
 }
 
@@ -1309,8 +1294,6 @@ function validRuntime(runtime: RuntimeStateV2): RuntimeStateV2 {
   return parsed;
 }
 
-/** A read never walks more phase boundaries than this, so a broken clock cannot spin the settle. */
-const MAX_READ_SETTLE_STEPS: number = 512;
 /** A tick never walks more finished days than this, so a broken clock cannot spin the loop. */
 const MAX_ROLLOVER_DAYS: number = 400;
 const CLEAR_VERDICT: Verdict = {

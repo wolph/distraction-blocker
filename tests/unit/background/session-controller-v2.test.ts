@@ -1304,6 +1304,88 @@ describe('SessionControllerV2 publication and serialization', (): void => {
     }
   });
 
+  it('invents no phase for a session asleep past its break', async (): Promise<void> => {
+    // Two hours with 25 and 5 minute cycles, durable in the break that runs S+25 to S+30, read at
+    // S+58. The tick's resume will activate at S+58, so nothing between the two is the worker's.
+    const cycling = { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 };
+    const startedAt: number = ACTIVATION_AT;
+    const focusMs: number = 1_500_000;
+    const breakEndsAt: number = startedAt + focusMs + 300_000;
+    const session = timedFocusSession({
+      config: sessionConfigV2({ cycling, duration: { kind: 'timed', minutes: 120 } }),
+      startedAt,
+      sessionEndsAt: startedAt + 7_200_000,
+      phase: 'break',
+      phaseStartedAt: startedAt + focusMs,
+      phaseEndsAt: breakEndsAt,
+      cycleIndex: 1,
+      focusedMs: focusMs,
+    });
+    const wake: number = startedAt + 3_480_000;
+    const { controller, ports } = harness(
+      publishedFocusRuntime({ session, enforcementCheckpoint: null, unlocks: [] }),
+      {
+        now: wake,
+        tabs: [
+          { tabId: 11, url: TARGET_URL, documentId: DOC_ONE },
+          { tabId: 12, url: SECOND_TARGET_URL, documentId: 'document-2' },
+        ],
+      },
+    );
+    const read: SessionSnapshotV2 = controller.snapshot(wake);
+
+    // No invented break, no invented clock, and no focus the user never did.
+    expect(isSessionSnapshotV2(read)).toBe(true);
+    expect(read.lifecycle.kind).toBe('starting');
+    expect(read.phase).toBe('idle');
+    expect(read.phaseEndsAt).toBeNull();
+    expect(read.sessionFocusedMs).toBe(0);
+
+    // The tick resumes at the instant it woke, and the read then agrees with what it wrote.
+    await controller.recover();
+    const durable = ports.current().session;
+    const after: SessionSnapshotV2 = controller.snapshot(wake);
+
+    expect(durable?.phase).toBe('focus');
+    expect(durable?.phaseStartedAt).toBe(wake);
+    expect(after.lifecycle.kind).toBe('active');
+    expect(after.phase).toBe('focus');
+    expect(after.phaseEndsAt).toBe(wake + focusMs);
+    expect(after.sessionFocusedMs).toBe(focusMs);
+    expect(isSessionSnapshotV2(after)).toBe(true);
+  });
+
+  it('reports a live break as the break it is', async (): Promise<void> => {
+    const cycling = { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 };
+    const startedAt: number = ACTIVATION_AT;
+    const focusMs: number = 1_500_000;
+    const breakEndsAt: number = startedAt + focusMs + 300_000;
+    const { controller } = harness(
+      publishedFocusRuntime({
+        enforcementCheckpoint: null,
+        session: timedFocusSession({
+          config: sessionConfigV2({ cycling, duration: { kind: 'timed', minutes: 120 } }),
+          startedAt,
+          sessionEndsAt: startedAt + 7_200_000,
+          phase: 'break',
+          phaseStartedAt: startedAt + focusMs,
+          phaseEndsAt: breakEndsAt,
+          cycleIndex: 1,
+          focusedMs: focusMs,
+        }),
+      }),
+    );
+    const inside: number = breakEndsAt - 60_000;
+    const read: SessionSnapshotV2 = controller.snapshot(inside);
+
+    // A boundary still ahead of the read is the phase the user is actually in.
+    expect(isSessionSnapshotV2(read)).toBe(true);
+    expect(read.lifecycle.kind).toBe('active');
+    expect(read.phase).toBe('break');
+    expect(read.phaseEndsAt).toBe(breakEndsAt);
+    expect(read.sessionFocusedMs).toBe(focusMs);
+  });
+
   it('reports the closure a completed timer owes rather than the idle shape', async (): Promise<void> => {
     const { controller, ports } = harness(publishedFocusRuntime());
     const session = ports.current().session;
