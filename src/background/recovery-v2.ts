@@ -16,6 +16,7 @@
 import type { CompiledMatcher } from '../core/matcher';
 import { advanceSessionV2, type SessionAdvanceResultV2 } from '../core/session-v2';
 import { CoreError } from '../shared/errors';
+import { exactDataEqual } from '../shared/exact-data';
 import type { SessionEndReasonV2, SessionStateV2, Verdict } from '../shared/types';
 import { ensurePhaseAlarmV2 } from './alarms-v2';
 import { documentCommandKeyV2, NO_SESSION_VERDICT } from './cleanup-progress-v2';
@@ -207,12 +208,17 @@ async function settleDurablePhase(
     return closeForReason(ports, effects, 'timer-completed', advanced.endedAt);
   }
   if (advanced.kind === 'resume-required') {
+    // A worker that slept through a focus boundary and the break after it advances two phases at
+    // once. The phase it passed through has to be durable before anything resumes from it: the
+    // resume reads the phase it restores, and the focus checkpoint left behind attests a phase that
+    // is over, which the parser refuses on a non-blocking row.
+    await writeSettledSession(ports, advanced.state, session);
     const prepared: PreparedTransitionV2 = await prepareResumeTransitionV2(ports, advanced.trigger);
     const driven: TransitionDriveResultV2 = await driveTransitionV2(ports, prepared.matcher);
     if (driven.kind !== 'cleanup') return resultFor(driven.runtime);
     return resultFor(await runTransitionCleanupAttemptV2(ports, effects));
   }
-  await writeSettledSession(ports, advanced.state);
+  await writeSettledSession(ports, advanced.state, session);
   return advanced.state;
 }
 
@@ -478,15 +484,23 @@ async function writeRecoveryCheckpoint(
   await writeRuntime(ports, { ...runtime, enforcementCheckpoint: checkpoint });
 }
 
-/** The settled session lands in place, and only the phase it settled into moves with it. */
-async function writeSettledSession(ports: RuntimePortsV2, session: SessionStateV2): Promise<void> {
+/**
+ * The settled session lands in place, and only the phase it settled into moves with it. A session
+ * that did not move at all is not rewritten, so a boot that settles nothing writes nothing.
+ */
+async function writeSettledSession(
+  ports: RuntimePortsV2,
+  settled: SessionStateV2,
+  previous: SessionStateV2,
+): Promise<void> {
+  if (exactDataEqual(settled, previous)) return;
   const runtime: RuntimeStateV2 = ports.runtime();
   await writeRuntime(ports, {
     ...runtime,
-    session: structuredClone(session),
+    session: structuredClone(settled),
     // A boundary that turned focus into a pause or a break takes the focus checkpoint with it,
     // because a non-blocking phase carries none.
-    enforcementCheckpoint: session.phase === 'focus' ? runtime.enforcementCheckpoint : null,
+    enforcementCheckpoint: settled.phase === 'focus' ? runtime.enforcementCheckpoint : null,
   });
 }
 

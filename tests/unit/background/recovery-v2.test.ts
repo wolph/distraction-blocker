@@ -394,6 +394,46 @@ describe('recovery of a durable session', (): void => {
     expect(result.runtime.session).toBeNull();
   });
 
+  it('resumes through a focus and the break that followed it', async (): Promise<void> => {
+    // Focus ends one minute in, its break one minute after that, and the worker wakes five minutes
+    // later. Recovery passes through two boundaries and may only resume from a durable break.
+    const asleep: RuntimeStateV2 = publishedFocusRuntime({
+      session: timedFocusSession({
+        config: sessionConfigV2({
+          cycling: { focusMin: 1, shortBreakMin: 1, longBreakMin: 15, longEvery: 4 },
+        }),
+        phaseEndsAt: ACTIVATION_AT + MINUTE_MS,
+      }),
+    });
+    const test: RecoveryHarness = harness(asleep);
+    healthyResponders(test.ports);
+
+    const result: RecoveryResultV2 = await recoverRuntimeV2(test.ports, test.effects);
+    const breakWrite: RuntimeStateV2 | undefined = test.ports.writes.find(
+      (write: RuntimeStateV2): boolean => write.session?.phase === 'break',
+    );
+    const resumed: PendingEnforcementTransition | undefined = test.ports.writes
+      .map(
+        (write: RuntimeStateV2): PendingEnforcementTransition | null =>
+          write.pendingEnforcementTransition,
+      )
+      .find((transition: PendingEnforcementTransition | null): boolean => transition !== null) as
+      | PendingEnforcementTransition
+      | undefined;
+
+    // The break it passed through is durable, and it dropped the checkpoint that attested the focus.
+    expect(breakWrite).toBeDefined();
+    expect(breakWrite?.session?.focusedMs).toBe(MINUTE_MS);
+    expect(breakWrite?.enforcementCheckpoint).toBeNull();
+    // Only then can a resume read the phase it restores.
+    expect(resumed?.kind).toBe('resume');
+    expect(resumed?.trigger).toBe('break-expired');
+    expect(resumed?.priorPhase).toBe('break');
+    expect(result.kind).toBe('published');
+    expect(result.runtime.session?.phase).toBe('focus');
+    expect(result.runtime.enforcementCheckpoint?.kind).toBe('resume-strengthening');
+  });
+
   it('settles a phase boundary the worker slept through', async (): Promise<void> => {
     const cycling: RuntimeStateV2 = publishedFocusRuntime({
       session: timedFocusSession({
@@ -421,6 +461,9 @@ describe('recovery of a durable session', (): void => {
     const result: RecoveryResultV2 = await recoverRuntimeV2(test.ports, test.effects);
 
     expect(result.runtime.session).toEqual(publishedFocusRuntime().session);
+    // Nothing settled, so the first write is the frozen recovery batch rather than a rewrite of the
+    // session that did not move.
+    expect(commandsOf(test.ports.writes[0] as RuntimeStateV2)[0]?.operationId).toBe(IDS[0]);
   });
 
   it('runs standalone recovery for a published focus session', async (): Promise<void> => {
