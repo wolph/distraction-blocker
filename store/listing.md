@@ -32,6 +32,8 @@ Delete local history removes historical full URLs, focus intentions, and detaile
 
 ## Limitations
 
+Blocking is enforced by the extension's service worker. If Chrome has not woken the worker when a page starts loading, that page can load before the block applies. Focus Lock does not use declarativeNetRequest rules. A page that loads that way is re-evaluated once the worker answers.
+
 - Chrome only. Blocking applies to top-level HTTP and HTTPS pages, not embedded widgets.
 - Chrome internal pages and the Chrome Web Store cannot host the blocking script.
 - Focus Lock cannot prevent a user from disabling the extension and does not block other browsers, apps, or devices.

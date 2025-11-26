@@ -133,6 +133,12 @@
             tab. The blocking interface is extension-provided content. Focus Lock does not inspect
             or collect page text, images, form fields, passwords, messages, or other website content.
           </p>
+          <p>
+            Blocking is enforced by the extension's service worker. If Chrome has not woken the
+            worker when a page starts loading, that page can load before the block applies. Focus
+            Lock does not use declarativeNetRequest rules. A page that loads that way is
+            re-evaluated once the worker answers.
+          </p>
         </div>
       </section>
 
@@ -189,7 +195,7 @@
     <footer>
       <div>
         <strong>Focus Lock privacy</strong>
-        <span>Last updated July 5, 2025</span>
+        <span>Last updated November 26, 2025</span>
       </div>
       <a href="https://github.com/wolph/distraction-blocker">https://github.com/wolph/distraction-blocker</a>
       <a href="https://github.com/wolph/distraction-blocker/issues">Support and issue reports</a>
