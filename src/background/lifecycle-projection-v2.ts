@@ -159,8 +159,11 @@ export function projectLifecycleV2(runtime: RuntimeStateV2, at?: number): Sessio
  * other lifecycle reports the idle shape, because the worker never projects clocks or config from a
  * session the public lifecycle is not reporting as active.
  *
- * The caller settles the runtime through `at` first. A session observed past its own durable
- * boundary is not settled, and the snapshot built from it fails `isSessionSnapshotV2`.
+ * The caller settles the runtime through `at` first, which is what makes an active snapshot report
+ * the phase the user is in. A session observed past its own phase or session boundary is one the
+ * worker has not written the successor for yet, and what it writes depends on when it wakes, so
+ * this reports it as `starting` rather than as a running session: no clocks, End hidden, and no
+ * start offered. The snapshot stays valid under `isSessionSnapshotV2` either way.
  */
 export function buildSessionSnapshotV2(input: SnapshotInputV2): SessionSnapshotV2 {
   const { runtime, settings, bank, at, nextSchedule }: SnapshotInputV2 = input;
