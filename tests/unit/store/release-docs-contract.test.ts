@@ -187,7 +187,12 @@ describe('Chrome Web Store release documentation contract', (): void => {
       'runtimeMigration',
       'events',
     ]);
-    for (const key of [LOCAL_RUNTIME, LOCAL_RUNTIME_SCHEMA, LOCAL_RUNTIME_MIGRATION, LOCAL_EVENTS]) {
+    for (const key of [
+      LOCAL_RUNTIME,
+      LOCAL_RUNTIME_SCHEMA,
+      LOCAL_RUNTIME_MIGRATION,
+      LOCAL_EVENTS,
+    ]) {
       expect(disclosures, key).toContain(`\`${key}\``);
     }
     expect(disclosures).toContain(
