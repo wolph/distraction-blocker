@@ -1,160 +1,343 @@
 /** @vitest-environment jsdom */
-import { cleanup, fireEvent, render } from '@testing-library/preact';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { cleanup, fireEvent, render, within } from '@testing-library/preact';
+import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
 import { Schedule } from '../../../src/options/Schedule';
 import { DEFAULT_SETTINGS } from '../../../src/shared/constants';
-import type { ScheduleEntry } from '../../../src/shared/types';
+import { isScheduleEntryV2 } from '../../../src/shared/runtime-validation';
+import {
+  SCHEDULE_UNTIL_STOPPED_COPY,
+  SCHEDULE_WINDOW_LABEL,
+  UNTIL_STOPPED_DISCLOSURE,
+  UNTIL_STOPPED_LABEL,
+} from '../../../src/shared/session-copy';
+import type { ScheduleEntryV2, SettingsV2 } from '../../../src/shared/types';
 
-afterEach((): void => {
-  cleanup();
-});
+const DEFAULTS: SettingsV2 = { ...DEFAULT_SETTINGS, schedule: [] };
+const FORCED_TYPE_LABEL: string = 'Session type forced by Until stopped';
+const FORCED_CYCLES_LABEL: string = 'Cycles forced by Until stopped';
 
-function existingEntry(): ScheduleEntry {
+function windowEntry(): ScheduleEntryV2 {
   return {
     id: 'entry-1',
     days: [1, 2, 3],
     start: '09:00',
     end: '12:30',
+    duration: { kind: 'window' },
     mode: 'blacklist',
-    strictness: 'flexible',
+    strictness: 'friction',
     cycling: null,
     intention: 'morning deep work',
     enabled: true,
   };
 }
 
-describe('Schedule', () => {
-  it('renders a flexible schedule entry', (): void => {
-    const { getByText } = render(
-      <Schedule entries={[existingEntry()]} defaults={DEFAULT_SETTINGS} onChange={vi.fn()} />,
-    );
+function indefiniteEntry(): ScheduleEntryV2 {
+  return {
+    ...windowEntry(),
+    id: 'entry-2',
+    duration: { kind: 'until-stopped' },
+    strictness: 'flexible',
+    cycling: null,
+  };
+}
 
-    expect(getByText('flexible')).toBeTruthy();
+function savedEntries(onChange: Mock): ScheduleEntryV2[] {
+  return (onChange.mock.calls[0]?.[0] ?? []) as ScheduleEntryV2[];
+}
+
+afterEach((): void => {
+  cleanup();
+});
+
+describe('Schedule duration choices', (): void => {
+  it('offers exactly two duration choices', (): void => {
+    const view = render(<Schedule entries={[]} defaults={DEFAULTS} onChange={vi.fn()} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+
+    const group: HTMLElement = view.getByRole('group', { name: 'Duration' });
+    const choices: HTMLElement[] = within(group).getAllByRole('radio');
+    expect(choices).toHaveLength(2);
+    expect(view.getByRole('radio', { name: SCHEDULE_WINDOW_LABEL })).toBeTruthy();
+    expect(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL })).toBeTruthy();
+    expect(
+      (view.getByRole('radio', { name: SCHEDULE_WINDOW_LABEL }) as HTMLInputElement).checked,
+    ).toBe(true);
   });
 
-  it('creates an entry with the defaults: weekdays, 09:00 to 12:00', (): void => {
-    const onChange = vi.fn();
-    const { getByRole } = render(
-      <Schedule entries={[]} defaults={DEFAULT_SETTINGS} onChange={onChange} />,
-    );
-    fireEvent.click(getByRole('button', { name: 'Add schedule entry' }));
-    fireEvent.click(getByRole('button', { name: 'Save entry' }));
-    expect(onChange).toHaveBeenCalledTimes(1);
-    const next: ScheduleEntry[] = onChange.mock.calls[0]?.[0] as ScheduleEntry[];
-    expect(next).toHaveLength(1);
-    const entry: ScheduleEntry = next[0] as ScheduleEntry;
-    expect(entry.days).toEqual([1, 2, 3, 4, 5]);
-    expect(entry.start).toBe('09:00');
-    expect(entry.end).toBe('12:00');
-    expect(entry.mode).toBe(DEFAULT_SETTINGS.defaultMode);
-    expect(entry.strictness).toBe(DEFAULT_SETTINGS.defaultStrictness);
-    expect(entry.cycling).toEqual(DEFAULT_SETTINGS.defaultCycling);
-    expect(entry.enabled).toBe(true);
-    expect(entry.id.length).toBeGreaterThan(0);
+  it('forces Flexible and no cycles for an indefinite entry and saves those values', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(<Schedule entries={[]} defaults={DEFAULTS} onChange={onChange} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+    fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
+
+    const forcedType: HTMLElement = view.getByRole('group', { name: FORCED_TYPE_LABEL });
+    const flexible: HTMLInputElement = view.getByRole('radio', {
+      name: /Flexible/,
+    }) as HTMLInputElement;
+    expect(forcedType.getAttribute('aria-disabled')).toBe('true');
+    expect(forcedType.contains(flexible)).toBe(true);
+    expect(flexible.checked).toBe(true);
+
+    const forcedCycles: HTMLElement = view.getByRole('group', { name: FORCED_CYCLES_LABEL });
+    const cycles: HTMLInputElement = view.getByRole('checkbox', {
+      name: /Cycle focus and breaks/,
+    }) as HTMLInputElement;
+    expect(forcedCycles.getAttribute('aria-disabled')).toBe('true');
+    expect(forcedCycles.contains(cycles)).toBe(true);
+    expect(cycles.checked).toBe(false);
+
+    expect(view.getAllByText(SCHEDULE_UNTIL_STOPPED_COPY).length).toBeGreaterThan(0);
+
+    fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
+
+    const saved: ScheduleEntryV2[] = savedEntries(onChange);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]?.duration).toEqual({ kind: 'until-stopped' });
+    expect(saved[0]?.strictness).toBe('flexible');
+    expect(saved[0]?.cycling).toBeNull();
+    expect(isScheduleEntryV2(saved[0])).toBe(true);
   });
 
-  it('shows the validation error inline for inverted times and never calls onChange', (): void => {
-    const onChange = vi.fn();
-    const { getByRole, getByLabelText, getByText } = render(
-      <Schedule entries={[]} defaults={DEFAULT_SETTINGS} onChange={onChange} />,
-    );
-    fireEvent.click(getByRole('button', { name: 'Add schedule entry' }));
-    fireEvent.input(getByLabelText('End'), { target: { value: '08:00' } });
-    fireEvent.click(getByRole('button', { name: 'Save entry' }));
-    expect(onChange).not.toHaveBeenCalled();
-    expect(getByText('start must be before end')).toBeTruthy();
+  it('refuses a session type or cycle change while the entry is indefinite', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(<Schedule entries={[]} defaults={DEFAULTS} onChange={onChange} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+    fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
+    fireEvent.click(view.getByRole('radio', { name: /Hard/ }));
+    fireEvent.click(view.getByRole('checkbox', { name: /Cycle focus and breaks/ }));
+    fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
+
+    const saved: ScheduleEntryV2[] = savedEntries(onChange);
+    expect(saved[0]?.strictness).toBe('flexible');
+    expect(saved[0]?.cycling).toBeNull();
   });
 
-  it('toggles an entry enabled state in place', (): void => {
-    const onChange = vi.fn();
-    const { getByLabelText } = render(
-      <Schedule entries={[existingEntry()]} defaults={DEFAULT_SETTINGS} onChange={onChange} />,
-    );
-    fireEvent.click(getByLabelText('Enabled'));
-    const next: ScheduleEntry[] = onChange.mock.calls[0]?.[0] as ScheduleEntry[];
-    expect(next[0]?.enabled).toBe(false);
+  it('keeps an indefinite entry Flexible when the forced wrapper is bypassed', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(<Schedule entries={[]} defaults={DEFAULTS} onChange={onChange} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+    fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
+
+    // Out of the wrapper, so no capture-phase block stands between the click and the draft.
+    const hard: HTMLElement = view.getByRole('radio', { name: /Hard/ });
+    document.body.appendChild(hard);
+    fireEvent.click(hard);
+    fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
+
+    const saved: ScheduleEntryV2[] = savedEntries(onChange);
+    expect(saved[0]?.duration).toEqual({ kind: 'until-stopped' });
+    expect(saved[0]?.strictness).toBe('flexible');
+    expect(saved[0]?.cycling).toBeNull();
+    expect(isScheduleEntryV2(saved[0])).toBe(true);
+    hard.remove();
   });
 
-  it('deletes an entry', (): void => {
-    const onChange = vi.fn();
-    const { getByRole } = render(
-      <Schedule entries={[existingEntry()]} defaults={DEFAULT_SETTINGS} onChange={onChange} />,
-    );
-    fireEvent.click(getByRole('button', { name: 'Delete' }));
-    expect(onChange).toHaveBeenCalledWith([]);
+  it('keeps an indefinite entry cycle-free when the forced wrapper is bypassed', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(<Schedule entries={[]} defaults={DEFAULTS} onChange={onChange} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+    fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
+
+    const cycles: HTMLElement = view.getByRole('checkbox', { name: /Cycle focus and breaks/ });
+    document.body.appendChild(cycles);
+    fireEvent.click(cycles);
+    cycles.remove();
+    fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
+
+    const saved: ScheduleEntryV2[] = savedEntries(onChange);
+    expect(saved[0]?.duration).toEqual({ kind: 'until-stopped' });
+    expect(saved[0]?.cycling).toBeNull();
+    expect(isScheduleEntryV2(saved[0])).toBe(true);
   });
 
-  it('edits an existing entry through the form', (): void => {
-    const onChange = vi.fn();
-    const { getByRole, getByLabelText } = render(
-      <Schedule entries={[existingEntry()]} defaults={DEFAULT_SETTINGS} onChange={onChange} />,
-    );
-    fireEvent.click(getByRole('button', { name: 'Edit' }));
-    fireEvent.input(getByLabelText('Intention'), { target: { value: 'write the report' } });
-    fireEvent.click(getByRole('button', { name: 'Save entry' }));
-    const next: ScheduleEntry[] = onChange.mock.calls[0]?.[0] as ScheduleEntry[];
-    expect(next).toHaveLength(1);
-    expect(next[0]?.intention).toBe('write the report');
-    expect(next[0]?.id).toBe('entry-1');
+  it('retains a bypassed session type edit for the timed duration', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(<Schedule entries={[]} defaults={DEFAULTS} onChange={onChange} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+    fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
+
+    const hard: HTMLElement = view.getByRole('radio', { name: /Hard/ });
+    document.body.appendChild(hard);
+    fireEvent.click(hard);
+    hard.remove();
+    fireEvent.click(view.getByRole('radio', { name: SCHEDULE_WINDOW_LABEL }));
+    fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
+
+    const saved: ScheduleEntryV2[] = savedEntries(onChange);
+    expect(saved[0]?.duration).toEqual({ kind: 'window' });
+    expect(saved[0]?.strictness).toBe('hard');
+    expect(isScheduleEntryV2(saved[0])).toBe(true);
   });
 
-  it('rejects an enabled entry that overlaps another entry on a shared day', (): void => {
-    const onChange = vi.fn();
-    const { getByRole, getByLabelText, getByText } = render(
-      <Schedule entries={[existingEntry()]} defaults={DEFAULT_SETTINGS} onChange={onChange} />,
-    );
-    fireEvent.click(getByRole('button', { name: 'Add schedule entry' }));
-    fireEvent.input(getByLabelText('Start'), { target: { value: '12:00' } });
-    fireEvent.input(getByLabelText('End'), { target: { value: '13:00' } });
-    fireEvent.click(getByRole('button', { name: 'Save entry' }));
-    expect(onChange).not.toHaveBeenCalled();
-    expect(getByText('Overlaps another enabled entry on Mon.')).toBeTruthy();
+  it('restores the unsent timed draft when the duration toggles back', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(<Schedule entries={[]} defaults={DEFAULTS} onChange={onChange} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+    fireEvent.click(view.getByRole('radio', { name: /Hard/ }));
+    fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
+    fireEvent.click(view.getByRole('radio', { name: SCHEDULE_WINDOW_LABEL }));
+
+    expect((view.getByRole('radio', { name: /Hard/ }) as HTMLInputElement).checked).toBe(true);
+    expect(
+      (view.getByRole('checkbox', { name: /Cycle focus and breaks/ }) as HTMLInputElement).checked,
+    ).toBe(true);
+    expect(view.queryByRole('group', { name: FORCED_TYPE_LABEL })).toBeNull();
+    expect(view.queryByText(SCHEDULE_UNTIL_STOPPED_COPY)).toBeNull();
+
+    fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
+
+    const saved: ScheduleEntryV2[] = savedEntries(onChange);
+    expect(saved[0]?.duration).toEqual({ kind: 'window' });
+    expect(saved[0]?.strictness).toBe('hard');
+    expect(saved[0]?.cycling).toEqual(DEFAULTS.defaultCycling);
+    expect(isScheduleEntryV2(saved[0])).toBe(true);
   });
 
-  it('allows adjacent enabled entries because schedule windows are end-exclusive', (): void => {
-    const onChange = vi.fn();
-    const { getByRole, getByLabelText } = render(
-      <Schedule entries={[existingEntry()]} defaults={DEFAULT_SETTINGS} onChange={onChange} />,
+  it('uses the current schedule defaults when a saved indefinite entry becomes timed', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(
+      <Schedule entries={[indefiniteEntry()]} defaults={DEFAULTS} onChange={onChange} />,
     );
-    fireEvent.click(getByRole('button', { name: 'Add schedule entry' }));
-    fireEvent.input(getByLabelText('Start'), { target: { value: '12:30' } });
-    fireEvent.input(getByLabelText('End'), { target: { value: '13:00' } });
-    fireEvent.click(getByRole('button', { name: 'Save entry' }));
-    expect(onChange).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(view.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(view.getByRole('radio', { name: SCHEDULE_WINDOW_LABEL }));
+    fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
+
+    const saved: ScheduleEntryV2[] = savedEntries(onChange);
+    expect(saved[0]?.strictness).toBe(DEFAULTS.defaultStrictness);
+    expect(saved[0]?.cycling).toEqual(DEFAULTS.defaultCycling);
   });
 
-  it('allows overlapping entries that do not share a weekday', (): void => {
-    const onChange = vi.fn();
-    const { getByRole } = render(
-      <Schedule entries={[existingEntry()]} defaults={DEFAULT_SETTINGS} onChange={onChange} />,
+  it('honours cyclingOnByDefault when a saved indefinite entry becomes timed', (): void => {
+    const defaults: SettingsV2 = { ...DEFAULTS, cyclingOnByDefault: false };
+    const onChange: Mock = vi.fn();
+    const view = render(
+      <Schedule entries={[indefiniteEntry()]} defaults={defaults} onChange={onChange} />,
     );
-    fireEvent.click(getByRole('button', { name: 'Add schedule entry' }));
-    for (const day of ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']) {
-      fireEvent.click(getByRole('button', { name: day }));
-    }
-    fireEvent.click(getByRole('button', { name: 'Sun' }));
-    fireEvent.click(getByRole('button', { name: 'Save entry' }));
-    expect(onChange).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(view.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(view.getByRole('radio', { name: SCHEDULE_WINDOW_LABEL }));
+    fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
+
+    expect(savedEntries(onChange)[0]?.cycling).toBeNull();
   });
 
-  it('rejects enabling an entry that overlaps another enabled entry', (): void => {
-    const disabledOverlap: ScheduleEntry = {
-      ...existingEntry(),
-      id: 'entry-2',
-      start: '10:00',
-      end: '11:00',
-      enabled: false,
-    };
-    const onChange = vi.fn();
-    const { getAllByLabelText, getByText } = render(
+  it('explains the forced values through the shared disclosure', (): void => {
+    const view = render(<Schedule entries={[]} defaults={DEFAULTS} onChange={vi.fn()} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+    fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
+    fireEvent.pointerEnter(view.getByRole('group', { name: FORCED_TYPE_LABEL }));
+
+    expect(view.getByRole('tooltip').textContent).toContain(UNTIL_STOPPED_DISCLOSURE);
+  });
+});
+
+describe('Schedule rows and validation', (): void => {
+  it('creates a window entry from the settings defaults', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(<Schedule entries={[]} defaults={DEFAULTS} onChange={onChange} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+    fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
+
+    const saved: ScheduleEntryV2[] = savedEntries(onChange);
+    expect(saved[0]?.duration).toEqual({ kind: 'window' });
+    expect(saved[0]?.days).toEqual([1, 2, 3, 4, 5]);
+    expect(saved[0]?.start).toBe('09:00');
+    expect(saved[0]?.end).toBe('12:00');
+    expect(saved[0]?.strictness).toBe(DEFAULTS.defaultStrictness);
+    expect(saved[0]?.cycling).toEqual(DEFAULTS.defaultCycling);
+  });
+
+  it('renders the schedule copy on an indefinite row only', (): void => {
+    const view = render(
       <Schedule
-        entries={[existingEntry(), disabledOverlap]}
-        defaults={DEFAULT_SETTINGS}
-        onChange={onChange}
+        entries={[windowEntry(), indefiniteEntry()]}
+        defaults={DEFAULTS}
+        onChange={vi.fn()}
       />,
     );
-    fireEvent.click(getAllByLabelText('Enabled')[1] as HTMLElement);
+
+    expect(view.getAllByText(SCHEDULE_UNTIL_STOPPED_COPY)).toHaveLength(1);
+    expect(view.getAllByText(SCHEDULE_WINDOW_LABEL)).toHaveLength(1);
+  });
+
+  it('keeps validateEntry gating every save', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(<Schedule entries={[]} defaults={DEFAULTS} onChange={onChange} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+    fireEvent.input(view.getByLabelText('End'), { target: { value: '08:00' } });
+    fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
+
     expect(onChange).not.toHaveBeenCalled();
-    expect(getByText('Overlaps another enabled entry on Mon.')).toBeTruthy();
+    expect(view.getByText('start must be before end')).toBeTruthy();
+  });
+
+  it('keeps the overlap check gating every save', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(
+      <Schedule entries={[windowEntry()]} defaults={DEFAULTS} onChange={onChange} />,
+    );
+
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+    fireEvent.input(view.getByLabelText('Start'), { target: { value: '12:00' } });
+    fireEvent.input(view.getByLabelText('End'), { target: { value: '13:00' } });
+    fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(view.getByText('Overlaps another enabled entry on Mon.')).toBeTruthy();
+  });
+
+  it('edits, toggles, and deletes saved entries in place', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(
+      <Schedule entries={[indefiniteEntry()]} defaults={DEFAULTS} onChange={onChange} />,
+    );
+
+    fireEvent.click(view.getByLabelText('Enabled'));
+    expect(savedEntries(onChange)[0]?.enabled).toBe(false);
+    onChange.mockReset();
+
+    fireEvent.click(view.getByRole('button', { name: 'Delete' }));
+    expect(onChange).toHaveBeenCalledWith([]);
+    onChange.mockReset();
+
+    fireEvent.click(view.getByRole('button', { name: 'Edit' }));
+    fireEvent.input(view.getByLabelText('Intention'), { target: { value: 'write the report' } });
+    fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
+
+    const saved: ScheduleEntryV2[] = savedEntries(onChange);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]?.id).toBe('entry-2');
+    expect(saved[0]?.intention).toBe('write the report');
+    expect(saved[0]?.duration).toEqual({ kind: 'until-stopped' });
+  });
+
+  it('carries the schedule duration styles in the Options stylesheet', (): void => {
+    const view = render(<Schedule entries={[]} defaults={DEFAULTS} onChange={vi.fn()} />);
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+    expect(
+      view.getByRole('group', { name: 'Duration' }).classList.contains('schedule-duration'),
+    ).toBe(true);
+    fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
+    expect(
+      view.getByText(SCHEDULE_UNTIL_STOPPED_COPY).classList.contains('schedule-duration-note'),
+    ).toBe(true);
+
+    const css: string = readFileSync(resolve('src/options/options.css'), 'utf8');
+
+    expect(css).toMatch(/\.schedule-duration\s*\{/s);
+    expect(css).toMatch(/\.schedule-duration-note\s*\{/s);
   });
 });

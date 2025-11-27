@@ -17,7 +17,8 @@ import {
 } from '../shared/storage-keys';
 import { localDateStr, localMonthStr } from '../shared/time';
 import type { DailyAgg, EventRecord, MonthlyAgg, StreakState } from '../shared/types';
-import { getDeviceId, parseStreak, readEvents } from './stores';
+import { readEventsV2 } from './event-log-v2';
+import { getDeviceId, parseStreak } from './stores';
 import { chooseNewerStreak } from './streak-sync';
 import { removeSyncItems, setSyncItemsWithinQuota } from './sync-quota';
 
@@ -392,7 +393,7 @@ export async function fetchStats(
       storage.sync === null
         ? Promise.resolve({})
         : (storage.sync.get(null) as Promise<Record<string, unknown>>),
-      readEvents(),
+      readEventsV2(),
     ]);
   const deviceId: string = loaded[0];
   const localItems: Record<string, unknown> = projectedLocalAggregateItems(loaded[1]);

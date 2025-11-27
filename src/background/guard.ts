@@ -123,7 +123,11 @@ export function settingsChangeAllowed(
     return 'a hard session is running: shortening unlocks lowers their cost';
   }
   if (
-    scheduleWeakened(session?.config.scheduleEntryId ?? null, current.schedule, incoming.schedule)
+    scheduleWeakened(
+      session?.config.scheduleOccurrence?.entryId ?? null,
+      current.schedule,
+      incoming.schedule,
+    )
   ) {
     return 'a hard session is running: its schedule entry cannot be weakened until it ends';
   }

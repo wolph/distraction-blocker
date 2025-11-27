@@ -1,6 +1,7 @@
-import type { ContentCommand } from '../shared/messages';
-import type { SessionSnapshot, Verdict } from '../shared/types';
+import type { DocumentContentCommand } from '../shared/enforcement-v2';
+import type { EnforcementTargetPortsV2 } from './enforcement-targets-v2';
 import type { BlockingSweepLease, Engine, LiveTabState } from './engine';
+import type { CleanupTabClaim } from './runtime-v2-types';
 
 export interface TabState {
   /** the tab's current mute state */
@@ -15,8 +16,8 @@ export interface TabState {
   wasStopped: boolean;
 }
 
+/** The browser effects one target needs beside the command the controller sends it. */
 export interface TabAction {
-  command: 'applyBlock' | 'clearBlock';
   /** mute state to set, null for no change */
   mute: boolean | null;
   reload: boolean;
@@ -60,21 +61,33 @@ async function tabStillAt(tabId: number, url: string): Promise<boolean> {
   return tab?.url === url;
 }
 
-/** Pure per-tab decision: what to send and which side effects to run. */
-export function planTabAction(verdict: Verdict, tabState: TabState): TabAction {
+/** Pure per-tab decision: the mute and reload effects a blocked or cleared target needs. */
+export function planTabAction(blocked: boolean, tabState: TabState): TabAction {
   const ownsTabEffects: boolean = tabState.wasMutedByUs && tabState.mutedByExtension === true;
-  if (verdict.blocked) {
-    return {
-      command: 'applyBlock',
-      mute: ownsTabEffects && tabState.muted ? null : true,
-      reload: false,
-    };
-  }
-  return {
-    command: 'clearBlock',
-    mute: ownsTabEffects ? tabState.priorMuted : null,
-    reload: tabState.wasStopped,
-  };
+  if (blocked) return { mute: ownsTabEffects && tabState.muted ? null : true, reload: false };
+  return { mute: ownsTabEffects ? tabState.priorMuted : null, reload: tabState.wasStopped };
+}
+
+/**
+ * The commands one target must apply, from the controller that owns them. It freezes and persists
+ * the command, records the blocked attempt when a kind is given, and answers what it froze, which
+ * is how this file learns whether the page ends up blocked.
+ */
+async function blockedForTarget(
+  engine: Engine,
+  tabId: number,
+  input: TabApplyInput,
+  attemptKind: 'navigation' | 'existing' | null,
+): Promise<boolean> {
+  if (input.documentId === null) return false;
+  const commands: DocumentContentCommand[] = await engine.documentCommandsFor(
+    { tabId, documentId: input.documentId, url: input.url },
+    attemptKind,
+  );
+  return commands.some(
+    (command: DocumentContentCommand): boolean =>
+      command.command === 'apply-enforcement' && command.verdict.blocked,
+  );
 }
 
 const tabTaskTails: Map<number, Promise<void>> = new Map();
@@ -244,7 +257,7 @@ interface ResolvedTabApplyOptions {
   validateDocument?: boolean;
 }
 
-function recordAttemptWithLease(
+function _recordAttemptWithLease(
   engine: Engine,
   url: string,
   tabId: number,
@@ -308,7 +321,7 @@ async function applyTabEffectsNow(
   engine: Engine,
   tabId: number,
   input: TabApplyInput,
-  verdict: Verdict,
+  blocked: boolean,
   beforeEffects: () => void = (): void => undefined,
   shouldContinue: () => boolean = (): boolean => true,
   validateDocument: boolean = false,
@@ -321,34 +334,25 @@ async function applyTabEffectsNow(
     if (liveDocumentId !== documentId || !shouldContinue()) return;
   }
   beforeEffects();
-  const snapshot: SessionSnapshot = engine.snapshot();
   const facts: { wasMutedByUs: boolean; priorMuted: boolean; wasStopped: boolean } =
     engine.tabFacts(tabId, url, documentId);
-  const action: TabAction = planTabAction(verdict, {
+  const action: TabAction = planTabAction(blocked, {
     muted: mutedNow,
     mutedByExtension,
     ...facts,
   });
-  const command: ContentCommand =
-    action.command === 'applyBlock'
-      ? { type: 'applyBlock', verdict, snapshot }
-      : { type: 'clearBlock', snapshot };
   if (!(await tabStillAt(tabId, url)) || !shouldContinue()) return;
-  try {
-    if (documentId === null) {
-      await chrome.tabs.sendMessage(tabId, command);
-    } else {
-      await chrome.tabs.sendMessage(tabId, command, { documentId });
-    }
-  } catch {
-    // tabs without the content script (chrome://, the web store) reject, fine
+  // The controller routes this target to whichever authority owns it and sends what it owes,
+  // reset first for a document that has not acknowledged the epoch.
+  if (documentId !== null) {
+    await engine.handleNavigation({ tabId, documentId, url }, null);
   }
   if (!shouldContinue()) return;
   if (validateDocument && documentId !== null) {
     const liveDocumentId: string | null = await getDocumentId(tabId);
     if (liveDocumentId !== documentId || !shouldContinue()) return;
   }
-  if (action.command === 'applyBlock') {
+  if (blocked) {
     await applyMute(
       engine,
       tabId,
@@ -414,19 +418,12 @@ async function queueResolvedTabApply(
         const input: TabApplyInput | null = await resolveInput(taskVersion);
         if (input === null || !operationIsCurrent()) return null;
         if (options.requireCurrentTask && tabTaskVersions.get(tabId) !== taskVersion) return null;
-        const verdict: Verdict = engine.verdictFor(input.url);
-        if (!verdict.blocked || attemptKind === null || recordedAttemptUrl === input.url) {
-          return { input, persistence: null };
-        }
-        const persistence: Promise<void> = recordAttemptWithLease(
-          engine,
-          input.url,
-          tabId,
-          attemptKind,
-          options.lease,
-        );
-        void persistence.catch((): void => undefined);
-        return { input, persistence };
+        // The controller records the attempt as it freezes the command, so the persistence this
+        // path used to own is the same await.
+        const kind: 'navigation' | 'existing' | null =
+          recordedAttemptUrl === input.url ? null : attemptKind;
+        const blocked: boolean = await blockedForTarget(engine, tabId, input, kind);
+        return { input, persistence: blocked && kind !== null ? Promise.resolve() : null };
       },
     );
     if (preparation === null) return;
@@ -444,16 +441,14 @@ async function queueResolvedTabApply(
         const input: TabApplyInput | null = await resolveInput(taskVersion);
         if (input === null || !operationIsCurrent()) return true;
         if (options.requireCurrentTask && tabTaskVersions.get(tabId) !== taskVersion) return true;
-        const verdict: Verdict = engine.verdictFor(input.url);
-        if (attemptKind !== null && verdict.blocked && recordedAttemptUrl !== input.url) {
-          return false;
-        }
+        const blocked: boolean = await blockedForTarget(engine, tabId, input, null);
+        if (attemptKind !== null && blocked && recordedAttemptUrl !== input.url) return false;
         let effectsAccepted: boolean = false;
         await applyTabEffectsNow(
           engine,
           tabId,
           input,
-          verdict,
+          blocked,
           (): void => {
             effectsAccepted = true;
             options.beforeEffects?.(input, taskVersion);
@@ -795,7 +790,17 @@ async function settleMuteUpdate(
     const liveUrl: string = liveIdentity.url;
     const changedIdentity: boolean = identityChanged(updateIdentity, liveIdentity);
     if (changedIdentity) {
-      desiredBlocked = engine.verdictFor(liveUrl).blocked;
+      desiredBlocked = await blockedForTarget(
+        engine,
+        tabId,
+        {
+          url: liveUrl,
+          mutedNow: desiredMuted,
+          mutedByExtension: false,
+          documentId: liveIdentity.documentId,
+        },
+        null,
+      );
       desiredMuted = desiredBlocked ? true : priorMuted;
     }
     const liveMute: { muted: boolean; owned: boolean } = muteState(
@@ -1331,6 +1336,68 @@ export function registerTabListeners(
     (details: chrome.webNavigation.WebNavigationTransitionCallbackDetails): void =>
       onNav(details, 'existing'),
   );
+}
+
+/**
+ * The generation the enforcement sweep reads. Every tab operation advances it, so a sweep that
+ * finished under an older generation knows the target set moved under it.
+ */
+export function readTabGenerationV2(): number {
+  return tabOperationSequence;
+}
+
+/** The live enforceable targets, read from the browser rather than from any stored view. */
+export function enforcementTargetPortsV2(): EnforcementTargetPortsV2 {
+  return {
+    queryTopFrameTabs: async (): Promise<Array<{ tabId: number; url: string | null }>> => {
+      const tabs: chrome.tabs.Tab[] = await chrome.tabs.query({});
+      return tabs.flatMap(
+        (tab: chrome.tabs.Tab): Array<{ tabId: number; url: string | null }> =>
+          tab.id === undefined ? [] : [{ tabId: tab.id, url: tab.url ?? null }],
+      );
+    },
+    topFrameDocumentId: (tabId: number): Promise<string | null> => getDocumentId(tabId),
+    readTargetGeneration: (): number => tabOperationSequence,
+    now: (): number => Date.now(),
+  };
+}
+
+/**
+ * Restores the mute state every claimed tab had before the session and reports the tabs that no
+ * longer need the claim. A tab that cannot be read keeps its claim for the next attempt.
+ */
+export async function restoreClaimedTabs(claims: readonly CleanupTabClaim[]): Promise<number[]> {
+  const settled: number[] = [];
+  for (const claim of claims) {
+    const read: TabReadResult = await readTab(claim.tabId);
+    if (!read.ok) continue;
+    const tab: chrome.tabs.Tab = read.tab;
+    const ownsMute: boolean = tab.mutedInfo?.extensionId === chrome.runtime.id;
+    const priorMuted: boolean = claim.state.priorMuted ?? false;
+    try {
+      if (ownsMute && (tab.mutedInfo?.muted ?? false) !== priorMuted) {
+        await chrome.tabs.update(claim.tabId, { muted: priorMuted });
+      }
+      settled.push(claim.tabId);
+    } catch {
+      // The tab went away or refused the update. The claim survives for the next attempt.
+    }
+  }
+  return settled;
+}
+
+/** Reloads the documents this session stopped, so a page left blank comes back on its own. */
+export async function reloadClaimedDocuments(claims: readonly CleanupTabClaim[]): Promise<void> {
+  for (const claim of claims) {
+    const stopped: string | null = claim.state.stoppedDocumentId;
+    if (stopped === null) continue;
+    try {
+      if ((await getDocumentId(claim.tabId)) !== stopped) continue;
+      await chrome.tabs.reload(claim.tabId);
+    } catch {
+      // A tab that is gone needs no reload.
+    }
+  }
 }
 
 function isIgnorableInjectionFailure(error: unknown): boolean {

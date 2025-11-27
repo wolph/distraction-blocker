@@ -354,7 +354,7 @@ function tick(): void {
   if (mounted.actionPending) disableAllActions(mounted);
 }
 
-function requestOpenGate(kind: GateKind, host: string | null): void {
+function requestOpenGate(kind: 'pause' | 'unlockSite', host: string | null): void {
   void sendAndRefresh({ type: 'openGate', gate: kind, host });
 }
 

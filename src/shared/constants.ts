@@ -184,28 +184,9 @@ export function unlockSitePhrase(host: string): string {
   return `I am allowing this site: ${host}`;
 }
 
+/** The idle read model every consumer starts from. One shape, which is the v2 one. */
 export function emptySnapshot(at: number): SessionSnapshot {
-  return {
-    at,
-    theme: DEFAULT_SETTINGS.theme,
-    phase: 'idle',
-    config: null,
-    startedAt: null,
-    phaseStartedAt: null,
-    phaseEndsAt: null,
-    sessionEndsAt: null,
-    cycleIndex: 0,
-    bankMs: 0,
-    bankAccrualPerMs: 0,
-    bankCapMs: DEFAULT_SETTINGS.pause.capMs,
-    pauseCostMs: DEFAULT_SETTINGS.pause.pauseMs,
-    unlockCostMs: DEFAULT_SETTINGS.pause.unlockMs,
-    activeUnlocks: [],
-    gate: null,
-    attemptsToday: 0,
-    scheduleActive: false,
-    nextSchedule: null,
-  };
+  return emptySnapshotV2(at);
 }
 
 export function emptySnapshotV2(at: number): SessionSnapshotV2 {

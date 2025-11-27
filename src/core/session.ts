@@ -1,7 +1,12 @@
 import { MIN_BREAK_BEFORE_EARLY_MS } from '../shared/constants';
 import { CoreError } from '../shared/errors';
 import { minToMs } from '../shared/time';
-import type { CycleConfig, Phase, SessionConfig, SessionState } from '../shared/types';
+import type {
+  CycleConfig,
+  NormalizedSessionConfigV1,
+  NormalizedSessionStateV1,
+  Phase,
+} from '../shared/types';
 
 /*
  * Timing semantics, the contract plan 03 codes against:
@@ -22,7 +27,11 @@ export type MachineEvent =
   | { type: 'phaseChanged'; from: Phase; to: Phase; at: number }
   | { type: 'completed'; at: number; focusedMs: number };
 
-export function startSession(config: SessionConfig, now: number, sessionId?: string): SessionState {
+export function startSession(
+  config: NormalizedSessionConfigV1,
+  now: number,
+  sessionId?: string,
+): NormalizedSessionStateV1 {
   const sessionEndsAt: number = now + minToMs(config.durationMin);
   const focusEnd: number =
     config.cycling === null
@@ -42,7 +51,7 @@ export function startSession(config: SessionConfig, now: number, sessionId?: str
   };
 }
 
-function breakLenMs(state: SessionState): number {
+function breakLenMs(state: NormalizedSessionStateV1): number {
   const c: CycleConfig | null = state.config.cycling;
   if (c === null) return 0;
   const isLong: boolean = (state.cycleIndex + 1) % c.longEvery === 0;
@@ -57,10 +66,10 @@ function breakLenMs(state: SessionState): number {
  * passed through, in order.
  */
 export function advance(
-  state: SessionState,
+  state: NormalizedSessionStateV1,
   now: number,
-): { next: SessionState | null; events: MachineEvent[] } {
-  let s: SessionState = { ...state };
+): { next: NormalizedSessionStateV1 | null; events: MachineEvent[] } {
+  let s: NormalizedSessionStateV1 = { ...state };
   const events: MachineEvent[] = [];
 
   for (;;) {
@@ -121,7 +130,11 @@ export function advance(
 }
 
 /** Session clock keeps running during a pause. Throws CoreError when not in focus. */
-export function beginPause(state: SessionState, now: number, pauseMs: number): SessionState {
+export function beginPause(
+  state: NormalizedSessionStateV1,
+  now: number,
+  pauseMs: number,
+): NormalizedSessionStateV1 {
   if (state.phase !== 'focus') throw new CoreError('not-cancelable', 'pause only during focus');
   return {
     ...state,
@@ -133,7 +146,10 @@ export function beginPause(state: SessionState, now: number, pauseMs: number): S
   };
 }
 
-export function endPauseEarly(state: SessionState, now: number): SessionState {
+export function endPauseEarly(
+  state: NormalizedSessionStateV1,
+  now: number,
+): NormalizedSessionStateV1 {
   if (state.phase !== 'paused' || state.pausedFrom === null) {
     throw new CoreError('not-cancelable', 'not paused');
   }
@@ -147,7 +163,10 @@ export function endPauseEarly(state: SessionState, now: number): SessionState {
 }
 
 /** Throws CoreError('break-too-short') before MIN_BREAK_BEFORE_EARLY_MS of break has elapsed. */
-export function startNextFocusEarly(state: SessionState, now: number): SessionState {
+export function startNextFocusEarly(
+  state: NormalizedSessionStateV1,
+  now: number,
+): NormalizedSessionStateV1 {
   if (state.phase !== 'break') throw new CoreError('break-too-short', 'not on a break');
   if (now - state.phaseStartedAt < MIN_BREAK_BEFORE_EARLY_MS) {
     throw new CoreError('break-too-short', 'give the break two minutes first');

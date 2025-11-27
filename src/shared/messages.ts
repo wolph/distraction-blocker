@@ -1,19 +1,18 @@
+import type { DocumentContentCommand } from './enforcement-v2';
 import type {
   DailyAgg,
   EventRecord,
-  GateKind,
   ListsConfig,
   MonthlyAgg,
   OnboardingDraft,
-  SessionConfig,
   SessionConfigV2,
   SessionSnapshot,
+  SessionSnapshotV2,
   Settings,
   SetupState,
   StorageMode,
   StreakState,
   ThemeMode,
-  Verdict,
 } from './types';
 
 export interface SessionStartRequestV2 {
@@ -90,7 +89,8 @@ export type StartSessionResponseV2 =
 
 export type SoundId = 'sessionComplete' | 'breakStart' | 'breakEnd' | 'scheduleStart';
 
-export type Request =
+/** Every request that is not a session command. The session members are the v2 union. */
+export type NonSessionRequest =
   | { type: 'getSnapshot' }
   | { type: 'getSetupState' }
   | { type: 'openOnboarding' }
@@ -109,13 +109,6 @@ export type Request =
     }
   /** docState fresh = document_start on a new navigation (worker records the tab as stopped when blocked), loaded = an already-rendered page */
   | { type: 'getBlockState'; url: string; docState: 'fresh' | 'loaded' }
-  | { type: 'startSession'; config: SessionConfig }
-  | { type: 'openGate'; gate: GateKind; host: string | null }
-  | { type: 'confirmGate'; typedPhrase: string | null }
-  | { type: 'requestSessionEnd' }
-  | { type: 'abandonGate' }
-  | { type: 'resumeFromPause' }
-  | { type: 'startNextFocusEarly' }
   | { type: 'updateSettings'; settings: Settings }
   | { type: 'updateTheme'; theme: ThemeMode }
   | { type: 'updateLists'; lists: ListsConfig }
@@ -124,6 +117,8 @@ export type Request =
   | { type: 'getStats'; days: number }
   | { type: 'exportEvents' }
   | { type: 'previewSound'; sound: SoundId };
+
+export type Request = NonSessionRequest | SessionRequestV2;
 
 export interface Rejection {
   ok: false;
@@ -196,7 +191,7 @@ export interface StatsBundle {
   };
 }
 
-export interface ResponseMap {
+export interface NonSessionResponseMap {
   getSnapshot: SessionSnapshot;
   getSetupState: SetupState;
   openOnboarding: Ack;
@@ -210,14 +205,6 @@ export interface ResponseMap {
   setStorageMode: Ack;
   retrySync: RetrySyncResponse;
   clearFocusLockData: ClearFocusLockDataResponse;
-  getBlockState: { verdict: Verdict; snapshot: SessionSnapshot };
-  startSession: Ack;
-  openGate: Ack;
-  confirmGate: Ack;
-  requestSessionEnd: Ack;
-  abandonGate: Ack;
-  resumeFromPause: Ack;
-  startNextFocusEarly: Ack;
   updateSettings: Ack;
   updateTheme: Ack;
   updateLists: Ack;
@@ -228,16 +215,18 @@ export interface ResponseMap {
   previewSound: Ack;
 }
 
+export interface ResponseMap extends NonSessionResponseMap, SessionResponseMapV2 {
+  /** The documents a content script must apply, newest persisted values only. */
+  getBlockState: { commands: DocumentContentCommand[] };
+}
+
 export type Broadcast =
-  | { type: 'stateChanged'; snapshot: SessionSnapshot }
+  | { type: 'stateChanged'; snapshot: SessionSnapshotV2 }
   /** content scripts must re-run getBlockState with their current URL */
   | { type: 'reevaluate' };
 
 /** Worker-to-content-script push commands, sent via chrome.tabs.sendMessage. */
-export type ContentCommand =
-  | { type: 'applyBlock'; verdict: Verdict; snapshot: SessionSnapshot }
-  | { type: 'clearBlock'; snapshot: SessionSnapshot }
-  | { type: 'reevaluate' };
+export type ContentCommand = DocumentContentCommand | { type: 'reevaluate' };
 
 export async function sendRequest<T extends Request['type']>(
   req: Extract<Request, { type: T }>,
@@ -278,8 +267,5 @@ export interface SessionResponseMapV2 {
   retryDataClear: CommandResponseV2<RetryCleanupResultCodeV2>;
 }
 
-export async function sendSessionRequestV2<T extends SessionRequestV2['type']>(
-  request: Extract<SessionRequestV2, { type: T }>,
-): Promise<SessionResponseMapV2[T]> {
-  return (await chrome.runtime.sendMessage(request)) as SessionResponseMapV2[T];
-}
+/** The v2 channel is the live channel now. The alias stays until Task 2 retires its callers. */
+export const sendSessionRequestV2: typeof sendRequest = sendRequest;

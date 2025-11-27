@@ -3,14 +3,26 @@ import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'p
 import { getDomain } from 'tldts';
 import { msUntilNextEarnedMinute } from '../core/budget';
 import { MIN_BREAK_BEFORE_EARLY_MS } from '../shared/constants';
-import { extrapolatedBank } from '../shared/live';
-import type { Ack, StatsBundle } from '../shared/messages';
+import type { StatsBundle } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
-import { ackError, isStatsBundle } from '../shared/runtime-validation';
+import { isStatsBundle } from '../shared/runtime-validation';
 import { formatClock } from '../shared/time';
-import type { GateKind, SessionSnapshot } from '../shared/types';
+import type { EndAuthorityV2, GateState, SessionSnapshotV2 } from '../shared/types';
+import { ClockStack } from './ClockStack';
 import { GatePanel } from './GatePanel';
-import { Ring } from './Ring';
+import {
+  endControl,
+  gateIdentity,
+  gateIntention,
+  gatePhraseLabel,
+  mapGateError,
+  sendGateCommand,
+  useV2Command,
+  type V2Command,
+} from './v2-command';
+
+/** Shown when a spend, resume, or break command does not come back accepted. */
+const ACTION_FAILED_COPY: string = 'Could not request that action. Try again.';
 
 type ActiveHostState =
   | { status: 'loading' }
@@ -18,6 +30,7 @@ type ActiveHostState =
   | { status: 'unsupported' }
   | { status: 'error' };
 
+/** Duplicated from the v1 ActiveView. The cutover deletes the v1 copy. */
 function useActiveHost(): ActiveHostState {
   const [state, setState]: [ActiveHostState, Dispatch<StateUpdater<ActiveHostState>>] =
     useState<ActiveHostState>({ status: 'loading' });
@@ -51,10 +64,7 @@ function useActiveHost(): ActiveHostState {
   return state;
 }
 
-function gateIdentity(gate: NonNullable<SessionSnapshot['gate']>): string {
-  return JSON.stringify([gate.kind, gate.host, gate.openedAt, gate.readyAt, gate.requiredPhrase]);
-}
-
+/** Duplicated from the v1 ActiveView. Stats reads stay on the v1 request channel. */
 function useFocusedTodayMs(): { ms: number | null; error: boolean } {
   const [ms, setMs]: [number | null, Dispatch<StateUpdater<number | null>>] = useState<
     number | null
@@ -77,6 +87,18 @@ function useFocusedTodayMs(): { ms: number | null; error: boolean } {
       });
   }, []);
   return { ms, error };
+}
+
+/** v2 mirror of extrapolatedBank, which only accepts the v1 snapshot shape. */
+function extrapolatedBankV2(snapshot: SessionSnapshotV2, nowMs: number): number {
+  const grown: number =
+    snapshot.bankMs + Math.max(0, nowMs - snapshot.at) * snapshot.bankAccrualPerMs;
+  return Math.min(snapshot.bankCapMs, grown);
+}
+
+/** The open cancel gate carried by End authority, absent for every other authority. */
+function endGateOf(authority: EndAuthorityV2): GateState | null {
+  return authority.kind === 'friction-gate' ? authority.gate : null;
 }
 
 function SpendButton({
@@ -102,74 +124,30 @@ function SpendButton({
   );
 }
 
-export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: number }): VNode {
-  const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
-    string | null
-  >(null);
-  const [actionPending, setActionPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
-    useState<boolean>(false);
-  const actionInFlight: { current: boolean } = useRef<boolean>(false);
+export interface ActiveViewProps {
+  snapshot: SessionSnapshotV2;
+  now: number;
+}
+
+export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
   const viewRef: { current: HTMLElement | null } = useRef<HTMLElement | null>(null);
+  /** Disabling in the same tick keeps a second click from racing the pending commit. */
+  const command: V2Command = useV2Command({
+    onBegin: (): void => {
+      for (const button of viewRef.current?.querySelectorAll<HTMLButtonElement>('button') ?? []) {
+        button.disabled = true;
+      }
+    },
+  });
   const activeSite: ActiveHostState = useActiveHost();
   const activeHost: string | null = activeSite.status === 'ready' ? activeSite.host : null;
   const focusedToday: { ms: number | null; error: boolean } = useFocusedTodayMs();
 
-  const beginAction: () => boolean = (): boolean => {
-    if (actionInFlight.current) return false;
-    actionInFlight.current = true;
-    for (const button of viewRef.current?.querySelectorAll<HTMLButtonElement>('button') ?? []) {
-      button.disabled = true;
-    }
-    setError(null);
-    setActionPending(true);
-    return true;
-  };
-
-  const bankMs: number = extrapolatedBank(snapshot, now);
+  const bankMs: number = extrapolatedBankV2(snapshot, now);
   const bankFill: number = snapshot.bankCapMs > 0 ? Math.min(1, bankMs / snapshot.bankCapMs) : 0;
   const intention: string = snapshot.config?.intention ?? '';
-  const strictness: string = snapshot.config?.strictness ?? 'friction';
-
-  const openGate: (gate: GateKind, host: string | null) => Promise<void> = async (
-    gate: GateKind,
-    host: string | null,
-  ): Promise<void> => {
-    if (!beginAction()) return;
-    try {
-      const ack: Ack = await sendRequest({ type: 'openGate', gate, host });
-      const responseError: string | null = ackError(ack, 'Could not request action. Try again.');
-      if (responseError !== null) setError(responseError);
-    } catch {
-      setError('Could not request that action. Try again.');
-    } finally {
-      actionInFlight.current = false;
-      setActionPending(false);
-    }
-  };
-
-  const act: (
-    req:
-      | { type: 'resumeFromPause' }
-      | { type: 'startNextFocusEarly' }
-      | { type: 'requestSessionEnd' },
-  ) => Promise<void> = async (
-    req:
-      | { type: 'resumeFromPause' }
-      | { type: 'startNextFocusEarly' }
-      | { type: 'requestSessionEnd' },
-  ): Promise<void> => {
-    if (!beginAction()) return;
-    try {
-      const ack: Ack = await sendRequest(req);
-      const responseError: string | null = ackError(ack, 'Could not request action. Try again.');
-      if (responseError !== null) setError(responseError);
-    } catch {
-      setError('Could not request that action. Try again.');
-    } finally {
-      actionInFlight.current = false;
-      setActionPending(false);
-    }
-  };
+  const authority: EndAuthorityV2 = snapshot.lifecycle.endAuthority;
+  const activeGate: GateState | null = snapshot.gate ?? endGateOf(authority);
 
   const affordability: (costMs: number) => { affordable: boolean; countdown: string | null } = (
     costMs: number,
@@ -200,7 +178,7 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
     countdown: string | null;
   }): string | null =>
     value.affordable ? null : (value.countdown ?? 'earn pause time by focusing');
-  const pendingReason: string | null = actionPending ? 'Action in progress' : null;
+  const pendingReason: string | null = command.pending ? 'Action in progress' : null;
   const activeSiteReason: string | null =
     activeSite.status === 'loading'
       ? 'Checking the active site'
@@ -218,9 +196,58 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
     snapshot.phaseStartedAt !== null &&
     now - snapshot.phaseStartedAt >= MIN_BREAK_BEFORE_EARLY_MS;
 
+  const endAction: VNode | null = endControl(authority, command);
+
+  const phaseControls: VNode | null =
+    snapshot.phase === 'paused' ? (
+      <button
+        type="button"
+        class="start-button"
+        disabled={command.pending}
+        onClick={(): void => void command.run({ type: 'resumeFromPause' }, ACTION_FAILED_COPY)}
+      >
+        Resume now
+      </button>
+    ) : snapshot.phase === 'break' ? (
+      breakEarlyVisible ? (
+        <button
+          type="button"
+          class="spend-button"
+          disabled={command.pending}
+          onClick={(): void =>
+            void command.run({ type: 'startNextFocusEarly' }, ACTION_FAILED_COPY)
+          }
+        >
+          Start next focus early
+        </button>
+      ) : null
+    ) : (
+      <>
+        <SpendButton
+          label={`Unlock this site for ${costMin(snapshot.unlockCostMs)} min`}
+          sub={activeHost}
+          disabledReason={unlockDisabledReason}
+          onClick={(): void =>
+            void command.run(
+              { type: 'openGate', gate: 'unlockSite', host: activeHost },
+              ACTION_FAILED_COPY,
+            )
+          }
+        />
+        <SpendButton
+          label={`Pause blocking for ${costMin(snapshot.pauseCostMs)} min`}
+          sub={null}
+          disabledReason={pauseDisabledReason}
+          onClick={(): void =>
+            void command.run({ type: 'openGate', gate: 'pause', host: null }, ACTION_FAILED_COPY)
+          }
+        />
+      </>
+    );
+
   return (
     <section ref={viewRef} class="view active-view">
-      <Ring snapshot={snapshot} now={now} />
+      <ClockStack snapshot={snapshot} now={now} />
       {intention !== '' ? <p class="intention-line">{intention}</p> : null}
       {focusedToday.ms !== null ? (
         <p class="today-line">{Math.floor(focusedToday.ms / 60_000)} min focused today</p>
@@ -242,64 +269,25 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
         <span class="meter-label">{formatClock(bankMs)} pause banked</span>
       </div>
 
-      {snapshot.gate !== null ? (
+      {activeGate !== null ? (
         <GatePanel
-          key={gateIdentity(snapshot.gate)}
-          gate={snapshot.gate}
+          key={gateIdentity(activeGate)}
+          gate={activeGate}
           now={now}
-          intention={intention}
+          intention={gateIntention(authority, activeGate, snapshot.config)}
+          phraseLabel={gatePhraseLabel(authority, activeGate)}
+          sendCommand={sendGateCommand}
+          commandError={mapGateError}
         />
-      ) : snapshot.phase === 'paused' ? (
-        <button
-          type="button"
-          class="start-button"
-          disabled={actionPending}
-          onClick={(): void => void act({ type: 'resumeFromPause' })}
-        >
-          Resume now
-        </button>
-      ) : snapshot.phase === 'break' ? (
-        breakEarlyVisible ? (
-          <div class="actions">
-            <button
-              type="button"
-              class="spend-button"
-              disabled={actionPending}
-              onClick={(): void => void act({ type: 'startNextFocusEarly' })}
-            >
-              Start next focus early
-            </button>
-          </div>
-        ) : null
-      ) : (
+      ) : phaseControls !== null || endAction !== null ? (
         <div class="actions">
-          <SpendButton
-            label={`Unlock this site for ${costMin(snapshot.unlockCostMs)} min`}
-            sub={activeHost}
-            disabledReason={unlockDisabledReason}
-            onClick={(): void => void openGate('unlockSite', activeHost)}
-          />
-          <SpendButton
-            label={`Pause blocking for ${costMin(snapshot.pauseCostMs)} min`}
-            sub={null}
-            disabledReason={pauseDisabledReason}
-            onClick={(): void => void openGate('pause', null)}
-          />
-          {strictness !== 'hard' ? (
-            <button
-              type="button"
-              class="cancel-link"
-              disabled={actionPending}
-              onClick={(): void => void act({ type: 'requestSessionEnd' })}
-            >
-              End session
-            </button>
-          ) : null}
+          {phaseControls}
+          {endAction}
         </div>
-      )}
-      {error !== null ? (
+      ) : null}
+      {command.error !== null ? (
         <p class="form-error" role="alert">
-          {error}
+          {command.error}
         </p>
       ) : null}
     </section>

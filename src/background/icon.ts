@@ -1,5 +1,6 @@
 import { formatBadge } from '../shared/time';
 import type { Phase, SessionSnapshot } from '../shared/types';
+import { badgeForV2, iconSpecV2 } from './badge-v2';
 
 const STATE_COLORS: Record<Phase, string> = {
   idle: '#9ca3af',
@@ -101,13 +102,13 @@ function drawCup(ctx: OffscreenCanvasRenderingContext2D, u: number): void {
 /** Renders and applies icon plus badge. Never throws: an icon render must not kill a tick. */
 export function updateIcon(snapshot: SessionSnapshot, badgeCountdown: boolean): void {
   try {
-    const spec: IconSpec = iconSpec(snapshot);
+    const spec: IconSpec = iconSpecV2(snapshot);
     const imageData: Record<number, ImageData> = {
       16: drawIcon(16, spec),
       32: drawIcon(32, spec),
     };
     void chrome.action.setIcon({ imageData }).catch((): undefined => undefined);
-    const badge: { text: string; color: string } = badgeFor(snapshot, badgeCountdown);
+    const badge: { text: string; color: string } = badgeForV2(snapshot, badgeCountdown);
     void chrome.action.setBadgeText({ text: badge.text }).catch((): undefined => undefined);
     void chrome.action
       .setBadgeBackgroundColor({ color: badge.color })

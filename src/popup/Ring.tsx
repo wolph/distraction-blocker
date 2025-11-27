@@ -1,7 +1,7 @@
 import type { VNode } from 'preact';
 import { phaseProgress, remainingPhaseMs } from '../shared/live';
 import { formatClock } from '../shared/time';
-import type { CycleConfig, SessionSnapshot } from '../shared/types';
+import type { CycleConfig, SessionDuration, SessionSnapshot } from '../shared/types';
 
 const RING_SIZE: number = 140;
 const RING_RADIUS: number = 62;
@@ -25,13 +25,16 @@ function phaseLabel(snapshot: SessionSnapshot): string {
   return 'focusing';
 }
 
+/** An indefinite session has no total to divide, so it reports the cycle it is in and no estimate. */
 function cycleLabel(snapshot: SessionSnapshot): string | null {
   const cycling: CycleConfig | null = snapshot.config?.cycling ?? null;
   if (cycling === null || snapshot.config === null) return null;
+  const duration: SessionDuration = snapshot.config.duration;
+  if (duration.kind === 'until-stopped') return `cycle ${snapshot.cycleIndex + 1}`;
   const perCycleMin: number = cycling.focusMin + cycling.shortBreakMin;
   const estimate: number = Math.max(
     snapshot.cycleIndex + 1,
-    Math.ceil(snapshot.config.durationMin / perCycleMin),
+    Math.ceil(duration.minutes / perCycleMin),
   );
   return `cycle ${snapshot.cycleIndex + 1} of ~${estimate}`;
 }

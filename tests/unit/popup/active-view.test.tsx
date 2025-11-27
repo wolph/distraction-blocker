@@ -4,7 +4,7 @@ import './chrome-fake';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ActiveViewV2 } from '../../../src/popup/ActiveViewV2';
+import { ActiveView } from '../../../src/popup/ActiveView';
 import {
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
@@ -167,10 +167,10 @@ afterEach((): void => {
   cleanup();
 });
 
-describe('ActiveViewV2', (): void => {
+describe('ActiveView', (): void => {
   it('renders the labelled clocks, intention, bank meter, and spend buttons in focus', async (): Promise<void> => {
     const { container, getByText, getByRole } = render(
-      h(ActiveViewV2, { snapshot: focusSnap(), now: NOW }),
+      h(ActiveView, { snapshot: focusSnap(), now: NOW }),
     );
 
     expect(getByText('20:00')).toBeTruthy();
@@ -188,7 +188,7 @@ describe('ActiveViewV2', (): void => {
   });
 
   it('spends pause and unlock through the v2 channel', async (): Promise<void> => {
-    const pauseView = render(h(ActiveViewV2, { snapshot: focusSnap(), now: NOW }));
+    const pauseView = render(h(ActiveView, { snapshot: focusSnap(), now: NOW }));
     const pause: HTMLButtonElement = pauseView.getByRole('button', {
       name: /Pause blocking for 5 min/,
     }) as HTMLButtonElement;
@@ -201,7 +201,7 @@ describe('ActiveViewV2', (): void => {
     pauseView.unmount();
     sendMessageMock.mockClear();
 
-    const unlockView = render(h(ActiveViewV2, { snapshot: focusSnap(), now: NOW }));
+    const unlockView = render(h(ActiveView, { snapshot: focusSnap(), now: NOW }));
     const unlock: HTMLButtonElement = unlockView.getByRole('button', {
       name: /Unlock this site for 5 min/,
     }) as HTMLButtonElement;
@@ -218,7 +218,7 @@ describe('ActiveViewV2', (): void => {
 
   it('ends immediately from focus through requestSessionEnd', async (): Promise<void> => {
     const { getByRole, queryByRole } = render(
-      h(ActiveViewV2, { snapshot: focusSnap(IMMEDIATE), now: NOW }),
+      h(ActiveView, { snapshot: focusSnap(IMMEDIATE), now: NOW }),
     );
     const end: HTMLButtonElement = getByRole('button', {
       name: END_SESSION_LABEL,
@@ -235,7 +235,7 @@ describe('ActiveViewV2', (): void => {
 
   it('shows End alongside Resume now during an indefinite pause', async (): Promise<void> => {
     const { getByRole, getByText, queryByRole } = render(
-      h(ActiveViewV2, { snapshot: indefinitePauseSnap(), now: NOW }),
+      h(ActiveView, { snapshot: indefinitePauseSnap(), now: NOW }),
     );
 
     expect(getByText(UNTIL_STOPPED_LABEL)).toBeTruthy();
@@ -255,7 +255,7 @@ describe('ActiveViewV2', (): void => {
 
   it('resumes from an indefinite pause through resumeFromPause', async (): Promise<void> => {
     const { getByRole, queryByRole } = render(
-      h(ActiveViewV2, { snapshot: indefinitePauseSnap(), now: NOW }),
+      h(ActiveView, { snapshot: indefinitePauseSnap(), now: NOW }),
     );
     const resume: HTMLButtonElement = getByRole('button', {
       name: 'Resume now',
@@ -272,7 +272,7 @@ describe('ActiveViewV2', (): void => {
 
   it('opens the End gate instead of ending for a closed friction authority', async (): Promise<void> => {
     const { getByRole, queryByRole } = render(
-      h(ActiveViewV2, { snapshot: focusSnap(CLOSED_FRICTION), now: NOW }),
+      h(ActiveView, { snapshot: focusSnap(CLOSED_FRICTION), now: NOW }),
     );
     const end: HTMLButtonElement = getByRole('button', {
       name: END_SESSION_LABEL,
@@ -289,7 +289,7 @@ describe('ActiveViewV2', (): void => {
 
   it('renders the persisted cancel gate and sends its commands through the v2 channel', async (): Promise<void> => {
     const authority: EndAuthorityV2 = openFriction({ requiredPhrase: 'let me stop' });
-    const view = render(h(ActiveViewV2, { snapshot: focusSnap(authority), now: NOW + 9_000 }));
+    const view = render(h(ActiveView, { snapshot: focusSnap(authority), now: NOW + 9_000 }));
 
     expect(view.queryByRole('button', { name: END_SESSION_LABEL })).toBeNull();
     expect(view.getByText('Type this to confirm: let me stop')).toBeTruthy();
@@ -328,7 +328,7 @@ describe('ActiveViewV2', (): void => {
         error: 'Wait for the delay to finish.',
       };
     });
-    const view = render(h(ActiveViewV2, { snapshot: focusSnap(openFriction()), now: NOW + 9_000 }));
+    const view = render(h(ActiveView, { snapshot: focusSnap(openFriction()), now: NOW + 9_000 }));
 
     fireEvent.click(view.getByRole('button', { name: 'End the session' }));
 
@@ -336,7 +336,7 @@ describe('ActiveViewV2', (): void => {
   });
 
   it('hides every End control for a hidden authority', (): void => {
-    const { queryByRole } = render(h(ActiveViewV2, { snapshot: focusSnap(HIDDEN), now: NOW }));
+    const { queryByRole } = render(h(ActiveView, { snapshot: focusSnap(HIDDEN), now: NOW }));
 
     expect(queryByRole('button', { name: END_SESSION_LABEL })).toBeNull();
     expect(queryByRole('button', { name: 'End the session' })).toBeNull();
@@ -352,7 +352,7 @@ describe('ActiveViewV2', (): void => {
       };
     });
     const { getByRole, findByText } = render(
-      h(ActiveViewV2, { snapshot: focusSnap(IMMEDIATE), now: NOW }),
+      h(ActiveView, { snapshot: focusSnap(IMMEDIATE), now: NOW }),
     );
 
     fireEvent.click(getByRole('button', { name: END_SESSION_LABEL }));
@@ -366,7 +366,7 @@ describe('ActiveViewV2', (): void => {
       throw new Error('Receiving end does not exist.');
     });
     const { getByRole, findByText } = render(
-      h(ActiveViewV2, { snapshot: focusSnap(IMMEDIATE), now: NOW }),
+      h(ActiveView, { snapshot: focusSnap(IMMEDIATE), now: NOW }),
     );
 
     fireEvent.click(getByRole('button', { name: END_SESSION_LABEL }));
@@ -380,7 +380,7 @@ describe('ActiveViewV2', (): void => {
       return { ok: false, code: 'not-a-real-code', error: 'trust me' };
     });
     const { getByRole, findByText, queryByText } = render(
-      h(ActiveViewV2, { snapshot: focusSnap(IMMEDIATE), now: NOW }),
+      h(ActiveView, { snapshot: focusSnap(IMMEDIATE), now: NOW }),
     );
 
     fireEvent.click(getByRole('button', { name: END_SESSION_LABEL }));
@@ -391,13 +391,13 @@ describe('ActiveViewV2', (): void => {
 
   it('keeps the break early start behavior', async (): Promise<void> => {
     const early = render(
-      h(ActiveViewV2, { snapshot: breakSnap(MIN_BREAK_BEFORE_EARLY_MS - 1_000), now: NOW }),
+      h(ActiveView, { snapshot: breakSnap(MIN_BREAK_BEFORE_EARLY_MS - 1_000), now: NOW }),
     );
     expect(early.queryByRole('button', { name: 'Start next focus early' })).toBeNull();
     early.unmount();
 
     const ready = render(
-      h(ActiveViewV2, { snapshot: breakSnap(MIN_BREAK_BEFORE_EARLY_MS), now: NOW }),
+      h(ActiveView, { snapshot: breakSnap(MIN_BREAK_BEFORE_EARLY_MS), now: NOW }),
     );
     const startEarly: HTMLButtonElement = ready.getByRole('button', {
       name: 'Start next focus early',
@@ -413,7 +413,7 @@ describe('ActiveViewV2', (): void => {
 
   it('renders a gate whose readyAt precedes openedAt with confirm still disabled', (): void => {
     const hostile: EndAuthorityV2 = openFriction({ openedAt: NOW, readyAt: NOW - 60_000 });
-    const { getByRole } = render(h(ActiveViewV2, { snapshot: focusSnap(hostile), now: NOW }));
+    const { getByRole } = render(h(ActiveView, { snapshot: focusSnap(hostile), now: NOW }));
 
     const confirm: HTMLButtonElement = getByRole('button', {
       name: 'End the session',

@@ -9,17 +9,15 @@ import {
   CATEGORY_IDS,
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
-  EVENT_LOG_CAP,
   MAX_FREEZE_TOKENS,
   rulesFromLists,
   TOP_SITES_DAILY,
 } from '../shared/constants';
 import { isRelativeMinuteDuration, isSafeDayCount } from '../shared/numeric-validation';
-import { isSettings } from '../shared/runtime-validation';
+import { parseStoredSettingsV2 } from '../shared/runtime-validation';
 import {
   LOCAL_CACHES,
   LOCAL_DEVICE_ID,
-  LOCAL_EVENTS,
   LOCAL_LISTS_SNAPSHOT,
   LOCAL_POLICY_COMMIT,
   LOCAL_POLICY_GENERATION_PREFIX,
@@ -34,15 +32,16 @@ import type {
   BankState,
   CycleConfig,
   DailyAgg,
-  EventRecord,
   GateState,
+  LegacyEventRecord,
   ListsConfig,
+  NormalizedSessionConfigV1,
+  NormalizedSessionStateV1,
   Rule,
-  ScheduleEntry,
-  SessionConfig,
+  ScheduleEntryV2,
   SessionRuleSnapshot,
-  SessionState,
   Settings,
+  SettingsV2,
   SiteUnlock,
   StreakState,
 } from '../shared/types';
@@ -53,13 +52,13 @@ import {
   LIST_SYNC_KEYS,
 } from './list-sync-codec';
 import type { DeferredBlockClaim, RuntimeTabState } from './runtime-leaf-types';
+import type { RuntimeStateV2 } from './runtime-v2-types';
 import { storageValuesEqual } from './storage-value-equality';
 import type { SyncJournal } from './sync-writer';
 
 export type { DeferredBlockClaim, RuntimeTabState } from './runtime-leaf-types';
 
-const TIME_RE: RegExp = /^([01]\d|2[0-3]):([0-5]\d)$/;
-let eventAppendQueue: Promise<void> = Promise.resolve();
+const _TIME_RE: RegExp = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 /**
  * Normalized background-internal state. Not part of the shared contract:
@@ -69,7 +68,7 @@ let eventAppendQueue: Promise<void> = Promise.resolve();
  * an empty DailyAgg is core's job, so the boot path does not depend on it.
  */
 export interface RuntimeState {
-  session: SessionState | null;
+  session: NormalizedSessionStateV1 | null;
   gate: GateState | null;
   unlocks: SiteUnlock[];
   tabStates: Record<number, RuntimeTabState>;
@@ -91,17 +90,20 @@ export interface RuntimeState {
   commitCheckpoint: RuntimeCommitCheckpoint | null;
 }
 
-export type LegacySessionConfig = Omit<SessionConfig, 'rules'>;
+export type LegacySessionConfig = Omit<NormalizedSessionConfigV1, 'rules'>;
 
 export type PredecessorSessionRuleSnapshot = Omit<SessionRuleSnapshot, 'baselineCategories'>;
 
-export type PredecessorSessionConfig = Omit<SessionConfig, 'rules'> & {
+export type PredecessorSessionConfig = Omit<NormalizedSessionConfigV1, 'rules'> & {
   rules: PredecessorSessionRuleSnapshot;
 };
 
-export type ParsedSessionConfig = SessionConfig | LegacySessionConfig | PredecessorSessionConfig;
+export type ParsedSessionConfig =
+  | NormalizedSessionConfigV1
+  | LegacySessionConfig
+  | PredecessorSessionConfig;
 
-export type ParsedSessionState = Omit<SessionState, 'config'> & {
+export type ParsedSessionState = Omit<NormalizedSessionStateV1, 'config'> & {
   config: ParsedSessionConfig;
 };
 
@@ -112,7 +114,7 @@ export type ParsedRuntimeState = Omit<RuntimeState, 'session'> & {
 
 export interface RuntimeCommitCheckpoint {
   bank: BankState;
-  events: EventRecord[];
+  events: LegacyEventRecord[];
   syncBank: boolean;
   aggregateSets?: Record<string, DailyAgg>;
   aggregateRemoves?: string[];
@@ -138,9 +140,9 @@ export function emptyRuntime(now: number): RuntimeState {
 }
 
 export function sanitizeRuntimeForLocalHistory(
-  runtime: RuntimeState,
+  runtime: RuntimeStateV2,
   clearAggregates: boolean,
-): RuntimeState {
+): RuntimeStateV2 {
   return {
     ...structuredClone(runtime),
     todayAgg: clearAggregates ? null : structuredClone(runtime.todayAgg),
@@ -261,13 +263,14 @@ export function parseStoredSettings(
   current: Settings = DEFAULT_SETTINGS,
 ): StoredSettingsParseResult {
   try {
-    if (isSettings(value)) {
-      const settings: Settings = structuredClone(value);
+    // A stored or synced v1 entry reads as a window entry, which is what the v2 parser does.
+    const parsed: SettingsV2 | null = parseStoredSettingsV2(value);
+    if (parsed !== null) {
       return {
         valid: true,
-        changed: !storageValuesEqual(settings, current),
+        changed: !storageValuesEqual(parsed, current),
         legacy: false,
-        settings,
+        settings: parsed,
       };
     }
     if (
@@ -279,8 +282,9 @@ export function parseStoredSettings(
     }
     const legacy: Record<string, unknown> = { ...value };
     delete legacy.allowForceEnd;
-    if (!isSettings(legacy)) return { valid: false };
-    const settings: Settings = structuredClone(legacy);
+    const legacySettings: SettingsV2 | null = parseStoredSettingsV2(legacy);
+    if (legacySettings === null) return { valid: false };
+    const settings: Settings = legacySettings;
     return {
       valid: true,
       changed: !storageValuesEqual(settings, current),
@@ -411,7 +415,7 @@ export function mergeRuntime(raw: unknown, now: number): ParsedRuntimeState {
   return runtime;
 }
 
-/** Completes the only accepted legacy SessionConfig shape at worker boot. */
+/** Completes the only accepted legacy NormalizedSessionConfigV1 shape at worker boot. */
 export function migrateRuntimeRules(runtime: ParsedRuntimeState, lists: ListsConfig): RuntimeState {
   if (isNormalizedRuntimeState(runtime)) return runtime;
   const session: ParsedSessionState | null = runtime.session;
@@ -433,11 +437,11 @@ export function migrateRuntimeRules(runtime: ParsedRuntimeState, lists: ListsCon
 
 function hasAnySessionRules(
   config: ParsedSessionConfig,
-): config is SessionConfig | PredecessorSessionConfig {
+): config is NormalizedSessionConfigV1 | PredecessorSessionConfig {
   return Object.hasOwn(config, 'rules');
 }
 
-function hasCurrentSessionRules(config: ParsedSessionConfig): config is SessionConfig {
+function hasCurrentSessionRules(config: ParsedSessionConfig): config is NormalizedSessionConfigV1 {
   return (
     hasAnySessionRules(config) &&
     isRecord(config.rules) &&
@@ -517,66 +521,42 @@ function parseCycleConfig(value: unknown): CycleConfig | null {
   };
 }
 
-function parseClockMinutes(value: unknown): number | null {
-  if (typeof value !== 'string') return null;
-  const match: RegExpExecArray | null = TIME_RE.exec(value);
-  return match === null ? null : Number(match[1]) * 60 + Number(match[2]);
+/**
+ * One stored entry through the v2 parser, which is what reads a synced v1 entry as a window entry.
+ * The parser owns the whole settings shape, so the entry rides one default settings object.
+ */
+function parseStoredScheduleEntry(value: unknown): ScheduleEntryV2 | null {
+  const parsed: SettingsV2 | null = parseStoredSettingsV2({
+    ...DEFAULT_SETTINGS,
+    schedule: [value],
+  });
+  return parsed?.schedule[0] ?? null;
 }
 
-function parseScheduleEntry(value: unknown): ScheduleEntry | null {
-  if (!isRecord(value) || !isNonBlankString(value.id)) return null;
-  if (!Array.isArray(value.days) || value.days.length === 0) return null;
-  if (typeof value.start !== 'string' || typeof value.end !== 'string') return null;
-  const days: number[] = [];
-  for (const day of value.days) {
-    if (!isNonNegativeInteger(day) || day > 6) return null;
-    days.push(day);
-  }
-  const startsAt: number | null = parseClockMinutes(value.start);
-  const endsAt: number | null = parseClockMinutes(value.end);
-  const cycling: CycleConfig | null = parseCycleConfig(value.cycling);
-  if (
-    startsAt === null ||
-    endsAt === null ||
-    startsAt >= endsAt ||
-    (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
-    (value.strictness !== 'flexible' &&
-      value.strictness !== 'hard' &&
-      value.strictness !== 'friction') ||
-    (value.cycling !== null && cycling === null) ||
-    typeof value.intention !== 'string' ||
-    typeof value.enabled !== 'boolean'
-  ) {
-    return null;
-  }
-  return {
-    id: value.id,
-    days,
-    start: value.start,
-    end: value.end,
-    mode: value.mode,
-    strictness: value.strictness,
-    cycling,
-    intention: value.intention,
-    enabled: value.enabled,
-  };
+/** The set as a whole, so the overlap and duplicate rules the parser owns still apply. */
+function parseStoredSchedule(entries: ScheduleEntryV2[]): ScheduleEntryV2[] {
+  const parsed: SettingsV2 | null = parseStoredSettingsV2({
+    ...DEFAULT_SETTINGS,
+    schedule: entries,
+  });
+  return parsed === null ? [] : parsed.schedule;
 }
 
-function parseSchedule(value: unknown): ScheduleEntry[] {
+function parseSchedule(value: unknown): ScheduleEntryV2[] {
   if (!Array.isArray(value)) return [];
-  const entries: ScheduleEntry[] = [];
+  const entries: ScheduleEntryV2[] = [];
   for (const candidate of value) {
-    const entry: ScheduleEntry | null = parseScheduleEntry(candidate);
+    const entry: ScheduleEntryV2 | null = parseStoredScheduleEntry(candidate);
     if (entry !== null) entries.push(entry);
   }
-  return entries;
+  return parseStoredSchedule(entries);
 }
 
-function parseStrictLiveSchedule(value: unknown, current: ScheduleEntry[]): ScheduleEntry[] {
+function parseStrictLiveSchedule(value: unknown, current: ScheduleEntryV2[]): ScheduleEntryV2[] {
   if (!Array.isArray(value)) return structuredClone(current);
-  const entries: ScheduleEntry[] = [];
+  const entries: ScheduleEntryV2[] = [];
   for (const candidate of value) {
-    const entry: ScheduleEntry | null = parseScheduleEntry(candidate);
+    const entry: ScheduleEntryV2 | null = parseStoredScheduleEntry(candidate);
     if (entry === null) return structuredClone(current);
     entries.push(entry);
   }
@@ -758,7 +738,7 @@ function parseSessionConfig(value: unknown): ParsedSessionConfig | null {
   ) {
     return null;
   }
-  const config: Omit<SessionConfig, 'rules'> = {
+  const config: Omit<NormalizedSessionConfigV1, 'rules'> = {
     mode: value.mode,
     strictness: value.strictness,
     durationMin: value.durationMin,
@@ -924,7 +904,7 @@ function isGateKind(value: unknown): value is 'pause' | 'unlockSite' | 'cancel' 
   return value === 'pause' || value === 'unlockSite' || value === 'cancel';
 }
 
-function parseEventRecord(value: unknown): EventRecord | null {
+function parseEventRecord(value: unknown): LegacyEventRecord | null {
   if (!isRecord(value) || !isNonNegativeNumber(value.at)) return null;
   const identity: ParsedSessionIdentity | null = parseSessionIdentity(value);
   if (identity === null) return null;
@@ -1007,9 +987,9 @@ function parseCommitCheckpoint(value: unknown): RuntimeCommitCheckpoint | null {
   if (!isNonNegativeNumber(value.bank.balanceMs) || typeof value.syncBank !== 'boolean') {
     return null;
   }
-  const events: EventRecord[] = [];
+  const events: LegacyEventRecord[] = [];
   for (const candidate of value.events) {
-    const event: EventRecord | null = parseEventRecord(candidate);
+    const event: LegacyEventRecord | null = parseEventRecord(candidate);
     if (event === null) return null;
     events.push(event);
   }
@@ -1169,44 +1149,4 @@ export async function getDeviceId(): Promise<string> {
   const id: string = crypto.randomUUID();
   await chrome.storage.local.set({ [LOCAL_DEVICE_ID]: id });
   return id;
-}
-
-function parseEventLog(value: unknown): EventRecord[] {
-  if (!Array.isArray(value)) return [];
-  const events: EventRecord[] = [];
-  for (const candidate of value) {
-    const event: EventRecord | null = parseEventRecord(candidate);
-    if (event !== null) events.push(event);
-  }
-  return events;
-}
-
-async function performAppendEvents(evs: EventRecord[]): Promise<void> {
-  const raw: unknown = (await chrome.storage.local.get(LOCAL_EVENTS))[LOCAL_EVENTS];
-  const log: EventRecord[] = parseEventLog(raw);
-  const incoming: EventRecord[] = parseEventLog(evs);
-  const seen: Set<string> = new Set(log.map((event: EventRecord): string => JSON.stringify(event)));
-  const unique: EventRecord[] = [];
-  for (const event of incoming) {
-    const key: string = JSON.stringify(event);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    unique.push(event);
-  }
-  const next: EventRecord[] = [...log, ...unique].slice(-EVENT_LOG_CAP);
-  await chrome.storage.local.set({ [LOCAL_EVENTS]: next });
-}
-
-export function appendEvents(evs: EventRecord[]): Promise<void> {
-  if (evs.length === 0) return Promise.resolve();
-  const requested: Promise<void> = eventAppendQueue.then(
-    (): Promise<void> => performAppendEvents(evs),
-  );
-  eventAppendQueue = requested.catch((): void => {});
-  return requested;
-}
-
-export async function readEvents(): Promise<EventRecord[]> {
-  const raw: unknown = (await chrome.storage.local.get(LOCAL_EVENTS))[LOCAL_EVENTS];
-  return parseEventLog(raw);
 }

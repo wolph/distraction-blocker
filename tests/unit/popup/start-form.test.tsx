@@ -25,7 +25,7 @@ vi.mock('../../../src/core/categories', () => ({
   ],
 }));
 
-import { StartFormV2 } from '../../../src/popup/StartFormV2';
+import { StartForm } from '../../../src/popup/StartForm';
 
 const SETTINGS: SettingsV2 = { ...DEFAULT_SETTINGS, schedule: [] };
 const TIMED_START_LABEL: string = 'Start 25 min - Block selected sites';
@@ -62,9 +62,9 @@ afterEach((): void => {
   cleanup();
 });
 
-describe('StartFormV2 duration and forced controls', (): void => {
+describe('StartForm duration and forced controls', (): void => {
   it('forces Flexible and no cycles while Until stopped is selected', (): void => {
-    const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
 
@@ -85,7 +85,7 @@ describe('StartFormV2 duration and forced controls', (): void => {
   });
 
   it('refuses a session type change while the control is forced', (): void => {
-    const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
     fireEvent.click(view.getByRole('button', { name: 'Hard lock' }));
@@ -109,7 +109,7 @@ describe('StartFormV2 duration and forced controls', (): void => {
   });
 
   it('restores the timed session type, cycles, and start label when a preset returns', (): void => {
-    const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
     fireEvent.click(view.getByRole('button', { name: '25 focus' }));
@@ -125,7 +125,7 @@ describe('StartFormV2 duration and forced controls', (): void => {
   });
 
   it('restores typed custom minutes through the pressed Until stopped chip', (): void => {
-    const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.input(view.getByLabelText('Custom minutes'), { target: { value: '45' } });
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
@@ -140,7 +140,7 @@ describe('StartFormV2 duration and forced controls', (): void => {
   });
 
   it('restores a non-default session type and cycle choice after the detour', (): void => {
-    const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.click(view.getByRole('button', { name: 'Hard lock' }));
     fireEvent.click(view.getByRole('checkbox'));
@@ -155,7 +155,7 @@ describe('StartFormV2 duration and forced controls', (): void => {
   });
 
   it('keeps the stored preset when custom minutes are typed during the detour', (): void => {
-    const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.click(view.getByRole('button', { name: '50 deep work (preference, not science)' }));
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
@@ -169,9 +169,9 @@ describe('StartFormV2 duration and forced controls', (): void => {
   });
 });
 
-describe('StartFormV2 start command', (): void => {
+describe('StartForm start command', (): void => {
   it('sends the exact until-stopped start request the worker accepts', async (): Promise<void> => {
-    const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
     fireEvent.input(view.getByLabelText('Intention'), { target: { value: 'ship the release' } });
@@ -196,7 +196,7 @@ describe('StartFormV2 start command', (): void => {
   });
 
   it('sends the timed request when a preset is selected', async (): Promise<void> => {
-    const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.click(view.getByRole('button', { name: TIMED_START_LABEL }));
 
@@ -206,7 +206,7 @@ describe('StartFormV2 start command', (): void => {
   });
 
   it('refuses to send a start without a usable session length', (): void => {
-    const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.input(view.getByLabelText('Custom minutes'), { target: { value: '0' } });
     fireEvent.click(
@@ -228,7 +228,7 @@ describe('StartFormV2 start command', (): void => {
     for (const code of codes) {
       resetChromeFake();
       answerStartWith({ ok: false, code, error: `worker said ${code}` } as StartSessionResponseV2);
-      const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
+      const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
       fireEvent.click(view.getByRole('button', { name: TIMED_START_LABEL }));
 
@@ -246,7 +246,7 @@ describe('StartFormV2 start command', (): void => {
       error: 'Blocking could not start on an open tab.',
       cleanupPending: true,
     });
-    const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.input(view.getByLabelText('Intention'), { target: { value: 'write the report' } });
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
@@ -261,7 +261,7 @@ describe('StartFormV2 start command', (): void => {
 
   it('shows the fallback when the worker answers with a malformed response', async (): Promise<void> => {
     sendMessageMock.mockResolvedValue({ ok: false, code: 'nope', error: 'unknown' });
-    const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.click(view.getByRole('button', { name: TIMED_START_LABEL }));
 
@@ -284,7 +284,7 @@ describe('StartFormV2 start command', (): void => {
         ? { ok: false, code: 'invalid-request', error: STALE_SESSION_RULES_ERROR }
         : { ok: true, code: 'ok' };
     });
-    const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.click(view.getByRole('button', { name: 'Social' }));
     fireEvent.click(view.getByRole('button', { name: TIMED_START_LABEL }));
@@ -313,7 +313,7 @@ describe('StartFormV2 start command', (): void => {
   });
 
   it('resets the form to Settings defaults after a successful start', async (): Promise<void> => {
-    const view = render(<StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} />);
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.input(view.getByLabelText('Intention'), { target: { value: 'ship the release' } });
     fireEvent.click(view.getByRole('button', { name: 'Hard lock' }));
@@ -333,7 +333,7 @@ describe('StartFormV2 start command', (): void => {
 
   it('disables the start action through the startsDisabled prop', (): void => {
     const view = render(
-      <StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} startsDisabled={true} />,
+      <StartForm settings={SETTINGS} lists={DEFAULT_LISTS} startsDisabled={true} />,
     );
     const start: HTMLButtonElement = view.getByRole('button', {
       name: TIMED_START_LABEL,
@@ -347,7 +347,7 @@ describe('StartFormV2 start command', (): void => {
 
   it('keeps fallback category controls out of the draft', (): void => {
     const view = render(
-      <StartFormV2 settings={SETTINGS} lists={DEFAULT_LISTS} categoriesEditable={false} />,
+      <StartForm settings={SETTINGS} lists={DEFAULT_LISTS} categoriesEditable={false} />,
     );
     const social: HTMLButtonElement = view.getByRole('button', {
       name: 'Social',

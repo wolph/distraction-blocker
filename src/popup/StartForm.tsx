@@ -1,34 +1,51 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
-import { type Ack, STALE_SESSION_RULES_ERROR, sendRequest } from '../shared/messages';
-import { ackError, isListsConfig } from '../shared/runtime-validation';
+import {
+  STALE_SESSION_RULES_ERROR,
+  type StartSessionResponseV2,
+  sendRequest,
+} from '../shared/messages';
+import { isListsConfig } from '../shared/runtime-validation';
+import { UNTIL_STOPPED_DISCLOSURE, UNTIL_STOPPED_FORCED_HINT } from '../shared/session-copy';
 import type {
   CategoryId,
   CycleConfig,
   ListsConfig,
+  SessionConfigV2,
   SessionMode,
-  Settings,
+  SettingsV2,
   Strictness,
 } from '../shared/types';
+import { START_FAILED_COPY, startErrorMessage } from './command-errors';
 import { DomainInput } from './DomainInput';
-import { Chip, RadioRow } from './form-controls';
+import { DurationControl } from './DurationControl';
+import { ForcedControl } from './ForcedControl';
+import { RadioRow } from './form-controls';
 import { RuleSummary } from './RuleSummary';
 import { SessionTypeControl } from './SessionTypeControl';
 import {
   addDraftAllowHost,
-  createSessionDraft,
   type DraftUpdate,
   rebaseSessionDraft,
   type SessionDraft,
   toggleDraftCategory,
-  toSessionConfig,
 } from './session-draft';
-
-const PRESET_LABELS: readonly [string, string, string] = [
-  'short',
-  'focus',
-  'deep work (preference, not science)',
-];
+import {
+  createStartDraft,
+  type DraftDuration,
+  effectiveCycling,
+  effectiveStrictness,
+  effectiveTimedMinutes,
+  restoreTimedDuration,
+  type StartDraft,
+  selectTimedPreset,
+  selectUntilStopped,
+  setCustomMinutes,
+  setTimedCycling,
+  setTimedStrictness,
+  startLabel,
+  toSessionConfigV2,
+} from './start-draft';
 
 interface ModeChoice {
   value: SessionMode;
@@ -49,24 +66,61 @@ const MODE_CHOICES: readonly ModeChoice[] = [
   },
 ];
 
-const MODE_START_LABELS: Record<SessionMode, string> = {
-  blacklist: 'Block selected sites',
-  whitelist: 'Allow selected sites only',
-};
+const FORCED_TYPE_LABEL: string = 'Session type forced by Until stopped';
+const FORCED_CYCLES_LABEL: string = 'Cycles forced by Until stopped';
+const INVALID_DURATION_ERROR: string = 'Enter a session length greater than zero minutes.';
+const STALE_LISTS_UNAVAILABLE_COPY: string =
+  'Defaults changed, but current lists could not be loaded. Reload the popup.';
 
 export interface StartFormProps {
-  settings: Settings;
+  settings: SettingsV2;
   lists: ListsConfig;
   categoriesEditable?: boolean;
+  startsDisabled?: boolean;
 }
 
-export function StartForm({ settings, lists, categoriesEditable = true }: StartFormProps): VNode {
-  const [draft, setDraft]: [SessionDraft, Dispatch<StateUpdater<SessionDraft>>] =
-    useState<SessionDraft>(() => createSessionDraft(settings, lists));
-  const [selectedMin, setSelectedMin]: [number, Dispatch<StateUpdater<number>>] = useState<number>(
-    settings.presetsMin[1],
+/**
+ * Routes the duration control's next value onto the reversible draft helpers. Every timed
+ * value returns the stored timed duration first, so the pressed Until stopped chip lands
+ * on `restoreTimedDuration` and a preset or a typed minute is the edit that follows it.
+ */
+function applyDraftDuration(draft: StartDraft, next: DraftDuration): StartDraft {
+  if (next.kind === 'until-stopped') return selectUntilStopped(draft);
+  const restored: StartDraft = restoreTimedDuration(draft);
+  if (next.presetMin !== null && next.customMin === '') {
+    return selectTimedPreset(restored, next.presetMin);
+  }
+  return setCustomMinutes(restored, next.customMin);
+}
+
+/**
+ * RuleSummary reads the mode and the rule snapshot only. The v2 draft adapts to its v1
+ * shape with its effective values, and an indefinite draft reports no timed minutes.
+ */
+function ruleSummaryDraft(draft: StartDraft): SessionDraft {
+  return {
+    mode: draft.mode,
+    strictness: effectiveStrictness(draft),
+    frictionGate: draft.frictionGate,
+    durationMin: effectiveTimedMinutes(draft) ?? 0,
+    cycling: effectiveCycling(draft),
+    intention: draft.intention,
+    rules: draft.rules,
+  };
+}
+
+export function StartForm({
+  settings,
+  lists,
+  categoriesEditable = true,
+  startsDisabled = false,
+}: StartFormProps): VNode {
+  const [draft, setDraft]: [StartDraft, Dispatch<StateUpdater<StartDraft>>] = useState<StartDraft>(
+    (): StartDraft => createStartDraft(settings, lists),
   );
-  const [customMin, setCustomMin]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
+  /** The lists the draft is rebased onto, which a stale start refreshes from the worker. */
+  const [activeLists, setActiveLists]: [ListsConfig, Dispatch<StateUpdater<ListsConfig>>] =
+    useState<ListsConfig>(lists);
   const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
     string | null
   >(null);
@@ -74,50 +128,59 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
     useState<boolean>(false);
 
   useEffect((): void => {
-    setDraft((current: SessionDraft): SessionDraft => rebaseSessionDraft(current, lists));
+    setActiveLists(lists);
+    setDraft((current: StartDraft): StartDraft => rebaseSessionDraft(current, lists));
   }, [lists]);
 
-  const durationMin: number = customMin.trim() === '' ? selectedMin : Number(customMin);
-  const durationLabel: string = Number.isFinite(durationMin)
-    ? `${durationMin} min`
-    : 'invalid time';
-  const startLabel: string = `Start ${durationLabel} - ${MODE_START_LABELS[draft.mode]}`;
+  const indefinite: boolean = draft.duration.kind === 'until-stopped';
+  const cycle: CycleConfig = settings.defaultCycling;
+  const cyclingLabel: string = `Cycles: ${cycle.focusMin} min focus, ${cycle.shortBreakMin} min break, ${cycle.longBreakMin} min long break every ${cycle.longEvery}th`;
+
+  const rebaseFromWorker: () => Promise<void> = async (): Promise<void> => {
+    const refreshed: unknown = await sendRequest({ type: 'getLists' });
+    if (!isListsConfig(refreshed)) {
+      setError(STALE_LISTS_UNAVAILABLE_COPY);
+      return;
+    }
+    setActiveLists(refreshed);
+    setDraft((current: StartDraft): StartDraft => rebaseSessionDraft(current, refreshed));
+    setError(STALE_SESSION_RULES_ERROR);
+  };
 
   const start: () => Promise<void> = async (): Promise<void> => {
-    if (starting) return;
-    if (!Number.isFinite(durationMin) || durationMin <= 0) {
-      setError('Enter a session length greater than zero minutes.');
+    if (starting || startsDisabled) return;
+    const config: SessionConfigV2 | null = toSessionConfigV2(draft);
+    if (config === null) {
+      setError(INVALID_DURATION_ERROR);
       return;
     }
 
     setError(null);
     setStarting(true);
     try {
-      const ack: Ack = await sendRequest({
+      const response: StartSessionResponseV2 = await sendRequest({
         type: 'startSession',
-        config: toSessionConfig({ ...draft, durationMin }),
+        config,
       });
-      const responseError: string | null = ackError(ack, 'Could not start session. Try again.');
-      if (responseError === STALE_SESSION_RULES_ERROR) {
-        const refreshed: unknown = await sendRequest({ type: 'getLists' });
-        if (!isListsConfig(refreshed)) {
-          setError('Defaults changed, but current lists could not be loaded. Reload the popup.');
-          return;
-        }
-        setDraft((current: SessionDraft): SessionDraft => rebaseSessionDraft(current, refreshed));
-        setError(STALE_SESSION_RULES_ERROR);
+      const message: string | null = startErrorMessage(response);
+      if (message === STALE_SESSION_RULES_ERROR) {
+        await rebaseFromWorker();
         return;
       }
-      if (responseError !== null) setError(responseError);
+      if (message !== null) {
+        setError(message);
+        return;
+      }
+      setDraft(createStartDraft(settings, activeLists));
     } catch {
-      setError('Could not start the session. Try again.');
+      setError(START_FAILED_COPY);
     } finally {
       setStarting(false);
     }
   };
 
   const addAllowedDomain: (raw: string) => string | null = (raw: string): string | null => {
-    const update: DraftUpdate = addDraftAllowHost(draft, raw);
+    const update: DraftUpdate<StartDraft> = addDraftAllowHost(draft, raw);
     if (update.draft !== draft) setDraft(update.draft);
     return update.error;
   };
@@ -131,46 +194,48 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
     }
   };
 
-  const cycle: CycleConfig = settings.defaultCycling;
-  const cyclingLabel: string = `Cycles: ${cycle.focusMin} min focus, ${cycle.shortBreakMin} min break, ${cycle.longBreakMin} min long break every ${cycle.longEvery}th`;
+  const sessionType: VNode = (
+    <SessionTypeControl
+      value={effectiveStrictness(draft)}
+      frictionDelayMs={draft.frictionGate.delayMs}
+      requireTypedPhrase={draft.frictionGate.requireTypedPhrase}
+      onChange={(strictness: Strictness): void => setDraft(setTimedStrictness(draft, strictness))}
+    />
+  );
+
+  const cycleRow: VNode = (
+    <label class="check-row">
+      <input
+        type="checkbox"
+        checked={effectiveCycling(draft) !== null}
+        onChange={(event: Event): void => {
+          const enabled: boolean = (event.currentTarget as HTMLInputElement).checked;
+          setDraft(setTimedCycling(draft, enabled ? cycle : null));
+        }}
+      />
+      <span>{cyclingLabel}</span>
+    </label>
+  );
 
   return (
     <section class="view start-form">
       <div class="start-form__scroll">
-        <fieldset class="chip-row" aria-label="Session length">
-          {settings.presetsMin.map(
-            (min: number, index: number): VNode => (
-              <Chip
-                key={min}
-                label={`${min} ${PRESET_LABELS[index] ?? ''}`.trim()}
-                selected={customMin.trim() === '' && selectedMin === min}
-                onClick={(): void => {
-                  setSelectedMin(min);
-                  setCustomMin('');
-                }}
-              />
-            ),
-          )}
-          <input
-            class="custom-min"
-            type="number"
-            min="1"
-            inputMode="numeric"
-            aria-label="Custom minutes"
-            placeholder="min"
-            value={customMin}
-            onInput={(event: Event): void =>
-              setCustomMin((event.currentTarget as HTMLInputElement).value)
-            }
-          />
-        </fieldset>
+        <DurationControl
+          presets={settings.presetsMin}
+          value={draft.duration}
+          onChange={(next: DraftDuration): void =>
+            setDraft((current: StartDraft): StartDraft => applyDraftDuration(current, next))
+          }
+        />
+
+        {indefinite ? <span class="radio-hint">{UNTIL_STOPPED_FORCED_HINT}</span> : null}
 
         <div class="field-control">
-          <label class="field-label" for="session-intention">
+          <label class="field-label" for="session-intention-v2">
             Intention
           </label>
           <input
-            id="session-intention"
+            id="session-intention-v2"
             class="intention-input"
             type="text"
             placeholder="What are you working on?"
@@ -181,12 +246,13 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
           />
         </div>
 
-        <SessionTypeControl
-          value={draft.strictness}
-          frictionDelayMs={draft.frictionGate.delayMs}
-          requireTypedPhrase={draft.frictionGate.requireTypedPhrase}
-          onChange={(strictness: Strictness): void => setDraft({ ...draft, strictness })}
-        />
+        {indefinite ? (
+          <ForcedControl label={FORCED_TYPE_LABEL} explanation={UNTIL_STOPPED_DISCLOSURE}>
+            {sessionType}
+          </ForcedControl>
+        ) : (
+          sessionType
+        )}
 
         <fieldset class="mode-control" aria-label="Blocking mode">
           <legend>Blocking mode</legend>
@@ -194,7 +260,7 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
             (choice: ModeChoice): VNode => (
               <RadioRow
                 key={choice.value}
-                name="mode"
+                name="mode-v2"
                 label={choice.label}
                 hint={choice.hint}
                 checked={draft.mode === choice.value}
@@ -207,7 +273,7 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
         {draft.mode === 'whitelist' ? <DomainInput onAdd={addAllowedDomain} /> : null}
 
         <RuleSummary
-          draft={draft}
+          draft={ruleSummaryDraft(draft)}
           categoriesEditable={categoriesEditable}
           onCategoryToggle={(id: CategoryId): void => {
             if (categoriesEditable) setDraft(toggleDraftCategory(draft, id));
@@ -217,17 +283,13 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
 
         <details class="options">
           <summary>Cycle options</summary>
-          <label class="check-row">
-            <input
-              type="checkbox"
-              checked={draft.cycling !== null}
-              onChange={(event: Event): void => {
-                const enabled: boolean = (event.currentTarget as HTMLInputElement).checked;
-                setDraft({ ...draft, cycling: enabled ? structuredClone(cycle) : null });
-              }}
-            />
-            <span>{cyclingLabel}</span>
-          </label>
+          {indefinite ? (
+            <ForcedControl label={FORCED_CYCLES_LABEL} explanation={UNTIL_STOPPED_DISCLOSURE}>
+              {cycleRow}
+            </ForcedControl>
+          ) : (
+            cycleRow
+          )}
         </details>
       </div>
 
@@ -235,10 +297,10 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
         <button
           type="button"
           class="start-button"
-          disabled={starting}
+          disabled={starting || startsDisabled}
           onClick={(): void => void start()}
         >
-          {startLabel}
+          {startLabel(draft)}
         </button>
         {error !== null ? (
           <p class="form-error" role="alert">

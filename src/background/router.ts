@@ -1,3 +1,4 @@
+import type { DocumentContentCommand } from '../shared/enforcement-v2';
 import type {
   Ack,
   OnboardingDraftConflict,
@@ -10,18 +11,16 @@ import type {
   BlockingRegistrationStatus,
   ListsConfig,
   OnboardingDraft,
-  SessionSnapshot,
   Settings,
   SetupState,
   SoundSettings,
   StorageMode,
-  Verdict,
 } from '../shared/types';
 import { playSound } from './audio';
 import type { Engine } from './engine';
+import { readEventsV2 } from './event-log-v2';
 import type { PolicyStorage } from './policy-storage';
 import { fetchStats } from './stats-service';
-import { readEvents } from './stores';
 
 export interface OnboardingRouterServices {
   reconcileWebsiteAccess(): Promise<{
@@ -96,6 +95,14 @@ function onboardingOperationalFailure(error: unknown): OnboardingOperationalFail
     ok: false,
     error: message.trim().length > 0 ? message : 'Onboarding operation failed.',
   };
+}
+
+/** Whether the commands this document must apply leave it blocked, which is what stops the page. */
+function blocksTarget(commands: readonly DocumentContentCommand[]): boolean {
+  return commands.some(
+    (command: DocumentContentCommand): boolean =>
+      command.command === 'apply-enforcement' && command.verdict.blocked,
+  );
 }
 
 /**
@@ -328,45 +335,31 @@ export async function routeMessage(
       return { ok: true, scope: msg.scope, status: 'cleared' };
     }
     case 'getBlockState': {
-      const tabId: number | undefined = sender.tab?.id;
-      const senderOwnsUrl: boolean = sender.url === msg.url && sender.tab?.url === msg.url;
+      // The worker owns the target, so it is derived from the sender rather than trusted from the
+      // message, and a document that cannot prove which page it is gets nothing to apply.
+      const tabId: number | null = sender.tab?.id ?? null;
+      const documentId: string | null = sender.documentId ?? null;
+      if (sender.url !== msg.url || tabId === null || documentId === null) return { commands: [] };
+      const target: { tabId: number; documentId: string; url: string } = {
+        tabId,
+        documentId,
+        url: msg.url,
+      };
       const kind: 'navigation' | 'existing' = msg.docState === 'fresh' ? 'navigation' : 'existing';
-      const duringTransition = (
-        stage: 'attempt' | 'stopped' | null,
-      ): Promise<{ verdict: Verdict; snapshot: SessionSnapshot }> | null =>
-        engine.blockStateDuringTransition?.(
-          msg.url,
-          tabId,
-          senderOwnsUrl,
-          kind,
-          stage,
-          sender.documentId,
-        ) ?? null;
-      const initialTransitionState = duringTransition('attempt');
-      if (initialTransitionState !== null) return await initialTransitionState;
-      const verdict: Verdict = engine.verdictFor(msg.url);
-      if (verdict.blocked && tabId !== undefined && senderOwnsUrl) {
-        await engine.recordAttempt(msg.url, tabId, kind);
-        const remainingStage: 'stopped' | null =
-          msg.docState === 'fresh' &&
-          typeof sender.documentId === 'string' &&
-          sender.documentId !== ''
-            ? 'stopped'
-            : null;
-        const admittedTransitionState = duringTransition(remainingStage);
-        if (admittedTransitionState !== null) return await admittedTransitionState;
-        if (msg.docState === 'fresh' && sender.documentId !== undefined) {
-          await engine.markStopped(tabId, msg.url, sender.documentId);
-        }
+      // The controller records the blocked attempt on this path exactly as the v1 engine did.
+      const commands: DocumentContentCommand[] = await engine.documentCommandsFor(target, kind);
+      if (msg.docState === 'fresh' && blocksTarget(commands)) {
+        // The claim is what carries the stopped-page copy and what the closure reloads.
+        await engine.markStopped(tabId, msg.url, documentId);
       }
-      const finalTransitionState = duringTransition(null);
-      if (finalTransitionState !== null) return await finalTransitionState;
-      return { verdict, snapshot: await engine.snapshotPersisted() };
+      return { commands };
     }
     case 'startSession':
       return engine.startSession(msg.config);
     case 'openGate':
       return engine.openGate(msg.gate, msg.host);
+    case 'openEndGate':
+      return engine.openEndGate();
     case 'confirmGate':
       return engine.confirmGate(msg.typedPhrase);
     case 'requestSessionEnd':
@@ -377,6 +370,17 @@ export async function routeMessage(
       return engine.resumeFromPause();
     case 'startNextFocusEarly':
       return engine.startNextFocusEarly();
+    case 'retryTransitionCleanup':
+      return engine.retryTransitionCleanup();
+    case 'retryClosureCleanup':
+      return engine.retryClosureCleanup();
+    case 'retryDataClear':
+      // The all-data journal slice replaces this stub with the real retry.
+      return {
+        ok: false,
+        code: 'retry-not-available',
+        error: 'Data clear retry is not available.',
+      };
     case 'updateSettings':
       return engine.updateSettings(msg.settings);
     case 'updateTheme':
@@ -394,7 +398,7 @@ export async function routeMessage(
             fetchStats(msg.days, Date.now(), engine.statsOverlay(), storage),
           );
     case 'exportEvents':
-      return { json: JSON.stringify(await readEvents(), null, 2) };
+      return { json: JSON.stringify(await readEventsV2(), null, 2) };
     case 'previewSound': {
       // Previews ignore the per-event toggle: the options page needs to
       // demo a sound the user is about to enable.

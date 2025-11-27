@@ -28,6 +28,7 @@ import type {
 } from '../shared/types';
 import { type WebsiteAccessOutcome, websiteAccessOutcome } from '../shared/website-access-state';
 import { ActiveView } from './ActiveView';
+import { LifecycleView } from './LifecycleView';
 import { StartForm } from './StartForm';
 import { useSnapshot } from './use-snapshot';
 
@@ -154,7 +155,7 @@ function Footer({ snapshot }: { snapshot: SessionSnapshot }): VNode {
   );
 }
 
-function IdleView(): VNode {
+function IdleView({ startsDisabled }: { startsDisabled: boolean }): VNode {
   const [settings, setSettings]: [Settings | null, Dispatch<StateUpdater<Settings | null>>] =
     useState<Settings | null>(null);
   const [lists, setLists]: [ListsConfig | null, Dispatch<StateUpdater<ListsConfig | null>>] =
@@ -195,7 +196,12 @@ function IdleView(): VNode {
   }
   return (
     <>
-      <StartForm settings={settings} lists={lists} categoriesEditable={listsEditable} />
+      <StartForm
+        settings={settings}
+        lists={lists}
+        categoriesEditable={listsEditable}
+        startsDisabled={startsDisabled}
+      />
       {loadError ? (
         <p class="form-error" role="alert">
           Could not load session settings. Reload the popup to try again. Defaults are shown.
@@ -206,11 +212,30 @@ function IdleView(): VNode {
   );
 }
 
-function Body({ snapshot, now }: { snapshot: SessionSnapshot; now: number }): VNode {
-  if (snapshot.phase === 'idle') {
-    return <IdleView />;
+/**
+ * One switch from the public lifecycle to the view that owns it. An all-data journal outranks every
+ * lifecycle, including idle, because the profile is being deleted and no session may start on top
+ * of that. Nothing else disables a start on an idle lifecycle, and no branch offers one while a
+ * journal exists.
+ */
+function Body({
+  snapshot,
+  now,
+  dataClear,
+}: {
+  snapshot: SessionSnapshot;
+  now: number;
+  dataClear: SetupState['dataClear'];
+}): VNode {
+  if (
+    dataClear.scope === 'all' &&
+    (dataClear.status === 'pending' || dataClear.status === 'error')
+  ) {
+    return <LifecycleView snapshot={snapshot} now={now} dataClear={dataClear} />;
   }
-  return <ActiveView snapshot={snapshot} now={now} />;
+  if (snapshot.lifecycle.kind === 'idle') return <IdleView startsDisabled={false} />;
+  if (snapshot.lifecycle.kind === 'active') return <ActiveView snapshot={snapshot} now={now} />;
+  return <LifecycleView snapshot={snapshot} now={now} dataClear={dataClear} />;
 }
 
 function SetupRequired(): VNode {
@@ -478,7 +503,7 @@ export function App(): VNode {
       ) : snapshot === null ? (
         <section class="view" aria-busy="true" />
       ) : (
-        <Body snapshot={snapshot} now={now} />
+        <Body snapshot={snapshot} now={now} dataClear={setup.dataClear} />
       )}
       {setup?.completed &&
       setup.blockingRegistration !== 'ready' &&

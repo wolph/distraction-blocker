@@ -1,6 +1,7 @@
 import { parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { emptyStreak } from '../core/streak';
 import { DEFAULT_SETTINGS } from '../shared/constants';
+import type { DocumentContentCommand } from '../shared/enforcement-v2';
 import type { Request, SoundId } from '../shared/messages';
 import { WEBSITE_ORIGINS } from '../shared/permissions';
 import { isInstallMarker, isListsConfig, isSettings } from '../shared/runtime-validation';
@@ -14,6 +15,8 @@ import {
   LOCAL_LISTS_SNAPSHOT,
   LOCAL_ONBOARDING_DRAFT,
   LOCAL_RUNTIME,
+  LOCAL_RUNTIME_MIGRATION,
+  LOCAL_RUNTIME_SCHEMA,
   LOCAL_SYNC_JOURNAL,
   LOCAL_SYNC_QUOTA_EVICTION,
   SYNC_BANK,
@@ -25,14 +28,23 @@ import { localDateStr, localMonthStr } from '../shared/time';
 import type {
   BankState,
   DailyAgg,
+  EventRecord,
   InstallMarker,
+  LegacyEventRecord,
   ListsConfig,
   MonthlyAgg,
+  PauseEconomy,
   SessionSnapshot,
   Settings,
   SetupState,
   StreakState,
 } from '../shared/types';
+import {
+  type AlarmNameV2,
+  type AlarmPortsV2,
+  ensureTickAlarmV2,
+  type ScheduledAlarmV2,
+} from './alarms-v2';
 import { notify, playSound } from './audio';
 import {
   type ContentRegistrationState,
@@ -40,6 +52,7 @@ import {
   reconcileContentRegistrationState,
 } from './content-registration';
 import { Engine, type EnginePorts } from './engine';
+import { appendEventsV2 } from './event-log-v2';
 import { updateIcon } from './icon';
 import {
   decodeListsSyncSnapshot,
@@ -52,10 +65,21 @@ import { createOnboardingService, type OnboardingService } from './onboarding';
 import { createPolicyStorage, type PolicySnapshot, type PolicyStorage } from './policy-storage';
 import { parseRequest } from './request-validation';
 import { routeMessage } from './router';
+import {
+  bootRuntimeAuthorityV2,
+  migrationStoragePayload,
+  type RuntimeBootPortsV2,
+  type RuntimeBootResultV2,
+} from './runtime-boot-v2';
+import { emptyRuntimeV2, loadRuntimeAuthority, saveRuntimeV2 } from './runtime-store-v2';
+import type {
+  CleanupTabClaim,
+  RuntimeMigrationCheckpointV1ToV2,
+  RuntimeStateV2,
+} from './runtime-v2-types';
+import type { AggregateStorage } from './stats-service';
 import { handleSyncChanges, missingSyncDefaults } from './storage-sync';
 import {
-  appendEvents,
-  emptyRuntime,
   getDeviceId,
   loadLists,
   loadRuntime,
@@ -82,9 +106,12 @@ import { type SanitizedSyncJournal, sanitizeSyncJournal } from './sync-quota';
 import type { SyncJournal } from './sync-writer';
 import {
   applyBlockingFactory,
+  enforcementTargetPortsV2,
   injectIntoExistingTabs,
   invalidateRemovedTab,
   registerTabListeners,
+  reloadClaimedDocuments,
+  restoreClaimedTabs,
 } from './tabs';
 
 const TICK_ALARM: string = 'tick';
@@ -108,6 +135,10 @@ type WebsiteReconciliationRequest = {
 };
 type WebsiteAccessNotice = Exclude<SetupState['websiteAccessNotice'], null>;
 type PendingWebsiteAccessNotice = { value: WebsiteAccessNotice | null };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
 
 function requiresWorkerControl(request: Request): boolean {
   switch (request.type) {
@@ -598,6 +629,94 @@ async function preparePolicyStorage(): Promise<PolicyStorage> {
   }
 }
 
+/** The chrome-backed alarm surface the v2 runners drive. */
+function chromeAlarmPortsV2(): AlarmPortsV2 {
+  return {
+    create: async (name: AlarmNameV2, when: number): Promise<void> => {
+      await chrome.alarms.create(name, { when });
+    },
+    createPeriodic: async (name: AlarmNameV2, periodInMinutes: number): Promise<void> => {
+      await chrome.alarms.create(name, { periodInMinutes });
+    },
+    get: async (name: AlarmNameV2): Promise<ScheduledAlarmV2 | null> => {
+      const alarm: chrome.alarms.Alarm | undefined = await chrome.alarms.get(name);
+      if (alarm === undefined) return null;
+      return {
+        scheduledTime: alarm.scheduledTime,
+        periodInMinutes: alarm.periodInMinutes ?? null,
+      };
+    },
+    clear: async (name: AlarmNameV2): Promise<void> => {
+      await chrome.alarms.clear(name);
+    },
+  };
+}
+
+/** The stored daily aggregates a closure seeds its split dates from. */
+async function loadStoredAggregates(
+  policyStorage: PolicyStorage,
+  keys: readonly string[],
+): Promise<Record<string, DailyAgg>> {
+  if (keys.length === 0) return {};
+  return await policyStorage.withAggregateStorage(
+    async (storage: AggregateStorage): Promise<Record<string, DailyAgg>> => {
+      const stored: Record<string, unknown> = await storage.local.get([...keys]);
+      const aggregates: Record<string, DailyAgg> = {};
+      for (const [key, value] of Object.entries(stored)) {
+        const parsed: DailyAgg | null = parseDailyAgg(value);
+        if (parsed !== null) aggregates[key] = parsed;
+      }
+      return aggregates;
+    },
+  );
+}
+
+/** The boot reader's ports: storage effects only, which is all it is allowed to perform. */
+function runtimeBootPorts(
+  policyStorage: PolicyStorage,
+  snapshot: PolicySnapshot,
+  deviceId: string,
+): RuntimeBootPortsV2 {
+  return {
+    now: (): number => Date.now(),
+    newId: (): string => crypto.randomUUID(),
+    loadRuntimeAuthority,
+    readMigrationCheckpoint: async (): Promise<unknown> => {
+      const stored: Record<string, unknown> =
+        await chrome.storage.local.get(LOCAL_RUNTIME_MIGRATION);
+      return stored[LOCAL_RUNTIME_MIGRATION];
+    },
+    writeMigrationCheckpointAndMarker: async (
+      checkpoint: RuntimeMigrationCheckpointV1ToV2,
+    ): Promise<void> => {
+      await chrome.storage.local.set(migrationStoragePayload(checkpoint));
+    },
+    clearMigrationCheckpoint: async (): Promise<void> => {
+      await chrome.storage.local.remove(LOCAL_RUNTIME_MIGRATION);
+    },
+    saveRuntime: (runtime: RuntimeStateV2): Promise<void> => saveRuntimeV2(runtime),
+    saveLegacyRuntime: (runtime: RuntimeState): Promise<void> => saveRuntime(runtime),
+    appendEvents: (events: readonly EventRecord[]): Promise<void> => appendEventsV2(events),
+    appendLegacyEvents: (events: readonly LegacyEventRecord[]): Promise<void> =>
+      appendEventsV2(events),
+    saveBank: async (bank: BankState, syncBank: boolean): Promise<void> => {
+      await policyStorage.setPolicy('bank', bank);
+      if (syncBank) await policyStorage.publishRemoteItem(SYNC_BANK, bank);
+    },
+    saveAggregate: (key: string, value: DailyAgg): Promise<void> =>
+      policyStorage.saveAggregate(key, value),
+    removeAggregate: (key: string): Promise<void> => policyStorage.removeAggregate(key),
+    persistSyncJournal: (): Promise<void> => policyStorage.remoteJournalDurable(),
+    loadAggregates: (keys: readonly string[]): Promise<Record<string, DailyAgg>> =>
+      loadStoredAggregates(policyStorage, keys),
+    lists: (): ListsConfig => snapshot.lists,
+    bank: (): BankState => snapshot.bank,
+    pauseEconomy: (): PauseEconomy => snapshot.settings.pause,
+    deviceId: (): string => deviceId,
+    reportError: reportBackgroundError,
+  };
+}
+
 async function boot(
   policyStorage: PolicyStorage,
   initialWebsiteCapability: WebsiteReconciliation,
@@ -612,10 +731,7 @@ async function boot(
   await policyStorage.initialize();
   const snapshot: PolicySnapshot = await policyStorage.loadSnapshot();
   const completedAllDataClear: boolean = policyStorage.allDataClearCompleted();
-  const [loadedRuntime, initialDeviceId]: [ParsedRuntimeState, string] = completedAllDataClear
-    ? [emptyRuntime(now), await getDeviceId()]
-    : await Promise.all([loadRuntime(now), getDeviceId()]);
-  let deviceId: string = initialDeviceId;
+  let deviceId: string = await getDeviceId();
   const setup: SetupState = await policyStorage.loadSetup();
   if (setup.completed) {
     try {
@@ -627,22 +743,33 @@ async function boot(
   const pendingAllDataClear: boolean =
     setup.dataClear.status !== 'idle' && setup.dataClear.scope === 'all';
   publishSetupCompleted(setup.completed && !pendingAllDataClear);
-  const migratedRuntime: RuntimeState = migrateRuntimeRules(loadedRuntime, snapshot.lists);
+  // One runtime authority, resolved before anything else runs. A stored migration checkpoint is
+  // finished, a v2 runtime is replayed, a legacy runtime migrates once, and anything else is
+  // reported and replaced by an empty v2 runtime.
+  const boot: RuntimeBootResultV2 = completedAllDataClear
+    ? { kind: 'v2', runtime: emptyRuntimeV2(now, crypto.randomUUID()), migrated: false }
+    : await bootRuntimeAuthorityV2(runtimeBootPorts(policyStorage, snapshot, deviceId));
+  if (boot.kind === 'rejected') {
+    reportBackgroundError(new Error(`stored runtime rejected: ${boot.reason}`));
+  }
   const localHistoryClear: { clearAggregates: boolean } | null =
     await policyStorage.pendingLocalHistoryClear();
-  const runtime: RuntimeState =
+  const runtime: RuntimeStateV2 =
     localHistoryClear === null
-      ? migratedRuntime
-      : sanitizeRuntimeForLocalHistory(migratedRuntime, localHistoryClear.clearAggregates);
+      ? boot.runtime
+      : sanitizeRuntimeForLocalHistory(boot.runtime, localHistoryClear.clearAggregates);
   if (localHistoryClear !== null) {
     try {
-      await saveRuntime(runtime);
+      await saveRuntimeV2(runtime);
       await policyStorage.finishLocalHistoryClear();
     } catch (error: unknown) {
       reportBackgroundError(error);
     }
-  } else if (!completedAllDataClear && runtime !== loadedRuntime) {
-    await saveRuntime(runtime);
+  } else if (!completedAllDataClear) {
+    // A fresh profile has nothing stored, and a rejected or migrated one must not read the old
+    // value again, so the resolved authority is written before anything else runs.
+    await saveRuntimeV2(runtime);
+    await chrome.storage.local.set({ [LOCAL_RUNTIME_SCHEMA]: { runtimeSchemaVersion: 2 } });
   }
   const streak: StreakState = snapshot.streak ?? emptyStreak(localMonthStr(now));
   const ports: EnginePorts = {
@@ -653,7 +780,7 @@ async function boot(
       deviceId = await getDeviceId();
       return deviceId;
     },
-    saveRuntime,
+    saveRuntime: (runtime: RuntimeStateV2): Promise<void> => saveRuntimeV2(runtime),
     saveMatcherCache,
     savePolicy: (key, value): Promise<void> => policyStorage.setPolicy(key, value),
     saveAggregate: (key: string, value: DailyAgg): Promise<void> =>
@@ -670,7 +797,9 @@ async function boot(
       void policyStorage.removeRemoteItem(key).catch(reportBackgroundError);
     },
     persistSyncJournal: (): Promise<void> => policyStorage.remoteJournalDurable(),
-    appendEvents,
+    // Checklist 4: the v2 writer is the only event writer, because the v1 one re-parses the whole
+    // log and drops v2 records.
+    appendEvents: (events: readonly EventRecord[]): Promise<void> => appendEventsV2(events),
     broadcast: (snapshot: SessionSnapshot): void => {
       // Rejects when no extension page is open to hear it, which is fine.
       chrome.runtime.sendMessage({ type: 'stateChanged', snapshot }).catch((): undefined => {
@@ -693,6 +822,31 @@ async function boot(
       policyStorage.pruneRemoteHistory(deviceId, retentionDays, pruneNow),
     reportError: reportBackgroundError,
     websiteBlockingReady: (): boolean => setupCompleted() && websiteCapability().status === 'ready',
+    auditEnforcement: async (): Promise<
+      'ready' | 'website-access-lost' | 'content-registration-failed'
+    > => {
+      if (!setupCompleted()) return 'website-access-lost';
+      const state: ContentRegistrationState =
+        await reconcileContentRegistrationState(reportBackgroundError);
+      if (state.permission !== 'granted') return 'website-access-lost';
+      return state.status === 'ready' ? 'ready' : 'content-registration-failed';
+    },
+    targets: enforcementTargetPortsV2(),
+    transport: {
+      sendToDocument: (
+        tabId: number,
+        documentId: string,
+        message: DocumentContentCommand,
+      ): Promise<unknown> => chrome.tabs.sendMessage(tabId, message, { documentId }),
+    },
+    alarms: chromeAlarmPortsV2(),
+    loadAggregates: (keys: readonly string[]): Promise<Record<string, DailyAgg>> =>
+      loadStoredAggregates(policyStorage, keys),
+    clearBlockingForNonBlockingPhase: (): Promise<void> => currentEngine().applyBlockingNow(),
+    restoreTabClaims: (claims: readonly CleanupTabClaim[]): Promise<number[]> =>
+      restoreClaimedTabs(claims),
+    reloadStoppedDocuments: (claims: readonly CleanupTabClaim[]): Promise<void> =>
+      reloadClaimedDocuments(claims),
   };
   const engine: Engine = new Engine(
     ports,
@@ -735,6 +889,10 @@ async function boot(
     await engine.retainDataClearQuiescence();
     return engine;
   }
+  // Checklist 6: the journals resolve before any alarm, message, or publication reaches the
+  // controller, and checklist 2: the periodic tick exists from this boot onward.
+  await engine.recover();
+  await ensureTickAlarmV2(chromeAlarmPortsV2());
   if (completedAllDataClear) return engine;
   await engine.tick();
   await engine.applyBlockingNow();
@@ -928,7 +1086,12 @@ export function main(): void {
     ): boolean => {
       const request: Request | null = parseRequest(msg);
       if (request === null) {
-        sendResponse({ ok: false, error: 'invalid request' });
+        // A session command answers in its own result-code shape, which is what the popup reads.
+        sendResponse(
+          isRecord(msg) && msg.type === 'startSession'
+            ? { ok: false, code: 'invalid-request' }
+            : { ok: false, error: 'invalid request' },
+        );
         return true;
       }
       ready

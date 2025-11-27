@@ -34,7 +34,6 @@ import type {
   Phase,
   Rule,
   ScheduleDuration,
-  ScheduleEntry,
   ScheduleEntryV2,
   ScheduleOccurrenceRef,
   SessionConfig,
@@ -563,7 +562,7 @@ export function isCycleConfig(value: unknown): value is CycleConfig {
   return safelyValidate((): boolean => isCycleConfigValue(value));
 }
 
-function isScheduleEntry(value: unknown): value is ScheduleEntry {
+function isScheduleEntry(value: unknown): value is NormalizedScheduleEntryV1 {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, SCHEDULE_ENTRY_V1_KEYS) ||
@@ -584,7 +583,7 @@ function isScheduleEntry(value: unknown): value is ScheduleEntry {
   ) {
     return false;
   }
-  const entry: ScheduleEntry = {
+  const entry: NormalizedScheduleEntryV1 = {
     id: value.id,
     days: value.days,
     start: value.start,
@@ -629,18 +628,19 @@ export function isScheduleEntryV2(value: unknown): value is ScheduleEntryV2 {
   return safelyValidate((): boolean => isScheduleEntryV2Value(value));
 }
 
-function isSchedule(value: unknown): value is ScheduleEntry[] {
+/** The live schedule is v2: every entry carries its own duration. */
+function isSchedule(value: unknown): value is ScheduleEntryV2[] {
   if (!isDenseArray(value)) return false;
   const ids: Set<string> = new Set<string>();
   for (let index: number = 0; index < value.length; index++) {
     if (!Object.hasOwn(value, index)) return false;
     const candidate: unknown = value[index];
-    if (!isScheduleEntry(candidate)) return false;
-    const entry: ScheduleEntry = candidate;
+    if (!isScheduleEntryV2Value(candidate)) return false;
+    const entry: ScheduleEntryV2 = candidate;
     if (ids.has(entry.id)) return false;
     ids.add(entry.id);
     for (let previousIndex: number = 0; previousIndex < index; previousIndex++) {
-      const previous: ScheduleEntry = value[previousIndex] as ScheduleEntry;
+      const previous: ScheduleEntryV2 = value[previousIndex] as ScheduleEntryV2;
       if (scheduleEntriesOverlap(previous, entry)) return false;
     }
   }
@@ -1219,7 +1219,7 @@ function isNextSchedule(value: unknown): boolean {
   return isRecord(value) && isNonBlankString(value.entryId) && isNonNegativeNumber(value.startsAt);
 }
 
-function isSessionSnapshotValue(value: unknown): value is SessionSnapshot {
+function _isSessionSnapshotValue(value: unknown): value is SessionSnapshot {
   if (!isRecord(value)) return false;
   const phaseValid: boolean =
     value.phase === 'idle' ||
@@ -1271,8 +1271,9 @@ function isSessionSnapshotValue(value: unknown): value is SessionSnapshot {
   return value.phase !== 'break' || value.config.cycling !== null;
 }
 
+/** The live snapshot contract is v2. The v1 predicate stays for migration and legacy input. */
 export function isSessionSnapshot(value: unknown): value is SessionSnapshot {
-  return safelyValidate((): boolean => isSessionSnapshotValue(value));
+  return isSessionSnapshotV2(value);
 }
 
 function isNullableDailyDate(value: unknown): value is string | null {
@@ -1361,8 +1362,13 @@ export function isLegacyEventRecord(value: unknown): value is LegacyEventRecord 
   return safelyValidate((): boolean => isEventRecordValue(value));
 }
 
+/**
+ * The live event contract is the v2 union. It composes the two v2 guards with the legacy one and
+ * never calls back into this function, so a mixed log validates in one pass and a legacy shape
+ * wearing `version: 2` stays rejected.
+ */
 export function isEventRecord(value: unknown): value is EventRecord {
-  return isLegacyEventRecord(value);
+  return isSessionEventRecordV2(value);
 }
 
 function validSourceOccurrence(

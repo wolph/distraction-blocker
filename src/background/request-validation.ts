@@ -1,5 +1,5 @@
 import { normalizeSessionRules, validateRule } from '../core/matcher';
-import { scheduleEntriesOverlap, validateEntry } from '../core/schedule';
+import { scheduleEntriesOverlap } from '../core/schedule';
 import { CATEGORY_IDS } from '../shared/constants';
 import type { Request, SessionStartRequestV2 } from '../shared/messages';
 import {
@@ -10,6 +10,7 @@ import {
 } from '../shared/numeric-validation';
 import {
   isOnboardingDraft,
+  isScheduleEntryV2,
   isSessionConfigV2,
   isSessionDuration,
 } from '../shared/runtime-validation';
@@ -19,8 +20,7 @@ import type {
   CycleConfig,
   ListsConfig,
   Rule,
-  ScheduleEntry,
-  SessionConfig,
+  ScheduleEntryV2,
   SessionConfigV2,
   SessionDuration,
   SessionRuleSnapshot,
@@ -366,49 +366,6 @@ export function parseSessionStartRequestV2(value: unknown): SessionStartRequestV
   }
 }
 
-function parseSessionConfig(value: unknown): SessionConfig | null {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, [
-      'mode',
-      'strictness',
-      'durationMin',
-      'cycling',
-      'intention',
-      'source',
-      'scheduleEntryId',
-      'rules',
-    ])
-  ) {
-    return null;
-  }
-  const rules: SessionRuleSnapshot | null = normalizeSessionRules(value.rules);
-  if (
-    (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
-    (value.strictness !== 'flexible' &&
-      value.strictness !== 'hard' &&
-      value.strictness !== 'friction') ||
-    !isRelativeMinuteDuration(value.durationMin) ||
-    (value.cycling !== null && !isCycleConfig(value.cycling)) ||
-    typeof value.intention !== 'string' ||
-    value.source !== 'manual' ||
-    value.scheduleEntryId !== null ||
-    rules === null
-  ) {
-    return null;
-  }
-  return {
-    mode: value.mode,
-    strictness: value.strictness,
-    durationMin: value.durationMin,
-    cycling: value.cycling === null ? null : { ...value.cycling },
-    intention: value.intention,
-    source: 'manual',
-    scheduleEntryId: null,
-    rules,
-  };
-}
-
 function isPauseSettings(value: unknown): boolean {
   if (!isRecord(value) || !hasExactKeys(value, ['earnRatio', 'capMs', 'pauseMs', 'unlockMs'])) {
     return false;
@@ -457,60 +414,16 @@ function isSoundSettings(value: unknown): boolean {
   );
 }
 
-function isScheduleEntry(value: unknown): value is ScheduleEntry {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, [
-      'id',
-      'days',
-      'start',
-      'end',
-      'mode',
-      'strictness',
-      'cycling',
-      'intention',
-      'enabled',
-    ]) ||
-    !isNonBlankString(value.id) ||
-    !isDenseArray(value.days) ||
-    value.days.length === 0 ||
-    !value.days.every((day: unknown): day is number => isNonNegativeInteger(day) && day <= 6) ||
-    new Set(value.days).size !== value.days.length ||
-    typeof value.start !== 'string' ||
-    typeof value.end !== 'string' ||
-    (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
-    (value.strictness !== 'flexible' &&
-      value.strictness !== 'hard' &&
-      value.strictness !== 'friction') ||
-    (value.cycling !== null && !isCycleConfig(value.cycling)) ||
-    typeof value.intention !== 'string' ||
-    typeof value.enabled !== 'boolean'
-  ) {
-    return false;
-  }
-  const entry: ScheduleEntry = {
-    id: value.id,
-    days: value.days,
-    start: value.start,
-    end: value.end,
-    mode: value.mode,
-    strictness: value.strictness,
-    cycling: value.cycling,
-    intention: value.intention,
-    enabled: value.enabled,
-  };
-  return validateEntry(entry) === null;
-}
-
-function isSchedule(value: unknown): value is ScheduleEntry[] {
-  if (!isDenseArray(value) || !value.every(isScheduleEntry)) return false;
+/** The request contract is the live one: every entry carries its own duration. */
+function isSchedule(value: unknown): value is ScheduleEntryV2[] {
+  if (!isDenseArray(value) || !value.every(isScheduleEntryV2)) return false;
   const ids: Set<string> = new Set<string>();
   for (let index: number = 0; index < value.length; index++) {
-    const entry: ScheduleEntry = value[index] as ScheduleEntry;
+    const entry: ScheduleEntryV2 = value[index] as ScheduleEntryV2;
     if (ids.has(entry.id)) return false;
     ids.add(entry.id);
     for (let previousIndex: number = 0; previousIndex < index; previousIndex++) {
-      const previous: ScheduleEntry = value[previousIndex] as ScheduleEntry;
+      const previous: ScheduleEntryV2 = value[previousIndex] as ScheduleEntryV2;
       if (scheduleEntriesOverlap(previous, entry)) return false;
     }
   }
@@ -682,11 +595,13 @@ function parseRecord(value: Record<string, unknown>): Request | null {
         ? (value as Request)
         : null;
     case 'startSession':
-      if (!hasExactKeys(value, ['type', 'config'])) return null;
-      {
-        const config: SessionConfig | null = parseSessionConfig(value.config);
-        return config === null ? null : { type: 'startSession', config };
-      }
+      // The live start request is the v2 one, which owns the tagged duration and the exact keys.
+      return parseSessionStartRequestV2(value);
+    case 'openEndGate':
+    case 'retryTransitionCleanup':
+    case 'retryClosureCleanup':
+    case 'retryDataClear':
+      return hasExactKeys(value, ['type']) ? (value as Request) : null;
     case 'openGate':
       if (
         !hasExactKeys(value, ['type', 'gate', 'host']) ||

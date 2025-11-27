@@ -220,6 +220,15 @@ export function addEvent(agg: DailyAgg, ev: EventRecord): DailyAgg {
     case 'sessionCanceled':
       // Canceled sessions still contribute the focus they achieved.
       return { ...current, focusMs: current.focusMs + ev.focusedMs };
+    // One v2 end event carries the outcome the two legacy events split between them.
+    case 'sessionEnded':
+      return ev.outcome === 'completed'
+        ? {
+            ...current,
+            sessionsCompleted: current.sessionsCompleted + 1,
+            focusMs: current.focusMs + ev.focusedMs,
+          }
+        : { ...current, focusMs: current.focusMs + ev.focusedMs };
     case 'attempt':
       return {
         ...current,

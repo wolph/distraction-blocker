@@ -4,7 +4,6 @@ import type {
   CategoryId,
   CycleConfig,
   ListsConfig,
-  SessionConfig,
   SessionMode,
   SessionRuleSnapshot,
   Settings,
@@ -111,18 +110,5 @@ export function addDraftAllowHost<const T extends { rules: SessionRuleSnapshot }
       },
     },
     error: null,
-  };
-}
-
-export function toSessionConfig(draft: SessionDraft): SessionConfig {
-  return {
-    mode: draft.mode,
-    strictness: draft.strictness,
-    durationMin: draft.durationMin,
-    cycling: draft.cycling === null ? null : structuredClone(draft.cycling),
-    intention: draft.intention.trim(),
-    source: 'manual',
-    scheduleEntryId: null,
-    rules: structuredClone(draft.rules),
   };
 }

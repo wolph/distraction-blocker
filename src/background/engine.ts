@@ -1,4 +1,3 @@
-import { accrue, spend } from '../core/budget';
 import { ALL_CATEGORIES } from '../core/categories';
 import {
   buildMatcherCache,
@@ -6,50 +5,50 @@ import {
   compileSessionMatcher,
   evaluateUrl,
   type MatcherCacheBundle,
-  normalizeSessionRules,
   registrableHost,
   type StoredMatcherCache,
-  sessionRulesMatchLists,
 } from '../core/matcher';
-import { activeEntry, nextStart, windowEnd } from '../core/schedule';
+import { windowEnd } from '../core/schedule';
 import {
-  advance,
-  beginPause,
-  endPauseEarly,
-  type MachineEvent,
-  startSession as machineStart,
-  startNextFocusEarly as machineStartNextFocusEarly,
-} from '../core/session';
+  type ResolvedScheduleOccurrenceV2,
+  resolveOpenScheduleOccurrencesV2,
+} from '../core/schedule-v2';
 import { addEvent, capAttempts, emptyDaily } from '../core/stats';
 import { emptyStreak } from '../core/streak';
 import {
   ATTEMPT_DEBOUNCE_MS,
-  cancelPhrase,
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
-  GATE_EXPIRY_MS,
-  pausePhrase,
-  rulesFromLists,
+  emptySnapshot,
   TOP_SITES_DAILY,
-  unlockSitePhrase,
 } from '../shared/constants';
-import { CoreError } from '../shared/errors';
-import { type Ack, type SoundId, STALE_SESSION_RULES_ERROR } from '../shared/messages';
+import type { DocumentContentCommand } from '../shared/enforcement-v2';
+import type {
+  Ack,
+  CommandResponseV2,
+  RetryCleanupResultCodeV2,
+  SessionCommandResultCodeV2,
+  SoundId,
+  StartSessionResponseV2,
+} from '../shared/messages';
 import { isListsConfig } from '../shared/runtime-validation';
-import { syncAggKey } from '../shared/storage-keys';
-import { localDateStr, localMidnightAfter, localMonthStr } from '../shared/time';
+import { SYNC_BANK, syncAggKey } from '../shared/storage-keys';
+import { localDateStr, localMonthStr } from '../shared/time';
 import type {
   BankState,
   DailyAgg,
   EventRecord,
-  GateKind,
-  GateState,
+  GateSettings,
   ListsConfig,
-  ScheduleEntry,
+  PauseEconomy,
+  ScheduleEntryV2,
+  ScheduleOccurrenceRef,
   SessionConfig,
+  SessionMode,
   SessionRuleSnapshot,
   SessionSnapshot,
   SessionState,
+  SessionStateV2,
   Settings,
   SiteUnlock,
   StreakState,
@@ -57,20 +56,30 @@ import type {
   ThemeMode,
   Verdict,
 } from '../shared/types';
+import type { AlarmPortsV2 } from './alarms-v2';
+import type { ContentTransportPortsV2 } from './content-transport-v2';
+import type { DocumentEnforcementAck } from './enforcement-persistence-v2';
+import type { EnforcementTargetPortsV2 } from './enforcement-targets-v2';
 import { listsChangeAllowed, settingsChangeAllowed } from './guard';
 import { encodeListsForSync, LIST_SYNC_KEYS, type ListsSyncEncoding } from './list-sync-codec';
 import type { PolicyValueByKey } from './policy-storage';
+import { planRollover, type RolloverPlan } from './rollover';
 import {
-  clockRebaseArchiveKey,
-  planBackwardDateRebase,
-  planRollover,
-  type RolloverPlan,
-} from './rollover';
+  commitRuntimeCheckpointV2,
+  projectRuntimeDomainV2,
+  type RuntimeCommitInputV2,
+} from './runtime-checkpoint-v2';
+import type { RuntimePortsV2 } from './runtime-ports-v2';
+import { emptyRuntimeV2 } from './runtime-store-v2';
+import type {
+  CleanupTabClaim,
+  RuntimeCommitCheckpointV2,
+  RuntimeStateV2,
+} from './runtime-v2-types';
+import type { ScheduleRunnerPortsV2 } from './schedule-runner-v2';
+import { type SessionControllerEffectsV2, SessionControllerV2 } from './session-controller-v2';
 import {
   type DeferredBlockClaim,
-  emptyRuntime,
-  type RuntimeCommitCheckpoint,
-  type RuntimeState,
   type RuntimeTabState,
   sanitizeRuntimeForLocalHistory,
 } from './stores';
@@ -96,7 +105,7 @@ export interface EnginePorts {
   newId(): string;
   /** Recreate and durably store the device identity after an all-data clear. */
   rehydrateAfterDataClear(): Promise<string>;
-  saveRuntime(r: RuntimeState): Promise<void>;
+  saveRuntime(r: RuntimeStateV2): Promise<void>;
   saveMatcherCache(cache: StoredMatcherCache, lists: ListsConfig): Promise<void>;
   savePolicy?<K extends keyof PolicyValueByKey>(key: K, value: PolicyValueByKey[K]): Promise<void>;
   saveAggregate?(key: string, value: DailyAgg): Promise<void>;
@@ -106,7 +115,7 @@ export interface EnginePorts {
   supersedeSync(key: string, value: unknown): void;
   removeSync(key: string): void;
   persistSyncJournal(): Promise<void>;
-  appendEvents(evs: EventRecord[]): Promise<void>;
+  appendEvents(evs: readonly EventRecord[]): Promise<void>;
   broadcast(snapshot: SessionSnapshot): void;
   applyBlocking(lease: BlockingSweepLease): Promise<void>;
   playSound(sound: SoundId): void;
@@ -118,6 +127,17 @@ export interface EnginePorts {
   reportError(error: unknown): void;
   /** Live website-blocking capability. */
   websiteBlockingReady(): boolean;
+  /** The v2 enforcement seam: the browser surfaces the controller drives through this engine. */
+  auditEnforcement(): Promise<'ready' | 'website-access-lost' | 'content-registration-failed'>;
+  targets: EnforcementTargetPortsV2;
+  transport: ContentTransportPortsV2;
+  alarms: AlarmPortsV2;
+  /** Stored daily aggregates by `syncAggKey`, for the closure that splits across a midnight. */
+  loadAggregates(keys: readonly string[]): Promise<Record<string, DailyAgg>>;
+  /** Clears blocking for a phase that blocks nothing, through the existing serialized sweep. */
+  clearBlockingForNonBlockingPhase(): Promise<void>;
+  restoreTabClaims(claims: readonly CleanupTabClaim[]): Promise<number[]>;
+  reloadStoppedDocuments(claims: readonly CleanupTabClaim[]): Promise<void>;
 }
 
 export interface LiveTabState {
@@ -147,7 +167,7 @@ interface AttemptDurability {
   reject(error: unknown): void;
 }
 
-const NO_SESSION_VERDICT: Verdict = {
+const _NO_SESSION_VERDICT: Verdict = {
   blocked: false,
   reason: 'no-session',
   categoryId: null,
@@ -155,18 +175,18 @@ const NO_SESSION_VERDICT: Verdict = {
 };
 const WEBSITE_BLOCKING_LOSS_RETRY_MS: number = 1_000;
 
-function strictnessStrength(strictness: Strictness): number {
+function _strictnessStrength(strictness: Strictness): number {
   if (strictness === 'flexible') return 0;
   if (strictness === 'friction') return 1;
   return 2;
 }
 
-function scheduleOccurrenceToken(entry: ScheduleEntry, now: number): string {
+function _scheduleOccurrenceToken(entry: ScheduleEntryV2, now: number): string {
   const endsAt: number = windowEnd(entry, new Date(now)).getTime();
   return `${entry.id}@${endsAt}`;
 }
 
-function scheduleUnavailableNoticeToken(entry: ScheduleEntry, now: number): string {
+function _scheduleUnavailableNoticeToken(entry: ScheduleEntryV2, now: number): string {
   const [hour, minute]: number[] = entry.start.split(':').map(Number);
   const occurrenceStart: Date = new Date(now);
   occurrenceStart.setHours(hour ?? 0, minute ?? 0, 0, 0);
@@ -181,10 +201,6 @@ function scheduleUnavailableNoticeToken(entry: ScheduleEntry, now: number): stri
  * worker woken after missed alarms is consistent before it answers.
  */
 export class Engine {
-  private activeMatcher: CompiledMatcher | null = null;
-  private activeMatcherSessionIdentity: string | null = null;
-  private activeMatcherRules: SessionRuleSnapshot | null = null;
-  private activeMatcherMode: SessionConfig['mode'] | null = null;
   private pendingEvents: EventRecord[] = [];
   private dirty = false;
   private needsBlocking = false;
@@ -203,16 +219,15 @@ export class Engine {
   private streakDirty = false;
   private bankRevision = 0;
   private runtimePersistRevision = 0;
-  private ownedRuntimeSnapshot: RuntimeState;
+  private ownedRuntimeSnapshot: RuntimeStateV2;
   private policyMutationQueue: Promise<void> = Promise.resolve();
-  private listCachePersistenceInFlight = false;
-  private inboundPolicyTransactionActive = false;
   private suppressPolicyPublication = false;
   private pendingAggregateSets: Map<string, DailyAgg> = new Map();
   private pendingAggregateRemoves: Set<string> = new Set();
   private dataClearBarrierState: 'open' | 'draining' | 'quiesced' = 'open';
   private dataClearOperationRunning = false;
   private websiteBlockingLossPending = false;
+  private readonly controller: SessionControllerV2;
 
   constructor(
     private readonly ports: EnginePorts,
@@ -220,12 +235,12 @@ export class Engine {
     private lists: ListsConfig,
     private bank: BankState,
     private streak: StreakState | null,
-    private runtime: RuntimeState,
+    private runtime: RuntimeStateV2,
     private deviceId: string,
     private readonly compileSessionPolicy: SessionMatcherCompiler = compileSessionMatcher,
   ) {
     this.applyRemovedTabTombstones();
-    const checkpoint: RuntimeCommitCheckpoint | null = this.runtime.commitCheckpoint;
+    const checkpoint: RuntimeCommitCheckpointV2 | null = this.runtime.commitCheckpoint;
     if (checkpoint !== null) {
       this.pendingEvents = [...checkpoint.events];
       for (const [key, value] of Object.entries(checkpoint.aggregateSets ?? {})) {
@@ -240,31 +255,115 @@ export class Engine {
       this.dirty = true;
     }
     this.setSettingsAndClampBank(this.settings);
-    if (this.runtime.session !== null && this.runtime.session.sessionId === undefined) {
-      const startedAt: number = this.runtime.session.startedAt;
-      const sessionId: string = this.ports.newId();
-      this.runtime.session = { ...this.runtime.session, sessionId };
-      this.pendingEvents.push({
-        t: 'sessionIdentityAssigned',
-        at: this.ports.now(),
-        startedAt,
-        sessionId,
-      });
-      this.runtime.commitCheckpoint = {
-        bank: structuredClone(this.bank),
-        events: [...this.pendingEvents],
-        syncBank: this.bankDirty,
-        ...(this.pendingAggregateSets.size === 0
-          ? {}
-          : { aggregateSets: Object.fromEntries(this.pendingAggregateSets) }),
-        ...(this.pendingAggregateRemoves.size === 0
-          ? {}
-          : { aggregateRemoves: [...this.pendingAggregateRemoves] }),
-      };
-      this.dirty = true;
-    }
-    this.activateMatcher(this.runtime.session);
+    // A v2 runtime always carries its session identity, so the legacy assignment branch is gone
+    // with the migration that mints it.
+    this.controller = new SessionControllerV2(
+      this.runtimePorts(),
+      this.scheduleRunnerPorts(),
+      this.controllerEffects(),
+    );
     this.ownedRuntimeSnapshot = structuredClone(this.runtime);
+  }
+
+  /** Everything the controller is not allowed to own, bound to this engine and its ports. */
+  private runtimePorts(): RuntimePortsV2 {
+    return {
+      now: (): number => this.ports.now(),
+      newId: (): string => this.ports.newId(),
+      runtime: (): RuntimeStateV2 => this.runtime,
+      writeRuntime: (next: RuntimeStateV2): Promise<void> => this.adoptRuntime(next),
+      commit: (input: RuntimeCommitInputV2): Promise<RuntimeStateV2> => this.commitRuntime(input),
+      auditEnforcement: (): Promise<
+        'ready' | 'website-access-lost' | 'content-registration-failed'
+      > => this.ports.auditEnforcement(),
+      compileMatcher: (rules: SessionRuleSnapshot, mode: SessionMode): CompiledMatcher =>
+        this.compileSessionPolicy(rules, ALL_CATEGORIES, mode),
+      verdictFor: (
+        matcher: CompiledMatcher,
+        url: string,
+        unlocks: readonly SiteUnlock[],
+      ): Verdict => evaluateUrl(matcher, url, [...unlocks], this.ports.now()),
+      targets: this.ports.targets,
+      transport: this.ports.transport,
+      alarms: this.ports.alarms,
+      theme: (): ThemeMode => this.settings.theme,
+      economy: (): PauseEconomy => structuredClone(this.settings.pause),
+      gateSettings: (): GateSettings => structuredClone(this.settings.gate),
+      bank: (): BankState => structuredClone(this.bank),
+      deviceId: (): string => this.deviceId,
+      attemptsToday: (): number => attemptsTodayOf(this.runtime.todayAgg),
+      openOccurrencesAt: (at: number): ScheduleOccurrenceRef[] =>
+        resolveOpenScheduleOccurrencesV2(this.settings.schedule, at).map(
+          (resolved: ResolvedScheduleOccurrenceV2): ScheduleOccurrenceRef => resolved.occurrence,
+        ),
+      loadAggregates: (keys: readonly string[]): Promise<Record<string, DailyAgg>> =>
+        this.ports.loadAggregates(keys),
+      rolloverCheck: (boundary: number): Promise<void> => this.rolloverCheck(boundary),
+      reportError: (error: unknown): void => this.ports.reportError(error),
+    };
+  }
+
+  private scheduleRunnerPorts(): ScheduleRunnerPortsV2 {
+    return {
+      settings: (): Settings => this.settings,
+      lists: (): ListsConfig => this.lists,
+      websiteBlockingReady: (): boolean => this.ports.websiteBlockingReady(),
+      notify: (title: string, body: string): void => this.ports.notify(title, body),
+      playSound: (sound: 'scheduleStart'): void => this.ports.playSound(sound),
+    };
+  }
+
+  private controllerEffects(): SessionControllerEffectsV2 {
+    return {
+      broadcast: (snapshot: SessionSnapshot): void => this.ports.broadcast(snapshot),
+      updateBadge: (snapshot: SessionSnapshot): void => this.ports.updateIcon(snapshot),
+      playSound: (sound: SoundId): void => this.ports.playSound(sound),
+      notify: (title: string, body: string): void => this.ports.notify(title, body),
+      clearBlockingForNonBlockingPhase: (): Promise<void> =>
+        this.ports.clearBlockingForNonBlockingPhase(),
+      recordAttempt: (url: string, tabId: number, kind: 'navigation' | 'existing'): Promise<void> =>
+        this.recordAttempt(url, tabId, kind),
+      restoreTabClaims: (claims: readonly CleanupTabClaim[]): Promise<number[]> =>
+        this.ports.restoreTabClaims(claims),
+      reloadStoppedDocuments: (claims: readonly CleanupTabClaim[]): Promise<void> =>
+        this.ports.reloadStoppedDocuments(claims),
+      requestBlankBadge: (): void => this.ports.updateIcon(emptySnapshot(this.ports.now())),
+    };
+  }
+
+  /** One durable runtime write, which the controller owns the content of. */
+  private async adoptRuntime(next: RuntimeStateV2): Promise<void> {
+    this.runtime = structuredClone(next);
+    this.ownedRuntimeSnapshot = structuredClone(next);
+    await this.ports.saveRuntime(this.runtime);
+  }
+
+  /** One durable checkpoint, through the same writers the retained engine commits with. */
+  private async commitRuntime(input: RuntimeCommitInputV2): Promise<RuntimeStateV2> {
+    const committed: RuntimeStateV2 = await commitRuntimeCheckpointV2(
+      {
+        saveRuntime: (runtime: RuntimeStateV2): Promise<void> => this.ports.saveRuntime(runtime),
+        appendEvents: (events: readonly EventRecord[]): Promise<void> =>
+          this.ports.appendEvents(events),
+        saveBank: (bank: BankState, syncBank: boolean): Promise<void> =>
+          this.saveCommittedBank(bank, syncBank),
+        saveAggregate: (key: string, value: DailyAgg): Promise<void> =>
+          this.saveAggregate(key, value),
+        removeAggregate: (key: string): Promise<void> => this.removeAggregate(key),
+      },
+      this.runtime,
+      input,
+    );
+    this.runtime = committed;
+    this.ownedRuntimeSnapshot = structuredClone(committed);
+    return committed;
+  }
+
+  /** The committed bank is the engine's bank, and only a synced one reaches the sync journal. */
+  private async saveCommittedBank(bank: BankState, syncBank: boolean): Promise<void> {
+    this.bank = structuredClone(bank);
+    await this.savePolicy('bank', this.bank);
+    if (syncBank) this.ports.queueSync(SYNC_BANK, this.bank);
   }
 
   reportError(error: unknown): void {
@@ -419,55 +518,14 @@ export class Engine {
     }
   }
 
-  blockStateDuringTransition(
-    url: string,
-    tabId: number | undefined,
-    senderOwnsUrl: boolean,
-    kind: 'navigation' | 'existing',
-    stage: 'attempt' | 'stopped' | null,
-    documentId?: string,
-  ): Promise<{ verdict: Verdict; snapshot: SessionSnapshot }> | null {
-    if (this.dataClearBarrierState === 'open') return null;
-    const verdict: Verdict = this.verdictFor(url);
-    const snapshot: SessionSnapshot = this.buildSnapshot(this.ports.now());
-    if (!verdict.blocked || tabId === undefined || !senderOwnsUrl || stage === null) {
-      return Promise.resolve({ verdict, snapshot });
-    }
-    if (this.runtime.removedTabTombstones[tabId] === true) {
-      return Promise.resolve({ verdict, snapshot });
-    }
-    const hasDocumentId: boolean = typeof documentId === 'string' && documentId !== '';
-    if (stage === 'stopped' && (kind !== 'navigation' || !hasDocumentId)) {
-      return Promise.resolve({ verdict, snapshot });
-    }
-    const sessionId: string | undefined = this.runtime.session?.sessionId;
-    if (sessionId === undefined) return Promise.resolve({ verdict, snapshot });
-    const claim: DeferredBlockClaim = {
-      attemptAt: this.ports.now(),
-      url,
-      tabId,
-      kind,
-      sessionId,
-      stage,
-      ...(hasDocumentId ? { documentId } : {}),
-    };
-    const key: string = `${sessionId}:${tabId}:${url}:${kind}:${claim.documentId ?? ''}`;
-    const existing: DeferredBlockClaim | undefined = this.runtime.deferredBlockClaims[key];
-    if (existing === undefined || (existing.stage === 'attempt' && stage === 'stopped')) {
-      this.runtime.deferredBlockClaims[key] =
-        existing === undefined ? claim : { ...claim, attemptAt: existing.attemptAt };
-    }
-    return this.persistRuntime()
-      .catch((error: unknown): void => this.ports.reportError(error))
-      .then((): { verdict: Verdict; snapshot: SessionSnapshot } => ({ verdict, snapshot }));
-  }
-
+  /**
+   * The public read model. The controller settles the core state through `at` in memory, so this
+   * stays pure and every caller sees the phase the user is in.
+   */
   snapshot(): SessionSnapshot {
     const now: number = this.ports.now();
-    this.catchUp(now);
-    const snap: SessionSnapshot = this.buildSnapshot(now);
     if (this.dataClearBarrierState === 'open' && this.dirty) this.commitInBackground(now);
-    return snap;
+    return this.controller.snapshot(now);
   }
 
   async snapshotPersisted(): Promise<SessionSnapshot> {
@@ -476,63 +534,24 @@ export class Engine {
 
   private async snapshotPersistedNow(): Promise<SessionSnapshot> {
     const now: number = this.ports.now();
-    this.catchUp(now);
     if (this.dirty) await this.commit(now);
     else await this.commitQueue;
-    return this.buildSnapshot(now);
+    return this.controller.snapshot(this.ports.now());
   }
 
-  verdictFor(url: string): Verdict {
-    const now: number = this.ports.now();
-    this.catchUp(now);
-    if (this.dataClearBarrierState === 'open' && this.dirty) this.commitInBackground(now);
-    const session: SessionState | null = this.runtime.session;
-    if (session === null || session.phase !== 'focus') return NO_SESSION_VERDICT;
-    return evaluateUrl(this.ensureMatcher(session), url, this.runtime.unlocks, now);
+  /** Resolves the durable journals once, before any alarm or message reaches the controller. */
+  async recover(): Promise<void> {
+    await this.controller.recover();
   }
 
-  async startSession(config: SessionConfig): Promise<Ack> {
-    return this.enqueuePolicyMutation((): Promise<Ack> => this.startSessionNow(config));
-  }
-
-  private async startSessionNow(config: SessionConfig): Promise<Ack> {
-    const now: number = this.ports.now();
-    this.catchUp(now);
-    if (this.runtime.session !== null) return this.fail(now, 'a session is already running');
-    if (!this.websiteBlockingReady()) return this.websiteBlockingUnavailable(now);
-    if (config.source !== 'manual' || config.scheduleEntryId !== null) {
-      return this.fail(now, 'invalid manual session');
-    }
-    const rules: SessionRuleSnapshot | null = normalizeSessionRules(config.rules);
-    if (rules === null) return this.fail(now, 'invalid session rules');
-    if (!sessionRulesMatchLists(rules, this.lists)) {
-      return this.fail(now, STALE_SESSION_RULES_ERROR);
-    }
-    const normalizedConfig: SessionConfig = { ...config, rules };
-    const sessionId: string = this.ports.newId();
-    this.runtime.session = machineStart(normalizedConfig, now, sessionId);
-    this.activateMatcher(this.runtime.session);
-    this.runtime.gate = null;
-    this.runtime.unlocks = [];
-    this.runtime.accruedFocusMs = 0;
-    this.recordEvent({
-      t: 'sessionStarted',
-      at: now,
-      source: normalizedConfig.source,
-      mode: normalizedConfig.mode,
-      strictness: normalizedConfig.strictness,
-      durationMin: normalizedConfig.durationMin,
-      intention: normalizedConfig.intention,
-      sessionId,
-    });
-    this.dirty = true;
-    this.needsBlocking = true;
-    await this.commit(now);
-    return { ok: true };
+  async startSession(config: SessionConfig): Promise<StartSessionResponseV2> {
+    return this.enqueuePolicyMutation(
+      (): Promise<StartSessionResponseV2> => this.controller.startSession(config),
+    );
   }
 
   hasActiveSession(): boolean {
-    return this.runtime.session !== null;
+    return this.controller.hasActiveSession();
   }
 
   async endSessionForWebsiteBlockingLoss(): Promise<boolean> {
@@ -540,36 +559,21 @@ export class Engine {
       return this.endSessionForWebsiteBlockingLossDuringBarrier();
     }
     return this.enqueuePolicyMutation(async (): Promise<boolean> => {
-      const now: number = this.ports.now();
-      this.catchUp(now);
-      const session: SessionState | null = this.runtime.session;
-      if (session === null) return false;
-      this.cancelSession(session, now);
-      this.dirty = true;
-      this.needsBlocking = true;
-      try {
-        await this.commit(now);
-      } catch (error: unknown) {
-        try {
-          await this.applyBlockingWithLease();
-        } catch (clearError: unknown) {
-          this.ports.reportError(clearError);
-        }
-        throw error;
-      }
+      if (!this.controller.hasActiveSession()) return false;
+      await this.controller.endForEnforcementLoss('website-access-lost');
       return true;
     });
   }
 
+  /**
+   * The barrier is closed, so no runtime write may land. The loss is remembered and applied when
+   * the barrier reopens; the pages are cleared right away, because the session is over for the user.
+   */
   private async endSessionForWebsiteBlockingLossDuringBarrier(): Promise<boolean> {
-    const session: SessionState | null = this.runtime.session;
-    if (session === null) return false;
-    const now: number = this.ports.now();
+    if (!this.controller.hasActiveSession()) return false;
     this.domainPersistRevision += 1;
-    this.cancelSession(session, now);
-    this.dirty = true;
     this.websiteBlockingLossPending = true;
-    const snapshot: SessionSnapshot = this.buildSnapshot(now);
+    const snapshot: SessionSnapshot = this.controller.snapshot(this.ports.now());
     this.ports.broadcast(snapshot);
     this.ports.updateIcon(snapshot);
     this.ports.scheduleWake(null);
@@ -584,270 +588,111 @@ export class Engine {
   private async applyPendingWebsiteBlockingLoss(): Promise<void> {
     if (!this.websiteBlockingLossPending) return;
     this.websiteBlockingLossPending = false;
-    this.dirty = true;
-    this.needsBlocking = true;
     try {
-      await this.commit(this.ports.now());
+      await this.controller.endForEnforcementLoss('website-access-lost');
     } catch (error: unknown) {
       this.websiteBlockingLossPending = true;
-      this.dirty = true;
-      this.needsBlocking = true;
       this.ports.reportError(error);
       this.ports.scheduleWake(this.ports.now() + WEBSITE_BLOCKING_LOSS_RETRY_MS);
     }
   }
 
-  private websiteBlockingReady(): boolean {
-    return this.ports.websiteBlockingReady();
-  }
-
-  private websiteBlockingUnavailable(now: number): Promise<Ack> {
-    return this.fail(
-      now,
-      'Website blocking is not enabled. Finish setup or grant website access, then try again.',
+  async requestSessionEnd(): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
+    return this.enqueuePolicyMutation(
+      (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
+        this.controller.requestSessionEnd(),
     );
   }
 
-  async openGate(gate: GateKind, host: string | null): Promise<Ack> {
-    this.assertRuntimeMutationAllowed();
-    const now: number = this.ports.now();
-    this.catchUp(now);
-    const session: SessionState | null = this.runtime.session;
-    if (session === null) return this.fail(now, 'no session is running');
-    if (gate === 'cancel') {
-      return this.endSessionByStrictness(session, now);
-    }
-    if (session.phase !== 'focus') return this.fail(now, 'pauses only apply during focus');
-    if (gate === 'unlockSite' && host === null) return this.fail(now, 'no site given to unlock');
-    const cost: number =
-      gate === 'pause' ? this.settings.pause.pauseMs : this.settings.pause.unlockMs;
-    if (this.bank.balanceMs < cost) return this.fail(now, 'not enough pause budget yet');
-    const needsPhrase: boolean = this.settings.gate.requireTypedPhrase;
-    const unlockHost: string | null =
-      gate === 'unlockSite' && host !== null ? (registrableHost(host) ?? host) : null;
-    let requiredPhrase: string | null = null;
-    if (needsPhrase && gate === 'pause') requiredPhrase = pausePhrase();
-    if (needsPhrase && gate === 'unlockSite' && unlockHost !== null) {
-      requiredPhrase = unlockSitePhrase(unlockHost);
-    }
-    this.runtime.gate = {
-      kind: gate,
-      host: unlockHost,
-      openedAt: now,
-      readyAt: now + this.settings.gate.delayMs,
-      requiredPhrase,
-    };
-    this.recordEvent({ t: 'gateOpened', at: now, gate, ...sessionIdentity(session) });
-    this.dirty = true;
-    await this.commit(now);
-    return { ok: true };
-  }
-
-  async requestSessionEnd(): Promise<Ack> {
-    this.assertRuntimeMutationAllowed();
-    const now: number = this.ports.now();
-    this.catchUp(now);
-    const session: SessionState | null = this.runtime.session;
-    if (session === null) return this.fail(now, 'no session is running');
-    return this.endSessionByStrictness(session, now);
-  }
-
-  private async endSessionByStrictness(session: SessionState, now: number): Promise<Ack> {
-    if (session.config.strictness === 'hard') {
-      return this.fail(now, 'hard sessions cannot be canceled');
-    }
-    if (session.config.strictness === 'flexible') {
-      this.cancelSession(session, now);
-      this.dirty = true;
-      this.needsBlocking = true;
-      await this.commit(now);
-      return { ok: true };
-    }
-    return this.openCancelGate(session, now);
-  }
-
-  private async openCancelGate(session: SessionState, now: number): Promise<Ack> {
-    if (this.runtime.gate?.kind === 'cancel') {
-      if (this.dirty) await this.commit(now);
-      return { ok: true };
-    }
-    this.runtime.gate = {
-      kind: 'cancel',
-      host: null,
-      openedAt: now,
-      readyAt: now + this.settings.gate.delayMs,
-      requiredPhrase: this.settings.gate.requireTypedPhrase
-        ? cancelPhrase(session.config.intention)
-        : null,
-    };
-    this.recordEvent({ t: 'gateOpened', at: now, gate: 'cancel', ...sessionIdentity(session) });
-    this.dirty = true;
-    await this.commit(now);
-    return { ok: true };
-  }
-
-  async confirmGate(typedPhrase: string | null): Promise<Ack> {
-    this.assertRuntimeMutationAllowed();
-    const now: number = this.ports.now();
-    this.catchUp(now);
-    const gate: GateState | null = this.runtime.gate;
-    const session: SessionState | null = this.runtime.session;
-    if (gate === null) return this.fail(now, 'no gate is open');
-    if (session === null) {
-      this.runtime.gate = null;
-      this.dirty = true;
-      return this.fail(now, 'the session already ended');
-    }
-    if (gate.kind === 'cancel' && session.config.strictness === 'hard') {
-      this.runtime.gate = null;
-      this.dirty = true;
-      return this.fail(now, 'hard sessions cannot be canceled');
-    }
-    if (now < gate.readyAt) return this.fail(now, 'the deliberation delay has not finished');
-    if (gate.requiredPhrase !== null && typedPhrase !== gate.requiredPhrase) {
-      return this.fail(now, 'that is not the exact phrase');
-    }
-    try {
-      this.executeGate(gate, session, now);
-    } catch (err: unknown) {
-      if (err instanceof CoreError) return this.fail(now, err.message);
-      throw err;
-    }
-    this.runtime.gate = null;
-    this.dirty = true;
-    this.needsBlocking = true;
-    await this.commit(now);
-    return { ok: true };
-  }
-
-  private executeGate(gate: GateState, session: SessionState, now: number): void {
-    if (gate.kind === 'pause') {
-      this.bank = spend(this.bank, this.settings.pause.pauseMs);
-      this.bankDirty = true;
-      this.bankRevision += 1;
-      this.runtime.session = beginPause(session, now, this.settings.pause.pauseMs);
-      this.recordEvent({
-        t: 'phase',
-        at: now,
-        from: session.phase,
-        to: 'paused',
-        ...sessionIdentity(session),
-      });
-      this.recordEvent({
-        t: 'pauseTaken',
-        at: now,
-        ms: this.settings.pause.pauseMs,
-        ...sessionIdentity(session),
-      });
-    } else if (gate.kind === 'unlockSite') {
-      const host: string = gate.host ?? '';
-      this.bank = spend(this.bank, this.settings.pause.unlockMs);
-      this.bankDirty = true;
-      this.bankRevision += 1;
-      this.runtime.unlocks = [
-        ...this.runtime.unlocks,
-        { host, until: now + this.settings.pause.unlockMs },
-      ];
-      this.recordEvent({
-        t: 'unlockTaken',
-        at: now,
-        host,
-        ms: this.settings.pause.unlockMs,
-        ...sessionIdentity(session),
-      });
-    } else this.cancelSession(session, now);
-  }
-
-  private cancelSession(session: SessionState, now: number): void {
-    this.recordEvent({
-      t: 'sessionCanceled',
-      at: now,
-      focusedMs: focusedMsAt(session, now),
-      ...sessionIdentity(session),
-    });
-    this.runtime.session = null;
-    this.activateMatcher(null);
-    this.runtime.gate = null;
-    this.runtime.unlocks = [];
-    this.runtime.accruedFocusMs = 0;
-    if (session.config.source !== 'schedule') {
-      this.runtime.scheduleActiveEntryId = null;
-      return;
-    }
-    const entryId: string | null = session.config.scheduleEntryId;
-    const existingMarker: string | null = this.runtime.scheduleActiveEntryId;
-    if (entryId === null || (existingMarker !== null && existingMarker !== entryId)) return;
-    const sourceEntry: ScheduleEntry | undefined = this.settings.schedule.find(
-      (entry: ScheduleEntry): boolean => entry.id === entryId,
+  async openEndGate(): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
+    return this.enqueuePolicyMutation(
+      (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> => this.controller.openEndGate(),
     );
-    this.runtime.scheduleActiveEntryId =
-      sourceEntry === undefined ? entryId : scheduleOccurrenceToken(sourceEntry, now);
   }
 
-  async abandonGate(): Promise<Ack> {
-    this.assertRuntimeMutationAllowed();
-    const now: number = this.ports.now();
-    this.catchUp(now);
-    if (this.runtime.gate !== null) {
-      this.recordEvent({
-        t: 'gateResisted',
-        at: now,
-        gate: this.runtime.gate.kind,
-        ...sessionIdentity(this.runtime.session),
-      });
-      this.runtime.gate = null;
-      this.dirty = true;
-    }
-    if (this.dirty) await this.commit(now);
-    return { ok: true };
+  async openGate(
+    gate: 'pause' | 'unlockSite',
+    host: string | null,
+  ): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
+    return this.enqueuePolicyMutation(
+      (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
+        this.controller.openGate(gate, host),
+    );
   }
 
-  async resumeFromPause(): Promise<Ack> {
-    this.assertRuntimeMutationAllowed();
-    const now: number = this.ports.now();
-    this.catchUp(now);
-    const session: SessionState | null = this.runtime.session;
-    if (session === null || session.phase !== 'paused') {
-      return this.fail(now, 'no pause is running');
-    }
-    const restored: SessionState = endPauseEarly(session, now);
-    this.recordEvent({
-      t: 'phase',
-      at: now,
-      from: 'paused',
-      to: restored.phase,
-      ...sessionIdentity(session),
-    });
-    this.runtime.session = restored;
-    this.dirty = true;
-    this.needsBlocking = true;
-    await this.commit(now);
-    return { ok: true };
+  async confirmGate(
+    typedPhrase: string | null,
+  ): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
+    return this.enqueuePolicyMutation(
+      (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
+        this.controller.confirmGate(typedPhrase),
+    );
   }
 
-  async startNextFocusEarly(): Promise<Ack> {
-    this.assertRuntimeMutationAllowed();
-    const now: number = this.ports.now();
-    this.catchUp(now);
-    const session: SessionState | null = this.runtime.session;
-    if (session === null || session.phase !== 'break') return this.fail(now, 'no break is running');
-    try {
-      this.runtime.session = machineStartNextFocusEarly(session, now);
-    } catch (err: unknown) {
-      if (err instanceof CoreError) return this.fail(now, err.message);
-      throw err;
-    }
-    this.recordEvent({
-      t: 'phase',
-      at: now,
-      from: 'break',
-      to: 'focus',
-      ...sessionIdentity(session),
-    });
-    this.dirty = true;
-    this.needsBlocking = true;
-    await this.commit(now);
-    return { ok: true };
+  async abandonGate(): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
+    return this.enqueuePolicyMutation(
+      (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> => this.controller.abandonGate(),
+    );
+  }
+
+  async resumeFromPause(): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
+    return this.enqueuePolicyMutation(
+      (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
+        this.controller.resumeFromPause(),
+    );
+  }
+
+  async startNextFocusEarly(): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
+    return this.enqueuePolicyMutation(
+      (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
+        this.controller.startNextFocusEarly(),
+    );
+  }
+
+  async retryTransitionCleanup(): Promise<CommandResponseV2<RetryCleanupResultCodeV2>> {
+    return this.enqueuePolicyMutation(
+      (): Promise<CommandResponseV2<RetryCleanupResultCodeV2>> =>
+        this.controller.retryTransitionCleanup(),
+    );
+  }
+
+  async retryClosureCleanup(): Promise<CommandResponseV2<RetryCleanupResultCodeV2>> {
+    return this.enqueuePolicyMutation(
+      (): Promise<CommandResponseV2<RetryCleanupResultCodeV2>> =>
+        this.controller.retryClosureCleanup(),
+    );
+  }
+
+  /** One alarm, routed by name to the journal or the settlement that owns it. */
+  async handleAlarm(name: string): Promise<void> {
+    await this.enqueuePolicyMutation((): Promise<void> => this.controller.handleAlarm(name));
+  }
+
+  /** The commands one document must apply, and the attempt the blocked ones record. */
+  async documentCommandsFor(
+    target: { tabId: number; documentId: string; url: string },
+    attemptKind: 'navigation' | 'existing' | null,
+  ): Promise<DocumentContentCommand[]> {
+    // All-data clear needs no session, so a closed barrier answers nothing and writes nothing.
+    if (this.dataClearBarrierState !== 'open') return [];
+    return await this.controller.documentCommandsFor(target, attemptKind);
+  }
+
+  async handleNavigation(
+    target: { tabId: number; documentId: string; url: string },
+    attemptKind: 'navigation' | 'existing' | null,
+  ): Promise<void> {
+    if (this.dataClearBarrierState !== 'open') return;
+    await this.controller.handleNavigation(target, attemptKind);
+  }
+
+  async recordDocumentAck(ack: DocumentEnforcementAck): Promise<void> {
+    await this.controller.recordDocumentAck(ack);
+  }
+
+  /** Refreezes every live document view, for a change the frozen views must carry. */
+  async refreshLiveViews(): Promise<void> {
+    await this.controller.refreshLiveViews();
   }
 
   async recordAttempt(
@@ -1134,7 +979,6 @@ export class Engine {
     await this.flushDeferredBlockClaims();
     await this.flushRemovedTabTombstones();
     const now: number = this.ports.now();
-    this.catchUp(now);
     this.pruneDebounce(now);
     await this.commit(now);
     await this.maybePrune(now);
@@ -1162,7 +1006,6 @@ export class Engine {
       }
     }
     const now: number = this.ports.now();
-    this.catchUp(now);
     const reason: string | null = settingsChangeAllowed(this.runtime.session, this.settings, s);
     if (reason !== null) return this.fail(now, reason);
     try {
@@ -1212,7 +1055,6 @@ export class Engine {
     reconcilePendingSync: boolean,
   ): Promise<Ack> {
     const now: number = this.ports.now();
-    this.catchUp(now);
     const reason: string | null = listsChangeAllowed(
       this.runtime.session,
       this.runtime.session?.config.mode ?? null,
@@ -1221,11 +1063,9 @@ export class Engine {
     );
     if (reason !== null) return this.fail(now, reason);
     const bundle: MatcherCacheBundle = buildMatcherCache(l, ALL_CATEGORIES);
-    this.listCachePersistenceInFlight = true;
     try {
       await this.ports.saveMatcherCache(bundle.stored, l);
     } finally {
-      this.listCachePersistenceInFlight = false;
     }
     if (queueForSync) {
       try {
@@ -1244,7 +1084,6 @@ export class Engine {
     this.dirty = true;
     this.needsBlocking = this.runtime.session !== null;
     const committedAt: number = this.ports.now();
-    this.catchUp(committedAt);
     await this.commit(committedAt);
     return { ok: true };
   }
@@ -1252,7 +1091,6 @@ export class Engine {
   async applySyncedSettings(settings: Settings): Promise<Ack> {
     this.assertRuntimeMutationAllowed();
     const now: number = this.ports.now();
-    this.catchUp(now);
     const reason: string | null = settingsChangeAllowed(
       this.runtime.session,
       this.settings,
@@ -1305,7 +1143,6 @@ export class Engine {
     if (!Number.isFinite(bank.balanceMs) || bank.balanceMs < 0) {
       return this.fail(now, 'invalid synced pause bank');
     }
-    this.catchUp(now);
     this.bank = { balanceMs: Math.min(bank.balanceMs, this.settings.pause.capMs) };
     this.bankRevision += 1;
     this.dirty = true;
@@ -1387,8 +1224,6 @@ export class Engine {
   ): Promise<Ack> {
     return this.enqueuePolicyMutation(async (): Promise<Ack> => {
       const admittedAt: number = this.ports.now();
-      this.catchUp(admittedAt);
-      this.inboundPolicyTransactionActive = true;
       try {
         if (this.dirty) await this.commit(admittedAt);
         const preview: Ack & { accepted?: Partial<PolicyValueByKey> } =
@@ -1403,9 +1238,7 @@ export class Engine {
         await this.commitSyncedPolicyNow(accepted, listBundle);
         return { ok: true };
       } finally {
-        this.inboundPolicyTransactionActive = false;
         const completedAt: number = this.ports.now();
-        this.catchUp(completedAt);
         if (this.dirty) await this.commit(completedAt);
       }
     });
@@ -1413,11 +1246,9 @@ export class Engine {
 
   private async prepareSyncedListBundle(lists: ListsConfig): Promise<MatcherCacheBundle> {
     const bundle: MatcherCacheBundle = buildMatcherCache(lists, ALL_CATEGORIES);
-    this.listCachePersistenceInFlight = true;
     try {
       await this.ports.saveMatcherCache(bundle.stored, lists);
     } finally {
-      this.listCachePersistenceInFlight = false;
     }
     return bundle;
   }
@@ -1431,7 +1262,6 @@ export class Engine {
         ? null
         : (preparedListBundle ?? (await this.prepareSyncedListBundle(changes.lists)));
     const now: number = this.ports.now();
-    this.catchUp(now);
     this.suppressPolicyPublication = true;
     try {
       if (changes.settings !== undefined) this.setSettingsAndClampBank(changes.settings);
@@ -1489,7 +1319,6 @@ export class Engine {
 
   statsOverlay(): EngineStatsOverlay {
     const now: number = this.ports.now();
-    this.catchUp(now);
     if (this.dataClearBarrierState === 'open' && this.dirty) this.commitInBackground(now);
     return {
       deviceId: this.deviceId,
@@ -1502,250 +1331,13 @@ export class Engine {
     };
   }
 
-  // --- catch-up: settle accrual, advance the machine, expire gates and unlocks ---
-
-  private catchUp(now: number): void {
-    if (this.dataClearBarrierState !== 'open') return;
-    const today: string = localDateStr(now);
-    if (this.runtime.date > today) this.rebaseDateBackward(today, now);
-    while (this.runtime.date !== today) {
-      const boundary: number = localMidnightAfter(this.runtime.date);
-      this.settleSession(boundary);
-      this.expireGate(boundary);
-      this.expireUnlocks(boundary);
-      this.rolloverCheck(boundary);
-    }
-    this.settleSession(now);
-    this.expireGate(now);
-    this.expireUnlocks(now);
-    if (!this.listCachePersistenceInFlight && !this.inboundPolicyTransactionActive) {
-      this.scheduleCheck(now);
-    }
-  }
-
-  private rebaseDateBackward(today: string, now: number): void {
-    const futureDate: string = this.runtime.date;
-    const plan: ReturnType<typeof planBackwardDateRebase> = planBackwardDateRebase(
-      today,
-      this.runtime.todayAgg ?? emptyDaily(futureDate),
-    );
-    this.recordAggregateRemoval(syncAggKey(this.deviceId, futureDate));
-    this.recordAggregateSet(
-      clockRebaseArchiveKey(this.deviceId, futureDate, now, this.ports.newId()),
-      plan.archive,
-    );
-    this.runtime.date = today;
-    this.runtime.todayAgg = plan.newAgg;
-    this.runtime.attemptDebounce = {};
-    this.failedAttemptPersistence.clear();
-    this.runtime.lastPruneDate = null;
-    this.rebaseStreakBackward(today);
-    this.dirty = true;
-  }
-
-  private rebaseStreakBackward(today: string): void {
-    if (this.streak === null) return;
-    this.streak = rebaseStreakForDate(this.streak, today);
-    this.streakDirty = true;
-  }
-
-  private settleSession(now: number): void {
-    const session: SessionState | null = this.runtime.session;
-    if (session === null) return;
-    const { next, events }: ReturnType<typeof advance> = advance(session, now);
-    const completed: MachineEvent | undefined = events.find(
-      (e: MachineEvent): boolean => e.type === 'completed',
-    );
-    const focusedNow: number =
-      completed?.type === 'completed' ? completed.focusedMs : focusedMsAt(next ?? session, now);
-    const delta: number = Math.max(0, focusedNow - this.runtime.accruedFocusMs);
-    if (delta > 0) {
-      const previousBalanceMs: number = this.bank.balanceMs;
-      this.bank = accrue(this.bank, delta, this.settings.pause);
-      const earnedMs: number = this.bank.balanceMs - previousBalanceMs;
-      this.runtime.accruedFocusMs = focusedNow;
-      const aggregate: DailyAgg = this.runtime.todayAgg ?? emptyDaily(this.runtime.date);
-      this.runtime.todayAgg = { ...aggregate, focusMs: aggregate.focusMs + delta };
-      if (earnedMs > 0) {
-        this.bankDirty = true;
-        this.bankRevision += 1;
-        this.recordEvent({
-          t: 'budgetEarned',
-          at: now,
-          ms: earnedMs,
-          ...sessionIdentity(session),
-        });
-      }
-      this.dirty = true;
-    }
-    if (next !== session) {
-      this.runtime.session = next;
-      if (next === null) this.activateMatcher(null);
-      this.dirty = true;
-    }
-    for (const ev of events) this.routeMachineEvent(ev, session);
-  }
-
-  private routeMachineEvent(ev: MachineEvent, session: SessionState): void {
-    if (ev.type === 'phaseChanged') {
-      this.recordEvent({
-        t: 'phase',
-        at: ev.at,
-        from: ev.from,
-        to: ev.to,
-        ...sessionIdentity(session),
-      });
-      if (ev.from === 'focus' && ev.to === 'break') this.ports.playSound('breakStart');
-      if (ev.from === 'break' && ev.to === 'focus') this.ports.playSound('breakEnd');
-    } else {
-      this.recordEvent({
-        t: 'sessionCompleted',
-        at: ev.at,
-        focusedMs: ev.focusedMs,
-        ...sessionIdentity(session),
-      });
-      this.ports.playSound('sessionComplete');
-      if (this.settings.sessionCompleteNotification) {
-        this.ports.notify('Focus session complete', 'The lock is off. Time for a real break.');
-      }
-      this.runtime.gate = null;
-      this.runtime.unlocks = [];
-      this.runtime.accruedFocusMs = 0;
-      this.runtime.scheduleActiveEntryId = null;
-    }
-    this.dirty = true;
-    this.needsBlocking = true;
-  }
-
-  private expireGate(now: number): void {
-    const gate: GateState | null = this.runtime.gate;
-    if (gate === null || now <= gate.readyAt + GATE_EXPIRY_MS) return;
-    this.recordEvent({
-      t: 'gateResisted',
-      at: now,
-      gate: gate.kind,
-      ...sessionIdentity(this.runtime.session),
-    });
-    this.runtime.gate = null;
-    this.dirty = true;
-  }
-
-  private expireUnlocks(now: number): void {
-    const live: SiteUnlock[] = this.runtime.unlocks.filter(
-      (u: SiteUnlock): boolean => u.until > now,
-    );
-    if (live.length !== this.runtime.unlocks.length) {
-      this.runtime.unlocks = live;
-      this.dirty = true;
-      this.needsBlocking = true;
-    }
-  }
-
-  private scheduleCheck(now: number): void {
-    const entries: ScheduleEntry[] = this.settings.schedule.filter(
-      (e: ScheduleEntry): boolean => e.enabled,
-    );
-    const active: ScheduleEntry | null =
-      entries.length === 0 ? null : activeEntry(entries, new Date(now));
-    const session: SessionState | null = this.runtime.session;
-    if (active === null) {
-      if (this.runtime.scheduleActiveEntryId !== null && session === null) {
-        this.runtime.scheduleActiveEntryId = null;
-        this.dirty = true;
-      }
-      if (this.runtime.scheduleUnavailableNoticeToken !== null) {
-        this.runtime.scheduleUnavailableNoticeToken = null;
-        this.dirty = true;
-      }
-      return;
-    }
-    if (session === null) {
-      const occurrenceToken: string = scheduleOccurrenceToken(active, now);
-      if (this.runtime.scheduleActiveEntryId === occurrenceToken) return;
-      if (this.runtime.scheduleActiveEntryId === active.id) {
-        // Legacy markers did not identify an occurrence. Suppress the current
-        // window once, then the absolute token allows later occurrences.
-        this.runtime.scheduleActiveEntryId = occurrenceToken;
-        this.dirty = true;
-        return;
-      }
-      this.startFromScheduleEntry(active, now);
-      return;
-    }
-    if (
-      session.config.source === 'schedule' &&
-      session.config.scheduleEntryId === active.id &&
-      this.runtime.scheduleActiveEntryId !== scheduleOccurrenceToken(active, now)
-    ) {
-      this.runtime.scheduleActiveEntryId = scheduleOccurrenceToken(active, now);
-      this.dirty = true;
-    }
-    // One session at a time. An active schedule may strengthen the running
-    // session, never weaken it.
-    if (strictnessStrength(active.strictness) > strictnessStrength(session.config.strictness)) {
-      this.runtime.session = {
-        ...session,
-        config: { ...session.config, strictness: active.strictness },
-      };
-      if (active.strictness === 'hard' && this.runtime.gate?.kind === 'cancel') {
-        this.runtime.gate = null;
-      }
-      this.dirty = true;
-    }
-  }
-
-  private startFromScheduleEntry(entry: ScheduleEntry, now: number): void {
-    if (!this.websiteBlockingReady()) {
-      const noticeToken: string = scheduleUnavailableNoticeToken(entry, now);
-      if (this.runtime.scheduleUnavailableNoticeToken !== noticeToken) {
-        this.runtime.scheduleUnavailableNoticeToken = noticeToken;
-        this.ports.notify(
-          'Focus schedule could not start',
-          'Website blocking is not enabled. Finish setup or grant website access, then try again.',
-        );
-        this.dirty = true;
-      }
-      return;
-    }
-    const endsAt: number = windowEnd(entry, new Date(now)).getTime();
-    const rules: SessionRuleSnapshot | null = normalizeSessionRules(rulesFromLists(this.lists));
-    if (rules === null) {
-      this.ports.reportError(new Error('cannot start schedule from invalid blocking lists'));
-      return;
-    }
-    const config: SessionConfig = {
-      mode: entry.mode,
-      strictness: entry.strictness,
-      durationMin: Math.max(0, (endsAt - now) / 60_000),
-      cycling: entry.cycling,
-      intention: entry.intention,
-      source: 'schedule',
-      scheduleEntryId: entry.id,
-      rules,
-    };
-    const sessionId: string = this.ports.newId();
-    this.runtime.session = machineStart(config, now, sessionId);
-    this.activateMatcher(this.runtime.session);
-    this.runtime.accruedFocusMs = 0;
-    this.runtime.scheduleActiveEntryId = scheduleOccurrenceToken(entry, now);
-    this.runtime.scheduleUnavailableNoticeToken = null;
-    this.recordEvent({
-      t: 'sessionStarted',
-      at: now,
-      source: 'schedule',
-      mode: config.mode,
-      strictness: config.strictness,
-      durationMin: config.durationMin,
-      intention: config.intention,
-      sessionId,
-    });
-    this.ports.playSound('scheduleStart');
-    this.ports.notify('Focus schedule started', `Locked until ${entry.end}.`);
-    this.dirty = true;
-    this.needsBlocking = true;
-  }
-
-  private rolloverCheck(now: number): void {
+  /**
+   * Closes the day the boundary just left: the finished aggregate is credited, the streak moves,
+   * and `todayAgg` and `date` advance to the day the boundary belongs to. The controller's tick
+   * owns the settlement that precedes it, so this only does the bookkeeping the Engine retains.
+   */
+  async rolloverCheck(boundary: number): Promise<void> {
+    const now: number = boundary;
     const today: string = localDateStr(now);
     if (today === this.runtime.date) return;
     const streak: StreakState = this.streak ?? emptyStreak(localMonthStr(now));
@@ -1763,6 +1355,7 @@ export class Engine {
     this.runtime.todayAgg = plan.newAgg;
     this.runtime.date = today;
     this.dirty = true;
+    await this.commit(now);
   }
 
   /** Weekly retention prune, marked only after storage operations finish. */
@@ -1805,11 +1398,6 @@ export class Engine {
   private recordAggregateSet(key: string, value: DailyAgg): void {
     this.pendingAggregateRemoves.delete(key);
     this.pendingAggregateSets.set(key, capAttempts(value, TOP_SITES_DAILY));
-  }
-
-  private recordAggregateRemoval(key: string): void {
-    this.pendingAggregateSets.delete(key);
-    this.pendingAggregateRemoves.add(key);
   }
 
   private async saveAggregate(key: string, value: DailyAgg): Promise<void> {
@@ -1877,17 +1465,21 @@ export class Engine {
     this.dirty = false;
     const block: boolean = this.needsBlocking;
     this.needsBlocking = false;
-    const snap: SessionSnapshot = this.buildSnapshot(now);
+    const snap: SessionSnapshot = this.controller.snapshot(now);
     this.resolveAttemptDurability(attemptRevision);
     this.ports.broadcast(snap);
     this.ports.updateIcon(snap);
     const wakeCandidates: number[] = this.runtime.unlocks.map(
       (unlock: SiteUnlock): number => unlock.until,
     );
-    if (this.runtime.session !== null) {
-      wakeCandidates.push(
-        Math.min(this.runtime.session.phaseEndsAt, this.runtime.session.sessionEndsAt),
+    // An indefinite session has no boundary to wake for, and a phase without an end has none
+    // either, so only the finite ones join the candidates.
+    const session: SessionStateV2 | null = this.runtime.session;
+    if (session !== null) {
+      const boundaries: number[] = [session.phaseEndsAt, session.sessionEndsAt].filter(
+        (boundary: number | null): boundary is number => boundary !== null,
       );
+      if (boundaries.length > 0) wakeCandidates.push(Math.min(...boundaries));
     }
     this.ports.scheduleWake(wakeCandidates.length === 0 ? null : Math.min(...wakeCandidates));
     if (block) {
@@ -1902,7 +1494,7 @@ export class Engine {
       const updatedAttemptRevision: number = this.attemptRevision;
       await this.persistDomainState();
       this.dirty = false;
-      const updated: SessionSnapshot = this.buildSnapshot(this.ports.now());
+      const updated: SessionSnapshot = this.controller.snapshot(this.ports.now());
       this.resolveAttemptDurability(updatedAttemptRevision);
       this.ports.broadcast(updated);
       this.ports.updateIcon(updated);
@@ -1928,14 +1520,19 @@ export class Engine {
       aggregateSets[syncAggKey(this.deviceId, date)] = capAttempts(aggregate, TOP_SITES_DAILY);
     }
     const aggregateRemoves: string[] = [...this.pendingAggregateRemoves];
+    // The retained engine writes a v2 checkpoint, because the runtime it persists is a v2 runtime
+    // and replay reads it back through the v2 reader.
     this.runtime.commitCheckpoint = {
+      version: 2,
+      checkpointId: `${this.runtime.enforcementEpoch}:engine-${this.domainPersistRevision}`,
+      projection: projectRuntimeDomainV2(this.runtime),
       bank,
       events,
       syncBank,
-      ...(Object.keys(aggregateSets).length === 0 ? {} : { aggregateSets }),
-      ...(aggregateRemoves.length === 0 ? {} : { aggregateRemoves }),
+      aggregateSets,
+      aggregateRemoves,
     };
-    const checkpointRuntime: RuntimeState = structuredClone(this.runtime);
+    const checkpointRuntime: RuntimeStateV2 = structuredClone(this.runtime);
     this.ownedRuntimeSnapshot = structuredClone(checkpointRuntime);
     await this.persistRuntime(checkpointRuntime);
     if (syncBank) await this.savePolicy('bank', bank);
@@ -1994,7 +1591,7 @@ export class Engine {
     await this.ports.persistSyncJournal();
   }
 
-  private persistRuntime(snapshot?: RuntimeState): Promise<void> {
+  private persistRuntime(snapshot?: RuntimeStateV2): Promise<void> {
     if (snapshot === undefined) {
       this.runtimePersistRevision += 1;
       this.ownedRuntimeSnapshot.tabStates = structuredClone(this.runtime.tabStates);
@@ -2010,7 +1607,7 @@ export class Engine {
     return this.queueRuntimeSnapshot(snapshot);
   }
 
-  private queueRuntimeSnapshot(snapshot: RuntimeState): Promise<void> {
+  private queueRuntimeSnapshot(snapshot: RuntimeStateV2): Promise<void> {
     const requested: Promise<void> = this.runtimePersistQueue.then(
       (): Promise<void> => this.ports.saveRuntime(snapshot),
     );
@@ -2019,41 +1616,6 @@ export class Engine {
       this.dirty = true;
       throw error;
     });
-  }
-
-  private sessionIdentityKey(session: SessionState): string {
-    return session.sessionId ?? `legacy:${session.startedAt}`;
-  }
-
-  private activateMatcher(session: SessionState | null): void {
-    if (session === null) {
-      this.activeMatcher = null;
-      this.activeMatcherSessionIdentity = null;
-      this.activeMatcherRules = null;
-      this.activeMatcherMode = null;
-      return;
-    }
-    this.activeMatcher = this.compileSessionPolicy(
-      session.config.rules,
-      ALL_CATEGORIES,
-      session.config.mode,
-    );
-    this.activeMatcherSessionIdentity = this.sessionIdentityKey(session);
-    this.activeMatcherRules = session.config.rules;
-    this.activeMatcherMode = session.config.mode;
-  }
-
-  private ensureMatcher(session: SessionState): CompiledMatcher {
-    if (
-      this.activeMatcher === null ||
-      this.activeMatcherSessionIdentity !== this.sessionIdentityKey(session) ||
-      this.activeMatcherRules !== session.config.rules ||
-      this.activeMatcherMode !== session.config.mode
-    ) {
-      this.activateMatcher(session);
-    }
-    if (this.activeMatcher === null) throw new Error('active session matcher was not compiled');
-    return this.activeMatcher;
   }
 
   private enqueuePolicyMutation<T>(mutation: () => Promise<T>): Promise<T> {
@@ -2164,7 +1726,7 @@ export class Engine {
     this.lists = structuredClone(DEFAULT_LISTS);
     this.bank = { balanceMs: 0 };
     this.streak = null;
-    this.runtime = emptyRuntime(now);
+    this.runtime = emptyRuntimeV2(now, this.ports.newId());
     this.deviceId = await this.ports.rehydrateAfterDataClear();
     this.pendingEvents = [];
     this.dirty = false;
@@ -2176,10 +1738,6 @@ export class Engine {
     this.attemptRevision = 0;
     this.attemptPersistInFlight.clear();
     this.failedAttemptPersistence.clear();
-    this.activeMatcher = null;
-    this.activeMatcherSessionIdentity = null;
-    this.activeMatcherRules = null;
-    this.activeMatcherMode = null;
     this.websiteBlockingLossPending = false;
     this.ownedRuntimeSnapshot = structuredClone(this.runtime);
     await this.persistRuntime(structuredClone(this.runtime));
@@ -2194,7 +1752,10 @@ export class Engine {
       hadTabStates;
     if (!hadBlockingState) return;
     const now: number = this.ports.now();
-    if (this.runtime.session !== null) this.cancelSession(this.runtime.session, now);
+    // The all-data clear takes the session with it, and the controller owns how it ends.
+    if (this.runtime.session !== null) {
+      await this.controller.endForEnforcementLoss('website-access-lost');
+    }
     this.runtime.gate = null;
     this.runtime.unlocks = [];
     this.dirty = true;
@@ -2383,49 +1944,15 @@ export class Engine {
       }
     }
   }
+}
 
-  private buildSnapshot(now: number): SessionSnapshot {
-    const s: SessionState | null = this.runtime.session;
-    const agg: DailyAgg | null = this.runtime.todayAgg;
-    const attemptsToday: number =
-      agg === null
-        ? 0
-        : Object.values(agg.attempts).reduce((a: number, b: number): number => a + b, 0) +
-          agg.attemptsOther;
-    return {
-      at: now,
-      theme: this.settings.theme,
-      phase: s === null ? 'idle' : s.phase,
-      config: s === null ? null : structuredClone(s.config),
-      startedAt: s?.startedAt ?? null,
-      phaseStartedAt: s?.phaseStartedAt ?? null,
-      phaseEndsAt: s?.phaseEndsAt ?? null,
-      sessionEndsAt: s?.sessionEndsAt ?? null,
-      cycleIndex: s?.cycleIndex ?? 0,
-      bankMs: this.bank.balanceMs,
-      bankAccrualPerMs: s !== null && s.phase === 'focus' ? this.settings.pause.earnRatio : 0,
-      bankCapMs: this.settings.pause.capMs,
-      pauseCostMs: this.settings.pause.pauseMs,
-      unlockCostMs: this.settings.pause.unlockMs,
-      activeUnlocks: structuredClone(this.runtime.unlocks),
-      gate: this.runtime.gate === null ? null : structuredClone(this.runtime.gate),
-      attemptsToday,
-      scheduleActive: this.runtime.scheduleActiveEntryId !== null,
-      nextSchedule: this.nextScheduleInfo(now),
-    };
-  }
-
-  private nextScheduleInfo(now: number): { entryId: string; startsAt: number } | null {
-    const enabled: ScheduleEntry[] = this.settings.schedule.filter(
-      (e: ScheduleEntry): boolean => e.enabled,
-    );
-    if (enabled.length === 0) return null;
-    const found: { entry: ScheduleEntry; startsAt: Date } | null = nextStart(
-      enabled,
-      new Date(now),
-    );
-    return found === null ? null : { entryId: found.entry.id, startsAt: found.startsAt.getTime() };
-  }
+/** The attempts the current day has recorded, which the frozen views report. */
+function attemptsTodayOf(todayAgg: DailyAgg | null): number {
+  if (todayAgg === null) return 0;
+  return Object.values(todayAgg.attempts).reduce(
+    (total: number, count: number): number => total + count,
+    0,
+  );
 }
 
 function hostOf(url: string): string {
@@ -2442,10 +1969,13 @@ function hostOf(url: string): string {
   }
 }
 
-function focusedMsAt(session: SessionState, now: number): number {
+/** Focus through one instant, capped by whichever finite boundary the phase carries. */
+function _focusedMsAt(session: SessionState, now: number): number {
   if (session.phase !== 'focus') return session.focusedMs;
-  const focusedUntil: number = Math.min(now, session.phaseEndsAt, session.sessionEndsAt);
-  return session.focusedMs + Math.max(0, focusedUntil - session.phaseStartedAt);
+  const boundaries: number[] = [now, session.phaseEndsAt, session.sessionEndsAt].filter(
+    (boundary: number | null): boundary is number => boundary !== null,
+  );
+  return session.focusedMs + Math.max(0, Math.min(...boundaries) - session.phaseStartedAt);
 }
 
 function sessionIdentity(session: SessionState | null): { sessionId?: string } {

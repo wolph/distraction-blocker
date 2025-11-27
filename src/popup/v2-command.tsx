@@ -6,7 +6,7 @@ import type {
   SessionCommandResultCodeV2,
   SessionRequestV2,
 } from '../shared/messages';
-import { sendSessionRequestV2 } from '../shared/messages';
+import { sendRequest } from '../shared/messages';
 import { END_FAILED_COPY, END_SESSION_LABEL } from '../shared/session-copy';
 import type { EndAuthorityV2, GateState, SessionConfigV2 } from '../shared/types';
 import { commandErrorMessage } from './command-errors';
@@ -49,7 +49,7 @@ export function endCommandOf(authority: EndAuthorityV2): V2EndCommand | null {
 export function sendGateCommand(
   request: GateRequest,
 ): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
-  return sendSessionRequestV2(request);
+  return sendRequest(request);
 }
 
 /**
@@ -111,7 +111,7 @@ export function useV2Command(options: V2CommandOptions = {}): V2Command {
     setError(null);
     setPending(true);
     try {
-      const response: V2CommandResponse = await sendSessionRequestV2(request);
+      const response: V2CommandResponse = await sendRequest(request);
       const message: string | null = commandErrorMessage(response, fallback);
       if (message !== null) setError(message);
     } catch {

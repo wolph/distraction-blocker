@@ -1,4 +1,4 @@
-import type { ScheduleEntry } from '../shared/types';
+import type { NormalizedScheduleEntryV1 } from '../shared/types';
 
 const TIME_RE: RegExp = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
@@ -8,7 +8,7 @@ function toMinutes(hhmm: string): number {
   return Number(m[1]) * 60 + Number(m[2]);
 }
 
-export function validateEntry(entry: ScheduleEntry): string | null {
+export function validateEntry(entry: NormalizedScheduleEntryV1): string | null {
   if (Number.isNaN(toMinutes(entry.start)) || Number.isNaN(toMinutes(entry.end))) {
     return 'times must be HH:MM (24 hour)';
   }
@@ -19,14 +19,20 @@ export function validateEntry(entry: ScheduleEntry): string | null {
   return null;
 }
 
-export function scheduleEntriesOverlap(first: ScheduleEntry, second: ScheduleEntry): boolean {
+export function scheduleEntriesOverlap(
+  first: NormalizedScheduleEntryV1,
+  second: NormalizedScheduleEntryV1,
+): boolean {
   if (!first.enabled || !second.enabled || first.id === second.id) return false;
   const sharedDay: boolean = first.days.some((day: number): boolean => second.days.includes(day));
   return sharedDay && first.start < second.end && second.start < first.end;
 }
 
 /** Entry whose window contains the local wall-clock time, null otherwise. */
-export function activeEntry(entries: ScheduleEntry[], at: Date): ScheduleEntry | null {
+export function activeEntry(
+  entries: NormalizedScheduleEntryV1[],
+  at: Date,
+): NormalizedScheduleEntryV1 | null {
   const nowMin: number = at.getHours() * 60 + at.getMinutes();
   const day: number = at.getDay();
   for (const e of entries) {
@@ -37,17 +43,17 @@ export function activeEntry(entries: ScheduleEntry[], at: Date): ScheduleEntry |
 }
 
 /** End of the active window as an absolute Date. */
-export function windowEnd(entry: ScheduleEntry, at: Date): Date {
+export function windowEnd(entry: NormalizedScheduleEntryV1, at: Date): Date {
   const end: number = toMinutes(entry.end);
   return new Date(at.getFullYear(), at.getMonth(), at.getDate(), Math.floor(end / 60), end % 60);
 }
 
 /** Next window start strictly after `at`, looking up to 8 days ahead. */
 export function nextStart(
-  entries: ScheduleEntry[],
+  entries: NormalizedScheduleEntryV1[],
   at: Date,
-): { entry: ScheduleEntry; startsAt: Date } | null {
-  let best: { entry: ScheduleEntry; startsAt: Date } | null = null;
+): { entry: NormalizedScheduleEntryV1; startsAt: Date } | null {
+  let best: { entry: NormalizedScheduleEntryV1; startsAt: Date } | null = null;
   for (const e of entries) {
     if (!e.enabled) continue;
     const startMin: number = toMinutes(e.start);

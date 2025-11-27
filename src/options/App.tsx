@@ -7,33 +7,17 @@ import {
   type SettingsSectionId,
 } from '../shared/SettingsNav';
 import { applyTheme } from '../shared/theme';
-import type { ListsConfig, Rule, ScheduleEntry, SessionSnapshot, Settings } from '../shared/types';
+import type { ListsConfig, Rule, ScheduleEntry, Settings } from '../shared/types';
 import { BehaviorDefaults, PauseEconomy } from './Behavior';
 import { Categories } from './Categories';
 import { DirtySaveBar } from './DirtySaveBar';
 import { PrivacyData } from './PrivacyData';
 import { RulesEditor } from './RulesEditor';
 import { Schedule } from './Schedule';
+import { SessionStatus } from './SessionStatus';
 import { SoundsBadge } from './SoundsBadge';
 import type { SettingsStore } from './use-settings';
 import { type SettingsMutation, useSettingsStore } from './use-settings';
-
-function formatWallTime(atMs: number): string {
-  const d: Date = new Date(atMs);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
-function hardBanner(snapshot: SessionSnapshot | null): VNode | null {
-  if (snapshot === null || snapshot.phase === 'idle') return null;
-  if (snapshot.config === null || snapshot.config.strictness !== 'hard') return null;
-  if (snapshot.sessionEndsAt === null) return null;
-  const text: string = `Changes that weaken blocking will be rejected until ${formatWallTime(snapshot.sessionEndsAt)}.`;
-  return (
-    <p class="hard-banner" role="status">
-      {text}
-    </p>
-  );
-}
 
 interface SectionProps {
   section: SettingsSectionId;
@@ -485,7 +469,7 @@ export function App(): VNode {
       <main class="content">
         <div class="content-body">
           <h1>Focus Lock settings</h1>
-          {hardBanner(store.snapshot)}
+          {store.snapshot === null ? null : <SessionStatus snapshot={store.snapshot} />}
           {store.loadError !== null ? (
             <p class="save-error" role="alert">
               {store.loadError}

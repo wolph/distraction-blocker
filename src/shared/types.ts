@@ -119,7 +119,8 @@ export interface NormalizedSessionConfigV1 {
   rules: SessionRuleSnapshot;
 }
 
-export type SessionConfig = NormalizedSessionConfigV1;
+/** The live session contract. The v1 shapes keep their explicit names as migration input. */
+export type SessionConfig = SessionConfigV2;
 
 /** Persisted machine state. Pure functions in src/core/session.ts own all transitions. */
 export interface NormalizedSessionStateV1 {
@@ -139,7 +140,7 @@ export interface NormalizedSessionStateV1 {
   focusedMs: number;
 }
 
-export type SessionState = NormalizedSessionStateV1;
+export type SessionState = SessionStateV2;
 
 export type PredecessorSessionRuleSnapshotV1 = Omit<SessionRuleSnapshot, 'baselineCategories'>;
 
@@ -217,7 +218,7 @@ export interface ScheduleEntryV2 {
   enabled: boolean;
 }
 
-export type SettingsV2 = Omit<Settings, 'schedule'> & { schedule: ScheduleEntryV2[] };
+export type SettingsV2 = Settings;
 
 export type GateKind = 'pause' | 'unlockSite' | 'cancel';
 
@@ -261,7 +262,7 @@ export interface NormalizedSessionSnapshotV1 {
   nextSchedule: { entryId: string; startsAt: number } | null;
 }
 
-export type SessionSnapshot = NormalizedSessionSnapshotV1;
+export type SessionSnapshot = SessionSnapshotV2;
 
 export type EndAuthorityV2 =
   | { kind: 'hidden' }
@@ -371,7 +372,7 @@ export interface NormalizedScheduleEntryV1 {
   enabled: boolean;
 }
 
-export type ScheduleEntry = NormalizedScheduleEntryV1;
+export type ScheduleEntry = ScheduleEntryV2;
 
 export interface Settings {
   theme: ThemeMode;
@@ -385,7 +386,7 @@ export interface Settings {
   badgeCountdown: boolean;
   sessionCompleteNotification: boolean;
   sounds: SoundSettings;
-  schedule: ScheduleEntry[];
+  schedule: ScheduleEntryV2[];
   streakGoalMin: number;
   streakFreezeIntervalDays: number;
   retentionDays: number;
@@ -472,7 +473,7 @@ export type LegacyEventRecord =
   | { t: 'pauseTaken'; at: number; ms: number; sessionId?: string }
   | { t: 'unlockTaken'; at: number; host: string; ms: number; sessionId?: string };
 
-export type EventRecord = LegacyEventRecord;
+export type EventRecord = SessionEventRecordV2;
 
 export type SessionEndReasonV2 =
   | 'timer-completed'
