@@ -14,7 +14,7 @@ import {
   LOCAL_EVENTS,
 } from '../../../src/shared/storage-keys';
 import type { DailyAgg, EventRecord } from '../../../src/shared/types';
-import { pairSessions, type SessionRow } from '../../../src/stats/SessionLog';
+import { pairSessionRowsV2, type SessionRowV2 } from '../../../src/stats/session-rows-v2';
 
 const ORIGINAL_TZ: string | undefined = process.env.TZ;
 
@@ -319,7 +319,7 @@ describe.sequential('stats-service local calendar ranges', (): void => {
     expect(
       recent.filter((event: EventRecord): boolean => event.t === 'sessionStarted'),
     ).toHaveLength(50);
-    expect(pairSessions(retainedMigration)).toEqual([
+    expect(pairSessionRowsV2(retainedMigration)).toEqual([
       expect.objectContaining({
         outcome: 'completed',
         focusedMs: 17,
@@ -339,7 +339,7 @@ describe.sequential('stats-service local calendar ranges', (): void => {
     ];
 
     const recent: EventRecord[] = buildStats('devA', {}, events, 7, Date.now()).recentSessions;
-    const rows: SessionRow[] = pairSessions(recent);
+    const rows: SessionRowV2[] = pairSessionRowsV2(recent);
 
     expect(recent).not.toContainEqual(events[3]);
     expect(rows).toEqual([
@@ -540,7 +540,7 @@ describe('stats-service recent session cap', (): void => {
             : total,
         0,
       );
-      const pairedRows: SessionRow[] = pairSessions(mixed);
+      const pairedRows: SessionRowV2[] = pairSessionRowsV2(mixed);
 
       expect(new Set(retainedIdentity)).toEqual(new Set([retainedSessionId]));
       expect(retainedPauseMs).toBe(pauseMs);

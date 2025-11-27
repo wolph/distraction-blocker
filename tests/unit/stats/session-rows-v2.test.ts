@@ -9,7 +9,6 @@ import type {
   SessionOutcomeV2,
   SessionStartedEventV2,
 } from '../../../src/shared/types';
-import { pairSessions, type SessionRow } from '../../../src/stats/SessionLog';
 import { pairSessionRowsV2, type SessionRowV2 } from '../../../src/stats/session-rows-v2';
 
 const MIN: number = 60_000;
@@ -221,7 +220,7 @@ describe('pairSessionRowsV2', (): void => {
     expect(canceled[0]?.focusedMs).toBe(8 * MIN);
   });
 
-  it('reads an equivalent legacy input the way the v1 session log does', (): void => {
+  it('reads a legacy input the way the v1 session log read it', (): void => {
     const legacy: LegacyEventRecord[] = [
       legacyStart(T9, 25, 'thesis chapter'),
       { t: 'pauseTaken', at: T9 + 5 * MIN, ms: 5 * MIN },
@@ -229,19 +228,19 @@ describe('pairSessionRowsV2', (): void => {
       { t: 'sessionCompleted', at: T925, focusedMs: 20 * MIN },
     ];
     const v2Row: SessionRowV2 | undefined = pairSessionRowsV2(newestFirst(legacy))[0];
-    const v1Row: SessionRow | undefined = pairSessions([...legacy].reverse())[0];
 
-    expect(v1Row).toBeDefined();
+    // The values the deleted v1 `pairSessions` produced for this exact history, stated directly
+    // now that the v1 pairing is gone and this builder is the only reader of legacy history.
     expect(v2Row).toMatchObject({
-      startedAt: v1Row?.startedAt,
-      intention: v1Row?.intention,
-      source: v1Row?.source,
-      outcome: v1Row?.outcome,
-      focusedMs: v1Row?.focusedMs,
-      pauseMs: v1Row?.pauseMs,
-      unlockMs: v1Row?.unlockMs,
+      startedAt: T9,
+      intention: 'thesis chapter',
+      source: 'manual',
+      outcome: 'completed',
+      focusedMs: 20 * MIN,
+      pauseMs: 5 * MIN,
+      unlockMs: 5 * MIN,
     });
-    expect(v2Row?.plan).toBe(statsPlanLabelV2({ kind: 'timed', minutes: v1Row?.plannedMin ?? 0 }));
+    expect(v2Row?.plan).toBe(statsPlanLabelV2({ kind: 'timed', minutes: 25 }));
   });
 
   it('runs a dangling newest start and ends a displaced one with unknown focus', (): void => {
