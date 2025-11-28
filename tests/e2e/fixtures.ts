@@ -13,7 +13,8 @@ import type {
   ListsConfig,
   OnboardingDraft,
   Rule,
-  SessionConfig,
+  SessionConfigV2,
+  SessionSnapshotV2,
   SetupState,
   StorageMode,
 } from '../../src/shared/types';
@@ -690,7 +691,7 @@ export async function sendExtensionRequest<T extends Request['type']>(
 
 export async function startTestSession(
   extPage: Page,
-  overrides: Partial<SessionConfig> = {},
+  overrides: Partial<SessionConfigV2> = {},
   customRules: Rule[] = [{ kind: 'host', pattern: 'blocked.example' }],
 ): Promise<void> {
   const lists: ListsConfig = {
@@ -707,14 +708,14 @@ export async function startTestSession(
     },
     exclusions: {},
   };
-  const config: SessionConfig = {
+  const config: SessionConfigV2 = {
     mode: 'blacklist',
     strictness: 'friction',
-    durationMin: 0.2,
+    duration: { kind: 'timed', minutes: 0.2 },
     cycling: null,
     intention: 'e2e test run',
     source: 'manual',
-    scheduleEntryId: null,
+    scheduleOccurrence: null,
     ...overrides,
     rules: overrides.rules ?? rulesFromLists(lists),
   };
@@ -740,12 +741,33 @@ export async function startTestSession(
       });
       if (!listsAck.ok) throw new Error(listsAck.error ?? 'updateLists rejected');
 
-      const sessionAck: { ok: boolean; error?: string } = await chrome.runtime.sendMessage({
-        type: 'startSession',
-        config: cfg,
-      });
-      if (!sessionAck.ok) throw new Error(sessionAck.error ?? 'startSession rejected');
+      const sessionAck: { ok: boolean; code?: string; error?: string } =
+        await chrome.runtime.sendMessage({ type: 'startSession', config: cfg });
+      if (!sessionAck.ok) {
+        throw new Error(sessionAck.code ?? sessionAck.error ?? 'startSession rejected');
+      }
     },
     { cfg: config, rules: customRules },
   );
+  // A start answers as soon as the worker accepts it, and publication follows the transition, so
+  // every caller waits for the lifecycle the session reaches rather than for the ack alone.
+  await waitForActiveSession(extPage);
+}
+
+/** Waits until the worker publishes an active lifecycle, which is when a session is enforcing. */
+export async function waitForActiveSession(
+  extPage: Page,
+  timeoutMs: number = 10_000,
+): Promise<void> {
+  const deadline: number = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const snapshot: SessionSnapshotV2 = (await extPage.evaluate(
+      async (): Promise<unknown> => await chrome.runtime.sendMessage({ type: 'getSnapshot' }),
+    )) as SessionSnapshotV2;
+    if (snapshot.lifecycle.kind === 'active') return;
+    await new Promise((resolve: (value: unknown) => void): void => {
+      setTimeout(resolve, 100);
+    });
+  }
+  throw new Error('the worker never published an active session');
 }

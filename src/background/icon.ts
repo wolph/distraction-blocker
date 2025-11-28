@@ -100,6 +100,11 @@ function drawCup(ctx: OffscreenCanvasRenderingContext2D, u: number): void {
 }
 
 /** Renders and applies icon plus badge. Never throws: an icon render must not kill a tick. */
+/**
+ * The toolbar for one snapshot. The drawing and the badge are guarded apart on purpose: drawing
+ * needs a canvas and the badge needs nothing, so a worker whose canvas is unavailable still says
+ * what the session is doing rather than going silent on both.
+ */
 export function updateIcon(snapshot: SessionSnapshot, badgeCountdown: boolean): void {
   try {
     const spec: IconSpec = iconSpecV2(snapshot);
@@ -108,12 +113,16 @@ export function updateIcon(snapshot: SessionSnapshot, badgeCountdown: boolean): 
       32: drawIcon(32, spec),
     };
     void chrome.action.setIcon({ imageData }).catch((): undefined => undefined);
+  } catch {
+    // OffscreenCanvas or action API hiccups must not break the engine, or the badge.
+  }
+  try {
     const badge: { text: string; color: string } = badgeForV2(snapshot, badgeCountdown);
     void chrome.action.setBadgeText({ text: badge.text }).catch((): undefined => undefined);
     void chrome.action
       .setBadgeBackgroundColor({ color: badge.color })
       .catch((): undefined => undefined);
   } catch {
-    // OffscreenCanvas or action API hiccups must not break the engine.
+    // An action API hiccup is not worth a thrown engine commit either.
   }
 }

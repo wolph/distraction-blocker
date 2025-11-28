@@ -584,7 +584,7 @@ async function seedStoreStats(controlPage: Page, worker: Worker): Promise<void> 
   for (const event of seed.events) {
     if (event.t === 'sessionStarted') {
       event.at = zonedTimestamp(currentDateKey, 8, 30, STORE_TIMEZONE);
-      event.durationMin = 20;
+      if ('durationMin' in event) event.durationMin = 20;
     }
     if (event.t === 'attempt') {
       event.at = zonedTimestamp(currentDateKey, 9, 10, STORE_TIMEZONE);
@@ -960,11 +960,11 @@ test('captures five truthful release states with category membership in the popu
     );
     const config: SessionConfig = {
       cycling: null,
-      durationMin: 25,
+      duration: { kind: 'timed', minutes: 25 },
       intention: STORE_INTENTION,
       mode: 'blacklist',
       rules: rulesFromLists(lists),
-      scheduleEntryId: null,
+      scheduleOccurrence: null,
       source: 'manual',
       strictness: 'friction',
     };
@@ -995,7 +995,7 @@ test('captures five truthful release states with category membership in the popu
     const snapshot = await sendExtensionRequest(blockedLaunch.extPage, { type: 'getSnapshot' });
     expect(snapshot).toMatchObject({
       config: {
-        durationMin: 25,
+        duration: { kind: 'timed', minutes: 25 },
         intention: STORE_INTENTION,
         mode: 'blacklist',
         strictness: 'friction',
@@ -1011,16 +1011,18 @@ test('captures five truthful release states with category membership in the popu
       docState: 'loaded',
       url: siteUrl('/plain.html'),
     });
-    expect(blockedState.verdict).toEqual({
+    // The worker answers with the commands a document applies, and a blocked page gets the
+    // active view with the verdict frozen into it.
+    const applied = blockedState.commands.find(
+      (command): boolean => command.command === 'apply-enforcement',
+    );
+    expect(applied?.command === 'apply-enforcement' ? applied.verdict : null).toEqual({
       blocked: true,
       categoryId: null,
       matchedPattern: 'blocked.example',
       reason: 'custom',
     });
-    expect(blockedState.snapshot).toMatchObject({
-      config: { intention: STORE_INTENTION },
-      phaseEndsAt: STATS_VISUAL_SEED_AT + 25 * 60_000,
-    });
+    expect(applied?.command === 'apply-enforcement' ? applied.presentation : null).toBe('active');
     try {
       await accessibilitySession.send('Accessibility.enable');
       await expect

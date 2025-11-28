@@ -347,7 +347,10 @@ test('popup daily states keep help and long rules contained at native width', as
   const existingPage: Page = await context.newPage();
   await existingPage.goto(siteUrl('/plain.html'));
   await extPage.bringToFront();
-  await startTestSession(extPage, { durationMin: 0.3, strictness: 'friction' });
+  await startTestSession(extPage, {
+    duration: { kind: 'timed', minutes: 0.3 },
+    strictness: 'friction',
+  });
   await expect(existingPage.locator('focus-lock-overlay')).toBeAttached();
   await expectClosedOverlayText(
     context,
@@ -1447,7 +1450,10 @@ test('Task 7 production evidence matrix is reproducible', async ({
     await blockedPage.goto(siteUrl('/plain.html'));
     await configureTask7Gate(extPage, true);
     await extPage.bringToFront();
-    await startTestSession(extPage, { durationMin: 10, strictness: 'friction' });
+    await startTestSession(extPage, {
+      duration: { kind: 'timed', minutes: 10 },
+      strictness: 'friction',
+    });
     await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
     await expectClosedOverlayText(
       context,
@@ -1746,7 +1752,7 @@ test('completion clears browser effects and reaches sound and notification APIs'
   expect(settingsAck).toEqual({ ok: true });
 
   await startTestSession(extPage, {
-    durationMin: 0.6,
+    duration: { kind: 'timed', minutes: 0.6 },
     cycling: {
       focusMin: 0.25,
       shortBreakMin: 0.05,
@@ -1815,7 +1821,10 @@ test('hard-session Options rejects weakening and saves a stronger rule', async (
   extPage,
   extensionId,
 }) => {
-  await startTestSession(extPage, { durationMin: 0.3, strictness: 'hard' });
+  await startTestSession(extPage, {
+    duration: { kind: 'timed', minutes: 0.3 },
+    strictness: 'hard',
+  });
   const optionsPage: Page = await context.newPage();
   await optionsPage.goto(`chrome-extension://${extensionId}/src/options/options.html`);
   await expect
@@ -1860,7 +1869,7 @@ test('theme cycle persists across extension pages and live overlay hosts without
   const normalPage: Page = await context.newPage();
   await normalPage.goto(siteUrl('/plain.html'));
   await normalPage.locator('#keep').fill('theme keeps page state');
-  await startTestSession(extPage, { durationMin: 0.8 });
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.8 } });
   const normalOverlay: ElementHandle<HTMLElement | SVGElement> = await overlayHandle(normalPage);
   let normalNavigations: number = 0;
   normalPage.on('framenavigated', (frame: Frame): void => {

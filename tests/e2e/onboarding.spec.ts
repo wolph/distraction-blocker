@@ -127,7 +127,7 @@ test('denied access can be retried, completed locally, and block a real page', a
     websiteAccess: 'granted',
     blockingRegistration: 'ready',
   });
-  await startTestSession(launch.extPage, { durationMin: 0.3 });
+  await startTestSession(launch.extPage, { duration: { kind: 'timed', minutes: 0.3 } });
   const blockedPage: Page = await launch.context.newPage();
   await blockedPage.goto(siteUrl('/plain.html'), { waitUntil: 'commit' });
   await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
@@ -171,7 +171,7 @@ test('permission revocation ends a session and rejects another session start', a
   const launch: FreshInstallLaunch = await freshInstallExtension.grantWebsiteAccess();
   const diagnostics: BrowserDiagnostics = freshInstallExtension.diagnostics;
   await freshInstallExtension.completeSetup('local');
-  await startTestSession(launch.extPage, { durationMin: 0.3 });
+  await startTestSession(launch.extPage, { duration: { kind: 'timed', minutes: 0.3 } });
   const active: SessionSnapshot = await sendExtensionRequest(launch.extPage, {
     type: 'getSnapshot',
   });

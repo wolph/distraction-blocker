@@ -54,6 +54,7 @@ import {
 import { sendDocumentEnforcementCommand, sendEpochResetCommand } from './content-transport-v2';
 import type {
   DocumentEnforcementAck,
+  DocumentEpochResetAck,
   EnforcementCheckpoint,
   FrozenDocumentCommand,
 } from './enforcement-persistence-v2';
@@ -441,7 +442,7 @@ export class SessionControllerV2 {
       const command: FrozenDocumentCommand = await this.currentCommandFor(target);
       const commands: DocumentContentCommand[] = [];
       if (!this.hasCurrentEpochAck(target.tabId, target.documentId)) {
-        commands.push(wireOf(this.resetCommandFor(target)));
+        commands.push(wireOf(await this.handOverEpochReset(target)));
       }
       commands.push(wireOf(command));
       await this.recordAttemptIfBlocked(target, attemptKind);
@@ -1153,6 +1154,37 @@ export class SessionControllerV2 {
       documentCommands: { ...structuredClone(runtime.documentCommands), [key]: command },
     });
     return command;
+  }
+
+  /**
+   * The reset one pulling document is handed, recorded as acknowledged in the same breath. The
+   * document asked for what it must apply and applies the array in order before it renders, so a
+   * pull is as good an acknowledgement as a push answer. Without this the pull answers the same
+   * reset on every navigation until some push happens to record one.
+   */
+  private async handOverEpochReset(target: {
+    tabId: number;
+    documentId: string;
+    url: string;
+  }): Promise<ReturnType<typeof buildFrozenEpochResetCommandV2>> {
+    const reset: ReturnType<typeof buildFrozenEpochResetCommandV2> = this.resetCommandFor(target);
+    const ack: DocumentEpochResetAck = {
+      version: 1,
+      operationId: reset.operationId,
+      enforcementEpoch: reset.enforcementEpoch,
+      tabId: reset.tabId,
+      documentId: reset.documentId,
+      url: reset.expectedUrl,
+      handledAt: this.ports.now(),
+    };
+    await this.write({
+      ...structuredClone(this.ports.runtime()),
+      epochResetAcks: {
+        ...structuredClone(this.ports.runtime().epochResetAcks),
+        [documentCommandKeyV2(ack.tabId, ack.documentId)]: ack,
+      },
+    });
+    return reset;
   }
 
   private resetCommandFor(target: {

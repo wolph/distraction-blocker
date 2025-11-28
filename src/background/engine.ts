@@ -1063,10 +1063,7 @@ export class Engine {
     );
     if (reason !== null) return this.fail(now, reason);
     const bundle: MatcherCacheBundle = buildMatcherCache(l, ALL_CATEGORIES);
-    try {
-      await this.ports.saveMatcherCache(bundle.stored, l);
-    } finally {
-    }
+    await this.ports.saveMatcherCache(bundle.stored, l);
     if (queueForSync) {
       try {
         await this.savePolicy('lists', l);
@@ -1246,10 +1243,7 @@ export class Engine {
 
   private async prepareSyncedListBundle(lists: ListsConfig): Promise<MatcherCacheBundle> {
     const bundle: MatcherCacheBundle = buildMatcherCache(lists, ALL_CATEGORIES);
-    try {
-      await this.ports.saveMatcherCache(bundle.stored, lists);
-    } finally {
-    }
+    await this.ports.saveMatcherCache(bundle.stored, lists);
     return bundle;
   }
 

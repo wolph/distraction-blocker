@@ -225,7 +225,7 @@ test('the packaged artifact installs, onboards, blocks, and survives a browser r
   });
 
   await startTestSession(launch.extPage, {
-    durationMin: 2,
+    duration: { kind: 'timed', minutes: 2 },
     intention: 'verify the packaged artifact',
   });
   await expectBlockedPage(launch, url);

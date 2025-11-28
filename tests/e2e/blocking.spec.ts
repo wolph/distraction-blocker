@@ -232,7 +232,7 @@ test('existing tab overlays, mutes, and resumes without reload', async ({
     document.body.appendChild(decoy);
   });
 
-  await startTestSession(extPage, { durationMin: 0.12 });
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.12 } });
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
   await assertAndCaptureOverlay(context, page, 'existing');
   await expect
@@ -268,7 +268,7 @@ test('existing tab overlays, mutes, and resumes without reload', async ({
 });
 
 test('a stopped tab reloads after the session ends', async ({ context, extPage, siteUrl }) => {
-  await startTestSession(extPage, { durationMin: 0.12 });
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.12 } });
   const page = await context.newPage();
   await page.goto(siteUrl('/plain.html'), { waitUntil: 'commit' });
 
@@ -286,7 +286,7 @@ test('SPA history navigation is blocked without a reload', async ({
 }) => {
   const page = await context.newPage();
   await page.goto(siteUrl('/spa.html'));
-  await startTestSession(extPage, { durationMin: 0.3 }, [
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.3 } }, [
     { kind: 'regex', pattern: 'blocked\\.example(?::\\d+)?/shorts' },
   ]);
   await expect(page.locator('focus-lock-overlay')).toHaveCount(0);
@@ -301,7 +301,7 @@ test('a blocked media tab is muted', async ({ context, extPage, siteUrl, worker 
   const url: string = siteUrl('/media.html');
   const page = await context.newPage();
   await page.goto(url);
-  await startTestSession(extPage, { durationMin: 0.12 });
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.12 } });
 
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
   await expect

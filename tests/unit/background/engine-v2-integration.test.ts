@@ -5,6 +5,7 @@ import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validati
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, DEFAULT_SETUP } from '../../../src/shared/constants';
 import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
 import type { Request } from '../../../src/shared/messages';
+import { isEventRecord } from '../../../src/shared/runtime-validation';
 import {
   LOCAL_EVENTS,
   LOCAL_INSTALL_MARKER,
@@ -39,6 +40,11 @@ interface AlarmRow {
   periodInMinutes: number | null;
 }
 
+interface BootOptions {
+  /** False makes the icon draw fail, which is what a worker without a canvas looks like. */
+  canvas?: boolean;
+}
+
 interface WorkerHarness {
   local: Record<string, unknown>;
   sync: Record<string, unknown>;
@@ -53,11 +59,16 @@ interface WorkerHarness {
   fireAlarm(name: string): Promise<void>;
   navigate(document: FakeDocument, kind: 'committed' | 'history'): Promise<void>;
   runtime(): RuntimeStateV2;
+  /** Every transition stage that became durable, in write order. */
+  stages(): string[];
+  /** The stored event log, newest last. */
+  events(): Array<Record<string, unknown>>;
   settle(): Promise<void>;
 }
 
 const NOW: number = new Date(2026, 8, 3, 9, 0, 0, 0).getTime();
 const CONTENT_SENDER: string = 'https://facebook.com/feed';
+const SESSION_UUID: string = '10000000-0000-4000-8000-000000000001';
 
 let clock: number = NOW;
 
@@ -70,8 +81,12 @@ function tabSender(document: FakeDocument): chrome.runtime.MessageSender {
 }
 
 /** Boots one worker over an in-memory browser and returns the handles a scenario drives it with. */
-async function bootWorker(seed: Record<string, unknown> = {}): Promise<WorkerHarness> {
+async function bootWorker(
+  seed: Record<string, unknown> = {},
+  options: BootOptions = {},
+): Promise<WorkerHarness> {
   clock = NOW;
+  const stages: string[] = [];
   const local: Record<string, unknown> = structuredClone(seed);
   const sync: Record<string, unknown> = {};
   const syncWrites: Array<Record<string, unknown>> = [];
@@ -95,6 +110,10 @@ async function bootWorker(seed: Record<string, unknown> = {}): Promise<WorkerHar
   vi.stubGlobal(
     'OffscreenCanvas',
     class {
+      constructor() {
+        if (options.canvas === false) throw new Error('no canvas in this worker');
+      }
+
       getContext(): Record<string, unknown> {
         const noop = (): void => undefined;
         return new Proxy(
@@ -208,6 +227,9 @@ async function bootWorker(seed: Record<string, unknown> = {}): Promise<WorkerHar
         }),
         set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
           Object.assign(local, structuredClone(items));
+          const runtime: RuntimeStateV2 | null = parseRuntimeStateV2(local[LOCAL_RUNTIME]);
+          const stage: string | undefined = runtime?.pendingEnforcementTransition?.stage;
+          if (stage !== undefined && stages.at(-1) !== stage) stages.push(stage);
         }),
         remove: vi.fn(async (keys: string | string[]): Promise<void> => {
           for (const key of typeof keys === 'string' ? [keys] : keys) delete local[key];
@@ -310,6 +332,9 @@ async function bootWorker(seed: Record<string, unknown> = {}): Promise<WorkerHar
     sounds,
     notices,
     settle,
+    stages: (): string[] => [...stages],
+    events: (): Array<Record<string, unknown>> =>
+      (local[LOCAL_EVENTS] as Array<Record<string, unknown>> | undefined) ?? [],
     runtime: (): RuntimeStateV2 => {
       const stored: RuntimeStateV2 | null = parseRuntimeStateV2(local[LOCAL_RUNTIME]);
       if (stored === null) throw new Error('the worker persisted no valid v2 runtime');
@@ -343,6 +368,16 @@ async function bootWorker(seed: Record<string, unknown> = {}): Promise<WorkerHar
       await settle();
     },
   };
+}
+
+/** The attempts the stored day has counted, which is what the popup and the overlay report. */
+function attemptsOf(worker: WorkerHarness): number {
+  const agg = worker.runtime().todayAgg;
+  if (agg === null) return 0;
+  return Object.values(agg.attempts).reduce(
+    (total: number, count: number): number => total + count,
+    0,
+  );
 }
 
 function indefiniteConfig(): SessionConfigV2 {
@@ -491,8 +526,7 @@ describe('worker cutover to v2 session authority', (): void => {
       { type: 'getBlockState', url: fresh.url, docState: 'fresh' } as Request,
       tabSender(fresh),
     )) as { commands: DocumentContentCommand[] };
-    // A push is what records the epoch acknowledgement, so the pull after it carries no reset.
-    await worker.navigate(fresh, 'committed');
+    // The pull records the acknowledgement the same way a push does, so no second reset goes out.
     const second = (await worker.send(
       { type: 'getBlockState', url: fresh.url, docState: 'loaded' } as Request,
       tabSender(fresh),
@@ -510,6 +544,165 @@ describe('worker cutover to v2 session authority', (): void => {
       'apply-enforcement',
     ]);
     expect(stranger.commands).toEqual([]);
+  });
+
+  it('records the stage sequence and the events one start and end produce', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    worker.documents.push({
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    });
+
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+    const sessionId: string = worker.runtime().session?.sessionId ?? '';
+    const stages: string[] = worker.stages();
+
+    // Every stage the machine passes through is durable, in order, and publication clears it.
+    expect(stages).toEqual([
+      'prepared',
+      'registration-audited',
+      'starting-verified',
+      'committed-pending-verification',
+      'alarm-ready',
+      'active-verified',
+    ]);
+    expect(worker.runtime().pendingEnforcementTransition).toBeNull();
+
+    await worker.send({ type: 'requestSessionEnd' } as Request);
+    await worker.settle();
+
+    // One start event and one end event, each with the id the session owns.
+    const started = worker.events().filter((event): boolean => event.t === 'sessionStarted');
+    const ended = worker.events().filter((event): boolean => event.t === 'sessionEnded');
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({ eventId: `${sessionId}:start`, sessionId });
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({
+      eventId: `${sessionId}:end`,
+      outcome: 'completed',
+      reason: 'manual-completed',
+    });
+  });
+
+  it('publishes both clocks and the phase alarm for a timed cycling start', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    worker.documents.push({
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    });
+    const config: SessionConfigV2 = {
+      ...indefiniteConfig(),
+      duration: { kind: 'timed', minutes: 50 },
+      cycling: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 },
+    };
+
+    await worker.send({ type: 'startSession', config } as Request);
+    await worker.settle();
+
+    const published: SessionSnapshotV2 | undefined = worker.broadcasts.at(-1);
+    const activatedAt: number = published?.phaseStartedAt ?? 0;
+    expect(published?.lifecycle.kind).toBe('active');
+    expect(published?.phaseEndsAt).toBe(activatedAt + 1_500_000);
+    expect(published?.sessionEndsAt).toBe(activatedAt + 3_000_000);
+    // The phase boundary owns an alarm, and it is the boundary the snapshot reports.
+    expect(worker.alarms.get('phase')?.when).toBe(activatedAt + 1_500_000);
+  });
+
+  it('records one attempt per blocked navigation and honors the debounce', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    const document: FakeDocument = {
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    };
+    worker.documents.push(document);
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+
+    await worker.send(
+      { type: 'getBlockState', url: document.url, docState: 'fresh' } as Request,
+      tabSender(document),
+    );
+    await worker.settle();
+    const afterFirst: number = attemptsOf(worker);
+    // The same document again inside the debounce window records nothing more.
+    await worker.send(
+      { type: 'getBlockState', url: document.url, docState: 'fresh' } as Request,
+      tabSender(document),
+    );
+    await worker.settle();
+
+    expect(afterFirst).toBe(1);
+    expect(attemptsOf(worker)).toBe(1);
+    expect(worker.events().filter((event): boolean => event.t === 'attempt')).toHaveLength(1);
+  });
+
+  it('keeps the badge when the icon cannot be drawn', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed(), { canvas: false });
+    worker.documents.push({
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    });
+
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+
+    // Drawing needs a canvas and the badge needs nothing, so one failing must not take the other.
+    expect(worker.badges).toContain('ON');
+  });
+
+  it('validates a long mixed event log without recursing', async (): Promise<void> => {
+    const legacy: unknown = {
+      t: 'sessionStarted',
+      at: NOW,
+      source: 'manual',
+      mode: 'blacklist',
+      strictness: 'flexible',
+      durationMin: 25,
+      intention: 'legacy',
+    };
+    const started: unknown = {
+      version: 2,
+      t: 'sessionStarted',
+      eventId: `${SESSION_UUID}:start`,
+      at: NOW,
+      sessionId: SESSION_UUID,
+      source: 'manual',
+      mode: 'blacklist',
+      strictness: 'flexible',
+      duration: { kind: 'until-stopped' },
+      intention: 'v2',
+      scheduleOccurrence: null,
+    };
+    const ended: unknown = {
+      version: 2,
+      t: 'sessionEnded',
+      eventId: `${SESSION_UUID}:end`,
+      at: NOW + 1_000,
+      sessionId: SESSION_UUID,
+      outcome: 'completed',
+      reason: 'manual-completed',
+      focusedMs: 1_000,
+      duration: { kind: 'until-stopped' },
+      source: 'manual',
+      scheduleOccurrence: null,
+    };
+    const log: unknown[] = [];
+    for (let index: number = 0; index < 10_000; index += 1) {
+      log.push([legacy, started, ended][index % 3]);
+    }
+
+    expect(log.every(isEventRecord)).toBe(true);
+    // A legacy shape wearing the v2 version but no id is still not a v2 record.
+    expect(isEventRecord({ ...(legacy as Record<string, unknown>), version: 2 })).toBe(false);
   });
 
   it('never writes runtime or event keys into sync', async (): Promise<void> => {

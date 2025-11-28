@@ -102,7 +102,7 @@ test('pause gate rejects an early confirmation and unblocks after its delay', as
   await configureFastEconomy(extPage, { pauseMs });
   const page = await context.newPage();
   await page.goto(siteUrl('/plain.html'));
-  await startTestSession(extPage, { durationMin: 0.3 });
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.3 } });
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
   await waitForBank(extPage, pauseMs);
   await expect
@@ -146,7 +146,7 @@ test('pause gate supports back to work, taking a pause, and resuming now', async
   await configureFastEconomy(extPage, { pauseMs });
   const page: Page = await context.newPage();
   await page.goto(siteUrl('/plain.html'));
-  await startTestSession(extPage, { durationMin: 2 });
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 2 } });
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
   await waitForBank(extPage, pauseMs);
 
@@ -183,7 +183,7 @@ test('pause gate supports back to work, taking a pause, and resuming now', async
 test('paused UI leaves when the session wall clock ends', async ({ extPage }) => {
   const pauseMs: number = 10_000;
   await configureFastEconomy(extPage, { pauseMs });
-  await startTestSession(extPage, { durationMin: 0.08 });
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.08 } });
   await waitForBank(extPage, pauseMs);
 
   await extPage.getByRole('button', { name: 'Pause blocking for 0 min' }).click();
@@ -203,7 +203,7 @@ test('paused UI leaves when the session wall clock ends', async ({ extPage }) =>
 
 test('abandoning a gate records a resisted temptation', async ({ extPage }) => {
   await configureFastEconomy(extPage);
-  await startTestSession(extPage, { durationMin: 0.3 });
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.3 } });
   await waitForBank(extPage, 1_000);
   expect(
     await sendExtensionRequest(extPage, { type: 'openGate', gate: 'pause', host: null }),
@@ -219,7 +219,10 @@ test('abandoning a gate records a resisted temptation', async ({ extPage }) => {
 });
 
 test('hard sessions reject weakening list changes', async ({ extPage }) => {
-  await startTestSession(extPage, { strictness: 'hard', durationMin: 0.2 });
+  await startTestSession(extPage, {
+    strictness: 'hard',
+    duration: { kind: 'timed', minutes: 0.2 },
+  });
   const lists = await sendExtensionRequest(extPage, { type: 'getLists' });
   const ack = await sendExtensionRequest(extPage, {
     type: 'updateLists',
@@ -233,7 +236,7 @@ test('hard sessions reject weakening list changes', async ({ extPage }) => {
 test('friction cancellation without typing uses the configured delay', async ({ extPage }) => {
   const gateDelayMs: number = 3_000;
   await configureFastEconomy(extPage, { gateDelayMs, requireTypedPhrase: false });
-  await startTestSession(extPage, { durationMin: 0.3 });
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.3 } });
   expect(await sendExtensionRequest(extPage, { type: 'requestSessionEnd' })).toEqual({ ok: true });
 
   const early = await sendExtensionRequest(extPage, {
@@ -276,7 +279,10 @@ test('Flexible session ending immediately removes an active block', async ({
   await configureFastEconomy(extPage, { gateDelayMs: 30_000, requireTypedPhrase: true });
   const page: Page = await context.newPage();
   await page.goto(siteUrl('/plain.html'));
-  await startTestSession(extPage, { durationMin: 0.3, strictness: 'flexible' });
+  await startTestSession(extPage, {
+    duration: { kind: 'timed', minutes: 0.3 },
+    strictness: 'flexible',
+  });
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
 
   expect(await sendExtensionRequest(extPage, { type: 'requestSessionEnd' })).toEqual({ ok: true });
@@ -288,10 +294,8 @@ test('Flexible session ending immediately removes an active block', async ({
 test('zero delay removes the wait but still honors the typing setting', async ({ extPage }) => {
   const requiredPhrase: string = cancelPhrase('e2e test run');
   await configureFastEconomy(extPage, { gateDelayMs: 0, requireTypedPhrase: true });
-  await startTestSession(extPage, { durationMin: 0.3 });
-  expect(
-    await sendExtensionRequest(extPage, { type: 'openGate', gate: 'cancel', host: null }),
-  ).toEqual({ ok: true });
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.3 } });
+  expect(await sendExtensionRequest(extPage, { type: 'openEndGate' })).toEqual({ ok: true });
 
   const opened: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
   expect(opened.gate?.readyAt).toBe(opened.gate?.openedAt);
@@ -309,10 +313,8 @@ test('friction cancellation with typing requires the configured phrase after its
   const gateDelayMs: number = 3_000;
   const requiredPhrase: string = cancelPhrase('e2e test run');
   await configureFastEconomy(extPage, { gateDelayMs, requireTypedPhrase: true });
-  await startTestSession(extPage, { durationMin: 0.3 });
-  expect(
-    await sendExtensionRequest(extPage, { type: 'openGate', gate: 'cancel', host: null }),
-  ).toEqual({ ok: true });
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.3 } });
+  expect(await sendExtensionRequest(extPage, { type: 'openEndGate' })).toEqual({ ok: true });
 
   const early = await sendExtensionRequest(extPage, {
     type: 'confirmGate',
@@ -358,7 +360,10 @@ test('friction cancellation with typing requires the configured phrase after its
 });
 
 test('hard sessions reject cancellation gates', async ({ extPage }) => {
-  await startTestSession(extPage, { durationMin: 0.3, strictness: 'hard' });
+  await startTestSession(extPage, {
+    duration: { kind: 'timed', minutes: 0.3 },
+    strictness: 'hard',
+  });
 
   const ack = await sendExtensionRequest(extPage, { type: 'requestSessionEnd' });
 
@@ -386,7 +391,7 @@ test('overlay unlock isolates another site and reblocks after expiry', async ({
   const otherUrl: string = siteUrl('/plain.html').replace('blocked.example', 'other.example');
   await page.goto(subdomainUrl);
   await otherPage.goto(otherUrl);
-  await startTestSession(extPage, { durationMin: 1.5 }, [
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 1.5 } }, [
     { kind: 'host', pattern: 'blocked.example' },
     { kind: 'host', pattern: 'other.example' },
   ]);

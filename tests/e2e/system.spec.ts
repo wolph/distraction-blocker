@@ -54,7 +54,7 @@ test('badge shows a countdown during focus and clears on completion', async ({
   extPage,
   worker,
 }) => {
-  await startTestSession(extPage, { durationMin: 0.1 });
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.1 } });
   await expect
     .poll(
       async (): Promise<string> =>
@@ -92,7 +92,7 @@ test('sync and local storage keep their documented split and quota', async ({
       settings: { ...settings, badgeCountdown: !settings.badgeCountdown },
     }),
   ).toEqual({ ok: true });
-  await startTestSession(extPage, { durationMin: 0.1 });
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.1 } });
   await expect
     .poll(
       async (): Promise<string> => {
@@ -243,6 +243,7 @@ test('an active schedule window starts a scheduled focus session', async ({ extP
             days: [scheduleClock.day],
             start: '11:59',
             end: '12:01',
+            duration: { kind: 'window' },
             mode: 'blacklist',
             strictness: 'friction',
             cycling: null,
@@ -269,7 +270,7 @@ test('an active schedule window starts a scheduled focus session', async ({ extP
     type: 'getSnapshot',
   });
   expect(snapshot.config?.source).toBe('schedule');
-  expect(snapshot.config?.scheduleEntryId).toBe('e2e-active-window');
+  expect(snapshot.config?.scheduleOccurrence?.entryId).toBe('e2e-active-window');
   expect(snapshot.phaseStartedAt).toBe(scheduleClock.at);
   await expect
     .poll(

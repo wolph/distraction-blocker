@@ -10,6 +10,7 @@ import {
   sendExtensionRequest,
   startTestSession,
   test,
+  waitForActiveSession,
 } from './fixtures';
 
 test.setTimeout(60_000);
@@ -84,7 +85,7 @@ test('persistent profile restores a blocked muted tab and active countdown after
     blockingRegistration: 'ready',
   });
   await startTestSession(first.extPage, {
-    durationMin: 0.5,
+    duration: { kind: 'timed', minutes: 0.5 },
     intention: 'survive browser restart',
   });
   const blockedPage: Page = await first.context.newPage();
@@ -97,6 +98,7 @@ test('persistent profile restores a blocked muted tab and active countdown after
     type: 'getSnapshot',
   });
   const tabBefore: PersistedTabState = await readPersistedTabState(first.worker, url);
+  expect(before.lifecycle.kind).toBe('active');
   expect(before.phase).toBe('focus');
   expect(before.phaseEndsAt).not.toBeNull();
   expect(tabBefore.hasTabState).toBe(true);
@@ -130,10 +132,13 @@ test('persistent profile restores a blocked muted tab and active countdown after
   await expect(second.extPage.locator('.phase-label')).toHaveText('focusing');
   await expect(second.extPage.locator('.clock')).toHaveText(/\d+:[0-5]\d/);
 
+  // A restarted worker republishes only after recovery resolves its journals.
+  await waitForActiveSession(second.extPage);
   const after: SessionSnapshot = await sendExtensionRequest(second.extPage, {
     type: 'getSnapshot',
   });
   const tabAfter: PersistedTabState = await readPersistedTabState(second.worker, url);
+  expect(after.lifecycle.kind).toBe('active');
   expect(after.phase).toBe('focus');
   expect(after.startedAt).toBe(before.startedAt);
   expect(after.phaseEndsAt).toBe(before.phaseEndsAt);

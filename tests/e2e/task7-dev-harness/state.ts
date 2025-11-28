@@ -101,11 +101,11 @@ function currentSnapshot(now: number, theme: ThemeMode): SessionSnapshot {
     bankAccrualPerMs: 5 / 30,
     config: {
       cycling: null,
-      durationMin: 25,
+      duration: { kind: 'timed', minutes: 25 },
       intention: 'Task 7 development QA',
       mode: 'blacklist',
       rules: rulesFromLists(DEFAULT_LISTS),
-      scheduleEntryId: null,
+      scheduleOccurrence: null,
       source: 'manual',
       strictness: 'friction',
     },
