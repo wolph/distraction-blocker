@@ -51,7 +51,7 @@ import type {
   EventRecord,
   ListsConfig,
   MonthlyAgg,
-  SessionState,
+  NormalizedSessionStateV1,
   Settings,
   SetupState,
   StreakState,
@@ -173,7 +173,7 @@ function localPolicy(setup: SetupState): Record<string, unknown> {
 }
 
 function runtimeWithActiveSession(now: number): RuntimeState {
-  const activeSession: SessionState = {
+  const activeSession: NormalizedSessionStateV1 = {
     sessionId: 'active-session',
     config: {
       mode: 'blacklist',

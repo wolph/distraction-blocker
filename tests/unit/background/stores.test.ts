@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/background/list-sync-codec';
+import { projectRuntimeDomainV2 } from '../../../src/background/runtime-checkpoint-v2';
+import { emptyRuntimeV2 } from '../../../src/background/runtime-store-v2';
+import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import type { ParsedRuntimeState, RuntimeState } from '../../../src/background/stores';
 import {
-  emptyRuntime,
   loadBank,
   loadLists,
   loadMatcherCache,
@@ -34,12 +36,7 @@ import {
   SYNC_SETTINGS,
   SYNC_STREAK,
 } from '../../../src/shared/storage-keys';
-import type {
-  DailyAgg,
-  ListsConfig,
-  Settings,
-  StreakState,
-} from '../../../src/shared/types';
+import type { DailyAgg, ListsConfig, Settings, StreakState } from '../../../src/shared/types';
 
 afterEach((): void => {
   vi.unstubAllGlobals();
@@ -497,11 +494,14 @@ describe('storage default merging', () => {
   });
 });
 
+const EPOCH_ID: string = '30000000-0000-4000-8000-000000000001';
+
 describe('runtime storage migration', () => {
   it('sanitizes restart runtime history without changing active runtime ownership', (): void => {
     const now: number = new Date(2026, 7, 29, 12, 0).getTime();
-    const runtime: RuntimeState = {
-      ...emptyRuntime(now),
+    const empty: RuntimeStateV2 = emptyRuntimeV2(now, EPOCH_ID);
+    const runtime: RuntimeStateV2 = {
+      ...empty,
       gate: {
         kind: 'pause',
         host: null,
@@ -512,12 +512,16 @@ describe('runtime storage migration', () => {
       unlocks: [{ host: 'allowed.example', until: now + 60_000 }],
       todayAgg: { ...emptyDaily('2026-08-29'), focusMs: 60_000 },
       commitCheckpoint: {
+        version: 2,
+        checkpointId: 'restart-history',
+        projection: projectRuntimeDomainV2(empty),
         bank: { balanceMs: 42_000 },
         events: [{ t: 'budgetEarned', at: now, ms: 1_000 }],
         syncBank: true,
         aggregateSets: {
           'agg:device:2026-08-29': { ...emptyDaily('2026-08-29'), focusMs: 60_000 },
         },
+        aggregateRemoves: [],
       },
     };
 
