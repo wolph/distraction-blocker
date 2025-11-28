@@ -4,21 +4,23 @@ import { DEFAULT_LISTS, DEFAULT_SETTINGS, rulesFromLists } from '../../../src/sh
 import type { ListsConfig, ScheduleEntry, SessionState, Settings } from '../../../src/shared/types';
 
 const hardSession: SessionState = {
+  version: 2,
+  sessionId: '10000000-0000-4000-8000-000000000001',
   config: {
     mode: 'blacklist',
     strictness: 'hard',
-    durationMin: 60,
+    duration: { kind: 'timed', minutes: 60 },
     cycling: null,
     intention: '',
     source: 'manual',
-    scheduleEntryId: null,
+    scheduleOccurrence: null,
     rules: rulesFromLists(DEFAULT_LISTS),
   },
   startedAt: 0,
-  sessionEndsAt: 1,
+  sessionEndsAt: 3_600_000,
   phase: 'focus',
   phaseStartedAt: 0,
-  phaseEndsAt: 1,
+  phaseEndsAt: 3_600_000,
   cycleIndex: 0,
   pausedFrom: null,
   focusedMs: 0,
@@ -117,6 +119,7 @@ const scheduleEntry: ScheduleEntry = {
   days: [1, 2, 3],
   start: '09:00',
   end: '12:00',
+  duration: { kind: 'window' },
   mode: 'blacklist',
   strictness: 'hard',
   cycling: null,
@@ -212,7 +215,16 @@ describe('settingsChangeAllowed', () => {
   it('rejects disabling or shortening the schedule entry the session came from', () => {
     const fromSchedule: SessionState = {
       ...hardSession,
-      config: { ...hardSession.config, source: 'schedule', scheduleEntryId: 'e1' },
+      config: {
+        ...hardSession.config,
+        source: 'schedule',
+        scheduleOccurrence: {
+          version: 1,
+          token: 'e1@2026-09-03',
+          entryId: 'e1',
+          localStartDate: '2026-09-03',
+        },
+      },
     };
     const current: Settings = { ...DEFAULT_SETTINGS, schedule: [scheduleEntry] };
     const disabled: Settings = {
@@ -252,7 +264,16 @@ describe('settingsChangeAllowed', () => {
   it('allows strengthening or no-effect edits to the source schedule entry', () => {
     const fromSchedule: SessionState = {
       ...hardSession,
-      config: { ...hardSession.config, source: 'schedule', scheduleEntryId: 'e1' },
+      config: {
+        ...hardSession.config,
+        source: 'schedule',
+        scheduleOccurrence: {
+          version: 1,
+          token: 'e1@2026-09-03',
+          entryId: 'e1',
+          localStartDate: '2026-09-03',
+        },
+      },
     };
     const frictionEntry: ScheduleEntry = { ...scheduleEntry, strictness: 'friction' };
     const current: Settings = { ...DEFAULT_SETTINGS, schedule: [frictionEntry] };

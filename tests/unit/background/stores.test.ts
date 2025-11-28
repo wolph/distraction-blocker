@@ -2,7 +2,6 @@ import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/background/list-sync-codec';
 import type { ParsedRuntimeState, RuntimeState } from '../../../src/background/stores';
 import {
-  appendEvents,
   emptyRuntime,
   loadBank,
   loadLists,
@@ -15,7 +14,6 @@ import {
   mergeSettings,
   migrateRuntimeRules,
   parseStoredSettings,
-  readEvents,
   sanitizeRuntimeForLocalHistory,
   saveMatcherCache,
 } from '../../../src/background/stores';
@@ -29,7 +27,6 @@ import {
 } from '../../../src/shared/constants';
 import {
   LOCAL_CACHES,
-  LOCAL_EVENTS,
   LOCAL_LISTS_SNAPSHOT,
   LOCAL_RUNTIME,
   SYNC_BANK,
@@ -39,7 +36,6 @@ import {
 } from '../../../src/shared/storage-keys';
 import type {
   DailyAgg,
-  EventRecord,
   ListsConfig,
   Settings,
   StreakState,
@@ -1043,120 +1039,5 @@ describe('runtime storage migration', () => {
         stoppedDocumentId: 'document-one',
       },
     });
-  });
-});
-
-describe('event storage replay', () => {
-  it('drops malformed stored events while preserving valid records', async () => {
-    const valid: EventRecord = {
-      t: 'budgetEarned',
-      at: 1,
-      ms: 500,
-      sessionId: 'session-one',
-    };
-    const identityAssigned: EventRecord = {
-      t: 'sessionIdentityAssigned',
-      at: 2,
-      startedAt: 0,
-      sessionId: 'session-one',
-    };
-    const state: Record<string, unknown> = {
-      [LOCAL_EVENTS]: [
-        valid,
-        identityAssigned,
-        null,
-        { t: 'budgetEarned', at: Number.NaN, ms: 500 },
-        { t: 'sessionIdentityAssigned', at: 2, startedAt: 0 },
-        { t: 'sessionIdentityAssigned', at: 2, startedAt: -1, sessionId: 'session-one' },
-        { t: 'sessionIdentityAssigned', at: 2, startedAt: 0, sessionId: ' ' },
-        { t: 'unknown', at: 2 },
-      ],
-    };
-    vi.stubGlobal('chrome', {
-      storage: {
-        local: {
-          get: vi.fn(async (): Promise<Record<string, unknown>> => state),
-          set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
-            Object.assign(state, items);
-          }),
-        },
-      },
-    });
-
-    await expect(readEvents()).resolves.toEqual([valid, identityAssigned]);
-    await appendEvents([{ t: 'pauseTaken', at: 2, ms: 100, sessionId: 'session-one' }]);
-    expect(state[LOCAL_EVENTS]).toEqual([
-      valid,
-      identityAssigned,
-      { t: 'pauseTaken', at: 2, ms: 100, sessionId: 'session-one' },
-    ]);
-  });
-
-  it('repairs a non-array event log before appending', async () => {
-    const event: EventRecord = { t: 'budgetEarned', at: 1, ms: 500 };
-    const state: Record<string, unknown> = { [LOCAL_EVENTS]: { malformed: true } };
-    vi.stubGlobal('chrome', {
-      storage: {
-        local: {
-          get: vi.fn(async (): Promise<Record<string, unknown>> => state),
-          set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
-            Object.assign(state, items);
-          }),
-        },
-      },
-    });
-
-    await expect(appendEvents([event])).resolves.toBeUndefined();
-    expect(state[LOCAL_EVENTS]).toEqual([event]);
-  });
-
-  it('does not append an identical checkpoint event twice', async () => {
-    const event = {
-      t: 'budgetEarned' as const,
-      at: 1,
-      ms: 500,
-      sessionId: 'session-one',
-    };
-    const state: Record<string, unknown> = { [LOCAL_EVENTS]: [] };
-    vi.stubGlobal('chrome', {
-      storage: {
-        local: {
-          get: vi.fn(async (): Promise<Record<string, unknown>> => state),
-          set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
-            Object.assign(state, items);
-          }),
-        },
-      },
-    });
-
-    await appendEvents([event]);
-    await appendEvents([event]);
-
-    expect(state[LOCAL_EVENTS]).toEqual([event]);
-  });
-
-  it('continues appending after an event-log write rejects', async () => {
-    const state: Record<string, unknown> = { [LOCAL_EVENTS]: [] };
-    const first: EventRecord = { t: 'budgetEarned', at: 1, ms: 500 };
-    const second: EventRecord = { t: 'pauseTaken', at: 2, ms: 100 };
-    const setLocal = vi
-      .fn<(items: Record<string, unknown>) => Promise<void>>()
-      .mockRejectedValueOnce(new Error('event storage unavailable'))
-      .mockImplementation(async (items: Record<string, unknown>): Promise<void> => {
-        Object.assign(state, items);
-      });
-    vi.stubGlobal('chrome', {
-      storage: {
-        local: {
-          get: vi.fn(async (): Promise<Record<string, unknown>> => structuredClone(state)),
-          set: setLocal,
-        },
-      },
-    });
-
-    await expect(appendEvents([first])).rejects.toThrow('event storage unavailable');
-    await expect(appendEvents([second])).resolves.toBeUndefined();
-
-    expect(state[LOCAL_EVENTS]).toEqual([second]);
   });
 });
