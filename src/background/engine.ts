@@ -695,6 +695,15 @@ export class Engine {
     await this.controller.refreshLiveViews();
   }
 
+  /**
+   * The same refresh, for the policy paths that only need it while a session is live. An idle
+   * profile holds no frozen view worth refreezing.
+   */
+  private async refreshLiveViewsIfLive(): Promise<void> {
+    if (!this.controller.hasActiveSession()) return;
+    await this.controller.refreshLiveViews();
+  }
+
   async recordAttempt(
     url: string,
     tabId: number,
@@ -1025,9 +1034,12 @@ export class Engine {
   }
 
   async updateTheme(theme: ThemeMode): Promise<Ack> {
-    return this.enqueuePolicyMutation(
-      (): Promise<Ack> => this.updateSettingsNow({ ...this.settings, theme }),
-    );
+    return this.enqueuePolicyMutation(async (): Promise<Ack> => {
+      const ack: Ack = await this.updateSettingsNow({ ...this.settings, theme });
+      // The frozen views carry the theme, so a change of it is a live update for every document.
+      if (ack.ok) await this.refreshLiveViewsIfLive();
+      return ack;
+    });
   }
 
   async updateLists(l: ListsConfig): Promise<Ack> {
@@ -1082,6 +1094,8 @@ export class Engine {
     this.needsBlocking = this.runtime.session !== null;
     const committedAt: number = this.ports.now();
     await this.commit(committedAt);
+    // A lists change moves what every open document must show, so the frozen views follow it.
+    await this.refreshLiveViewsIfLive();
     return { ok: true };
   }
 

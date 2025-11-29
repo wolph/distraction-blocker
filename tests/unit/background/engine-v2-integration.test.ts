@@ -2,7 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { main } from '../../../src/background/main';
 import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validation';
-import { DEFAULT_LISTS, DEFAULT_SETTINGS, DEFAULT_SETUP } from '../../../src/shared/constants';
+import { emptyRuntime } from '../../../src/background/stores';
+import { startSession as startLegacySession } from '../../../src/core/session';
+import {
+  DEFAULT_LISTS,
+  DEFAULT_SETTINGS,
+  DEFAULT_SETUP,
+  rulesFromLists,
+} from '../../../src/shared/constants';
 import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
 import type { Request } from '../../../src/shared/messages';
 import { isEventRecord } from '../../../src/shared/runtime-validation';
@@ -16,8 +23,13 @@ import {
   LOCAL_SETTINGS,
   LOCAL_SETUP,
 } from '../../../src/shared/storage-keys';
-import type { SessionConfigV2, SessionSnapshotV2 } from '../../../src/shared/types';
+import type {
+  NormalizedSessionConfigV1,
+  SessionConfigV2,
+  SessionSnapshotV2,
+} from '../../../src/shared/types';
 import { appliedResponseFor, epochResetResponseFor } from './runtime-ports-fake';
+import { pendingTransition, timedFocusSession, transitionRuntime } from './runtime-v2-fixtures';
 
 // The worker imports the content script as a built asset. Under vitest that module would evaluate
 // against a document that does not exist here, so the asset is stubbed with its built path.
@@ -63,12 +75,17 @@ interface WorkerHarness {
   stages(): string[];
   /** The stored event log, newest last. */
   events(): Array<Record<string, unknown>>;
+  /** Takes website access away, the way a revoked permission does. */
+  revokeWebsiteAccess(): void;
+  /** How many times the worker has written local storage, which is how a no-op wake is read. */
+  writes(): number;
   settle(): Promise<void>;
 }
 
 const NOW: number = new Date(2026, 8, 3, 9, 0, 0, 0).getTime();
 const CONTENT_SENDER: string = 'https://facebook.com/feed';
 const SESSION_UUID: string = '10000000-0000-4000-8000-000000000001';
+const DEFAULT_LISTS_BASELINE: string = rulesFromLists(DEFAULT_LISTS).baselineRevision;
 
 let clock: number = NOW;
 
@@ -87,6 +104,8 @@ async function bootWorker(
 ): Promise<WorkerHarness> {
   clock = NOW;
   const stages: string[] = [];
+  let websiteAccess: boolean = true;
+  let localWrites: number = 0;
   const local: Record<string, unknown> = structuredClone(seed);
   const sync: Record<string, unknown> = {};
   const syncWrites: Array<Record<string, unknown>> = [];
@@ -178,7 +197,7 @@ async function bootWorker(
       Reason: { AUDIO_PLAYBACK: 'AUDIO_PLAYBACK' },
     },
     permissions: {
-      contains: vi.fn().mockResolvedValue(true),
+      contains: vi.fn(async (): Promise<boolean> => websiteAccess),
       onAdded: { addListener: vi.fn() },
       onRemoved: { addListener: vi.fn() },
     },
@@ -209,7 +228,12 @@ async function bootWorker(
     },
     scripting: {
       executeScript: vi.fn().mockResolvedValue([]),
-      getRegisteredContentScripts: vi.fn().mockResolvedValue([]),
+      getRegisteredContentScripts: vi.fn(
+        async (): Promise<chrome.scripting.RegisteredContentScript[]> =>
+          websiteAccess
+            ? [{ id: 'focus-lock-content' } as chrome.scripting.RegisteredContentScript]
+            : [],
+      ),
       registerContentScripts: vi.fn().mockResolvedValue(undefined),
       unregisterContentScripts: vi.fn().mockResolvedValue(undefined),
     },
@@ -226,6 +250,7 @@ async function bootWorker(
           );
         }),
         set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+          localWrites += 1;
           Object.assign(local, structuredClone(items));
           const runtime: RuntimeStateV2 | null = parseRuntimeStateV2(local[LOCAL_RUNTIME]);
           const stage: string | undefined = runtime?.pendingEnforcementTransition?.stage;
@@ -333,6 +358,10 @@ async function bootWorker(
     notices,
     settle,
     stages: (): string[] => [...stages],
+    revokeWebsiteAccess: (): void => {
+      websiteAccess = false;
+    },
+    writes: (): number => localWrites,
     events: (): Array<Record<string, unknown>> =>
       (local[LOCAL_EVENTS] as Array<Record<string, unknown>> | undefined) ?? [],
     runtime: (): RuntimeStateV2 => {
@@ -378,6 +407,11 @@ function attemptsOf(worker: WorkerHarness): number {
     (total: number, count: number): number => total + count,
     0,
   );
+}
+
+/** The command map key one document owns. */
+function documentKeyOf(document: FakeDocument): string {
+  return `${document.tabId}:${document.documentId}`;
 }
 
 function indefiniteConfig(): SessionConfigV2 {
@@ -703,6 +737,210 @@ describe('worker cutover to v2 session authority', (): void => {
     expect(log.every(isEventRecord)).toBe(true);
     // A legacy shape wearing the v2 version but no id is still not a v2 record.
     expect(isEventRecord({ ...(legacy as Record<string, unknown>), version: 2 })).toBe(false);
+  });
+
+  it('migrates a stored v1 session and publishes it as active', async (): Promise<void> => {
+    // The worker reads the real clock, so the stored session is seeded against it: a session that
+    // already ran out would migrate straight into its closure instead.
+    const startedAt: number = Date.now() - 300_000;
+    const legacyConfig: NormalizedSessionConfigV1 = {
+      mode: 'blacklist',
+      strictness: 'friction',
+      durationMin: 25,
+      cycling: null,
+      intention: 'migrated session',
+      source: 'manual',
+      scheduleEntryId: null,
+      rules: {
+        baselineRevision: DEFAULT_LISTS_BASELINE,
+        baselineCategories: DEFAULT_LISTS.categories,
+        categories: { ...DEFAULT_LISTS.categories, social: true },
+        exclusions: {},
+        permanentBlacklist: [],
+        permanentAllowlist: [],
+        sessionBlacklist: [],
+        sessionAllowlist: [],
+      },
+    };
+    const legacyRuntime: Record<string, unknown> = {
+      ...emptyRuntime(Date.now()),
+      session: startLegacySession(legacyConfig, startedAt, SESSION_UUID),
+    };
+    const worker: WorkerHarness = await bootWorker({
+      ...installedSeed(),
+      [LOCAL_RUNTIME]: legacyRuntime,
+    });
+
+    // The stored v1 session is the authority the boot migrates, and recovery publishes it.
+    const runtime: RuntimeStateV2 = worker.runtime();
+    expect(runtime.runtimeSchemaVersion).toBe(2);
+    expect(runtime.session?.config.duration).toEqual({ kind: 'timed', minutes: 25 });
+    expect(runtime.session?.config.intention).toBe('migrated session');
+    expect(runtime.session?.sessionId).toBe(SESSION_UUID);
+    // The migration checkpoint is cleared once the migration it recorded is finished.
+    expect(worker.local[LOCAL_RUNTIME_MIGRATION]).toBeUndefined();
+    expect(worker.local[LOCAL_RUNTIME_SCHEMA]).toEqual({ runtimeSchemaVersion: 2 });
+  });
+
+  it('refreshes every live view when the theme changes', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    const document: FakeDocument = {
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    };
+    worker.documents.push(document);
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+    const before: RuntimeStateV2 = worker.runtime();
+    const beforeCommand = before.documentCommands[documentKeyOf(document)];
+    const sentBefore: number = document.received.length;
+
+    await worker.send({ type: 'updateTheme', theme: 'dark' } as Request);
+    await worker.settle();
+
+    // A theme change is a live update: new operation, higher revision, and the documents get it.
+    const after: RuntimeStateV2 = worker.runtime();
+    const afterCommand = after.documentCommands[documentKeyOf(document)];
+    expect(after.runtimeRevision).toBeGreaterThan(before.runtimeRevision);
+    expect(afterCommand?.operationId).not.toBe(beforeCommand?.operationId);
+    expect(afterCommand?.runtimeRevision).toBe(after.runtimeRevision);
+    expect(document.received.length).toBeGreaterThan(sentBefore);
+  });
+
+  it('dispatches each alarm to the owner its name names', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    worker.documents.push({
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    });
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+    const sessionId: string | undefined = worker.runtime().session?.sessionId;
+
+    // A name no alarm owns is ignored: nothing settles and nothing publishes.
+    const beforeUnknown: number = worker.broadcasts.length;
+    const writesBefore: number = worker.writes();
+    await worker.fireAlarm('not-an-alarm');
+    expect(worker.broadcasts.length).toBe(beforeUnknown);
+    expect(worker.writes()).toBe(writesBefore);
+
+    // The tick settles and publishes, and the cleanup alarms find no journal of their own.
+    await worker.fireAlarm('tick');
+    expect(worker.broadcasts.length).toBeGreaterThan(beforeUnknown);
+    await worker.fireAlarm('transition-cleanup');
+    await worker.fireAlarm('closure-cleanup');
+
+    expect(worker.runtime().session?.sessionId).toBe(sessionId);
+    expect(worker.runtime().pendingClosure).toBeNull();
+    expect(parseRuntimeStateV2(worker.runtime())).not.toBeNull();
+  });
+
+  it('closes the session when website access is revoked', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    worker.documents.push({
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    });
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+
+    worker.revokeWebsiteAccess();
+    await worker.send({ type: 'reconcileWebsiteAccess' } as Request);
+    await worker.settle();
+
+    expect(worker.runtime().session).toBeNull();
+    const ended = worker
+      .events()
+      .filter((event): boolean => event.t === 'sessionEnded')
+      .at(-1);
+    expect(ended).toMatchObject({ reason: 'website-access-lost', outcome: 'canceled' });
+  });
+
+  it('never broadcasts a config for a lifecycle that is not active', async (): Promise<void> => {
+    // A committed transition is the case that matters: the session is durable while the lifecycle
+    // is not active, so a projection that read the session would leak its config to every page.
+    const worker: WorkerHarness = await bootWorker({
+      ...installedSeed(),
+      [LOCAL_RUNTIME]: transitionRuntime(pendingTransition('start', 'alarm-ready'), {
+        session: timedFocusSession(),
+      }),
+    });
+    worker.documents.push({
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    });
+    await worker.fireAlarm('tick');
+
+    expect(worker.broadcasts.length).toBeGreaterThan(0);
+    for (const snapshot of worker.broadcasts) {
+      if (snapshot.lifecycle.kind === 'active') continue;
+      expect(snapshot.config).toBeNull();
+      expect(snapshot.phase).toBe('idle');
+      expect(snapshot.sessionEndsAt).toBeNull();
+    }
+    expect(
+      worker.broadcasts.some((snapshot): boolean => snapshot.lifecycle.kind !== 'active'),
+    ).toBe(true);
+  });
+
+  it('keeps the v2 start event when a v1 attempt is appended after it', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    const document: FakeDocument = {
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    };
+    worker.documents.push(document);
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+    const sessionId: string = worker.runtime().session?.sessionId ?? '';
+
+    // The attempt rides the retained engine's writer, which must be the v2 one.
+    await worker.send(
+      { type: 'getBlockState', url: document.url, docState: 'fresh' } as Request,
+      tabSender(document),
+    );
+    await worker.settle();
+
+    const events = worker.events();
+    expect(events.filter((event): boolean => event.t === 'attempt')).toHaveLength(1);
+    expect(
+      events.filter(
+        (event): boolean => event.t === 'sessionStarted' && event.eventId === `${sessionId}:start`,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('recovers a restarted worker without repeating the start event', async (): Promise<void> => {
+    const first: WorkerHarness = await bootWorker(installedSeed());
+    first.documents.push({
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    });
+    await first.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await first.settle();
+    const sessionId: string = first.runtime().session?.sessionId ?? '';
+    const storedAfterStart: Record<string, unknown> = structuredClone(first.local);
+
+    // The same storage, a new worker: recovery resumes the session it finds.
+    const second: WorkerHarness = await bootWorker(storedAfterStart);
+
+    expect(second.runtime().session?.sessionId).toBe(sessionId);
+    expect(second.broadcasts.at(-1)?.lifecycle.kind).toBe('active');
+    expect(second.events().filter((event): boolean => event.t === 'sessionStarted')).toHaveLength(
+      1,
+    );
   });
 
   it('never writes runtime or event keys into sync', async (): Promise<void> => {

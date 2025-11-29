@@ -1201,8 +1201,12 @@ export function main(): void {
     },
   );
 
-  chrome.alarms.onAlarm.addListener((): void => {
-    void ready.then((engine: Engine): Promise<void> => engine.tick()).catch(reportBackgroundError);
+  // One wake, routed by the name it carries: the tick settles, a phase alarm settles its boundary,
+  // and each cleanup alarm runs only the journal it belongs to.
+  chrome.alarms.onAlarm.addListener((alarm: chrome.alarms.Alarm): void => {
+    void ready
+      .then((engine: Engine): Promise<void> => engine.handleAlarm(alarm.name))
+      .catch(reportBackgroundError);
   });
 
   registerTabListeners((): Promise<Engine> => ready, reportBackgroundError);
