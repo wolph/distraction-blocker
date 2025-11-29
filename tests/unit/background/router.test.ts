@@ -1,19 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AlarmNameV2, ScheduledAlarmV2 } from '../../../src/background/alarms-v2';
 import { Engine, type EnginePorts } from '../../../src/background/engine';
+import { readEventsV2 } from '../../../src/background/event-log-v2';
 import type { PolicyStorage } from '../../../src/background/policy-storage';
 import { routeMessage } from '../../../src/background/router';
+import { emptyRuntimeV2 } from '../../../src/background/runtime-store-v2';
+import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import { type AggregateStorage, fetchStats } from '../../../src/background/stats-service';
-import { emptyRuntime, type RuntimeState, readEvents } from '../../../src/background/stores';
 import {
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
   DEFAULT_SETUP,
-  emptySnapshot,
   rulesFromLists,
 } from '../../../src/shared/constants';
+import type { DocumentEnforcementCommand } from '../../../src/shared/enforcement-v2';
 import type { StatsBundle } from '../../../src/shared/messages';
 import { isWebsiteAccessReconciliation } from '../../../src/shared/runtime-validation';
 import type {
+  DailyAgg,
   EventRecord,
   ListsConfig,
   OnboardingDraft,
@@ -23,12 +27,15 @@ import type {
 
 vi.mock('../../../src/background/audio', () => ({ playSound: vi.fn() }));
 vi.mock('../../../src/background/stats-service', () => ({ fetchStats: vi.fn() }));
-vi.mock('../../../src/background/stores', async () => {
-  const actual: typeof import('../../../src/background/stores') = await vi.importActual(
-    '../../../src/background/stores',
+vi.mock('../../../src/background/event-log-v2', async () => {
+  const actual: typeof import('../../../src/background/event-log-v2') = await vi.importActual(
+    '../../../src/background/event-log-v2',
   );
-  return { ...actual, readEvents: vi.fn() };
+  return { ...actual, readEventsV2: vi.fn() };
 });
+
+/** The engine fixture boots on one fixed enforcement epoch so its runtime parses. */
+const ENGINE_EPOCH_ID: string = '30000000-0000-4000-8000-0000000000a1';
 
 const overlay: ReturnType<Engine['statsOverlay']> = {
   deviceId: 'devA',
@@ -86,15 +93,27 @@ function onboardingStorage(
   } as unknown as PolicyStorage;
 }
 
+/** Every v2 identity the runtime parses is a UUID, so the fixture mints real ones. */
+function uuidMinter(): () => string {
+  let minted: number = 0;
+  return (): string => {
+    minted += 1;
+    return `40000000-0000-4000-8000-${String(minted).padStart(12, '0')}`;
+  };
+}
+
 function realBlockingEngine(options?: {
   now?: () => number;
-  saveRuntime?: (runtime: RuntimeState) => Promise<void> | void;
+  saveRuntime?: (runtime: RuntimeStateV2) => Promise<void> | void;
 }): Engine {
+  const now: () => number = options?.now ?? ((): number => new Date(2026, 7, 31, 12, 0).getTime());
+  // The controller reads its alarms back, so the fixture remembers what it was asked to schedule.
+  const alarms: Map<string, ScheduledAlarmV2> = new Map<string, ScheduledAlarmV2>();
   const ports: EnginePorts = {
-    now: options?.now ?? ((): number => new Date(2026, 7, 31, 12, 0).getTime()),
-    newId: (): string => 'new-id',
+    now,
+    newId: uuidMinter(),
     rehydrateAfterDataClear: async (): Promise<string> => 'device-rehydrated',
-    saveRuntime: async (runtime: RuntimeState): Promise<void> => options?.saveRuntime?.(runtime),
+    saveRuntime: async (runtime: RuntimeStateV2): Promise<void> => options?.saveRuntime?.(runtime),
     saveMatcherCache: async (): Promise<void> => undefined,
     queueSync: (): void => undefined,
     supersedeSync: (): void => undefined,
@@ -111,17 +130,61 @@ function realBlockingEngine(options?: {
     reportError: (): void => undefined,
     websiteBlockingReady: (): boolean => true,
     hasPendingSync: (): boolean => false,
+    auditEnforcement: async (): Promise<'ready'> => 'ready',
+    targets: {
+      queryTopFrameTabs: async (): Promise<Array<{ tabId: number; url: string | null }>> => [],
+      topFrameDocumentId: async (): Promise<string | null> => null,
+      readTargetGeneration: (): number => 0,
+      now,
+    },
+    transport: {
+      sendToDocument: async (): Promise<unknown> => undefined,
+    },
+    alarms: {
+      create: async (name: AlarmNameV2, when: number): Promise<void> => {
+        alarms.set(name, { scheduledTime: when, periodInMinutes: null });
+      },
+      createPeriodic: async (name: AlarmNameV2, periodInMinutes: number): Promise<void> => {
+        alarms.set(name, { scheduledTime: now(), periodInMinutes });
+      },
+      get: async (name: AlarmNameV2): Promise<ScheduledAlarmV2 | null> => alarms.get(name) ?? null,
+      clear: async (name: AlarmNameV2): Promise<void> => {
+        alarms.delete(name);
+      },
+    },
+    loadAggregates: async (): Promise<Record<string, DailyAgg>> => ({}),
+    clearBlockingForNonBlockingPhase: async (): Promise<void> => undefined,
+    restoreTabClaims: async (): Promise<number[]> => [],
+    reloadStoppedDocuments: async (): Promise<void> => undefined,
   };
-  const now: number = ports.now();
   return new Engine(
     ports,
     DEFAULT_SETTINGS,
     { ...DEFAULT_LISTS, custom: [{ kind: 'host', pattern: 'facebook.com' }] },
     { balanceMs: 0 },
     null,
-    emptyRuntime(now),
+    emptyRuntimeV2(now(), ENGINE_EPOCH_ID),
     'device-id',
   );
+}
+
+/** The one blocked enforcement command the router reads a stopped page out of. */
+function blockingCommand(url: string, documentId: string): DocumentEnforcementCommand {
+  return {
+    version: 1,
+    command: 'apply-enforcement',
+    operationId: '40000000-0000-4000-8000-0000000000ff',
+    enforcementEpoch: ENGINE_EPOCH_ID,
+    sessionId: null,
+    reservedSessionId: null,
+    basePolicyRevision: 1,
+    runtimeRevision: 1,
+    documentId,
+    expectedUrl: url,
+    presentation: 'active',
+    verdict: { blocked: true, reason: 'custom', categoryId: null, matchedPattern: url },
+    overlay: null,
+  };
 }
 
 describe('routeMessage onboarding wiring', (): void => {
@@ -659,17 +722,17 @@ describe('routeMessage onboarding wiring', (): void => {
   });
 
   it.each(['enableSync', 'selectLocalMode'] as const)(
-    'returns a valid blocked state while %s holds the Engine storage barrier',
+    'answers nothing and writes nothing while %s holds the Engine storage barrier',
     async (transition: 'enableSync' | 'selectLocalMode'): Promise<void> => {
       const blockingEngine: Engine = realBlockingEngine();
       const config: SessionConfig = {
         mode: 'blacklist',
         strictness: 'friction',
-        durationMin: 25,
+        duration: { kind: 'timed', minutes: 25 },
         cycling: null,
         intention: 'finish the launch',
         source: 'manual',
-        scheduleEntryId: null,
+        scheduleOccurrence: null,
         rules: rulesFromLists({
           ...DEFAULT_LISTS,
           custom: [{ kind: 'host', pattern: 'facebook.com' }],
@@ -716,92 +779,15 @@ describe('routeMessage onboarding wiring', (): void => {
               documentId: 'document-id',
             },
           ),
-        ).resolves.toMatchObject({
-          verdict: { blocked: true },
-          snapshot: { phase: 'focus' },
-        });
+        ).resolves.toEqual({ commands: [] });
       } finally {
         releaseBarrier();
         await changingMode;
       }
-      expect(blockingEngine.tabFacts(7, url, 'document-id').wasStopped).toBe(true);
-      expect(blockingEngine.statsOverlay().todayAgg.attempts['facebook.com']).toBe(1);
+      expect(blockingEngine.tabFacts(7, url, 'document-id').wasStopped).toBe(false);
+      expect(blockingEngine.statsOverlay().todayAgg.attempts['facebook.com']).toBeUndefined();
     },
   );
-
-  it('persists only the stopped stage when the barrier starts after attempt recording', async (): Promise<void> => {
-    const initialNow: number = new Date(2026, 7, 31, 12, 0).getTime();
-    let now: number = initialNow;
-    let armed: boolean = false;
-    let releaseBarrier: () => void = (): void => undefined;
-    let signalBarrierHeld: () => void = (): void => undefined;
-    const barrierBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
-      releaseBarrier = resolve;
-    });
-    const barrierHeld: Promise<void> = new Promise<void>((resolve: () => void): void => {
-      signalBarrierHeld = resolve;
-    });
-    const savedRuntimes: RuntimeState[] = [];
-    let barrier: Promise<void> | null = null;
-    let blockingEngine: Engine;
-    blockingEngine = realBlockingEngine({
-      now: (): number => now,
-      saveRuntime: (runtime: RuntimeState): void => {
-        savedRuntimes.push(structuredClone(runtime));
-        if (!armed || barrier !== null || runtime.todayAgg?.attempts['facebook.com'] !== 1) {
-          return;
-        }
-        barrier = blockingEngine.runWithAggregateStorageBarrier(async (): Promise<void> => {
-          signalBarrierHeld();
-          await barrierBlocked;
-        });
-      },
-    });
-    await blockingEngine.startSession({
-      mode: 'blacklist',
-      strictness: 'friction',
-      durationMin: 25,
-      cycling: null,
-      intention: 'finish the launch',
-      source: 'manual',
-      scheduleEntryId: null,
-      rules: rulesFromLists({
-        ...DEFAULT_LISTS,
-        custom: [{ kind: 'host', pattern: 'facebook.com' }],
-      }),
-    });
-    armed = true;
-    const url: string = 'https://facebook.com/feed';
-
-    await expect(
-      routeMessage(
-        blockingEngine,
-        { type: 'getBlockState', url, docState: 'fresh' },
-        {
-          url,
-          tab: { id: 7, url } as chrome.tabs.Tab,
-          documentId: 'document-between-stages',
-        },
-      ),
-    ).resolves.toMatchObject({
-      verdict: { blocked: true },
-      snapshot: { phase: 'focus' },
-    });
-    await barrierHeld;
-    expect(Object.values(savedRuntimes.at(-1)?.deferredBlockClaims ?? {})).toContainEqual(
-      expect.objectContaining({
-        documentId: 'document-between-stages',
-        stage: 'stopped',
-      }),
-    );
-
-    now = initialNow + 31_000;
-    releaseBarrier();
-    await barrier;
-
-    expect(blockingEngine.statsOverlay().todayAgg.attempts['facebook.com']).toBe(1);
-    expect(blockingEngine.tabFacts(7, url, 'document-between-stages').wasStopped).toBe(true);
-  });
 
   it('clears local history through the serialized storage adapter', async (): Promise<void> => {
     const storage: PolicyStorage = onboardingStorage();
@@ -1122,7 +1108,7 @@ describe('routeMessage stats wiring', () => {
         focusedMs: 60_000,
       },
     ];
-    vi.mocked(readEvents).mockResolvedValue(events);
+    vi.mocked(readEventsV2).mockResolvedValue(events);
 
     const result: unknown = await routeMessage(engine, { type: 'exportEvents' }, sender);
 
@@ -1137,11 +1123,11 @@ describe('routeMessage session category override wiring', (): void => {
     const config: SessionConfig = {
       mode: 'blacklist',
       strictness: 'friction',
-      durationMin: 25,
+      duration: { kind: 'timed', minutes: 25 },
       cycling: null,
       intention: 'finish the launch',
       source: 'manual',
-      scheduleEntryId: null,
+      scheduleOccurrence: null,
       rules: {
         ...rulesFromLists(before),
         categories: { ...before.categories, social: true },
@@ -1150,7 +1136,7 @@ describe('routeMessage session category override wiring', (): void => {
 
     await expect(
       routeMessage(blockingEngine, { type: 'startSession', config }, sender),
-    ).resolves.toEqual({ ok: true });
+    ).resolves.toEqual({ ok: true, code: 'ok' });
     const url: string = 'https://instagram.com/explore';
     await expect(
       routeMessage(
@@ -1162,7 +1148,15 @@ describe('routeMessage session category override wiring', (): void => {
           documentId: 'category-override-document',
         },
       ),
-    ).resolves.toMatchObject({ verdict: { blocked: true }, snapshot: { phase: 'focus' } });
+    ).resolves.toMatchObject({
+      commands: expect.arrayContaining([
+        expect.objectContaining({
+          command: 'apply-enforcement',
+          verdict: expect.objectContaining({ blocked: true }),
+          overlay: expect.objectContaining({ presentation: 'active', phase: 'focus' }),
+        }),
+      ]),
+    });
     expect(blockingEngine.getLists()).toEqual(before);
   });
 });
@@ -1185,17 +1179,11 @@ describe('routeMessage tab identity wiring', () => {
     const documentId = 'document-one';
     const markStopped = vi.fn().mockResolvedValue(undefined);
     const rebindTab = vi.fn();
+    const documentCommandsFor = vi.fn().mockResolvedValue([blockingCommand(url, documentId)]);
     const blockingEngine: Engine = {
-      verdictFor: vi.fn(() => ({
-        blocked: true,
-        reason: 'custom',
-        categoryId: null,
-        matchedPattern: url,
-      })),
-      recordAttempt: vi.fn().mockResolvedValue(undefined),
+      documentCommandsFor,
       rebindTab,
       markStopped,
-      snapshotPersisted: vi.fn().mockResolvedValue(emptySnapshot(0)),
     } as unknown as Engine;
     const tabSender: chrome.runtime.MessageSender = {
       tab: { id: 7, url } as chrome.tabs.Tab,
@@ -1209,6 +1197,7 @@ describe('routeMessage tab identity wiring', () => {
       tabSender,
     );
 
+    expect(documentCommandsFor).toHaveBeenCalledWith({ tabId: 7, documentId, url }, 'navigation');
     expect(markStopped).toHaveBeenCalledWith(7, url, documentId);
     expect(rebindTab).not.toHaveBeenCalled();
   });
@@ -1216,45 +1205,37 @@ describe('routeMessage tab identity wiring', () => {
   it('fails closed when a fresh sender has no document identity', async () => {
     const url: string = 'https://blocked.example/page';
     const markStopped = vi.fn().mockResolvedValue(undefined);
+    const documentCommandsFor = vi.fn().mockResolvedValue([blockingCommand(url, 'document-one')]);
     const blockingEngine: Engine = {
-      verdictFor: vi.fn(() => ({
-        blocked: true,
-        reason: 'custom',
-        categoryId: null,
-        matchedPattern: url,
-      })),
-      recordAttempt: vi.fn().mockResolvedValue(undefined),
+      documentCommandsFor,
       rebindTab: vi.fn(),
       markStopped,
-      snapshotPersisted: vi.fn().mockResolvedValue(emptySnapshot(0)),
     } as unknown as Engine;
 
-    await routeMessage(
-      blockingEngine,
-      { type: 'getBlockState', url, docState: 'fresh' },
-      { tab: { id: 7, url } as chrome.tabs.Tab, url },
-    );
+    await expect(
+      routeMessage(
+        blockingEngine,
+        { type: 'getBlockState', url, docState: 'fresh' },
+        { tab: { id: 7, url } as chrome.tabs.Tab, url },
+      ),
+    ).resolves.toEqual({ commands: [] });
 
+    expect(documentCommandsFor).not.toHaveBeenCalled();
     expect(markStopped).not.toHaveBeenCalled();
   });
 
   it('ignores stale block-state mutations after the tab navigates', async () => {
     const oldUrl: string = 'https://blocked.example/old';
     const newUrl: string = 'https://allowed.example/new';
-    const recordAttempt = vi.fn().mockResolvedValue(undefined);
     const rebindTab = vi.fn();
     const markStopped = vi.fn().mockResolvedValue(undefined);
+    const documentCommandsFor = vi
+      .fn()
+      .mockResolvedValue([blockingCommand(oldUrl, 'document-one')]);
     const blockingEngine: Engine = {
-      verdictFor: vi.fn(() => ({
-        blocked: true,
-        reason: 'custom',
-        categoryId: null,
-        matchedPattern: oldUrl,
-      })),
-      recordAttempt,
+      documentCommandsFor,
       rebindTab,
       markStopped,
-      snapshotPersisted: vi.fn().mockResolvedValue(emptySnapshot(0)),
     } as unknown as Engine;
     const staleSender: chrome.runtime.MessageSender = {
       tab: { id: 7, url: newUrl } as chrome.tabs.Tab,
@@ -1268,7 +1249,7 @@ describe('routeMessage tab identity wiring', () => {
     );
 
     expect(rebindTab).not.toHaveBeenCalled();
-    expect(recordAttempt).not.toHaveBeenCalled();
+    expect(documentCommandsFor).not.toHaveBeenCalled();
     expect(markStopped).not.toHaveBeenCalled();
   });
 });

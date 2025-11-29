@@ -24,7 +24,7 @@ type RequestByType = {
 const SESSION_CONFIG: SessionConfig = {
   mode: 'blacklist',
   strictness: 'friction',
-  durationMin: 25,
+  duration: { kind: 'timed', minutes: 25 },
   cycling: {
     focusMin: 25,
     shortBreakMin: 5,
@@ -33,7 +33,7 @@ const SESSION_CONFIG: SessionConfig = {
   },
   intention: 'Ship the parser',
   source: 'manual',
-  scheduleEntryId: null,
+  scheduleOccurrence: null,
   rules: rulesFromLists(DEFAULT_LISTS),
 };
 
@@ -81,7 +81,11 @@ const VALID_REQUESTS: RequestByType = {
   openGate: { type: 'openGate', gate: 'unlockSite', host: 'news.example' },
   confirmGate: { type: 'confirmGate', typedPhrase: null },
   requestSessionEnd: { type: 'requestSessionEnd' },
+  openEndGate: { type: 'openEndGate' },
   abandonGate: { type: 'abandonGate' },
+  retryTransitionCleanup: { type: 'retryTransitionCleanup' },
+  retryClosureCleanup: { type: 'retryClosureCleanup' },
+  retryDataClear: { type: 'retryDataClear' },
   resumeFromPause: { type: 'resumeFromPause' },
   startNextFocusEarly: { type: 'startNextFocusEarly' },
   updateSettings: { type: 'updateSettings', settings: SETTINGS },
@@ -287,20 +291,27 @@ describe('parseRequest', (): void => {
   it.each([
     replaceNested(VALID_REQUESTS.startSession, 'config', { mode: 'other' }),
     replaceNested(VALID_REQUESTS.startSession, 'config', { strictness: 'other' }),
-    replaceNested(VALID_REQUESTS.startSession, 'config', { durationMin: -1 }),
-    replaceNested(VALID_REQUESTS.startSession, 'config', { durationMin: Number.NaN }),
-    replaceNested(VALID_REQUESTS.startSession, 'config', { durationMin: Number.POSITIVE_INFINITY }),
+    replaceNested(VALID_REQUESTS.startSession, 'config', {
+      duration: { kind: 'timed', minutes: -1 },
+    }),
+    replaceNested(VALID_REQUESTS.startSession, 'config', {
+      duration: { kind: 'timed', minutes: Number.NaN },
+    }),
+    replaceNested(VALID_REQUESTS.startSession, 'config', {
+      duration: { kind: 'timed', minutes: Number.POSITIVE_INFINITY },
+    }),
     replaceNested(VALID_REQUESTS.startSession, 'config', {
       source: 'manual',
-      scheduleEntryId: 'entry',
+      scheduleOccurrence: {
+        version: 1,
+        token: 'entry@2026-09-03',
+        entryId: 'entry',
+        localStartDate: '2026-09-03',
+      },
     }),
     replaceNested(VALID_REQUESTS.startSession, 'config', {
       source: 'schedule',
-      scheduleEntryId: null,
-    }),
-    replaceNested(VALID_REQUESTS.startSession, 'config', {
-      source: 'schedule',
-      scheduleEntryId: '   ',
+      scheduleOccurrence: null,
     }),
     replaceNested(VALID_REQUESTS.startSession, 'config', { cycling: [] }),
     replaceNested(VALID_REQUESTS.startSession, 'config', { extra: true }),
@@ -424,7 +435,12 @@ describe('parseRequest', (): void => {
     const config: SessionConfig = {
       ...SESSION_CONFIG,
       source: 'schedule',
-      scheduleEntryId: 'weekday-morning',
+      scheduleOccurrence: {
+        version: 1,
+        token: 'weekday-morning@2026-09-03',
+        entryId: 'weekday-morning',
+        localStartDate: '2026-09-03',
+      },
     };
     expect(parseRequest({ type: 'startSession', config })).toBeNull();
   });
@@ -717,16 +733,20 @@ describe('parseRequest', (): void => {
   it.each([
     [
       'zero session duration',
-      replaceNested(VALID_REQUESTS.startSession, 'config', { durationMin: 0 }),
+      replaceNested(VALID_REQUESTS.startSession, 'config', {
+        duration: { kind: 'timed', minutes: 0 },
+      }),
     ],
     [
       'sub-millisecond session duration',
-      replaceNested(VALID_REQUESTS.startSession, 'config', { durationMin: 0.000_001 }),
+      replaceNested(VALID_REQUESTS.startSession, 'config', {
+        duration: { kind: 'timed', minutes: 0.000_001 },
+      }),
     ],
     [
       'unsafe session duration',
       replaceNested(VALID_REQUESTS.startSession, 'config', {
-        durationMin: Number.MAX_SAFE_INTEGER,
+        duration: { kind: 'timed', minutes: Number.MAX_SAFE_INTEGER },
       }),
     ],
     [
@@ -799,7 +819,7 @@ describe('parseRequest', (): void => {
     const capMin: number = MAX_RELATIVE_DURATION_MS / MINUTE_MS;
     const config: SessionConfig = {
       ...SESSION_CONFIG,
-      durationMin: capMin,
+      duration: { kind: 'timed', minutes: capMin },
       cycling: {
         focusMin: capMin,
         shortBreakMin: capMin,
@@ -826,7 +846,7 @@ describe('parseRequest', (): void => {
     [
       'session duration',
       replaceNested(VALID_REQUESTS.startSession, 'config', {
-        durationMin: (MAX_RELATIVE_DURATION_MS + 1) / MINUTE_MS,
+        duration: { kind: 'timed', minutes: (MAX_RELATIVE_DURATION_MS + 1) / MINUTE_MS },
       }),
     ],
     [
@@ -904,6 +924,7 @@ function scheduleEntry(update: Record<string, unknown>): Record<string, unknown>
     days: [1, 2, 3, 4, 5],
     start: '09:00',
     end: '17:00',
+    duration: { kind: 'window' },
     mode: 'blacklist',
     strictness: 'hard',
     cycling: null,
