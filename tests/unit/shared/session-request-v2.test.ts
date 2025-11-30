@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, type Mock, vi } from 'vitest';
 import {
   type CommandResponseV2,
@@ -263,18 +261,5 @@ describe('v2 session request channel', (): void => {
     await expect(sendSessionRequestV2(REQUEST_SESSION_END)).rejects.toThrow(
       'Receiving end does not exist.',
     );
-  });
-
-  it('leaves the live v1 request union, response map, and sender untouched', (): void => {
-    const source: string = readFileSync(resolve('src/shared/messages.ts'), 'utf8');
-
-    expect(source).toContain('export type Request =');
-    expect(source).toContain("'startSession'; config: SessionConfig }");
-    expect(source).toContain('export interface ResponseMap {');
-    expect(source).toContain('  startSession: Ack;');
-    expect(source).toContain("export async function sendRequest<T extends Request['type']>(");
-    expect(source).toContain('  req: Extract<Request, { type: T }>,');
-    expect(source).toContain('): Promise<ResponseMap[T]> {');
-    expect(source).toContain('  return (await chrome.runtime.sendMessage(req)) as ResponseMap[T];');
   });
 });

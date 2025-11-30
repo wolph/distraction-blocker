@@ -85,21 +85,21 @@ const SESSION_RULES: SessionRuleSnapshot = {
 const CONFIG: SessionConfig = {
   mode: 'blacklist',
   strictness: 'flexible',
-  durationMin: 25,
+  duration: { kind: 'timed', minutes: 25 },
   cycling: null,
   intention: 'Review the release',
   source: 'manual',
-  scheduleEntryId: null,
+  scheduleOccurrence: null,
   rules: SESSION_RULES,
 };
 const LEGACY_CONFIG: Omit<SessionConfig, 'rules'> = {
   mode: 'blacklist',
   strictness: 'friction',
-  durationMin: 25,
+  duration: { kind: 'timed', minutes: 25 },
   cycling: null,
   intention: 'Review the release',
   source: 'manual',
-  scheduleEntryId: null,
+  scheduleOccurrence: null,
 };
 const SETUP: SetupState = {
   version: 1,
@@ -122,14 +122,19 @@ const INSTALL_MARKER: InstallMarker = {
 };
 
 function activeSnapshot(config: unknown = CONFIG): unknown {
+  const startedAt: number = NOW - 10_000;
   return {
     ...emptySnapshot(NOW),
+    // Flexible ends on request, so the authority is the immediate one.
+    lifecycle: { kind: 'active', endAuthority: { kind: 'immediate', actionLabel: 'End session' } },
     phase: 'focus',
     config,
-    startedAt: NOW - 10_000,
-    phaseStartedAt: NOW - 10_000,
+    startedAt,
+    phaseStartedAt: startedAt,
     phaseEndsAt: NOW + 10_000,
-    sessionEndsAt: NOW + 20_000,
+    // A timed session ends exactly its duration after its start.
+    sessionEndsAt: startedAt + 25 * 60_000,
+    sessionFocusedMs: NOW - startedAt,
   };
 }
 
@@ -422,6 +427,7 @@ describe('runtime and worker request validation parity', (): void => {
             days: [1],
             start: '09:00',
             end: '10:00',
+            duration: { kind: 'window' },
             mode: 'blacklist',
             strictness: 'flexible',
             cycling: null,
@@ -488,7 +494,19 @@ describe('runtime and worker request validation parity', (): void => {
       { ...CONFIG, cycling: { ...DEFAULT_SETTINGS.defaultCycling, extra: true } },
       false,
     ],
-    ['manual config with schedule id', { ...CONFIG, scheduleEntryId: 'unexpected' }, false],
+    [
+      'manual config with a schedule occurrence',
+      {
+        ...CONFIG,
+        scheduleOccurrence: {
+          version: 1,
+          token: 'weekday@2026-09-03',
+          entryId: 'weekday',
+          localStartDate: '2026-09-03',
+        },
+      },
+      false,
+    ],
   ])(
     'matches worker session validation for %s',
     (_label: string, value: unknown, accepted: boolean): void => {
@@ -500,19 +518,20 @@ describe('runtime and worker request validation parity', (): void => {
   );
 });
 
-describe('v1 cycling compatibility', (): void => {
-  it('preserves transparent Proxy acceptance across cycle, settings, session, and schedule paths', (): void => {
+describe('transparent Proxy handling across the cycle, settings, session, and schedule paths', (): void => {
+  it('keeps the v1 cycle and settings paths transparent and holds the v2 paths to exact data', (): void => {
     const cycling: CycleConfig = new Proxy<CycleConfig>({ ...DEFAULT_SETTINGS.defaultCycling }, {});
     const config: SessionConfig = { ...CONFIG, cycling };
-    const settings: Settings = {
-      ...DEFAULT_SETTINGS,
-      defaultCycling: cycling,
+    const settings: Settings = { ...DEFAULT_SETTINGS, defaultCycling: cycling };
+    const scheduled: Settings = {
+      ...settings,
       schedule: [
         {
           id: 'weekday',
           days: [1],
           start: '09:00',
           end: '10:00',
+          duration: { kind: 'window' },
           mode: 'blacklist',
           strictness: 'flexible',
           cycling,
@@ -525,8 +544,12 @@ describe('v1 cycling compatibility', (): void => {
     expect(isCycleConfig(cycling)).toBe(true);
     expect(parseRequest({ type: 'updateSettings', settings })).not.toBeNull();
     expect(isSettings(settings)).toBe(true);
-    expect(parseRequest({ type: 'startSession', config })).not.toBeNull();
-    expect(isSessionSnapshot(activeSnapshot(config))).toBe(true);
+
+    // The v2 session and schedule contracts read exact own data, which a Proxy is not.
+    expect(parseRequest({ type: 'startSession', config })).toBeNull();
+    expect(isSessionSnapshot(activeSnapshot(config))).toBe(false);
+    expect(parseRequest({ type: 'updateSettings', settings: scheduled })).toBeNull();
+    expect(isSettings(scheduled)).toBe(false);
   });
 });
 

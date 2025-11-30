@@ -41,12 +41,22 @@ import type {
 } from '../../../src/shared/types';
 
 describe('additive v2 contracts', (): void => {
-  it('keeps current public names pinned to explicit v1 aliases', (): void => {
-    expectTypeOf<SessionConfig>().toEqualTypeOf<NormalizedSessionConfigV1>();
-    expectTypeOf<SessionState>().toEqualTypeOf<NormalizedSessionStateV1>();
-    expectTypeOf<SessionSnapshot>().toEqualTypeOf<NormalizedSessionSnapshotV1>();
-    expectTypeOf<ScheduleEntry>().toEqualTypeOf<NormalizedScheduleEntryV1>();
-    expectTypeOf<EventRecord>().toEqualTypeOf<LegacyEventRecord>();
+  it('pins the public names to the v2 shapes the worker now speaks', (): void => {
+    expectTypeOf<SessionConfig>().toEqualTypeOf<SessionConfigV2>();
+    expectTypeOf<SessionState>().toEqualTypeOf<SessionStateV2>();
+    expectTypeOf<SessionSnapshot>().toEqualTypeOf<SessionSnapshotV2>();
+    expectTypeOf<ScheduleEntry>().toEqualTypeOf<ScheduleEntryV2>();
+    expectTypeOf<EventRecord>().toEqualTypeOf<SessionEventRecordV2>();
+  });
+
+  it('keeps the v1 shapes reachable under their explicit legacy names', (): void => {
+    expectTypeOf<NormalizedSessionConfigV1['durationMin']>().toEqualTypeOf<number>();
+    expectTypeOf<NormalizedSessionStateV1['config']>().toEqualTypeOf<NormalizedSessionConfigV1>();
+    expectTypeOf<
+      NormalizedSessionSnapshotV1['config']
+    >().toEqualTypeOf<NormalizedSessionConfigV1 | null>();
+    expectTypeOf<NormalizedScheduleEntryV1['id']>().toEqualTypeOf<string>();
+    expectTypeOf<LegacyEventRecord['at']>().toEqualTypeOf<number>();
   });
 
   it('separates normalized v1 runtime values from persisted migration input', (): void => {
