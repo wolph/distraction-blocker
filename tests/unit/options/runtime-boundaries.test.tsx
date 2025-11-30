@@ -34,6 +34,7 @@ function scheduleEntry(id: string, start: string, end: string): ScheduleEntry {
     days: [1],
     start,
     end,
+    duration: { kind: 'window' },
     mode: 'blacklist',
     strictness: 'friction',
     cycling: null,
@@ -117,23 +118,27 @@ describe('Options runtime response boundaries', (): void => {
 
   it('preserves a hard-session banner after a malformed snapshot broadcast', async (): Promise<void> => {
     const sessionEndsAt: number = new Date(2026, 7, 28, 16, 45).getTime();
+    const startedAt: number = sessionEndsAt - 25 * 60_000;
+    const at: number = sessionEndsAt - 15 * 60_000;
     const hardSnapshot = {
-      ...emptySnapshot(sessionEndsAt - 15 * 60_000),
+      ...emptySnapshot(at),
+      lifecycle: { kind: 'active' as const, endAuthority: { kind: 'hidden' as const } },
       phase: 'focus' as const,
       config: {
         mode: 'blacklist' as const,
         strictness: 'hard' as const,
-        durationMin: 25,
+        duration: { kind: 'timed' as const, minutes: 25 },
         cycling: null,
         intention: 'report',
         source: 'manual' as const,
-        scheduleEntryId: null,
+        scheduleOccurrence: null,
         rules: rulesFromLists(DEFAULT_LISTS),
       },
-      startedAt: sessionEndsAt - 15 * 60_000,
-      phaseStartedAt: sessionEndsAt - 15 * 60_000,
+      startedAt,
+      phaseStartedAt: startedAt,
       phaseEndsAt: sessionEndsAt,
       sessionEndsAt,
+      sessionFocusedMs: at - startedAt,
     };
     fake.respond('getSnapshot', hardSnapshot);
     const { getByText } = render(<Harness />);

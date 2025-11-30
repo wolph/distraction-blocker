@@ -11,6 +11,7 @@ import {
   emptySnapshot,
   rulesFromLists,
 } from '../../../src/shared/constants';
+import { settingsTimedCopy } from '../../../src/shared/session-copy';
 import type { ScheduleEntry, SessionSnapshot } from '../../../src/shared/types';
 import { installChromeFake } from './chrome-fake';
 
@@ -30,6 +31,7 @@ const entry: ScheduleEntry = {
   days: [1, 2, 3],
   start: '09:00',
   end: '12:00',
+  duration: { kind: 'window' },
   mode: 'blacklist',
   strictness: 'hard',
   cycling: null,
@@ -73,25 +75,29 @@ describe('Options navigation', () => {
     expect(css).toMatch(/\.options--sticky-save\s+\.content-body\s*\{[^}]*overflow-y:\s*auto/s);
   });
 
-  it('uses the exact hard-blocking rejection copy', async (): Promise<void> => {
+  it('uses the exact read-only session status copy', async (): Promise<void> => {
     const endsAt: number = new Date(2026, 7, 28, 16, 45).getTime();
+    const startedAt: number = endsAt - 25 * 60_000;
+    const at: number = endsAt - 1_000;
     const snapshot: SessionSnapshot = {
-      ...emptySnapshot(endsAt - 1_000),
+      ...emptySnapshot(at),
+      lifecycle: { kind: 'active', endAuthority: { kind: 'hidden' } },
       phase: 'focus',
       config: {
         mode: 'blacklist',
         strictness: 'hard',
-        durationMin: 25,
+        duration: { kind: 'timed', minutes: 25 },
         cycling: null,
         intention: '',
         source: 'manual',
-        scheduleEntryId: null,
+        scheduleOccurrence: null,
         rules: rulesFromLists(DEFAULT_LISTS),
       },
-      startedAt: endsAt - 15 * 60_000,
-      phaseStartedAt: endsAt - 15 * 60_000,
+      startedAt,
+      phaseStartedAt: startedAt,
       phaseEndsAt: endsAt,
       sessionEndsAt: endsAt,
+      sessionFocusedMs: at - startedAt,
     };
     const fake = installChromeFake();
     fake.respond('getSettings', DEFAULT_SETTINGS);
@@ -99,9 +105,7 @@ describe('Options navigation', () => {
     fake.respond('getSnapshot', snapshot);
     const { getByRole } = render(<App />);
     await waitFor((): void => {
-      expect(getByRole('status').textContent).toBe(
-        'Changes that weaken blocking will be rejected until 16:45.',
-      );
+      expect(getByRole('status').textContent).toBe(settingsTimedCopy('16:45'));
     });
   });
 });

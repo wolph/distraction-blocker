@@ -13,6 +13,7 @@ import {
   rulesFromLists,
 } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
+import { settingsTimedCopy } from '../../../src/shared/session-copy';
 import type {
   ListsConfig,
   SessionConfig,
@@ -53,21 +54,26 @@ function hardSnapshot(sessionEndsAt: number): SessionSnapshot {
   const config: SessionConfig = {
     mode: 'blacklist',
     strictness: 'hard',
-    durationMin: 25,
+    duration: { kind: 'timed', minutes: 25 },
     cycling: null,
     intention: 'write the report',
     source: 'manual',
-    scheduleEntryId: null,
+    scheduleOccurrence: null,
     rules: rulesFromLists(DEFAULT_LISTS),
   };
+  const startedAt: number = sessionEndsAt - 25 * 60_000;
+  const at: number = sessionEndsAt - 15 * 60_000;
   return {
-    ...emptySnapshot(sessionEndsAt - 10 * 60_000),
+    ...emptySnapshot(at),
+    // Hard hides the end control, which is what the status disclosure stands in for.
+    lifecycle: { kind: 'active', endAuthority: { kind: 'hidden' } },
     phase: 'focus',
     config,
-    startedAt: sessionEndsAt - 15 * 60_000,
-    phaseStartedAt: sessionEndsAt - 15 * 60_000,
+    startedAt,
+    phaseStartedAt: startedAt,
     phaseEndsAt: sessionEndsAt,
     sessionEndsAt,
+    sessionFocusedMs: at - startedAt,
   };
 }
 
@@ -706,27 +712,27 @@ describe('App frame', () => {
     );
   });
 
-  it('shows the hard-session banner with the end time', async (): Promise<void> => {
+  it('shows the session status with the end time', async (): Promise<void> => {
     const endsAt: number = new Date(2026, 7, 28, 16, 45).getTime();
     fake.respond('getSnapshot', hardSnapshot(endsAt));
     const { getByText } = render(<App />);
     await waitFor((): void => {
-      expect(getByText('Changes that weaken blocking will be rejected until 16:45.')).toBeTruthy();
+      expect(getByText(settingsTimedCopy('16:45'))).toBeTruthy();
     });
   });
 
-  it('shows no banner while idle and picks up a stateChanged broadcast', async (): Promise<void> => {
+  it('shows no status while idle and picks up a stateChanged broadcast', async (): Promise<void> => {
     const { getByText, queryByText } = render(<App />);
     await waitFor((): void => {
       expect(getByText('Blocking')).toBeTruthy();
     });
-    const bannerText: string = 'Changes that weaken blocking will be rejected until 09:30.';
-    expect(queryByText(bannerText)).toBeNull();
+    const statusText: string = settingsTimedCopy('09:30');
+    expect(queryByText(statusText)).toBeNull();
     const endsAt: number = new Date(2026, 7, 29, 9, 30).getTime();
     await act(async (): Promise<void> => {
       fake.emit({ type: 'stateChanged', snapshot: hardSnapshot(endsAt) });
     });
-    expect(getByText(bannerText)).toBeTruthy();
+    expect(getByText(statusText)).toBeTruthy();
   });
 
   it('shows a quiet load error instead of rendering malformed settings', async (): Promise<void> => {
