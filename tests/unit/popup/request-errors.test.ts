@@ -6,6 +6,7 @@ import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ActiveView } from '../../../src/popup/ActiveView';
 import { App } from '../../../src/popup/App';
+import { START_FAILED_COPY } from '../../../src/popup/command-errors';
 import { StartForm } from '../../../src/popup/StartForm';
 import {
   DEFAULT_LISTS,
@@ -15,7 +16,9 @@ import {
   rulesFromLists,
 } from '../../../src/shared/constants';
 import type { Ack, Request, StatsBundle } from '../../../src/shared/messages';
+import { END_FAILED_COPY } from '../../../src/shared/session-copy';
 import type {
+  EndAuthorityV2,
   GateState,
   SessionConfig,
   SessionSnapshot,
@@ -29,6 +32,8 @@ import {
   tabsQueryMock,
 } from './chrome-fake';
 
+/** ActiveView keeps this copy module-local, so the test states the user-visible string. */
+const ACTION_FAILED_COPY: string = 'Could not request that action. Try again.';
 const NOW: number = 1_700_000_000_000;
 const COMPLETED_SETUP: SetupState = {
   ...DEFAULT_SETUP,
@@ -54,23 +59,33 @@ function deferred<T>(): Deferred<T> {
 const config: SessionConfig = {
   mode: 'blacklist',
   strictness: 'friction',
-  durationMin: 50,
+  duration: { kind: 'timed', minutes: 50 },
   cycling: DEFAULT_SETTINGS.defaultCycling,
   intention: 'write the report',
   source: 'manual',
-  scheduleEntryId: null,
+  scheduleOccurrence: null,
   rules: rulesFromLists(DEFAULT_LISTS),
+};
+
+/** Friction reaches its End through the cancel gate, so the authority carries no open gate yet. */
+const FRICTION_AUTHORITY: EndAuthorityV2 = {
+  kind: 'friction-gate',
+  gate: null,
+  copy: { actionLabel: 'End session' },
+  actions: { open: 'open-end-gate' },
 };
 
 function focusSnapshot(): SessionSnapshot {
   return {
     ...emptySnapshot(NOW),
+    lifecycle: { kind: 'active', endAuthority: FRICTION_AUTHORITY },
     phase: 'focus',
     config,
     startedAt: NOW - 5 * 60_000,
     phaseStartedAt: NOW - 5 * 60_000,
     phaseEndsAt: NOW + 20 * 60_000,
     sessionEndsAt: NOW + 45 * 60_000,
+    sessionFocusedMs: 5 * 60_000,
     bankMs: 10 * 60_000,
     bankAccrualPerMs: 5 / 30,
   };
@@ -82,6 +97,8 @@ function pausedSnapshot(): SessionSnapshot {
     phase: 'paused',
     phaseStartedAt: NOW - 60_000,
     phaseEndsAt: NOW + 4 * 60_000,
+    sessionFocusedMs: 4 * 60_000,
+    bankAccrualPerMs: 0,
   };
 }
 
@@ -157,7 +174,7 @@ describe('popup request errors', (): void => {
     pending.reject(new Error('worker disconnected'));
 
     await waitFor((): void => {
-      expect(getByRole('alert').textContent).toBe('Could not start the session. Try again.');
+      expect(getByRole('alert').textContent).toBe(START_FAILED_COPY);
       expect(start.disabled).toBe(false);
     });
   });
@@ -239,17 +256,17 @@ describe('popup request errors', (): void => {
   });
 
   it.each([
-    ['openGate' as const, focusSnapshot(), /Pause blocking for 5 min/],
-    ['requestSessionEnd' as const, focusSnapshot(), 'End session'],
-    ['resumeFromPause' as const, pausedSnapshot(), 'Resume now'],
+    ['openGate' as const, focusSnapshot(), /Pause blocking for 5 min/, ACTION_FAILED_COPY],
+    ['openEndGate' as const, focusSnapshot(), 'End session', END_FAILED_COPY],
+    ['resumeFromPause' as const, pausedSnapshot(), 'Resume now', ACTION_FAILED_COPY],
   ])(
     'settles a rejected %s action and allows retry',
     async (requestType:
       | 'openGate'
-      | 'requestSessionEnd'
+      | 'openEndGate'
       | 'resumeFromPause', snapshot: SessionSnapshot, buttonName:
       | string
-      | RegExp): Promise<void> => {
+      | RegExp, failureCopy: string): Promise<void> => {
       const pending: Deferred<Ack> = deferred<Ack>();
       sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
         if (request.type === 'getStats') return statsBundle;
@@ -266,7 +283,7 @@ describe('popup request errors', (): void => {
       pending.reject(new Error('worker disconnected'));
 
       await waitFor((): void => {
-        expect(getByRole('alert').textContent).toBe('Could not request that action. Try again.');
+        expect(getByRole('alert').textContent).toBe(failureCopy);
         expect(action.disabled).toBe(false);
       });
     },

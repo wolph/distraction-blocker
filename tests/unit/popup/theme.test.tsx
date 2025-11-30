@@ -38,22 +38,36 @@ const COMPLETED_SETUP: SetupState = {
 };
 
 function activeSnapshot(theme: SessionSnapshot['theme'] = 'auto'): SessionSnapshot {
+  // One clock read: the v2 validator ties the end to the start exactly.
+  const at: number = Date.now();
+  const startedAt: number = at - 1_000;
   return {
-    ...emptySnapshot(Date.now()),
+    ...emptySnapshot(at),
     theme,
+    lifecycle: {
+      kind: 'active',
+      // Friction reaches its End through the cancel gate, so no gate is open yet.
+      endAuthority: {
+        kind: 'friction-gate',
+        gate: null,
+        copy: { actionLabel: 'End session' },
+        actions: { open: 'open-end-gate' },
+      },
+    },
     phase: 'focus',
-    startedAt: Date.now() - 1_000,
-    phaseStartedAt: Date.now() - 1_000,
-    phaseEndsAt: Date.now() + 60_000,
-    sessionEndsAt: Date.now() + 60_000,
+    startedAt,
+    phaseStartedAt: startedAt,
+    phaseEndsAt: startedAt + 60_000,
+    sessionEndsAt: startedAt + 60_000,
+    sessionFocusedMs: at - startedAt,
     config: {
       mode: 'blacklist',
       strictness: 'friction',
-      durationMin: 1,
+      duration: { kind: 'timed', minutes: 1 },
       cycling: null,
       intention: 'work',
       source: 'manual',
-      scheduleEntryId: null,
+      scheduleOccurrence: null,
       rules: rulesFromLists(DEFAULT_LISTS),
     },
   };
@@ -61,6 +75,7 @@ function activeSnapshot(theme: SessionSnapshot['theme'] = 'auto'): SessionSnapsh
 
 beforeEach((): void => {
   resetChromeFake();
+  sessionStorage.clear();
   sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
     if (request.type === 'getSetupState') return COMPLETED_SETUP;
     if (request.type === 'getSnapshot') return activeSnapshot();

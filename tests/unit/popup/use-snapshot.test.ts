@@ -16,6 +16,9 @@ import {
 import type { SessionSnapshot } from '../../../src/shared/types';
 import { emitMessage, resetChromeFake, sendMessageMock } from './chrome-fake';
 
+/** The one-shot guard `use-snapshot.ts` writes before it reloads. */
+const RELOAD_FLAG: string = 'focusLockSnapshotReload';
+
 interface Deferred<T> {
   promise: Promise<T>;
   resolve: (value: T) => void;
@@ -42,15 +45,25 @@ function SnapshotProbe(): VNode {
 function focusSnapshot(at: number): SessionSnapshot {
   return {
     ...emptySnapshot(at),
+    lifecycle: {
+      kind: 'active',
+      // Friction reaches its End through the cancel gate, so no gate is open yet.
+      endAuthority: {
+        kind: 'friction-gate',
+        gate: null,
+        copy: { actionLabel: 'End session' },
+        actions: { open: 'open-end-gate' },
+      },
+    },
     phase: 'focus',
     config: {
       mode: 'blacklist',
       strictness: 'friction',
-      durationMin: 25,
+      duration: { kind: 'timed', minutes: 25 },
       cycling: DEFAULT_SETTINGS.defaultCycling,
       intention: '',
       source: 'manual',
-      scheduleEntryId: null,
+      scheduleOccurrence: null,
       rules: rulesFromLists(DEFAULT_LISTS),
     },
     startedAt: at,
@@ -63,6 +76,7 @@ function focusSnapshot(at: number): SessionSnapshot {
 describe('useSnapshot', () => {
   beforeEach((): void => {
     resetChromeFake();
+    sessionStorage.clear();
   });
 
   afterEach((): void => {
@@ -157,7 +171,22 @@ describe('useSnapshot', () => {
     expect(queryByRole('button', { name: 'End session' })).toBeNull();
   });
 
-  it('fails closed when getSnapshot returns a malformed active object', async (): Promise<void> => {
+  it('reloads once for a snapshot it cannot validate', async (): Promise<void> => {
+    sendMessageMock.mockResolvedValue({
+      phase: 'focus',
+      config: { strictness: 'friction' },
+    });
+    const { getByRole } = render(h(Probe, null));
+
+    // jsdom cannot navigate, so the reload shows up as the flag that guards the second attempt.
+    await waitFor((): void => {
+      expect(sessionStorage.getItem(RELOAD_FLAG)).toBe('1');
+    });
+    expect(getByRole('status').textContent).toBe('loading');
+  });
+
+  it('fails closed when the reloaded page still cannot validate the snapshot', async (): Promise<void> => {
+    sessionStorage.setItem(RELOAD_FLAG, '1');
     sendMessageMock.mockResolvedValue({
       phase: 'focus',
       config: { strictness: 'friction' },
@@ -169,7 +198,8 @@ describe('useSnapshot', () => {
     });
   });
 
-  it('fails closed when a stateChanged broadcast is malformed', async (): Promise<void> => {
+  it('fails closed when a stateChanged broadcast is malformed after the reload', async (): Promise<void> => {
+    sessionStorage.setItem(RELOAD_FLAG, '1');
     sendMessageMock.mockResolvedValue(emptySnapshot(Date.now()));
     const { getByRole } = render(h(Probe, null));
     await waitFor((): void => {

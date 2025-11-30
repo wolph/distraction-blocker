@@ -6,6 +6,7 @@ import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ActiveView } from '../../../src/popup/ActiveView';
 import { App } from '../../../src/popup/App';
+import { START_FAILED_COPY } from '../../../src/popup/command-errors';
 import { GatePanel } from '../../../src/popup/GatePanel';
 import { StartForm } from '../../../src/popup/StartForm';
 import {
@@ -23,6 +24,7 @@ import {
 import { isSessionSnapshot, isSettings } from '../../../src/shared/runtime-validation';
 import type {
   CycleConfig,
+  EndAuthorityV2,
   GateState,
   ScheduleEntry,
   SessionConfig,
@@ -32,6 +34,8 @@ import type {
 } from '../../../src/shared/types';
 import { resetChromeFake, sendMessageMock, tabsQueryMock } from './chrome-fake';
 
+/** ActiveView keeps this copy module-local, so the test states the user-visible string. */
+const ACTION_FAILED_COPY: string = 'Could not request that action. Try again.';
 const NOW: number = 1_700_000_000_000;
 const COMPLETED_SETUP: SetupState = {
   ...DEFAULT_SETUP,
@@ -43,18 +47,26 @@ const COMPLETED_SETUP: SetupState = {
 const CONFIG: SessionConfig = {
   mode: 'blacklist',
   strictness: 'friction',
-  durationMin: 25,
+  duration: { kind: 'timed', minutes: 25 },
   cycling: DEFAULT_SETTINGS.defaultCycling,
   intention: 'write report',
   source: 'manual',
-  scheduleEntryId: null,
+  scheduleOccurrence: null,
   rules: rulesFromLists(DEFAULT_LISTS),
+};
+/** Friction reaches its End through the cancel gate, so no gate is open yet. */
+const FRICTION_AUTHORITY: EndAuthorityV2 = {
+  kind: 'friction-gate',
+  gate: null,
+  copy: { actionLabel: 'End session' },
+  actions: { open: 'open-end-gate' },
 };
 const SCHEDULE_ENTRY: ScheduleEntry = {
   id: 'schedule-entry',
   days: [1],
   start: '09:00',
   end: '10:00',
+  duration: { kind: 'window' },
   mode: 'blacklist',
   strictness: 'friction',
   cycling: null,
@@ -79,12 +91,15 @@ const STATS: StatsBundle = {
 function activeSnapshot(phase: 'focus' | 'break' | 'paused'): SessionSnapshot {
   return {
     ...emptySnapshot(NOW),
+    lifecycle: { kind: 'active', endAuthority: FRICTION_AUTHORITY },
     phase,
     config: CONFIG,
     startedAt: NOW - 10 * 60_000,
     phaseStartedAt: NOW - 5 * 60_000,
-    phaseEndsAt: NOW + 20 * 60_000,
-    sessionEndsAt: NOW + 45 * 60_000,
+    phaseEndsAt: NOW + 10 * 60_000,
+    // A timed session ends exactly its duration after its start.
+    sessionEndsAt: NOW + 15 * 60_000,
+    sessionFocusedMs: 5 * 60_000,
     bankMs: 10 * 60_000,
     bankAccrualPerMs: phase === 'focus' ? 5 / 30 : 0,
   };
@@ -106,6 +121,7 @@ describe('popup runtime response boundaries', (): void => {
       if (request.type === 'getSnapshot') return emptySnapshot(NOW);
       if (request.type === 'getSettings') return DEFAULT_SETTINGS;
       if (request.type === 'getLists') return { ...DEFAULT_LISTS, categories: null };
+      // A start answer the v2 command reader cannot classify falls back to the fixed copy.
       if (request.type === 'startSession')
         return { ok: false, error: 'authoritative start failure' };
       return { ok: true };
@@ -127,7 +143,7 @@ describe('popup runtime response boundaries', (): void => {
 
     fireEvent.click(getByRole('button', { name: 'Start 25 min - Block selected sites' }));
     await waitFor((): void => {
-      expect(getByText('authoritative start failure')).toBeTruthy();
+      expect(getByText(START_FAILED_COPY)).toBeTruthy();
     });
   });
 
@@ -308,7 +324,7 @@ describe('popup runtime response boundaries', (): void => {
       fireEvent.click(getByRole('button', { name: buttonName }));
 
       await waitFor((): void => {
-        expect(getByRole('alert').textContent).toBe('Could not request action. Try again.');
+        expect(getByRole('alert').textContent).toBe(ACTION_FAILED_COPY);
       });
     },
   );
