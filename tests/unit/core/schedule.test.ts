@@ -118,7 +118,12 @@ describe('validateEntry', () => {
 
 describe('scheduleEntriesOverlap', (): void => {
   it('matches enabled shared-day half-open schedule windows', (): void => {
-    const first: NormalizedScheduleEntryV1 = entry({ id: 'first', days: [1], start: '09:00', end: '12:00' });
+    const first: NormalizedScheduleEntryV1 = entry({
+      id: 'first',
+      days: [1],
+      start: '09:00',
+      end: '12:00',
+    });
     expect(
       scheduleEntriesOverlap(
         first,
@@ -174,7 +179,11 @@ describe.runIf(!isAmsterdamChild)('schedule timezone isolation', () => {
 
 describe.runIf(isAmsterdamChild)('Europe/Amsterdam DST schedule evaluation', () => {
   it('keeps the spring start and end on their configured wall-clock times', () => {
-    const sundayEntry: NormalizedScheduleEntryV1 = entry({ days: [0], start: '03:30', end: '04:30' });
+    const sundayEntry: NormalizedScheduleEntryV1 = entry({
+      days: [0],
+      start: '03:30',
+      end: '04:30',
+    });
     const beforeTransition: Date = new Date(2026, 2, 28, 12, 0);
     const duringWindow: Date = new Date(2026, 2, 29, 3, 45);
     const found: ReturnType<typeof nextStart> = nextStart([sundayEntry], beforeTransition);
@@ -186,7 +195,11 @@ describe.runIf(isAmsterdamChild)('Europe/Amsterdam DST schedule evaluation', () 
   });
 
   it('keeps the autumn start and end on their configured wall-clock times', () => {
-    const sundayEntry: NormalizedScheduleEntryV1 = entry({ days: [0], start: '09:00', end: '10:00' });
+    const sundayEntry: NormalizedScheduleEntryV1 = entry({
+      days: [0],
+      start: '09:00',
+      end: '10:00',
+    });
     const beforeTransition: Date = new Date(2026, 9, 24, 12, 0);
     const duringWindow: Date = new Date(2026, 9, 25, 9, 30);
     const found: ReturnType<typeof nextStart> = nextStart([sundayEntry], beforeTransition);
