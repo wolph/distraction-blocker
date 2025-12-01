@@ -8,7 +8,11 @@ import {
 } from '../../../src/core/session';
 import { DEFAULT_LISTS } from '../../../src/shared/constants';
 import { CoreError } from '../../../src/shared/errors';
-import type { SessionConfig, SessionRuleSnapshot, SessionState } from '../../../src/shared/types';
+import type {
+  NormalizedSessionConfigV1,
+  NormalizedSessionStateV1,
+  SessionRuleSnapshot,
+} from '../../../src/shared/types';
 
 const T0 = 1_000_000_000;
 const MIN = 60_000;
@@ -23,7 +27,7 @@ const SESSION_RULES: SessionRuleSnapshot = {
   sessionAllowlist: [],
 };
 
-function cfg(partial: Partial<SessionConfig> = {}): SessionConfig {
+function cfg(partial: Partial<NormalizedSessionConfigV1> = {}): NormalizedSessionConfigV1 {
   return {
     mode: 'blacklist',
     strictness: 'flexible',
@@ -121,7 +125,7 @@ describe('pause', () => {
   });
   it('throws outside focus', () => {
     const s = startSession(cfg(), T0);
-    const onBreak = advance(s, T0 + 25 * MIN + 1).next as SessionState;
+    const onBreak = advance(s, T0 + 25 * MIN + 1).next as NormalizedSessionStateV1;
     expect(() => beginPause(onBreak, T0 + 26 * MIN, MIN)).toThrow(CoreError);
   });
 });
@@ -129,7 +133,7 @@ describe('pause', () => {
 describe('startNextFocusEarly', () => {
   it('requires 2 minutes of break, then starts the next cycle', () => {
     const s = startSession(cfg(), T0);
-    const onBreak = advance(s, T0 + 25 * MIN + 1).next as SessionState;
+    const onBreak = advance(s, T0 + 25 * MIN + 1).next as NormalizedSessionStateV1;
     expect(() => startNextFocusEarly(onBreak, T0 + 26 * MIN)).toThrow(CoreError);
     const early = startNextFocusEarly(onBreak, T0 + 27 * MIN + 1);
     expect(early.phase).toBe('focus');
