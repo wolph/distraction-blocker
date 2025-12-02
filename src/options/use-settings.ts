@@ -6,9 +6,9 @@ import {
   isListsConfig,
   isRetrySyncResponse,
   isSessionSnapshot,
-  isSettings,
   isSetupState,
   isWebsiteAccessReconciliation,
+  parseStoredSettingsV2,
 } from '../shared/runtime-validation';
 import { updateTheme } from '../shared/theme';
 import type {
@@ -21,6 +21,26 @@ import type {
 } from '../shared/types';
 
 const LOAD_ERROR: string = 'Could not load settings. Reload the page to try again.';
+
+/** Set once per page, so a page that reloads into the same failure shows the error instead. */
+const RELOAD_FLAG: string = 'focusLockSnapshotReload';
+
+/**
+ * An extension page older than the worker cannot validate a v2 snapshot, and the spec answers that
+ * with one reload: the reloaded page is the current one. A page that fails again after reloading
+ * keeps what it already has rather than looping.
+ */
+function reloadOnceForInvalidSnapshot(): boolean {
+  try {
+    if (sessionStorage.getItem(RELOAD_FLAG) !== null) return false;
+    sessionStorage.setItem(RELOAD_FLAG, '1');
+  } catch {
+    // A page without session storage cannot remember the attempt, so it never reloads.
+    return false;
+  }
+  location.reload();
+  return true;
+}
 
 type ScheduleMutation = {
   section: 'schedule';
@@ -170,17 +190,19 @@ export function useSettingsStore(): SettingsStore {
           sendRequest({ type: 'getSetupState' }),
         ]);
         if (!alive) return;
-        if (
-          !isSettings(loadedSettings) ||
-          !isListsConfig(loadedLists) ||
-          !isSessionSnapshot(loadedSnapshot) ||
-          !isSetupState(loadedSetup)
-        ) {
+        // A stored or synced v1 schedule entry reads as a window entry through the v2 parser.
+        const parsedSettings: Settings | null = parseStoredSettingsV2(loadedSettings);
+        if (parsedSettings === null || !isListsConfig(loadedLists) || !isSetupState(loadedSetup)) {
+          setLoadError(LOAD_ERROR);
+          return;
+        }
+        if (!isSessionSnapshot(loadedSnapshot)) {
+          if (reloadOnceForInvalidSnapshot()) return;
           setLoadError(LOAD_ERROR);
           return;
         }
         const currentSnapshot: SessionSnapshot = latestBroadcast ?? loadedSnapshot;
-        const currentSettings: Settings = { ...loadedSettings, theme: currentSnapshot.theme };
+        const currentSettings: Settings = { ...parsedSettings, theme: currentSnapshot.theme };
         settingsRef.current = currentSettings;
         setSettings(currentSettings);
         setLists(loadedLists);
@@ -193,11 +215,12 @@ export function useSettingsStore(): SettingsStore {
     };
     void load();
     const onBroadcast: (message: unknown) => void = (message: unknown): void => {
-      if (
-        isRecord(message) &&
-        message.type === 'stateChanged' &&
-        isSessionSnapshot(message.snapshot)
-      ) {
+      if (isRecord(message) && message.type === 'stateChanged') {
+        if (!isSessionSnapshot(message.snapshot)) {
+          // The page that cannot validate the broadcast reloads once, then keeps what it has.
+          reloadOnceForInvalidSnapshot();
+          return;
+        }
         latestBroadcast = message.snapshot;
         setSnapshot(message.snapshot);
         const theme: ThemeMode = message.snapshot.theme;

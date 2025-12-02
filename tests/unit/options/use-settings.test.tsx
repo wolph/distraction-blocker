@@ -24,6 +24,9 @@ import type {
 import type { ChromeFake } from './chrome-fake';
 import { installChromeFake } from './chrome-fake';
 
+/** The one-shot guard `use-settings.ts` writes before it reloads. */
+const RELOAD_FLAG: string = 'focusLockSnapshotReload';
+
 let fake: ChromeFake;
 let captured: SettingsStore | null = null;
 
@@ -79,6 +82,7 @@ function hardSnapshot(sessionEndsAt: number): SessionSnapshot {
 
 beforeEach((): void => {
   captured = null;
+  sessionStorage.clear();
   window.history.replaceState(null, '', '/');
   fake = installChromeFake();
   fake.respond('getSettings', DEFAULT_SETTINGS);
@@ -221,7 +225,20 @@ describe('useSettingsStore', () => {
     expect(store().lists).toBeNull();
   });
 
-  it('rejects a worker rejection snapshot response without publishing it', async (): Promise<void> => {
+  it('reloads once for a snapshot response it cannot validate', async (): Promise<void> => {
+    fake.respond('getSnapshot', { ok: false, error: 'worker unavailable' });
+    render(<Harness />);
+
+    // jsdom cannot navigate, so the reload shows up as the flag that guards the second attempt.
+    await waitFor((): void => {
+      expect(sessionStorage.getItem(RELOAD_FLAG)).toBe('1');
+    });
+    expect(store().loadError).toBeNull();
+    expect(store().snapshot).toBeNull();
+  });
+
+  it('rejects a worker rejection snapshot response once the reloaded page fails again', async (): Promise<void> => {
+    sessionStorage.setItem(RELOAD_FLAG, '1');
     fake.respond('getSnapshot', { ok: false, error: 'worker unavailable' });
     render(<Harness />);
 
