@@ -418,7 +418,7 @@ export class SessionControllerV2 {
       } else if (runtime.pendingClosure !== null) {
         await handleCleanupNavigationV2(this.ports, target);
       } else {
-        await this.sendCurrentCommands(target);
+        await this.sendCurrentCommands(target, attemptKind !== null);
       }
       await this.recordAttemptIfBlocked(target, attemptKind);
     });
@@ -439,7 +439,13 @@ export class SessionControllerV2 {
         target.documentId,
       );
       if (enforceable.kind !== 'enforceable') return [];
-      const command: FrozenDocumentCommand = await this.currentCommandFor(target);
+      // A navigation or a document's own pull names the URL it is on, so a stored command for
+      // another URL is refrozen. A sweep only reports what a target already holds: its URL comes
+      // from a tab query that may already be behind the navigation it is racing.
+      const command: FrozenDocumentCommand = await this.currentCommandFor(
+        target,
+        attemptKind !== null,
+      );
       const commands: DocumentContentCommand[] = [];
       if (!this.hasCurrentEpochAck(target.tabId, target.documentId)) {
         commands.push(wireOf(await this.handOverEpochReset(target)));
@@ -1068,12 +1074,15 @@ export class SessionControllerV2 {
   }
 
   /** Sends the newest persisted command for one target, resetting its epoch first when needed. */
-  private async sendCurrentCommands(target: {
-    tabId: number;
-    documentId: string;
-    url: string;
-  }): Promise<void> {
-    const command: FrozenDocumentCommand = await this.currentCommandFor(target);
+  private async sendCurrentCommands(
+    target: {
+      tabId: number;
+      documentId: string;
+      url: string;
+    },
+    refreezeChangedUrl: boolean = false,
+  ): Promise<void> {
+    const command: FrozenDocumentCommand = await this.currentCommandFor(target, refreezeChangedUrl);
     if (!this.hasCurrentEpochAck(target.tabId, target.documentId)) {
       const outcome = await sendEpochResetCommand(
         this.ports.transport,
@@ -1097,15 +1106,26 @@ export class SessionControllerV2 {
    * The newest persisted command for one document, freezing one first when the map has none. The
    * frozen value is durable before it is returned, so no caller ever sees a volatile view.
    */
-  private async currentCommandFor(target: {
-    tabId: number;
-    documentId: string;
-    url: string;
-  }): Promise<FrozenDocumentCommand> {
+  private async currentCommandFor(
+    target: {
+      tabId: number;
+      documentId: string;
+      url: string;
+    },
+    refreezeChangedUrl: boolean = false,
+  ): Promise<FrozenDocumentCommand> {
     const runtime: RuntimeStateV2 = this.ports.runtime();
     const key: string = documentCommandKeyV2(target.tabId, target.documentId);
     const stored: FrozenDocumentCommand | undefined = runtime.documentCommands[key];
-    if (stored !== undefined) return structuredClone(stored);
+    if (stored !== undefined && (!refreezeChangedUrl || stored.expectedUrl === target.url)) {
+      return structuredClone(stored);
+    }
+    if (stored !== undefined) {
+      // A same-document navigation keeps the key and changes the URL, so the stored command is not
+      // this page's command. The document already applied that tuple, and it accepts only a higher
+      // one, so the whole map advances a revision with this target's new URL in it.
+      return await this.refreezeChangedTarget(runtime, key, stored, target.url);
+    }
     const session: SessionStateV2 | null = runtime.session;
     // The new document joins the tuple the others already hold. While the command map is the
     // current authority every stored command repeats the runtime revision, so raising it for one
@@ -1185,6 +1205,31 @@ export class SessionControllerV2 {
       },
     });
     return reset;
+  }
+
+  /**
+   * One live update for a document that navigated within itself. Every command is refrozen at the
+   * next revision, with this target's new URL in place, and the command for that target is what
+   * the caller sends.
+   */
+  private async refreezeChangedTarget(
+    runtime: RuntimeStateV2,
+    key: string,
+    stored: FrozenDocumentCommand,
+    url: string,
+  ): Promise<FrozenDocumentCommand> {
+    await this.commitLiveViews({
+      ...structuredClone(runtime),
+      documentCommands: {
+        ...structuredClone(runtime.documentCommands),
+        [key]: { ...structuredClone(stored), expectedUrl: url },
+      },
+    });
+    const refrozen: FrozenDocumentCommand | undefined = this.ports.runtime().documentCommands[key];
+    if (refrozen === undefined) {
+      throw new CoreError('invalid-rule', 'a refrozen live view lost the target it was built for');
+    }
+    return structuredClone(refrozen);
   }
 
   private resetCommandFor(target: {

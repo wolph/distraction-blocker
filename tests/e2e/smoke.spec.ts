@@ -228,7 +228,7 @@ test('Stats content stays inside responsive viewports', async ({
           source: 'manual',
           mode: 'blacklist',
           strictness: 'friction',
-          duration: { kind: 'timed', minutes: 25 },
+          durationMin: 25,
           intention: 'Responsive layout regression with a deliberately long session intention',
           sessionId: 'responsive-layout',
         },

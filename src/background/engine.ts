@@ -32,7 +32,7 @@ import type {
   StartSessionResponseV2,
 } from '../shared/messages';
 import { isListsConfig } from '../shared/runtime-validation';
-import { SYNC_BANK, syncAggKey } from '../shared/storage-keys';
+import { syncAggKey } from '../shared/storage-keys';
 import { localDateStr, localMonthStr } from '../shared/time';
 import type {
   BankState,
@@ -56,7 +56,7 @@ import type {
   ThemeMode,
   Verdict,
 } from '../shared/types';
-import type { AlarmPortsV2 } from './alarms-v2';
+import { type AlarmPortsV2, parseAlarmNameV2 } from './alarms-v2';
 import type { ContentTransportPortsV2 } from './content-transport-v2';
 import type { DocumentEnforcementAck } from './enforcement-persistence-v2';
 import type { EnforcementTargetPortsV2 } from './enforcement-targets-v2';
@@ -359,11 +359,14 @@ export class Engine {
     return committed;
   }
 
-  /** The committed bank is the engine's bank, and only a synced one reaches the sync journal. */
+  /**
+   * The committed bank is the engine's bank. `savePolicy` is the typed writer that owns whether it
+   * reaches sync, so nothing here queues a policy key onto the remote journal by hand.
+   */
   private async saveCommittedBank(bank: BankState, syncBank: boolean): Promise<void> {
     this.bank = structuredClone(bank);
+    this.bankDirty = this.bankDirty || syncBank;
     await this.savePolicy('bank', this.bank);
-    if (syncBank) this.ports.queueSync(SYNC_BANK, this.bank);
   }
 
   reportError(error: unknown): void {
@@ -545,9 +548,11 @@ export class Engine {
   }
 
   async startSession(config: SessionConfig): Promise<StartSessionResponseV2> {
-    return this.enqueuePolicyMutation(
-      (): Promise<StartSessionResponseV2> => this.controller.startSession(config),
-    );
+    return this.enqueuePolicyMutation(async (): Promise<StartSessionResponseV2> => {
+      const response: StartSessionResponseV2 = await this.controller.startSession(config);
+      await this.sweepAfterPhaseChange();
+      return response;
+    });
   }
 
   hasActiveSession(): boolean {
@@ -600,7 +605,10 @@ export class Engine {
   async requestSessionEnd(): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
     return this.enqueuePolicyMutation(
       (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
-        this.controller.requestSessionEnd(),
+        this.commandWithSweep(
+          (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
+            this.controller.requestSessionEnd(),
+        ),
     );
   }
 
@@ -625,7 +633,10 @@ export class Engine {
   ): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
     return this.enqueuePolicyMutation(
       (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
-        this.controller.confirmGate(typedPhrase),
+        this.commandWithSweep(
+          (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
+            this.controller.confirmGate(typedPhrase),
+        ),
     );
   }
 
@@ -638,14 +649,20 @@ export class Engine {
   async resumeFromPause(): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
     return this.enqueuePolicyMutation(
       (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
-        this.controller.resumeFromPause(),
+        this.commandWithSweep(
+          (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
+            this.controller.resumeFromPause(),
+        ),
     );
   }
 
   async startNextFocusEarly(): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
     return this.enqueuePolicyMutation(
       (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
-        this.controller.startNextFocusEarly(),
+        this.commandWithSweep(
+          (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
+            this.controller.startNextFocusEarly(),
+        ),
     );
   }
 
@@ -665,7 +682,31 @@ export class Engine {
 
   /** One alarm, routed by name to the journal or the settlement that owns it. */
   async handleAlarm(name: string): Promise<void> {
-    await this.enqueuePolicyMutation((): Promise<void> => this.controller.handleAlarm(name));
+    // A name no alarm owns wakes nothing, sweep included.
+    if (parseAlarmNameV2(name) === null) return;
+    await this.enqueuePolicyMutation(async (): Promise<void> => {
+      await this.controller.handleAlarm(name);
+      await this.sweepAfterPhaseChange();
+    });
+  }
+
+  /**
+   * One command, then the tab sweep it implies. The frozen commands the controller sends are what a
+   * document renders; the mute a blocked tab wears and the reload a stopped one needs are browser
+   * effects the sweep owns, and a phase change moves both.
+   */
+  private async commandWithSweep<T>(command: () => Promise<T>): Promise<T> {
+    const response: T = await command();
+    await this.sweepAfterPhaseChange();
+    return response;
+  }
+
+  private async sweepAfterPhaseChange(): Promise<void> {
+    try {
+      await this.applyBlockingWithLease();
+    } catch (error: unknown) {
+      this.ports.reportError(error);
+    }
   }
 
   /** The commands one document must apply, and the attempt the blocked ones record. */

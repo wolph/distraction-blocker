@@ -699,9 +699,10 @@ function runtimeBootPorts(
     appendEvents: (events: readonly EventRecord[]): Promise<void> => appendEventsV2(events),
     appendLegacyEvents: (events: readonly LegacyEventRecord[]): Promise<void> =>
       appendEventsV2(events),
-    saveBank: async (bank: BankState, syncBank: boolean): Promise<void> => {
+    // `setPolicy` is the typed writer, and it decides whether the bank reaches sync. Publishing a
+    // policy key straight onto the remote journal is what the storage layer refuses.
+    saveBank: async (bank: BankState): Promise<void> => {
       await policyStorage.setPolicy('bank', bank);
-      if (syncBank) await policyStorage.publishRemoteItem(SYNC_BANK, bank);
     },
     saveAggregate: (key: string, value: DailyAgg): Promise<void> =>
       policyStorage.saveAggregate(key, value),

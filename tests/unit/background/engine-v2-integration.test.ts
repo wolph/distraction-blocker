@@ -79,6 +79,8 @@ interface WorkerHarness {
   revokeWebsiteAccess(): void;
   /** How many times the worker has written local storage, which is how a no-op wake is read. */
   writes(): number;
+  /** Every mute the worker set, which is the sweep's own effect. */
+  mutes(): Array<{ tabId: number; muted: boolean }>;
   settle(): Promise<void>;
 }
 
@@ -106,6 +108,7 @@ async function bootWorker(
   const stages: string[] = [];
   let websiteAccess: boolean = true;
   let localWrites: number = 0;
+  const muteCalls: Array<{ tabId: number; muted: boolean }> = [];
   const local: Record<string, unknown> = structuredClone(seed);
   const sync: Record<string, unknown> = {};
   const syncWrites: Array<Record<string, unknown>> = [];
@@ -314,7 +317,10 @@ async function bootWorker(
             : epochResetResponseFor(message, clock);
         },
       ),
-      update: vi.fn().mockResolvedValue({}),
+      update: vi.fn(async (tabId: number, props: { muted?: boolean }): Promise<unknown> => {
+        if (props.muted !== undefined) muteCalls.push({ tabId, muted: props.muted });
+        return {};
+      }),
       onRemoved: { addListener: vi.fn() },
     },
     webNavigation: {
@@ -362,6 +368,7 @@ async function bootWorker(
       websiteAccess = false;
     },
     writes: (): number => localWrites,
+    mutes: (): Array<{ tabId: number; muted: boolean }> => [...muteCalls],
     events: (): Array<Record<string, unknown>> =>
       (local[LOCAL_EVENTS] as Array<Record<string, unknown>> | undefined) ?? [],
     runtime: (): RuntimeStateV2 => {
@@ -574,6 +581,16 @@ describe('worker cutover to v2 session authority', (): void => {
       'reset-enforcement-epoch',
       'apply-enforcement',
     ]);
+    // The page is on a blocked host, so what it is handed blocks it.
+    const enforcement = first.commands.find(
+      (command): boolean => command.command === 'apply-enforcement',
+    );
+    expect(enforcement?.command === 'apply-enforcement' ? enforcement.verdict.blocked : null).toBe(
+      true,
+    );
+    expect(enforcement?.command === 'apply-enforcement' ? enforcement.presentation : null).toBe(
+      'active',
+    );
     expect(second.commands.map((command): string => command.command)).toEqual([
       'apply-enforcement',
     ]);
@@ -941,6 +958,22 @@ describe('worker cutover to v2 session authority', (): void => {
     expect(second.events().filter((event): boolean => event.t === 'sessionStarted')).toHaveLength(
       1,
     );
+  });
+
+  it('mutes a blocked tab through the sweep', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    worker.documents.push({
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    });
+
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+
+    // A blocked page is muted by the sweep, which is the effect the frozen command does not carry.
+    expect(worker.mutes()).toContainEqual({ tabId: 11, muted: true });
   });
 
   it('never writes runtime or event keys into sync', async (): Promise<void> => {

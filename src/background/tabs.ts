@@ -79,9 +79,12 @@ async function blockedForTarget(
   input: TabApplyInput,
   attemptKind: 'navigation' | 'existing' | null,
 ): Promise<boolean> {
-  if (input.documentId === null) return false;
+  // A sweep often carries no document id, because it starts from a tab query. The live one is read
+  // here so the mute and reload effects still know whether the page ends up blocked.
+  const documentId: string | null = input.documentId ?? (await getDocumentId(tabId));
+  if (documentId === null) return false;
   const commands: DocumentContentCommand[] = await engine.documentCommandsFor(
-    { tabId, documentId: input.documentId, url: input.url },
+    { tabId, documentId, url: input.url },
     attemptKind,
   );
   return commands.some(
@@ -344,8 +347,9 @@ async function applyTabEffectsNow(
   if (!(await tabStillAt(tabId, url)) || !shouldContinue()) return;
   // The controller routes this target to whichever authority owns it and sends what it owes,
   // reset first for a document that has not acknowledged the epoch.
-  if (documentId !== null) {
-    await engine.handleNavigation({ tabId, documentId, url }, null);
+  const liveDocumentId: string | null = documentId ?? (await getDocumentId(tabId));
+  if (liveDocumentId !== null) {
+    await engine.handleNavigation({ tabId, documentId: liveDocumentId, url }, null);
   }
   if (!shouldContinue()) return;
   if (validateDocument && documentId !== null) {
