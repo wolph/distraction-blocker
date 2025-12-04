@@ -1473,7 +1473,10 @@ test('Task 7 production evidence matrix is reproducible', async ({
         viewports: pageViewports,
       })),
     );
-    expect(await sendExtensionRequest(extPage, { type: 'abandonGate' })).toEqual({ ok: true });
+    expect(await sendExtensionRequest(extPage, { type: 'abandonGate' })).toEqual({
+      ok: true,
+      code: 'ok',
+    });
     await configureTask7Gate(extPage, false);
     expect(await sendExtensionRequest(extPage, { type: 'requestSessionEnd' })).toEqual({
       ok: true,
@@ -1488,7 +1491,10 @@ test('Task 7 production evidence matrix is reproducible', async ({
         viewports: pageViewports,
       })),
     );
-    expect(await sendExtensionRequest(extPage, { type: 'abandonGate' })).toEqual({ ok: true });
+    expect(await sendExtensionRequest(extPage, { type: 'abandonGate' })).toEqual({
+      ok: true,
+      code: 'ok',
+    });
     overlayGeometry = await captureTask7OverlayMatrix({
       capture,
       controlPage: extPage,

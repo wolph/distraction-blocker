@@ -11,6 +11,7 @@
  * which is the precondition the transition runner documents.
  */
 
+import { accrue } from '../core/budget';
 import {
   advanceSessionV2,
   assertCanStartNextFocusEarlyV2,
@@ -93,6 +94,13 @@ import {
   type TransitionDriveResultV2,
   transitionMatcherV2,
 } from './transition-runner-v2';
+
+/** One settle's earnings: the advanced runtime, the bank it produced, and the event it reports. */
+interface SettledEarningsV2 {
+  runtime: RuntimeStateV2;
+  bank: BankState | undefined;
+  events: SessionEventRecordV2[];
+}
 
 export interface SessionControllerEffectsV2 extends CleanupEffectPortsV2 {
   broadcast(snapshot: SessionSnapshotV2): void;
@@ -940,9 +948,17 @@ export class SessionControllerV2 {
       this.completionEffects();
       return;
     }
-    const settled: RuntimeStateV2 = { ...expired, session: structuredClone(advanced.state) };
+    // Focus earns pause budget as it is settled, exactly as the v1 engine credited it, and the
+    // closure reads `accruedFocusMs` as its watermark so nothing is counted twice.
+    const earnings: SettledEarningsV2 = this.settleEarnings(
+      { ...expired, session: structuredClone(advanced.state) },
+      advanced.sessionFocusedMs,
+      now,
+    );
+    const settled: RuntimeStateV2 = earnings.runtime;
+    events.push(...earnings.events);
     if (advanced.kind === 'resume-required') {
-      await this.persistSettled(settled, live, events, now);
+      await this.persistSettled(settled, live, events, now, earnings.bank);
       const onBreak: boolean = advanced.trigger === 'break-expired';
       await this.driveResume(onBreak ? 'break-expired' : 'manual', onBreak ? 'break' : 'paused');
       return;
@@ -958,6 +974,7 @@ export class SessionControllerV2 {
       live || rolled,
       events,
       now,
+      earnings.bank,
     );
     if (rolled && advanced.state.phase !== 'focus') {
       await this.effects.clearBlockingForNonBlockingPhase();
@@ -977,18 +994,55 @@ export class SessionControllerV2 {
     live: boolean,
     events: SessionEventRecordV2[],
     now: number,
+    bank?: BankState,
   ): Promise<void> {
     const owned: boolean =
       next.pendingEnforcementTransition?.stage === 'cleanup' || next.pendingClosure !== null;
     if (live && !owned) {
-      await this.commitLiveViews(next, events);
+      await this.commitLiveViews(next, events, bank);
       return;
     }
-    if (events.length > 0) {
-      await this.commitSettled(next, events, now);
+    if (events.length > 0 || bank !== undefined) {
+      await this.commitSettled(next, events, now, bank);
       return;
     }
     await this.writeIfChanged(next);
+  }
+
+  /**
+   * What one settle earned: the runtime with its focus watermark and daily focus advanced, the bank
+   * the earning produced, and the event that reports it. A settle that added no focus earns nothing
+   * and hands back no bank, so it stays a bare write.
+   */
+  private settleEarnings(
+    runtime: RuntimeStateV2,
+    focusedMs: number,
+    now: number,
+  ): SettledEarningsV2 {
+    const delta: number = Math.max(0, focusedMs - runtime.accruedFocusMs);
+    if (delta === 0) return { runtime, bank: undefined, events: [] };
+    const economy: PauseEconomy = this.ports.economy();
+    const before: BankState = this.ports.bank();
+    const bank: BankState = accrue(before, delta, economy);
+    const earned: number = bank.balanceMs - before.balanceMs;
+    const session: SessionStateV2 | null = runtime.session;
+    // The daily aggregate stays with the retained Engine, which owns every other write to it, so
+    // this advances the watermark and the Engine credits the day with the difference.
+    return {
+      runtime: { ...runtime, accruedFocusMs: focusedMs },
+      bank,
+      events:
+        earned > 0
+          ? [
+              {
+                t: 'budgetEarned',
+                at: now,
+                ms: earned,
+                ...(session === null ? {} : { sessionId: session.sessionId }),
+              },
+            ]
+          : [],
+    };
   }
 
   /** One checkpoint for a settled runtime and the events it carries, with no view refrozen. */
@@ -996,13 +1050,14 @@ export class SessionControllerV2 {
     next: RuntimeStateV2,
     events: SessionEventRecordV2[],
     now: number,
+    bank?: BankState,
   ): Promise<void> {
     await this.ports.commit({
-      checkpointId: `${next.enforcementEpoch}:expiry-${now}`,
+      checkpointId: `${next.enforcementEpoch}:settle-${now}`,
       projection: projectRuntimeDomainV2(validRuntime(next)),
-      bank: this.ports.bank(),
+      bank: bank ?? this.ports.bank(),
       events: structuredClone(events),
-      syncBank: false,
+      syncBank: bank !== undefined,
       aggregateSets: {},
       aggregateRemoves: [],
     });

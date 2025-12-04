@@ -685,7 +685,10 @@ export class Engine {
     // A name no alarm owns wakes nothing, sweep included.
     if (parseAlarmNameV2(name) === null) return;
     await this.enqueuePolicyMutation(async (): Promise<void> => {
+      const accruedBefore: number = this.runtime.accruedFocusMs;
       await this.controller.handleAlarm(name);
+      this.creditSettledFocus(accruedBefore);
+      if (this.dirty) await this.commit(this.ports.now());
       await this.sweepAfterPhaseChange();
     });
   }
@@ -1028,8 +1031,10 @@ export class Engine {
   private async tickNow(): Promise<void> {
     await this.flushDeferredBlockClaims();
     await this.flushRemovedTabTombstones();
+    const accruedBefore: number = this.runtime.accruedFocusMs;
     const now: number = this.ports.now();
     this.pruneDebounce(now);
+    this.creditSettledFocus(accruedBefore);
     await this.commit(now);
     await this.maybePrune(now);
     if (this.dirty) await this.commit(now);
@@ -1405,6 +1410,19 @@ export class Engine {
     this.runtime.date = today;
     this.dirty = true;
     await this.commit(now);
+  }
+
+  /**
+   * The day is credited with whatever focus the settle just accrued. The controller advances the
+   * watermark, the Engine owns the daily aggregate, and the difference between the two is the focus
+   * this settle added.
+   */
+  private creditSettledFocus(accruedBefore: number): void {
+    const delta: number = Math.max(0, this.runtime.accruedFocusMs - accruedBefore);
+    if (delta === 0) return;
+    const aggregate: DailyAgg = this.runtime.todayAgg ?? emptyDaily(this.runtime.date);
+    this.runtime.todayAgg = { ...aggregate, focusMs: aggregate.focusMs + delta };
+    this.dirty = true;
   }
 
   /** Weekly retention prune, marked only after storage operations finish. */

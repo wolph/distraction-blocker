@@ -14,6 +14,7 @@ import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2'
 import type { Request } from '../../../src/shared/messages';
 import { isEventRecord } from '../../../src/shared/runtime-validation';
 import {
+  LOCAL_BANK,
   LOCAL_EVENTS,
   LOCAL_INSTALL_MARKER,
   LOCAL_LISTS,
@@ -974,6 +975,36 @@ describe('worker cutover to v2 session authority', (): void => {
 
     // A blocked page is muted by the sweep, which is the effect the frozen command does not carry.
     expect(worker.mutes()).toContainEqual({ tabId: 11, muted: true });
+  });
+
+  it('earns pause budget as focus settles', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    worker.documents.push({
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    });
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+
+    // The worker reads the real clock, so the test moves it: a minute of focus, then a tick.
+    const startedAt: number = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(startedAt + 60_000);
+    try {
+      await worker.fireAlarm('tick');
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const runtime: RuntimeStateV2 = worker.runtime();
+    expect(runtime.accruedFocusMs).toBeGreaterThan(0);
+    expect(runtime.todayAgg?.focusMs ?? 0).toBeGreaterThan(0);
+    expect(worker.events().some((event): boolean => event.t === 'budgetEarned')).toBe(true);
+    expect(
+      (worker.local[LOCAL_BANK] as { balanceMs: number } | undefined)?.balanceMs ?? 0,
+    ).toBeGreaterThan(0);
   });
 
   it('never writes runtime or event keys into sync', async (): Promise<void> => {

@@ -114,7 +114,7 @@ test('pause gate rejects an early confirmation and unblocks after its delay', as
 
   expect(
     await sendExtensionRequest(extPage, { type: 'openGate', gate: 'pause', host: null }),
-  ).toEqual({ ok: true });
+  ).toEqual({ ok: true, code: 'ok' });
   const early = await sendExtensionRequest(extPage, {
     type: 'confirmGate',
     typedPhrase: null,
@@ -207,8 +207,11 @@ test('abandoning a gate records a resisted temptation', async ({ extPage }) => {
   await waitForBank(extPage, 1_000);
   expect(
     await sendExtensionRequest(extPage, { type: 'openGate', gate: 'pause', host: null }),
-  ).toEqual({ ok: true });
-  expect(await sendExtensionRequest(extPage, { type: 'abandonGate' })).toEqual({ ok: true });
+  ).toEqual({ ok: true, code: 'ok' });
+  expect(await sendExtensionRequest(extPage, { type: 'abandonGate' })).toEqual({
+    ok: true,
+    code: 'ok',
+  });
 
   await expect
     .poll(async (): Promise<number> => {
@@ -237,7 +240,10 @@ test('friction cancellation without typing uses the configured delay', async ({ 
   const gateDelayMs: number = 3_000;
   await configureFastEconomy(extPage, { gateDelayMs, requireTypedPhrase: false });
   await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.3 } });
-  expect(await sendExtensionRequest(extPage, { type: 'requestSessionEnd' })).toEqual({ ok: true });
+  expect(await sendExtensionRequest(extPage, { type: 'requestSessionEnd' })).toEqual({
+    ok: true,
+    code: 'ok',
+  });
 
   const early = await sendExtensionRequest(extPage, {
     type: 'confirmGate',
@@ -266,7 +272,7 @@ test('friction cancellation without typing uses the configured delay', async ({ 
       type: 'confirmGate',
       typedPhrase: null,
     }),
-  ).toEqual({ ok: true });
+  ).toEqual({ ok: true, code: 'ok' });
   const ended: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
   expect(ended.phase).toBe('idle');
 });
@@ -285,7 +291,10 @@ test('Flexible session ending immediately removes an active block', async ({
   });
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
 
-  expect(await sendExtensionRequest(extPage, { type: 'requestSessionEnd' })).toEqual({ ok: true });
+  expect(await sendExtensionRequest(extPage, { type: 'requestSessionEnd' })).toEqual({
+    ok: true,
+    code: 'ok',
+  });
   await expect(page.locator('focus-lock-overlay')).toHaveCount(0);
   const ended: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
   expect(ended).toMatchObject({ phase: 'idle', gate: null, activeUnlocks: [] });
@@ -295,7 +304,10 @@ test('zero delay removes the wait but still honors the typing setting', async ({
   const requiredPhrase: string = cancelPhrase('e2e test run');
   await configureFastEconomy(extPage, { gateDelayMs: 0, requireTypedPhrase: true });
   await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.3 } });
-  expect(await sendExtensionRequest(extPage, { type: 'openEndGate' })).toEqual({ ok: true });
+  expect(await sendExtensionRequest(extPage, { type: 'openEndGate' })).toEqual({
+    ok: true,
+    code: 'ok',
+  });
 
   const opened: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
   expect(opened.gate?.readyAt).toBe(opened.gate?.openedAt);
@@ -304,7 +316,7 @@ test('zero delay removes the wait but still honors the typing setting', async ({
   ).toMatchObject({ ok: false });
   expect(
     await sendExtensionRequest(extPage, { type: 'confirmGate', typedPhrase: requiredPhrase }),
-  ).toEqual({ ok: true });
+  ).toEqual({ ok: true, code: 'ok' });
 });
 
 test('friction cancellation with typing requires the configured phrase after its delay', async ({
@@ -314,7 +326,10 @@ test('friction cancellation with typing requires the configured phrase after its
   const requiredPhrase: string = cancelPhrase('e2e test run');
   await configureFastEconomy(extPage, { gateDelayMs, requireTypedPhrase: true });
   await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.3 } });
-  expect(await sendExtensionRequest(extPage, { type: 'openEndGate' })).toEqual({ ok: true });
+  expect(await sendExtensionRequest(extPage, { type: 'openEndGate' })).toEqual({
+    ok: true,
+    code: 'ok',
+  });
 
   const early = await sendExtensionRequest(extPage, {
     type: 'confirmGate',
@@ -353,7 +368,7 @@ test('friction cancellation with typing requires the configured phrase after its
       type: 'confirmGate',
       typedPhrase: requiredPhrase,
     }),
-  ).toEqual({ ok: true });
+  ).toEqual({ ok: true, code: 'ok' });
 
   const ended: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
   expect(ended.phase).toBe('idle');
