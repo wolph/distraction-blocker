@@ -321,6 +321,10 @@ export class SessionControllerV2 {
   /** Spends a ready gate. The cancel gate closes the session, the others buy their relief. */
   async confirmGate(typedPhrase: string | null): Promise<CommandResultV2> {
     return this.command(async (): Promise<CommandResultV2> => {
+      // A spend is a durable transaction against the bank, so the focus earned since the last
+      // settle is credited before the balance is read. The tick is a minute apart, and a user who
+      // just earned a pause may not be refused it because nothing has settled yet.
+      await this.settleThroughNow();
       const runtime: RuntimeStateV2 = this.ports.runtime();
       const gate: GateState | null = runtime.gate;
       const session: SessionStateV2 | null = runtime.session;

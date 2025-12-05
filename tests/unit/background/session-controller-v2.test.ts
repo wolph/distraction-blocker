@@ -67,6 +67,8 @@ const DOC_ONE: string = 'document-1';
 /** A document the frozen fixtures do not hold, so a navigation freezes its command from the URL. */
 const DOC_BLOCKED: string = 'document-9';
 const AT: number = ACTIVATION_AT + 60_000;
+/** A focus watermark no settle can beat, so a spend test measures the spend and nothing else. */
+const SETTLED_WATERMARK_MS: number = 86_400_000;
 /** Enough scripted UUIDs for a start, its cleanup, and several live-view operations. */
 const IDS: readonly string[] = [
   SESSION_ID,
@@ -591,9 +593,12 @@ describe('SessionControllerV2 end and gate commands', (): void => {
   });
 
   it('spends the bank and begins a pause with a read-back alarm before the commit', async (): Promise<void> => {
-    const { controller, ports, effects } = harness(publishedFocusRuntime(), {
-      bank: { balanceMs: 600_000 },
-    });
+    const { controller, ports, effects } = harness(
+      publishedFocusRuntime({ accruedFocusMs: SETTLED_WATERMARK_MS }),
+      {
+        bank: { balanceMs: 600_000 },
+      },
+    );
     expect((await controller.openGate('pause', null)).code).toBe('ok');
     const response: CommandResponseV2<SessionCommandResultCodeV2> = await confirmOpenGate(
       controller,
@@ -620,10 +625,13 @@ describe('SessionControllerV2 end and gate commands', (): void => {
 
   it('charges the bank and records exactly one event per gate command', async (): Promise<void> => {
     const economy = { ...DEFAULT_SETTINGS.pause };
-    const { controller, ports } = harness(publishedFocusRuntime(), {
-      bank: { balanceMs: economy.pauseMs * 2 },
-      economy,
-    });
+    const { controller, ports } = harness(
+      publishedFocusRuntime({ accruedFocusMs: SETTLED_WATERMARK_MS }),
+      {
+        bank: { balanceMs: economy.pauseMs * 2 },
+        economy,
+      },
+    );
     expect((await controller.openGate('pause', null)).code).toBe('ok');
     expect(eventsOf(ports, 'gateOpened')).toHaveLength(1);
     const before: number = ports.bank().balanceMs;
@@ -638,10 +646,13 @@ describe('SessionControllerV2 end and gate commands', (): void => {
 
   it('charges the bank and records one event for an unlock', async (): Promise<void> => {
     const economy = { ...DEFAULT_SETTINGS.pause };
-    const { controller, ports } = harness(publishedFocusRuntime(), {
-      bank: { balanceMs: economy.unlockMs },
-      economy,
-    });
+    const { controller, ports } = harness(
+      publishedFocusRuntime({ accruedFocusMs: SETTLED_WATERMARK_MS }),
+      {
+        bank: { balanceMs: economy.unlockMs },
+        economy,
+      },
+    );
     await controller.openGate('unlockSite', 'facebook.com');
     const before: number = ports.bank().balanceMs;
     expect((await confirmOpenGate(controller, ports)).code).toBe('ok');
@@ -779,9 +790,12 @@ describe('SessionControllerV2 end and gate commands', (): void => {
   });
 
   it('adds a site unlock for an unlock gate', async (): Promise<void> => {
-    const { controller, ports } = harness(publishedFocusRuntime(), {
-      bank: { balanceMs: 600_000 },
-    });
+    const { controller, ports } = harness(
+      publishedFocusRuntime({ accruedFocusMs: SETTLED_WATERMARK_MS }),
+      {
+        bank: { balanceMs: 600_000 },
+      },
+    );
     expect((await controller.openGate('unlockSite', 'facebook.com')).code).toBe('ok');
     expect((await confirmOpenGate(controller, ports)).code).toBe('ok');
 
