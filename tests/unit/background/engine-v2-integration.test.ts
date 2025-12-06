@@ -1007,6 +1007,33 @@ describe('worker cutover to v2 session authority', (): void => {
     ).toBeGreaterThan(0);
   });
 
+  it('reports the bank the read instant has earned', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    worker.documents.push({
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    });
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+
+    const started: number = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(started + 120_000);
+    let snapshot: SessionSnapshotV2;
+    try {
+      snapshot = (await worker.send({ type: 'getSnapshot' } as Request)) as SessionSnapshotV2;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // The read settles the core state through its instant, and the bank is what that focus earns,
+    // so the balance the popup reads is the balance the user has, not the last settled one.
+    expect(snapshot.bankMs).toBeGreaterThan(0);
+    expect((worker.local[LOCAL_BANK] as { balanceMs: number } | undefined)?.balanceMs ?? 0).toBe(0);
+  });
+
   it('never writes runtime or event keys into sync', async (): Promise<void> => {
     const worker: WorkerHarness = await bootWorker(installedSeed());
     await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);

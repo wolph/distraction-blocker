@@ -149,7 +149,7 @@ export class SessionControllerV2 {
     const base: SessionSnapshotV2 = buildSessionSnapshotV2({
       runtime,
       settings,
-      bank: this.ports.bank(),
+      bank: this.readBank(durable, at),
       at,
       nextSchedule: nextScheduleInfoV2(settings.schedule, runtime.handledScheduleOccurrences, at),
     });
@@ -164,6 +164,20 @@ export class SessionControllerV2 {
 
   hasActiveSession(): boolean {
     return this.ports.runtime().session !== null;
+  }
+
+  /**
+   * The bank as `at` observes it. The read settles the core state through `at`, and the bank is
+   * what settled focus earns, so it is reported at the same instant. The durable balance still
+   * moves only when a settle writes, which is what a spend transacts against.
+   */
+  private readBank(durable: RuntimeStateV2, at: number): BankState {
+    const bank: BankState = this.ports.bank();
+    const session: SessionStateV2 | null = durable.session;
+    if (session === null) return bank;
+    const focused: number = advanceSessionV2(session, at).sessionFocusedMs;
+    const delta: number = Math.max(0, focused - durable.accruedFocusMs);
+    return delta === 0 ? bank : accrue(bank, delta, this.ports.economy());
   }
 
   /** Resolves the durable authority once, then allows publication. */
