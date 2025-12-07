@@ -581,6 +581,8 @@ describe('SessionControllerV2 end and gate commands', (): void => {
       publishedFocusRuntime({
         session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
       }),
+      // The phrase is a settings choice, so this profile asks for one.
+      { gateSettings: { ...DEFAULT_SETTINGS.gate, requireTypedPhrase: true } },
     );
     await controller.openEndGate();
     expect((await controller.confirmGate(null)).code).toBe('gate-not-ready');
@@ -663,9 +665,9 @@ describe('SessionControllerV2 end and gate commands', (): void => {
       host: 'facebook.com',
       ms: economy.unlockMs,
     });
-    // One balance buys one unlock: the second confirmation cannot afford its cost.
-    expect((await controller.openGate('unlockSite', 'twitter.com')).code).toBe('ok');
-    expect((await confirmOpenGate(controller, ports)).code).toBe('end-not-allowed');
+    // One balance buys one unlock, and the gate the balance cannot cover never opens.
+    expect((await controller.openGate('unlockSite', 'twitter.com')).code).toBe('end-not-allowed');
+    expect(ports.current().gate).toBeNull();
     expect(eventsOf(ports, 'unlockTaken')).toHaveLength(1);
     expect(ports.bank().balanceMs).toBe(before - economy.unlockMs);
   });

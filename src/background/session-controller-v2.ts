@@ -12,6 +12,7 @@
  */
 
 import { accrue } from '../core/budget';
+import { registrableHost } from '../core/matcher';
 import {
   advanceSessionV2,
   assertCanStartNextFocusEarlyV2,
@@ -279,7 +280,9 @@ export class SessionControllerV2 {
           host: null,
           openedAt: this.ports.now(),
           readyAt: this.ports.now() + this.ports.gateSettings().delayMs,
-          requiredPhrase: cancelPhrase(session.config.intention),
+          requiredPhrase: this.ports.gateSettings().requireTypedPhrase
+            ? cancelPhrase(session.config.intention)
+            : null,
         },
         this.gateEvent('gateOpened', 'cancel', session),
       );
@@ -303,13 +306,20 @@ export class SessionControllerV2 {
       if (gate === 'unlockSite' && (host === null || host.trim() === '')) {
         return failure('end-not-allowed');
       }
+      // A gate the user cannot afford is not opened at all, which is what the v1 economy did: the
+      // deliberation exists to spend a balance that is already there.
+      const economy: PauseEconomy = this.ports.economy();
+      const cost: number = gate === 'pause' ? economy.pauseMs : economy.unlockMs;
+      if (this.ports.bank().balanceMs < cost) return failure('end-not-allowed');
+      const unlockHost: string | null =
+        gate === 'unlockSite' && host !== null ? (registrableHost(host) ?? host) : null;
       await this.commitLiveGate(
         {
           kind: gate,
-          host: gate === 'unlockSite' ? host : null,
+          host: unlockHost,
           openedAt: this.ports.now(),
           readyAt: this.ports.now() + this.ports.gateSettings().delayMs,
-          requiredPhrase: gate === 'pause' ? pausePhrase() : unlockSitePhrase(host ?? ''),
+          requiredPhrase: this.gatePhrase(gate, unlockHost),
         },
         this.gateEvent('gateOpened', gate, session),
       );
@@ -330,6 +340,13 @@ export class SessionControllerV2 {
       );
       return OK;
     });
+  }
+
+  /** The phrase a gate demands, or null when the settings do not ask for one. */
+  private gatePhrase(gate: 'pause' | 'unlockSite', host: string | null): string | null {
+    if (!this.ports.gateSettings().requireTypedPhrase) return null;
+    if (gate === 'pause') return pausePhrase();
+    return host === null ? null : unlockSitePhrase(host);
   }
 
   /** Spends a ready gate. The cancel gate closes the session, the others buy their relief. */
