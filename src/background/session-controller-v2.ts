@@ -293,6 +293,9 @@ export class SessionControllerV2 {
   /** Opens a pause or unlock gate, which the confirmation then spends the bank on. */
   async openGate(gate: 'pause' | 'unlockSite', host: string | null): Promise<CommandResultV2> {
     return this.command(async (): Promise<CommandResultV2> => {
+      // The affordability rule reads the durable balance, so the focus earned since the last
+      // settle is credited first. Otherwise a gate the user has earned is refused until the tick.
+      await this.settleThroughNow();
       const session: SessionStateV2 | null = this.ports.runtime().session;
       const guard: CommandResultV2 | null = this.gateGuard(session);
       if (guard !== null) return guard;
