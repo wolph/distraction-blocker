@@ -319,8 +319,12 @@ export class Engine {
       updateBadge: (snapshot: SessionSnapshot): void => this.ports.updateIcon(snapshot),
       playSound: (sound: SoundId): void => this.ports.playSound(sound),
       notify: (title: string, body: string): void => this.ports.notify(title, body),
-      clearBlockingForNonBlockingPhase: (): Promise<void> =>
-        this.ports.clearBlockingForNonBlockingPhase(),
+      // The sweep reads the controller for every target, and this effect runs inside a controller
+      // command, so awaiting it here would deadlock the queue against itself. The clear is
+      // requested and runs as soon as the command that asked for it lets the queue go.
+      clearBlockingForNonBlockingPhase: async (): Promise<void> => {
+        void this.sweepAfterPhaseChange();
+      },
       recordAttempt: (url: string, tabId: number, kind: 'navigation' | 'existing'): Promise<void> =>
         this.recordAttempt(url, tabId, kind),
       restoreTabClaims: (claims: readonly CleanupTabClaim[]): Promise<number[]> =>
@@ -704,8 +708,13 @@ export class Engine {
     return response;
   }
 
+  /**
+   * What a phase change owes every open document: the frozen views are refrozen for the phase the
+   * session is in now, and then the browser effects the sweep owns follow them.
+   */
   private async sweepAfterPhaseChange(): Promise<void> {
     try {
+      await this.controller.refreshLiveViews();
       await this.applyBlockingWithLease();
     } catch (error: unknown) {
       this.ports.reportError(error);
