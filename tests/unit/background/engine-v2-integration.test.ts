@@ -1034,6 +1034,37 @@ describe('worker cutover to v2 session authority', (): void => {
     expect((worker.local[LOCAL_BANK] as { balanceMs: number } | undefined)?.balanceMs ?? 0).toBe(0);
   });
 
+  it('counts a resisted gate in the day it happened on', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    worker.documents.push({
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    });
+    await worker.send({
+      type: 'startSession',
+      config: {
+        ...indefiniteConfig(),
+        strictness: 'friction',
+        duration: { kind: 'timed', minutes: 25 },
+      },
+    } as Request);
+    await worker.settle();
+
+    expect(
+      (await worker.send({ type: 'openEndGate' } as Request)) as { ok: boolean },
+    ).toMatchObject({
+      ok: true,
+    });
+    await worker.send({ type: 'abandonGate' } as Request);
+    await worker.settle();
+
+    // Stats read the day, not the log, so an event a commit carries is folded into it.
+    expect(worker.runtime().todayAgg?.resisted ?? 0).toBe(1);
+    expect(worker.runtime().todayAgg?.sessionsStarted ?? 0).toBe(1);
+  });
+
   it('never writes runtime or event keys into sync', async (): Promise<void> => {
     const worker: WorkerHarness = await bootWorker(installedSeed());
     await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);

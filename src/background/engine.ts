@@ -342,8 +342,27 @@ export class Engine {
     await this.ports.saveRuntime(this.runtime);
   }
 
+  /**
+   * Folds the events one commit carries into the day they happened on, which is what the v1
+   * `recordEvent` did. The ended family is left out: a closure computes those counters itself and
+   * writes them as absolute aggregate values, so folding them here would count them twice.
+   */
+  private foldCommittedEvents(events: readonly EventRecord[]): void {
+    const counted: EventRecord[] = events.filter(
+      (event: EventRecord): boolean =>
+        event.t !== 'sessionEnded' &&
+        event.t !== 'sessionCompleted' &&
+        event.t !== 'sessionCanceled',
+    );
+    if (counted.length === 0) return;
+    let aggregate: DailyAgg = this.runtime.todayAgg ?? emptyDaily(this.runtime.date);
+    for (const event of counted) aggregate = addEvent(aggregate, event);
+    this.runtime.todayAgg = aggregate;
+  }
+
   /** One durable checkpoint, through the same writers the retained engine commits with. */
   private async commitRuntime(input: RuntimeCommitInputV2): Promise<RuntimeStateV2> {
+    this.foldCommittedEvents(input.events);
     const committed: RuntimeStateV2 = await commitRuntimeCheckpointV2(
       {
         saveRuntime: (runtime: RuntimeStateV2): Promise<void> => this.ports.saveRuntime(runtime),
