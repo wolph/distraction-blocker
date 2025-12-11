@@ -237,8 +237,8 @@ test('the packaged artifact installs, onboards, blocks, and survives a browser r
   expect(await currentSetup(launch)).toEqual(setupBeforeRestart);
   expect(await freshInstallExtension.hasWebsiteAccess()).toBe(true);
   expect(await freshInstallExtension.dynamicRegistrations()).toMatchObject(expectedRegistrations());
-  await expect(launch.extPage.locator('.phase-label')).toHaveText('focusing');
-  await expect(launch.extPage.locator('.clock')).toHaveText(/\d+:[0-5]\d/);
+  await expect(launch.extPage.locator('.clock-stack__value').first()).toHaveText(/\d+:[0-5]\d/);
+  await expect(launch.extPage.locator('.clock-stack__label').first()).not.toBeEmpty();
   await expectBlockedPage(launch, url);
   expectNoDiagnostics(diagnostics);
 });

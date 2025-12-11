@@ -129,11 +129,12 @@ test('persistent profile restores a blocked muted tab and active countdown after
       );
     });
   expect(topmostAtInput).toBe('FOCUS-LOCK-OVERLAY');
-  await expect(second.extPage.locator('.phase-label')).toHaveText('focusing');
-  await expect(second.extPage.locator('.clock')).toHaveText(/\d+:[0-5]\d/);
-
-  // A restarted worker republishes only after recovery resolves its journals.
+  // A restarted worker republishes only after recovery resolves its journals, and the popup opened
+  // before that shows the idle view until the republication reaches it.
   await waitForActiveSession(second.extPage);
+  // The v2 popup labels its clocks instead of naming a phase: the first row is the running one.
+  await expect(second.extPage.locator('.clock-stack__value').first()).toHaveText(/\d+:[0-5]\d/);
+  await expect(second.extPage.locator('.clock-stack__label').first()).not.toBeEmpty();
   const after: SessionSnapshot = await sendExtensionRequest(second.extPage, {
     type: 'getSnapshot',
   });
