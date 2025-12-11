@@ -1034,6 +1034,61 @@ describe('worker cutover to v2 session authority', (): void => {
     expect((worker.local[LOCAL_BANK] as { balanceMs: number } | undefined)?.balanceMs ?? 0).toBe(0);
   });
 
+  it('reblocks an expired unlock on the next tick', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker({
+      ...installedSeed(),
+      [LOCAL_BANK]: { balanceMs: 10 * 60_000 },
+    });
+    const document: FakeDocument = {
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    };
+    worker.documents.push(document);
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+    expect(worker.runtime().documentCommands[documentKeyOf(document)]?.presentation).toBe('active');
+
+    const started: number = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await worker.send({
+        type: 'openGate',
+        gate: 'unlockSite',
+        host: 'facebook.com',
+      } as Request);
+      vi.setSystemTime(started + DEFAULT_SETTINGS.gate.delayMs + 1_000);
+      expect(
+        (await worker.send({ type: 'confirmGate', typedPhrase: null } as Request)) as {
+          ok: boolean;
+        },
+      ).toMatchObject({ ok: true });
+      await worker.settle();
+      expect(worker.runtime().documentCommands[documentKeyOf(document)]?.presentation).toBe(
+        'clear',
+      );
+      // Indefinite focus owns no phase alarm, and an unlock expiry is not a boundary, so a commit
+      // taken while the unlock is live leaves the singleton absent instead of filling it with a
+      // time no session asked for.
+      vi.setSystemTime(started + DEFAULT_SETTINGS.gate.delayMs + 60_000);
+      await worker.fireAlarm('tick');
+      await worker.settle();
+      expect(worker.runtime().unlocks).toHaveLength(1);
+      expect(worker.alarms.get('phase')).toBeUndefined();
+
+      // No alarm owns the expiry: `phase` belongs to the session boundary alone, so the unlock ends
+      // by instant and the minute tick is what puts the page back behind the overlay.
+      vi.setSystemTime(started + DEFAULT_SETTINGS.pause.unlockMs + 120_000);
+      await worker.fireAlarm('tick');
+      await worker.settle();
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(worker.runtime().documentCommands[documentKeyOf(document)]?.presentation).toBe('active');
+  });
+
   it('counts a resisted gate in the day it happened on', async (): Promise<void> => {
     const worker: WorkerHarness = await bootWorker(installedSeed());
     worker.documents.push({

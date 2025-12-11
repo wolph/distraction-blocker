@@ -48,7 +48,6 @@ import type {
   SessionRuleSnapshot,
   SessionSnapshot,
   SessionState,
-  SessionStateV2,
   Settings,
   SiteUnlock,
   StreakState,
@@ -121,6 +120,10 @@ export interface EnginePorts {
   playSound(sound: SoundId): void;
   notify(title: string, message: string): void;
   updateIcon(snapshot: SessionSnapshot): void;
+  /**
+   * The v1 wake seam, unused since the controller took the alarms: `phase` is owned by the durable
+   * session and carries its next boundary, so nothing outside the controller may write it.
+   */
   scheduleWake(atMs: number | null): void;
   /** run the weekly sync-storage retention prune */
   prune(retentionDays: number, now: number): Promise<void>;
@@ -173,7 +176,6 @@ const _NO_SESSION_VERDICT: Verdict = {
   categoryId: null,
   matchedPattern: null,
 };
-const WEBSITE_BLOCKING_LOSS_RETRY_MS: number = 1_000;
 
 function _strictnessStrength(strictness: Strictness): number {
   if (strictness === 'flexible') return 0;
@@ -604,7 +606,6 @@ export class Engine {
     const snapshot: SessionSnapshot = this.controller.snapshot(this.ports.now());
     this.ports.broadcast(snapshot);
     this.ports.updateIcon(snapshot);
-    this.ports.scheduleWake(null);
     try {
       await this.applyBlockingWithLease();
     } catch (error: unknown) {
@@ -621,7 +622,6 @@ export class Engine {
     } catch (error: unknown) {
       this.websiteBlockingLossPending = true;
       this.ports.reportError(error);
-      this.ports.scheduleWake(this.ports.now() + WEBSITE_BLOCKING_LOSS_RETRY_MS);
     }
   }
 
@@ -1564,19 +1564,11 @@ export class Engine {
     this.resolveAttemptDurability(attemptRevision);
     this.ports.broadcast(snap);
     this.ports.updateIcon(snap);
-    const wakeCandidates: number[] = this.runtime.unlocks.map(
-      (unlock: SiteUnlock): number => unlock.until,
-    );
-    // An indefinite session has no boundary to wake for, and a phase without an end has none
-    // either, so only the finite ones join the candidates.
-    const session: SessionStateV2 | null = this.runtime.session;
-    if (session !== null) {
-      const boundaries: number[] = [session.phaseEndsAt, session.sessionEndsAt].filter(
-        (boundary: number | null): boundary is number => boundary !== null,
-      );
-      if (boundaries.length > 0) wakeCandidates.push(Math.min(...boundaries));
-    }
-    this.ports.scheduleWake(wakeCandidates.length === 0 ? null : Math.min(...wakeCandidates));
+    // No wake is scheduled here. The `phase` alarm belongs to the durable session and holds its
+    // next boundary alone, which indefinite focus does not have at all, so a commit that wrote an
+    // unlock expiry into it would delete the boundary the controller created and read back. An
+    // expiring unlock is enforced by instant instead: the verdict ignores an unlock the read
+    // instant has passed, and the minute tick sweeps the tabs that then owe an overlay again.
     if (block) {
       try {
         await this.applyBlockingWithLease();

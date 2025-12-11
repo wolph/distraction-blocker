@@ -240,7 +240,8 @@ test('friction cancellation without typing uses the configured delay', async ({ 
   const gateDelayMs: number = 3_000;
   await configureFastEconomy(extPage, { gateDelayMs, requireTypedPhrase: false });
   await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.3 } });
-  expect(await sendExtensionRequest(extPage, { type: 'requestSessionEnd' })).toEqual({
+  // A Friction End opens the gate; only a Flexible session ends on the request itself.
+  expect(await sendExtensionRequest(extPage, { type: 'openEndGate' })).toEqual({
     ok: true,
     code: 'ok',
   });
@@ -381,9 +382,10 @@ test('hard sessions reject cancellation gates', async ({ extPage }) => {
   });
 
   const ack = await sendExtensionRequest(extPage, { type: 'requestSessionEnd' });
+  const gateAck = await sendExtensionRequest(extPage, { type: 'openEndGate' });
 
-  expect(ack.ok).toBe(false);
-  if (!ack.ok) expect(ack.error).toMatch(/hard sessions cannot be canceled/i);
+  expect(ack).toEqual({ ok: false, code: 'end-not-allowed', error: 'end-not-allowed' });
+  expect(gateAck).toEqual({ ok: false, code: 'end-not-allowed', error: 'end-not-allowed' });
   const snapshot: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
   expect(snapshot.phase).toBe('focus');
   expect(snapshot.gate).toBeNull();
@@ -437,10 +439,19 @@ test('overlay unlock isolates another site and reblocks after expiry', async ({
     type: 'getSnapshot',
   });
   expect(snapshot.activeUnlocks[0]?.host).toBe('blocked.example');
+  // The `phase` alarm belongs to the session and holds its next boundary alone. An unlock expiry
+  // is not a boundary, so it never lands there: the verdict drops the unlock by instant and the
+  // minute tick sweeps the tab back behind the overlay.
   const phaseAlarm: chrome.alarms.Alarm | undefined = await worker.evaluate(
     async (): Promise<chrome.alarms.Alarm | undefined> => await chrome.alarms.get('phase'),
   );
-  expect(phaseAlarm?.scheduledTime).toBe(snapshot.activeUnlocks[0]?.until);
+  expect(phaseAlarm?.scheduledTime).toBe(
+    Math.min(
+      snapshot.phaseEndsAt ?? Number.POSITIVE_INFINITY,
+      snapshot.sessionEndsAt ?? Number.POSITIVE_INFINITY,
+    ),
+  );
+  expect(phaseAlarm?.scheduledTime).not.toBe(snapshot.activeUnlocks[0]?.until);
   await expect(page.locator('focus-lock-overlay')).toHaveCount(0);
   await expect(page.locator('#marker')).toHaveText('plain page');
   await expect(otherPage.locator('focus-lock-overlay')).toBeAttached();
@@ -456,6 +467,10 @@ test('overlay unlock isolates another site and reblocks after expiry', async ({
       { timeout: 50_000 },
     )
     .toBe(0);
+  // The unlock is over by instant, so the page it paid for blocks again on its next visit. The
+  // sweep that reblocks a page nobody navigates rides the minute tick, which is too slow for a
+  // 60-second test budget and is covered in tests/unit/background/engine-v2-integration.test.ts.
+  await page.reload();
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
   await expect(otherPage.locator('focus-lock-overlay')).toBeAttached();
 });
