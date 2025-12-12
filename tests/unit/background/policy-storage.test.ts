@@ -7,6 +7,7 @@ import {
   type PolicySnapshot,
   type PolicyStorage,
 } from '../../../src/background/policy-storage';
+import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import { emptyRuntime, type RuntimeState } from '../../../src/background/stores';
 import type { SyncJournal } from '../../../src/background/sync-writer';
 import { capAttempts, emptyDaily, rollupMonth } from '../../../src/core/stats';
@@ -56,6 +57,12 @@ import type {
   SetupState,
   StreakState,
 } from '../../../src/shared/types';
+import {
+  cleanupClosureRuntime,
+  commitCheckpointRuntime,
+  emptyRuntimeV2,
+  publishedFocusRuntime,
+} from './runtime-v2-fixtures';
 
 interface FakeAreaState {
   values: Record<string, unknown>;
@@ -2986,10 +2993,9 @@ describe('PolicyStorage', (): void => {
 
   it('clears every Focus Lock local key only after remote all-data deletion succeeds', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
-    const now: number = Date.now();
     const local: FakeStorage = fakeStorage({
       ...localPolicy(setup),
-      [LOCAL_RUNTIME]: emptyRuntime(now),
+      [LOCAL_RUNTIME]: emptyRuntimeV2(),
       [LOCAL_RUNTIME_SCHEMA]: { runtimeSchemaVersion: 2 },
       [LOCAL_RUNTIME_MIGRATION]: { version: 1, phase: 'projected' },
       [LOCAL_CACHES]: { matcher: true },
@@ -3035,7 +3041,7 @@ describe('PolicyStorage', (): void => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
     const local: FakeStorage = fakeStorage({
       ...localPolicy(setup),
-      [LOCAL_RUNTIME]: emptyRuntime(Date.now()),
+      [LOCAL_RUNTIME]: emptyRuntimeV2(),
     });
     const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
     const retainedAfterFailure: boolean[] = [];
@@ -3067,7 +3073,7 @@ describe('PolicyStorage', (): void => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
     const local: FakeStorage = fakeStorage({
       ...localPolicy(setup),
-      [LOCAL_RUNTIME]: emptyRuntime(Date.now()),
+      [LOCAL_RUNTIME]: emptyRuntimeV2(),
     });
     const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
     let recreated: boolean = false;
@@ -3111,7 +3117,7 @@ describe('PolicyStorage', (): void => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
     const local: FakeStorage = fakeStorage({
       ...localPolicy(setup),
-      [LOCAL_RUNTIME]: emptyRuntime(Date.now()),
+      [LOCAL_RUNTIME]: emptyRuntimeV2(),
     });
     const storage: PolicyStorage = createPolicyStorage(
       local.area,
@@ -3202,6 +3208,40 @@ describe('PolicyStorage', (): void => {
     },
   );
 
+  it('deletes all data against a stopped v2 runtime and refuses every runtime that is not', async (): Promise<void> => {
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const seeded = (runtime: RuntimeStateV2): FakeStorage =>
+      fakeStorage({ ...localPolicy(setup), [LOCAL_RUNTIME]: runtime });
+
+    const stopped: FakeStorage = seeded(emptyRuntimeV2());
+    await expect(
+      policyStorage(stopped, fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings })).deleteRemoteData(
+        'all',
+      ),
+    ).resolves.toBeUndefined();
+    expect(stopped.state.values[LOCAL_RUNTIME]).toBeUndefined();
+    expect(stopped.state.values[LOCAL_SETTINGS]).toBeUndefined();
+
+    const live: RuntimeStateV2 = publishedFocusRuntime();
+    const holding: FakeStorage = seeded(live);
+    await expect(
+      policyStorage(holding, fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings })).deleteRemoteData(
+        'all',
+      ),
+    ).rejects.toThrow('stop the active session and blocking state before deleting all data');
+    expect(holding.state.values[LOCAL_RUNTIME]).toEqual(live);
+
+    // No session, but the closure journal still owns the clear commands the reset would race.
+    const closing: RuntimeStateV2 = cleanupClosureRuntime();
+    const cleaning: FakeStorage = seeded(closing);
+    await expect(
+      policyStorage(cleaning, fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings })).deleteRemoteData(
+        'all',
+      ),
+    ).rejects.toThrow('persisted runtime is not valid for all-data deletion');
+    expect(cleaning.state.values[LOCAL_RUNTIME]).toEqual(closing);
+  });
+
   it('does not resume an all-data journal until durable runtime is stopped', async (): Promise<void> => {
     const setup: SetupState = {
       ...DEFAULT_SETUP,
@@ -3235,12 +3275,7 @@ describe('PolicyStorage', (): void => {
 
   it('preserves stopped runtime and matcher cache when remote all-data deletion fails', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
-    const runtime: RuntimeState = emptyRuntime(Date.now());
-    runtime.commitCheckpoint = {
-      bank: SNAPSHOT.bank,
-      events: [],
-      syncBank: true,
-    };
+    const runtime: RuntimeStateV2 = commitCheckpointRuntime(emptyRuntimeV2());
     const cache = { matcher: true };
     const history: Record<string, unknown>[] = [{ id: 'event-1', type: 'attempt', at: Date.now() }];
     const local: FakeStorage = fakeStorage({
@@ -3519,7 +3554,7 @@ describe('PolicyStorage', (): void => {
     };
     const local: FakeStorage = fakeStorage({
       ...localPolicy(setup),
-      [LOCAL_RUNTIME]: emptyRuntime(Date.now()),
+      [LOCAL_RUNTIME]: emptyRuntimeV2(),
       [LOCAL_DATA_CLEAR_JOURNAL]: {
         scope: 'all',
         phase: 'remote',

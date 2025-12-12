@@ -44,6 +44,8 @@ import type {
   StreakState,
 } from '../shared/types';
 import { encodeListsForSync, LIST_SYNC_KEYS, type ListsSyncEncoding } from './list-sync-codec';
+import type { RuntimeStateV2 } from './runtime-v2-types';
+import { parseRuntimeStateV2 } from './runtime-v2-validation';
 import {
   type AggregateStorage,
   type LocalAggregatePruneCheckpoint,
@@ -225,6 +227,29 @@ const FOCUS_LOCK_LOCAL_EXACT_KEYS: readonly string[] = [
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The runtime an all-data clear may delete under. A stopped runtime holds no session and no blocking
+ * state, and it owes no cleanup, because a pending transition or a pending closure is a journal
+ * another owner is still driving. A prepared target reservation lives inside a transition and
+ * nowhere else, so refusing the transition is what covers it.
+ *
+ * What a stopped profile legitimately keeps is deliberately not required to be idle. The clear
+ * commands a finished cleanup leaves in `documentCommands`, the epoch acknowledgements, the
+ * revisions, and the day's aggregate all survive a stop. Resetting those to the idle projection
+ * `data-clear-journal` validates is the clear's own job, not a precondition for running it.
+ */
+function isStoppedRuntimeV2(runtime: RuntimeStateV2): boolean {
+  return (
+    runtime.session === null &&
+    runtime.gate === null &&
+    runtime.unlocks.length === 0 &&
+    Object.keys(runtime.tabStates).length === 0 &&
+    runtime.enforcementCheckpoint === null &&
+    runtime.pendingEnforcementTransition === null &&
+    runtime.pendingClosure === null
+  );
 }
 
 function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
@@ -2018,6 +2043,12 @@ export function createPolicyStorage(
     await finishDataClear(journal);
   }
 
+  /**
+   * The worker persists the v2 runtime shape, so the stored value is validated by the v2 parser
+   * rather than round-tripped through the v1 reader, which no v2 runtime can survive unchanged.
+   * Live blocking state keeps its own actionable message, and everything else the stopped rule
+   * refuses reports the value itself as unusable.
+   */
   async function assertStoppedRuntimeForAllDataClear(): Promise<void> {
     const stored: Record<string, unknown> = await local.get(LOCAL_RUNTIME);
     if (!Object.hasOwn(stored, LOCAL_RUNTIME)) return;
@@ -2033,25 +2064,9 @@ export function createPolicyStorage(
     ) {
       throw new Error('stop the active session and blocking state before deleting all data');
     }
-    const runtimeNow: number = new Date(`${value.date}T12:00:00`).getTime();
-    if (!Number.isFinite(runtimeNow)) {
+    const runtime: RuntimeStateV2 | null = parseRuntimeStateV2(value);
+    if (runtime === null || !isStoppedRuntimeV2(runtime)) {
       throw new Error('persisted runtime is not valid for all-data deletion');
-    }
-    const snapshot: PolicySnapshot = await loadSnapshotInternal();
-    const runtime: RuntimeState = migrateRuntimeRules(
-      mergeRuntime(value, runtimeNow),
-      snapshot.lists,
-    );
-    if (!valuesEqual(runtime, value)) {
-      throw new Error('persisted runtime is not valid for all-data deletion');
-    }
-    if (
-      runtime.session !== null ||
-      runtime.gate !== null ||
-      runtime.unlocks.length > 0 ||
-      Object.keys(runtime.tabStates).length > 0
-    ) {
-      throw new Error('stop the active session and blocking state before deleting all data');
     }
   }
 

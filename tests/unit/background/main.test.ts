@@ -830,10 +830,7 @@ describe('background runtime request boundary', () => {
     expect(mocks.localState[LOCAL_ONBOARDING_DRAFT]).toBeUndefined();
   });
 
-  // The all-data clear still validates the persisted runtime by round-tripping it through the v1
-  // parser (`assertStoppedRuntimeForAllDataClear`), and the worker now persists a v2 runtime, so
-  // every all-data clear is refused. The assertions are kept whole. See task-1-piece-A-report.md.
-  it.skip('marks a live all-data reset clean before the next boot creates legacy evidence', async (): Promise<void> => {
+  it('marks a live all-data reset clean before the next boot creates legacy evidence', async (): Promise<void> => {
     setCompleteLocalPolicy();
     mocks.localState[LOCAL_RUNTIME] = emptyRuntimeV2(Date.now(), TEST_EPOCH);
     mocks.registrationStatuses = ['ready', 'unavailable'];
@@ -934,10 +931,7 @@ describe('background runtime request boundary', () => {
     expect(mocks.aggregateBarrierCalls).toBe(1);
   });
 
-  // The all-data clear still validates the persisted runtime by round-tripping it through the v1
-  // parser (`assertStoppedRuntimeForAllDataClear`), and the worker now persists a v2 runtime, so
-  // every all-data clear is refused. The assertions are kept whole. See task-1-piece-A-report.md.
-  it.skip('retries a boot-restored local-phase all-data clear through the runtime router', async (): Promise<void> => {
+  it('retries a boot-restored local-phase all-data clear through the runtime router', async (): Promise<void> => {
     mocks.localState = {
       [LOCAL_SETUP]: {
         ...DEFAULT_SETUP,
@@ -1667,7 +1661,7 @@ describe('background runtime request boundary', () => {
         storageMode: 'local',
         dataClear: { status: 'pending', scope: 'all', phase: 'remote' },
       },
-      [LOCAL_RUNTIME]: emptyRuntime(now),
+      [LOCAL_RUNTIME]: emptyRuntimeV2(now, TEST_EPOCH),
       [LOCAL_DATA_CLEAR_JOURNAL]: {
         scope: 'all',
         phase: 'remote',
@@ -1725,7 +1719,7 @@ describe('background runtime request boundary', () => {
         storageMode: 'local',
         dataClear: { status: 'pending', scope: 'all', phase: 'remote' },
       },
-      [LOCAL_RUNTIME]: emptyRuntime(now),
+      [LOCAL_RUNTIME]: emptyRuntimeV2(now, TEST_EPOCH),
       [LOCAL_DATA_CLEAR_JOURNAL]: {
         scope: 'all',
         phase: 'remote',
