@@ -6316,7 +6316,7 @@ describe('applyBlockingFactory', () => {
   // The attempt write moved inside the per-tab task, so a blocking sweep started by that write
   // waits for the task that is waiting for it. The assertions are kept whole for whoever restores
   // the release. See task-1-piece-A-report.md.
-  it.skip('does not deadlock when attempt persistence starts a nested same-tab sweep', async () => {
+  it('does not deadlock when attempt persistence starts a nested same-tab sweep', async () => {
     let now = new Date(2026, 7, 29, 12, 0).getTime();
     const appendEvents = vi.fn().mockResolvedValue(undefined);
     const applyBlocking = vi.fn().mockResolvedValue(undefined);
@@ -6360,6 +6360,11 @@ describe('applyBlockingFactory', () => {
     now += 5 * 60_000 + 1;
     await engine.tick();
     now += 5 * 60_000 + 1;
+    // A commit sweeps only while blocking work is pending, and a policy change is what arms that
+    // in v2. One refused sweep leaves it armed, so the next commit, the attempt's own, is the one
+    // that starts the nested sweep this test is about.
+    applyBlocking.mockRejectedValueOnce(new Error('sweep refused once'));
+    await expect(engine.updateLists(deadlockLists)).rejects.toThrow('sweep refused once');
     appendEvents.mockClear();
     applyBlocking.mockClear();
     reportError.mockClear();
@@ -6387,6 +6392,11 @@ describe('applyBlockingFactory', () => {
             mutedInfo: { muted, extensionId: muted ? 'focus-lock' : undefined },
           }),
         ),
+      },
+      webNavigation: {
+        getFrame: vi.fn().mockResolvedValue({ documentId: LIVE_DOCUMENT_ID }),
+        onCommitted: { addListener: vi.fn() },
+        onHistoryStateUpdated: { addListener: vi.fn() },
       },
     });
     const runSweep: () => Promise<void> = applyBlockingFactory((): Engine => engine);
@@ -6422,7 +6432,7 @@ describe('applyBlockingFactory', () => {
   // The attempt write moved inside the per-tab task, so a blocking sweep started by that write
   // waits for the task that is waiting for it. The assertions are kept whole for whoever restores
   // the release. See task-1-piece-A-report.md.
-  it.skip('releases the tab queue after persistence starts a nested same-tab sweep', async () => {
+  it('releases the tab queue after persistence starts a nested same-tab sweep', async () => {
     const url = 'https://facebook.com/deterministic-nested-sweep';
     const persistenceOrder: string[] = [];
     const persistAttempt = vi.fn(async (): Promise<void> => {
@@ -6502,6 +6512,11 @@ describe('applyBlockingFactory', () => {
             mutedInfo: { muted, extensionId: muted ? 'focus-lock' : undefined },
           }),
         ),
+      },
+      webNavigation: {
+        getFrame: vi.fn().mockResolvedValue({ documentId: LIVE_DOCUMENT_ID }),
+        onCommitted: { addListener: vi.fn() },
+        onHistoryStateUpdated: { addListener: vi.fn() },
       },
     });
     runSweep = applyBlockingFactory((): Engine => engine);

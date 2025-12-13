@@ -411,30 +411,38 @@ async function queueResolvedTabApply(
   while (true) {
     const preparation: {
       input: TabApplyInput;
-      persistence: Promise<void> | null;
+      persistence: Promise<boolean> | null;
     } | null = await enqueueTabTask(
       tabId,
       async (
         taskVersion: number,
-      ): Promise<{ input: TabApplyInput; persistence: Promise<void> | null } | null> => {
+      ): Promise<{ input: TabApplyInput; persistence: Promise<boolean> | null } | null> => {
         if (!operationIsCurrent()) return null;
         await cancelMuteContinuation(tabId, options.lease);
         const input: TabApplyInput | null = await resolveInput(taskVersion);
         if (input === null || !operationIsCurrent()) return null;
         if (options.requireCurrentTask && tabTaskVersions.get(tabId) !== taskVersion) return null;
-        // The controller records the attempt as it freezes the command, so the persistence this
-        // path used to own is the same await.
         const kind: 'navigation' | 'existing' | null =
           recordedAttemptUrl === input.url ? null : attemptKind;
-        const blocked: boolean = await blockedForTarget(engine, tabId, input, kind);
-        return { input, persistence: blocked && kind !== null ? Promise.resolve() : null };
+        // The controller records the attempt as it freezes the command, and that write commits,
+        // which starts a blocking sweep that re-enters this tab's queue. So the call is started
+        // here and settled after the task releases: a sweep must never wait for the task that
+        // asked for it. Nothing is recorded without a kind, so that case still settles in place.
+        if (kind === null) {
+          await blockedForTarget(engine, tabId, input, null);
+          return { input, persistence: null };
+        }
+        const frozen: Promise<boolean> = blockedForTarget(engine, tabId, input, kind);
+        // The rejection is delivered to the awaiting caller below, not to the process.
+        void frozen.catch((): void => undefined);
+        return { input, persistence: frozen };
       },
     );
     if (preparation === null) return;
     if (preparation.persistence !== null) {
-      await preparation.persistence;
+      const blocked: boolean = await preparation.persistence;
       if (!operationIsCurrent()) return;
-      recordedAttemptUrl = preparation.input.url;
+      if (blocked) recordedAttemptUrl = preparation.input.url;
     }
 
     const completed: boolean = await enqueueTabTask(
