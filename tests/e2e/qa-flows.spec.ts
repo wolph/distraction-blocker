@@ -1833,12 +1833,14 @@ test('hard-session Options rejects weakening and saves a stronger rule', async (
   });
   const optionsPage: Page = await context.newPage();
   await optionsPage.goto(`chrome-extension://${extensionId}/src/options/options.html`);
+  // Settings describes the session by its lifecycle now, not by its strictness: the hard rule is
+  // stated where it bites, on the save that would weaken blocking.
   await expect
     .poll(async (): Promise<string> => {
-      const text: string | null = await optionsPage.locator('.hard-banner').textContent();
+      const text: string | null = await optionsPage.locator('.session-status').textContent();
       return text?.trim() ?? '';
     })
-    .toMatch(/^Changes that weaken blocking will be rejected until \d{2}:\d{2}\.$/);
+    .toMatch(/^Timed session active until \d{2}:\d{2}\./);
 
   await optionsPage.getByRole('button', { name: 'Remove blocked.example' }).click();
   await optionsPage.getByRole('button', { name: 'Save changes' }).click();

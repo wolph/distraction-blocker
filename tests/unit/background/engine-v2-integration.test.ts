@@ -224,9 +224,17 @@ async function bootWorker(
         ),
       },
       sendMessage: vi.fn(async (message: unknown): Promise<void> => {
-        const broadcast = message as { type?: string; snapshot?: SessionSnapshotV2 };
+        const broadcast = message as {
+          type?: string;
+          snapshot?: SessionSnapshotV2;
+          sound?: string;
+        };
         if (broadcast.type === 'stateChanged' && broadcast.snapshot !== undefined) {
           broadcasts.push(structuredClone(broadcast.snapshot));
+        }
+        // The offscreen page is the audience for a sound, and this stub is standing in for it.
+        if (broadcast.type === 'playSound' && broadcast.sound !== undefined) {
+          sounds.push(broadcast.sound);
         }
       }),
     },
@@ -1032,6 +1040,53 @@ describe('worker cutover to v2 session authority', (): void => {
     // so the balance the popup reads is the balance the user has, not the last settled one.
     expect(snapshot.bankMs).toBeGreaterThan(0);
     expect((worker.local[LOCAL_BANK] as { balanceMs: number } | undefined)?.balanceMs ?? 0).toBe(0);
+  });
+
+  it('clears the badge when a timed session completes', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    worker.documents.push({
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    });
+    await worker.send({
+      type: 'startSession',
+      config: {
+        ...indefiniteConfig(),
+        duration: { kind: 'timed', minutes: 30 },
+        cycling: { focusMin: 10, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 },
+      },
+    } as Request);
+    await worker.settle();
+    expect(worker.badges.at(-1)).not.toBe('');
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      // Every boundary the session plans, in order, the way the alarm would deliver them.
+      for (let boundary: number = 0; boundary < 10; boundary += 1) {
+        const when: number | null | undefined = worker.alarms.get('phase')?.when;
+        if (when === undefined || when === null) break;
+        vi.setSystemTime(when + 1_000);
+        await worker.fireAlarm('phase');
+        await worker.settle();
+        if (worker.runtime().session === null) break;
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // The session is over, so the toolbar says nothing: a stale countdown outlives the session it
+    // was counting and tells the user they are still locked.
+    expect(worker.runtime().session).toBeNull();
+    expect(worker.badges.at(-1)).toBe('');
+    // Every boundary it crossed is in the log and was heard.
+    expect(
+      worker.events().filter((event): boolean => event.t === 'phase').length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(worker.sounds).toContain('breakStart');
+    expect(worker.sounds).toContain('breakEnd');
+    expect(worker.sounds).toContain('sessionComplete');
   });
 
   it('reblocks an expired unlock on the next tick', async (): Promise<void> => {

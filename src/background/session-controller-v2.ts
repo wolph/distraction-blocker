@@ -910,7 +910,12 @@ export class SessionControllerV2 {
     const driven: TransitionDriveResultV2 = await driveTransitionV2(this.ports, prepared.matcher);
     if (driven.kind === 'cleanup') await this.runTransitionCleanupIfOwned();
     this.publish();
-    return driven.kind === 'published' ? OK : failure('no-active-session');
+    if (driven.kind !== 'published') return failure('no-active-session');
+    // The break is over, and the sound says so on every path back to focus, timed or manual.
+    if (phase === 'break' && this.schedule.settings().sounds.breakEnd) {
+      this.effects.playSound('breakEnd');
+    }
+    return OK;
   }
 
   /**
@@ -975,6 +980,16 @@ export class SessionControllerV2 {
       return;
     }
     const advanced: SessionAdvanceResultV2 = advanceSessionV2(session, now);
+    // A settled roll is a phase change like any other, and the log is what the stats read.
+    for (const change of advanced.events) {
+      events.push({
+        t: 'phase',
+        at: change.at,
+        from: change.from,
+        to: change.to,
+        sessionId: session.sessionId,
+      });
+    }
     if (advanced.kind === 'timer-completed') {
       // The closure one await away replaces the whole command map with its clear batch, so a live
       // update here would send every document a blocking command for a session that is over.
@@ -1014,8 +1029,21 @@ export class SessionControllerV2 {
       now,
       earnings.bank,
     );
+    // The boundary moved, so the alarm that carries it has to move with it. A settled roll is the
+    // one phase change with no command behind it to create the alarm, and without this the worker
+    // sleeps through every boundary after the first one and only the minute tick catches up.
+    if (advanced.state.phaseEndsAt !== session.phaseEndsAt) {
+      const current: SessionStateV2 | null = this.ports.runtime().session;
+      if (current !== null && (await this.ensurePhaseAlarm(current)) === 'alarm-failed') {
+        await closeSessionV2(this.ports, this.effects, { endedAt: now, reason: 'alarm-failed' });
+        return;
+      }
+    }
     if (rolled && advanced.state.phase !== 'focus') {
       await this.effects.clearBlockingForNonBlockingPhase();
+    }
+    if (rolled && advanced.state.phase === 'break' && this.schedule.settings().sounds.breakStart) {
+      this.effects.playSound('breakStart');
     }
   }
 
