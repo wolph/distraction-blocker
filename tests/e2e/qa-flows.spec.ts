@@ -1460,8 +1460,10 @@ test('Task 7 production evidence matrix is reproducible', async ({
       blockedPage,
       'Blocked by your block list: blocked.example',
     );
-    expect(await sendExtensionRequest(extPage, { type: 'requestSessionEnd' })).toEqual({
+    // A Friction session ends through its gate, which is what the popup's End control sends.
+    expect(await sendExtensionRequest(extPage, { type: 'openEndGate' })).toEqual({
       ok: true,
+      code: 'ok',
     });
     gateGeometry.push(
       ...(await captureTask7GateState({
@@ -1478,8 +1480,9 @@ test('Task 7 production evidence matrix is reproducible', async ({
       code: 'ok',
     });
     await configureTask7Gate(extPage, false);
-    expect(await sendExtensionRequest(extPage, { type: 'requestSessionEnd' })).toEqual({
+    expect(await sendExtensionRequest(extPage, { type: 'openEndGate' })).toEqual({
       ok: true,
+      code: 'ok',
     });
     gateGeometry.push(
       ...(await captureTask7GateState({
