@@ -3242,6 +3242,44 @@ describe('PolicyStorage', (): void => {
     expect(cleaning.state.values[LOCAL_RUNTIME]).toEqual(closing);
   });
 
+  it('resumes a pending all-data journal on a stopped legacy runtime and refuses a live one', async (): Promise<void> => {
+    // The one boot where the stored runtime is still v1: the journal resumes before the migration.
+    const pending: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      dataClear: { status: 'pending', scope: 'all', phase: 'remote' },
+    };
+    const journal = { scope: 'all', phase: 'remote', inventory: [SYNC_SETTINGS] };
+    const stoppedLocal: FakeStorage = fakeStorage({
+      ...localPolicy(pending),
+      [LOCAL_RUNTIME]: emptyRuntime(Date.now()),
+      [LOCAL_DATA_CLEAR_JOURNAL]: journal,
+    });
+    const stoppedSync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
+    const stoppedStorage: PolicyStorage = policyStorage(stoppedLocal, stoppedSync);
+
+    await expect(stoppedStorage.initialize()).resolves.toBeUndefined();
+
+    expect(stoppedLocal.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toBeUndefined();
+    expect(stoppedLocal.state.values[LOCAL_RUNTIME]).toBeUndefined();
+    expect(stoppedSync.state.values[SYNC_SETTINGS]).toBeUndefined();
+    expect(await stoppedStorage.loadSetup()).toEqual(DEFAULT_SETUP);
+
+    const live: RuntimeState = runtimeWithActiveSession(Date.now());
+    const liveLocal: FakeStorage = fakeStorage({
+      ...localPolicy(pending),
+      [LOCAL_RUNTIME]: live,
+    });
+    const liveSync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
+
+    await expect(policyStorage(liveLocal, liveSync).deleteRemoteData('all')).rejects.toThrow(
+      'stop the active session and blocking state before deleting all data',
+    );
+    expect(liveLocal.state.values[LOCAL_RUNTIME]).toEqual(live);
+    expect(liveSync.state.values[SYNC_SETTINGS]).toEqual(SNAPSHOT.settings);
+  });
+
   it('does not resume an all-data journal until durable runtime is stopped', async (): Promise<void> => {
     const setup: SetupState = {
       ...DEFAULT_SETUP,

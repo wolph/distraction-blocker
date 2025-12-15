@@ -2044,10 +2044,10 @@ export function createPolicyStorage(
   }
 
   /**
-   * The worker persists the v2 runtime shape, so the stored value is validated by the v2 parser
-   * rather than round-tripped through the v1 reader, which no v2 runtime can survive unchanged.
-   * Live blocking state keeps its own actionable message, and everything else the stopped rule
-   * refuses reports the value itself as unusable.
+   * The worker persists the v2 runtime shape, so a stored value the v2 parser accepts is measured
+   * against the v2 stopped rule rather than round-tripped through the v1 reader, which no v2
+   * runtime can survive unchanged. Live blocking state keeps its own actionable message, and
+   * everything else the stopped rule refuses reports the value itself as unusable.
    */
   async function assertStoppedRuntimeForAllDataClear(): Promise<void> {
     const stored: Record<string, unknown> = await local.get(LOCAL_RUNTIME);
@@ -2065,8 +2065,44 @@ export function createPolicyStorage(
       throw new Error('stop the active session and blocking state before deleting all data');
     }
     const runtime: RuntimeStateV2 | null = parseRuntimeStateV2(value);
-    if (runtime === null || !isStoppedRuntimeV2(runtime)) {
+    if (runtime !== null) {
+      if (!isStoppedRuntimeV2(runtime)) {
+        throw new Error('persisted runtime is not valid for all-data deletion');
+      }
+      return;
+    }
+    await assertStoppedLegacyRuntimeForAllDataClear(value, value.date);
+  }
+
+  /**
+   * The upgrade boot is the one place a stored runtime is still v1 when a clear runs: `initialize`
+   * resumes a pending journal before the v2 migration writes anything, so refusing every v1 value
+   * would lose a deletion the user already asked for. The v1 reader therefore keeps the stopped
+   * rule for a value only it can parse, and a value neither parser accepts is still refused.
+   */
+  async function assertStoppedLegacyRuntimeForAllDataClear(
+    value: Record<string, unknown>,
+    date: string,
+  ): Promise<void> {
+    const runtimeNow: number = new Date(`${date}T12:00:00`).getTime();
+    if (!Number.isFinite(runtimeNow)) {
       throw new Error('persisted runtime is not valid for all-data deletion');
+    }
+    const snapshot: PolicySnapshot = await loadSnapshotInternal();
+    const runtime: RuntimeState = migrateRuntimeRules(
+      mergeRuntime(value, runtimeNow),
+      snapshot.lists,
+    );
+    if (!valuesEqual(runtime, value)) {
+      throw new Error('persisted runtime is not valid for all-data deletion');
+    }
+    if (
+      runtime.session !== null ||
+      runtime.gate !== null ||
+      runtime.unlocks.length > 0 ||
+      Object.keys(runtime.tabStates).length > 0
+    ) {
+      throw new Error('stop the active session and blocking state before deleting all data');
     }
   }
 

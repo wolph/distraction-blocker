@@ -1661,7 +1661,7 @@ describe('background runtime request boundary', () => {
         storageMode: 'local',
         dataClear: { status: 'pending', scope: 'all', phase: 'remote' },
       },
-      [LOCAL_RUNTIME]: emptyRuntimeV2(now, TEST_EPOCH),
+      [LOCAL_RUNTIME]: emptyRuntime(now),
       [LOCAL_DATA_CLEAR_JOURNAL]: {
         scope: 'all',
         phase: 'remote',
@@ -1719,7 +1719,7 @@ describe('background runtime request boundary', () => {
         storageMode: 'local',
         dataClear: { status: 'pending', scope: 'all', phase: 'remote' },
       },
-      [LOCAL_RUNTIME]: emptyRuntimeV2(now, TEST_EPOCH),
+      [LOCAL_RUNTIME]: emptyRuntime(now),
       [LOCAL_DATA_CLEAR_JOURNAL]: {
         scope: 'all',
         phase: 'remote',
