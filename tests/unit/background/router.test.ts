@@ -13,7 +13,10 @@ import {
   DEFAULT_SETUP,
   rulesFromLists,
 } from '../../../src/shared/constants';
-import type { DocumentEnforcementCommand } from '../../../src/shared/enforcement-v2';
+import type {
+  DocumentContentCommand,
+  DocumentEnforcementCommand,
+} from '../../../src/shared/enforcement-v2';
 import type { StatsBundle } from '../../../src/shared/messages';
 import { isWebsiteAccessReconciliation } from '../../../src/shared/runtime-validation';
 import type {
@@ -722,7 +725,7 @@ describe('routeMessage onboarding wiring', (): void => {
   });
 
   it.each(['enableSync', 'selectLocalMode'] as const)(
-    'answers nothing and writes nothing while %s holds the Engine storage barrier',
+    'keeps a live session blocking, and counts no attempt, while %s holds the Engine storage barrier',
     async (transition: 'enableSync' | 'selectLocalMode'): Promise<void> => {
       const blockingEngine: Engine = realBlockingEngine();
       const config: SessionConfig = {
@@ -768,23 +771,36 @@ describe('routeMessage onboarding wiring', (): void => {
       await barrierHeld;
       const url: string = 'https://facebook.com/feed';
 
+      let answer: unknown;
       try {
-        await expect(
-          routeMessage(
-            blockingEngine,
-            { type: 'getBlockState', url, docState: 'fresh' },
-            {
-              url,
-              tab: { id: 7, url } as chrome.tabs.Tab,
-              documentId: 'document-id',
-            },
-          ),
-        ).resolves.toEqual({ commands: [] });
+        // Switching where policy is stored does not end the session, so the page this pull is for
+        // stays blocked for the whole transition. Only a pending all-data clear answers nothing.
+        answer = await routeMessage(
+          blockingEngine,
+          { type: 'getBlockState', url, docState: 'fresh' },
+          {
+            url,
+            tab: { id: 7, url } as chrome.tabs.Tab,
+            documentId: 'document-id',
+          },
+        );
       } finally {
         releaseBarrier();
         await changingMode;
       }
-      expect(blockingEngine.tabFacts(7, url, 'document-id').wasStopped).toBe(false);
+      const commands: DocumentContentCommand[] = (answer as { commands: DocumentContentCommand[] })
+        .commands;
+      const enforcement: DocumentEnforcementCommand[] = commands.filter(
+        (command: DocumentContentCommand): command is DocumentEnforcementCommand =>
+          command.command === 'apply-enforcement',
+      );
+      expect(enforcement).toHaveLength(1);
+      expect(enforcement[0]?.verdict.blocked).toBe(true);
+      // The page is stopped, so the claim the closure reloads it from is kept: only the profile
+      // erase refuses that write, and a mode switch is not one.
+      expect(blockingEngine.tabFacts(7, url, 'document-id').wasStopped).toBe(true);
+      // The attempt is the exception. It lands in the aggregate a quiesced barrier is rewriting,
+      // so the count is dropped rather than written past it.
       expect(blockingEngine.statsOverlay().todayAgg.attempts['facebook.com']).toBeUndefined();
     },
   );

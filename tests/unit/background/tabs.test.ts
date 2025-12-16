@@ -185,7 +185,10 @@ function liveFocusRuntime(now: number, lists: ListsConfig): RuntimeStateV2 {
 }
 
 /** The enforcement seams a real engine needs, answering empty because these tests seed sessions. */
-function enforcementSeamPorts(now: () => number): {
+function enforcementSeamPorts(
+  now: () => number,
+  onCommand: (command: DocumentContentCommand) => void = (): void => undefined,
+): {
   alarms: AlarmPortsV2;
   auditEnforcement: () => Promise<'ready'>;
   clearBlockingForNonBlockingPhase: () => Promise<void>;
@@ -215,8 +218,9 @@ function enforcementSeamPorts(now: () => number): {
         _tabId: number,
         _documentId: string,
         message: DocumentContentCommand,
-      ): Promise<unknown> =>
-        Promise.resolve(
+      ): Promise<unknown> => {
+        onCommand(message);
+        return Promise.resolve(
           message.command === 'reset-enforcement-epoch'
             ? {
                 version: 1,
@@ -243,7 +247,8 @@ function enforcementSeamPorts(now: () => number): {
                 overlay: message.overlay,
                 handledAt: now(),
               },
-        ),
+        );
+      },
     },
     alarms: {
       create: (): Promise<void> => Promise.resolve(),
@@ -3925,9 +3930,15 @@ describe('invalidateRemovedTab', () => {
 });
 
 describe('registerTabListeners', () => {
+  /**
+   * A real engine, with the two seams the fake engines get from `withCommandSeam`: what each
+   * routed document was actually told, read off the transport, and a spy on the command seam the
+   * worker asks. Nothing else about the engine is faked, because these tests drive its barrier.
+   */
   async function blockedNavigationEngine(reportError: (error: unknown) => void): Promise<Engine> {
     const now: number = new Date(2026, 7, 29, 12, 0).getTime();
     const applyBlocking = vi.fn().mockResolvedValue(undefined);
+    const dispatched: string[] = [];
     const ports: EnginePorts = {
       now: vi.fn((): number => now),
       newId: vi.fn((): string => '60000000-0000-4000-8000-000000000001'),
@@ -3949,7 +3960,13 @@ describe('registerTabListeners', () => {
       prune: vi.fn().mockResolvedValue(undefined),
       reportError,
       websiteBlockingReady: vi.fn((): boolean => true),
-      ...enforcementSeamPorts((): number => now),
+      ...enforcementSeamPorts(
+        (): number => now,
+        (command: DocumentContentCommand): void => {
+          if (command.command !== 'apply-enforcement') return;
+          dispatched.push(command.verdict.blocked ? 'applyBlock' : 'clearBlock');
+        },
+      ),
     };
     const lists = {
       ...DEFAULT_LISTS,
@@ -3964,6 +3981,8 @@ describe('registerTabListeners', () => {
       liveFocusRuntime(now, lists),
       'navigation-device',
     );
+    dispatchLog.set(engine, dispatched);
+    vi.spyOn(engine, 'documentCommandsFor');
     applyBlocking.mockImplementation(applyBlockingFactory((): Engine => engine));
     return engine;
   }
@@ -3982,7 +4001,7 @@ describe('registerTabListeners', () => {
   // The engine answers no document commands while the barrier is not open, and the deferred
   // reconciliation sweep runs before the barrier reopens, so an admitted or deferred navigation
   // now enforces nothing. The assertions are kept whole. See task-1-piece-A-report.md.
-  it.skip('keeps SPA navigation admitted while an aggregate barrier drains', async (): Promise<void> => {
+  it('keeps SPA navigation admitted while an aggregate barrier drains', async (): Promise<void> => {
     type NavigationDetails = {
       tabId: number;
       url: string;
@@ -4081,7 +4100,7 @@ describe('registerTabListeners', () => {
   // The engine answers no document commands while the barrier is not open, and the deferred
   // reconciliation sweep runs before the barrier reopens, so an admitted or deferred navigation
   // now enforces nothing. The assertions are kept whole. See task-1-piece-A-report.md.
-  it.skip('reconciles SPA navigation that arrives after an aggregate barrier owns storage', async (): Promise<void> => {
+  it('reconciles SPA navigation that arrives after an aggregate barrier owns storage', async (): Promise<void> => {
     type NavigationDetails = { tabId: number; url: string; frameId: number; documentId?: string };
     const url = 'https://facebook.com/quiesced-spa';
     const reportError = vi.fn();
@@ -4152,7 +4171,7 @@ describe('registerTabListeners', () => {
   // The engine answers no document commands while the barrier is not open, and the deferred
   // reconciliation sweep runs before the barrier reopens, so an admitted or deferred navigation
   // now enforces nothing. The assertions are kept whole. See task-1-piece-A-report.md.
-  it.skip('coalesces quiesced navigation and retries one failed reconciliation sweep', async (): Promise<void> => {
+  it('coalesces quiesced navigation and retries one failed reconciliation sweep', async (): Promise<void> => {
     type NavigationDetails = { tabId: number; url: string; frameId: number; documentId?: string };
     const firstUrl = 'https://facebook.com/quiesced-first';
     const latestUrl = 'https://facebook.com/quiesced-latest';
@@ -4227,9 +4246,10 @@ describe('registerTabListeners', () => {
     expect(query).toHaveBeenCalledTimes(2);
     expect(dispatchedCommands(engine)).toHaveLength(1);
     // Only the latest document is routed, and it is routed as blocked.
+    // A sweep names no attempt kind: it reports what a target already holds.
     expect(engine.documentCommandsFor).toHaveBeenLastCalledWith(
       { tabId: 74, documentId: 'latest-document', url: latestUrl },
-      expect.anything(),
+      null,
     );
     expect(dispatchedCommands(engine)).toEqual(['applyBlock']);
     expect(engine.tabFacts(74, firstUrl).wasMutedByUs).toBe(false);

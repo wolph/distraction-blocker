@@ -228,6 +228,13 @@ export class Engine {
   private pendingAggregateRemoves: Set<string> = new Set();
   private dataClearBarrierState: 'open' | 'draining' | 'quiesced' = 'open';
   private dataClearOperationRunning = false;
+  /**
+   * True only while an all-data clear owns storage. A clear needs no session, so the pages it
+   * is about to erase are served nothing. Every other barrier state, a storage-mode switch or
+   * an aggregate drain, keeps serving the live frozen commands: a hard session's pages must
+   * not unblock because storage is being switched.
+   */
+  private allDataClearPending = false;
   private websiteBlockingLossPending = false;
   private readonly controller: SessionControllerV2;
 
@@ -327,8 +334,19 @@ export class Engine {
       clearBlockingForNonBlockingPhase: async (): Promise<void> => {
         void this.sweepAfterPhaseChange();
       },
-      recordAttempt: (url: string, tabId: number, kind: 'navigation' | 'existing'): Promise<void> =>
-        this.recordAttempt(url, tabId, kind),
+      // An attempt lands in today's aggregate, which is the storage a quiesced barrier is busy
+      // rewriting, and the controller carries no lease to prove otherwise. So the frozen command
+      // still goes out, because a live session's pages must not unblock for a storage switch, and
+      // the count behind it is dropped. A draining barrier has not taken storage yet, and it waits
+      // for this write like any other, so that one still runs.
+      recordAttempt: (
+        url: string,
+        tabId: number,
+        kind: 'navigation' | 'existing',
+      ): Promise<void> =>
+        this.dataClearBarrierState === 'quiesced'
+          ? Promise.resolve()
+          : this.recordAttempt(url, tabId, kind),
       restoreTabClaims: (claims: readonly CleanupTabClaim[]): Promise<number[]> =>
         this.ports.restoreTabClaims(claims),
       reloadStoppedDocuments: (claims: readonly CleanupTabClaim[]): Promise<void> =>
@@ -451,6 +469,7 @@ export class Engine {
     if (this.dataClearOperationRunning) throw new Error('all-data clear is already in progress');
     const startingOpen: boolean = this.dataClearBarrierState === 'open';
     this.dataClearOperationRunning = true;
+    this.allDataClearPending = true;
     if (startingOpen) this.dataClearBarrierState = 'draining';
     try {
       if (startingOpen) await this.drainRuntimeMutations();
@@ -465,6 +484,7 @@ export class Engine {
       throw error;
     } finally {
       this.dataClearOperationRunning = false;
+      this.allDataClearPending = this.dataClearBarrierState !== 'open';
       if (this.dataClearBarrierState === 'open') {
         await this.applyPendingWebsiteBlockingLoss();
         await this.flushDeferredBlockClaims();
@@ -483,6 +503,7 @@ export class Engine {
       throw new Error('another storage transition is already in progress');
     }
     this.dataClearOperationRunning = true;
+    this.allDataClearPending = true;
     this.dataClearBarrierState = 'draining';
     try {
       await this.drainRuntimeMutations();
@@ -745,8 +766,9 @@ export class Engine {
     target: { tabId: number; documentId: string; url: string },
     attemptKind: 'navigation' | 'existing' | null,
   ): Promise<DocumentContentCommand[]> {
-    // All-data clear needs no session, so a closed barrier answers nothing and writes nothing.
-    if (this.dataClearBarrierState !== 'open') return [];
+    // An all-data clear needs no session, so its pending erase answers nothing and writes nothing.
+    // Every other closed state, a mode switch or an aggregate drain, still serves the live command.
+    if (this.allDataClearPending) return [];
     return await this.controller.documentCommandsFor(target, attemptKind);
   }
 
@@ -754,7 +776,7 @@ export class Engine {
     target: { tabId: number; documentId: string; url: string },
     attemptKind: 'navigation' | 'existing' | null,
   ): Promise<void> {
-    if (this.dataClearBarrierState !== 'open') return;
+    if (this.allDataClearPending) return;
     await this.controller.handleNavigation(target, attemptKind);
   }
 
@@ -1722,10 +1744,13 @@ export class Engine {
   }
 
   private runtimeMutationAllowed(lease?: BlockingSweepLease): boolean {
-    return (
-      this.dataClearBarrierState === 'open' ||
-      (lease !== undefined && this.activeRuntimeMutationLeases.has(lease))
-    );
+    if (this.dataClearBarrierState === 'open') return true;
+    if (lease !== undefined && this.activeRuntimeMutationLeases.has(lease)) return true;
+    // Only a pending all-data clear refuses outright: it is about to erase the profile, so nothing
+    // may be written behind it. Every other transition moves where policy is stored while the
+    // session keeps enforcing, and new mutations are already refused at the admission points, so
+    // what still arrives here is enforcement the drain waits for.
+    return !this.allDataClearPending;
   }
 
   private assertRuntimeMutationAllowed(lease?: BlockingSweepLease): void {
@@ -1774,6 +1799,7 @@ export class Engine {
   private openRuntimeMutationBarrier(): void {
     this.dataClearBarrierState = 'open';
     this.dataClearOperationRunning = false;
+    this.allDataClearPending = false;
   }
 
   private rejectDeferredBlockingSweep(error: Error): void {
