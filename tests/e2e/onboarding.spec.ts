@@ -196,10 +196,7 @@ test('permission revocation ends a session and rejects another session start', a
       type: 'startSession',
       config,
     }),
-  ).toEqual({
-    ok: false,
-    error: 'Website blocking is not enabled. Finish setup or grant website access, then try again.',
-  });
+  ).toEqual({ ok: false, code: 'website-access-lost', error: 'website-access-lost' });
   await launch.extPage.reload();
   await expect(
     launch.extPage.getByText('Your session ended because website access was removed.'),
