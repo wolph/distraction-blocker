@@ -62,7 +62,13 @@ import type { EnforcementTargetPortsV2 } from './enforcement-targets-v2';
 import { listsChangeAllowed, settingsChangeAllowed } from './guard';
 import { encodeListsForSync, LIST_SYNC_KEYS, type ListsSyncEncoding } from './list-sync-codec';
 import type { PolicyValueByKey } from './policy-storage';
-import { planRollover, type RolloverPlan } from './rollover';
+import {
+  type BackwardDateRebasePlan,
+  clockRebaseArchiveKey,
+  planBackwardDateRebase,
+  planRollover,
+  type RolloverPlan,
+} from './rollover';
 import {
   commitRuntimeCheckpointV2,
   projectRuntimeDomainV2,
@@ -1444,6 +1450,10 @@ export class Engine {
     const now: number = boundary;
     const today: string = localDateStr(now);
     if (today === this.runtime.date) return;
+    if (this.runtime.date > today) {
+      await this.rebaseDateBackward(today, now);
+      return;
+    }
     const streak: StreakState = this.streak ?? emptyStreak(localMonthStr(now));
     const plan: RolloverPlan = planRollover(
       this.runtime.date,
@@ -1458,6 +1468,36 @@ export class Engine {
     this.streakDirty = true;
     this.runtime.todayAgg = plan.newAgg;
     this.runtime.date = today;
+    this.dirty = true;
+    await this.commit(now);
+  }
+
+  /**
+   * A `date` in the future is a clock that ran ahead and has been put back, so that day was never
+   * lived. Crediting it would count focus and a streak day that never happened, so the aggregate
+   * is quarantined under an archive key instead, its daily key is removed, and the streak drops
+   * every marker the future day left. The controller hands this case one backward call.
+   */
+  private async rebaseDateBackward(today: string, now: number): Promise<void> {
+    const futureDate: string = this.runtime.date;
+    const plan: BackwardDateRebasePlan = planBackwardDateRebase(
+      today,
+      this.runtime.todayAgg ?? emptyDaily(futureDate),
+    );
+    this.recordAggregateRemoval(syncAggKey(this.deviceId, futureDate));
+    this.recordAggregateSet(
+      clockRebaseArchiveKey(this.deviceId, futureDate, now, this.ports.newId()),
+      plan.archive,
+    );
+    this.runtime.date = today;
+    this.runtime.todayAgg = plan.newAgg;
+    this.runtime.attemptDebounce = {};
+    this.failedAttemptPersistence.clear();
+    this.runtime.lastPruneDate = null;
+    if (this.streak !== null) {
+      this.streak = rebaseStreakForDate(this.streak, today);
+      this.streakDirty = true;
+    }
     this.dirty = true;
     await this.commit(now);
   }
@@ -1515,6 +1555,11 @@ export class Engine {
   private recordAggregateSet(key: string, value: DailyAgg): void {
     this.pendingAggregateRemoves.delete(key);
     this.pendingAggregateSets.set(key, capAttempts(value, TOP_SITES_DAILY));
+  }
+
+  private recordAggregateRemoval(key: string): void {
+    this.pendingAggregateSets.delete(key);
+    this.pendingAggregateRemoves.add(key);
   }
 
   private async saveAggregate(key: string, value: DailyAgg): Promise<void> {

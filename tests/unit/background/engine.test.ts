@@ -2550,7 +2550,7 @@ describe('Engine', () => {
   // `clockRebaseArchiveKey` are unreferenced, and `rolloverCheck` credits a future day instead of
   // quarantining it. The assertions are kept whole for whoever gives that rule an owner again.
   // See task-1-piece-A-report.md.
-  it.skip('quarantines a future local aggregate and removes its daily key', async () => {
+  it('quarantines a future local aggregate and removes its daily key', async () => {
     const runtime: RuntimeStateV2 = emptyRuntimeV2Fixture(T0);
     const futureDate: string = localDateStr(T0 + 3 * DAY_MS);
     const futureAgg: DailyAgg = {
@@ -2612,7 +2612,7 @@ describe('Engine', () => {
   // `clockRebaseArchiveKey` are unreferenced, and `rolloverCheck` credits a future day instead of
   // quarantining it. The assertions are kept whole for whoever gives that rule an owner again.
   // See task-1-piece-A-report.md.
-  it.skip('makes a backward-date archive durable before removing the future daily', async (): Promise<void> => {
+  it('makes a backward-date archive durable before removing the future daily', async (): Promise<void> => {
     const runtime: RuntimeStateV2 = emptyRuntimeV2Fixture(T0);
     const futureDate: string = localDateStr(T0 + 3 * DAY_MS);
     runtime.date = futureDate;
@@ -2655,7 +2655,7 @@ describe('Engine', () => {
   // `clockRebaseArchiveKey` are unreferenced, and `rolloverCheck` credits a future day instead of
   // quarantining it. The assertions are kept whole for whoever gives that rule an owner again.
   // See task-1-piece-A-report.md.
-  it.skip('caps a backward-date archive before checkpoint and storage persistence', async (): Promise<void> => {
+  it('caps a backward-date archive before checkpoint and storage persistence', async (): Promise<void> => {
     const futureDate: string = localDateStr(T0 + 3 * DAY_MS);
     const runtime: RuntimeStateV2 = {
       ...emptyRuntimeV2Fixture(T0),
@@ -2667,7 +2667,8 @@ describe('Engine', () => {
       .mockRejectedValue(new Error('archive persistence interrupted'));
     const h: Harness = makeEngine({ runtime, saveAggregate });
 
-    await expect(h.engine.tick()).rejects.toThrow('archive persistence interrupted');
+    // The controller hands a future date one backward call, which is where the archive is written.
+    await expect(creditWakeDays(h)).rejects.toThrow('archive persistence interrupted');
 
     const archive = saveAggregate.mock.calls.find(([key]: [string, DailyAgg]): boolean =>
       key.startsWith('archive:clock-rebase:'),
@@ -2688,7 +2689,7 @@ describe('Engine', () => {
   // `clockRebaseArchiveKey` are unreferenced, and `rolloverCheck` credits a future day instead of
   // quarantining it. The assertions are kept whole for whoever gives that rule an owner again.
   // See task-1-piece-A-report.md.
-  it.skip('clears future streak markers during a same-month clock rebase', async () => {
+  it('clears future streak markers during a same-month clock rebase', async () => {
     const runtime: RuntimeStateV2 = emptyRuntimeV2Fixture(T0);
     const futureDate: string = localDateStr(T0 + DAY_MS);
     runtime.date = futureDate;
