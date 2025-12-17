@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AlarmNameV2, ScheduledAlarmV2 } from '../../../src/background/alarms-v2';
 import { Engine, type EnginePorts } from '../../../src/background/engine';
 import { readEventsV2 } from '../../../src/background/event-log-v2';
 import type { PolicyStorage } from '../../../src/background/policy-storage';
@@ -20,13 +19,13 @@ import type {
 import type { StatsBundle } from '../../../src/shared/messages';
 import { isWebsiteAccessReconciliation } from '../../../src/shared/runtime-validation';
 import type {
-  DailyAgg,
   EventRecord,
   ListsConfig,
   OnboardingDraft,
   SessionConfig,
   SetupState,
 } from '../../../src/shared/types';
+import { engineSeamPortsV2 } from './engine-ports-fake';
 
 vi.mock('../../../src/background/audio', () => ({ playSound: vi.fn() }));
 vi.mock('../../../src/background/stats-service', () => ({ fetchStats: vi.fn() }));
@@ -110,8 +109,6 @@ function realBlockingEngine(options?: {
   saveRuntime?: (runtime: RuntimeStateV2) => Promise<void> | void;
 }): Engine {
   const now: () => number = options?.now ?? ((): number => new Date(2026, 7, 31, 12, 0).getTime());
-  // The controller reads its alarms back, so the fixture remembers what it was asked to schedule.
-  const alarms: Map<string, ScheduledAlarmV2> = new Map<string, ScheduledAlarmV2>();
   const ports: EnginePorts = {
     now,
     newId: uuidMinter(),
@@ -133,32 +130,8 @@ function realBlockingEngine(options?: {
     reportError: (): void => undefined,
     websiteBlockingReady: (): boolean => true,
     hasPendingSync: (): boolean => false,
-    auditEnforcement: async (): Promise<'ready'> => 'ready',
-    targets: {
-      queryTopFrameTabs: async (): Promise<Array<{ tabId: number; url: string | null }>> => [],
-      topFrameDocumentId: async (): Promise<string | null> => null,
-      readTargetGeneration: (): number => 0,
-      now,
-    },
-    transport: {
-      sendToDocument: async (): Promise<unknown> => undefined,
-    },
-    alarms: {
-      create: async (name: AlarmNameV2, when: number): Promise<void> => {
-        alarms.set(name, { scheduledTime: when, periodInMinutes: null });
-      },
-      createPeriodic: async (name: AlarmNameV2, periodInMinutes: number): Promise<void> => {
-        alarms.set(name, { scheduledTime: now(), periodInMinutes });
-      },
-      get: async (name: AlarmNameV2): Promise<ScheduledAlarmV2 | null> => alarms.get(name) ?? null,
-      clear: async (name: AlarmNameV2): Promise<void> => {
-        alarms.delete(name);
-      },
-    },
-    loadAggregates: async (): Promise<Record<string, DailyAgg>> => ({}),
-    clearBlockingForNonBlockingPhase: async (): Promise<void> => undefined,
-    restoreTabClaims: async (): Promise<number[]> => [],
-    reloadStoppedDocuments: async (): Promise<void> => undefined,
+    // The controller reads its alarms back, so this fixture remembers what it scheduled.
+    ...engineSeamPortsV2({ now, rememberAlarms: true, readTargetGeneration: (): number => 0 }),
   };
   return new Engine(
     ports,

@@ -1,7 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AlarmPortsV2, ScheduledAlarmV2 } from '../../../src/background/alarms-v2';
-import type { ContentTransportPortsV2 } from '../../../src/background/content-transport-v2';
-import type { EnforcementTargetPortsV2 } from '../../../src/background/enforcement-targets-v2';
 import {
   type BlockingSweepLease,
   Engine,
@@ -25,13 +22,8 @@ import {
   rulesFromLists,
 } from '../../../src/shared/constants';
 import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
-import type {
-  DailyAgg,
-  EventRecord,
-  ListsConfig,
-  SessionStateV2,
-  Verdict,
-} from '../../../src/shared/types';
+import type { EventRecord, ListsConfig, SessionStateV2, Verdict } from '../../../src/shared/types';
+import { type EngineSeamPortsV2, engineSeamPortsV2 } from './engine-ports-fake';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -184,79 +176,12 @@ function liveFocusRuntime(now: number, lists: ListsConfig): RuntimeStateV2 {
   };
 }
 
-/** The enforcement seams a real engine needs, answering empty because these tests seed sessions. */
+/** The enforcement seams a real engine needs, with the cooperative document these tests drive. */
 function enforcementSeamPorts(
   now: () => number,
   onCommand: (command: DocumentContentCommand) => void = (): void => undefined,
-): {
-  alarms: AlarmPortsV2;
-  auditEnforcement: () => Promise<'ready'>;
-  clearBlockingForNonBlockingPhase: () => Promise<void>;
-  loadAggregates: () => Promise<Record<string, DailyAgg>>;
-  reloadStoppedDocuments: () => Promise<void>;
-  restoreTabClaims: () => Promise<number[]>;
-  targets: EnforcementTargetPortsV2;
-  transport: ContentTransportPortsV2;
-} {
-  return {
-    auditEnforcement: (): Promise<'ready'> => Promise.resolve('ready'),
-    loadAggregates: (): Promise<Record<string, DailyAgg>> => Promise.resolve({}),
-    clearBlockingForNonBlockingPhase: (): Promise<void> => Promise.resolve(),
-    restoreTabClaims: (): Promise<number[]> => Promise.resolve([]),
-    reloadStoppedDocuments: (): Promise<void> => Promise.resolve(),
-    targets: {
-      queryTopFrameTabs: (): Promise<Array<{ tabId: number; url: string | null }>> =>
-        Promise.resolve([]),
-      topFrameDocumentId: (): Promise<string | null> => Promise.resolve(null),
-      readTargetGeneration: (): number => 1,
-      now,
-    },
-    transport: {
-      // A cooperative document: it echoes whatever the controller froze, which is the answer the
-      // content script gives when it applies a command.
-      sendToDocument: (
-        _tabId: number,
-        _documentId: string,
-        message: DocumentContentCommand,
-      ): Promise<unknown> => {
-        onCommand(message);
-        return Promise.resolve(
-          message.command === 'reset-enforcement-epoch'
-            ? {
-                version: 1,
-                disposition: 'epoch-reset',
-                operationId: message.operationId,
-                enforcementEpoch: message.enforcementEpoch,
-                documentId: message.documentId,
-                observedUrl: message.expectedUrl,
-                handledAt: now(),
-              }
-            : {
-                version: 1,
-                disposition: 'applied',
-                operationId: message.operationId,
-                enforcementEpoch: message.enforcementEpoch,
-                sessionId: message.sessionId,
-                reservedSessionId: message.reservedSessionId,
-                basePolicyRevision: message.basePolicyRevision,
-                runtimeRevision: message.runtimeRevision,
-                documentId: message.documentId,
-                observedUrl: message.expectedUrl,
-                presentation: message.presentation,
-                verdict: message.verdict,
-                overlay: message.overlay,
-                handledAt: now(),
-              },
-        );
-      },
-    },
-    alarms: {
-      create: (): Promise<void> => Promise.resolve(),
-      createPeriodic: (): Promise<void> => Promise.resolve(),
-      get: (): Promise<ScheduledAlarmV2 | null> => Promise.resolve(null),
-      clear: (): Promise<void> => Promise.resolve(),
-    },
-  };
+): EngineSeamPortsV2 {
+  return engineSeamPortsV2({ now, transport: 'cooperative', onCommand });
 }
 
 const dispatchLog: WeakMap<Engine, string[]> = new WeakMap<Engine, string[]>();

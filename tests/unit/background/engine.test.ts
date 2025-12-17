@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { AlarmPortsV2, ScheduledAlarmV2 } from '../../../src/background/alarms-v2';
-import type { ContentTransportPortsV2 } from '../../../src/background/content-transport-v2';
 import type { EnforcementCheckpoint } from '../../../src/background/enforcement-persistence-v2';
-import type { EnforcementTargetPortsV2 } from '../../../src/background/enforcement-targets-v2';
 import type { BlockingSweepLease, EnginePorts } from '../../../src/background/engine';
 import { Engine } from '../../../src/background/engine';
 import { appendEventsV2, readEventsV2 } from '../../../src/background/event-log-v2';
@@ -46,10 +43,17 @@ import type {
   StreakState,
   Verdict,
 } from '../../../src/shared/types';
+import { type EngineSeamPortsV2, engineSeamPortsV2 } from './engine-ports-fake';
 
-/** The engine ports a test drives through mocks: everything the engine calls as a function. */
+/**
+ * The engine ports a test drives through mocks: everything the engine calls as a function, minus
+ * the v2 enforcement seams, which the shared fixture supplies whole and no test here asserts on.
+ */
+type MockableEnginePorts = Omit<EnginePorts, keyof EngineSeamPortsV2>;
 type MockedEnginePorts = {
-  [K in keyof EnginePorts as EnginePorts[K] extends ((...args: never[]) => unknown) | undefined
+  [K in keyof MockableEnginePorts as MockableEnginePorts[K] extends
+    | ((...args: never[]) => unknown)
+    | undefined
     ? K
     : never]: ReturnType<typeof vi.fn>;
 };
@@ -228,30 +232,10 @@ function makeEngine(opts?: {
       opts?.saveMatcherCache === undefined
         ? vi.fn().mockResolvedValue(undefined)
         : vi.fn(opts.saveMatcherCache),
-    auditEnforcement: vi.fn().mockResolvedValue('ready'),
-    loadAggregates: vi.fn().mockResolvedValue({}),
-    clearBlockingForNonBlockingPhase: vi.fn().mockResolvedValue(undefined),
-    restoreTabClaims: vi.fn().mockResolvedValue([]),
-    reloadStoppedDocuments: vi.fn().mockResolvedValue(undefined),
   };
   // The enforcement seams the controller reads through. These tests seed sessions rather than
-  // driving enforcement, so the surfaces answer empty and record nothing.
-  const targets: EnforcementTargetPortsV2 = {
-    queryTopFrameTabs: (): Promise<Array<{ tabId: number; url: string | null }>> =>
-      Promise.resolve([]),
-    topFrameDocumentId: (): Promise<string | null> => Promise.resolve(null),
-    readTargetGeneration: (): number => 1,
-    now: (): number => nowMs,
-  };
-  const transport: ContentTransportPortsV2 = {
-    sendToDocument: (): Promise<unknown> => Promise.resolve(null),
-  };
-  const alarms: AlarmPortsV2 = {
-    create: (): Promise<void> => Promise.resolve(),
-    createPeriodic: (): Promise<void> => Promise.resolve(),
-    get: (): Promise<ScheduledAlarmV2 | null> => Promise.resolve(null),
-    clear: (): Promise<void> => Promise.resolve(),
-  };
+  // driving enforcement, so the surfaces answer empty and the documents answer nothing.
+  const seams: EngineSeamPortsV2 = engineSeamPortsV2({ now: (): number => nowMs });
   const settings: Settings = { ...DEFAULT_SETTINGS, ...opts?.settings };
   const lists: ListsConfig =
     opts?.lists ??
@@ -261,7 +245,7 @@ function makeEngine(opts?: {
     } satisfies ListsConfig);
   const seeded: RuntimeStateV2 = opts?.runtime ?? emptyRuntimeV2Fixture(T0);
   const engine: Engine = new Engine(
-    { ...ports, targets, transport, alarms } as unknown as EnginePorts,
+    { ...ports, ...seams } as unknown as EnginePorts,
     settings,
     lists,
     { balanceMs: opts?.bankMs ?? 0 },
