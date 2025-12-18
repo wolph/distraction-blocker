@@ -8,7 +8,9 @@ export class CoreError extends Error {
       | 'gate-wrong-phrase'
       | 'not-cancelable'
       | 'invalid-rule'
-      | 'invalid-schedule',
+      | 'invalid-schedule'
+      | 'lease-order'
+      | 'storage',
     message: string,
   ) {
     super(message);
