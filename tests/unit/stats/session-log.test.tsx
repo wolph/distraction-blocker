@@ -56,6 +56,84 @@ describe('SessionLog', () => {
     expect(container.textContent).toContain('Unlock');
   });
 
+  it('renders a v2 row with the shared outcome wording', () => {
+    const sessionId: string = '11111111-2222-4333-8444-555555555555';
+    const v2Events: EventRecord[] = [
+      {
+        version: 2,
+        t: 'sessionEnded',
+        eventId: `${sessionId}:end`,
+        at: T925,
+        sessionId,
+        outcome: 'completed',
+        reason: 'timer-completed',
+        focusedMs: 25 * 60_000,
+        duration: { kind: 'timed', minutes: 25 },
+        source: 'manual',
+        scheduleOccurrence: null,
+      },
+      {
+        version: 2,
+        t: 'sessionStarted',
+        eventId: `${sessionId}:start`,
+        at: T9,
+        sessionId,
+        source: 'manual',
+        mode: 'blacklist',
+        strictness: 'friction',
+        duration: { kind: 'timed', minutes: 25 },
+        intention: 'v2 chapter',
+        scheduleOccurrence: null,
+      },
+    ];
+
+    const { container } = render(<SessionLog events={v2Events} />);
+
+    // The wording is `statsOutcomeLabelV2`'s, reached through the row pairing, so the log never
+    // spells an outcome of its own.
+    expect(container.querySelector('.session-table .chip')?.textContent).toBe('Completed');
+  });
+
+  it('renders a running v2 session and an unclosed one in the shared wording', () => {
+    const running: string = '11111111-2222-4333-8444-666666666666';
+    const abandoned: string = '11111111-2222-4333-8444-777777777777';
+    const v2Events: EventRecord[] = [
+      {
+        version: 2,
+        t: 'sessionStarted',
+        eventId: `${running}:start`,
+        at: T13,
+        sessionId: running,
+        source: 'manual',
+        mode: 'blacklist',
+        strictness: 'flexible',
+        duration: { kind: 'until-stopped' },
+        intention: 'still going',
+        scheduleOccurrence: null,
+      },
+      {
+        version: 2,
+        t: 'sessionStarted',
+        eventId: `${abandoned}:start`,
+        at: T9,
+        sessionId: abandoned,
+        source: 'manual',
+        mode: 'blacklist',
+        strictness: 'friction',
+        duration: { kind: 'timed', minutes: 25 },
+        intention: 'superseded',
+        scheduleOccurrence: null,
+      },
+    ];
+
+    const { container } = render(<SessionLog events={v2Events} />);
+    const chips: string[] = [...container.querySelectorAll('.session-table .chip')].map(
+      (chip: Element): string => chip.textContent ?? '',
+    );
+
+    expect(chips).toEqual(['Running', 'Ended early']);
+  });
+
   it('renders the quiet first-run line with no sessions', () => {
     const { container, getByRole } = render(<SessionLog events={[]} />);
     expect(getByRole('heading', { level: 2 }).textContent).toBe('Recent sessions on this machine');
