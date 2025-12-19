@@ -511,6 +511,8 @@ export interface ControllerEffectsFakeV2 {
   blankBadges: number;
   /** Runs inside `restoreTabClaims`, for interleaving a write during a cleanup attempt. */
   onRestore?: () => Promise<void> | void;
+  /** Runs inside `recordAttempt`, for the sweep a real attempt write starts. */
+  onRecordAttempt?: () => Promise<void> | void;
   restoreTabClaims(claims: readonly CleanupTabClaim[]): Promise<number[]>;
   reloadStoppedDocuments(claims: readonly CleanupTabClaim[]): Promise<void>;
   requestBlankBadge(): void;
@@ -566,6 +568,7 @@ export function createControllerEffectsFakeV2(): ControllerEffectsFakeV2 {
       kind: 'navigation' | 'existing',
     ): Promise<void> => {
       fake.attempts.push({ url, tabId, kind });
+      await fake.onRecordAttempt?.();
     },
   };
   return fake;

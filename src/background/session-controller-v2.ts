@@ -103,6 +103,12 @@ interface SettledEarningsV2 {
   events: SessionEventRecordV2[];
 }
 
+/** What one document-command call decides inside the queue, before the attempt write runs. */
+interface PreparedDocumentCommandsV2 {
+  commands: DocumentContentCommand[];
+  blocked: boolean;
+}
+
 export interface SessionControllerEffectsV2 extends CleanupEffectPortsV2 {
   broadcast(snapshot: SessionSnapshotV2): void;
   updateBadge(snapshot: SessionSnapshotV2): void;
@@ -451,13 +457,13 @@ export class SessionControllerV2 {
     target: { tabId: number; documentId: string; url: string },
     attemptKind: 'navigation' | 'existing' | null,
   ): Promise<void> {
-    await this.enqueue(async (): Promise<void> => {
+    const blocked: boolean = await this.enqueue(async (): Promise<boolean> => {
       const enforceable: TargetClassificationV2 = classifyEnforcementTargetV2(
         target.tabId,
         target.url,
         target.documentId,
       );
-      if (enforceable.kind !== 'enforceable') return;
+      if (enforceable.kind !== 'enforceable') return false;
       const runtime: RuntimeStateV2 = this.ports.runtime();
       if (runtime.pendingEnforcementTransition !== null) {
         await handleTransitionNavigationV2(this.ports, transitionMatcherV2(this.ports), target);
@@ -466,8 +472,10 @@ export class SessionControllerV2 {
       } else {
         await this.sendCurrentCommands(target, attemptKind !== null);
       }
-      await this.recordAttemptIfBlocked(target, attemptKind);
+      return this.blockedNow(target);
     });
+    // Outside the queue, for the reason `documentCommandsFor` states.
+    await this.recordAttemptIfBlocked(blocked, target, attemptKind);
   }
 
   /**
@@ -478,28 +486,34 @@ export class SessionControllerV2 {
     target: { tabId: number; documentId: string; url: string },
     attemptKind: 'navigation' | 'existing' | null,
   ): Promise<DocumentContentCommand[]> {
-    return this.enqueue(async (): Promise<DocumentContentCommand[]> => {
-      const enforceable: TargetClassificationV2 = classifyEnforcementTargetV2(
-        target.tabId,
-        target.url,
-        target.documentId,
-      );
-      if (enforceable.kind !== 'enforceable') return [];
-      // A navigation or a document's own pull names the URL it is on, so a stored command for
-      // another URL is refrozen. A sweep only reports what a target already holds: its URL comes
-      // from a tab query that may already be behind the navigation it is racing.
-      const command: FrozenDocumentCommand = await this.currentCommandFor(
-        target,
-        attemptKind !== null,
-      );
-      const commands: DocumentContentCommand[] = [];
-      if (!this.hasCurrentEpochAck(target.tabId, target.documentId)) {
-        commands.push(wireOf(await this.handOverEpochReset(target)));
-      }
-      commands.push(wireOf(command));
-      await this.recordAttemptIfBlocked(target, attemptKind);
-      return commands;
-    });
+    const prepared: PreparedDocumentCommandsV2 = await this.enqueue(
+      async (): Promise<PreparedDocumentCommandsV2> => {
+        const enforceable: TargetClassificationV2 = classifyEnforcementTargetV2(
+          target.tabId,
+          target.url,
+          target.documentId,
+        );
+        if (enforceable.kind !== 'enforceable') return { commands: [], blocked: false };
+        // A navigation or a document's own pull names the URL it is on, so a stored command for
+        // another URL is refrozen. A sweep only reports what a target already holds: its URL comes
+        // from a tab query that may already be behind the navigation it is racing.
+        const command: FrozenDocumentCommand = await this.currentCommandFor(
+          target,
+          attemptKind !== null,
+        );
+        const commands: DocumentContentCommand[] = [];
+        if (!this.hasCurrentEpochAck(target.tabId, target.documentId)) {
+          commands.push(wireOf(await this.handOverEpochReset(target)));
+        }
+        commands.push(wireOf(command));
+        return { commands, blocked: this.blockedNow(target) };
+      },
+    );
+    // The attempt write is settled after the queue is released. It commits, a commit with blocking
+    // work pending sweeps, and a sweep asks this controller for every target it finds, so holding
+    // the queue across the write would leave it waiting for itself.
+    await this.recordAttemptIfBlocked(prepared.blocked, target, attemptKind);
+    return prepared.commands;
   }
 
   /**
@@ -1374,14 +1388,19 @@ export class SessionControllerV2 {
   }
 
   /** A blocked frozen verdict is what makes one navigation an attempt. Sweeps pass null. */
+  /** Whether the command this target currently holds blocks it. Read inside the queue. */
+  private blockedNow(target: { tabId: number; documentId: string }): boolean {
+    const key: string = documentCommandKeyV2(target.tabId, target.documentId);
+    return this.ports.runtime().documentCommands[key]?.verdict.blocked === true;
+  }
+
+  /** The attempt one blocked target records. Awaited outside the queue, never inside it. */
   private async recordAttemptIfBlocked(
-    target: { tabId: number; documentId: string; url: string },
+    blocked: boolean,
+    target: { tabId: number; url: string },
     attemptKind: 'navigation' | 'existing' | null,
   ): Promise<void> {
-    if (attemptKind === null) return;
-    const key: string = documentCommandKeyV2(target.tabId, target.documentId);
-    const command: FrozenDocumentCommand | undefined = this.ports.runtime().documentCommands[key];
-    if (command?.verdict.blocked !== true) return;
+    if (!blocked || attemptKind === null) return;
     await this.effects.recordAttempt(target.url, target.tabId, attemptKind);
   }
 

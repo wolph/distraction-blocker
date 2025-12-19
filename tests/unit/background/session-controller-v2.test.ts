@@ -1504,4 +1504,31 @@ describe('SessionControllerV2 recovery', (): void => {
       });
     }
   });
+
+  it('settles the attempt write after it releases the command queue', async (): Promise<void> => {
+    const { controller, effects }: HarnessV2 = harness(publishedFocusRuntime());
+    let swept: boolean = false;
+    // A real attempt write commits, and a commit with blocking work pending sweeps every target
+    // it can see straight back through this controller.
+    effects.onRecordAttempt = async (): Promise<void> => {
+      await controller.documentCommandsFor(
+        { tabId: 12, documentId: 'document-2', url: SECOND_TARGET_URL },
+        null,
+      );
+      swept = true;
+    };
+
+    const settled: string = await Promise.race([
+      controller
+        .documentCommandsFor({ tabId: 11, documentId: DOC_ONE, url: TARGET_URL }, 'navigation')
+        .then((): string => 'answered'),
+      new Promise<string>((resolve: (value: string) => void): void => {
+        setTimeout((): void => resolve('deadlocked'), 100);
+      }),
+    ]);
+
+    expect(settled).toBe('answered');
+    expect(swept).toBe(true);
+    expect(effects.attempts).toHaveLength(1);
+  });
 });
