@@ -856,6 +856,45 @@ describe('worker cutover to v2 session authority', (): void => {
     expect(worker.local[LOCAL_RUNTIME_SCHEMA]).toEqual({ runtimeSchemaVersion: 2 });
   });
 
+  it('claims a stopped page, shows it, and reloads it when the session ends', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    const document: FakeDocument = {
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    };
+    worker.documents.push(document);
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+
+    // A fresh blocked navigation is a page that never rendered, so the worker claims it.
+    await worker.send(
+      { type: 'getBlockState', url: document.url, docState: 'fresh' } as Request,
+      tabSender(document),
+    );
+    await worker.settle();
+    expect(worker.runtime().tabStates[11]?.stoppedDocumentId).toBe('document-1');
+
+    // The claim reaches the page through the next frozen view it is sent.
+    await worker.send({ type: 'updateTheme', theme: 'dark' } as Request);
+    await worker.settle();
+    const command = worker.runtime().documentCommands[documentKeyOf(document)];
+    const overlay = command?.overlay;
+    expect(overlay?.presentation === 'active' ? overlay.copy.stoppedPage : null).toBe(
+      'This page did not load. It will load by itself when the session ends.',
+    );
+
+    const reloadsBefore: number = worker.reloads.length;
+    await worker.send({ type: 'requestSessionEnd' } as Request);
+    await worker.settle();
+
+    // The closure carries the claim, reloads the page it stopped, and gives the tab back.
+    expect(worker.reloads.slice(reloadsBefore)).toContain(11);
+    expect(worker.runtime().tabStates).toEqual({});
+    expect(worker.runtime().session).toBeNull();
+  });
+
   it('migrates a scheduled v1 session with a bare marker into its cleanup', async (): Promise<void> => {
     const startedAt: number = Date.now() - 300_000;
     const legacyConfig: NormalizedSessionConfigV1 = {
