@@ -63,6 +63,8 @@ interface BootOptions {
   holdReloads?: boolean;
   /** Documents the browser already holds when the worker boots. */
   documents?: FakeDocument[];
+  /** Arms the registration-audit gate before `main()` runs. */
+  holdRegistrationAudit?: boolean;
 }
 
 interface WorkerHarness {
@@ -79,6 +81,9 @@ interface WorkerHarness {
   /** Holds every tab reload until `releaseTabReloads` runs, for watching a cleanup in flight. */
   holdTabReloads(): void;
   releaseTabReloads(): void;
+  /** Holds the content-registration audit, which parks a transition on its `prepared` stage. */
+  holdRegistrationAudit(): void;
+  releaseRegistrationAudit(): void;
   /** Every tab a cleanup reloaded, in order. */
   reloads: number[];
   notices: Array<{ title: string; body: string }>;
@@ -134,6 +139,14 @@ async function bootWorker(
   const sounds: string[] = [];
   const notices: Array<{ title: string; body: string }> = [];
   let syncWriteGate: Promise<void> | null = null;
+  let auditGate: Promise<void> | null = null;
+  let releaseAuditGate: () => void = (): void => undefined;
+  const armAuditGate = (): void => {
+    auditGate = new Promise<void>((resolve: () => void): void => {
+      releaseAuditGate = resolve;
+    });
+  };
+  if (options.holdRegistrationAudit === true) armAuditGate();
   let reloadGate: Promise<void> | null = null;
   let releaseReloadGate: () => void = (): void => undefined;
   const armReloadGate = (): void => {
@@ -265,10 +278,12 @@ async function bootWorker(
     scripting: {
       executeScript: vi.fn().mockResolvedValue([]),
       getRegisteredContentScripts: vi.fn(
-        async (): Promise<chrome.scripting.RegisteredContentScript[]> =>
-          websiteAccess
+        async (): Promise<chrome.scripting.RegisteredContentScript[]> => {
+          if (auditGate !== null) await auditGate;
+          return websiteAccess
             ? [{ id: 'focus-lock-content' } as chrome.scripting.RegisteredContentScript]
-            : [],
+            : [];
+        },
       ),
       registerContentScripts: vi.fn().mockResolvedValue(undefined),
       unregisterContentScripts: vi.fn().mockResolvedValue(undefined),
@@ -404,6 +419,11 @@ async function bootWorker(
     sounds,
     notices,
     reloads,
+    holdRegistrationAudit: armAuditGate,
+    releaseRegistrationAudit: (): void => {
+      auditGate = null;
+      releaseAuditGate();
+    },
     holdTabReloads: armReloadGate,
     releaseTabReloads: (): void => {
       reloadGate = null;
@@ -854,6 +874,54 @@ describe('worker cutover to v2 session authority', (): void => {
     // The migration checkpoint is cleared once the migration it recorded is finished.
     expect(worker.local[LOCAL_RUNTIME_MIGRATION]).toBeUndefined();
     expect(worker.local[LOCAL_RUNTIME_SCHEMA]).toEqual({ runtimeSchemaVersion: 2 });
+  });
+
+  it('serves a navigation that races a start in the order the epoch requires', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    const open: FakeDocument = {
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    };
+    const arriving: FakeDocument = {
+      tabId: 12,
+      documentId: 'document-2',
+      url: 'https://facebook.com/groups',
+      received: [],
+    };
+    worker.documents.push(open);
+
+    // The content-registration audit is the step between `prepared` and `registration-audited`, so
+    // holding it parks the start exactly where a page may not be sent anything yet.
+    worker.holdRegistrationAudit();
+    const starting: Promise<unknown> = worker.send({
+      type: 'startSession',
+      config: indefiniteConfig(),
+    } as Request);
+    await worker.settle();
+    expect(worker.stages().at(-1)).toBe('prepared');
+
+    worker.documents.push(arriving);
+    await worker.navigate(arriving, 'committed');
+    expect(arriving.received).toEqual([]);
+
+    worker.releaseRegistrationAudit();
+    await starting;
+    await worker.settle();
+
+    // Nothing was lost and nothing arrived out of order: the document that navigated mid-start is
+    // reset first, because it has acknowledged no epoch, then shown the starting view, and the
+    // active view is what it ends on.
+    const shown: string[] = arriving.received.map((command): string =>
+      command.command === 'apply-enforcement' ? command.presentation : command.command,
+    );
+    expect(shown[0]).toBe('reset-enforcement-epoch');
+    expect(shown[1]).toBe('starting');
+    expect(shown.at(-1)).toBe('active');
+    // The starting views all precede the active ones: a document never goes back to the view the
+    // transition was showing before it published.
+    expect(shown.lastIndexOf('starting')).toBeLessThan(shown.indexOf('active'));
   });
 
   it('claims a stopped page, shows it, and reloads it when the session ends', async (): Promise<void> => {
