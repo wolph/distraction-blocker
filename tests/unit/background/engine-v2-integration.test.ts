@@ -67,6 +67,8 @@ interface WorkerHarness {
   broadcasts: SessionSnapshotV2[];
   badges: string[];
   sounds: string[];
+  /** Holds every sync write until the returned release runs, for interleaving a mode switch. */
+  holdSyncWrites(): () => void;
   notices: Array<{ title: string; body: string }>;
   send(request: Request, sender?: chrome.runtime.MessageSender): Promise<unknown>;
   fireAlarm(name: string): Promise<void>;
@@ -119,6 +121,7 @@ async function bootWorker(
   const badges: string[] = [];
   const sounds: string[] = [];
   const notices: Array<{ title: string; body: string }> = [];
+  let syncWriteGate: Promise<void> | null = null;
   let messageListener:
     | ((
         request: unknown,
@@ -283,6 +286,7 @@ async function bootWorker(
           );
         }),
         set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+          if (syncWriteGate !== null) await syncWriteGate;
           syncWrites.push(structuredClone(items));
           Object.assign(sync, structuredClone(items));
         }),
@@ -371,6 +375,16 @@ async function bootWorker(
     badges,
     sounds,
     notices,
+    holdSyncWrites: (): (() => void) => {
+      let release: () => void = (): void => undefined;
+      syncWriteGate = new Promise<void>((resolve: () => void): void => {
+        release = resolve;
+      });
+      return (): void => {
+        syncWriteGate = null;
+        release();
+      };
+    },
     settle,
     stages: (): string[] => [...stages],
     revokeWebsiteAccess: (): void => {
@@ -1040,6 +1054,49 @@ describe('worker cutover to v2 session authority', (): void => {
     // so the balance the popup reads is the balance the user has, not the last settled one.
     expect(snapshot.bankMs).toBeGreaterThan(0);
     expect((worker.local[LOCAL_BANK] as { balanceMs: number } | undefined)?.balanceMs ?? 0).toBe(0);
+  });
+
+  it('keeps a hard session blocking while storage switches mode', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    const document: FakeDocument = {
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    };
+    worker.documents.push(document);
+    await worker.send({
+      type: 'startSession',
+      config: {
+        ...indefiniteConfig(),
+        strictness: 'hard',
+        duration: { kind: 'timed', minutes: 25 },
+      },
+    } as Request);
+    await worker.settle();
+
+    const release: () => void = worker.holdSyncWrites();
+    const switching: Promise<unknown> = worker.send({
+      type: 'setStorageMode',
+      storageMode: 'sync',
+      deleteRemote: false,
+    } as Request);
+    await worker.settle();
+
+    // The barrier is closed and holding, and the page asks what it must show. A storage move is
+    // not an erase: the session is still running, so the answer is the command it is running on.
+    const answer = (await worker.send(
+      { type: 'getBlockState', url: document.url, docState: 'loaded' } as Request,
+      tabSender(document),
+    )) as { commands: DocumentContentCommand[] };
+    release();
+    await switching;
+    await worker.settle();
+
+    const applied: DocumentContentCommand | undefined = answer.commands.at(-1);
+    expect(applied?.command).toBe('apply-enforcement');
+    expect(applied?.command === 'apply-enforcement' ? applied.presentation : null).toBe('active');
+    expect(worker.local[LOCAL_SETUP]).toMatchObject({ storageMode: 'sync' });
   });
 
   it('clears the badge when a timed session completes', async (): Promise<void> => {
