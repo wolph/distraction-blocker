@@ -24,6 +24,7 @@ import {
   LOCAL_SETTINGS,
   LOCAL_SETUP,
 } from '../../../src/shared/storage-keys';
+import { localDateStr } from '../../../src/shared/time';
 import type {
   NormalizedSessionConfigV1,
   SessionConfigV2,
@@ -45,6 +46,8 @@ interface FakeDocument {
   url: string;
   /** Every command the worker sent to this document, in order. */
   received: DocumentContentCommand[];
+  /** Drops the first command sent here, which is what an unreachable document looks like. */
+  dropFirstCommand?: boolean;
 }
 
 interface AlarmRow {
@@ -56,6 +59,10 @@ interface AlarmRow {
 interface BootOptions {
   /** False makes the icon draw fail, which is what a worker without a canvas looks like. */
   canvas?: boolean;
+  /** Arms the reload gate before `main()` runs, for watching a boot-time cleanup in flight. */
+  holdReloads?: boolean;
+  /** Documents the browser already holds when the worker boots. */
+  documents?: FakeDocument[];
 }
 
 interface WorkerHarness {
@@ -69,6 +76,11 @@ interface WorkerHarness {
   sounds: string[];
   /** Holds every sync write until the returned release runs, for interleaving a mode switch. */
   holdSyncWrites(): () => void;
+  /** Holds every tab reload until `releaseTabReloads` runs, for watching a cleanup in flight. */
+  holdTabReloads(): void;
+  releaseTabReloads(): void;
+  /** Every tab a cleanup reloaded, in order. */
+  reloads: number[];
   notices: Array<{ title: string; body: string }>;
   send(request: Request, sender?: chrome.runtime.MessageSender): Promise<unknown>;
   fireAlarm(name: string): Promise<void>;
@@ -115,13 +127,22 @@ async function bootWorker(
   const local: Record<string, unknown> = structuredClone(seed);
   const sync: Record<string, unknown> = {};
   const syncWrites: Array<Record<string, unknown>> = [];
-  const documents: FakeDocument[] = [];
+  const documents: FakeDocument[] = [...(options.documents ?? [])];
   const alarms: Map<string, AlarmRow> = new Map<string, AlarmRow>();
   const broadcasts: SessionSnapshotV2[] = [];
   const badges: string[] = [];
   const sounds: string[] = [];
   const notices: Array<{ title: string; body: string }> = [];
   let syncWriteGate: Promise<void> | null = null;
+  let reloadGate: Promise<void> | null = null;
+  let releaseReloadGate: () => void = (): void => undefined;
+  const armReloadGate = (): void => {
+    reloadGate = new Promise<void>((resolve: () => void): void => {
+      releaseReloadGate = resolve;
+    });
+  };
+  if (options.holdReloads === true) armReloadGate();
+  const reloads: number[] = [];
   let messageListener:
     | ((
         request: unknown,
@@ -312,7 +333,10 @@ async function bootWorker(
               ({ id: row.tabId, url: row.url }) as chrome.tabs.Tab,
           ),
       ),
-      reload: vi.fn().mockResolvedValue(undefined),
+      reload: vi.fn(async (tabId: number): Promise<void> => {
+        if (reloadGate !== null) await reloadGate;
+        reloads.push(tabId);
+      }),
       sendMessage: vi.fn(
         async (
           tabId: number,
@@ -324,6 +348,10 @@ async function bootWorker(
               candidate.tabId === tabId && candidate.documentId === options?.documentId,
           );
           if (row === undefined) throw new Error('Could not establish connection.');
+          if (row.dropFirstCommand === true) {
+            row.dropFirstCommand = false;
+            throw new Error('Could not establish connection.');
+          }
           row.received.push(structuredClone(message));
           return message.command === 'apply-enforcement'
             ? appliedResponseFor(message, clock)
@@ -375,6 +403,12 @@ async function bootWorker(
     badges,
     sounds,
     notices,
+    reloads,
+    holdTabReloads: armReloadGate,
+    releaseTabReloads: (): void => {
+      reloadGate = null;
+      releaseReloadGate();
+    },
     holdSyncWrites: (): (() => void) => {
       let release: () => void = (): void => undefined;
       syncWriteGate = new Promise<void>((resolve: () => void): void => {
@@ -820,6 +854,131 @@ describe('worker cutover to v2 session authority', (): void => {
     // The migration checkpoint is cleared once the migration it recorded is finished.
     expect(worker.local[LOCAL_RUNTIME_MIGRATION]).toBeUndefined();
     expect(worker.local[LOCAL_RUNTIME_SCHEMA]).toEqual({ runtimeSchemaVersion: 2 });
+  });
+
+  it('migrates a scheduled v1 session with a bare marker into its cleanup', async (): Promise<void> => {
+    const startedAt: number = Date.now() - 300_000;
+    const legacyConfig: NormalizedSessionConfigV1 = {
+      mode: 'blacklist',
+      strictness: 'friction',
+      durationMin: 25,
+      cycling: null,
+      intention: 'scheduled run',
+      source: 'schedule',
+      scheduleEntryId: 'entry-1',
+      rules: {
+        baselineRevision: DEFAULT_LISTS_BASELINE,
+        baselineCategories: DEFAULT_LISTS.categories,
+        categories: { ...DEFAULT_LISTS.categories, social: true },
+        exclusions: {},
+        permanentBlacklist: [],
+        permanentAllowlist: [],
+        sessionBlacklist: [],
+        sessionAllowlist: [],
+      },
+    };
+    // The v1 writer stored a bare entry id, which names no local start date, so the occurrence
+    // this session claims cannot be rebuilt and migration is forbidden to invent one.
+    const legacyRuntime: Record<string, unknown> = {
+      ...emptyRuntime(Date.now()),
+      scheduleActiveEntryId: 'entry-1',
+      session: startLegacySession(legacyConfig, startedAt, SESSION_UUID),
+      tabStates: { 11: { muteUrl: null, priorMuted: null, stoppedDocumentId: 'document-1' } },
+    };
+
+    // The stopped page the session left behind is reloaded by the cleanup, so holding that reload
+    // holds the closure open and the worker publishes what it is doing.
+    const worker: WorkerHarness = await bootWorker(
+      { ...installedSeed(), [LOCAL_RUNTIME]: legacyRuntime },
+      {
+        documents: [
+          {
+            tabId: 11,
+            documentId: 'document-1',
+            url: CONTENT_SENDER,
+            received: [],
+            dropFirstCommand: true,
+          },
+        ],
+      },
+    );
+    // The first clear never reaches the page, so the closure keeps its cleanup and the worker says
+    // so. The retry alarm is what finishes it.
+    const duringCleanup: string[] = worker.broadcasts.map(
+      (snapshot: SessionSnapshotV2): string => snapshot.lifecycle.kind,
+    );
+    // The stopped page the v1 runtime was holding is in the seed the closure carries, which is what
+    // the reload and the claim release read.
+    expect(worker.runtime().pendingClosure?.cleanupSeed.tabClaims).toEqual([
+      { tabId: 11, state: { muteUrl: null, priorMuted: null, stoppedDocumentId: 'document-1' } },
+    ]);
+    await worker.fireAlarm('closure-cleanup');
+    await worker.settle();
+
+    const lifecycles: string[] = worker.broadcasts.map(
+      (snapshot: SessionSnapshotV2): string => snapshot.lifecycle.kind,
+    );
+    expect(duringCleanup).toContain('cleanup');
+    expect(lifecycles.at(-1)).toBe('idle');
+    expect(worker.reloads).toContain(11);
+    expect(worker.runtime().tabStates).toEqual({});
+    const runtime: RuntimeStateV2 = worker.runtime();
+    expect(runtime.session).toBeNull();
+    expect(runtime.pendingClosure).toBeNull();
+    const ended = worker.events().find((event): boolean => event.t === 'sessionEnded') as
+      | Record<string, unknown>
+      | undefined;
+    expect(ended).toMatchObject({
+      reason: 'invalid-active-state',
+      outcome: 'canceled',
+      scheduleOccurrence: null,
+    });
+  });
+
+  it('migrates a scheduled v1 session whose marker names its occurrence', async (): Promise<void> => {
+    const startedAt: number = Date.now() - 300_000;
+    const entryId: string = 'entry-1';
+    const marker: string = `${entryId}@${localDateStr(startedAt)}`;
+    const legacyConfig: NormalizedSessionConfigV1 = {
+      mode: 'blacklist',
+      strictness: 'friction',
+      durationMin: 25,
+      cycling: null,
+      intention: 'scheduled run',
+      source: 'schedule',
+      scheduleEntryId: entryId,
+      rules: {
+        baselineRevision: DEFAULT_LISTS_BASELINE,
+        baselineCategories: DEFAULT_LISTS.categories,
+        categories: { ...DEFAULT_LISTS.categories, social: true },
+        exclusions: {},
+        permanentBlacklist: [],
+        permanentAllowlist: [],
+        sessionBlacklist: [],
+        sessionAllowlist: [],
+      },
+    };
+    const legacyRuntime: Record<string, unknown> = {
+      ...emptyRuntime(Date.now()),
+      scheduleActiveEntryId: marker,
+      session: startLegacySession(legacyConfig, startedAt, SESSION_UUID),
+    };
+
+    const worker: WorkerHarness = await bootWorker({
+      ...installedSeed(),
+      [LOCAL_RUNTIME]: legacyRuntime,
+    });
+
+    // The exact `entryId@YYYY-MM-DD` marker is the one form that names an occurrence, so this
+    // session has a v2 config and survives the migration instead of closing.
+    const runtime: RuntimeStateV2 = worker.runtime();
+    expect(runtime.session?.config.scheduleOccurrence).toEqual({
+      version: 1,
+      token: marker,
+      entryId,
+      localStartDate: localDateStr(startedAt),
+    });
+    expect(worker.broadcasts.at(-1)?.lifecycle.kind).toBe('active');
   });
 
   it('refreshes every live view when the theme changes', async (): Promise<void> => {
