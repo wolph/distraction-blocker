@@ -26,6 +26,7 @@ import {
 } from '../../../src/shared/storage-keys';
 import { localDateStr, localMidnightAfter } from '../../../src/shared/time';
 import type {
+  DailyAgg,
   NormalizedSessionConfigV1,
   SessionConfigV2,
   SessionSnapshotV2,
