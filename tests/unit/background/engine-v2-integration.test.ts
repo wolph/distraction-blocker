@@ -24,7 +24,7 @@ import {
   LOCAL_SETTINGS,
   LOCAL_SETUP,
 } from '../../../src/shared/storage-keys';
-import { localDateStr } from '../../../src/shared/time';
+import { localDateStr, localMidnightAfter } from '../../../src/shared/time';
 import type {
   NormalizedSessionConfigV1,
   SessionConfigV2,
@@ -481,6 +481,14 @@ async function bootWorker(
       await settle();
     },
   };
+}
+
+/** The stored daily aggregate for one local date, whichever device wrote it. */
+function aggregateFor(worker: WorkerHarness, date: string): DailyAgg | undefined {
+  const entry: [string, unknown] | undefined = Object.entries(worker.local).find(
+    ([key]: [string, unknown]): boolean => key.startsWith('agg:') && key.endsWith(`:${date}`),
+  );
+  return entry === undefined ? undefined : (entry[1] as DailyAgg);
 }
 
 /** The attempts the stored day has counted, which is what the popup and the overlay report. */
@@ -1363,6 +1371,49 @@ describe('worker cutover to v2 session authority', (): void => {
     expect(applied?.command).toBe('apply-enforcement');
     expect(applied?.command === 'apply-enforcement' ? applied.presentation : null).toBe('active');
     expect(worker.local[LOCAL_SETUP]).toMatchObject({ storageMode: 'sync' });
+  });
+
+  it('splits the focus a session carries across a local midnight', async (): Promise<void> => {
+    const today: string = localDateStr(Date.now());
+    const midnight: number = localMidnightAfter(today);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(midnight - 10 * 60_000);
+      const worker: WorkerHarness = await bootWorker(installedSeed());
+      const document: FakeDocument = {
+        tabId: 11,
+        documentId: 'document-1',
+        url: CONTENT_SENDER,
+        received: [],
+      };
+      worker.documents.push(document);
+      await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+      await worker.settle();
+      // One blocked navigation before midnight, so the day that ends has an attempt of its own.
+      await worker.navigate(document, 'committed');
+      await worker.settle();
+
+      vi.setSystemTime(midnight + 5 * 60_000);
+      await worker.fireAlarm('tick');
+      await worker.settle();
+      await worker.send({ type: 'requestSessionEnd' } as Request);
+      await worker.settle();
+
+      const finished: DailyAgg | undefined = aggregateFor(worker, today);
+      const next: DailyAgg | undefined = aggregateFor(worker, localDateStr(midnight + 5 * 60_000));
+      // The day that ended keeps everything it counted before the boundary.
+      expect(Object.keys(finished?.attempts ?? {})).toEqual(['facebook.com']);
+      expect(finished?.sessionsStarted).toBe(1);
+      expect(finished?.pauseMsEarned).toBe(10 * 60_000 * DEFAULT_SETTINGS.pause.earnRatio);
+      // The new day counts the session that ended on it, and neither day counts it twice.
+      expect(next?.sessionsStarted ?? 0).toBe(0);
+      expect(next?.sessionsCompleted).toBe(1);
+      expect((finished?.focusMs ?? 0) + (next?.focusMs ?? 0)).toBe(15 * 60_000);
+      expect(finished?.date).toBe(today);
+      expect(next?.date).toBe(localDateStr(midnight + 5 * 60_000));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('clears the badge when a timed session completes', async (): Promise<void> => {
