@@ -125,7 +125,6 @@ function realBlockingEngine(options?: {
     playSound: (): void => undefined,
     notify: (): void => undefined,
     updateIcon: (): void => undefined,
-    scheduleWake: (): void => undefined,
     prune: async (): Promise<void> => undefined,
     reportError: (): void => undefined,
     websiteBlockingReady: (): boolean => true,

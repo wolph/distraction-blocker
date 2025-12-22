@@ -139,7 +139,6 @@ function clearMutationPorts(ports: Harness['ports']): void {
   ports.broadcast.mockClear();
   ports.applyBlocking.mockClear();
   ports.updateIcon.mockClear();
-  ports.scheduleWake.mockClear();
   ports.saveMatcherCache.mockClear();
 }
 
@@ -219,7 +218,6 @@ function makeEngine(opts?: {
     playSound: vi.fn(),
     notify: vi.fn(),
     updateIcon: vi.fn(),
-    scheduleWake: vi.fn(),
     prune: vi.fn().mockResolvedValue(undefined),
     reportError: vi.fn(),
     websiteBlockingReady:

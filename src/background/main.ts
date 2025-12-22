@@ -115,7 +115,6 @@ import {
 } from './tabs';
 
 const TICK_ALARM: string = 'tick';
-const PHASE_ALARM: string = 'phase';
 const DAILY_AGG_KEY_RE: RegExp = /^agg:[^:]+:(\d{4}-\d{2}-\d{2})$/;
 const MONTHLY_AGG_KEY_RE: RegExp = /^aggm:[^:]+:(\d{4}-\d{2})$/;
 
@@ -814,10 +813,6 @@ async function boot(
     notify,
     updateIcon: (snapshot: SessionSnapshot): void => {
       updateIcon(snapshot, currentEngine().getSettings().badgeCountdown);
-    },
-    scheduleWake: (atMs: number | null): void => {
-      if (atMs === null) void chrome.alarms.clear(PHASE_ALARM);
-      else void chrome.alarms.create(PHASE_ALARM, { when: atMs });
     },
     prune: (retentionDays: number, pruneNow: number): Promise<void> =>
       policyStorage.pruneRemoteHistory(deviceId, retentionDays, pruneNow),

@@ -126,11 +126,6 @@ export interface EnginePorts {
   playSound(sound: SoundId): void;
   notify(title: string, message: string): void;
   updateIcon(snapshot: SessionSnapshot): void;
-  /**
-   * The v1 wake seam, unused since the controller took the alarms: `phase` is owned by the durable
-   * session and carries its next boundary, so nothing outside the controller may write it.
-   */
-  scheduleWake(atMs: number | null): void;
   /** run the weekly sync-storage retention prune */
   prune(retentionDays: number, now: number): Promise<void>;
   reportError(error: unknown): void;
