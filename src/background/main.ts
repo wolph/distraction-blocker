@@ -891,6 +891,8 @@ async function boot(
   await ensureTickAlarmV2(chromeAlarmPortsV2());
   if (completedAllDataClear) return engine;
   await engine.tick();
+  // A window that is already open belongs to this boot, not to the minute after it.
+  await engine.checkSchedule();
   await engine.applyBlockingNow();
   return engine;
 }

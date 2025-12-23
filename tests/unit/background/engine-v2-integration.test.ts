@@ -28,6 +28,7 @@ import { localDateStr, localMidnightAfter } from '../../../src/shared/time';
 import type {
   DailyAgg,
   NormalizedSessionConfigV1,
+  ScheduleEntryV2,
   SessionConfigV2,
   SessionSnapshotV2,
 } from '../../../src/shared/types';
@@ -481,6 +482,27 @@ async function bootWorker(
       });
       await settle();
     },
+  };
+}
+
+/** One schedule entry whose window is open at `at`, in the local day that instant belongs to. */
+function openWindowEntry(at: number): ScheduleEntryV2 {
+  const local: Date = new Date(at);
+  const clock = (offsetMinutes: number): string => {
+    const moment: Date = new Date(at + offsetMinutes * 60_000);
+    return `${String(moment.getHours()).padStart(2, '0')}:${String(moment.getMinutes()).padStart(2, '0')}`;
+  };
+  return {
+    id: 'open-window',
+    days: [local.getDay()],
+    start: clock(-30),
+    end: clock(30),
+    duration: { kind: 'window' },
+    mode: 'blacklist',
+    strictness: 'friction',
+    cycling: null,
+    intention: 'scheduled focus',
+    enabled: true,
   };
 }
 
@@ -1372,6 +1394,53 @@ describe('worker cutover to v2 session authority', (): void => {
     expect(applied?.command).toBe('apply-enforcement');
     expect(applied?.command === 'apply-enforcement' ? applied.presentation : null).toBe('active');
     expect(worker.local[LOCAL_SETUP]).toMatchObject({ storageMode: 'sync' });
+  });
+
+  it('starts an already open schedule window at boot', async (): Promise<void> => {
+    // Noon, so the window this entry names sits inside one local day.
+    const noon: Date = new Date();
+    noon.setHours(12, 0, 0, 0);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(noon.getTime());
+      const worker: WorkerHarness = await bootWorker({
+        ...installedSeed(),
+        [LOCAL_SETTINGS]: { ...DEFAULT_SETTINGS, schedule: [openWindowEntry(noon.getTime())] },
+      });
+      await worker.settle();
+
+      // The boot resolves its journals and then checks the schedule, so a window that is already
+      // open is a session now rather than a session a minute from now.
+      const runtime: RuntimeStateV2 = worker.runtime();
+      expect(runtime.session?.config.source).toBe('schedule');
+      expect(runtime.session?.config.scheduleOccurrence?.entryId).toBe('open-window');
+      expect(worker.alarms.get('tick')?.periodInMinutes).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('starts an open window as soon as the schedule is saved', async (): Promise<void> => {
+    const noon: Date = new Date();
+    noon.setHours(12, 0, 0, 0);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(noon.getTime());
+      const worker: WorkerHarness = await bootWorker(installedSeed());
+      expect(worker.runtime().session).toBeNull();
+
+      await worker.send({
+        type: 'updateSettings',
+        settings: { ...DEFAULT_SETTINGS, schedule: [openWindowEntry(noon.getTime())] },
+      } as Request);
+      await worker.settle();
+
+      // The write is durable before the check reads it, and both run in one policy mutation.
+      expect(worker.runtime().session?.config.source).toBe('schedule');
+      expect(worker.runtime().session?.config.intention).toBe('scheduled focus');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('splits the focus a session carries across a local midnight', async (): Promise<void> => {

@@ -23,6 +23,7 @@ import {
   TOP_SITES_DAILY,
 } from '../shared/constants';
 import type { DocumentContentCommand } from '../shared/enforcement-v2';
+import { exactDataEqual } from '../shared/exact-data';
 import type {
   Ack,
   CommandResponseV2,
@@ -1079,6 +1080,23 @@ export class Engine {
     return this.enqueuePolicyMutation((): Promise<void> => this.tickNow());
   }
 
+  /**
+   * One schedule check, on the queue and in the order the tick uses. The boot runs it once the
+   * journals are resolved, and a settings write that moved the schedule runs it as soon as the new
+   * schedule is durable, so an open window does not wait for the next minute.
+   */
+  async checkSchedule(): Promise<void> {
+    return this.enqueuePolicyMutation((): Promise<void> => this.checkScheduleNow());
+  }
+
+  private async checkScheduleNow(): Promise<void> {
+    const accruedBefore: number = this.runtime.accruedFocusMs;
+    await this.controller.checkSchedule();
+    this.creditSettledFocus(accruedBefore);
+    if (this.dirty) await this.commit(this.ports.now());
+    await this.sweepAfterPhaseChange();
+  }
+
   private async tickNow(): Promise<void> {
     await this.flushDeferredBlockClaims();
     await this.flushRemovedTabTombstones();
@@ -1114,6 +1132,7 @@ export class Engine {
     const now: number = this.ports.now();
     const reason: string | null = settingsChangeAllowed(this.runtime.session, this.settings, s);
     if (reason !== null) return this.fail(now, reason);
+    const scheduleMoved: boolean = !exactDataEqual(this.settings.schedule, s.schedule);
     try {
       await this.savePolicy('settings', s);
     } catch (error: unknown) {
@@ -1127,6 +1146,9 @@ export class Engine {
     this.setSettingsAndClampBank(s);
     this.dirty = true;
     await this.commit(now);
+    // A window the user just saved may already be open, and the schedule check is what starts it.
+    // This runs inside the same policy mutation, so the new schedule is durable before it is read.
+    if (scheduleMoved) await this.checkScheduleNow();
     return { ok: true };
   }
 

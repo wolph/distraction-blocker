@@ -212,6 +212,14 @@ export class SessionControllerV2 {
     });
   }
 
+  /**
+   * One schedule check on the queue the tick uses. The boot and a schedule settings write both run
+   * it, so a window that is already open starts its session then rather than a tick later.
+   */
+  async checkSchedule(): Promise<void> {
+    await this.enqueue((): Promise<void> => this.runScheduleCheck());
+  }
+
   /** Routes one alarm to the owner named by its name. An unknown name is ignored. */
   async handleAlarm(name: string): Promise<void> {
     switch (parseAlarmNameV2(name)) {

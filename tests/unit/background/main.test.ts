@@ -267,6 +267,10 @@ vi.mock('../../../src/background/engine', () => ({
       if (mocks.recoverError !== null) throw mocks.recoverError;
     }
 
+    async checkSchedule(): Promise<void> {
+      mocks.bootTrace.push('checkSchedule');
+    }
+
     async handleAlarm(name: string): Promise<void> {
       mocks.handledAlarms.push(name);
       if (mocks.alarmError !== null) throw mocks.alarmError;
@@ -1934,7 +1938,7 @@ describe('background session policy boot', () => {
     expect(mocks.matcherCacheSaveAttempts).toBe(0);
     expect(mocks.engineArguments).toHaveLength(7);
     // The durable authority is resolved before the first tick, which is the new boot order.
-    expect(mocks.bootTrace).toEqual(['recover', 'tick']);
+    expect(mocks.bootTrace).toEqual(['recover', 'tick', 'checkSchedule']);
   });
 });
 
