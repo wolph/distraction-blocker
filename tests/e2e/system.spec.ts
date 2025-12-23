@@ -255,13 +255,6 @@ test('an active schedule window starts a scheduled focus session', async ({ extP
     }),
   ).toEqual({ ok: true });
 
-  // The minute tick owns the schedule check, and nothing else in v2 runs one, so the test wakes it
-  // instead of waiting out a real minute inside a sixty-second budget.
-  await worker.evaluate(async (): Promise<void> => {
-    // biome-ignore lint/complexity/useDateNow: the worker's Date.now is frozen to the schedule's
-    // noon above, and the alarm has to land on the real clock to fire at all.
-    await chrome.alarms.create('tick', { when: new Date().getTime() });
-  });
   await expect
     .poll(
       async (): Promise<string> => {
