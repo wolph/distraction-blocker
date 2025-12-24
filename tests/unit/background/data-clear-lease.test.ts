@@ -37,6 +37,8 @@ const LEGACY_JOURNAL: LegacyAllDataClearJournal = {
 
 interface StorageStub {
   values: Record<string, unknown>;
+  /** When set, `get` waits on it, which holds a transaction open past its operation. */
+  gate: Promise<void> | null;
   sets: Record<string, unknown>[];
   removes: string[];
   writeMode: WriteMode;
@@ -57,11 +59,12 @@ function stubStorage(initial: Record<string, unknown> = {}): StorageStub {
     values,
     sets,
     removes,
+    gate: null,
     writeMode: 'store',
-    get: vi.fn(
-      async (key: string): Promise<Record<string, unknown>> =>
-        Object.hasOwn(values, key) ? { [key]: values[key] } : {},
-    ),
+    get: vi.fn(async (key: string): Promise<Record<string, unknown>> => {
+      if (stub.gate !== null) await stub.gate;
+      return Object.hasOwn(values, key) ? { [key]: values[key] } : {};
+    }),
     set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
       sets.push(items);
       if (stub.writeMode === 'reject') throw new Error('storage set failed');
@@ -87,6 +90,24 @@ function corruptedWrite(items: Record<string, unknown>): Record<string, unknown>
   return {
     [LOCAL_DATA_CLEAR_JOURNAL]: { ...journal, inventory: [...journal.inventory, 'stowaway'] },
   };
+}
+
+/** Every lease under test names an engine runtime lease that is not held unless a test says so. */
+function newLease(engineLeaseHeld: () => boolean = (): boolean => false): AllDataClearLease {
+  return createAllDataClearLease(engineLeaseHeld);
+}
+
+interface Gate {
+  promise: Promise<void>;
+  open(): void;
+}
+
+function newGate(): Gate {
+  let open: () => void = (): void => undefined;
+  const promise: Promise<void> = new Promise<void>((resolve: () => void): void => {
+    open = resolve;
+  });
+  return { promise, open };
 }
 
 function seededJournal(): AllDataClearJournalV2 {
@@ -179,6 +200,24 @@ async function settled(work: Promise<unknown>): Promise<unknown> {
   );
 }
 
+function expectCoreError(error: unknown, code: string): void {
+  expect(error).toBeInstanceOf(CoreError);
+  expect((error as CoreError).code).toBe(code);
+}
+
+/** The transaction an operation started and never awaited. */
+function startedTransaction(
+  outstanding: Promise<DataClearJournal | null>[],
+): Promise<DataClearJournal | null> {
+  const started: Promise<DataClearJournal | null> | undefined = outstanding[0];
+  if (started === undefined) throw new Error('the operation never started a transaction');
+  return started;
+}
+
+function rejectionReason(outcome: PromiseSettledResult<unknown> | undefined): unknown {
+  return outcome !== undefined && outcome.status === 'rejected' ? outcome.reason : null;
+}
+
 async function rejectedCoreError(work: Promise<unknown>, code: string): Promise<CoreError> {
   const error: unknown = await settled(work);
   expect(error).toBeInstanceOf(CoreError);
@@ -189,7 +228,7 @@ async function rejectedCoreError(work: Promise<unknown>, code: string): Promise<
 /** One inventory write and one intent append under the lease, in the requested order. */
 async function interleavedWrites(intentFirst: boolean): Promise<StorageStub> {
   const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: seededJournal() });
-  const lease: AllDataClearLease = createAllDataClearLease();
+  const lease: AllDataClearLease = newLease();
   const seen: (StoredJournal | null)[] = [];
   const inventory: JournalTransform = recording(seen, setInventory(['policy']));
   const intent: JournalTransform = recording(seen, appendIntent(intentRecord()));
@@ -210,7 +249,7 @@ afterEach((): void => {
 
 describe('exclusive all-data clear lease', (): void => {
   it('serializes concurrent operations in call order and issues distinct tokens', async (): Promise<void> => {
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
     const order: string[] = [];
     const tokens: DataClearLeaseToken[] = [];
 
@@ -226,7 +265,7 @@ describe('exclusive all-data clear lease', (): void => {
   });
 
   it('refuses a nested acquisition synchronously instead of deadlocking', async (): Promise<void> => {
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
     let nested: unknown = null;
 
     await lease.run(async (): Promise<void> => {
@@ -238,7 +277,7 @@ describe('exclusive all-data clear lease', (): void => {
   });
 
   it('reports only the running operation token as current', async (): Promise<void> => {
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
 
     const first: DataClearLeaseToken = await lease.run(
       async (token: DataClearLeaseToken): Promise<DataClearLeaseToken> => {
@@ -256,7 +295,7 @@ describe('exclusive all-data clear lease', (): void => {
   });
 
   it('reports the lease held from the acquisition call until the last operation settles', async (): Promise<void> => {
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
     expect(lease.held()).toBe(false);
 
     const first: Promise<boolean> = lease.run(async (): Promise<boolean> => lease.held());
@@ -268,7 +307,7 @@ describe('exclusive all-data clear lease', (): void => {
   });
 
   it('releases the lease when an operation rejects', async (): Promise<void> => {
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
 
     const failure: unknown = await settled(
       lease.run(async (): Promise<void> => {
@@ -280,12 +319,85 @@ describe('exclusive all-data clear lease', (): void => {
     expect(lease.held()).toBe(false);
     expect(await lease.run(async (): Promise<string> => 'ran')).toBe('ran');
   });
+
+  it('refuses acquisition while an engine runtime lease is held', async (): Promise<void> => {
+    let engineHeld: boolean = true;
+    const lease: AllDataClearLease = newLease((): boolean => engineHeld);
+
+    const refused: unknown = captured((): unknown =>
+      lease.run(async (): Promise<void> => undefined),
+    );
+
+    expectCoreError(refused, 'lease-order');
+    expect(lease.held()).toBe(false);
+
+    engineHeld = false;
+    expect(await lease.run(async (): Promise<string> => 'ran')).toBe('ran');
+  });
 });
 
 describe('token-checked journal transactions', (): void => {
+  it('refuses a second transaction while one is in flight under the same token', async (): Promise<void> => {
+    const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: seededJournal() });
+    const lease: AllDataClearLease = newLease();
+
+    const outcomes: PromiseSettledResult<DataClearJournal | null>[] = await lease.run(
+      (token: DataClearLeaseToken): Promise<PromiseSettledResult<DataClearJournal | null>[]> =>
+        Promise.allSettled([
+          transactDataClearJournal(lease, token, setInventory(['policy'])),
+          transactDataClearJournal(lease, token, appendIntent(intentRecord())),
+        ]),
+    );
+
+    expect(
+      outcomes.map(
+        (outcome: PromiseSettledResult<DataClearJournal | null>): string => outcome.status,
+      ),
+    ).toEqual(['fulfilled', 'rejected']);
+    expectCoreError(rejectionReason(outcomes[1]), 'lease-order');
+    expect(storage.sets).toHaveLength(1);
+    expect(storedJournal(storage).inventory).toEqual(['policy']);
+    expect(storedJournal(storage).pendingInstallLifecycleIntents).toEqual([]);
+  });
+
+  it('refuses a write from a transaction that outlived its operation', async (): Promise<void> => {
+    const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: seededJournal() });
+    const lease: AllDataClearLease = newLease();
+    const gate: Gate = newGate();
+    const outstanding: Promise<DataClearJournal | null>[] = [];
+    storage.gate = gate.promise;
+
+    await lease.run(async (token: DataClearLeaseToken): Promise<void> => {
+      outstanding.push(transactDataClearJournal(lease, token, setInventory(['policy'])));
+    });
+
+    expect(lease.held()).toBe(false);
+    gate.open();
+    expectCoreError(await settled(startedTransaction(outstanding)), 'lease-order');
+    expect(storage.set).not.toHaveBeenCalled();
+    expect(storage.values[LOCAL_DATA_CLEAR_JOURNAL]).toEqual(seededJournal());
+  });
+
+  it('refuses a removal from a transaction that outlived its operation', async (): Promise<void> => {
+    const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: seededJournal() });
+    const lease: AllDataClearLease = newLease();
+    const gate: Gate = newGate();
+    const outstanding: Promise<DataClearJournal | null>[] = [];
+    storage.gate = gate.promise;
+
+    await lease.run(async (token: DataClearLeaseToken): Promise<void> => {
+      outstanding.push(transactDataClearJournal(lease, token, (): null => null));
+    });
+
+    gate.open();
+    expectCoreError(await settled(startedTransaction(outstanding)), 'lease-order');
+    expect(storage.remove).not.toHaveBeenCalled();
+    expect(storage.values[LOCAL_DATA_CLEAR_JOURNAL]).toEqual(seededJournal());
+  });
+
   it('writes one set and verifies the exact read-back', async (): Promise<void> => {
     const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: seededJournal() });
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
 
     const written: DataClearJournal | null = await transact(lease, setInventory(['policy']));
 
@@ -299,7 +411,7 @@ describe('token-checked journal transactions', (): void => {
 
   it('removes the journal for a null transform and verifies its absence', async (): Promise<void> => {
     const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: seededJournal() });
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
 
     const written: DataClearJournal | null = await transact(lease, (): null => null);
 
@@ -311,7 +423,7 @@ describe('token-checked journal transactions', (): void => {
 
   it('writes nothing for an unchanged transform', async (): Promise<void> => {
     const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: seededJournal() });
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
 
     const written: DataClearJournal | null = await transact(lease, (): 'unchanged' => 'unchanged');
 
@@ -322,7 +434,7 @@ describe('token-checked journal transactions', (): void => {
 
   it('throws storage when the written journal reads back differently', async (): Promise<void> => {
     const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: seededJournal() });
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
     storage.writeMode = 'corrupt';
 
     await rejectedCoreError(transact(lease, setInventory(['policy'])), 'storage');
@@ -332,7 +444,7 @@ describe('token-checked journal transactions', (): void => {
 
   it('throws storage when a removed journal reads back present', async (): Promise<void> => {
     const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: seededJournal() });
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
     storage.writeMode = 'drop';
 
     await rejectedCoreError(
@@ -345,7 +457,7 @@ describe('token-checked journal transactions', (): void => {
 
   it('throws before any read for a token from a completed operation', async (): Promise<void> => {
     const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: seededJournal() });
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
     const stale: DataClearLeaseToken = await lease.run(
       async (token: DataClearLeaseToken): Promise<DataClearLeaseToken> => token,
     );
@@ -361,8 +473,8 @@ describe('token-checked journal transactions', (): void => {
 
   it('throws before any read for a token the running operation does not hold', async (): Promise<void> => {
     const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: seededJournal() });
-    const lease: AllDataClearLease = createAllDataClearLease();
-    const other: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
+    const other: AllDataClearLease = newLease();
 
     await lease.run(async (token: DataClearLeaseToken): Promise<void> => {
       await rejectedCoreError(
@@ -392,7 +504,7 @@ describe('token-checked journal transactions', (): void => {
 
   it('hands a stored legacy journal to the transform for upgrade', async (): Promise<void> => {
     const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: { ...LEGACY_JOURNAL } });
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
     const seen: (StoredJournal | null)[] = [];
 
     const written: DataClearJournal | null = await transact(
@@ -416,7 +528,7 @@ describe('token-checked journal transactions', (): void => {
   it('throws storage carrying the raw stored value when the journal fails parsing', async (): Promise<void> => {
     const raw: Record<string, unknown> = { scope: 'all', phase: 'nowhere', inventory: [] };
     const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: raw });
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
     let reached: boolean = false;
 
     const error: CoreError = await rejectedCoreError(
@@ -435,7 +547,7 @@ describe('token-checked journal transactions', (): void => {
 
   it('throws before writing when the transform returns an invalid journal', async (): Promise<void> => {
     const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: seededJournal() });
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
 
     await rejectedCoreError(
       transact(
@@ -451,7 +563,7 @@ describe('token-checked journal transactions', (): void => {
 
   it('throws before writing when the transform returns a legacy journal', async (): Promise<void> => {
     const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: seededJournal() });
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
 
     await rejectedCoreError(
       transact(
@@ -466,7 +578,7 @@ describe('token-checked journal transactions', (): void => {
 
   it('refuses to leave a stored legacy journal unchanged', async (): Promise<void> => {
     const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: { ...LEGACY_JOURNAL } });
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
 
     await rejectedCoreError(
       transact(lease, (): 'unchanged' => 'unchanged'),
@@ -478,7 +590,7 @@ describe('token-checked journal transactions', (): void => {
 
   it('leaves the stored journal intact when the write rejects and rereads it on the next run', async (): Promise<void> => {
     const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: seededJournal() });
-    const lease: AllDataClearLease = createAllDataClearLease();
+    const lease: AllDataClearLease = newLease();
     storage.writeMode = 'reject';
 
     const failure: unknown = await settled(transact(lease, setInventory(['policy'])));
