@@ -213,6 +213,19 @@ function IdleView({ startsDisabled }: { startsDisabled: boolean }): VNode {
 }
 
 /**
+ * The all-data journal the popup must render over every setup gate, or null when no such
+ * journal exists. The worker writes DEFAULT_SETUP with the journal attached from the local
+ * phase onward, so `completed` is false and `blockingRegistration` is unavailable while the
+ * profile is being deleted: reading the journal before those gates is the only way the
+ * deleting copy and the exhausted-clear retry are reachable.
+ */
+function allDataJournal(dataClear: SetupState['dataClear']): SetupState['dataClear'] | null {
+  const active: boolean =
+    dataClear.scope === 'all' && (dataClear.status === 'pending' || dataClear.status === 'error');
+  return active ? dataClear : null;
+}
+
+/**
  * One switch from the public lifecycle to the view that owns it. An all-data journal outranks every
  * lifecycle, including idle, because the profile is being deleted and no session may start on top
  * of that. Nothing else disables a start on an idle lifecycle, and no branch offers one while a
@@ -227,11 +240,9 @@ function Body({
   now: number;
   dataClear: SetupState['dataClear'];
 }): VNode {
-  if (
-    dataClear.scope === 'all' &&
-    (dataClear.status === 'pending' || dataClear.status === 'error')
-  ) {
-    return <LifecycleView snapshot={snapshot} now={now} dataClear={dataClear} />;
+  const journal: SetupState['dataClear'] | null = allDataJournal(dataClear);
+  if (journal !== null) {
+    return <LifecycleView snapshot={snapshot} now={now} dataClear={journal} />;
   }
   if (snapshot.lifecycle.kind === 'idle') return <IdleView startsDisabled={false} />;
   if (snapshot.lifecycle.kind === 'active') return <ActiveView snapshot={snapshot} now={now} />;
@@ -483,6 +494,9 @@ export function App(): VNode {
     return saveError;
   };
 
+  const journal: SetupState['dataClear'] | null =
+    setup === null ? null : allDataJournal(setup.dataClear);
+
   return (
     <div class="app">
       <Header theme={theme} onThemeChange={saveTheme} />
@@ -492,6 +506,8 @@ export function App(): VNode {
         </section>
       ) : setup === null ? (
         <section class="view" aria-busy="true" />
+      ) : journal !== null ? (
+        <LifecycleView snapshot={snapshot} now={now} dataClear={journal} />
       ) : !setup.completed ? (
         <SetupRequired />
       ) : setup.blockingRegistration !== 'ready' ? (

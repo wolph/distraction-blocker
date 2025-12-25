@@ -28,6 +28,7 @@ const OPERATION_ID: string = '20000000-0000-4000-8000-000000000001';
 /** A closure journal is named by the closed session's UUID plus the close suffix. */
 const CLOSURE_ID: string = '10000000-0000-4000-8000-000000000001:close';
 const START_BUTTON: RegExp = /^Start 25 min/;
+const SETUP_HEADING: string = 'Finish setting up Focus Lock';
 
 const COMPLETED_SETUP: SetupState = {
   ...DEFAULT_SETUP,
@@ -63,6 +64,20 @@ const ALL_DATA_ERROR: SetupState['dataClear'] = {
   scope: 'all',
   phase: 'local',
 };
+const ALL_DATA_PENDING_REMOTE: SetupState['dataClear'] = {
+  status: 'pending',
+  scope: 'all',
+  phase: 'remote',
+};
+
+/**
+ * What the worker actually stores from the local phase onward: policy-storage writes
+ * DEFAULT_SETUP with the journal attached, so `completed` is false and the registration is
+ * unavailable while the profile is being deleted.
+ */
+function incompleteSetup(dataClear: SetupState['dataClear']): SetupState {
+  return { ...DEFAULT_SETUP, dataClear };
+}
 
 function activeSnapshot(): SessionSnapshot {
   const startedAt: number = NOW - 5 * 60_000;
@@ -94,8 +109,12 @@ function lifecycleSnapshot(lifecycle: SessionLifecycleV2): SessionSnapshot {
 }
 
 function install(snapshot: SessionSnapshot, dataClear: SetupState['dataClear']): void {
+  installSetup(snapshot, { ...COMPLETED_SETUP, dataClear });
+}
+
+function installSetup(snapshot: SessionSnapshot, setup: SetupState): void {
   sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
-    if (request.type === 'getSetupState') return { ...COMPLETED_SETUP, dataClear };
+    if (request.type === 'getSetupState') return setup;
     if (request.type === 'getSnapshot') return snapshot;
     if (request.type === 'getSettings') return DEFAULT_SETTINGS;
     if (request.type === 'getLists') return DEFAULT_LISTS;
@@ -144,6 +163,40 @@ describe('popup lifecycle body', (): void => {
     });
     expect(getByRole('button', { name: RETRY_CLEANUP_LABEL })).toBeTruthy();
     expect(queryByRole('button', { name: START_BUTTON })).toBeNull();
+  });
+
+  it('renders the deleting copy while an all-data clear runs its local phase', async (): Promise<void> => {
+    installSetup(emptySnapshot(NOW), incompleteSetup(ALL_DATA_PENDING));
+    const { getByRole, queryByRole } = render(h(App, null));
+
+    await waitFor((): void => {
+      expect(getByRole('status').textContent).toBe(DATA_CLEAR_PENDING_COPY);
+    });
+    expect(queryByRole('heading', { name: SETUP_HEADING })).toBeNull();
+    expect(queryByRole('button', { name: 'Open setup' })).toBeNull();
+    expect(queryByRole('button', { name: START_BUTTON })).toBeNull();
+  });
+
+  it('renders the deleting copy while an all-data clear runs its remote phase', async (): Promise<void> => {
+    installSetup(emptySnapshot(NOW), { ...COMPLETED_SETUP, dataClear: ALL_DATA_PENDING_REMOTE });
+    const { getByRole, queryByRole } = render(h(App, null));
+
+    await waitFor((): void => {
+      expect(getByRole('status').textContent).toBe(DATA_CLEAR_PENDING_COPY);
+    });
+    expect(queryByRole('button', { name: START_BUTTON })).toBeNull();
+  });
+
+  it('offers the cleanup retry when an all-data clear exhausts in its local phase', async (): Promise<void> => {
+    installSetup(emptySnapshot(NOW), incompleteSetup(ALL_DATA_ERROR));
+    const { getByRole, queryByRole } = render(h(App, null));
+
+    await waitFor((): void => {
+      expect(getByRole('status').textContent).toBe(DATA_CLEAR_ERROR_COPY);
+    });
+    expect(getByRole('button', { name: RETRY_CLEANUP_LABEL })).toBeTruthy();
+    expect(queryByRole('heading', { name: SETUP_HEADING })).toBeNull();
+    expect(queryByRole('button', { name: 'Open setup' })).toBeNull();
   });
 
   it('renders the lifecycle view while starting', async (): Promise<void> => {

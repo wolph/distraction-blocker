@@ -79,7 +79,8 @@ interface EndGateView {
 }
 
 export interface LifecycleViewProps {
-  snapshot: SessionSnapshotV2;
+  /** null only while an all-data journal renders before a snapshot has arrived. */
+  snapshot: SessionSnapshotV2 | null;
   now: number;
   dataClear:
     | SetupState['dataClear']
@@ -143,10 +144,11 @@ function endGateView(
 export function LifecycleView({ snapshot, now, dataClear }: LifecycleViewProps): VNode | null {
   const command: V2Command = useV2Command();
 
-  const body: LifecycleBody | null = dataClearBody(dataClear) ?? lifecycleBody(snapshot);
+  const body: LifecycleBody | null =
+    dataClearBody(dataClear) ?? (snapshot === null ? null : lifecycleBody(snapshot));
   if (body === null) return null;
 
-  const endGate: EndGateView | null = endGateView(body.authority, snapshot.config);
+  const endGate: EndGateView | null = endGateView(body.authority, snapshot?.config ?? null);
   const endAction: VNode | null = endControl(body.authority, command);
   const retryCommand: RetryCommandV2 | null = body.retry;
 
