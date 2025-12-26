@@ -17,6 +17,7 @@ import {
   DATA_CLEAR_ERROR_COPY,
   DATA_CLEAR_PENDING_COPY,
   POPUP_CLOSURE_CLEANUP_COPY,
+  POPUP_CLOSURE_ERROR_COPY,
   POPUP_STARTING_COPY,
   RETRY_CLEANUP_LABEL,
 } from '../../../src/shared/session-copy';
@@ -29,6 +30,7 @@ const OPERATION_ID: string = '20000000-0000-4000-8000-000000000001';
 const CLOSURE_ID: string = '10000000-0000-4000-8000-000000000001:close';
 const START_BUTTON: RegExp = /^Start 25 min/;
 const SETUP_HEADING: string = 'Finish setting up Focus Lock';
+const BLOCKING_OFF_HEADING: string = 'Website blocking is off';
 
 const COMPLETED_SETUP: SetupState = {
   ...DEFAULT_SETUP,
@@ -68,6 +70,17 @@ const ALL_DATA_PENDING_REMOTE: SetupState['dataClear'] = {
   status: 'pending',
   scope: 'all',
   phase: 'remote',
+};
+
+/**
+ * What a website-access-lost closure leaves behind: the session ended because Chrome
+ * revoked host access, so blocking is unavailable while the closure still cleans up.
+ */
+const ACCESS_LOST_SETUP: SetupState = {
+  ...COMPLETED_SETUP,
+  websiteAccess: 'denied',
+  blockingRegistration: 'unavailable',
+  websiteAccessNotice: 'revoked-during-session',
 };
 
 /**
@@ -197,6 +210,43 @@ describe('popup lifecycle body', (): void => {
     expect(getByRole('button', { name: RETRY_CLEANUP_LABEL })).toBeTruthy();
     expect(queryByRole('heading', { name: SETUP_HEADING })).toBeNull();
     expect(queryByRole('button', { name: 'Open setup' })).toBeNull();
+  });
+
+  it('renders the closure cleanup error over the website-blocking screen', async (): Promise<void> => {
+    installSetup(
+      lifecycleSnapshot({
+        kind: 'error',
+        code: 'closure-cleanup-failed',
+        retryAvailable: true,
+        endAuthority: { kind: 'hidden' },
+      }),
+      ACCESS_LOST_SETUP,
+    );
+    const { getByRole, getByText, queryByRole } = render(h(App, null));
+
+    await waitFor((): void => {
+      expect(getByText(POPUP_CLOSURE_ERROR_COPY)).toBeTruthy();
+    });
+    expect(getByRole('button', { name: RETRY_CLEANUP_LABEL })).toBeTruthy();
+    expect(queryByRole('heading', { name: BLOCKING_OFF_HEADING })).toBeNull();
+  });
+
+  it('renders closure cleanup over the website-blocking screen', async (): Promise<void> => {
+    installSetup(
+      lifecycleSnapshot({
+        kind: 'cleanup',
+        journal: 'closure',
+        id: CLOSURE_ID,
+        endAuthority: { kind: 'hidden' },
+      }),
+      ACCESS_LOST_SETUP,
+    );
+    const { getByText, queryByRole } = render(h(App, null));
+
+    await waitFor((): void => {
+      expect(getByText(POPUP_CLOSURE_CLEANUP_COPY)).toBeTruthy();
+    });
+    expect(queryByRole('heading', { name: BLOCKING_OFF_HEADING })).toBeNull();
   });
 
   it('renders the lifecycle view while starting', async (): Promise<void> => {

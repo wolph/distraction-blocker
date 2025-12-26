@@ -496,6 +496,17 @@ export function App(): VNode {
 
   const journal: SetupState['dataClear'] | null =
     setup === null ? null : allDataJournal(setup.dataClear);
+  /**
+   * A closure that ended for `website-access-lost` leaves blocking unavailable while its own
+   * cleanup or error still needs the user, and Settings tells that user to open the popup and
+   * retry. So cleanup and error outrank the website-blocking screen: stale enforcement pixels
+   * are not runtime authority, and the retry has to be reachable where the copy promises it.
+   */
+  const attentionSnapshot: SessionSnapshot | null =
+    snapshot !== null &&
+    (snapshot.lifecycle.kind === 'cleanup' || snapshot.lifecycle.kind === 'error')
+      ? snapshot
+      : null;
 
   return (
     <div class="app">
@@ -510,6 +521,8 @@ export function App(): VNode {
         <LifecycleView snapshot={snapshot} now={now} dataClear={journal} />
       ) : !setup.completed ? (
         <SetupRequired />
+      ) : attentionSnapshot !== null ? (
+        <LifecycleView snapshot={attentionSnapshot} now={now} dataClear={setup.dataClear} />
       ) : setup.blockingRegistration !== 'ready' ? (
         <WebsiteBlockingOff setup={setup} onReconciled={setSetup} />
       ) : error ? (
