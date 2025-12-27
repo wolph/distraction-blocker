@@ -1443,6 +1443,39 @@ describe('worker cutover to v2 session authority', (): void => {
     }
   });
 
+  it('counts the focus of a session that follows one that ended', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    worker.documents.push({
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    });
+    const started: number = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+      await worker.settle();
+      vi.setSystemTime(started + 2 * 60_000);
+      await worker.fireAlarm('tick');
+      await worker.send({ type: 'requestSessionEnd' } as Request);
+      await worker.settle();
+      const afterFirst: number = worker.runtime().todayAgg?.focusMs ?? 0;
+
+      // The closure resets the accrual to zero, so the second session starts counting from nothing.
+      await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+      await worker.settle();
+      vi.setSystemTime(started + 5 * 60_000);
+      await worker.fireAlarm('tick');
+      await worker.settle();
+
+      expect(afterFirst).toBe(2 * 60_000);
+      expect(worker.runtime().todayAgg?.focusMs).toBe(5 * 60_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('splits the focus a session carries across a local midnight', async (): Promise<void> => {
     const today: string = localDateStr(Date.now());
     const midnight: number = localMidnightAfter(today);
@@ -1471,14 +1504,15 @@ describe('worker cutover to v2 session authority', (): void => {
 
       const finished: DailyAgg | undefined = aggregateFor(worker, today);
       const next: DailyAgg | undefined = aggregateFor(worker, localDateStr(midnight + 5 * 60_000));
-      // The day that ended keeps everything it counted before the boundary.
+      // The day that ended keeps everything it counted before the boundary, the focus included.
       expect(Object.keys(finished?.attempts ?? {})).toEqual(['facebook.com']);
       expect(finished?.sessionsStarted).toBe(1);
       expect(finished?.pauseMsEarned).toBe(10 * 60_000 * DEFAULT_SETTINGS.pause.earnRatio);
-      // The new day counts the session that ended on it, and neither day counts it twice.
+      expect(finished?.focusMs).toBe(10 * 60_000);
+      // The new day counts the session that ended on it and the five minutes it ran into it.
       expect(next?.sessionsStarted ?? 0).toBe(0);
       expect(next?.sessionsCompleted).toBe(1);
-      expect((finished?.focusMs ?? 0) + (next?.focusMs ?? 0)).toBe(15 * 60_000);
+      expect(next?.focusMs).toBe(5 * 60_000);
       expect(finished?.date).toBe(today);
       expect(next?.date).toBe(localDateStr(midnight + 5 * 60_000));
     } finally {

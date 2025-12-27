@@ -214,6 +214,13 @@ export class Engine {
   private attemptRevision = 0;
   private attemptPersistInFlight: Map<string, Set<AttemptDurability>> = new Map();
   private failedAttemptPersistence: Set<string> = new Set();
+  /**
+   * How much of `accruedFocusMs` the daily aggregate already counts. The controller advances the
+   * accrual as it settles, the Engine owns the day, and the gap between the two is what a credit
+   * folds in. It is a field rather than a per-call capture because the day may be closed inside a
+   * settle, and the focus that settle produced belongs to the day it happened on.
+   */
+  private creditedFocusMs: number = 0;
   private runtimePersistQueue: Promise<void> = Promise.resolve();
   private activeRuntimeMutationLeases: Set<RuntimeMutationLease> = new Set();
   private runtimeMutationsInFlight: Set<Promise<void>> = new Set();
@@ -274,6 +281,8 @@ export class Engine {
       this.controllerEffects(),
     );
     this.ownedRuntimeSnapshot = structuredClone(this.runtime);
+    // The stored day already counts the stored accrual, so this boot credits only what it settles.
+    this.creditedFocusMs = this.runtime.accruedFocusMs;
   }
 
   /** Everything the controller is not allowed to own, bound to this engine and its ports. */
@@ -361,7 +370,19 @@ export class Engine {
   private async adoptRuntime(next: RuntimeStateV2): Promise<void> {
     this.runtime = structuredClone(next);
     this.ownedRuntimeSnapshot = structuredClone(next);
+    this.followAccrualReset();
     await this.ports.saveRuntime(this.runtime);
+  }
+
+  /**
+   * A closure sets the accrual back to zero, and it does that inside a command rather than a
+   * settle, so the watermark follows it down here. Without this the next session's focus is
+   * measured against a watermark the closure already retired, and its first minutes vanish.
+   */
+  private followAccrualReset(): void {
+    if (this.runtime.accruedFocusMs < this.creditedFocusMs) {
+      this.creditedFocusMs = this.runtime.accruedFocusMs;
+    }
   }
 
   /**
@@ -401,6 +422,7 @@ export class Engine {
     );
     this.runtime = committed;
     this.ownedRuntimeSnapshot = structuredClone(committed);
+    this.followAccrualReset();
     return committed;
   }
 
@@ -731,9 +753,8 @@ export class Engine {
     // A name no alarm owns wakes nothing, sweep included.
     if (parseAlarmNameV2(name) === null) return;
     await this.enqueuePolicyMutation(async (): Promise<void> => {
-      const accruedBefore: number = this.runtime.accruedFocusMs;
       await this.controller.handleAlarm(name);
-      this.creditSettledFocus(accruedBefore);
+      this.creditSettledFocus();
       if (this.dirty) await this.commit(this.ports.now());
       await this.sweepAfterPhaseChange();
     });
@@ -1090,9 +1111,8 @@ export class Engine {
   }
 
   private async checkScheduleNow(): Promise<void> {
-    const accruedBefore: number = this.runtime.accruedFocusMs;
     await this.controller.checkSchedule();
-    this.creditSettledFocus(accruedBefore);
+    this.creditSettledFocus();
     if (this.dirty) await this.commit(this.ports.now());
     await this.sweepAfterPhaseChange();
   }
@@ -1100,10 +1120,9 @@ export class Engine {
   private async tickNow(): Promise<void> {
     await this.flushDeferredBlockClaims();
     await this.flushRemovedTabTombstones();
-    const accruedBefore: number = this.runtime.accruedFocusMs;
     const now: number = this.ports.now();
     this.pruneDebounce(now);
-    this.creditSettledFocus(accruedBefore);
+    this.creditSettledFocus();
     await this.commit(now);
     await this.maybePrune(now);
     if (this.dirty) await this.commit(now);
@@ -1471,6 +1490,9 @@ export class Engine {
       await this.rebaseDateBackward(today, now);
       return;
     }
+    // The focus settled up to this boundary belongs to the day the boundary ends, so it is credited
+    // before that day is written. Crediting after would hand every minute to the day after it.
+    this.creditSettledFocus();
     const streak: StreakState = this.streak ?? emptyStreak(localMonthStr(now));
     const plan: RolloverPlan = planRollover(
       this.runtime.date,
@@ -1520,12 +1542,13 @@ export class Engine {
   }
 
   /**
-   * The day is credited with whatever focus the settle just accrued. The controller advances the
-   * watermark, the Engine owns the daily aggregate, and the difference between the two is the focus
-   * this settle added.
+   * The day is credited with whatever focus has settled since the last credit. A closure resets the
+   * accrual to zero, so the watermark follows the accrual down as well as up and the next session
+   * starts counting from nothing.
    */
-  private creditSettledFocus(accruedBefore: number): void {
-    const delta: number = Math.max(0, this.runtime.accruedFocusMs - accruedBefore);
+  private creditSettledFocus(): void {
+    const delta: number = Math.max(0, this.runtime.accruedFocusMs - this.creditedFocusMs);
+    this.creditedFocusMs = this.runtime.accruedFocusMs;
     if (delta === 0) return;
     const aggregate: DailyAgg = this.runtime.todayAgg ?? emptyDaily(this.runtime.date);
     this.runtime.todayAgg = { ...aggregate, focusMs: aggregate.focusMs + delta };
