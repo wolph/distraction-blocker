@@ -9,11 +9,12 @@ import type {
 const MAX_ROWS: number = 20;
 
 /**
- * Wording for rows the v2 reason table cannot describe. A legacy terminal event carries
- * no reason, so it keeps the v1 session log's lowercase words rather than claiming one.
+ * Wording for rows the v2 reason table cannot describe. A legacy terminal event carries no
+ * reason, so it claims none, but it lands in the same Outcome column as the v2 rows and takes
+ * that column's casing: one column, one spelling per outcome.
  */
-const LEGACY_COMPLETED_OUTCOME: string = 'completed';
-const LEGACY_ENDED_EARLY_OUTCOME: string = 'ended early';
+const LEGACY_COMPLETED_OUTCOME: string = 'Completed';
+const LEGACY_ENDED_EARLY_OUTCOME: string = 'Ended early';
 
 /**
  * A row closed without any end event has no reason either, but it sits in the same

@@ -51,7 +51,7 @@ describe('SessionLog', () => {
     expect(container.querySelectorAll('.session-table .chip.neutral').length).toBe(1);
     expect(container.querySelectorAll('.session-table .chip.running').length).toBe(1);
     expect(container.textContent).toContain('thesis chapter');
-    expect(container.textContent).toContain('ended early');
+    expect(container.textContent).toContain('Ended early');
     expect(container.textContent).toContain('Pause');
     expect(container.textContent).toContain('Unlock');
   });
@@ -152,7 +152,7 @@ describe('SessionLog', () => {
     expect(article.textContent).toContain(new Date(T9).toLocaleDateString());
     expect(article.textContent).toContain('09:00');
     expect(article.textContent).toContain('23 m');
-    expect(article.textContent).toContain('completed');
+    expect(article.textContent).toContain('Completed');
   });
 
   it('switches from the desktop table to articles through the 768px tablet width', () => {

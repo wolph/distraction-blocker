@@ -726,8 +726,8 @@ async function assertRenderedStatsVisualState(
   if (
     (await page.getByText(longDomain, { exact: true }).count()) < 1 ||
     (await page.getByText('1234567', { exact: true }).count()) < 1 ||
-    (await page.getByText('completed', { exact: true }).count()) < 1 ||
-    (await page.getByText('ended early', { exact: true }).count()) < 1
+    (await page.getByText('Completed', { exact: true }).count()) < 1 ||
+    (await page.getByText('Ended early', { exact: true }).count()) < 1
   ) {
     throw new Error('The Stats boundary state is missing domain, count, or session outcomes.');
   }

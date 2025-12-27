@@ -190,7 +190,7 @@ describe('pairSessionRowsV2', (): void => {
     ]);
   });
 
-  it('keeps the current wording for a legacy start closed by a legacy end', (): void => {
+  it('reports a legacy start closed by a legacy end in the shared column casing', (): void => {
     const completed: SessionRowV2[] = pairSessionRowsV2(
       newestFirst([
         legacyStart(T9, 25, 'thesis chapter'),
@@ -202,7 +202,7 @@ describe('pairSessionRowsV2', (): void => {
       plan: '25 m',
       intention: 'thesis chapter',
       source: 'manual',
-      outcome: 'completed',
+      outcome: 'Completed',
       outcomeKind: 'completed',
       focusedMs: 25 * MIN,
       pauseMs: 0,
@@ -215,7 +215,7 @@ describe('pairSessionRowsV2', (): void => {
         { t: 'sessionCanceled', at: T925, focusedMs: 8 * MIN },
       ]),
     );
-    expect(canceled[0]?.outcome).toBe('ended early');
+    expect(canceled[0]?.outcome).toBe('Ended early');
     expect(canceled[0]?.outcomeKind).toBe('ended');
     expect(canceled[0]?.focusedMs).toBe(8 * MIN);
   });
@@ -230,12 +230,13 @@ describe('pairSessionRowsV2', (): void => {
     const v2Row: SessionRowV2 | undefined = pairSessionRowsV2(newestFirst(legacy))[0];
 
     // The values the deleted v1 `pairSessions` produced for this exact history, stated directly
-    // now that the v1 pairing is gone and this builder is the only reader of legacy history.
+    // now that the v1 pairing is gone and this builder is the only reader of legacy history. Only
+    // the outcome casing moved: one Outcome column cannot spell the same result two ways.
     expect(v2Row).toMatchObject({
       startedAt: T9,
       intention: 'thesis chapter',
       source: 'manual',
-      outcome: 'completed',
+      outcome: 'Completed',
       focusedMs: 20 * MIN,
       pauseMs: 5 * MIN,
       unlockMs: 5 * MIN,

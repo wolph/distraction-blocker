@@ -321,7 +321,7 @@ describe.sequential('stats-service local calendar ranges', (): void => {
     ).toHaveLength(50);
     expect(pairSessionRowsV2(retainedMigration)).toEqual([
       expect.objectContaining({
-        outcome: 'completed',
+        outcome: 'Completed',
         focusedMs: 17,
         pauseMs: 11,
         unlockMs: 13,
@@ -343,8 +343,8 @@ describe.sequential('stats-service local calendar ranges', (): void => {
 
     expect(recent).not.toContainEqual(events[3]);
     expect(rows).toEqual([
-      expect.objectContaining({ outcome: 'ended early', focusedMs: 3 }),
-      expect.objectContaining({ outcome: 'completed', focusedMs: 5 }),
+      expect.objectContaining({ outcome: 'Ended early', focusedMs: 3 }),
+      expect.objectContaining({ outcome: 'Completed', focusedMs: 5 }),
     ]);
   });
 
@@ -548,7 +548,7 @@ describe('stats-service recent session cap', (): void => {
       expect(retainedFocusedMs).toBe(legacyFirst ? 107 : 17);
       expect(pairedRows).toHaveLength(1);
       expect(pairedRows[0]).toMatchObject({
-        outcome: legacyFirst ? 'completed' : 'ended early',
+        outcome: legacyFirst ? 'Completed' : 'Ended early',
         focusedMs: legacyFirst ? 107 : 17,
         pauseMs,
         unlockMs,
