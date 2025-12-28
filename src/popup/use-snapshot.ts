@@ -1,32 +1,13 @@
 import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import { sendRequest } from '../shared/messages';
+import { reloadOnceForInvalidSnapshot } from '../shared/reload-once';
 import { isSessionSnapshot } from '../shared/runtime-validation';
 import type { SessionSnapshot } from '../shared/types';
 
 type UnknownRecord = Record<string, unknown>;
 
-/** Set once per page, so a page that reloads into the same failure shows the error instead. */
-const RELOAD_FLAG: string = 'focusLockSnapshotReload';
-
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === 'object' && value !== null;
-}
-
-/**
- * An extension page older than the worker cannot validate a v2 snapshot, and the spec answers that
- * with one reload: the reloaded page is the current one. A page that fails again after reloading
- * shows the error state rather than looping.
- */
-function reloadOnceForInvalidSnapshot(): boolean {
-  try {
-    if (sessionStorage.getItem(RELOAD_FLAG) !== null) return false;
-    sessionStorage.setItem(RELOAD_FLAG, '1');
-  } catch {
-    // A page without session storage cannot remember the attempt, so it never reloads.
-    return false;
-  }
-  location.reload();
-  return true;
 }
 
 /**

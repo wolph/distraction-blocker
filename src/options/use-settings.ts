@@ -1,6 +1,7 @@
 import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'preact/hooks';
 import type { Ack, ClearFocusLockDataResponse } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
+import { reloadOnceForInvalidSnapshot } from '../shared/reload-once';
 import {
   ackError,
   isListsConfig,
@@ -21,26 +22,6 @@ import type {
 } from '../shared/types';
 
 const LOAD_ERROR: string = 'Could not load settings. Reload the page to try again.';
-
-/** Set once per page, so a page that reloads into the same failure shows the error instead. */
-const RELOAD_FLAG: string = 'focusLockSnapshotReload';
-
-/**
- * An extension page older than the worker cannot validate a v2 snapshot, and the spec answers that
- * with one reload: the reloaded page is the current one. A page that fails again after reloading
- * keeps what it already has rather than looping.
- */
-function reloadOnceForInvalidSnapshot(): boolean {
-  try {
-    if (sessionStorage.getItem(RELOAD_FLAG) !== null) return false;
-    sessionStorage.setItem(RELOAD_FLAG, '1');
-  } catch {
-    // A page without session storage cannot remember the attempt, so it never reloads.
-    return false;
-  }
-  location.reload();
-  return true;
-}
 
 type ScheduleMutation = {
   section: 'schedule';
