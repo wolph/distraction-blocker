@@ -1,33 +1,40 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useRef, useState } from 'preact/hooks';
 import type { Ack, CommandResponseV2, SessionCommandResultCodeV2 } from '../shared/messages';
-import { sendRequest } from '../shared/messages';
-import { ackError } from '../shared/runtime-validation';
-import type { GateKind, GateState } from '../shared/types';
+import type { EndAuthorityV2, GateKind, GateState } from '../shared/types';
 
 export type GateRequest =
   | { type: 'abandonGate' }
   | { type: 'confirmGate'; typedPhrase: string | null };
 
-/** Both transports answer this panel: v1 with an Ack, v2 with a coded command result. */
+/**
+ * The transport this panel sends through. The live surfaces answer with a coded v2 command
+ * result; the `Ack` arm stays only because the mapper, not the panel, reads the shape.
+ */
 export type GateCommandSender = (
   request: GateRequest,
 ) => Promise<Ack | CommandResponseV2<SessionCommandResultCodeV2>>;
 
 /**
  * Maps one transport answer to its message, or null when the command was accepted.
- * The shapes differ per transport, so the sender's mapper travels with it: `ackError`
- * rejects any v1 Ack carrying extra keys, which every coded v2 answer does.
+ * The shapes differ per transport, so the sender's mapper travels with it, and both are
+ * required: a mapper that does not match the sender misreports every accepted answer.
  */
 export type GateCommandErrorMapper = (response: unknown, fallback: string) => string | null;
+
+/** The cancel-gate copy the End authority publishes, so these literals cannot drift from it. */
+type PublishedCancelGateCopy = Extract<EndAuthorityV2, { copy: { confirm: string } }>['copy'];
+
+const CANCEL_CONFIRM_LABEL: PublishedCancelGateCopy['confirm'] = 'End the session';
+const BACK_TO_WORK_LABEL: PublishedCancelGateCopy['back'] = 'Never mind, back to work';
 
 const CONFIRM_LABELS: Record<GateKind, string> = {
   pause: 'Take the pause',
   unlockSite: 'Unlock this site',
-  cancel: 'End the session',
+  cancel: CANCEL_CONFIRM_LABEL,
 };
 
-/** The v1 wording for the typed confirmation prompt. v2 authority copy overrides it. */
+/** The wording a pause or unlock gate uses. An End authority publishes its own instead. */
 export const DEFAULT_PHRASE_LABEL: string = 'Type:';
 
 /**
@@ -38,11 +45,15 @@ export interface GatePanelProps {
   gate: GateState;
   now: number;
   intention: string;
-  /** v2 surfaces pass the v2 session channel. v1 callers keep the live sendRequest. */
-  sendCommand?: GateCommandSender;
-  /** Must match the sender: `commandErrorMessage` for v2, `ackError` for v1. */
-  commandError?: GateCommandErrorMapper;
-  /** v2 surfaces pass the End authority's exact `copy.phraseLabel`. */
+  /** The session channel this panel sends through. No default: see `commandError`. */
+  sendCommand: GateCommandSender;
+  /**
+   * Must match the sender. `mapGateError` reads the coded v2 answer every live surface gets;
+   * `ackError` rejects any value carrying `code`, so pairing it with the v2 channel would
+   * report an accepted gate command as a failure.
+   */
+  commandError: GateCommandErrorMapper;
+  /** An End authority passes its exact published `copy.phraseLabel`. */
   phraseLabel?: string;
 }
 
@@ -50,8 +61,8 @@ export function GatePanel({
   gate,
   now,
   intention,
-  sendCommand = sendRequest,
-  commandError = ackError,
+  sendCommand,
+  commandError,
   phraseLabel = DEFAULT_PHRASE_LABEL,
 }: GatePanelProps): VNode {
   const [typed, setTyped]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
@@ -111,7 +122,7 @@ export function GatePanel({
         </p>
       ) : null}
       <button type="button" class="start-button" disabled={pending} onClick={abandon}>
-        Never mind, back to work
+        {BACK_TO_WORK_LABEL}
       </button>
       {gate.requiredPhrase !== null ? (
         <label class="gate-phrase">

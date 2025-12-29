@@ -45,7 +45,7 @@ export function endCommandOf(authority: EndAuthorityV2): V2EndCommand | null {
   return null;
 }
 
-/** The gate transport for every v2 surface. GatePanel defaults to the v1 channel. */
+/** The gate transport for every surface that renders GatePanel. */
 export function sendGateCommand(
   request: GateRequest,
 ): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
@@ -65,7 +65,7 @@ export const mapGateError: GateCommandErrorMapper = (
 
 /**
  * Only an open friction End authority publishes exact cancel-gate copy. A pause or
- * unlock gate keeps the panel's own v1 label.
+ * unlock gate keeps the panel's own default label.
  */
 export function gatePhraseLabel(authority: EndAuthorityV2, gate: GateState): string | undefined {
   return authority.kind === 'friction-gate' && authority.gate !== null && gate.kind === 'cancel'

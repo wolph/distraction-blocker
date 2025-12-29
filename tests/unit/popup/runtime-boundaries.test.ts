@@ -9,6 +9,7 @@ import { App } from '../../../src/popup/App';
 import { START_FAILED_COPY } from '../../../src/popup/command-errors';
 import { GatePanel } from '../../../src/popup/GatePanel';
 import { StartForm } from '../../../src/popup/StartForm';
+import { mapGateError, sendGateCommand } from '../../../src/popup/v2-command';
 import {
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
@@ -346,7 +347,15 @@ describe('popup runtime response boundaries', (): void => {
         async (request: Request): Promise<unknown> =>
           request.type === requestType ? { error: 'missing ok' } : { ok: true },
       );
-      const { getByRole } = render(h(GatePanel, { gate, now: NOW, intention: '' }));
+      const { getByRole } = render(
+        h(GatePanel, {
+          gate,
+          now: NOW,
+          intention: '',
+          sendCommand: sendGateCommand,
+          commandError: mapGateError,
+        }),
+      );
 
       fireEvent.click(getByRole('button', { name: buttonName }));
 
