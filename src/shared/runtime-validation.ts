@@ -257,8 +257,14 @@ export function isSetupState(value: unknown): value is SetupState {
         value.dataClear.scope === null &&
         value.dataClear.phase === null) ||
         ((value.dataClear.status === 'pending' || value.dataClear.status === 'error') &&
-          (((value.dataClear.scope === 'synced-policy' || value.dataClear.scope === 'all') &&
+          ((value.dataClear.scope === 'synced-policy' &&
             (value.dataClear.phase === 'remote' || value.dataClear.phase === 'local')) ||
+            // Only the all-data clear reaches the browser-reset phase, where the journal owns the
+            // Runtime, Setup, and install-marker projections it materializes.
+            (value.dataClear.scope === 'all' &&
+              (value.dataClear.phase === 'remote' ||
+                value.dataClear.phase === 'local' ||
+                value.dataClear.phase === 'browser-reset')) ||
             (value.dataClear.scope === 'local-history' &&
               (value.dataClear.phase === 'local' || value.dataClear.phase === 'runtime'))))) &&
       typeof value.legacyImported === 'boolean',

@@ -316,6 +316,19 @@ export function projectAllDataClearPublicState(
 }
 
 /**
+ * The one builder for the clean install-marker projection, so the exact literal the browser-reset
+ * journal validates is never spelled a second time in a writer or in a test.
+ */
+export function cleanInstallMarkerProjection(
+  extensionVersion: string,
+): CleanInstallMarkerProjection {
+  if (!isNonBlankString(extensionVersion)) {
+    invalidJournal('a clean install marker projection needs a non-blank extension version');
+  }
+  return { version: 1, profile: 'clean', latestReason: 'install', extensionVersion };
+}
+
+/**
  * The exact marker transform replay applies for one intent. `previousVersion` is retained for event
  * recovery and never changes the current marker, which is the existing install-marker semantics.
  */

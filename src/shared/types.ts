@@ -62,8 +62,13 @@ export interface SetupState {
     | { status: 'idle'; scope: null; phase: null }
     | {
         status: 'pending' | 'error';
-        scope: 'synced-policy' | 'all';
+        scope: 'synced-policy';
         phase: 'remote' | 'local';
+      }
+    | {
+        status: 'pending' | 'error';
+        scope: 'all';
+        phase: 'remote' | 'local' | 'browser-reset';
       }
     | {
         status: 'pending' | 'error';

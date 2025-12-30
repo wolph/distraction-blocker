@@ -7,6 +7,7 @@ import {
   type AllDataClearPublicState,
   appendInstallLifecycleIntent,
   type CleanInstallMarkerProjection,
+  cleanInstallMarkerProjection,
   createAllDataClearJournalV2,
   DATA_CLEAR_RESET_DEADLINE_MS,
   type DataClearJournal,
@@ -865,6 +866,23 @@ describe('all-data public state projection', (): void => {
         phase === 'browser-reset' ? browserResetJournal() : remoteJournal({ phase });
       expect(projectAllDataClearPublicState(journal).status).not.toBe('idle');
     }
+  });
+});
+
+describe('clean install marker projection', (): void => {
+  it('builds the exact clean marker the browser-reset journal projects', (): void => {
+    const marker: CleanInstallMarkerProjection = cleanInstallMarkerProjection(EXTENSION_VERSION);
+
+    expect(marker).toEqual({
+      version: 1,
+      profile: 'clean',
+      latestReason: 'install',
+      extensionVersion: EXTENSION_VERSION,
+    });
+  });
+
+  it('refuses a blank extension version', (): void => {
+    expectInvalidRule((): CleanInstallMarkerProjection => cleanInstallMarkerProjection('  '));
   });
 });
 

@@ -254,6 +254,30 @@ describe('runtime and worker request validation parity', (): void => {
         dataClear: { status: 'pending', scope: 'local-history', phase: 'remote' },
       }),
     ).toBe(false);
+    expect(
+      isSetupState({
+        ...SETUP,
+        dataClear: { status: 'pending', scope: 'all', phase: 'browser-reset' },
+      }),
+    ).toBe(true);
+    expect(
+      isSetupState({
+        ...SETUP,
+        dataClear: { status: 'error', scope: 'all', phase: 'browser-reset' },
+      }),
+    ).toBe(true);
+    expect(
+      isSetupState({
+        ...SETUP,
+        dataClear: { status: 'pending', scope: 'synced-policy', phase: 'browser-reset' },
+      }),
+    ).toBe(false);
+    expect(
+      isSetupState({
+        ...SETUP,
+        dataClear: { status: 'pending', scope: 'local-history', phase: 'browser-reset' },
+      }),
+    ).toBe(false);
     expect(isSetupState({ ...SETUP, storageError: 'unknown' })).toBe(false);
     expect(isInstallMarker(INSTALL_MARKER)).toBe(true);
     expect(isInstallMarker({ ...INSTALL_MARKER, latestReason: 'startup' })).toBe(false);
