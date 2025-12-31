@@ -94,8 +94,8 @@ function applyDraftDuration(draft: StartDraft, next: DraftDuration): StartDraft 
 }
 
 /**
- * RuleSummary reads the mode and the rule snapshot only. The v2 draft adapts to its v1
- * shape with its effective values, and an indefinite draft reports no timed minutes.
+ * RuleSummary reads the mode and the rule snapshot only. The start draft adapts to the
+ * SessionDraft shape it wants, and an indefinite draft reports no timed minutes.
  */
 function ruleSummaryDraft(draft: StartDraft): SessionDraft {
   return {

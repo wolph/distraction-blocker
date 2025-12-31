@@ -1,8 +1,8 @@
 /**
- * Shared shadow-root CSS for the blocked page. The v1 snapshot renderer and the v2
- * `DocumentOverlayView` renderer mount this exact string, so both pages keep one look and one
- * tick cadence. The transition durations are written from `OVERLAY_TICK_MS`, so a renderer that
- * repaints on the interval never animates past its next repaint.
+ * Shared shadow-root CSS for the blocked page. `DocumentOverlayView` mounts this exact string
+ * through the overlay host, so every blocked page keeps one look and one tick cadence. The
+ * transition durations are written from `OVERLAY_TICK_MS`, so a renderer that repaints on the
+ * interval never animates past its next repaint.
  */
 
 /** Local repaint cadence for the clock, the bank meter, and the gate ring. */

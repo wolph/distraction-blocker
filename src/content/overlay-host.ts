@@ -1,10 +1,10 @@
 /**
  * The shared blocked-page shell: one closed shadow host carrying the overlay styles, a dialog
- * backdrop, the interaction trap, initial focus, and the two SVG figures both renderers draw.
+ * backdrop, the interaction trap, initial focus, and the two SVG figures the renderer draws.
  *
- * This is a leaf on purpose. The v1 snapshot renderer and the v2 `DocumentOverlayView` renderer
- * both mount through here, so retiring v1 at the cutover removes a renderer and leaves the shell
- * and its tests standing. Nothing here reads session state, a verdict, or a view.
+ * This is a leaf on purpose. `DocumentOverlayView` mounts through here, and the cutover that
+ * deleted the v1 renderer left this shell and its tests standing. Nothing here reads session
+ * state, a verdict, or a view.
  */
 
 import { OVERLAY_STYLES } from './overlay-styles';

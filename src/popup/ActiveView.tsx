@@ -30,7 +30,7 @@ type ActiveHostState =
   | { status: 'unsupported' }
   | { status: 'error' };
 
-/** Duplicated from the v1 ActiveView. The cutover deletes the v1 copy. */
+/** The active tab's host, for the unlock control's own wording. */
 function useActiveHost(): ActiveHostState {
   const [state, setState]: [ActiveHostState, Dispatch<StateUpdater<ActiveHostState>>] =
     useState<ActiveHostState>({ status: 'loading' });
@@ -64,7 +64,7 @@ function useActiveHost(): ActiveHostState {
   return state;
 }
 
-/** Duplicated from the v1 ActiveView. Stats reads stay on the v1 request channel. */
+/** Today's focus total. Stats reads are a non-session request, so they stay on sendRequest. */
 function useFocusedTodayMs(): { ms: number | null; error: boolean } {
   const [ms, setMs]: [number | null, Dispatch<StateUpdater<number | null>>] = useState<
     number | null
@@ -89,7 +89,7 @@ function useFocusedTodayMs(): { ms: number | null; error: boolean } {
   return { ms, error };
 }
 
-/** v2 mirror of extrapolatedBank, which only accepts the v1 snapshot shape. */
+/** The bank grown to `nowMs`, capped, so the meter moves between published snapshots. */
 function extrapolatedBankV2(snapshot: SessionSnapshotV2, nowMs: number): number {
   const grown: number =
     snapshot.bankMs + Math.max(0, nowMs - snapshot.at) * snapshot.bankAccrualPerMs;
