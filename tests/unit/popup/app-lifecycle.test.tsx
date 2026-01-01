@@ -22,7 +22,7 @@ import {
   RETRY_CLEANUP_LABEL,
 } from '../../../src/shared/session-copy';
 import type { SessionLifecycleV2, SessionSnapshot, SetupState } from '../../../src/shared/types';
-import { resetChromeFake, sendMessageMock, tabsQueryMock } from './chrome-fake';
+import { emitStorageChange, resetChromeFake, sendMessageMock, tabsQueryMock } from './chrome-fake';
 
 const NOW: number = 1_700_000_000_000;
 const OPERATION_ID: string = '20000000-0000-4000-8000-000000000001';
@@ -281,6 +281,23 @@ describe('popup lifecycle body', (): void => {
 
     await waitFor((): void => {
       expect(getByRole('status').textContent).toBe(POPUP_CLOSURE_CLEANUP_COPY);
+    });
+    expect(queryByRole('button', { name: START_BUTTON })).toBeNull();
+  });
+
+  it('rereads the setup record when the journal is written while the popup is open', async (): Promise<void> => {
+    installSetup(emptySnapshot(NOW), COMPLETED_SETUP);
+    const { getByRole, queryByRole } = render(h(App, null));
+
+    await waitFor((): void => {
+      expect(getByRole('button', { name: START_BUTTON })).toBeTruthy();
+    });
+
+    installSetup(emptySnapshot(NOW), incompleteSetup(ALL_DATA_PENDING));
+    emitStorageChange({ setup: { newValue: incompleteSetup(ALL_DATA_PENDING) } });
+
+    await waitFor((): void => {
+      expect(getByRole('status').textContent).toBe(DATA_CLEAR_PENDING_COPY);
     });
     expect(queryByRole('button', { name: START_BUTTON })).toBeNull();
   });

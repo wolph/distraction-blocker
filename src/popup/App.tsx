@@ -17,6 +17,7 @@ import {
   isSetupState,
   isWebsiteAccessReconciliation,
 } from '../shared/runtime-validation';
+import { LOCAL_SETUP } from '../shared/storage-keys';
 import { ThemeControl } from '../shared/ThemeControl';
 import { applyTheme, updateTheme } from '../shared/theme';
 import type {
@@ -466,16 +467,41 @@ export function App(): VNode {
   const [setupError, setSetupError]: [boolean, Dispatch<StateUpdater<boolean>>] =
     useState<boolean>(false);
 
-  useEffect((): void => {
-    void sendRequest({ type: 'getSetupState' })
-      .then((value: SetupState): void => {
-        if (!isSetupState(value)) {
-          setSetupError(true);
-          return;
-        }
-        setSetup(value);
-      })
-      .catch((): void => setSetupError(true));
+  useEffect((): (() => void) => {
+    let alive: boolean = true;
+    const readSetup: () => void = (): void => {
+      void sendRequest({ type: 'getSetupState' })
+        .then((value: SetupState): void => {
+          if (!alive) return;
+          if (!isSetupState(value)) {
+            setSetupError(true);
+            return;
+          }
+          setSetupError(false);
+          setSetup(value);
+        })
+        .catch((): void => {
+          if (alive) setSetupError(true);
+        });
+    };
+    readSetup();
+    /**
+     * The snapshot is live through the stateChanged broadcast, but the setup record is not, and
+     * no setupChanged broadcast exists. A data-clear journal is written straight into that
+     * record, and its browser-reset phase is worker-initiated, so a popup that read the record
+     * once would keep offering the wrong branch while the profile is being deleted. Every write
+     * lands on one local key, so the popup rereads through the worker whenever it changes.
+     */
+    const onStored: (changes: Record<string, chrome.storage.StorageChange>, area: string) => void =
+      (changes: Record<string, chrome.storage.StorageChange>, area: string): void => {
+        if (area !== 'local' || !Object.hasOwn(changes, LOCAL_SETUP)) return;
+        readSetup();
+      };
+    chrome.storage.onChanged.addListener(onStored);
+    return (): void => {
+      alive = false;
+      chrome.storage.onChanged.removeListener(onStored);
+    };
   }, []);
 
   useEffect((): void => {

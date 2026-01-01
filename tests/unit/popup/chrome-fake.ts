@@ -6,6 +6,10 @@
 import { type Mock, vi } from 'vitest';
 
 type MessageListener = (msg: unknown) => void;
+type StorageChangeListener = (
+  changes: Record<string, chrome.storage.StorageChange>,
+  areaName: string,
+) => void;
 
 export const sendMessageMock: Mock = vi.fn();
 export const openOptionsPageMock: Mock = vi.fn();
@@ -14,11 +18,22 @@ export const tabsQueryMock: Mock = vi.fn(async (): Promise<unknown[]> => []);
 export const permissionsRequestMock: Mock = vi.fn(async (): Promise<boolean> => false);
 
 export const messageListeners: MessageListener[] = [];
+export const storageChangeListeners: StorageChangeListener[] = [];
 
 /** Push a worker broadcast through every captured onMessage listener. */
 export function emitMessage(msg: unknown): void {
   for (const listener of [...messageListeners]) {
     listener(msg);
+  }
+}
+
+/** Push one storage write through every captured onChanged listener. */
+export function emitStorageChange(
+  changes: Record<string, chrome.storage.StorageChange>,
+  areaName: string = 'local',
+): void {
+  for (const listener of [...storageChangeListeners]) {
+    listener(changes, areaName);
   }
 }
 
@@ -31,6 +46,7 @@ export function resetChromeFake(): void {
   permissionsRequestMock.mockReset();
   permissionsRequestMock.mockResolvedValue(false);
   messageListeners.length = 0;
+  storageChangeListeners.length = 0;
 }
 
 const chromeFake = {
@@ -54,6 +70,17 @@ const chromeFake = {
   },
   permissions: {
     request: permissionsRequestMock,
+  },
+  storage: {
+    onChanged: {
+      addListener: (listener: StorageChangeListener): void => {
+        storageChangeListeners.push(listener);
+      },
+      removeListener: (listener: StorageChangeListener): void => {
+        const index: number = storageChangeListeners.indexOf(listener);
+        if (index >= 0) storageChangeListeners.splice(index, 1);
+      },
+    },
   },
 };
 
