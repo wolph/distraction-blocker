@@ -82,9 +82,7 @@ export interface LifecycleViewProps {
   /** null only while an all-data journal renders before a snapshot has arrived. */
   snapshot: SessionSnapshotV2 | null;
   now: number;
-  dataClear:
-    | SetupState['dataClear']
-    | { status: 'pending' | 'error'; scope: 'all'; phase: 'browser-reset' };
+  dataClear: SetupState['dataClear'];
 }
 
 /**
