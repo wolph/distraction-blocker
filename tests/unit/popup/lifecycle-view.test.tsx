@@ -333,13 +333,11 @@ describe('LifecycleView cleanup errors', (): void => {
 });
 
 describe('LifecycleView all-data clear', (): void => {
-  /**
-   * Every all-data phase a SetupState can carry. The spec's browser-reset phase has no journal
-   * slice yet, so SetupState cannot produce it and this view cannot be handed it.
-   */
+  /** Every all-data phase SetupState carries, browser-reset included. */
   const PENDING_PHASES: ReadonlyArray<LifecycleViewProps['dataClear']> = [
     { status: 'pending', scope: 'all', phase: 'remote' },
     { status: 'pending', scope: 'all', phase: 'local' },
+    { status: 'pending', scope: 'all', phase: 'browser-reset' },
   ];
 
   it('overrides every lifecycle and control while a clear is pending', (): void => {
@@ -371,7 +369,7 @@ describe('LifecycleView all-data clear', (): void => {
     const { getByRole, getByText, queryByRole } = view(emptySnapshotV2(NOW), {
       status: 'error',
       scope: 'all',
-      phase: 'remote',
+      phase: 'browser-reset',
     });
     const retry: HTMLButtonElement = getByRole('button', {
       name: RETRY_CLEANUP_LABEL,
