@@ -9,7 +9,7 @@ export type GateRequest =
 
 /**
  * The transport this panel sends through. The live surfaces answer with a coded v2 command
- * result; the `Ack` arm stays only because the mapper, not the panel, reads the shape.
+ * result. The `Ack` arm stays only because the mapper, not the panel, reads the shape.
  */
 export type GateCommandSender = (
   request: GateRequest,
@@ -48,7 +48,7 @@ export interface GatePanelProps {
   /** The session channel this panel sends through. No default: see `commandError`. */
   sendCommand: GateCommandSender;
   /**
-   * Must match the sender. `mapGateError` reads the coded v2 answer every live surface gets;
+   * Must match the sender. `mapGateError` reads the coded v2 answer every live surface gets.
    * `ackError` rejects any value carrying `code`, so pairing it with the v2 channel would
    * report an accepted gate command as a failure.
    */
