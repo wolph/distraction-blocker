@@ -3411,4 +3411,59 @@ describe('Engine', () => {
 
     expect(write).not.toHaveBeenCalled();
   });
+
+  it('settles the session before it runs its own minute maintenance', async () => {
+    const h: Harness = makeEngine({ runtime: activeRuntimeV2() });
+    h.setNow(T0 + 60_000);
+    let focusAtPrune: number = -1;
+    h.ports.prune.mockImplementation(async (): Promise<void> => {
+      focusAtPrune = h.engine.statsOverlay().todayAgg.focusMs;
+    });
+
+    await h.engine.handleAlarm('tick');
+
+    // The session is what the minute is for, and the prune is what is left over. By the time the
+    // prune runs, the minute of focus is already settled and credited, so the boundary was never
+    // held behind storage work that belongs to no session.
+    expect(h.ports.prune).toHaveBeenCalledTimes(1);
+    expect(focusAtPrune).toBe(60_000);
+  });
+
+  it('reports a refused maintenance write and still finishes the minute alarm', async () => {
+    const h: Harness = makeEngine({
+      runtime: activeRuntimeV2({}, { removedTabTombstones: { 7: true } }),
+    });
+    h.setNow(T0 + 60_000);
+    let refused: boolean = false;
+    h.ports.saveRuntime.mockImplementation(async (runtime: RuntimeStateV2): Promise<void> => {
+      // The tombstone flush is the write that carries none, and it is the one refused here.
+      if (!refused && Object.keys(runtime.removedTabTombstones).length === 0) {
+        refused = true;
+        throw new Error('storage refused the tombstone flush');
+      }
+    });
+
+    await expect(h.engine.handleAlarm('tick')).resolves.toBeUndefined();
+
+    expect(refused).toBe(true);
+    expect(h.ports.reportError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'storage refused the tombstone flush' }),
+    );
+    // The session still settled: a retention chore may not cost a boundary.
+    expect(h.ports.broadcast).toHaveBeenCalled();
+  });
+
+  it('prunes on the alarm that reaches the weekly due date', async () => {
+    const h: Harness = makeEngine({
+      runtime: { ...emptyRuntimeV2Fixture(T0), lastPruneDate: localDateStr(T0) },
+    });
+
+    h.setNow(T0 + 3 * DAY_MS);
+    await h.engine.handleAlarm('tick');
+    expect(h.ports.prune).not.toHaveBeenCalled();
+
+    h.setNow(T0 + 7 * DAY_MS);
+    await h.engine.handleAlarm('tick');
+    expect(h.ports.prune).toHaveBeenCalledTimes(1);
+  });
 });

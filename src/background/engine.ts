@@ -56,7 +56,7 @@ import type {
   ThemeMode,
   Verdict,
 } from '../shared/types';
-import { type AlarmPortsV2, parseAlarmNameV2 } from './alarms-v2';
+import { type AlarmNameV2, type AlarmPortsV2, parseAlarmNameV2, TICK_ALARM } from './alarms-v2';
 import type { ContentTransportPortsV2 } from './content-transport-v2';
 import type { DocumentEnforcementAck } from './enforcement-persistence-v2';
 import type { EnforcementTargetPortsV2 } from './enforcement-targets-v2';
@@ -751,11 +751,22 @@ export class Engine {
   /** One alarm, routed by name to the journal or the settlement that owns it. */
   async handleAlarm(name: string): Promise<void> {
     // A name no alarm owns wakes nothing, sweep included.
-    if (parseAlarmNameV2(name) === null) return;
+    const alarm: AlarmNameV2 | null = parseAlarmNameV2(name);
+    if (alarm === null) return;
     await this.enqueuePolicyMutation(async (): Promise<void> => {
       await this.controller.handleAlarm(name);
       this.creditSettledFocus();
       if (this.dirty) await this.commit(this.ports.now());
+      // The minute alarm is the Engine's maintenance window as well as the controller's. It runs
+      // second, so a session boundary is never held behind a prune, and it cannot fail the tick:
+      // a settled session must not be lost because a retention prune was refused.
+      if (alarm === TICK_ALARM) {
+        try {
+          await this.runEngineMaintenance(this.ports.now());
+        } catch (error: unknown) {
+          this.ports.reportError(error);
+        }
+      }
       await this.sweepAfterPhaseChange();
     });
   }
@@ -1118,11 +1129,19 @@ export class Engine {
   }
 
   private async tickNow(): Promise<void> {
+    this.creditSettledFocus();
+    await this.runEngineMaintenance(this.ports.now());
+  }
+
+  /**
+   * Everything the minute owes the Engine rather than a session: the claims and tombstones a tab
+   * left behind, the attempt debounce, and the weekly retention prune. None of it touches the
+   * session, so a boundary never waits for it.
+   */
+  private async runEngineMaintenance(now: number): Promise<void> {
     await this.flushDeferredBlockClaims();
     await this.flushRemovedTabTombstones();
-    const now: number = this.ports.now();
     this.pruneDebounce(now);
-    this.creditSettledFocus();
     await this.commit(now);
     await this.maybePrune(now);
     if (this.dirty) await this.commit(now);
