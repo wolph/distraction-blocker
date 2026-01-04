@@ -424,3 +424,143 @@ describe('ActiveView', (): void => {
     ).toBe(false);
   });
 });
+
+/** The two spend controls, in render order: unlock first, then pause. */
+function spendControls(container: HTMLElement): {
+  unlock: HTMLButtonElement;
+  pause: HTMLButtonElement;
+} {
+  const buttons: HTMLButtonElement[] = Array.from(
+    container.querySelectorAll<HTMLButtonElement>('.spend-button'),
+  );
+  const unlock: HTMLButtonElement | undefined = buttons[0];
+  const pause: HTMLButtonElement | undefined = buttons[1];
+  if (unlock === undefined || pause === undefined) {
+    throw new Error('the spend controls were not rendered');
+  }
+  return { unlock, pause };
+}
+
+/** The sub-line under a spend control: its disabled reason, or the active host. */
+function spendSub(button: HTMLButtonElement): string | null {
+  return button.querySelector('.spend-sub')?.textContent ?? null;
+}
+
+function unaffordableSnap(endAuthority: EndAuthorityV2 = CLOSED_FRICTION): SessionSnapshotV2 {
+  return { ...focusSnap(endAuthority), bankMs: 0 };
+}
+
+/**
+ * `unlockDisabledReason` is `pending ?? activeSite ?? affordability` and `pauseDisabledReason`
+ * drops the middle link, so the pause control is what tells the two apart. The popup authors
+ * both affordability strings itself; the worker authors the same two for the blocked page and
+ * only the worker's copy was pinned.
+ */
+describe('ActiveView disabled reasons', (): void => {
+  it('reports active-site loading, ready, unsupported, and error states truthfully', async (): Promise<void> => {
+    tabsQueryMock.mockReturnValue(new Promise((): void => {}));
+    const loading = render(h(ActiveView, { snapshot: focusSnap(), now: NOW }));
+    const stillLoading: HTMLButtonElement = spendControls(loading.container).unlock;
+    expect(spendSub(stillLoading)).toBe('Checking the active site');
+    expect(stillLoading.disabled).toBe(true);
+    loading.unmount();
+
+    tabsQueryMock.mockResolvedValue([{ url: 'https://www.youtube.com/watch?v=1' }]);
+    const ready = render(h(ActiveView, { snapshot: focusSnap(), now: NOW }));
+    await waitFor((): void => {
+      expect(spendSub(spendControls(ready.container).unlock)).toBe('youtube.com');
+    });
+    expect(spendControls(ready.container).unlock.disabled).toBe(false);
+    ready.unmount();
+
+    tabsQueryMock.mockResolvedValue([{ url: 'chrome://extensions/' }]);
+    const unsupported = render(h(ActiveView, { snapshot: focusSnap(), now: NOW }));
+    await waitFor((): void => {
+      expect(spendSub(spendControls(unsupported.container).unlock)).toBe(
+        'Open a regular website to unlock it',
+      );
+    });
+    expect(spendControls(unsupported.container).unlock.disabled).toBe(true);
+    expect(spendControls(unsupported.container).pause.disabled).toBe(false);
+    unsupported.unmount();
+
+    tabsQueryMock.mockRejectedValue(new Error('tabs query failed'));
+    const failed = render(h(ActiveView, { snapshot: focusSnap(), now: NOW }));
+    await waitFor((): void => {
+      expect(spendSub(spendControls(failed.container).unlock)).toBe(
+        'Could not identify the active site',
+      );
+    });
+    expect(failed.getByRole('alert').textContent).toBe('Could not identify the active site.');
+  });
+
+  it('prioritizes the unsupported-tab reason over insufficient budget', async (): Promise<void> => {
+    tabsQueryMock.mockResolvedValue([{ url: 'chrome://extensions/' }]);
+    const { container } = render(h(ActiveView, { snapshot: unaffordableSnap(), now: NOW }));
+
+    await waitFor((): void => {
+      expect(spendSub(spendControls(container).unlock)).toBe('Open a regular website to unlock it');
+    });
+    expect(spendSub(spendControls(container).pause)).toBe('ready in 6:00');
+    expect(spendControls(container).unlock.disabled).toBe(true);
+    expect(spendControls(container).pause.disabled).toBe(true);
+  });
+
+  it('prioritizes pending action over unsupported tab and insufficient budget', async (): Promise<void> => {
+    sendMessageMock.mockImplementation(async (request: AnyRequest): Promise<unknown> => {
+      if (request.type === 'getStats') return statsBundle;
+      return new Promise((): void => {});
+    });
+    tabsQueryMock.mockResolvedValue([{ url: 'chrome://extensions/' }]);
+    const { container, getByRole } = render(
+      h(ActiveView, { snapshot: unaffordableSnap(IMMEDIATE), now: NOW }),
+    );
+    await waitFor((): void => {
+      expect(spendSub(spendControls(container).unlock)).toBe('Open a regular website to unlock it');
+    });
+
+    fireEvent.click(getByRole('button', { name: END_SESSION_LABEL }));
+
+    await waitFor((): void => {
+      expect(spendSub(spendControls(container).unlock)).toBe('Action in progress');
+    });
+    expect(spendSub(spendControls(container).pause)).toBe('Action in progress');
+  });
+
+  it('shows time until the next earned pause minute while a spend is unaffordable', async (): Promise<void> => {
+    const { container } = render(h(ActiveView, { snapshot: unaffordableSnap(), now: NOW }));
+
+    await waitFor((): void => {
+      expect(spendSub(spendControls(container).unlock)).toBe('ready in 6:00');
+    });
+    expect(spendSub(spendControls(container).pause)).toBe('ready in 6:00');
+    expect(container.textContent).not.toContain('ready in 30:00');
+    expect(spendControls(container).unlock.disabled).toBe(true);
+    expect(spendControls(container).pause.disabled).toBe(true);
+  });
+
+  it('never renders ready in zero for a positive sub-second wait', async (): Promise<void> => {
+    const snapshot: SessionSnapshotV2 = {
+      ...focusSnap(),
+      bankMs: 59_900,
+      bankAccrualPerMs: 1,
+    };
+    const { container } = render(h(ActiveView, { snapshot, now: NOW }));
+
+    await waitFor((): void => {
+      expect(spendSub(spendControls(container).unlock)).toBe('ready in 0:01');
+    });
+    expect(container.textContent).not.toContain('ready in 0:00');
+  });
+
+  it('does not promise an earned minute above the configured bank cap', async (): Promise<void> => {
+    const snapshot: SessionSnapshotV2 = { ...focusSnap(), bankMs: 0, bankCapMs: 0 };
+    const { container } = render(h(ActiveView, { snapshot, now: NOW }));
+
+    await waitFor((): void => {
+      expect(spendSub(spendControls(container).unlock)).toBe('earn pause time by focusing');
+    });
+    expect(spendSub(spendControls(container).pause)).toBe('earn pause time by focusing');
+    expect(container.textContent).not.toContain('ready in');
+  });
+});

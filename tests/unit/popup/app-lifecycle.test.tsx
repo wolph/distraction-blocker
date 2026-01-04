@@ -19,6 +19,8 @@ import {
   POPUP_CLOSURE_CLEANUP_COPY,
   POPUP_CLOSURE_ERROR_COPY,
   POPUP_STARTING_COPY,
+  POPUP_TRANSITION_CLEANUP_COPY,
+  POPUP_TRANSITION_ERROR_COPY,
   RETRY_CLEANUP_LABEL,
 } from '../../../src/shared/session-copy';
 import type { SessionLifecycleV2, SessionSnapshot, SetupState } from '../../../src/shared/types';
@@ -28,6 +30,8 @@ const NOW: number = 1_700_000_000_000;
 const OPERATION_ID: string = '20000000-0000-4000-8000-000000000001';
 /** A closure journal is named by the closed session's UUID plus the close suffix. */
 const CLOSURE_ID: string = '10000000-0000-4000-8000-000000000001:close';
+/** A transition journal is named by the id the runtime minted for the failed start. */
+const TRANSITION_ID: string = '30000000-0000-4000-8000-000000000001';
 const START_BUTTON: RegExp = /^Start 25 min/;
 const SETUP_HEADING: string = 'Finish setting up Focus Lock';
 const BLOCKING_OFF_HEADING: string = 'Website blocking is off';
@@ -247,6 +251,45 @@ describe('popup lifecycle body', (): void => {
       expect(getByText(POPUP_CLOSURE_CLEANUP_COPY)).toBeTruthy();
     });
     expect(queryByRole('heading', { name: BLOCKING_OFF_HEADING })).toBeNull();
+  });
+
+  it('renders the transition cleanup error over the website-blocking screen', async (): Promise<void> => {
+    installSetup(
+      lifecycleSnapshot({
+        kind: 'error',
+        code: 'transition-cleanup-failed',
+        retryAvailable: true,
+        endAuthority: { kind: 'hidden' },
+      }),
+      ACCESS_LOST_SETUP,
+    );
+    const { getByRole, getByText, queryByRole } = render(h(App, null));
+
+    await waitFor((): void => {
+      expect(getByText(POPUP_TRANSITION_ERROR_COPY)).toBeTruthy();
+    });
+    expect(getByRole('button', { name: RETRY_CLEANUP_LABEL })).toBeTruthy();
+    expect(queryByRole('heading', { name: BLOCKING_OFF_HEADING })).toBeNull();
+    expect(queryByRole('button', { name: START_BUTTON })).toBeNull();
+  });
+
+  it('renders transition cleanup over the website-blocking screen', async (): Promise<void> => {
+    installSetup(
+      lifecycleSnapshot({
+        kind: 'cleanup',
+        journal: 'transition',
+        id: TRANSITION_ID,
+        endAuthority: { kind: 'hidden' },
+      }),
+      ACCESS_LOST_SETUP,
+    );
+    const { getByText, queryByRole } = render(h(App, null));
+
+    await waitFor((): void => {
+      expect(getByText(POPUP_TRANSITION_CLEANUP_COPY)).toBeTruthy();
+    });
+    expect(queryByRole('heading', { name: BLOCKING_OFF_HEADING })).toBeNull();
+    expect(queryByRole('button', { name: START_BUTTON })).toBeNull();
   });
 
   it('renders the lifecycle view while starting', async (): Promise<void> => {
