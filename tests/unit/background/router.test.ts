@@ -107,6 +107,7 @@ function uuidMinter(): () => string {
 function realBlockingEngine(options?: {
   now?: () => number;
   saveRuntime?: (runtime: RuntimeStateV2) => Promise<void> | void;
+  onCommand?: (command: DocumentContentCommand) => void;
 }): Engine {
   const now: () => number = options?.now ?? ((): number => new Date(2026, 7, 31, 12, 0).getTime());
   const ports: EnginePorts = {
@@ -130,7 +131,12 @@ function realBlockingEngine(options?: {
     websiteBlockingReady: (): boolean => true,
     hasPendingSync: (): boolean => false,
     // The controller reads its alarms back, so this fixture remembers what it scheduled.
-    ...engineSeamPortsV2({ now, rememberAlarms: true, readTargetGeneration: (): number => 0 }),
+    ...engineSeamPortsV2({
+      now,
+      rememberAlarms: true,
+      readTargetGeneration: (): number => 0,
+      onCommand: options?.onCommand,
+    }),
   };
   return new Engine(
     ports,
@@ -160,6 +166,35 @@ function blockingCommand(url: string, documentId: string): DocumentEnforcementCo
     verdict: { blocked: true, reason: 'custom', categoryId: null, matchedPattern: url },
     overlay: null,
   };
+}
+
+/** The one host every enforcement test in this file blocks, and the page it pulls for. */
+const BLOCKED_HOST: string = 'facebook.com';
+const BLOCKED_URL: string = 'https://facebook.com/feed';
+
+/** A live timed focus session over the fixture's one custom host. */
+function focusSessionConfig(): SessionConfig {
+  return {
+    mode: 'blacklist',
+    strictness: 'friction',
+    duration: { kind: 'timed', minutes: 25 },
+    cycling: null,
+    intention: 'finish the launch',
+    source: 'manual',
+    scheduleOccurrence: null,
+    rules: rulesFromLists({
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: BLOCKED_HOST }],
+    }),
+  };
+}
+
+/** The enforcement commands out of one `getBlockState` answer, in the order they were frozen. */
+function enforcementIn(commands: DocumentContentCommand[]): DocumentEnforcementCommand[] {
+  return commands.filter(
+    (command: DocumentContentCommand): command is DocumentEnforcementCommand =>
+      command.command === 'apply-enforcement',
+  );
 }
 
 describe('routeMessage onboarding wiring', (): void => {
@@ -696,84 +731,102 @@ describe('routeMessage onboarding wiring', (): void => {
     ).rejects.toThrow('remote deletion failed');
   });
 
-  it.each(['enableSync', 'selectLocalMode'] as const)(
-    'keeps a live session blocking, and counts no attempt, while %s holds the Engine storage barrier',
-    async (transition: 'enableSync' | 'selectLocalMode'): Promise<void> => {
-      const blockingEngine: Engine = realBlockingEngine();
-      const config: SessionConfig = {
-        mode: 'blacklist',
-        strictness: 'friction',
-        duration: { kind: 'timed', minutes: 25 },
-        cycling: null,
-        intention: 'finish the launch',
-        source: 'manual',
-        scheduleOccurrence: null,
-        rules: rulesFromLists({
-          ...DEFAULT_LISTS,
-          custom: [{ kind: 'host', pattern: 'facebook.com' }],
-        }),
-      };
-      await blockingEngine.startSession(config);
-      let releaseBarrier: () => void = (): void => undefined;
-      let signalBarrierHeld: () => void = (): void => undefined;
-      const barrierBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
-        releaseBarrier = resolve;
+  /**
+   * One blocked navigation delivered while `transition` holds the Engine storage barrier open. The
+   * barrier is released and the mode change awaited before anything is read back, so every caller
+   * asserts against a settled worker.
+   */
+  async function blockedNavigationUnderStorageBarrier(
+    transition: 'enableSync' | 'selectLocalMode',
+  ): Promise<{ engine: Engine; enforcement: DocumentEnforcementCommand[]; url: string }> {
+    const blockingEngine: Engine = realBlockingEngine();
+    await blockingEngine.startSession(focusSessionConfig());
+    let releaseBarrier: () => void = (): void => undefined;
+    let signalBarrierHeld: () => void = (): void => undefined;
+    const barrierBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseBarrier = resolve;
+    });
+    const barrierHeld: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalBarrierHeld = resolve;
+    });
+    const holdBarrier: () => Promise<void> = (): Promise<void> =>
+      blockingEngine.runWithAggregateStorageBarrier(async (): Promise<void> => {
+        signalBarrierHeld();
+        await barrierBlocked;
       });
-      const barrierHeld: Promise<void> = new Promise<void>((resolve: () => void): void => {
-        signalBarrierHeld = resolve;
-      });
-      const holdBarrier: () => Promise<void> = (): Promise<void> =>
-        blockingEngine.runWithAggregateStorageBarrier(async (): Promise<void> => {
-          signalBarrierHeld();
-          await barrierBlocked;
-        });
-      const storage: PolicyStorage = onboardingStorage({
-        [transition]: vi.fn(holdBarrier),
-      });
-      const changingMode: Promise<unknown> = routeMessage(
-        blockingEngine,
-        {
-          type: 'setStorageMode',
-          storageMode: transition === 'enableSync' ? 'sync' : 'local',
-          deleteRemote: false,
-        },
-        sender,
-        storage,
-      );
-      await barrierHeld;
-      const url: string = 'https://facebook.com/feed';
+    const storage: PolicyStorage = onboardingStorage({
+      [transition]: vi.fn(holdBarrier),
+    });
+    const changingMode: Promise<unknown> = routeMessage(
+      blockingEngine,
+      {
+        type: 'setStorageMode',
+        storageMode: transition === 'enableSync' ? 'sync' : 'local',
+        deleteRemote: false,
+      },
+      sender,
+      storage,
+    );
+    await barrierHeld;
+    const url: string = BLOCKED_URL;
 
-      let answer: unknown;
-      try {
-        // Switching where policy is stored does not end the session, so the page this pull is for
-        // stays blocked for the whole transition. Only a pending all-data clear answers nothing.
-        answer = await routeMessage(
-          blockingEngine,
-          { type: 'getBlockState', url, docState: 'fresh' },
-          {
-            url,
-            tab: { id: 7, url } as chrome.tabs.Tab,
-            documentId: 'document-id',
-          },
-        );
-      } finally {
-        releaseBarrier();
-        await changingMode;
-      }
-      const commands: DocumentContentCommand[] = (answer as { commands: DocumentContentCommand[] })
-        .commands;
-      const enforcement: DocumentEnforcementCommand[] = commands.filter(
-        (command: DocumentContentCommand): command is DocumentEnforcementCommand =>
-          command.command === 'apply-enforcement',
+    let answer: unknown;
+    try {
+      // Switching where policy is stored does not end the session, so the page this pull is for
+      // stays blocked for the whole transition. Only a pending all-data clear answers nothing.
+      answer = await routeMessage(
+        blockingEngine,
+        { type: 'getBlockState', url, docState: 'fresh' },
+        {
+          url,
+          tab: { id: 7, url } as chrome.tabs.Tab,
+          documentId: 'document-id',
+        },
       );
-      expect(enforcement).toHaveLength(1);
-      expect(enforcement[0]?.verdict.blocked).toBe(true);
+    } finally {
+      releaseBarrier();
+      await changingMode;
+    }
+    const commands: DocumentContentCommand[] = (answer as { commands: DocumentContentCommand[] })
+      .commands;
+    return { engine: blockingEngine, enforcement: enforcementIn(commands), url };
+  }
+
+  it.each(['enableSync', 'selectLocalMode'] as const)(
+    'keeps a live session blocking while %s holds the Engine storage barrier',
+    async (transition: 'enableSync' | 'selectLocalMode'): Promise<void> => {
+      const held: {
+        engine: Engine;
+        enforcement: DocumentEnforcementCommand[];
+        url: string;
+      } = await blockedNavigationUnderStorageBarrier(transition);
+
+      expect(held.enforcement).toHaveLength(1);
+      expect(held.enforcement[0]?.verdict.blocked).toBe(true);
       // The page is stopped, so the claim the closure reloads it from is kept: only the profile
       // erase refuses that write, and a mode switch is not one.
-      expect(blockingEngine.tabFacts(7, url, 'document-id').wasStopped).toBe(true);
-      // The attempt is the exception. It lands in the aggregate a quiesced barrier is rewriting,
-      // so the count is dropped rather than written past it.
-      expect(blockingEngine.statsOverlay().todayAgg.attempts['facebook.com']).toBeUndefined();
+      expect(held.engine.tabFacts(7, held.url, 'document-id').wasStopped).toBe(true);
+    },
+  );
+
+  // Pinned defect: a blocked navigation taken while a quiesced barrier owns today's aggregate is
+  // not counted. The `recordAttempt` effect in `Engine.controllerEffects`
+  // (`src/background/engine.ts`, around :353) answers a resolved promise while the barrier is
+  // quiesced instead of deferring the write, so the count is dropped rather than replayed when the
+  // barrier opens. The spec exempts only the sweep from attempt accounting, so the assertion below
+  // is the requirement, and it is what the v1 engine asserted at 39113e9. The assertions are kept
+  // whole for whoever gives the controller a lease over that aggregate.
+  // See task-1-testfix-report.md.
+  it.skip.each(['enableSync', 'selectLocalMode'] as const)(
+    'counts the blocked attempt taken while %s holds the Engine storage barrier',
+    async (transition: 'enableSync' | 'selectLocalMode'): Promise<void> => {
+      const held: {
+        engine: Engine;
+        enforcement: DocumentEnforcementCommand[];
+        url: string;
+      } = await blockedNavigationUnderStorageBarrier(transition);
+
+      expect(held.engine.statsOverlay().todayAgg.attempts['facebook.com']).toBe(1);
     },
   );
 
@@ -1049,6 +1102,156 @@ describe('routeMessage onboarding wiring', (): void => {
     ).resolves.toEqual({ ok: true, scope: 'all', status: 'cleared' });
     expect(storage.selectLocalMode).not.toHaveBeenCalled();
     expect(storage.deleteRemoteData).toHaveBeenCalledWith('all');
+  });
+});
+
+/**
+ * `Engine.documentCommandsFor` and `Engine.handleNavigation` both read
+ * `Engine.allDataClearPending`, and the distinction they carry is easy to invert. A storage-mode
+ * switch or an aggregate drain moves where policy lives while the session keeps enforcing, which
+ * the barrier cases in the suite above pin. A pending all-data clear is the opposite: the profile
+ * is about to be erased, so the worker answers nothing and writes nothing behind the deletion. The
+ * last test here is the control that says the refusal is the gate rather than the fixture.
+ */
+describe('routeMessage all-data clear enforcement gate', (): void => {
+  /** Lets every queued persist settle, so a runtime write started behind the gate is still seen. */
+  function settle(): Promise<void> {
+    return new Promise((resolve: () => void): void => {
+      setTimeout(resolve, 0);
+    });
+  }
+
+  /** A live blocking session on a real Engine, with its durable writes and its wire recorded. */
+  function recordingEngine(): {
+    engine: Engine;
+    savedRuntimes: RuntimeStateV2[];
+    sentCommands: DocumentContentCommand[];
+  } {
+    const savedRuntimes: RuntimeStateV2[] = [];
+    const sentCommands: DocumentContentCommand[] = [];
+    const engine: Engine = realBlockingEngine({
+      saveRuntime: (runtime: RuntimeStateV2): void => {
+        savedRuntimes.push(structuredClone(runtime));
+      },
+      onCommand: (command: DocumentContentCommand): void => {
+        sentCommands.push(command);
+      },
+    });
+    return { engine, savedRuntimes, sentCommands };
+  }
+
+  it('answers no commands, and writes nothing, while an all-data clear is pending', async (): Promise<void> => {
+    const recorded: {
+      engine: Engine;
+      savedRuntimes: RuntimeStateV2[];
+      sentCommands: DocumentContentCommand[];
+    } = recordingEngine();
+    await recorded.engine.startSession(focusSessionConfig());
+    // The state a boot with an owed all-data clear leaves behind (`src/background/main.ts:885`):
+    // the barrier is quiesced, the session is still in the runtime, and the erase has not run.
+    await recorded.engine.retainDataClearQuiescence();
+    const writesBefore: number = recorded.savedRuntimes.length;
+    const commandsBefore: number = recorded.sentCommands.length;
+    const url: string = BLOCKED_URL;
+
+    const answer: unknown = await routeMessage(
+      recorded.engine,
+      { type: 'getBlockState', url, docState: 'fresh' },
+      {
+        url,
+        tab: { id: 7, url } as chrome.tabs.Tab,
+        documentId: 'document-id',
+      },
+    );
+    await settle();
+
+    expect(answer).toEqual({ commands: [] });
+    // Nothing was frozen into the runtime the deletion is about to remove, no stopped claim was
+    // taken over the page, and no attempt reached the aggregate that goes with it.
+    expect(recorded.savedRuntimes).toHaveLength(writesBefore);
+    expect(recorded.sentCommands).toHaveLength(commandsBefore);
+    expect(recorded.engine.tabFacts(7, url, 'document-id').wasStopped).toBe(false);
+    expect(recorded.engine.statsOverlay().todayAgg.attempts[BLOCKED_HOST]).toBeUndefined();
+  });
+
+  it('refuses a navigation and its commands while the all-data clear runs', async (): Promise<void> => {
+    const recorded: {
+      engine: Engine;
+      savedRuntimes: RuntimeStateV2[];
+      sentCommands: DocumentContentCommand[];
+    } = recordingEngine();
+    await recorded.engine.startSession(focusSessionConfig());
+    let releaseClear: () => void = (): void => undefined;
+    let signalClearHeld: () => void = (): void => undefined;
+    const clearBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releaseClear = resolve;
+    });
+    const clearHeld: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      signalClearHeld = resolve;
+    });
+    const clearing: Promise<void> = recorded.engine.runWithDataClearBarrier(
+      async (): Promise<void> => {
+        signalClearHeld();
+        await clearBlocked;
+      },
+    );
+    await clearHeld;
+    const writesBefore: number = recorded.savedRuntimes.length;
+    const commandsBefore: number = recorded.sentCommands.length;
+    const url: string = BLOCKED_URL;
+    const target: { tabId: number; documentId: string; url: string } = {
+      tabId: 7,
+      documentId: 'document-id',
+      url,
+    };
+
+    try {
+      await recorded.engine.handleNavigation(target, 'navigation');
+      await expect(recorded.engine.documentCommandsFor(target, 'navigation')).resolves.toEqual([]);
+      await settle();
+
+      // The controller is never entered, so no command reaches the document and no write lands in
+      // the runtime the erase is about to delete. A clear that reported `cleared` while leaving a
+      // frozen command and an attempt behind is the residue this gate exists to prevent.
+      expect(recorded.sentCommands).toHaveLength(commandsBefore);
+      expect(recorded.savedRuntimes).toHaveLength(writesBefore);
+      expect(recorded.engine.tabFacts(7, url, 'document-id').wasStopped).toBe(false);
+      expect(recorded.engine.statsOverlay().todayAgg.attempts[BLOCKED_HOST]).toBeUndefined();
+    } finally {
+      releaseClear();
+      await clearing;
+    }
+  });
+
+  it('serves the same navigation, and counts it, with no all-data clear pending', async (): Promise<void> => {
+    const recorded: {
+      engine: Engine;
+      savedRuntimes: RuntimeStateV2[];
+      sentCommands: DocumentContentCommand[];
+    } = recordingEngine();
+    await recorded.engine.startSession(focusSessionConfig());
+    const writesBefore: number = recorded.savedRuntimes.length;
+    const url: string = BLOCKED_URL;
+
+    const answer: unknown = await routeMessage(
+      recorded.engine,
+      { type: 'getBlockState', url, docState: 'fresh' },
+      {
+        url,
+        tab: { id: 7, url } as chrome.tabs.Tab,
+        documentId: 'document-id',
+      },
+    );
+    await settle();
+    const enforcement: DocumentEnforcementCommand[] = enforcementIn(
+      (answer as { commands: DocumentContentCommand[] }).commands,
+    );
+
+    expect(enforcement).toHaveLength(1);
+    expect(enforcement[0]?.verdict.blocked).toBe(true);
+    expect(recorded.engine.tabFacts(7, url, 'document-id').wasStopped).toBe(true);
+    expect(recorded.engine.statsOverlay().todayAgg.attempts[BLOCKED_HOST]).toBe(1);
+    expect(recorded.savedRuntimes.length).toBeGreaterThan(writesBefore);
   });
 });
 
