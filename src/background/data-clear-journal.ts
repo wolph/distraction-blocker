@@ -316,6 +316,24 @@ export function projectAllDataClearPublicState(
 }
 
 /**
+ * The empty reset progress a journal carries when it enters browser reset, before the resolver has
+ * started an attempt. Every producer builds it here so the nine-field shape has one definition.
+ */
+export function emptyDataClearResetProgress(): DataClearResetProgress {
+  return {
+    attemptStartedAt: null,
+    resolverPassCount: 0,
+    targetGeneration: null,
+    stablePasses: 0,
+    targets: {},
+    commands: {},
+    acknowledgements: {},
+    exclusions: [],
+    deferredUnreachable: [],
+  };
+}
+
+/**
  * The one builder for the clean install-marker projection, so the exact literal the browser-reset
  * journal validates is never spelled a second time in a writer or in a test.
  */

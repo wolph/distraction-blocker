@@ -37,13 +37,41 @@ import {
 import type {
   BankState,
   DailyAgg,
+  InstallMarker,
   ListsConfig,
   Settings,
   SetupState,
   StorageMode,
   StreakState,
 } from '../shared/types';
+import {
+  beginManualCleanupBatchV2,
+  freshCleanupRetryStateV2,
+  recordCleanupAttemptFailureV2,
+} from './cleanup-progress-v2';
+import {
+  type AllDataClearJournalV2,
+  type AllDataClearPublicState,
+  cleanInstallMarkerProjection,
+  createAllDataClearJournalV2,
+  type DataClearJournal,
+  type DataClearResetIdsV2,
+  emptyDataClearResetProgress,
+  isLegacyAllDataClearJournal,
+  type LegacyAllDataClearJournal,
+  type LocalHistoryClearJournal,
+  parseDataClearJournal,
+  projectAllDataClearPublicState,
+  type SyncedPolicyClearJournal,
+  upgradeLegacyAllDataClearJournal,
+} from './data-clear-journal';
+import {
+  type AllDataClearLease,
+  type DataClearLeaseToken,
+  transactDataClearJournal,
+} from './data-clear-lease';
 import { encodeListsForSync, LIST_SYNC_KEYS, type ListsSyncEncoding } from './list-sync-codec';
+import { emptyRuntimeV2 } from './runtime-store-v2';
 import type { RuntimeStateV2 } from './runtime-v2-types';
 import { parseRuntimeStateV2 } from './runtime-v2-validation';
 import {
@@ -141,6 +169,13 @@ export interface PolicyStorage {
   finishLocalHistoryClear(): Promise<void>;
   pendingLocalHistoryClear(): Promise<{ clearAggregates: boolean } | null>;
   allDataClearCompleted(): boolean;
+  /** Runs the phase the all-data journal is in and reports which one it was. */
+  runAllDataClearPhase(
+    token: DataClearLeaseToken,
+  ): Promise<'remote' | 'local' | 'browser-reset' | 'none'>;
+  materializeBrowserResetProjections(token: DataClearLeaseToken): Promise<void>;
+  retryAllDataClear(token: DataClearLeaseToken): Promise<'ok' | 'retry-not-available'>;
+  allDataClearPublicState(): Promise<AllDataClearPublicState>;
   storageMode(): Promise<StorageMode | null>;
   inboundSyncAllowed(): Promise<boolean>;
   consumeRemoteEcho(key: string, value: unknown): boolean;
@@ -166,21 +201,22 @@ interface PreviousValues {
   missing: string[];
 }
 
-type DataClearJournal =
-  | {
-      scope: 'synced-policy' | 'all';
-      phase: 'remote' | 'local';
-      inventory: string[];
-    }
-  | {
-      scope: 'local-history';
-      phase: 'local' | 'runtime';
-      inventory: string[];
-      clearAggregates: boolean;
-      priorStorageError: SetupState['storageError'];
-    };
+/**
+ * The two journals this module still owns end to end. The all-data journal is the version 2 value
+ * `data-clear-journal` defines, and every change to it runs through the shared deletion lease.
+ */
+type ScopedClearJournal = SyncedPolicyClearJournal | LocalHistoryClearJournal;
 
-type LocalHistoryClearJournal = Extract<DataClearJournal, { scope: 'local-history' }>;
+type StoredClearJournal = DataClearJournal | LegacyAllDataClearJournal;
+
+/** The seam Main binds so this module can transact the all-data journal under the shared lease. */
+export interface PolicyStorageDataClearPorts {
+  lease: AllDataClearLease;
+  newId(): string;
+  now(): number;
+  /** `chrome.runtime.getManifest?.().version ?? 'unknown'` at the moment the journal advances. */
+  manifestVersion(): string;
+}
 
 interface PolicyGenerationRecord {
   id: string;
@@ -224,6 +260,9 @@ const FOCUS_LOCK_LOCAL_EXACT_KEYS: readonly string[] = [
   LOCAL_BANK,
   LOCAL_STREAK,
 ];
+
+/** The phases Policy Storage runs before Engine takes browser reset: remote, then local. */
+const ALL_DATA_PHASES_THIS_SIDE_OWNS: readonly string[] = ['remote', 'local'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -570,65 +609,21 @@ function publicationDeltaFromRemote(
   };
 }
 
-function isSetupStorageError(value: unknown): value is SetupState['storageError'] {
-  return (
-    value === null ||
-    value === 'legacy-migration-failed' ||
-    value === 'sync-publish-failed' ||
-    value === 'remote-deletion-failed' ||
-    value === 'local-clear-failed'
-  );
-}
-
-function parseDataClearJournal(value: unknown): DataClearJournal | null {
-  if (value === undefined) return null;
-  const hasPriorStorageError: boolean =
-    isRecord(value) && Object.hasOwn(value, 'priorStorageError');
-  const localHistoryKeysValid: boolean =
-    isRecord(value) &&
-    (hasExactKeys(value, ['scope', 'phase', 'inventory', 'clearAggregates']) ||
-      hasExactKeys(value, ['scope', 'phase', 'inventory', 'clearAggregates', 'priorStorageError']));
-  if (
-    isRecord(value) &&
-    localHistoryKeysValid &&
-    value.scope === 'local-history' &&
-    (value.phase === 'local' || value.phase === 'runtime') &&
-    Array.isArray(value.inventory) &&
-    value.inventory.every((key: unknown): key is string => typeof key === 'string') &&
-    typeof value.clearAggregates === 'boolean' &&
-    (!hasPriorStorageError || isSetupStorageError(value.priorStorageError))
-  ) {
-    return {
-      scope: value.scope,
-      phase: value.phase,
-      inventory: [...new Set(value.inventory)],
-      clearAggregates: value.clearAggregates,
-      priorStorageError: isSetupStorageError(value.priorStorageError)
-        ? value.priorStorageError
-        : null,
-    };
-  }
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, ['scope', 'phase', 'inventory']) ||
-    (value.scope !== 'synced-policy' && value.scope !== 'all') ||
-    (value.phase !== 'remote' && value.phase !== 'local') ||
-    !Array.isArray(value.inventory) ||
-    !value.inventory.every((key: unknown): key is string => typeof key === 'string')
-  ) {
-    throw new Error('invalid data clear journal');
-  }
-  return { scope: value.scope, phase: value.phase, inventory: [...new Set(value.inventory)] };
-}
-
 function setupDataClearState(
-  journal: DataClearJournal,
+  journal: ScopedClearJournal,
   status: 'pending' | 'error',
 ): SetupState['dataClear'] {
-  if (journal.scope === 'local-history') {
-    return { status, scope: journal.scope, phase: journal.phase };
-  }
-  return { status, scope: journal.scope, phase: journal.phase };
+  return journal.scope === 'local-history'
+    ? { status, scope: 'local-history', phase: journal.phase }
+    : { status, scope: 'synced-policy', phase: journal.phase };
+}
+
+/** The Setup projection of an all-data phase, which mirrors the journal the lease holder wrote. */
+function allDataSetupState(
+  phase: AllDataClearJournalV2['phase'],
+  status: 'pending' | 'error',
+): SetupState['dataClear'] {
+  return { status, scope: 'all', phase };
 }
 
 function parsePolicyCommit(value: unknown): PolicyCommit | null {
@@ -650,11 +645,16 @@ function policyRevision(snapshot: PolicySnapshot): string {
   return `policy-v1:${serialized(snapshot)}`;
 }
 
+/**
+ * `dataClearPorts` is optional only until Main binds it in the wiring slice. Every all-data entry
+ * point refuses to run without it, so no phase can write the journal outside the shared lease.
+ */
 export function createPolicyStorage(
   local: chrome.storage.StorageArea,
   sync: chrome.storage.SyncStorageArea,
   firstSyncCheckpoint: FirstSyncCheckpointSource,
   allDataClearBarrier: AllDataClearBarrier,
+  dataClearPorts?: PolicyStorageDataClearPorts,
 ): PolicyStorage {
   let initialized: boolean = false;
   let mode: StorageMode | null = null;
@@ -665,7 +665,7 @@ export function createPolicyStorage(
   let setupCache: SetupState | null = null;
   let allDataClearBarrierHeld = false;
   let allDataClearQuiescenceRequired = false;
-  let completedAllDataClear = false;
+  const completedAllDataClear = false;
   const echoes: SyncEchoes = new SyncEchoes();
 
   function enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -829,7 +829,7 @@ export function createPolicyStorage(
   }
 
   async function persistDataClearJournal(
-    journal: DataClearJournal,
+    journal: ScopedClearJournal,
     status: 'pending' | 'error',
     storageError: SetupState['storageError'],
   ): Promise<void> {
@@ -1100,9 +1100,18 @@ export function createPolicyStorage(
     }
   }
 
-  async function loadDataClearJournal(): Promise<DataClearJournal | null> {
+  /**
+   * The shared parser returns null for both an absent and an unusable value, and a stored value no
+   * parser accepts is a durable fault rather than an empty journal, so absence is checked first.
+   */
+  async function loadDataClearJournal(): Promise<StoredClearJournal | null> {
     const stored: Record<string, unknown> = await local.get(LOCAL_DATA_CLEAR_JOURNAL);
-    return parseDataClearJournal(stored[LOCAL_DATA_CLEAR_JOURNAL]);
+    if (!Object.hasOwn(stored, LOCAL_DATA_CLEAR_JOURNAL)) return null;
+    const journal: StoredClearJournal | null = parseDataClearJournal(
+      stored[LOCAL_DATA_CLEAR_JOURNAL],
+    );
+    if (journal === null) throw new Error('invalid data clear journal');
+    return journal;
   }
 
   async function recoverLocalAggregatePrune(): Promise<void> {
@@ -1153,18 +1162,23 @@ export function createPolicyStorage(
     let setup: SetupState = await loadSetupInternal();
     mode = setup.storageMode;
     firstSyncPublication = await loadFirstSyncPublication();
-    const dataClearJournal: DataClearJournal | null = await loadDataClearJournal();
+    const dataClearJournal: StoredClearJournal | null = await loadDataClearJournal();
     if (dataClearJournal !== null) {
       if (dataClearJournal.scope === 'all') {
         if (!allDataClearBarrierHeld) {
           throw new Error('all-data clear recovery requires the runtime mutation barrier');
         }
+        // Every all-data phase now runs under the shared deletion lease, which boot does not hold.
+        // Initialization only quiesces the worker and leaves the journal to its dispatcher.
         allDataClearQuiescenceRequired = true;
+        initialized = true;
+        return;
       }
       try {
         await resumeDataClear(dataClearJournal);
       } catch (_error: unknown) {
-        const currentJournal: DataClearJournal = (await loadDataClearJournal()) ?? dataClearJournal;
+        const currentJournal: ScopedClearJournal =
+          scopedClearJournal(await loadDataClearJournal()) ?? dataClearJournal;
         const failedSetup: SetupState = await loadSetupInternal();
         const failedDataClear: SetupState['dataClear'] = setupDataClearState(
           currentJournal,
@@ -1915,16 +1929,17 @@ export function createPolicyStorage(
     });
   }
 
-  async function clearRemotePhase(journal: DataClearJournal): Promise<DataClearJournal> {
+  /** The Sync keys a remote deletion owns: the journal inventory plus every pending publication. */
+  async function remoteDeletionKeys(inventory: readonly string[]): Promise<string[]> {
     const publication: SyncJournal = await loadedJournal(LOCAL_SYNC_JOURNAL, false);
     const checkpointPublication: SyncJournal = firstSyncPublication?.publication ?? {
       sets: {},
       removes: [],
     };
-    const initialKeys: string[] = [
+    return [
       ...new Set(
         [
-          ...journal.inventory,
+          ...inventory,
           ...Object.keys(publication.sets),
           ...publication.removes,
           ...Object.keys(checkpointPublication.sets),
@@ -1932,31 +1947,44 @@ export function createPolicyStorage(
         ].filter(isFocusLockDeletionKey),
       ),
     ].sort();
-    journal = { ...journal, inventory: initialKeys };
-    await persistDataClearJournal(journal, 'pending', null);
-    if (publisher !== null) {
-      await publisher.pause();
-      await publisher.drain();
-      await publisher.transformPending(
-        (): Promise<void> => Promise.resolve(),
-        (): SyncJournal => ({ sets: {}, removes: [] }),
-      );
-    } else {
+  }
+
+  async function drainRemotePublication(): Promise<void> {
+    if (publisher === null) {
       await persistPublicationJournal({ sets: {}, removes: [] });
+      return;
     }
+    await publisher.pause();
+    await publisher.drain();
+    await publisher.transformPending(
+      (): Promise<void> => Promise.resolve(),
+      (): SyncJournal => ({ sets: {}, removes: [] }),
+    );
+  }
+
+  /** Verified Sync deletion. It returns only after a pass proves every owned key is gone. */
+  async function removeRemoteInventory(
+    initialKeys: string[],
+    persistInventory: (inventory: string[]) => Promise<void>,
+  ): Promise<void> {
     await removeSyncItemsUntilClear(
-      {
-        initialKeys,
-        matches: isFocusLockDeletionKey,
-        persistInventory: async (inventory: string[]): Promise<void> => {
-          const pending: DataClearJournal = { ...journal, inventory };
-          await persistDataClearJournal(pending, 'pending', null);
-        },
-      },
+      { initialKeys, matches: isFocusLockDeletionKey, persistInventory },
       sync,
       local,
     );
     if (firstSyncPublication !== null) await removeFirstSyncPublication();
+  }
+
+  async function clearRemotePhase(
+    journal: SyncedPolicyClearJournal,
+  ): Promise<SyncedPolicyClearJournal> {
+    const initialKeys: string[] = await remoteDeletionKeys(journal.inventory);
+    const pending: SyncedPolicyClearJournal = { ...journal, inventory: initialKeys };
+    await persistDataClearJournal(pending, 'pending', null);
+    await drainRemotePublication();
+    await removeRemoteInventory(initialKeys, async (inventory: string[]): Promise<void> => {
+      await persistDataClearJournal({ ...pending, inventory }, 'pending', null);
+    });
     return { ...journal, inventory: [] };
   }
 
@@ -1970,7 +1998,8 @@ export function createPolicyStorage(
     );
   }
 
-  async function finishDataClear(journal: DataClearJournal): Promise<void> {
+  /** Only the synced-policy and local-history journals finish here. All-data removal is Engine's. */
+  async function finishDataClear(journal: ScopedClearJournal): Promise<void> {
     const setup: SetupState = await loadSetupInternal();
     await saveSetupInternal({
       ...setup,
@@ -2002,45 +2031,16 @@ export function createPolicyStorage(
       }
       throw error;
     }
-    if (journal.scope === 'all') {
-      allDataClearQuiescenceRequired = true;
-      completedAllDataClear = true;
-    }
   }
 
-  async function clearLocalPhase(journal: DataClearJournal): Promise<void> {
-    let previousRemainingSignature: string | null = null;
-    while (true) {
-      const allLocal: Record<string, unknown> = await local.get(null);
-      const keys: string[] = Object.keys(allLocal).filter(
+  /** The Focus Lock local keys an all-data clear owns. The journal itself is never one of them. */
+  function focusLockLocalKeys(stored: Record<string, unknown>): string[] {
+    return Object.keys(stored)
+      .filter(
         (key: string): boolean =>
           key !== LOCAL_SETUP && key !== LOCAL_DATA_CLEAR_JOURNAL && isFocusLockLocalKey(key),
-      );
-      if (keys.length === 0) break;
-      await local.remove(keys);
-      const remaining: Record<string, unknown> = await local.get(null);
-      const remainingFocusLockKeys: string[] = Object.keys(remaining).filter(
-        (key: string): boolean =>
-          key !== LOCAL_SETUP && key !== LOCAL_DATA_CLEAR_JOURNAL && isFocusLockLocalKey(key),
-      );
-      if (remainingFocusLockKeys.length === 0) break;
-      const remainingValues: Record<string, unknown> = Object.fromEntries(
-        remainingFocusLockKeys.map((key: string): [string, unknown] => [key, remaining[key]]),
-      );
-      const signature: string = serialized(remainingValues);
-      if (signature === previousRemainingSignature) {
-        throw new Error('could not verify local data clear');
-      }
-      previousRemainingSignature = signature;
-    }
-    firstSyncPublication = null;
-    const incomplete: SetupState = {
-      ...DEFAULT_SETUP,
-      dataClear: { status: 'pending', scope: 'all', phase: 'local' },
-    };
-    await verifiedWrite({ [LOCAL_SETUP]: incomplete }, 'incomplete setup after local clear');
-    mode = null;
-    await finishDataClear(journal);
+      )
+      .sort();
   }
 
   /**
@@ -2200,26 +2200,18 @@ export function createPolicyStorage(
     return runtimePending;
   }
 
-  async function resumeDataClear(journal: DataClearJournal): Promise<void> {
-    if (journal.scope === 'all') await assertStoppedRuntimeForAllDataClear();
+  async function resumeDataClear(journal: ScopedClearJournal): Promise<void> {
     try {
       if (journal.scope === 'local-history') {
         await clearLocalHistoryStoragePhase(journal);
         return;
       }
-      let current: DataClearJournal = journal;
-      if (current.phase === 'remote') {
-        current = await clearRemotePhase(current);
-        if (current.scope === 'synced-policy') {
-          await finishDataClear(current);
-          return;
-        }
-        current = { ...current, phase: 'local' };
-        await persistDataClearJournal(current, 'pending', null);
-      }
-      await clearLocalPhase(current);
+      const cleared: SyncedPolicyClearJournal =
+        journal.phase === 'remote' ? await clearRemotePhase(journal) : journal;
+      await finishDataClear(cleared);
     } catch (error: unknown) {
-      const current: DataClearJournal = (await loadDataClearJournal()) ?? journal;
+      const current: ScopedClearJournal =
+        scopedClearJournal(await loadDataClearJournal()) ?? journal;
       const storageError: SetupState['storageError'] =
         current.phase === 'remote' ? 'remote-deletion-failed' : 'local-clear-failed';
       await persistDataClearJournal(current, 'error', storageError);
@@ -2227,26 +2219,376 @@ export function createPolicyStorage(
     }
   }
 
-  async function deleteRemoteDataInternal(scope: 'synced-policy' | 'all'): Promise<void> {
+  function scopedClearJournal(journal: StoredClearJournal | null): ScopedClearJournal | null {
+    return journal === null || journal.scope === 'all' ? null : journal;
+  }
+
+  async function deleteRemoteDataInternal(scope: 'synced-policy'): Promise<void> {
     await ensureInitialized();
-    if (scope !== 'synced-policy' && scope !== 'all') throw new Error('invalid data clear scope');
     if (mode === 'sync') throw new Error('disable sync before deleting remote data');
-    const existing: DataClearJournal | null = await loadDataClearJournal();
+    const existing: StoredClearJournal | null = await loadDataClearJournal();
     if (existing !== null && existing.scope !== scope) {
       throw new Error('another data clear operation is pending');
     }
-    const journal: DataClearJournal =
-      existing ?? ({ scope, phase: 'remote', inventory: [] } satisfies DataClearJournal);
-    if (scope === 'all' && existing !== null) allDataClearQuiescenceRequired = true;
-    if (scope === 'all') await assertStoppedRuntimeForAllDataClear();
+    const journal: SyncedPolicyClearJournal = scopedSyncedPolicyJournal(existing, scope);
     await persistDataClearJournal(journal, 'pending', null);
-    if (scope === 'all') allDataClearQuiescenceRequired = true;
     await resumeDataClear(journal);
+  }
+
+  function scopedSyncedPolicyJournal(
+    existing: StoredClearJournal | null,
+    scope: 'synced-policy',
+  ): SyncedPolicyClearJournal {
+    if (existing === null) return { scope, phase: 'remote', inventory: [] };
+    if (existing.scope !== scope) throw new Error('another data clear operation is pending');
+    return existing;
+  }
+
+  // The all-data clear, version 2. Policy Storage owns the remote and local phases and the write
+  // that advances the journal into browser reset. It never executes reset effects, never finishes
+  // the journal, and never removes it: Engine owns browser reset and Main owns the dispatcher.
+
+  function requiredDataClearPorts(): PolicyStorageDataClearPorts {
+    if (dataClearPorts === undefined) {
+      throw new Error('the all-data clear needs its deletion-lease ports');
+    }
+    return dataClearPorts;
+  }
+
+  function freshResetIds(ports: PolicyStorageDataClearPorts): DataClearResetIdsV2 {
+    return { resetEpoch: ports.newId(), resetOperationId: ports.newId() };
+  }
+
+  function assertAllDataJournal(journal: StoredClearJournal | null): AllDataClearJournalV2 {
+    if (journal === null || journal.scope !== 'all' || isLegacyAllDataClearJournal(journal)) {
+      throw new Error('the all-data clear journal is missing');
+    }
+    return journal;
+  }
+
+  /**
+   * The one upgrade site. Every owner that reads the journal under the lease turns a legacy value
+   * into version 2 before it writes anything else, so no phase ever transforms a legacy shape.
+   */
+  function upgradedAllDataJournal(
+    stored: StoredClearJournal,
+    ports: PolicyStorageDataClearPorts,
+  ): AllDataClearJournalV2 | 'unchanged' {
+    if (stored.scope !== 'all') throw new Error('another data clear operation is pending');
+    if (!isLegacyAllDataClearJournal(stored)) return 'unchanged';
+    return upgradeLegacyAllDataClearJournal(stored, freshResetIds(ports), ports.now());
+  }
+
+  /**
+   * One change, one transaction, under the caller's token. The lease refuses a second transaction
+   * while this one is in flight, so a phase that needs two changes makes them in one transform.
+   */
+  async function updateAllDataJournal(
+    token: DataClearLeaseToken,
+    transform: (journal: AllDataClearJournalV2) => AllDataClearJournalV2 | 'unchanged',
+  ): Promise<AllDataClearJournalV2> {
+    const ports: PolicyStorageDataClearPorts = requiredDataClearPorts();
+    const written: DataClearJournal | null = await transactDataClearJournal(
+      ports.lease,
+      token,
+      (stored: StoredClearJournal | null): DataClearJournal | 'unchanged' => {
+        if (stored === null) throw new Error('the all-data clear journal is missing');
+        const upgraded: AllDataClearJournalV2 | 'unchanged' = upgradedAllDataJournal(stored, ports);
+        return transform(upgraded === 'unchanged' ? assertAllDataJournal(stored) : upgraded);
+      },
+    );
+    return assertAllDataJournal(written);
+  }
+
+  /** Reads the journal under the token, upgrading a legacy value in place before anything else. */
+  async function readAllDataJournal(
+    token: DataClearLeaseToken,
+  ): Promise<AllDataClearJournalV2 | null> {
+    const ports: PolicyStorageDataClearPorts = requiredDataClearPorts();
+    const current: DataClearJournal | null = await transactDataClearJournal(
+      ports.lease,
+      token,
+      (stored: StoredClearJournal | null): DataClearJournal | 'unchanged' =>
+        stored === null ? 'unchanged' : upgradedAllDataJournal(stored, ports),
+    );
+    return current === null ? null : assertAllDataJournal(current);
+  }
+
+  /** Creates the journal when none exists, and upgrades a legacy value, in one transaction. */
+  async function openAllDataJournal(token: DataClearLeaseToken): Promise<AllDataClearJournalV2> {
+    const ports: PolicyStorageDataClearPorts = requiredDataClearPorts();
+    const opened: DataClearJournal | null = await transactDataClearJournal(
+      ports.lease,
+      token,
+      (stored: StoredClearJournal | null): DataClearJournal | 'unchanged' =>
+        stored === null
+          ? createAllDataClearJournalV2(freshResetIds(ports), ports.now())
+          : upgradedAllDataJournal(stored, ports),
+    );
+    return assertAllDataJournal(opened);
+  }
+
+  /** The materialized Setup mirrors the journal phase. The journal stays the authority. */
+  async function publishAllDataSetupPhase(
+    phase: AllDataClearJournalV2['phase'],
+    status: 'pending' | 'error',
+  ): Promise<void> {
+    const setup: SetupState = await loadSetupInternal();
+    const dataClear: SetupState['dataClear'] = allDataSetupState(phase, status);
+    if (valuesEqual(setup.dataClear, dataClear)) return;
+    await saveSetupInternal({ ...setup, dataClear });
+  }
+
+  function allDataAttemptStatus(journal: AllDataClearJournalV2): 'pending' | 'error' {
+    return journal.retry.lastError !== null && journal.retry.nextAttemptAt === null
+      ? 'error'
+      : 'pending';
+  }
+
+  function failureMessage(error: unknown): string {
+    const message: string = error instanceof Error ? error.message : String(error);
+    return message.trim() === '' ? 'all-data clear attempt failed' : message;
+  }
+
+  /**
+   * A failed attempt is durable state, so it is recorded in the journal rather than in Setup. The
+   * write is best effort: it uses the storage that just failed, and the caller must still see the
+   * original failure rather than a second one raised while reporting the first.
+   */
+  async function recordAllDataAttemptFailure(
+    token: DataClearLeaseToken,
+    error: unknown,
+  ): Promise<void> {
+    const ports: PolicyStorageDataClearPorts = requiredDataClearPorts();
+    const message: string = failureMessage(error);
+    try {
+      const journal: AllDataClearJournalV2 = await updateAllDataJournal(
+        token,
+        (current: AllDataClearJournalV2): AllDataClearJournalV2 | 'unchanged' =>
+          current.retry.lastError !== null && current.retry.nextAttemptAt === null
+            ? 'unchanged'
+            : {
+                ...current,
+                retry: recordCleanupAttemptFailureV2(current.retry, ports.now(), message),
+              },
+      );
+      await publishAllDataSetupPhase(journal.phase, allDataAttemptStatus(journal));
+    } catch {
+      return;
+    }
+  }
+
+  async function runAllDataRemotePhase(
+    token: DataClearLeaseToken,
+    journal: AllDataClearJournalV2,
+  ): Promise<void> {
+    const ports: PolicyStorageDataClearPorts = requiredDataClearPorts();
+    const initialKeys: string[] = await remoteDeletionKeys(journal.inventory);
+    await updateAllDataJournal(
+      token,
+      (current: AllDataClearJournalV2): AllDataClearJournalV2 => ({
+        ...current,
+        inventory: initialKeys,
+      }),
+    );
+    await drainRemotePublication();
+    await removeRemoteInventory(initialKeys, async (inventory: string[]): Promise<void> => {
+      await updateAllDataJournal(
+        token,
+        (current: AllDataClearJournalV2): AllDataClearJournalV2 => ({ ...current, inventory }),
+      );
+    });
+    await updateAllDataJournal(
+      token,
+      (current: AllDataClearJournalV2): AllDataClearJournalV2 => ({
+        ...current,
+        phase: 'local',
+        inventory: [],
+        retry: freshCleanupRetryStateV2(current.retry.batch, ports.now()),
+      }),
+    );
+    await publishAllDataSetupPhase('local', 'pending');
+  }
+
+  async function runAllDataLocalPhase(token: DataClearLeaseToken): Promise<void> {
+    let previousRemainingSignature: string | null = null;
+    for (;;) {
+      const keys: string[] = focusLockLocalKeys(await local.get(null));
+      if (keys.length === 0) break;
+      await updateAllDataJournal(
+        token,
+        (current: AllDataClearJournalV2): AllDataClearJournalV2 => ({
+          ...current,
+          inventory: keys,
+        }),
+      );
+      await local.remove(keys);
+      const remaining: Record<string, unknown> = await local.get(null);
+      const remainingKeys: string[] = focusLockLocalKeys(remaining);
+      if (remainingKeys.length === 0) break;
+      const signature: string = serialized(
+        Object.fromEntries(
+          remainingKeys.map((key: string): [string, unknown] => [key, remaining[key]]),
+        ),
+      );
+      if (signature === previousRemainingSignature) {
+        throw new Error('could not verify local data clear');
+      }
+      previousRemainingSignature = signature;
+    }
+    firstSyncPublication = null;
+    await advanceToBrowserReset(token);
+    await verifiedWrite(
+      {
+        [LOCAL_SETUP]: {
+          ...DEFAULT_SETUP,
+          dataClear: allDataSetupState('browser-reset', 'pending'),
+        },
+      },
+      'incomplete setup after local clear',
+    );
+    mode = null;
+  }
+
+  /**
+   * The single write that makes browser reset durable. It carries the complete projections the
+   * repair path replays from, so no Runtime, Setup, or marker value is materialized before it.
+   */
+  async function advanceToBrowserReset(token: DataClearLeaseToken): Promise<void> {
+    const ports: PolicyStorageDataClearPorts = requiredDataClearPorts();
+    const extensionVersion: string = ports.manifestVersion();
+    const at: number = ports.now();
+    await updateAllDataJournal(
+      token,
+      (current: AllDataClearJournalV2): AllDataClearJournalV2 => ({
+        ...current,
+        phase: 'browser-reset',
+        inventory: [],
+        runtimeProjection: emptyRuntimeV2(at, current.resetEpoch),
+        setupProjection: structuredClone(DEFAULT_SETUP),
+        installMarkerProjection: cleanInstallMarkerProjection(extensionVersion),
+        finalInstallMarkerProjection: cleanInstallMarkerProjection(extensionVersion),
+        resetProgress: emptyDataClearResetProgress(),
+        retry: freshCleanupRetryStateV2(current.retry.batch, at),
+      }),
+    );
+  }
+
+  async function runAllDataClearPhaseInternal(
+    token: DataClearLeaseToken,
+  ): Promise<'remote' | 'local' | 'browser-reset' | 'none'> {
+    await ensureInitialized();
+    const journal: AllDataClearJournalV2 | null = await readAllDataJournal(token);
+    if (journal === null) return 'none';
+    allDataClearQuiescenceRequired = true;
+    await assertStoppedRuntimeForAllDataClear();
+    if (journal.phase === 'browser-reset') return 'browser-reset';
+    const phase: 'remote' | 'local' = journal.phase;
+    try {
+      if (phase === 'remote') await runAllDataRemotePhase(token, journal);
+      else await runAllDataLocalPhase(token);
+    } catch (error: unknown) {
+      await recordAllDataAttemptFailure(token, error);
+      throw error;
+    }
+    return phase;
+  }
+
+  /** The Settings request path: create or adopt the journal, then run every phase this side owns. */
+  async function startAllDataClearInternal(token: DataClearLeaseToken): Promise<void> {
+    await ensureInitialized();
+    if (mode === 'sync') throw new Error('disable sync before deleting remote data');
+    const existing: StoredClearJournal | null = await loadDataClearJournal();
+    if (existing !== null && existing.scope !== 'all') {
+      throw new Error('another data clear operation is pending');
+    }
+    if (existing !== null) allDataClearQuiescenceRequired = true;
+    await assertStoppedRuntimeForAllDataClear();
+    const opened: AllDataClearJournalV2 = await openAllDataJournal(token);
+    allDataClearQuiescenceRequired = true;
+    await publishAllDataSetupPhase(opened.phase, allDataAttemptStatus(opened));
+    for (const _step of ALL_DATA_PHASES_THIS_SIDE_OWNS) {
+      const ran: 'remote' | 'local' | 'browser-reset' | 'none' =
+        await runAllDataClearPhaseInternal(token);
+      if (ran === 'browser-reset' || ran === 'none') return;
+    }
+  }
+
+  async function materializeBrowserResetProjectionsInternal(
+    token: DataClearLeaseToken,
+  ): Promise<void> {
+    await ensureInitialized();
+    const journal: AllDataClearJournalV2 | null = await readAllDataJournal(token);
+    if (journal === null || journal.phase !== 'browser-reset') {
+      throw new Error('the all-data clear journal is not in browser reset');
+    }
+    const runtime: RuntimeStateV2 | null = journal.runtimeProjection;
+    const setup: SetupState | null = journal.setupProjection;
+    const marker: InstallMarker | null = journal.installMarkerProjection;
+    if (runtime === null || setup === null || marker === null) {
+      throw new Error('a browser-reset journal carries every projection it materializes');
+    }
+    await materializeProjection(LOCAL_RUNTIME, runtime, 'reset runtime projection');
+    await materializeProjection(LOCAL_SETUP, setup, 'reset setup projection');
+    await materializeProjection(LOCAL_INSTALL_MARKER, marker, 'reset install marker projection');
+  }
+
+  /** Repair, not authority: a value that already equals its projection is left alone. */
+  async function materializeProjection(
+    key: string,
+    projection: unknown,
+    label: string,
+  ): Promise<void> {
+    const stored: Record<string, unknown> = await local.get(key);
+    if (Object.hasOwn(stored, key) && valuesEqual(stored[key], projection)) return;
+    await verifiedWrite({ [key]: projection }, label);
+  }
+
+  async function retryAllDataClearInternal(
+    token: DataClearLeaseToken,
+  ): Promise<'ok' | 'retry-not-available'> {
+    await ensureInitialized();
+    const journal: AllDataClearJournalV2 | null = await readAllDataJournal(token);
+    if (journal === null || journal.phase === 'browser-reset') return 'retry-not-available';
+    if (journal.retry.lastError === null || journal.retry.nextAttemptAt !== null) {
+      return 'retry-not-available';
+    }
+    const ports: PolicyStorageDataClearPorts = requiredDataClearPorts();
+    const next: AllDataClearJournalV2 = await updateAllDataJournal(
+      token,
+      (current: AllDataClearJournalV2): AllDataClearJournalV2 => ({
+        ...current,
+        retry: beginManualCleanupBatchV2(current.retry, ports.now()),
+      }),
+    );
+    await publishAllDataSetupPhase(next.phase, 'pending');
+    return 'ok';
+  }
+
+  /**
+   * A read-only projection of the durable journal. It is the one all-data surface that does not
+   * need the lease, because no effect and no later write depends on the snapshot it returns.
+   */
+  async function allDataClearPublicStateInternal(): Promise<AllDataClearPublicState> {
+    const journal: StoredClearJournal | null = await loadDataClearJournal();
+    if (journal === null) return { status: 'idle', scope: null, phase: null };
+    if (journal.scope === 'all' && isLegacyAllDataClearJournal(journal)) {
+      return { status: 'pending', scope: 'all', phase: journal.phase };
+    }
+    return projectAllDataClearPublicState(assertScopedOrV2Journal(journal));
+  }
+
+  /** Every member but the legacy all-data shape, which the caller has already ruled out. */
+  function assertScopedOrV2Journal(journal: StoredClearJournal): DataClearJournal {
+    if (journal.scope === 'all' && isLegacyAllDataClearJournal(journal)) {
+      throw new Error('a legacy all-data journal upgrades before it is read');
+    }
+    return journal;
   }
 
   async function clearLocalHistoryInternal(): Promise<boolean> {
     await ensureInitialized();
-    const existing: DataClearJournal | null = await loadDataClearJournal();
+    const existing: StoredClearJournal | null = await loadDataClearJournal();
     if (existing !== null && existing.scope !== 'local-history') {
       throw new Error('another data clear operation is pending');
     }
@@ -2267,7 +2609,7 @@ export function createPolicyStorage(
 
   async function finishLocalHistoryClearInternal(): Promise<void> {
     await ensureInitialized();
-    const journal: DataClearJournal | null = await loadDataClearJournal();
+    const journal: StoredClearJournal | null = await loadDataClearJournal();
     if (journal === null) return;
     if (journal.scope !== 'local-history' || journal.phase !== 'runtime') {
       throw new Error('local history removal is not ready to finish');
@@ -2279,7 +2621,7 @@ export function createPolicyStorage(
     clearAggregates: boolean;
   } | null> {
     await ensureInitialized();
-    const journal: DataClearJournal | null = await loadDataClearJournal();
+    const journal: StoredClearJournal | null = await loadDataClearJournal();
     if (journal?.scope !== 'local-history' || journal.phase !== 'runtime') return null;
     return { clearAggregates: journal.clearAggregates };
   }
@@ -2547,7 +2889,7 @@ export function createPolicyStorage(
   return {
     initialize: async (): Promise<void> => {
       const stored: Record<string, unknown> = await local.get(LOCAL_DATA_CLEAR_JOURNAL);
-      const journal: DataClearJournal | null = parseDataClearJournal(
+      const journal: StoredClearJournal | null = parseDataClearJournal(
         stored[LOCAL_DATA_CLEAR_JOURNAL],
       );
       if (journal?.scope !== 'all') return enqueue(initializeInternal);
@@ -2598,10 +2940,35 @@ export function createPolicyStorage(
       enqueue((): Promise<void> => queueVerifiedRemoteCorrectionsInternal(keys)),
     deleteRemoteData: (scope: 'synced-policy' | 'all'): Promise<void> =>
       scope === 'all'
-        ? runAllDataClearExclusive(
-            (): Promise<void> => enqueue((): Promise<void> => deleteRemoteDataInternal(scope)),
+        ? requiredDataClearPorts().lease.run(
+            (token: DataClearLeaseToken): Promise<void> =>
+              runAllDataClearExclusive(
+                (): Promise<void> => enqueue((): Promise<void> => startAllDataClearInternal(token)),
+              ),
           )
         : enqueue((): Promise<void> => deleteRemoteDataInternal(scope)),
+    runAllDataClearPhase: (
+      token: DataClearLeaseToken,
+    ): Promise<'remote' | 'local' | 'browser-reset' | 'none'> =>
+      runAllDataClearExclusive(
+        (): Promise<'remote' | 'local' | 'browser-reset' | 'none'> =>
+          enqueue(
+            (): Promise<'remote' | 'local' | 'browser-reset' | 'none'> =>
+              runAllDataClearPhaseInternal(token),
+          ),
+      ),
+    materializeBrowserResetProjections: (token: DataClearLeaseToken): Promise<void> =>
+      runAllDataClearExclusive(
+        (): Promise<void> =>
+          enqueue((): Promise<void> => materializeBrowserResetProjectionsInternal(token)),
+      ),
+    retryAllDataClear: (token: DataClearLeaseToken): Promise<'ok' | 'retry-not-available'> =>
+      runAllDataClearExclusive(
+        (): Promise<'ok' | 'retry-not-available'> =>
+          enqueue((): Promise<'ok' | 'retry-not-available'> => retryAllDataClearInternal(token)),
+      ),
+    allDataClearPublicState: (): Promise<AllDataClearPublicState> =>
+      allDataClearPublicStateInternal(),
     clearLocalHistory: (): Promise<boolean> => enqueue(clearLocalHistoryInternal),
     finishLocalHistoryClear: (): Promise<void> => enqueue(finishLocalHistoryClearInternal),
     pendingLocalHistoryClear: (): Promise<{ clearAggregates: boolean } | null> =>

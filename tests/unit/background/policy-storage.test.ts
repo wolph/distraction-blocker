@@ -1,4 +1,23 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  freshCleanupRetryStateV2,
+  nextCleanupAttemptAtV2,
+} from '../../../src/background/cleanup-progress-v2';
+import {
+  type AllDataClearJournalV2,
+  type AllDataClearPublicState,
+  cleanInstallMarkerProjection,
+  createAllDataClearJournalV2,
+  type PendingInstallLifecycleIntent,
+  parseDataClearJournal,
+} from '../../../src/background/data-clear-journal';
+import {
+  type AllDataClearLease,
+  createAllDataClearLease,
+  type DataClearLeaseToken,
+} from '../../../src/background/data-clear-lease';
 import { decodeListsSyncSnapshot } from '../../../src/background/list-sync-codec';
 import {
   type AllDataClearBarrier,
@@ -6,7 +25,9 @@ import {
   type FirstSyncCheckpointSource,
   type PolicySnapshot,
   type PolicyStorage,
+  type PolicyStorageDataClearPorts,
 } from '../../../src/background/policy-storage';
+import { emptyRuntimeV2 as emptyStoreRuntimeV2 } from '../../../src/background/runtime-store-v2';
 import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import { emptyRuntime, type RuntimeState } from '../../../src/background/stores';
 import type { SyncJournal } from '../../../src/background/sync-writer';
@@ -29,6 +50,7 @@ import {
   LOCAL_DEVICE_ID,
   LOCAL_EVENTS,
   LOCAL_FIRST_SYNC_PUBLICATION,
+  LOCAL_INSTALL_MARKER,
   LOCAL_LISTS,
   LOCAL_POLICY_COMMIT,
   LOCAL_POLICY_GENERATION_PREFIX,
@@ -212,12 +234,125 @@ const DIRECT_ALL_DATA_CLEAR_BARRIER: AllDataClearBarrier = {
   runExclusive: <T>(operation: () => Promise<T>): Promise<T> => operation(),
 };
 
-function policyStorage(local: FakeStorage, sync: FakeStorage): PolicyStorage {
+const CLEAR_NOW: number = new Date(2026, 8, 3, 10, 0, 0, 0).getTime();
+const CLEAR_EPOCH: string = '60000000-0000-4000-8000-000000000001';
+const CLEAR_OPERATION: string = '60000000-0000-4000-8000-000000000002';
+const MANIFEST_VERSION: string = '1.4.2';
+const INTENT_ID: string = '70000000-0000-4000-8000-000000000001';
+
+interface ClearPortsStub {
+  ports: PolicyStorageDataClearPorts;
+  lease: AllDataClearLease;
+  issued: string[];
+}
+
+/** The deletion-lease seam Main binds in Task 5, with deterministic identifiers and clock. */
+function clearPorts(): ClearPortsStub {
+  const issued: string[] = [];
+  const lease: AllDataClearLease = createAllDataClearLease((): boolean => false);
+  let next: number = 1;
+  const ports: PolicyStorageDataClearPorts = {
+    lease,
+    newId: (): string => {
+      const id: string = `60000000-0000-4000-8000-${String(next).padStart(12, '0')}`;
+      next += 1;
+      issued.push(id);
+      return id;
+    },
+    now: (): number => CLEAR_NOW,
+    manifestVersion: (): string => MANIFEST_VERSION,
+  };
+  return { ports, lease, issued };
+}
+
+/**
+ * The journal transaction writes through `chrome.storage.local`, the same area Main injects here,
+ * so the global points at the fake this storage was built on.
+ */
+function stubChromeStorage(local: FakeStorage, sync: FakeStorage): void {
+  vi.stubGlobal('chrome', { storage: { local: local.area, sync: sync.area } });
+}
+
+function policyStorage(
+  local: FakeStorage,
+  sync: FakeStorage,
+  ports: PolicyStorageDataClearPorts = clearPorts().ports,
+): PolicyStorage {
+  stubChromeStorage(local, sync);
   return createPolicyStorage(
     local.area,
     sync.area,
     EMPTY_CHECKPOINT,
     DIRECT_ALL_DATA_CLEAR_BARRIER,
+    ports,
+  );
+}
+
+function policyStorageWithBarrier(
+  local: FakeStorage,
+  sync: FakeStorage,
+  barrier: AllDataClearBarrier,
+  ports: PolicyStorageDataClearPorts = clearPorts().ports,
+): PolicyStorage {
+  stubChromeStorage(local, sync);
+  return createPolicyStorage(local.area, sync.area, EMPTY_CHECKPOINT, barrier, ports);
+}
+
+const BROWSER_RESET_SETUP: SetupState = {
+  ...DEFAULT_SETUP,
+  dataClear: { status: 'pending', scope: 'all', phase: 'browser-reset' },
+};
+
+function seededAllDataJournal(
+  overrides: Partial<AllDataClearJournalV2> = {},
+): AllDataClearJournalV2 {
+  return {
+    ...createAllDataClearJournalV2(
+      { resetEpoch: CLEAR_EPOCH, resetOperationId: CLEAR_OPERATION },
+      CLEAR_NOW,
+    ),
+    ...overrides,
+  };
+}
+
+function lifecycleIntent(): PendingInstallLifecycleIntent {
+  return {
+    version: 1,
+    eventId: INTENT_ID,
+    reason: 'update',
+    currentVersion: MANIFEST_VERSION,
+    previousVersion: '1.4.1',
+    observedAt: CLEAR_NOW,
+  };
+}
+
+function storedAllDataJournal(local: FakeStorage): AllDataClearJournalV2 {
+  const journal: unknown = parseDataClearJournal(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]);
+  if (journal === null || typeof journal !== 'object' || !('version' in journal)) {
+    throw new Error('no version 2 all-data journal is stored');
+  }
+  return journal as AllDataClearJournalV2;
+}
+
+/** Every payload a `set` carried that touched the journal key, in write order. */
+function journalWrites(local: FakeStorage): Record<string, unknown>[] {
+  return vi
+    .mocked(local.area.set)
+    .mock.calls.map(
+      (call: unknown[]): Record<string, unknown> => call[0] as Record<string, unknown>,
+    )
+    .filter((items: Record<string, unknown>): boolean =>
+      Object.hasOwn(items, LOCAL_DATA_CLEAR_JOURNAL),
+    );
+}
+
+function runPhase(
+  storage: PolicyStorage,
+  stub: ClearPortsStub,
+): Promise<'remote' | 'local' | 'browser-reset' | 'none'> {
+  return stub.lease.run(
+    (token: DataClearLeaseToken): Promise<'remote' | 'local' | 'browser-reset' | 'none'> =>
+      storage.runAllDataClearPhase(token),
   );
 }
 
@@ -247,6 +382,7 @@ describe('PolicyStorage', (): void => {
   afterEach((): void => {
     vi.clearAllTimers();
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it('initializes an unconfirmed clean profile without any Sync API call', async (): Promise<void> => {
@@ -3034,7 +3170,9 @@ describe('PolicyStorage', (): void => {
     expect(local.state.values['aggm:malformed']).toBeUndefined();
     expect(local.state.values[LOCAL_AGGREGATE_TOMBSTONES]).toBeUndefined();
     expect(local.state.values[LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]).toBeUndefined();
-    expect(await storage.loadSetup()).toEqual(DEFAULT_SETUP);
+    // Engine owns browser reset and the journal removal, so the clear stops here, still pending.
+    expect(await storage.loadSetup()).toEqual(BROWSER_RESET_SETUP);
+    expect(storedAllDataJournal(local).phase).toBe('browser-reset');
   });
 
   it('does not retain stale quiescence when a later all-data journal write fails early', async (): Promise<void> => {
@@ -3045,7 +3183,7 @@ describe('PolicyStorage', (): void => {
     });
     const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
     const retainedAfterFailure: boolean[] = [];
-    const storage: PolicyStorage = createPolicyStorage(local.area, sync.area, EMPTY_CHECKPOINT, {
+    const storage: PolicyStorage = policyStorageWithBarrier(local, sync, {
       runExclusive: async <T>(
         operation: () => Promise<T>,
         retainQuiescence: () => boolean,
@@ -3060,12 +3198,13 @@ describe('PolicyStorage', (): void => {
     });
 
     await storage.deleteRemoteData('all');
+    // Engine finished the first clear, so the next request creates a journal of its own.
+    delete local.state.values[LOCAL_DATA_CLEAR_JOURNAL];
     vi.mocked(local.area.set).mockRejectedValueOnce(new Error('journal write unavailable'));
 
     await expect(storage.deleteRemoteData('all')).rejects.toThrow('journal write unavailable');
 
     expect(retainedAfterFailure).toEqual([false]);
-    expect(await storage.loadSetup()).toEqual(DEFAULT_SETUP);
     expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toBeUndefined();
   });
 
@@ -3095,7 +3234,7 @@ describe('PolicyStorage', (): void => {
 
     expect(recreated).toBe(true);
     expect(local.state.values[LOCAL_EVENTS]).toBeUndefined();
-    expect(await storage.loadSetup()).toEqual(DEFAULT_SETUP);
+    expect(await storage.loadSetup()).toEqual(BROWSER_RESET_SETUP);
   });
 
   it('acquires the runtime barrier before entering the adapter mutation queue', async (): Promise<void> => {
@@ -3119,10 +3258,9 @@ describe('PolicyStorage', (): void => {
       ...localPolicy(setup),
       [LOCAL_RUNTIME]: emptyRuntimeV2(),
     });
-    const storage: PolicyStorage = createPolicyStorage(
-      local.area,
-      fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings }).area,
-      EMPTY_CHECKPOINT,
+    const storage: PolicyStorage = policyStorageWithBarrier(
+      local,
+      fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings }),
       barrier,
     );
 
@@ -3257,14 +3395,17 @@ describe('PolicyStorage', (): void => {
       [LOCAL_DATA_CLEAR_JOURNAL]: journal,
     });
     const stoppedSync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
-    const stoppedStorage: PolicyStorage = policyStorage(stoppedLocal, stoppedSync);
+    const stub: ClearPortsStub = clearPorts();
+    const stoppedStorage: PolicyStorage = policyStorage(stoppedLocal, stoppedSync, stub.ports);
 
     await expect(stoppedStorage.initialize()).resolves.toBeUndefined();
+    expect(await runPhase(stoppedStorage, stub)).toBe('remote');
+    expect(await runPhase(stoppedStorage, stub)).toBe('local');
 
-    expect(stoppedLocal.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toBeUndefined();
+    expect(storedAllDataJournal(stoppedLocal).phase).toBe('browser-reset');
     expect(stoppedLocal.state.values[LOCAL_RUNTIME]).toBeUndefined();
     expect(stoppedSync.state.values[SYNC_SETTINGS]).toBeUndefined();
-    expect(await stoppedStorage.loadSetup()).toEqual(DEFAULT_SETUP);
+    expect(await stoppedStorage.loadSetup()).toEqual(BROWSER_RESET_SETUP);
 
     const live: RuntimeState = runtimeWithActiveSession(Date.now());
     const liveLocal: FakeStorage = fakeStorage({
@@ -3295,16 +3436,27 @@ describe('PolicyStorage', (): void => {
       [LOCAL_DATA_CLEAR_JOURNAL]: journal,
     });
     const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
-    const storage: PolicyStorage = policyStorage(local, sync);
+    const stub: ClearPortsStub = clearPorts();
+    const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
 
+    // Boot only quiesces now. The phase the dispatcher runs is what refuses a live runtime.
     await expect(storage.initialize()).resolves.toBeUndefined();
+    await expect(runPhase(storage, stub)).rejects.toThrow(
+      'stop the active session and blocking state before deleting all data',
+    );
 
     expect(local.state.values[LOCAL_RUNTIME]).toEqual(runtime);
-    expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toEqual(journal);
+    // Recovery upgrades a legacy journal before every other read, including this refusal.
+    expect(storedAllDataJournal(local)).toEqual({
+      ...createAllDataClearJournalV2(
+        { resetEpoch: stub.issued[0] ?? '', resetOperationId: stub.issued[1] ?? '' },
+        CLEAR_NOW,
+      ),
+      inventory: journal.inventory,
+    });
     expect(sync.state.values[SYNC_SETTINGS]).toEqual(SNAPSHOT.settings);
     expect(await storage.loadSetup()).toMatchObject({
-      dataClear: { status: 'error', scope: 'all', phase: 'remote' },
-      storageError: 'remote-deletion-failed',
+      dataClear: { status: 'pending', scope: 'all', phase: 'remote' },
     });
     expect(local.area.remove).not.toHaveBeenCalled();
     expect(sync.area.set).not.toHaveBeenCalled();
@@ -3325,7 +3477,7 @@ describe('PolicyStorage', (): void => {
     const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
     sync.state.failRemove = new Error('remote removal unavailable');
     let retainedQuiescence: boolean = false;
-    const storage: PolicyStorage = createPolicyStorage(local.area, sync.area, EMPTY_CHECKPOINT, {
+    const storage: PolicyStorage = policyStorageWithBarrier(local, sync, {
       runExclusive: async <T>(
         operation: () => Promise<T>,
         retainQuiescence: () => boolean,
@@ -3456,7 +3608,7 @@ describe('PolicyStorage', (): void => {
     const local: FakeStorage = fakeStorage({ ...localPolicy(setup), unrelated: 'keep' });
     const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
     let retainedQuiescence: boolean = false;
-    const storage: PolicyStorage = createPolicyStorage(local.area, sync.area, EMPTY_CHECKPOINT, {
+    const storage: PolicyStorage = policyStorageWithBarrier(local, sync, {
       runExclusive: async <T>(
         operation: () => Promise<T>,
         retainQuiescence: () => boolean,
@@ -3484,25 +3636,32 @@ describe('PolicyStorage', (): void => {
 
     expect(retainedQuiescence).toBe(true);
     expect(sync.state.values[SYNC_SETTINGS]).toBeUndefined();
-    expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toMatchObject({
-      scope: 'all',
-      phase: 'local',
-    });
-    expect((await setupState(local)).storageError).toBe('local-clear-failed');
+    expect(storedAllDataJournal(local).phase).toBe('local');
+    // The journal carries the durable failure now, so Setup keeps no second error authority.
+    expect(storedAllDataJournal(local).retry.lastError).toBe('local clear interrupted');
+    expect((await setupState(local)).storageError).toBeNull();
 
     failLocalClear = false;
     let barrierRuns: number = 0;
-    const restarted: PolicyStorage = createPolicyStorage(local.area, sync.area, EMPTY_CHECKPOINT, {
-      runExclusive: async <T>(operation: () => Promise<T>): Promise<T> => {
-        barrierRuns += 1;
-        return operation();
+    const restartStub: ClearPortsStub = clearPorts();
+    const restarted: PolicyStorage = policyStorageWithBarrier(
+      local,
+      sync,
+      {
+        runExclusive: async <T>(operation: () => Promise<T>): Promise<T> => {
+          barrierRuns += 1;
+          return operation();
+        },
       },
-    });
+      restartStub.ports,
+    );
     await restarted.initialize();
+    expect(await runPhase(restarted, restartStub)).toBe('local');
 
-    expect(barrierRuns).toBe(1);
+    expect(barrierRuns).toBe(2);
     expect(local.state.values.unrelated).toBe('keep');
-    expect(await restarted.loadSetup()).toEqual(DEFAULT_SETUP);
+    expect(storedAllDataJournal(local).phase).toBe('browser-reset');
+    expect(await restarted.loadSetup()).toEqual(BROWSER_RESET_SETUP);
   });
 
   it('rejects remote deletion while sync mode can still publish', async (): Promise<void> => {
@@ -3600,7 +3759,8 @@ describe('PolicyStorage', (): void => {
       },
     });
     const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: DEFAULT_SETTINGS });
-    const storage: PolicyStorage = policyStorage(local, sync);
+    const stub: ClearPortsStub = clearPorts();
+    const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
     vi.mocked(local.area.remove).mockImplementation(
       async (keys: string | string[]): Promise<void> => {
         const requested: string[] = typeof keys === 'string' ? [keys] : keys;
@@ -3610,14 +3770,13 @@ describe('PolicyStorage', (): void => {
     );
 
     await storage.initialize();
+    expect(await runPhase(storage, stub)).toBe('remote');
+    await expect(runPhase(storage, stub)).rejects.toThrow('local clear unavailable');
 
-    expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toMatchObject({
-      scope: 'all',
-      phase: 'local',
-    });
+    expect(storedAllDataJournal(local).phase).toBe('local');
+    expect(storedAllDataJournal(local).retry.lastError).toBe('local clear unavailable');
     expect(await storage.loadSetup()).toMatchObject({
-      dataClear: { status: 'error', scope: 'all', phase: 'local' },
-      storageError: 'local-clear-failed',
+      dataClear: { status: 'pending', scope: 'all', phase: 'local' },
     });
   });
 
@@ -4288,5 +4447,491 @@ describe('PolicyStorage', (): void => {
 
     expect(local.state.values[LOCAL_EVENTS]).toBeUndefined();
     expect(local.state.values['agg:device:2026-08-31']).toEqual(aggregate);
+  });
+  describe('all-data journal v2', (): void => {
+    function allDataLocal(): Record<string, unknown> {
+      return {
+        ...localPolicy({ ...DEFAULT_SETUP, completed: true, storageMode: 'local' }),
+        [LOCAL_RUNTIME]: emptyRuntimeV2(),
+        [LOCAL_RUNTIME_SCHEMA]: { runtimeSchemaVersion: 2 },
+        [LOCAL_RUNTIME_MIGRATION]: { version: 1, phase: 'projected' },
+        [LOCAL_CACHES]: { matcher: true },
+        [LOCAL_DEVICE_ID]: 'device-id',
+        [LOCAL_INSTALL_MARKER]: {
+          version: 1,
+          profile: 'legacy',
+          latestReason: 'update',
+          extensionVersion: '1.4.1',
+        },
+        unrelated: 'keep',
+      };
+    }
+
+    function browserResetProjections(): Partial<AllDataClearJournalV2> {
+      return {
+        phase: 'browser-reset',
+        inventory: [],
+        runtimeProjection: emptyStoreRuntimeV2(CLEAR_NOW, CLEAR_EPOCH),
+        setupProjection: DEFAULT_SETUP,
+        installMarkerProjection: cleanInstallMarkerProjection(MANIFEST_VERSION),
+        finalInstallMarkerProjection: cleanInstallMarkerProjection(MANIFEST_VERSION),
+        resetProgress: {
+          attemptStartedAt: null,
+          resolverPassCount: 0,
+          targetGeneration: null,
+          stablePasses: 0,
+          targets: {},
+          commands: {},
+          acknowledgements: {},
+          exclusions: [],
+          deferredUnreachable: [],
+        },
+        retry: freshCleanupRetryStateV2(1, CLEAR_NOW),
+      };
+    }
+
+    async function reachBrowserReset(
+      local: FakeStorage,
+      sync: FakeStorage,
+      stub: ClearPortsStub,
+      overrides: Partial<AllDataClearJournalV2> = {},
+    ): Promise<PolicyStorage> {
+      local.state.values[LOCAL_DATA_CLEAR_JOURNAL] = seededAllDataJournal({
+        phase: 'local',
+        ...overrides,
+      });
+      const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
+      await storage.initialize();
+      expect(await runPhase(storage, stub)).toBe('local');
+      return storage;
+    }
+
+    it('creates a version 2 journal with fresh reset identifiers before any other write', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage(allDataLocal());
+      const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
+      await storage.initialize();
+
+      await storage.deleteRemoteData('all');
+
+      expect(stub.issued).toHaveLength(2);
+      expect(journalWrites(local)[0]).toEqual({
+        [LOCAL_DATA_CLEAR_JOURNAL]: createAllDataClearJournalV2(
+          { resetEpoch: stub.issued[0] ?? '', resetOperationId: stub.issued[1] ?? '' },
+          CLEAR_NOW,
+        ),
+      });
+      expect(storedAllDataJournal(local).phase).toBe('browser-reset');
+      expect(sync.state.values[SYNC_SETTINGS]).toBeUndefined();
+      expect(local.state.values.unrelated).toBe('keep');
+    });
+
+    it('upgrades a stored legacy all-data journal before any other write', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage({
+        ...allDataLocal(),
+        [LOCAL_DATA_CLEAR_JOURNAL]: { scope: 'all', phase: 'remote', inventory: [SYNC_SETTINGS] },
+      });
+      const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
+      await storage.initialize();
+
+      expect(await runPhase(storage, stub)).toBe('remote');
+
+      expect(journalWrites(local)[0]).toEqual({
+        [LOCAL_DATA_CLEAR_JOURNAL]: {
+          ...createAllDataClearJournalV2(
+            { resetEpoch: stub.issued[0] ?? '', resetOperationId: stub.issued[1] ?? '' },
+            CLEAR_NOW,
+          ),
+          inventory: [SYNC_SETTINGS],
+        },
+      });
+      expect(storedAllDataJournal(local).phase).toBe('local');
+    });
+
+    it('advances to local only after verified Sync deletion and preserves every other field', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage({
+        ...allDataLocal(),
+        [LOCAL_DATA_CLEAR_JOURNAL]: seededAllDataJournal({
+          pendingInstallLifecycleIntents: [lifecycleIntent()],
+        }),
+      });
+      const sync: FakeStorage = fakeStorage({
+        [SYNC_SETTINGS]: SNAPSHOT.settings,
+        [SYNC_BANK]: SNAPSHOT.bank,
+        unrelated: 'keep',
+      });
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
+      await storage.initialize();
+
+      // The runner reports the phase it ran, and leaves the journal in the phase that follows it.
+      expect(await runPhase(storage, stub)).toBe('remote');
+
+      expect(sync.state.values).toEqual({ unrelated: 'keep' });
+      expect(storedAllDataJournal(local)).toEqual(
+        seededAllDataJournal({
+          phase: 'local',
+          pendingInstallLifecycleIntents: [lifecycleIntent()],
+        }),
+      );
+      expect(stub.issued).toEqual([]);
+      const inventories: string[][] = journalWrites(local).map(
+        (items: Record<string, unknown>): string[] =>
+          (items[LOCAL_DATA_CLEAR_JOURNAL] as AllDataClearJournalV2).inventory,
+      );
+      expect(inventories).toContainEqual([SYNC_BANK, SYNC_SETTINGS]);
+      expect(inventories.at(-1)).toEqual([]);
+    });
+
+    it('removes every Focus Lock local key except the journal and advances to browser-reset', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage({
+        ...allDataLocal(),
+        'agg:device-id:2026-08-31': { stale: true },
+      });
+      const sync: FakeStorage = fakeStorage({});
+      const stub: ClearPortsStub = clearPorts();
+
+      await reachBrowserReset(local, sync, stub, {
+        pendingInstallLifecycleIntents: [lifecycleIntent()],
+      });
+
+      expect(local.state.values[LOCAL_SETTINGS]).toBeUndefined();
+      expect(local.state.values[LOCAL_RUNTIME]).toBeUndefined();
+      expect(local.state.values[LOCAL_RUNTIME_SCHEMA]).toBeUndefined();
+      expect(local.state.values[LOCAL_RUNTIME_MIGRATION]).toBeUndefined();
+      expect(local.state.values[LOCAL_DEVICE_ID]).toBeUndefined();
+      expect(local.state.values[LOCAL_INSTALL_MARKER]).toBeUndefined();
+      expect(local.state.values['agg:device-id:2026-08-31']).toBeUndefined();
+      expect(local.state.values.unrelated).toBe('keep');
+      expect(storedAllDataJournal(local)).toEqual(
+        seededAllDataJournal({
+          ...browserResetProjections(),
+          pendingInstallLifecycleIntents: [lifecycleIntent()],
+        }),
+      );
+    });
+
+    it('repeats the local phase idempotently after a removal crash', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage({
+        ...allDataLocal(),
+        [LOCAL_DATA_CLEAR_JOURNAL]: seededAllDataJournal({ phase: 'local' }),
+      });
+      const sync: FakeStorage = fakeStorage({});
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
+      await storage.initialize();
+      local.state.failRemove = new Error('local removal unavailable');
+
+      await expect(runPhase(storage, stub)).rejects.toThrow('local removal unavailable');
+
+      expect(storedAllDataJournal(local).phase).toBe('local');
+      expect(storedAllDataJournal(local).retry.lastError).toBe('local removal unavailable');
+      expect(local.state.values[LOCAL_SETTINGS]).toEqual(SNAPSHOT.settings);
+
+      local.state.failRemove = null;
+      expect(await runPhase(storage, stub)).toBe('local');
+      expect(storedAllDataJournal(local).phase).toBe('browser-reset');
+      expect(local.state.values[LOCAL_SETTINGS]).toBeUndefined();
+    });
+
+    it('materializes runtime, setup, and the install marker in three verified writes', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage(allDataLocal());
+      const sync: FakeStorage = fakeStorage({});
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = await reachBrowserReset(local, sync, stub);
+      vi.mocked(local.area.set).mockClear();
+
+      await stub.lease.run(
+        (token: DataClearLeaseToken): Promise<void> =>
+          storage.materializeBrowserResetProjections(token),
+      );
+
+      expect(
+        vi
+          .mocked(local.area.set)
+          .mock.calls.map((call: unknown[]): string[] =>
+            Object.keys(call[0] as Record<string, unknown>),
+          ),
+      ).toEqual([[LOCAL_RUNTIME], [LOCAL_SETUP], [LOCAL_INSTALL_MARKER]]);
+      expect(local.state.values[LOCAL_RUNTIME]).toEqual(
+        emptyStoreRuntimeV2(CLEAR_NOW, CLEAR_EPOCH),
+      );
+      expect(local.state.values[LOCAL_SETUP]).toEqual(DEFAULT_SETUP);
+      expect(local.state.values[LOCAL_INSTALL_MARKER]).toEqual(
+        cleanInstallMarkerProjection(MANIFEST_VERSION),
+      );
+      expect(storedAllDataJournal(local).phase).toBe('browser-reset');
+    });
+
+    it('repairs only the materialized value that no longer matches its projection', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage(allDataLocal());
+      const sync: FakeStorage = fakeStorage({});
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = await reachBrowserReset(local, sync, stub);
+      await stub.lease.run(
+        (token: DataClearLeaseToken): Promise<void> =>
+          storage.materializeBrowserResetProjections(token),
+      );
+      local.state.values[LOCAL_SETUP] = { ...DEFAULT_SETUP, completed: true };
+      vi.mocked(local.area.set).mockClear();
+
+      await stub.lease.run(
+        (token: DataClearLeaseToken): Promise<void> =>
+          storage.materializeBrowserResetProjections(token),
+      );
+
+      expect(
+        vi
+          .mocked(local.area.set)
+          .mock.calls.map((call: unknown[]): string[] =>
+            Object.keys(call[0] as Record<string, unknown>),
+          ),
+      ).toEqual([[LOCAL_SETUP]]);
+      expect(local.state.values[LOCAL_SETUP]).toEqual(DEFAULT_SETUP);
+    });
+
+    it('keeps the journal authoritative when a materialization write fails', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage(allDataLocal());
+      const sync: FakeStorage = fakeStorage({});
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = await reachBrowserReset(local, sync, stub);
+      const journal: AllDataClearJournalV2 = storedAllDataJournal(local);
+      vi.mocked(local.area.set).mockRejectedValueOnce(new Error('runtime write unavailable'));
+
+      await expect(
+        stub.lease.run(
+          (token: DataClearLeaseToken): Promise<void> =>
+            storage.materializeBrowserResetProjections(token),
+        ),
+      ).rejects.toThrow('runtime write unavailable');
+
+      expect(storedAllDataJournal(local)).toEqual(journal);
+      expect(local.state.values[LOCAL_INSTALL_MARKER]).toBeUndefined();
+    });
+
+    it('records a failed remote attempt in journal retry state and preserves the reset identity', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage({
+        ...allDataLocal(),
+        [LOCAL_DATA_CLEAR_JOURNAL]: seededAllDataJournal(),
+      });
+      const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
+      await storage.initialize();
+      sync.state.failRemove = new Error('remote removal unavailable');
+
+      await expect(runPhase(storage, stub)).rejects.toThrow('remote removal unavailable');
+
+      const stored: AllDataClearJournalV2 = storedAllDataJournal(local);
+      expect(stored.phase).toBe('remote');
+      expect(stored.resetEpoch).toBe(CLEAR_EPOCH);
+      expect(stored.resetOperationId).toBe(CLEAR_OPERATION);
+      expect(stored.inventory).toEqual([SYNC_SETTINGS]);
+      expect(stored.retry).toEqual({
+        batch: 1,
+        automaticAttempt: 1,
+        nextAttemptAt: nextCleanupAttemptAtV2(1, CLEAR_NOW),
+        lastError: 'remote removal unavailable',
+      });
+      expect(sync.state.values[SYNC_SETTINGS]).toEqual(SNAPSHOT.settings);
+    });
+
+    it('resets the retry batch only for an exhausted remote or local batch', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage({
+        ...allDataLocal(),
+        [LOCAL_DATA_CLEAR_JOURNAL]: seededAllDataJournal(),
+      });
+      const sync: FakeStorage = fakeStorage({});
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
+      await storage.initialize();
+
+      expect(
+        await stub.lease.run(
+          (token: DataClearLeaseToken): Promise<'ok' | 'retry-not-available'> =>
+            storage.retryAllDataClear(token),
+        ),
+      ).toBe('retry-not-available');
+
+      local.state.values[LOCAL_DATA_CLEAR_JOURNAL] = seededAllDataJournal({
+        retry: { batch: 1, automaticAttempt: 12, nextAttemptAt: null, lastError: 'exhausted' },
+      });
+
+      expect(
+        await stub.lease.run(
+          (token: DataClearLeaseToken): Promise<'ok' | 'retry-not-available'> =>
+            storage.retryAllDataClear(token),
+        ),
+      ).toBe('ok');
+      expect(storedAllDataJournal(local).retry).toEqual({
+        batch: 2,
+        automaticAttempt: 0,
+        nextAttemptAt: CLEAR_NOW,
+        lastError: null,
+      });
+    });
+
+    it('projects the public state from the stored journal', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage(allDataLocal());
+      const sync: FakeStorage = fakeStorage({});
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
+      await storage.initialize();
+
+      expect(await storage.allDataClearPublicState()).toEqual({
+        status: 'idle',
+        scope: null,
+        phase: null,
+      });
+
+      local.state.values[LOCAL_DATA_CLEAR_JOURNAL] = seededAllDataJournal({ phase: 'local' });
+      const pending: AllDataClearPublicState = await storage.allDataClearPublicState();
+      expect(pending).toEqual({ status: 'pending', scope: 'all', phase: 'local' });
+
+      local.state.values[LOCAL_DATA_CLEAR_JOURNAL] = seededAllDataJournal({
+        retry: { batch: 1, automaticAttempt: 12, nextAttemptAt: null, lastError: 'exhausted' },
+      });
+      expect(await storage.allDataClearPublicState()).toEqual({
+        status: 'error',
+        scope: 'all',
+        phase: 'remote',
+      });
+    });
+
+    it('reports browser-reset without acting once the journal reaches it', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage(allDataLocal());
+      const sync: FakeStorage = fakeStorage({});
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = await reachBrowserReset(local, sync, stub);
+      vi.mocked(local.area.set).mockClear();
+      vi.mocked(local.area.remove).mockClear();
+
+      expect(await runPhase(storage, stub)).toBe('browser-reset');
+
+      expect(journalWrites(local)).toEqual([]);
+      expect(vi.mocked(local.area.remove)).not.toHaveBeenCalled();
+    });
+
+    it('never removes the journal and never writes it beside another key', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage(allDataLocal());
+      const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
+      await storage.initialize();
+
+      await storage.deleteRemoteData('all');
+
+      const removed: string[] = vi
+        .mocked(local.area.remove)
+        .mock.calls.flatMap((call: unknown[]): string[] => {
+          const keys: string | string[] = call[0] as string | string[];
+          return typeof keys === 'string' ? [keys] : keys;
+        });
+      expect(removed).not.toContain(LOCAL_DATA_CLEAR_JOURNAL);
+      expect(
+        journalWrites(local).map((items: Record<string, unknown>): string[] => Object.keys(items)),
+      ).toEqual(journalWrites(local).map((): string[] => [LOCAL_DATA_CLEAR_JOURNAL]));
+      expect(storedAllDataJournal(local).phase).toBe('browser-reset');
+    });
+
+    it('resumes materialization after a crash between two projection writes', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage(allDataLocal());
+      const sync: FakeStorage = fakeStorage({});
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = await reachBrowserReset(local, sync, stub);
+      vi.mocked(local.area.set).mockImplementationOnce(
+        async (items: Record<string, unknown>): Promise<void> => {
+          Object.assign(local.state.values, structuredClone(items));
+        },
+      );
+      vi.mocked(local.area.set).mockRejectedValueOnce(new Error('setup write unavailable'));
+
+      await expect(
+        stub.lease.run(
+          (token: DataClearLeaseToken): Promise<void> =>
+            storage.materializeBrowserResetProjections(token),
+        ),
+      ).rejects.toThrow('setup write unavailable');
+
+      expect(local.state.values[LOCAL_RUNTIME]).toEqual(
+        emptyStoreRuntimeV2(CLEAR_NOW, CLEAR_EPOCH),
+      );
+      expect(local.state.values[LOCAL_INSTALL_MARKER]).toBeUndefined();
+      vi.mocked(local.area.set).mockClear();
+
+      await stub.lease.run(
+        (token: DataClearLeaseToken): Promise<void> =>
+          storage.materializeBrowserResetProjections(token),
+      );
+
+      expect(
+        vi
+          .mocked(local.area.set)
+          .mock.calls.map((call: unknown[]): string[] =>
+            Object.keys(call[0] as Record<string, unknown>),
+          ),
+      ).toEqual([[LOCAL_SETUP], [LOCAL_INSTALL_MARKER]]);
+      expect(local.state.values[LOCAL_SETUP]).toEqual(DEFAULT_SETUP);
+      expect(local.state.values[LOCAL_INSTALL_MARKER]).toEqual(
+        cleanInstallMarkerProjection(MANIFEST_VERSION),
+      );
+    });
+
+    it('writes the all-data journal only through the lease transaction', (): void => {
+      const source: string = readFileSync(
+        fileURLToPath(new URL('../../../src/background/policy-storage.ts', import.meta.url)),
+        'utf8',
+      );
+
+      // One direct write of the key remains, and its parameter type cannot carry scope 'all'.
+      expect(source.match(/\[LOCAL_DATA_CLEAR_JOURNAL\]:/gu)).toHaveLength(1);
+      expect(source).toMatch(
+        /async function persistDataClearJournal\(\s*journal: ScopedClearJournal,/u,
+      );
+      // The single removal site belongs to the two journals this module still finishes itself.
+      expect(source.match(/local\.remove\(LOCAL_DATA_CLEAR_JOURNAL\)/gu)).toHaveLength(1);
+      expect(source).toMatch(/async function finishDataClear\(journal: ScopedClearJournal\)/u);
+    });
+
+    it('refuses a stored all-data journal the parser rejects without writing', async (): Promise<void> => {
+      const hostile: Record<string, unknown> = {
+        ...seededAllDataJournal(),
+        setupProjection: { ...DEFAULT_SETUP },
+      };
+      const local: FakeStorage = fakeStorage({
+        ...allDataLocal(),
+        [LOCAL_DATA_CLEAR_JOURNAL]: hostile,
+      });
+      const sync: FakeStorage = fakeStorage({});
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
+
+      await expect(runPhase(storage, stub)).rejects.toThrow(/data clear journal/u);
+
+      expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toEqual(hostile);
+      expect(journalWrites(local)).toEqual([]);
+    });
+
+    it('refuses to run a phase while durable runtime is not stopped', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage({
+        ...allDataLocal(),
+        [LOCAL_RUNTIME]: publishedFocusRuntime(),
+        [LOCAL_DATA_CLEAR_JOURNAL]: seededAllDataJournal(),
+      });
+      const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
+      await storage.initialize();
+
+      await expect(runPhase(storage, stub)).rejects.toThrow(
+        'stop the active session and blocking state before deleting all data',
+      );
+
+      expect(journalWrites(local)).toEqual([]);
+      expect(sync.state.values[SYNC_SETTINGS]).toEqual(SNAPSHOT.settings);
+    });
   });
 });

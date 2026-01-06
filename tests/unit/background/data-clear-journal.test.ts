@@ -12,6 +12,7 @@ import {
   DATA_CLEAR_RESET_DEADLINE_MS,
   type DataClearJournal,
   type DataClearResetProgress,
+  emptyDataClearResetProgress,
   type FinalInstallMarkerProjection,
   isLegacyAllDataClearJournal,
   type LegacyAllDataClearJournal,
@@ -866,6 +867,30 @@ describe('all-data public state projection', (): void => {
         phase === 'browser-reset' ? browserResetJournal() : remoteJournal({ phase });
       expect(projectAllDataClearPublicState(journal).status).not.toBe('idle');
     }
+  });
+});
+
+describe('empty reset progress', (): void => {
+  it('builds the progress a journal enters browser reset with', (): void => {
+    expect(emptyDataClearResetProgress()).toEqual({
+      attemptStartedAt: null,
+      resolverPassCount: 0,
+      targetGeneration: null,
+      stablePasses: 0,
+      targets: {},
+      commands: {},
+      acknowledgements: {},
+      exclusions: [],
+      deferredUnreachable: [],
+    });
+  });
+
+  it('is accepted by the browser-reset journal parser', (): void => {
+    const journal: AllDataClearJournalV2 = browserResetJournal({
+      resetProgress: emptyDataClearResetProgress(),
+    });
+
+    expect(parseDataClearJournal(journal)).toEqual(journal);
   });
 });
 
