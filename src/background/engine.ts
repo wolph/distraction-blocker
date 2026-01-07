@@ -229,7 +229,6 @@ export class Engine {
   private bankDirty = false;
   private streakDirty = false;
   private bankRevision = 0;
-  private runtimePersistRevision = 0;
   private ownedRuntimeSnapshot: RuntimeStateV2;
   private policyMutationQueue: Promise<void> = Promise.resolve();
   private suppressPolicyPublication = false;
@@ -551,7 +550,7 @@ export class Engine {
       this.pendingAggregateSets.clear();
       this.pendingAggregateRemoves.clear();
       this.ownedRuntimeSnapshot = structuredClone(this.runtime);
-      await this.persistRuntime(structuredClone(this.runtime));
+      await this.persistRuntime();
       await finish();
       return aggregatesCleared;
     });
@@ -1723,7 +1722,6 @@ export class Engine {
     const date: string = this.runtime.date;
     const syncBank: boolean = this.bankDirty;
     const bankRevision: number = this.bankRevision;
-    const runtimePersistRevision: number = this.runtimePersistRevision;
     const aggregateSets: Record<string, DailyAgg> = Object.fromEntries(
       [...this.pendingAggregateSets.entries()].map(
         ([key, value]: [string, DailyAgg]): [string, DailyAgg] => [key, structuredClone(value)],
@@ -1745,9 +1743,7 @@ export class Engine {
       aggregateSets,
       aggregateRemoves,
     };
-    const checkpointRuntime: RuntimeStateV2 = structuredClone(this.runtime);
-    this.ownedRuntimeSnapshot = structuredClone(checkpointRuntime);
-    await this.persistRuntime(checkpointRuntime);
+    await this.persistRuntime();
     if (syncBank) await this.savePolicy('bank', bank);
     if (this.streakDirty && this.streak !== null) {
       await this.savePolicy('streak', this.streak);
@@ -1772,12 +1768,10 @@ export class Engine {
     }
     for (const key of aggregateRemoves) this.pendingAggregateRemoves.delete(key);
     if (this.domainPersistRevision === domainPersistRevision) {
+      // The checkpoint this commit replayed is retired, and the write that retires it composes the
+      // current runtime, so a session the controller ended while this ran stays ended.
       this.runtime.commitCheckpoint = null;
-      if (this.runtimePersistRevision === runtimePersistRevision) {
-        checkpointRuntime.commitCheckpoint = null;
-        this.ownedRuntimeSnapshot = structuredClone(checkpointRuntime);
-        await this.persistRuntime(checkpointRuntime);
-      }
+      await this.persistRuntime();
     }
   }
 
@@ -1804,25 +1798,34 @@ export class Engine {
     await this.ports.persistSyncJournal();
   }
 
-  private persistRuntime(snapshot?: RuntimeStateV2): Promise<void> {
-    if (snapshot === undefined) {
-      this.runtimePersistRevision += 1;
-      this.ownedRuntimeSnapshot.tabStates = structuredClone(this.runtime.tabStates);
-      this.ownedRuntimeSnapshot.attemptDebounce = structuredClone(this.runtime.attemptDebounce);
-      this.ownedRuntimeSnapshot.deferredBlockClaims = structuredClone(
-        this.runtime.deferredBlockClaims,
-      );
-      this.ownedRuntimeSnapshot.removedTabTombstones = structuredClone(
-        this.runtime.removedTabTombstones,
-      );
-      return this.queueRuntimeSnapshot(structuredClone(this.ownedRuntimeSnapshot));
-    }
-    return this.queueRuntimeSnapshot(snapshot);
+  /**
+   * The one durable runtime write the Engine makes. It never writes a value it captured before its
+   * awaits: the runtime is composed inside the write queue, from the controller's latest value plus
+   * the fields the Engine owns, so a controller write that lands while this one is in flight is
+   * carried forward rather than reverted. The controller owns the session and everything projected
+   * with it, and this write must never be the reason an ended session comes back.
+   */
+  private persistRuntime(): Promise<void> {
+    return this.queueRuntimeSnapshot();
   }
 
-  private queueRuntimeSnapshot(snapshot: RuntimeStateV2): Promise<void> {
+  /** The controller's latest durable runtime, with the fields the Engine owns laid over it. */
+  private composeOwnedRuntime(): RuntimeStateV2 {
+    const owned: RuntimeStateV2 = this.ownedRuntimeSnapshot;
+    owned.tabStates = structuredClone(this.runtime.tabStates);
+    owned.attemptDebounce = structuredClone(this.runtime.attemptDebounce);
+    owned.deferredBlockClaims = structuredClone(this.runtime.deferredBlockClaims);
+    owned.removedTabTombstones = structuredClone(this.runtime.removedTabTombstones);
+    owned.todayAgg = structuredClone(this.runtime.todayAgg);
+    owned.date = this.runtime.date;
+    owned.lastPruneDate = this.runtime.lastPruneDate;
+    owned.commitCheckpoint = structuredClone(this.runtime.commitCheckpoint);
+    return structuredClone(owned);
+  }
+
+  private queueRuntimeSnapshot(): Promise<void> {
     const requested: Promise<void> = this.runtimePersistQueue.then(
-      (): Promise<void> => this.ports.saveRuntime(snapshot),
+      (): Promise<void> => this.ports.saveRuntime(this.composeOwnedRuntime()),
     );
     this.runtimePersistQueue = requested.catch((): void => {});
     return requested.catch((error: unknown): never => {
@@ -1951,13 +1954,12 @@ export class Engine {
     this.bankDirty = false;
     this.streakDirty = false;
     this.bankRevision = 0;
-    this.runtimePersistRevision = 0;
     this.attemptRevision = 0;
     this.attemptPersistInFlight.clear();
     this.failedAttemptPersistence.clear();
     this.websiteBlockingLossPending = false;
     this.ownedRuntimeSnapshot = structuredClone(this.runtime);
-    await this.persistRuntime(structuredClone(this.runtime));
+    await this.persistRuntime();
   }
 
   private async prepareRuntimeForAllDataClear(): Promise<void> {

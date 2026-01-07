@@ -23,6 +23,7 @@ import {
   LOCAL_RUNTIME_SCHEMA,
   LOCAL_SETTINGS,
   LOCAL_SETUP,
+  LOCAL_SYNC_JOURNAL,
 } from '../../../src/shared/storage-keys';
 import { localDateStr, localMidnightAfter } from '../../../src/shared/time';
 import type {
@@ -80,6 +81,8 @@ interface WorkerHarness {
   sounds: string[];
   /** Holds every sync write until the returned release runs, for interleaving a mode switch. */
   holdSyncWrites(): () => void;
+  /** Holds the next sync-journal write, which parks an Engine commit before its runtime write. */
+  holdJournalWrite(): () => void;
   /** Holds every tab reload until `releaseTabReloads` runs, for watching a cleanup in flight. */
   holdTabReloads(): void;
   releaseTabReloads(): void;
@@ -141,6 +144,7 @@ async function bootWorker(
   const sounds: string[] = [];
   const notices: Array<{ title: string; body: string }> = [];
   let syncWriteGate: Promise<void> | null = null;
+  let journalWriteGate: Promise<void> | null = null;
   let auditGate: Promise<void> | null = null;
   let releaseAuditGate: () => void = (): void => undefined;
   const armAuditGate = (): void => {
@@ -303,6 +307,13 @@ async function bootWorker(
           );
         }),
         set: vi.fn(async (items: Record<string, unknown>): Promise<void> => {
+          if (journalWriteGate !== null && Object.hasOwn(items, LOCAL_SYNC_JOURNAL)) {
+            // One-shot: the write this gate parks is the one in flight, and everything behind it
+            // runs, which is what makes the two authorities overlap.
+            const parked: Promise<void> = journalWriteGate;
+            journalWriteGate = null;
+            await parked;
+          }
           localWrites += 1;
           Object.assign(local, structuredClone(items));
           const runtime: RuntimeStateV2 | null = parseRuntimeStateV2(local[LOCAL_RUNTIME]);
@@ -430,6 +441,13 @@ async function bootWorker(
     releaseTabReloads: (): void => {
       reloadGate = null;
       releaseReloadGate();
+    },
+    holdJournalWrite: (): (() => void) => {
+      let release: () => void = (): void => undefined;
+      journalWriteGate = new Promise<void>((resolve: () => void): void => {
+        release = resolve;
+      });
+      return release;
     },
     holdSyncWrites: (): (() => void) => {
       let release: () => void = (): void => undefined;
@@ -1441,6 +1459,38 @@ describe('worker cutover to v2 session authority', (): void => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('keeps an ended session ended when an attempt write is still in flight', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    const document: FakeDocument = {
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    };
+    worker.documents.push(document);
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+
+    // The attempt commit is parked in the middle of its writes, which is where the Engine used to
+    // be holding a runtime clone it had taken before them.
+    const release: () => void = worker.holdJournalWrite();
+    const attempting: Promise<void> = worker.navigate(document, 'committed');
+    await worker.settle();
+
+    // The user ends the session while that write is in flight, and the controller commits it.
+    await worker.send({ type: 'requestSessionEnd' } as Request);
+    await worker.settle();
+    release();
+    await attempting;
+    await worker.settle();
+
+    expect(worker.runtime().session).toBeNull();
+    expect(worker.runtime().pendingClosure).toBeNull();
+    // The attempt the write carried is still counted: neither authority loses the other's work.
+    expect(worker.runtime().attemptDebounce).not.toEqual({});
+    expect(attemptsOf(worker)).toBe(1);
   });
 
   it('counts the focus of a session that follows one that ended', async (): Promise<void> => {

@@ -2478,15 +2478,16 @@ describe('Engine', () => {
     const storedRuntime: RuntimeStateV2 = structuredClone(
       h.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeStateV2,
     );
+    // The write that retires the checkpoint composes the current runtime, so it carries the tab
+    // the stop claimed while it was in flight and leaves nothing to replay.
+    expect(storedRuntime).toMatchObject({
+      tabStates: { 7: { stoppedDocumentId: 'durable-document' } },
+      commitCheckpoint: null,
+    });
     const restarted: Harness = makeEngine({ runtime: storedRuntime });
     expect(
       restarted.engine.tabFacts(7, 'https://facebook.com/feed', 'durable-document').wasStopped,
     ).toBe(true);
-    await restarted.engine.snapshotPersisted();
-    expect(restarted.ports.saveRuntime.mock.calls.at(-1)?.[0]).toMatchObject({
-      tabStates: { 7: { stoppedDocumentId: 'durable-document' } },
-      commitCheckpoint: null,
-    });
   });
 
   it('does not restore bank data from a checkpoint that does not own a bank write', async () => {
