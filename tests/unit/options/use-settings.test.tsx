@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import type { VNode } from 'preact';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import { App } from '../../../src/options/App';
 import type { SettingsStore } from '../../../src/options/use-settings';
 import { useSettingsStore } from '../../../src/options/use-settings';
@@ -93,7 +93,15 @@ beforeEach((): void => {
 afterEach((): void => {
   cleanup();
   window.history.replaceState(null, '', '/');
+  vi.unstubAllGlobals();
 });
+
+/** jsdom refuses to redefine location's own properties, so the whole global is stubbed. */
+function stubReload(): Mock<() => void> {
+  const reload: Mock<() => void> = vi.fn<() => void>();
+  vi.stubGlobal('location', { ...window.location, reload });
+  return reload;
+}
 
 describe('useSettingsStore', () => {
   it('loads settings, lists, and snapshot on mount', async (): Promise<void> => {
@@ -226,18 +234,40 @@ describe('useSettingsStore', () => {
   });
 
   it('reloads once for a snapshot response it cannot validate', async (): Promise<void> => {
+    const reload: Mock<() => void> = stubReload();
     fake.respond('getSnapshot', { ok: false, error: 'worker unavailable' });
     render(<Harness />);
 
-    // jsdom cannot navigate, so the reload shows up as the flag that guards the second attempt.
+    // jsdom cannot navigate, so the guard flag and the reload call are what the page leaves behind.
     await waitFor((): void => {
       expect(sessionStorage.getItem(RELOAD_FLAG)).toBe('1');
     });
+    expect(reload).toHaveBeenCalledOnce();
     expect(store().loadError).toBeNull();
     expect(store().snapshot).toBeNull();
   });
 
+  it('never reloads a page whose session storage refuses to remember the attempt', async (): Promise<void> => {
+    const reload: Mock<() => void> = stubReload();
+    vi.stubGlobal('sessionStorage', {
+      getItem: (): string | null => {
+        throw new Error('storage is blocked');
+      },
+      setItem: (): void => {
+        throw new Error('storage is blocked');
+      },
+    });
+    fake.respond('getSnapshot', { ok: false, error: 'worker unavailable' });
+    render(<Harness />);
+
+    await waitFor((): void => {
+      expect(store().loadError).toBe('Could not load settings. Reload the page to try again.');
+    });
+    expect(reload).not.toHaveBeenCalled();
+  });
+
   it('rejects a worker rejection snapshot response once the reloaded page fails again', async (): Promise<void> => {
+    const reload: Mock<() => void> = stubReload();
     sessionStorage.setItem(RELOAD_FLAG, '1');
     fake.respond('getSnapshot', { ok: false, error: 'worker unavailable' });
     render(<Harness />);
@@ -248,6 +278,7 @@ describe('useSettingsStore', () => {
     expect(store().settings).toBeNull();
     expect(store().lists).toBeNull();
     expect(store().snapshot).toBeNull();
+    expect(reload).not.toHaveBeenCalled();
   });
 
   it('rejects a non-positive freeze cadence from the worker', async (): Promise<void> => {

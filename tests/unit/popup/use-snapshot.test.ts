@@ -3,7 +3,7 @@ import './chrome-fake';
 
 import { act, cleanup, render, waitFor } from '@testing-library/preact';
 import { h, type VNode } from 'preact';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import { App } from '../../../src/popup/App';
 import { useSnapshot } from '../../../src/popup/use-snapshot';
 import {
@@ -73,6 +73,13 @@ function focusSnapshot(at: number): SessionSnapshot {
   };
 }
 
+/** jsdom refuses to redefine location's own properties, so the whole global is stubbed. */
+function stubReload(): Mock<() => void> {
+  const reload: Mock<() => void> = vi.fn<() => void>();
+  vi.stubGlobal('location', { ...window.location, reload });
+  return reload;
+}
+
 describe('useSnapshot', () => {
   beforeEach((): void => {
     resetChromeFake();
@@ -81,6 +88,7 @@ describe('useSnapshot', () => {
 
   afterEach((): void => {
     cleanup();
+    vi.unstubAllGlobals();
   });
 
   it('loads the initial snapshot via getSnapshot', async (): Promise<void> => {
@@ -172,20 +180,45 @@ describe('useSnapshot', () => {
   });
 
   it('reloads once for a snapshot it cannot validate', async (): Promise<void> => {
+    const reload: Mock<() => void> = stubReload();
     sendMessageMock.mockResolvedValue({
       phase: 'focus',
       config: { strictness: 'friction' },
     });
     const { getByRole } = render(h(Probe, null));
 
-    // jsdom cannot navigate, so the reload shows up as the flag that guards the second attempt.
+    // jsdom cannot navigate, so the guard flag and the reload call are what the page leaves behind.
     await waitFor((): void => {
       expect(sessionStorage.getItem(RELOAD_FLAG)).toBe('1');
     });
+    expect(reload).toHaveBeenCalledOnce();
     expect(getByRole('status').textContent).toBe('loading');
   });
 
+  it('never reloads a page whose session storage refuses to remember the attempt', async (): Promise<void> => {
+    const reload: Mock<() => void> = stubReload();
+    vi.stubGlobal('sessionStorage', {
+      getItem: (): string | null => {
+        throw new Error('storage is blocked');
+      },
+      setItem: (): void => {
+        throw new Error('storage is blocked');
+      },
+    });
+    sendMessageMock.mockResolvedValue({
+      phase: 'focus',
+      config: { strictness: 'friction' },
+    });
+    const { getByRole } = render(h(Probe, null));
+
+    await waitFor((): void => {
+      expect(getByRole('status').textContent).toBe('unavailable');
+    });
+    expect(reload).not.toHaveBeenCalled();
+  });
+
   it('fails closed when the reloaded page still cannot validate the snapshot', async (): Promise<void> => {
+    const reload: Mock<() => void> = stubReload();
     sessionStorage.setItem(RELOAD_FLAG, '1');
     sendMessageMock.mockResolvedValue({
       phase: 'focus',
@@ -196,6 +229,7 @@ describe('useSnapshot', () => {
     await waitFor((): void => {
       expect(getByRole('status').textContent).toBe('unavailable');
     });
+    expect(reload).not.toHaveBeenCalled();
   });
 
   it('fails closed when a stateChanged broadcast is malformed after the reload', async (): Promise<void> => {

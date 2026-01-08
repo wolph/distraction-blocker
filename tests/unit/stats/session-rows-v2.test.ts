@@ -299,6 +299,66 @@ describe('pairSessionRowsV2', (): void => {
     expect(sessionA?.unlockMs).toBe(0);
   });
 
+  it('attaches an unidentified spend to the newest open row', (): void => {
+    const rows: SessionRowV2[] = pairSessionRowsV2(
+      newestFirst([
+        v2Start(T9, SESSION_A, TIMED_50, 'a'),
+        v2Start(T11, SESSION_B, TIMED_50, 'b'),
+        // A spend written before the worker learned to stamp its session id.
+        { t: 'pauseTaken', at: T11 + MIN, ms: 5 * MIN },
+        { t: 'unlockTaken', at: T11 + 2 * MIN, host: 'youtube.com', ms: 4 * MIN },
+        v2End(T1110, SESSION_B, 'completed', 'timer-completed', 40 * MIN, TIMED_50),
+      ]),
+    );
+
+    const sessionB: SessionRowV2 | undefined = rows.find(
+      (row: SessionRowV2): boolean => row.intention === 'b',
+    );
+    expect(sessionB?.pauseMs).toBe(5 * MIN);
+    expect(sessionB?.unlockMs).toBe(4 * MIN);
+    const sessionA: SessionRowV2 | undefined = rows.find(
+      (row: SessionRowV2): boolean => row.intention === 'a',
+    );
+    expect(sessionA?.pauseMs).toBe(0);
+    expect(sessionA?.unlockMs).toBe(0);
+  });
+
+  it('gives an open legacy row the unidentified spend ahead of a newer v2 row', (): void => {
+    const rows: SessionRowV2[] = pairSessionRowsV2(
+      newestFirst([
+        legacyStart(T9, 25, 'legacy'),
+        v2Start(T11, SESSION_B, TIMED_50, 'v2'),
+        { t: 'pauseTaken', at: T11 + MIN, ms: 5 * MIN },
+      ]),
+    );
+
+    const legacy: SessionRowV2 | undefined = rows.find(
+      (row: SessionRowV2): boolean => row.intention === 'legacy',
+    );
+    const v2: SessionRowV2 | undefined = rows.find(
+      (row: SessionRowV2): boolean => row.intention === 'v2',
+    );
+    expect(legacy?.pauseMs).toBe(5 * MIN);
+    expect(v2?.pauseMs).toBe(0);
+  });
+
+  it('drops an unidentified terminal that owns no open row', (): void => {
+    const rows: SessionRowV2[] = pairSessionRowsV2(
+      newestFirst([
+        v2Start(T11, SESSION_B, TIMED_50, 'v2'),
+        { t: 'sessionCompleted', at: T1110, focusedMs: 40 * MIN },
+      ]),
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      intention: 'v2',
+      outcome: 'Running',
+      outcomeKind: 'running',
+      focusedMs: null,
+    });
+  });
+
   it('returns rows newest first and caps the list at twenty', (): void => {
     const events: SessionEventRecordV2[] = [];
     for (let index: number = 0; index < 25; index += 1) {
