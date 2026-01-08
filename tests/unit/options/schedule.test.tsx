@@ -299,6 +299,31 @@ describe('Schedule rows and validation', (): void => {
     expect(view.getByText('Overlaps another enabled entry on Mon.')).toBeTruthy();
   });
 
+  it('rejects enabling an entry that overlaps another enabled entry', (): void => {
+    const onChange: Mock = vi.fn();
+    const disabled: ScheduleEntryV2 = {
+      ...windowEntry(),
+      id: 'entry-3',
+      days: [1],
+      start: '12:00',
+      end: '13:00',
+      enabled: false,
+    };
+    const view = render(
+      <Schedule entries={[windowEntry(), disabled]} defaults={DEFAULTS} onChange={onChange} />,
+    );
+    const toggles: HTMLInputElement[] = view.getAllByLabelText('Enabled') as HTMLInputElement[];
+    const refused: HTMLInputElement | undefined = toggles[1];
+    if (refused === undefined) throw new Error('the second entry row was not rendered');
+
+    fireEvent.click(refused);
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(view.getByRole('alert').textContent).toBe('Overlaps another enabled entry on Mon.');
+    // A refused toggle must not leave the browser's flip on screen.
+    expect(refused.checked).toBe(false);
+  });
+
   it('edits, toggles, and deletes saved entries in place', (): void => {
     const onChange: Mock = vi.fn();
     const view = render(

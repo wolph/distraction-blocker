@@ -16,7 +16,7 @@ import {
   UNTIL_STOPPED_LABEL,
 } from '../../../src/shared/session-copy';
 import type { ListsConfig, SettingsV2 } from '../../../src/shared/types';
-import { resetChromeFake, sendMessageMock } from './chrome-fake';
+import { openOptionsPageMock, resetChromeFake, sendMessageMock } from './chrome-fake';
 
 vi.mock('../../../src/core/categories', () => ({
   ALL_CATEGORIES: [
@@ -358,5 +358,104 @@ describe('StartForm start command', (): void => {
 
     expect(social.getAttribute('aria-pressed')).toBe('false');
     expect(requests()).toHaveLength(0);
+  });
+});
+
+describe('StartForm settings link, list rebase, and layout', (): void => {
+  it('opens permanent Settings without touching the draft', async (): Promise<void> => {
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
+    fireEvent.input(view.getByLabelText('Intention'), { target: { value: 'write the report' } });
+
+    fireEvent.click(view.getByRole('button', { name: 'Open Settings for permanent defaults' }));
+
+    await waitFor((): void => {
+      expect(openOptionsPageMock).toHaveBeenCalledOnce();
+    });
+    expect((view.getByLabelText('Intention') as HTMLInputElement).value).toBe('write the report');
+    expect(requests()).toHaveLength(0);
+    expect(view.queryByRole('alert')).toBeNull();
+  });
+
+  it('reports a Settings page that will not open', async (): Promise<void> => {
+    openOptionsPageMock.mockRejectedValue(new Error('no options page'));
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Open Settings for permanent defaults' }));
+
+    await waitFor((): void => {
+      expect(view.getByRole('alert').textContent).toBe('Could not open Settings. Try again.');
+    });
+    expect(requests()).toHaveLength(0);
+  });
+
+  it('rebases the draft onto refreshed lists while keeping the user deviation', (): void => {
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
+    fireEvent.click(view.getByRole('button', { name: 'Social' }));
+    expect(view.getByRole('button', { name: 'Social' }).getAttribute('aria-pressed')).toBe('true');
+    expect(
+      view.getByRole('button', { name: 'Video and streaming' }).getAttribute('aria-pressed'),
+    ).toBe('false');
+
+    const refreshed: ListsConfig = {
+      ...DEFAULT_LISTS,
+      categories: { ...DEFAULT_LISTS.categories, video: true },
+      custom: [{ kind: 'host', pattern: 'fresh.example' }],
+    };
+    view.rerender(<StartForm settings={SETTINGS} lists={refreshed} />);
+
+    expect(view.getByText('fresh.example')).toBeTruthy();
+    expect(
+      view.getByRole('button', { name: 'Video and streaming' }).getAttribute('aria-pressed'),
+    ).toBe('true');
+    expect(view.getByRole('button', { name: 'Social' }).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('reports lists it cannot reload after a stale start', async (): Promise<void> => {
+    sendMessageMock.mockImplementation(async (request: SessionRequestV2): Promise<unknown> => {
+      if (request.type === 'startSession') {
+        return { ok: false, code: 'invalid-request', error: STALE_SESSION_RULES_ERROR };
+      }
+      return { categories: 'not a lists config' };
+    });
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
+
+    fireEvent.click(view.getByRole('button', { name: TIMED_START_LABEL }));
+
+    await waitFor((): void => {
+      expect(view.getByRole('alert').textContent).toBe(
+        'Defaults changed, but current lists could not be loaded. Reload the popup.',
+      );
+    });
+    expect(requests().map((request: SessionRequestV2): string => request.type)).toEqual([
+      'startSession',
+      'getLists',
+    ]);
+  });
+
+  it('labels the intention field and the blocking mode group', (): void => {
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
+
+    const intention: HTMLInputElement = view.getByLabelText('Intention') as HTMLInputElement;
+    expect(intention.placeholder).toBe('What are you working on?');
+    const mode: HTMLElement = view.getByRole('group', { name: 'Blocking mode' });
+    expect(mode.querySelector('legend')?.textContent).toBe('Blocking mode');
+  });
+
+  it('keeps the start action and its error outside the scrolling region', async (): Promise<void> => {
+    openOptionsPageMock.mockRejectedValue(new Error('no options page'));
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
+    const scroll: Element | null = view.container.querySelector('.start-form__scroll');
+    const actions: Element | null = view.container.querySelector('.start-form__actions');
+    if (scroll === null || actions === null) throw new Error('the start form layout is missing');
+
+    const start: HTMLElement = view.getByRole('button', { name: TIMED_START_LABEL });
+    expect(actions.contains(start)).toBe(true);
+    expect(scroll.contains(start)).toBe(false);
+
+    fireEvent.click(view.getByRole('button', { name: 'Open Settings for permanent defaults' }));
+
+    const alert: HTMLElement = await view.findByRole('alert');
+    expect(actions.contains(alert)).toBe(true);
+    expect(scroll.contains(alert)).toBe(false);
   });
 });
