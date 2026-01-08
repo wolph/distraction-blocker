@@ -35,8 +35,11 @@ export interface EngineSeamOptionsV2 {
   now: () => number;
   /** Defaults to `silent`, because most suites seed sessions rather than drive enforcement. */
   transport?: EngineTransportModeV2;
-  /** Every command the transport carried, in order, for a suite that asserts on what was sent. */
-  onCommand?: (command: DocumentContentCommand) => void;
+  /**
+   * Every command the transport carried, in order, with the tab it was addressed to, for a suite
+   * that asserts on what was sent and where it landed.
+   */
+  onCommand?: (command: DocumentContentCommand, tabId: number) => void;
   /** Remembers what the controller scheduled so `get` reads it back. Off by default. */
   rememberAlarms?: boolean;
   /** The tab generation a sweep compares against. Defaults to a fixed one. */
@@ -115,7 +118,7 @@ function alarmPortsV2(remember: boolean, now: () => number): AlarmPortsV2 {
 export function engineSeamPortsV2(options: EngineSeamOptionsV2): EngineSeamPortsV2 {
   const now: () => number = options.now;
   const cooperative: boolean = options.transport === 'cooperative';
-  const record: (command: DocumentContentCommand) => void =
+  const record: (command: DocumentContentCommand, tabId: number) => void =
     options.onCommand ?? ((): void => undefined);
   const targets: EnforcementTargetPortsV2 = {
     queryTopFrameTabs: (): Promise<Array<{ tabId: number; url: string | null }>> =>
@@ -126,11 +129,11 @@ export function engineSeamPortsV2(options: EngineSeamOptionsV2): EngineSeamPorts
   };
   const transport: ContentTransportPortsV2 = {
     sendToDocument: (
-      _tabId: number,
+      tabId: number,
       _documentId: string,
       message: DocumentContentCommand,
     ): Promise<unknown> => {
-      record(message);
+      record(message, tabId);
       return Promise.resolve(cooperative ? cooperativeResponse(message, now()) : null);
     },
   };

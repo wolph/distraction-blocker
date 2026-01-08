@@ -179,12 +179,21 @@ function liveFocusRuntime(now: number, lists: ListsConfig): RuntimeStateV2 {
 /** The enforcement seams a real engine needs, with the cooperative document these tests drive. */
 function enforcementSeamPorts(
   now: () => number,
-  onCommand: (command: DocumentContentCommand) => void = (): void => undefined,
+  onCommand: (command: DocumentContentCommand, tabId: number) => void = (): void => undefined,
 ): EngineSeamPortsV2 {
   return engineSeamPortsV2({ now, transport: 'cooperative', onCommand });
 }
 
-const dispatchLog: WeakMap<Engine, string[]> = new WeakMap<Engine, string[]>();
+/** One document handed to the controller: what it was told, and which document was told it. */
+interface DispatchedNavigation {
+  kind: 'applyBlock' | 'clearBlock';
+  target: { tabId: number; documentId: string; url: string };
+}
+
+const dispatchLog: WeakMap<Engine, DispatchedNavigation[]> = new WeakMap<
+  Engine,
+  DispatchedNavigation[]
+>();
 
 /**
  * Gives a fake engine the command seam the worker reads. It answers the fake's own verdict and
@@ -214,11 +223,16 @@ function withCommandSeam(engine: Engine): Engine {
       return [enforcementCommandFor(target, verdict)];
     },
   );
-  const dispatched: string[] = [];
+  const dispatched: DispatchedNavigation[] = [];
   dispatchLog.set(engine, dispatched);
   fake.handleNavigation = vi.fn(
     async (target: { tabId: number; documentId: string; url: string }): Promise<void> => {
-      dispatched.push(fake.verdictFor(target.url).blocked ? 'applyBlock' : 'clearBlock');
+      // The target is kept beside the verdict. A navigation race is only visible in which document
+      // was handed over, so a seam that dropped it could not answer the question its tests ask.
+      dispatched.push({
+        kind: fake.verdictFor(target.url).blocked ? 'applyBlock' : 'clearBlock',
+        target: { ...target },
+      });
     },
   );
   fake.recordDocumentAck = vi.fn().mockResolvedValue(undefined);
@@ -240,7 +254,21 @@ function clearDispatchLog(engine: Engine): void {
  * the controller instead of messaging the page itself, so this is what a tab was told.
  */
 function dispatchedCommands(engine: Engine): string[] {
-  return dispatchLog.get(engine) ?? [];
+  return (dispatchLog.get(engine) ?? []).map(
+    (dispatch: DispatchedNavigation): string => dispatch.kind,
+  );
+}
+
+/** The documents the worker handed to the controller, in order, for a test that races them. */
+function dispatchedTargets(engine: Engine): Array<{
+  tabId: number;
+  documentId: string;
+  url: string;
+}> {
+  return (dispatchLog.get(engine) ?? []).map(
+    (dispatch: DispatchedNavigation): { tabId: number; documentId: string; url: string } =>
+      dispatch.target,
+  );
 }
 
 const blocked: Verdict = {
@@ -248,12 +276,6 @@ const blocked: Verdict = {
   reason: 'custom',
   categoryId: null,
   matchedPattern: 'facebook.com',
-};
-const _categoryBlocked: Verdict = {
-  blocked: true,
-  reason: 'category',
-  categoryId: 'social',
-  matchedPattern: 'instagram.com',
 };
 const allowed: Verdict = {
   blocked: false,
@@ -666,6 +688,14 @@ describe('applyToTab', () => {
       false,
       LIVE_DOCUMENT_ID,
     );
+    // Mid-flight, which is the half of this the ordering claim lives in. The older operation is
+    // parked inside its command freeze, which is where the attempt is written and which runs before
+    // any dispatch, so the one document that reaches the controller here is the newer intent. The
+    // v1 test read the same count off `sendMessage` at this point, and again after the gate opened.
+    await vi.waitFor((): void => {
+      expect(engine.handleNavigation).toHaveBeenCalledTimes(1);
+    });
+
     persistenceGate.resolve(undefined);
     await withTimeout(Promise.all([older, newer]), 'same-tab intent replacement');
 
@@ -3863,7 +3893,7 @@ describe('registerTabListeners', () => {
   async function blockedNavigationEngine(reportError: (error: unknown) => void): Promise<Engine> {
     const now: number = new Date(2026, 7, 29, 12, 0).getTime();
     const applyBlocking = vi.fn().mockResolvedValue(undefined);
-    const dispatched: string[] = [];
+    const dispatched: DispatchedNavigation[] = [];
     const ports: EnginePorts = {
       now: vi.fn((): number => now),
       newId: vi.fn((): string => '60000000-0000-4000-8000-000000000001'),
@@ -3886,9 +3916,12 @@ describe('registerTabListeners', () => {
       websiteBlockingReady: vi.fn((): boolean => true),
       ...enforcementSeamPorts(
         (): number => now,
-        (command: DocumentContentCommand): void => {
+        (command: DocumentContentCommand, tabId: number): void => {
           if (command.command !== 'apply-enforcement') return;
-          dispatched.push(command.verdict.blocked ? 'applyBlock' : 'clearBlock');
+          dispatched.push({
+            kind: command.verdict.blocked ? 'applyBlock' : 'clearBlock',
+            target: { tabId, documentId: command.documentId, url: command.expectedUrl },
+          });
         },
       ),
     };
@@ -5376,7 +5409,12 @@ describe('registerTabListeners', () => {
       expect(flushRuntime).toHaveBeenCalledTimes(1);
     });
 
-    expect(dispatchedCommands(engine)).toContain('applyBlock');
+    // The document the commit accepted is the one enforced, even though the tab moved to
+    // `document-b` while the final URL read was in flight.
+    expect(dispatchedTargets(engine)).toEqual([
+      { tabId: 7, documentId: 'document-a', url: currentUrl },
+    ]);
+    expect(dispatchedCommands(engine)).toEqual(['applyBlock']);
     expect(update).not.toHaveBeenCalled();
   });
 });
@@ -6260,7 +6298,10 @@ describe('applyBlockingFactory', () => {
   // The attempt write moved inside the per-tab task, so a blocking sweep started by that write
   // waits for the task that is waiting for it. The assertions are kept whole for whoever restores
   // the release. See task-1-piece-A-report.md.
-  it('does not deadlock when attempt persistence starts a nested same-tab sweep', async () => {
+  // Named for what it checks, not for the deadlock it cannot prove. `performCommit` resolves the
+  // attempt's durability before it sweeps, so this passes with and without the release fix; the
+  // test below it is the one that pins the release. See task-1-piece-D2-report.md, M6.
+  it('writes one attempt, without error, when persistence starts a nested same-tab sweep', async () => {
     let now = new Date(2026, 7, 29, 12, 0).getTime();
     const appendEvents = vi.fn().mockResolvedValue(undefined);
     const applyBlocking = vi.fn().mockResolvedValue(undefined);
