@@ -426,7 +426,7 @@ describe('ActiveView', (): void => {
 });
 
 /** The two spend controls, in render order: unlock first, then pause. */
-function spendControls(container: HTMLElement): {
+function spendControls(container: Element): {
   unlock: HTMLButtonElement;
   pause: HTMLButtonElement;
 } {
