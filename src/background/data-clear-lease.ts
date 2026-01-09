@@ -73,7 +73,8 @@ interface LeaseState {
   current: DataClearLeaseToken | null;
   pending: number;
   insideOperation: boolean;
-  transacting: boolean;
+  /** The token whose transaction is in flight, so a stale claim cannot block a later one. */
+  transactingToken: DataClearLeaseToken | null;
   nextId: number;
   engineLeaseHeld: () => boolean;
 }
@@ -89,7 +90,7 @@ export function createAllDataClearLease(engineLeaseHeld: () => boolean): AllData
     current: null,
     pending: 0,
     insideOperation: false,
-    transacting: false,
+    transactingToken: null,
     nextId: 1,
     engineLeaseHeld,
   };
@@ -137,11 +138,29 @@ export async function transactDataClearJournal(
  * lease's knowledge may call it directly.
  */
 export function assertNoEngineRuntimeLease(engineLeaseHeld: () => boolean): void {
-  if (engineLeaseHeld()) {
+  if (engineRuntimeLeaseHeld(engineLeaseHeld)) {
     throw new CoreError(
       'lease-order',
       'the shared deletion lease is outermost and cannot be acquired under an engine runtime lease',
     );
+  }
+}
+
+/**
+ * Main binds this predicate before Engine exists, so it reads a slot that is still empty, still in
+ * its temporal dead zone, or guarded by a getter of its own. A throw from it is a lock-order
+ * failure at the acquisition point, not an unrelated crash, so it is reported as one.
+ */
+function engineRuntimeLeaseHeld(engineLeaseHeld: () => boolean): boolean {
+  try {
+    return engineLeaseHeld();
+  } catch (error: unknown) {
+    const failure: CoreError = new CoreError(
+      'lease-order',
+      'the engine runtime-lease predicate could not be read, so acquisition is refused',
+    );
+    failure.cause = error;
+    throw failure;
   }
 }
 
@@ -177,6 +196,7 @@ async function holdLease<T>(
     return await callOperation(state, token, operation);
   } finally {
     state.current = null;
+    state.transactingToken = null;
     state.pending -= 1;
   }
 }
@@ -196,9 +216,14 @@ function callOperation<T>(
 }
 
 /**
- * Two transactions under one token would each read the same value and the later write would drop
- * the earlier change, so the second is refused rather than serialized: a lease holder that needs
- * two changes makes them in one transform.
+ * Two concurrent transactions under one token would each read the same value and the later write
+ * would drop the earlier change, so the second is refused: a holder that needs two changes at once
+ * makes them in one transform. Sequential transactions under one token are the normal case, and
+ * finalization replay depends on them: it advances the marker projection, materializes the marker,
+ * and removes the applied intent, which is two transactions with a write between them.
+ *
+ * The claim is keyed on the token, so a transaction abandoned by a released operation cannot refuse
+ * the next operation's first transaction with a concurrency message it did not earn.
  */
 function claimJournalTransaction(state: LeaseState, token: DataClearLeaseToken): () => void {
   if (state.current !== token) {
@@ -207,18 +232,18 @@ function claimJournalTransaction(state: LeaseState, token: DataClearLeaseToken):
       'an all-data journal transaction needs the current deletion-lease token',
     );
   }
-  if (state.transacting) {
+  if (state.transactingToken === token) {
     throw new CoreError(
       'lease-order',
       'one all-data journal transaction runs at a time under the deletion lease',
     );
   }
-  state.transacting = true;
+  state.transactingToken = token;
   let released: boolean = false;
   return (): void => {
     if (released) return;
     released = true;
-    state.transacting = false;
+    if (state.transactingToken === token) state.transactingToken = null;
   };
 }
 

@@ -110,6 +110,13 @@ function newGate(): Gate {
   return { promise, open };
 }
 
+const MARKER: Record<string, unknown> = {
+  version: 1,
+  profile: 'clean',
+  latestReason: 'install',
+  extensionVersion: EXTENSION_VERSION,
+};
+
 function seededJournal(): AllDataClearJournalV2 {
   return createAllDataClearJournalV2(
     { resetEpoch: RESET_EPOCH, resetOperationId: RESET_OPERATION },
@@ -358,6 +365,58 @@ describe('token-checked journal transactions', (): void => {
     expect(storage.sets).toHaveLength(1);
     expect(storedJournal(storage).inventory).toEqual(['policy']);
     expect(storedJournal(storage).pendingInstallLifecycleIntents).toEqual([]);
+  });
+
+  it('allows sequential transactions under one token with a write between them', async (): Promise<void> => {
+    const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: seededJournal() });
+    const lease: AllDataClearLease = newLease();
+    const seen: (StoredJournal | null)[] = [];
+
+    // The finalization replay shape: advance the journal, materialize the marker, then remove the
+    // applied intent, all under one uninterrupted token.
+    await lease.run(async (token: DataClearLeaseToken): Promise<void> => {
+      await transactDataClearJournal(lease, token, appendIntent(intentRecord()));
+      await chrome.storage.local.set({ installMarker: MARKER });
+      await transactDataClearJournal(
+        lease,
+        token,
+        recording(
+          seen,
+          (current: StoredJournal | null): DataClearJournal => ({
+            ...allDataJournal(current),
+            pendingInstallLifecycleIntents: [],
+          }),
+        ),
+      );
+    });
+
+    expect((seen[0] as AllDataClearJournalV2).pendingInstallLifecycleIntents).toEqual([
+      intentRecord(),
+    ]);
+    expect(storedJournal(storage).pendingInstallLifecycleIntents).toEqual([]);
+    expect(
+      storage.sets.map((items: Record<string, unknown>): string[] => Object.keys(items)),
+    ).toEqual([[LOCAL_DATA_CLEAR_JOURNAL], ['installMarker'], [LOCAL_DATA_CLEAR_JOURNAL]]);
+  });
+
+  it('lets a new operation transact after an abandoned transaction under the previous token', async (): Promise<void> => {
+    const storage: StorageStub = stubStorage({ [LOCAL_DATA_CLEAR_JOURNAL]: seededJournal() });
+    const lease: AllDataClearLease = newLease();
+    const gate: Gate = newGate();
+    const abandoned: Promise<DataClearJournal | null>[] = [];
+    storage.gate = gate.promise;
+
+    await lease.run(async (token: DataClearLeaseToken): Promise<void> => {
+      abandoned.push(transactDataClearJournal(lease, token, setInventory(['policy'])));
+    });
+    storage.gate = null;
+
+    const written: DataClearJournal | null = await transact(lease, setInventory(['history']));
+
+    expect(written).toEqual({ ...seededJournal(), inventory: ['history'] });
+    expect(storedJournal(storage).inventory).toEqual(['history']);
+    gate.open();
+    expectCoreError(await settled(startedTransaction(abandoned)), 'lease-order');
   });
 
   it('refuses a write from a transaction that outlived its operation', async (): Promise<void> => {
@@ -615,6 +674,28 @@ describe('deletion lease order', (): void => {
 
     expect(error).toBeInstanceOf(CoreError);
     expect((error as CoreError).code).toBe('lease-order');
+  });
+
+  it('reports a throwing engine-lease predicate as a lock-order failure', async (): Promise<void> => {
+    const boom: ReferenceError = new ReferenceError('Cannot access engine before initialization');
+    const lease: AllDataClearLease = newLease((): boolean => {
+      throw boom;
+    });
+
+    const refused: unknown = captured((): unknown =>
+      lease.run(async (): Promise<void> => undefined),
+    );
+
+    expectCoreError(refused, 'lease-order');
+    expect((refused as CoreError).cause).toBe(boom);
+    expect(lease.held()).toBe(false);
+    expect(
+      captured((): void =>
+        assertNoEngineRuntimeLease((): boolean => {
+          throw boom;
+        }),
+      ),
+    ).toBeInstanceOf(CoreError);
   });
 
   it('returns when no engine runtime lease is held', (): void => {
