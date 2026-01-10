@@ -140,7 +140,13 @@ export function engineSeamPortsV2(options: EngineSeamOptionsV2): EngineSeamPorts
   return {
     auditEnforcement: (): Promise<'ready'> => Promise.resolve('ready'),
     loadAggregates: (): Promise<Record<string, DailyAgg>> => Promise.resolve({}),
-    clearBlockingForNonBlockingPhase: (): Promise<void> => Promise.resolve(),
+    // `EnginePorts` still declares this port, so the fake has to supply it, but nothing in the
+    // worker reads it: the Engine builds the controller effect of the same name itself and clears
+    // through `applyBlocking`. A resolved stub would let a reader reappear behind a green suite, so
+    // this one fails instead of pretending the seam is live. See task-1-review-tests.md, I4.
+    clearBlockingForNonBlockingPhase: (): Promise<void> => {
+      throw new Error('EnginePorts.clearBlockingForNonBlockingPhase has no production reader');
+    },
     restoreTabClaims: (): Promise<number[]> => Promise.resolve([]),
     reloadStoppedDocuments: (): Promise<void> => Promise.resolve(),
     targets,
