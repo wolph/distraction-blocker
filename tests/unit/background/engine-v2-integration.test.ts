@@ -1461,6 +1461,62 @@ describe('worker cutover to v2 session authority', (): void => {
     }
   });
 
+  it('leaves the epoch reset for the push that delivers it', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    worker.documents.push({
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    });
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+
+    // A tab the session never reached has acknowledged no epoch. The sweep in front of the push
+    // reads whether it is blocked, and reading must not take the reset the push still owes it.
+    const arriving: FakeDocument = {
+      tabId: 12,
+      documentId: 'document-2',
+      url: 'https://facebook.com/groups',
+      received: [],
+    };
+    worker.documents.push(arriving);
+    await worker.navigate(arriving, 'committed');
+    await worker.settle();
+
+    expect(arriving.received.map((command): string => command.command)).toEqual([
+      'reset-enforcement-epoch',
+      'apply-enforcement',
+    ]);
+  });
+
+  it('clears the tabs a rejected runtime left behind at boot', async (): Promise<void> => {
+    const stranded: FakeDocument = {
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    };
+    // A stored runtime the reader refuses is replaced by an empty one under a fresh epoch, so no
+    // open document has acknowledged anything and the boot sweep owes every one of them a reset.
+    const worker: WorkerHarness = await bootWorker(
+      {
+        ...installedSeed(),
+        [LOCAL_RUNTIME_SCHEMA]: { runtimeSchemaVersion: 2 },
+        [LOCAL_RUNTIME]: { version: 2, nonsense: true },
+      },
+      { documents: [stranded] },
+    );
+    await worker.settle();
+
+    expect(worker.runtime().session).toBeNull();
+    // The reset comes first and the clear follows it, so the page the rejected runtime stranded is
+    // released rather than left holding whatever overlay it had.
+    expect(stranded.received[0]?.command).toBe('reset-enforcement-epoch');
+    const applied: DocumentContentCommand | undefined = stranded.received[1];
+    expect(applied?.command === 'apply-enforcement' ? applied.presentation : null).toBe('clear');
+  });
+
   it('keeps an ended session ended when an attempt write is still in flight', async (): Promise<void> => {
     const worker: WorkerHarness = await bootWorker(installedSeed());
     const document: FakeDocument = {

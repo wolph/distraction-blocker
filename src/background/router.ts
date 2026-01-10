@@ -347,7 +347,13 @@ export async function routeMessage(
       };
       const kind: 'navigation' | 'existing' = msg.docState === 'fresh' ? 'navigation' : 'existing';
       // The controller records the blocked attempt on this path exactly as the v1 engine did.
-      const commands: DocumentContentCommand[] = await engine.documentCommandsFor(target, kind);
+      // The pull is the delivery: this answer is what the document applies, so it is the one call
+      // that may hand over the epoch reset and record the acknowledgement for it.
+      const commands: DocumentContentCommand[] = await engine.documentCommandsFor(
+        target,
+        kind,
+        'deliver',
+      );
       if (msg.docState === 'fresh' && blocksTarget(commands)) {
         // The claim is what carries the stopped-page copy and what the closure reloads.
         await engine.markStopped(tabId, msg.url, documentId);

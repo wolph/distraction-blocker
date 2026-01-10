@@ -1074,11 +1074,28 @@ describe('SessionControllerV2 navigation and documents', (): void => {
 
   it('returns the reset command before the newest persisted command', async (): Promise<void> => {
     const { controller, ports } = harness(publishedFocusRuntime({ epochResetAcks: {} }));
-    const commands = await controller.documentCommandsFor(target, null);
+    const commands = await controller.documentCommandsFor(target, null, 'deliver');
 
     expect(commands[0]?.command).toBe('reset-enforcement-epoch');
     expect(commands[1]?.command).toBe('apply-enforcement');
     expect(ports.current().documentCommands[documentKey(11, DOC_ONE)]).toBeDefined();
+  });
+
+  it('hands the reset only to a caller that delivers it', async (): Promise<void> => {
+    const { controller, ports } = harness(publishedFocusRuntime({ epochResetAcks: {} }));
+
+    const read = await controller.documentCommandsFor(target, null);
+
+    // A reader gets the command and no reset, and records no acknowledgement, so the reset this
+    // document is owed is still there for the push that follows.
+    expect(read.map((command): string => command.command)).toEqual(['apply-enforcement']);
+    expect(ports.current().epochResetAcks).toEqual({});
+    const delivered = await controller.documentCommandsFor(target, null, 'deliver');
+    expect(delivered.map((command): string => command.command)).toEqual([
+      'reset-enforcement-epoch',
+      'apply-enforcement',
+    ]);
+    expect(Object.keys(ports.current().epochResetAcks)).toEqual([documentKey(11, DOC_ONE)]);
   });
 
   it('applies the attempt rule to documentCommandsFor as well', async (): Promise<void> => {

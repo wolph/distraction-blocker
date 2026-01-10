@@ -103,6 +103,14 @@ interface SettledEarningsV2 {
   events: SessionEventRecordV2[];
 }
 
+/**
+ * Whether the caller of `documentCommandsFor` sends the commands to the document. Only a delivering
+ * caller may take the epoch reset, because taking it is what records the acknowledgement, and a
+ * caller that reads the answer and drops it applies nothing. Reading is the default, so a new
+ * caller cannot consume a reset it never delivers by forgetting to say so.
+ */
+export type DocumentCommandDeliveryV2 = 'deliver' | 'read';
+
 /** What one document-command call decides inside the queue, before the attempt write runs. */
 interface PreparedDocumentCommandsV2 {
   commands: DocumentContentCommand[];
@@ -493,6 +501,7 @@ export class SessionControllerV2 {
   async documentCommandsFor(
     target: { tabId: number; documentId: string; url: string },
     attemptKind: 'navigation' | 'existing' | null,
+    delivery: DocumentCommandDeliveryV2 = 'read',
   ): Promise<DocumentContentCommand[]> {
     const prepared: PreparedDocumentCommandsV2 = await this.enqueue(
       async (): Promise<PreparedDocumentCommandsV2> => {
@@ -510,7 +519,10 @@ export class SessionControllerV2 {
           attemptKind !== null,
         );
         const commands: DocumentContentCommand[] = [];
-        if (!this.hasCurrentEpochAck(target.tabId, target.documentId)) {
+        // The reset is handed over only to a caller that delivers the array. An acknowledgement
+        // records what a document applied, and a caller that reads the answer and drops it applies
+        // nothing: minting one there consumes the reset the next push still owes this document.
+        if (delivery === 'deliver' && !this.hasCurrentEpochAck(target.tabId, target.documentId)) {
           commands.push(wireOf(await this.handOverEpochReset(target)));
         }
         commands.push(wireOf(command));

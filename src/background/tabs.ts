@@ -83,6 +83,8 @@ async function blockedForTarget(
   // here so the mute and reload effects still know whether the page ends up blocked.
   const documentId: string | null = input.documentId ?? (await getDocumentId(tabId));
   if (documentId === null) return false;
+  // This file reads the answer and drops it, so it asks as a reader, which is the default: the
+  // epoch reset a document has not acknowledged belongs to the push that follows, not to this call.
   const commands: DocumentContentCommand[] = await engine.documentCommandsFor(
     { tabId, documentId, url: input.url },
     attemptKind,

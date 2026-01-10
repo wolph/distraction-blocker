@@ -83,7 +83,11 @@ import type {
   RuntimeStateV2,
 } from './runtime-v2-types';
 import type { ScheduleRunnerPortsV2 } from './schedule-runner-v2';
-import { type SessionControllerEffectsV2, SessionControllerV2 } from './session-controller-v2';
+import {
+  type DocumentCommandDeliveryV2,
+  type SessionControllerEffectsV2,
+  SessionControllerV2,
+} from './session-controller-v2';
 import {
   type DeferredBlockClaim,
   type RuntimeTabState,
@@ -798,11 +802,12 @@ export class Engine {
   async documentCommandsFor(
     target: { tabId: number; documentId: string; url: string },
     attemptKind: 'navigation' | 'existing' | null,
+    delivery: DocumentCommandDeliveryV2 = 'read',
   ): Promise<DocumentContentCommand[]> {
     // An all-data clear needs no session, so its pending erase answers nothing and writes nothing.
     // Every other closed state, a mode switch or an aggregate drain, still serves the live command.
     if (this.allDataClearPending) return [];
-    return await this.controller.documentCommandsFor(target, attemptKind);
+    return await this.controller.documentCommandsFor(target, attemptKind, delivery);
   }
 
   async handleNavigation(
