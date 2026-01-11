@@ -96,7 +96,7 @@ function onFirstDocumentDispatch(engine: Engine, impl: () => void): void {
 function commandedUrls(engine: Engine): string[] {
   return vi
     .mocked(engine.documentCommandsFor)
-    .mock.calls.map((call: [{ url: string }, unknown]): string => call[0].url);
+    .mock.calls.map((call: [{ url: string }, ...unknown[]]): string => call[0].url);
 }
 
 const LIVE_DOCUMENT_ID: string = 'document-1';

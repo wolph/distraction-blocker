@@ -1388,7 +1388,12 @@ describe('routeMessage tab identity wiring', () => {
       tabSender,
     );
 
-    expect(documentCommandsFor).toHaveBeenCalledWith({ tabId: 7, documentId, url }, 'navigation');
+    // The router delivers what it answers, so the document may take the epoch reset it is handed.
+    expect(documentCommandsFor).toHaveBeenCalledWith(
+      { tabId: 7, documentId, url },
+      'navigation',
+      'deliver',
+    );
     expect(markStopped).toHaveBeenCalledWith(7, url, documentId);
     expect(rebindTab).not.toHaveBeenCalled();
   });
