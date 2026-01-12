@@ -1461,6 +1461,22 @@ describe('worker cutover to v2 session authority', (): void => {
     }
   });
 
+  it('recovers on a boot that finds a pending all-data clear', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker({
+      ...installedSeed(),
+      [LOCAL_SETUP]: {
+        ...(installedSeed()[LOCAL_SETUP] as object),
+        dataClear: { status: 'pending', scope: 'all', phase: 'remote' },
+      },
+    });
+    await worker.settle();
+
+    // Recovery is what lets the controller publish at all. A worker that skipped it would go dark
+    // for its whole life: no broadcast and no badge for anything that happened after the clear.
+    expect(worker.broadcasts.length).toBeGreaterThan(0);
+    expect(worker.broadcasts.at(-1)?.lifecycle.kind).toBe('idle');
+  });
+
   it('leaves the epoch reset for the push that delivers it', async (): Promise<void> => {
     const worker: WorkerHarness = await bootWorker(installedSeed());
     worker.documents.push({

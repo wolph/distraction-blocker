@@ -882,6 +882,10 @@ async function boot(
     publishWebsiteCapability(appliedCapability);
   }
   if (pendingAllDataClear) {
+    // The journals resolve on this boot too. A controller that never recovers publishes nothing
+    // for the life of the worker, so the retry that finishes the clear would leave the popup and
+    // the badge dark until the next eviction.
+    await engine.recover();
     await engine.retainDataClearQuiescence();
     return engine;
   }
