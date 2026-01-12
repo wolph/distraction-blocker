@@ -1530,8 +1530,10 @@ export class Engine {
     this.streakDirty = true;
     this.runtime.todayAgg = plan.newAgg;
     this.runtime.date = today;
+    // The controller calls this from inside its own queue, so the write is left to the caller that
+    // runs after it returns. Committing here would sweep whenever blocking work is pending, the
+    // sweep would ask the controller for a target, and the queue would wait for itself forever.
     this.dirty = true;
-    await this.commit(now);
   }
 
   /**
@@ -1560,8 +1562,8 @@ export class Engine {
       this.streak = rebaseStreakForDate(this.streak, today);
       this.streakDirty = true;
     }
+    // Left to the caller for the reason the forward rollover states.
     this.dirty = true;
-    await this.commit(now);
   }
 
   /**

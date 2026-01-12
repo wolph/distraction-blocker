@@ -1598,6 +1598,50 @@ describe('worker cutover to v2 session authority', (): void => {
     }
   });
 
+  it('crosses a midnight with a sweep owed and does not deadlock', async (): Promise<void> => {
+    const today: string = localDateStr(Date.now());
+    const midnight: number = localMidnightAfter(today);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(midnight - 10 * 60_000);
+      const worker: WorkerHarness = await bootWorker(installedSeed());
+      worker.documents.push({
+        tabId: 11,
+        documentId: 'document-1',
+        url: CONTENT_SENDER,
+        received: [],
+      });
+      await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+      await worker.settle();
+
+      // One refused sweep leaves blocking work pending, which is what makes the next commit sweep.
+      const query = chrome.tabs.query as unknown as ReturnType<typeof vi.fn>;
+      query.mockRejectedValueOnce(new Error('tab query refused once'));
+      await worker.send({
+        type: 'updateSettings',
+        settings: { ...DEFAULT_SETTINGS, theme: 'dark' },
+      } as Request);
+      await worker.settle();
+
+      // The tick now crosses the boundary with that work still owed. The rollover leaves its write
+      // to the caller, so nothing commits, and therefore nothing sweeps, while the controller queue
+      // is held. This guards the shape: the deadlock itself needs a sweep that is not already
+      // running, which `applyBlockingFactory` refuses to start twice.
+      vi.setSystemTime(midnight + 60_000);
+      const ticked: string = await Promise.race([
+        worker.fireAlarm('tick').then((): string => 'ticked'),
+        new Promise<string>((resolve: (value: string) => void): void => {
+          setTimeout((): void => resolve('deadlocked'), 200);
+        }),
+      ]);
+
+      expect(ticked).toBe('ticked');
+      expect(worker.runtime().date).toBe(localDateStr(midnight + 60_000));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('splits the focus a session carries across a local midnight', async (): Promise<void> => {
     const today: string = localDateStr(Date.now());
     const midnight: number = localMidnightAfter(today);

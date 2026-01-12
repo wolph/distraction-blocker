@@ -154,6 +154,7 @@ async function creditWakeDays(harness: Harness): Promise<void> {
   let date: string = harness.seededRuntime.date;
   if (date > today) {
     await harness.engine.rolloverCheck(now);
+    await harness.engine.tick();
     return;
   }
   while (date < today) {
@@ -161,6 +162,9 @@ async function creditWakeDays(harness: Harness): Promise<void> {
     await harness.engine.rolloverCheck(boundary);
     date = localDateStr(boundary);
   }
+  // The rollover leaves its write to the caller that runs once the controller queue is released,
+  // which in the worker is the tick that walked the boundaries.
+  await harness.engine.tick();
 }
 
 function lastSavedRuntime(harness: Harness): RuntimeStateV2 {
