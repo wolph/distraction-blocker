@@ -607,6 +607,31 @@ describe('transition cleanup discovery', (): void => {
     ).toEqual(['reset-enforcement-epoch', 'apply-enforcement']);
   });
 
+  it('exempts a cleanup that entered before the audit from discovery', async (): Promise<void> => {
+    // Spec 766: nothing was sent before the registration audit, so a cleanup entered from
+    // `prepared` must not invent a first send for a document it never touched, whatever the
+    // failure that ended it was.
+    const fake: RuntimePortsFakeV2 = fakeFor(
+      transitionRuntime(pendingTransition('start', 'prepared')),
+    );
+    await enterTransitionCleanupV2(fake, {
+      cause: 'start-abandon',
+      failure: null,
+      endedAt: fake.now(),
+    });
+    expect(storedTransition(fake).cleanupFrom).toBe('prepared');
+    fake.setTabs([
+      { tabId: 11, url: BLOCKED_URL, documentId: DOC_ONE },
+      { tabId: 12, url: 'https://news.example.com/story', documentId: 'document-12' },
+    ]);
+
+    await runTransitionCleanupAttemptV2(fake, effectsFake());
+
+    expect(
+      fake.sends.filter((send: FakeSendV2): boolean => send.documentId === 'document-12'),
+    ).toEqual([]);
+  });
+
   it('fails the attempt when a discovered claim contradicts the captured one', async (): Promise<void> => {
     const fake: RuntimePortsFakeV2 = await inManualEndCleanup();
     const captured: CleanupTabClaim[] = storedProgress(fake).tabClaims;

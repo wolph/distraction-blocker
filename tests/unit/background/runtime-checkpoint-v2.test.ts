@@ -4,6 +4,7 @@ import {
   recordCleanupAttemptFailureV2,
   replaceCleanupBatchV2,
 } from '../../../src/background/cleanup-progress-v2';
+import type { FrozenDocumentCommand } from '../../../src/background/enforcement-persistence-v2';
 import { mergeEventLogV2 } from '../../../src/background/event-log-v2';
 import {
   applyRuntimeCheckpointV2,
@@ -668,6 +669,27 @@ describe('checkpoint replay', (): void => {
   });
 });
 
+/**
+ * The replacement `replaceCleanupBatchV2` now refuses to emit, built by hand so the commit guard
+ * still has one to refuse: a new operation ID and retry batch at the clear revision the batch
+ * already had.
+ */
+function reusedRevisionReplacement(progress: CleanupProgress): CleanupProgress {
+  return {
+    ...structuredClone(progress),
+    cleanupOperationId: OTHER_OPERATION_ID,
+    clearCommands: Object.fromEntries(
+      Object.entries(progress.clearCommands).map(
+        ([key, command]: [string, FrozenDocumentCommand]): [string, FrozenDocumentCommand] => [
+          key,
+          { ...structuredClone(command), operationId: OTHER_OPERATION_ID },
+        ],
+      ),
+    ),
+    retry: beginManualCleanupBatchV2(progress.retry, NOW),
+  };
+}
+
 describe('cleanup batch revisions', (): void => {
   it('advances the clear revision through one checkpoint and replays idempotently', async (): Promise<void> => {
     const base: RuntimeStateV2 = cleanupClosureRuntime();
@@ -709,11 +731,7 @@ describe('cleanup batch revisions', (): void => {
 
   it('refuses a replacement batch that reuses its clear revision', async (): Promise<void> => {
     const base: RuntimeStateV2 = cleanupClosureRuntime();
-    const replaced: CleanupProgress = replaceCleanupBatchV2(closureBatch(base), {
-      cleanupOperationId: OTHER_OPERATION_ID,
-      clearRuntimeRevision: CLEAR_RUNTIME_REVISION,
-      at: NOW,
-    });
+    const replaced: CleanupProgress = reusedRevisionReplacement(closureBatch(base));
 
     expect(replaced.clearRuntimeRevision).toBe(closureBatch(base).clearRuntimeRevision);
 
@@ -839,11 +857,7 @@ describe('cleanup batch revisions', (): void => {
       cleanupTransition('start', 'starting-verified', 'start-abandon'),
     );
     const closure: RuntimeStateV2 = cleanupClosureRuntime();
-    const handoff: CleanupProgress = replaceCleanupBatchV2(closureBatch(closure), {
-      cleanupOperationId: OTHER_OPERATION_ID,
-      clearRuntimeRevision: CLEAR_RUNTIME_REVISION,
-      at: NOW,
-    });
+    const handoff: CleanupProgress = reusedRevisionReplacement(closureBatch(closure));
 
     await expectRefusedCommit(
       harness(),
@@ -863,11 +877,7 @@ describe('cleanup batch revisions', (): void => {
     );
     const progress: CleanupProgress = transition.cleanupProgress as CleanupProgress;
     const base: RuntimeStateV2 = transitionRuntime(transition);
-    const replaced: CleanupProgress = replaceCleanupBatchV2(progress, {
-      cleanupOperationId: OTHER_OPERATION_ID,
-      clearRuntimeRevision: progress.clearRuntimeRevision,
-      at: NOW,
-    });
+    const replaced: CleanupProgress = reusedRevisionReplacement(progress);
 
     await expectRefusedCommit(
       harness(),

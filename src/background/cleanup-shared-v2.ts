@@ -25,6 +25,7 @@ import {
   documentCommandKeyV2,
   mergeCleanupTabClaimV2,
   recordCleanupAttemptFailureV2,
+  replaceCleanupBatchV2,
 } from './cleanup-progress-v2';
 import { splitFocusByLocalDateV2 } from './closure-projection-v2';
 import {
@@ -40,6 +41,7 @@ import {
   type TargetClassificationV2,
 } from './enforcement-targets-v2';
 import { buildFrozenEpochResetCommandV2 } from './overlay-view-v2';
+import { projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
 import type {
   CleanupProgress,
@@ -300,11 +302,11 @@ export async function clearDiscoveredDocumentsV2(
   journal: CleanupJournalV2,
   label: string,
 ): Promise<string | null> {
-  // Spec 766: a start abandoned before its registration audit sent nothing, so discovery must not
-  // invent a first send for a document this cleanup never touched. The exemption is that stage, not
-  // an empty batch: a post-audit batch that froze no commands still enumerates, and a closure has no
-  // audit-failure entry to exempt.
-  if (abandonedBeforeAuditV2(ports.runtime(), journal)) return null;
+  // Spec 766: a cleanup that entered before its registration audit sent nothing, so discovery must
+  // not invent a first send for a document this cleanup never touched. The exemption is that stage,
+  // not an empty batch: a post-audit batch that froze no commands still enumerates, and a closure
+  // has no pre-audit stage to exempt.
+  if (enteredBeforeAuditV2(ports.runtime(), journal)) return null;
   const classified: TargetClassificationV2[] = await enumerateEnforcementTargetsV2(ports.targets);
   for (const target of classified) {
     if (target.kind !== 'enforceable') continue;
@@ -333,11 +335,82 @@ const PRE_AUDIT_FAILURES: ReadonlySet<string> = new Set<string>([
   'content-registration-failed',
 ]);
 
-/** Whether this cleanup is the pre-audit abandon spec 766 exempts from every clear. */
-function abandonedBeforeAuditV2(runtime: RuntimeStateV2, journal: CleanupJournalV2): boolean {
+/**
+ * Whether this cleanup entered before the registration audit, which spec 766 exempts from every
+ * clear. The stage the cleanup came from is the authority: `prepared` is the one stage before the
+ * audit, and it covers an abandon that carries no failure at all as well as the two audit answers.
+ * Those failures are still read, because a journal that reaches cleanup without recording its
+ * source stage would otherwise lose the exemption its failure already proves.
+ */
+function enteredBeforeAuditV2(runtime: RuntimeStateV2, journal: CleanupJournalV2): boolean {
   if (journal === 'closure') return false;
-  const failure: string | null = runtime.pendingEnforcementTransition?.failure ?? null;
+  const transition: PendingEnforcementTransition | null = runtime.pendingEnforcementTransition;
+  if (transition === null) return false;
+  if (transition.cleanupFrom === 'prepared') return true;
+  const failure: string | null = transition.failure;
   return failure !== null && PRE_AUDIT_FAILURES.has(failure);
+}
+
+/**
+ * The manual retry both journals run, which is one step: a new operation ID and clear revision
+ * replace the batch identity, every frozen command is restamped with them, and the row is persisted.
+ *
+ * It commits rather than writing, because `assertCleanupBatchAdvance` is written for exactly this
+ * replacement and only runs inside a commit. Nothing is flushed: no events, no aggregates, and the
+ * bank unchanged.
+ */
+export async function replaceCleanupBatchAndCommitV2(
+  ports: RuntimePortsV2,
+  journal: CleanupJournalV2,
+  checkpointOwnerId: string,
+): Promise<RuntimeStateV2> {
+  const runtime: RuntimeStateV2 = ports.runtime();
+  const progress: CleanupProgress = journalProgressV2(runtime, journal);
+  const replaced: CleanupProgress = replaceCleanupBatchV2(progress, {
+    cleanupOperationId: ports.newId(),
+    clearRuntimeRevision: progress.clearRuntimeRevision + 1,
+    at: ports.now(),
+  });
+  const next: RuntimeStateV2 = validatedCleanupRuntimeV2(
+    restampedCleanupRowV2(withJournalProgressV2(runtime, journal, replaced), journal, replaced),
+  );
+  return ports.commit({
+    checkpointId: `${checkpointOwnerId}:cleanup-retry-${replaced.retry.batch}`,
+    projection: projectRuntimeDomainV2(next),
+    bank: ports.bank(),
+    events: [],
+    syncBank: false,
+    aggregateSets: {},
+    aggregateRemoves: [],
+  });
+}
+
+/**
+ * The runtime a replacement batch persists. The clear revision is the runtime revision, the command
+ * map is the restamped batch, and a transition carries that revision on its own row as well.
+ */
+function restampedCleanupRowV2(
+  runtime: RuntimeStateV2,
+  journal: CleanupJournalV2,
+  replaced: CleanupProgress,
+): RuntimeStateV2 {
+  const next: RuntimeStateV2 = {
+    ...runtime,
+    runtimeRevision: replaced.clearRuntimeRevision,
+    documentCommands: structuredClone(replaced.clearCommands),
+  };
+  if (journal === 'closure') return next;
+  const transition: PendingEnforcementTransition | null = next.pendingEnforcementTransition;
+  if (transition === null) {
+    throw invalidCleanup('a transition cleanup retry needs its cleanup transition');
+  }
+  return {
+    ...next,
+    pendingEnforcementTransition: {
+      ...transition,
+      runtimeRevision: replaced.clearRuntimeRevision,
+    },
+  };
 }
 
 /**

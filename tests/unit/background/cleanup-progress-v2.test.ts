@@ -39,6 +39,7 @@ import {
   documentKey,
   EPOCH_ID,
   NOW,
+  OTHER_EPOCH_ID,
   OTHER_OPERATION_ID,
   OTHER_SESSION_ID,
   runtimeTabState,
@@ -548,6 +549,44 @@ describe('newly discovered cleanup targets', (): void => {
   });
 });
 
+describe('discovered cleanup targets', (): void => {
+  it('keeps the first command when the same document is added twice', (): void => {
+    const progress: CleanupProgress = progressFixture();
+    const moved: CleanupEnforcementTarget = { ...FIRST_TARGET, expectedUrl: SECOND_TARGET_URL };
+
+    const added: CleanupProgress = addCleanupTargetV2(progress, moved, IDENTITY);
+
+    expect(added.targets[FIRST_KEY]).toEqual(progress.targets[FIRST_KEY]);
+    expect(added.clearCommands[FIRST_KEY]).toEqual(progress.clearCommands[FIRST_KEY]);
+    expect(added.clearCommands[FIRST_KEY]?.expectedUrl).toBe(TARGET_URL);
+    expect(Object.keys(added.clearCommands)).toEqual([FIRST_KEY, SECOND_KEY]);
+  });
+
+  it('refuses a target that diverges from the batch base policy revision', (): void => {
+    const progress: CleanupProgress = progressFixture();
+
+    expectInvalidRule(
+      (): CleanupProgress =>
+        addCleanupTargetV2(progress, THIRD_TARGET, {
+          ...IDENTITY,
+          basePolicyRevision: BASE_POLICY_REVISION + 1,
+        }),
+    );
+  });
+
+  it('refuses a target that diverges from the batch enforcement epoch', (): void => {
+    const progress: CleanupProgress = progressFixture();
+
+    expectInvalidRule(
+      (): CleanupProgress =>
+        addCleanupTargetV2(progress, THIRD_TARGET, {
+          ...IDENTITY,
+          enforcementEpoch: OTHER_EPOCH_ID,
+        }),
+    );
+  });
+});
+
 describe('resolved cleanup tabs', (): void => {
   it('keeps resolved tab IDs unique and sorted', (): void => {
     const progress: CleanupProgress = progressFixture();
@@ -598,6 +637,33 @@ describe('manual cleanup batches', (): void => {
     expect(validateDetachedCleanupProgress(replaced)).toBe(true);
     expect(progress.cleanupOperationId).toBe(CLEANUP_OPERATION_ID);
     expect(progress.clearCommands[FIRST_KEY]?.operationId).toBe(CLEANUP_OPERATION_ID);
+  });
+
+  it('refuses a replacement that does not advance the clear revision', (): void => {
+    const progress: CleanupProgress = progressFixture();
+
+    // The commit guard refuses exactly this batch, so the builder never emits one.
+    expectInvalidRule(
+      (): CleanupProgress =>
+        replaceCleanupBatchV2(progress, {
+          cleanupOperationId: OTHER_OPERATION_ID,
+          clearRuntimeRevision: CLEAR_RUNTIME_REVISION,
+          at: NOW + 5,
+        }),
+    );
+  });
+
+  it('refuses a replacement that reuses the current operation ID', (): void => {
+    const progress: CleanupProgress = progressFixture();
+
+    expectInvalidRule(
+      (): CleanupProgress =>
+        replaceCleanupBatchV2(progress, {
+          cleanupOperationId: CLEANUP_OPERATION_ID,
+          clearRuntimeRevision: CLEAR_RUNTIME_REVISION + 1,
+          at: NOW + 5,
+        }),
+    );
   });
 
   it('rejects a replacement identity the progress validator refuses', (): void => {

@@ -232,12 +232,30 @@ export function addCleanupTargetV2(
   identity: Omit<ClearCommandIdentityV2, 'operationId' | 'runtimeRevision'>,
 ): CleanupProgress {
   const next: CleanupProgress = detachedCopy(progress);
+  assertBatchIdentityAgrees(next, identity);
   addKeyedTarget(next.targets, next.clearCommands, target, {
     ...identity,
     operationId: next.cleanupOperationId,
     runtimeRevision: next.clearRuntimeRevision,
   });
   return validatedProgress(next);
+}
+
+/**
+ * A discovered document joins the batch that froze the others, so it carries that batch's policy
+ * identity. The stored-progress validator already refuses a divergent enforcement epoch; the base
+ * policy revision is the half it does not see, and a command carrying a newer one is a command the
+ * commit guard would refuse after the write.
+ */
+function assertBatchIdentityAgrees(
+  progress: CleanupProgress,
+  identity: Omit<ClearCommandIdentityV2, 'operationId' | 'runtimeRevision'>,
+): void {
+  const frozen: FrozenDocumentCommand | undefined = Object.values(progress.clearCommands)[0];
+  if (frozen === undefined) return;
+  if (frozen.basePolicyRevision !== identity.basePolicyRevision) {
+    invalidCleanup('a discovered cleanup target carries the batch base policy revision');
+  }
 }
 
 export function resolveCleanupTabV2(progress: CleanupProgress, tabId: number): CleanupProgress {
@@ -259,6 +277,14 @@ export function replaceCleanupBatchV2(
   progress: CleanupProgress,
   input: CleanupBatchReplacementV2,
 ): CleanupProgress {
+  // The commit guard refuses a replacement that keeps the clear revision or the operation ID, so
+  // the builder refuses to emit one rather than leaving the caller to discover it at the commit.
+  if (input.clearRuntimeRevision <= progress.clearRuntimeRevision) {
+    invalidCleanup('a replacement cleanup batch advances the clear revision');
+  }
+  if (input.cleanupOperationId === progress.cleanupOperationId) {
+    invalidCleanup('a replacement cleanup batch allocates a new operation ID');
+  }
   const next: CleanupProgress = detachedCopy(progress);
   next.cleanupOperationId = input.cleanupOperationId;
   next.clearRuntimeRevision = input.clearRuntimeRevision;

@@ -25,7 +25,6 @@ import {
 import {
   buildCleanupProgressV2,
   buildCleanupSeedV2,
-  replaceCleanupBatchV2,
   resolveCleanupTabV2,
 } from './cleanup-progress-v2';
 import {
@@ -33,6 +32,7 @@ import {
   journalProgressV2,
   mergeDiscoveredClaimsV2,
   recordCleanupFailureAndRearmV2,
+  replaceCleanupBatchAndCommitV2,
   resetAndClearDocumentV2,
   settledAggregatesV2,
 } from './cleanup-shared-v2';
@@ -235,28 +235,11 @@ export async function retryClosureCleanupV2(
   ) {
     return { runtime, code: 'retry-not-available' };
   }
-  const replaced: CleanupProgress = replaceCleanupBatchV2(closure.cleanupProgress, {
-    cleanupOperationId: ports.newId(),
-    clearRuntimeRevision: closure.cleanupProgress.clearRuntimeRevision + 1,
-    at: ports.now(),
-  });
-  const next: RuntimeStateV2 = validated({
-    ...structuredClone(runtime),
-    runtimeRevision: replaced.clearRuntimeRevision,
-    documentCommands: structuredClone(replaced.clearCommands),
-    pendingClosure: { ...structuredClone(closure), cleanupProgress: structuredClone(replaced) },
-  });
-  // Through the checkpoint rather than a plain write: `assertCleanupBatchAdvance` is written for
-  // exactly this replacement, and it only runs inside a commit. Nothing is flushed.
-  const committed: RuntimeStateV2 = await ports.commit({
-    checkpointId: `${closure.projection.closureId}:cleanup-retry-${replaced.retry.batch}`,
-    projection: projectRuntimeDomainV2(next),
-    bank: ports.bank(),
-    events: [],
-    syncBank: false,
-    aggregateSets: {},
-    aggregateRemoves: [],
-  });
+  const committed: RuntimeStateV2 = await replaceCleanupBatchAndCommitV2(
+    ports,
+    'closure',
+    closure.projection.closureId,
+  );
   return { runtime: committed, code: 'ok' };
 }
 
