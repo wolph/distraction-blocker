@@ -44,6 +44,8 @@ import {
   cleanupTransition,
   documentKey,
   emptyRuntimeV2,
+  epochResetAck,
+  epochResetAckMap,
   OTHER_EPOCH_ID,
   OTHER_OPERATION_ID,
   pausedRuntime,
@@ -391,6 +393,12 @@ describe('SessionControllerV2 end and gate commands', (): void => {
     return harness(
       transitionRuntime(pendingTransition('start', 'active-verified', transition), {
         session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
+        // The documents that applied the starting view are on this epoch, so a replacement view
+        // goes to them without a reset in front of it.
+        epochResetAcks: {
+          ...epochResetAckMap(),
+          [documentKey(12, 'document-2')]: epochResetAck({ tabId: 12, documentId: 'document-2' }),
+        },
       }),
       {
         now: ACTIVATION_AT + 5_000,

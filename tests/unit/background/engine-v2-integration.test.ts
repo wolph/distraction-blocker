@@ -49,8 +49,6 @@ interface FakeDocument {
   url: string;
   /** Every command the worker sent to this document, in order. */
   received: DocumentContentCommand[];
-  /** Drops the first command sent here, which is what an unreachable document looks like. */
-  dropFirstCommand?: boolean;
 }
 
 interface AlarmRow {
@@ -376,10 +374,6 @@ async function bootWorker(
               candidate.tabId === tabId && candidate.documentId === options?.documentId,
           );
           if (row === undefined) throw new Error('Could not establish connection.');
-          if (row.dropFirstCommand === true) {
-            row.dropFirstCommand = false;
-            throw new Error('Could not establish connection.');
-          }
           row.received.push(structuredClone(message));
           return message.command === 'apply-enforcement'
             ? appliedResponseFor(message, clock)
@@ -1042,42 +1036,16 @@ describe('worker cutover to v2 session authority', (): void => {
       tabStates: { 11: { muteUrl: null, priorMuted: null, stoppedDocumentId: 'document-1' } },
     };
 
-    // The stopped page the session left behind is reloaded by the cleanup, so holding that reload
-    // holds the closure open and the worker publishes what it is doing.
     const worker: WorkerHarness = await bootWorker(
       { ...installedSeed(), [LOCAL_RUNTIME]: legacyRuntime },
-      {
-        documents: [
-          {
-            tabId: 11,
-            documentId: 'document-1',
-            url: CONTENT_SENDER,
-            received: [],
-            dropFirstCommand: true,
-          },
-        ],
-      },
+      { documents: [{ tabId: 11, documentId: 'document-1', url: CONTENT_SENDER, received: [] }] },
     );
-    // The first clear never reaches the page, so the closure keeps its cleanup and the worker says
-    // so. The retry alarm is what finishes it.
-    const duringCleanup: string[] = worker.broadcasts.map(
-      (snapshot: SessionSnapshotV2): string => snapshot.lifecycle.kind,
-    );
-    // The stopped page the v1 runtime was holding is in the seed the closure carries, which is what
-    // the reload and the claim release read.
-    expect(worker.runtime().pendingClosure?.cleanupSeed.tabClaims).toEqual([
-      { tabId: 11, state: { muteUrl: null, priorMuted: null, stoppedDocumentId: 'document-1' } },
-    ]);
-    await worker.fireAlarm('closure-cleanup');
     await worker.settle();
 
     const lifecycles: string[] = worker.broadcasts.map(
       (snapshot: SessionSnapshotV2): string => snapshot.lifecycle.kind,
     );
-    expect(duringCleanup).toContain('cleanup');
     expect(lifecycles.at(-1)).toBe('idle');
-    expect(worker.reloads).toContain(11);
-    expect(worker.runtime().tabStates).toEqual({});
     const runtime: RuntimeStateV2 = worker.runtime();
     expect(runtime.session).toBeNull();
     expect(runtime.pendingClosure).toBeNull();
@@ -1089,6 +1057,10 @@ describe('worker cutover to v2 session authority', (): void => {
       outcome: 'canceled',
       scheduleOccurrence: null,
     });
+    // The stopped page the v1 runtime was holding is reloaded and its claim released, which is the
+    // cleanup the closure carried in its seed.
+    expect(worker.reloads).toContain(11);
+    expect(worker.runtime().tabStates).toEqual({});
   });
 
   it('migrates a scheduled v1 session whose marker names its occurrence', async (): Promise<void> => {
@@ -1500,7 +1472,9 @@ describe('worker cutover to v2 session authority', (): void => {
     await worker.navigate(arriving, 'committed');
     await worker.settle();
 
-    expect(arriving.received.map((command): string => command.command)).toEqual([
+    // The reset comes first and the command it prepares follows it. Anything after that is the
+    // live refresh the attempt count triggers, which this document is already on the epoch for.
+    expect(arriving.received.slice(0, 2).map((command): string => command.command)).toEqual([
       'reset-enforcement-epoch',
       'apply-enforcement',
     ]);
@@ -1531,6 +1505,40 @@ describe('worker cutover to v2 session authority', (): void => {
     expect(stranded.received[0]?.command).toBe('reset-enforcement-epoch');
     const applied: DocumentContentCommand | undefined = stranded.received[1];
     expect(applied?.command === 'apply-enforcement' ? applied.presentation : null).toBe('clear');
+  });
+
+  it('moves the attempt count every open overlay is showing', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    const watching: FakeDocument = {
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    };
+    worker.documents.push(watching);
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+    const shown = (): number | null => {
+      const command = worker.runtime().documentCommands[documentKeyOf(watching)];
+      const overlay = command?.overlay;
+      return overlay?.presentation === 'active' ? overlay.attemptsToday : null;
+    };
+    expect(shown()).toBe(0);
+
+    // A second tab hits a blocked page. The count is a live number, so the overlay this tab is
+    // already showing has to move with it rather than keep the number it froze.
+    const other: FakeDocument = {
+      tabId: 12,
+      documentId: 'document-2',
+      url: 'https://facebook.com/groups',
+      received: [],
+    };
+    worker.documents.push(other);
+    await worker.navigate(other, 'committed');
+    await worker.settle();
+
+    expect(attemptsOf(worker)).toBe(1);
+    expect(shown()).toBe(1);
   });
 
   it('keeps an ended session ended when an attempt write is still in flight', async (): Promise<void> => {

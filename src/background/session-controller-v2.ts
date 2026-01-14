@@ -740,7 +740,7 @@ export class SessionControllerV2 {
       // the ten-second deadline through, so the pass that reads this row resumes on what is left of
       // the original budget rather than a fresh one.
       for (const command of Object.values(this.ports.runtime().documentCommands)) {
-        await sendDocumentEnforcementCommand(this.ports.transport, command);
+        await this.deliver(command);
       }
       this.publish();
       return;
@@ -770,7 +770,7 @@ export class SessionControllerV2 {
       aggregateRemoves: [],
     });
     for (const command of Object.values(documentCommands)) {
-      await sendDocumentEnforcementCommand(this.ports.transport, command);
+      await this.deliver(command);
     }
     this.publish();
   }
@@ -1238,10 +1238,23 @@ export class SessionControllerV2 {
     refreezeChangedUrl: boolean = false,
   ): Promise<void> {
     const command: FrozenDocumentCommand = await this.currentCommandFor(target, refreezeChangedUrl);
-    if (!this.hasCurrentEpochAck(target.tabId, target.documentId)) {
+    await this.deliver(command);
+  }
+
+  /**
+   * One command, and the epoch reset that has to precede it. A document accepts nothing until it
+   * has been reset onto the current epoch, so a send that skips the reset is a command the page
+   * refuses and an overlay that never changes. A refused reset sends nothing.
+   */
+  private async deliver(command: FrozenDocumentCommand): Promise<void> {
+    if (!this.hasCurrentEpochAck(command.tabId, command.documentId)) {
       const outcome = await sendEpochResetCommand(
         this.ports.transport,
-        this.resetCommandFor(target),
+        this.resetCommandFor({
+          tabId: command.tabId,
+          documentId: command.documentId,
+          url: command.expectedUrl,
+        }),
       );
       if (outcome.kind !== 'reset') return;
       await this.write({

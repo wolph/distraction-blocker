@@ -916,6 +916,9 @@ export class Engine {
         this.attemptPersistInFlight.delete(key);
       }
     }
+    // Every open overlay shows the day's attempt count, frozen into the command it is rendering,
+    // so a count that just moved is a live update like a theme or a lists change.
+    if (!retryFailedPersistence) await this.refreshLiveViewsIfLive();
   }
 
   async markStopped(
