@@ -12,7 +12,7 @@ import {
 } from '../../../src/shared/constants';
 import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
 import type { Request } from '../../../src/shared/messages';
-import { isEventRecord } from '../../../src/shared/runtime-validation';
+import { isEventRecord, isSessionSnapshotV2 } from '../../../src/shared/runtime-validation';
 import {
   LOCAL_BANK,
   LOCAL_EVENTS,
@@ -1431,6 +1431,30 @@ describe('worker cutover to v2 session authority', (): void => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('answers a snapshot while a storage transition holds the barrier', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+
+    const release: () => void = worker.holdSyncWrites();
+    const switching: Promise<unknown> = worker.send({
+      type: 'setStorageMode',
+      storageMode: 'sync',
+      deleteRemote: false,
+    } as Request);
+    await worker.settle();
+
+    // The popup reads through the barrier: the snapshot is a settle at an instant, not a write, and
+    // this is the window the popup has to show what the transition is doing.
+    const snapshot = (await worker.send({ type: 'getSnapshot' } as Request)) as SessionSnapshotV2;
+    release();
+    await switching;
+    await worker.settle();
+
+    expect(isSessionSnapshotV2(snapshot)).toBe(true);
+    expect(snapshot.lifecycle.kind).toBe('active');
   });
 
   it('recovers on a boot that finds a pending all-data clear', async (): Promise<void> => {

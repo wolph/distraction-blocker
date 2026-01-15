@@ -118,7 +118,10 @@ export async function routeMessage(
 ): Promise<unknown> {
   switch (msg.type) {
     case 'getSnapshot':
-      return engine.snapshotPersisted();
+      // The read model is a settle at an instant, so it is read rather than committed. Waiting on
+      // the mutation queue made this reject for the whole of any storage transition, which is
+      // exactly the window the popup has to render the clear it is waiting on.
+      return engine.snapshot();
     case 'getSetupState':
       return requirePolicyStorage(policyStorage).loadSetup();
     case 'openOnboarding': {
