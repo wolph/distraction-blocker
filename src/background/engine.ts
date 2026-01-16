@@ -58,7 +58,6 @@ import type {
 } from '../shared/types';
 import { type AlarmNameV2, type AlarmPortsV2, parseAlarmNameV2, TICK_ALARM } from './alarms-v2';
 import type { ContentTransportPortsV2 } from './content-transport-v2';
-import type { DocumentEnforcementAck } from './enforcement-persistence-v2';
 import type { EnforcementTargetPortsV2 } from './enforcement-targets-v2';
 import { listsChangeAllowed, settingsChangeAllowed } from './guard';
 import { encodeListsForSync, LIST_SYNC_KEYS, type ListsSyncEncoding } from './list-sync-codec';
@@ -203,10 +202,10 @@ function _scheduleUnavailableNoticeToken(entry: ScheduleEntryV2, now: number): s
 }
 
 /**
- * Authoritative session engine. Pure src/core modules make every domain
- * decision, this class wires them to persistence and effects through
- * EnginePorts. Every public entry point runs catchUp() first, so a
- * worker woken after missed alarms is consistent before it answers.
+ * The retained engine. The controller owns the session; this class owns the day, the attempt
+ * bookkeeping, the tab claims, the bank, and the streak, and it wires the controller to storage and
+ * to browser effects through `EnginePorts`. Every public entry point takes the policy mutation
+ * queue, so one command, alarm, or navigation finishes its writes before the next one starts.
  */
 export class Engine {
   private pendingEvents: EventRecord[] = [];
@@ -816,10 +815,6 @@ export class Engine {
   ): Promise<void> {
     if (this.allDataClearPending) return;
     await this.controller.handleNavigation(target, attemptKind);
-  }
-
-  async recordDocumentAck(ack: DocumentEnforcementAck): Promise<void> {
-    await this.controller.recordDocumentAck(ack);
   }
 
   /** Refreezes every live document view, for a change the frozen views must carry. */

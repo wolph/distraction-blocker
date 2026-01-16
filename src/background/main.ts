@@ -114,7 +114,6 @@ import {
   restoreClaimedTabs,
 } from './tabs';
 
-const TICK_ALARM: string = 'tick';
 const DAILY_AGG_KEY_RE: RegExp = /^agg:[^:]+:(\d{4}-\d{2}-\d{2})$/;
 const MONTHLY_AGG_KEY_RE: RegExp = /^aggm:[^:]+:(\d{4}-\d{2})$/;
 
@@ -628,6 +627,16 @@ async function preparePolicyStorage(): Promise<PolicyStorage> {
   }
 }
 
+/**
+ * The one producer of the periodic tick. `ensureTickAlarmV2` answers whether the browser really
+ * holds the alarm it was asked for, and a worker whose maintenance never runs is worth reporting.
+ */
+async function armTickAlarm(): Promise<void> {
+  if ((await ensureTickAlarmV2(chromeAlarmPortsV2())) === 'alarm-failed') {
+    reportBackgroundError(new Error('the periodic tick alarm was refused'));
+  }
+}
+
 /** The chrome-backed alarm surface the v2 runners drive. */
 function chromeAlarmPortsV2(): AlarmPortsV2 {
   return {
@@ -728,6 +737,9 @@ async function boot(
   publishSetupCompleted: (completed: boolean) => void,
 ): Promise<Engine> {
   const now: number = Date.now();
+  // Checklist 2: the periodic tick exists from this boot onward, whichever path the boot takes,
+  // and its read-back is the only proof the browser accepted it.
+  await armTickAlarm();
   await policyStorage.initialize();
   const snapshot: PolicySnapshot = await policyStorage.loadSnapshot();
   const completedAllDataClear: boolean = policyStorage.allDataClearCompleted();
@@ -890,9 +902,8 @@ async function boot(
     return engine;
   }
   // Checklist 6: the journals resolve before any alarm, message, or publication reaches the
-  // controller, and checklist 2: the periodic tick exists from this boot onward.
+  // controller.
   await engine.recover();
-  await ensureTickAlarmV2(chromeAlarmPortsV2());
   if (completedAllDataClear) return engine;
   await engine.tick();
   // A window that is already open belongs to this boot, not to the minute after it.
@@ -1039,7 +1050,6 @@ export function main(): void {
 
   chrome.runtime.onInstalled.addListener((details: chrome.runtime.InstalledDetails): void => {
     void updateInstallMarker(details).catch(reportBackgroundError);
-    void chrome.alarms.create(TICK_ALARM, { periodInMinutes: 1 }).catch(reportBackgroundError);
     const openOnboardingIfNeeded: () => Promise<void> = async (): Promise<void> => {
       if (
         details.reason !== 'install' &&
@@ -1222,8 +1232,4 @@ export function main(): void {
         .catch(reportBackgroundError),
     ]);
   });
-
-  // Reloads of an already-installed extension skip onInstalled, and
-  // alarm creation is idempotent, so ensure the tick exists every boot.
-  void chrome.alarms.create(TICK_ALARM, { periodInMinutes: 1 }).catch(reportBackgroundError);
 }

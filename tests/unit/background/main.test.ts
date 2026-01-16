@@ -87,6 +87,7 @@ type MockRegistrationResult =
 const mocks = vi.hoisted(
   (): {
     engineArguments: unknown[] | null;
+    alarms: Map<string, chrome.alarms.Alarm>;
     handledAlarms: string[];
     recoverCalls: number;
     recoverError: Error | null;
@@ -135,6 +136,7 @@ const mocks = vi.hoisted(
     aggregateBarrierCalls: number;
   } => ({
     engineArguments: null,
+    alarms: new Map<string, chrome.alarms.Alarm>(),
     handledAlarms: [] as string[],
     recoverCalls: 0,
     recoverError: null as Error | null,
@@ -467,8 +469,20 @@ function oversizedSettings(id: string): Settings {
 function stubChrome(): void {
   vi.stubGlobal('chrome', {
     alarms: {
-      clear: vi.fn().mockResolvedValue(true),
-      create: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn(async (name: string): Promise<boolean> => mocks.alarms.delete(name)),
+      // The worker reads every alarm it creates back, so this fake remembers what it was given.
+      create: vi.fn(
+        async (name: string, info: { when?: number; periodInMinutes?: number }): Promise<void> => {
+          mocks.alarms.set(name, {
+            name,
+            scheduledTime: info.when ?? Date.now(),
+            periodInMinutes: info.periodInMinutes,
+          });
+        },
+      ),
+      get: vi.fn(
+        async (name: string): Promise<chrome.alarms.Alarm | undefined> => mocks.alarms.get(name),
+      ),
       onAlarm: {
         addListener: vi.fn((listener: AlarmListener): void => {
           mocks.alarmListener = listener;
@@ -689,6 +703,7 @@ beforeEach((): void => {
   vi.setSystemTime(new Date(2026, 7, 29, 12, 0));
   vi.mocked(handleSyncChanges).mockClear();
   mocks.engineArguments = null;
+  mocks.alarms.clear();
   mocks.alarmListener = null;
   mocks.bootGate = null;
   mocks.dropTabCalls = [];
