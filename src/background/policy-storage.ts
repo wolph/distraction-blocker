@@ -209,7 +209,14 @@ type ScopedClearJournal = SyncedPolicyClearJournal | LocalHistoryClearJournal;
 
 type StoredClearJournal = DataClearJournal | LegacyAllDataClearJournal;
 
-/** The seam Main binds so this module can transact the all-data journal under the shared lease. */
+/**
+ * The seam Main binds so this module can transact the all-data journal under the shared lease.
+ *
+ * It carries no storage area on purpose: `transactDataClearJournal` reads and writes
+ * `chrome.storage.local` directly, which is the Task 2 contract. The invariant that keeps the two
+ * agreeing is that the `local` area this module is constructed with IS `chrome.storage.local`. An
+ * instance built on any other area would write its journal somewhere else, silently.
+ */
 export interface PolicyStorageDataClearPorts {
   lease: AllDataClearLease;
   newId(): string;
@@ -261,8 +268,8 @@ const FOCUS_LOCK_LOCAL_EXACT_KEYS: readonly string[] = [
   LOCAL_STREAK,
 ];
 
-/** The phases Policy Storage runs before Engine takes browser reset: remote, then local. */
-const ALL_DATA_PHASES_THIS_SIDE_OWNS: readonly string[] = ['remote', 'local'];
+/** Remote, then local: the two phases Policy Storage runs before Engine takes browser reset. */
+const ALL_DATA_PHASES_THIS_SIDE_OWNS: number = 2;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -2033,7 +2040,13 @@ export function createPolicyStorage(
     }
   }
 
-  /** The Focus Lock local keys an all-data clear owns. The journal itself is never one of them. */
+  /**
+   * The Focus Lock local keys an all-data clear owns. The journal itself is never one of them, and
+   * `setup` is not one either: the pre-clear Setup stays on disk through the wipe and is replaced by
+   * the mirror write that follows the browser-reset advance, then by the journal's own projection.
+   * A crash in that window leaves a stale Setup beside an advanced journal, which spec 1327 calls
+   * repair work rather than invalid state.
+   */
   function focusLockLocalKeys(stored: Record<string, unknown>): string[] {
     return Object.keys(stored)
       .filter(
@@ -2075,8 +2088,8 @@ export function createPolicyStorage(
   }
 
   /**
-   * The upgrade boot is the one place a stored runtime is still v1 when a clear runs: `initialize`
-   * resumes a pending journal before the v2 migration writes anything, so refusing every v1 value
+   * The upgrade boot is the one place a stored runtime is still v1 when a clear runs: the deletion
+   * dispatcher drives the phases before the v2 migration writes anything, so refusing every v1 value
    * would lose a deletion the user already asked for. The v1 reader therefore keeps the stopped
    * rule for a value only it can parse, and a value neither parser accepts is still refused.
    */
@@ -2357,6 +2370,7 @@ export function createPolicyStorage(
    */
   async function recordAllDataAttemptFailure(
     token: DataClearLeaseToken,
+    phase: 'remote' | 'local',
     error: unknown,
   ): Promise<void> {
     const ports: PolicyStorageDataClearPorts = requiredDataClearPorts();
@@ -2365,7 +2379,7 @@ export function createPolicyStorage(
       const journal: AllDataClearJournalV2 = await updateAllDataJournal(
         token,
         (current: AllDataClearJournalV2): AllDataClearJournalV2 | 'unchanged' =>
-          current.retry.lastError !== null && current.retry.nextAttemptAt === null
+          current.phase !== phase || exhaustedBatch(current)
             ? 'unchanged'
             : {
                 ...current,
@@ -2376,6 +2390,15 @@ export function createPolicyStorage(
     } catch {
       return;
     }
+  }
+
+  /**
+   * A retry batch belongs to the phase that owns it. A step that fails after its own advance already
+   * landed, the Setup mirror that follows the write most of all, would otherwise burn an attempt of
+   * the next phase's batch, and browser reset's batch is Engine's to spend and to clear.
+   */
+  function exhaustedBatch(journal: AllDataClearJournalV2): boolean {
+    return journal.retry.lastError !== null && journal.retry.nextAttemptAt === null;
   }
 
   async function runAllDataRemotePhase(
@@ -2469,6 +2492,9 @@ export function createPolicyStorage(
         installMarkerProjection: cleanInstallMarkerProjection(extensionVersion),
         finalInstallMarkerProjection: cleanInstallMarkerProjection(extensionVersion),
         resetProgress: emptyDataClearResetProgress(),
+        // Spec 1301: a phase advance installs a fresh retry state. The batch counter is carried
+        // rather than reset to one, so a manual retry in remote or local stays visible in the batch
+        // number the next phase reports. Nothing schedules from it.
         retry: freshCleanupRetryStateV2(current.retry.batch, at),
       }),
     );
@@ -2478,6 +2504,8 @@ export function createPolicyStorage(
     token: DataClearLeaseToken,
   ): Promise<'remote' | 'local' | 'browser-reset' | 'none'> {
     await ensureInitialized();
+    // Recovery step 1 upgrades a legacy journal before every other read, so that write, and only
+    // that write, precedes the stopped-runtime gate. It is idempotent and deletes nothing.
     const journal: AllDataClearJournalV2 | null = await readAllDataJournal(token);
     if (journal === null) return 'none';
     allDataClearQuiescenceRequired = true;
@@ -2488,7 +2516,7 @@ export function createPolicyStorage(
       if (phase === 'remote') await runAllDataRemotePhase(token, journal);
       else await runAllDataLocalPhase(token);
     } catch (error: unknown) {
-      await recordAllDataAttemptFailure(token, error);
+      await recordAllDataAttemptFailure(token, phase, error);
       throw error;
     }
     return phase;
@@ -2507,7 +2535,7 @@ export function createPolicyStorage(
     const opened: AllDataClearJournalV2 = await openAllDataJournal(token);
     allDataClearQuiescenceRequired = true;
     await publishAllDataSetupPhase(opened.phase, allDataAttemptStatus(opened));
-    for (const _step of ALL_DATA_PHASES_THIS_SIDE_OWNS) {
+    for (let step: number = 0; step < ALL_DATA_PHASES_THIS_SIDE_OWNS; step += 1) {
       const ran: 'remote' | 'local' | 'browser-reset' | 'none' =
         await runAllDataClearPhaseInternal(token);
       if (ran === 'browser-reset' || ran === 'none') return;

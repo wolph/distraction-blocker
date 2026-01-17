@@ -40,6 +40,7 @@ import {
   rulesFromLists,
   TOP_SITES_DAILY,
 } from '../../../src/shared/constants';
+import { CoreError } from '../../../src/shared/errors';
 import {
   LOCAL_AGGREGATE_PRUNE,
   LOCAL_AGGREGATE_TOMBSTONES,
@@ -3380,8 +3381,9 @@ describe('PolicyStorage', (): void => {
     expect(cleaning.state.values[LOCAL_RUNTIME]).toEqual(closing);
   });
 
-  it('resumes a pending all-data journal on a stopped legacy runtime and refuses a live one', async (): Promise<void> => {
-    // The one boot where the stored runtime is still v1: the journal resumes before the migration.
+  it('runs a pending all-data journal on a stopped legacy runtime and refuses a live one', async (): Promise<void> => {
+    // The one boot where the stored runtime is still v1: the dispatcher runs the phases before the
+    // migration writes anything.
     const pending: SetupState = {
       ...DEFAULT_SETUP,
       completed: true,
@@ -4614,6 +4616,26 @@ describe('PolicyStorage', (): void => {
       );
     });
 
+    it('carries the retry batch of a manual retry into the browser-reset advance', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage({
+        ...allDataLocal(),
+        [LOCAL_DATA_CLEAR_JOURNAL]: seededAllDataJournal({
+          phase: 'local',
+          retry: { batch: 2, automaticAttempt: 0, nextAttemptAt: CLEAR_NOW, lastError: null },
+        }),
+      });
+      const sync: FakeStorage = fakeStorage({});
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
+      await storage.initialize();
+
+      expect(await runPhase(storage, stub)).toBe('local');
+
+      // Spec 1301 installs a fresh retry state on advance. The batch a manual retry raised is the
+      // label of the batch, not a schedule, so it is carried rather than reset.
+      expect(storedAllDataJournal(local).retry).toEqual(freshCleanupRetryStateV2(2, CLEAR_NOW));
+    });
+
     it('repeats the local phase idempotently after a removal crash', async (): Promise<void> => {
       const local: FakeStorage = fakeStorage({
         ...allDataLocal(),
@@ -4737,6 +4759,61 @@ describe('PolicyStorage', (): void => {
         lastError: 'remote removal unavailable',
       });
       expect(sync.state.values[SYNC_SETTINGS]).toEqual(SNAPSHOT.settings);
+    });
+
+    /**
+     * Fails the next Setup mirror write, the lone-key write that follows a phase advance. Later
+     * writes land, so the rollback inside `verifiedWrite` succeeds and the caller sees this error.
+     */
+    function failNextSetupMirror(local: FakeStorage, message: string): void {
+      let failed: boolean = false;
+      vi.mocked(local.area.set).mockImplementation(
+        async (items: Record<string, unknown>): Promise<void> => {
+          const keys: string[] = Object.keys(items);
+          if (!failed && keys.length === 1 && keys[0] === LOCAL_SETUP) {
+            failed = true;
+            throw new Error(message);
+          }
+          Object.assign(local.state.values, structuredClone(items));
+        },
+      );
+    }
+
+    it('does not record a local failure against the browser-reset batch it advanced into', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage({
+        ...allDataLocal(),
+        [LOCAL_DATA_CLEAR_JOURNAL]: seededAllDataJournal({ phase: 'local' }),
+      });
+      const sync: FakeStorage = fakeStorage({});
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
+      await storage.initialize();
+      failNextSetupMirror(local, 'setup write unavailable');
+
+      await expect(runPhase(storage, stub)).rejects.toThrow('setup write unavailable');
+
+      // The advance succeeded, so the batch spec 1327 gives Engine keeps its full budget.
+      const stored: AllDataClearJournalV2 = storedAllDataJournal(local);
+      expect(stored.phase).toBe('browser-reset');
+      expect(stored.retry).toEqual(freshCleanupRetryStateV2(1, CLEAR_NOW));
+    });
+
+    it('does not record a remote failure against the local batch it advanced into', async (): Promise<void> => {
+      const local: FakeStorage = fakeStorage({
+        ...allDataLocal(),
+        [LOCAL_DATA_CLEAR_JOURNAL]: seededAllDataJournal(),
+      });
+      const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: SNAPSHOT.settings });
+      const stub: ClearPortsStub = clearPorts();
+      const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
+      await storage.initialize();
+      failNextSetupMirror(local, 'setup write unavailable');
+
+      await expect(runPhase(storage, stub)).rejects.toThrow('setup write unavailable');
+
+      const stored: AllDataClearJournalV2 = storedAllDataJournal(local);
+      expect(stored.phase).toBe('local');
+      expect(stored.retry).toEqual(freshCleanupRetryStateV2(1, CLEAR_NOW));
     });
 
     it('resets the retry batch only for an exhausted remote or local batch', async (): Promise<void> => {
@@ -4897,20 +4974,31 @@ describe('PolicyStorage', (): void => {
     });
 
     it('refuses a stored all-data journal the parser rejects without writing', async (): Promise<void> => {
-      const hostile: Record<string, unknown> = {
-        ...seededAllDataJournal(),
-        setupProjection: { ...DEFAULT_SETUP },
-      };
       const local: FakeStorage = fakeStorage({
         ...allDataLocal(),
-        [LOCAL_DATA_CLEAR_JOURNAL]: hostile,
+        [LOCAL_DATA_CLEAR_JOURNAL]: seededAllDataJournal(),
       });
       const sync: FakeStorage = fakeStorage({});
       const stub: ClearPortsStub = clearPorts();
       const storage: PolicyStorage = policyStorage(local, sync, stub.ports);
+      // Initialization reads a journal it accepts, so the refusal below is the transaction's own
+      // parse-failure throw rather than the loader's, which runs before the token is checked.
+      await storage.initialize();
+      const hostile: Record<string, unknown> = {
+        ...seededAllDataJournal(),
+        setupProjection: { ...DEFAULT_SETUP },
+      };
+      local.state.values[LOCAL_DATA_CLEAR_JOURNAL] = hostile;
+      vi.mocked(local.area.set).mockClear();
 
-      await expect(runPhase(storage, stub)).rejects.toThrow(/data clear journal/u);
+      const failure: unknown = await runPhase(storage, stub).then(
+        (): unknown => null,
+        (error: unknown): unknown => error,
+      );
 
+      expect(failure).toBeInstanceOf(CoreError);
+      expect((failure as CoreError).code).toBe('storage');
+      expect((failure as CoreError).cause).toEqual(hostile);
       expect(local.state.values[LOCAL_DATA_CLEAR_JOURNAL]).toEqual(hostile);
       expect(journalWrites(local)).toEqual([]);
     });
