@@ -477,7 +477,8 @@ function stubChrome(): void {
             name,
             scheduledTime: info.when ?? Date.now(),
             periodInMinutes: info.periodInMinutes,
-          });
+            persistAcrossSessions: false,
+          } as chrome.alarms.Alarm);
         },
       ),
       get: vi.fn(
