@@ -45,6 +45,7 @@ import { projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
 import type {
   CleanupProgress,
+  CleanupTabClaim,
   PendingClosure,
   PendingEnforcementTransition,
   RuntimeStateV2,
@@ -176,6 +177,23 @@ export async function writeCleanupFailureV2(
 }
 
 /**
+ * How one send treats a page that answers with no receiver at all.
+ *
+ * Membership in this batch is the evidence the transport answer does not carry. A document the
+ * batch froze, or one on a tab this cleanup holds a claim for, was overlaid by this session (spec
+ * 758, spec 1954), so a missing receiver there is a clear that did not land and the journal stays
+ * open. A document discovered on a tab with no claim was never sent anything by this journal and
+ * has no overlay to clear, so an unreachable one is deferred rather than fatal, which is how spec
+ * 1345 treats the same case in browser reset.
+ */
+export interface CleanupSendPolicyV2 {
+  tolerateNoReceiver: boolean;
+}
+
+const OVERLAID_SEND_POLICY: CleanupSendPolicyV2 = { tolerateNoReceiver: false };
+const UNCLAIMED_SEND_POLICY: CleanupSendPolicyV2 = { tolerateNoReceiver: true };
+
+/**
  * Spec step 6 for one document: reset it when it has not acknowledged the current epoch, and only
  * then send its exact frozen clear. Every reachable document owes that handshake, the ones a batch
  * froze and the ones an attempt or a navigation discovers alike, so every send comes through here.
@@ -186,6 +204,7 @@ export async function resetAndClearDocumentV2(
   key: string,
   command: FrozenDocumentCommand,
   label: string,
+  policy: CleanupSendPolicyV2 = OVERLAID_SEND_POLICY,
 ): Promise<string | null> {
   const runtime: RuntimeStateV2 = ports.runtime();
   const ack: DocumentEpochResetAck | undefined = runtime.epochResetAcks[key];
@@ -202,6 +221,7 @@ export async function resetAndClearDocumentV2(
     );
     // A closed document owes nothing further this attempt, and its claim decides its resolution.
     if (reset.kind === 'closed') return null;
+    if (reset.kind === 'no-receiver' && policy.tolerateNoReceiver) return null;
     if (reset.kind !== 'reset') return `${label} reset for ${key} answered ${reset.kind}`;
     await recordEpochAckV2(ports, reset.ack);
   }
@@ -212,6 +232,7 @@ export async function resetAndClearDocumentV2(
   if (outcome.kind === 'applied' || outcome.kind === 'closed' || outcome.kind === 'changed') {
     return null;
   }
+  if (outcome.kind === 'no-receiver' && policy.tolerateNoReceiver) return null;
   // Nothing may outrank the clear revision, so a stale answer during cleanup is fatal too.
   return `${label} clear for ${key} answered ${outcome.kind}`;
 }
@@ -317,16 +338,23 @@ export async function clearDiscoveredDocumentsV2(
       documentId: target.documentId,
       expectedUrl: target.url,
     });
+    const current: CleanupProgress = journalProgressV2(ports.runtime(), journal);
     const failure: string | null = await resetAndClearDocumentV2(
       ports,
-      journalProgressV2(ports.runtime(), journal),
+      current,
       key,
       command,
       label,
+      claimedTabV2(current, target.tabId) ? OVERLAID_SEND_POLICY : UNCLAIMED_SEND_POLICY,
     );
     if (failure !== null) return failure;
   }
   return null;
+}
+
+/** Whether this cleanup holds a claim for the tab, which is what proves it overlaid the page. */
+function claimedTabV2(progress: CleanupProgress, tabId: number): boolean {
+  return progress.tabClaims.some((claim: CleanupTabClaim): boolean => claim.tabId === tabId);
 }
 
 /** The two `auditEnforcement` answers, which are the failures that precede any send. */

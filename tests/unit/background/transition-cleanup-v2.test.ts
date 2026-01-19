@@ -632,6 +632,50 @@ describe('transition cleanup discovery', (): void => {
     ).toEqual([]);
   });
 
+  it('defers an unreachable document this cleanup never overlaid', async (): Promise<void> => {
+    // Spec 1345 shape: a page discovered on a tab this cleanup holds no claim for was never sent
+    // anything by this journal, so a missing receiver is nothing to clear rather than a lost clear.
+    const fake: RuntimePortsFakeV2 = await inManualEndCleanup();
+    fake.setTabs([
+      { tabId: 11, url: BLOCKED_URL, documentId: DOC_ONE },
+      { tabId: 12, url: 'https://news.example.com/story', documentId: 'document-12' },
+    ]);
+    fake.respondForDocument(12, 'document-12', noReceiverResponder());
+
+    await runTransitionCleanupAttemptV2(fake, effectsFake());
+
+    expect(fake.current().pendingEnforcementTransition).toBeNull();
+  });
+
+  it('keeps the journal open when an unreachable document is on a claimed tab', async (): Promise<void> => {
+    // The same answer from a tab this cleanup claimed is a clear that did not land: the session
+    // overlaid that page, so spec 758 and spec 1954 keep it fatal.
+    const fake: RuntimePortsFakeV2 = await inManualEndCleanup();
+    const runtime: RuntimeStateV2 = fake.current();
+    await fake.writeRuntime({
+      ...runtime,
+      tabStates: {
+        ...runtime.tabStates,
+        12: {
+          muteUrl: 'https://news.example.com/story',
+          priorMuted: false,
+          stoppedDocumentId: null,
+        },
+      },
+    });
+    fake.setTabs([
+      { tabId: 11, url: BLOCKED_URL, documentId: DOC_ONE },
+      { tabId: 12, url: 'https://news.example.com/story', documentId: 'document-12' },
+    ]);
+    fake.respondForDocument(12, 'document-12', noReceiverResponder());
+
+    await runTransitionCleanupAttemptV2(fake, effectsFake());
+
+    const progress: CleanupProgress = storedProgress(fake);
+    expect(progress.retry.automaticAttempt).toBe(1);
+    expect(progress.retry.lastError).toContain('answered no-receiver');
+  });
+
   it('fails the attempt when a discovered claim contradicts the captured one', async (): Promise<void> => {
     const fake: RuntimePortsFakeV2 = await inManualEndCleanup();
     const captured: CleanupTabClaim[] = storedProgress(fake).tabClaims;
