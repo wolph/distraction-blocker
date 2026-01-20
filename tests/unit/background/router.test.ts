@@ -809,15 +809,10 @@ describe('routeMessage onboarding wiring', (): void => {
     },
   );
 
-  // Pinned defect: a blocked navigation taken while a quiesced barrier owns today's aggregate is
-  // not counted. The `recordAttempt` effect in `Engine.controllerEffects`
-  // (`src/background/engine.ts`, around :353) answers a resolved promise while the barrier is
-  // quiesced instead of deferring the write, so the count is dropped rather than replayed when the
-  // barrier opens. The spec exempts only the sweep from attempt accounting, so the assertion below
-  // is the requirement, and it is what the v1 engine asserted at 39113e9. The assertions are kept
-  // whole for whoever gives the controller a lease over that aggregate.
-  // See task-1-testfix-report.md.
-  it.skip.each(['enableSync', 'selectLocalMode'] as const)(
+  // The barrier is storage bookkeeping the user cannot see, and a blocked navigation they made is
+  // an attempt the day owes them, so a quiesced barrier holds the write and replays it when the
+  // barrier opens. The spec exempts only the sweep from attempt accounting.
+  it.each(['enableSync', 'selectLocalMode'] as const)(
     'counts the blocked attempt taken while %s holds the Engine storage barrier',
     async (transition: 'enableSync' | 'selectLocalMode'): Promise<void> => {
       const held: {
@@ -1181,21 +1176,11 @@ describe('routeMessage all-data clear enforcement gate', (): void => {
       sentCommands: DocumentContentCommand[];
     } = recordingEngine();
     await recorded.engine.startSession(focusSessionConfig());
-    let releaseClear: () => void = (): void => undefined;
-    let signalClearHeld: () => void = (): void => undefined;
-    const clearBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
-      releaseClear = resolve;
-    });
-    const clearHeld: Promise<void> = new Promise<void>((resolve: () => void): void => {
-      signalClearHeld = resolve;
-    });
-    const clearing: Promise<void> = recorded.engine.runWithDataClearBarrier(
-      async (): Promise<void> => {
-        signalClearHeld();
-        await clearBlocked;
-      },
-    );
-    await clearHeld;
+    // The barrier is taken the way a boot with an owed clear takes it, which leaves the session in
+    // the runtime. `runWithDataClearBarrier` ends the session before its operation runs, so a gate
+    // staged on that one is asked about a profile with nothing left to protect.
+    await recorded.engine.retainDataClearQuiescence();
+    expect(recorded.engine.hasActiveSession()).toBe(true);
     const writesBefore: number = recorded.savedRuntimes.length;
     const commandsBefore: number = recorded.sentCommands.length;
     const url: string = BLOCKED_URL;
@@ -1217,9 +1202,10 @@ describe('routeMessage all-data clear enforcement gate', (): void => {
       expect(recorded.savedRuntimes).toHaveLength(writesBefore);
       expect(recorded.engine.tabFacts(7, url, 'document-id').wasStopped).toBe(false);
       expect(recorded.engine.statsOverlay().todayAgg.attempts[BLOCKED_HOST]).toBeUndefined();
+      // The session is still live, so this gate refused a navigation it was actually protecting.
+      expect(recorded.engine.hasActiveSession()).toBe(true);
     } finally {
-      releaseClear();
-      await clearing;
+      await settle();
     }
   });
 

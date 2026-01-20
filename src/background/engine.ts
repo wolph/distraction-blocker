@@ -224,6 +224,13 @@ export class Engine {
    * settle, and the focus that settle produced belongs to the day it happened on.
    */
   private creditedFocusMs: number = 0;
+  /**
+   * Attempts a quiesced barrier could not write yet. The barrier is storage bookkeeping the user
+   * cannot see, and a blocked navigation they made is an attempt the day owes them, so it waits
+   * here rather than being dropped.
+   */
+  private deferredAttempts: Array<{ url: string; tabId: number; kind: 'navigation' | 'existing' }> =
+    [];
   private runtimePersistQueue: Promise<void> = Promise.resolve();
   private activeRuntimeMutationLeases: Set<RuntimeMutationLease> = new Set();
   private runtimeMutationsInFlight: Set<Promise<void>> = new Set();
@@ -348,18 +355,21 @@ export class Engine {
         void this.sweepAfterPhaseChange();
       },
       // An attempt lands in today's aggregate, which is the storage a quiesced barrier is busy
-      // rewriting, and the controller carries no lease to prove otherwise. So the frozen command
-      // still goes out, because a live session's pages must not unblock for a storage switch, and
-      // the count behind it is dropped. A draining barrier has not taken storage yet, and it waits
-      // for this write like any other, so that one still runs.
+      // rewriting, so the write waits for the barrier rather than joining it. The frozen command
+      // still goes out either way, because a live session's pages must not unblock for a storage
+      // switch. A draining barrier has not taken storage yet and waits for this write like any
+      // other, so that one still runs.
       recordAttempt: (
         url: string,
         tabId: number,
         kind: 'navigation' | 'existing',
-      ): Promise<void> =>
-        this.dataClearBarrierState === 'quiesced'
-          ? Promise.resolve()
-          : this.recordAttempt(url, tabId, kind),
+      ): Promise<void> => {
+        if (this.dataClearBarrierState !== 'quiesced') {
+          return this.recordAttempt(url, tabId, kind);
+        }
+        this.deferredAttempts.push({ url, tabId, kind });
+        return Promise.resolve();
+      },
       restoreTabClaims: (claims: readonly CleanupTabClaim[]): Promise<number[]> =>
         this.ports.restoreTabClaims(claims),
       reloadStoppedDocuments: (claims: readonly CleanupTabClaim[]): Promise<void> =>
@@ -516,6 +526,7 @@ export class Engine {
         await this.flushDeferredBlockClaims();
         await this.flushRemovedTabTombstones();
         await this.flushDeferredBlockingSweep();
+        await this.flushDeferredAttempts();
       } else {
         this.rejectDeferredBlockingSweep(
           new Error('runtime mutation deferred while all-data deletion remains pending'),
@@ -590,6 +601,7 @@ export class Engine {
         }
       }
       await this.applyPendingWebsiteBlockingLoss();
+      await this.flushDeferredAttempts();
     }
   }
 
@@ -1962,6 +1974,8 @@ export class Engine {
     this.attemptRevision = 0;
     this.attemptPersistInFlight.clear();
     this.failedAttemptPersistence.clear();
+    // The day those attempts belonged to has just been erased, so they go with it.
+    this.deferredAttempts = [];
     this.websiteBlockingLossPending = false;
     this.ownedRuntimeSnapshot = structuredClone(this.runtime);
     await this.persistRuntime();
@@ -1990,6 +2004,26 @@ export class Engine {
       this.runtime.tabStates = {};
       await this.persistRuntime();
       await this.drainRuntimeMutations();
+    }
+  }
+
+  /**
+   * The attempts a quiesced barrier held. Each one is replayed through the ordinary path once the
+   * barrier is open, so the debounce and the day's aggregate see them exactly as they would have.
+   * An attempt whose replay fails is reported and dropped rather than retried forever.
+   */
+  private async flushDeferredAttempts(): Promise<void> {
+    if (this.deferredAttempts.length === 0) return;
+    const pending: Array<{ url: string; tabId: number; kind: 'navigation' | 'existing' }> = [
+      ...this.deferredAttempts,
+    ];
+    this.deferredAttempts = [];
+    for (const attempt of pending) {
+      try {
+        await this.recordAttempt(attempt.url, attempt.tabId, attempt.kind);
+      } catch (error: unknown) {
+        this.ports.reportError(error);
+      }
     }
   }
 
