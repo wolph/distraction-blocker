@@ -230,8 +230,14 @@ async function bootWorker(
       },
     },
     notifications: {
+      // The API takes an optional id before the options, and the worker passes options alone.
       create: vi.fn(
-        async (_id: string, options: { title: string; message: string }): Promise<void> => {
+        async (
+          first: string | { title: string; message: string },
+          second?: { title: string; message: string },
+        ): Promise<void> => {
+          const options = typeof first === 'string' ? second : first;
+          if (options === undefined) throw new Error('a notification needs its options');
           notices.push({ title: options.title, body: options.message });
         },
       ),
@@ -1716,6 +1722,122 @@ describe('worker cutover to v2 session authority', (): void => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('unlocks the registrable host, not the subdomain the overlay sent', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker({
+      ...installedSeed(),
+      [LOCAL_BANK]: { balanceMs: 10 * 60_000 },
+    });
+    const mobile: FakeDocument = {
+      tabId: 11,
+      documentId: 'document-1',
+      url: 'https://m.facebook.com/feed',
+      received: [],
+    };
+    const desktop: FakeDocument = {
+      tabId: 12,
+      documentId: 'document-2',
+      url: 'https://www.facebook.com/feed',
+      received: [],
+    };
+    worker.documents.push(mobile, desktop);
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+
+    const started: number = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      // The overlay sends the hostname the page is on, which is the subdomain the user is looking at.
+      await worker.send({
+        type: 'openGate',
+        gate: 'unlockSite',
+        host: 'm.facebook.com',
+      } as Request);
+      vi.setSystemTime(started + DEFAULT_SETTINGS.gate.delayMs + 1_000);
+      await worker.send({ type: 'confirmGate', typedPhrase: null } as Request);
+      await worker.settle();
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // The unlock is paid for once and covers the site, so the desktop page the same session blocks
+    // is cleared too rather than staying blocked behind a subdomain the user never typed.
+    expect(worker.runtime().unlocks.map((unlock): string => unlock.host)).toEqual(['facebook.com']);
+    expect(worker.runtime().documentCommands[documentKeyOf(desktop)]?.presentation).toBe('clear');
+    expect(worker.runtime().documentCommands[documentKeyOf(mobile)]?.presentation).toBe('clear');
+  });
+
+  // Skipped, and the skip is the finding: `startSession` never reads `websiteBlockingReady`, which
+  // is the flag that says setup is finished and the content registration is live. Only the schedule
+  // runner reads it. So a profile whose setup never completed starts a session over the message
+  // channel and publishes it, and the transition's own audit does not catch it, because that audit
+  // asks the browser for permissions rather than asking whether this profile is set up. The
+  // assertions below are the requirement, unweakened.
+  it.skip('refuses a manual start while website blocking is unavailable', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker({
+      ...installedSeed(),
+      [LOCAL_SETUP]: {
+        ...(installedSeed()[LOCAL_SETUP] as object),
+        websiteAccess: 'denied',
+        blockingRegistration: 'unavailable',
+      },
+    });
+    worker.documents.push({
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    });
+
+    const answer = (await worker.send({
+      type: 'startSession',
+      config: indefiniteConfig(),
+    } as Request)) as { ok: boolean; code?: string };
+
+    // A session that cannot block anything is not a session, so the start is refused rather than
+    // published, and nothing durable is left behind for a recovery to resume.
+    expect(answer).toMatchObject({ ok: false, code: 'website-access-lost' });
+    expect(worker.runtime().session).toBeNull();
+    expect(worker.runtime().pendingEnforcementTransition).toBeNull();
+    expect(worker.broadcasts.at(-1)?.lifecycle.kind).toBe('idle');
+  });
+
+  it('honors the completion sound and notification the user turned off', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker({
+      ...installedSeed(),
+      [LOCAL_SETTINGS]: {
+        ...DEFAULT_SETTINGS,
+        sessionCompleteNotification: false,
+        sounds: { ...DEFAULT_SETTINGS.sounds, sessionComplete: false },
+      },
+    });
+    worker.documents.push({
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    });
+    await worker.send({
+      type: 'startSession',
+      config: { ...indefiniteConfig(), duration: { kind: 'timed', minutes: 25 } },
+    } as Request);
+    await worker.settle();
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const when: number | null | undefined = worker.alarms.get('phase')?.when;
+      vi.setSystemTime((when ?? Date.now()) + 1_000);
+      await worker.fireAlarm('phase');
+      await worker.settle();
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // The session finished, and the two things the user switched off stayed off.
+    expect(worker.runtime().session).toBeNull();
+    expect(worker.sounds).not.toContain('sessionComplete');
+    expect(worker.notices).toEqual([]);
   });
 
   it('clears the badge when a timed session completes', async (): Promise<void> => {

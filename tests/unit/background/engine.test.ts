@@ -3417,6 +3417,21 @@ describe('Engine', () => {
     expect(write).not.toHaveBeenCalled();
   });
 
+  it('mints a fresh enforcement epoch when an all-data clear finishes', async () => {
+    const h: Harness = makeEngine({ runtime: activeRuntimeV2() });
+    const before: string = h.seededRuntime.enforcementEpoch;
+
+    await h.engine.runWithDataClearBarrier(async (): Promise<void> => undefined);
+    await h.engine.tick();
+
+    // A document that survived the clear still holds commands stamped with the old epoch. A reused
+    // epoch would let it keep applying them, so the erase mints a new one and every stale command
+    // is refused until its document is reset onto it.
+    const after: string = lastSavedRuntime(h).enforcementEpoch;
+    expect(before).not.toBe('');
+    expect(after).not.toBe(before);
+  });
+
   it('settles the session before it runs its own minute maintenance', async () => {
     const h: Harness = makeEngine({ runtime: activeRuntimeV2() });
     h.setNow(T0 + 60_000);
