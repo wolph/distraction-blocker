@@ -258,6 +258,42 @@ function assertBatchIdentityAgrees(
   }
 }
 
+/**
+ * Spec 1150, the same-document half of "a changed document gets a new keyed target". A cross-
+ * document move arrives under a new key and `addCleanupTargetV2` takes it. A same-document move
+ * keeps its `documentId`, so it keeps its key, and the recorded target now names a URL the page has
+ * left. This rebuilds that one keyed target and its clear command for the URL the page is on, under
+ * the batch's own operation ID and clear revision, so nothing else in the batch moves and the page
+ * receives a command it will accept rather than one it answers `changed` to.
+ */
+export function remapMovedCleanupTargetV2(
+  progress: CleanupProgress,
+  target: CleanupEnforcementTarget,
+  identity: Omit<ClearCommandIdentityV2, 'operationId' | 'runtimeRevision'>,
+): CleanupProgress {
+  const key: string = documentCommandKeyV2(target.tabId, target.documentId);
+  const recorded: CleanupEnforcementTarget | undefined = progress.targets[key];
+  if (recorded === undefined) {
+    invalidCleanup('a moved cleanup target must already be in the batch');
+  }
+  if (recorded.expectedUrl === target.expectedUrl) return progress;
+  const next: CleanupProgress = detachedCopy(progress);
+  assertBatchIdentityAgrees(next, identity);
+  // Assigned rather than removed and re-added, so the document keeps its place in the batch and
+  // every other entry is untouched.
+  next.targets[key] = {
+    tabId: target.tabId,
+    documentId: target.documentId,
+    expectedUrl: target.expectedUrl,
+  };
+  next.clearCommands[key] = buildFrozenClearCommandV2(target, {
+    ...identity,
+    operationId: next.cleanupOperationId,
+    runtimeRevision: next.clearRuntimeRevision,
+  });
+  return validatedProgress(next);
+}
+
 export function resolveCleanupTabV2(progress: CleanupProgress, tabId: number): CleanupProgress {
   if (!isNonNegativeInteger(tabId)) {
     invalidCleanup(`cleanup resolved tab ${String(tabId)} is not a tab ID`);

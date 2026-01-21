@@ -632,6 +632,35 @@ describe('transition cleanup discovery', (): void => {
     ).toEqual([]);
   });
 
+  it('clears a same-document move for the URL the page moved to', async (): Promise<void> => {
+    // Spec 1150: the moved document keeps its key, so the batch would otherwise keep sending the
+    // URL it left and clear nothing. Its command is rebuilt under the batch's own operation and
+    // clear revision, and every other frozen command stays exactly as it was.
+    const fake: RuntimePortsFakeV2 = await inManualEndCleanup();
+    const before: CleanupProgress = storedProgress(fake);
+    const key: string = documentKey(11, DOC_ONE);
+    const moved: string = 'https://facebook.com/feed/story';
+    fake.setTabs([{ tabId: 11, url: moved, documentId: DOC_ONE }]);
+
+    await runTransitionCleanupAttemptV2(fake, effectsFake());
+
+    const sent: DocumentContentCommand[] = fake.sends
+      .filter((send: FakeSendV2): boolean => send.message.command === 'apply-enforcement')
+      .map((send: FakeSendV2): DocumentContentCommand => send.message);
+    expect(
+      sent.some(
+        (message: DocumentContentCommand): boolean =>
+          'expectedUrl' in message && message.expectedUrl === moved,
+      ),
+    ).toBe(true);
+    const carried: RuntimeStateV2[] = fake.writes.filter(
+      (write: RuntimeStateV2): boolean => write.documentCommands[key]?.expectedUrl === moved,
+    );
+    expect(carried).not.toEqual([]);
+    expect(carried[0]?.documentCommands[key]?.operationId).toBe(before.cleanupOperationId);
+    expect(carried[0]?.documentCommands[key]?.runtimeRevision).toBe(before.clearRuntimeRevision);
+  });
+
   it('defers an unreachable document this cleanup never overlaid', async (): Promise<void> => {
     // Spec 1345 shape: a page discovered on a tab this cleanup holds no claim for was never sent
     // anything by this journal, so a missing receiver is nothing to clear rather than a lost clear.

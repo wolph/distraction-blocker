@@ -19,6 +19,7 @@ import {
   NO_SESSION_VERDICT,
   nextCleanupAttemptAtV2,
   recordCleanupAttemptFailureV2,
+  remapMovedCleanupTargetV2,
   replaceCleanupBatchV2,
   resolveCleanupTabV2,
 } from '../../../src/background/cleanup-progress-v2';
@@ -560,6 +561,38 @@ describe('discovered cleanup targets', (): void => {
     expect(added.clearCommands[FIRST_KEY]).toEqual(progress.clearCommands[FIRST_KEY]);
     expect(added.clearCommands[FIRST_KEY]?.expectedUrl).toBe(TARGET_URL);
     expect(Object.keys(added.clearCommands)).toEqual([FIRST_KEY, SECOND_KEY]);
+  });
+
+  it('rebuilds a same-document move for the URL the page is on', (): void => {
+    const progress: CleanupProgress = progressFixture();
+    const moved: CleanupEnforcementTarget = { ...FIRST_TARGET, expectedUrl: SECOND_TARGET_URL };
+
+    const remapped: CleanupProgress = remapMovedCleanupTargetV2(progress, moved, IDENTITY);
+
+    expect(remapped.targets[FIRST_KEY]).toEqual(moved);
+    expect(remapped.clearCommands[FIRST_KEY]).toEqual(
+      buildFrozenClearCommandV2(moved, FULL_IDENTITY),
+    );
+    expect(remapped.clearCommands[FIRST_KEY]?.operationId).toBe(progress.cleanupOperationId);
+    expect(remapped.clearCommands[FIRST_KEY]?.runtimeRevision).toBe(progress.clearRuntimeRevision);
+    // Every other command in the batch is byte-for-byte what it was.
+    expect(remapped.clearCommands[SECOND_KEY]).toEqual(progress.clearCommands[SECOND_KEY]);
+    expect(Object.keys(remapped.clearCommands)).toEqual([FIRST_KEY, SECOND_KEY]);
+    expect(progress.clearCommands[FIRST_KEY]?.expectedUrl).toBe(TARGET_URL);
+  });
+
+  it('leaves a target that has not moved exactly as it was', (): void => {
+    const progress: CleanupProgress = progressFixture();
+
+    expect(remapMovedCleanupTargetV2(progress, FIRST_TARGET, IDENTITY)).toBe(progress);
+  });
+
+  it('refuses to remap a document the batch does not own', (): void => {
+    const progress: CleanupProgress = progressFixture();
+
+    expectInvalidRule(
+      (): CleanupProgress => remapMovedCleanupTargetV2(progress, THIRD_TARGET, IDENTITY),
+    );
   });
 
   it('refuses a target that diverges from the batch base policy revision', (): void => {
