@@ -815,4 +815,41 @@ describe('persisted matcher cache', () => {
       expect(restoreMatcherCache(raw, cacheLists, CATS)).toBeNull();
     },
   );
+
+  /**
+   * The production compiled signature is a key-sorted stringification of `modes`, so a
+   * mutated cache needs its own signature recomputed the same way. Without this the
+   * mutation is rejected by the signature check and the guard under test never runs.
+   */
+  function stableJson(value: unknown): string {
+    if (value === null || typeof value !== 'object') return JSON.stringify(value);
+    if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+    const record: Record<string, unknown> = value as Record<string, unknown>;
+    const members: string[] = Object.keys(record)
+      .sort()
+      .map((key: string): string => `${JSON.stringify(key)}:${stableJson(record[key])}`);
+    return `{${members.join(',')}}`;
+  }
+
+  it('refuses a self-consistent cache whose stored regex source is empty', (): void => {
+    const raw = JSON.parse(JSON.stringify(buildMatcherCache(cacheLists, CATS).stored)) as Record<
+      string,
+      unknown
+    >;
+    const modes = raw.modes as { blacklist: { regexes: Array<{ source: string; via: string }> } };
+    modes.blacklist.regexes = [{ source: '', via: 'custom' }];
+    raw.compiledSignature = stableJson(raw.modes);
+
+    expect(restoreMatcherCache(raw, cacheLists, CATS)).toBeNull();
+  });
+
+  it('still restores a cache whose signature was recomputed without other edits', (): void => {
+    const raw = JSON.parse(JSON.stringify(buildMatcherCache(cacheLists, CATS).stored)) as Record<
+      string,
+      unknown
+    >;
+    raw.compiledSignature = stableJson(raw.modes);
+
+    expect(restoreMatcherCache(raw, cacheLists, CATS)).not.toBeNull();
+  });
 });

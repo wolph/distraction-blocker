@@ -596,6 +596,9 @@ function restoreStoredMatcher(value: unknown, mode: SessionMode): CompiledMatche
     if (typeof candidate.source !== 'string' || !validRegexProvenance(candidate.via, mode)) {
       return null;
     }
+    // The compiler rejects an empty pattern, so a stored empty source was never validated.
+    // Restoring it would install a regex that matches every URL.
+    if (candidate.source.trim() === '') return null;
     try {
       regexes.push({
         source: candidate.source,

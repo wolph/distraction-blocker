@@ -18,8 +18,13 @@ function displayPattern(rule: Rule): string {
   return rule.kind === 'regex' ? `/${rule.pattern}/` : rule.pattern;
 }
 
-/** `/foo/` typed in the UI becomes the bare source `foo` in storage. */
+/**
+ * `/foo/` typed in the UI becomes the bare source `foo` in storage. A lone `/` is an
+ * empty pair of delimiters, exactly like `//`, so it becomes the empty source the
+ * validator rejects rather than a regex that matches every URL.
+ */
 function stripSlashes(raw: string): string {
+  if (raw === '/') return '';
   if (raw.length > 1 && raw.startsWith('/') && raw.endsWith('/')) {
     return raw.slice(1, -1);
   }

@@ -44,6 +44,18 @@ describe('RulesEditor', () => {
     expect(getByText('not a valid regex: the pattern is empty')).toBeTruthy();
   });
 
+  it('rejects a lone slash instead of adding a catch-all rule', (): void => {
+    const onChange = vi.fn();
+    const { getByLabelText, getByRole, getByText } = render(
+      <RulesEditor title="Custom blacklist" rules={[]} onChange={onChange} />,
+    );
+    fireEvent.change(getByLabelText('Rule kind'), { target: { value: 'regex' } });
+    fireEvent.input(getByLabelText('Pattern'), { target: { value: '/' } });
+    fireEvent.click(getByRole('button', { name: 'Add rule' }));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(getByText('not a valid regex: the pattern is empty')).toBeTruthy();
+  });
+
   it('strips slash delimiters on input and stores the bare regex source', (): void => {
     const onChange = vi.fn();
     const { getByLabelText, getByRole } = render(
