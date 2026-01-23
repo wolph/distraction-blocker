@@ -28,7 +28,10 @@ import { syncAggKey } from '../../../src/shared/storage-keys';
 import { localDateStr } from '../../../src/shared/time';
 import type { DailyAgg, SessionStateV2 } from '../../../src/shared/types';
 import {
+  appliedResponseFor,
   createRuntimePortsFakeV2,
+  epochResetResponseFor,
+  type FakeResponderV2,
   type FakeSendV2,
   noReceiverResponder,
   type RuntimePortsFakeV2,
@@ -38,6 +41,7 @@ import {
   CLEANUP_OPERATION_ID,
   documentKey,
   emptyRuntimeV2,
+  epochResetAck,
   OTHER_OPERATION_ID,
   pausedSession,
   pendingTransition,
@@ -630,6 +634,80 @@ describe('transition cleanup discovery', (): void => {
     expect(
       fake.sends.filter((send: FakeSendV2): boolean => send.documentId === 'document-12'),
     ).toEqual([]);
+  });
+
+  /** A document that answers every clear from the URL it moved to inside the same document. */
+  function movedResponder(observedUrl: string, handledAt: number): FakeResponderV2 {
+    return (message: DocumentContentCommand): unknown => {
+      if (message.command !== 'apply-enforcement') return epochResetResponseFor(message, handledAt);
+      const applied: Record<string, unknown> = appliedResponseFor(message, handledAt) as Record<
+        string,
+        unknown
+      >;
+      return { ...applied, observedUrl };
+    };
+  }
+
+  it('reclears a document that answers the frozen command from a URL it moved to', async (): Promise<void> => {
+    // The `changed` answer carries the observed URL, which is the exact signal that this key's
+    // target moved and kept its key, so no second enumeration is needed to find it.
+    const fake: RuntimePortsFakeV2 = await inManualEndCleanup();
+    const before: CleanupProgress = storedProgress(fake);
+    const key: string = documentKey(11, DOC_ONE);
+    const moved: string = 'https://facebook.com/feed/story';
+    const acked: RuntimeStateV2 = fake.current();
+    // The document acknowledged this epoch while the session enforced it, which is the normal state
+    // for a page that was overlaid, so the clear is sent without a reset first.
+    await fake.writeRuntime({
+      ...acked,
+      epochResetAcks: {
+        [key]: epochResetAck({
+          enforcementEpoch: acked.enforcementEpoch,
+          documentId: DOC_ONE,
+          url: BLOCKED_URL,
+        }),
+      },
+    });
+    fake.respondForDocument(11, DOC_ONE, movedResponder(moved, fake.now()));
+
+    await runTransitionCleanupAttemptV2(fake, effectsFake());
+
+    const cleared: DocumentContentCommand[] = fake.sends
+      .filter((send: FakeSendV2): boolean => send.message.command === 'apply-enforcement')
+      .map((send: FakeSendV2): DocumentContentCommand => send.message);
+    // The first clear names the frozen URL and is answered `changed`; the replacement names the URL
+    // the page is on, under the batch's own identity.
+    expect(
+      cleared.map((message: DocumentContentCommand): string =>
+        'expectedUrl' in message ? message.expectedUrl : '',
+      ),
+    ).toContain(moved);
+    // The attempt is clean once the replacement lands, so the evidence is the durable write the
+    // remap made: one command for the key, carrying the new URL under the batch's own identity.
+    const carried: RuntimeStateV2[] = fake.writes.filter(
+      (write: RuntimeStateV2): boolean => write.documentCommands[key]?.expectedUrl === moved,
+    );
+    const remapped: FrozenDocumentCommand | undefined = carried[0]?.documentCommands[key];
+    expect(remapped?.operationId).toBe(before.cleanupOperationId);
+    expect(remapped?.runtimeRevision).toBe(before.clearRuntimeRevision);
+    expect(Object.keys(carried[0]?.documentCommands ?? {})).toEqual(
+      Object.keys(before.clearCommands),
+    );
+    expect(fake.current().pendingEnforcementTransition).toBeNull();
+  });
+
+  it('keeps the command of a document that has not moved byte-for-byte across attempts', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = await inManualEndCleanup();
+    const frozen: CleanupProgress = storedProgress(fake);
+    fake.respondForDocument(11, DOC_ONE, noReceiverResponder());
+
+    await runTransitionCleanupAttemptV2(fake, effectsFake());
+    const first: CleanupProgress = storedProgress(fake);
+    await runTransitionCleanupAttemptV2(fake, effectsFake());
+
+    expect(first.clearCommands).toEqual(frozen.clearCommands);
+    expect(storedProgress(fake).clearCommands).toEqual(frozen.clearCommands);
+    expect(storedProgress(fake).targets).toEqual(frozen.targets);
   });
 
   it('clears a same-document move for the URL the page moved to', async (): Promise<void> => {

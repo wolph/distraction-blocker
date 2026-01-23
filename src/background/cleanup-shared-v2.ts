@@ -231,11 +231,46 @@ export async function resetAndClearDocumentV2(
     ports.transport,
     command,
   );
+  if (outcome.kind === 'changed') {
+    return reclearMovedDocumentV2(ports, key, command, outcome.observedUrl, label, policy);
+  }
+  if (outcome.kind === 'applied' || outcome.kind === 'closed') return null;
+  if (outcome.kind === 'no-receiver' && policy.tolerateNoReceiver) return null;
+  // Nothing may outrank the clear revision, so a stale answer during cleanup is fatal too.
+  return `${label} clear for ${key} answered ${outcome.kind}`;
+}
+
+/**
+ * A `changed` answer carries the URL the document is on, which is the exact evidence that this
+ * key's recorded target moved within its own document and kept its key. The batch replaces that one
+ * command with one built from the observed URL, in the single durable write `durableClearCommandV2`
+ * makes, which retires the old command rather than leaving two for one key, and sends the
+ * replacement once. A page that moves again inside the same attempt is left to the next attempt,
+ * which rereads it, rather than chased in a loop.
+ */
+async function reclearMovedDocumentV2(
+  ports: RuntimePortsV2,
+  key: string,
+  command: FrozenDocumentCommand,
+  observedUrl: string,
+  label: string,
+  policy: CleanupSendPolicyV2,
+): Promise<string | null> {
+  const journal: CleanupJournalV2 | null = cleanupJournalOfV2(ports.runtime());
+  if (journal === null || observedUrl === command.expectedUrl) return null;
+  const moved: FrozenDocumentCommand = await durableClearCommandV2(ports, journal, key, {
+    tabId: command.tabId,
+    documentId: command.documentId,
+    expectedUrl: observedUrl,
+  });
+  const outcome: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
+    ports.transport,
+    moved,
+  );
   if (outcome.kind === 'applied' || outcome.kind === 'closed' || outcome.kind === 'changed') {
     return null;
   }
   if (outcome.kind === 'no-receiver' && policy.tolerateNoReceiver) return null;
-  // Nothing may outrank the clear revision, so a stale answer during cleanup is fatal too.
   return `${label} clear for ${key} answered ${outcome.kind}`;
 }
 
