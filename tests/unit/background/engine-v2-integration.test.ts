@@ -132,6 +132,14 @@ async function bootWorker(
   let websiteAccess: boolean = true;
   let localWrites: number = 0;
   const muteCalls: Array<{ tabId: number; muted: boolean }> = [];
+  /** What the browser would report for a tab this worker muted, which is what an unmute reads. */
+  const mutedTabs: Map<number, boolean> = new Map<number, boolean>();
+  const fakeTab = (row: FakeDocument): chrome.tabs.Tab =>
+    ({
+      id: row.tabId,
+      url: row.url,
+      mutedInfo: { muted: mutedTabs.get(row.tabId) ?? false, extensionId: 'test-extension' },
+    }) as chrome.tabs.Tab;
   const local: Record<string, unknown> = structuredClone(seed);
   const sync: Record<string, unknown> = {};
   const syncWrites: Array<Record<string, unknown>> = [];
@@ -356,15 +364,9 @@ async function bootWorker(
           (candidate: FakeDocument): boolean => candidate.tabId === tabId,
         );
         if (row === undefined) throw new Error(`no tab ${tabId}`);
-        return { id: row.tabId, url: row.url } as chrome.tabs.Tab;
+        return fakeTab(row);
       }),
-      query: vi.fn(
-        async (): Promise<chrome.tabs.Tab[]> =>
-          documents.map(
-            (row: FakeDocument): chrome.tabs.Tab =>
-              ({ id: row.tabId, url: row.url }) as chrome.tabs.Tab,
-          ),
-      ),
+      query: vi.fn(async (): Promise<chrome.tabs.Tab[]> => documents.map(fakeTab)),
       reload: vi.fn(async (tabId: number): Promise<void> => {
         if (reloadGate !== null) await reloadGate;
         reloads.push(tabId);
@@ -387,7 +389,10 @@ async function bootWorker(
         },
       ),
       update: vi.fn(async (tabId: number, props: { muted?: boolean }): Promise<unknown> => {
-        if (props.muted !== undefined) muteCalls.push({ tabId, muted: props.muted });
+        if (props.muted !== undefined) {
+          muteCalls.push({ tabId, muted: props.muted });
+          mutedTabs.set(tabId, props.muted);
+        }
         return {};
       }),
       onRemoved: { addListener: vi.fn() },
@@ -1722,6 +1727,42 @@ describe('worker cutover to v2 session authority', (): void => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('clears the pages a pause is taken over', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker({
+      ...installedSeed(),
+      [LOCAL_BANK]: { balanceMs: 10 * 60_000 },
+    });
+    const blocked: FakeDocument = {
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    };
+    worker.documents.push(blocked);
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+    expect(worker.runtime().documentCommands[documentKeyOf(blocked)]?.presentation).toBe('active');
+
+    const started: number = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    let confirmed: unknown;
+    try {
+      await worker.send({ type: 'openGate', gate: 'pause', host: null } as Request);
+      vi.setSystemTime(started + DEFAULT_SETTINGS.gate.delayMs + 1_000);
+      confirmed = await worker.send({ type: 'confirmGate', typedPhrase: null } as Request);
+      await worker.settle();
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // The confirmation answers on its own, and the clear it owes runs behind it: a paused session
+    // blocks nothing, so the page it was holding is released.
+    expect(confirmed).toMatchObject({ ok: true });
+    expect(worker.runtime().session?.phase).toBe('paused');
+    expect(worker.runtime().documentCommands[documentKeyOf(blocked)]?.presentation).toBe('clear');
+    expect(worker.mutes()).toContainEqual({ tabId: 11, muted: false });
   });
 
   it('unlocks the registrable host, not the subdomain the overlay sent', async (): Promise<void> => {

@@ -237,7 +237,12 @@ function makeEngine(opts?: {
   };
   // The enforcement seams the controller reads through. These tests seed sessions rather than
   // driving enforcement, so the surfaces answer empty and the documents answer nothing.
-  const seams: EngineSeamPortsV2 = engineSeamPortsV2({ now: (): number => nowMs });
+  const seams: EngineSeamPortsV2 = engineSeamPortsV2({
+    now: (): number => nowMs,
+    // A session command that moves a boundary creates an alarm and reads it back, so the fake has
+    // to remember what it was given or every phase change closes with `alarm-failed`.
+    rememberAlarms: true,
+  });
   const settings: Settings = { ...DEFAULT_SETTINGS, ...opts?.settings };
   const lists: ListsConfig =
     opts?.lists ??
@@ -3415,6 +3420,23 @@ describe('Engine', () => {
     await writer.flushNow();
 
     expect(write).not.toHaveBeenCalled();
+  });
+
+  it('drives a pause through the Engine and clears the blocking it owed', async () => {
+    const h: Harness = makeEngine({ runtime: activeRuntimeV2(), bankMs: 10 * 60_000 });
+    expect((await h.engine.openGate('pause', null)).ok).toBe(true);
+    h.setNow(T0 + DEFAULT_SETTINGS.gate.delayMs + 1_000);
+
+    const confirmed = await h.engine.confirmGate(null);
+
+    // The confirmation answers on its own. The clear it owes runs after the command releases the
+    // queue, because the sweep it starts asks the controller for every target and would otherwise
+    // wait for the command that asked for it.
+    expect(confirmed).toEqual({ ok: true, code: 'ok' });
+    expect(h.engine.snapshot().phase).toBe('paused');
+    await vi.waitFor((): void => {
+      expect(h.ports.applyBlocking).toHaveBeenCalled();
+    });
   });
 
   it('mints a fresh enforcement epoch when an all-data clear finishes', async () => {
