@@ -8,11 +8,14 @@ import type { VNode } from 'preact';
 import { afterEach, describe, expect, it, type Mock, type MockInstance, vi } from 'vitest';
 import { ForcedControl } from '../../../src/popup/ForcedControl';
 import { SessionTypeControl } from '../../../src/popup/SessionTypeControl';
+import { HelpPopover } from '../../../src/shared/HelpPopover';
 import { UNTIL_STOPPED_DISCLOSURE } from '../../../src/shared/session-copy';
 import type { Strictness } from '../../../src/shared/types';
 
 const GROUP_LABEL: string = 'Session type';
 const FRICTION_CONSEQUENCE: string = 'Ending early requires a 10-second wait.';
+const OUTSIDE_HELP_LABEL: string = 'Unrelated help';
+const OUTSIDE_HELP_TEXT: string = 'This popover lives outside the forced control.';
 
 function forcedChoice(onClick: () => void): VNode {
   return (
@@ -168,9 +171,34 @@ describe('ForcedControl', (): void => {
     expect(view.getByRole('tooltip').textContent).toContain(FRICTION_CONSEQUENCE);
   });
 
+  it('dismisses a popover open elsewhere when a forced choice discloses its own help', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(
+      <div>
+        <HelpPopover label={OUTSIDE_HELP_LABEL}>{OUTSIDE_HELP_TEXT}</HelpPopover>
+        {forcedSessionType(onChange)}
+      </div>,
+    );
+
+    fireEvent.click(view.getByRole('button', { name: OUTSIDE_HELP_LABEL }));
+    expect(view.getByRole('tooltip').textContent).toContain(OUTSIDE_HELP_TEXT);
+
+    fireEvent.click(view.getByRole('button', { name: 'Friction' }));
+
+    expect(onChange).not.toHaveBeenCalled();
+    const tooltips: HTMLElement[] = view.getAllByRole('tooltip');
+    expect(tooltips).toHaveLength(1);
+    expect(tooltips[0]?.textContent).toContain(FRICTION_CONSEQUENCE);
+  });
+
   it('styles the forced wrapper and hides the described explanation', (): void => {
     const css: string = readFileSync(resolve('src/popup/popup.css'), 'utf8');
+    const view = render(forcedChoice(vi.fn()));
+    const group: HTMLElement = view.getByRole('group', { name: GROUP_LABEL });
 
+    expect(group.classList.contains('forced-control')).toBe(true);
+    expect(group.querySelector('.forced-control__body')).not.toBeNull();
+    expect(group.querySelector('.forced-control__explanation')).not.toBeNull();
     expect(css).toMatch(/\.forced-control\s*\{[^}]*cursor:\s*not-allowed/s);
     expect(css).toMatch(/\.forced-control:focus-visible\s*\{[^}]*outline:\s*2px solid/s);
     expect(css).toMatch(/\.forced-control__body\s*\{[^}]*pointer-events:\s*none/s);

@@ -68,11 +68,23 @@ export function ForcedControl({ label, explanation, children }: ForcedControlPro
     nested.dispatchEvent(new Event(channel));
   };
 
+  /**
+   * The capture-phase block below keeps a click from ever reaching `document`, where
+   * `HelpPopover` listens for the outside click that dismisses an open popover. Replaying
+   * the click on `document` hands that dismissal back: every open popover sees a target
+   * outside its own root and closes, and the disclosure that follows reopens only the one
+   * this click asked for.
+   */
+  const replayOutsideClickDismissal: () => void = (): void => {
+    document.dispatchEvent(new MouseEvent('click', { bubbles: false, cancelable: false }));
+  };
+
   /** Capture phase: the child never sees the event, so no value can change. */
   const blockChildInteraction: (event: MouseEvent) => void = (event: MouseEvent): void => {
     if (isOwnHelpTarget(event.target)) return;
     event.preventDefault();
     event.stopPropagation();
+    replayOutsideClickDismissal();
     discloseHelpFor(event.target, 'pointerenter');
   };
 

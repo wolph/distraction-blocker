@@ -146,7 +146,12 @@ describe('DurationControl', (): void => {
 
   it('lays the integrated duration row out as one wrapping chip row', (): void => {
     const css: string = readFileSync(resolve('src/popup/popup.css'), 'utf8');
+    const view = render(
+      <DurationControl presets={PRESETS} value={timed(25, '')} onChange={vi.fn()} />,
+    );
+    const group: HTMLElement = view.getByRole('group', { name: 'Session length' });
 
+    expect(group.classList.contains('duration-control')).toBe(true);
     expect(css).toMatch(/\.duration-control[^{]*\{[^}]*display:\s*flex/s);
     expect(css).toMatch(/\.duration-control[^{]*\{[^}]*flex-wrap:\s*wrap/s);
   });
