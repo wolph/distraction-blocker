@@ -2,11 +2,25 @@ import type { VNode } from 'preact';
 import { ALL_CATEGORIES } from '../core/categories';
 import { hostRuleCoversHost } from '../core/matcher';
 import { HelpPopover } from '../shared/HelpPopover';
-import type { CategoryId, CategoryList, Rule } from '../shared/types';
-import type { SessionDraft } from './session-draft';
+import type {
+  CategoryId,
+  CategoryList,
+  Rule,
+  SessionMode,
+  SessionRuleSnapshot,
+} from '../shared/types';
+
+/**
+ * The two fields this summary reads. Narrower than any caller's draft on purpose, so a
+ * caller never has to fabricate a duration or a session type it does not have.
+ */
+export interface RuleSummaryDraft {
+  mode: SessionMode;
+  rules: SessionRuleSnapshot;
+}
 
 export interface RuleSummaryProps {
-  draft: SessionDraft;
+  draft: RuleSummaryDraft;
   categoriesEditable: boolean;
   onCategoryToggle: (id: CategoryId) => void;
   onOpenSettings: () => void;

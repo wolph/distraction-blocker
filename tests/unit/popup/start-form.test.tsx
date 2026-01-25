@@ -4,6 +4,7 @@ import './chrome-fake';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseSessionStartRequestV2 } from '../../../src/background/request-validation';
+import { START_FAILED_COPY } from '../../../src/popup/command-errors';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, rulesFromLists } from '../../../src/shared/constants';
 import {
   type SessionRequestV2,
@@ -329,6 +330,18 @@ describe('StartForm start command', (): void => {
     );
     expect((view.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
     expect(view.queryByRole('alert')).toBeNull();
+  });
+
+  it('shows the start fallback when the transport itself rejects', async (): Promise<void> => {
+    sendMessageMock.mockRejectedValue(new Error('port closed'));
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
+
+    fireEvent.input(view.getByLabelText('Intention'), { target: { value: 'ship the release' } });
+    fireEvent.click(view.getByRole('button', { name: TIMED_START_LABEL }));
+
+    const alert: HTMLElement = await view.findByRole('alert');
+    expect(alert.textContent).toBe(START_FAILED_COPY);
+    expect((view.getByLabelText('Intention') as HTMLInputElement).value).toBe('ship the release');
   });
 
   it('disables the start action through the startsDisabled prop', (): void => {

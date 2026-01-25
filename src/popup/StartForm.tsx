@@ -27,7 +27,6 @@ import {
   addDraftAllowHost,
   type DraftUpdate,
   rebaseSessionDraft,
-  type SessionDraft,
   toggleDraftCategory,
 } from './session-draft';
 import {
@@ -35,7 +34,6 @@ import {
   type DraftDuration,
   effectiveCycling,
   effectiveStrictness,
-  effectiveTimedMinutes,
   restoreTimedDuration,
   type StartDraft,
   selectTimedPreset,
@@ -91,22 +89,6 @@ function applyDraftDuration(draft: StartDraft, next: DraftDuration): StartDraft 
     return selectTimedPreset(restored, next.presetMin);
   }
   return setCustomMinutes(restored, next.customMin);
-}
-
-/**
- * RuleSummary reads the mode and the rule snapshot only. The start draft adapts to the
- * SessionDraft shape it wants, and an indefinite draft reports no timed minutes.
- */
-function ruleSummaryDraft(draft: StartDraft): SessionDraft {
-  return {
-    mode: draft.mode,
-    strictness: effectiveStrictness(draft),
-    frictionGate: draft.frictionGate,
-    durationMin: effectiveTimedMinutes(draft) ?? 0,
-    cycling: effectiveCycling(draft),
-    intention: draft.intention,
-    rules: draft.rules,
-  };
 }
 
 export function StartForm({
@@ -231,11 +213,11 @@ export function StartForm({
         {indefinite ? <span class="radio-hint">{UNTIL_STOPPED_FORCED_HINT}</span> : null}
 
         <div class="field-control">
-          <label class="field-label" for="session-intention-v2">
+          <label class="field-label" for="session-intention">
             Intention
           </label>
           <input
-            id="session-intention-v2"
+            id="session-intention"
             class="intention-input"
             type="text"
             placeholder="What are you working on?"
@@ -260,7 +242,7 @@ export function StartForm({
             (choice: ModeChoice): VNode => (
               <RadioRow
                 key={choice.value}
-                name="mode-v2"
+                name="mode"
                 label={choice.label}
                 hint={choice.hint}
                 checked={draft.mode === choice.value}
@@ -273,7 +255,7 @@ export function StartForm({
         {draft.mode === 'whitelist' ? <DomainInput onAdd={addAllowedDomain} /> : null}
 
         <RuleSummary
-          draft={ruleSummaryDraft(draft)}
+          draft={draft}
           categoriesEditable={categoriesEditable}
           onCategoryToggle={(id: CategoryId): void => {
             if (categoriesEditable) setDraft(toggleDraftCategory(draft, id));
