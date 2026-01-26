@@ -1,9 +1,9 @@
 /** @vitest-environment jsdom */
 import { cleanup, render } from '@testing-library/preact';
 import { afterEach, describe, expect, it } from 'vitest';
+import { formatDuration } from '../../../src/shared/format';
 import type { StatsBundle } from '../../../src/shared/messages';
 import type { DailyAgg, MonthlyAgg, PauseEconomy, StreakState } from '../../../src/shared/types';
-import { formatDuration } from '../../../src/stats/format';
 import { Streak } from '../../../src/stats/Streak';
 import { Tiles } from '../../../src/stats/Tiles';
 

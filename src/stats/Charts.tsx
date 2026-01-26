@@ -1,11 +1,11 @@
 import type { JSX } from 'preact';
+import { formatMinutes } from '../shared/format';
 import type { StatsBundle } from '../shared/messages';
 import { localDateStr } from '../shared/time';
 import type { DailyAgg, EventRecord } from '../shared/types';
 import { BarChart, type ChartDatum } from './charts/BarChart';
 import { HBarChart } from './charts/HBarChart';
 import { HourlyHeatStrip } from './charts/HourlyHeatStrip';
-import { formatMinutes } from './format';
 
 export interface ChartsProps {
   bundle: StatsBundle;

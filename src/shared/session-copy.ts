@@ -1,4 +1,4 @@
-import { formatMinutes } from '../stats/format';
+import { formatMinutes } from './format';
 import type { SessionDuration, SessionEndReasonV2 } from './types';
 
 /** Duration control and the forced session type and cycle disclosure. */

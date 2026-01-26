@@ -1,5 +1,6 @@
 import type { VNode } from 'preact';
 import { ForcedControl } from '../popup/ForcedControl';
+import { formatTimeOfDay } from '../shared/format';
 import {
   SETTINGS_CLEANUP_COPY,
   SETTINGS_ERROR_COPY,
@@ -9,7 +10,6 @@ import {
   settingsTimedCopy,
 } from '../shared/session-copy';
 import type { SessionLifecycleV2, SessionSnapshotV2 } from '../shared/types';
-import { formatTimeOfDay } from '../stats/format';
 
 const STATUS_LABEL: string = 'Session status';
 

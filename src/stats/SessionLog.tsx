@@ -1,6 +1,6 @@
 import type { JSX } from 'preact';
+import { formatDuration, formatTimeOfDay } from '../shared/format';
 import type { EventRecord } from '../shared/types';
-import { formatDuration, formatTimeOfDay } from './format';
 import { pairSessionRowsV2, type SessionRowV2 } from './session-rows-v2';
 
 /** The chip a row wears, from the outcome kind the pairing already decided. */

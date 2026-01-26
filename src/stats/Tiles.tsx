@@ -1,8 +1,8 @@
 import type { JSX } from 'preact';
+import { formatDuration } from '../shared/format';
 import type { StatsBundle } from '../shared/messages';
 import { localDateStr } from '../shared/time';
 import type { DailyAgg, MonthlyAgg, PauseEconomy } from '../shared/types';
-import { formatDuration } from './format';
 
 export interface TilesProps {
   bundle: StatsBundle;
