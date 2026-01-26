@@ -270,8 +270,14 @@ function exclusionsAgree(
   return identities.size === exclusions.length;
 }
 
+/**
+ * A tab with no document ID is its own identity, not the text "null". A document identified by the
+ * literal string "null" is a different target, and folding the two onto one key refuses a
+ * checkpoint that legitimately carries both. The document form is tagged, so no document ID can
+ * spell the null form.
+ */
 function documentIdentity(tabId: number, documentId: string | null): string {
-  return `${tabId}:${documentId}`;
+  return documentId === null ? `${tabId}:none` : `${tabId}:document:${documentId}`;
 }
 
 function isCheckpointKind(value: unknown): value is EnforcementCheckpoint['kind'] {

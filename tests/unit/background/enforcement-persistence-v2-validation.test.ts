@@ -579,6 +579,19 @@ describe('background enforcement checkpoint parsing', (): void => {
     ]);
   });
 
+  it('keeps a null document ID distinct from a document called null', (): void => {
+    // `${tabId}:${documentId}` folds the two onto one key, which refuses a checkpoint that
+    // legitimately excludes both a tab with no document ID and a document identified as "null".
+    const distinct: EnforcementCheckpoint = checkpoint({
+      exclusions: [
+        exclusion({ tabId: 21, documentId: null }),
+        exclusion({ tabId: 21, documentId: 'null' }),
+      ],
+    });
+
+    expect(parseEnforcementCheckpoint(distinct)).toEqual(distinct);
+  });
+
   it('rejects one top-frame tab target in both documents and exclusions', (): void => {
     expectRejected(parseEnforcementCheckpoint, [
       checkpoint({ exclusions: [exclusion({ tabId: 11 })] }),

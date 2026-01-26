@@ -131,6 +131,17 @@ describe('v2 event identity keys', (): void => {
     expect(eventIdentityKeyV2({ ...ordered, ms: 6_000 })).not.toBe(eventIdentityKeyV2(ordered));
   });
 
+  it('keys a non-object entry without throwing', (): void => {
+    // `in` throws on a primitive, and a caller can hand a merge records it never parsed.
+    const hostile: SessionEventRecordV2 = 'not-an-event' as unknown as SessionEventRecordV2;
+
+    expect((): string => eventIdentityKeyV2(hostile)).not.toThrow();
+    expect(eventIdentityKeyV2(hostile)).toBe(eventIdentityKeyV2(hostile));
+    expect(eventIdentityKeyV2(hostile)).not.toBe(
+      eventIdentityKeyV2(null as unknown as SessionEventRecordV2),
+    );
+  });
+
   it('separates the legacy and version 2 key spaces', (): void => {
     expect(eventIdentityKeyV2(startedEvent())).not.toBe(eventIdentityKeyV2(LEGACY_START));
   });
@@ -302,6 +313,27 @@ describe('v2 event log storage', (): void => {
     await appendEventsV2([sessionEndedEvent()]);
 
     expect(fake.state[LOCAL_EVENTS]).toEqual([sessionEndedEvent()]);
+  });
+
+  it('writes nothing when a replayed batch merges to the stored log', async (): Promise<void> => {
+    const fake: StorageFake = stubEventStorage([budgetEarnedEvent(), sessionEndedEvent()]);
+
+    await expect(appendEventsV2([sessionEndedEvent()])).resolves.toBeUndefined();
+
+    // First write wins, so the merge is the log that is already stored and the write is a durable
+    // no-op. The read still happens, because the merge is what proves it.
+    expect(fake.get).toHaveBeenCalled();
+    expect(fake.set).not.toHaveBeenCalled();
+    expect(fake.state[LOCAL_EVENTS]).toEqual([budgetEarnedEvent(), sessionEndedEvent()]);
+  });
+
+  it('still repairs a stored log the parser had to fix', async (): Promise<void> => {
+    const fake: StorageFake = stubEventStorage([budgetEarnedEvent(), { t: 'unknown', at: NOW }]);
+
+    await appendEventsV2([budgetEarnedEvent()]);
+
+    // The merge equals the parsed log but not the stored value, so the corrective write still lands.
+    expect(fake.set).toHaveBeenCalledWith({ [LOCAL_EVENTS]: [budgetEarnedEvent()] });
   });
 
   it('performs no storage read or write for an empty batch', async (): Promise<void> => {

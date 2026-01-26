@@ -9,7 +9,7 @@ import { type ExactDataSnapshot, snapshotExactData } from '../shared/exact-data'
 import { isSessionEventRecordV2 } from '../shared/runtime-validation';
 import { LOCAL_EVENTS } from '../shared/storage-keys';
 import type { SessionEventRecordV2 } from '../shared/types';
-import { canonicalStorageValue } from './storage-value-equality';
+import { canonicalStorageValue, storageValuesEqual } from './storage-value-equality';
 
 let eventAppendQueueV2: Promise<void> = Promise.resolve();
 
@@ -18,7 +18,15 @@ let eventAppendQueueV2: Promise<void> = Promise.resolve();
  * identity is their content with object keys sorted, which makes two equal records one record.
  */
 export function eventIdentityKeyV2(event: SessionEventRecordV2): string {
-  if ('version' in event && event.version === 2 && typeof event.eventId === 'string') {
+  // `in` throws on a primitive, and this key is computed for every record a merge walks, including
+  // one a caller handed over without parsing it first, so the object test comes before the key.
+  if (
+    typeof event === 'object' &&
+    event !== null &&
+    'version' in event &&
+    event.version === 2 &&
+    typeof event.eventId === 'string'
+  ) {
     return `v2:${event.eventId}`;
   }
   return `legacy:${canonicalEventJson(event)}`;
@@ -74,6 +82,10 @@ async function performAppendEventsV2(events: readonly SessionEventRecordV2[]): P
   const log: SessionEventRecordV2[] = parseStoredEventLogV2(raw);
   const incoming: SessionEventRecordV2[] = parseStoredEventLogV2(events);
   const next: SessionEventRecordV2[] = mergeEventLogV2(log, incoming);
+  // First write wins, so a replayed batch merges to the log that is already stored. Writing it back
+  // would be a durable write that changes nothing, and the stored value is what the comparison
+  // reads, so a log the parser repaired still gets its one corrective write.
+  if (storageValuesEqual(next, raw)) return;
   await chrome.storage.local.set({ [LOCAL_EVENTS]: next });
 }
 

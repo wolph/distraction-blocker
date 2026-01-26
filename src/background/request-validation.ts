@@ -372,7 +372,9 @@ function isPauseSettings(value: unknown): boolean {
   }
   return (
     isNonNegativeNumber(value.earnRatio) &&
-    isNonNegativeInteger(value.capMs) &&
+    // The cap is a relative millisecond span like the two costs beside it, not merely a safe
+    // integer, so it is bounded by the same rule rather than by the integer range.
+    isRelativeMillisecondDuration(value.capMs, true) &&
     isRelativeMillisecondDuration(value.pauseMs, true) &&
     isRelativeMillisecondDuration(value.unlockMs, true)
   );

@@ -167,6 +167,11 @@ export const MAX_FREEZE_TOKENS: number = 2;
 export const RUNTIME_SCHEMA_VERSION_V2: 2 = 2;
 /** The spec's 12-attempt cleanup schedule: one batch makes at most this many automatic attempts. */
 export const CLEANUP_MAX_AUTOMATIC_ATTEMPTS: number = 12;
+/**
+ * The bounded freshness budget a committed transition spends verifying its active view. The runner
+ * spends it and the stored-transition matrix bounds it, so the two read one definition.
+ */
+export const MAX_FINAL_FRESHNESS_ATTEMPTS: number = 3;
 export const HANDLED_SCHEDULE_OCCURRENCE_RETENTION_MS: number = 14 * 24 * 60 * 60 * 1_000;
 export const MAX_HANDLED_SCHEDULE_OCCURRENCES: number = 256;
 

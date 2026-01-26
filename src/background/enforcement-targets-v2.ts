@@ -6,6 +6,7 @@
  * the transition runner, and a sweep never touches attempt accounting.
  */
 
+import { MAX_FINAL_FRESHNESS_ATTEMPTS } from '../shared/constants';
 import { isNonBlankString, isNonNegativeInteger, isRecord } from '../shared/v2-domain-intrinsics';
 import { documentCommandKeyV2 } from './cleanup-progress-v2';
 import {
@@ -25,7 +26,7 @@ import type {
 
 /** One sweep reaches a stable enforceable set within this many complete passes, or it is fatal. */
 export const MAX_TARGET_RESOLVER_PASSES: number = 3;
-export const MAX_FINAL_FRESHNESS_ATTEMPTS: number = 3;
+export { MAX_FINAL_FRESHNESS_ATTEMPTS };
 export const FINAL_FRESHNESS_TIMEOUT_MS: number = 10_000;
 
 /**

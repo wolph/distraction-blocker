@@ -783,6 +783,9 @@ describe('parseRequest', (): void => {
     ['zero streak goal', { streakGoalMin: 0 }],
     ['unsafe streak goal', { streakGoalMin: Number.MAX_SAFE_INTEGER }],
     ['unsafe pause cap', { pause: { ...SETTINGS.pause, capMs: Number.MAX_SAFE_INTEGER + 1 } }],
+    // A safe integer is not a duration: the bank cap is a relative millisecond span like every
+    // other cost in this record, so nine quadrillion milliseconds is out of range.
+    ['out-of-range pause cap', { pause: { ...SETTINGS.pause, capMs: 9e15 } }],
     ['unsafe pause length', { pause: { ...SETTINGS.pause, pauseMs: Number.MAX_SAFE_INTEGER + 1 } }],
     [
       'unsafe unlock length',

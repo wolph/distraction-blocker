@@ -1,3 +1,4 @@
+import { MAX_FINAL_FRESHNESS_ATTEMPTS } from '../shared/constants';
 import type { DocumentOverlayView } from '../shared/enforcement-v2';
 import { canonicalSessionIdentity } from '../shared/enforcement-v2-validation';
 import { snapshotExactData } from '../shared/exact-data';
@@ -169,14 +170,19 @@ const STAGE_EXPECTATIONS: ReadonlyMap<string, StageExpectation> = new Map<string
     ],
     [
       'alarm-ready',
-      { ...PRE_COMMIT, committed: true, maxFreshnessAttempts: 3, startingCheckpoint: true },
+      {
+        ...PRE_COMMIT,
+        committed: true,
+        maxFreshnessAttempts: MAX_FINAL_FRESHNESS_ATTEMPTS,
+        startingCheckpoint: true,
+      },
     ],
     [
       'active-verified',
       {
         committed: true,
         minFreshnessAttempts: 1,
-        maxFreshnessAttempts: 3,
+        maxFreshnessAttempts: MAX_FINAL_FRESHNESS_ATTEMPTS,
         reservationsAllowed: false,
         startingCheckpoint: true,
         checkpoint: true,
