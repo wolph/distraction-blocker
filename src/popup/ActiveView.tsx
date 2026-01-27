@@ -6,6 +6,7 @@ import { MIN_BREAK_BEFORE_EARLY_MS } from '../shared/constants';
 import type { StatsBundle } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import { isStatsBundle } from '../shared/runtime-validation';
+import { ACTION_FAILED_COPY } from '../shared/session-copy';
 import { formatClock } from '../shared/time';
 import type { EndAuthorityV2, GateState, SessionSnapshotV2 } from '../shared/types';
 import { ClockStack } from './ClockStack';
@@ -20,9 +21,6 @@ import {
   useV2Command,
   type V2Command,
 } from './v2-command';
-
-/** Shown when a spend, resume, or break command does not come back accepted. */
-const ACTION_FAILED_COPY: string = 'Could not request that action. Try again.';
 
 type ActiveHostState =
   | { status: 'loading' }

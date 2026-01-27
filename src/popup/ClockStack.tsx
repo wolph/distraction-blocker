@@ -5,20 +5,15 @@ import {
   remainingSessionMsV2,
 } from '../shared/live';
 import {
+  BREAK_CLOCK_LABEL,
   FOCUS_PHASE_CLOCK_LABEL,
   FOCUS_TIME_LABEL,
+  PAUSE_CLOCK_LABEL,
   TOTAL_SESSION_CLOCK_LABEL,
   UNTIL_STOPPED_LABEL,
 } from '../shared/session-copy';
 import { formatClock } from '../shared/time';
 import type { SessionSnapshotV2 } from '../shared/types';
-
-/**
- * Row labels the Interface requirements leave open. The focus phase, total session,
- * and focus time labels are owned by session-copy, so only pause and break live here.
- */
-export const PAUSE_CLOCK_LABEL: string = 'pause';
-export const BREAK_CLOCK_LABEL: string = 'break';
 
 interface ClockRow {
   key: string;

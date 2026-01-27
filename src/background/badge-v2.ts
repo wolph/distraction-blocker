@@ -1,3 +1,4 @@
+import { INDEFINITE_BADGE_TEXT } from '../shared/session-copy';
 import { formatBadge } from '../shared/time';
 import type { Phase, SessionSnapshotV2 } from '../shared/types';
 import type { IconSpec } from './icon';
@@ -12,9 +13,6 @@ const STATE_COLORS: Record<Phase, string> = {
   break: '#14b8a6',
   paused: '#f59e0b',
 };
-
-/** Shown while a session runs with no finite end. */
-export const INDEFINITE_BADGE_TEXT: string = 'ON';
 
 /**
  * Only an active session has clocks to report. Starting, cleanup, and error hide a

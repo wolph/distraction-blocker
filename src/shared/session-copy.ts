@@ -14,6 +14,11 @@ export const END_SESSION_LABEL: string = 'End session';
 export const FOCUS_TIME_LABEL: string = 'Focus time';
 export const FOCUS_PHASE_CLOCK_LABEL: string = 'focus phase';
 export const TOTAL_SESSION_CLOCK_LABEL: string = 'total session';
+export const PAUSE_CLOCK_LABEL: string = 'pause';
+export const BREAK_CLOCK_LABEL: string = 'break';
+
+/** Shown on the toolbar badge while a session runs with no finite end. */
+export const INDEFINITE_BADGE_TEXT: string = 'ON';
 
 /** Popup lifecycle and command errors. */
 export const POPUP_STARTING_COPY: string = 'Focus Lock is starting. Applying your selected rules.';
@@ -25,6 +30,8 @@ export const POPUP_TRANSITION_ERROR_COPY: string =
 export const POPUP_CLOSURE_ERROR_COPY: string = 'Focus Lock could not finish browser cleanup.';
 export const RETRY_CLEANUP_LABEL: string = 'Retry cleanup';
 export const END_FAILED_COPY: string = 'Could not end session. Try again.';
+export const RETRY_FAILED_COPY: string = 'Could not retry cleanup. Try again.';
+export const ACTION_FAILED_COPY: string = 'Could not request that action. Try again.';
 export const DATA_CLEAR_PENDING_COPY: string = 'Deleting Focus Lock data. Finishing cleanup.';
 export const DATA_CLEAR_ERROR_COPY: string = 'Could not delete data. Try again.';
 

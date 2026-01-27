@@ -4,7 +4,7 @@ import './chrome-fake';
 import { cleanup, render } from '@testing-library/preact';
 import { h } from 'preact';
 import { afterEach, describe, expect, it } from 'vitest';
-import { BREAK_CLOCK_LABEL, ClockStack, PAUSE_CLOCK_LABEL } from '../../../src/popup/ClockStack';
+import { ClockStack } from '../../../src/popup/ClockStack';
 import {
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
@@ -12,8 +12,10 @@ import {
   rulesFromLists,
 } from '../../../src/shared/constants';
 import {
+  BREAK_CLOCK_LABEL,
   FOCUS_PHASE_CLOCK_LABEL,
   FOCUS_TIME_LABEL,
+  PAUSE_CLOCK_LABEL,
   TOTAL_SESSION_CLOCK_LABEL,
   UNTIL_STOPPED_LABEL,
 } from '../../../src/shared/session-copy';

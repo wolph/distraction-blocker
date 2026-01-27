@@ -2,18 +2,23 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  ACTION_FAILED_COPY,
+  BREAK_CLOCK_LABEL,
   DATA_CLEAR_ERROR_COPY,
   DATA_CLEAR_PENDING_COPY,
   END_FAILED_COPY,
   END_SESSION_LABEL,
   FOCUS_PHASE_CLOCK_LABEL,
   FOCUS_TIME_LABEL,
+  INDEFINITE_BADGE_TEXT,
+  PAUSE_CLOCK_LABEL,
   POPUP_CLOSURE_CLEANUP_COPY,
   POPUP_CLOSURE_ERROR_COPY,
   POPUP_STARTING_COPY,
   POPUP_TRANSITION_CLEANUP_COPY,
   POPUP_TRANSITION_ERROR_COPY,
   RETRY_CLEANUP_LABEL,
+  RETRY_FAILED_COPY,
   SCHEDULE_STARTED_TITLE,
   SCHEDULE_UNTIL_STOPPED_BODY,
   SCHEDULE_UNTIL_STOPPED_COPY,
@@ -62,6 +67,12 @@ describe('session copy', (): void => {
     expect(FOCUS_TIME_LABEL).toBe('Focus time');
     expect(FOCUS_PHASE_CLOCK_LABEL).toBe('focus phase');
     expect(TOTAL_SESSION_CLOCK_LABEL).toBe('total session');
+    expect(PAUSE_CLOCK_LABEL).toBe('pause');
+    expect(BREAK_CLOCK_LABEL).toBe('break');
+  });
+
+  it('publishes the exact badge text', (): void => {
+    expect(INDEFINITE_BADGE_TEXT).toBe('ON');
   });
 
   it('publishes the exact popup lifecycle and command error copy', (): void => {
@@ -74,6 +85,8 @@ describe('session copy', (): void => {
     expect(POPUP_CLOSURE_ERROR_COPY).toBe('Focus Lock could not finish browser cleanup.');
     expect(RETRY_CLEANUP_LABEL).toBe('Retry cleanup');
     expect(END_FAILED_COPY).toBe('Could not end session. Try again.');
+    expect(RETRY_FAILED_COPY).toBe('Could not retry cleanup. Try again.');
+    expect(ACTION_FAILED_COPY).toBe('Could not request that action. Try again.');
     expect(DATA_CLEAR_PENDING_COPY).toBe('Deleting Focus Lock data. Finishing cleanup.');
     expect(DATA_CLEAR_ERROR_COPY).toBe('Could not delete data. Try again.');
   });

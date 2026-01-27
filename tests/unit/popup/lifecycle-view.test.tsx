@@ -4,11 +4,7 @@ import './chrome-fake';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  LifecycleView,
-  type LifecycleViewProps,
-  RETRY_FAILED_COPY,
-} from '../../../src/popup/LifecycleView';
+import { LifecycleView, type LifecycleViewProps } from '../../../src/popup/LifecycleView';
 import { DEFAULT_LISTS, emptySnapshotV2, rulesFromLists } from '../../../src/shared/constants';
 import type { SessionRequestV2 } from '../../../src/shared/messages';
 import {
@@ -21,6 +17,7 @@ import {
   POPUP_TRANSITION_CLEANUP_COPY,
   POPUP_TRANSITION_ERROR_COPY,
   RETRY_CLEANUP_LABEL,
+  RETRY_FAILED_COPY,
 } from '../../../src/shared/session-copy';
 import type {
   EndAuthorityV2,

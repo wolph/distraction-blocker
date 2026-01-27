@@ -9,6 +9,7 @@ import {
   POPUP_TRANSITION_CLEANUP_COPY,
   POPUP_TRANSITION_ERROR_COPY,
   RETRY_CLEANUP_LABEL,
+  RETRY_FAILED_COPY,
 } from '../shared/session-copy';
 import type {
   EndAuthorityV2,
@@ -29,9 +30,6 @@ import {
   useV2Command,
   type V2Command,
 } from './v2-command';
-
-/** Shown when a retry answer is not an exact accepted result. */
-export const RETRY_FAILED_COPY: string = 'Could not retry cleanup. Try again.';
 
 const HIDDEN_AUTHORITY: EndAuthorityV2 = { kind: 'hidden' };
 
