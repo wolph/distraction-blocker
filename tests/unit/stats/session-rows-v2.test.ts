@@ -76,6 +76,9 @@ function legacyStart(
   source: 'manual' | 'schedule' = 'manual',
   sessionId?: string,
 ): LegacyEventRecord {
+  // A stored legacy start has no sessionId key at all, so the fixture omits it rather than
+  // writing it as undefined. Both shapes take the same branch today, and the day one of them
+  // stops doing so this fixture is the one that matches what storage holds.
   return {
     t: 'sessionStarted',
     at,
@@ -84,7 +87,7 @@ function legacyStart(
     strictness: 'friction',
     durationMin,
     intention,
-    sessionId,
+    ...(sessionId === undefined ? {} : { sessionId }),
   };
 }
 
@@ -218,6 +221,26 @@ describe('pairSessionRowsV2', (): void => {
     expect(canceled[0]?.outcome).toBe('Ended early');
     expect(canceled[0]?.outcomeKind).toBe('ended');
     expect(canceled[0]?.focusedMs).toBe(8 * MIN);
+  });
+
+  it('spells a displaced legacy start the way the rest of the column spells it', (): void => {
+    // A worker restart inside a legacy-only history: the first start is displaced with no end
+    // event of its own. It sits in the same Outcome column as the legacy cancellation below it,
+    // so both read `Ended early`, which is the casing the v2 rows use.
+    const rows: SessionRowV2[] = pairSessionRowsV2(
+      newestFirst([
+        legacyStart(T9, 25, 'thesis chapter'),
+        legacyStart(T925, 50, 'second attempt'),
+        { t: 'sessionCanceled', at: T925 + 10 * MIN, focusedMs: 10 * MIN },
+      ]),
+    );
+
+    expect(rows.map((row: SessionRowV2): string => row.outcome)).toEqual([
+      'Ended early',
+      'Ended early',
+    ]);
+    expect(rows[1]?.intention).toBe('thesis chapter');
+    expect(rows[1]?.focusedMs).toBeNull();
   });
 
   it('reads a legacy input the way the v1 session log read it', (): void => {

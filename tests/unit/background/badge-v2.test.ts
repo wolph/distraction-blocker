@@ -225,6 +225,33 @@ describe('iconSpecV2', (): void => {
     expect(iconSpecV2({ ...timedFocus(), at: NOW - 60 * MIN }).progress).toBe(0);
   });
 
+  it('draws every phase in the same color v1 draws it', (): void => {
+    // The palette is written twice, once here and once in icon.ts, so a retuned color in
+    // either file has to fail somewhere. This is that somewhere until the two collapse.
+    const phases: ReadonlyArray<SessionSnapshotV2['phase']> = ['idle', 'focus', 'break', 'paused'];
+
+    for (const phase of phases) {
+      const v2: SessionSnapshotV2 =
+        phase === 'idle'
+          ? emptySnapshotV2(NOW)
+          : { ...timedFocus(), phase, phaseStartedAt: NOW, phaseEndsAt: NOW + 5 * MIN };
+      const v1: SessionSnapshot =
+        phase === 'idle'
+          ? emptySnapshot(NOW)
+          : {
+              ...emptySnapshot(NOW),
+              phase,
+              startedAt: NOW - 5 * MIN,
+              phaseStartedAt: NOW,
+              phaseEndsAt: NOW + 5 * MIN,
+              sessionEndsAt: NOW + 45 * MIN,
+            };
+
+      expect(iconSpecV2(v2).color).toBe(iconSpec(v1).color);
+      expect(badgeForV2(v2, true).color).toBe(badgeFor(v1, true).color);
+    }
+  });
+
   it('draws and counts the same as v1 for a single-phase timed focus', (): void => {
     const v2: SessionSnapshotV2 = {
       ...timedFocus(),
