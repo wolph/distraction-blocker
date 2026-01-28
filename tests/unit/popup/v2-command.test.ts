@@ -8,15 +8,22 @@ import {
   endCommandOf,
   endControl,
   gateIdentity,
+  gateIntention,
   mapGateError,
   sendGateCommand,
   useV2Command,
   type V2Command,
   type V2EndCommand,
 } from '../../../src/popup/v2-command';
+import { DEFAULT_LISTS, rulesFromLists } from '../../../src/shared/constants';
 import type { SessionRequestV2 } from '../../../src/shared/messages';
 import { END_SESSION_LABEL } from '../../../src/shared/session-copy';
-import type { EndAuthorityV2, GateState } from '../../../src/shared/types';
+import type {
+  EndAuthorityV2,
+  GateState,
+  SessionConfigV2,
+  SessionRuleSnapshot,
+} from '../../../src/shared/types';
 import { resetChromeFake, sendMessageMock } from './chrome-fake';
 
 const NOW: number = 1_700_000_000_000;
@@ -48,6 +55,26 @@ const OPEN_FRICTION: EndAuthorityV2 = {
     intentionReminder: null,
   },
   actions: { abandon: 'abandon-gate', confirm: 'confirm-gate' },
+};
+
+const PAUSE_GATE: GateState = {
+  kind: 'pause',
+  host: null,
+  openedAt: NOW - 2_000,
+  readyAt: NOW + 8_000,
+  requiredPhrase: null,
+};
+
+const RULES: SessionRuleSnapshot = rulesFromLists(DEFAULT_LISTS);
+const CONFIG: SessionConfigV2 = {
+  mode: 'blacklist',
+  strictness: 'friction',
+  duration: { kind: 'until-stopped' },
+  cycling: null,
+  intention: 'ship the release',
+  source: 'manual',
+  scheduleOccurrence: null,
+  rules: RULES,
 };
 
 interface HarnessProps {
@@ -90,6 +117,25 @@ describe('gateIdentity', (): void => {
     expect(gateIdentity(CANCEL_GATE)).not.toBe(
       gateIdentity({ ...CANCEL_GATE, requiredPhrase: 'let me stop' }),
     );
+  });
+});
+
+describe('gateIntention', (): void => {
+  it('reads the persisted reminder for a cancel gate and the config for the others', (): void => {
+    const withReminder: EndAuthorityV2 = {
+      ...OPEN_FRICTION,
+      copy: { ...OPEN_FRICTION.copy, intentionReminder: 'write the report' },
+    } as EndAuthorityV2;
+
+    // The persisted reminder wins for the cancel gate, so a worker that suppressed it with
+    // null shows nothing even while the config still carries an intention.
+    expect(gateIntention(withReminder, CANCEL_GATE, CONFIG)).toBe('write the report');
+    expect(gateIntention(OPEN_FRICTION, CANCEL_GATE, CONFIG)).toBe('');
+
+    // A pause or unlock gate carries no persisted copy, so it falls back to the session's own.
+    expect(gateIntention(withReminder, PAUSE_GATE, CONFIG)).toBe('ship the release');
+    expect(gateIntention(IMMEDIATE, CANCEL_GATE, CONFIG)).toBe('ship the release');
+    expect(gateIntention(IMMEDIATE, CANCEL_GATE, null)).toBe('');
   });
 });
 
