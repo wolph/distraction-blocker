@@ -8,7 +8,6 @@
  * journal is a parameter rather than a module boundary.
  */
 
-import { focusedMsAtV2 } from '../core/session-v2';
 import { CoreError } from '../shared/errors';
 import { exactDataEqual } from '../shared/exact-data';
 import { syncAggKey } from '../shared/storage-keys';
@@ -29,7 +28,7 @@ import {
   remapMovedCleanupTargetV2,
   replaceCleanupBatchV2,
 } from './cleanup-progress-v2';
-import { splitFocusByLocalDateV2 } from './closure-projection-v2';
+import { closureSplitIntervalV2, splitFocusByLocalDateV2 } from './closure-projection-v2';
 import {
   type DocumentCommandOutcomeV2,
   type EpochResetOutcomeV2,
@@ -303,13 +302,13 @@ export async function settledAggregatesV2(
   session: SessionStateV2,
   endedAt: number,
 ): Promise<Record<string, DailyAgg>> {
-  const settleTo: number =
-    session.phase === 'focus'
-      ? Math.min(endedAt, session.phaseEndsAt ?? endedAt)
-      : session.phaseStartedAt;
-  const deltaMs: number = Math.max(0, focusedMsAtV2(session, endedAt) - runtime.accruedFocusMs);
+  const interval: { from: number; to: number } = closureSplitIntervalV2(
+    session,
+    endedAt,
+    runtime.accruedFocusMs,
+  );
   const dates: Set<string> = new Set<string>(
-    splitFocusByLocalDateV2(settleTo - deltaMs, settleTo).map(
+    splitFocusByLocalDateV2(interval.from, interval.to).map(
       (split: { date: string }): string => split.date,
     ),
   );

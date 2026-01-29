@@ -287,37 +287,42 @@ export function validateDetachedVerdict(value: unknown): value is Verdict {
 export function validateDetachedDocumentEnforcementCommand(
   value: unknown,
 ): value is DocumentEnforcementCommand {
-  const candidate: UnknownRecord | null = exactRecord(value, COMMAND_KEYS);
-  return candidate !== null && validateDetachedDocumentEnforcementCommandFields(candidate);
+  return validateDetachedDocumentEnforcementCommandFields(value);
 }
 
 /**
- * Validates command fields on an already-detached record whose root key set the caller owns,
- * such as a background frozen command that adds its own worker-owned keys.
+ * Validates command fields on an already-detached record that carries the wire command's keys plus
+ * the ones its caller owns, such as a background frozen command that adds `tabId`. The owned keys
+ * are named by the caller rather than assumed, so the key set is checked here instead of being
+ * promised in prose: a record carrying a key nobody declared is refused.
  */
-export function validateDetachedDocumentEnforcementCommandFields(value: unknown): boolean {
-  if (!isRecord(value)) return false;
-  const verdict: unknown = value.verdict;
+export function validateDetachedDocumentEnforcementCommandFields(
+  value: unknown,
+  ownedKeys: readonly string[] = [],
+): boolean {
+  const candidate: UnknownRecord | null = exactRecord(value, [...COMMAND_KEYS, ...ownedKeys]);
+  if (candidate === null) return false;
+  const verdict: unknown = candidate.verdict;
   if (
-    value.version !== 1 ||
-    value.command !== 'apply-enforcement' ||
-    !isUuid(value.operationId) ||
-    !isUuid(value.enforcementEpoch) ||
-    canonicalSessionIdentity(value.sessionId, value.reservedSessionId) === null ||
-    !isNonNegativeInteger(value.basePolicyRevision) ||
-    !isNonNegativeInteger(value.runtimeRevision) ||
-    !isNonBlankString(value.documentId) ||
-    !isNonBlankString(value.expectedUrl) ||
-    !isEnforcementPresentation(value.presentation) ||
+    candidate.version !== 1 ||
+    candidate.command !== 'apply-enforcement' ||
+    !isUuid(candidate.operationId) ||
+    !isUuid(candidate.enforcementEpoch) ||
+    canonicalSessionIdentity(candidate.sessionId, candidate.reservedSessionId) === null ||
+    !isNonNegativeInteger(candidate.basePolicyRevision) ||
+    !isNonNegativeInteger(candidate.runtimeRevision) ||
+    !isNonBlankString(candidate.documentId) ||
+    !isNonBlankString(candidate.expectedUrl) ||
+    !isEnforcementPresentation(candidate.presentation) ||
     !validateDetachedVerdict(verdict)
   ) {
     return false;
   }
   return validateDetachedCommandPresentation(
-    value.presentation,
+    candidate.presentation,
     verdict,
-    value.overlay,
-    value.sessionId,
+    candidate.overlay,
+    candidate.sessionId,
   );
 }
 

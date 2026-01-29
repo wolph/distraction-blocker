@@ -227,6 +227,22 @@ function settlementSplitsV2(
   return splitFocusByLocalDateV2(settleFrom, settleTo);
 }
 
+/**
+ * The interval this closure settles focus over, for the callers that need the bound rather than the
+ * splits. It is the same interval `settlementSplitsV2` walks: it ends at the last focus instant and
+ * is exactly the unsettled focus delta long, so a caller reading back the days it touches no longer
+ * recomputes a bound this module owns.
+ */
+export function closureSplitIntervalV2(
+  session: SessionStateV2,
+  endedAt: number,
+  accruedFocusMs: number,
+): { from: number; to: number } {
+  const to: number = settlementEndV2(session, endedAt);
+  const from: number = to - Math.max(0, focusedMsAtV2(session, endedAt) - accruedFocusMs);
+  return { from, to };
+}
+
 /** What the closure aggregates need beyond the raw input, computed once by the builder. */
 interface ClosureAggregatePlanV2 {
   splits: readonly FocusDateSplitV2[];

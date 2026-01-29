@@ -119,6 +119,9 @@ export function parseEnforcementCheckpoint(value: unknown): EnforcementCheckpoin
  * Accepts only already-detached exact plain data from snapshotExactData. The frozen record owns the
  * wider key set, so the exact-key check happens here before the shared command fields are checked.
  */
+/** The keys the worker adds to a wire command when it freezes one. */
+const WORKER_OWNED_COMMAND_KEYS: readonly string[] = ['tabId'];
+
 export function validateDetachedFrozenDocumentCommand(
   value: unknown,
 ): value is FrozenDocumentCommand {
@@ -126,7 +129,7 @@ export function validateDetachedFrozenDocumentCommand(
   return (
     candidate !== null &&
     isNonNegativeInteger(candidate.tabId) &&
-    validateDetachedDocumentEnforcementCommandFields(candidate)
+    validateDetachedDocumentEnforcementCommandFields(candidate, WORKER_OWNED_COMMAND_KEYS)
   );
 }
 

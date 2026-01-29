@@ -684,10 +684,21 @@ describe('shared enforcement v2 command parsing', (): void => {
     const frozen: UnknownRecord = withKey(command(), 'tabId', 7);
 
     expect(validateDetachedDocumentEnforcementCommand(structuredClone(frozen))).toBe(false);
-    expect(validateDetachedDocumentEnforcementCommandFields(structuredClone(frozen))).toBe(true);
+    // The caller names the keys it owns, so the key set is checked here rather than promised.
+    expect(
+      validateDetachedDocumentEnforcementCommandFields(structuredClone(frozen), ['tabId']),
+    ).toBe(true);
+    expect(validateDetachedDocumentEnforcementCommandFields(structuredClone(frozen))).toBe(false);
+    expect(
+      validateDetachedDocumentEnforcementCommandFields(
+        structuredClone(withKey(frozen, 'stowaway', true)),
+        ['tabId'],
+      ),
+    ).toBe(false);
     expect(
       validateDetachedDocumentEnforcementCommandFields(
         structuredClone(withKey(frozen, 'reservedSessionId', SESSION_ID)),
+        ['tabId'],
       ),
     ).toBe(false);
     expect(validateDetachedDocumentEnforcementCommandFields(null)).toBe(false);
