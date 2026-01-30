@@ -3439,6 +3439,35 @@ describe('Engine', () => {
     });
   });
 
+  it('carries the controller checkpoint through the window its replay runs in', async () => {
+    const h: Harness = makeEngine({ runtime: activeRuntimeV2(), bankMs: 10 * 60_000 });
+    let releaseEvents: () => void = (): void => {
+      throw new Error('event persistence did not start');
+    };
+    h.ports.appendEvents.mockImplementationOnce(
+      (): Promise<void> =>
+        new Promise((resolve: () => void): void => {
+          releaseEvents = resolve;
+        }),
+    );
+
+    // The controller's commit is durable and its replay is still running. This is the window a
+    // crash has to survive: the events, bank, and aggregates it named are already being flushed.
+    const opening: Promise<unknown> = h.engine.openGate('pause', null);
+    await vi.waitFor((): void => expect(h.ports.appendEvents).toHaveBeenCalledTimes(1));
+    await h.engine.markStopped(7, 'https://facebook.com/feed', 'document-one');
+
+    // What a boot would read now is the committed state with its checkpoint, not the state that
+    // preceded the commit: replaying the older one would credit the bank a second time.
+    const stored: RuntimeStateV2 = lastSavedRuntime(h);
+    expect(stored.commitCheckpoint).not.toBeNull();
+    expect(stored.gate).not.toBeNull();
+    expect(stored.tabStates[7]?.stoppedDocumentId).toBe('document-one');
+
+    releaseEvents();
+    await opening;
+  });
+
   it('mints a fresh enforcement epoch when an all-data clear finishes', async () => {
     const h: Harness = makeEngine({ runtime: activeRuntimeV2() });
     const before: string = h.seededRuntime.enforcementEpoch;

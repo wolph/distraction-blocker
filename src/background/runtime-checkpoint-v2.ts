@@ -49,6 +49,13 @@ interface CleanupBatchV2 {
 
 export interface RuntimeCheckpointPortsV2 {
   saveRuntime(runtime: RuntimeStateV2): Promise<void>;
+  /**
+   * The composed with-checkpoint runtime, handed over the moment it is durable and before the
+   * replay starts. A second holder of the runtime has to carry the checkpoint from here: a write of
+   * its own inside the replay window would otherwise store a projection older than the events, bank,
+   * and aggregates this commit has already flushed, and a crash there would replay none of them.
+   */
+  publishCheckpointRuntime?(runtime: RuntimeStateV2): void;
   appendEvents(events: readonly SessionEventRecordV2[]): Promise<void>;
   saveBank(bank: BankState, syncBank: boolean): Promise<void>;
   saveAggregate(key: string, value: DailyAgg): Promise<void>;
@@ -148,6 +155,7 @@ export async function commitRuntimeCheckpointV2(
     'a commit checkpoint must clear to a valid runtime',
   );
   await ports.saveRuntime(withCheckpoint);
+  ports.publishCheckpointRuntime?.(structuredClone(withCheckpoint));
   return replayRuntimeCheckpointV2(ports, withCheckpoint);
 }
 

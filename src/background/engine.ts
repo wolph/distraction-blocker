@@ -421,6 +421,14 @@ export class Engine {
     const committed: RuntimeStateV2 = await commitRuntimeCheckpointV2(
       {
         saveRuntime: (runtime: RuntimeStateV2): Promise<void> => this.ports.saveRuntime(runtime),
+        // The Engine holds the runtime too, and it writes its own fields onto whatever it holds.
+        // Taking the checkpoint here means a write of its own during the replay carries the commit
+        // forward rather than storing the state that preceded it.
+        publishCheckpointRuntime: (runtime: RuntimeStateV2): void => {
+          this.runtime = structuredClone(runtime);
+          this.ownedRuntimeSnapshot = structuredClone(runtime);
+          this.followAccrualReset();
+        },
         appendEvents: (events: readonly EventRecord[]): Promise<void> =>
           this.ports.appendEvents(events),
         saveBank: (bank: BankState, syncBank: boolean): Promise<void> =>
