@@ -1616,8 +1616,9 @@ describe('worker cutover to v2 session authority', (): void => {
       url: CONTENT_SENDER,
       received: [],
     });
-    const started: number = Date.now();
     vi.useFakeTimers({ toFake: ['Date'] });
+    // The clock is frozen before the session starts, so the two minutes below are exactly two.
+    const started: number = Date.now();
     try {
       await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
       await worker.settle();
