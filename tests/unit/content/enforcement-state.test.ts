@@ -334,6 +334,58 @@ describe('canonicalSessionIdentityV2', () => {
       canonicalSessionIdentityV2(tuple()),
     );
   });
+
+  it('throws an invalid-rule CoreError for a tuple with two identities or none', () => {
+    const both: ContentEnforcementTuple = tuple({ reservedSessionId: OTHER_SESSION_ID });
+    const neither: ContentEnforcementTuple = tuple({ sessionId: null, reservedSessionId: null });
+
+    expect(() => canonicalSessionIdentityV2(both)).toThrow(CoreError);
+    expect(() => canonicalSessionIdentityV2(neither)).toThrow(CoreError);
+  });
+});
+
+describe('handleContentCommandV2 command admission', () => {
+  it('rejects an enforcement command carrying two session identities', () => {
+    // The parser excludes this pair, so it can only arrive by bypassing it. Both identities
+    // collapsed onto one shared key before, which made two unrelated sessions compare equal.
+    const command: DocumentEnforcementCommand = enforcementCommand({
+      reservedSessionId: OTHER_SESSION_ID,
+    });
+    const state: ContentEnforcementState = resetTo(EPOCH_A);
+
+    const result: ContentCommandResultV2 = handleContentCommandV2(
+      state,
+      command,
+      OBSERVED_URL,
+      NOW,
+    );
+
+    expect(result.response).toBeNull();
+    expect(result.render).toBe('none');
+    expect(result.state.tuple).toBeNull();
+  });
+
+  it('rejects a command carrying only the tag fields the response echoes', () => {
+    // An unparsed object with the right tag used to reach the apply branch and produce a
+    // response whose echoed fields were undefined, which the landed parser refuses.
+    const command: DocumentContentCommand = {
+      command: 'apply-enforcement',
+      operationId: OPERATION_A,
+      enforcementEpoch: EPOCH_A,
+      documentId: DOCUMENT_ID,
+    } as unknown as DocumentContentCommand;
+    const state: ContentEnforcementState = resetTo(EPOCH_A);
+
+    const result: ContentCommandResultV2 = handleContentCommandV2(
+      state,
+      command,
+      OBSERVED_URL,
+      NOW,
+    );
+
+    expect(result.response).toBeNull();
+    expect(result.render).toBe('none');
+  });
 });
 
 describe('handleContentCommandV2 epoch handshake', () => {

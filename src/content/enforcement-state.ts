@@ -11,11 +11,13 @@ import type {
   DocumentEnforcementCommand,
   ResetEnforcementEpochCommand,
 } from '../shared/enforcement-v2';
-import { canonicalSessionIdentity } from '../shared/enforcement-v2-validation';
+import {
+  canonicalSessionIdentity,
+  parseDocumentContentCommand,
+} from '../shared/enforcement-v2-validation';
 import { CoreError } from '../shared/errors';
-import { type ExactDataSnapshot, exactDataEqual, snapshotExactData } from '../shared/exact-data';
+import { exactDataEqual } from '../shared/exact-data';
 import type { Verdict } from '../shared/types';
-import { isNonBlankString, isRecord } from '../shared/v2-domain-intrinsics';
 
 export interface ContentCommandResultV2 {
   state: ContentEnforcementState;
@@ -60,11 +62,22 @@ export function compareEnforcementTuplesV2(
 /**
  * Returns the canonical identity of a tuple: the single non-null identity string, whichever field
  * carries it. Durable activation promotes the reserved string to `sessionId`, so a reservation and
- * its promotion are one identity and differ only by tuple. The shared helper owns that rule and
- * answers null for the pair the command parser already excludes, which becomes the empty identity.
+ * its promotion are one identity and differ only by tuple. A tuple carrying two identities, or
+ * none, has no canonical identity: that is a rule violation rather than a result, so it throws
+ * instead of collapsing onto one shared key that two unrelated tuples would both answer to.
  */
 export function canonicalSessionIdentityV2(tuple: ContentEnforcementTuple): string {
-  return canonicalSessionIdentity(tuple.sessionId, tuple.reservedSessionId) ?? '';
+  const identity: string | null = canonicalSessionIdentity(
+    tuple.sessionId,
+    tuple.reservedSessionId,
+  );
+  if (identity === null) {
+    throw new CoreError(
+      'invalid-rule',
+      'enforcement tuple carries no single session identity: exactly one of sessionId and reservedSessionId is a UUID',
+    );
+  }
+  return identity;
 }
 
 export function handleContentCommandV2(
@@ -81,32 +94,15 @@ export function handleContentCommandV2(
 }
 
 /**
- * Detaches the command once. Every later read, comparison, response, and stored view uses this
- * snapshot, so a live object that answers differently between two reads cannot reach state. A
- * command that is not exact plain data has no snapshot and is rejected instead of thrown on: the
- * caller parses first, so an unparsed value is already a worker-side fault.
+ * Detaches the command once through the shared parser. Every later read, comparison, response, and
+ * stored view uses that snapshot, so a live object that answers differently between two reads
+ * cannot reach state. The caller parses before dispatch, so this second pass costs one validation
+ * per command and buys the declared return type: a value this module cannot echo into a valid
+ * `ContentEnforcementResponse` is rejected here rather than turned into one the worker refuses.
+ * Re-using the parser instead of a local field check keeps one set of command rules in the repo.
  */
 function detachCommand(command: DocumentContentCommand): DocumentContentCommand | null {
-  const snapshot: ExactDataSnapshot | null = snapshotExactData(command);
-  if (snapshot === null || !hasContentCommandTag(snapshot.value)) return null;
-  return snapshot.value;
-}
-
-/**
- * The caller parses before dispatch, so an exact snapshot carrying a command tag is that command.
- * The three fields every response echoes are still checked, so no answer this module builds can be
- * a response the landed parser rejects.
- */
-function hasContentCommandTag(value: unknown): value is DocumentContentCommand {
-  if (!isRecord(value)) return false;
-  if (value.command !== 'reset-enforcement-epoch' && value.command !== 'apply-enforcement') {
-    return false;
-  }
-  return (
-    isNonBlankString(value.operationId) &&
-    isNonBlankString(value.enforcementEpoch) &&
-    isNonBlankString(value.documentId)
-  );
+  return parseDocumentContentCommand(command);
 }
 
 function handleResetCommand(
@@ -312,6 +308,12 @@ function detachedState(state: ContentEnforcementState): ContentEnforcementState 
   };
 }
 
+/**
+ * Retires one epoch, at most once. The set has no cap on purpose: spec 724 guarantees that a
+ * delayed reset naming any epoch this document ever held is rejected, and forgetting an old epoch
+ * would let that reset roll the document backward. Growth is one UUID per epoch rotation seen by
+ * one document, which ends when the document unloads.
+ */
 function retireEpoch(retired: readonly string[], epoch: string | null): string[] {
   return epoch === null || retired.includes(epoch) ? [...retired] : [...retired, epoch];
 }
