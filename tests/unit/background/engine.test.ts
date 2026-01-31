@@ -3439,6 +3439,45 @@ describe('Engine', () => {
     });
   });
 
+  it('leaves every rollover write to the tick that follows it', async () => {
+    const yesterday: string = localDateStr(T0 - DAY_MS);
+    const saveAggregate = vi
+      .fn<NonNullable<EnginePorts['saveAggregate']>>()
+      .mockResolvedValue(undefined);
+    const h: Harness = makeEngine({
+      runtime: {
+        ...emptyRuntimeV2Fixture(T0),
+        date: yesterday,
+        todayAgg: { ...emptyDaily(yesterday), focusMs: 60_000 },
+      },
+      streak: {
+        current: 0,
+        best: 0,
+        lastCountedDate: null,
+        activeDays: [],
+        activeMonth: '2026-08',
+      },
+      saveAggregate,
+    });
+    h.ports.saveRuntime.mockClear();
+    h.ports.queueSync.mockClear();
+
+    await h.engine.rolloverCheck(localMidnightAfter(yesterday));
+
+    // The controller calls this from inside its own queue, so nothing may be written here: a write
+    // sweeps when blocking work is pending, and the sweep would ask the controller that is waiting.
+    expect(h.ports.saveRuntime).not.toHaveBeenCalled();
+    expect(saveAggregate).not.toHaveBeenCalled();
+    expect(h.ports.queueSync).not.toHaveBeenCalledWith('streak', expect.anything());
+
+    await h.engine.tick();
+
+    // The tick is the caller that runs once the queue is released, and it owes all three writes.
+    expect(h.ports.saveRuntime).toHaveBeenCalled();
+    expect(saveAggregate).toHaveBeenCalledWith(`agg:dev-test:${yesterday}`, expect.anything());
+    expect(h.ports.queueSync).toHaveBeenCalledWith('streak', expect.anything());
+  });
+
   it('carries the controller checkpoint through the window its replay runs in', async () => {
     const h: Harness = makeEngine({ runtime: activeRuntimeV2(), bankMs: 10 * 60_000 });
     let releaseEvents: () => void = (): void => {
