@@ -382,4 +382,25 @@ describe('OVERLAY_STYLES', (): void => {
     expect(ring.ringFill.getAttribute('stroke-dasharray')).toBe(String(RING_CIRCUMFERENCE));
     expect(ring.ringFill.getAttribute('stroke-dashoffset')).toBe(String(RING_CIRCUMFERENCE));
   });
+
+  it('keeps the ring inside the viewBox the svg declares', (): void => {
+    // The assertion above and RING_CIRCUMFERENCE both derive from the same radius, so a radius
+    // that outgrew the viewBox would clip the ring on every gate and still pass. These read the
+    // geometry back off the element instead.
+    const ring: { waitWrap: HTMLElement; ringFill: SVGCircleElement } = buildRing();
+    const svg: SVGSVGElement | null = ring.waitWrap.querySelector('svg');
+    const viewBox: string = svg?.getAttribute('viewBox') ?? '';
+    const [minX, minY, width, height]: number[] = viewBox.split(' ').map(Number);
+    const cx: number = Number(ring.ringFill.getAttribute('cx'));
+    const cy: number = Number(ring.ringFill.getAttribute('cy'));
+    const r: number = Number(ring.ringFill.getAttribute('r'));
+
+    expect(viewBox).not.toBe('');
+    expect(r).toBeGreaterThan(0);
+    expect(cx - r).toBeGreaterThanOrEqual(minX as number);
+    expect(cy - r).toBeGreaterThanOrEqual(minY as number);
+    expect(cx + r).toBeLessThanOrEqual((minX as number) + (width as number));
+    expect(cy + r).toBeLessThanOrEqual((minY as number) + (height as number));
+    expect(Number(ring.ringFill.getAttribute('stroke-dasharray'))).toBeCloseTo(2 * Math.PI * r, 10);
+  });
 });

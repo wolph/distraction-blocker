@@ -73,10 +73,18 @@ function focusSnapshot(at: number): SessionSnapshot {
   };
 }
 
-/** jsdom refuses to redefine location's own properties, so the whole global is stubbed. */
+/**
+ * jsdom refuses to redefine location's own properties, so the whole global is stubbed. The spread
+ * carries the URL: jsdom gives Location its attributes as own enumerable members, not as
+ * prototype accessors, so href and the rest survive it. That is what the assertion pins, because
+ * a jsdom that moved them onto the prototype would leave anything reading the URL under this
+ * stub with undefined, and the failure would surface far from here.
+ */
 function stubReload(): Mock<() => void> {
   const reload: Mock<() => void> = vi.fn<() => void>();
+  const href: string = window.location.href;
   vi.stubGlobal('location', { ...window.location, reload });
+  expect(location.href).toBe(href);
   return reload;
 }
 

@@ -171,6 +171,27 @@ describe('popup lifecycle body', (): void => {
     expect(queryByRole('button', { name: START_BUTTON })).toBeNull();
   });
 
+  it('renders the all-data journal before any snapshot has arrived', async (): Promise<void> => {
+    // The journal ladder sits above the snapshot guard, so LifecycleView's documented
+    // `snapshot: null` branch is reachable: the copy comes from the journal, not the session.
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getSetupState')
+        return { ...COMPLETED_SETUP, dataClear: ALL_DATA_PENDING };
+      if (request.type === 'getSnapshot') return new Promise<never>((): void => {});
+      if (request.type === 'getSettings') return DEFAULT_SETTINGS;
+      if (request.type === 'getLists') return DEFAULT_LISTS;
+      if (request.type === 'getStats') return STATS;
+      return { ok: true };
+    });
+    const { getByRole, queryByRole } = render(h(App, null));
+
+    await waitFor((): void => {
+      expect(getByRole('status').textContent).toBe(DATA_CLEAR_PENDING_COPY);
+    });
+    expect(queryByRole('button', { name: START_BUTTON })).toBeNull();
+    expect(queryByRole('button', { name: 'End session' })).toBeNull();
+  });
+
   it('offers the cleanup retry for an exhausted all-data journal', async (): Promise<void> => {
     install(emptySnapshot(NOW), ALL_DATA_ERROR);
     const { getByRole, queryByRole } = render(h(App, null));
