@@ -1,5 +1,6 @@
 import {
   canonicalSessionIdentity,
+  isKnownUnsupportedUrlV2,
   validateDetachedDocumentEnforcementCommandFields,
   validateDetachedVerdict,
 } from '../shared/enforcement-v2-validation';
@@ -180,7 +181,10 @@ export function validateDetachedEnforcementTargetExclusion(
     candidate !== null &&
     isNonNegativeInteger(candidate.tabId) &&
     (candidate.documentId === null || isNonBlankString(candidate.documentId)) &&
+    // The producer excludes a target only where Chrome forbids the content script, so a stored
+    // exclusion naming any other page is state no enumeration could have written.
     isNonBlankString(candidate.url) &&
+    isKnownUnsupportedUrlV2(candidate.url) &&
     candidate.reason === 'known-unsupported'
   );
 }

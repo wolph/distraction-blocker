@@ -283,6 +283,21 @@ export function validateDetachedVerdict(value: unknown): value is Verdict {
   );
 }
 
+/**
+ * The only two top-frame prefixes where Chrome forbids the registered content script. Every other
+ * scheme is outside the HTTP(S) target set, and an ordinary HTTP(S) page is never downgraded. The
+ * enumerator classifies with it and the stored exclusion contract is bounded by it, so it is one
+ * definition rather than a rule the producer keeps and the parser trusts.
+ */
+const KNOWN_UNSUPPORTED_PREFIXES: readonly string[] = [
+  'https://chromewebstore.google.com/',
+  'https://chrome.google.com/webstore/',
+];
+
+export function isKnownUnsupportedUrlV2(url: string): boolean {
+  return KNOWN_UNSUPPORTED_PREFIXES.some((prefix: string): boolean => url.startsWith(prefix));
+}
+
 /** Accepts only already-detached exact plain data from snapshotExactData. */
 export function validateDetachedDocumentEnforcementCommand(
   value: unknown,

@@ -491,7 +491,7 @@ function validateDetachedRuntimeLeaves(candidate: UnknownRecord): boolean {
     !validateDetachedAttemptDebounce(candidate.attemptDebounce) ||
     !validateDetachedDeferredBlockClaims(candidate.deferredBlockClaims) ||
     !validateDetachedRemovedTabTombstones(candidate.removedTabTombstones) ||
-    !isNullOr(candidate.scheduleUnavailableNoticeToken, isNonBlankString) ||
+    !isNullOr(candidate.scheduleUnavailableNoticeToken, isStoredNoticeToken) ||
     !isDailyDate(date) ||
     !isNullOr(candidate.lastPruneDate, isDailyDate)
   ) {
@@ -843,6 +843,15 @@ function detachedTabIdEntries(value: unknown): Array<[number, unknown]> | null {
     entries.push([tabId, value[key]]);
   }
   return entries;
+}
+
+/**
+ * The notice token is an opaque identity the schedule runner compares, and the version 1 reader
+ * stores any string. Requiring a non-blank one is tighter than both that shape and the spec, and a
+ * migrated runtime carrying an empty token would be refused for a field nothing else reads.
+ */
+function isStoredNoticeToken(value: unknown): value is string {
+  return typeof value === 'string';
 }
 
 function isNullOr<T>(

@@ -7,6 +7,7 @@
  */
 
 import { MAX_FINAL_FRESHNESS_ATTEMPTS } from '../shared/constants';
+import { isKnownUnsupportedUrlV2 } from '../shared/enforcement-v2-validation';
 import { isNonBlankString, isNonNegativeInteger, isRecord } from '../shared/v2-domain-intrinsics';
 import { documentCommandKeyV2 } from './cleanup-progress-v2';
 import {
@@ -29,14 +30,6 @@ export const MAX_TARGET_RESOLVER_PASSES: number = 3;
 export { MAX_FINAL_FRESHNESS_ATTEMPTS };
 export const FINAL_FRESHNESS_TIMEOUT_MS: number = 10_000;
 
-/**
- * The only two top-frame prefixes where Chrome forbids the registered content script. Every other
- * scheme is outside the HTTP(S) target set, and an ordinary HTTP(S) page is never downgraded here.
- */
-const KNOWN_UNSUPPORTED_PREFIXES: readonly string[] = [
-  'https://chromewebstore.google.com/',
-  'https://chrome.google.com/webstore/',
-];
 const HTTP_PREFIXES: readonly string[] = ['http://', 'https://'];
 
 export interface EnforcementTargetPortsV2 {
@@ -108,9 +101,7 @@ type FatalResetOutcomeV2 = Extract<
   { kind: 'rejected' | 'no-receiver' | 'mismatch' }
 >;
 
-export function isKnownUnsupportedUrlV2(url: string): boolean {
-  return hasAnyPrefix(url, KNOWN_UNSUPPORTED_PREFIXES);
-}
+export { isKnownUnsupportedUrlV2 };
 
 /** True for a top-frame HTTP(S) URL the registered content script is allowed to run in. */
 export function isEnforceableHttpUrlV2(url: string): boolean {

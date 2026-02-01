@@ -323,12 +323,14 @@ describe('background runtime top-level leaves', (): void => {
   it('rejects an invalid schedule unavailable notice token', (): void => {
     expectRejected([
       withKey(emptyRuntimeV2(), 'scheduleUnavailableNoticeToken', 42),
-      withKey(emptyRuntimeV2(), 'scheduleUnavailableNoticeToken', ''),
-      withKey(emptyRuntimeV2(), 'scheduleUnavailableNoticeToken', '   '),
       withKey(emptyRuntimeV2(), 'scheduleUnavailableNoticeToken', undefined),
     ]);
+    // The token is an opaque identity the runner compares, and the version 1 reader stores any
+    // string, so a migrated runtime carrying a blank one is accepted rather than refused.
     expectAccepted([
       emptyRuntimeV2({ scheduleUnavailableNoticeToken: `${ENTRY_ID}@${LOCAL_DATE}` }),
+      emptyRuntimeV2({ scheduleUnavailableNoticeToken: '' }),
+      emptyRuntimeV2({ scheduleUnavailableNoticeToken: '   ' }),
     ]);
   });
 

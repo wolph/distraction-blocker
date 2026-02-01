@@ -579,6 +579,19 @@ describe('background enforcement checkpoint parsing', (): void => {
     ]);
   });
 
+  it('refuses an exclusion naming a page the content script is allowed to run in', (): void => {
+    // The producer excludes only the two prefixes Chrome forbids, so any other URL is state no
+    // enumeration could have written.
+    expectRejected(parseEnforcementCheckpoint, [
+      checkpoint({ exclusions: [exclusion({ url: 'https://facebook.com/feed' })] }),
+      checkpoint({ exclusions: [exclusion({ url: 'https://chrome.google.com/sync' })] }),
+    ]);
+    const supported: EnforcementCheckpoint = checkpoint({
+      exclusions: [exclusion({ url: 'https://chrome.google.com/webstore/detail/x' })],
+    });
+    expect(parseEnforcementCheckpoint(supported)).toEqual(supported);
+  });
+
   it('keeps a null document ID distinct from a document called null', (): void => {
     // `${tabId}:${documentId}` folds the two onto one key, which refuses a checkpoint that
     // legitimately excludes both a tab with no document ID and a document identified as "null".
