@@ -8,7 +8,6 @@
  * shared deletion lease. Nothing here reads or writes storage.
  */
 
-import { parseResetEnforcementEpochCommand } from '../shared/enforcement-v2-validation';
 import { CoreError } from '../shared/errors';
 import { exactDataEqual, snapshotExactData } from '../shared/exact-data';
 import { isInstallMarker, isSetupState } from '../shared/runtime-validation';
@@ -29,7 +28,10 @@ import {
 } from './cleanup-closure-v2-validation';
 import { freshCleanupRetryStateV2 } from './cleanup-progress-v2';
 import type { DocumentEpochResetAck, FrozenEpochResetCommand } from './enforcement-persistence-v2';
-import { validateDetachedDocumentEpochResetAck } from './enforcement-persistence-v2-validation';
+import {
+  validateDetachedDocumentEpochResetAck,
+  validateDetachedFrozenEpochResetCommand,
+} from './enforcement-persistence-v2-validation';
 import { emptyRuntimeV2 } from './runtime-store-v2';
 import type {
   CleanupEnforcementTarget,
@@ -603,16 +605,6 @@ function resetCommandsAgree(
       Object.hasOwn(maps.targets, key),
     )
   );
-}
-
-/**
- * A frozen reset command is the shared wire command plus the worker-owned tab, so the shared parser
- * checks every wire field and only the tab is added here.
- */
-function validateDetachedFrozenEpochResetCommand(value: unknown): value is FrozenEpochResetCommand {
-  if (!isRecord(value) || !isNonNegativeInteger(value.tabId)) return false;
-  const { tabId: _tabId, ...wire }: UnknownRecord = value;
-  return parseResetEnforcementEpochCommand(wire) !== null;
 }
 
 function validateDetachedResetExclusion(value: unknown): value is DataClearResetExclusion {

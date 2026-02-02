@@ -1,6 +1,7 @@
 import {
   canonicalSessionIdentity,
   isKnownUnsupportedUrlV2,
+  parseResetEnforcementEpochCommand,
   validateDetachedDocumentEnforcementCommandFields,
   validateDetachedVerdict,
 } from '../shared/enforcement-v2-validation';
@@ -10,6 +11,7 @@ import {
   exactRecord,
   isNonBlankString,
   isNonNegativeInteger,
+  isRecord,
   isSafeTimestamp,
   isUuid,
 } from '../shared/v2-domain-intrinsics';
@@ -19,6 +21,7 @@ import type {
   EnforcementCheckpoint,
   EnforcementTargetExclusion,
   FrozenDocumentCommand,
+  FrozenEpochResetCommand,
 } from './enforcement-persistence-v2';
 
 type UnknownRecord = Record<string, unknown>;
@@ -120,6 +123,19 @@ export function parseEnforcementCheckpoint(value: unknown): EnforcementCheckpoin
  * Accepts only already-detached exact plain data from snapshotExactData. The frozen record owns the
  * wider key set, so the exact-key check happens here before the shared command fields are checked.
  */
+/**
+ * A frozen reset command is the shared wire command plus the worker-owned tab, so the shared parser
+ * checks every wire field and only the tab is added here. Both the overlay builder and the all-data
+ * journal validate this shape, so it has one definition rather than a private copy in each.
+ */
+export function validateDetachedFrozenEpochResetCommand(
+  value: unknown,
+): value is FrozenEpochResetCommand {
+  if (!isRecord(value) || !isNonNegativeInteger(value.tabId)) return false;
+  const { tabId: _tabId, ...wire }: Record<string, unknown> = value;
+  return parseResetEnforcementEpochCommand(wire) !== null;
+}
+
 /** The keys the worker adds to a wire command when it freezes one. */
 const WORKER_OWNED_COMMAND_KEYS: readonly string[] = ['tabId'];
 

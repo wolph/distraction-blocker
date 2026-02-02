@@ -14,7 +14,6 @@ import type {
 } from '../shared/enforcement-v2';
 import {
   canonicalSessionIdentity,
-  parseResetEnforcementEpochCommand,
   validateDetachedDocumentOverlayView,
 } from '../shared/enforcement-v2-validation';
 import { CoreError } from '../shared/errors';
@@ -29,10 +28,13 @@ import type {
   ThemeMode,
   Verdict,
 } from '../shared/types';
-import { isNonNegativeInteger, isRecord, isSafeTimestamp } from '../shared/v2-domain-intrinsics';
+import { isSafeTimestamp } from '../shared/v2-domain-intrinsics';
 import { verdictLabel } from '../shared/verdict-label';
 import type { FrozenDocumentCommand, FrozenEpochResetCommand } from './enforcement-persistence-v2';
-import { validateDetachedFrozenDocumentCommand } from './enforcement-persistence-v2-validation';
+import {
+  validateDetachedFrozenDocumentCommand,
+  validateDetachedFrozenEpochResetCommand,
+} from './enforcement-persistence-v2-validation';
 
 type ActiveOverlayView = Extract<DocumentOverlayView, { presentation: 'active' }>;
 type ActiveStatusCopy = ActiveOverlayCopy['status'];
@@ -250,21 +252,6 @@ export function buildFrozenEpochResetCommandV2(
     invalidView('an epoch reset command does not satisfy the frozen command contract');
   }
   return detached;
-}
-
-/**
- * A reset command is the enforcement command's key set minus its policy, so the shared parser
- * cannot check it directly. It is validated field by field, plus the worker-owned tab.
- */
-function validateDetachedFrozenEpochResetCommand(value: unknown): value is FrozenEpochResetCommand {
-  const reset: unknown = wireResetCommand(value);
-  return reset !== null && parseResetEnforcementEpochCommand(reset) !== null;
-}
-
-function wireResetCommand(value: unknown): unknown {
-  if (!isRecord(value) || !isNonNegativeInteger(value.tabId)) return null;
-  const { tabId: _tabId, ...wire }: Record<string, unknown> = value;
-  return wire;
 }
 
 function activeActions(

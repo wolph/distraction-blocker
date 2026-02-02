@@ -151,6 +151,12 @@ interface CleanupRowV2 {
  * The runtime the entry persists. Its command map is exactly the clear batch, its revision is the
  * clear revision, its base policy revision is the one the transition reserved and this write now
  * makes durable, and the session is the one the cause leaves behind.
+ *
+ * Moving the base policy revision here is a producer requirement, not an option, and it binds the
+ * abandoning causes too: a pre-commit start is the one stage whose reservation may lead the durable
+ * base, and entering cleanup ends that stage. `transitionBaseRevisionAgrees` refuses a cleanup row
+ * whose durable base still trails the transition's reserved one, so a producer that skipped this
+ * would meet the rule as a parse failure on the runtime it just wrote.
  */
 function cleanupRuntime(
   runtime: RuntimeStateV2,
