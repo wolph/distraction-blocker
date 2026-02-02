@@ -60,8 +60,6 @@ interface AlarmRow {
 interface BootOptions {
   /** False makes the icon draw fail, which is what a worker without a canvas looks like. */
   canvas?: boolean;
-  /** Arms the reload gate before `main()` runs, for watching a boot-time cleanup in flight. */
-  holdReloads?: boolean;
   /** Documents the browser already holds when the worker boots. */
   documents?: FakeDocument[];
   /** Arms the registration-audit gate before `main()` runs. */
@@ -81,9 +79,6 @@ interface WorkerHarness {
   holdSyncWrites(): () => void;
   /** Holds the next sync-journal write, which parks an Engine commit before its runtime write. */
   holdJournalWrite(): () => void;
-  /** Holds every tab reload until `releaseTabReloads` runs, for watching a cleanup in flight. */
-  holdTabReloads(): void;
-  releaseTabReloads(): void;
   /** Holds the content-registration audit, which parks a transition on its `prepared` stage. */
   holdRegistrationAudit(): void;
   releaseRegistrationAudit(): void;
@@ -159,14 +154,6 @@ async function bootWorker(
     });
   };
   if (options.holdRegistrationAudit === true) armAuditGate();
-  let reloadGate: Promise<void> | null = null;
-  let releaseReloadGate: () => void = (): void => undefined;
-  const armReloadGate = (): void => {
-    reloadGate = new Promise<void>((resolve: () => void): void => {
-      releaseReloadGate = resolve;
-    });
-  };
-  if (options.holdReloads === true) armReloadGate();
   const reloads: number[] = [];
   let messageListener:
     | ((
@@ -368,7 +355,6 @@ async function bootWorker(
       }),
       query: vi.fn(async (): Promise<chrome.tabs.Tab[]> => documents.map(fakeTab)),
       reload: vi.fn(async (tabId: number): Promise<void> => {
-        if (reloadGate !== null) await reloadGate;
         reloads.push(tabId);
       }),
       sendMessage: vi.fn(
@@ -441,11 +427,6 @@ async function bootWorker(
     releaseRegistrationAudit: (): void => {
       auditGate = null;
       releaseAuditGate();
-    },
-    holdTabReloads: armReloadGate,
-    releaseTabReloads: (): void => {
-      reloadGate = null;
-      releaseReloadGate();
     },
     holdJournalWrite: (): (() => void) => {
       let release: () => void = (): void => undefined;
@@ -1044,7 +1025,15 @@ describe('worker cutover to v2 session authority', (): void => {
       ...emptyRuntime(Date.now()),
       scheduleActiveEntryId: 'entry-1',
       session: startLegacySession(legacyConfig, startedAt, SESSION_UUID),
-      tabStates: { 11: { muteUrl: null, priorMuted: null, stoppedDocumentId: 'document-1' } },
+      tabStates: {
+        11: { muteUrl: null, priorMuted: null, stoppedDocumentId: 'document-1' },
+        // A tab the browser has not restored yet. Its claim cannot be read, so it keeps the closure.
+        99: {
+          muteUrl: 'https://facebook.com/restoring',
+          priorMuted: false,
+          stoppedDocumentId: null,
+        },
+      },
     };
 
     const worker: WorkerHarness = await bootWorker(
@@ -1052,10 +1041,28 @@ describe('worker cutover to v2 session authority', (): void => {
       { documents: [{ tabId: 11, documentId: 'document-1', url: CONTENT_SENDER, received: [] }] },
     );
     await worker.settle();
+    // The first attempt could not read the tab it had a claim on, so the closure is still owed and
+    // the worker says so. This is the publication the brief names before the idle one.
+    const duringCleanup: string[] = worker.broadcasts.map(
+      (snapshot: SessionSnapshotV2): string => snapshot.lifecycle.kind,
+    );
+
+    // The browser finishes restoring that tab, and the retry resolves the claim.
+    worker.documents.push({
+      tabId: 99,
+      documentId: 'document-99',
+      url: 'https://facebook.com/restoring',
+      received: [],
+    });
+    await worker.fireAlarm('closure-cleanup');
+    await worker.settle();
 
     const lifecycles: string[] = worker.broadcasts.map(
       (snapshot: SessionSnapshotV2): string => snapshot.lifecycle.kind,
     );
+    // The brief's sequence: `cleanup` while the closure is still owed, then `idle` once its retry
+    // finishes it.
+    expect(duringCleanup).toContain('cleanup');
     expect(lifecycles.at(-1)).toBe('idle');
     const runtime: RuntimeStateV2 = worker.runtime();
     expect(runtime.session).toBeNull();
