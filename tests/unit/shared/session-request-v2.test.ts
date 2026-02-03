@@ -228,15 +228,24 @@ describe('v2 session request channel', (): void => {
   it('infers the mapped response type for each response family', async (): Promise<void> => {
     sendMessageMock.mockResolvedValue({ ok: true, code: 'ok' });
 
+    // Asserted on the call, not on an annotated local: annotating first would make every
+    // one of these true whatever the sender infers.
+    expectTypeOf(
+      sendSessionRequestV2(START_SESSION),
+    ).resolves.toEqualTypeOf<StartSessionResponseV2>();
+    expectTypeOf(sendSessionRequestV2(CONFIRM_GATE)).resolves.toEqualTypeOf<
+      CommandResponseV2<SessionCommandResultCodeV2>
+    >();
+    expectTypeOf(sendSessionRequestV2(RETRY_DATA_CLEAR)).resolves.toEqualTypeOf<
+      CommandResponseV2<RetryCleanupResultCodeV2>
+    >();
+
     const start: StartSessionResponseV2 = await sendSessionRequestV2(START_SESSION);
     const command: CommandResponseV2<SessionCommandResultCodeV2> =
       await sendSessionRequestV2(CONFIRM_GATE);
     const retry: CommandResponseV2<RetryCleanupResultCodeV2> =
       await sendSessionRequestV2(RETRY_DATA_CLEAR);
 
-    expectTypeOf(start).toEqualTypeOf<StartSessionResponseV2>();
-    expectTypeOf(command).toEqualTypeOf<CommandResponseV2<SessionCommandResultCodeV2>>();
-    expectTypeOf(retry).toEqualTypeOf<CommandResponseV2<RetryCleanupResultCodeV2>>();
     expect([start, command, retry]).toEqual([
       { ok: true, code: 'ok' },
       { ok: true, code: 'ok' },

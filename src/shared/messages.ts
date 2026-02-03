@@ -15,10 +15,11 @@ import type {
   ThemeMode,
 } from './types';
 
-export interface SessionStartRequestV2 {
+/** A type alias, not an interface, so callers can still pass it where a record is wanted. */
+export type SessionStartRequestV2 = {
   type: 'startSession';
   config: SessionConfigV2;
-}
+};
 
 export type TransitionFailureReasonV2 =
   | 'website-access-lost'
@@ -235,13 +236,12 @@ export async function sendRequest<T extends Request['type']>(
 }
 
 /**
- * Additive v2 session command channel. It stays separate from the live `Request`
- * union so v2 popup surfaces can send session commands while every v1 caller keeps
- * its exact types. The cutover slice merges these members into `Request` and
- * `ResponseMap` and retires `sendSessionRequestV2`.
+ * The v2 session command channel, merged into `Request` by the cutover. `startSession`
+ * is the named request the worker parser returns, so the union carries that interface
+ * rather than a second spelling of it.
  */
 export type SessionRequestV2 =
-  | { type: 'startSession'; config: SessionConfigV2 }
+  | SessionStartRequestV2
   | { type: 'requestSessionEnd' }
   | { type: 'openEndGate' }
   | { type: 'abandonGate' }
