@@ -3452,8 +3452,9 @@ describe('Engine', () => {
       },
       streak: {
         current: 0,
-        best: 0,
+        freezeTokens: 0,
         lastCountedDate: null,
+        lastFreezeGrantDate: null,
         activeDays: [],
         activeMonth: '2026-08',
       },
