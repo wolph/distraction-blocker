@@ -1,6 +1,5 @@
 import { type ExactDataSnapshot, snapshotExactData } from '../shared/exact-data';
 import type {
-  CommandResponseV2,
   RetryCleanupResultCodeV2,
   SessionCommandResultCodeV2,
   StartSessionResponseV2,
@@ -96,10 +95,11 @@ export function startErrorMessage(response: StartSessionResponseV2): string | nu
   );
 }
 
-/** null while the command was accepted, the message to show otherwise. */
-export function commandErrorMessage(
-  response: CommandResponseV2<SessionCommandResultCodeV2 | RetryCleanupResultCodeV2>,
-  fallback: string,
-): string | null {
+/**
+ * null while the command was accepted, the message to show otherwise. The parameter is
+ * `unknown` because every caller reads an answer that crossed a message port, and this
+ * function is the guard that answer passes through.
+ */
+export function commandErrorMessage(response: unknown, fallback: string): string | null {
   return resultErrorMessage(response, COMMAND_FAILURE_CODES, NO_CLEANUP_PENDING_CODES, fallback);
 }

@@ -53,15 +53,14 @@ export function sendGateCommand(
 }
 
 /**
- * Boundary cast: the panel hands back whatever the transport answered, and
- * `commandErrorMessage` is the validator built for that untrusted value. `ackError`
- * cannot do it, because it rejects any answer carrying the v2 `code` key.
+ * The panel hands back whatever the transport answered, and `commandErrorMessage` is the
+ * validator built for exactly that: it snapshots the value first and refuses anything that is
+ * not an exact coded result. No cast, because the validator's own parameter is `unknown`.
  */
 export const mapGateError: GateCommandErrorMapper = (
   response: unknown,
   fallback: string,
-): string | null =>
-  commandErrorMessage(response as CommandResponseV2<SessionCommandResultCodeV2>, fallback);
+): string | null => commandErrorMessage(response, fallback);
 
 /**
  * Only an open friction End authority publishes exact cancel-gate copy. A pause or

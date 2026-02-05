@@ -1,24 +1,21 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useRef, useState } from 'preact/hooks';
-import type { Ack, CommandResponseV2, SessionCommandResultCodeV2 } from '../shared/messages';
+import type { CommandResponseV2, SessionCommandResultCodeV2 } from '../shared/messages';
 import type { EndAuthorityV2, GateKind, GateState } from '../shared/types';
 
 export type GateRequest =
   | { type: 'abandonGate' }
   | { type: 'confirmGate'; typedPhrase: string | null };
 
-/**
- * The transport this panel sends through. The live surfaces answer with a coded v2 command
- * result. The `Ack` arm stays only because the mapper, not the panel, reads the shape.
- */
+/** The transport this panel sends through. Every surface answers with a coded v2 result. */
 export type GateCommandSender = (
   request: GateRequest,
-) => Promise<Ack | CommandResponseV2<SessionCommandResultCodeV2>>;
+) => Promise<CommandResponseV2<SessionCommandResultCodeV2>>;
 
 /**
- * Maps one transport answer to its message, or null when the command was accepted.
- * The shapes differ per transport, so the sender's mapper travels with it, and both are
- * required: a mapper that does not match the sender misreports every accepted answer.
+ * Maps one transport answer to its message, or null when the command was accepted. The panel
+ * never reads the answer, so the mapper is the validator and its parameter is `unknown` on
+ * purpose: the sender's declared return type is a claim from the other side of a message port.
  */
 export type GateCommandErrorMapper = (response: unknown, fallback: string) => string | null;
 
@@ -48,9 +45,8 @@ export interface GatePanelProps {
   /** The session channel this panel sends through. No default: see `commandError`. */
   sendCommand: GateCommandSender;
   /**
-   * Must match the sender. `mapGateError` reads the coded v2 answer every live surface gets.
-   * `ackError` rejects any value carrying `code`, so pairing it with the v2 channel would
-   * report an accepted gate command as a failure.
+   * Must match the sender. `mapGateError` reads the coded v2 answer every live surface gets,
+   * and validates it, because the transport carries no runtime guard of its own.
    */
   commandError: GateCommandErrorMapper;
   /** An End authority passes its exact published `copy.phraseLabel`. */
@@ -87,8 +83,7 @@ export function GatePanel({
     setError(null);
     setPending(true);
     try {
-      const response: Ack | CommandResponseV2<SessionCommandResultCodeV2> =
-        await sendCommand(request);
+      const response: CommandResponseV2<SessionCommandResultCodeV2> = await sendCommand(request);
       const responseError: string | null = commandError(
         response,
         'Could not update the gate. Try again.',
