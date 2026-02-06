@@ -19,8 +19,9 @@ installDocumentEnforcement({
       respond: (response: ContentEnforcementResponse | undefined) => void,
     ) => void,
   ): void => {
-    // The listener answers asynchronously, so it holds the channel open and answers exactly once,
-    // a rejected command included: an unanswered channel hangs the worker until this document goes.
+    // The channel is held open only for a message this listener answers, which is every parsed
+    // command, a rejected one included. Holding it open for a foreign message would hang that
+    // sender until this document unloads, and answering twice would throw.
     chrome.runtime.onMessage.addListener(
       (
         message: unknown,
@@ -33,7 +34,7 @@ installDocumentEnforcement({
           answered = true;
           sendResponse(response);
         });
-        return true;
+        return answered;
       },
     );
   },
