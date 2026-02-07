@@ -25,9 +25,12 @@ export function installPersistedPageShow(target: Window, reevaluate: () => void)
   return (): void => target.removeEventListener('pageshow', onPageShow);
 }
 
+/** A stopped document wears this title, which is how a restored one recognizes itself. */
+export const STOPPED_DOCUMENT_TITLE: string = 'Locked - Focus Lock';
+
 export function recoverRestoredOverlay(document: Document): boolean {
   const staleHosts: Element[] = Array.from(document.querySelectorAll('focus-lock-overlay'));
-  const wasStopped: boolean = staleHosts.length > 0 && document.title === 'Locked - Focus Lock';
+  const wasStopped: boolean = staleHosts.length > 0 && document.title === STOPPED_DOCUMENT_TITLE;
   for (const host of staleHosts) host.remove();
   return wasStopped;
 }

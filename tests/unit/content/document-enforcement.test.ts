@@ -219,7 +219,9 @@ async function install(harness: Harness): Promise<void> {
 
 function deliver(harness: Harness, message: unknown): (ContentEnforcementResponse | undefined)[] {
   const responses: (ContentEnforcementResponse | undefined)[] = [];
-  const respond = (response: ContentEnforcementResponse | undefined): void => {
+  const respond: (response: ContentEnforcementResponse | undefined) => void = (
+    response: ContentEnforcementResponse | undefined,
+  ): void => {
     responses.push(response);
   };
   for (const listener of harness.listeners) listener(message, respond);

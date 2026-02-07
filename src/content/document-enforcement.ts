@@ -20,6 +20,7 @@ import {
   docStateFor,
   installPersistedPageShow,
   recoverRestoredOverlay,
+  STOPPED_DOCUMENT_TITLE,
   shouldStop,
 } from './gate';
 import { clearDocumentOverlay, renderDocumentOverlay } from './overlay-v2';
@@ -39,9 +40,6 @@ export interface DocumentEnforcementHostV2 {
     ) => void,
   ): void;
 }
-
-/** A stopped document wears this title, which is how a restored one recognizes itself. */
-const STOPPED_DOCUMENT_TITLE: string = 'Locked - Focus Lock';
 
 interface DocumentLoop {
   host: DocumentEnforcementHostV2;
