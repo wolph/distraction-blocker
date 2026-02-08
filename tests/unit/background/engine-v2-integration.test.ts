@@ -1813,20 +1813,12 @@ describe('worker cutover to v2 session authority', (): void => {
     expect(worker.runtime().documentCommands[documentKeyOf(mobile)]?.presentation).toBe('clear');
   });
 
-  // Skipped, and the skip is the finding: `startSession` never reads `websiteBlockingReady`, which
-  // is the flag that says setup is finished and the content registration is live. Only the schedule
-  // runner reads it. So a profile whose setup never completed starts a session over the message
-  // channel and publishes it, and the transition's own audit does not catch it, because that audit
-  // asks the browser for permissions rather than asking whether this profile is set up. The
-  // assertions below are the requirement, unweakened.
-  it.skip('refuses a manual start while website blocking is unavailable', async (): Promise<void> => {
+  it('refuses a manual start while website blocking is unavailable', async (): Promise<void> => {
     const worker: WorkerHarness = await bootWorker({
       ...installedSeed(),
-      [LOCAL_SETUP]: {
-        ...(installedSeed()[LOCAL_SETUP] as object),
-        websiteAccess: 'denied',
-        blockingRegistration: 'unavailable',
-      },
+      // Setup never finished, which is what `websiteBlockingReady` reports on. The browser still
+      // grants the permission, so the transition's audit is happy and only this gate can refuse.
+      [LOCAL_SETUP]: { ...(installedSeed()[LOCAL_SETUP] as object), completed: false },
     });
     worker.documents.push({
       tabId: 11,
@@ -1840,9 +1832,10 @@ describe('worker cutover to v2 session authority', (): void => {
       config: indefiniteConfig(),
     } as Request)) as { ok: boolean; code?: string };
 
-    // A session that cannot block anything is not a session, so the start is refused rather than
-    // published, and nothing durable is left behind for a recovery to resume.
-    expect(answer).toMatchObject({ ok: false, code: 'website-access-lost' });
+    // A session that cannot block anything is not a session, so the start is refused before it
+    // prepares anything: no stage is written, no journal survives, and nothing is published.
+    expect(answer).toMatchObject({ ok: false, code: 'invalid-request' });
+    expect(worker.stages()).toEqual([]);
     expect(worker.runtime().session).toBeNull();
     expect(worker.runtime().pendingEnforcementTransition).toBeNull();
     expect(worker.broadcasts.at(-1)?.lifecycle.kind).toBe('idle');

@@ -256,6 +256,13 @@ export class SessionControllerV2 {
     return this.enqueue(async (): Promise<StartSessionResponseV2> => {
       const journal: StartSessionResponseV2 | null = this.journalRejection();
       if (journal !== null) return journal;
+      // A session that cannot block anything is not a session. Command admission belongs to the
+      // controller, and the transition's audit cannot stand in for this: that audit asks the
+      // browser about permissions, not whether this profile finished setting blocking up. The
+      // refusal comes before anything is prepared, so no journal is written for it.
+      if (!this.schedule.websiteBlockingReady()) {
+        return { ok: false, code: 'invalid-request', error: 'invalid-request' };
+      }
       let prepared: PreparedTransitionV2;
       try {
         prepared = await prepareStartTransitionV2(this.ports, candidateFor(config), 'manual');
