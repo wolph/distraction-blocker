@@ -25,7 +25,6 @@ import {
   documentCommandKeyV2,
   mergeCleanupTabClaimV2,
   recordCleanupAttemptFailureV2,
-  remapMovedCleanupTargetV2,
   replaceCleanupBatchV2,
 } from './cleanup-progress-v2';
 import { closureSplitIntervalV2, splitFocusByLocalDateV2 } from './closure-projection-v2';
@@ -230,46 +229,14 @@ export async function resetAndClearDocumentV2(
     ports.transport,
     command,
   );
-  if (outcome.kind === 'changed') {
-    return reclearMovedDocumentV2(ports, key, command, outcome.observedUrl, label, policy);
-  }
-  if (outcome.kind === 'applied' || outcome.kind === 'closed') return null;
-  if (outcome.kind === 'no-receiver' && policy.tolerateNoReceiver) return null;
-  // Nothing may outrank the clear revision, so a stale answer during cleanup is fatal too.
-  return `${label} clear for ${key} answered ${outcome.kind}`;
-}
-
-/**
- * A `changed` answer carries the URL the document is on, which is the exact evidence that this
- * key's recorded target moved within its own document and kept its key. The batch replaces that one
- * command with one built from the observed URL, in the single durable write `durableClearCommandV2`
- * makes, which retires the old command rather than leaving two for one key, and sends the
- * replacement once. A page that moves again inside the same attempt is left to the next attempt,
- * which rereads it, rather than chased in a loop.
- */
-async function reclearMovedDocumentV2(
-  ports: RuntimePortsV2,
-  key: string,
-  command: FrozenDocumentCommand,
-  observedUrl: string,
-  label: string,
-  policy: CleanupSendPolicyV2,
-): Promise<string | null> {
-  const journal: CleanupJournalV2 | null = cleanupJournalOfV2(ports.runtime());
-  if (journal === null || observedUrl === command.expectedUrl) return null;
-  const moved: FrozenDocumentCommand = await durableClearCommandV2(ports, journal, key, {
-    tabId: command.tabId,
-    documentId: command.documentId,
-    expectedUrl: observedUrl,
-  });
-  const outcome: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
-    ports.transport,
-    moved,
-  );
+  // `changed` says only that the worker refused to wrap an acknowledgement for a URL it did not
+  // name. The content script never reads `expectedUrl`, so the clear was applied and the overlay is
+  // gone, and the document disappears from the next reread under its own URL.
   if (outcome.kind === 'applied' || outcome.kind === 'closed' || outcome.kind === 'changed') {
     return null;
   }
   if (outcome.kind === 'no-receiver' && policy.tolerateNoReceiver) return null;
+  // Nothing may outrank the clear revision, so a stale answer during cleanup is fatal too.
   return `${label} clear for ${key} answered ${outcome.kind}`;
 }
 
@@ -368,33 +335,46 @@ export async function clearDiscoveredDocumentsV2(
   for (const target of classified) {
     if (target.kind !== 'enforceable') continue;
     const key: string = documentCommandKeyV2(target.tabId, target.documentId);
-    // A key the batch already owns is skipped only while it still names the URL the page is on. A
-    // same-document move keeps the key and leaves the recorded URL behind it, so the batch would
-    // otherwise send a command the page answers `changed` to and clear nothing.
-    const recorded: FrozenDocumentCommand | undefined = journalProgressV2(ports.runtime(), journal)
-      .clearCommands[key];
-    if (recorded !== undefined && recorded.expectedUrl === target.url) continue;
+    // Membership is read before the add, because `durableClearCommandV2` puts a newly discovered
+    // document into the batch, and it is membership before that write which says whether this
+    // cleanup ever overlaid the page.
+    const saved: CleanupProgress = journalProgressV2(ports.runtime(), journal);
+    if (Object.hasOwn(saved.clearCommands, key)) continue;
+    const overlaid: boolean = wasOverlaidByThisCleanupV2(saved, key, target.tabId);
     const command: FrozenDocumentCommand = await durableClearCommandV2(ports, journal, key, {
       tabId: target.tabId,
       documentId: target.documentId,
       expectedUrl: target.url,
     });
-    const current: CleanupProgress = journalProgressV2(ports.runtime(), journal);
     const failure: string | null = await resetAndClearDocumentV2(
       ports,
-      current,
+      journalProgressV2(ports.runtime(), journal),
       key,
       command,
       label,
-      claimedTabV2(current, target.tabId) ? OVERLAID_SEND_POLICY : UNCLAIMED_SEND_POLICY,
+      overlaid ? OVERLAID_SEND_POLICY : UNCLAIMED_SEND_POLICY,
     );
     if (failure !== null) return failure;
   }
   return null;
 }
 
-/** Whether this cleanup holds a claim for the tab, which is what proves it overlaid the page. */
-function claimedTabV2(progress: CleanupProgress, tabId: number): boolean {
+/**
+ * Whether this cleanup ever put an overlay on the page, which is what makes a missing receiver a
+ * clear that did not land rather than nothing to clear.
+ *
+ * The frozen batch is the first half and the stronger one: for a transition it is exactly the
+ * documents its starting and active views addressed, so a document in it was sent an overlay by
+ * this session. A tab claim is the second half and is weaker on its own, because
+ * `Engine.dropEmptyTabState` deletes a tab's state unless it was muted or stopped, so an overlaid
+ * tab can legitimately hold no claim by the time cleanup runs. Either one is enough.
+ */
+function wasOverlaidByThisCleanupV2(
+  progress: CleanupProgress,
+  key: string,
+  tabId: number,
+): boolean {
+  if (Object.hasOwn(progress.clearCommands, key)) return true;
   return progress.tabClaims.some((claim: CleanupTabClaim): boolean => claim.tabId === tabId);
 }
 
@@ -523,10 +503,7 @@ export async function handleCleanupNavigationV2(
   );
 }
 
-/**
- * Returns the batch's command for this document, adding and persisting it when it is new and
- * rebuilding it in place when the page has moved within the same document, which keeps the key.
- */
+/** Returns the batch's command for this document, adding and persisting it when it is new. */
 async function durableClearCommandV2(
   ports: RuntimePortsV2,
   journal: CleanupJournalV2,
@@ -536,16 +513,12 @@ async function durableClearCommandV2(
   const runtime: RuntimeStateV2 = ports.runtime();
   const progress: CleanupProgress = journalProgressV2(runtime, journal);
   const known: FrozenDocumentCommand | undefined = progress.clearCommands[key];
-  if (known !== undefined && known.expectedUrl === target.expectedUrl) return known;
-  const identity: Omit<ClearCommandIdentityV2, 'operationId' | 'runtimeRevision'> = {
+  if (known !== undefined) return known;
+  const added: CleanupProgress = addCleanupTargetV2(progress, target, {
     enforcementEpoch: runtime.enforcementEpoch,
     basePolicyRevision: runtime.basePolicyRevision,
     ...cleanupClearIdentityV2(runtime, journal),
-  };
-  const added: CleanupProgress =
-    known === undefined
-      ? addCleanupTargetV2(progress, target, identity)
-      : remapMovedCleanupTargetV2(progress, target, identity);
+  });
   const next: RuntimeStateV2 = withJournalProgressV2(runtime, journal, added);
   await ports.writeRuntime(
     validatedCleanupRuntimeV2({

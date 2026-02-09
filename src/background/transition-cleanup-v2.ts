@@ -210,14 +210,19 @@ const AUDIT_FAILURES: ReadonlySet<string> = new Set<string>([
 
 /**
  * The clear batch covers exactly the documents the transition's newest frozen view addressed, with
- * one exception: an audit failure happens before registration is audited, so no document has been
- * sent anything (spec 766) and there is nothing to clear. That entry releases its reservations with
- * an empty batch instead of clearing targets that never heard from this transition.
+ * one exception: nothing is sent before registration is audited, so a cleanup entered from the one
+ * pre-audit stage has nothing to clear (spec 766). That entry releases its reservations with an
+ * empty batch instead of clearing targets that never heard from this transition.
+ *
+ * The stage is the authority, and the two audit failures are read as well because they are the
+ * answers that end a transition at that stage. Discovery uses the same rule, so the batch a journal
+ * freezes and the documents it later enumerates agree on what this cleanup ever touched.
  */
 function clearTargetsOf(
   transition: PendingEnforcementTransition,
   entry: TransitionCleanupEntryV2,
 ): CleanupEnforcementTarget[] {
+  if (transition.stage === 'prepared') return [];
   if (entry.failure !== null && AUDIT_FAILURES.has(entry.failure)) return [];
   return frozenTargetsOf(transition);
 }

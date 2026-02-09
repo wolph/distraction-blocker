@@ -28,10 +28,7 @@ import { syncAggKey } from '../../../src/shared/storage-keys';
 import { localDateStr } from '../../../src/shared/time';
 import type { DailyAgg, SessionStateV2 } from '../../../src/shared/types';
 import {
-  appliedResponseFor,
   createRuntimePortsFakeV2,
-  epochResetResponseFor,
-  type FakeResponderV2,
   type FakeSendV2,
   noReceiverResponder,
   type RuntimePortsFakeV2,
@@ -41,7 +38,6 @@ import {
   CLEANUP_OPERATION_ID,
   documentKey,
   emptyRuntimeV2,
-  epochResetAck,
   OTHER_OPERATION_ID,
   pausedSession,
   pendingTransition,
@@ -228,6 +224,25 @@ describe('enterTransitionCleanupV2', (): void => {
       expect(fake.sends).toHaveLength(0);
       expect(resolved.pendingEnforcementTransition).toBeNull();
     }
+  });
+
+  it('releases reservations with an empty batch from the pre-audit stage', async (): Promise<void> => {
+    // Spec 766 keys the exemption on the stage, not on the failure that reached it: an abandon at
+    // `prepared` carries no failure at all, and nothing was sent from that stage either.
+    const fake: RuntimePortsFakeV2 = fakeFor(
+      transitionRuntime(pendingTransition('start', 'prepared')),
+    );
+
+    await enterTransitionCleanupV2(fake, {
+      cause: 'start-abandon',
+      failure: null,
+      endedAt: fake.now(),
+    });
+
+    expect(storedProgress(fake).clearCommands).toEqual({});
+    expect(storedProgress(fake).targets).toEqual({});
+    expect(fake.current().documentCommands).toEqual({});
+    expect(fake.sends).toHaveLength(0);
   });
 
   it('keeps the frozen batch for a failure after the audit', async (): Promise<void> => {
@@ -636,67 +651,9 @@ describe('transition cleanup discovery', (): void => {
     ).toEqual([]);
   });
 
-  /** A document that answers every clear from the URL it moved to inside the same document. */
-  function movedResponder(observedUrl: string, handledAt: number): FakeResponderV2 {
-    return (message: DocumentContentCommand): unknown => {
-      if (message.command !== 'apply-enforcement') return epochResetResponseFor(message, handledAt);
-      const applied: Record<string, unknown> = appliedResponseFor(message, handledAt) as Record<
-        string,
-        unknown
-      >;
-      return { ...applied, observedUrl };
-    };
-  }
-
-  it('reclears a document that answers the frozen command from a URL it moved to', async (): Promise<void> => {
-    // The `changed` answer carries the observed URL, which is the exact signal that this key's
-    // target moved and kept its key, so no second enumeration is needed to find it.
-    const fake: RuntimePortsFakeV2 = await inManualEndCleanup();
-    const before: CleanupProgress = storedProgress(fake);
-    const key: string = documentKey(11, DOC_ONE);
-    const moved: string = 'https://facebook.com/feed/story';
-    const acked: RuntimeStateV2 = fake.current();
-    // The document acknowledged this epoch while the session enforced it, which is the normal state
-    // for a page that was overlaid, so the clear is sent without a reset first.
-    await fake.writeRuntime({
-      ...acked,
-      epochResetAcks: {
-        [key]: epochResetAck({
-          enforcementEpoch: acked.enforcementEpoch,
-          documentId: DOC_ONE,
-          url: BLOCKED_URL,
-        }),
-      },
-    });
-    fake.respondForDocument(11, DOC_ONE, movedResponder(moved, fake.now()));
-
-    await runTransitionCleanupAttemptV2(fake, effectsFake());
-
-    const cleared: DocumentContentCommand[] = fake.sends
-      .filter((send: FakeSendV2): boolean => send.message.command === 'apply-enforcement')
-      .map((send: FakeSendV2): DocumentContentCommand => send.message);
-    // The first clear names the frozen URL and is answered `changed`; the replacement names the URL
-    // the page is on, under the batch's own identity.
-    expect(
-      cleared.map((message: DocumentContentCommand): string =>
-        'expectedUrl' in message ? message.expectedUrl : '',
-      ),
-    ).toContain(moved);
-    // The attempt is clean once the replacement lands, so the evidence is the durable write the
-    // remap made: one command for the key, carrying the new URL under the batch's own identity.
-    const carried: RuntimeStateV2[] = fake.writes.filter(
-      (write: RuntimeStateV2): boolean => write.documentCommands[key]?.expectedUrl === moved,
-    );
-    const remapped: FrozenDocumentCommand | undefined = carried[0]?.documentCommands[key];
-    expect(remapped?.operationId).toBe(before.cleanupOperationId);
-    expect(remapped?.runtimeRevision).toBe(before.clearRuntimeRevision);
-    expect(Object.keys(carried[0]?.documentCommands ?? {})).toEqual(
-      Object.keys(before.clearCommands),
-    );
-    expect(fake.current().pendingEnforcementTransition).toBeNull();
-  });
-
-  it('keeps the command of a document that has not moved byte-for-byte across attempts', async (): Promise<void> => {
+  it('leaves the frozen batch untouched across two failed attempts', async (): Promise<void> => {
+    // The unreachable document fails at its epoch reset under the strict policy, so this pins that
+    // a failing attempt rewrites no target and no command, not anything about a moved document.
     const fake: RuntimePortsFakeV2 = await inManualEndCleanup();
     const frozen: CleanupProgress = storedProgress(fake);
     fake.respondForDocument(11, DOC_ONE, noReceiverResponder());
@@ -710,33 +667,26 @@ describe('transition cleanup discovery', (): void => {
     expect(storedProgress(fake).targets).toEqual(frozen.targets);
   });
 
-  it('clears a same-document move for the URL the page moved to', async (): Promise<void> => {
-    // Spec 1150: the moved document keeps its key, so the batch would otherwise keep sending the
-    // URL it left and clear nothing. Its command is rebuilt under the batch's own operation and
-    // clear revision, and every other frozen command stays exactly as it was.
-    const fake: RuntimePortsFakeV2 = await inManualEndCleanup();
-    const before: CleanupProgress = storedProgress(fake);
-    const key: string = documentKey(11, DOC_ONE);
-    const moved: string = 'https://facebook.com/feed/story';
-    fake.setTabs([{ tabId: 11, url: moved, documentId: DOC_ONE }]);
+  it('keeps the journal open when an unreachable document is one the batch froze', async (): Promise<void> => {
+    // A tab claim is not a proxy for an overlay: `Engine.dropEmptyTabState` drops a tab's state
+    // unless it was muted or stopped, so an overlaid tab can hold no claim by the time cleanup
+    // runs. The frozen batch is the stronger evidence, and it keeps the answer fatal.
+    const fake: RuntimePortsFakeV2 = fakeFor(preCommitRuntime());
+    await enterTransitionCleanupV2(fake, {
+      cause: 'start-abandon',
+      failure: null,
+      endedAt: fake.now(),
+    });
+    const frozen: CleanupProgress = storedProgress(fake);
+    expect(frozen.tabClaims).toEqual([]);
+    expect(Object.keys(frozen.clearCommands)).toContain(documentKey(11, DOC_ONE));
+    fake.respondForDocument(11, DOC_ONE, noReceiverResponder());
 
     await runTransitionCleanupAttemptV2(fake, effectsFake());
 
-    const sent: DocumentContentCommand[] = fake.sends
-      .filter((send: FakeSendV2): boolean => send.message.command === 'apply-enforcement')
-      .map((send: FakeSendV2): DocumentContentCommand => send.message);
-    expect(
-      sent.some(
-        (message: DocumentContentCommand): boolean =>
-          'expectedUrl' in message && message.expectedUrl === moved,
-      ),
-    ).toBe(true);
-    const carried: RuntimeStateV2[] = fake.writes.filter(
-      (write: RuntimeStateV2): boolean => write.documentCommands[key]?.expectedUrl === moved,
-    );
-    expect(carried).not.toEqual([]);
-    expect(carried[0]?.documentCommands[key]?.operationId).toBe(before.cleanupOperationId);
-    expect(carried[0]?.documentCommands[key]?.runtimeRevision).toBe(before.clearRuntimeRevision);
+    const progress: CleanupProgress = storedProgress(fake);
+    expect(progress.retry.automaticAttempt).toBe(1);
+    expect(progress.retry.lastError).toContain('answered no-receiver');
   });
 
   it('defers an unreachable document this cleanup never overlaid', async (): Promise<void> => {
