@@ -81,6 +81,11 @@ export interface ClockStackProps {
  * Labelled clocks for one active session. A timed cycling session shows its focus
  * phase and its total session as separate rows so the phase length is never mistaken
  * for the session length.
+ *
+ * This replaces the v1 progress ring, and nothing takes over the visual progress that
+ * ring carried. That is deliberate: an indefinite session has no proportion to draw, and
+ * a ring that appears for one duration and not the other reads as a missing element
+ * rather than as a difference. The toolbar icon still draws phase progress.
  */
 export function ClockStack({ snapshot, now }: ClockStackProps): VNode {
   const rows: ClockRow[] = clockRows(snapshot, now);
