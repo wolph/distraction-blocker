@@ -88,7 +88,12 @@ function validateArchiveEntryName(fileName: string): void {
   );
 }
 
-export function validateArchiveEntry(
+/**
+ * Checks one entry against the archive-safety rules and records it in the accumulators, which
+ * is what carries the duplicate-name, entry-count, and total-size limits across a whole archive.
+ * The name says admit rather than validate because `seen` and `totals` are written here.
+ */
+export function admitArchiveEntry(
   entry: ArchiveEntry,
   seen: Set<string>,
   totals: ArchiveTotals,
@@ -109,6 +114,9 @@ export function validateArchiveEntry(
     entry.compressionMethod === DEFLATE_COMPRESSION_METHOD,
     `ZIP entry must use the generator compression method: ${entry.fileName}`,
   );
+  // The exact-attributes assert three lines down subsumes both of these: it forces the low
+  // sixteen bits to zero and the mode to a regular file. They stay because they name what is
+  // wrong with a rejected archive, and they must stay ahead of it to be the message you get.
   assert(
     (entry.externalFileAttributes & MS_DOS_DIRECTORY_ATTRIBUTE) === 0,
     `ZIP directory entries are forbidden: ${entry.fileName}`,
@@ -173,6 +181,9 @@ export function parseArchiveEntries(archive: Buffer): ArchiveEntry[] {
   const totalEntries: number = archive.readUInt16LE(endOffset + 10);
   const directorySize: number = archive.readUInt32LE(endOffset + 12);
   const directoryOffset: number = archive.readUInt32LE(endOffset + 16);
+  // End-of-central-directory layout from `endOffset`: 0 signature, 4 this disk, 6 directory
+  // start disk, 8 entries on this disk, 10 total entries, 12 directory size, 16 directory
+  // offset, 20 comment length.
   const commentLength: number = archive.readUInt16LE(endOffset + 20);
   assert(entriesOnDisk === totalEntries, 'ZIP central directory spans multiple disks');
   assert(commentLength === 0, 'ZIP archive comment is forbidden');
@@ -200,6 +211,10 @@ export function parseArchiveEntries(archive: Buffer): ArchiveEntry[] {
       archive.readUInt32LE(offset) === CENTRAL_DIRECTORY_SIGNATURE,
       'ZIP central directory header has a bad signature',
     );
+    // Central directory header layout from `offset`: 0 signature, 8 general-purpose flags,
+    // 10 compression method, 16 CRC-32, 20 compressed size, 24 uncompressed size, 28 name
+    // length, 30 extra length, 32 comment length, 38 external attributes, 42 local offset,
+    // 46 name bytes.
     const fileNameLength: number = archive.readUInt16LE(offset + 28);
     const extraFieldLength: number = archive.readUInt16LE(offset + 30);
     const fileCommentLength: number = archive.readUInt16LE(offset + 32);
@@ -230,6 +245,11 @@ export function parseArchiveEntries(archive: Buffer): ArchiveEntry[] {
   return entries;
 }
 
+/**
+ * Local file header layout from `offset`: 0 signature, 6 general-purpose flags, 8 compression
+ * method, 14 CRC-32, 18 compressed size, 22 uncompressed size, 26 name length, 28 extra length,
+ * 30 name bytes, then the extra field, then the compressed data.
+ */
 function readArchiveEntryContents(archive: Buffer, entry: ArchiveEntry): Buffer {
   const offset: number = entry.localHeaderOffset;
   assert(
@@ -279,20 +299,24 @@ export async function extractPackageArchive(
   const entries: ArchiveEntry[] = parseArchiveEntries(archive);
   const seen: Set<string> = new Set<string>();
   const totals: ArchiveTotals = { entryCount: 0, uncompressedBytes: 0 };
-  for (const entry of entries) validateArchiveEntry(entry, seen, totals);
+  for (const entry of entries) admitArchiveEntry(entry, seen, totals);
   assert(seen.has('manifest.json'), 'Packaged ZIP has no manifest.json at its root');
+  // Every member is inflated and checked before the first byte reaches the disk, so a bad
+  // local header or a CRC mismatch leaves no half-populated directory behind.
   const destinationRoot: string = path.resolve(destinationDirectory);
-  for (const entry of entries) {
-    const targetPath: string = path.resolve(destinationRoot, entry.fileName);
-    assert(
-      targetPath.startsWith(`${destinationRoot}${path.sep}`),
-      `ZIP entry escapes the extraction directory: ${entry.fileName}`,
-    );
-    await mkdir(path.dirname(targetPath), { mode: 0o700, recursive: true });
-    await writeFile(targetPath, readArchiveEntryContents(archive, entry), {
-      flag: 'wx',
-      mode: 0o600,
-    });
+  const pending: Array<{ targetPath: string; contents: Buffer }> = entries.map(
+    (entry: ArchiveEntry): { targetPath: string; contents: Buffer } => {
+      const targetPath: string = path.resolve(destinationRoot, entry.fileName);
+      assert(
+        targetPath.startsWith(`${destinationRoot}${path.sep}`),
+        `ZIP entry escapes the extraction directory: ${entry.fileName}`,
+      );
+      return { targetPath, contents: readArchiveEntryContents(archive, entry) };
+    },
+  );
+  for (const member of pending) {
+    await mkdir(path.dirname(member.targetPath), { mode: 0o700, recursive: true });
+    await writeFile(member.targetPath, member.contents, { flag: 'wx', mode: 0o600 });
   }
   return [...seen].sort();
 }

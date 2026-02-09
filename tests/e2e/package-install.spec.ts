@@ -21,6 +21,7 @@ import {
   ARCHIVE_LIMITS,
   type ArchiveEntry,
   type ArchiveTotals,
+  admitArchiveEntry,
   DEFLATE_COMPRESSION_METHOD,
   extractPackageArchive,
   type PackageManifest,
@@ -28,13 +29,11 @@ import {
   readPackageArchive,
   readPackageManifest,
   UTF8_FILE_NAME_FLAG,
-  validateArchiveEntry,
 } from './package-install-archive';
 
 test.setTimeout(120_000);
 
 const REPOSITORY_ROOT: string = path.resolve(import.meta.dirname, '../..');
-const REPOSITORY_DIST: string = path.join(REPOSITORY_ROOT, 'dist');
 
 function expectedRegistrations(): Record<string, unknown>[] {
   return [
@@ -75,8 +74,40 @@ function requirePackageManifest(): PackageManifest {
   return packageManifest;
 }
 
-function expectNoDiagnostics(diagnostics: BrowserDiagnostics): void {
-  expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).not.toThrow();
+/** Every concrete file path the packaged manifest names. Globbed resources are skipped. */
+function declaredManifestFiles(manifestText: string): string[] {
+  const manifest: Record<string, unknown> = JSON.parse(manifestText) as Record<string, unknown>;
+  const found: string[] = [];
+  const take: (value: unknown) => void = (value: unknown): void => {
+    if (typeof value === 'string' && value !== '' && !value.includes('*')) found.push(value);
+  };
+  const record: (value: unknown) => Record<string, unknown> | null = (
+    value: unknown,
+  ): Record<string, unknown> | null =>
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+
+  take(record(manifest.background)?.service_worker);
+  take(record(manifest.action)?.default_popup);
+  take(manifest.options_page);
+  take(record(manifest.options_ui)?.page);
+  for (const icon of Object.values(record(manifest.icons) ?? {})) take(icon);
+  for (const script of Array.isArray(manifest.content_scripts) ? manifest.content_scripts : []) {
+    const entry: Record<string, unknown> | null = record(script);
+    for (const file of Array.isArray(entry?.js) ? entry.js : []) take(file);
+    for (const file of Array.isArray(entry?.css) ? entry.css : []) take(file);
+  }
+  const resources: unknown[] = Array.isArray(manifest.web_accessible_resources)
+    ? manifest.web_accessible_resources
+    : [];
+  for (const group of resources) {
+    const entry: Record<string, unknown> | null = record(group);
+    for (const file of Array.isArray(entry?.resources) ? entry.resources : []) take(file);
+  }
+  // A manifest this helper cannot read would make the inventory check vacuous, so it says so.
+  if (found.length < 3) throw new Error('the packaged manifest declares no readable file paths');
+  return found;
 }
 
 function baselineEntry(overrides: Partial<ArchiveEntry> = {}): ArchiveEntry {
@@ -96,7 +127,7 @@ function baselineEntry(overrides: Partial<ArchiveEntry> = {}): ArchiveEntry {
 function expectRejectedEntry(overrides: Partial<ArchiveEntry>, reason: RegExp): void {
   const totals: ArchiveTotals = { entryCount: 0, uncompressedBytes: 0 };
   expect((): void =>
-    validateArchiveEntry(baselineEntry(overrides), new Set<string>(), totals),
+    admitArchiveEntry(baselineEntry(overrides), new Set<string>(), totals),
   ).toThrow(reason);
 }
 
@@ -156,20 +187,19 @@ test.afterAll(async (): Promise<void> => {
 
 test('the release ZIP extracts under archive safety rules and is the only loaded build', (): void => {
   const directory: string = requireExtractedDirectory();
+  // The inventory is checked against what the packaged manifest itself declares, so a
+  // truncated package fails here instead of at whatever loads the missing file. Naming the
+  // paths in this file would only pin them to today's build layout.
   expect(extractedFileNames).toContain('manifest.json');
-  expect(extractedFileNames.length).toBeGreaterThan(1);
-  expect(
-    extractedFileNames.filter(
-      (name: string): boolean => name.startsWith('/') || name.includes('..'),
-    ),
-  ).toEqual([]);
+  for (const declared of declaredManifestFiles(requireExtractedManifestText())) {
+    expect(extractedFileNames).toContain(declared);
+  }
   expect(resolveExtensionDist()).toBe(directory);
-  expect(resolveExtensionDist()).not.toBe(REPOSITORY_DIST);
 
   const totals: ArchiveTotals = { entryCount: 0, uncompressedBytes: 0 };
   const seen: Set<string> = new Set<string>();
-  expect((): void => validateArchiveEntry(baselineEntry(), seen, totals)).not.toThrow();
-  expect((): void => validateArchiveEntry(baselineEntry(), seen, totals)).toThrow(/Duplicate/);
+  expect((): void => admitArchiveEntry(baselineEntry(), seen, totals)).not.toThrow();
+  expect((): void => admitArchiveEntry(baselineEntry(), seen, totals)).toThrow(/Duplicate/);
 
   expectRejectedEntry({ fileName: '../escape.json' }, /unsafe path component/);
   expectRejectedEntry({ fileName: '/etc/passwd' }, /absolute path/);
@@ -212,7 +242,7 @@ test('the packaged artifact installs, onboards, blocks, and survives a browser r
   await expect(
     launch.onboardingPage.getByRole('heading', { name: 'Choose your starting block list' }),
   ).toBeVisible();
-  expectNoDiagnostics(diagnostics);
+  assertNoUnexpectedBrowserDiagnostics(diagnostics);
 
   launch = await freshInstallExtension.grantWebsiteAccess();
   expect(await freshInstallExtension.hasWebsiteAccess()).toBe(true);
@@ -230,7 +260,7 @@ test('the packaged artifact installs, onboards, blocks, and survives a browser r
   });
   await expectBlockedPage(launch, url);
   const setupBeforeRestart: SetupState = await currentSetup(launch);
-  expectNoDiagnostics(diagnostics);
+  assertNoUnexpectedBrowserDiagnostics(diagnostics);
 
   launch = await freshInstallExtension.relaunch();
   expect(await runtimeIdentity(launch)).toEqual(identity);
@@ -240,5 +270,5 @@ test('the packaged artifact installs, onboards, blocks, and survives a browser r
   await expect(launch.extPage.locator('.clock-stack__value').first()).toHaveText(/\d+:[0-5]\d/);
   await expect(launch.extPage.locator('.clock-stack__label').first()).not.toBeEmpty();
   await expectBlockedPage(launch, url);
-  expectNoDiagnostics(diagnostics);
+  assertNoUnexpectedBrowserDiagnostics(diagnostics);
 });
