@@ -745,6 +745,36 @@ describe('v2 boot rejected authority', (): void => {
     expect(test.storage.marker).toBeUndefined();
   });
 
+  it('bounds the report when both the runtime and the checkpoint are oversized', async (): Promise<void> => {
+    // The message can carry a refused runtime and a stored migration checkpoint, so the bound the
+    // constant really has to hold is the two together, not one of them.
+    const oversized: unknown = { runtimeSchemaVersion: 2, session: 'x'.repeat(8_192) };
+    const test: BootHarness = harness(
+      emptyStorage({ runtime: oversized, migration: { junk: 'y'.repeat(8_192) } }),
+    );
+
+    await bootRuntimeAuthorityV2(test.ports);
+    const message: string = errorMessage(test.errors[0]);
+
+    expect(message.length).toBeLessThan(8_800);
+    expect(message).toContain('...');
+  });
+
+  it('reports a stored migration checkpoint that no parser accepts', async (): Promise<void> => {
+    // The v2 and absent branches are right to ignore it, but the reader knows something is wrong,
+    // and saying nothing means re-reading the same broken value on every future boot.
+    const stored: RuntimeStateV2 = storedV2Runtime();
+    const test: BootHarness = harness(
+      emptyStorage({ runtime: stored, migration: { version: 'nope' } }),
+    );
+
+    const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
+
+    expect(result).toEqual({ kind: 'v2', runtime: stored, migrated: false });
+    expect(test.errors).toHaveLength(1);
+    expect(errorMessage(test.errors[0])).toContain('failed to parse');
+  });
+
   it('reports the marker cutoff when no checkpoint explains it', async (): Promise<void> => {
     const test: BootHarness = harness(
       emptyStorage({
@@ -819,10 +849,19 @@ describe('v2 boot crash recovery', (): void => {
       const ends: SessionEventRecordV2[] = storage.events.filter(
         (event: SessionEventRecordV2): boolean => event.t === 'sessionEnded',
       );
+      // The legacy checkpoint's own event counts too: the three legacy-phase rows exist to prove
+      // that replay is idempotent, and only a legacy record can show it, because it dedupes by
+      // canonical content rather than by an event ID. The settlement writes a `budgetEarned` of its
+      // own at a different instant, so this counts the replayed one alone.
+      const replayed: SessionEventRecordV2[] = storage.events.filter(
+        (event: SessionEventRecordV2): boolean =>
+          event.t === 'budgetEarned' && event.at === START_AT,
+      );
 
       expect(result.kind, `crash at ${failing}`).toBe('migrated');
       expect(result.runtime.pendingClosure?.stage, `crash at ${failing}`).toBe('cleanup');
       expect(ends, `crash at ${failing}`).toHaveLength(1);
+      expect(replayed, `crash at ${failing}`).toHaveLength(1);
       expect(storage.migration, `crash at ${failing}`).toBeUndefined();
       expect(storage.runtime, `crash at ${failing}`).toEqual(result.runtime);
     }

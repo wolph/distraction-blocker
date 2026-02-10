@@ -9,12 +9,12 @@
  */
 
 import { CoreError } from '../shared/errors';
-import { type ExactDataSnapshot, exactDataEqual, snapshotExactData } from '../shared/exact-data';
+import { type ExactDataSnapshot, snapshotExactData } from '../shared/exact-data';
 import { LOCAL_RUNTIME, LOCAL_RUNTIME_SCHEMA } from '../shared/storage-keys';
 import { localDateStr } from '../shared/time';
 import { isRecord } from '../shared/v2-domain-intrinsics';
 import type { RuntimeStateV2 } from './runtime-v2-types';
-import { parseRuntimeStateV2 } from './runtime-v2-validation';
+import { isRuntimeSchemaMarkerValue, parseRuntimeStateV2 } from './runtime-v2-validation';
 import { readStoredRuntimeRaw } from './stores';
 
 /**
@@ -36,6 +36,9 @@ const V2_ONLY_RUNTIME_KEYS: readonly string[] = [
 export interface RuntimeSchemaMarkerV2 {
   runtimeSchemaVersion: 2;
 }
+
+/** The one marker value this worker writes and returns, so no caller spells the literal again. */
+export const RUNTIME_SCHEMA_MARKER_V2: RuntimeSchemaMarkerV2 = { runtimeSchemaVersion: 2 };
 
 export type StoredRuntimeAuthority =
   | { kind: 'absent' }
@@ -83,7 +86,7 @@ export function emptyRuntimeV2(now: number, enforcementEpoch: string): RuntimeSt
  */
 export function isRuntimeSchemaMarkerV2(value: unknown): value is RuntimeSchemaMarkerV2 {
   const snapshot: ExactDataSnapshot | null = snapshotExactData(value);
-  return snapshot !== null && exactDataEqual(snapshot.value, { runtimeSchemaVersion: 2 });
+  return snapshot !== null && isRuntimeSchemaMarkerValue(snapshot.value);
 }
 
 /**
@@ -116,7 +119,9 @@ export function classifyStoredRuntime(
 
 export async function readRuntimeSchemaMarker(): Promise<RuntimeSchemaMarkerV2 | null> {
   const stored: Record<string, unknown> = await chrome.storage.local.get(LOCAL_RUNTIME_SCHEMA);
-  return isRuntimeSchemaMarkerV2(stored[LOCAL_RUNTIME_SCHEMA]) ? { runtimeSchemaVersion: 2 } : null;
+  return isRuntimeSchemaMarkerV2(stored[LOCAL_RUNTIME_SCHEMA])
+    ? { ...RUNTIME_SCHEMA_MARKER_V2 }
+    : null;
 }
 
 /**

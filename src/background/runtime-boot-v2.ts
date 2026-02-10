@@ -89,6 +89,17 @@ export async function bootRuntimeAuthorityV2(
   // A decided migration is finished before any other verdict, including the marker cutoff, which
   // only means "a marker with no checkpoint left to explain it" once this read comes back empty.
   if (stored !== null) return migratedBoot(await replayMigrationCheckpoint(ports, stored));
+  // A stored value that no parser accepts is inert here, and the branches below are right to ignore
+  // it, but the reader knows something is wrong: the rejected branch says so in its message, and
+  // every other branch says so here rather than re-reading it silently on every future boot.
+  if (storedMigration !== undefined && authority.kind !== 'rejected') {
+    ports.reportError(
+      new CoreError(
+        'invalid-rule',
+        'a stored migration checkpoint failed to parse and was ignored',
+      ),
+    );
+  }
   switch (authority.kind) {
     case 'v2':
       return {

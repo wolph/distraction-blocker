@@ -602,6 +602,13 @@ function expectedEndAction(
 }
 
 /** Returns capturedAt when the whole active timing row is valid, otherwise null. */
+/**
+ * The overlay stores what a phase is, so a phase whose end equals its start is accepted: a boundary
+ * instant genuinely produces one, and a view that refused it could not describe what happened. The
+ * schedule window is the stricter of the two on purpose, and for the opposite reason: a window whose
+ * end equals its start offers no time in which to run a session, so `windowStartsAt < windowEndsAt`
+ * refuses it at creation rather than storing a session nothing could have run.
+ */
 function activeTimingCapturedAt(timing: UnknownRecord, duration: SessionDuration): number | null {
   const capturedAt: unknown = timing.capturedAt;
   const phaseStartedAt: unknown = timing.phaseStartedAt;

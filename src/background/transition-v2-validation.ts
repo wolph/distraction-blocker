@@ -382,6 +382,11 @@ function validateDetachedCandidateScheduleWindow(value: unknown): value is Candi
  * A window-timed session runs between its captured bounds, so its activation sits inside the
  * half-open window the pre-commit recheck applied: `windowStartsAt <= activationAt < windowEndsAt`.
  * The bound itself would derive a zero-length session, which is not a duration this domain has.
+ *
+ * This is stricter than the overlay's phase rule, which accepts a phase whose end equals its start,
+ * and deliberately so. A zero-length phase can occur, at a boundary instant, and the stored view has
+ * to be able to say what happened. A zero-length window can never legitimately start a session,
+ * because there is no time in which to run one, so it is refused where the session is created.
  */
 function activationWithinWindow(
   start: SessionStartCandidate | null,

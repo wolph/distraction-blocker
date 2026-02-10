@@ -1941,6 +1941,31 @@ describe('PolicyStorage', (): void => {
     expect(local.state.values[LOCAL_AGGREGATE_PRUNE]).toBeUndefined();
   });
 
+  it('initializes before it answers a snapshot read', async (): Promise<void> => {
+    // Boot reads the bank through `loadSnapshot`, and the ordering requirement that read carries is
+    // structural rather than a call-site convention: the reader initializes first, so a boot that
+    // asked for the snapshot before initializing would still get an initialized one. The pending
+    // prune checkpoint is the evidence, because only initialization recovers it.
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const oldDate: string = '2026-05-01';
+    const oldKey: string = syncAggKey('device-a', oldDate);
+    const monthKey: string = 'aggm:device-a:2026-05';
+    const aggregate = { ...emptyDaily(oldDate), focusMs: 42_000 };
+    const monthly = rollupMonth('2026-05', [aggregate]);
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [oldKey]: aggregate,
+      [monthKey]: monthly,
+      [LOCAL_AGGREGATE_PRUNE]: { set: { [monthKey]: monthly }, remove: [oldKey] },
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+
+    expect(await storage.loadSnapshot()).toEqual(SNAPSHOT);
+
+    expect(local.state.values[LOCAL_AGGREGATE_PRUNE]).toBeUndefined();
+    expect(local.state.values[oldKey]).toBeUndefined();
+  });
+
   it('marks a failed aggregate prune journal durable error and recovers it after restart', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'sync' };
     const oldDate: string = '2026-05-01';

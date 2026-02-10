@@ -5,6 +5,7 @@ import {
   msUntilNextEarnedMinute,
   spend,
 } from '../../../src/core/budget';
+import { DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import { CoreError } from '../../../src/shared/errors';
 import type { PauseEconomy } from '../../../src/shared/types';
 
@@ -60,5 +61,30 @@ describe('msUntilNextEarnedMinute', () => {
     expect(msUntilNextEarnedMinute(0, ECO.earnRatio, 0)).toBeNull();
     expect(msUntilNextEarnedMinute(0, ECO.earnRatio, 30_000)).toBeNull();
     expect(msUntilNextEarnedMinute(0, Number.MIN_VALUE, ECO.capMs)).toBeNull();
+  });
+});
+
+describe('the shipped economy', () => {
+  // The parser accepts a zero price, because a parser must accept every value the economy can
+  // legitimately hold and zero is representable. What must not happen is the shipped configuration
+  // producing one, which is what this pins.
+  const shipped: PauseEconomy = DEFAULT_SETTINGS.pause;
+
+  it('charges for a pause and for a site unlock', () => {
+    expect(shipped.pauseMs).toBeGreaterThan(0);
+    expect(shipped.unlockMs).toBeGreaterThan(0);
+    expect(spend({ balanceMs: shipped.capMs }, shipped.pauseMs).balanceMs).toBe(
+      shipped.capMs - shipped.pauseMs,
+    );
+    expect(spend({ balanceMs: shipped.capMs }, shipped.unlockMs).balanceMs).toBe(
+      shipped.capMs - shipped.unlockMs,
+    );
+  });
+
+  it('makes an empty bank afford neither', () => {
+    expect(() => spend({ balanceMs: 0 }, shipped.pauseMs)).toThrow(CoreError);
+    expect(() => spend({ balanceMs: 0 }, shipped.unlockMs)).toThrow(CoreError);
+    expect(msUntilAffordable({ balanceMs: 0 }, shipped.pauseMs, shipped)).toBeGreaterThan(0);
+    expect(msUntilAffordable({ balanceMs: 0 }, shipped.unlockMs, shipped)).toBeGreaterThan(0);
   });
 });

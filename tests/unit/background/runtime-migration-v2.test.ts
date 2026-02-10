@@ -17,6 +17,7 @@ import type {
 } from '../../../src/background/runtime-v2-types';
 import { parseRuntimeMigrationCheckpointV1ToV2 } from '../../../src/background/runtime-v2-validation';
 import type { DeferredBlockClaim, RuntimeState } from '../../../src/background/stores';
+import { createHandledScheduleOccurrenceV2 } from '../../../src/core/schedule-v2';
 import { DEFAULT_LISTS, rulesFromLists } from '../../../src/shared/constants';
 import { CoreError } from '../../../src/shared/errors';
 import { syncAggKey } from '../../../src/shared/storage-keys';
@@ -635,6 +636,27 @@ describe('invalid active state migration', (): void => {
     expect(checkpoint.assignedSessionId).toBe(ASSIGNED_SESSION_ID);
     expect(checkpoint.identityEvent?.sessionId).toBe(ASSIGNED_SESSION_ID);
     expect(checkpoint.cleanupPlan?.projection.sessionId).toBe(ASSIGNED_SESSION_ID);
+  });
+
+  it('suppresses the occurrence of a scheduled session it closes', (): void => {
+    // Spec 1633: the record is carried when it is factually present. The session was started under
+    // its occurrence in version 1, so closing it at migration must not leave the token free for the
+    // scheduler to restart the same window immediately.
+    const scheduled: NormalizedSessionStateV1 = legacySession({
+      config: scheduledConfig(),
+      sessionEndsAt: START_AT + MINUTE_MS,
+    });
+    const checkpoint: RuntimeMigrationCheckpointV1ToV2 = invalidActiveCheckpoint(scheduled, {
+      runtime: legacyRuntime({ session: scheduled, scheduleActiveEntryId: MARKER }),
+    });
+
+    expect(checkpoint.projectedRuntime.session).toBeNull();
+    expect(checkpoint.cleanupPlan?.projection.handledOccurrences).toEqual([
+      createHandledScheduleOccurrenceV2(OCCURRENCE, scheduled.startedAt, 'started'),
+    ]);
+    expect(checkpoint.projectedRuntime.handledScheduleOccurrences).toEqual(
+      checkpoint.cleanupPlan?.projection.handledOccurrences,
+    );
   });
 
   it('closes a manual session that cannot satisfy the v2 session contract', (): void => {

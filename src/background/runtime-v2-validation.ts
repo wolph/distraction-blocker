@@ -217,10 +217,11 @@ function validateDetachedMigrationCheckpoint(
 }
 
 /**
- * `runtime-store-v2.ts` owns the standalone marker guard, and it imports this module's parser, so
- * the shape is restated here rather than imported back across that edge.
+ * The marker's shape, on already-detached exact plain data. `runtime-store-v2.ts` owns the standalone
+ * guard that snapshots a stored value first, and it imports this module's parser, so the shape lives
+ * on this side of that edge and the store's guard calls it rather than restating it.
  */
-function isRuntimeSchemaMarkerValue(value: unknown): boolean {
+export function isRuntimeSchemaMarkerValue(value: unknown): boolean {
   const marker: UnknownRecord | null = exactRecord(value, ['runtimeSchemaVersion']);
   return marker !== null && marker.runtimeSchemaVersion === 2;
 }

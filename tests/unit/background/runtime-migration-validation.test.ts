@@ -423,6 +423,24 @@ describe('migration cleanup plan agreement', (): void => {
     ]);
   });
 
+  it('accepts a handled record the plan, the closure, and the log all carry', (): void => {
+    // Spec 1634 allows one when an already validated local-date record is factually present, so the
+    // parser must accept the agreeing case as well as reject the mismatched one below it.
+    const carried: ClosureProjection = migrationClosureProjection({
+      handledOccurrences: [handledOccurrence()],
+    });
+
+    expectAccepted([
+      cleanupCheckpoint({
+        projectedRuntime: migrationCleanupRuntime({
+          handledScheduleOccurrences: [handledOccurrence()],
+          pendingClosure: migrationCleanupClosure({ projection: carried }),
+        }),
+        cleanupPlan: migrationCleanupPlan({ projection: carried }),
+      }),
+    ]);
+  });
+
   it('accepts a scheduled invalid-active end with or without its occurrence', (): void => {
     const withOccurrence: ClosureProjection = migrationClosureProjection({
       endEvent: sessionEndedEvent({

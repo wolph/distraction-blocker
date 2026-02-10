@@ -94,7 +94,9 @@ export function parseLegacyScheduleOccurrenceMarkerV1(
   // The reference validator owns both halves of the rule: its token must be exactly
   // `${entryId}@${localStartDate}`, which rejects another entry's marker and any marker with no
   // separator, and its local date must be a real calendar date. Nothing is compared twice here.
-  const separator: number = marker.indexOf('@');
+  // The last separator, not the first: the token is `${entryId}@${localStartDate}` and an entry ID
+  // may contain an `@` of its own, which splitting at the first one would strand in the date half.
+  const separator: number = marker.lastIndexOf('@');
   const occurrence: ScheduleOccurrenceRef = {
     version: 1,
     token: marker,
@@ -199,7 +201,10 @@ function sessionCheckpoint(
   const runtime: RuntimeStateV2 = {
     ...carriedRuntimeV2(input),
     session: migrated.session,
-    handledScheduleOccurrences: handledStartRecords(migrated),
+    handledScheduleOccurrences: handledStartRecords(
+      migrated.occurrence,
+      migrated.session.startedAt,
+    ),
     basePolicyRevision: MIGRATION_ACTIVE_REVISION,
     runtimeRevision: MIGRATION_ACTIVE_REVISION,
   };
@@ -250,12 +255,11 @@ function migratedSessionId(input: MigrationInputV2, legacy: NormalizedSessionSta
  * for that token.
  */
 function handledStartRecords(
-  migrated: MigratedSessionV2,
+  occurrence: ScheduleOccurrenceRef | null,
+  startedAt: number,
 ): RuntimeStateV2['handledScheduleOccurrences'] {
-  if (migrated.occurrence === null || migrated.session === null) return [];
-  return [
-    createHandledScheduleOccurrenceV2(migrated.occurrence, migrated.session.startedAt, 'started'),
-  ];
+  if (occurrence === null) return [];
+  return [createHandledScheduleOccurrenceV2(occurrence, startedAt, 'started')];
 }
 
 /**
@@ -285,6 +289,7 @@ function invalidActiveCheckpoint(
     ...carriedRuntimeV2(input),
     gate: null,
     unlocks: [],
+    handledScheduleOccurrences: handledStartRecords(migrated.occurrence, legacy.startedAt),
     // The session is logically closed, and v1 resets this watermark at every no-session site, so
     // the next session starts crediting from zero rather than from a closed session's focus.
     accruedFocusMs: 0,
@@ -367,7 +372,11 @@ function migrationClosureProjection(
     focusedMs: endEvent.focusedMs,
     endEvent,
     events: settlementEvents(input, sessionId, settled, endEvent),
-    handledOccurrences: [],
+    // Spec 1633: the record is present when it is factually present. A scheduled session whose
+    // endpoints have no v2 form was still started under its occurrence, so the token stays
+    // suppressed for the rest of its window rather than letting the scheduler restart the window
+    // the migration has just closed. The legacy start is the only factual instant for it.
+    handledOccurrences: handledStartRecords(migrated.occurrence, legacy.startedAt),
     completionIncrement: 0,
     bankAfter: { ...settled.bankAfter },
     aggregateSets: structuredClone(settled.aggregateSets),
