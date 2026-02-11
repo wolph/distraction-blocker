@@ -7,6 +7,7 @@
 import { msUntilNextEarnedMinute } from '../shared/budget-display';
 import type { DocumentOverlayView } from '../shared/enforcement-v2';
 import { exactDataEqual } from '../shared/exact-data';
+import { growBank } from '../shared/live';
 import type { Ack, Request } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import { applyTheme } from '../shared/theme';
@@ -190,11 +191,15 @@ function appendBank(
   updateBank(overlay, view, now);
 }
 
-/** Grows the frozen bank forward from the capture time the same way the worker does. */
+/** Grows the frozen bank forward from the capture time, through the shared rule. */
 function bankAt(view: ActiveOverlayView, now: number): number {
-  const grown: number =
-    view.economy.bankMs + Math.max(0, now - view.timing.capturedAt) * view.economy.bankAccrualPerMs;
-  return Math.min(view.economy.bankCapMs, grown);
+  return growBank(
+    view.economy.bankMs,
+    view.economy.bankAccrualPerMs,
+    view.economy.bankCapMs,
+    view.timing.capturedAt,
+    now,
+  );
 }
 
 function updateBank(overlay: MountedOverlay, view: ActiveOverlayView, now: number): void {

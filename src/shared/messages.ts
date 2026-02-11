@@ -266,6 +266,3 @@ export interface SessionResponseMapV2 {
   retryClosureCleanup: CommandResponseV2<RetryCleanupResultCodeV2>;
   retryDataClear: CommandResponseV2<RetryCleanupResultCodeV2>;
 }
-
-/** The v2 channel is the live channel now. The alias stays until Task 2 retires its callers. */
-export const sendSessionRequestV2: typeof sendRequest = sendRequest;

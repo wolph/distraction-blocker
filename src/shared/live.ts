@@ -1,20 +1,20 @@
-import type { SessionSnapshot, SessionSnapshotV2 } from './types';
+import type { SessionSnapshotV2 } from './types';
 
-export function remainingPhaseMs(snap: SessionSnapshot, nowMs: number): number {
-  if (snap.phaseEndsAt === null) return 0;
-  return Math.max(0, snap.phaseEndsAt - nowMs);
-}
-
-export function extrapolatedBank(snap: SessionSnapshot, nowMs: number): number {
-  const grown: number = snap.bankMs + Math.max(0, nowMs - snap.at) * snap.bankAccrualPerMs;
-  return Math.min(snap.bankCapMs, grown);
-}
-
-export function phaseProgress(snap: SessionSnapshot, nowMs: number): number {
-  if (snap.phaseStartedAt === null || snap.phaseEndsAt === null) return 0;
-  const span: number = snap.phaseEndsAt - snap.phaseStartedAt;
-  if (span <= 0) return 0;
-  return Math.min(1, Math.max(0, (nowMs - snap.phaseStartedAt) / span));
+/**
+ * The pause bank grown from the moment it was captured to `nowMs`, capped. Shape-free on
+ * purpose: the popup grows it from a snapshot and the blocked page grows it from a frozen
+ * overlay view, and one arithmetic rule serves both without either learning the other's type.
+ * A `nowMs` before the capture never shrinks the bank, so a snapshot that arrives late reads
+ * as the value it was captured with rather than as a smaller one.
+ */
+export function growBank(
+  bankMs: number,
+  accrualPerMs: number,
+  capMs: number,
+  capturedAt: number,
+  nowMs: number,
+): number {
+  return Math.min(capMs, bankMs + Math.max(0, nowMs - capturedAt) * accrualPerMs);
 }
 
 export function remainingPhaseMsV2(snap: SessionSnapshotV2, nowMs: number): number | null {

@@ -1,48 +1,31 @@
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_LISTS, emptySnapshotV2, rulesFromLists } from '../../../src/shared/constants';
 import {
-  DEFAULT_LISTS,
-  emptySnapshot,
-  emptySnapshotV2,
-  rulesFromLists,
-} from '../../../src/shared/constants';
-import {
-  extrapolatedBank,
-  phaseProgress,
+  growBank,
   projectedSessionFocusedMsV2,
-  remainingPhaseMs,
   remainingPhaseMsV2,
   remainingSessionMsV2,
 } from '../../../src/shared/live';
-import type {
-  SessionConfigV2,
-  SessionSnapshot,
-  SessionSnapshotV2,
-} from '../../../src/shared/types';
+import type { SessionConfigV2, SessionSnapshotV2 } from '../../../src/shared/types';
 
-const snap: SessionSnapshot = {
-  ...emptySnapshot(1_000),
-  phase: 'focus',
-  phaseStartedAt: 0,
-  phaseEndsAt: 11_000,
-  bankMs: 6_000,
-  bankAccrualPerMs: 0.5,
-  bankCapMs: 10_000,
-};
+describe('growBank', (): void => {
+  const BANK_MS: number = 6_000;
+  const ACCRUAL: number = 0.5;
+  const CAP_MS: number = 10_000;
+  const CAPTURED_AT: number = 1_000;
 
-describe('live extrapolation', () => {
-  it('counts down the phase and clamps at zero', () => {
-    expect(remainingPhaseMs(snap, 6_000)).toBe(5_000);
-    expect(remainingPhaseMs(snap, 20_000)).toBe(0);
+  it('grows the bank at the accrual rate, clamped to the cap', (): void => {
+    expect(growBank(BANK_MS, ACCRUAL, CAP_MS, CAPTURED_AT, 5_000)).toBe(8_000);
+    expect(growBank(BANK_MS, ACCRUAL, CAP_MS, CAPTURED_AT, 60_000)).toBe(CAP_MS);
   });
-  it('grows the bank at the accrual rate, clamped to the cap', () => {
-    expect(extrapolatedBank(snap, 5_000)).toBe(8_000);
-    expect(extrapolatedBank(snap, 60_000)).toBe(10_000);
+
+  it('never shrinks the bank for a time before the capture', (): void => {
+    expect(growBank(BANK_MS, ACCRUAL, CAP_MS, CAPTURED_AT, 0)).toBe(BANK_MS);
+    expect(growBank(BANK_MS, ACCRUAL, CAP_MS, CAPTURED_AT, CAPTURED_AT)).toBe(BANK_MS);
   });
-  it('reports phase progress in [0, 1]', () => {
-    expect(phaseProgress(snap, 5_500)).toBeCloseTo(0.5);
-    expect(
-      phaseProgress({ ...snap, phase: 'idle', phaseStartedAt: null, phaseEndsAt: null }, 5),
-    ).toBe(0);
+
+  it('returns the captured value when nothing accrues', (): void => {
+    expect(growBank(BANK_MS, 0, CAP_MS, CAPTURED_AT, 60_000)).toBe(BANK_MS);
   });
 });
 

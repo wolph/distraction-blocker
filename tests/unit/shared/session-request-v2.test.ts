@@ -6,7 +6,7 @@ import {
   type SessionRequestV2,
   type SessionResponseMapV2,
   type StartSessionResponseV2,
-  sendSessionRequestV2,
+  sendRequest,
 } from '../../../src/shared/messages';
 import type { SessionConfigV2 } from '../../../src/shared/types';
 import { MANUAL_INDEFINITE_CONFIG } from './v2-runtime-fixtures';
@@ -60,53 +60,51 @@ interface ChannelCall {
 const CHANNEL_CALLS: readonly ChannelCall[] = [
   {
     request: START_SESSION,
-    send: (): Promise<SessionResponseMapV2['startSession']> => sendSessionRequestV2(START_SESSION),
+    send: (): Promise<SessionResponseMapV2['startSession']> => sendRequest(START_SESSION),
   },
   {
     request: REQUEST_SESSION_END,
     send: (): Promise<SessionResponseMapV2['requestSessionEnd']> =>
-      sendSessionRequestV2(REQUEST_SESSION_END),
+      sendRequest(REQUEST_SESSION_END),
   },
   {
     request: OPEN_END_GATE,
-    send: (): Promise<SessionResponseMapV2['openEndGate']> => sendSessionRequestV2(OPEN_END_GATE),
+    send: (): Promise<SessionResponseMapV2['openEndGate']> => sendRequest(OPEN_END_GATE),
   },
   {
     request: ABANDON_GATE,
-    send: (): Promise<SessionResponseMapV2['abandonGate']> => sendSessionRequestV2(ABANDON_GATE),
+    send: (): Promise<SessionResponseMapV2['abandonGate']> => sendRequest(ABANDON_GATE),
   },
   {
     request: CONFIRM_GATE,
-    send: (): Promise<SessionResponseMapV2['confirmGate']> => sendSessionRequestV2(CONFIRM_GATE),
+    send: (): Promise<SessionResponseMapV2['confirmGate']> => sendRequest(CONFIRM_GATE),
   },
   {
     request: OPEN_GATE,
-    send: (): Promise<SessionResponseMapV2['openGate']> => sendSessionRequestV2(OPEN_GATE),
+    send: (): Promise<SessionResponseMapV2['openGate']> => sendRequest(OPEN_GATE),
   },
   {
     request: RESUME_FROM_PAUSE,
-    send: (): Promise<SessionResponseMapV2['resumeFromPause']> =>
-      sendSessionRequestV2(RESUME_FROM_PAUSE),
+    send: (): Promise<SessionResponseMapV2['resumeFromPause']> => sendRequest(RESUME_FROM_PAUSE),
   },
   {
     request: START_NEXT_FOCUS_EARLY,
     send: (): Promise<SessionResponseMapV2['startNextFocusEarly']> =>
-      sendSessionRequestV2(START_NEXT_FOCUS_EARLY),
+      sendRequest(START_NEXT_FOCUS_EARLY),
   },
   {
     request: RETRY_TRANSITION_CLEANUP,
     send: (): Promise<SessionResponseMapV2['retryTransitionCleanup']> =>
-      sendSessionRequestV2(RETRY_TRANSITION_CLEANUP),
+      sendRequest(RETRY_TRANSITION_CLEANUP),
   },
   {
     request: RETRY_CLOSURE_CLEANUP,
     send: (): Promise<SessionResponseMapV2['retryClosureCleanup']> =>
-      sendSessionRequestV2(RETRY_CLOSURE_CLEANUP),
+      sendRequest(RETRY_CLOSURE_CLEANUP),
   },
   {
     request: RETRY_DATA_CLEAR,
-    send: (): Promise<SessionResponseMapV2['retryDataClear']> =>
-      sendSessionRequestV2(RETRY_DATA_CLEAR),
+    send: (): Promise<SessionResponseMapV2['retryDataClear']> => sendRequest(RETRY_DATA_CLEAR),
   },
 ];
 
@@ -230,21 +228,17 @@ describe('v2 session request channel', (): void => {
 
     // Asserted on the call, not on an annotated local: annotating first would make every
     // one of these true whatever the sender infers.
-    expectTypeOf(
-      sendSessionRequestV2(START_SESSION),
-    ).resolves.toEqualTypeOf<StartSessionResponseV2>();
-    expectTypeOf(sendSessionRequestV2(CONFIRM_GATE)).resolves.toEqualTypeOf<
+    expectTypeOf(sendRequest(START_SESSION)).resolves.toEqualTypeOf<StartSessionResponseV2>();
+    expectTypeOf(sendRequest(CONFIRM_GATE)).resolves.toEqualTypeOf<
       CommandResponseV2<SessionCommandResultCodeV2>
     >();
-    expectTypeOf(sendSessionRequestV2(RETRY_DATA_CLEAR)).resolves.toEqualTypeOf<
+    expectTypeOf(sendRequest(RETRY_DATA_CLEAR)).resolves.toEqualTypeOf<
       CommandResponseV2<RetryCleanupResultCodeV2>
     >();
 
-    const start: StartSessionResponseV2 = await sendSessionRequestV2(START_SESSION);
-    const command: CommandResponseV2<SessionCommandResultCodeV2> =
-      await sendSessionRequestV2(CONFIRM_GATE);
-    const retry: CommandResponseV2<RetryCleanupResultCodeV2> =
-      await sendSessionRequestV2(RETRY_DATA_CLEAR);
+    const start: StartSessionResponseV2 = await sendRequest(START_SESSION);
+    const command: CommandResponseV2<SessionCommandResultCodeV2> = await sendRequest(CONFIRM_GATE);
+    const retry: CommandResponseV2<RetryCleanupResultCodeV2> = await sendRequest(RETRY_DATA_CLEAR);
 
     expect([start, command, retry]).toEqual([
       { ok: true, code: 'ok' },
@@ -261,14 +255,12 @@ describe('v2 session request channel', (): void => {
     };
     sendMessageMock.mockResolvedValueOnce(rejection);
 
-    await expect(sendSessionRequestV2(CONFIRM_GATE)).resolves.toBe(rejection);
+    await expect(sendRequest(CONFIRM_GATE)).resolves.toBe(rejection);
   });
 
   it('propagates a failed runtime transport instead of resolving', async (): Promise<void> => {
     sendMessageMock.mockRejectedValueOnce(new Error('Receiving end does not exist.'));
 
-    await expect(sendSessionRequestV2(REQUEST_SESSION_END)).rejects.toThrow(
-      'Receiving end does not exist.',
-    );
+    await expect(sendRequest(REQUEST_SESSION_END)).rejects.toThrow('Receiving end does not exist.');
   });
 });

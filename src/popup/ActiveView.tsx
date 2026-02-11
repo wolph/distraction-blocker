@@ -3,6 +3,7 @@ import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'p
 import { getDomain } from 'tldts';
 import { msUntilNextEarnedMinute } from '../core/budget';
 import { MIN_BREAK_BEFORE_EARLY_MS } from '../shared/constants';
+import { growBank } from '../shared/live';
 import type { StatsBundle } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import { isStatsBundle } from '../shared/runtime-validation';
@@ -87,13 +88,6 @@ function useFocusedTodayMs(): { ms: number | null; error: boolean } {
   return { ms, error };
 }
 
-/** The bank grown to `nowMs`, capped, so the meter moves between published snapshots. */
-function extrapolatedBankV2(snapshot: SessionSnapshotV2, nowMs: number): number {
-  const grown: number =
-    snapshot.bankMs + Math.max(0, nowMs - snapshot.at) * snapshot.bankAccrualPerMs;
-  return Math.min(snapshot.bankCapMs, grown);
-}
-
 /** The open cancel gate carried by End authority, absent for every other authority. */
 function endGateOf(authority: EndAuthorityV2): GateState | null {
   return authority.kind === 'friction-gate' ? authority.gate : null;
@@ -141,7 +135,14 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
   const activeHost: string | null = activeSite.status === 'ready' ? activeSite.host : null;
   const focusedToday: { ms: number | null; error: boolean } = useFocusedTodayMs();
 
-  const bankMs: number = extrapolatedBankV2(snapshot, now);
+  /** Grown to `now` so the meter moves between published snapshots. */
+  const bankMs: number = growBank(
+    snapshot.bankMs,
+    snapshot.bankAccrualPerMs,
+    snapshot.bankCapMs,
+    snapshot.at,
+    now,
+  );
   const bankFill: number = snapshot.bankCapMs > 0 ? Math.min(1, bankMs / snapshot.bankCapMs) : 0;
   const intention: string = snapshot.config?.intention ?? '';
   const authority: EndAuthorityV2 = snapshot.lifecycle.endAuthority;

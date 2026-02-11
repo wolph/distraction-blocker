@@ -17,7 +17,6 @@ export interface SessionDraft {
     delayMs: number;
     requireTypedPhrase: boolean;
   };
-  durationMin: number;
   cycling: CycleConfig | null;
   intention: string;
   rules: SessionRuleSnapshot;
@@ -36,7 +35,6 @@ export function createSessionDraft(settings: Settings, lists: ListsConfig): Sess
       delayMs: settings.gate.delayMs,
       requireTypedPhrase: settings.gate.requireTypedPhrase,
     },
-    durationMin: settings.presetsMin[1],
     cycling: settings.cyclingOnByDefault ? structuredClone(settings.defaultCycling) : null,
     intention: '',
     rules: rulesFromLists(lists),
