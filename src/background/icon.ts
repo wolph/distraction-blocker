@@ -1,13 +1,6 @@
 import { formatBadge } from '../shared/time';
-import type { Phase, SessionSnapshot } from '../shared/types';
-import { badgeForV2, iconSpecV2 } from './badge-v2';
-
-const STATE_COLORS: Record<Phase, string> = {
-  idle: '#9ca3af',
-  focus: '#22c55e',
-  break: '#14b8a6',
-  paused: '#f59e0b',
-};
+import type { SessionSnapshot } from '../shared/types';
+import { badgeForV2, iconSpecV2, STATE_COLORS } from './badge-v2';
 
 export interface IconSpec {
   color: string;

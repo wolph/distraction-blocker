@@ -3,11 +3,8 @@ import { formatBadge } from '../shared/time';
 import type { Phase, SessionSnapshotV2 } from '../shared/types';
 import type { IconSpec } from './icon';
 
-/**
- * The same palette as `icon.ts`, which cannot be shared because its record is private
- * there. The cutover slice collapses the two files and this copy goes with it.
- */
-const STATE_COLORS: Record<Phase, string> = {
+/** The one phase palette. `icon.ts` draws from this record rather than a copy of it. */
+export const STATE_COLORS: Record<Phase, string> = {
   idle: '#9ca3af',
   focus: '#22c55e',
   break: '#14b8a6',

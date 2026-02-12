@@ -226,8 +226,8 @@ describe('iconSpecV2', (): void => {
   });
 
   it('draws every phase in the same color v1 draws it', (): void => {
-    // The palette is written twice, once here and once in icon.ts, so a retuned color in
-    // either file has to fail somewhere. This is that somewhere until the two collapse.
+    // One palette now, exported from badge-v2 and imported by icon.ts, so this no longer
+    // guards a copy. It still pins that the two projections read the same entry per phase.
     const phases: ReadonlyArray<SessionSnapshotV2['phase']> = ['idle', 'focus', 'break', 'paused'];
 
     for (const phase of phases) {
