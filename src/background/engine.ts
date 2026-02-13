@@ -23,6 +23,7 @@ import {
   TOP_SITES_DAILY,
 } from '../shared/constants';
 import type { DocumentContentCommand } from '../shared/enforcement-v2';
+import { CoreError } from '../shared/errors';
 import { exactDataEqual } from '../shared/exact-data';
 import type {
   Ack,
@@ -58,6 +59,14 @@ import type {
 } from '../shared/types';
 import { type AlarmNameV2, type AlarmPortsV2, parseAlarmNameV2, TICK_ALARM } from './alarms-v2';
 import type { ContentTransportPortsV2 } from './content-transport-v2';
+import type { AllDataClearLease, DataClearLeaseToken } from './data-clear-lease';
+import {
+  type AllDataClearFinalizationV2,
+  type BrowserResetAttemptResultV2,
+  type BrowserResetPortsV2,
+  finalizeAllDataClearV2,
+  runBrowserResetAttemptV2,
+} from './data-clear-reset-v2';
 import type { EnforcementTargetPortsV2 } from './enforcement-targets-v2';
 import { listsChangeAllowed, settingsChangeAllowed } from './guard';
 import { encodeListsForSync, LIST_SYNC_KEYS, type ListsSyncEncoding } from './list-sync-codec';
@@ -109,6 +118,18 @@ interface DeferredBlockingSweep {
   resolve(): void;
 }
 
+/**
+ * What the browser reset needs that the Engine cannot own: the deletion lease, the evidence Policy
+ * Storage materialized, the clean-profile identity, and Main's install-lifecycle replay.
+ */
+export interface BrowserResetEngineSeamV2 {
+  lease: AllDataClearLease;
+  readMaterialized(): Promise<{ runtime: unknown; setup: unknown; installMarker: unknown }>;
+  deviceIdExists(): Promise<boolean>;
+  ensureDeviceId(): Promise<string>;
+  replayLifecycleIntents(token: DataClearLeaseToken): Promise<'complete' | 'failed'>;
+}
+
 export interface EnginePorts {
   now(): number;
   newId(): string;
@@ -133,6 +154,12 @@ export interface EnginePorts {
   /** run the weekly sync-storage retention prune */
   prune(retentionDays: number, now: number): Promise<void>;
   reportError(error: unknown): void;
+  /**
+   * The Main-owned half of the browser reset. While it is unbound the all-data clear ends at its
+   * storage phases, which is what every caller before this slice expected. Once Main binds it, the
+   * clear keeps the barrier closed until the journal is gone.
+   */
+  browserReset?: BrowserResetEngineSeamV2;
   /** Live website-blocking capability. */
   websiteBlockingReady(): boolean;
   /** The v2 enforcement seam: the browser surfaces the controller drives through this engine. */
@@ -520,6 +547,10 @@ export class Engine {
       await this.prepareRuntimeForAllDataClear();
       this.dataClearBarrierState = 'quiesced';
       const result: T = await operation();
+      // The storage phases are over, and with the reset seam bound the clear is not: the browser
+      // reset and its finalization own the rest, and the barrier stays closed until the journal is
+      // gone, so nothing publishes or writes over a profile that is still being erased.
+      if (this.ports.browserReset !== undefined) return result;
       await this.resetAfterAllDataClear();
       this.dataClearBarrierState = 'open';
       return result;
@@ -541,6 +572,56 @@ export class Engine {
         );
       }
     }
+  }
+
+  /**
+   * One browser-reset attempt, under the token the caller already holds. The journal is the only
+   * record of its progress, so this answers what the caller owes next and writes nothing else.
+   */
+  async runBrowserResetAttempt(token: DataClearLeaseToken): Promise<BrowserResetAttemptResultV2> {
+    return runBrowserResetAttemptV2(this.browserResetPorts(), token);
+  }
+
+  /**
+   * Ends the clear. The barrier opens only for `removed`, which is the one answer that means the
+   * journal is gone, and the in-memory reset happens there rather than when the phases finished.
+   */
+  async finalizeAllDataClear(): Promise<AllDataClearFinalizationV2> {
+    const outcome: AllDataClearFinalizationV2 = await finalizeAllDataClearV2(
+      this.browserResetPorts(),
+    );
+    if (outcome !== 'removed') return outcome;
+    await this.resetAfterAllDataClear();
+    this.openRuntimeMutationBarrier();
+    await this.applyPendingWebsiteBlockingLoss();
+    await this.flushDeferredAttempts();
+    return outcome;
+  }
+
+  /** The reset ports: Main's half, plus the browser seams the Engine already holds. */
+  private browserResetPorts(): BrowserResetPortsV2 {
+    const seam: BrowserResetEngineSeamV2 | undefined = this.ports.browserReset;
+    if (seam === undefined) {
+      throw new CoreError('invalid-rule', 'the browser reset needs its Main-owned seam');
+    }
+    return {
+      lease: seam.lease,
+      now: (): number => this.ports.now(),
+      newId: (): string => this.ports.newId(),
+      targets: this.ports.targets,
+      transport: this.ports.transport,
+      alarms: this.ports.alarms,
+      readMaterialized: (): Promise<{
+        runtime: unknown;
+        setup: unknown;
+        installMarker: unknown;
+      }> => seam.readMaterialized(),
+      deviceIdExists: (): Promise<boolean> => seam.deviceIdExists(),
+      ensureDeviceId: (): Promise<string> => seam.ensureDeviceId(),
+      replayLifecycleIntents: (token: DataClearLeaseToken): Promise<'complete' | 'failed'> =>
+        seam.replayLifecycleIntents(token),
+      reportError: (error: unknown): void => this.ports.reportError(error),
+    };
   }
 
   async retainDataClearQuiescence(): Promise<void> {
