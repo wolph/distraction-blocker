@@ -873,6 +873,39 @@ describe('runEnforcementPassV2 fatal outcomes', () => {
     expect(result.kind).toBe('unreachable');
   });
 
+  it('fails when the epoch reset answers from another URL', async (): Promise<void> => {
+    // The enforcement flow keeps spec 1343: a verdict is computed for one URL and must never be
+    // applied to another, so URL drift here is fatal. Cleanup narrows this for its own resets,
+    // which carry no verdict, and that narrowing must not reach this pass.
+    const world: FakeWorld = makeWorld({
+      answer: async (
+        message: DocumentContentCommand,
+        _tabId: number,
+        _documentId: string,
+        state: FakeWorld,
+      ): Promise<unknown> => {
+        if (isEnforcementMessage(message)) return appliedAnswer(message, state.now);
+        return {
+          version: 1,
+          disposition: 'epoch-reset',
+          operationId: message.operationId,
+          enforcementEpoch: message.enforcementEpoch,
+          documentId: message.documentId,
+          observedUrl: 'https://facebook.com/feed/story',
+          handledAt: state.now,
+        };
+      },
+    });
+
+    const result: EnforcementPassResultV2 = await runEnforcementPassV2(world.ports, world.driver);
+
+    expect(result.kind).toBe('unreachable');
+    if (result.kind === 'unreachable') {
+      expect(result.detail).toContain('observedUrl');
+    }
+    expect(world.recordedAcks).toEqual([]);
+  });
+
   it('fails when the epoch handshake is rejected', async (): Promise<void> => {
     const world: FakeWorld = makeWorld({
       answer: async (

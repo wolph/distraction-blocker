@@ -64,20 +64,21 @@ export type DocumentCommandOutcomeV2 =
   | { kind: 'changed'; observedUrl: string }
   | { kind: 'closed' }
   | { kind: 'no-receiver' }
-  | { kind: 'mismatch'; detail: string };
+  | { kind: 'mismatch'; detail: string; field: string | null };
 
 export type EpochResetOutcomeV2 =
   | { kind: 'reset'; ack: DocumentEpochResetAck }
   | { kind: 'rejected'; currentEpoch: string }
   | { kind: 'closed' }
   | { kind: 'no-receiver' }
-  | { kind: 'mismatch'; detail: string };
+  /** `field` names the one echoed field that differed, when exactly one did. */
+  | { kind: 'mismatch'; detail: string; field: string | null };
 
 /** A send failure classifies the target itself, so both senders share these three answers. */
 type SendFailureOutcomeV2 =
   | { kind: 'closed' }
   | { kind: 'no-receiver' }
-  | { kind: 'mismatch'; detail: string };
+  | { kind: 'mismatch'; detail: string; field: string | null };
 
 /** The runtime's answer when a document has no listener at all. */
 const NO_RECEIVER_MESSAGES: readonly string[] = [
@@ -122,7 +123,11 @@ export async function sendDocumentEnforcementCommand(
   }
   const response: ContentEnforcementResponse | null = parseContentEnforcementResponse(raw);
   if (response === null) {
-    return { kind: 'mismatch', detail: raw === undefined ? REJECTED_DETAIL : UNPARSABLE_DETAIL };
+    return {
+      kind: 'mismatch',
+      field: null,
+      detail: raw === undefined ? REJECTED_DETAIL : UNPARSABLE_DETAIL,
+    };
   }
   if (response.disposition === 'applied') return appliedOutcome(command, response);
   if (response.disposition === 'stale-command') return staleOutcome(command, response);
@@ -146,7 +151,11 @@ export async function sendEpochResetCommand(
   }
   const response: ContentEnforcementResponse | null = parseContentEnforcementResponse(raw);
   if (response === null) {
-    return { kind: 'mismatch', detail: raw === undefined ? REJECTED_DETAIL : UNPARSABLE_DETAIL };
+    return {
+      kind: 'mismatch',
+      field: null,
+      detail: raw === undefined ? REJECTED_DETAIL : UNPARSABLE_DETAIL,
+    };
   }
   if (response.disposition === 'epoch-reset') return epochResetOutcome(command, response);
   if (response.disposition === 'epoch-reset-rejected') {
@@ -191,7 +200,7 @@ function appliedOutcome(
     handledAt: response.handledAt,
   })?.value;
   if (!validateDetachedDocumentEnforcementAck(ack)) {
-    return { kind: 'mismatch', detail: ackContractDetail('applied') };
+    return { kind: 'mismatch', field: null, detail: ackContractDetail('applied') };
   }
   return { kind: 'applied', ack };
 }
@@ -284,7 +293,7 @@ function epochResetOutcome(
     handledAt: response.handledAt,
   })?.value;
   if (!validateDetachedDocumentEpochResetAck(ack)) {
-    return { kind: 'mismatch', detail: ackContractDetail('epoch-reset') };
+    return { kind: 'mismatch', field: null, detail: ackContractDetail('epoch-reset') };
   }
   return { kind: 'reset', ack };
 }
@@ -310,9 +319,13 @@ function resetMismatchField(
   return null;
 }
 
-function fieldMismatch(disposition: string, field: string): { kind: 'mismatch'; detail: string } {
+function fieldMismatch(
+  disposition: string,
+  field: string,
+): { kind: 'mismatch'; detail: string; field: string } {
   return {
     kind: 'mismatch',
+    field,
     detail: `${disposition} answer: ${field} does not match the sent command`,
   };
 }
@@ -320,9 +333,10 @@ function fieldMismatch(disposition: string, field: string): { kind: 'mismatch'; 
 function unexpectedDisposition(
   disposition: string,
   command: string,
-): { kind: 'mismatch'; detail: string } {
+): { kind: 'mismatch'; detail: string; field: null } {
   return {
     kind: 'mismatch',
+    field: null,
     detail: `unexpected ${disposition} answer to the ${command} command`,
   };
 }
@@ -339,7 +353,7 @@ function sendFailureOutcome(error: unknown): SendFailureOutcomeV2 {
   const message: string = errorText(error);
   if (hasAnyFragment(message, NO_RECEIVER_MESSAGES)) return { kind: 'no-receiver' };
   if (hasAnyFragment(message, CLOSED_TARGET_MESSAGES)) return { kind: 'closed' };
-  return { kind: 'mismatch', detail: message };
+  return { kind: 'mismatch', field: null, detail: message };
 }
 
 function hasAnyFragment(message: string, fragments: readonly string[]): boolean {

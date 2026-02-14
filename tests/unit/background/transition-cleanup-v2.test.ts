@@ -28,7 +28,9 @@ import { syncAggKey } from '../../../src/shared/storage-keys';
 import { localDateStr } from '../../../src/shared/time';
 import type { DailyAgg, SessionStateV2 } from '../../../src/shared/types';
 import {
+  appliedResponseFor,
   createRuntimePortsFakeV2,
+  type FakeResponderV2,
   type FakeSendV2,
   noReceiverResponder,
   type RuntimePortsFakeV2,
@@ -687,6 +689,77 @@ describe('transition cleanup discovery', (): void => {
     const progress: CleanupProgress = storedProgress(fake);
     expect(progress.retry.automaticAttempt).toBe(1);
     expect(progress.retry.lastError).toContain('answered no-receiver');
+  });
+
+  /** A document answering from the URL it moved to inside its own document. */
+  function movedDocumentResponder(observedUrl: string, handledAt: number): FakeResponderV2 {
+    return (message: DocumentContentCommand): unknown => ({
+      version: 1,
+      disposition: message.command === 'apply-enforcement' ? 'applied' : 'epoch-reset',
+      operationId: message.operationId,
+      enforcementEpoch: message.enforcementEpoch,
+      documentId: message.documentId,
+      observedUrl,
+      handledAt,
+      ...(message.command === 'apply-enforcement'
+        ? {
+            sessionId: message.sessionId,
+            reservedSessionId: message.reservedSessionId,
+            basePolicyRevision: message.basePolicyRevision,
+            runtimeRevision: message.runtimeRevision,
+            presentation: message.presentation,
+            verdict: message.verdict,
+            overlay: message.overlay,
+          }
+        : {}),
+    });
+  }
+
+  it('reaches the clear when a moved document answers the reset from its new URL', async (): Promise<void> => {
+    // A cleanup reset carries no verdict: it establishes epoch agreement so the clear that follows
+    // is accepted, and removing an overlay is correct on any URL. Without this the batch stops at
+    // the reset for every attempt, and a manual retry meets the same wall because the URL sticks.
+    const fake: RuntimePortsFakeV2 = await inManualEndCleanup();
+    fake.respondForDocument(
+      11,
+      DOC_ONE,
+      movedDocumentResponder('https://facebook.com/feed/story', fake.now()),
+    );
+
+    await runTransitionCleanupAttemptV2(fake, effectsFake());
+
+    expect(
+      fake.sends
+        .filter((send: FakeSendV2): boolean => send.documentId === DOC_ONE)
+        .map((send: FakeSendV2): string => send.message.command),
+    ).toEqual(['reset-enforcement-epoch', 'apply-enforcement']);
+    expect(fake.current().pendingEnforcementTransition).toBeNull();
+  });
+
+  it('keeps every other reset mismatch fatal during cleanup', async (): Promise<void> => {
+    // The narrowing is one field wide. An answer that echoes a different operation is still an
+    // answer to a command this cleanup did not send.
+    const fake: RuntimePortsFakeV2 = await inManualEndCleanup();
+    // The clear would be answered correctly, so only the reset's echoed operation is wrong: nothing
+    // else can end the attempt, and widening the narrowing by one field would let it resolve.
+    fake.respondForDocument(11, DOC_ONE, (message: DocumentContentCommand): unknown =>
+      message.command === 'apply-enforcement'
+        ? appliedResponseFor(message, fake.now())
+        : {
+            version: 1,
+            disposition: 'epoch-reset',
+            operationId: OTHER_OPERATION_ID,
+            enforcementEpoch: message.enforcementEpoch,
+            documentId: message.documentId,
+            observedUrl: BLOCKED_URL,
+            handledAt: fake.now(),
+          },
+    );
+
+    await runTransitionCleanupAttemptV2(fake, effectsFake());
+
+    expect(storedProgress(fake).retry.lastError).toContain('answered mismatch');
+    expect(fake.current().pendingEnforcementTransition).not.toBeNull();
   });
 
   it('defers an unreachable document this cleanup never overlaid', async (): Promise<void> => {

@@ -19,7 +19,6 @@ import {
   createAlarmWithReadBackV2,
   TRANSITION_CLEANUP_ALARM,
 } from './alarms-v2';
-import type { ClearCommandIdentityV2 } from './cleanup-progress-v2';
 import {
   addCleanupTargetV2,
   documentCommandKeyV2,
@@ -222,8 +221,10 @@ export async function resetAndClearDocumentV2(
     // A closed document owes nothing further this attempt, and its claim decides its resolution.
     if (reset.kind === 'closed') return null;
     if (reset.kind === 'no-receiver' && policy.tolerateNoReceiver) return null;
-    if (reset.kind !== 'reset') return `${label} reset for ${key} answered ${reset.kind}`;
-    await recordEpochAckV2(ports, reset.ack);
+    if (reset.kind !== 'reset' && !movedDocumentResetV2(reset)) {
+      return `${label} reset for ${key} answered ${reset.kind}`;
+    }
+    if (reset.kind === 'reset') await recordEpochAckV2(ports, reset.ack);
   }
   const outcome: DocumentCommandOutcomeV2 = await sendDocumentEnforcementCommand(
     ports.transport,
@@ -238,6 +239,20 @@ export async function resetAndClearDocumentV2(
   if (outcome.kind === 'no-receiver' && policy.tolerateNoReceiver) return null;
   // Nothing may outrank the clear revision, so a stale answer during cleanup is fatal too.
   return `${label} clear for ${key} answered ${outcome.kind}`;
+}
+
+/**
+ * A cleanup reset whose only discrepancy is the URL the document reports.
+ *
+ * URL drift is fatal in the enforcement flow, spec 1343, because a verdict computed for one URL must
+ * never be applied to another. A cleanup reset carries no verdict: it exists only to establish epoch
+ * agreement so the clear that follows is accepted, and removing an overlay is correct on any URL.
+ * The document did reset its epoch, because its handler never reads the expected URL, so only the
+ * worker's field comparison refused the answer. The reason does not carry over, so neither does the
+ * rule, and every other mismatched field stays fatal here.
+ */
+function movedDocumentResetV2(reset: EpochResetOutcomeV2): boolean {
+  return reset.kind === 'mismatch' && reset.field === 'observedUrl';
 }
 
 /** One acknowledgement becomes durable before the clear command it authorizes is sent. */
