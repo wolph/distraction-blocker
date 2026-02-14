@@ -1,7 +1,7 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
 import { scheduleEntriesOverlap, validateEntry } from '../core/schedule';
-import { ForcedControl } from '../popup/ForcedControl';
+import { ForcedControl } from '../shared/ForcedControl';
 import {
   SCHEDULE_UNTIL_STOPPED_COPY,
   SCHEDULE_WINDOW_LABEL,

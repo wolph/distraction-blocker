@@ -1,6 +1,7 @@
 import type { ComponentChildren, RefObject, VNode } from 'preact';
 import { useId, useRef } from 'preact/hooks';
-import { HelpPopover } from '../shared/HelpPopover';
+import { HelpPopover } from './HelpPopover';
+import './forced-control.css';
 
 export interface ForcedControlProps {
   label: string;

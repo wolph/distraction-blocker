@@ -1,13 +1,11 @@
 /** @vitest-environment jsdom */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import './chrome-fake';
-
 import { act, cleanup, fireEvent, render } from '@testing-library/preact';
 import type { VNode } from 'preact';
 import { afterEach, describe, expect, it, type Mock, type MockInstance, vi } from 'vitest';
-import { ForcedControl } from '../../../src/popup/ForcedControl';
 import { SessionTypeControl } from '../../../src/popup/SessionTypeControl';
+import { ForcedControl } from '../../../src/shared/ForcedControl';
 import { HelpPopover } from '../../../src/shared/HelpPopover';
 import { UNTIL_STOPPED_DISCLOSURE } from '../../../src/shared/session-copy';
 import type { Strictness } from '../../../src/shared/types';
@@ -192,7 +190,9 @@ describe('ForcedControl', (): void => {
   });
 
   it('styles the forced wrapper and hides the described explanation', (): void => {
-    const css: string = readFileSync(resolve('src/popup/popup.css'), 'utf8');
+    // One stylesheet for every page that renders the component, imported by the component
+    // itself, so neither page can carry a copy that drifts.
+    const css: string = readFileSync(resolve('src/shared/forced-control.css'), 'utf8');
     const view = render(forcedChoice(vi.fn()));
     const group: HTMLElement = view.getByRole('group', { name: GROUP_LABEL });
 

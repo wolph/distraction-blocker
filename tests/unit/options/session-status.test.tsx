@@ -209,7 +209,7 @@ describe('SessionStatus disclosure', (): void => {
     expect(view.getByRole('tooltip').textContent).toContain(SETTINGS_SESSION_DISCLOSURE);
   });
 
-  it('carries the forced wrapper styles in the Options stylesheet', (): void => {
+  it('carries the forced wrapper and its own status styles', (): void => {
     const view = render(<SessionStatus snapshot={indefiniteActive()} />);
     const group: HTMLElement = view.getByRole('group', { name: STATUS_LABEL });
     expect(view.getByRole('status').classList.contains('session-status')).toBe(true);
@@ -219,13 +219,12 @@ describe('SessionStatus disclosure', (): void => {
       SETTINGS_SESSION_DISCLOSURE,
     );
 
+    // The forced wrapper's rules moved to src/shared/forced-control.css, which the component
+    // imports, and tests/unit/shared/forced-control.test.tsx owns them now. Options keeps only
+    // its own status styles, and this page must not grow a second copy of the wrapper's.
     const css: string = readFileSync(resolve('src/options/options.css'), 'utf8');
 
-    expect(css).toMatch(/\.forced-control\s*\{[^}]*cursor:\s*not-allowed/s);
-    expect(css).toMatch(/\.forced-control:focus-visible\s*\{[^}]*outline:\s*2px solid/s);
-    expect(css).toMatch(/\.forced-control__body\s*\{[^}]*pointer-events:\s*none/s);
-    expect(css).toMatch(/\.forced-control__body\s+\.help-popover\s*\{[^}]*pointer-events:\s*auto/s);
-    expect(css).toMatch(/\.forced-control__explanation\s*\{[^}]*position:\s*absolute/s);
     expect(css).toMatch(/\.session-status\s*\{/s);
+    expect(css).not.toMatch(/\.forced-control/s);
   });
 });

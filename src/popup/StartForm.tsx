@@ -1,5 +1,6 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
+import { ForcedControl } from '../shared/ForcedControl';
 import {
   STALE_SESSION_RULES_ERROR,
   type StartSessionResponseV2,
@@ -19,7 +20,6 @@ import type {
 import { START_FAILED_COPY, startErrorMessage } from './command-errors';
 import { DomainInput } from './DomainInput';
 import { DurationControl } from './DurationControl';
-import { ForcedControl } from './ForcedControl';
 import { RadioRow } from './form-controls';
 import { RuleSummary } from './RuleSummary';
 import { SessionTypeControl } from './SessionTypeControl';

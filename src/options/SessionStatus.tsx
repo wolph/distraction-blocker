@@ -1,5 +1,5 @@
 import type { VNode } from 'preact';
-import { ForcedControl } from '../popup/ForcedControl';
+import { ForcedControl } from '../shared/ForcedControl';
 import { formatTimeOfDay } from '../shared/format';
 import {
   SETTINGS_CLEANUP_COPY,
