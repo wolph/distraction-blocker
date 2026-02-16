@@ -12,7 +12,7 @@ import { CoreError } from '../shared/errors';
 import { type ExactDataSnapshot, snapshotExactData } from '../shared/exact-data';
 import { LOCAL_RUNTIME, LOCAL_RUNTIME_SCHEMA } from '../shared/storage-keys';
 import { localDateStr } from '../shared/time';
-import { isRecord } from '../shared/v2-domain-intrinsics';
+import { isRecord, isSafeTimestamp } from '../shared/v2-domain-intrinsics';
 import type { RuntimeStateV2 } from './runtime-v2-types';
 import { isRuntimeSchemaMarkerValue, parseRuntimeStateV2 } from './runtime-v2-validation';
 import { readStoredRuntimeRaw } from './stores';
@@ -51,8 +51,18 @@ export type StoredRuntimeAuthority =
    */
   | { kind: 'rejected'; reason: 'marker-without-v2' | 'invalid-v2'; raw: unknown };
 
-/** The idle v2 runtime a clean install and a rejected stored runtime both boot from. */
+/**
+ * The idle v2 runtime a clean install and a rejected stored runtime both boot from.
+ *
+ * `now` reaches storage as the runtime's local-date watermark, and an unsafe instant would produce a
+ * date the parser refuses on the next boot, so it is refused here where the caller can see which
+ * argument was wrong. The epoch is checked by the parser on the way to storage rather than here,
+ * because the worker's own identity source is not a UUID in every harness that builds a runtime.
+ */
 export function emptyRuntimeV2(now: number, enforcementEpoch: string): RuntimeStateV2 {
+  if (!isSafeTimestamp(now)) {
+    throw new CoreError('invalid-rule', 'an empty runtime needs a safe creation instant');
+  }
   return {
     runtimeSchemaVersion: 2,
     session: null,

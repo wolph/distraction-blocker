@@ -164,6 +164,17 @@ describe('empty v2 runtime', (): void => {
   });
 });
 
+describe('empty v2 runtime arguments', (): void => {
+  it('refuses an instant that cannot become a local date', (): void => {
+    // `now` reaches storage as the date watermark, so an unsafe instant would only be caught by
+    // the parser on the next boot, with nothing left to say which argument was wrong.
+    for (const instant of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5]) {
+      expect((): RuntimeStateV2 => emptyRuntimeV2(instant, EPOCH_ID)).toThrow(CoreError);
+    }
+    expect(emptyRuntimeV2(NOW, EPOCH_ID).date).toBe(localDateStr(NOW));
+  });
+});
+
 describe('stored runtime classification', (): void => {
   it.each<[string, RuntimeSchemaMarkerV2 | null]>([
     ['without a marker', null],

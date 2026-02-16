@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   isEventRecord,
@@ -332,10 +332,12 @@ describe('v2 event record union validation', (): void => {
   );
 
   it.each(LEGACY_VARIANTS)(
-    'agrees with the legacy guard on the legacy variant %#',
+    'accepts the legacy variant %# through both entry points',
     (event: LegacyEventRecord): void => {
-      expect(isLegacyEventRecord(event)).toBe(isEventRecord(event));
+      // `isEventRecord` delegates to `isLegacyEventRecord`, so comparing the two would pass
+      // whatever either did. Both are pinned to the expected verdict instead.
       expect(isLegacyEventRecord(event)).toBe(true);
+      expect(isEventRecord(event)).toBe(true);
     },
   );
 
@@ -356,12 +358,22 @@ describe('v2 event record union validation', (): void => {
   });
 
   it('never references the legacy entry point from the union guard', (): void => {
-    const source: string = readFileSync(resolve('src/shared/runtime-validation.ts'), 'utf8');
+    // Resolved from this module rather than the runner's working directory, and ended at the next
+    // top-level declaration rather than the first closing brace, so a nested block inside the guard
+    // cannot shorten the scanned region and turn a real reference into a pass.
+    const source: string = readFileSync(
+      fileURLToPath(new URL('../../../src/shared/runtime-validation.ts', import.meta.url)),
+      'utf8',
+    );
     const start: number = source.indexOf('export function isSessionEventRecordV2');
     expect(start).toBeGreaterThan(-1);
-    const end: number = source.indexOf('\n}\n', start);
-    expect(end).toBeGreaterThan(start);
+    const nextDeclaration: number = source
+      .slice(start + 1)
+      .search(/\n(?:export |function |const )/u);
+    expect(nextDeclaration).toBeGreaterThan(-1);
+    const guard: string = source.slice(start, start + 1 + nextDeclaration);
 
-    expect(source.slice(start, end)).not.toMatch(/\bisEventRecord\b/u);
+    expect(guard).toContain('isLegacyEventRecord');
+    expect(guard).not.toMatch(/\bisEventRecord\b/u);
   });
 });
