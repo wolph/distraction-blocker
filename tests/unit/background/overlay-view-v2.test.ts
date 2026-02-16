@@ -399,6 +399,18 @@ describe('buildActiveOverlayView gate rows', () => {
     });
 
     expect(unlock.copy.gateTitle).toBe('Unlock example.com?');
+    // The gate contract binds a non-blank host to this kind, so an unlock gate without one is an
+    // input no validator produced. The builder refuses it rather than borrowing "this site".
+    expect(
+      (): ActiveOverlay =>
+        activeView({
+          gate: gateState({
+            kind: 'unlockSite',
+            host: null,
+            requiredPhrase: 'I am allowing this site: example.com',
+          }),
+        }),
+    ).toThrow('an unlock gate names the host it unlocks');
     expect(unlock.copy.gateConfirm).toBe('Unlock this site');
     expect(cancel.copy.gateTitle).toBe('End this session');
     expect(cancel.copy.gateConfirm).toBe('End the session');

@@ -28,7 +28,7 @@ import type {
   ThemeMode,
   Verdict,
 } from '../shared/types';
-import { isSafeTimestamp } from '../shared/v2-domain-intrinsics';
+import { isNonBlankString, isSafeTimestamp } from '../shared/v2-domain-intrinsics';
 import { verdictLabel } from '../shared/verdict-label';
 import type { FrozenDocumentCommand, FrozenEpochResetCommand } from './enforcement-persistence-v2';
 import {
@@ -303,7 +303,13 @@ function leadCopy(duration: SessionDuration, sessionEndsAt: number | null): Acti
 
 function gateTitleCopy(gate: GateState): string {
   if (gate.kind === 'pause') return 'Take a pause?';
-  if (gate.kind === 'unlockSite') return `Unlock ${gate.host ?? 'this site'}?`;
+  if (gate.kind === 'unlockSite') {
+    // The gate contract already binds a non-blank host to this kind, in `isGate` and in the
+    // detached predicate the runtime uses, so borrowing "this site" would paper over a gate no
+    // validator produced. This module raises for an unrenderable input rather than inventing copy.
+    if (!isNonBlankString(gate.host)) invalidView('an unlock gate names the host it unlocks');
+    return `Unlock ${gate.host}?`;
+  }
   return 'End this session';
 }
 
