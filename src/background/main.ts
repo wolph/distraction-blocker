@@ -2,6 +2,7 @@ import { parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { emptyStreak } from '../core/streak';
 import { DEFAULT_SETTINGS } from '../shared/constants';
 import type { DocumentContentCommand } from '../shared/enforcement-v2';
+import { CoreError } from '../shared/errors';
 import type { Request, SoundId } from '../shared/messages';
 import { WEBSITE_ORIGINS } from '../shared/permissions';
 import { isInstallMarker, isListsConfig, isSettings } from '../shared/runtime-validation';
@@ -701,6 +702,14 @@ function runtimeBootPorts(
     },
     clearMigrationCheckpoint: async (): Promise<void> => {
       await chrome.storage.local.remove(LOCAL_RUNTIME_MIGRATION);
+      // The read-back is what makes the clear a fact. A checkpoint that survives its removal is
+      // replayed by the next boot, which is safe on its own, but a marker outliving the checkpoint
+      // it explains is not, so a removal that did not take is raised rather than believed.
+      const stored: Record<string, unknown> =
+        await chrome.storage.local.get(LOCAL_RUNTIME_MIGRATION);
+      if (stored[LOCAL_RUNTIME_MIGRATION] !== undefined) {
+        throw new CoreError('storage', 'the runtime migration checkpoint survived its removal');
+      }
     },
     saveRuntime: (runtime: RuntimeStateV2): Promise<void> => saveRuntimeV2(runtime),
     saveLegacyRuntime: (runtime: RuntimeState): Promise<void> => saveRuntime(runtime),

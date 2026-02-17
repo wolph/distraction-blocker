@@ -35,6 +35,7 @@ import {
   LOCAL_LISTS_SNAPSHOT,
   LOCAL_ONBOARDING_DRAFT,
   LOCAL_RUNTIME,
+  LOCAL_RUNTIME_MIGRATION,
   LOCAL_SETTINGS,
   LOCAL_SETUP,
   LOCAL_STREAK,
@@ -130,6 +131,7 @@ const mocks = vi.hoisted(
     injectionResult: boolean;
     persistDeviceIdOnGet: boolean;
     localRemoveError: Error | null;
+    localRemoveDropKeys: string[];
     syncRemoveError: Error | null;
     tickActiveSessionStates: boolean[];
     applyBlockingActiveSessionStates: boolean[];
@@ -182,6 +184,7 @@ const mocks = vi.hoisted(
     injectionResult: true,
     persistDeviceIdOnGet: false,
     localRemoveError: null,
+    localRemoveDropKeys: [] as string[],
     syncRemoveError: null,
     tickActiveSessionStates: [],
     applyBlockingActiveSessionStates: [],
@@ -578,10 +581,16 @@ function stubChrome(): void {
           if (mocks.localRemoveError !== null) {
             const localRemoveError: Error = mocks.localRemoveError;
             mocks.localRemoveError = null;
+            mocks.localRemoveDropKeys = [];
             throw localRemoveError;
           }
           const requested: string[] = typeof keys === 'string' ? [keys] : keys;
-          for (const key of requested) delete mocks.localState[key];
+          for (const key of requested) {
+            // A storage layer that accepts a removal and keeps the value is what a read-back is
+            // for, so the stub can answer that way on request.
+            if (mocks.localRemoveDropKeys.includes(key)) continue;
+            delete mocks.localState[key];
+          }
         }),
       },
       sync: {
@@ -743,6 +752,7 @@ beforeEach((): void => {
   mocks.injectionResult = true;
   mocks.persistDeviceIdOnGet = false;
   mocks.localRemoveError = null;
+  mocks.localRemoveDropKeys = [];
   mocks.syncRemoveError = null;
   mocks.tickActiveSessionStates = [];
   mocks.applyBlockingActiveSessionStates = [];
@@ -2919,6 +2929,28 @@ describe('background detached listener errors', () => {
     await dropped;
 
     expect(mocks.dropTabCalls).toEqual([7]);
+  });
+
+  it('refuses to believe a migration clear the storage layer kept', async () => {
+    // The storage layer accepts the removal and keeps the value, which is the one failure a clear
+    // cannot see without reading the key back.
+    mocks.localRemoveDropKeys = [LOCAL_RUNTIME_MIGRATION];
+
+    main();
+    const listener: RuntimeListener = runtimeListener();
+    const response: unknown = await new Promise<unknown>(
+      (resolve: (value: unknown) => void): void => {
+        listener({ type: 'getSnapshot' }, {}, resolve);
+      },
+    );
+
+    // A marker that outlives the checkpoint explaining it is the state this read-back exists to
+    // refuse, so the boot fails rather than treating the migration as finished.
+    expect(response).toEqual({
+      ok: false,
+      error: expect.stringContaining('the runtime migration checkpoint survived its removal'),
+    });
+    expect(mocks.localState[LOCAL_RUNTIME_MIGRATION]).toBeDefined();
   });
 
   it('reports each rejected tab-removal branch once', async () => {
