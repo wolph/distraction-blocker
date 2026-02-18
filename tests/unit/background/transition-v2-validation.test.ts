@@ -868,6 +868,10 @@ describe('background transition reservations', (): void => {
       cleanupTransition('start', 'prepared', 'start-abandon', {
         preparedTargetReservations: preparedReservationMap(),
       }),
+      // Both stages that allow reservations lose them at cleanup entry, so both are refused here.
+      cleanupTransition('start', 'registration-audited', 'start-abandon', {
+        preparedTargetReservations: preparedReservationMap(),
+      }),
     ]);
   });
 });

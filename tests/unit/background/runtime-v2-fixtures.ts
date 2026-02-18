@@ -75,6 +75,7 @@ export const SESSION_ID: string = '10000000-0000-4000-8000-000000000001';
 export const OTHER_SESSION_ID: string = '10000000-0000-4000-8000-000000000002';
 export const CLEANUP_OPERATION_ID: string = '20000000-0000-4000-8000-000000000001';
 export const OTHER_OPERATION_ID: string = '20000000-0000-4000-8000-000000000002';
+export const BASE_POLICY_REVISION: number = 4;
 export const EPOCH_ID: string = '30000000-0000-4000-8000-000000000001';
 export const OTHER_EPOCH_ID: string = '30000000-0000-4000-8000-000000000002';
 export const CLEAR_RUNTIME_REVISION: number = 9;
@@ -352,7 +353,6 @@ export function migrationInvalidActiveClosure(): CleanupClosureV2 {
 export const TRANSITION_ID: string = '40000000-0000-4000-8000-000000000001';
 export const STARTING_OPERATION_ID: string = '50000000-0000-4000-8000-000000000001';
 export const ACTIVE_OPERATION_ID: string = '50000000-0000-4000-8000-000000000002';
-export const BASE_POLICY_REVISION: number = 4;
 export const TARGET_GENERATION: number = 3;
 /** Local 2026-09-02 09:30, so the captured window agrees with LOCAL_DATE in any test timezone. */
 export const REQUESTED_AT: number = new Date(2026, 8, 2, 9, 30, 0, 0).getTime();
