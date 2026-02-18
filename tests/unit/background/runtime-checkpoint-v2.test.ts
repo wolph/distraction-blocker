@@ -194,6 +194,15 @@ function closureBatch(runtime: RuntimeStateV2): CleanupProgress {
   return (runtime.pendingClosure as CleanupClosureV2).cleanupProgress;
 }
 
+function transitionBatch(runtime: RuntimeStateV2): CleanupProgress {
+  const progress: CleanupProgress | null | undefined =
+    runtime.pendingEnforcementTransition?.cleanupProgress;
+  if (progress === null || progress === undefined) {
+    throw new Error('expected a transition cleanup batch');
+  }
+  return progress;
+}
+
 /** A projection that installs one cleanup batch: progress, its commands, and the runtime revision. */
 function closureBatchProjection(
   runtime: RuntimeStateV2,
@@ -670,6 +679,37 @@ describe('checkpoint replay', (): void => {
 });
 
 /**
+ * A batch built by hand with every frozen command restamped to match it, so the composed runtime is
+ * a shape the parser accepts and the commit guard is the only thing that can refuse it.
+ */
+function restampedBatch(
+  progress: CleanupProgress,
+  identity: { cleanupOperationId?: string; clearRuntimeRevision?: number; batch?: number },
+): CleanupProgress {
+  const cleanupOperationId: string = identity.cleanupOperationId ?? progress.cleanupOperationId;
+  const clearRuntimeRevision: number =
+    identity.clearRuntimeRevision ?? progress.clearRuntimeRevision;
+  return {
+    ...structuredClone(progress),
+    cleanupOperationId,
+    clearRuntimeRevision,
+    clearCommands: Object.fromEntries(
+      Object.entries(progress.clearCommands).map(
+        ([key, command]: [string, FrozenDocumentCommand]): [string, FrozenDocumentCommand] => [
+          key,
+          {
+            ...structuredClone(command),
+            operationId: cleanupOperationId,
+            runtimeRevision: clearRuntimeRevision,
+          },
+        ],
+      ),
+    ),
+    retry: { ...structuredClone(progress.retry), batch: identity.batch ?? progress.retry.batch },
+  };
+}
+
+/**
  * The replacement `replaceCleanupBatchV2` now refuses to emit, built by hand so the commit guard
  * still has one to refuse: a new operation ID and retry batch at the clear revision the batch
  * already had.
@@ -767,13 +807,16 @@ describe('cleanup batch revisions', (): void => {
 
   it('refuses an automatic retry that changes the clear revision', async (): Promise<void> => {
     const base: RuntimeStateV2 = cleanupClosureRuntime();
-    const moved: CleanupProgress = {
-      ...closureBatch(base),
+    // Restamped, so every command repeats the moved revision and the composed runtime is a shape
+    // the parser accepts. Without that the runtime is invalid too, and the guard's message is
+    // asserted only because the guard happens to run first.
+    const moved: CleanupProgress = restampedBatch(closureBatch(base), {
       clearRuntimeRevision: CLEAR_RUNTIME_REVISION + 1,
-    };
+    });
 
     expect(moved.cleanupOperationId).toBe(closureBatch(base).cleanupOperationId);
     expect(moved.retry.batch).toBe(closureBatch(base).retry.batch);
+    expect(parseRuntimeStateV2({ ...base, ...closureBatchProjection(base, moved) })).not.toBeNull();
 
     await expectRefusedCommit(
       harness(),
@@ -830,10 +873,13 @@ describe('cleanup batch revisions', (): void => {
       cleanupTransition('start', 'starting-verified', 'start-abandon'),
     );
     const closure: RuntimeStateV2 = cleanupClosureRuntime();
-    const handoff: CleanupProgress = replaceCleanupBatchV2(closureBatch(closure), {
+    // The closure starts its own retry counting at the same batch number the transition holds,
+    // which is what production does: both journals enter cleanup at `freshCleanupRetryStateV2(1)`.
+    // The same-kind rule would refuse that, so acceptance is the journal-kind exemption itself.
+    const handoff: CleanupProgress = restampedBatch(closureBatch(closure), {
       cleanupOperationId: OTHER_OPERATION_ID,
       clearRuntimeRevision: CLEAR_RUNTIME_REVISION + 1,
-      at: NOW,
+      batch: transitionBatch(base).retry.batch,
     });
     const fake: Harness = harness();
 
@@ -849,6 +895,7 @@ describe('cleanup batch revisions', (): void => {
     expect(committed.pendingEnforcementTransition).toBeNull();
     expect(closureBatch(committed).clearRuntimeRevision).toBe(CLEAR_RUNTIME_REVISION + 1);
     expect(closureBatch(committed).cleanupOperationId).toBe(OTHER_OPERATION_ID);
+    expect(closureBatch(committed).retry.batch).toBe(transitionBatch(base).retry.batch);
     expect(parseRuntimeStateV2(committed)).not.toBeNull();
   });
 
