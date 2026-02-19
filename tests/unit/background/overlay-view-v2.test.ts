@@ -304,7 +304,8 @@ describe('buildActiveOverlayView timed focus', () => {
     expect(view.activeUnlocks).toEqual(unlocks);
     expect(view.attemptsToday).toBe(1);
     expect(view.copy.attempts).toBe('1 attempt blocked today');
-    expect(activeView({ attemptsToday: 0 }).copy.attempts).toBe('0 attempts blocked today');
+    // A sentence, not a form field: zero reads as a word.
+    expect(activeView({ attemptsToday: 0 }).copy.attempts).toBe('No attempts blocked today');
     expect(activeView({ attemptsToday: 2 }).copy.attempts).toBe('2 attempts blocked today');
   });
 

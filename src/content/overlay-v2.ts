@@ -280,6 +280,15 @@ function bankWaitText(view: ActiveOverlayView, bank: number): string {
   return `${view.copy.bankWaitPrefix} ${formatClock(waitMs)}`;
 }
 
+/**
+ * The two `?? ''` fallbacks below are unreachable, and deliberately kept.
+ * `validateDetachedActiveCopy` in `shared/enforcement-v2-validation.ts` requires `gateTitle` and
+ * `gateConfirm` to be non-blank strings whenever a gate is open, and this function runs only for an
+ * open gate, so neither can be null here. The contract cannot say so in a way TypeScript can use,
+ * because `gate` and `copy` are sibling fields and no union on one narrows the other; tying them
+ * together is a wire-shape change parked as its own item. Throwing instead would break a blocked
+ * page mid-render for a case the validator already refuses.
+ */
 function buildGate(
   overlay: MountedOverlay,
   view: ActiveOverlayView,

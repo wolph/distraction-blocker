@@ -183,7 +183,13 @@ export function buildActiveOverlayView(input: ActiveViewInputV2): DocumentOverla
   });
 }
 
-/** The local wall clock a timed session is locked until, such as `14:35`. */
+/**
+ * The local wall clock a timed session is locked until, such as `14:35`, and `9:05` before ten.
+ *
+ * The hour is deliberately unpadded: this is a sentence on a blocked page, where a wall-clock time
+ * reads the way it is spoken, and a leading zero adds nothing. The minute is padded, which is the
+ * half that changes how the time reads.
+ */
 export function formatLockedUntilV2(sessionEndsAt: number): string {
   if (!isSafeTimestamp(sessionEndsAt)) {
     invalidView('a locked-until time must be a safe timestamp');
@@ -313,7 +319,9 @@ function gateTitleCopy(gate: GateState): string {
   return 'End this session';
 }
 
+/** A sentence, not a form field, so none of them reads as a word rather than a zero. */
 function attemptsCopy(attemptsToday: number): string {
+  if (attemptsToday === 0) return 'No attempts blocked today';
   return attemptsToday === 1
     ? '1 attempt blocked today'
     : `${attemptsToday} attempts blocked today`;
