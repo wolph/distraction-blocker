@@ -18,6 +18,7 @@ import { focusedMsAtV2 } from '../core/session-v2';
 import { capAttempts, emptyDaily } from '../core/stats';
 import { TOP_SITES_DAILY } from '../shared/constants';
 import { CoreError } from '../shared/errors';
+import { safeSum } from '../shared/numeric-validation';
 import { syncAggKey } from '../shared/storage-keys';
 import { localDateStr } from '../shared/time';
 import type {
@@ -353,10 +354,8 @@ function nextLocalMidnight(at: number): number {
 }
 
 function checkedAdd(left: number, right: number, label: string): number {
-  const total: number = left + right;
-  if (!Number.isSafeInteger(total) || total < 0) {
-    invalidClosure(`${label} must stay a non-negative safe integer`);
-  }
+  const total: number | null = safeSum(left, right);
+  if (total === null) invalidClosure(`${label} must stay a non-negative safe integer`);
   return total;
 }
 

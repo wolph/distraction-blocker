@@ -11,6 +11,7 @@ import { accrue } from '../core/budget';
 import { capAttempts, emptyDaily, isDailyDate } from '../core/stats';
 import { TOP_SITES_DAILY } from '../shared/constants';
 import { CoreError } from '../shared/errors';
+import { safeSum } from '../shared/numeric-validation';
 import { syncAggKey } from '../shared/storage-keys';
 import type {
   BankState,
@@ -294,8 +295,8 @@ function assertLegacySettlementInput(input: LegacySettlementInputV1): void {
 }
 
 function checkedAdd(left: number, right: number, label: string): number {
-  const total: number = left + right;
-  if (!isSafeTimestamp(total)) invalidLegacy(`${label} must stay a non-negative safe integer`);
+  const total: number | null = safeSum(left, right);
+  if (total === null) invalidLegacy(`${label} must stay a non-negative safe integer`);
   return total;
 }
 

@@ -34,3 +34,13 @@ export function isSafeDayCount(value: unknown): value is number {
   const milliseconds: number = value * DAY_MS;
   return Number.isSafeInteger(milliseconds) && milliseconds <= DATE_MAX_MS;
 }
+
+/**
+ * The sum of two non-negative safe integers, or null when it is not one. Three modules add durable
+ * counters and each raises its own error for the failure, so the arithmetic rule lives here and the
+ * error identity stays with the caller.
+ */
+export function safeSum(left: number, right: number): number | null {
+  const total: number = left + right;
+  return Number.isSafeInteger(total) && total >= 0 ? total : null;
+}
