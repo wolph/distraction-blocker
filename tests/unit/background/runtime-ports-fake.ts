@@ -17,7 +17,10 @@ import type {
 } from '../../../src/background/alarms-v2';
 import type { ContentTransportPortsV2 } from '../../../src/background/content-transport-v2';
 import type { EnforcementTargetPortsV2 } from '../../../src/background/enforcement-targets-v2';
-import type { RuntimeCommitInputV2 } from '../../../src/background/runtime-checkpoint-v2';
+import {
+  assertCommitPreconditionsV2,
+  type RuntimeCommitInputV2,
+} from '../../../src/background/runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from '../../../src/background/runtime-ports-v2';
 import type { CleanupTabClaim, RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validation';
@@ -96,6 +99,12 @@ export interface RuntimePortsFakeOptionsV2 {
    * is what a durable write that will not land looks like from inside a command.
    */
   failWrites?: boolean;
+  /**
+   * Documents that already hold an epoch, keyed `${tabId}:${documentId}`, for a scenario that
+   * starts mid-session rather than driving the reset handshake itself. Without an entry a document
+   * answers `reset-required` until it is sent a reset, which is what a real one does.
+   */
+  documentEpochs?: Record<string, string>;
 }
 
 export interface RuntimePortsFakeV2 extends RuntimePortsV2 {
@@ -106,6 +115,12 @@ export interface RuntimePortsFakeV2 extends RuntimePortsV2 {
   errors: unknown[];
   /** Every boundary the controller asked the Engine to roll over, in order. */
   rollovers: number[];
+  /**
+   * How many runtimes had landed at each rollover call, aligned with `rollovers` by index. It is
+   * what pins a settle against the close it must precede, the same way `alarmCallWrites` pins an
+   * alarm against its write.
+   */
+  rolloverCallWrites: number[];
   /** When true, `rolloverCheck` rebases `date` the way the retained Engine would. */
   onRolloverAdvanceDate?: boolean;
   auditCalls: number;
@@ -126,6 +141,8 @@ export interface RuntimePortsFakeV2 extends RuntimePortsV2 {
   setAlarmReadBack(mode: 'exact' | 'missing' | 'other-time'): void;
   /** Answers every send for one `${tabId}:${documentId}` target. */
   respondForDocument(tabId: number, documentId: string, responder: FakeResponderV2): void;
+  /** Puts a document in the epoch it would hold after answering that epoch's reset. */
+  setDocumentEpoch(tabId: number, documentId: string, epoch: string): void;
   /** Answers every send that carries one operation ID. Checked before the document responder. */
   respondForOperation(operationId: string, responder: FakeResponderV2): void;
   /** The last runtime this fake persisted, which is what `runtime()` returns. */
@@ -136,13 +153,26 @@ export interface RuntimePortsFakeV2 extends RuntimePortsV2 {
 
 const DEFAULT_DEVICE_ID: string = 'device-1';
 
+/**
+ * The clock is the fake's most load-bearing input: it decides whether a budget is spent, whether an
+ * alarm is due, and which local day a settle credits. There is no default worth guessing, and the
+ * one this had was accidental, so a caller that forgets it is told rather than run at ten
+ * milliseconds past the epoch.
+ */
+function requiredNow(now: number | undefined): number {
+  if (now === undefined) {
+    throw new Error('the ports fake needs an explicit `now`: every scenario has a clock');
+  }
+  return now;
+}
+
 export function createRuntimePortsFakeV2(
   initial: RuntimeStateV2,
   options: RuntimePortsFakeOptionsV2 = {},
 ): RuntimePortsFakeV2 {
   const state: FakeStateV2 = {
     runtime: requireValidRuntime(initial, 'the fake was seeded with an invalid runtime'),
-    now: options.now ?? initial.date.length,
+    now: requiredNow(options.now),
     ids: [...(options.ids ?? [])],
     tabs: [...(options.tabs ?? [])],
     tabSets: (options.tabSets ?? []).map((set: readonly FakeTabRowV2[]): FakeTabRowV2[] => [
@@ -157,14 +187,14 @@ export function createRuntimePortsFakeV2(
     alarms: new Map<AlarmNameV2, ScheduledAlarmV2>(),
     byDocument: new Map<string, FakeResponderV2>(),
     byOperation: new Map<string, FakeResponderV2>(),
+    documentEpochs: seededDocumentEpochs(initial, options.documentEpochs),
   };
-  if (options.now !== undefined) state.now = options.now;
-
   const writes: RuntimeStateV2[] = [];
   const commits: RuntimeCommitInputV2[] = [];
   const sends: FakeSendV2[] = [];
   const errors: unknown[] = [];
   const rollovers: number[] = [];
+  const rolloverCallWrites: number[] = [];
   const alarmCalls: Array<{ kind: 'create' | 'createPeriodic' | 'clear'; name: AlarmNameV2 }> = [];
   const alarmCallWrites: number[] = [];
 
@@ -174,6 +204,7 @@ export function createRuntimePortsFakeV2(
     sends,
     errors,
     rollovers,
+    rolloverCallWrites,
     auditCalls: 0,
     alarmCalls,
     alarmCallWrites,
@@ -193,6 +224,9 @@ export function createRuntimePortsFakeV2(
       writes.push(structuredClone(state.runtime));
     },
     commit: async (input: RuntimeCommitInputV2): Promise<RuntimeStateV2> => {
+      // The same three preconditions production applies before any write, so a caller that
+      // committed a stale projection fails here rather than at the storage boundary in production.
+      assertCommitPreconditionsV2(state.runtime, input);
       commits.push(structuredClone(input));
       // Production writes the bank the checkpoint carries whatever `syncBank` says, so the fake
       // does too: `syncBank` selects the sync mirror, not whether the local bank lands.
@@ -245,6 +279,7 @@ export function createRuntimePortsFakeV2(
     },
     rolloverCheck: async (boundary: number): Promise<void> => {
       rollovers.push(boundary);
+      rolloverCallWrites.push(writes.length);
       // The retained Engine owns `date` and `todayAgg`. A test that wants the loop to make
       // progress asks the fake to stand in for that bookkeeping.
       if (!fake.onRolloverAdvanceDate) return;
@@ -284,6 +319,9 @@ export function createRuntimePortsFakeV2(
     },
     respondForDocument: (tabId: number, documentId: string, responder: FakeResponderV2): void => {
       state.byDocument.set(`${tabId}:${documentId}`, responder);
+    },
+    setDocumentEpoch: (tabId: number, documentId: string, epoch: string): void => {
+      state.documentEpochs.set(`${tabId}:${documentId}`, epoch);
     },
     respondForOperation: (operationId: string, responder: FakeResponderV2): void => {
       state.byOperation.set(operationId, responder);
@@ -337,6 +375,28 @@ export function epochResetResponseFor(message: DocumentContentCommand, handledAt
   };
 }
 
+/** The exact `reset-required` answer a document returns for an epoch it does not hold. */
+export function resetRequiredResponseFor(
+  message: DocumentContentCommand,
+  currentEpoch: string | null,
+  handledAt: number,
+): unknown {
+  if (message.command !== 'apply-enforcement') {
+    throw new Error('resetRequiredResponseFor needs an apply-enforcement command');
+  }
+  return {
+    version: 1,
+    disposition: 'reset-required',
+    operationId: message.operationId,
+    enforcementEpoch: message.enforcementEpoch,
+    documentId: message.documentId,
+    observedUrl: message.expectedUrl,
+    requestedEpoch: message.enforcementEpoch,
+    currentEpoch,
+    handledAt,
+  };
+}
+
 /** A responder that models a document with no listener at all. */
 export function noReceiverResponder(): FakeResponderV2 {
   return (): never => {
@@ -352,6 +412,8 @@ export function silentResponder(): FakeResponderV2 {
 interface FakeStateV2 {
   runtime: RuntimeStateV2;
   now: number;
+  /** The enforcement epoch each `${tabId}:${documentId}` currently holds, as the document sees it. */
+  documentEpochs: Map<string, string>;
   ids: string[];
   tabs: FakeTabRowV2[];
   tabSets: FakeTabRowV2[][];
@@ -405,11 +467,51 @@ function transportPorts(state: FakeStateV2, sends: FakeSendV2[]): ContentTranspo
         `${tabId}:${documentId}`,
       );
       if (byDocument !== undefined) return byDocument(message);
-      return message.command === 'apply-enforcement'
-        ? appliedResponseFor(message, state.now)
-        : epochResetResponseFor(message, state.now);
+      return defaultDocumentAnswer(state, tabId, documentId, message);
     },
   };
+}
+
+/**
+ * The epoch each document holds at seeding. A recorded `epochResetAcks` entry is the runtime's own
+ * evidence that the document answered that epoch's reset, so the fake starts it in that epoch and
+ * production's `hasEpochAck` skip stays consistent with what the document then answers. An explicit
+ * `documentEpochs` option wins, for a scenario that wants a document out of step with the record.
+ */
+function seededDocumentEpochs(
+  initial: RuntimeStateV2,
+  overrides: Record<string, string> | undefined,
+): Map<string, string> {
+  const epochs: Map<string, string> = new Map<string, string>();
+  for (const [key, ack] of Object.entries(initial.epochResetAcks)) {
+    epochs.set(key, ack.enforcementEpoch);
+  }
+  for (const [key, epoch] of Object.entries(overrides ?? {})) epochs.set(key, epoch);
+  return epochs;
+}
+
+/**
+ * What a well-behaved document answers when no responder is scripted for it. A document accepts an
+ * enforcement command only for the epoch it currently holds, and it holds an epoch only after it has
+ * answered a reset for it, exactly as `src/content/enforcement-state.ts` does. Answering `applied`
+ * unconditionally is what let a broken handshake pass unnoticed, so the fake refuses to do it.
+ */
+function defaultDocumentAnswer(
+  state: FakeStateV2,
+  tabId: number,
+  documentId: string,
+  message: DocumentContentCommand,
+): unknown {
+  const key: string = `${tabId}:${documentId}`;
+  if (message.command === 'reset-enforcement-epoch') {
+    state.documentEpochs.set(key, message.enforcementEpoch);
+    return epochResetResponseFor(message, state.now);
+  }
+  const held: string | null = state.documentEpochs.get(key) ?? null;
+  if (held !== message.enforcementEpoch) {
+    return resetRequiredResponseFor(message, held, state.now);
+  }
+  return appliedResponseFor(message, state.now);
 }
 
 function alarmPorts(

@@ -150,6 +150,42 @@ async function confirmOpenGate(
   return controller.confirmGate(ports.current().gate?.requiredPhrase ?? null);
 }
 
+describe('SessionControllerV2 local-date walk', (): void => {
+  it('settles each finished local day before it asks the Engine to close it', async (): Promise<void> => {
+    // The ordering is the point: a closure delta must never land on a day already closed. The fake
+    // records the write count at each rollover, so "settled first" is an assertion rather than a
+    // claim in the test name.
+    const threeDaysAgo: string = localDateStr(AT - 3 * 86_400_000);
+    // A live session, because a settle only writes when there is focus to credit. `todayAgg` is
+    // the aggregate for the day the runtime is on, so it goes with the date the walk starts from.
+    const { controller, ports } = harness({
+      ...publishedFocusRuntime(),
+      date: threeDaysAgo,
+      todayAgg: null,
+    });
+    // The retained Engine owns `date`, so the fake has to stand in for it or the walk stops after
+    // one boundary with nothing advanced.
+    ports.onRolloverAdvanceDate = true;
+
+    await controller.tick();
+
+    expect(ports.rollovers.length).toBeGreaterThanOrEqual(3);
+    expect(ports.rollovers).toEqual(
+      [...ports.rollovers].sort((a: number, b: number): number => a - b),
+    );
+    expect(ports.rolloverCallWrites).toHaveLength(ports.rollovers.length);
+    // Every close is preceded by at least one write, and each one by strictly more than the last,
+    // which is the settle that ran between them.
+    expect(ports.rolloverCallWrites[0]).toBeGreaterThan(0);
+    for (let index: number = 1; index < ports.rolloverCallWrites.length; index++) {
+      expect(ports.rolloverCallWrites[index]).toBeGreaterThan(
+        ports.rolloverCallWrites[index - 1] ?? 0,
+      );
+    }
+    expect(ports.current().date).toBe(localDateStr(AT));
+  });
+});
+
 describe('SessionControllerV2 startSession', (): void => {
   it('converts the config to a manual candidate and publishes', async (): Promise<void> => {
     const { controller, ports } = harness();

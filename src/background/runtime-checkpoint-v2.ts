@@ -114,15 +114,15 @@ export function applyRuntimeCheckpointV2(
 }
 
 /**
- * One durable commit. Both the runtime that carries the checkpoint and the runtime that replay will
- * leave behind are validated before the first write, so a checkpoint no replay could ever finish
- * never becomes durable, and no port runs for a rejected commit.
+ * The three rules a commit must satisfy before any write: neither monotonic revision may go
+ * backwards, and a cleanup batch may only advance. Exported so a test double applies the same three
+ * rather than validating the composed runtime alone, which would let a stale projection pass every
+ * caller's tests and throw only at the storage boundary in production.
  */
-export async function commitRuntimeCheckpointV2(
-  ports: RuntimeCheckpointPortsV2,
+export function assertCommitPreconditionsV2(
   runtime: RuntimeStateV2,
   input: RuntimeCommitInputV2,
-): Promise<RuntimeStateV2> {
+): void {
   if (input.projection.runtimeRevision < runtime.runtimeRevision) {
     throw new CoreError(
       'invalid-rule',
@@ -136,6 +136,19 @@ export async function commitRuntimeCheckpointV2(
     );
   }
   assertCleanupBatchAdvance(runtimeCleanupBatch(runtime), projectedCleanupBatch(input.projection));
+}
+
+/**
+ * One durable commit. Both the runtime that carries the checkpoint and the runtime that replay will
+ * leave behind are validated before the first write, so a checkpoint no replay could ever finish
+ * never becomes durable, and no port runs for a rejected commit.
+ */
+export async function commitRuntimeCheckpointV2(
+  ports: RuntimeCheckpointPortsV2,
+  runtime: RuntimeStateV2,
+  input: RuntimeCommitInputV2,
+): Promise<RuntimeStateV2> {
+  assertCommitPreconditionsV2(runtime, input);
   const checkpoint: RuntimeCommitCheckpointV2 = {
     version: 2,
     checkpointId: input.checkpointId,
