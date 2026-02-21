@@ -46,7 +46,7 @@ import type {
 } from '../shared/types';
 import { ensurePhaseAlarmV2, parseAlarmNameV2 } from './alarms-v2';
 import { documentCommandKeyV2 } from './cleanup-progress-v2';
-import { manualEndReasonV2 } from './closure-projection-v2';
+import { closureIdV2, manualEndReasonV2 } from './closure-projection-v2';
 import {
   closeSessionV2,
   prepareClosureV2,
@@ -296,7 +296,7 @@ export class SessionControllerV2 {
   async openEndGate(): Promise<CommandResultV2> {
     return this.command(async (): Promise<CommandResultV2> => {
       const session: SessionStateV2 | null = this.ports.runtime().session;
-      const guard: CommandResultV2 | null = this.gateGuard(session);
+      const guard: CommandResultV2 | null = this.endFamilyGuard(session);
       if (guard !== null) return guard;
       if (session === null || session.config.strictness !== 'friction') {
         return failure('end-not-allowed');
@@ -671,6 +671,19 @@ export class SessionControllerV2 {
 
   private inTransitionCleanup(): boolean {
     return this.ports.runtime().pendingEnforcementTransition?.stage === 'cleanup';
+  }
+
+  /**
+   * The journal guards an End command answers, per spec 1170: a session already closing is no
+   * active session, which is what `requestSessionEnd` answers for the same state. Opening the
+   * cancel gate is the Friction spelling of End, so the two agree rather than diverging on a race
+   * only a stray message can reach. A pause or unlock gate is not an End and keeps `gateGuard`.
+   */
+  private endFamilyGuard(session: SessionStateV2 | null): CommandResultV2 | null {
+    if (this.inTransitionCleanup()) return failure('transition-cleanup-pending');
+    if (this.ports.runtime().pendingClosure !== null) return failure('no-active-session');
+    if (session === null) return failure('no-active-session');
+    return null;
   }
 
   /** The journal guards every gate command shares. Only Hard refuses End (spec 1021). */
@@ -1465,7 +1478,7 @@ function owedClosureSnapshot(base: SessionSnapshotV2, sessionId: string): Sessio
     lifecycle: {
       kind: 'cleanup',
       journal: 'closure',
-      id: `${sessionId}:close`,
+      id: closureIdV2(sessionId),
       endAuthority: { kind: 'hidden' },
     },
     phase: 'idle',

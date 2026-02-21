@@ -150,6 +150,25 @@ async function confirmOpenGate(
   return controller.confirmGate(ports.current().gate?.requiredPhrase ?? null);
 }
 
+describe('SessionControllerV2 commands during a closure journal', (): void => {
+  it('answers no-active-session for both spellings of End and cleanup-pending for the rest', async (): Promise<void> => {
+    // Spec 1170: a session already closing is no active session. The Friction End opens the cancel
+    // gate, so it is an End and answers the same code requestSessionEnd does. A pause or unlock
+    // gate is not an End, and reports the journal that is actually blocking it.
+    const closing: RuntimeStateV2 = cleanupClosureRuntime();
+
+    const flexibleEnd = await harness(closing).controller.requestSessionEnd();
+    const frictionEnd = await harness(closing).controller.openEndGate();
+    const pause = await harness(closing).controller.openGate('pause', null);
+    const unlock = await harness(closing).controller.openGate('unlockSite', 'facebook.com');
+
+    expect(flexibleEnd.code).toBe('no-active-session');
+    expect(frictionEnd.code).toBe('no-active-session');
+    expect(pause.code).toBe('closure-cleanup-pending');
+    expect(unlock.code).toBe('closure-cleanup-pending');
+  });
+});
+
 describe('SessionControllerV2 local-date walk', (): void => {
   it('settles each finished local day before it asks the Engine to close it', async (): Promise<void> => {
     // The ordering is the point: a closure delta must never land on a day already closed. The fake

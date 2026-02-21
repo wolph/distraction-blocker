@@ -112,6 +112,15 @@ export function manualEndReasonV2(
 }
 
 /**
+ * The closure journal's identity, minted from the session it closes. The projection owns the
+ * grammar because it is the only thing that mints one, and every reader derives it from here rather
+ * than restating it.
+ */
+export function closureIdV2(sessionId: string): string {
+  return `${sessionId}:close`;
+}
+
+/**
  * Natural timed completion handled its source token at start, so it adds nothing. Every other
  * closure of a scheduled or indefinite session suppresses the windows open at `endedAt`.
  */
@@ -144,13 +153,19 @@ export function buildClosureProjectionV2(
   const endEvent: SessionEndedEventV2 = buildSessionEndedEventV2(input, outcome.outcome, focusedMs);
 
   const projection: ClosureProjection = {
-    closureId: `${session.sessionId}:close`,
+    closureId: closureIdV2(session.sessionId),
     sessionId: session.sessionId,
     endedAt,
     reason: input.reason,
     outcome: outcome.outcome,
     focusedMs,
     endEvent,
+    // The list closes with the same object `endEvent` names, deliberately. The projection is
+    // immutable by construction and round-trips through storage, where identity is lost anyway, so
+    // nothing in production can depend on the sharing or be harmed by it. What the sharing buys is
+    // the strongest statement available that the list ends with this exact event, which
+    // `closes the event list with the immutable end event exactly once` pins by identity: structural
+    // equality would also accept a duplicate that merely looks the same.
     events: [
       ...settlementEventsV2(session.sessionId, endedAt, bankAfter.balanceMs - input.bank.balanceMs),
       endEvent,

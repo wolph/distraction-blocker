@@ -34,6 +34,7 @@ import {
   isUuid,
 } from '../shared/v2-domain-intrinsics';
 import { buildCleanupProgressV2, buildCleanupSeedV2 } from './cleanup-progress-v2';
+import { closureIdV2 } from './closure-projection-v2';
 import { type LegacySettlementResultV1, settleLegacySessionV1 } from './legacy-runtime-v1';
 import { emptyRuntimeV2 } from './runtime-store-v2';
 import type {
@@ -364,7 +365,7 @@ function migrationClosureProjection(
     scheduleOccurrence: null,
   };
   return {
-    closureId: `${sessionId}:close`,
+    closureId: closureIdV2(sessionId),
     sessionId,
     endedAt: input.migratedAt,
     reason: endEvent.reason,
