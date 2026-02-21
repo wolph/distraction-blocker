@@ -489,6 +489,64 @@ describe('shared enforcement v2 overlay parsing', (): void => {
     ).not.toBeNull();
   });
 
+  it('never runs an overlay accessor, and never sees a value a proxy swaps in', (): void => {
+    // Rejection alone does not prove the parser did not read the accessor. The repo's boundary
+    // suites count getter calls, and this boundary had no such case.
+    let attemptsReads: number = 0;
+    const overlay: ActiveOverlay = activeOverlay();
+    const accessorCopy: UnknownRecord = { ...overlay.copy };
+    Object.defineProperty(accessorCopy, 'attempts', {
+      configurable: true,
+      enumerable: true,
+      get: (): string => {
+        attemptsReads += 1;
+        return '2 attempts blocked today';
+      },
+    });
+
+    expect(parseDocumentOverlayView(withKey(overlay, 'copy', accessorCopy))).toBeNull();
+    expect(attemptsReads).toBe(0);
+
+    // A proxy that mutates the record while it is being inspected must not have its later value
+    // observed: the snapshot the parser works from is taken before anything can change.
+    // The walk reads descriptors rather than values, so a `get` trap never fires here: the trap
+    // that sees the parser coming is `getOwnPropertyDescriptor`.
+    let mutations: number = 0;
+    const timing: UnknownRecord = { ...overlay.timing };
+    const mutating: unknown = new Proxy(timing, {
+      getOwnPropertyDescriptor: (
+        target: UnknownRecord,
+        key: string | symbol,
+      ): PropertyDescriptor | undefined => {
+        mutations += 1;
+        // A different but still legal instant, so only the atomicity check can refuse it.
+        timing.capturedAt = overlay.timing.capturedAt - 1;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+
+    expect(parseDocumentOverlayView(withKey(overlay, 'timing', mutating))).toBeNull();
+    // The trap fired, so the rejection is the mutation being caught rather than the proxy being
+    // skipped: the snapshot is compared against a clone taken after the walk, and they differ.
+    expect(mutations).toBeGreaterThan(0);
+
+    let commandMutations: number = 0;
+    const source: UnknownRecord = { ...command() };
+    const mutatingCommand: unknown = new Proxy(source, {
+      getOwnPropertyDescriptor: (
+        target: UnknownRecord,
+        key: string | symbol,
+      ): PropertyDescriptor | undefined => {
+        commandMutations += 1;
+        source.runtimeRevision = Number(source.runtimeRevision) + 1;
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+
+    expect(parseDocumentEnforcementCommand(mutatingCommand)).toBeNull();
+    expect(commandMutations).toBeGreaterThan(0);
+  });
+
   it('rejects exact-schema and hostile nested overlay data', (): void => {
     const overlay: ActiveOverlay = activeOverlay();
     const sparse: unknown[] = new Array<unknown>(2);
@@ -512,6 +570,8 @@ describe('shared enforcement v2 overlay parsing', (): void => {
       withKey(overlay, 'copy', accessorCopy),
       withKey(overlay, 'economy', { ...overlay.economy, [Symbol('extra')]: true }),
       withKey(overlay, 'timing', new Proxy({ ...overlay.timing }, {})),
+      // The command parser has a proxy root case; this boundary had one only in a nested field.
+      new Proxy({ ...overlay }, {}),
       withKey(overlay, 'timing', prototyped),
       withKey(overlay, 'copy', cycle),
       withKey(overlay, 'activeUnlocks', { 0: { host: 'example.com', until: NOW + 1 } }),
