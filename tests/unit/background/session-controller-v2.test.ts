@@ -12,6 +12,7 @@ import type {
 import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validation';
 import { SessionControllerV2 } from '../../../src/background/session-controller-v2';
 import { DEFAULT_SETTINGS, GATE_EXPIRY_MS } from '../../../src/shared/constants';
+import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
 import type {
   CommandResponseV2,
   SessionCommandResultCodeV2,
@@ -149,6 +150,45 @@ async function confirmOpenGate(
   ports.advance(60_000);
   return controller.confirmGate(ports.current().gate?.requiredPhrase ?? null);
 }
+
+describe('SessionControllerV2 document pull under a journal', (): void => {
+  it('answers a document the durable clear batch does not name instead of throwing', async (): Promise<void> => {
+    // The map is the frozen clear batch while a journal is durable, and the validators require the
+    // runtime to keep it exactly, so freezing a command for a new document wrote a runtime they
+    // refused and the pull threw. The document got nothing at all, which is worse than nothing.
+    const { controller } = harness(cleanupClosureRuntime(), {
+      tabs: [{ tabId: 77, url: BLOCKED_URL, documentId: 'document-77' }],
+    });
+
+    const commands: DocumentContentCommand[] = await controller.documentCommandsFor(
+      { tabId: 77, documentId: 'document-77', url: BLOCKED_URL },
+      'navigation',
+    );
+
+    expect(commands).toEqual([]);
+  });
+
+  it('hands a document the clear command the batch already holds for it', async (): Promise<void> => {
+    const closing: RuntimeStateV2 = cleanupClosureRuntime();
+    const key: string = documentKey(11, 'document-1');
+    const { controller } = harness(closing);
+
+    const commands: DocumentContentCommand[] = await controller.documentCommandsFor(
+      { tabId: 11, documentId: 'document-1', url: TARGET_URL },
+      'navigation',
+    );
+
+    const expected = closing.pendingClosure?.cleanupProgress?.clearCommands[key];
+    expect(expected).toBeDefined();
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      command: 'apply-enforcement',
+      presentation: 'clear',
+      operationId: expected?.operationId,
+      runtimeRevision: expected?.runtimeRevision,
+    });
+  });
+});
 
 describe('SessionControllerV2 commands during a closure journal', (): void => {
   it('answers no-active-session for both spellings of End and cleanup-pending for the rest', async (): Promise<void> => {
