@@ -106,6 +106,8 @@ export const DAILY_AGG_REQUIRED_KEYS: readonly string[] = [
   'resisted',
 ];
 export const DAILY_AGG_OPTIONAL_KEYS: readonly string[] = ['pauseMsEarned', 'unlockMsSpent'];
+/** Every legacy event may name the session it belongs to, and none of them has to. */
+const LEGACY_EVENT_OPTIONAL_KEYS: readonly string[] = ['sessionId'];
 const AGGREGATE_SET_KEY_RE: RegExp = /^agg:[^:]+:(\d{4}-\d{2}-\d{2})$/;
 const ARCHIVE_AGGREGATE_KEY_RE: RegExp =
   /^archive:clock-rebase:[^:]+:(\d{4}-\d{2}-\d{2}):\d+:[^:]+$/;
@@ -517,15 +519,9 @@ function validateDetachedLegacyEventRecord(value: unknown): value is LegacyEvent
   if (!isRecord(value) || typeof value.t !== 'string') return false;
   const required: readonly string[] | undefined = LEGACY_EVENT_KEYS.get(value.t);
   if (required === undefined) return false;
-  const keys: PropertyKey[] = Reflect.ownKeys(value);
-  const allowed: boolean = keys.every(
-    (key: PropertyKey): boolean =>
-      typeof key === 'string' && (required.includes(key) || key === 'sessionId'),
-  );
+  // The key rule is this module's addition; `isEventRecord` owns the v1 domain of the values.
   return (
-    allowed &&
-    required.every((key: string): boolean => Object.hasOwn(value, key)) &&
-    isEventRecord(value)
+    hasRequiredAndAllowedKeys(value, required, LEGACY_EVENT_OPTIONAL_KEYS) && isEventRecord(value)
   );
 }
 
@@ -547,13 +543,25 @@ export function validateDetachedDailyAgg(value: unknown, date: string): value is
 }
 
 function hasDailyAggKeys(value: UnknownRecord): boolean {
+  return hasRequiredAndAllowedKeys(value, DAILY_AGG_REQUIRED_KEYS, DAILY_AGG_OPTIONAL_KEYS);
+}
+
+/**
+ * Every own key is one the schema names, and every required key is present. Two schemas here need
+ * that rule, the daily aggregate and the legacy event, and they differ only in which keys are
+ * optional, so the loop is written once and each caller brings its own two lists.
+ */
+function hasRequiredAndAllowedKeys(
+  value: UnknownRecord,
+  required: readonly string[],
+  optional: readonly string[],
+): boolean {
   const keys: PropertyKey[] = Reflect.ownKeys(value);
   return (
     keys.every(
       (key: PropertyKey): boolean =>
-        typeof key === 'string' &&
-        (DAILY_AGG_REQUIRED_KEYS.includes(key) || DAILY_AGG_OPTIONAL_KEYS.includes(key)),
-    ) && DAILY_AGG_REQUIRED_KEYS.every((key: string): boolean => Object.hasOwn(value, key))
+        typeof key === 'string' && (required.includes(key) || optional.includes(key)),
+    ) && required.every((key: string): boolean => Object.hasOwn(value, key))
   );
 }
 
