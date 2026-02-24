@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  detachedIdentityMap,
   parseCleanupEnforcementTarget,
   parseCleanupProgress,
   parseCleanupRetryState,
@@ -8,12 +9,23 @@ import {
   parseClosureProjection,
   parsePendingClosure,
   parsePostCleanupClosure,
+  validateDetachedAggregateRemoves,
+  validateDetachedAggregateSets,
+  validateDetachedBankState,
+  validateDetachedCleanupEnforcementTarget,
   validateDetachedCleanupProgress,
+  validateDetachedCleanupRetryState,
   validateDetachedCleanupSeed,
+  validateDetachedCleanupTabClaim,
   validateDetachedClosureProjection,
+  validateDetachedDailyAgg,
+  validateDetachedHandledScheduleOccurrence,
   validateDetachedPendingClosure,
+  validateDetachedPostCleanupClosure,
+  validateDetachedRuntimeTabState,
 } from '../../../src/background/cleanup-closure-v2-validation';
 import type { FrozenDocumentCommand } from '../../../src/background/enforcement-persistence-v2';
+import type { RuntimeTabState } from '../../../src/background/runtime-leaf-types';
 import type {
   CleanupProgress,
   CleanupTabClaim,
@@ -44,6 +56,7 @@ import {
   documentKey,
   EPOCH_ID,
   handledOccurrence,
+  LOCAL_DATE,
   migrationInvalidActiveClosure,
   migrationInvalidActiveEndEvent,
   NOW,
@@ -914,5 +927,109 @@ describe('background epoch and revision independence', (): void => {
       OTHER_EPOCH_ID,
     );
     expect(EPOCH_ID).not.toBe(OTHER_EPOCH_ID);
+  });
+});
+
+describe('detached predicates on their own', (): void => {
+  // Every predicate below is reachable through a `parse*` entry point, which is how the rest of this
+  // suite reaches it. These pin each one as its own contract: the exact-key rule it adds and one
+  // domain rule it owns, so a change that only a caller currently catches fails here first.
+
+  it('accepts and refuses a retry state', (): void => {
+    expect(validateDetachedCleanupRetryState(cleanupRetryState())).toBe(true);
+    expect(validateDetachedCleanupRetryState(withKey(cleanupRetryState(), 'extra', 1))).toBe(false);
+    expect(validateDetachedCleanupRetryState(withoutKey(cleanupRetryState(), 'batch'))).toBe(false);
+    expect(validateDetachedCleanupRetryState(withKey(cleanupRetryState(), 'lastError', '  '))).toBe(
+      false,
+    );
+  });
+
+  it('accepts and refuses a runtime tab state', (): void => {
+    const state: RuntimeTabState = cleanupTabClaim().state;
+
+    expect(validateDetachedRuntimeTabState(state)).toBe(true);
+    expect(validateDetachedRuntimeTabState(withKey(state, 'extra', 1))).toBe(false);
+    expect(validateDetachedRuntimeTabState(withKey(state, 'muteUrl', ''))).toBe(false);
+    expect(validateDetachedRuntimeTabState(withKey(state, 'priorMuted', 'yes'))).toBe(false);
+  });
+
+  it('accepts and refuses a tab claim', (): void => {
+    expect(validateDetachedCleanupTabClaim(cleanupTabClaim())).toBe(true);
+    expect(validateDetachedCleanupTabClaim(withKey(cleanupTabClaim(), 'extra', 1))).toBe(false);
+    expect(validateDetachedCleanupTabClaim(withKey(cleanupTabClaim(), 'tabId', -1))).toBe(false);
+  });
+
+  it('accepts and refuses an enforcement target', (): void => {
+    expect(validateDetachedCleanupEnforcementTarget(cleanupTarget())).toBe(true);
+    expect(validateDetachedCleanupEnforcementTarget(withKey(cleanupTarget(), 'extra', 1))).toBe(
+      false,
+    );
+    expect(
+      validateDetachedCleanupEnforcementTarget(withKey(cleanupTarget(), 'documentId', ' ')),
+    ).toBe(false);
+  });
+
+  it('accepts and refuses a bank state', (): void => {
+    expect(validateDetachedBankState(bankState())).toBe(true);
+    expect(validateDetachedBankState(withKey(bankState(), 'extra', 1))).toBe(false);
+    expect(validateDetachedBankState(withKey(bankState(), 'balanceMs', -1))).toBe(false);
+    expect(validateDetachedBankState(withKey(bankState(), 'balanceMs', Number.NaN))).toBe(false);
+  });
+
+  it('accepts and refuses a handled occurrence', (): void => {
+    expect(validateDetachedHandledScheduleOccurrence(handledOccurrence())).toBe(true);
+    expect(
+      validateDetachedHandledScheduleOccurrence(withKey(handledOccurrence(), 'extra', 1)),
+    ).toBe(false);
+    expect(
+      validateDetachedHandledScheduleOccurrence(withKey(handledOccurrence(), 'reason', 'unknown')),
+    ).toBe(false);
+  });
+
+  it('accepts and refuses an aggregate set map', (): void => {
+    expect(validateDetachedAggregateSets({ [AGGREGATE_KEY]: dailyAgg() })).toBe(true);
+    expect(validateDetachedAggregateSets({ 'agg:device-1:not-a-date': dailyAgg() })).toBe(false);
+    expect(
+      validateDetachedAggregateSets({ [AGGREGATE_KEY]: dailyAgg({ date: '2026-09-03' }) }),
+    ).toBe(false);
+    expect(validateDetachedAggregateSets([])).toBe(false);
+  });
+
+  it('accepts and refuses an aggregate removal list', (): void => {
+    expect(validateDetachedAggregateRemoves([AGGREGATE_KEY])).toBe(true);
+    expect(validateDetachedAggregateRemoves([ARCHIVE_AGGREGATE_KEY])).toBe(false);
+    expect(validateDetachedAggregateRemoves(sparseArray(AGGREGATE_KEY))).toBe(false);
+    expect(validateDetachedAggregateRemoves(AGGREGATE_KEY)).toBe(false);
+  });
+
+  it('accepts and refuses a post-cleanup closure', (): void => {
+    expect(validateDetachedPostCleanupClosure(postCleanupClosure())).toBe(true);
+    expect(validateDetachedPostCleanupClosure(withKey(postCleanupClosure(), 'extra', 1))).toBe(
+      false,
+    );
+    expect(
+      validateDetachedPostCleanupClosure(withoutKey(postCleanupClosure(), 'cleanupSeed')),
+    ).toBe(false);
+  });
+
+  it('accepts and refuses a daily aggregate against its own date', (): void => {
+    expect(validateDetachedDailyAgg(dailyAgg(), LOCAL_DATE)).toBe(true);
+    expect(validateDetachedDailyAgg(dailyAgg(), '2026-09-03')).toBe(false);
+    expect(validateDetachedDailyAgg(withKey(dailyAgg(), 'extra', 1), LOCAL_DATE)).toBe(false);
+  });
+
+  it('keys an identity map by the entry it stores', (): void => {
+    const key: string = documentKey(11, 'document-1');
+
+    expect(
+      detachedIdentityMap({ [key]: cleanupTarget() }, validateDetachedCleanupEnforcementTarget),
+    ).toEqual({ [key]: cleanupTarget() });
+    expect(
+      detachedIdentityMap(
+        { [documentKey(12, 'document-1')]: cleanupTarget() },
+        validateDetachedCleanupEnforcementTarget,
+      ),
+    ).toBeNull();
+    expect(detachedIdentityMap([], validateDetachedCleanupEnforcementTarget)).toBeNull();
   });
 });
