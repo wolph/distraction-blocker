@@ -19,6 +19,7 @@ import {
 } from '../../../src/background/transition-runner-v2';
 import { validateDetachedPendingEnforcementTransition } from '../../../src/background/transition-v2-validation';
 import type { CompiledMatcher } from '../../../src/core/matcher';
+import { MAX_FINAL_FRESHNESS_ATTEMPTS } from '../../../src/shared/constants';
 import type {
   DocumentContentCommand,
   DocumentEnforcementCommand,
@@ -442,6 +443,34 @@ describe('driveTransitionV2 start sequence', (): void => {
 
     expect(result.kind).toBe('published');
     expect(Math.max(...attempts)).toBeGreaterThanOrEqual(2);
+  });
+
+  it('permits the third attempt and only closes after it', async (): Promise<void> => {
+    // The budget rule has a count as well as a limit. Bumping the generation on the first two
+    // sends and letting the third stand proves three attempts are permitted, which the exhaustion
+    // case below cannot show on its own.
+    const { fake, prepared } = await preparedStart();
+    let bumps: number = 0;
+    fake.respondForOperation(ACTIVE_OPERATION_ID, (message): unknown => {
+      if (bumps < MAX_FINAL_FRESHNESS_ATTEMPTS - 1) {
+        bumps += 1;
+        fake.bumpGeneration();
+      }
+      return appliedResponseFor(message, fake.now());
+    });
+
+    const result: TransitionDriveResultV2 = await driveTransitionV2(fake, prepared.matcher);
+    const attempts: number[] = fake.writes
+      .map(
+        (runtime): number | null => runtime.pendingEnforcementTransition?.freshnessAttempts ?? null,
+      )
+      .filter((value): value is number => value !== null);
+
+    // The counter records retries, so the third pass runs at MAX - 1 and is the last one the
+    // guard permits. The exhaustion case below bumps on every send and closes instead.
+    expect(bumps).toBe(MAX_FINAL_FRESHNESS_ATTEMPTS - 1);
+    expect(Math.max(...attempts)).toBe(MAX_FINAL_FRESHNESS_ATTEMPTS - 1);
+    expect(result.kind).toBe('published');
   });
 
   it('closes the session when the freshness budget is exhausted', async (): Promise<void> => {
