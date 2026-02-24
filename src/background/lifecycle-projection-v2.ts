@@ -306,12 +306,16 @@ function closureLifecycle(closure: PendingClosure): SessionLifecycleV2 {
  * standalone recovery, or a focus session whose checkpoint does not match. Either way the public
  * lifecycle withholds active state, and the only stable identifier it can name is the epoch that
  * recovery will verify against.
+ *
+ * The pass that follows a non-focus phase is a resume, so that is what this row reports rather than
+ * calling every unpublished session a start. A focus phase is re-verified in place, which is
+ * neither of the two labels the contract offers, and `start` is the nearer of them.
  */
 function unpublishedSessionLifecycle(runtime: RuntimeStateV2): SessionLifecycleV2 {
   return {
     kind: 'starting',
     operationId: runtime.enforcementEpoch,
-    transition: 'start',
+    transition: runtime.session?.phase === 'focus' ? 'start' : 'resume',
     endAuthority: HIDDEN_AUTHORITY,
   };
 }

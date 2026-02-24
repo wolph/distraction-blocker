@@ -329,6 +329,24 @@ describe('projectLifecycleV2 lifecycle table', (): void => {
     expect(isPublishableSessionV2(migrated)).toBe(false);
   });
 
+  it('calls a pause past its boundary a resume rather than a start', (): void => {
+    // A pause whose end has passed is exactly the session waiting for a resume transition. Nothing
+    // renders this label today, but it is part of the published snapshot, and calling that pass a
+    // start was the one thing it could not be.
+    const paused: RuntimeStateV2 = pausedRuntime();
+    const afterPause: number = (paused.session?.phaseEndsAt ?? 0) + 1_000;
+
+    const lifecycle: SessionLifecycleV2 = projectLifecycleV2(paused, afterPause);
+
+    expect(isPublishableSessionV2(paused, afterPause)).toBe(false);
+    expect(lifecycle).toEqual({
+      kind: 'starting',
+      operationId: paused.enforcementEpoch,
+      transition: 'resume',
+      endAuthority: { kind: 'hidden' },
+    });
+  });
+
   it('reports closure cleanup while a retry is scheduled and error once it is not', (): void => {
     const scheduled: RuntimeStateV2 = cleanupClosureRuntime();
     const exhausted: RuntimeStateV2 = cleanupClosureRuntime({
