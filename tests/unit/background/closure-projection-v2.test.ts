@@ -1,5 +1,3 @@
-import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { validateDetachedClosureProjection } from '../../../src/background/cleanup-closure-v2-validation';
 import {
@@ -32,6 +30,7 @@ import type {
   SessionEndReasonV2,
   SessionStateV2,
 } from '../../../src/shared/types';
+import { isTimezoneChild, runSuiteInTimezone } from '../timezone-child';
 import {
   canonicalRules,
   dailyAgg,
@@ -42,8 +41,7 @@ import {
 } from './runtime-v2-fixtures';
 
 const AMSTERDAM_CHILD_FLAG: string = 'FOCUS_LOCK_V2_CLOSURE_AMSTERDAM_CHILD';
-const AMSTERDAM_CHILD_TIMEOUT_MS: number = 30_000;
-const isAmsterdamChild: boolean = process.env[AMSTERDAM_CHILD_FLAG] === '1';
+const isAmsterdamChild: boolean = isTimezoneChild(AMSTERDAM_CHILD_FLAG);
 
 const DEVICE_ID: string = 'device-1';
 const NEXT_DATE: string = '2026-09-03';
@@ -69,48 +67,6 @@ const ENFORCEMENT_REASONS: readonly SessionEndReasonV2[] = [
 ];
 const CANCELED_REASONS: readonly SessionEndReasonV2[] = ['manual-canceled', ...ENFORCEMENT_REASONS];
 const CAPTURE_REASONS: readonly SessionEndReasonV2[] = ['manual-completed', ...CANCELED_REASONS];
-
-interface ChildProcessFailure {
-  status?: number | null;
-  signal?: string | null;
-  stdout?: string | Uint8Array;
-  stderr?: string | Uint8Array;
-}
-
-function capturedOutput(value: unknown): string {
-  const output: string =
-    typeof value === 'string'
-      ? value
-      : value instanceof Uint8Array
-        ? Buffer.from(value).toString('utf8')
-        : '';
-  return output.trim() || '<empty>';
-}
-
-function runTimezoneChild(
-  timezone: string,
-  args: string[],
-  extraEnv: Record<string, string>,
-): string {
-  try {
-    return execFileSync(process.execPath, args, {
-      encoding: 'utf8',
-      env: { TZ: timezone, ...extraEnv },
-      stdio: 'pipe',
-      timeout: AMSTERDAM_CHILD_TIMEOUT_MS,
-    });
-  } catch (error: unknown) {
-    const failure: ChildProcessFailure = error as ChildProcessFailure;
-    throw new Error(
-      [
-        `timezone child failed: status=${failure.status ?? 'none'}, signal=${failure.signal ?? 'none'}`,
-        `stdout: ${capturedOutput(failure.stdout)}`,
-        `stderr: ${capturedOutput(failure.stderr)}`,
-      ].join('\n'),
-      { cause: error },
-    );
-  }
-}
 
 function sessionConfig(overrides: Partial<SessionConfigV2> = {}): SessionConfigV2 {
   return {
@@ -739,15 +695,8 @@ describe('v2 closure hostile input', (): void => {
 
 describe.runIf(!isAmsterdamChild)('v2 closure timezone isolation', (): void => {
   it('passes the exact DST split case in a Europe/Amsterdam child process', (): void => {
-    const vitestPath: string = fileURLToPath(
-      new URL('../../../node_modules/vitest/vitest.mjs', import.meta.url),
-    );
-    const testPath: string = fileURLToPath(import.meta.url);
-
     expect((): string =>
-      runTimezoneChild('Europe/Amsterdam', [vitestPath, 'run', testPath], {
-        [AMSTERDAM_CHILD_FLAG]: '1',
-      }),
+      runSuiteInTimezone('Europe/Amsterdam', AMSTERDAM_CHILD_FLAG, import.meta.url),
     ).not.toThrow();
   });
 });

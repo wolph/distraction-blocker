@@ -1,5 +1,3 @@
-import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   capturedScheduleWindowContainsV2,
@@ -21,52 +19,10 @@ import type {
   ScheduleEntryV2,
   ScheduleOccurrenceRef,
 } from '../../../src/shared/types';
+import { isTimezoneChild, runSuiteInTimezone } from '../timezone-child';
 
 const DST_CHILD_FLAG: string = 'FOCUS_LOCK_V2_AMSTERDAM_DST_CHILD';
-const DST_CHILD_TIMEOUT_MS: number = 30_000;
-const isAmsterdamChild: boolean = process.env[DST_CHILD_FLAG] === '1';
-
-interface ChildProcessFailure {
-  status?: number | null;
-  signal?: string | null;
-  stdout?: string | Uint8Array;
-  stderr?: string | Uint8Array;
-}
-
-function capturedOutput(value: unknown): string {
-  const output: string =
-    typeof value === 'string'
-      ? value
-      : value instanceof Uint8Array
-        ? Buffer.from(value).toString('utf8')
-        : '';
-  return output.trim() || '<empty>';
-}
-
-function runTimezoneChild(
-  timezone: string,
-  args: string[],
-  extraEnv: Record<string, string> = {},
-): string {
-  try {
-    return execFileSync(process.execPath, args, {
-      encoding: 'utf8',
-      env: { TZ: timezone, ...extraEnv },
-      stdio: 'pipe',
-      timeout: DST_CHILD_TIMEOUT_MS,
-    });
-  } catch (error: unknown) {
-    const failure: ChildProcessFailure = error as ChildProcessFailure;
-    throw new Error(
-      [
-        `timezone child failed: status=${failure.status ?? 'none'}, signal=${failure.signal ?? 'none'}`,
-        `stdout: ${capturedOutput(failure.stdout)}`,
-        `stderr: ${capturedOutput(failure.stderr)}`,
-      ].join('\n'),
-      { cause: error },
-    );
-  }
-}
+const isAmsterdamChild: boolean = isTimezoneChild(DST_CHILD_FLAG);
 
 function entry(partial: Partial<ScheduleEntryV2> = {}): ScheduleEntryV2 {
   return {
@@ -459,15 +415,8 @@ describe('v2 handled schedule occurrence retention', (): void => {
 
 describe.runIf(!isAmsterdamChild)('v2 schedule timezone isolation', (): void => {
   it('passes the exact DST cases in a Europe/Amsterdam child process', (): void => {
-    const vitestPath: string = fileURLToPath(
-      new URL('../../../node_modules/vitest/vitest.mjs', import.meta.url),
-    );
-    const testPath: string = fileURLToPath(import.meta.url);
-
     expect((): string =>
-      runTimezoneChild('Europe/Amsterdam', [vitestPath, 'run', testPath], {
-        [DST_CHILD_FLAG]: '1',
-      }),
+      runSuiteInTimezone('Europe/Amsterdam', DST_CHILD_FLAG, import.meta.url),
     ).not.toThrow();
   });
 });
