@@ -46,6 +46,25 @@ export interface EngineSeamOptionsV2 {
   readTargetGeneration?: () => number;
 }
 
+/**
+ * The identity source a v2 harness must give `EnginePorts.newId`.
+ *
+ * Every identity the runtime parser accepts is a UUID: the enforcement epoch, the session, the
+ * operations, the transition. A harness minting anything else produces a runtime the parser
+ * refuses, and the refusal surfaces wherever the Engine next writes rather than where the bad
+ * identity was minted. The worst case is the epoch, because the Engine mints a fresh one after an
+ * all-data clear and hands it straight to `emptyRuntimeV2`.
+ *
+ * Each call returns a distinct UUID, so a suite can tell one minted identity from the next.
+ */
+export function uuidMinterV2(): () => string {
+  let minted: number = 0;
+  return (): string => {
+    minted += 1;
+    return `40000000-0000-4000-8000-${String(minted).padStart(12, '0')}`;
+  };
+}
+
 /** The `EnginePorts` members the v2 enforcement seam owns. */
 export type EngineSeamPortsV2 = Pick<
   EnginePorts,
