@@ -445,14 +445,13 @@ describe('driveTransitionV2 start sequence', (): void => {
     expect(Math.max(...attempts)).toBeGreaterThanOrEqual(2);
   });
 
-  it('permits the third attempt and only closes after it', async (): Promise<void> => {
-    // The budget rule has a count as well as a limit. Bumping the generation on the first two
-    // sends and letting the third stand proves three attempts are permitted, which the exhaustion
-    // case below cannot show on its own.
+  it('publishes when the generation settles before the budget runs out', async (): Promise<void> => {
+    // The other half of the budget rule: a run that stops moving under the limit publishes and
+    // spends no more passes than it needed. The exhaustion case below counts the limit itself.
     const { fake, prepared } = await preparedStart();
     let bumps: number = 0;
     fake.respondForOperation(ACTIVE_OPERATION_ID, (message): unknown => {
-      if (bumps < MAX_FINAL_FRESHNESS_ATTEMPTS - 1) {
+      if (bumps < 2) {
         bumps += 1;
         fake.bumpGeneration();
       }
@@ -466,11 +465,8 @@ describe('driveTransitionV2 start sequence', (): void => {
       )
       .filter((value): value is number => value !== null);
 
-    // The counter records retries, so the third pass runs at MAX - 1 and is the last one the
-    // guard permits. The exhaustion case below bumps on every send and closes instead.
-    expect(bumps).toBe(MAX_FINAL_FRESHNESS_ATTEMPTS - 1);
-    expect(Math.max(...attempts)).toBe(MAX_FINAL_FRESHNESS_ATTEMPTS - 1);
     expect(result.kind).toBe('published');
+    expect(Math.max(...attempts)).toBeLessThan(MAX_FINAL_FRESHNESS_ATTEMPTS);
   });
 
   it('closes the session when the freshness budget is exhausted', async (): Promise<void> => {
@@ -480,8 +476,21 @@ describe('driveTransitionV2 start sequence', (): void => {
       return appliedResponseFor(message, fake.now());
     });
     const result: TransitionDriveResultV2 = await driveTransitionV2(fake, prepared.matcher);
+    const attempts: number[] = fake.writes
+      .map(
+        (runtime): number | null => runtime.pendingEnforcementTransition?.freshnessAttempts ?? null,
+      )
+      .filter((value): value is number => value !== null);
+    const passes: number[] = [...new Set<number>(attempts)].filter(
+      (value: number): boolean => value > 0,
+    );
     const transition: PendingEnforcementTransition = storedTransition(fake);
 
+    // Counted rather than derived, so nobody has to reason it out again. Each pass writes its own
+    // incremented number before it runs, so the numbers written are the passes: 1, 2, 3, and the
+    // fourth is refused. Fewer than three would mean the budget spends an attempt it never used.
+    expect(passes).toEqual([1, 2, 3]);
+    expect(passes).toHaveLength(MAX_FINAL_FRESHNESS_ATTEMPTS);
     expect(result.kind).toBe('cleanup');
     expect(transition.cleanupCause).toBe('transition-failed');
     expect(transition.failure).toBe('tab-enforcement-failed');
