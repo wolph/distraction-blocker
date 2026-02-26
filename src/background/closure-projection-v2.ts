@@ -151,6 +151,11 @@ export function buildClosureProjectionV2(
   const outcome: ClosureOutcomeV2 = closureOutcomeForReasonV2(input.reason);
   const endedDate: string = localDateStr(endedAt);
   const endEvent: SessionEndedEventV2 = buildSessionEndedEventV2(input, outcome.outcome, focusedMs);
+  const aggregates: ClosureAggregatesV2 = buildClosureAggregatesV2(input, {
+    splits: settlementSplitsV2(session, endedAt, focusDeltaMs),
+    endedDate,
+    completionIncrement: outcome.completionIncrement,
+  });
 
   const projection: ClosureProjection = {
     closureId: closureIdV2(session.sessionId),
@@ -182,21 +187,14 @@ export function buildClosureProjectionV2(
     ),
     completionIncrement: outcome.completionIncrement,
     bankAfter,
-    aggregateSets: buildClosureAggregatesV2(input, {
-      splits: settlementSplitsV2(session, endedAt, focusDeltaMs),
-      endedDate,
-      completionIncrement: outcome.completionIncrement,
-    }),
+    aggregateSets: aggregates.sets,
     aggregateRemoves: [],
   };
   if (!validateDetachedClosureProjection(projection)) {
     invalidClosure('the closure projection does not satisfy the stored closure contract');
   }
 
-  const endedAggregate: DailyAgg | undefined =
-    projection.aggregateSets[syncAggKey(input.deviceId, endedDate)];
-  if (endedAggregate === undefined) invalidClosure('the closure end date carries no aggregate');
-  return { projection, todayAgg: structuredClone(endedAggregate), accruedFocusMs: focusedMs };
+  return { projection, todayAgg: aggregates.ended, accruedFocusMs: focusedMs };
 }
 
 /** The immutable end event, whose duration, source, and occurrence repeat the session config. */
@@ -266,14 +264,23 @@ interface ClosureAggregatePlanV2 {
   completionIncrement: 0 | 1;
 }
 
+/** The stored aggregates and, separately, the end date's own entry the caller adopts as today's. */
+interface ClosureAggregatesV2 {
+  sets: Record<string, DailyAgg>;
+  ended: DailyAgg;
+}
+
 /**
  * Focus credit lands on every local date the settled interval covers. The end date always gets an
- * entry, because it carries the completion increment even when that increment is zero.
+ * entry, because it carries the completion increment even when that increment is zero. That entry
+ * is returned here rather than looked back out of the record: the lookup answered
+ * `DailyAgg | undefined` and needed a guard for a key this function always writes, which no test
+ * could ever reach. Capping is pure, so building it twice gives the caller a detached equal.
  */
 function buildClosureAggregatesV2(
   input: ClosureProjectionInputV2,
   plan: ClosureAggregatePlanV2,
-): Record<string, DailyAgg> {
+): ClosureAggregatesV2 {
   const aggregates: Map<string, DailyAgg> = new Map<string, DailyAgg>();
   for (const split of plan.splits) {
     const aggregate: DailyAgg = seedClosureAggregateV2(aggregates, input, split.date);
@@ -286,12 +293,15 @@ function buildClosureAggregatesV2(
     'completed sessions',
   );
 
-  return Object.fromEntries(
-    [...aggregates.entries()].map(([key, aggregate]: [string, DailyAgg]): [string, DailyAgg] => [
-      key,
-      capAttempts(aggregate, TOP_SITES_DAILY),
-    ]),
-  );
+  return {
+    sets: Object.fromEntries(
+      [...aggregates.entries()].map(([key, aggregate]: [string, DailyAgg]): [string, DailyAgg] => [
+        key,
+        capAttempts(aggregate, TOP_SITES_DAILY),
+      ]),
+    ),
+    ended: capAttempts(ended, TOP_SITES_DAILY),
+  };
 }
 
 /** One seeded aggregate per touched date, built once and then added to in place. */
