@@ -4,6 +4,7 @@ import {
   createHandledScheduleOccurrenceV2,
   localStartDateForV2,
   mergeHandledScheduleOccurrencesV2,
+  nextScheduleWindowStartV2,
   pruneHandledScheduleOccurrencesV2,
   type ResolvedScheduleOccurrenceV2,
   resolveOpenScheduleOccurrencesV2,
@@ -413,6 +414,53 @@ describe('v2 handled schedule occurrence retention', (): void => {
   });
 });
 
+describe('nextScheduleWindowStartV2', (): void => {
+  const FRIDAY_0800: number = new Date(2026, 7, 28, 8, 0).getTime();
+  const FRIDAY_1300: number = new Date(2026, 7, 28, 13, 0).getTime();
+
+  it('finds later today, then the next matching day, and nothing when disabled', (): void => {
+    expect(nextScheduleWindowStartV2([entry()], FRIDAY_0800)?.startsAt).toBe(
+      new Date(2026, 7, 28, 9, 0).getTime(),
+    );
+    expect(nextScheduleWindowStartV2([entry()], FRIDAY_1300)?.startsAt).toBe(
+      new Date(2026, 7, 31, 9, 0).getTime(),
+    );
+    expect(nextScheduleWindowStartV2([entry({ enabled: false })], FRIDAY_0800)).toBeNull();
+  });
+
+  it('takes the earliest of several entries and answers with a detached copy', (): void => {
+    const later: ScheduleEntryV2 = entry({ id: 'later', start: '11:00', end: '12:00' });
+    const earlier: ScheduleEntryV2 = entry({ id: 'earlier', start: '10:00', end: '10:30' });
+
+    const next: { entry: ScheduleEntryV2; startsAt: number } | null = nextScheduleWindowStartV2(
+      [later, earlier],
+      new Date(2026, 7, 28, 9, 30).getTime(),
+    );
+
+    expect(next?.entry.id).toBe('earlier');
+    expect(next?.entry).not.toBe(earlier);
+    expect(next?.startsAt).toBe(new Date(2026, 7, 28, 10, 0).getTime());
+  });
+
+  it('agrees with the open-window resolver about when a window starts', (): void => {
+    // The whole point of one resolver: the instant the read model predicts is the instant the
+    // check reports once that window is open. A drift here is a start the popup announced and the
+    // schedule check declined.
+    const weekday: ScheduleEntryV2 = entry();
+    const predicted: number =
+      nextScheduleWindowStartV2([weekday], FRIDAY_0800)?.startsAt ?? Number.NaN;
+    const open: ResolvedScheduleOccurrenceV2 | undefined = resolveOpenScheduleOccurrencesV2(
+      [weekday],
+      predicted + 60_000,
+    )[0];
+
+    expect(open?.windowStartsAt).toBe(predicted);
+    expect(open?.occurrence.token).toBe(
+      scheduleOccurrenceTokenV2(weekday.id, localStartDateForV2(predicted)),
+    );
+  });
+});
+
 describe.runIf(!isAmsterdamChild)('v2 schedule timezone isolation', (): void => {
   it('passes the exact DST cases in a Europe/Amsterdam child process', (): void => {
     expect((): string =>
@@ -430,6 +478,26 @@ describe.runIf(isAmsterdamChild)('Europe/Amsterdam v2 schedule occurrences', ():
     expect(
       resolveOpenScheduleOccurrencesV2([sundayEntry], localAfterMidnight)[0]?.occurrence.token,
     ).toBe('weekday@2026-03-29');
+  });
+
+  it('keeps the next spring and autumn starts on their configured wall-clock times', (): void => {
+    // Ported from the v1 `nextStart` cases when this resolver took over the question, so the DST
+    // coverage stays with the code that answers it.
+    const spring: ScheduleEntryV2 = entry({ days: [0], start: '03:30', end: '04:30' });
+    const autumn: ScheduleEntryV2 = entry({ days: [0], start: '09:00', end: '10:00' });
+
+    const springStart: number | undefined = nextScheduleWindowStartV2(
+      [spring],
+      new Date(2026, 2, 28, 12, 0).getTime(),
+    )?.startsAt;
+    const autumnStart: number | undefined = nextScheduleWindowStartV2(
+      [autumn],
+      new Date(2026, 9, 24, 12, 0).getTime(),
+    )?.startsAt;
+
+    expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe('Europe/Amsterdam');
+    expect(new Date(springStart ?? 0).toISOString()).toBe('2026-03-29T01:30:00.000Z');
+    expect(new Date(autumnStart ?? 0).toISOString()).toBe('2026-10-25T08:00:00.000Z');
   });
 
   it('resolves the spring window through platform local Date construction', (): void => {

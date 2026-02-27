@@ -11,9 +11,9 @@
  * behavior names. Every durable change goes through the runtime ports.
  */
 
-import { nextStart } from '../core/schedule';
 import {
   localStartDateForV2,
+  nextScheduleWindowStartV2,
   pruneHandledScheduleOccurrencesV2,
   type ResolvedScheduleOccurrenceV2,
   resolveOpenScheduleOccurrencesV2,
@@ -124,13 +124,17 @@ export function nextScheduleInfoV2(
   // there are live records, plus the one step that returns.
   let at: number = now;
   for (let step: number = 0; step <= handledTokens.size; step++) {
-    // `nextStart` is the shared v1 resolver, so it answers with the v1 entry shape it was given.
-    const next: ReturnType<typeof nextStart> = nextStart([...entries], new Date(at));
+    // One resolver answers when an entry opens, for this read model and for the check that starts
+    // the session. Two would drift, and the drift shows up as a start the popup announced and the
+    // check declined.
+    const next: { entry: ScheduleEntryV2; startsAt: number } | null = nextScheduleWindowStartV2(
+      entries,
+      at,
+    );
     if (next === null) return null;
-    const startsAt: number = next.startsAt.getTime();
-    const token: string = occurrenceToken(next.entry.id, startsAt);
-    if (!handledTokens.has(token)) return { entryId: next.entry.id, startsAt };
-    at = startsAt;
+    const token: string = occurrenceToken(next.entry.id, next.startsAt);
+    if (!handledTokens.has(token)) return { entryId: next.entry.id, startsAt: next.startsAt };
+    at = next.startsAt;
   }
   return null;
 }

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   activeEntry,
-  nextStart,
   scheduleEntriesOverlap,
   validateEntry,
   windowEnd,
@@ -47,19 +46,6 @@ describe('windowEnd', () => {
     expect(windowEnd(entry({}), friday1000).getTime()).toBe(
       new Date(2026, 7, 28, 12, 30).getTime(),
     );
-  });
-});
-
-describe('nextStart', () => {
-  it('finds later today, next matching day, and null with nothing enabled', () => {
-    const at = new Date(2026, 7, 28, 8, 0);
-    expect(nextStart([entry({})], at)?.startsAt.getTime()).toBe(
-      new Date(2026, 7, 28, 9, 0).getTime(),
-    );
-    expect(nextStart([entry({})], friday1300)?.startsAt.getTime()).toBe(
-      new Date(2026, 7, 31, 9, 0).getTime(),
-    );
-    expect(nextStart([entry({ enabled: false })], at)).toBeNull();
   });
 });
 
@@ -123,12 +109,9 @@ describe.runIf(isAmsterdamChild)('Europe/Amsterdam DST schedule evaluation', () 
       start: '03:30',
       end: '04:30',
     });
-    const beforeTransition: Date = new Date(2026, 2, 28, 12, 0);
     const duringWindow: Date = new Date(2026, 2, 29, 3, 45);
-    const found: ReturnType<typeof nextStart> = nextStart([sundayEntry], beforeTransition);
 
     expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe('Europe/Amsterdam');
-    expect(found?.startsAt.toISOString()).toBe('2026-03-29T01:30:00.000Z');
     expect(activeEntry([sundayEntry], duringWindow)?.id).toBe('e1');
     expect(windowEnd(sundayEntry, duringWindow).toISOString()).toBe('2026-03-29T02:30:00.000Z');
   });
@@ -139,11 +122,8 @@ describe.runIf(isAmsterdamChild)('Europe/Amsterdam DST schedule evaluation', () 
       start: '09:00',
       end: '10:00',
     });
-    const beforeTransition: Date = new Date(2026, 9, 24, 12, 0);
     const duringWindow: Date = new Date(2026, 9, 25, 9, 30);
-    const found: ReturnType<typeof nextStart> = nextStart([sundayEntry], beforeTransition);
 
-    expect(found?.startsAt.toISOString()).toBe('2026-10-25T08:00:00.000Z');
     expect(activeEntry([sundayEntry], duringWindow)?.id).toBe('e1');
     expect(windowEnd(sundayEntry, duringWindow).toISOString()).toBe('2026-10-25T09:00:00.000Z');
   });

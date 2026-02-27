@@ -47,31 +47,3 @@ export function windowEnd(entry: NormalizedScheduleEntryV1, at: Date): Date {
   const end: number = toMinutes(entry.end);
   return new Date(at.getFullYear(), at.getMonth(), at.getDate(), Math.floor(end / 60), end % 60);
 }
-
-/** Next window start strictly after `at`, looking up to 8 days ahead. */
-export function nextStart(
-  entries: NormalizedScheduleEntryV1[],
-  at: Date,
-): { entry: NormalizedScheduleEntryV1; startsAt: Date } | null {
-  let best: { entry: NormalizedScheduleEntryV1; startsAt: Date } | null = null;
-  for (const e of entries) {
-    if (!e.enabled) continue;
-    const startMin: number = toMinutes(e.start);
-    for (let d: number = 0; d < 8; d++) {
-      const day: Date = new Date(at.getFullYear(), at.getMonth(), at.getDate() + d);
-      if (!e.days.includes(day.getDay())) continue;
-      const startsAt: Date = new Date(
-        day.getFullYear(),
-        day.getMonth(),
-        day.getDate(),
-        Math.floor(startMin / 60),
-        startMin % 60,
-      );
-      if (startsAt.getTime() <= at.getTime()) continue;
-      if (best === null || startsAt.getTime() < best.startsAt.getTime())
-        best = { entry: e, startsAt };
-      break;
-    }
-  }
-  return best;
-}

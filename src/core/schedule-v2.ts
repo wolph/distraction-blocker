@@ -147,6 +147,47 @@ export function resolveOpenScheduleOccurrencesV2(
  * The one occurrence identity grammar: an entry and the local day its window opened on. Every
  * producer and the stored-value validator spell it this way, so it lives here once.
  */
+/** How far ahead the next-window search looks, which is one week plus the day it starts on. */
+const NEXT_WINDOW_DAYS_SEARCHED: number = 8;
+
+/**
+ * The next window any enabled entry opens strictly after `at`, or null when none opens within the
+ * week ahead.
+ *
+ * This is the same question `resolveOpenScheduleOccurrencesV2` answers about the present instant,
+ * asked about the future, so it reads its boundaries through the same helpers rather than repeating
+ * the arithmetic. Two resolvers with their own arithmetic drift, and a drift here is one the user
+ * sees: the popup announces a start the schedule check will not take.
+ */
+export function nextScheduleWindowStartV2(
+  entries: readonly ScheduleEntryV2[],
+  at: number,
+): { entry: ScheduleEntryV2; startsAt: number } | null {
+  const observed: Date = dateForObservation(at);
+  let best: { entry: ScheduleEntryV2; startsAt: number } | null = null;
+  for (const entry of entries) {
+    if (!entry.enabled) continue;
+    const startMinutes: number = toMinutes(entry.start);
+    for (let ahead: number = 0; ahead < NEXT_WINDOW_DAYS_SEARCHED; ahead++) {
+      const day: Date = new Date(
+        observed.getFullYear(),
+        observed.getMonth(),
+        observed.getDate() + ahead,
+      );
+      if (!entry.days.includes(day.getDay())) continue;
+      const startsAt: number = absoluteBoundary(day, startMinutes, 'schedule window start');
+      // A day whose start has already passed is not this entry's next one, so the search moves on
+      // to the following day rather than giving up on the entry.
+      if (startsAt <= at) continue;
+      if (best === null || startsAt < best.startsAt) {
+        best = { entry: structuredClone(entry), startsAt };
+      }
+      break;
+    }
+  }
+  return best;
+}
+
 export function scheduleOccurrenceTokenV2(entryId: string, localStartDate: string): string {
   return `${entryId}@${localStartDate}`;
 }
