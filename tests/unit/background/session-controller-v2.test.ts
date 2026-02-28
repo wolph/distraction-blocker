@@ -152,20 +152,54 @@ async function confirmOpenGate(
 }
 
 describe('SessionControllerV2 document pull under a journal', (): void => {
-  it('answers a document the durable clear batch does not name instead of throwing', async (): Promise<void> => {
+  it('adds a document the durable clear batch does not name and hands it the clear', async (): Promise<void> => {
     // The map is the frozen clear batch while a journal is durable, and the validators require the
-    // runtime to keep it exactly, so freezing a command for a new document wrote a runtime they
-    // refused and the pull threw. The document got nothing at all, which is worse than nothing.
-    const { controller } = harness(cleanupClosureRuntime(), {
+    // runtime to keep it exactly, so freezing an ordinary command for a new document wrote a
+    // runtime they refused and the pull threw. It now joins the batch instead, through the same
+    // durable add the navigation push makes: a document whose only contact with the worker is a
+    // pull no longer waits for the journal's runner to enumerate it.
+    const { controller, ports } = harness(cleanupClosureRuntime(), {
       tabs: [{ tabId: 77, url: BLOCKED_URL, documentId: 'document-77' }],
     });
+    const key: string = documentKey(77, 'document-77');
 
     const commands: DocumentContentCommand[] = await controller.documentCommandsFor(
       { tabId: 77, documentId: 'document-77', url: BLOCKED_URL },
       'navigation',
     );
 
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      command: 'apply-enforcement',
+      presentation: 'clear',
+      expectedUrl: BLOCKED_URL,
+    });
+    const added: FrozenDocumentCommand | undefined =
+      ports.current().pendingClosure?.cleanupProgress?.clearCommands[key];
+    expect(added).toBeDefined();
+    expect(ports.current().documentCommands[key]).toEqual(added);
+  });
+
+  it('leaves a sweep read out of the frozen batch', async (): Promise<void> => {
+    // A sweep reports what a target already holds and its URL came from a tab query that may be
+    // behind the navigation it is racing, so it does not get to write a durable clear command for a
+    // page it may be wrong about. It still answers rather than throwing.
+    const { controller, ports } = harness(cleanupClosureRuntime(), {
+      tabs: [{ tabId: 77, url: BLOCKED_URL, documentId: 'document-77' }],
+    });
+
+    const commands: DocumentContentCommand[] = await controller.documentCommandsFor(
+      { tabId: 77, documentId: 'document-77', url: BLOCKED_URL },
+      null,
+    );
+
     expect(commands).toEqual([]);
+    expect(
+      ports.current().pendingClosure?.cleanupProgress?.clearCommands[
+        documentKey(77, 'document-77')
+      ],
+    ).toBeUndefined();
+    expect(ports.writes).toHaveLength(0);
   });
 
   it('hands a document the clear command the batch already holds for it', async (): Promise<void> => {

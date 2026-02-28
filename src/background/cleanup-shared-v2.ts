@@ -350,13 +350,13 @@ export async function clearDiscoveredDocumentsV2(
   for (const target of classified) {
     if (target.kind !== 'enforceable') continue;
     const key: string = documentCommandKeyV2(target.tabId, target.documentId);
-    // Membership is read before the add, because `durableClearCommandV2` puts a newly discovered
-    // document into the batch, and it is membership before that write which says whether this
-    // cleanup ever overlaid the page.
+    // Membership is read before the add, because `durableCleanupClearCommandV2` puts a newly
+    // discovered document into the batch, and it is membership before that write which says whether
+    // this cleanup ever overlaid the page.
     const saved: CleanupProgress = journalProgressV2(ports.runtime(), journal);
     if (Object.hasOwn(saved.clearCommands, key)) continue;
     const overlaid: boolean = wasOverlaidByThisCleanupV2(saved, key, target.tabId);
-    const command: FrozenDocumentCommand = await durableClearCommandV2(ports, journal, key, {
+    const command: FrozenDocumentCommand = await durableCleanupClearCommandV2(ports, journal, {
       tabId: target.tabId,
       documentId: target.documentId,
       expectedUrl: target.url,
@@ -504,7 +504,7 @@ export async function handleCleanupNavigationV2(
   const journal: CleanupJournalV2 | null = cleanupJournalOfV2(ports.runtime());
   if (journal === null) return;
   const key: string = documentCommandKeyV2(classified.tabId, classified.documentId);
-  const command: FrozenDocumentCommand = await durableClearCommandV2(ports, journal, key, {
+  const command: FrozenDocumentCommand = await durableCleanupClearCommandV2(ports, journal, {
     tabId: classified.tabId,
     documentId: classified.documentId,
     expectedUrl: classified.url,
@@ -518,13 +518,19 @@ export async function handleCleanupNavigationV2(
   );
 }
 
-/** Returns the batch's command for this document, adding and persisting it when it is new. */
-async function durableClearCommandV2(
+/**
+ * Returns the batch's command for this document, adding and persisting it when it is new. This is
+ * the one place a document joins a frozen batch, and both ways the worker meets a late document
+ * reach it: the navigation push, and a pull from a document that named the URL it is on. Without
+ * the second, a document whose only contact with the worker is a pull waits for the journal's
+ * runner to enumerate it.
+ */
+export async function durableCleanupClearCommandV2(
   ports: RuntimePortsV2,
   journal: CleanupJournalV2,
-  key: string,
   target: { tabId: number; documentId: string; expectedUrl: string },
 ): Promise<FrozenDocumentCommand> {
+  const key: string = documentCommandKeyV2(target.tabId, target.documentId);
   const runtime: RuntimeStateV2 = ports.runtime();
   const progress: CleanupProgress = journalProgressV2(runtime, journal);
   const known: FrozenDocumentCommand | undefined = progress.clearCommands[key];

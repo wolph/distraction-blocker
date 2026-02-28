@@ -46,7 +46,12 @@ import type {
 } from '../shared/types';
 import { ensurePhaseAlarmV2, parseAlarmNameV2 } from './alarms-v2';
 import { documentCommandKeyV2 } from './cleanup-progress-v2';
-import { type CleanupJournalV2, cleanupJournalOfV2, journalProgressV2 } from './cleanup-shared-v2';
+import {
+  type CleanupJournalV2,
+  cleanupJournalOfV2,
+  durableCleanupClearCommandV2,
+  journalProgressV2,
+} from './cleanup-shared-v2';
 import { closureIdV2, manualEndReasonV2 } from './closure-projection-v2';
 import {
   closeSessionV2,
@@ -1297,11 +1302,11 @@ export class SessionControllerV2 {
    * The command a pulling document is answered with, or null when this runtime owes it none.
    *
    * A durable cleanup batch is the whole command map while it lasts, and the validators require the
-   * runtime to keep it exactly, so freezing a new command here would write a map they refuse and
-   * the pull would throw instead of answering. The batch's own command is handed back when it names
-   * this document, and a document it does not name is answered with nothing: adding it belongs to
-   * the journal's navigation handler and its runner, which send as well as persist. A prepared
-   * closure holds no durable batch, so it takes the ordinary path, exactly as the push side does.
+   * runtime to keep it exactly, so freezing an ordinary command here would write a map they refuse
+   * and the pull would throw instead of answering. The batch's own command is handed back when it
+   * names this document, and a document it does not name joins the batch through the leaf that owns
+   * discovery, which is the same durable add the navigation push makes. A prepared closure holds no
+   * durable batch, so it takes the ordinary path, exactly as the push side does.
    */
   private async pulledCommandFor(
     target: { tabId: number; documentId: string; url: string },
@@ -1311,7 +1316,19 @@ export class SessionControllerV2 {
     const journal: CleanupJournalV2 | null = cleanupJournalOfV2(runtime);
     if (journal !== null) {
       const key: string = documentCommandKeyV2(target.tabId, target.documentId);
-      return journalProgressV2(runtime, journal).clearCommands[key] ?? null;
+      const named: FrozenDocumentCommand | undefined = journalProgressV2(runtime, journal)
+        .clearCommands[key];
+      if (named !== undefined) return named;
+      // A sweep reports what a target already holds and its URL comes from a tab query that may
+      // already be behind, so it does not get to write a durable clear command for a page it may be
+      // wrong about. A caller that names the URL the document is on does, which is how a document
+      // that reached the worker only by pulling stops waiting for the journal's runner.
+      if (attemptKind === null) return null;
+      return await durableCleanupClearCommandV2(this.ports, journal, {
+        tabId: target.tabId,
+        documentId: target.documentId,
+        expectedUrl: target.url,
+      });
     }
     // A navigation or a document's own pull names the URL it is on, so a stored command for
     // another URL is refrozen. A sweep only reports what a target already holds: its URL comes
