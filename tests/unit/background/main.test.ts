@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { reconcileContentRegistrationState } from '../../../src/background/content-registration';
-import type { Engine, EnginePorts } from '../../../src/background/engine';
+import type { AllDataClearJournalV2 } from '../../../src/background/data-clear-journal';
+import type { BrowserResetPortsV2 } from '../../../src/background/data-clear-reset-v2';
+import {
+  finalizeAllDataClearV2,
+  runBrowserResetAttemptV2,
+} from '../../../src/background/data-clear-reset-v2';
+import type { BrowserResetEngineSeamV2, Engine, EnginePorts } from '../../../src/background/engine';
 import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/background/list-sync-codec';
 import { main } from '../../../src/background/main';
 import { routeMessage } from '../../../src/background/router';
@@ -280,8 +286,53 @@ vi.mock('../../../src/background/engine', () => ({
       mocks.handledAlarms.push(name);
       if (mocks.alarmError !== null) throw mocks.alarmError;
     }
+
+    /** The lock-order predicate Main binds. No mocked call runs inside a mutation frame. */
+    runtimeMutationFrameHeld(): boolean {
+      return false;
+    }
+
+    /**
+     * The two browser-reset entry points delegate to the real module over the seam Main bound,
+     * exactly as the Engine does, so a live worker's clear is the same code path as a boot's.
+     */
+    async runBrowserResetAttempt(token: unknown): Promise<unknown> {
+      return runBrowserResetAttemptV2(
+        engineBrowserResetPorts(),
+        token as Parameters<typeof runBrowserResetAttemptV2>[1],
+      );
+    }
+
+    async finalizeAllDataClear(): Promise<unknown> {
+      const outcome: unknown = await finalizeAllDataClearV2(engineBrowserResetPorts());
+      if (outcome === 'removed') {
+        const ports: EnginePorts | undefined = mocks.engineArguments?.[0] as
+          | EnginePorts
+          | undefined;
+        await ports?.rehydrateAfterDataClear();
+      }
+      return outcome;
+    }
   },
 }));
+
+/** The reset ports the Engine composes: Main's seam plus the browser surfaces Engine holds. */
+function engineBrowserResetPorts(): BrowserResetPortsV2 {
+  const ports: EnginePorts | undefined = mocks.engineArguments?.[0] as EnginePorts | undefined;
+  const seam: BrowserResetEngineSeamV2 | undefined = ports?.browserReset;
+  if (ports === undefined || seam === undefined) {
+    throw new Error('the engine mock has no browser-reset seam bound');
+  }
+  return {
+    ...seam,
+    now: (): number => Date.now(),
+    newId: (): string => crypto.randomUUID(),
+    targets: ports.targets,
+    transport: ports.transport,
+    alarms: ports.alarms,
+    reportError: ports.reportError,
+  };
+}
 
 vi.mock('../../../src/background/content-registration', () => ({
   contentScriptFile: 'assets/content-runtime.js',
@@ -860,9 +911,7 @@ describe('background runtime request boundary', () => {
     expect(mocks.localState[LOCAL_ONBOARDING_DRAFT]).toBeUndefined();
   });
 
-  it.skip('marks a live all-data reset clean before the next boot creates legacy evidence', async (): Promise<void> => {
-    // Skipped: `ca21629` removed the contract where `deleteRemoteData('all')` finished the clear
-    // at boot. The replacement belongs to the data-clear journal plan's Task 5, which owns this.
+  it('marks a live all-data reset clean before the next boot creates legacy evidence', async (): Promise<void> => {
     setCompleteLocalPolicy();
     mocks.localState[LOCAL_RUNTIME] = emptyRuntimeV2(Date.now(), TEST_EPOCH);
     mocks.registrationStatuses = ['ready', 'unavailable'];
@@ -896,9 +945,7 @@ describe('background runtime request boundary', () => {
     expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
   });
 
-  it.skip('keeps worker requests responsive when boot cannot resume pending all-data deletion', async (): Promise<void> => {
-    // Skipped: `ca21629` removed the contract where `deleteRemoteData('all')` finished the clear
-    // at boot. The replacement belongs to the data-clear journal plan's Task 5, which owns this.
+  it('keeps worker requests responsive when boot cannot resume pending all-data deletion', async (): Promise<void> => {
     mocks.localState = {
       [LOCAL_SETUP]: {
         ...DEFAULT_SETUP,
@@ -925,10 +972,21 @@ describe('background runtime request boundary', () => {
 
     const storage: unknown = vi.mocked(routeMessage).mock.calls.at(-1)?.[3];
     expect(storage).toBeDefined();
+    // The first failure is one attempt of twelve, so the clear is still pending and its retry is
+    // scheduled. The journal's own retry state is the failure authority for this scope, which is
+    // why Setup carries no storage error of its own.
     expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
-      dataClear: { status: 'error', scope: 'all', phase: 'remote' },
-      storageError: 'remote-deletion-failed',
+      dataClear: { status: 'pending', scope: 'all', phase: 'remote' },
+      storageError: null,
     });
+    const journal: AllDataClearJournalV2 = mocks.localState[
+      LOCAL_DATA_CLEAR_JOURNAL
+    ] as AllDataClearJournalV2;
+    expect(journal.version).toBe(2);
+    expect(journal.phase).toBe('remote');
+    expect(journal.retry.lastError).toContain('remote removal unavailable');
+    expect(journal.retry.nextAttemptAt).toBeGreaterThan(0);
+    expect(mocks.alarms.get('data-clear-retry')?.scheduledTime).toBe(journal.retry.nextAttemptAt);
   });
 
   it('routes explicit Sync retry through the engine-owned aggregate checkpoint barrier', async (): Promise<void> => {
@@ -965,9 +1023,7 @@ describe('background runtime request boundary', () => {
     expect(mocks.aggregateBarrierCalls).toBe(1);
   });
 
-  it.skip('retries a boot-restored local-phase all-data clear through the runtime router', async (): Promise<void> => {
-    // Skipped: `ca21629` removed the contract where `deleteRemoteData('all')` finished the clear
-    // at boot. The replacement belongs to the data-clear journal plan's Task 5, which owns this.
+  it('retries a boot-restored local-phase all-data clear through the runtime router', async (): Promise<void> => {
     mocks.localState = {
       [LOCAL_SETUP]: {
         ...DEFAULT_SETUP,
@@ -1688,10 +1744,9 @@ describe('background runtime request boundary', () => {
     ).toBeLessThan(vi.mocked(chrome.storage.local.get).mock.invocationCallOrder[0] ?? 0);
   });
 
-  it.skip('keeps boot quiesced after resuming a successful all-data clear journal', async (): Promise<void> => {
-    // Skipped: `ca21629` removed the contract where `deleteRemoteData('all')` finished the clear
-    // at boot. The replacement belongs to the data-clear journal plan's Task 5, which owns this.
+  it('finishes a resumed all-data clear at boot and leaves a clean profile', async (): Promise<void> => {
     const now: number = Date.now();
+    mocks.persistDeviceIdOnGet = true;
     mocks.localState = {
       [LOCAL_SETUP]: {
         ...DEFAULT_SETUP,
@@ -1711,13 +1766,18 @@ describe('background runtime request boundary', () => {
     main();
     await expect(dispatchRuntime({ type: 'getSnapshot' })).resolves.toEqual({ ok: true });
 
-    expect(mocks.tickCalls).toBe(0);
-    expect(mocks.savedRuntimes).toEqual([]);
+    // The local wipe removes the stored runtime, and browser reset materializes the journal's own
+    // projection in its place, so the profile a completed clear leaves is a clean one rather than
+    // an absent one.
     expect(chrome.storage.local.remove).toHaveBeenCalledWith(
       expect.arrayContaining([LOCAL_RUNTIME]),
     );
-    expect(mocks.localState[LOCAL_RUNTIME]).toBeUndefined();
-    expect(mocks.localState[LOCAL_DEVICE_ID]).toBeUndefined();
+    expect(mocks.localState[LOCAL_RUNTIME]).toMatchObject({
+      runtimeSchemaVersion: 2,
+      session: null,
+      todayAgg: null,
+    });
+    expect(mocks.localState[LOCAL_DEVICE_ID]).toBe('device-id');
     expect(mocks.scenario.storedSync[SYNC_SETTINGS]).toBeUndefined();
     expect(mocks.localState[LOCAL_DATA_CLEAR_JOURNAL]).toBeUndefined();
     expect(mocks.localState[LOCAL_SETUP]).toEqual({
@@ -3002,5 +3062,319 @@ describe('background detached listener errors', () => {
     expect(consoleError).toHaveBeenCalledTimes(2);
     expect(consoleError).toHaveBeenNthCalledWith(1, 'focus-lock background error', error);
     expect(consoleError).toHaveBeenNthCalledWith(2, 'focus-lock background error', error);
+  });
+});
+
+describe('background all-data journal bootstrap', () => {
+  const RESET_EPOCH: string = '50000000-0000-4000-8000-000000000001';
+  const RESET_OPERATION: string = '50000000-0000-4000-8000-000000000002';
+  const EVENT_ID: string = '50000000-0000-4000-8000-00000000000a';
+
+  /** The marker projection a browser-reset journal carries, at the version this worker reports. */
+  function cleanMarker(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      version: 1,
+      profile: 'clean',
+      latestReason: 'install',
+      extensionVersion: 'unknown',
+      ...overrides,
+    };
+  }
+
+  /** A journal that has finished deleting storage and owes only the browser reset. */
+  function browserResetJournal(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      version: 2,
+      scope: 'all',
+      phase: 'browser-reset',
+      inventory: [],
+      resetEpoch: RESET_EPOCH,
+      resetOperationId: RESET_OPERATION,
+      runtimeProjection: emptyRuntimeV2(Date.now(), RESET_EPOCH),
+      setupProjection: DEFAULT_SETUP,
+      installMarkerProjection: cleanMarker(),
+      finalInstallMarkerProjection: cleanMarker(),
+      pendingInstallLifecycleIntents: [],
+      resetProgress: {
+        attemptStartedAt: null,
+        resolverPassCount: 0,
+        targetGeneration: null,
+        stablePasses: 0,
+        targets: {},
+        commands: {},
+        acknowledgements: {},
+        exclusions: [],
+        deferredUnreachable: [],
+      },
+      retry: { batch: 1, automaticAttempt: 0, nextAttemptAt: Date.now(), lastError: null },
+      ...overrides,
+    };
+  }
+
+  function seedBrowserReset(overrides: Record<string, unknown> = {}): void {
+    mocks.localState = {
+      [LOCAL_SETUP]: DEFAULT_SETUP,
+      [LOCAL_RUNTIME]: emptyRuntimeV2(Date.now(), RESET_EPOCH),
+      [LOCAL_INSTALL_MARKER]: cleanMarker(),
+      [LOCAL_DATA_CLEAR_JOURNAL]: browserResetJournal(overrides),
+    };
+  }
+
+  /** Every value written to one local key, in order, whoever wrote it. */
+  function localWrites(key: string): unknown[] {
+    const calls: unknown[][] = vi.mocked(chrome.storage.local.set).mock.calls as unknown[][];
+    return calls
+      .map((call: unknown[]): Record<string, unknown> => call[0] as Record<string, unknown>)
+      .filter((items: Record<string, unknown>): boolean => Object.hasOwn(items, key))
+      .map((items: Record<string, unknown>): unknown => items[key]);
+  }
+
+  /** Every install marker this boot wrote, in order, whoever wrote it. */
+  function installMarkerWrites(): unknown[] {
+    return localWrites(LOCAL_INSTALL_MARKER);
+  }
+
+  /** Every write that started a browser-reset attempt, which is one per dispatch that runs one. */
+  function attemptStarts(): unknown[] {
+    return localWrites(LOCAL_DATA_CLEAR_JOURNAL).filter((value: unknown): boolean => {
+      const journal: AllDataClearJournalV2 = value as AllDataClearJournalV2;
+      return (
+        journal.resetProgress?.attemptStartedAt != null &&
+        journal.resetProgress.resolverPassCount === 0
+      );
+    });
+  }
+
+  function storedJournal(): AllDataClearJournalV2 | undefined {
+    return mocks.localState[LOCAL_DATA_CLEAR_JOURNAL] as AllDataClearJournalV2 | undefined;
+  }
+
+  /** The services Main hands the router, which is where its dispatcher entry points are bound. */
+  function routerServices(): {
+    retryDataClear(): Promise<'ok' | 'retry-not-available'>;
+    continueAllDataClear(): Promise<void>;
+  } {
+    const services: unknown = vi.mocked(routeMessage).mock.calls.at(-1)?.[4];
+    if (services === null || typeof services !== 'object') {
+      throw new Error('the router services were not bound');
+    }
+    return services as {
+      retryDataClear(): Promise<'ok' | 'retry-not-available'>;
+      continueAllDataClear(): Promise<void>;
+    };
+  }
+
+  it('runs the clear before it classifies the profile the clear is erasing', async (): Promise<void> => {
+    mocks.persistDeviceIdOnGet = true;
+    mocks.localState = {
+      [LOCAL_SETUP]: {
+        ...DEFAULT_SETUP,
+        completed: true,
+        storageMode: 'local',
+        dataClear: { status: 'pending', scope: 'all', phase: 'remote' },
+      },
+      [LOCAL_RUNTIME]: emptyRuntime(Date.now()),
+      // Legacy evidence a classification would have read: the marker it writes says `legacy`, and
+      // it would outlive the clear that is deleting exactly these keys.
+      [LOCAL_EVENTS]: [],
+      [LOCAL_SYNC_JOURNAL]: { sets: {}, removes: [] },
+      [LOCAL_DATA_CLEAR_JOURNAL]: { scope: 'all', phase: 'remote', inventory: [SYNC_SETTINGS] },
+    };
+    mocks.scenario.storedSync = { [SYNC_SETTINGS]: DEFAULT_SETTINGS };
+
+    await finishBoot();
+
+    expect(storedJournal()).toBeUndefined();
+    expect(mocks.localState[LOCAL_INSTALL_MARKER]).toMatchObject({ profile: 'clean' });
+    expect(mocks.localState[LOCAL_EVENTS]).toBeUndefined();
+    // Classification would have read the evidence above and written `legacy`, which is the marker
+    // a clean profile must never carry. No write of one is the proof it never ran.
+    expect(installMarkerWrites()).not.toContainEqual(
+      expect.objectContaining({ profile: 'legacy' }),
+    );
+  });
+
+  it('leaves the journal and publishes nothing when the clear cannot finish', async (): Promise<void> => {
+    // The clean identity never becomes durable here, so finalization has nothing to read back and
+    // the clear stays where it is rather than declaring itself done.
+    mocks.persistDeviceIdOnGet = false;
+    seedBrowserReset();
+
+    await finishBoot();
+
+    expect(storedJournal()).toMatchObject({ phase: 'browser-reset' });
+    expect(mocks.tickCalls).toBe(0);
+    expect(mocks.localState[LOCAL_INSTALL_MARKER]).toEqual(cleanMarker());
+  });
+
+  it('finishes the browser reset and removes the journal', async (): Promise<void> => {
+    mocks.persistDeviceIdOnGet = true;
+    seedBrowserReset();
+
+    await finishBoot();
+
+    expect(storedJournal()).toBeUndefined();
+    expect(mocks.localState[LOCAL_DEVICE_ID]).toBe('device-id');
+    expect(mocks.tickCalls).toBe(1);
+  });
+
+  it('classifies nothing when the deletion state cannot be read', async (): Promise<void> => {
+    mocks.localState = {
+      [LOCAL_SETUP]: { ...DEFAULT_SETUP, completed: true, storageMode: 'local' },
+      [LOCAL_RUNTIME]: emptyRuntimeV2(Date.now(), RESET_EPOCH),
+      [LOCAL_EVENTS]: [],
+      [LOCAL_DATA_CLEAR_JOURNAL]: { scope: 'all', phase: 'nonsense' },
+    };
+
+    main();
+
+    // Fail closed. A stored value no parser accepts leaves the boot refusing every request, and
+    // nothing classifies the profile, imports legacy policy, or ticks over data that may still be
+    // being erased.
+    await expect(dispatchRuntime({ type: 'getSnapshot' })).resolves.toEqual({
+      ok: false,
+      error: expect.stringContaining('invalid data clear journal'),
+    });
+    expect(mocks.tickCalls).toBe(0);
+    expect(installMarkerWrites()).toEqual([]);
+    expect(mocks.localState[LOCAL_DATA_CLEAR_JOURNAL]).toEqual({
+      scope: 'all',
+      phase: 'nonsense',
+    });
+  });
+
+  it('appends a lifecycle event to the journal instead of writing a marker', async (): Promise<void> => {
+    mocks.persistDeviceIdOnGet = false;
+    seedBrowserReset();
+    await finishBoot();
+
+    await installedListener()({
+      reason: 'update',
+      previousVersion: '0.9.0',
+    } as chrome.runtime.InstalledDetails);
+    await vi.waitFor((): void => {
+      expect(storedJournal()?.pendingInstallLifecycleIntents).toHaveLength(1);
+    });
+
+    expect(storedJournal()?.pendingInstallLifecycleIntents[0]).toMatchObject({
+      reason: 'update',
+      previousVersion: '0.9.0',
+      currentVersion: 'unknown',
+    });
+    expect(mocks.localState[LOCAL_INSTALL_MARKER]).toEqual(cleanMarker());
+  });
+
+  it('writes nothing in the frame the lifecycle callback runs in', async (): Promise<void> => {
+    mocks.persistDeviceIdOnGet = false;
+    seedBrowserReset();
+    await finishBoot();
+    vi.mocked(chrome.storage.local.set).mockClear();
+
+    installedListener()({ reason: 'install' } as chrome.runtime.InstalledDetails);
+
+    // The Chrome boundary: a worker torn down here loses the event, and nothing durable is half
+    // written, because the submission's first write happens in a later turn.
+    expect(chrome.storage.local.set).not.toHaveBeenCalled();
+  });
+
+  it('replays a captured event into the final marker before the clear ends', async (): Promise<void> => {
+    mocks.persistDeviceIdOnGet = true;
+    seedBrowserReset({
+      pendingInstallLifecycleIntents: [
+        {
+          version: 1,
+          eventId: EVENT_ID,
+          reason: 'update',
+          currentVersion: '1.1.0',
+          previousVersion: '1.0.0',
+          observedAt: Date.now(),
+        },
+      ],
+    });
+
+    await finishBoot();
+
+    expect(storedJournal()).toBeUndefined();
+    expect(mocks.localState[LOCAL_INSTALL_MARKER]).toEqual(
+      cleanMarker({ latestReason: 'update', extensionVersion: '1.1.0' }),
+    );
+  });
+
+  it('applies a lifecycle event immediately once no clear owns the marker', async (): Promise<void> => {
+    setCompleteLocalPolicy();
+    mocks.localState[LOCAL_RUNTIME] = emptyRuntimeV2(Date.now(), TEST_EPOCH);
+    await finishBoot();
+
+    await installedListener()({
+      reason: 'update',
+      previousVersion: '0.9.0',
+    } as chrome.runtime.InstalledDetails);
+    await vi.waitFor((): void => {
+      expect(mocks.localState[LOCAL_INSTALL_MARKER]).toMatchObject({ latestReason: 'update' });
+    });
+
+    expect(storedJournal()).toBeUndefined();
+  });
+
+  it('routes the retry alarm to the dispatcher rather than to the engine', async (): Promise<void> => {
+    mocks.persistDeviceIdOnGet = false;
+    seedBrowserReset();
+    await finishBoot();
+    expect(storedJournal()).toBeDefined();
+
+    mocks.persistDeviceIdOnGet = true;
+    if (mocks.alarmListener === null) throw new Error('alarm listener was not registered');
+    mocks.alarmListener({
+      name: 'data-clear-retry',
+      persistAcrossSessions: false,
+      scheduledTime: Date.now(),
+    });
+    await vi.waitFor((): void => {
+      expect(storedJournal()).toBeUndefined();
+    });
+
+    expect(mocks.handledAlarms).not.toContain('data-clear-retry');
+  });
+
+  it('refuses a manual retry while the clear still has attempts scheduled', async (): Promise<void> => {
+    mocks.persistDeviceIdOnGet = false;
+    seedBrowserReset();
+    await finishBoot();
+
+    await expect(routerServices().retryDataClear()).resolves.toBe('retry-not-available');
+  });
+
+  it('begins a new batch for an exhausted clear and runs it', async (): Promise<void> => {
+    mocks.persistDeviceIdOnGet = false;
+    seedBrowserReset({
+      retry: { batch: 1, automaticAttempt: 12, nextAttemptAt: null, lastError: 'reset-deadline' },
+    });
+    await finishBoot();
+    expect(storedJournal()?.retry.nextAttemptAt).toBeNull();
+
+    mocks.persistDeviceIdOnGet = true;
+    await expect(routerServices().retryDataClear()).resolves.toBe('ok');
+
+    expect(storedJournal()).toBeUndefined();
+  });
+
+  it('answers a second arrival while the clear holds the lease', async (): Promise<void> => {
+    // A document the reset cannot reach keeps every attempt unstable, so a dispatch that ran twice
+    // would leave two attempt starts behind rather than skipping the second.
+    const queryTabs: { mockResolvedValue(tabs: chrome.tabs.Tab[]): void } = vi.mocked(
+      chrome.tabs.query,
+    ) as unknown as { mockResolvedValue(tabs: chrome.tabs.Tab[]): void };
+    queryTabs.mockResolvedValue([{ id: 5, url: 'https://facebook.com/feed' }] as chrome.tabs.Tab[]);
+    mocks.persistDeviceIdOnGet = false;
+    seedBrowserReset();
+    await finishBoot();
+    expect(storedJournal()).toBeDefined();
+    vi.mocked(chrome.storage.local.set).mockClear();
+
+    const first: Promise<void> = routerServices().continueAllDataClear();
+    const second: Promise<void> = routerServices().continueAllDataClear();
+    await Promise.all([first, second]);
+
+    expect(attemptStarts()).toHaveLength(1);
   });
 });

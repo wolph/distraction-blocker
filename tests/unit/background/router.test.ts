@@ -91,6 +91,9 @@ function onboardingStorage(
     deleteRemoteData: vi.fn().mockResolvedValue(undefined),
     clearLocalHistory: vi.fn().mockResolvedValue(undefined),
     finishLocalHistoryClear: vi.fn().mockResolvedValue(undefined),
+    allDataClearPublicState: vi
+      .fn()
+      .mockResolvedValue({ status: 'idle', scope: null, phase: null }),
     ...overrides,
   } as unknown as PolicyStorage;
 }
@@ -323,6 +326,61 @@ describe('routeMessage onboarding wiring', (): void => {
     expect(setupEngine.updateSettings).toHaveBeenCalledWith(authoritative.settings);
     expect(setupEngine.updateLists).toHaveBeenCalledWith(authoritative.lists);
     expect(storage.markSetupCompleted).toHaveBeenCalledOnce();
+  });
+
+  it('publishes a running all-data clear over an idle materialized Setup', async (): Promise<void> => {
+    // Browser reset materializes the clean Setup from its own projection while the clear is still
+    // running, so the stored record says idle and the journal says otherwise.
+    const setup: SetupState = { ...DEFAULT_SETUP, websiteAccess: 'denied' };
+    const storage: PolicyStorage = onboardingStorage({
+      loadSetup: vi.fn().mockResolvedValue(setup),
+      allDataClearPublicState: vi
+        .fn()
+        .mockResolvedValue({ status: 'pending', scope: 'all', phase: 'browser-reset' }),
+    });
+
+    await expect(routeMessage(engine, { type: 'getSetupState' }, sender, storage)).resolves.toEqual(
+      { ...setup, dataClear: { status: 'pending', scope: 'all', phase: 'browser-reset' } },
+    );
+  });
+
+  it('answers a retry request from the dispatcher', async (): Promise<void> => {
+    const retryDataClear = vi.fn().mockResolvedValue('ok');
+
+    await expect(
+      routeMessage(engine, { type: 'retryDataClear' }, sender, onboardingStorage(), {
+        reconcileWebsiteAccess: vi.fn(),
+        removeOnboardingDraft: vi.fn(),
+        reportError: vi.fn(),
+        retryDataClear,
+      }),
+    ).resolves.toEqual({ ok: true, code: 'ok' });
+    expect(retryDataClear).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a retry the dispatcher has nothing to begin', async (): Promise<void> => {
+    await expect(
+      routeMessage(engine, { type: 'retryDataClear' }, sender, onboardingStorage(), {
+        reconcileWebsiteAccess: vi.fn(),
+        removeOnboardingDraft: vi.fn(),
+        reportError: vi.fn(),
+        retryDataClear: vi.fn().mockResolvedValue('retry-not-available'),
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      code: 'retry-not-available',
+      error: 'Data clear retry is not available.',
+    });
+  });
+
+  it('refuses a retry when no dispatcher is bound', async (): Promise<void> => {
+    await expect(
+      routeMessage(engine, { type: 'retryDataClear' }, sender, onboardingStorage()),
+    ).resolves.toEqual({
+      ok: false,
+      code: 'retry-not-available',
+      error: 'Data clear retry is not available.',
+    });
   });
 
   it('returns setup state without exposing a broad setup writer', async (): Promise<void> => {
@@ -964,6 +1022,54 @@ describe('routeMessage onboarding wiring', (): void => {
     ).resolves.toEqual({ ok: true, scope: 'all', status: 'cleared' });
     expect(order).toEqual(['local', 'delete', 'reconcile']);
     expect(storage.deleteRemoteData).toHaveBeenCalledWith('all');
+  });
+
+  it('hands the rest of an all-data clear to the dispatcher before it reconciles', async (): Promise<void> => {
+    const order: string[] = [];
+    const storage: PolicyStorage = onboardingStorage({
+      deleteRemoteData: vi.fn(async (): Promise<void> => {
+        order.push('delete');
+      }),
+    });
+    const continueAllDataClear = vi.fn(async (): Promise<void> => {
+      order.push('dispatch');
+    });
+
+    await expect(
+      routeMessage({} as Engine, { type: 'clearFocusLockData', scope: 'all' }, sender, storage, {
+        reconcileWebsiteAccess: vi.fn(async () => {
+          order.push('reconcile');
+          return { permission: 'granted' as const, status: 'ready' as const };
+        }),
+        removeOnboardingDraft: vi.fn(),
+        reportError: vi.fn(),
+        continueAllDataClear,
+      }),
+    ).resolves.toEqual({ ok: true, scope: 'all', status: 'cleared' });
+    // The creation seam opens the journal and runs the phases it owns. The browser reset and the
+    // finalization are the dispatcher's, and they run before the answer leaves the router.
+    expect(order).toEqual(['delete', 'dispatch', 'reconcile']);
+  });
+
+  it('reports a dispatcher failure as a clear that is still pending', async (): Promise<void> => {
+    const storage: PolicyStorage = onboardingStorage();
+    const setupCompleted = vi.fn();
+
+    await expect(
+      routeMessage({} as Engine, { type: 'clearFocusLockData', scope: 'all' }, sender, storage, {
+        reconcileWebsiteAccess: vi.fn(),
+        removeOnboardingDraft: vi.fn(),
+        reportError: vi.fn(),
+        setupCompleted,
+        continueAllDataClear: vi.fn().mockRejectedValue(new Error('browser reset unavailable')),
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: 'browser reset unavailable',
+      scope: 'all',
+      status: 'pending',
+    });
+    expect(setupCompleted).toHaveBeenCalledExactlyOnceWith(false);
   });
 
   it('preserves data and does not reconcile when all-data remote deletion fails', async (): Promise<void> => {

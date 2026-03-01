@@ -17,6 +17,7 @@ import type {
   StorageMode,
 } from '../shared/types';
 import { playSound } from './audio';
+import type { AllDataClearPublicState } from './data-clear-journal';
 import type { Engine } from './engine';
 import { readEventsV2 } from './event-log-v2';
 import type { PolicyStorage } from './policy-storage';
@@ -34,6 +35,13 @@ export interface OnboardingRouterServices {
   removeOnboardingDraft(): Promise<void>;
   reportError(error: unknown): void;
   setupCompleted?(completed: boolean): void;
+  /** The phase-aware manual retry of an exhausted all-data clear, through Main's dispatcher. */
+  retryDataClear?(): Promise<'ok' | 'retry-not-available'>;
+  /**
+   * Runs whatever the all-data clear owes after the creation seam has done the phases it owns.
+   * Main's dispatcher is the only caller of the browser reset and of finalization.
+   */
+  continueAllDataClear?(): Promise<void>;
 }
 
 async function completeSetupPolicy(
@@ -122,8 +130,15 @@ export async function routeMessage(
       // the mutation queue made this reject for the whole of any storage transition, which is
       // exactly the window the popup has to render the clear it is waiting on.
       return engine.snapshot();
-    case 'getSetupState':
-      return requirePolicyStorage(policyStorage).loadSetup();
+    case 'getSetupState': {
+      const storage: PolicyStorage = requirePolicyStorage(policyStorage);
+      const setup: SetupState = await storage.loadSetup();
+      // The journal outranks the Setup record it mirrors. Browser reset materializes an idle Setup
+      // from the journal's own projection, so a clear that is still running would otherwise
+      // publish as finished for exactly as long as it has left to run.
+      const allData: AllDataClearPublicState = await storage.allDataClearPublicState();
+      return allData.status === 'idle' ? setup : { ...setup, dataClear: allData };
+    }
     case 'openOnboarding': {
       const open: (() => Promise<void>) | undefined =
         requireOnboardingServices(onboardingServices).openOnboarding;
@@ -305,7 +320,10 @@ export async function routeMessage(
       }
       try {
         if ((await storage.storageMode()) === 'sync') await storage.selectLocalMode();
+        // The creation seam opens the journal and runs the phases Policy Storage owns. Everything
+        // after them, the browser reset and the finalization, belongs to Main's dispatcher.
         await storage.deleteRemoteData(msg.scope);
+        await onboardingServices?.continueAllDataClear?.();
       } catch (error: unknown) {
         try {
           const setup: SetupState = await storage.loadSetup();
@@ -383,13 +401,20 @@ export async function routeMessage(
       return engine.retryTransitionCleanup();
     case 'retryClosureCleanup':
       return engine.retryClosureCleanup();
-    case 'retryDataClear':
-      // The all-data journal slice replaces this stub with the real retry.
-      return {
-        ok: false,
-        code: 'retry-not-available',
-        error: 'Data clear retry is not available.',
-      };
+    case 'retryDataClear': {
+      const retry: (() => Promise<'ok' | 'retry-not-available'>) | undefined =
+        onboardingServices?.retryDataClear;
+      // A worker with no dispatcher bound has no clear to retry, which is the same answer an
+      // unexhausted journal gets: there is nothing here for the button to begin.
+      if (retry === undefined || (await retry()) === 'retry-not-available') {
+        return {
+          ok: false,
+          code: 'retry-not-available',
+          error: 'Data clear retry is not available.',
+        };
+      }
+      return { ok: true, code: 'ok' };
+    }
     case 'updateSettings':
       return engine.updateSettings(msg.settings);
     case 'updateTheme':

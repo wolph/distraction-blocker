@@ -260,6 +260,8 @@ export class Engine {
     [];
   private runtimePersistQueue: Promise<void> = Promise.resolve();
   private activeRuntimeMutationLeases: Set<RuntimeMutationLease> = new Set();
+  /** Depth of the synchronous frames of runtime-mutation callbacks running right now. */
+  private runtimeMutationFrames: number = 0;
   private runtimeMutationsInFlight: Set<Promise<void>> = new Set();
   private deferredBlockingSweep: DeferredBlockingSweep | null = null;
   private deferredBlockingSweepRequested = false;
@@ -489,6 +491,16 @@ export class Engine {
 
   applyBlockingNow(): Promise<void> {
     return this.applyBlockingWithLease();
+  }
+
+  /**
+   * True only inside the synchronous frame of a runtime-mutation callback. Main binds this as the
+   * deletion lease's lock-order predicate, so an acquisition attempted from inside such a callback
+   * is refused as the lock-order failure it is, while a mutation that is merely in flight, which
+   * the barrier drains on its own, leaves a legitimate acquisition alone.
+   */
+  runtimeMutationFrameHeld(): boolean {
+    return this.runtimeMutationFrames > 0;
   }
 
   runWithRuntimeMutationLease<T>(
@@ -721,6 +733,11 @@ export class Engine {
   }
 
   async startSession(config: SessionConfig): Promise<StartSessionResponseV2> {
+    // A profile that is being erased has no session to start, and the queue behind this barrier
+    // would refuse the write anyway, with a message the popup cannot render.
+    if (this.allDataClearPending) {
+      return { ok: false, code: 'data-clear-pending', error: 'data-clear-pending' };
+    }
     return this.enqueuePolicyMutation(async (): Promise<StartSessionResponseV2> => {
       const response: StartSessionResponseV2 = await this.controller.startSession(config);
       await this.sweepAfterPhaseChange();
@@ -2028,13 +2045,23 @@ export class Engine {
   ): Promise<T> {
     const lease: RuntimeMutationLease = {} as RuntimeMutationLease;
     this.activeRuntimeMutationLeases.add(lease);
-    const requested: Promise<T> = (async (): Promise<T> => {
-      try {
-        return await operation(lease);
-      } finally {
-        this.activeRuntimeMutationLeases.delete(lease);
-      }
-    })();
+    // The frame counter covers the callback's synchronous prefix and nothing else, which is the
+    // one window where a nested deletion-lease acquisition is distinguishable from a second
+    // acquirer that legitimately queues. Counting mutations still in flight instead would refuse a
+    // clear the user asked for whenever an unrelated commit happened to overlap it.
+    this.runtimeMutationFrames += 1;
+    let requested: Promise<T>;
+    try {
+      requested = (async (): Promise<T> => {
+        try {
+          return await operation(lease);
+        } finally {
+          this.activeRuntimeMutationLeases.delete(lease);
+        }
+      })();
+    } finally {
+      this.runtimeMutationFrames -= 1;
+    }
     const settled: Promise<void> = requested.then(
       (): void => undefined,
       (): void => undefined,

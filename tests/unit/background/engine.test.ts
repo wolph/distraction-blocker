@@ -1089,7 +1089,11 @@ describe('Engine', () => {
     h.setNow(T0 + 2 * 60_000);
 
     await expect(h.engine.tick()).rejects.toThrow('data clear');
-    await expect(h.engine.startSession(manualConfig)).rejects.toThrow('data clear');
+    await expect(h.engine.startSession(manualConfig)).resolves.toEqual({
+      ok: false,
+      code: 'data-clear-pending',
+      error: 'data-clear-pending',
+    });
     await expect(
       h.engine.recordAttempt('https://facebook.com/feed', 1, 'navigation'),
     ).rejects.toThrow('data clear');
@@ -1328,7 +1332,11 @@ describe('Engine', () => {
     await h.engine.startSession(manualConfig);
     await h.engine.retainDataClearQuiescence();
 
-    await expect(h.engine.startSession(manualConfig)).rejects.toThrow('data clear');
+    await expect(h.engine.startSession(manualConfig)).resolves.toEqual({
+      ok: false,
+      code: 'data-clear-pending',
+      error: 'data-clear-pending',
+    });
     await h.engine.runWithDataClearBarrier((): Promise<void> => Promise.resolve());
 
     expect(h.engine.hasActiveSession()).toBe(false);
@@ -1526,7 +1534,11 @@ describe('Engine', () => {
         (): boolean => true,
       ),
     ).rejects.toThrow('remote deletion unavailable');
-    await expect(h.engine.startSession(manualConfig)).rejects.toThrow('data clear');
+    await expect(h.engine.startSession(manualConfig)).resolves.toEqual({
+      ok: false,
+      code: 'data-clear-pending',
+      error: 'data-clear-pending',
+    });
     await expect(
       h.engine.runWithDataClearBarrier(
         (): Promise<void> => Promise.resolve(),

@@ -3,12 +3,14 @@ import { emptyStreak } from '../core/streak';
 import { DEFAULT_SETTINGS } from '../shared/constants';
 import type { DocumentContentCommand } from '../shared/enforcement-v2';
 import { CoreError } from '../shared/errors';
+import { exactDataEqual } from '../shared/exact-data';
 import type { Request, SoundId } from '../shared/messages';
 import { WEBSITE_ORIGINS } from '../shared/permissions';
 import { isInstallMarker, isListsConfig, isSettings } from '../shared/runtime-validation';
 import {
   LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS,
   LOCAL_CACHES,
+  LOCAL_DATA_CLEAR_JOURNAL,
   LOCAL_DEVICE_ID,
   LOCAL_EVENTS,
   LOCAL_FIRST_SYNC_PUBLICATION,
@@ -18,6 +20,7 @@ import {
   LOCAL_RUNTIME,
   LOCAL_RUNTIME_MIGRATION,
   LOCAL_RUNTIME_SCHEMA,
+  LOCAL_SETUP,
   LOCAL_SYNC_JOURNAL,
   LOCAL_SYNC_QUOTA_EVICTION,
   SYNC_BANK,
@@ -43,6 +46,8 @@ import type {
 import {
   type AlarmNameV2,
   type AlarmPortsV2,
+  createAlarmWithReadBackV2,
+  DATA_CLEAR_RETRY_ALARM,
   ensureTickAlarmV2,
   type ScheduledAlarmV2,
 } from './alarms-v2';
@@ -52,9 +57,40 @@ import {
   contentScriptFile,
   reconcileContentRegistrationState,
 } from './content-registration';
-import { Engine, type EnginePorts } from './engine';
+import {
+  type AllDataClearJournalV2,
+  type DataClearJournal,
+  type DataClearResetIdsV2,
+  type FinalInstallMarkerProjection,
+  isLegacyAllDataClearJournal,
+  type LegacyAllDataClearJournal,
+  type PendingInstallLifecycleIntent,
+  parseDataClearJournal,
+  upgradeLegacyAllDataClearJournal,
+} from './data-clear-journal';
+import {
+  type AllDataClearLease,
+  createAllDataClearLease,
+  type DataClearLeaseToken,
+  transactDataClearJournal,
+} from './data-clear-lease';
+import {
+  type AllDataClearFinalizationV2,
+  type BrowserResetAttemptResultV2,
+  type BrowserResetPortsV2,
+  finalizeAllDataClearV2,
+  retryBrowserResetV2,
+  runBrowserResetAttemptV2,
+} from './data-clear-reset-v2';
+import { type BrowserResetEngineSeamV2, Engine, type EnginePorts } from './engine';
 import { appendEventsV2 } from './event-log-v2';
 import { updateIcon } from './icon';
+import {
+  appendOrApplyInstallLifecycle,
+  captureInstallLifecycleIntent,
+  type InstallLifecycleSubmissionV2,
+  replayLifecycleIntentsV2,
+} from './install-lifecycle-v2';
 import {
   decodeListsSyncSnapshot,
   encodeListsForSync,
@@ -63,7 +99,12 @@ import {
   type ListsSyncEncoding,
 } from './list-sync-codec';
 import { createOnboardingService, type OnboardingService } from './onboarding';
-import { createPolicyStorage, type PolicySnapshot, type PolicyStorage } from './policy-storage';
+import {
+  createPolicyStorage,
+  type PolicySnapshot,
+  type PolicyStorage,
+  type PolicyStorageDataClearPorts,
+} from './policy-storage';
 import { parseRequest } from './request-validation';
 import { routeMessage } from './router';
 import {
@@ -449,30 +490,331 @@ async function classifyInstallProfile(): Promise<InstallMarker> {
   return verified;
 }
 
-async function persistCleanInstallMarker(): Promise<void> {
-  const marker: InstallMarker = {
-    version: 1,
-    profile: 'clean',
-    latestReason: 'install',
-    extensionVersion: chrome.runtime.getManifest?.().version ?? 'unknown',
-  };
-  await chrome.storage.local.set({ [LOCAL_INSTALL_MARKER]: marker });
-  const verified: unknown = (await chrome.storage.local.get(LOCAL_INSTALL_MARKER))[
-    LOCAL_INSTALL_MARKER
-  ];
-  if (!isInstallMarker(verified) || verified.profile !== 'clean') {
-    throw new Error('could not persist clean install profile after data reset');
-  }
-}
-
-async function updateInstallMarker(details: chrome.runtime.InstalledDetails): Promise<void> {
+/**
+ * The normal path for a lifecycle event: classify, then record what the event meant. It runs only
+ * when no all-data journal exists, because a clear owns the marker from the moment it opens one.
+ */
+async function applyInstallLifecycleImmediately(
+  intent: PendingInstallLifecycleIntent,
+): Promise<void> {
   const marker: InstallMarker = await classifyInstallProfile();
   const next: InstallMarker = {
     ...marker,
-    latestReason: details.reason === 'update' ? 'update' : 'install',
-    extensionVersion: chrome.runtime.getManifest?.().version ?? marker.extensionVersion,
+    latestReason: intent.reason === 'update' ? 'update' : 'install',
+    extensionVersion: intent.currentVersion,
   };
   await chrome.storage.local.set({ [LOCAL_INSTALL_MARKER]: next });
+}
+
+/**
+ * Writes the marker one replayed intent produced and proves it, which is the middle step of the
+ * replay: the journal already holds this exact projection, and the intent is removed only after
+ * this read comes back equal.
+ */
+async function materializeFinalInstallMarker(marker: FinalInstallMarkerProjection): Promise<void> {
+  await chrome.storage.local.set({ [LOCAL_INSTALL_MARKER]: marker });
+  const stored: unknown = (await chrome.storage.local.get(LOCAL_INSTALL_MARKER))[
+    LOCAL_INSTALL_MARKER
+  ];
+  if (!exactDataEqual(stored, marker)) {
+    throw new CoreError('storage', 'the replayed install marker did not read back');
+  }
+}
+
+/** What one dispatch of the all-data clear left behind. */
+type AllDataClearDispatchV2 = 'idle' | 'busy' | 'pending' | 'removed';
+
+/** How far the phases this worker runs under one acquisition got. */
+type AllDataClearPhaseRunV2 = 'idle' | 'stable' | 'unfinished';
+
+/** Remote, local, and the browser-reset verdict: three answers is the whole ladder. */
+const ALL_DATA_PHASE_STEPS: number = 3;
+
+/** The seam Policy Storage transacts the all-data journal through. */
+function policyStorageDataClearPorts(lease: AllDataClearLease): PolicyStorageDataClearPorts {
+  return {
+    lease,
+    newId: (): string => crypto.randomUUID(),
+    now: (): number => Date.now(),
+    manifestVersion: (): string => chrome.runtime.getManifest?.().version ?? 'unknown',
+  };
+}
+
+/**
+ * The stored journal, read without the lease. It decides only how this boot publishes and which
+ * phase runs next, and every effect that follows rereads it under the token that owns it.
+ */
+async function storedDataClearJournal(): Promise<
+  DataClearJournal | LegacyAllDataClearJournal | null
+> {
+  const stored: Record<string, unknown> = await chrome.storage.local.get(LOCAL_DATA_CLEAR_JOURNAL);
+  const raw: unknown = stored[LOCAL_DATA_CLEAR_JOURNAL];
+  if (raw === undefined) return null;
+  const parsed: DataClearJournal | LegacyAllDataClearJournal | null = parseDataClearJournal(raw);
+  if (parsed === null)
+    throw new CoreError('storage', 'the stored data clear journal failed parsing');
+  return parsed;
+}
+
+/**
+ * True while an all-data clear is unfinished, whatever the materialized Setup happens to say.
+ *
+ * A stored value no parser accepts is reported and answered as unfinished. Nothing may classify a
+ * profile, import legacy policy, or publish an idle lifecycle over a deletion state that cannot be
+ * read, and the phases themselves raise on the same value rather than acting on it.
+ */
+async function allDataClearUnfinished(): Promise<boolean> {
+  try {
+    const journal: DataClearJournal | LegacyAllDataClearJournal | null =
+      await storedDataClearJournal();
+    return journal !== null && journal.scope === 'all';
+  } catch (error: unknown) {
+    reportBackgroundError(error);
+    return true;
+  }
+}
+
+/**
+ * Recovery step 1: the journal is read under the token, and a legacy value becomes version 2 in
+ * the same transaction, before any phase reads it again.
+ */
+async function readUpgradedAllDataJournal(
+  lease: AllDataClearLease,
+  token: DataClearLeaseToken,
+): Promise<AllDataClearJournalV2 | null> {
+  const ids: DataClearResetIdsV2 = {
+    resetEpoch: crypto.randomUUID(),
+    resetOperationId: crypto.randomUUID(),
+  };
+  const current: DataClearJournal | null = await transactDataClearJournal(
+    lease,
+    token,
+    (
+      stored: DataClearJournal | LegacyAllDataClearJournal | null,
+    ): DataClearJournal | 'unchanged' => {
+      if (stored === null || stored.scope !== 'all') return 'unchanged';
+      return isLegacyAllDataClearJournal(stored)
+        ? upgradeLegacyAllDataClearJournal(stored, ids, Date.now())
+        : 'unchanged';
+    },
+  );
+  if (current === null || current.scope !== 'all' || isLegacyAllDataClearJournal(current)) {
+    return null;
+  }
+  return current;
+}
+
+/**
+ * Main's half of the browser reset. `replayLifecycleIntents` is the named adapter from the port
+ * Engine and the reset module call to the replay this worker owns: it runs under the token it is
+ * given, never acquires, and reports a failure as a failed step rather than a thrown clear.
+ */
+function browserResetSeam(lease: AllDataClearLease): BrowserResetEngineSeamV2 {
+  return {
+    lease,
+    readMaterialized: async (): Promise<{
+      runtime: unknown;
+      setup: unknown;
+      installMarker: unknown;
+    }> => {
+      const stored: Record<string, unknown> = await chrome.storage.local.get([
+        LOCAL_RUNTIME,
+        LOCAL_SETUP,
+        LOCAL_INSTALL_MARKER,
+      ]);
+      return {
+        runtime: stored[LOCAL_RUNTIME],
+        setup: stored[LOCAL_SETUP],
+        installMarker: stored[LOCAL_INSTALL_MARKER],
+      };
+    },
+    deviceIdExists: async (): Promise<boolean> => {
+      const stored: Record<string, unknown> = await chrome.storage.local.get(LOCAL_DEVICE_ID);
+      return typeof stored[LOCAL_DEVICE_ID] === 'string';
+    },
+    ensureDeviceId: (): Promise<string> => getDeviceId(),
+    replayLifecycleIntents: async (token: DataClearLeaseToken): Promise<'complete' | 'failed'> => {
+      try {
+        return await replayLifecycleIntentsV2(lease, token, materializeFinalInstallMarker);
+      } catch (error: unknown) {
+        reportBackgroundError(error);
+        return 'failed';
+      }
+    },
+  };
+}
+
+/** The same seam, plus the browser surfaces Engine would have contributed, for a boot with none. */
+function browserResetPorts(lease: AllDataClearLease): BrowserResetPortsV2 {
+  const seam: BrowserResetEngineSeamV2 = browserResetSeam(lease);
+  return {
+    ...seam,
+    now: (): number => Date.now(),
+    newId: (): string => crypto.randomUUID(),
+    targets: enforcementTargetPortsV2(),
+    transport: {
+      sendToDocument: (
+        tabId: number,
+        documentId: string,
+        message: DocumentContentCommand,
+      ): Promise<unknown> => chrome.tabs.sendMessage(tabId, message, { documentId }),
+    },
+    alarms: chromeAlarmPortsV2(),
+    reportError: reportBackgroundError,
+  };
+}
+
+/**
+ * The attempt goes through Engine when one exists, because a live worker's reset must hold the
+ * barrier Engine owns, and through the module directly during a boot that has not built one yet.
+ */
+async function runBrowserResetAttempt(
+  lease: AllDataClearLease,
+  token: DataClearLeaseToken,
+): Promise<BrowserResetAttemptResultV2> {
+  return engineInstance === null
+    ? runBrowserResetAttemptV2(browserResetPorts(lease), token)
+    : engineInstance.runBrowserResetAttempt(token);
+}
+
+/** Finalization acquires the lease itself, so it is called with none held. */
+async function finalizeAllDataClear(lease: AllDataClearLease): Promise<AllDataClearFinalizationV2> {
+  return engineInstance === null
+    ? finalizeAllDataClearV2(browserResetPorts(lease))
+    : engineInstance.finalizeAllDataClear();
+}
+
+/**
+ * Every phase this worker owns, under the one acquisition the dispatcher made. Policy Storage runs
+ * remote and local and advances the journal; browser reset materializes what the journal projects
+ * and then resolves the documents. A reset that is already stable is not re-run: it only needs the
+ * clean identity, which is idempotent, before finalization can read it back.
+ */
+async function runAllDataClearPhases(
+  storage: PolicyStorage,
+  lease: AllDataClearLease,
+  token: DataClearLeaseToken,
+): Promise<AllDataClearPhaseRunV2> {
+  const opened: AllDataClearJournalV2 | null = await readUpgradedAllDataJournal(lease, token);
+  if (opened === null) return 'idle';
+  for (let step: number = 0; step < ALL_DATA_PHASE_STEPS; step += 1) {
+    const ran: 'remote' | 'local' | 'browser-reset' | 'none' =
+      await storage.runAllDataClearPhase(token);
+    if (ran === 'none') return 'idle';
+    if (ran === 'browser-reset') break;
+  }
+  await storage.materializeBrowserResetProjections(token);
+  const current: AllDataClearJournalV2 | null = await readUpgradedAllDataJournal(lease, token);
+  if (current === null) return 'idle';
+  if (current.resetProgress?.stablePasses === 2) {
+    await browserResetSeam(lease).ensureDeviceId();
+    return 'stable';
+  }
+  const attempt: BrowserResetAttemptResultV2 = await runBrowserResetAttempt(lease, token);
+  return attempt === 'stable' ? 'stable' : 'unfinished';
+}
+
+/**
+ * The one entry point for the all-data clear, wherever the wake came from: this boot, the Settings
+ * request that created the journal, or the retry alarm. A second arrival while the lease is held
+ * answers `busy` rather than running the same phase twice.
+ */
+async function dispatchAllDataClear(
+  storage: PolicyStorage,
+  lease: AllDataClearLease,
+): Promise<AllDataClearDispatchV2> {
+  if (lease.held()) return 'busy';
+  let reached: AllDataClearPhaseRunV2 = 'unfinished';
+  let finalization: AllDataClearFinalizationV2 | null = null;
+  try {
+    reached = await lease.run(
+      (token: DataClearLeaseToken): Promise<AllDataClearPhaseRunV2> =>
+        runAllDataClearPhases(storage, lease, token),
+    );
+    // Finalization acquires the lease for itself, so it runs after the phases have released it.
+    if (reached === 'stable') finalization = await finalizeAllDataClear(lease);
+  } catch (error: unknown) {
+    // A failed phase has already recorded itself in the journal's retry state, and the journal is
+    // the authority for what happens next, so the throw is reported and the retry is armed.
+    reportBackgroundError(error);
+  }
+  if (finalization === 'removed') return 'removed';
+  if (reached === 'idle' && finalization === null) return 'idle';
+  await armDataClearRetryAlarm();
+  return (await allDataClearUnfinished()) ? 'pending' : 'idle';
+}
+
+/**
+ * The wake that carries the next attempt. The browser-reset phase arms its own alarm inside its
+ * retry, so this covers the phases Policy Storage owns, and re-arming an alarm that already reads
+ * back at the same instant is what makes it safe to call after every dispatch.
+ */
+async function armDataClearRetryAlarm(): Promise<void> {
+  try {
+    const journal: DataClearJournal | LegacyAllDataClearJournal | null =
+      await storedDataClearJournal();
+    if (journal === null || journal.scope !== 'all' || isLegacyAllDataClearJournal(journal)) return;
+    const at: number | null = journal.retry.nextAttemptAt;
+    if (at === null) return;
+    const armed: boolean = await createAlarmWithReadBackV2(
+      chromeAlarmPortsV2(),
+      DATA_CLEAR_RETRY_ALARM,
+      at,
+    );
+    if (!armed) {
+      reportBackgroundError(new CoreError('storage', 'the data clear retry alarm was refused'));
+    }
+  } catch (error: unknown) {
+    reportBackgroundError(error);
+  }
+}
+
+/**
+ * The manual retry, phase by phase. An unfinished journal is already going to be retried on its own
+ * schedule, so only an exhausted one has anything to begin, which is exactly what the popup and
+ * Settings offer the button for.
+ */
+async function retryAllDataClear(
+  storage: PolicyStorage,
+  lease: AllDataClearLease,
+): Promise<'ok' | 'retry-not-available'> {
+  if (lease.held()) return 'retry-not-available';
+  const begun: 'ok' | 'retry-not-available' = await lease.run(
+    async (token: DataClearLeaseToken): Promise<'ok' | 'retry-not-available'> => {
+      const journal: AllDataClearJournalV2 | null = await readUpgradedAllDataJournal(lease, token);
+      if (journal === null) return 'retry-not-available';
+      if (journal.retry.lastError === null || journal.retry.nextAttemptAt !== null) {
+        return 'retry-not-available';
+      }
+      return journal.phase === 'browser-reset'
+        ? retryBrowserResetV2(browserResetPorts(lease), token)
+        : storage.retryAllDataClear(token);
+    },
+  );
+  if (begun === 'retry-not-available') return begun;
+  await dispatchAllDataClear(storage, lease);
+  return 'ok';
+}
+
+/**
+ * One captured lifecycle event, submitted once. With a journal it becomes a durable record and
+ * nothing else happens; without one it takes the immediate marker path. A full list is a durable
+ * failure the journal records, and it is reported here rather than swallowed.
+ */
+async function submitInstallLifecycle(
+  lease: AllDataClearLease,
+  intent: PendingInstallLifecycleIntent,
+): Promise<void> {
+  const submission: InstallLifecycleSubmissionV2 = await appendOrApplyInstallLifecycle(
+    lease,
+    intent,
+    (): Promise<void> => applyInstallLifecycleImmediately(intent),
+  );
+  if (submission === 'capacity') {
+    reportBackgroundError(
+      new CoreError('storage', 'the pending install lifecycle intent list is full'),
+    );
+  }
 }
 
 function effectiveLegacyValue(
@@ -484,8 +826,12 @@ function effectiveLegacyValue(
   return Object.hasOwn(journal.sets, key) ? journal.sets[key] : stored[key];
 }
 
-async function preparePolicyStorage(): Promise<PolicyStorage> {
-  const marker: InstallMarker = await classifyInstallProfile();
+/**
+ * Recovery steps 1 through 4. Policy Storage is initialized, the all-data journal decides this
+ * boot, and only a read that proves the journal is gone lets classification, the legacy import,
+ * and the rest of the boot run. Nothing classifies or publishes over a profile being erased.
+ */
+async function preparePolicyStorage(lease: AllDataClearLease): Promise<PolicyStorage> {
   const storage: PolicyStorage = createPolicyStorage(
     chrome.storage.local,
     chrome.storage.sync,
@@ -525,9 +871,12 @@ async function preparePolicyStorage(): Promise<PolicyStorage> {
           ? operation()
           : engineInstance.runWithDataClearBarrier(operation, retainQuiescence),
     },
+    policyStorageDataClearPorts(lease),
   );
   await storage.initialize();
-  if (storage.allDataClearCompleted()) await persistCleanInstallMarker();
+  await dispatchAllDataClear(storage, lease);
+  if (await allDataClearUnfinished()) return storage;
+  const marker: InstallMarker = await classifyInstallProfile();
   const recoveredSetup: SetupState = await storage.loadSetup();
   if (recoveredSetup.dataClear.status !== 'idle') return storage;
   if (marker.profile === 'clean') {
@@ -737,6 +1086,7 @@ function runtimeBootPorts(
 
 async function boot(
   policyStorage: PolicyStorage,
+  lease: AllDataClearLease,
   initialWebsiteCapability: WebsiteReconciliation,
   websiteCapability: () => ContentRegistrationState,
   initialCapabilityIsCurrent: () => boolean,
@@ -751,7 +1101,6 @@ async function boot(
   await armTickAlarm();
   await policyStorage.initialize();
   const snapshot: PolicySnapshot = await policyStorage.loadSnapshot();
-  const completedAllDataClear: boolean = policyStorage.allDataClearCompleted();
   let deviceId: string = await getDeviceId();
   const setup: SetupState = await policyStorage.loadSetup();
   if (setup.completed) {
@@ -761,13 +1110,15 @@ async function boot(
       reportBackgroundError(error);
     }
   }
-  const pendingAllDataClear: boolean =
-    setup.dataClear.status !== 'idle' && setup.dataClear.scope === 'all';
+  // The journal outlives the Setup record it mirrors: browser reset materializes an idle Setup
+  // from its own projection while the clear is still unfinished, so the journal is what this boot
+  // asks. A clear that is still running publishes nothing and resolves no runtime authority.
+  const pendingAllDataClear: boolean = await allDataClearUnfinished();
   publishSetupCompleted(setup.completed && !pendingAllDataClear);
   // One runtime authority, resolved before anything else runs. A stored migration checkpoint is
   // finished, a v2 runtime is replayed, a legacy runtime migrates once, and anything else is
   // reported and replaced by an empty v2 runtime.
-  const boot: RuntimeBootResultV2 = completedAllDataClear
+  const boot: RuntimeBootResultV2 = pendingAllDataClear
     ? { kind: 'v2', runtime: emptyRuntimeV2(now, crypto.randomUUID()), migrated: false }
     : await bootRuntimeAuthorityV2(runtimeBootPorts(policyStorage, snapshot, deviceId));
   if (boot.kind === 'rejected') {
@@ -786,7 +1137,7 @@ async function boot(
     } catch (error: unknown) {
       reportBackgroundError(error);
     }
-  } else if (!completedAllDataClear) {
+  } else if (!pendingAllDataClear) {
     // A fresh profile has nothing stored, and a rejected or migrated one must not read the old
     // value again, so the resolved authority is written before anything else runs.
     await saveRuntimeV2(runtime);
@@ -796,8 +1147,9 @@ async function boot(
   const ports: EnginePorts = {
     now: (): number => Date.now(),
     newId: (): string => crypto.randomUUID(),
+    // The install marker is the journal's projection now, written when the clear materializes it
+    // and advanced by the lifecycle replay, so the identity is all this port still owes.
     rehydrateAfterDataClear: async (): Promise<string> => {
-      await persistCleanInstallMarker();
       deviceId = await getDeviceId();
       return deviceId;
     },
@@ -857,6 +1209,7 @@ async function boot(
       ): Promise<unknown> => chrome.tabs.sendMessage(tabId, message, { documentId }),
     },
     alarms: chromeAlarmPortsV2(),
+    browserReset: browserResetSeam(lease),
     loadAggregates: (keys: readonly string[]): Promise<Record<string, DailyAgg>> =>
       loadStoredAggregates(policyStorage, keys),
     clearBlockingForNonBlockingPhase: (): Promise<void> => currentEngine().applyBlockingNow(),
@@ -913,7 +1266,6 @@ async function boot(
   // Checklist 6: the journals resolve before any alarm, message, or publication reaches the
   // controller.
   await engine.recover();
-  if (completedAllDataClear) return engine;
   await engine.tick();
   // A window that is already open belongs to this boot, not to the minute after it.
   await engine.checkSchedule();
@@ -941,6 +1293,12 @@ export function main(): void {
   let workerControlTail: Promise<void> = Promise.resolve();
   let setupCompleted: boolean = false;
   const pendingWebsiteAccessNotice: PendingWebsiteAccessNotice = { value: null };
+  // One deletion lease per worker, built before Policy Storage, Engine, install classification and
+  // the lifecycle listener, because every one of them is a caller. The predicate reads the Engine
+  // slot this module owns, which is empty until boot fills it.
+  const dataClearLease: AllDataClearLease = createAllDataClearLease((): boolean =>
+    engineInstance === null ? false : engineInstance.runtimeMutationFrameHeld(),
+  );
   const onboardingService: OnboardingService = createOnboardingService({
     loadSetup: async (): Promise<SetupState> => (await policyStorageReady).loadSetup(),
   });
@@ -1058,7 +1416,19 @@ export function main(): void {
   };
 
   chrome.runtime.onInstalled.addListener((details: chrome.runtime.InstalledDetails): void => {
-    void updateInstallMarker(details).catch(reportBackgroundError);
+    // Everything the record needs is read in this frame. The worker may be torn down before the
+    // first write, which is Chrome's boundary and loses the event, but nothing here reads a value
+    // that a later turn could have changed underneath it.
+    const submitted: () => Promise<void> = async (): Promise<void> => {
+      const intent: PendingInstallLifecycleIntent = captureInstallLifecycleIntent(
+        details,
+        Date.now(),
+        crypto.randomUUID(),
+        chrome.runtime.getManifest?.().version ?? 'unknown',
+      );
+      await submitInstallLifecycle(dataClearLease, intent);
+    };
+    void runWorkerControl(submitted).catch(reportBackgroundError);
     const openOnboardingIfNeeded: () => Promise<void> = async (): Promise<void> => {
       if (
         details.reason !== 'install' &&
@@ -1076,7 +1446,7 @@ export function main(): void {
   chrome.permissions.onRemoved.addListener((permissions: chrome.permissions.Permissions): void => {
     if (isWebsitePermissionEvent(permissions)) reconcileAfterPermissionEvent('permission-removed');
   });
-  policyStorageReady = preparePolicyStorage();
+  policyStorageReady = preparePolicyStorage(dataClearLease);
   const initialWebsiteCapability: Promise<WebsiteReconciliation> = reconcileWebsiteCapability(
     'boot',
     false,
@@ -1085,6 +1455,7 @@ export function main(): void {
     ([storage, initialCapability]: [PolicyStorage, WebsiteReconciliation]): Promise<Engine> =>
       boot(
         storage,
+        dataClearLease,
         initialCapability,
         (): ContentRegistrationState => websiteCapability,
         (): boolean => initialCapability.generation === websiteReconciliationGeneration,
@@ -1123,6 +1494,11 @@ export function main(): void {
                 (await reconcileWebsiteCapability('explicit', true, true)).capability,
               dismissWebsiteAccessNotice,
               openOnboarding: onboardingService.open,
+              retryDataClear: async (): Promise<'ok' | 'retry-not-available'> =>
+                retryAllDataClear(await policyStorageReady, dataClearLease),
+              continueAllDataClear: async (): Promise<void> => {
+                await dispatchAllDataClear(await policyStorageReady, dataClearLease);
+              },
               loadOnboardingDraft: onboardingService.loadDraft,
               saveOnboardingDraft: onboardingService.saveDraft,
               removeOnboardingDraft: onboardingService.removeDraft,
@@ -1225,6 +1601,18 @@ export function main(): void {
   // One wake, routed by the name it carries: the tick settles, a phase alarm settles its boundary,
   // and each cleanup alarm runs only the journal it belongs to.
   chrome.alarms.onAlarm.addListener((alarm: chrome.alarms.Alarm): void => {
+    // The clear's retry is the one wake Engine does not own. It waits for Policy Storage rather
+    // than for the Engine, because a boot that is still finishing a clear has no Engine yet, and
+    // the dispatcher it enters is the same one that boot and Settings enter.
+    if (alarm.name === DATA_CLEAR_RETRY_ALARM) {
+      void policyStorageReady
+        .then(
+          (storage: PolicyStorage): Promise<AllDataClearDispatchV2> =>
+            dispatchAllDataClear(storage, dataClearLease),
+        )
+        .catch(reportBackgroundError);
+      return;
+    }
     void ready
       .then((engine: Engine): Promise<void> => engine.handleAlarm(alarm.name))
       .catch(reportBackgroundError);
