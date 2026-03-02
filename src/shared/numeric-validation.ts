@@ -1,6 +1,6 @@
-export const MINUTE_MS: number = 60_000;
-export const DAY_MS: number = 86_400_000;
-export const DATE_MAX_MS: number = 8_640_000_000_000_000;
+const MINUTE_MS: number = 60_000;
+const DAY_MS: number = 86_400_000;
+const DATE_MAX_MS: number = 8_640_000_000_000_000;
 export const MAX_RELATIVE_DURATION_MS: number = DATE_MAX_MS / 2;
 export const MIN_RELATIVE_MINUTES: number = 0.5 / MINUTE_MS;
 export const MAX_RELATIVE_MINUTES: number = MAX_RELATIVE_DURATION_MS / MINUTE_MS;

@@ -25,9 +25,7 @@ function hasValues(values: readonly string[] | undefined): boolean {
   return (values?.length ?? 0) > 0;
 }
 
-export function registrationMatches(
-  registration: chrome.scripting.RegisteredContentScript,
-): boolean {
+function registrationMatches(registration: chrome.scripting.RegisteredContentScript): boolean {
   return (
     registration.id === CONTENT_SCRIPT_ID &&
     arraysEqual(sorted(registration.js), [contentScriptFile]) &&

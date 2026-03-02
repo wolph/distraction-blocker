@@ -1356,10 +1356,6 @@ export function registerTabListeners(
  * The generation the enforcement sweep reads. Every tab operation advances it, so a sweep that
  * finished under an older generation knows the target set moved under it.
  */
-export function readTabGenerationV2(): number {
-  return tabOperationSequence;
-}
-
 /** The live enforceable targets, read from the browser rather than from any stored view. */
 export function enforcementTargetPortsV2(): EnforcementTargetPortsV2 {
   return {

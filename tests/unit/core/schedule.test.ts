@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  activeEntry,
-  scheduleEntriesOverlap,
-  validateEntry,
-  windowEnd,
-} from '../../../src/core/schedule';
+import { scheduleEntriesOverlap, validateEntry, windowEnd } from '../../../src/core/schedule';
 import type { NormalizedScheduleEntryV1 } from '../../../src/shared/types';
 import { isTimezoneChild, runSuiteInTimezone } from '../timezone-child';
 
@@ -28,18 +23,6 @@ function entry(partial: Partial<NormalizedScheduleEntryV1>): NormalizedScheduleE
 
 // 2026-08-28 is a Friday (day 5), 2026-08-30 a Sunday.
 const friday1000 = new Date(2026, 7, 28, 10, 0);
-const friday1300 = new Date(2026, 7, 28, 13, 0);
-const sunday1000 = new Date(2026, 7, 30, 10, 0);
-
-describe('activeEntry', () => {
-  it('matches day and window, end exclusive', () => {
-    expect(activeEntry([entry({})], friday1000)?.id).toBe('e1');
-    expect(activeEntry([entry({})], friday1300)).toBeNull();
-    expect(activeEntry([entry({})], sunday1000)).toBeNull();
-    expect(activeEntry([entry({ enabled: false })], friday1000)).toBeNull();
-    expect(activeEntry([entry({})], new Date(2026, 7, 28, 12, 30))).toBeNull();
-  });
-});
 
 describe('windowEnd', () => {
   it('returns the end as an absolute local Date', () => {
@@ -112,7 +95,6 @@ describe.runIf(isAmsterdamChild)('Europe/Amsterdam DST schedule evaluation', () 
     const duringWindow: Date = new Date(2026, 2, 29, 3, 45);
 
     expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe('Europe/Amsterdam');
-    expect(activeEntry([sundayEntry], duringWindow)?.id).toBe('e1');
     expect(windowEnd(sundayEntry, duringWindow).toISOString()).toBe('2026-03-29T02:30:00.000Z');
   });
 
@@ -123,8 +105,6 @@ describe.runIf(isAmsterdamChild)('Europe/Amsterdam DST schedule evaluation', () 
       end: '10:00',
     });
     const duringWindow: Date = new Date(2026, 9, 25, 9, 30);
-
-    expect(activeEntry([sundayEntry], duringWindow)?.id).toBe('e1');
     expect(windowEnd(sundayEntry, duringWindow).toISOString()).toBe('2026-10-25T09:00:00.000Z');
   });
 });

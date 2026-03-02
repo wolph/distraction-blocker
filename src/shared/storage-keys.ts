@@ -1,6 +1,6 @@
 export const SYNC_SETTINGS: string = 'settings';
 export const SYNC_LISTS: string = 'lists';
-export const SYNC_LIST_CATEGORY_PREFIX: string = 'lists:category:';
+const SYNC_LIST_CATEGORY_PREFIX: string = 'lists:category:';
 export const SYNC_BANK: string = 'bank';
 export const SYNC_STREAK: string = 'streak';
 

@@ -28,20 +28,6 @@ export function scheduleEntriesOverlap(
   return sharedDay && first.start < second.end && second.start < first.end;
 }
 
-/** Entry whose window contains the local wall-clock time, null otherwise. */
-export function activeEntry(
-  entries: NormalizedScheduleEntryV1[],
-  at: Date,
-): NormalizedScheduleEntryV1 | null {
-  const nowMin: number = at.getHours() * 60 + at.getMinutes();
-  const day: number = at.getDay();
-  for (const e of entries) {
-    if (!e.enabled || !e.days.includes(day)) continue;
-    if (nowMin >= toMinutes(e.start) && nowMin < toMinutes(e.end)) return e;
-  }
-  return null;
-}
-
 /** End of the active window as an absolute Date. */
 export function windowEnd(entry: NormalizedScheduleEntryV1, at: Date): Date {
   const end: number = toMinutes(entry.end);

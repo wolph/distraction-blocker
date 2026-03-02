@@ -32,7 +32,7 @@ const CONFIRM_LABELS: Record<GateKind, string> = {
 };
 
 /** The wording a pause or unlock gate uses. An End authority publishes its own instead. */
-export const DEFAULT_PHRASE_LABEL: string = 'Type:';
+const DEFAULT_PHRASE_LABEL: string = 'Type:';
 
 /**
  * Deliberation gate. The worker owns the timing: this panel only renders

@@ -347,10 +347,6 @@ export async function loadSyncJournal(): Promise<SyncJournal> {
   return { sets, removes };
 }
 
-export async function saveSyncJournal(journal: SyncJournal): Promise<void> {
-  await chrome.storage.local.set({ [LOCAL_SYNC_JOURNAL]: journal });
-}
-
 function journalValue(journal: SyncJournal | undefined, key: string, stored: unknown): unknown {
   if (journal === undefined) return stored;
   if (journal.removes.includes(key)) return undefined;

@@ -2,7 +2,7 @@ import { sendRequest } from './messages';
 import { ackError } from './runtime-validation';
 import type { ThemeMode } from './types';
 
-export const THEME_ORDER: readonly ThemeMode[] = ['auto', 'light', 'dark'];
+const THEME_ORDER: readonly ThemeMode[] = ['auto', 'light', 'dark'];
 
 const THEME_SAVE_ERROR: string = 'Could not save theme. Reload page and try again.';
 

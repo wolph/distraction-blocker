@@ -1,17 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { badgeForV2, iconSpecV2 } from '../../../src/background/badge-v2';
-import { badgeFor, type IconSpec, iconSpec } from '../../../src/background/icon';
-import {
-  DEFAULT_LISTS,
-  emptySnapshot,
-  emptySnapshotV2,
-  rulesFromLists,
-} from '../../../src/shared/constants';
+import type { IconSpec } from '../../../src/background/icon';
+import { DEFAULT_LISTS, emptySnapshotV2, rulesFromLists } from '../../../src/shared/constants';
 import { formatBadge } from '../../../src/shared/time';
 import type {
   SessionConfigV2,
   SessionLifecycleV2,
-  SessionSnapshot,
   SessionSnapshotV2,
 } from '../../../src/shared/types';
 
@@ -223,53 +217,5 @@ describe('iconSpecV2', (): void => {
   it('clamps the ring progress into zero through one', (): void => {
     expect(iconSpecV2({ ...timedFocus(), at: NOW + 60 * MIN }).progress).toBe(1);
     expect(iconSpecV2({ ...timedFocus(), at: NOW - 60 * MIN }).progress).toBe(0);
-  });
-
-  it('draws every phase in the same color v1 draws it', (): void => {
-    // One palette now, exported from badge-v2 and imported by icon.ts, so this no longer
-    // guards a copy. It still pins that the two projections read the same entry per phase.
-    const phases: ReadonlyArray<SessionSnapshotV2['phase']> = ['idle', 'focus', 'break', 'paused'];
-
-    for (const phase of phases) {
-      const v2: SessionSnapshotV2 =
-        phase === 'idle'
-          ? emptySnapshotV2(NOW)
-          : { ...timedFocus(), phase, phaseStartedAt: NOW, phaseEndsAt: NOW + 5 * MIN };
-      const v1: SessionSnapshot =
-        phase === 'idle'
-          ? emptySnapshot(NOW)
-          : {
-              ...emptySnapshot(NOW),
-              phase,
-              startedAt: NOW - 5 * MIN,
-              phaseStartedAt: NOW,
-              phaseEndsAt: NOW + 5 * MIN,
-              sessionEndsAt: NOW + 45 * MIN,
-            };
-
-      expect(iconSpecV2(v2).color).toBe(iconSpec(v1).color);
-      expect(badgeForV2(v2, true).color).toBe(badgeFor(v1, true).color);
-    }
-  });
-
-  it('draws and counts the same as v1 for a single-phase timed focus', (): void => {
-    const v2: SessionSnapshotV2 = {
-      ...timedFocus(),
-      phaseEndsAt: NOW + 45 * MIN,
-      sessionEndsAt: NOW + 45 * MIN,
-    };
-    const v1: SessionSnapshot = {
-      ...emptySnapshot(NOW),
-      phase: 'focus',
-      startedAt: NOW - 5 * MIN,
-      phaseStartedAt: NOW - 5 * MIN,
-      phaseEndsAt: NOW + 45 * MIN,
-      sessionEndsAt: NOW + 45 * MIN,
-    };
-
-    expect(iconSpecV2(v2)).toEqual(iconSpec(v1));
-    // Only a session whose phase ends with it agrees on the badge. A cycling session
-    // diverges by design, because v2 counts the whole session down and v1 the phase.
-    expect(badgeForV2(v2, true)).toEqual(badgeFor(v1, true));
   });
 });

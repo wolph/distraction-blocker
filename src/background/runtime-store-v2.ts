@@ -38,7 +38,7 @@ export interface RuntimeSchemaMarkerV2 {
 }
 
 /** The one marker value this worker writes and returns, so no caller spells the literal again. */
-export const RUNTIME_SCHEMA_MARKER_V2: RuntimeSchemaMarkerV2 = { runtimeSchemaVersion: 2 };
+const RUNTIME_SCHEMA_MARKER_V2: RuntimeSchemaMarkerV2 = { runtimeSchemaVersion: 2 };
 
 export type StoredRuntimeAuthority =
   | { kind: 'absent' }

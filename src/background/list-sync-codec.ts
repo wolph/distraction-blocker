@@ -57,7 +57,7 @@ function canonicalRules(rules: Rule[]): Rule[] {
   return rules.map((rule: Rule): Rule => ({ kind: rule.kind, pattern: rule.pattern }));
 }
 
-export function canonicalListsConfig(lists: ListsConfig): ListsConfig {
+function canonicalListsConfig(lists: ListsConfig): ListsConfig {
   const categories: ListsConfig['categories'] = { ...DEFAULT_LISTS.categories };
   const exclusions: ListsConfig['exclusions'] = {};
   for (const categoryId of CATEGORY_IDS) {
@@ -132,7 +132,7 @@ export async function encodeListsForSync(lists: ListsConfig): Promise<ListsSyncE
   return encodingWithRevision(lists, revision);
 }
 
-export function assertListsSyncEncodable(lists: ListsConfig): void {
+function assertListsSyncEncodable(lists: ListsConfig): void {
   encodingWithRevision(lists, '0'.repeat(64));
 }
 

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { iconSpecV2 } from '../../../src/background/badge-v2';
 import type { IconSpec } from '../../../src/background/icon';
-import { drawIcon, iconSpec, updateIcon } from '../../../src/background/icon';
+import { drawIcon, updateIcon } from '../../../src/background/icon';
 import { emptySnapshot } from '../../../src/shared/constants';
 
 interface DrawCall {
@@ -79,8 +80,11 @@ class RecordingCanvas {
 }
 
 function activeSpec(phase: 'focus' | 'break'): IconSpec {
-  return iconSpec({
+  // The projection only draws a ring for an active lifecycle, so the fixture carries one. The v1
+  // projection this used to call read the phase fields without that guard and is gone.
+  return iconSpecV2({
     ...emptySnapshot(30_000),
+    lifecycle: { kind: 'active', endAuthority: { kind: 'immediate', actionLabel: 'End session' } },
     phase,
     phaseStartedAt: 0,
     phaseEndsAt: 60_000,

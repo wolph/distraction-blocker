@@ -32,7 +32,7 @@ function aggregateHasActivity(aggregate: DailyAgg | MonthlyAgg): boolean {
   );
 }
 
-export function isEmptyBundle(bundle: StatsBundle): boolean {
+function isEmptyBundle(bundle: StatsBundle): boolean {
   return (
     bundle.recentSessions.length === 0 &&
     !bundle.days.some(aggregateHasActivity) &&

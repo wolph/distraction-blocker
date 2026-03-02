@@ -111,9 +111,7 @@ function parseLocalPruneCheckpoint(value: unknown): LocalAggregatePruneCheckpoin
   return { set: structuredClone(set), remove: [...candidate.remove] };
 }
 
-export function projectedLocalAggregateItems(
-  items: Record<string, unknown>,
-): Record<string, unknown> {
+function projectedLocalAggregateItems(items: Record<string, unknown>): Record<string, unknown> {
   const projected: Record<string, unknown> = Object.fromEntries(
     Object.entries(items).filter(([key]: [string, unknown]): boolean => isAggregateStatsKey(key)),
   );

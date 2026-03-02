@@ -1,6 +1,5 @@
-import { formatBadge } from '../shared/time';
 import type { SessionSnapshot } from '../shared/types';
-import { badgeForV2, iconSpecV2, STATE_COLORS } from './badge-v2';
+import { badgeForV2, iconSpecV2 } from './badge-v2';
 
 export interface IconSpec {
   color: string;
@@ -8,39 +7,6 @@ export interface IconSpec {
   progress: number;
   glyph: 'lock' | 'cup';
   ring: boolean;
-}
-
-/** Pure description of the icon: state color, shackle position, phase progress. */
-export function iconSpec(snapshot: SessionSnapshot): IconSpec {
-  const color: string = STATE_COLORS[snapshot.phase];
-  if (
-    snapshot.phase === 'idle' ||
-    snapshot.phaseStartedAt === null ||
-    snapshot.phaseEndsAt === null
-  ) {
-    return { color, open: snapshot.phase === 'idle', progress: 0, glyph: 'lock', ring: false };
-  }
-  const span: number = snapshot.phaseEndsAt - snapshot.phaseStartedAt;
-  const progress: number =
-    span <= 0 ? 0 : Math.min(1, Math.max(0, (snapshot.at - snapshot.phaseStartedAt) / span));
-  return {
-    color,
-    open: false,
-    progress,
-    glyph: snapshot.phase === 'break' ? 'cup' : 'lock',
-    ring: true,
-  };
-}
-
-export function badgeFor(
-  snapshot: SessionSnapshot,
-  countdown: boolean,
-): { text: string; color: string } {
-  const color: string = STATE_COLORS[snapshot.phase];
-  if (!countdown || snapshot.phase === 'idle' || snapshot.phaseEndsAt === null) {
-    return { text: '', color };
-  }
-  return { text: formatBadge(snapshot.phaseEndsAt - snapshot.at), color };
 }
 
 export function drawIcon(size: number, spec: IconSpec): ImageData {

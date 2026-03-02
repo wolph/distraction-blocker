@@ -35,7 +35,7 @@ import { useSnapshot } from './use-snapshot';
 
 const DAY_NAMES: readonly string[] = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-export function formatNextSchedule(startsAt: number): string {
+function formatNextSchedule(startsAt: number): string {
   const d: Date = new Date(startsAt);
   const day: string = DAY_NAMES[d.getDay()] ?? '';
   const hh: string = String(d.getHours()).padStart(2, '0');
