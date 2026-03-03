@@ -11,8 +11,9 @@ import type {
   DocumentOverlayView,
 } from '../shared/enforcement-v2';
 import { parseDocumentContentCommand } from '../shared/enforcement-v2-validation';
+import { isDenseArray } from '../shared/exact-data';
 import type { Verdict } from '../shared/types';
-import { isDenseArray, isRecord } from '../shared/v2-domain-intrinsics';
+import { isRecord } from '../shared/v2-domain-intrinsics';
 import type { ContentCommandResultV2 } from './enforcement-state';
 import { createContentEnforcementState, handleContentCommandV2 } from './enforcement-state';
 import {

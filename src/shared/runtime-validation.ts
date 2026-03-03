@@ -2,7 +2,12 @@ import { normalizeSessionRules, validateRule } from '../core/matcher';
 import { scheduleEntriesOverlap, validateEntry } from '../core/schedule';
 import { isDailyDate, parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { CATEGORY_IDS, cancelPhrase, MAX_FREEZE_TOKENS } from './constants';
-import { type ExactDataSnapshot, exactDataEqual, snapshotExactData } from './exact-data';
+import {
+  type ExactDataSnapshot,
+  exactDataEqual,
+  isDenseArray,
+  snapshotExactData,
+} from './exact-data';
 import type {
   Ack,
   OnboardingCleanupResponse,
@@ -141,18 +146,6 @@ const UUID_RE: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 function isRecord(value: unknown): value is UnknownRecord {
   try {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
-  } catch {
-    return false;
-  }
-}
-
-function isDenseArray(value: unknown): value is unknown[] {
-  try {
-    if (!Array.isArray(value)) return false;
-    for (let index: number = 0; index < value.length; index++) {
-      if (!Object.hasOwn(value, index)) return false;
-    }
-    return true;
   } catch {
     return false;
   }

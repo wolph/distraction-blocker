@@ -10,12 +10,11 @@ import type {
   ResetEnforcementEpochCommand,
   StartingOverlayCopy,
 } from './enforcement-v2';
-import { exactDataEqual, snapshotExactData } from './exact-data';
+import { exactDataEqual, isDenseArray, snapshotExactData } from './exact-data';
 import { isRelativeMillisecondDuration } from './numeric-validation';
 import type { SessionDuration, Strictness, ThemeMode, Verdict } from './types';
 import {
   exactRecord,
-  isDenseArray,
   isNonBlankString,
   isNonNegativeInteger,
   isNullableNonBlankString,

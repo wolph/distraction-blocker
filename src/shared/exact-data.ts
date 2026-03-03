@@ -172,6 +172,19 @@ function exactPairSeen(left: object, right: object, context: ExactValueContext):
   return false;
 }
 
+/**
+ * Array gate for a value that may still carry holes: rejects non-arrays and sparse indices. It is
+ * the cheap sibling of `exactDenseArrayLength`, which additionally refuses an array carrying own
+ * keys beyond its indices, and every validator in this codebase that walks an array starts here.
+ */
+export function isDenseArray(value: unknown): value is unknown[] {
+  if (!Array.isArray(value)) return false;
+  for (let index: number = 0; index < value.length; index++) {
+    if (!Object.hasOwn(value, index)) return false;
+  }
+  return true;
+}
+
 function exactDenseArrayLength(value: unknown[]): number | null {
   const lengthDescriptor: PropertyDescriptor | undefined = Reflect.getOwnPropertyDescriptor(
     value,

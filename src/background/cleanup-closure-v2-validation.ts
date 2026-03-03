@@ -3,7 +3,7 @@ import {
   CLEANUP_MAX_AUTOMATIC_ATTEMPTS,
   HANDLED_SCHEDULE_OCCURRENCE_RETENTION_MS,
 } from '../shared/constants';
-import { exactDataEqual, snapshotExactData } from '../shared/exact-data';
+import { exactDataEqual, isDenseArray, snapshotExactData } from '../shared/exact-data';
 import { closureIdFor, isEventRecord, isSessionEndedEventV2 } from '../shared/runtime-validation';
 import type {
   BankState,
@@ -15,7 +15,6 @@ import type {
 import {
   everyDenseEntry,
   exactRecord,
-  isDenseArray,
   isNonBlankString,
   isNonNegativeInteger,
   isNullableNonBlankString,

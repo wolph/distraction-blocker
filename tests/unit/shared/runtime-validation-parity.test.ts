@@ -217,6 +217,31 @@ describe('runtime validation dense array boundaries', (): void => {
     expect(validate()).toBe(false);
   });
 
+  it('rejects an array whose own reads throw', (): void => {
+    // `Array.isArray` sees straight through a proxy, so the dense walk is the first thing to touch
+    // the trap. Sparse holes are the reachable case, and this is the hostile one beside it.
+    const hostile: Rule[] = new Proxy<Rule[]>([], {
+      get: (): never => {
+        throw new Error('get trap');
+      },
+    });
+
+    expect((): boolean => isListsConfig({ ...DEFAULT_LISTS, custom: hostile })).not.toThrow();
+    expect(isListsConfig({ ...DEFAULT_LISTS, custom: hostile })).toBe(false);
+    expect((): boolean =>
+      isSessionSnapshot({
+        ...(activeSnapshot() as SessionSnapshot),
+        activeUnlocks: hostile as unknown as SiteUnlock[],
+      }),
+    ).not.toThrow();
+    expect(
+      isSessionSnapshot({
+        ...(activeSnapshot() as SessionSnapshot),
+        activeUnlocks: hostile as unknown as SiteUnlock[],
+      }),
+    ).toBe(false);
+  });
+
   it('rejects a sparse event array returned by the JSON boundary', (): void => {
     vi.spyOn(JSON, 'parse').mockReturnValue(sparseArray<EventRecord>(1));
 
