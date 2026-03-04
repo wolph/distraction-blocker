@@ -3,8 +3,11 @@ import { formatBadge } from '../shared/time';
 import type { Phase, SessionSnapshotV2 } from '../shared/types';
 import type { IconSpec } from './icon';
 
-/** The one phase palette. `icon.ts` draws from this record rather than a copy of it. */
-export const STATE_COLORS: Record<Phase, string> = {
+/**
+ * The one phase palette. It was exported for `icon.ts`, which held a copy while the v1 projections
+ * lived there. Those are gone and the only reader is this module, so the export went with them.
+ */
+const STATE_COLORS: Record<Phase, string> = {
   idle: '#9ca3af',
   focus: '#22c55e',
   break: '#14b8a6',
