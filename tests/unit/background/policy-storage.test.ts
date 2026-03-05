@@ -245,11 +245,13 @@ interface ClearPortsStub {
   ports: PolicyStorageDataClearPorts;
   lease: AllDataClearLease;
   issued: string[];
+  reported: unknown[];
 }
 
 /** The deletion-lease seam Main binds in Task 5, with deterministic identifiers and clock. */
 function clearPorts(): ClearPortsStub {
   const issued: string[] = [];
+  const reported: unknown[] = [];
   const lease: AllDataClearLease = createAllDataClearLease((): boolean => false);
   let next: number = 1;
   const ports: PolicyStorageDataClearPorts = {
@@ -262,8 +264,11 @@ function clearPorts(): ClearPortsStub {
     },
     now: (): number => CLEAR_NOW,
     manifestVersion: (): string => MANIFEST_VERSION,
+    reportError: (error: unknown): void => {
+      reported.push(error);
+    },
   };
-  return { ports, lease, issued };
+  return { ports, lease, issued, reported };
 }
 
 /**
@@ -3945,6 +3950,28 @@ describe('PolicyStorage', (): void => {
     );
 
     await expect(storage.initialize()).rejects.toThrow('invalid data clear journal');
+  });
+
+  it('reports an unreadable journal and still refuses to finish the boot', async (): Promise<void> => {
+    // The rejection reaches only whoever awaited `initialize`, which in the worker is the message
+    // chain's catch, so without the report a profile whose journal cannot be parsed looks like a
+    // dead boot and nothing else. Reporting does not soften it: the boot still refuses.
+    const stub: ClearPortsStub = clearPorts();
+    const storage: PolicyStorage = policyStorage(
+      fakeStorage({
+        ...localPolicy({ ...DEFAULT_SETUP, completed: true, storageMode: 'local' }),
+        [LOCAL_DATA_CLEAR_JOURNAL]: { scope: 'all', phase: 'not-a-phase' },
+      }),
+      fakeStorage(),
+      stub.ports,
+    );
+
+    await expect(storage.initialize()).rejects.toThrow('invalid data clear journal');
+
+    expect(stub.reported).toHaveLength(1);
+    expect(stub.reported[0]).toBeInstanceOf(Error);
+    expect(String(stub.reported[0])).toContain('invalid data clear journal');
+    await expect(storage.loadSetup()).rejects.toThrow('invalid data clear journal');
   });
 
   it.each([

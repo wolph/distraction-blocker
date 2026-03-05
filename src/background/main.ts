@@ -537,6 +537,7 @@ function policyStorageDataClearPorts(lease: AllDataClearLease): PolicyStorageDat
     newId: (): string => crypto.randomUUID(),
     now: (): number => Date.now(),
     manifestVersion: (): string => chrome.runtime.getManifest?.().version ?? 'unknown',
+    reportError: reportBackgroundError,
   };
 }
 

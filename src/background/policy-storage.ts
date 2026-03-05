@@ -223,6 +223,8 @@ export interface PolicyStorageDataClearPorts {
   now(): number;
   /** `chrome.runtime.getManifest?.().version ?? 'unknown'` at the moment the journal advances. */
   manifestVersion(): string;
+  /** The worker's background error report, for a fault that stops the boot before anything runs. */
+  reportError(error: unknown): void;
 }
 
 interface PolicyGenerationRecord {
@@ -1121,6 +1123,23 @@ export function createPolicyStorage(
     return journal;
   }
 
+  /**
+   * The boot's own read of the journal. A stored value no parser accepts stops initialization, and
+   * that rejection is the only trace the fault leaves: it reaches whoever awaited `initialize`,
+   * which for the worker is the message chain's catch, so the log stays empty for a profile whose
+   * journal cannot be read. The failure is reported here as well as thrown, which is what routing a
+   * parse failure to the dispatcher does for every other reader of this key. The boot still refuses
+   * to go on.
+   */
+  async function reportedDataClearJournalRead(): Promise<StoredClearJournal | null> {
+    try {
+      return await loadDataClearJournal();
+    } catch (error: unknown) {
+      dataClearPorts?.reportError(error);
+      throw error;
+    }
+  }
+
   async function recoverLocalAggregatePrune(): Promise<void> {
     const stored: Record<string, unknown> = await local.get(LOCAL_AGGREGATE_PRUNE);
     if (!Object.hasOwn(stored, LOCAL_AGGREGATE_PRUNE)) return;
@@ -1169,7 +1188,7 @@ export function createPolicyStorage(
     let setup: SetupState = await loadSetupInternal();
     mode = setup.storageMode;
     firstSyncPublication = await loadFirstSyncPublication();
-    const dataClearJournal: StoredClearJournal | null = await loadDataClearJournal();
+    const dataClearJournal: StoredClearJournal | null = await reportedDataClearJournalRead();
     if (dataClearJournal !== null) {
       if (dataClearJournal.scope === 'all') {
         if (!allDataClearBarrierHeld) {
