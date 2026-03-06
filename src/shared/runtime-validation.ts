@@ -437,7 +437,7 @@ export function closureIdFor(sessionId: string): string {
 }
 
 /** Accepts exactly one UUID followed by the closure suffix, and nothing else. */
-export function isClosureId(value: unknown): value is string {
+function isClosureId(value: unknown): value is string {
   if (typeof value !== 'string' || !value.endsWith(CLOSURE_ID_SUFFIX)) return false;
   return isUuid(value.slice(0, value.length - CLOSURE_ID_SUFFIX.length));
 }

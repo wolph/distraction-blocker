@@ -4,8 +4,6 @@ import {
   ALWAYS_ALLOW_HOSTS,
   ALWAYS_ALLOW_SCHEMES,
   CATEGORY_IDS,
-  policyRevision,
-  rulesFromLists,
 } from '../shared/constants';
 import { isDenseArray } from '../shared/exact-data';
 import { normalizeHost } from '../shared/host-normalization';
@@ -321,24 +319,6 @@ export function normalizeStoredSessionRules(value: unknown): SessionRuleSnapshot
     ...value,
     baselineCategories: value.categories,
   });
-}
-
-function sameValue(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-/** Checks every worker-owned permanent field, not only the freshness token. */
-export function sessionRulesMatchLists(rules: SessionRuleSnapshot, lists: ListsConfig): boolean {
-  const actual: SessionRuleSnapshot | null = normalizeSessionRules(rules);
-  const expected: SessionRuleSnapshot | null = normalizeSessionRules(rulesFromLists(lists));
-  if (actual === null || expected === null) return false;
-  return (
-    actual.baselineRevision === policyRevision(lists) &&
-    sameValue(actual.baselineCategories, expected.baselineCategories) &&
-    sameValue(actual.exclusions, expected.exclusions) &&
-    sameValue(actual.permanentBlacklist, expected.permanentBlacklist) &&
-    sameValue(actual.permanentAllowlist, expected.permanentAllowlist)
-  );
 }
 
 export function listsFromSessionRules(rules: SessionRuleSnapshot): ListsConfig {

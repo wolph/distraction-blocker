@@ -47,7 +47,7 @@ export const DATA_CLEAR_RESET_DEADLINE_MS: number = 10_000;
 export const MAX_DATA_CLEAR_RESOLVER_PASSES: number = 3;
 
 /** The retry error a full intent list records, so the failure is durable and visible. */
-export const INSTALL_LIFECYCLE_INTENT_CAPACITY_ERROR: string = 'install-lifecycle-intent-capacity';
+const INSTALL_LIFECYCLE_INTENT_CAPACITY_ERROR: string = 'install-lifecycle-intent-capacity';
 
 export interface DataClearDeferredTarget {
   tabId: number;

@@ -84,7 +84,7 @@ export function journalProgressV2(
 }
 
 /** The same runtime with one journal's progress replaced. Every other field is carried. */
-export function withJournalProgressV2(
+function withJournalProgressV2(
   runtime: RuntimeStateV2,
   journal: CleanupJournalV2,
   progress: CleanupProgress,
@@ -113,7 +113,7 @@ export function withJournalProgressV2(
 }
 
 /** The alarm that wakes one journal's waiting batch. */
-export function cleanupAlarmOfV2(journal: CleanupJournalV2): AlarmNameV2 {
+function cleanupAlarmOfV2(journal: CleanupJournalV2): AlarmNameV2 {
   return journal === 'closure' ? CLOSURE_CLEANUP_ALARM : TRANSITION_CLEANUP_ALARM;
 }
 
@@ -158,7 +158,7 @@ export async function rearmCleanupAlarmV2(
 }
 
 /** One durable failed attempt on the journal that owns the batch. The caller owns the loop. */
-export async function writeCleanupFailureV2(
+async function writeCleanupFailureV2(
   ports: RuntimePortsV2,
   journal: CleanupJournalV2,
   detail: string,
@@ -256,7 +256,7 @@ function movedDocumentResetV2(reset: EpochResetOutcomeV2): boolean {
 }
 
 /** One acknowledgement becomes durable before the clear command it authorizes is sent. */
-export async function recordEpochAckV2(
+async function recordEpochAckV2(
   ports: RuntimePortsV2,
   ack: DocumentEpochResetAck,
 ): Promise<void> {
@@ -556,7 +556,7 @@ export async function durableCleanupClearCommandV2(
  * The session identity a batch's clear commands carry. A closure closed a durable session, and a
  * transition names the durable one it committed or the reserved one a pre-commit start held.
  */
-export function cleanupClearIdentityV2(
+function cleanupClearIdentityV2(
   runtime: RuntimeStateV2,
   journal: CleanupJournalV2,
 ): CleanupClearIdentityV2 {
@@ -573,7 +573,7 @@ export function cleanupClearIdentityV2(
     : { sessionId: null, reservedSessionId: transition.sessionId };
 }
 
-export function validatedCleanupRuntimeV2(runtime: RuntimeStateV2): RuntimeStateV2 {
+function validatedCleanupRuntimeV2(runtime: RuntimeStateV2): RuntimeStateV2 {
   const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(runtime);
   if (parsed === null) throw invalidCleanup('a cleanup step built an invalid runtime');
   return parsed;

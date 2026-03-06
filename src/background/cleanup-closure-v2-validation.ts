@@ -92,7 +92,7 @@ const HANDLED_OCCURRENCE_KEYS: readonly string[] = [
   'expiresAt',
 ];
 const BANK_KEYS: readonly string[] = ['balanceMs'];
-export const DAILY_AGG_REQUIRED_KEYS: readonly string[] = [
+const DAILY_AGG_REQUIRED_KEYS: readonly string[] = [
   'date',
   'focusMs',
   'sessionsStarted',
@@ -104,7 +104,7 @@ export const DAILY_AGG_REQUIRED_KEYS: readonly string[] = [
   'unlocksTaken',
   'resisted',
 ];
-export const DAILY_AGG_OPTIONAL_KEYS: readonly string[] = ['pauseMsEarned', 'unlockMsSpent'];
+const DAILY_AGG_OPTIONAL_KEYS: readonly string[] = ['pauseMsEarned', 'unlockMsSpent'];
 /** Every legacy event may name the session it belongs to, and none of them has to. */
 const LEGACY_EVENT_OPTIONAL_KEYS: readonly string[] = ['sessionId'];
 const AGGREGATE_SET_KEY_RE: RegExp = /^agg:[^:]+:(\d{4}-\d{2}-\d{2})$/;
