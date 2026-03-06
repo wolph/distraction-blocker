@@ -6,14 +6,25 @@ import {
   type Page,
   type Worker,
 } from '@playwright/test';
+import { parseStoredEventLogV2 } from '../../src/background/event-log-v2';
+import type { RuntimeStateV2 } from '../../src/background/runtime-v2-types';
+import { parseRuntimeStateV2 } from '../../src/background/runtime-v2-validation';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, rulesFromLists } from '../../src/shared/constants';
 import type { Request, ResponseMap, SoundId } from '../../src/shared/messages';
 import { CONTENT_SCRIPT_ID, WEBSITE_ORIGINS } from '../../src/shared/permissions';
+import {
+  LOCAL_EVENTS,
+  LOCAL_POLICY_COMMIT,
+  LOCAL_POLICY_GENERATION_PREFIX,
+  LOCAL_RUNTIME,
+} from '../../src/shared/storage-keys';
 import type {
   ListsConfig,
   OnboardingDraft,
   Rule,
   SessionConfigV2,
+  SessionEventRecordV2,
+  SessionLifecycleV2,
   SessionSnapshotV2,
   SetupState,
   StorageMode,
@@ -759,15 +770,146 @@ export async function waitForActiveSession(
   extPage: Page,
   timeoutMs: number = 10_000,
 ): Promise<void> {
+  await waitForLifecycle(extPage, 'active', timeoutMs);
+}
+
+/**
+ * Starts an until-stopped session. The three fields an indefinite session has no freedom in are
+ * not overridable, because a start that named a duration, a strictness, or a cycle plan of its own
+ * would not be the session this helper's name promises.
+ */
+export async function startUntilStoppedSession(
+  extPage: Page,
+  overrides: Partial<Omit<SessionConfigV2, 'duration' | 'strictness' | 'cycling'>> = {},
+  customRules: Rule[] = [{ kind: 'host', pattern: 'blocked.example' }],
+): Promise<void> {
+  await startTestSession(
+    extPage,
+    {
+      ...overrides,
+      duration: { kind: 'until-stopped' },
+      strictness: 'flexible',
+      cycling: null,
+    },
+    customRules,
+  );
+}
+
+/**
+ * Polls the published snapshot until it reports `kind`, and answers the snapshot that reported it.
+ * The failure names every lifecycle this wait actually saw, so a timeout says what the worker was
+ * doing instead of only what it was asked for.
+ */
+export async function waitForLifecycle(
+  extPage: Page,
+  kind: SessionLifecycleV2['kind'],
+  timeoutMs: number = 15_000,
+): Promise<SessionSnapshotV2> {
+  const seen: SessionLifecycleV2['kind'][] = [];
   const deadline: number = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const snapshot: SessionSnapshotV2 = (await extPage.evaluate(
-      async (): Promise<unknown> => await chrome.runtime.sendMessage({ type: 'getSnapshot' }),
-    )) as SessionSnapshotV2;
-    if (snapshot.lifecycle.kind === 'active') return;
+  for (;;) {
+    const snapshot: SessionSnapshotV2 = await sendExtensionRequest(extPage, {
+      type: 'getSnapshot',
+    });
+    if (snapshot.lifecycle.kind === kind) return snapshot;
+    if (seen[seen.length - 1] !== snapshot.lifecycle.kind) seen.push(snapshot.lifecycle.kind);
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `the worker never published a ${kind} lifecycle, it published ${seen.join(', ')}`,
+      );
+    }
     await new Promise((resolve: (value: unknown) => void): void => {
       setTimeout(resolve, 100);
     });
   }
-  throw new Error('the worker never published an active session');
+}
+
+/**
+ * The durable v2 runtime, read the way the worker's own boot reads it: through the committed
+ * policy generation pointer when one exists, and through the plain runtime key otherwise. The
+ * shipped parser validates it, so a value this returns is a value the worker would accept.
+ */
+export async function readRuntimeV2(worker: Worker): Promise<RuntimeStateV2> {
+  const raw: unknown = await worker.evaluate(
+    async (keys: {
+      runtime: string;
+      policyCommit: string;
+      generationPrefix: string;
+    }): Promise<unknown> => {
+      const pointerStored: Record<string, unknown> = await chrome.storage.local.get(
+        keys.policyCommit,
+      );
+      const pointer: unknown = pointerStored[keys.policyCommit];
+      const id: unknown =
+        typeof pointer === 'object' && pointer !== null && 'source' in pointer
+          ? (pointer as { source: unknown; id?: unknown }).source === 'generation'
+            ? (pointer as { id?: unknown }).id
+            : undefined
+          : undefined;
+      if (typeof id !== 'string') {
+        return (await chrome.storage.local.get(keys.runtime))[keys.runtime];
+      }
+      const generationKey: string = `${keys.generationPrefix}${id}`;
+      const stored: Record<string, unknown> = await chrome.storage.local.get(generationKey);
+      const generation: unknown = stored[generationKey];
+      if (typeof generation !== 'object' || generation === null) {
+        throw new Error('the committed runtime generation is missing');
+      }
+      return (generation as { runtime?: unknown }).runtime;
+    },
+    {
+      runtime: LOCAL_RUNTIME,
+      policyCommit: LOCAL_POLICY_COMMIT,
+      generationPrefix: LOCAL_POLICY_GENERATION_PREFIX,
+    },
+  );
+  const runtime: RuntimeStateV2 | null = parseRuntimeStateV2(raw);
+  if (runtime === null) throw new Error('the stored runtime is not a valid v2 runtime');
+  return runtime;
+}
+
+/** The durable event log, validated by the shipped parser. Oldest first, as it is stored. */
+export async function readEventsV2FromWorker(worker: Worker): Promise<SessionEventRecordV2[]> {
+  const raw: unknown = await worker.evaluate(
+    async (key: string): Promise<unknown> => (await chrome.storage.local.get(key))[key],
+    LOCAL_EVENTS,
+  );
+  return parseStoredEventLogV2(raw);
+}
+
+/** The toolbar badge Chrome is actually showing, which is the only badge authority a test has. */
+export async function readBadgeText(worker: Worker): Promise<string> {
+  return await worker.evaluate(async (): Promise<string> => await chrome.action.getBadgeText({}));
+}
+
+/**
+ * Records the lifecycle of every snapshot the worker broadcasts to this page from now on. A
+ * transition can open and close between two polls, so a scenario that cares about the order of
+ * published states observes them rather than sampling for them. The recording lives on the page,
+ * so a reload starts it over and a caller must install it after its last reload.
+ */
+export async function observeSnapshotBroadcasts(extPage: Page): Promise<void> {
+  await extPage.evaluate((): void => {
+    const scope = globalThis as unknown as { __focusLockE2ELifecycles?: string[] };
+    scope.__focusLockE2ELifecycles = [];
+    chrome.runtime.onMessage.addListener((message: unknown): void => {
+      if (typeof message !== 'object' || message === null) return;
+      const candidate = message as { type?: unknown; snapshot?: unknown };
+      if (candidate.type !== 'stateChanged') return;
+      const snapshot = candidate.snapshot as { lifecycle?: { kind?: unknown } } | undefined;
+      const kind: unknown = snapshot?.lifecycle?.kind;
+      if (typeof kind === 'string') scope.__focusLockE2ELifecycles?.push(kind);
+    });
+  });
+}
+
+/** The lifecycles observed since `observeSnapshotBroadcasts`, in publication order. */
+export async function observedSnapshotLifecycles(
+  extPage: Page,
+): Promise<SessionLifecycleV2['kind'][]> {
+  return await extPage.evaluate(
+    (): SessionLifecycleV2['kind'][] =>
+      ((globalThis as unknown as { __focusLockE2ELifecycles?: string[] })
+        .__focusLockE2ELifecycles ?? []) as SessionLifecycleV2['kind'][],
+  );
 }

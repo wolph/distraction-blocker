@@ -1,0 +1,828 @@
+/**
+ * Product flows for the "Until stopped" session, driven through the surfaces a user touches: the
+ * popup start form, the blocked page, the toolbar badge, Settings, Stats, and the schedule.
+ *
+ * Two published-state facts shape what these scenarios can assert, both measured against this
+ * build rather than assumed. The worker publishes exactly one snapshot per command, so the
+ * `starting` and `cleanup` lifecycles a fast start and a successful end pass through are durable
+ * but never broadcast, and no wait can observe them. Every scenario therefore asserts the state
+ * the user can actually reach, plus the durable journal the invisible one left behind. The task
+ * report records both measurements.
+ */
+
+import type { BrowserContext, CDPSession, Locator, Page, Worker } from '@playwright/test';
+import type { RuntimeTabState } from '../../src/background/runtime-leaf-types';
+import type {
+  DailyAgg,
+  ListsConfig,
+  ScheduleEntryV2,
+  SessionEndedEventV2,
+  SessionEventRecordV2,
+  SessionLifecycleV2,
+  SessionSnapshotV2,
+  Settings,
+} from '../../src/shared/types';
+import { assertNoUnexpectedBrowserDiagnostics } from './browser-diagnostics';
+import {
+  browserDiagnosticsFor,
+  clearNotifications,
+  expect,
+  notificationIds,
+  type ObservedSound,
+  observedSnapshotLifecycles,
+  observedSounds,
+  observeSnapshotBroadcasts,
+  observeSoundMessages,
+  readBadgeText,
+  readEventsV2FromWorker,
+  readRuntimeV2,
+  sendExtensionRequest,
+  startTestSession,
+  startUntilStoppedSession,
+  test,
+  waitForLifecycle,
+} from './fixtures';
+
+/**
+ * Copy the spec fixes, spelled out here rather than imported. A test that imported the shipped
+ * constant would agree with any wording the product later chose, which is the one thing these
+ * assertions exist to refuse.
+ */
+const UNTIL_STOPPED_LABEL: string = 'Until stopped';
+const START_UNTIL_STOPPED_LABEL: string = 'Start until stopped';
+const UNTIL_STOPPED_FORCED_HINT: string =
+  'Flexible session. Cycles off. End it manually from the popup.';
+const END_SESSION_LABEL: string = 'End session';
+const FOCUS_TIME_LABEL: string = 'Focus time';
+const FOCUS_PHASE_CLOCK_LABEL: string = 'focus phase';
+const TOTAL_SESSION_CLOCK_LABEL: string = 'total session';
+const PAUSE_CLOCK_LABEL: string = 'pause';
+const INDEFINITE_BADGE_TEXT: string = 'ON';
+const OVERLAY_UNTIL_STOPPED_STATUS: string =
+  'Focus Lock is active until you end it from the popup.';
+const OVERLAY_STOPPED_PAGE_COPY: string =
+  'This page did not load. It will load by itself when the session ends.';
+const SETTINGS_INDEFINITE_COPY: string =
+  'Until stopped session active. Use the toolbar popup to view or end it.';
+const SETTINGS_SESSION_DISCLOSURE: string =
+  'The toolbar popup owns session controls. The active session keeps the rules captured when it started.';
+const SCHEDULE_STARTED_TITLE: string = 'Focus schedule started';
+const SCHEDULE_UNTIL_STOPPED_BODY: string = 'Active until you end it manually.';
+const CANCEL_GATE_TITLE: string = 'End this session';
+const CANCEL_GATE_CONFIRM: string = 'End the session';
+const CANCEL_GATE_BACK: string = 'Never mind, back to work';
+const STATS_COMPLETED_MANUALLY: string = 'Completed manually';
+const STATS_ENDED_EARLY: string = 'Ended early';
+
+const FORCED_TYPE_LABEL: string = 'Session type forced by Until stopped';
+const FORCED_CYCLES_LABEL: string = 'Cycles forced by Until stopped';
+const SESSION_STATUS_LABEL: string = 'Session status';
+const BLOCKED_HOST: string = 'blocked.example';
+
+/**
+ * The schedule window a scheduled start needs is a local wall-clock window on the current local
+ * day, so a run that straddles local midnight would watch its own window close mid-scenario. The
+ * scenario refuses to run inside that band rather than becoming a test that sometimes proves
+ * nothing.
+ */
+const MIDNIGHT_GUARD_MINUTES: number = 20;
+
+interface RecordedNotification {
+  title: string;
+  message: string;
+}
+
+interface DomNodeSnapshot {
+  attributes?: string[];
+  backendNodeId: number;
+  children?: DomNodeSnapshot[];
+  nodeName: string;
+  shadowRoots?: DomNodeSnapshot[];
+}
+
+/** The accessible names the mounted overlay contributes, and nothing the host page contributes. */
+interface OverlayCopy {
+  statics: string[];
+  buttons: string[];
+}
+
+interface FastEconomyOptions {
+  pauseMs: number;
+  gateDelayMs?: number;
+}
+
+function expectNoDiagnostics(context: BrowserContext): void {
+  expect((): void =>
+    assertNoUnexpectedBrowserDiagnostics(browserDiagnosticsFor(context)),
+  ).not.toThrow();
+}
+
+/**
+ * Shortens the pause economy so a bank the user would earn in half an hour is earned in a second.
+ * Nothing here changes what a pause means, only how long the test waits to afford one.
+ */
+async function configureFastEconomy(extPage: Page, options: FastEconomyOptions): Promise<void> {
+  const settings: Settings = await sendExtensionRequest(extPage, { type: 'getSettings' });
+  const ack = await sendExtensionRequest(extPage, {
+    type: 'updateSettings',
+    settings: {
+      ...settings,
+      pause: {
+        earnRatio: 10,
+        capMs: Math.max(60_000, options.pauseMs),
+        pauseMs: options.pauseMs,
+        unlockMs: options.pauseMs,
+      },
+      gate: { delayMs: options.gateDelayMs ?? 500, requireTypedPhrase: false },
+    },
+  });
+  if (!ack.ok) throw new Error(ack.error);
+}
+
+/** Puts the test host on the stored block list, which is what a popup-driven start captures. */
+async function seedBlockedList(extPage: Page): Promise<void> {
+  const lists: ListsConfig = await sendExtensionRequest(extPage, { type: 'getLists' });
+  const ack = await sendExtensionRequest(extPage, {
+    type: 'updateLists',
+    lists: { ...lists, custom: [{ kind: 'host', pattern: BLOCKED_HOST }] },
+  });
+  if (!ack.ok) throw new Error(ack.error);
+}
+
+function flattenDomNode(node: DomNodeSnapshot): DomNodeSnapshot[] {
+  const descendants: DomNodeSnapshot[] = [node];
+  for (const child of node.children ?? []) descendants.push(...flattenDomNode(child));
+  for (const shadowRoot of node.shadowRoots ?? []) {
+    descendants.push(...flattenDomNode(shadowRoot));
+  }
+  return descendants;
+}
+
+/** The overlay renders in a closed shadow root, so its nodes are reachable only through CDP. */
+async function overlayNodeIds(session: CDPSession): Promise<ReadonlySet<number>> {
+  await session.send('DOM.enable');
+  const document = await session.send('DOM.getDocument', { depth: -1, pierce: true });
+  const allNodes: DomNodeSnapshot[] = flattenDomNode(document.root as DomNodeSnapshot);
+  const host: DomNodeSnapshot | undefined = allNodes.find(
+    (node: DomNodeSnapshot): boolean => node.nodeName === 'FOCUS-LOCK-OVERLAY',
+  );
+  if (host === undefined) throw new Error('the Focus Lock overlay is not mounted');
+  return new Set<number>(
+    (host.shadowRoots ?? [])
+      .flatMap((shadowRoot: DomNodeSnapshot): DomNodeSnapshot[] => flattenDomNode(shadowRoot))
+      .map((node: DomNodeSnapshot): number => node.backendNodeId),
+  );
+}
+
+async function overlayCopy(context: BrowserContext, page: Page): Promise<OverlayCopy> {
+  const session: CDPSession = await context.newCDPSession(page);
+  try {
+    await session.send('Accessibility.enable');
+    const scopedNodeIds: ReadonlySet<number> = await overlayNodeIds(session);
+    const tree = await session.send('Accessibility.getFullAXTree');
+    const scoped = tree.nodes.filter(
+      (node): boolean =>
+        node.backendDOMNodeId !== undefined && scopedNodeIds.has(node.backendDOMNodeId),
+    );
+    return {
+      statics: scoped
+        .filter((node): boolean => node.role?.value === 'StaticText')
+        .map((node): string => String(node.name?.value ?? '')),
+      buttons: scoped
+        .filter((node): boolean => node.role?.value === 'button')
+        .map((node): string => String(node.name?.value ?? '')),
+    };
+  } finally {
+    await session.detach();
+  }
+}
+
+/** One labelled clock row's value, matched on the exact label so no row can stand in for another. */
+function clockValue(page: Page, label: string): Locator {
+  return page
+    .locator('.clock-stack__row')
+    .filter({
+      has: page.locator('.clock-stack__label').filter({ hasText: new RegExp(`^${label}$`) }),
+    })
+    .locator('.clock-stack__value');
+}
+
+async function waitForPhase(extPage: Page, phase: string): Promise<SessionSnapshotV2> {
+  await expect
+    .poll(
+      async (): Promise<string> =>
+        (await sendExtensionRequest(extPage, { type: 'getSnapshot' })).phase,
+      { timeout: 20_000 },
+    )
+    .toBe(phase);
+  return await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+}
+
+/**
+ * Records what the worker asks Chrome to show. Chrome exposes notification IDs but never the
+ * options behind them, so the only way to assert a notification body is to observe the call.
+ */
+async function observeNotifications(worker: Worker): Promise<void> {
+  await worker.evaluate((): void => {
+    const scope = globalThis as unknown as {
+      __focusLockE2ENotifications?: { title: string; message: string }[];
+    };
+    scope.__focusLockE2ENotifications = [];
+    const create: (...args: unknown[]) => unknown = chrome.notifications.create.bind(
+      chrome.notifications,
+    ) as unknown as (...args: unknown[]) => unknown;
+    const recording: (...args: unknown[]) => unknown = (...args: unknown[]): unknown => {
+      for (const argument of args) {
+        if (typeof argument !== 'object' || argument === null) continue;
+        const options = argument as { title?: unknown; message?: unknown };
+        if (typeof options.title === 'string' && typeof options.message === 'string') {
+          scope.__focusLockE2ENotifications?.push({
+            title: options.title,
+            message: options.message,
+          });
+        }
+      }
+      return create(...args);
+    };
+    chrome.notifications.create = recording as unknown as typeof chrome.notifications.create;
+  });
+}
+
+async function recordedNotifications(worker: Worker): Promise<RecordedNotification[]> {
+  return await worker.evaluate(
+    (): RecordedNotification[] =>
+      (globalThis as unknown as { __focusLockE2ENotifications?: RecordedNotification[] })
+        .__focusLockE2ENotifications ?? [],
+  );
+}
+
+/**
+ * Wakes the worker's one-minute maintenance alarm now and waits for the publication it produces,
+ * which is the evidence the schedule check actually ran. The alarm keeps its period, so the
+ * profile is left with the periodic tick it started with.
+ */
+async function forceTick(extPage: Page, worker: Worker): Promise<void> {
+  const before: number = (await observedSnapshotLifecycles(extPage)).length;
+  await worker.evaluate(async (): Promise<void> => {
+    await chrome.alarms.create('tick', { when: Date.now(), periodInMinutes: 1 });
+  });
+  await expect
+    .poll(async (): Promise<number> => (await observedSnapshotLifecycles(extPage)).length, {
+      timeout: 30_000,
+    })
+    .toBeGreaterThan(before);
+}
+
+function completedToday(runtime: { todayAgg: DailyAgg | null }): number {
+  return runtime.todayAgg?.sessionsCompleted ?? 0;
+}
+
+function endEventFor(events: SessionEventRecordV2[], sessionId: string): SessionEndedEventV2 {
+  const found: SessionEventRecordV2 | undefined = events.find(
+    (event: SessionEventRecordV2): boolean =>
+      'version' in event && event.version === 2 && event.eventId === `${sessionId}:end`,
+  );
+  if (found === undefined || !('version' in found) || found.t !== 'sessionEnded') {
+    throw new Error(`no end event was recorded for session ${sessionId}`);
+  }
+  return found;
+}
+
+/**
+ * True once the worker holds a durable stop record for some tab, which is the only authority on
+ * whether a fresh navigation was actually stopped. Answers false rather than throwing, so the
+ * caller can report a missing precondition instead of failing on it.
+ */
+async function stoppedDocumentRecorded(worker: Worker, timeoutMs: number): Promise<boolean> {
+  const deadline: number = Date.now() + timeoutMs;
+  for (;;) {
+    const stopped: boolean = Object.values((await readRuntimeV2(worker)).tabStates).some(
+      (state: RuntimeTabState): boolean => state.stoppedDocumentId !== null,
+    );
+    if (stopped) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve: (value: unknown) => void): void => {
+      setTimeout(resolve, 100);
+    });
+  }
+}
+
+async function activeSessionId(worker: Worker): Promise<string> {
+  const sessionId: string | undefined = (await readRuntimeV2(worker)).session?.sessionId;
+  if (sessionId === undefined) throw new Error('no durable session is active');
+  return sessionId;
+}
+
+test('manual until-stopped start forces the flexible plan and reports it everywhere', async ({
+  context,
+  extPage,
+  worker,
+}) => {
+  await seedBlockedList(extPage);
+  await extPage.reload();
+
+  await extPage.getByRole('button', { name: UNTIL_STOPPED_LABEL, exact: true }).click();
+
+  const forcedType: Locator = extPage.getByRole('group', { name: FORCED_TYPE_LABEL });
+  await expect(forcedType).toHaveAttribute('aria-disabled', 'true');
+  await expect(forcedType.getByRole('button', { name: 'Flexible' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await expect(extPage.getByText(UNTIL_STOPPED_FORCED_HINT, { exact: true })).toBeVisible();
+
+  await extPage.getByText('Cycle options').click();
+  const forcedCycles: Locator = extPage.getByRole('group', { name: FORCED_CYCLES_LABEL });
+  await expect(forcedCycles).toHaveAttribute('aria-disabled', 'true');
+  await expect(forcedCycles.getByRole('checkbox')).not.toBeChecked();
+
+  const startButton: Locator = extPage.getByRole('button', { name: START_UNTIL_STOPPED_LABEL });
+  await expect(startButton).toBeEnabled();
+
+  await observeSnapshotBroadcasts(extPage);
+  await startButton.click();
+  const active: SessionSnapshotV2 = await waitForLifecycle(extPage, 'active');
+
+  // This build publishes one snapshot per command, so a fast start never broadcasts `starting`.
+  // The order is still asserted for the day it does, and the absence is a finding in the report,
+  // not an expectation encoded here.
+  const kinds: SessionLifecycleV2['kind'][] = await observedSnapshotLifecycles(extPage);
+  expect(kinds).toContain('active');
+  expect(kinds).not.toContain('error');
+  const startingIndex: number = kinds.indexOf('starting');
+  if (startingIndex !== -1) expect(startingIndex).toBeLessThan(kinds.indexOf('active'));
+
+  expect(active.config?.duration).toEqual({ kind: 'until-stopped' });
+  expect(active.config?.strictness).toBe('flexible');
+  expect(active.config?.cycling).toBeNull();
+  expect(active.phaseEndsAt).toBeNull();
+  expect(active.sessionEndsAt).toBeNull();
+
+  await expect(clockValue(extPage, FOCUS_TIME_LABEL)).toBeVisible();
+  await expect(extPage.locator('.clock-stack__note')).toHaveText(UNTIL_STOPPED_LABEL);
+  await expect(extPage.getByRole('button', { name: END_SESSION_LABEL })).toBeVisible();
+  await expect
+    .poll(async (): Promise<string> => await readBadgeText(worker))
+    .toBe(INDEFINITE_BADGE_TEXT);
+
+  expectNoDiagnostics(context);
+});
+
+test('the indefinite blocked page hands every ending to the popup', async ({
+  context,
+  extPage,
+  siteUrl,
+}) => {
+  const existingPage: Page = await context.newPage();
+  await existingPage.goto(siteUrl('/plain.html'));
+  await startUntilStoppedSession(extPage);
+  await expect(existingPage.locator('focus-lock-overlay')).toBeAttached();
+
+  await expect
+    .poll(async (): Promise<string[]> => (await overlayCopy(context, existingPage)).statics)
+    .toContain(OVERLAY_UNTIL_STOPPED_STATUS);
+  const existingCopy: OverlayCopy = await overlayCopy(context, existingPage);
+  expect(
+    existingCopy.statics.filter((text: string): boolean => text.startsWith('Locked until')),
+  ).toEqual([]);
+  expect(existingCopy.buttons).not.toContain(END_SESSION_LABEL);
+  expect(existingCopy.statics).not.toContain(OVERLAY_STOPPED_PAGE_COPY);
+
+  expectNoDiagnostics(context);
+});
+
+/**
+ * Every claim this suite makes about a fresh navigation lives here, behind one precondition,
+ * because whether a navigation is fresh enough to stop is Chrome's call rather than the product's:
+ * the content script reads `document.readyState` when it installs, and on a page this small Chrome
+ * sometimes injects it after the document has already left `loading`. Measured on this machine,
+ * one navigation in eight arrived too late, and forcing a slower parse through request
+ * interception made it worse rather than better. The plan already refuses to test the fail-open
+ * boundary as fail-closed, so the precondition is read from the worker's own durable stop record
+ * and the scenario says out loud when Chrome handed it nothing to stop.
+ */
+test('a stopped fresh navigation carries the indefinite and stopped-page copy', async ({
+  context,
+  extPage,
+  siteUrl,
+  worker,
+}) => {
+  await startUntilStoppedSession(extPage);
+  const stoppedPage: Page = await context.newPage();
+  await stoppedPage.goto(siteUrl('/plain.html'), { waitUntil: 'commit' });
+
+  const stopped: boolean = await stoppedDocumentRecorded(worker, 10_000);
+  test.skip(
+    !stopped,
+    'Chrome injected the content script after this document left readyState loading, so there was no fresh navigation to stop',
+  );
+  await expect(stoppedPage.locator('focus-lock-overlay')).toBeAttached();
+  await expect(stoppedPage).toHaveTitle('Locked - Focus Lock');
+  await expect(stoppedPage.locator('#marker')).toHaveCount(0);
+  const stoppedCopy: OverlayCopy = await overlayCopy(context, stoppedPage);
+  expect(stoppedCopy.statics).toContain(OVERLAY_UNTIL_STOPPED_STATUS);
+  expect(
+    stoppedCopy.statics.filter((text: string): boolean => text.startsWith('Locked until')),
+  ).toEqual([]);
+  expect(stoppedCopy.buttons).not.toContain(END_SESSION_LABEL);
+
+  // The worker records the stop after it has already built the command that answered this
+  // navigation, so the stopped-page sentence rides on the next live-view refresh rather than on
+  // the first render. The refresh here is a theme change, which is a real user action. That
+  // ordering is a finding in the task report.
+  expect(await sendExtensionRequest(extPage, { type: 'updateTheme', theme: 'dark' })).toEqual({
+    ok: true,
+  });
+  await expect
+    .poll(async (): Promise<string[]> => (await overlayCopy(context, stoppedPage)).statics, {
+      timeout: 15_000,
+    })
+    .toContain(OVERLAY_STOPPED_PAGE_COPY);
+  const refreshedCopy: OverlayCopy = await overlayCopy(context, stoppedPage);
+  expect(refreshedCopy.statics).toContain(OVERLAY_UNTIL_STOPPED_STATUS);
+  expect(refreshedCopy.buttons).not.toContain(END_SESSION_LABEL);
+
+  expectNoDiagnostics(context);
+});
+
+test('popup End completes the indefinite session manually and silently', async ({
+  context,
+  extPage,
+  siteUrl,
+  worker,
+}) => {
+  const blockedPage: Page = await context.newPage();
+  await blockedPage.goto(siteUrl('/plain.html'));
+  await clearNotifications(worker);
+  await observeSoundMessages(extPage);
+  await startUntilStoppedSession(extPage);
+  await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
+
+  const sessionId: string = await activeSessionId(worker);
+  const completedBefore: number = completedToday(await readRuntimeV2(worker));
+
+  await observeSnapshotBroadcasts(extPage);
+  await extPage.getByRole('button', { name: END_SESSION_LABEL }).click();
+  await waitForLifecycle(extPage, 'idle', 60_000);
+
+  await expect(blockedPage.locator('focus-lock-overlay')).toHaveCount(0);
+  await expect(blockedPage.locator('#marker')).toHaveText('plain page');
+
+  const endEvent: SessionEndedEventV2 = endEventFor(
+    await readEventsV2FromWorker(worker),
+    sessionId,
+  );
+  expect(endEvent.reason).toBe('manual-completed');
+  expect(endEvent.outcome).toBe('completed');
+  expect(endEvent.duration).toEqual({ kind: 'until-stopped' });
+
+  const runtimeAfter = await readRuntimeV2(worker);
+  expect(completedToday(runtimeAfter)).toBe(completedBefore + 1);
+  // The closure journal is the durable half of the cleanup lifecycle the popup never sees. An end
+  // that left it behind would be an end that never finished.
+  expect(runtimeAfter.pendingClosure).toBeNull();
+  expect(runtimeAfter.session).toBeNull();
+  expect(await observedSnapshotLifecycles(extPage)).not.toContain('error');
+
+  expect(
+    (await observedSounds(extPage)).map((sound: ObservedSound): string => sound.sound),
+  ).not.toContain('sessionComplete');
+  expect(await notificationIds(worker)).toEqual([]);
+  expect(await readBadgeText(worker)).toBe('');
+
+  expectNoDiagnostics(context);
+});
+
+test('an indefinite pause freezes focus time and still ends from the popup', async ({
+  context,
+  extPage,
+  worker,
+}) => {
+  // A minute-long pause so the freeze is measured well inside it: the boundary this scenario cares
+  // about is the one it must not cross.
+  await configureFastEconomy(extPage, { pauseMs: 60_000 });
+  await startUntilStoppedSession(extPage);
+
+  const sessionId: string = await activeSessionId(worker);
+  await expect
+    .poll(
+      async (): Promise<number> =>
+        (await sendExtensionRequest(extPage, { type: 'getSnapshot' })).bankMs,
+      { timeout: 20_000 },
+    )
+    .toBeGreaterThanOrEqual(60_000);
+
+  await extPage.getByRole('button', { name: /^Pause blocking for / }).click();
+  const confirmPause: Locator = extPage.getByRole('button', { name: 'Take the pause' });
+  await expect(confirmPause).toBeEnabled();
+  await confirmPause.click();
+
+  const paused: SessionSnapshotV2 = await waitForPhase(extPage, 'paused');
+  expect(paused.lifecycle.kind).toBe('active');
+  expect(paused.phaseEndsAt).not.toBeNull();
+  expect(paused.sessionEndsAt).toBeNull();
+  await expect(clockValue(extPage, PAUSE_CLOCK_LABEL)).toBeVisible();
+
+  const focusTime: Locator = clockValue(extPage, FOCUS_TIME_LABEL);
+  const firstRead: string = await focusTime.innerText();
+  await expect
+    .poll(async (): Promise<string> => await focusTime.innerText(), {
+      intervals: [500],
+      timeout: 1_500,
+    })
+    .toBe(firstRead);
+  expect(await focusTime.innerText()).toBe(firstRead);
+
+  await extPage.getByRole('button', { name: END_SESSION_LABEL }).click();
+  await waitForLifecycle(extPage, 'idle', 60_000);
+
+  const endEvent: SessionEndedEventV2 = endEventFor(
+    await readEventsV2FromWorker(worker),
+    sessionId,
+  );
+  expect(endEvent.reason).toBe('manual-completed');
+  expect(endEvent.outcome).toBe('completed');
+  expect((await readRuntimeV2(worker)).pendingClosure).toBeNull();
+
+  expectNoDiagnostics(context);
+});
+
+test('a pause that expires resumes indefinite focus with no end in sight', async ({
+  context,
+  extPage,
+  worker,
+}) => {
+  await configureFastEconomy(extPage, { pauseMs: 6_000 });
+  await startUntilStoppedSession(extPage);
+  await expect
+    .poll(
+      async (): Promise<number> =>
+        (await sendExtensionRequest(extPage, { type: 'getSnapshot' })).bankMs,
+      { timeout: 20_000 },
+    )
+    .toBeGreaterThanOrEqual(6_000);
+
+  await extPage.getByRole('button', { name: /^Pause blocking for / }).click();
+  const confirmPause: Locator = extPage.getByRole('button', { name: 'Take the pause' });
+  await expect(confirmPause).toBeEnabled();
+  await confirmPause.click();
+
+  const paused: SessionSnapshotV2 = await waitForPhase(extPage, 'paused');
+  expect(paused.phaseStartedAt).not.toBeNull();
+
+  const resumed: SessionSnapshotV2 = await waitForPhase(extPage, 'focus');
+  expect(resumed.lifecycle.kind).toBe('active');
+  expect(resumed.phaseEndsAt).toBeNull();
+  expect(resumed.sessionEndsAt).toBeNull();
+  // A fresh focus phase, not the one the pause interrupted: the resume transition really ran.
+  expect(resumed.phaseStartedAt ?? 0).toBeGreaterThan(paused.phaseStartedAt ?? 0);
+  expect((await readRuntimeV2(worker)).pendingEnforcementTransition).toBeNull();
+  await expect(clockValue(extPage, FOCUS_TIME_LABEL)).toBeVisible();
+  await expect(readBadgeText(worker)).resolves.toBe(INDEFINITE_BADGE_TEXT);
+
+  expectNoDiagnostics(context);
+});
+
+test('a 50 minute cycling session labels its phase and its session separately', async ({
+  context,
+  extPage,
+  worker,
+}) => {
+  await startTestSession(extPage, {
+    duration: { kind: 'timed', minutes: 50 },
+    strictness: 'flexible',
+    cycling: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 },
+  });
+
+  // Both clocks are read once, right after activation. They tick down, so the tolerance covers the
+  // render latency between the durable start and this read and nothing more.
+  await expect(clockValue(extPage, FOCUS_PHASE_CLOCK_LABEL)).toHaveText(/^(25:00|24:59|24:58)$/);
+  await expect(clockValue(extPage, TOTAL_SESSION_CLOCK_LABEL)).toHaveText(/^(50:00|49:59|49:58)$/);
+
+  const snapshot: SessionSnapshotV2 = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+  const startedAt: number | null = snapshot.startedAt;
+  expect(startedAt).not.toBeNull();
+  const phaseAlarm: chrome.alarms.Alarm | undefined = await worker.evaluate(
+    async (): Promise<chrome.alarms.Alarm | undefined> => await chrome.alarms.get('phase'),
+  );
+  expect(phaseAlarm).toBeDefined();
+  expect(
+    Math.abs((phaseAlarm?.scheduledTime ?? 0) - ((startedAt ?? 0) + 25 * 60_000)),
+  ).toBeLessThan(1_000);
+
+  expectNoDiagnostics(context);
+});
+
+/** Ends one timed and one indefinite session by hand, in that order, newest last. */
+async function recordTwoManualEnds(extPage: Page, worker: Worker): Promise<void> {
+  await startTestSession(extPage, {
+    duration: { kind: 'timed', minutes: 5 },
+    strictness: 'flexible',
+  });
+  const timedSessionId: string = await activeSessionId(worker);
+  await extPage.getByRole('button', { name: END_SESSION_LABEL }).click();
+  await waitForLifecycle(extPage, 'idle', 60_000);
+  const timedEnd: SessionEndedEventV2 = endEventFor(
+    await readEventsV2FromWorker(worker),
+    timedSessionId,
+  );
+  expect(timedEnd.reason).toBe('manual-canceled');
+  expect(timedEnd.outcome).toBe('canceled');
+
+  await startUntilStoppedSession(extPage);
+  const indefiniteSessionId: string = await activeSessionId(worker);
+  await extPage.getByRole('button', { name: END_SESSION_LABEL }).click();
+  await waitForLifecycle(extPage, 'idle', 60_000);
+  const indefiniteEnd: SessionEndedEventV2 = endEventFor(
+    await readEventsV2FromWorker(worker),
+    indefiniteSessionId,
+  );
+  expect(indefiniteEnd.reason).toBe('manual-completed');
+  expect(indefiniteEnd.outcome).toBe('completed');
+  expect(indefiniteEnd.duration).toEqual({ kind: 'until-stopped' });
+}
+
+test('manual end reasons separate a timed cancel from an indefinite completion', async ({
+  context,
+  extPage,
+  worker,
+}) => {
+  await recordTwoManualEnds(extPage, worker);
+  expectNoDiagnostics(context);
+});
+
+/**
+ * Known defect, and the reason this scenario is expected to fail: `recentSessionEvents` in
+ * `src/background/stats-service.ts` still classifies terminal events by the v1 names, so the v2
+ * `sessionEnded` record never reaches the stats bundle. Every v2 session therefore reports as
+ * `Running` with no focused time, and neither outcome wording the spec fixes can appear. The
+ * assertions below are the wording the spec requires, so this scenario turns green the moment the
+ * classifier learns the v2 name, and Playwright then reports it as an unexpected pass.
+ */
+test('stats reports the indefinite plan and both manual outcomes', async ({
+  context,
+  extPage,
+  extensionId,
+  worker,
+}) => {
+  test.fail();
+  await recordTwoManualEnds(extPage, worker);
+
+  const statsPage: Page = await context.newPage();
+  await statsPage.goto(`chrome-extension://${extensionId}/src/stats/stats.html`);
+  const rows: Locator = statsPage.locator('.session-table tbody tr');
+  await expect(rows.first()).toContainText(UNTIL_STOPPED_LABEL);
+  await expect(rows.first()).toContainText(STATS_COMPLETED_MANUALLY);
+  await expect(rows.nth(1)).toContainText('5 m');
+  await expect(rows.nth(1)).toContainText(STATS_ENDED_EARLY);
+
+  expectNoDiagnostics(context);
+});
+
+test('end authority follows the session type a timed session was started with', async ({
+  context,
+  extPage,
+}) => {
+  await configureFastEconomy(extPage, { pauseMs: 60_000, gateDelayMs: 500 });
+
+  await startTestSession(extPage, {
+    duration: { kind: 'timed', minutes: 5 },
+    strictness: 'friction',
+  });
+  await extPage.getByRole('button', { name: END_SESSION_LABEL }).click();
+  const gateSnapshot: SessionSnapshotV2 = await expect
+    .poll(
+      async (): Promise<string | null> =>
+        (await sendExtensionRequest(extPage, { type: 'getSnapshot' })).gate?.kind ?? null,
+    )
+    .toBe('cancel')
+    .then(async (): Promise<SessionSnapshotV2> => {
+      return await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+    });
+  const authority: SessionLifecycleV2['endAuthority'] = gateSnapshot.lifecycle.endAuthority;
+  expect(authority.kind).toBe('friction-gate');
+  // The popup's active view renders the gate's controls but not its title, so the exact title is
+  // asserted where the worker publishes it. The report records that gap.
+  expect(
+    authority.kind === 'friction-gate' && authority.gate !== null ? authority.copy.title : null,
+  ).toBe(CANCEL_GATE_TITLE);
+  await expect(extPage.getByRole('button', { name: CANCEL_GATE_BACK })).toBeVisible();
+  const confirmEnd: Locator = extPage.getByRole('button', { name: CANCEL_GATE_CONFIRM });
+  await expect(confirmEnd).toBeEnabled();
+  await confirmEnd.click();
+  await waitForLifecycle(extPage, 'idle', 60_000);
+
+  await startTestSession(extPage, {
+    duration: { kind: 'timed', minutes: 5 },
+    strictness: 'hard',
+  });
+  await expect(clockValue(extPage, TOTAL_SESSION_CLOCK_LABEL)).toBeVisible();
+  await expect(extPage.getByRole('button', { name: END_SESSION_LABEL })).toHaveCount(0);
+
+  expectNoDiagnostics(context);
+});
+
+test('a scheduled until-stopped window starts once and never relocks inside itself', async ({
+  context,
+  extPage,
+  worker,
+}) => {
+  // The scenario also waits out a full closure cleanup, which the default budget cannot hold.
+  test.setTimeout(120_000);
+  await observeNotifications(worker);
+
+  const clock: { hours: number; minutes: number; day: number } = await worker.evaluate(
+    (): { hours: number; minutes: number; day: number } => {
+      const at: Date = new Date();
+      return { hours: at.getHours(), minutes: at.getMinutes(), day: at.getDay() };
+    },
+  );
+  const nowMinutes: number = clock.hours * 60 + clock.minutes;
+  test.skip(
+    nowMinutes < MIDNIGHT_GUARD_MINUTES || nowMinutes > 24 * 60 - MIDNIGHT_GUARD_MINUTES,
+    'a local wall-clock window cannot stay open across local midnight',
+  );
+
+  const asHhMm: (minutes: number) => string = (minutes: number): string =>
+    `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+  const entry: ScheduleEntryV2 = {
+    id: 'e2e-indefinite-window',
+    days: [clock.day],
+    start: asHhMm(nowMinutes - 1),
+    end: asHhMm(nowMinutes + 9),
+    duration: { kind: 'until-stopped' },
+    mode: 'blacklist',
+    strictness: 'flexible',
+    cycling: null,
+    intention: 'scheduled indefinite e2e',
+    enabled: true,
+  };
+  const settings: Settings = await sendExtensionRequest(extPage, { type: 'getSettings' });
+  const ack = await sendExtensionRequest(extPage, {
+    type: 'updateSettings',
+    settings: { ...settings, schedule: [entry] },
+  });
+  if (!ack.ok) throw new Error(ack.error);
+
+  const active: SessionSnapshotV2 = await waitForLifecycle(extPage, 'active', 30_000);
+  expect(active.config?.source).toBe('schedule');
+  expect(active.config?.duration).toEqual({ kind: 'until-stopped' });
+  expect(active.config?.strictness).toBe('flexible');
+  expect(active.sessionEndsAt).toBeNull();
+  expect(active.config?.scheduleOccurrence?.entryId).toBe(entry.id);
+  expect(await recordedNotifications(worker)).toContainEqual({
+    title: SCHEDULE_STARTED_TITLE,
+    message: SCHEDULE_UNTIL_STOPPED_BODY,
+  });
+
+  await extPage.reload();
+  await observeSnapshotBroadcasts(extPage);
+  await extPage.getByRole('button', { name: END_SESSION_LABEL }).click();
+  await waitForLifecycle(extPage, 'idle', 60_000);
+  expect((await readRuntimeV2(worker)).handledScheduleOccurrences).toContainEqual(
+    expect.objectContaining({
+      token: `${entry.id}@${active.config?.scheduleOccurrence?.localStartDate ?? ''}`,
+      reason: 'started',
+    }),
+  );
+
+  // Three real schedule checks inside the same still-open window. Each one publishes, which is how
+  // this scenario knows the check ran rather than assuming it did.
+  for (let round: number = 0; round < 3; round += 1) {
+    await forceTick(extPage, worker);
+    const snapshot: SessionSnapshotV2 = await sendExtensionRequest(extPage, {
+      type: 'getSnapshot',
+    });
+    expect(snapshot.lifecycle.kind).toBe('idle');
+    expect(snapshot.config).toBeNull();
+  }
+  expect(await observedSnapshotLifecycles(extPage)).not.toContain('active');
+
+  expectNoDiagnostics(context);
+});
+
+test('settings reports the indefinite session and discloses that the popup owns it', async ({
+  context,
+  extPage,
+  extensionId,
+}) => {
+  const optionsPage: Page = await context.newPage();
+  await optionsPage.goto(`chrome-extension://${extensionId}/src/options/options.html`);
+  await expect(optionsPage.locator('.session-status')).toHaveCount(0);
+
+  await startUntilStoppedSession(extPage);
+
+  const status: Locator = optionsPage.locator('.session-status');
+  await expect(status).toHaveText(SETTINGS_INDEFINITE_COPY);
+  const statusGroup: Locator = optionsPage.getByRole('group', { name: SESSION_STATUS_LABEL });
+  await expect(statusGroup).toHaveAttribute('aria-disabled', 'true');
+  await statusGroup.focus();
+  await expect(optionsPage.getByRole('tooltip')).toHaveText(SETTINGS_SESSION_DISCLOSURE);
+
+  expectNoDiagnostics(context);
+});
+
+// TODO(all-data clear): the all-data clear flow belongs here once the journal slice lands. It owes
+// a request that answers `data-clear-pending` for a start, the popup copy `Deleting Focus Lock
+// data. Finishing cleanup.`, the exhausted-error copy with `Retry cleanup` clicked end to end, and
+// the journal advancing behind that retry. Carved out of this task by the plan ledger.
