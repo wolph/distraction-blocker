@@ -704,10 +704,17 @@ async function runAllDataClearPhases(
     if (ran === 'none') return 'idle';
     if (ran === 'browser-reset') break;
   }
-  await storage.materializeBrowserResetProjections(token);
   const current: AllDataClearJournalV2 | null = await readUpgradedAllDataJournal(lease, token);
   if (current === null) return 'idle';
+  // Repair materializes the clean projection, which is the right value only while it is still the
+  // journal's current one. Once a lifecycle replay has advanced the final projection and written
+  // the marker from it, repairing would regress the marker that replay just produced.
+  if (exactDataEqual(current.installMarkerProjection, current.finalInstallMarkerProjection)) {
+    await storage.materializeBrowserResetProjections(token);
+  }
   if (current.resetProgress?.stablePasses === 2) {
+    // The crash cell between the clean-marker read-back and the identity: a reset that is already
+    // stable owes only the identity, and asking for it again is what makes that cell recoverable.
     await browserResetSeam(lease).ensureDeviceId();
     return 'stable';
   }

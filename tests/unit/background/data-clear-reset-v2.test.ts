@@ -4,7 +4,10 @@ import type { ContentTransportPortsV2 } from '../../../src/background/content-tr
 import {
   type AllDataClearJournalV2,
   type CleanInstallMarkerProjection,
+  DATA_CLEAR_RESET_DEADLINE_MS,
   type DataClearResetProgress,
+  type FinalInstallMarkerProjection,
+  MAX_DATA_CLEAR_RESOLVER_PASSES,
   parseDataClearJournal,
 } from '../../../src/background/data-clear-journal';
 import {
@@ -18,9 +21,15 @@ import {
   retryBrowserResetV2,
   runBrowserResetAttemptV2,
 } from '../../../src/background/data-clear-reset-v2';
-import type { EnforcementTargetPortsV2 } from '../../../src/background/enforcement-targets-v2';
+import type { FrozenEpochResetCommand } from '../../../src/background/enforcement-persistence-v2';
+import {
+  type EnforcementTargetPortsV2,
+  FINAL_FRESHNESS_TIMEOUT_MS,
+  MAX_TARGET_RESOLVER_PASSES,
+} from '../../../src/background/enforcement-targets-v2';
 import { emptyRuntimeV2 } from '../../../src/background/runtime-store-v2';
 import { DEFAULT_SETUP } from '../../../src/shared/constants';
+import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
 import { LOCAL_DATA_CLEAR_JOURNAL } from '../../../src/shared/storage-keys';
 
 const NOW: number = Date.parse('2026-09-04T10:00:00.000Z');
@@ -41,6 +50,12 @@ interface FakeTargetV2 {
   answer: 'reset' | 'closed' | 'no-receiver' | 'mismatch' | 'rejected' | 'stale-operation';
 }
 
+interface MaterializedStateV2 {
+  runtime: unknown;
+  setup: unknown;
+  installMarker: unknown;
+}
+
 interface ResetHarnessV2 {
   ports: BrowserResetPortsV2;
   lease: AllDataClearLease;
@@ -52,6 +67,10 @@ interface ResetHarnessV2 {
   ensureDeviceIdCalls: number[];
   replayCalls: number;
   sent: string[];
+  /** What Policy Storage and the replay have actually written, which is what the checks read. */
+  materialized: MaterializedStateV2;
+  /** The commands the journal held at the instant each send went out. */
+  frozenAtSend: Array<Record<string, FrozenEpochResetCommand>>;
   journal(): AllDataClearJournalV2;
   progress(): DataClearResetProgress;
   run<T>(operation: (token: DataClearLeaseToken) => Promise<T>): Promise<T>;
@@ -142,6 +161,12 @@ function harness(journal: AllDataClearJournalV2 | null = browserResetJournal()):
   const clock: { now: number } = { now: NOW };
   const ensureDeviceIdCalls: number[] = [];
   const sent: string[] = [];
+  const frozenAtSend: Array<Record<string, FrozenEpochResetCommand>> = [];
+  const materialized: MaterializedStateV2 = {
+    runtime: journal?.runtimeProjection ?? null,
+    setup: journal?.setupProjection ?? null,
+    installMarker: journal?.installMarkerProjection ?? null,
+  };
   const state: { replayCalls: number; deviceId: boolean; replay: 'complete' | 'failed' } = {
     replayCalls: 0,
     deviceId: true,
@@ -186,6 +211,7 @@ function harness(journal: AllDataClearJournalV2 | null = browserResetJournal()):
       );
       if (target === undefined) throw new Error('The tab was closed.');
       sent.push(`${tabId}:${documentId}`);
+      frozenAtSend.push(storedJournal(storage)?.resetProgress?.commands ?? {});
       return answerFor(target, message as Record<string, unknown>, clock.now);
     },
   };
@@ -208,25 +234,19 @@ function harness(journal: AllDataClearJournalV2 | null = browserResetJournal()):
     targets,
     transport,
     alarms: alarmPorts,
-    readMaterialized: async (): Promise<{
-      runtime: unknown;
-      setup: unknown;
-      installMarker: unknown;
-    }> => {
-      const stored: AllDataClearJournalV2 | null = storedJournal(storage);
-      return {
-        runtime: stored?.runtimeProjection ?? null,
-        setup: stored?.setupProjection ?? null,
-        installMarker: stored?.installMarkerProjection ?? null,
-      };
-    },
+    readMaterialized: async (): Promise<MaterializedStateV2> => structuredClone(materialized),
     deviceIdExists: async (): Promise<boolean> => state.deviceId,
     ensureDeviceId: async (): Promise<string> => {
       ensureDeviceIdCalls.push(clock.now);
       return 'device-id';
     },
+    // Main's replay writes the marker its journal projects. A failed one writes nothing.
     replayLifecycleIntents: async (): Promise<'complete' | 'failed'> => {
       state.replayCalls += 1;
+      if (state.replay === 'complete') {
+        materialized.installMarker =
+          storedJournal(storage)?.finalInstallMarkerProjection ?? materialized.installMarker;
+      }
       return state.replay;
     },
     reportError: vi.fn(),
@@ -240,6 +260,8 @@ function harness(journal: AllDataClearJournalV2 | null = browserResetJournal()):
     generation,
     clock,
     ensureDeviceIdCalls,
+    materialized,
+    frozenAtSend,
     get replayCalls(): number {
       return state.replayCalls;
     },
@@ -275,6 +297,14 @@ describe('browser reset attempt', (): void => {
     vi.restoreAllMocks();
   });
 
+  it('bounds the resolver by the numbers the enforcement sweep is bounded by', (): void => {
+    // The journal leaf may not import the enforcement module, so the two definitions are kept in
+    // agreement here rather than by construction. A change to one without the other lands as a
+    // failure instead of a silently different bound.
+    expect(MAX_DATA_CLEAR_RESOLVER_PASSES).toBe(MAX_TARGET_RESOLVER_PASSES);
+    expect(DATA_CLEAR_RESET_DEADLINE_MS).toBe(FINAL_FRESHNESS_TIMEOUT_MS);
+  });
+
   it('refuses to start on evidence the journal did not project', async (): Promise<void> => {
     const h: ResetHarnessV2 = harness();
     h.ports.readMaterialized = async (): Promise<{
@@ -297,12 +327,95 @@ describe('browser reset attempt', (): void => {
 
   it('regenerates the device identity once before it sends anything', async (): Promise<void> => {
     const h: ResetHarnessV2 = harness();
+    const order: string[] = [];
+    h.ports.ensureDeviceId = async (): Promise<string> => {
+      order.push('identity');
+      h.ensureDeviceIdCalls.push(h.clock.now);
+      return 'device-id';
+    };
+    const send = h.ports.transport.sendToDocument;
+    h.ports.transport.sendToDocument = async (
+      tabId: number,
+      documentId: string,
+      message: DocumentContentCommand,
+    ): Promise<unknown> => {
+      order.push('send');
+      return send(tabId, documentId, message);
+    };
 
     await h.run(
       (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
     );
 
     expect(h.ensureDeviceIdCalls).toHaveLength(1);
+    expect(order[0]).toBe('identity');
+  });
+
+  it('freezes every command in the journal before it sends one', async (): Promise<void> => {
+    const h: ResetHarnessV2 = harness();
+
+    await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
+
+    // Nothing may be issued that a crash could leave unrecorded: the journal already holds this
+    // exact command at the instant it goes out.
+    expect(h.frozenAtSend).not.toHaveLength(0);
+    for (const frozen of h.frozenAtSend) {
+      expect(frozen[FIRST_KEY]).toMatchObject({
+        tabId: 11,
+        documentId: 'document-1',
+        expectedUrl: TARGET_URL,
+        operationId: RESET_OPERATION,
+        enforcementEpoch: RESET_EPOCH,
+      });
+    }
+  });
+
+  it('keeps what a failed pass had already made durable', async (): Promise<void> => {
+    const h: ResetHarnessV2 = harness();
+    h.tabs.push({ tabId: 12, documentId: 'document-2', url: OTHER_URL, answer: 'mismatch' });
+
+    const result: string = await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
+
+    // The first document was reset under this operation. A journal that forgot the command it was
+    // reset with would have no record that the reset was ever issued.
+    expect(result).toBe('retry-scheduled');
+    expect(Object.keys(h.progress().commands)).toContain(FIRST_KEY);
+    expect(h.progress().targets[FIRST_KEY]).toMatchObject({ tabId: 11, expectedUrl: TARGET_URL });
+  });
+
+  it('retries the exact frozen command when the document drifts', async (): Promise<void> => {
+    const frozen: FrozenEpochResetCommand = {
+      version: 1,
+      command: 'reset-enforcement-epoch',
+      tabId: 11,
+      documentId: 'document-1',
+      expectedUrl: TARGET_URL,
+      operationId: RESET_OPERATION,
+      enforcementEpoch: RESET_EPOCH,
+    };
+    const h: ResetHarnessV2 = harness(
+      browserResetJournal({
+        resetProgress: resetProgress({
+          targets: {
+            [FIRST_KEY]: { tabId: 11, documentId: 'document-1', expectedUrl: TARGET_URL },
+          },
+          commands: { [FIRST_KEY]: frozen },
+        }),
+      }),
+    );
+    const target: FakeTargetV2 | undefined = h.tabs[0];
+    if (target === undefined) throw new Error('the harness needs its target');
+    target.url = OTHER_URL;
+
+    await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
+
+    expect(h.progress().commands[FIRST_KEY]).toEqual(frozen);
   });
 
   it('reaches stable on two generation-stable acknowledged passes', async (): Promise<void> => {
@@ -388,6 +501,26 @@ describe('browser reset attempt', (): void => {
     expect(h.progress().exclusions).toEqual([]);
   });
 
+  it('fails the attempt on an answer that is not plain data', async (): Promise<void> => {
+    const h: ResetHarnessV2 = harness();
+    h.ports.transport.sendToDocument = async (): Promise<unknown> =>
+      new Proxy(
+        {},
+        {
+          get: (): never => {
+            throw new Error('a hostile answer must not be read field by field');
+          },
+        },
+      );
+
+    const result: string = await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
+
+    expect(result).toBe('retry-scheduled');
+    expect(h.journal().retry.lastError).toContain('mismatch');
+  });
+
   it('fails the attempt on an acknowledgement for another operation', async (): Promise<void> => {
     const h: ResetHarnessV2 = harness();
     const target: FakeTargetV2 | undefined = h.tabs[0];
@@ -414,14 +547,34 @@ describe('browser reset attempt', (): void => {
       (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
     );
 
-    // Neither answer fails the attempt: a closed tab is gone, and a tab with no receiver is one
-    // the bounded passes are there to wait for.
-    expect(result).toBe('retry-scheduled');
+    // Neither answer fails the attempt, and neither keeps deleted data alive: a closed tab is
+    // gone, and a tab with no receiver is recorded and left for the reset every old-epoch document
+    // gets when it next loads.
+    expect(result).toBe('stable');
     expect(h.progress().exclusions).toEqual([
       { tabId: 11, documentId: 'document-1', expectedUrl: TARGET_URL, reason: 'closed' },
     ]);
     expect(h.progress().deferredUnreachable).toEqual([
       { tabId: 12, documentId: 'document-2', expectedUrl: OTHER_URL, reason: 'no-receiver' },
+    ]);
+  });
+
+  it('stabilizes when the only document open has no receiver', async (): Promise<void> => {
+    // Every tab that was already open when the extension was installed answers this way. It must
+    // not keep the clear from completing, or a user who deletes their data is left with a browser
+    // the barrier never reopens.
+    const h: ResetHarnessV2 = harness();
+    const target: FakeTargetV2 | undefined = h.tabs[0];
+    if (target === undefined) throw new Error('the harness needs its target');
+    target.answer = 'no-receiver';
+
+    const result: string = await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
+
+    expect(result).toBe('stable');
+    expect(h.progress().deferredUnreachable).toEqual([
+      { tabId: 11, documentId: 'document-1', expectedUrl: TARGET_URL, reason: 'no-receiver' },
     ]);
   });
 
@@ -579,6 +732,122 @@ describe('all-data clear finalization', (): void => {
     expect(h.journal().retry.lastError).toBe('journal-not-removed');
   });
 
+  it('replays the crash window that left the marker behind its projection', async (): Promise<void> => {
+    // Spec 1337's window: the advanced projection is durable and the marker is not. Replay is the
+    // only thing that closes it, so finalization must reach the replay to recover.
+    const advanced: FinalInstallMarkerProjection = {
+      version: 1,
+      profile: 'clean',
+      latestReason: 'update',
+      extensionVersion: '2.0.0',
+    };
+    const h: ResetHarnessV2 = harness(
+      browserResetJournal({
+        finalInstallMarkerProjection: advanced,
+        resetProgress: resetProgress({
+          attemptStartedAt: NOW,
+          stablePasses: 2,
+          targetGeneration: 7,
+        }),
+      }),
+    );
+
+    const outcome: string = await finalizeAllDataClearV2(h.ports);
+
+    expect(outcome).toBe('removed');
+    expect(h.replayCalls).toBe(1);
+    expect(h.materialized.installMarker).toEqual(advanced);
+    expect(h.storage[LOCAL_DATA_CLEAR_JOURNAL]).toBeUndefined();
+  });
+
+  it('does not call an advanced marker a materialization mismatch', async (): Promise<void> => {
+    const advanced: FinalInstallMarkerProjection = {
+      version: 1,
+      profile: 'clean',
+      latestReason: 'update',
+      extensionVersion: '2.0.0',
+    };
+    const h: ResetHarnessV2 = harness(
+      browserResetJournal({ finalInstallMarkerProjection: advanced }),
+    );
+    h.materialized.installMarker = advanced;
+
+    const result: string = await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
+
+    // The clean projection is frozen forever, so it stops being what the live marker must equal
+    // the moment a replay advances the journal's own final projection.
+    expect(result).toBe('stable');
+    expect(h.journal().retry.lastError).toBeNull();
+  });
+
+  it('refuses the removal when the target generation moved under it', async (): Promise<void> => {
+    const h: ResetHarnessV2 = harness(
+      browserResetJournal({
+        resetProgress: resetProgress({
+          attemptStartedAt: NOW,
+          stablePasses: 2,
+          targetGeneration: 7,
+        }),
+      }),
+    );
+    h.generation.value = 8;
+
+    const outcome: string = await finalizeAllDataClearV2(h.ports);
+
+    expect(outcome).toBe('retry-scheduled');
+    expect(h.storage[LOCAL_DATA_CLEAR_JOURNAL]).toBeDefined();
+    expect(h.journal().retry.lastError).toContain('generation');
+  });
+
+  it('answers exhausted rather than scheduled when the batch is spent', async (): Promise<void> => {
+    const h: ResetHarnessV2 = harness(
+      browserResetJournal({
+        retry: { batch: 1, automaticAttempt: 11, nextAttemptAt: NOW, lastError: 'reset-deadline' },
+        resetProgress: resetProgress({ attemptStartedAt: NOW, stablePasses: 2 }),
+      }),
+    );
+    h.ports.replayLifecycleIntents = async (): Promise<'complete' | 'failed'> => 'failed';
+
+    const outcome: string = await finalizeAllDataClearV2(h.ports);
+
+    // The twelfth failure leaves no alarm, so telling the caller a retry is scheduled would be a
+    // lie about state it may act on.
+    expect(outcome).toBe('exhausted');
+    expect(h.alarms.get('data-clear-retry')).toBeUndefined();
+  });
+
+  it('refuses to acquire the lease a caller already holds', async (): Promise<void> => {
+    const h: ResetHarnessV2 = harness();
+
+    await expect(
+      h.run((): Promise<string> => finalizeAllDataClearV2(h.ports)),
+    ).rejects.toMatchObject({ code: 'lease-order' });
+  });
+
+  it('resets the caller in memory before it releases the lease', async (): Promise<void> => {
+    const h: ResetHarnessV2 = harness(
+      browserResetJournal({
+        resetProgress: resetProgress({
+          attemptStartedAt: NOW,
+          stablePasses: 2,
+          targetGeneration: 7,
+        }),
+      }),
+    );
+    const held: boolean[] = [];
+    h.ports.afterRemoval = async (): Promise<void> => {
+      held.push(h.lease.held());
+    };
+
+    const outcome: string = await finalizeAllDataClearV2(h.ports);
+
+    // A clear that began against a half-reset caller would be reasoning about state nobody owns.
+    expect(outcome).toBe('removed');
+    expect(held).toEqual([true]);
+  });
+
   it('schedules a retry when the lifecycle replay fails', async (): Promise<void> => {
     const h: ResetHarnessV2 = await stableHarness();
     h.ports.replayLifecycleIntents = async (): Promise<'complete' | 'failed'> => 'failed';
@@ -593,7 +862,8 @@ describe('all-data clear finalization', (): void => {
 
 describe('browser reset restart recovery', (): void => {
   it('resumes on the pass budget the crashed attempt had written', async (): Promise<void> => {
-    // The worker died after its second pass count was durable, so the restart owes one pass.
+    // The worker died after its second pass count was durable, so the restart owes one pass, and
+    // one pass alone can never reach the two stable passes completion needs.
     const h: ResetHarnessV2 = harness(
       browserResetJournal({
         resetProgress: resetProgress({ attemptStartedAt: NOW, resolverPassCount: 2 }),
@@ -604,10 +874,39 @@ describe('browser reset restart recovery', (): void => {
       (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
     );
 
-    // A fresh attempt begins, which is what the journal records, and it starts its own budget.
-    expect(result).toBe('stable');
-    expect(h.progress().resolverPassCount).toBe(2);
+    expect(result).toBe('retry-scheduled');
+    expect(h.progress().resolverPassCount).toBe(3);
     expect(h.progress().attemptStartedAt).toBe(NOW);
+    expect(h.sent).toHaveLength(1);
+    expect(h.journal().retry.automaticAttempt).toBe(1);
+  });
+
+  it('resumes the remaining time rather than restamping the attempt start', async (): Promise<void> => {
+    const h: ResetHarnessV2 = harness(
+      browserResetJournal({
+        resetProgress: resetProgress({ attemptStartedAt: NOW, resolverPassCount: 1 }),
+      }),
+    );
+    h.clock.now = NOW + DEADLINE_MS - 1;
+    const answer = h.ports.transport.sendToDocument;
+    h.ports.transport.sendToDocument = async (
+      tabId: number,
+      documentId: string,
+      message: DocumentContentCommand,
+    ): Promise<unknown> => {
+      h.clock.now = NOW + DEADLINE_MS;
+      return await answer(tabId, documentId, message);
+    };
+
+    const result: string = await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
+
+    // The deadline belongs to the attempt that began, not to the wake that resumed it: one pass
+    // fits in what is left and the next is refused, with the start left where it was.
+    expect(result).toBe('retry-scheduled');
+    expect(h.progress().attemptStartedAt).toBe(NOW);
+    expect(h.sent).toHaveLength(1);
   });
 
   it('advances the schedule before any effect when it restarts past the deadline', async (): Promise<void> => {
@@ -616,14 +915,53 @@ describe('browser reset restart recovery', (): void => {
     );
     h.clock.now = NOW + DEADLINE_MS;
 
-    const result: string = await h.run(async (token: DataClearLeaseToken): Promise<string> => {
-      // The attempt start is rewritten from this instant, so the deadline is measured from the
-      // restart rather than from the attempt that died.
-      return await runBrowserResetAttemptV2(h.ports, token);
-    });
+    const result: string = await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
 
-    expect(result).toBe('stable');
-    expect(h.progress().attemptStartedAt).toBe(NOW + DEADLINE_MS);
+    // The budget the crashed attempt owned is spent, so this wake schedules the next attempt and
+    // does nothing else: no identity, no send, and no rewritten start.
+    expect(result).toBe('retry-scheduled');
+    expect(h.progress().attemptStartedAt).toBe(NOW);
+    expect(h.sent).toEqual([]);
+    expect(h.ensureDeviceIdCalls).toEqual([]);
+    expect(h.journal().retry.automaticAttempt).toBe(1);
+    expect(h.journal().retry.lastError).toContain('reset-deadline');
+  });
+
+  it('advances the schedule before any effect when it restarts past its passes', async (): Promise<void> => {
+    const h: ResetHarnessV2 = harness(
+      browserResetJournal({
+        resetProgress: resetProgress({ attemptStartedAt: NOW, resolverPassCount: 3 }),
+      }),
+    );
+
+    const result: string = await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
+
+    expect(result).toBe('retry-scheduled');
+    expect(h.sent).toEqual([]);
+    expect(h.ensureDeviceIdCalls).toEqual([]);
+    expect(h.journal().retry.automaticAttempt).toBe(1);
+  });
+
+  it('answers instead of raising when the batch is already exhausted', async (): Promise<void> => {
+    // Spec 1355 has bootstrap resume the reset for any journal it finds, exhausted included, and
+    // the result type declares `exhausted`, so a caller is entitled to that answer.
+    const h: ResetHarnessV2 = harness(
+      browserResetJournal({
+        retry: { batch: 1, automaticAttempt: 12, nextAttemptAt: null, lastError: 'reset-deadline' },
+        resetProgress: resetProgress({ attemptStartedAt: NOW, resolverPassCount: 3 }),
+      }),
+    );
+
+    const result: string = await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
+
+    expect(result).toBe('exhausted');
+    expect(h.journal().retry.automaticAttempt).toBe(12);
   });
 });
 

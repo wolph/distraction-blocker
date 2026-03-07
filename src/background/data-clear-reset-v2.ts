@@ -63,13 +63,22 @@ export interface BrowserResetPortsV2 {
   ensureDeviceId(): Promise<string>;
   /** Main's adapter over the install-lifecycle replay, run under the token it is given. */
   replayLifecycleIntents(token: DataClearLeaseToken): Promise<'complete' | 'failed'>;
+  /**
+   * The caller's own in-memory reset, run while the lease is still held, so no later operation can
+   * begin against a caller that is half reset.
+   */
+  afterRemoval?(): Promise<void>;
   reportError(error: unknown): void;
 }
 
 /** One attempt ends stable, with its next attempt scheduled, or with the batch exhausted. */
 export type BrowserResetAttemptResultV2 = 'stable' | 'retry-scheduled' | 'exhausted';
 
-export type AllDataClearFinalizationV2 = 'removed' | 'not-finalizable' | 'retry-scheduled';
+export type AllDataClearFinalizationV2 =
+  | 'removed'
+  | 'not-finalizable'
+  | 'retry-scheduled'
+  | 'exhausted';
 
 /** The reset progress an attempt starts from, which is the shape a restart resumes on. */
 const FRESH_ATTEMPT: Pick<
@@ -86,26 +95,40 @@ export async function runBrowserResetAttemptV2(
   ports: BrowserResetPortsV2,
   token: DataClearLeaseToken,
 ): Promise<BrowserResetAttemptResultV2> {
-  const journal: AllDataClearJournalV2 = await resetJournal(ports);
+  const journal: AllDataClearJournalV2 = await resetJournal();
   if (!(await materializationMatches(ports, journal))) {
     return failAttempt(ports, token, 'materialization-mismatch');
   }
+  // A restart resumes the attempt the journal already owns. Its budget is checked before the
+  // identity and before any send, so a wake that arrives past the deadline or past the third
+  // reserved pass advances the retry schedule and produces no effect at all.
+  const spent: string | null = attemptBudgetSpent(resetProgressOf(journal), ports.now());
+  if (spent !== null) return failAttempt(ports, token, spent);
   await ports.ensureDeviceId();
   await beginAttempt(ports, token);
   for (;;) {
-    const current: AllDataClearJournalV2 = await resetJournal(ports);
+    const current: AllDataClearJournalV2 = await resetJournal();
     const progress: DataClearResetProgress = resetProgressOf(current);
-    const started: number = progress.attemptStartedAt ?? ports.now();
-    if (ports.now() >= started + DATA_CLEAR_RESET_DEADLINE_MS) {
-      return failAttempt(ports, token, 'reset-deadline');
-    }
-    if (progress.resolverPassCount >= MAX_DATA_CLEAR_RESOLVER_PASSES) {
-      return failAttempt(ports, token, 'reset-passes-exhausted');
-    }
+    const remaining: string | null = attemptBudgetSpent(progress, ports.now());
+    if (remaining !== null) return failAttempt(ports, token, remaining);
     const pass: PassOutcomeV2 = await runResolverPass(ports, token, progress);
     if (pass.kind === 'failed') return failAttempt(ports, token, pass.detail);
     if (pass.kind === 'stable') return 'stable';
   }
+}
+
+/**
+ * What an attempt has already spent of the budget the journal made durable, or null while it still
+ * has both time and a pass left. An attempt that has not started yet owns its whole budget.
+ */
+function attemptBudgetSpent(progress: DataClearResetProgress, now: number): string | null {
+  const started: number | null = progress.attemptStartedAt;
+  if (started === null) return null;
+  if (now >= started + DATA_CLEAR_RESET_DEADLINE_MS) return 'reset-deadline';
+  if (progress.resolverPassCount >= MAX_DATA_CLEAR_RESOLVER_PASSES) {
+    return 'reset-passes-exhausted';
+  }
+  return null;
 }
 
 /**
@@ -116,21 +139,35 @@ export async function runBrowserResetAttemptV2(
 export async function finalizeAllDataClearV2(
   ports: BrowserResetPortsV2,
 ): Promise<AllDataClearFinalizationV2> {
+  // The lease is acquired here, so a caller that already holds it would queue behind itself and
+  // deadlock. Refusing says which rule was broken instead of hanging the worker.
+  if (ports.lease.held()) {
+    throw new CoreError(
+      'lease-order',
+      'finalization acquires the deletion lease and cannot run under one that is already held',
+    );
+  }
   return ports.lease.run(
     async (token: DataClearLeaseToken): Promise<AllDataClearFinalizationV2> => {
-      const journal: AllDataClearJournalV2 = await resetJournal(ports);
+      const journal: AllDataClearJournalV2 = await resetJournal();
       if (!(await finalizable(ports, journal))) return 'not-finalizable';
       if ((await ports.replayLifecycleIntents(token)) === 'failed') {
         return scheduledOrExhausted(await failAttempt(ports, token, 'lifecycle-replay-failed'));
       }
-      const replayed: AllDataClearJournalV2 = await resetJournal(ports);
+      const replayed: AllDataClearJournalV2 = await resetJournal();
       if (replayed.pendingInstallLifecycleIntents.length > 0) {
         return scheduledOrExhausted(await failAttempt(ports, token, 'lifecycle-intents-remain'));
       }
       if (!(await finalMarkerMatches(ports, replayed))) {
         return scheduledOrExhausted(await failAttempt(ports, token, 'final-marker-mismatch'));
       }
-      ports.targets.readTargetGeneration();
+      // Spec 1353 requires the final generation reread to be unchanged, so it is compared rather
+      // than merely performed: a target set that moved between the last stable pass and this
+      // removal is a proof that no longer holds.
+      const generation: number = ports.targets.readTargetGeneration();
+      if (generation !== resetProgressOf(replayed).targetGeneration) {
+        return scheduledOrExhausted(await failAttempt(ports, token, 'target-generation-changed'));
+      }
       try {
         await transactDataClearJournal(ports.lease, token, (): null => null);
       } catch (error: unknown) {
@@ -143,6 +180,9 @@ export async function finalizeAllDataClearV2(
       if ((await storedJournal()) !== null) {
         return scheduledOrExhausted(await failAttempt(ports, token, 'journal-not-removed'));
       }
+      // The caller's own reset happens while the lease is still held, so nothing can begin a new
+      // clear against a caller that is half reset.
+      await ports.afterRemoval?.();
       return 'removed';
     },
   );
@@ -187,21 +227,32 @@ export async function retryBrowserResetV2(
 }
 
 /**
- * An exhausted batch is still a journal that stays where it is, and finalization reports the same
- * `retry-scheduled` for it: the public state reads the exhaustion off the journal's own retry.
+ * An exhausted batch leaves no alarm behind, so a caller told `retry-scheduled` for one would be
+ * acting on a wake that is never coming. The journal stays where it is either way.
  */
 function scheduledOrExhausted(result: 'retry-scheduled' | 'exhausted'): AllDataClearFinalizationV2 {
-  void result;
-  return 'retry-scheduled';
+  return result;
 }
 
 /** One resolver pass: what it decided, and nothing about how it wrote it. */
 type PassOutcomeV2 = { kind: 'stable' } | { kind: 'continue' } | { kind: 'failed'; detail: string };
 
-/** What one pass learned about every target it reached, folded into a single durable write. */
-interface PassRecordV2 {
-  targets: Record<string, CleanupEnforcementTarget>;
-  commands: Record<string, FrozenEpochResetCommand>;
+/** One target this pass will send to, under the exact command it is sent with. */
+interface FrozenTargetV2 {
+  key: string;
+  target: CleanupEnforcementTarget;
+  command: FrozenEpochResetCommand;
+}
+
+/** What enumeration decided, before anything was written and before anything was sent. */
+interface PassPlanV2 {
+  frozen: FrozenTargetV2[];
+  exclusions: DataClearResetExclusion[];
+  deferred: DataClearDeferredTarget[];
+}
+
+/** What the sends answered. Exclusions and deferrals grow here as documents turn out to be gone. */
+interface SendRecordV2 {
   acknowledgements: Record<string, DocumentEpochResetAck>;
   exclusions: DataClearResetExclusion[];
   deferred: DataClearDeferredTarget[];
@@ -211,26 +262,33 @@ interface PassRecordV2 {
 }
 
 /**
- * Sends this pass's reset to every enforceable target, then writes the pass count, everything the
- * pass learned, and the stability it reached, in one transform. The pass count is durable before
- * enumeration, so a crash costs a pass rather than repeating one.
+ * One resolver pass, in the order the spec fixes: enumerate and classify, make the pass count and
+ * every exact command durable, send only what is durable, then fold the answers in one transform.
+ *
+ * The freeze before the send is the point. A reset issued under a command no journal records is a
+ * browser effect nothing can account for after a crash, and the retry would re-derive a different
+ * command for a document whose URL had drifted.
  */
 async function runResolverPass(
   ports: BrowserResetPortsV2,
   token: DataClearLeaseToken,
   progress: DataClearResetProgress,
 ): Promise<PassOutcomeV2> {
-  await countPass(ports, token);
-  const journal: AllDataClearJournalV2 = await resetJournal(ports);
-  const record: PassRecordV2 = await sendPass(ports, journal);
+  const journal: AllDataClearJournalV2 = await resetJournal();
+  const plan: PassPlanV2 = await planPass(ports, journal);
+  await freezePass(ports, token, plan);
+  const record: SendRecordV2 = await sendFrozen(ports, plan);
   if (record.failure !== null) return { kind: 'failed', detail: record.failure };
   const generation: number = ports.targets.readTargetGeneration();
   // The first pass adopts the generation rather than counting it as a change: the attempt has no
   // earlier reading to have been invalidated, and a change costs a pass out of three.
   const changed: boolean =
     progress.targetGeneration !== null && progress.targetGeneration !== generation;
-  const settled: boolean = record.reachable > 0 || record.deferred.length === 0;
-  const stable: boolean = !changed && settled && record.acknowledgedNow === record.reachable;
+  // A deferral never blocks stability. Spec 1345 says an unreachable document does not keep deleted
+  // data alive, and spec 1355 is why that is safe: it receives its reset when it next loads. A pass
+  // with nothing reachable at all is settled, which is the ordinary state of a profile whose tabs
+  // were open before the extension was installed.
+  const stable: boolean = !changed && record.acknowledgedNow === record.reachable;
   const stablePasses: 0 | 1 | 2 = changed ? 0 : nextStablePasses(progress.stablePasses, stable);
   await transactDataClearJournal(
     ports.lease,
@@ -244,11 +302,11 @@ async function runResolverPass(
           ...held,
           targetGeneration: generation,
           stablePasses,
-          targets: { ...held.targets, ...record.targets },
-          commands: { ...held.commands, ...record.commands },
           acknowledgements: { ...held.acknowledgements, ...record.acknowledgements },
-          exclusions: record.exclusions,
-          deferredUnreachable: record.deferred,
+          // Exclusions and deferrals are this pass's picture rather than a running log: a target
+          // that is gone from the reread is gone from the record with it.
+          exclusions: [...plan.exclusions, ...record.exclusions],
+          deferredUnreachable: [...plan.deferred, ...record.deferred],
         },
       };
     },
@@ -263,28 +321,20 @@ function nextStablePasses(current: 0 | 1 | 2, stable: boolean): 0 | 1 | 2 {
 }
 
 /**
- * The browser half of one pass. Every enforceable target is frozen into a command and sent under
- * the journal's own epoch and operation, and only an exact acknowledgement counts. A rejected or
- * mismatched answer fails the attempt on the spot: it is never deferred and never excluded.
+ * Enumerates the browser and decides what each target is, without writing or sending anything. A
+ * target the journal already froze a command for keeps that exact command, so a document whose URL
+ * drifted between attempts is retried under the command it was first issued.
  */
-async function sendPass(
+async function planPass(
   ports: BrowserResetPortsV2,
   journal: AllDataClearJournalV2,
-): Promise<PassRecordV2> {
-  const record: PassRecordV2 = {
-    targets: {},
-    commands: {},
-    acknowledgements: {},
-    exclusions: [],
-    deferred: [],
-    reachable: 0,
-    acknowledgedNow: 0,
-    failure: null,
-  };
+): Promise<PassPlanV2> {
+  const held: Record<string, FrozenEpochResetCommand> = resetProgressOf(journal).commands;
+  const plan: PassPlanV2 = { frozen: [], exclusions: [], deferred: [] };
   for (const target of await enumerateEnforcementTargetsV2(ports.targets)) {
     if (target.kind === 'outside') continue;
     if (target.kind === 'known-unsupported') {
-      record.exclusions.push({
+      plan.exclusions.push({
         tabId: target.tabId,
         documentId: target.documentId,
         expectedUrl: target.url,
@@ -295,7 +345,7 @@ async function sendPass(
     if (target.kind === 'changed') {
       // A target the resolver could not name a document for is deferred, not excluded: it is a
       // page that may still answer, and the bounded passes are what decide that.
-      record.deferred.push({
+      plan.deferred.push({
         tabId: target.tabId,
         documentId: null,
         expectedUrl: target.url,
@@ -304,34 +354,97 @@ async function sendPass(
       continue;
     }
     const key: string = documentCommandKeyV2(target.tabId, target.documentId);
-    const command: FrozenEpochResetCommand = buildFrozenEpochResetCommandV2({
-      tabId: target.tabId,
-      documentId: target.documentId,
-      expectedUrl: target.url,
-      operationId: journal.resetOperationId,
-      enforcementEpoch: journal.resetEpoch,
+    const command: FrozenEpochResetCommand =
+      held[key] ??
+      buildFrozenEpochResetCommandV2({
+        tabId: target.tabId,
+        documentId: target.documentId,
+        expectedUrl: target.url,
+        operationId: journal.resetOperationId,
+        enforcementEpoch: journal.resetEpoch,
+      });
+    // The target record is the command's own fields, not the live reading. A document whose URL
+    // drifted under a frozen command is retried under the command it was issued, and the journal
+    // says the same thing about it in both maps.
+    plan.frozen.push({
+      key,
+      target: {
+        tabId: command.tabId,
+        documentId: command.documentId,
+        expectedUrl: command.expectedUrl,
+      },
+      command,
     });
-    record.targets[key] = {
-      tabId: target.tabId,
-      documentId: target.documentId,
-      expectedUrl: target.url,
-    };
-    record.commands[key] = command;
+  }
+  return plan;
+}
+
+/**
+ * Reserves the pass and makes every command of it durable, in one transform, before a single send
+ * goes out. The pass count belongs here too: a crash inside the sends costs that pass rather than
+ * repeating it.
+ */
+async function freezePass(
+  ports: BrowserResetPortsV2,
+  token: DataClearLeaseToken,
+  plan: PassPlanV2,
+): Promise<void> {
+  await transactDataClearJournal(
+    ports.lease,
+    token,
+    (current: DataClearJournal | LegacyAllDataClearJournal | null): DataClearJournal => {
+      const journal: AllDataClearJournalV2 = browserResetOf(current);
+      const progress: DataClearResetProgress = resetProgressOf(journal);
+      const targets: Record<string, CleanupEnforcementTarget> = { ...progress.targets };
+      const commands: Record<string, FrozenEpochResetCommand> = { ...progress.commands };
+      for (const frozen of plan.frozen) {
+        targets[frozen.key] = frozen.target;
+        commands[frozen.key] = frozen.command;
+      }
+      return {
+        ...journal,
+        resetProgress: {
+          ...progress,
+          resolverPassCount: nextPassCount(progress.resolverPassCount),
+          targets,
+          commands,
+        },
+      };
+    },
+  );
+}
+
+/**
+ * Sends every command this pass froze. Only an acknowledgement that answers the exact command
+ * counts. A rejection or a mismatch fails the attempt on the spot: it is never deferred and never
+ * excluded.
+ */
+async function sendFrozen(ports: BrowserResetPortsV2, plan: PassPlanV2): Promise<SendRecordV2> {
+  const record: SendRecordV2 = {
+    acknowledgements: {},
+    exclusions: [],
+    deferred: [],
+    reachable: 0,
+    acknowledgedNow: 0,
+    failure: null,
+  };
+  for (const frozen of plan.frozen) {
     record.reachable += 1;
-    const outcome: EpochResetOutcomeV2 = await sendEpochResetCommand(ports.transport, command);
-    if (outcome.kind === 'reset' && exactAck(outcome.ack, command)) {
-      record.acknowledgements[key] = outcome.ack;
+    const outcome: EpochResetOutcomeV2 = await sendEpochResetCommand(
+      ports.transport,
+      frozen.command,
+    );
+    if (outcome.kind === 'reset' && exactAck(outcome.ack, frozen.command)) {
+      record.acknowledgements[frozen.key] = outcome.ack;
       record.acknowledgedNow += 1;
       continue;
     }
     if (outcome.kind === 'closed') {
       record.reachable -= 1;
-      delete record.targets[key];
-      delete record.commands[key];
       record.exclusions.push({
-        tabId: target.tabId,
-        documentId: target.documentId,
-        expectedUrl: target.url,
+        tabId: frozen.target.tabId,
+        documentId: frozen.target.documentId,
+        expectedUrl: frozen.target.expectedUrl,
         reason: 'closed',
       });
       continue;
@@ -339,17 +452,17 @@ async function sendPass(
     if (outcome.kind === 'no-receiver') {
       record.reachable -= 1;
       record.deferred.push({
-        tabId: target.tabId,
-        documentId: target.documentId,
-        expectedUrl: target.url,
+        tabId: frozen.target.tabId,
+        documentId: frozen.target.documentId,
+        expectedUrl: frozen.target.expectedUrl,
         reason: 'no-receiver',
       });
       continue;
     }
     record.failure =
       outcome.kind === 'rejected'
-        ? `epoch-reset-rejected on tab ${target.tabId}`
-        : `reset acknowledgement mismatch on tab ${target.tabId}`;
+        ? `epoch-reset-rejected on tab ${frozen.target.tabId}`
+        : `reset acknowledgement mismatch on tab ${frozen.target.tabId}`;
     return record;
   }
   return record;
@@ -366,36 +479,26 @@ function exactAck(ack: DocumentEpochResetAck, command: FrozenEpochResetCommand):
   );
 }
 
-/** The attempt start, durable before the first pass so a restart resumes inside its budget. */
+/**
+ * The attempt start, durable before the first pass so a restart resumes inside its budget. An
+ * attempt that already has a start keeps it, along with the passes it reserved: restamping it from
+ * the current clock is what would let an evicted worker send resets forever without ever spending
+ * one of its twelve attempts.
+ */
 async function beginAttempt(ports: BrowserResetPortsV2, token: DataClearLeaseToken): Promise<void> {
   const at: number = ports.now();
   await transactDataClearJournal(
     ports.lease,
     token,
-    (current: DataClearJournal | LegacyAllDataClearJournal | null): DataClearJournal => {
-      const journal: AllDataClearJournalV2 = browserResetOf(current);
-      return {
-        ...journal,
-        resetProgress: { ...resetProgressOf(journal), ...FRESH_ATTEMPT, attemptStartedAt: at },
-      };
-    },
-  );
-}
-
-/** The pass count is durable before the pass runs, so a crash inside one costs that pass. */
-async function countPass(ports: BrowserResetPortsV2, token: DataClearLeaseToken): Promise<void> {
-  await transactDataClearJournal(
-    ports.lease,
-    token,
-    (current: DataClearJournal | LegacyAllDataClearJournal | null): DataClearJournal => {
+    (
+      current: DataClearJournal | LegacyAllDataClearJournal | null,
+    ): DataClearJournal | 'unchanged' => {
       const journal: AllDataClearJournalV2 = browserResetOf(current);
       const progress: DataClearResetProgress = resetProgressOf(journal);
+      if (progress.attemptStartedAt !== null) return 'unchanged';
       return {
         ...journal,
-        resetProgress: {
-          ...progress,
-          resolverPassCount: nextPassCount(progress.resolverPassCount),
-        },
+        resetProgress: { ...progress, ...FRESH_ATTEMPT, attemptStartedAt: at },
       };
     },
   );
@@ -418,6 +521,9 @@ async function failAttempt(
   token: DataClearLeaseToken,
   detail: string,
 ): Promise<'retry-scheduled' | 'exhausted'> {
+  // Bootstrap resumes the reset for any journal it finds, an exhausted one included, so a batch
+  // with nothing left to schedule answers rather than raising out of the entry point.
+  if (batchExhausted(await resetJournal())) return 'exhausted';
   const at: number = ports.now();
   await transactDataClearJournal(
     ports.lease,
@@ -430,13 +536,18 @@ async function failAttempt(
   return rearmResetAlarm(ports, token);
 }
 
+/** A batch that has failed with nothing left to schedule. Only a manual retry moves it. */
+function batchExhausted(journal: AllDataClearJournalV2): boolean {
+  return journal.retry.lastError !== null && journal.retry.nextAttemptAt === null;
+}
+
 /** Brings the retry alarm in line with the journal's own `nextAttemptAt`. */
 async function rearmResetAlarm(
   ports: BrowserResetPortsV2,
   token: DataClearLeaseToken,
 ): Promise<'retry-scheduled' | 'exhausted'> {
   for (;;) {
-    const journal: AllDataClearJournalV2 = await resetJournal(ports);
+    const journal: AllDataClearJournalV2 = await resetJournal();
     const scheduled: number | null = journal.retry.nextAttemptAt;
     if (scheduled === null) return 'exhausted';
     if (await createAlarmWithReadBackV2(ports.alarms, DATA_CLEAR_RETRY_ALARM, scheduled)) {
@@ -480,7 +591,13 @@ function reissuedCommands(
   return reissued;
 }
 
-/** The three values this journal already materialized have to be exactly what it projected. */
+/**
+ * The three values this journal already materialized have to be exactly what it projects now. The
+ * marker is compared against the final projection rather than the frozen clean one, because a
+ * replay that advanced the final projection made the live marker legitimately different from the
+ * clean projection, and every attempt after it would otherwise record a mismatch until the batch
+ * exhausted.
+ */
 async function materializationMatches(
   ports: BrowserResetPortsV2,
   journal: AllDataClearJournalV2,
@@ -490,7 +607,7 @@ async function materializationMatches(
   return (
     exactDataEqual(materialized.runtime, journal.runtimeProjection) &&
     exactDataEqual(materialized.setup, journal.setupProjection) &&
-    exactDataEqual(materialized.installMarker, journal.installMarkerProjection)
+    exactDataEqual(materialized.installMarker, journal.finalInstallMarkerProjection)
   );
 }
 
@@ -515,9 +632,10 @@ async function finalizable(
     await ports.readMaterialized();
   if (!exactDataEqual(materialized.runtime, journal.runtimeProjection)) return false;
   if (!exactDataEqual(materialized.setup, journal.setupProjection)) return false;
-  if (!exactDataEqual(materialized.installMarker, journal.finalInstallMarkerProjection)) {
-    return false;
-  }
+  // The marker is deliberately not checked here. Replay is what materializes it, so requiring it
+  // before replaying would make the crash window between the projection write and the marker write
+  // unrecoverable: nothing else in the system ever writes that marker. It is proved after the
+  // replay instead, which is the only place it can be.
   if (resetProgressOf(journal).stablePasses !== 2) return false;
   return await ports.deviceIdExists();
 }
@@ -534,8 +652,7 @@ async function storedJournal(): Promise<DataClearJournal | null> {
   return parsed;
 }
 
-async function resetJournal(ports: BrowserResetPortsV2): Promise<AllDataClearJournalV2> {
-  void ports;
+async function resetJournal(): Promise<AllDataClearJournalV2> {
   return browserResetOf(await storedJournal());
 }
 

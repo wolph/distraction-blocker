@@ -599,15 +599,17 @@ export class Engine {
    * journal is gone, and the in-memory reset happens there rather than when the phases finished.
    */
   async finalizeAllDataClear(): Promise<AllDataClearFinalizationV2> {
-    const outcome: AllDataClearFinalizationV2 = await finalizeAllDataClearV2(
-      this.browserResetPorts(),
-    );
-    if (outcome !== 'removed') return outcome;
-    await this.resetAfterAllDataClear();
-    this.openRuntimeMutationBarrier();
-    await this.applyPendingWebsiteBlockingLoss();
-    await this.flushDeferredAttempts();
-    return outcome;
+    return finalizeAllDataClearV2({
+      ...this.browserResetPorts(),
+      // The in-memory reset runs while the deletion lease is still held, so nothing can begin a
+      // second clear against an Engine that is half reset.
+      afterRemoval: async (): Promise<void> => {
+        await this.resetAfterAllDataClear();
+        this.openRuntimeMutationBarrier();
+        await this.applyPendingWebsiteBlockingLoss();
+        await this.flushDeferredAttempts();
+      },
+    });
   }
 
   /** The reset ports: Main's half, plus the browser seams the Engine already holds. */

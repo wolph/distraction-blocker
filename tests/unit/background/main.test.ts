@@ -3358,23 +3358,42 @@ describe('background all-data journal bootstrap', () => {
     expect(storedJournal()).toBeUndefined();
   });
 
+  it('never repairs the marker back over one a replay advanced', async (): Promise<void> => {
+    // The crash window between the advanced projection and the marker it produces: the projection
+    // is durable, the marker is written from it, and the frozen clean projection must not be
+    // materialized over the result on the next dispatch.
+    const advanced: Record<string, unknown> = cleanMarker({
+      latestReason: 'update',
+      extensionVersion: '2.0.0',
+    });
+    mocks.persistDeviceIdOnGet = true;
+    seedBrowserReset({ finalInstallMarkerProjection: advanced });
+    mocks.localState[LOCAL_INSTALL_MARKER] = advanced;
+
+    await finishBoot();
+
+    expect(storedJournal()).toBeUndefined();
+    expect(mocks.localState[LOCAL_INSTALL_MARKER]).toEqual(advanced);
+  });
+
   it('answers a second arrival while the clear holds the lease', async (): Promise<void> => {
-    // A document the reset cannot reach keeps every attempt unstable, so a dispatch that ran twice
-    // would leave two attempt starts behind rather than skipping the second.
-    const queryTabs: { mockResolvedValue(tabs: chrome.tabs.Tab[]): void } = vi.mocked(
-      chrome.tabs.query,
-    ) as unknown as { mockResolvedValue(tabs: chrome.tabs.Tab[]): void };
-    queryTabs.mockResolvedValue([{ id: 5, url: 'https://facebook.com/feed' }] as chrome.tabs.Tab[]);
-    mocks.persistDeviceIdOnGet = false;
+    const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+    mocks.persistDeviceIdOnGet = true;
     seedBrowserReset();
     await finishBoot();
-    expect(storedJournal()).toBeDefined();
+    expect(storedJournal()).toBeUndefined();
     vi.mocked(chrome.storage.local.set).mockClear();
+    mocks.localState[LOCAL_DATA_CLEAR_JOURNAL] = browserResetJournal();
 
+    // Both arrive in the same turn, so the second reaches the dispatcher while the first holds
+    // the lease. It must answer rather than queue: a queued run would finish the clear underneath
+    // the first one, which then finalizes a journal that is already gone.
     const first: Promise<void> = routerServices().continueAllDataClear();
     const second: Promise<void> = routerServices().continueAllDataClear();
     await Promise.all([first, second]);
 
+    expect(storedJournal()).toBeUndefined();
     expect(attemptStarts()).toHaveLength(1);
+    expect(consoleError).not.toHaveBeenCalled();
   });
 });
