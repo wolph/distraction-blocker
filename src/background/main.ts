@@ -1518,7 +1518,12 @@ export function main(): void {
           return requiresWorkerControl(request) ? runWorkerControl(route) : route();
         })
         .then((response: unknown): void => sendResponse(response))
-        .catch((err: unknown): void => sendResponse({ ok: false, error: String(err) }));
+        .catch((err: unknown): void => {
+          // The asker is told, and so is the log. A boot that fails answers every request with the
+          // same error, and the one person who can diagnose it would otherwise see nothing at all.
+          reportBackgroundError(err);
+          sendResponse({ ok: false, error: String(err) });
+        });
       return true;
     },
   );

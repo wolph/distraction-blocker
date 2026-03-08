@@ -2992,6 +2992,7 @@ describe('background detached listener errors', () => {
   });
 
   it('refuses to believe a migration clear the storage layer kept', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
     // The storage layer accepts the removal and keeps the value, which is the one failure a clear
     // cannot see without reading the key back.
     mocks.localRemoveDropKeys = [LOCAL_RUNTIME_MIGRATION];
@@ -3010,6 +3011,13 @@ describe('background detached listener errors', () => {
       ok: false,
       error: expect.stringContaining('the runtime migration checkpoint survived its removal'),
     });
+    // The asker is told and so is the log: a boot failure nobody records is one nobody can read.
+    expect(consoleError).toHaveBeenCalledWith(
+      'focus-lock background error',
+      expect.objectContaining({
+        message: 'the runtime migration checkpoint survived its removal',
+      }),
+    );
     expect(mocks.localState[LOCAL_RUNTIME_MIGRATION]).toBeDefined();
   });
 
