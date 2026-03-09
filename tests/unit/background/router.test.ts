@@ -25,7 +25,7 @@ import type {
   SessionConfig,
   SetupState,
 } from '../../../src/shared/types';
-import { engineSeamPortsV2 } from './engine-ports-fake';
+import { engineSeamPortsV2, uuidMinterV2 } from './engine-ports-fake';
 
 vi.mock('../../../src/background/audio', () => ({ playSound: vi.fn() }));
 vi.mock('../../../src/background/stats-service', () => ({ fetchStats: vi.fn() }));
@@ -98,15 +98,6 @@ function onboardingStorage(
   } as unknown as PolicyStorage;
 }
 
-/** Every v2 identity the runtime parses is a UUID, so the fixture mints real ones. */
-function uuidMinter(): () => string {
-  let minted: number = 0;
-  return (): string => {
-    minted += 1;
-    return `40000000-0000-4000-8000-${String(minted).padStart(12, '0')}`;
-  };
-}
-
 function realBlockingEngine(options?: {
   now?: () => number;
   saveRuntime?: (runtime: RuntimeStateV2) => Promise<void> | void;
@@ -115,7 +106,7 @@ function realBlockingEngine(options?: {
   const now: () => number = options?.now ?? ((): number => new Date(2026, 7, 31, 12, 0).getTime());
   const ports: EnginePorts = {
     now,
-    newId: uuidMinter(),
+    newId: uuidMinterV2(),
     rehydrateAfterDataClear: async (): Promise<string> => 'device-rehydrated',
     saveRuntime: async (runtime: RuntimeStateV2): Promise<void> => options?.saveRuntime?.(runtime),
     saveMatcherCache: async (): Promise<void> => undefined,

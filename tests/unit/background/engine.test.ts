@@ -43,7 +43,7 @@ import type {
   StreakState,
   Verdict,
 } from '../../../src/shared/types';
-import { type EngineSeamPortsV2, engineSeamPortsV2 } from './engine-ports-fake';
+import { type EngineSeamPortsV2, engineSeamPortsV2, uuidMinterV2 } from './engine-ports-fake';
 
 /**
  * The engine ports a test drives through mocks: everything the engine calls as a function, minus
@@ -177,6 +177,19 @@ function _hasCommitCheckpoint(runtime: RuntimeStateV2): boolean {
   return (runtime as RuntimeStateV2 & { commitCheckpoint?: unknown }).commitCheckpoint != null;
 }
 
+/**
+ * The identity the harness last minted. The archive nonce is one of them, and pinning a literal
+ * instead would mean minting something the runtime parser refuses everywhere else.
+ */
+function mintedId(h: Harness): string {
+  const results: Array<{ type: string; value: unknown }> = vi.mocked(h.ports.newId).mock.results;
+  const last: { type: string; value: unknown } | undefined = results.at(-1);
+  if (last === undefined || typeof last.value !== 'string') {
+    throw new Error('the harness minted no identity');
+  }
+  return last.value;
+}
+
 function makeEngine(opts?: {
   bankMs?: number;
   settings?: Partial<Settings>;
@@ -198,7 +211,7 @@ function makeEngine(opts?: {
   let nowMs: number = T0;
   const ports: Harness['ports'] = {
     now: vi.fn((): number => nowMs),
-    newId: vi.fn((): string => 'archive-id'),
+    newId: vi.fn(uuidMinterV2()),
     rehydrateAfterDataClear: vi.fn().mockResolvedValue('dev-rehydrated'),
     saveRuntime: vi.fn().mockResolvedValue(undefined),
     ...(opts?.savePolicy === undefined ? {} : { savePolicy: vi.fn(opts.savePolicy) }),
@@ -2596,7 +2609,7 @@ describe('Engine', () => {
       expect.anything(),
     );
     expect(h.ports.queueSync).toHaveBeenCalledWith(
-      clockRebaseArchiveKey('dev-test', futureDate, T0, 'archive-id'),
+      clockRebaseArchiveKey('dev-test', futureDate, T0, mintedId(h)),
       futureAgg,
     );
     expect(h.ports.queueSync).not.toHaveBeenCalledWith(
@@ -2650,7 +2663,7 @@ describe('Engine', () => {
     await h.engine.tick();
 
     expect(trace).toEqual([
-      `set:${clockRebaseArchiveKey('dev-test', futureDate, T0, 'archive-id')}`,
+      `set:${clockRebaseArchiveKey('dev-test', futureDate, T0, mintedId(h))}`,
       `remove:${syncAggKey('dev-test', futureDate)}`,
     ]);
   });
