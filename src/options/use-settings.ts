@@ -11,6 +11,7 @@ import {
   isWebsiteAccessReconciliation,
   parseStoredSettingsV2,
 } from '../shared/runtime-validation';
+import { DATA_CLEAR_ERROR_COPY } from '../shared/session-copy';
 import { updateTheme } from '../shared/theme';
 import type {
   ListsConfig,
@@ -76,6 +77,8 @@ export interface SettingsStore {
   setStorageMode(next: StorageMode): Promise<string | null>;
   retrySync(): Promise<string | null>;
   clearData(scope: 'local-history' | 'synced-policy' | 'all'): Promise<string | null>;
+  /** Resumes an all-data deletion that ran out of automatic attempts. */
+  retryDataClear(): Promise<string | null>;
 }
 
 interface WriteQueue {
@@ -129,6 +132,17 @@ function clearDataError(
     return value.error;
   }
   return 'Could not delete data. Try again.';
+}
+
+/**
+ * The retry answer, read exactly. Anything but the worker's own `ok` is a retry that did not begin,
+ * and the copy says so rather than reporting a deletion that resumed when it did not.
+ */
+function retryDataClearError(value: unknown): string | null {
+  if (!isRecord(value)) return DATA_CLEAR_ERROR_COPY;
+  const keys: string[] = Object.keys(value).sort();
+  if (value.ok === true && keys.join(',') === 'code,ok' && value.code === 'ok') return null;
+  return DATA_CLEAR_ERROR_COPY;
 }
 
 /**
@@ -304,6 +318,19 @@ export function useSettingsStore(): SettingsStore {
       });
     };
 
+  const retryDataClear: () => Promise<string | null> = async (): Promise<string | null> => {
+    return enqueueWrite(setupWrites, async (): Promise<string | null> => {
+      let error: string | null = null;
+      try {
+        error = retryDataClearError(await sendRequest({ type: 'retryDataClear' }));
+      } catch {
+        error = DATA_CLEAR_ERROR_COPY;
+      }
+      const refreshError: string | null = await refreshSetup();
+      return error ?? refreshError;
+    });
+  };
+
   const saveSettings: (mutation: SettingsMutation) => Promise<string | null> = async (
     mutation: SettingsMutation,
   ): Promise<string | null> => {
@@ -372,5 +399,6 @@ export function useSettingsStore(): SettingsStore {
     setStorageMode,
     retrySync,
     clearData,
+    retryDataClear,
   };
 }

@@ -260,11 +260,6 @@ describe('Privacy and data', (): void => {
       label: 'Retry remote Sync deletion',
       copy: 'Remote Chrome Sync data could not be deleted. Try again.',
     },
-    {
-      scope: 'all' as const,
-      label: 'Retry all data deletion',
-      copy: 'All Focus Lock data could not be deleted. Try again.',
-    },
   ])(
     'prioritizes and retries the durable $scope deletion failure after reload',
     async ({ scope, label, copy }): Promise<void> => {
@@ -298,6 +293,59 @@ describe('Privacy and data', (): void => {
       );
     },
   );
+
+  it('retries a stuck all-data deletion rather than asking for a new one', async (): Promise<void> => {
+    setup = setupState({
+      dataClear: { status: 'error', scope: 'all', phase: 'browser-reset' },
+    });
+    fake.respond('retryDataClear', (request: Request): object => {
+      expect(request).toEqual({ type: 'retryDataClear' });
+      setup = setupState({
+        dataClear: { status: 'pending', scope: 'all', phase: 'browser-reset' },
+      });
+      return { ok: true, code: 'ok' };
+    });
+    const view = renderPrivacy();
+
+    await waitFor((): void =>
+      expect(view.getByText('All Focus Lock data could not be deleted. Try again.')).toBeTruthy(),
+    );
+
+    fireEvent.click(view.getByRole('button', { name: 'Retry all data deletion' }));
+
+    // Asking for a new deletion is what ran no phase of the one already in progress and answered
+    // success for it, so the button resumes the clear the journal is holding instead.
+    await waitFor((): void => expect(fake.sent).toContainEqual({ type: 'retryDataClear' }));
+    expect(fake.sent).not.toContainEqual({ type: 'clearFocusLockData', scope: 'all' });
+    await waitFor((): void =>
+      expect(view.getByText('Resuming deletion of all Focus Lock data.')).toBeTruthy(),
+    );
+  });
+
+  it('reports an all-data retry the worker refused', async (): Promise<void> => {
+    setup = setupState({
+      dataClear: { status: 'error', scope: 'all', phase: 'browser-reset' },
+    });
+    fake.respond('retryDataClear', (): object => ({
+      ok: false,
+      code: 'retry-not-available',
+      error: 'Data clear retry is not available.',
+    }));
+    const view = renderPrivacy();
+
+    await waitFor((): void =>
+      expect(view.getByText('All Focus Lock data could not be deleted. Try again.')).toBeTruthy(),
+    );
+
+    fireEvent.click(view.getByRole('button', { name: 'Retry all data deletion' }));
+
+    // The refusal is the answer the user gets. Reporting the resumption the worker declined would
+    // leave them waiting on a deletion that never restarted.
+    await waitFor((): void =>
+      expect(view.getByRole('alert').textContent).toBe('Could not delete data. Try again.'),
+    );
+    expect(view.queryByText('Resuming deletion of all Focus Lock data.')).toBeNull();
+  });
 
   it('disables Sync without combining remote deletion', async (): Promise<void> => {
     fake.respond('setStorageMode', (request: Request): object => {

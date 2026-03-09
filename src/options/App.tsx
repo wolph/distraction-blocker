@@ -121,6 +121,7 @@ function PrivacySection(props: SectionProps): VNode {
           onStorageModeChange={props.store.setStorageMode}
           onRetrySync={props.store.retrySync}
           onClearData={props.store.clearData}
+          onRetryDataClear={props.store.retryDataClear}
         />
       )}
     </section>

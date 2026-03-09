@@ -15,6 +15,7 @@ export interface PrivacyDataProps {
   onStorageModeChange: (next: StorageMode) => Promise<string | null>;
   onRetrySync: () => Promise<string | null>;
   onClearData: (scope: 'local-history' | 'synced-policy' | 'all') => Promise<string | null>;
+  onRetryDataClear: () => Promise<string | null>;
 }
 
 interface WebsiteAccessPresentation {
@@ -458,12 +459,16 @@ export function PrivacyData(props: PrivacyDataProps): VNode {
           class="secondary privacy-retry"
           disabled={pending}
           onClick={(): void => {
+            // An all-data deletion in progress is retried, never started again. Asking for a new
+            // deletion runs no phase of the one that is already stuck and answers success for it.
+            if (dataClearFailure === 'all') {
+              void runAction(props.onRetryDataClear, 'Resuming deletion of all Focus Lock data.');
+              return;
+            }
             const success: string =
               dataClearFailure === 'local-history'
                 ? 'Local history deleted.'
-                : dataClearFailure === 'synced-policy'
-                  ? 'Remote Chrome Sync data deleted.'
-                  : 'All Focus Lock data deleted.';
+                : 'Remote Chrome Sync data deleted.';
             void runAction(
               (): Promise<string | null> => props.onClearData(dataClearFailure),
               success,

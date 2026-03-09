@@ -69,6 +69,7 @@ describe('Options request errors', (): void => {
         onStorageModeChange={(): Promise<string | null> => pending.promise}
         onRetrySync={async (): Promise<string | null> => null}
         onClearData={async (): Promise<string | null> => null}
+        onRetryDataClear={async (): Promise<string | null> => null}
       />,
     );
     const sync: HTMLInputElement = getByRole('switch', {
