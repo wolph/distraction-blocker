@@ -66,10 +66,27 @@ export function writeJson(path: string, value: unknown): void {
   write(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+const encodedPngs: Map<string, Buffer> = new Map<string, Buffer>();
+
+/**
+ * Every fixture writes the same nine white PNGs, and encoding them is most of what building one
+ * costs: 450ms of the 800ms `createFixture` takes, measured on an idle machine. The bytes depend
+ * only on the dimensions, so each size is encoded once per worker process and written from the
+ * cache after that. `writeFileSync` copies, so a test that corrupts a written file does not reach
+ * the cached buffer.
+ */
 export function writePng(path: string, width: number, height: number): void {
+  const size: string = `${width}x${height}`;
+  const cached: Buffer | undefined = encodedPngs.get(size);
+  if (cached !== undefined) {
+    write(path, cached);
+    return;
+  }
   const png: PNG = new PNG({ width, height });
   png.data.fill(255);
-  write(path, PNG.sync.write(png));
+  const encoded: Buffer = PNG.sync.write(png);
+  encodedPngs.set(size, encoded);
+  write(path, encoded);
 }
 
 export function validManifest(): Record<string, unknown> {

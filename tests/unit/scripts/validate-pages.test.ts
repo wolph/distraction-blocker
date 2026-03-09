@@ -13,9 +13,18 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const fixtures: string[] = [];
+/**
+ * Every test here builds a fixture on disk and spawns the script under test, which costs about a
+ * second on an idle machine and five to ten seconds when the full suite runs this file alongside
+ * everything else. The default budget is five seconds, so these tests passed alone and failed in
+ * full runs. The budget is stated once for the file rather than per test, and it is thirty times
+ * the measured idle cost, which is the contention headroom the release gate needs.
+ */
+vi.setConfig({ testTimeout: 30_000 });
+
 const BUILD_SCRIPT_PATH: string = resolve('scripts/build-pages.mjs');
 const GITHUB_REF_EXPRESSION: string = '$' + '{{ github.ref }}';
 const PAGE_URL_EXPRESSION: string = '$' + '{{ steps.deployment.outputs.page_url }}';
@@ -162,7 +171,7 @@ describe('Pages validation', () => {
   it('accepts the release workflow and staged site', (): void => {
     const result: ReturnType<typeof spawnSync> = validate(fixture());
     expect(result.status, String(result.stderr)).toBe(0);
-  }, 10_000);
+  });
 
   it('rejects invalid workflow YAML', (): void => {
     const path: string = fixture();
@@ -589,7 +598,7 @@ describe('Pages validation', () => {
     );
     const result: ReturnType<typeof spawnSync> = validate(path);
     expect(result.status, String(result.stderr)).toBe(0);
-  }, 10_000);
+  });
 
   it('builds only regular files in both 404 locations', (): void => {
     const path: string = sourceFixture();
@@ -622,7 +631,7 @@ describe('Pages validation', () => {
     const stagedPath: string = fixture();
     const validationResult: ReturnType<typeof spawnSync> = validate(stagedPath);
     expect(validationResult.status, String(validationResult.stderr)).toBe(0);
-  }, 10_000);
+  });
 
   it('rejects an external docs ancestor symlink', (): void => {
     const path: string = mkdtempSync(join(tmpdir(), 'focus-lock-pages-source-root-'));

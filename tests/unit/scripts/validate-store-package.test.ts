@@ -11,7 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type ArchiveEntryFixture,
   createFixture,
@@ -28,6 +28,15 @@ import {
 } from './store-package-fixture';
 
 const SCRIPT_PATH: string = resolve('scripts/validate-store-package.mjs');
+/**
+ * Every test here builds a fixture on disk and spawns the script under test, which costs about a
+ * second on an idle machine and five to ten seconds when the full suite runs this file alongside
+ * everything else. The default budget is five seconds, so these tests passed alone and failed in
+ * full runs. The budget is stated once for the file rather than per test, and it is thirty times
+ * the measured idle cost, which is the contention headroom the release gate needs.
+ */
+vi.setConfig({ testTimeout: 30_000 });
+
 const fixtures: string[] = [];
 
 function fixture(): string {
@@ -84,7 +93,7 @@ describe('submission manifest and assets', (): void => {
   it('accepts a valid release fixture with optional all-sites access and a public key', (): void => {
     const result: ReturnType<typeof runValidator> = validate(fixture());
     expect(result.status, output(result)).toBe(0);
-  }, 30_000);
+  });
 
   it('allows the optional marquee asset to be omitted', (): void => {
     const root: string = fixture();
