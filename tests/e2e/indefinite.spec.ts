@@ -2,12 +2,12 @@
  * Product flows for the "Until stopped" session, driven through the surfaces a user touches: the
  * popup start form, the blocked page, the toolbar badge, Settings, Stats, and the schedule.
  *
- * Two published-state facts shape what these scenarios can assert, both measured against this
+ * One published-state fact shapes how these scenarios watch a transition, measured against this
  * build rather than assumed. The worker publishes exactly one snapshot per command, so the
- * `starting` and `cleanup` lifecycles a fast start and a successful end pass through are durable
- * but never broadcast, and no wait can observe them. Every scenario therefore asserts the state
- * the user can actually reach, plus the durable journal the invisible one left behind. The task
- * report records both measurements.
+ * `starting` and `cleanup` lifecycles a fast start and a successful end pass through never reach
+ * the broadcast stream. They do reach a `getSnapshot` read, which the worker answers off the
+ * mutation queue, so the scenarios that care about transition order sample that channel from
+ * inside the page through `sampleLifecyclesUntil` rather than polling it from the test runner.
  */
 
 import type { BrowserContext, CDPSession, Locator, Page, Worker } from '@playwright/test';
@@ -36,6 +36,7 @@ import {
   readBadgeText,
   readEventsV2FromWorker,
   readRuntimeV2,
+  sampleLifecyclesUntil,
   sendExtensionRequest,
   startTestSession,
   startUntilStoppedSession,
@@ -339,18 +340,15 @@ test('manual until-stopped start forces the flexible plan and reports it everywh
   const startButton: Locator = extPage.getByRole('button', { name: START_UNTIL_STOPPED_LABEL });
   await expect(startButton).toBeEnabled();
 
-  await observeSnapshotBroadcasts(extPage);
+  // The sub-second starting window is real and observable, but only on the snapshot channel: the
+  // worker answers `getSnapshot` off the mutation queue while a transition runs, and publishes one
+  // broadcast per command at the end. So the sampling runs in the page, and it starts before the
+  // click that opens the window it is there to catch.
+  const sampled: Promise<SessionLifecycleV2['kind'][]> = sampleLifecyclesUntil(extPage, 'active');
   await startButton.click();
+  const kinds: SessionLifecycleV2['kind'][] = await sampled;
+  expect(kinds).toEqual(['idle', 'starting', 'active']);
   const active: SessionSnapshotV2 = await waitForLifecycle(extPage, 'active');
-
-  // This build publishes one snapshot per command, so a fast start never broadcasts `starting`.
-  // The order is still asserted for the day it does, and the absence is a finding in the report,
-  // not an expectation encoded here.
-  const kinds: SessionLifecycleV2['kind'][] = await observedSnapshotLifecycles(extPage);
-  expect(kinds).toContain('active');
-  expect(kinds).not.toContain('error');
-  const startingIndex: number = kinds.indexOf('starting');
-  if (startingIndex !== -1) expect(startingIndex).toBeLessThan(kinds.indexOf('active'));
 
   expect(active.config?.duration).toEqual({ kind: 'until-stopped' });
   expect(active.config?.strictness).toBe('flexible');
@@ -461,8 +459,9 @@ test('popup End completes the indefinite session manually and silently', async (
   const sessionId: string = await activeSessionId(worker);
   const completedBefore: number = completedToday(await readRuntimeV2(worker));
 
-  await observeSnapshotBroadcasts(extPage);
+  const sampled: Promise<SessionLifecycleV2['kind'][]> = sampleLifecyclesUntil(extPage, 'idle');
   await extPage.getByRole('button', { name: END_SESSION_LABEL }).click();
+  expect(await sampled).toEqual(['active', 'cleanup', 'idle']);
   await waitForLifecycle(extPage, 'idle', 60_000);
 
   await expect(blockedPage.locator('focus-lock-overlay')).toHaveCount(0);
@@ -482,7 +481,6 @@ test('popup End completes the indefinite session manually and silently', async (
   // that left it behind would be an end that never finished.
   expect(runtimeAfter.pendingClosure).toBeNull();
   expect(runtimeAfter.session).toBeNull();
-  expect(await observedSnapshotLifecycles(extPage)).not.toContain('error');
 
   expect(
     (await observedSounds(extPage)).map((sound: ObservedSound): string => sound.sound),

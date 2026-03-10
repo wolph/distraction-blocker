@@ -913,3 +913,42 @@ export async function observedSnapshotLifecycles(
         .__focusLockE2ELifecycles ?? []) as SessionLifecycleV2['kind'][],
   );
 }
+
+/**
+ * Samples the published snapshot from inside the page, as fast as the message port answers, and
+ * returns every lifecycle it saw in order with consecutive repeats collapsed.
+ *
+ * The worker answers `getSnapshot` off the mutation queue on purpose, so a read lands mid
+ * transition and reports the lifecycle the transition is in. A poll driven from Node cannot see
+ * that: one round trip through the test runner costs more than the whole transition. This loop
+ * runs in the page, so it samples the same window about a hundred times.
+ *
+ * Start it without awaiting, do the thing that moves the session, then await it:
+ *
+ * ```ts
+ * const sampling: Promise<SessionLifecycleV2['kind'][]> = sampleLifecyclesUntil(extPage, 'active');
+ * await startButton.click();
+ * expect(await sampling).toEqual(['idle', 'starting', 'active']);
+ * ```
+ */
+export async function sampleLifecyclesUntil(
+  extPage: Page,
+  terminal: SessionLifecycleV2['kind'],
+  timeoutMs: number = 20_000,
+): Promise<SessionLifecycleV2['kind'][]> {
+  return (await extPage.evaluate(
+    async (input: { terminal: string; timeoutMs: number }): Promise<string[]> => {
+      const seen: string[] = [];
+      const deadline: number = Date.now() + input.timeoutMs;
+      for (;;) {
+        const snapshot = (await chrome.runtime.sendMessage({ type: 'getSnapshot' })) as {
+          lifecycle?: { kind?: string };
+        };
+        const kind: string | undefined = snapshot?.lifecycle?.kind;
+        if (typeof kind === 'string' && seen[seen.length - 1] !== kind) seen.push(kind);
+        if (kind === input.terminal || Date.now() >= deadline) return seen;
+      }
+    },
+    { terminal, timeoutMs },
+  )) as SessionLifecycleV2['kind'][];
+}
