@@ -67,7 +67,7 @@ const _TIME_RE: RegExp = /^([01]\d|2[0-3]):([0-5]\d)$/;
  * todayAgg stays null until the first event of the day folds in. Minting
  * an empty DailyAgg is core's job, so the boot path does not depend on it.
  */
-export interface RuntimeState {
+export interface LegacyRuntimeStateV1 {
   session: NormalizedSessionStateV1 | null;
   gate: GateState | null;
   unlocks: SiteUnlock[];
@@ -108,7 +108,7 @@ export type ParsedSessionState = Omit<NormalizedSessionStateV1, 'config'> & {
 };
 
 /** Storage-boundary state. A legacy parsed session may omit rules until boot migration. */
-export type ParsedRuntimeState = Omit<RuntimeState, 'session'> & {
+export type ParsedRuntimeState = Omit<LegacyRuntimeStateV1, 'session'> & {
   session: ParsedSessionState | null;
 };
 
@@ -120,7 +120,7 @@ export interface RuntimeCommitCheckpoint {
   aggregateRemoves?: string[];
 }
 
-export function emptyRuntime(now: number): RuntimeState {
+export function emptyRuntime(now: number): LegacyRuntimeStateV1 {
   return {
     session: null,
     gate: null,
@@ -384,7 +384,7 @@ export async function loadRuntime(now: number): Promise<ParsedRuntimeState> {
 }
 
 export function mergeRuntime(raw: unknown, now: number): ParsedRuntimeState {
-  const empty: RuntimeState = emptyRuntime(now);
+  const empty: LegacyRuntimeStateV1 = emptyRuntime(now);
   if (!isRecord(raw)) return empty;
   const date: string = isDailyDate(raw.date) ? raw.date : empty.date;
   const runtime: ParsedRuntimeState = {
@@ -412,7 +412,10 @@ export function mergeRuntime(raw: unknown, now: number): ParsedRuntimeState {
 }
 
 /** Completes the only accepted legacy NormalizedSessionConfigV1 shape at worker boot. */
-export function migrateRuntimeRules(runtime: ParsedRuntimeState, lists: ListsConfig): RuntimeState {
+export function migrateRuntimeRules(
+  runtime: ParsedRuntimeState,
+  lists: ListsConfig,
+): LegacyRuntimeStateV1 {
   if (isNormalizedRuntimeState(runtime)) return runtime;
   const session: ParsedSessionState | null = runtime.session;
   if (session === null) {
@@ -445,7 +448,7 @@ function hasCurrentSessionRules(config: ParsedSessionConfig): config is Normaliz
   );
 }
 
-function isNormalizedRuntimeState(runtime: ParsedRuntimeState): runtime is RuntimeState {
+function isNormalizedRuntimeState(runtime: ParsedRuntimeState): runtime is LegacyRuntimeStateV1 {
   return runtime.session === null || hasCurrentSessionRules(runtime.session.config);
 }
 
@@ -1124,7 +1127,7 @@ function applyRemovedTabTombstones(runtime: ParsedRuntimeState): void {
   }
 }
 
-export async function saveRuntime(r: RuntimeState): Promise<void> {
+export async function saveLegacyRuntime(r: LegacyRuntimeStateV1): Promise<void> {
   await chrome.storage.local.set({ [LOCAL_RUNTIME]: r });
 }
 

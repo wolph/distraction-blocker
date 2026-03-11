@@ -38,7 +38,7 @@ import type {
   RuntimeStateV2,
 } from './runtime-v2-types';
 import { parseRuntimeMigrationCheckpointV1ToV2 } from './runtime-v2-validation';
-import { mergeRuntime, migrateRuntimeRules, type RuntimeState } from './stores';
+import { type LegacyRuntimeStateV1, mergeRuntime, migrateRuntimeRules } from './stores';
 
 export interface RuntimeBootPortsV2 extends RuntimeCheckpointPortsV2, LegacyReplayPortsV1 {
   now(): number;
@@ -140,7 +140,10 @@ async function migrateLegacyRuntime(
   raw: unknown,
 ): Promise<RuntimeStateV2> {
   const now: number = ports.now();
-  const normalized: RuntimeState = migrateRuntimeRules(mergeRuntime(raw, now), ports.lists());
+  const normalized: LegacyRuntimeStateV1 = migrateRuntimeRules(
+    mergeRuntime(raw, now),
+    ports.lists(),
+  );
   const replayed: LegacyReplayResultV1 = await replayLegacyRuntimeCheckpointV1(ports, normalized);
   const priorAggregates: Record<string, DailyAgg> = await loadSettlementAggregates(
     ports,
@@ -227,7 +230,7 @@ function sortedAggregateSets(aggregateSets: Record<string, DailyAgg>): Array<[st
  */
 async function loadSettlementAggregates(
   ports: RuntimeBootPortsV2,
-  runtime: RuntimeState,
+  runtime: LegacyRuntimeStateV1,
   now: number,
 ): Promise<Record<string, DailyAgg>> {
   if (runtime.session === null) return {};
@@ -259,8 +262,11 @@ function localDayStart(at: number): number {
 }
 
 /** A legacy session that never carried a UUID receives exactly one, allocated here and nowhere else. */
-function assignedSessionIdFor(ports: RuntimeBootPortsV2, runtime: RuntimeState): string | null {
-  const session: RuntimeState['session'] = runtime.session;
+function assignedSessionIdFor(
+  ports: RuntimeBootPortsV2,
+  runtime: LegacyRuntimeStateV1,
+): string | null {
+  const session: LegacyRuntimeStateV1['session'] = runtime.session;
   return session !== null && session.sessionId === undefined ? ports.newId() : null;
 }
 

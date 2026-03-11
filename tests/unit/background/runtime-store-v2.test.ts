@@ -11,7 +11,11 @@ import {
 } from '../../../src/background/runtime-store-v2';
 import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validation';
-import { emptyRuntime, loadRuntime, type RuntimeState } from '../../../src/background/stores';
+import {
+  emptyRuntime,
+  type LegacyRuntimeStateV1,
+  loadRuntime,
+} from '../../../src/background/stores';
 import { CoreError } from '../../../src/shared/errors';
 import {
   LOCAL_POLICY_COMMIT,
@@ -72,7 +76,7 @@ function stubStorage(initial: Record<string, unknown> = {}): StorageStub {
   return { values, localSets, syncSet };
 }
 
-function legacyRuntime(): RuntimeState {
+function legacyRuntime(): LegacyRuntimeStateV1 {
   return emptyRuntime(NOW);
 }
 
@@ -207,7 +211,7 @@ describe('stored runtime classification', (): void => {
   });
 
   it('hands an unversioned v1 runtime to migration by reference', (): void => {
-    const raw: RuntimeState = legacyRuntime();
+    const raw: LegacyRuntimeStateV1 = legacyRuntime();
     const authority: StoredRuntimeAuthority = classifyStoredRuntime(raw, null);
 
     expect(authority).toEqual({ kind: 'legacy', raw });
@@ -231,7 +235,7 @@ describe('stored runtime classification', (): void => {
   // LOCAL_RUNTIME_MIGRATION checkpoint first and replay a valid one, and may read this verdict as a
   // refusal to migrate unversioned v1 again only when no valid checkpoint exists.
   it('rejects unversioned v1 once the schema marker exists', (): void => {
-    const raw: RuntimeState = legacyRuntime();
+    const raw: LegacyRuntimeStateV1 = legacyRuntime();
 
     expect(classifyStoredRuntime(raw, MARKER)).toEqual({
       kind: 'rejected',

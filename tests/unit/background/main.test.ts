@@ -14,8 +14,8 @@ import { emptyRuntimeV2 } from '../../../src/background/runtime-store-v2';
 import { handleSyncChanges, missingSyncDefaults } from '../../../src/background/storage-sync';
 import {
   emptyRuntime,
+  type LegacyRuntimeStateV1,
   type ParsedRuntimeState,
-  type RuntimeState,
 } from '../../../src/background/stores';
 import { SYNC_QUOTA_BYTES_TOTAL, syncItemBytes } from '../../../src/background/sync-quota';
 import type { SyncJournal } from '../../../src/background/sync-writer';
@@ -108,7 +108,7 @@ const mocks = vi.hoisted(
     storageListener: StorageListener | null;
     savedJournals: SyncJournal[];
     savedMatcherCaches: StoredMatcherCache[];
-    savedRuntimes: RuntimeState[];
+    savedRuntimes: LegacyRuntimeStateV1[];
     matcherCacheSaveAttempts: number;
     matcherCacheSaveError: Error | null;
     scenario: BootScenario;
@@ -212,8 +212,8 @@ vi.mock('../../../src/background/engine', () => ({
     async tick(): Promise<void> {
       mocks.bootTrace.push('tick');
       mocks.tickCalls += 1;
-      const runtime: RuntimeState | undefined = mocks.engineArguments?.[5] as
-        | RuntimeState
+      const runtime: LegacyRuntimeStateV1 | undefined = mocks.engineArguments?.[5] as
+        | LegacyRuntimeStateV1
         | undefined;
       mocks.tickActiveSessionStates.push(runtime?.session !== null && runtime !== undefined);
       if (mocks.tickCalls === 1 && mocks.tickGate !== null) await mocks.tickGate;
@@ -252,8 +252,8 @@ vi.mock('../../../src/background/engine', () => ({
     }
 
     async endSessionForWebsiteBlockingLoss(): Promise<boolean> {
-      const runtime: RuntimeState | undefined = mocks.engineArguments?.[5] as
-        | RuntimeState
+      const runtime: LegacyRuntimeStateV1 | undefined = mocks.engineArguments?.[5] as
+        | LegacyRuntimeStateV1
         | undefined;
       if (runtime?.session === null || runtime === undefined) return false;
       runtime.session = null;
@@ -265,8 +265,8 @@ vi.mock('../../../src/background/engine', () => ({
     }
 
     hasActiveSession(): boolean {
-      const runtime: RuntimeState | undefined = mocks.engineArguments?.[5] as
-        | RuntimeState
+      const runtime: LegacyRuntimeStateV1 | undefined = mocks.engineArguments?.[5] as
+        | LegacyRuntimeStateV1
         | undefined;
       return runtime?.session !== null && runtime !== undefined;
     }
@@ -402,10 +402,12 @@ vi.mock('../../../src/background/stores', async () => {
     parseStoredSettings: actual.parseStoredSettings,
     parseStreak: actual.parseStreak,
     sanitizeRuntimeForLocalHistory: actual.sanitizeRuntimeForLocalHistory,
-    saveRuntime: vi.fn().mockImplementation(async (runtime: RuntimeState): Promise<void> => {
-      if (mocks.runtimeSaveError !== null) throw mocks.runtimeSaveError;
-      mocks.savedRuntimes.push(structuredClone(runtime));
-    }),
+    saveLegacyRuntime: vi
+      .fn()
+      .mockImplementation(async (runtime: LegacyRuntimeStateV1): Promise<void> => {
+        if (mocks.runtimeSaveError !== null) throw mocks.runtimeSaveError;
+        mocks.savedRuntimes.push(structuredClone(runtime));
+      }),
     saveMatcherCache: vi
       .fn()
       .mockImplementation(async (cache: StoredMatcherCache): Promise<void> => {
@@ -424,8 +426,8 @@ vi.mock('../../../src/background/tabs', async () => ({
     '../../../src/background/tabs',
   )),
   applyBlockingFactory: vi.fn((): (() => Promise<void>) => async (): Promise<void> => {
-    const runtime: RuntimeState | undefined = mocks.engineArguments?.[5] as
-      | RuntimeState
+    const runtime: LegacyRuntimeStateV1 | undefined = mocks.engineArguments?.[5] as
+      | LegacyRuntimeStateV1
       | undefined;
     mocks.applyBlockingActiveSessionStates.push(runtime?.session !== null && runtime !== undefined);
   }),
@@ -612,7 +614,7 @@ function stubChrome(): void {
             ) {
               throw mocks.runtimeSaveError;
             }
-            mocks.savedRuntimes.push(structuredClone(items[LOCAL_RUNTIME]) as RuntimeState);
+            mocks.savedRuntimes.push(structuredClone(items[LOCAL_RUNTIME]) as LegacyRuntimeStateV1);
           }
           if (Object.hasOwn(items, LOCAL_SETUP)) {
             mocks.setupWriteStarted?.();
@@ -742,9 +744,9 @@ function engineBank(): BankState {
   return mocks.engineArguments[3] as BankState;
 }
 
-function engineRuntime(): RuntimeState {
+function engineRuntime(): LegacyRuntimeStateV1 {
   if (mocks.engineArguments === null) throw new Error('engine was not constructed');
-  return mocks.engineArguments[5] as RuntimeState;
+  return mocks.engineArguments[5] as LegacyRuntimeStateV1;
 }
 
 function enginePorts(): EnginePorts {
@@ -1065,7 +1067,7 @@ describe('background runtime request boundary', () => {
 
   it('sanitizes runtime before Engine boot resumes a removed local-history transaction', async (): Promise<void> => {
     const now: number = Date.now();
-    const runtime: RuntimeState = {
+    const runtime: LegacyRuntimeStateV1 = {
       ...emptyRuntime(now),
       unlocks: [{ host: 'allowed.example', until: now + 60_000 }],
       todayAgg: { ...emptyDaily(new Date(now).toISOString().slice(0, 10)), focusMs: 60_000 },
@@ -1103,8 +1105,8 @@ describe('background runtime request boundary', () => {
     main();
     await expect(dispatchRuntime({ type: 'getSnapshot' })).resolves.toEqual({ ok: true });
 
-    const failedBootRuntime: RuntimeState | undefined = mocks.engineArguments?.[5] as
-      | RuntimeState
+    const failedBootRuntime: LegacyRuntimeStateV1 | undefined = mocks.engineArguments?.[5] as
+      | LegacyRuntimeStateV1
       | undefined;
     expect(failedBootRuntime).toMatchObject({
       unlocks: runtime.unlocks,
@@ -1114,7 +1116,7 @@ describe('background runtime request boundary', () => {
     // The boot persists the runtime it migrated; what must not land is the sanitized one.
     expect(
       mocks.savedRuntimes.filter(
-        (saved: RuntimeState): boolean =>
+        (saved: LegacyRuntimeStateV1): boolean =>
           saved.todayAgg === null && saved.commitCheckpoint === null,
       ),
     ).toEqual([]);
@@ -1130,8 +1132,8 @@ describe('background runtime request boundary', () => {
     main();
     await expect(dispatchRuntime({ type: 'getSnapshot' })).resolves.toEqual({ ok: true });
 
-    const recoveredBootRuntime: RuntimeState | undefined = mocks.engineArguments?.[5] as
-      | RuntimeState
+    const recoveredBootRuntime: LegacyRuntimeStateV1 | undefined = mocks.engineArguments?.[5] as
+      | LegacyRuntimeStateV1
       | undefined;
     expect(recoveredBootRuntime).toMatchObject({
       unlocks: runtime.unlocks,

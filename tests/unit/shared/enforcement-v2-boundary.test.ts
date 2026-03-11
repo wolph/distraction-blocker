@@ -23,10 +23,13 @@ describe('shared enforcement v2 source boundary', (): void => {
  * The legacy session names the migration path still needs. Every other module reads v2 shapes,
  * so a new reference outside this list means v1 leaked back into live code.
  *
- * `RuntimeState` and `saveRuntime` are deliberately absent: they keep their v1 spelling until
- * the rename Task 2 defers lands, and `src/background/policy-storage.ts` reads `RuntimeState`
- * as migration input, which the plan's allowlist does not name. Add both names and that file
- * here in the same change that renames them.
+ * All four now name something. `LegacyRuntimeStateV1` and `saveLegacyRuntime` were listed here
+ * before they existed, waiting for the rename that gave them these spellings, and that rename is
+ * what added `policy-storage.ts` below: it reads the legacy runtime as migration input, through
+ * `mergeRuntime` and `migrateRuntimeRules`, in seven places.
+ *
+ * Note that `saveRuntime` is not scanned and must not be. It is still a live member name on the v2
+ * runtime, checkpoint and boot ports, which have nothing to do with the v1 writer that was renamed.
  */
 const LEGACY_SESSION_NAMES: readonly string[] = [
   'NormalizedSessionStateV1',
@@ -39,6 +42,7 @@ const LEGACY_ALLOWED_FILES: ReadonlySet<string> = new Set<string>([
   'background/legacy-runtime-v1.ts',
   'background/main.ts',
   'background/runtime-boot-v2.ts',
+  'background/policy-storage.ts',
   'background/runtime-migration-v2.ts',
   'background/stores.ts',
   'core/session.ts',

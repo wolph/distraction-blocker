@@ -29,7 +29,7 @@ import {
 } from '../../../src/background/policy-storage';
 import { emptyRuntimeV2 as emptyStoreRuntimeV2 } from '../../../src/background/runtime-store-v2';
 import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
-import { emptyRuntime, type RuntimeState } from '../../../src/background/stores';
+import { emptyRuntime, type LegacyRuntimeStateV1 } from '../../../src/background/stores';
 import type { SyncJournal } from '../../../src/background/sync-writer';
 import { capAttempts, emptyDaily, rollupMonth } from '../../../src/core/stats';
 import {
@@ -202,7 +202,7 @@ function localPolicy(setup: SetupState): Record<string, unknown> {
   };
 }
 
-function runtimeWithActiveSession(now: number): RuntimeState {
+function runtimeWithActiveSession(now: number): LegacyRuntimeStateV1 {
   const activeSession: NormalizedSessionStateV1 = {
     sessionId: 'active-session',
     config: {
@@ -936,7 +936,7 @@ describe('PolicyStorage', (): void => {
       currentRules,
     ) as unknown as Record<string, unknown>;
     delete predecessorRules.baselineCategories;
-    const runtime: RuntimeState = {
+    const runtime: LegacyRuntimeStateV1 = {
       ...emptyRuntime(now),
       session: {
         sessionId: 'predecessor-session',
@@ -959,7 +959,7 @@ describe('PolicyStorage', (): void => {
         pausedFrom: null,
         focusedMs: 0,
       },
-    } as unknown as RuntimeState;
+    } as unknown as LegacyRuntimeStateV1;
     const local: FakeStorage = fakeStorage();
     const first: PolicyStorage = policyStorage(local, fakeStorage());
     let interruptMaterialization: boolean = true;
@@ -982,9 +982,9 @@ describe('PolicyStorage', (): void => {
     await restarted.initialize();
 
     expect(local.state.values[LOCAL_POLICY_COMMIT]).toMatchObject({ source: 'direct' });
-    expect((local.state.values[LOCAL_RUNTIME] as RuntimeState).session?.config.rules).toEqual(
-      currentRules,
-    );
+    expect(
+      (local.state.values[LOCAL_RUNTIME] as LegacyRuntimeStateV1).session?.config.rules,
+    ).toEqual(currentRules);
   });
 
   it('recovers effective legacy aggregate authority from a committed migration generation', async (): Promise<void> => {
@@ -3307,7 +3307,7 @@ describe('PolicyStorage', (): void => {
   it('rejects all-data deletion without mutating storage while durable runtime is active', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
     const now: number = Date.now();
-    const activeRuntime: RuntimeState = runtimeWithActiveSession(now);
+    const activeRuntime: LegacyRuntimeStateV1 = runtimeWithActiveSession(now);
     activeRuntime.commitCheckpoint = {
       bank: SNAPSHOT.bank,
       events: [],
@@ -3341,7 +3341,7 @@ describe('PolicyStorage', (): void => {
     async (field: 'gate' | 'unlocks' | 'tabStates'): Promise<void> => {
       const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
       const now: number = Date.now();
-      const runtime: RuntimeState = emptyRuntime(now);
+      const runtime: LegacyRuntimeStateV1 = emptyRuntime(now);
       if (field === 'gate') {
         runtime.gate = {
           kind: 'cancel',
@@ -3439,7 +3439,7 @@ describe('PolicyStorage', (): void => {
     expect(stoppedSync.state.values[SYNC_SETTINGS]).toBeUndefined();
     expect(await stoppedStorage.loadSetup()).toEqual(BROWSER_RESET_SETUP);
 
-    const live: RuntimeState = runtimeWithActiveSession(Date.now());
+    const live: LegacyRuntimeStateV1 = runtimeWithActiveSession(Date.now());
     const liveLocal: FakeStorage = fakeStorage({
       ...localPolicy(pending),
       [LOCAL_RUNTIME]: live,
@@ -3460,7 +3460,7 @@ describe('PolicyStorage', (): void => {
       storageMode: 'local',
       dataClear: { status: 'pending', scope: 'all', phase: 'remote' },
     };
-    const runtime: RuntimeState = runtimeWithActiveSession(Date.now());
+    const runtime: LegacyRuntimeStateV1 = runtimeWithActiveSession(Date.now());
     const journal = { scope: 'all', phase: 'remote', inventory: [SYNC_SETTINGS] };
     const local: FakeStorage = fakeStorage({
       ...localPolicy(setup),

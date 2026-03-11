@@ -81,12 +81,12 @@ import {
 } from './stats-service';
 import { storageValuesEqual } from './storage-value-equality';
 import {
+  type LegacyRuntimeStateV1,
   mergeRuntime,
   migrateRuntimeRules,
   type ParsedRuntimeState,
   parseBank,
   parseStreak,
-  type RuntimeState,
 } from './stores';
 import { assertSyncItemWithinQuota } from './sync-item-size';
 import {
@@ -190,7 +190,7 @@ export interface PolicyStorage {
   markLegacyMigrationFailed(): Promise<void>;
   importLegacy(
     snapshot: PolicySnapshot,
-    runtime: RuntimeState,
+    runtime: LegacyRuntimeStateV1,
     journal: SyncJournal,
     storedSync?: Record<string, unknown>,
   ): Promise<void>;
@@ -231,7 +231,7 @@ interface PolicyGenerationRecord {
   id: string;
   revision: string;
   policy: PolicySnapshot;
-  runtime: RuntimeState;
+  runtime: LegacyRuntimeStateV1;
   journal: SyncJournal;
   aggregates: Record<string, unknown>;
   aggregateTombstones: string[];
@@ -1781,7 +1781,7 @@ export function createPolicyStorage(
     if (!valuesEqual(parsedRuntime, value.runtime)) {
       throw new Error('committed runtime generation is invalid');
     }
-    const runtime: RuntimeState = migrateRuntimeRules(parsedRuntime, policy.lists);
+    const runtime: LegacyRuntimeStateV1 = migrateRuntimeRules(parsedRuntime, policy.lists);
     const journal: SyncJournal = parseJournal(value.journal, false);
     const hasAggregateAuthority: boolean = value.aggregates !== undefined;
     if (hasAggregateAuthority !== (value.aggregateTombstones !== undefined)) {
@@ -1848,7 +1848,7 @@ export function createPolicyStorage(
 
   async function importLegacyInternal(
     snapshot: PolicySnapshot,
-    runtime: RuntimeState,
+    runtime: LegacyRuntimeStateV1,
     journal: SyncJournal,
     storedSync: Record<string, unknown>,
   ): Promise<void> {
@@ -2121,7 +2121,7 @@ export function createPolicyStorage(
       throw new Error('persisted runtime is not valid for all-data deletion');
     }
     const snapshot: PolicySnapshot = await loadSnapshotInternal();
-    const runtime: RuntimeState = migrateRuntimeRules(
+    const runtime: LegacyRuntimeStateV1 = migrateRuntimeRules(
       mergeRuntime(value, runtimeNow),
       snapshot.lists,
     );
@@ -3057,7 +3057,7 @@ export function createPolicyStorage(
     markLegacyMigrationFailed: (): Promise<void> => enqueue(markLegacyMigrationFailedInternal),
     importLegacy: (
       snapshot: PolicySnapshot,
-      runtime: RuntimeState,
+      runtime: LegacyRuntimeStateV1,
       journal: SyncJournal,
       storedSync: Record<string, unknown> = {},
     ): Promise<void> =>

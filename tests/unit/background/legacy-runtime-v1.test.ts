@@ -10,7 +10,7 @@ import {
   replayLegacyRuntimeCheckpointV1,
   settleLegacySessionV1,
 } from '../../../src/background/legacy-runtime-v1';
-import type { RuntimeState } from '../../../src/background/stores';
+import type { LegacyRuntimeStateV1 } from '../../../src/background/stores';
 import { emptyRuntime, type RuntimeCommitCheckpoint } from '../../../src/background/stores';
 import { accrue } from '../../../src/core/budget';
 import { capAttempts, emptyDaily } from '../../../src/core/stats';
@@ -67,7 +67,7 @@ interface AggregateWrite {
 interface LegacyHarness {
   ports: LegacyReplayPortsV1;
   names: LegacyPortName[];
-  runtimeWrites: RuntimeState[];
+  runtimeWrites: LegacyRuntimeStateV1[];
   eventBatches: LegacyEventRecord[][];
   bankWrites: BankWrite[];
   aggregateWrites: AggregateWrite[];
@@ -77,7 +77,7 @@ interface LegacyHarness {
 
 function harness(failPort: LegacyPortName | null = null): LegacyHarness {
   const names: LegacyPortName[] = [];
-  const runtimeWrites: RuntimeState[] = [];
+  const runtimeWrites: LegacyRuntimeStateV1[] = [];
   const eventBatches: LegacyEventRecord[][] = [];
   const bankWrites: BankWrite[] = [];
   const aggregateWrites: AggregateWrite[] = [];
@@ -90,7 +90,7 @@ function harness(failPort: LegacyPortName | null = null): LegacyHarness {
   }
 
   const ports: LegacyReplayPortsV1 = {
-    saveLegacyRuntime: async (runtime: RuntimeState): Promise<void> => {
+    saveLegacyRuntime: async (runtime: LegacyRuntimeStateV1): Promise<void> => {
       record('saveLegacyRuntime');
       runtimeWrites.push(runtime);
     },
@@ -211,7 +211,7 @@ function legacyCheckpoint(
   };
 }
 
-function checkpointRuntime(checkpoint: RuntimeCommitCheckpoint | null): RuntimeState {
+function checkpointRuntime(checkpoint: RuntimeCommitCheckpoint | null): LegacyRuntimeStateV1 {
   return {
     ...emptyRuntime(START_AT),
     todayAgg: storedDay(LOCAL_DATE),
@@ -232,7 +232,7 @@ function expectInvalidRule(run: () => unknown): void {
 
 describe('legacy checkpoint replay', (): void => {
   it('does nothing without a stored checkpoint', async (): Promise<void> => {
-    const runtime: RuntimeState = emptyRuntime(START_AT);
+    const runtime: LegacyRuntimeStateV1 = emptyRuntime(START_AT);
     const fake: LegacyHarness = harness();
 
     expect((await replayLegacyRuntimeCheckpointV1(fake.ports, runtime)).runtime).toBe(runtime);
@@ -241,11 +241,12 @@ describe('legacy checkpoint replay', (): void => {
 
   it('flushes events, bank, aggregates, removals, then the cleared runtime', async (): Promise<void> => {
     const checkpoint: RuntimeCommitCheckpoint = legacyCheckpoint();
-    const runtime: RuntimeState = checkpointRuntime(checkpoint);
+    const runtime: LegacyRuntimeStateV1 = checkpointRuntime(checkpoint);
     const fake: LegacyHarness = harness();
 
-    const replayed: RuntimeState = (await replayLegacyRuntimeCheckpointV1(fake.ports, runtime))
-      .runtime;
+    const replayed: LegacyRuntimeStateV1 = (
+      await replayLegacyRuntimeCheckpointV1(fake.ports, runtime)
+    ).runtime;
 
     expect(fake.names).toEqual([
       'appendLegacyEvents',
@@ -308,7 +309,7 @@ describe('legacy checkpoint replay', (): void => {
 
   it('treats the optional v1 aggregate fields as empty', async (): Promise<void> => {
     const fake: LegacyHarness = harness();
-    const runtime: RuntimeState = checkpointRuntime({
+    const runtime: LegacyRuntimeStateV1 = checkpointRuntime({
       bank: { balanceMs: 0 },
       events: [],
       syncBank: true,
@@ -366,7 +367,7 @@ describe('legacy checkpoint replay', (): void => {
     );
     const fake: LegacyHarness = harness();
 
-    const replayed: RuntimeState = (
+    const replayed: LegacyRuntimeStateV1 = (
       await replayLegacyRuntimeCheckpointV1(fake.ports, checkpointRuntime(guarded))
     ).runtime;
 
@@ -375,14 +376,16 @@ describe('legacy checkpoint replay', (): void => {
   });
 
   it('issues the same calls when the same checkpoint replays twice', async (): Promise<void> => {
-    const runtime: RuntimeState = checkpointRuntime(legacyCheckpoint());
+    const runtime: LegacyRuntimeStateV1 = checkpointRuntime(legacyCheckpoint());
     const first: LegacyHarness = harness();
     const second: LegacyHarness = harness();
 
-    const firstRun: RuntimeState = (await replayLegacyRuntimeCheckpointV1(first.ports, runtime))
-      .runtime;
-    const secondRun: RuntimeState = (await replayLegacyRuntimeCheckpointV1(second.ports, runtime))
-      .runtime;
+    const firstRun: LegacyRuntimeStateV1 = (
+      await replayLegacyRuntimeCheckpointV1(first.ports, runtime)
+    ).runtime;
+    const secondRun: LegacyRuntimeStateV1 = (
+      await replayLegacyRuntimeCheckpointV1(second.ports, runtime)
+    ).runtime;
 
     expect(secondRun).toEqual(firstRun);
     expect(second.names).toEqual(first.names);
@@ -406,7 +409,7 @@ describe('legacy checkpoint replay', (): void => {
   });
 
   it('replays the whole flush after a crash in the journal barrier', async (): Promise<void> => {
-    const runtime: RuntimeState = checkpointRuntime(legacyCheckpoint());
+    const runtime: LegacyRuntimeStateV1 = checkpointRuntime(legacyCheckpoint());
     const crashed: LegacyHarness = harness('persistSyncJournal');
 
     await expect(replayLegacyRuntimeCheckpointV1(crashed.ports, runtime)).rejects.toThrow(
@@ -417,8 +420,9 @@ describe('legacy checkpoint replay', (): void => {
     expect(runtime.commitCheckpoint).not.toBeNull();
 
     const recovered: LegacyHarness = harness();
-    const replayed: RuntimeState = (await replayLegacyRuntimeCheckpointV1(recovered.ports, runtime))
-      .runtime;
+    const replayed: LegacyRuntimeStateV1 = (
+      await replayLegacyRuntimeCheckpointV1(recovered.ports, runtime)
+    ).runtime;
 
     expect(recovered.names).toEqual([
       'appendLegacyEvents',
@@ -432,7 +436,7 @@ describe('legacy checkpoint replay', (): void => {
   });
 
   it('replays the journal again after a crash between the barrier and the clear', async (): Promise<void> => {
-    const runtime: RuntimeState = checkpointRuntime(legacyCheckpoint());
+    const runtime: LegacyRuntimeStateV1 = checkpointRuntime(legacyCheckpoint());
     const crashed: LegacyHarness = harness('saveLegacyRuntime');
 
     await expect(replayLegacyRuntimeCheckpointV1(crashed.ports, runtime)).rejects.toThrow(
@@ -454,7 +458,7 @@ describe('legacy checkpoint replay', (): void => {
   });
 
   it('fails with an invalid-rule error when the runtime cannot be detached', async (): Promise<void> => {
-    const hostile: RuntimeState = checkpointRuntime(legacyCheckpoint());
+    const hostile: LegacyRuntimeStateV1 = checkpointRuntime(legacyCheckpoint());
     Object.assign(hostile, { attemptDebounce: { broken: ((): void => {}) as unknown as number } });
     const fake: LegacyHarness = harness();
 
@@ -477,11 +481,12 @@ describe('legacy checkpoint replay', (): void => {
   });
 
   it('detaches the runtime it returns from the runtime it read', async (): Promise<void> => {
-    const runtime: RuntimeState = checkpointRuntime(legacyCheckpoint());
+    const runtime: LegacyRuntimeStateV1 = checkpointRuntime(legacyCheckpoint());
     const fake: LegacyHarness = harness();
 
-    const replayed: RuntimeState = (await replayLegacyRuntimeCheckpointV1(fake.ports, runtime))
-      .runtime;
+    const replayed: LegacyRuntimeStateV1 = (
+      await replayLegacyRuntimeCheckpointV1(fake.ports, runtime)
+    ).runtime;
     if (replayed.todayAgg !== null) replayed.todayAgg.focusMs = 1;
 
     expect(runtime.todayAgg).toEqual(storedDay(LOCAL_DATE));

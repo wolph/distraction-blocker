@@ -21,7 +21,7 @@ import type {
   RuntimeMigrationCheckpointV1ToV2,
   RuntimeStateV2,
 } from '../../../src/background/runtime-v2-types';
-import type { RuntimeCommitCheckpoint, RuntimeState } from '../../../src/background/stores';
+import type { LegacyRuntimeStateV1, RuntimeCommitCheckpoint } from '../../../src/background/stores';
 import { DEFAULT_LISTS, rulesFromLists } from '../../../src/shared/constants';
 import { CoreError } from '../../../src/shared/errors';
 import {
@@ -195,7 +195,7 @@ function harness(
       record('saveRuntime');
       storage.runtime = structuredClone(runtime);
     },
-    saveLegacyRuntime: async (runtime: RuntimeState): Promise<void> => {
+    saveLegacyRuntime: async (runtime: LegacyRuntimeStateV1): Promise<void> => {
       record('saveLegacyRuntime');
       storage.runtime = structuredClone(runtime);
     },
@@ -286,7 +286,7 @@ function storedAggregate(date: string, focusMs: number): DailyAgg {
   };
 }
 
-function legacyRuntime(overrides: Partial<RuntimeState> = {}): RuntimeState {
+function legacyRuntime(overrides: Partial<LegacyRuntimeStateV1> = {}): LegacyRuntimeStateV1 {
   return {
     session: null,
     gate: null,
@@ -307,7 +307,7 @@ function legacyRuntime(overrides: Partial<RuntimeState> = {}): RuntimeState {
 }
 
 /** The one legacy shape that migrates into a cleanup-stage closure: a scheduled session with no date. */
-function invalidScheduledRuntime(): RuntimeState {
+function invalidScheduledRuntime(): LegacyRuntimeStateV1 {
   return legacyRuntime({
     session: legacySession({
       config: legacyConfig({ source: 'schedule', scheduleEntryId: ENTRY_ID }),

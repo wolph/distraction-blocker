@@ -123,6 +123,7 @@ import type { AggregateStorage } from './stats-service';
 import { handleSyncChanges, missingSyncDefaults } from './storage-sync';
 import {
   getDeviceId,
+  type LegacyRuntimeStateV1,
   loadLists,
   loadRuntime,
   loadSyncJournal,
@@ -131,11 +132,10 @@ import {
   parseBank,
   parseStoredSettings,
   parseStreak,
-  type RuntimeState,
   type StoredSettingsParseResult,
   sanitizeRuntimeForLocalHistory,
+  saveLegacyRuntime,
   saveMatcherCache,
-  saveRuntime,
 } from './stores';
 import { chooseNewerStreak, rebaseStreakForDate, streaksEqual } from './streak-sync';
 import {
@@ -974,7 +974,7 @@ async function preparePolicyStorage(lease: AllDataClearLease): Promise<PolicySto
       if (listsWereMissing) replacePendingLists(journal, await encodeListsForSync(lists));
     }
     const loadedRuntime: ParsedRuntimeState = await loadRuntime(now);
-    const runtime: RuntimeState = migrateRuntimeRules(loadedRuntime, lists);
+    const runtime: LegacyRuntimeStateV1 = migrateRuntimeRules(loadedRuntime, lists);
     const snapshot: PolicySnapshot = { settings, lists, bank, streak: persistedStreak };
     assertValidResolvedLegacyPolicy(snapshot);
     await storage.importLegacy(snapshot, runtime, journal, storedSync);
@@ -1069,7 +1069,7 @@ function runtimeBootPorts(
       }
     },
     saveRuntime: (runtime: RuntimeStateV2): Promise<void> => saveRuntimeV2(runtime),
-    saveLegacyRuntime: (runtime: RuntimeState): Promise<void> => saveRuntime(runtime),
+    saveLegacyRuntime,
     appendEvents: (events: readonly EventRecord[]): Promise<void> => appendEventsV2(events),
     appendLegacyEvents: (events: readonly LegacyEventRecord[]): Promise<void> =>
       appendEventsV2(events),

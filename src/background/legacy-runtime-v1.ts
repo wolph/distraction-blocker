@@ -23,10 +23,10 @@ import type {
 import { isNonBlankString, isSafeTimestamp } from '../shared/v2-domain-intrinsics';
 import { type FocusDateSplitV2, splitFocusByLocalDateV2 } from './closure-projection-v2';
 import type { LegacyMigrationFocusSettlement } from './runtime-v2-types';
-import type { RuntimeCommitCheckpoint, RuntimeState } from './stores';
+import type { LegacyRuntimeStateV1, RuntimeCommitCheckpoint } from './stores';
 
 export interface LegacyReplayPortsV1 {
-  saveLegacyRuntime(runtime: RuntimeState): Promise<void>;
+  saveLegacyRuntime(runtime: LegacyRuntimeStateV1): Promise<void>;
   appendLegacyEvents(events: readonly LegacyEventRecord[]): Promise<void>;
   saveBank(bank: BankState, syncBank: boolean): Promise<void>;
   saveAggregate(key: string, value: DailyAgg): Promise<void>;
@@ -37,7 +37,7 @@ export interface LegacyReplayPortsV1 {
 
 /** What one replay left durable, so the caller never has to guess which bank is current. */
 export interface LegacyReplayResultV1 {
-  runtime: RuntimeState;
+  runtime: LegacyRuntimeStateV1;
   /** The bank this replay stored, or null when the checkpoint had none to flush. */
   bank: BankState | null;
 }
@@ -84,7 +84,7 @@ interface LegacySettlementBoundsV1 {
  */
 export async function replayLegacyRuntimeCheckpointV1(
   ports: LegacyReplayPortsV1,
-  runtime: RuntimeState,
+  runtime: LegacyRuntimeStateV1,
 ): Promise<LegacyReplayResultV1> {
   const checkpoint: RuntimeCommitCheckpoint | null = runtime.commitCheckpoint;
   if (checkpoint === null) return { runtime, bank: null };
@@ -98,7 +98,10 @@ export async function replayLegacyRuntimeCheckpointV1(
     await ports.removeAggregate(key);
   }
   await ports.persistSyncJournal();
-  const cleared: RuntimeState = detachedLegacyRuntime({ ...runtime, commitCheckpoint: null });
+  const cleared: LegacyRuntimeStateV1 = detachedLegacyRuntime({
+    ...runtime,
+    commitCheckpoint: null,
+  });
   await ports.saveLegacyRuntime(cleared);
   return { runtime: cleared, bank };
 }
@@ -259,7 +262,7 @@ function sortedLegacyAggregateSets(
   );
 }
 
-function detachedLegacyRuntime(runtime: RuntimeState): RuntimeState {
+function detachedLegacyRuntime(runtime: LegacyRuntimeStateV1): LegacyRuntimeStateV1 {
   try {
     return structuredClone(runtime);
   } catch {

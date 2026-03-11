@@ -3,7 +3,7 @@ import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/backgroun
 import { projectRuntimeDomainV2 } from '../../../src/background/runtime-checkpoint-v2';
 import { emptyRuntimeV2 } from '../../../src/background/runtime-store-v2';
 import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
-import type { ParsedRuntimeState, RuntimeState } from '../../../src/background/stores';
+import type { LegacyRuntimeStateV1, ParsedRuntimeState } from '../../../src/background/stores';
 import {
   loadBank,
   loadLists,
@@ -896,8 +896,8 @@ describe('runtime storage migration', () => {
     );
 
     expectTypeOf(runtime).toEqualTypeOf<ParsedRuntimeState>();
-    const normalized: RuntimeState = migrateRuntimeRules(runtime, currentLists);
-    expectTypeOf(normalized).toEqualTypeOf<RuntimeState>();
+    const normalized: LegacyRuntimeStateV1 = migrateRuntimeRules(runtime, currentLists);
+    expectTypeOf(normalized).toEqualTypeOf<LegacyRuntimeStateV1>();
     expect(normalized.session?.config.rules).toEqual(rulesFromLists(currentLists));
   });
 

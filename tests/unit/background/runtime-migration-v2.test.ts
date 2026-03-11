@@ -16,7 +16,7 @@ import type {
   RuntimeStateV2,
 } from '../../../src/background/runtime-v2-types';
 import { parseRuntimeMigrationCheckpointV1ToV2 } from '../../../src/background/runtime-v2-validation';
-import type { DeferredBlockClaim, RuntimeState } from '../../../src/background/stores';
+import type { DeferredBlockClaim, LegacyRuntimeStateV1 } from '../../../src/background/stores';
 import { createHandledScheduleOccurrenceV2 } from '../../../src/core/schedule-v2';
 import { DEFAULT_LISTS, rulesFromLists } from '../../../src/shared/constants';
 import { CoreError } from '../../../src/shared/errors';
@@ -127,7 +127,7 @@ function liveUnlock(): SiteUnlock {
   return { host: 'example.com', until: MIGRATED_AT + MINUTE_MS };
 }
 
-function legacyRuntime(overrides: Partial<RuntimeState> = {}): RuntimeState {
+function legacyRuntime(overrides: Partial<LegacyRuntimeStateV1> = {}): LegacyRuntimeStateV1 {
   return {
     session: null,
     gate: null,
@@ -336,7 +336,7 @@ describe('migration checkpoint builder', (): void => {
   });
 
   it('carries every v1 runtime field the v2 runtime still owns', (): void => {
-    const legacy: RuntimeState = legacyRuntime({
+    const legacy: LegacyRuntimeStateV1 = legacyRuntime({
       gate: liveGate(),
       unlocks: [liveUnlock()],
       accruedFocusMs: 90_000,
@@ -540,7 +540,7 @@ describe('invalid active state migration', (): void => {
     const session: NormalizedSessionStateV1 = legacySession({ config: scheduledConfig() });
     // A backward clock or a westward timezone change leaves a stale future runtime date behind,
     // and the settled split then lands on a date the runtime already considers finished.
-    const staleFuture: RuntimeState = legacyRuntime({ session, date: '2026-09-04' });
+    const staleFuture: LegacyRuntimeStateV1 = legacyRuntime({ session, date: '2026-09-04' });
     const stored: DailyAgg = { ...emptyAggregate(), focusMs: 5 * MINUTE_MS, sessionsStarted: 1 };
     const plan: MigrationCleanupPlan = cleanupPlanOf(session, {
       runtime: staleFuture,
@@ -706,7 +706,7 @@ describe('migration checkpoint boundary', (): void => {
   });
 
   it('detaches the projected runtime from the legacy runtime it read', (): void => {
-    const legacy: RuntimeState = legacyRuntime({ unlocks: [liveUnlock()] });
+    const legacy: LegacyRuntimeStateV1 = legacyRuntime({ unlocks: [liveUnlock()] });
     const runtime: RuntimeStateV2 = buildRuntimeMigrationCheckpointV1ToV2(
       migrationInput({ runtime: legacy }),
     ).projectedRuntime;

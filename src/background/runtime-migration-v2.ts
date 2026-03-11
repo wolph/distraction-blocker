@@ -46,11 +46,11 @@ import type {
   RuntimeStateV2,
 } from './runtime-v2-types';
 import { parseRuntimeMigrationCheckpointV1ToV2 } from './runtime-v2-validation';
-import type { RuntimeState } from './stores';
+import type { LegacyRuntimeStateV1 } from './stores';
 
 export interface MigrationInputV2 {
   /** The parsed v1 runtime, with any legacy commit checkpoint already replayed and cleared. */
-  runtime: RuntimeState;
+  runtime: LegacyRuntimeStateV1;
   bank: BankState;
   pauseEconomy: PauseEconomy;
   deviceId: string;
@@ -402,11 +402,13 @@ function settlementEvents(
  * is migration input only and has no v2 field. Every leaf is detached from the legacy runtime.
  */
 function carriedRuntimeV2(input: MigrationInputV2): RuntimeStateV2 {
-  const legacy: RuntimeState = input.runtime;
+  const legacy: LegacyRuntimeStateV1 = input.runtime;
   return {
     ...emptyRuntimeV2(input.migratedAt, input.enforcementEpoch),
     gate: legacy.gate === null ? null : { ...legacy.gate },
-    unlocks: legacy.unlocks.map((unlock: RuntimeState['unlocks'][number]) => ({ ...unlock })),
+    unlocks: legacy.unlocks.map((unlock: LegacyRuntimeStateV1['unlocks'][number]) => ({
+      ...unlock,
+    })),
     tabStates: structuredClone(legacy.tabStates),
     accruedFocusMs: legacy.accruedFocusMs,
     attemptDebounce: { ...legacy.attemptDebounce },
