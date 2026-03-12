@@ -359,7 +359,6 @@ vi.mock('../../../src/background/router', () => ({
 }));
 vi.mock('../../../src/background/stats-service', () => ({
   pruneAndRollup: vi.fn(() => ({ remove: [], set: {} })),
-  runPrune: vi.fn(),
 }));
 vi.mock('../../../src/background/storage-sync', () => ({
   handleSyncChanges: vi.fn(),
