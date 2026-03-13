@@ -399,6 +399,8 @@ export class Engine {
         this.deferredAttempts.push({ url, tabId, kind });
         return Promise.resolve();
       },
+      markStoppedPage: (tabId: number, url: string, documentId: string): Promise<void> =>
+        this.markStopped(tabId, url, documentId),
       restoreTabClaims: (claims: readonly CleanupTabClaim[]): Promise<number[]> =>
         this.ports.restoreTabClaims(claims),
       reloadStoppedDocuments: (claims: readonly CleanupTabClaim[]): Promise<void> =>

@@ -1306,6 +1306,30 @@ describe('routeMessage all-data clear enforcement gate', (): void => {
     }
   });
 
+  it('explains the stopped page in the first view the page receives', async (): Promise<void> => {
+    const recorded: { engine: Engine } = recordingEngine();
+    await recorded.engine.startSession(focusSessionConfig());
+    const url: string = BLOCKED_URL;
+
+    const answer: unknown = await routeMessage(
+      recorded.engine,
+      { type: 'getBlockState', url, docState: 'fresh' },
+      { url, tab: { id: 7, url } as chrome.tabs.Tab, documentId: 'document-id' },
+    );
+    await settle();
+    const enforcement: DocumentEnforcementCommand[] = enforcementIn(
+      (answer as { commands: DocumentContentCommand[] }).commands,
+    );
+
+    // The page whose load was stopped is told why in the view that stops it. An explanation that
+    // arrives on some later refresh leaves the user looking at a blocked page with no reason on it.
+    expect(recorded.engine.tabFacts(7, url, 'document-id').wasStopped).toBe(true);
+    expect(enforcement[0]?.overlay?.stoppedPage).toBe(true);
+    expect(enforcement[0]?.overlay?.copy.stoppedPage).toBe(
+      'This page did not load. It will load by itself when the session ends.',
+    );
+  });
+
   it('serves the same navigation, and counts it, with no all-data clear pending', async (): Promise<void> => {
     const recorded: {
       engine: Engine;
@@ -1472,12 +1496,14 @@ describe('routeMessage tab identity wiring', () => {
     );
 
     // The router delivers what it answers, so the document may take the epoch reset it is handed.
+    // The stopped claim is not the router's to take: it belongs to the call that freezes the view,
+    // which is the only place it can be taken before the view that explains it.
     expect(documentCommandsFor).toHaveBeenCalledWith(
       { tabId: 7, documentId, url },
       'navigation',
       'deliver',
     );
-    expect(markStopped).toHaveBeenCalledWith(7, url, documentId);
+    expect(markStopped).not.toHaveBeenCalled();
     expect(rebindTab).not.toHaveBeenCalled();
   });
 

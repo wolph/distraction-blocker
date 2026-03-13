@@ -608,6 +608,8 @@ export interface ControllerEffectsFakeV2 {
   notices: Array<{ title: string; body: string }>;
   clears: number;
   attempts: Array<{ url: string; tabId: number; kind: 'navigation' | 'existing' }>;
+  /** Every stopped claim the controller took, in order, before the view that explains it. */
+  stopped: Array<{ tabId: number; url: string; documentId: string }>;
   restored: number[][];
   reloads: number;
   blankBadges: number;
@@ -624,6 +626,7 @@ export interface ControllerEffectsFakeV2 {
   notify(title: string, body: string): void;
   clearBlockingForNonBlockingPhase(): Promise<void>;
   recordAttempt(url: string, tabId: number, kind: 'navigation' | 'existing'): Promise<void>;
+  markStoppedPage(tabId: number, url: string, documentId: string): Promise<void>;
 }
 
 export function createControllerEffectsFakeV2(): ControllerEffectsFakeV2 {
@@ -634,6 +637,7 @@ export function createControllerEffectsFakeV2(): ControllerEffectsFakeV2 {
     notices: [],
     clears: 0,
     attempts: [],
+    stopped: [],
     restored: [],
     reloads: 0,
     blankBadges: 0,
@@ -671,6 +675,9 @@ export function createControllerEffectsFakeV2(): ControllerEffectsFakeV2 {
     ): Promise<void> => {
       fake.attempts.push({ url, tabId, kind });
       await fake.onRecordAttempt?.();
+    },
+    markStoppedPage: async (tabId: number, url: string, documentId: string): Promise<void> => {
+      fake.stopped.push({ tabId, url, documentId });
     },
   };
   return fake;

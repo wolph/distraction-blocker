@@ -132,6 +132,11 @@ export interface SessionControllerEffectsV2 extends CleanupEffectPortsV2 {
   clearBlockingForNonBlockingPhase(): Promise<void>;
   /** The existing `Engine.recordAttempt`, which owns `ATTEMPT_DEBOUNCE_MS` and the attempt event. */
   recordAttempt(url: string, tabId: number, kind: 'navigation' | 'existing'): Promise<void>;
+  /**
+   * The existing `Engine.markStopped`, which owns the tab claim. It is taken before the view that
+   * stops the page is frozen, because the view reads the claim to explain itself.
+   */
+  markStoppedPage(tabId: number, url: string, documentId: string): Promise<void>;
 }
 
 // Precondition the cutover must satisfy before any v2 producer runs: the retained Engine appends its
@@ -524,6 +529,12 @@ export class SessionControllerV2 {
           target.documentId,
         );
         if (enforceable.kind !== 'enforceable') return { commands: [], blocked: false };
+        // The claim comes first, because the view is frozen from the runtime that holds it. A
+        // page whose load this answer stops would otherwise render the blocked overlay with
+        // nothing on it saying why, until some later refresh happened to rebuild the view.
+        if (delivery === 'deliver' && attemptKind === 'navigation') {
+          await this.claimStoppedPage(target);
+        }
         const command: FrozenDocumentCommand | null = await this.pulledCommandFor(
           target,
           attemptKind,
@@ -1484,6 +1495,27 @@ export class SessionControllerV2 {
 
   /** A blocked frozen verdict is what makes one navigation an attempt. Sweeps pass null. */
   /** Whether the command this target currently holds blocks it. Read inside the queue. */
+  /**
+   * Takes the stopped claim for a navigation this answer is about to block. The verdict is
+   * evaluated rather than read off a frozen command, because the command for this document does
+   * not exist yet: it is the one being built from the runtime this claim is about to enter.
+   */
+  private async claimStoppedPage(target: {
+    tabId: number;
+    documentId: string;
+    url: string;
+  }): Promise<void> {
+    const runtime: RuntimeStateV2 = this.ports.runtime();
+    const evaluated: Verdict | null = evaluatedVerdictOf(
+      this.ports,
+      runtime,
+      runtime.session,
+      target.url,
+    );
+    if (evaluated?.blocked !== true) return;
+    await this.effects.markStoppedPage(target.tabId, target.url, target.documentId);
+  }
+
   private blockedNow(target: { tabId: number; documentId: string }): boolean {
     const key: string = documentCommandKeyV2(target.tabId, target.documentId);
     return this.ports.runtime().documentCommands[key]?.verdict.blocked === true;

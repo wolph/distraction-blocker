@@ -106,13 +106,6 @@ function onboardingOperationalFailure(error: unknown): OnboardingOperationalFail
 }
 
 /** Whether the commands this document must apply leave it blocked, which is what stops the page. */
-function blocksTarget(commands: readonly DocumentContentCommand[]): boolean {
-  return commands.some(
-    (command: DocumentContentCommand): boolean =>
-      command.command === 'apply-enforcement' && command.verdict.blocked,
-  );
-}
-
 /**
  * One exhaustive switch from typed requests to engine calls. The never
  * check at the bottom keeps it exhaustive when the message union grows.
@@ -370,15 +363,13 @@ export async function routeMessage(
       // The controller records the blocked attempt on this path exactly as the v1 engine did.
       // The pull is the delivery: this answer is what the document applies, so it is the one call
       // that may hand over the epoch reset and record the acknowledgement for it.
+      // The stopped claim is taken inside this call, before the view is frozen, so the page that
+      // is stopped receives the sentence explaining it in the same answer.
       const commands: DocumentContentCommand[] = await engine.documentCommandsFor(
         target,
         kind,
         'deliver',
       );
-      if (msg.docState === 'fresh' && blocksTarget(commands)) {
-        // The claim is what carries the stopped-page copy and what the closure reloads.
-        await engine.markStopped(tabId, msg.url, documentId);
-      }
       return { commands };
     }
     case 'startSession':
