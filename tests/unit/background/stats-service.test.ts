@@ -386,6 +386,119 @@ describe.sequential('stats-service local calendar ranges', (): void => {
   );
 });
 
+function startedV2(at: number, sessionId: string): EventRecord {
+  return {
+    version: 2,
+    t: 'sessionStarted',
+    eventId: `event-start-${sessionId}`,
+    at,
+    sessionId,
+    source: 'manual',
+    mode: 'blacklist',
+    strictness: 'friction',
+    duration: { kind: 'timed', minutes: 25 },
+    intention: `session ${at}`,
+    scheduleOccurrence: null,
+  };
+}
+
+function endedV2(
+  at: number,
+  sessionId: string,
+  overrides: Partial<Extract<EventRecord, { t: 'sessionEnded' }>> = {},
+): EventRecord {
+  return {
+    version: 2,
+    t: 'sessionEnded',
+    eventId: `event-end-${sessionId}`,
+    at,
+    sessionId,
+    outcome: 'completed',
+    reason: 'timer-completed',
+    focusedMs: 1_500_000,
+    duration: { kind: 'timed', minutes: 25 },
+    source: 'manual',
+    scheduleOccurrence: null,
+    ...overrides,
+  };
+}
+
+describe('stats-service version 2 session outcomes', (): void => {
+  // The end-to-end suite caught this and no unit test did: the recent-session filter listed the two
+  // version 1 terminals and not the version 2 end event, so a finished session never reached the
+  // bundle and the row stayed `Running` with no focused time.
+  it('reports a completed v2 session with its focused time and reason label', (): void => {
+    const events: EventRecord[] = [startedV2(1, 'session-a'), endedV2(2, 'session-a')];
+
+    const recent: EventRecord[] = buildStats('devA', {}, events, 7, Date.now()).recentSessions;
+    const rows: SessionRowV2[] = pairSessionRowsV2(recent);
+
+    expect(recent).toEqual([...events].reverse());
+    expect(rows).toEqual([
+      expect.objectContaining({
+        outcome: 'Completed',
+        outcomeKind: 'completed',
+        focusedMs: 1_500_000,
+      }),
+    ]);
+  });
+
+  it('reports a canceled v2 session as ended early', (): void => {
+    const events: EventRecord[] = [
+      startedV2(1, 'session-b'),
+      endedV2(2, 'session-b', {
+        outcome: 'canceled',
+        reason: 'manual-canceled',
+        focusedMs: 60_000,
+      }),
+    ];
+
+    const rows: SessionRowV2[] = pairSessionRowsV2(
+      buildStats('devA', {}, events, 7, Date.now()).recentSessions,
+    );
+
+    expect(rows).toEqual([
+      expect.objectContaining({ outcome: 'Ended early', outcomeKind: 'ended', focusedMs: 60_000 }),
+    ]);
+  });
+
+  it('stops attributing later id-less events to a session the v2 end closed', (): void => {
+    // The v1 terminals closed their group so nothing later joined it. The v2 end has to close it
+    // too, or an id-less pause that belongs to no open session is folded into the finished one.
+    const events: EventRecord[] = [
+      startedV2(1, 'session-e'),
+      endedV2(2, 'session-e'),
+      { t: 'pauseTaken', at: 3, ms: 5_000 },
+    ];
+
+    const recent: EventRecord[] = buildStats('devA', {}, events, 7, Date.now()).recentSessions;
+
+    expect(recent.some((event: EventRecord): boolean => event.t === 'pauseTaken')).toBe(false);
+    expect(pairSessionRowsV2(recent)).toEqual([
+      expect.objectContaining({ outcome: 'Completed', pauseMs: 0 }),
+    ]);
+  });
+
+  it('closes the group so a later session is not folded into the finished one', (): void => {
+    const events: EventRecord[] = [
+      startedV2(1, 'session-c'),
+      endedV2(2, 'session-c'),
+      startedV2(3, 'session-d'),
+      { t: 'pauseTaken', at: 4, ms: 1_000, sessionId: 'session-d' },
+      endedV2(5, 'session-d', { focusedMs: 900_000 }),
+    ];
+
+    const rows: SessionRowV2[] = pairSessionRowsV2(
+      buildStats('devA', {}, events, 7, Date.now()).recentSessions,
+    );
+
+    expect(rows).toEqual([
+      expect.objectContaining({ startedAt: 3, focusedMs: 900_000, pauseMs: 1_000 }),
+      expect.objectContaining({ startedAt: 1, focusedMs: 1_500_000, pauseMs: 0 }),
+    ]);
+  });
+});
+
 describe('stats-service recent session cap', (): void => {
   it('keeps every event needed for a retained long session', (): void => {
     const events: EventRecord[] = [started(1, 'long-session')];

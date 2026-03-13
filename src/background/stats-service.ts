@@ -31,6 +31,7 @@ type RecentSessionEvent = Extract<
   {
     t:
       | 'sessionStarted'
+      | 'sessionEnded'
       | 'sessionCompleted'
       | 'sessionCanceled'
       | 'sessionIdentityAssigned'
@@ -145,11 +146,21 @@ function localDateBefore(now: number, daysBefore: number): string {
 function isRecentSessionEvent(event: EventRecord): event is RecentSessionEvent {
   return (
     event.t === 'sessionStarted' ||
-    event.t === 'sessionCompleted' ||
-    event.t === 'sessionCanceled' ||
+    isSessionTerminalEvent(event) ||
     event.t === 'sessionIdentityAssigned' ||
     event.t === 'pauseTaken' ||
     event.t === 'unlockTaken'
+  );
+}
+
+/**
+ * The three spellings of a finished session. `sessionEnded` is the version 2 event every closure
+ * writes; the other two are the version 1 outcomes a migrated log still holds. Both readers of this
+ * rule, the filter and the group that closes on it, ask here rather than listing the names again.
+ */
+function isSessionTerminalEvent(event: EventRecord): boolean {
+  return (
+    event.t === 'sessionEnded' || event.t === 'sessionCompleted' || event.t === 'sessionCanceled'
   );
 }
 
@@ -216,7 +227,7 @@ function recentSessionEvents(events: EventRecord[]): EventRecord[] {
         : identifiedOpens.get(sessionId);
     if (group === undefined) continue;
     group.events.push(event);
-    if (event.t === 'sessionCompleted' || event.t === 'sessionCanceled') {
+    if (isSessionTerminalEvent(event)) {
       if (sessionId === undefined && legacyOpen !== null) {
         legacyOpen = null;
       } else if (group.sessionId !== undefined) {
