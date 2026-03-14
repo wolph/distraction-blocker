@@ -650,12 +650,10 @@ test('manual end reasons separate a timed cancel from an indefinite completion',
 });
 
 /**
- * Known defect, and the reason this scenario is expected to fail: `recentSessionEvents` in
- * `src/background/stats-service.ts` still classifies terminal events by the v1 names, so the v2
- * `sessionEnded` record never reaches the stats bundle. Every v2 session therefore reports as
- * `Running` with no focused time, and neither outcome wording the spec fixes can appear. The
- * assertions below are the wording the spec requires, so this scenario turns green the moment the
- * classifier learns the v2 name, and Playwright then reports it as an unexpected pass.
+ * This scenario found the defect that `stats-service.ts` classified terminal events by the version 1
+ * names, which dropped every version 2 `sessionEnded` on the way into the stats bundle and left each
+ * finished session reporting as `Running` with no focused time. It is the end-to-end proof that both
+ * outcome wordings reach the table, which no unit test covered when it was written.
  */
 test('stats reports the indefinite plan and both manual outcomes', async ({
   context,
@@ -663,7 +661,6 @@ test('stats reports the indefinite plan and both manual outcomes', async ({
   extensionId,
   worker,
 }) => {
-  test.fail();
   await recordTwoManualEnds(extPage, worker);
 
   const statsPage: Page = await context.newPage();
