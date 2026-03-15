@@ -60,7 +60,7 @@ Focus Lock's use of information received from Chrome APIs complies with the Chro
 | Pause balance and streaks | Working copy | Yes | No |
 | Daily and monthly session totals and domain-level blocked-attempt counts | Working copy for this device | Yes | No |
 
-The local runtime keys `runtime`, `runtimeSchema`, `runtimeMigration`, and `events` are local only. They hold the live session and its schema marker, any pending migration record, and the detailed event log, and Focus Lock never writes them to Chrome Sync.
+The local runtime keys `runtime`, `runtimeSchema`, `runtimeMigration`, `events`, and `dataClearJournal` are local only. They hold the live session and its schema marker, any pending migration record, the detailed event log, and any deletion still in progress. A deletion in progress carries a copy of the live session, including the page addresses it is enforcing against, for as long as that deletion takes. Focus Lock never writes any of these keys to Chrome Sync.
 
 Focus Lock reads, writes, and deletes the disclosed Chrome Sync data through Chrome's extension APIs. The developer does not receive or retain a separate copy. Chrome and Google handling is governed by the [Google Privacy Policy](https://policies.google.com/privacy) and applicable [Google Chrome Terms of Service](https://www.google.com/chrome/terms/).
 

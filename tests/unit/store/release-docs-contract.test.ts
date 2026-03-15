@@ -5,8 +5,7 @@ import { DEFAULT_SETTINGS, EVENT_LOG_CAP } from '../../../src/shared/constants';
 import {
   LOCAL_EVENTS,
   LOCAL_RUNTIME,
-  LOCAL_RUNTIME_MIGRATION,
-  LOCAL_RUNTIME_SCHEMA,
+  LOCAL_V2_SESSION_AUTHORITY_KEYS,
   SYNC_BANK,
   SYNC_LISTS,
   SYNC_SETTINGS,
@@ -178,26 +177,24 @@ describe('Chrome Web Store release documentation contract', (): void => {
     );
   });
 
-  it('lists every local runtime key as local only', (): void => {
+  it('lists every local session authority key as local only', (): void => {
+    // Derived from the exported key list rather than a copy of it. A key that joins the authority
+    // set now fails here until the disclosure names it, which a hardcoded list of four could not
+    // do: that is how `dataClearJournal` reached the archive unnamed.
     const disclosures: string = normalizedDocument(DOCUMENT_PATHS.disclosures);
+    const sentence: RegExpExecArray | null = /The local runtime keys ([^.]+) are local only\./.exec(
+      disclosures,
+    );
+    if (sentence === null) throw new Error('the disclosures no longer name the local runtime keys');
 
-    expect([LOCAL_RUNTIME, LOCAL_RUNTIME_SCHEMA, LOCAL_RUNTIME_MIGRATION, LOCAL_EVENTS]).toEqual([
-      'runtime',
-      'runtimeSchema',
-      'runtimeMigration',
-      'events',
-    ]);
-    for (const key of [
-      LOCAL_RUNTIME,
-      LOCAL_RUNTIME_SCHEMA,
-      LOCAL_RUNTIME_MIGRATION,
-      LOCAL_EVENTS,
-    ]) {
+    const named: string[] = [...(sentence[1] ?? '').matchAll(/`([^`]+)`/g)]
+      .map((match: RegExpMatchArray): string => match[1] ?? '')
+      .sort();
+
+    expect(named).toEqual([...LOCAL_V2_SESSION_AUTHORITY_KEYS].sort());
+    for (const key of LOCAL_V2_SESSION_AUTHORITY_KEYS) {
       expect(disclosures, key).toContain(`\`${key}\``);
     }
-    expect(disclosures).toContain(
-      'The local runtime keys `runtime`, `runtimeSchema`, `runtimeMigration`, and `events` are local only.',
-    );
   });
 
   it('selects URL and user data categories without selecting website content', (): void => {
