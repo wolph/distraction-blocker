@@ -4,6 +4,7 @@ Focus Lock blocks distracting websites during deliberate focus sessions. Choose 
 
 - Block selected site categories and custom rules, or allow only selected sites.
 - Choose Flexible, Friction, or Hard lock before each session. Friction can require a wait and typed confirmation. Hard lock cannot end early.
+- Set a session length, or run a session until you stop it. An until-stopped session uses Flexible blocking with no focus and break cycles, and it ends from the popup rather than on a timer. A schedule can start one the same way.
 - Focus Lock checks top-level navigations and replaces blocked pages with its blocking surface. Already-open pages receive an in-place overlay and keep their form, scroll, and JavaScript state.
 - Earn pause time at a configurable rate and cap. Pause and one-site unlock actions use a deliberation gate.
 - Run manual, cycling, or scheduled sessions and inspect session and blocking records in Statistics.
