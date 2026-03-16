@@ -4,6 +4,7 @@ dist-pages/
 release/
 key.pem
 test-results/
+artifacts/
 playwright-report/
 .playwright-mcp/
 .remember/
