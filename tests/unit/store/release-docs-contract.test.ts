@@ -134,8 +134,12 @@ describe('Chrome Web Store release documentation contract', (): void => {
       expect(document, path).toContain('historical full URLs');
       expect(document, path).toContain('from the local event log');
       expect(document, path).toContain('does not clear the current live-session runtime');
-      expect(document, path).toContain('URL and intention state');
-      expect(document, path).toContain('remains until that live state ends');
+      // The qualification has to name what is held and say what bounds it. Before the indefinite
+      // session there was always a timer, so "remains until that live state ends" was a bound. It
+      // is not one now, and copy that stops at the old phrasing has to fail here.
+      expect(document, path).toContain('focus intention');
+      expect(document, path).toContain('addresses of the pages');
+      expect(document, path).toContain('run until stopped');
     }
   });
 
