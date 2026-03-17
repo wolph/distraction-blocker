@@ -3,7 +3,7 @@ Focus Lock blocks distracting websites during deliberate focus sessions. Choose 
 ## Features
 
 - Block selected site categories and custom rules, or allow only selected sites.
-- Set a session length, or run a session until you stop it. A timed session ends on its own. A session set to run until stopped ends when you end it from the popup. A schedule can start either kind.
+- Set a session length, or run a session until you stop it. A timed session ends on its own. A session set to run until stopped ends when you end it from the popup. A schedule can start either kind, and a scheduled timed session runs to the end of its window.
 - Choose Flexible, Friction, or Hard lock before a timed session. Friction can require a wait and typed confirmation. Hard lock cannot end early. A session set to run until stopped is always Flexible and runs no focus and break cycles, and the popup shows both settings as fixed while it is selected.
 - Focus Lock checks top-level navigations and replaces blocked pages with its blocking surface. Already-open pages receive an in-place overlay and keep their form, scroll, and JavaScript state.
 - Earn pause time at a configurable rate and cap. Pause and one-site unlock actions use a deliberation gate.
@@ -29,7 +29,7 @@ The extension also uses Chrome permissions for local and optional synced storage
 
 Chrome Sync is a setup choice and can be disabled later in Settings > Privacy and data. The same page can export the local event log and separately delete remote Focus Lock data from Chrome Sync after sync is disabled.
 
-Delete local history removes historical full URLs, focus intentions, and detailed session events from the local event log. In local-only mode, it also removes local aggregate statistics. It does not clear the current live-session runtime, which holds the focus intention and the addresses of the pages the session is enforcing against. A session set to run until stopped holds that runtime until the person ends it. See Retention for what ending a session clears and what it leaves.
+Delete local history removes historical full URLs, focus intentions, and detailed session events from the local event log. In local-only mode, it also removes local aggregate statistics. It does not clear the current live-session runtime, which holds the focus intention and the address of every website tab open while the session runs. A session set to run until stopped holds that runtime until the person ends it. Ending the session clears the intention. It leaves one clear instruction for each of those tabs, each holding that tab's address, and the next session replaces them.
 
 ## Limitations
 

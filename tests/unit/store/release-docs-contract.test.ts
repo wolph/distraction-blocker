@@ -138,8 +138,42 @@ describe('Chrome Web Store release documentation contract', (): void => {
       // session there was always a timer, so "remains until that live state ends" was a bound. It
       // is not one now, and copy that stops at the old phrasing has to fail here.
       expect(document, path).toContain('focus intention');
-      expect(document, path).toContain('addresses of the pages');
+      expect(document, path).toContain('address of every website tab');
       expect(document, path).toContain('run until stopped');
+      // The clear commands a finished cleanup leaves behind cover every enforceable target, and
+      // `classifyEnforcementTargetV2` calls any top-frame http or https document enforceable
+      // whether or not it was blocked. Copy that says only "the pages the session enforced
+      // against" describes a smaller set than the one that is kept.
+      expect(document, path).not.toContain('addresses of the pages');
+      // No shipped surface starts an all-scope clear: `Confirmation` in `options/PrivacyData.tsx`
+      // admits only local history and synced policy, and the one `'all'` branch there retries a
+      // clear that is already stuck. Copy must not offer deleting all data as the way out.
+      expect(document, path).not.toContain('all Focus Lock data is deleted');
+      expect(document, path).not.toContain('delete all Focus Lock data');
+    }
+  });
+
+  // A qualification that ends by pointing at a section the document does not have is worse than no
+  // pointer, because the reader is sent somewhere for the part that actually bounds the retention.
+  // Substring checks cannot catch that, so resolve the cross-reference itself.
+  it('resolves every Retention cross-reference in release copy', (): void => {
+    const sections: Record<string, RegExp> = {
+      [DOCUMENT_PATHS.privacy]: /id="retention"/,
+      [DOCUMENT_PATHS.disclosures]: /^#{2,3} Retention/m,
+      [DOCUMENT_PATHS.reviewer]: /^#{2,3} Retention/m,
+      [DOCUMENT_PATHS.listing]: /^#{2,3} Retention/m,
+      [DOCUMENT_PATHS.readme]: /^#{2,3} Retention/m,
+    };
+
+    for (const [path, heading] of Object.entries(sections)) {
+      const pointer: boolean = /See Retention|Retention below/.test(normalizedDocument(path));
+      if (!pointer) continue;
+      // The heading has to be matched against the raw file: `normalizedDocument` collapses every
+      // newline, so a line-anchored heading pattern can never match its output.
+      expect(
+        heading.test(readDocument(path)),
+        `${path} points at a Retention section it does not have`,
+      ).toBe(true);
     }
   });
 

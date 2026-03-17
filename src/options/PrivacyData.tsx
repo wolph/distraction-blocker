@@ -151,7 +151,9 @@ function ConfirmationDialog(props: {
         <p>
           This permanently deletes full URLs, focus intentions, and detailed session events from
           this device
-          {props.localOnlyAggregates ? ', plus local-only aggregate statistics' : ''}.
+          {props.localOnlyAggregates ? ', plus local-only aggregate statistics' : ''}. It does not
+          clear a running session, which keeps its intention and the address of every website tab
+          open while it runs.
         </p>
       ) : (
         <p>
