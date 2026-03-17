@@ -3385,6 +3385,27 @@ describe('background all-data journal bootstrap', () => {
     expect(mocks.localState[LOCAL_INSTALL_MARKER]).toEqual(advanced);
   });
 
+  it('repairs a drifted runtime even after a replay advanced the marker', async (): Promise<void> => {
+    // The repair and the marker are two different obligations. Withholding the repair to protect
+    // the marker leaves a drifted runtime that finalization can never accept, and nothing records
+    // or schedules anything for it, so the clear stops with the barrier shut and no wake coming.
+    const advanced: Record<string, unknown> = cleanMarker({
+      latestReason: 'update',
+      extensionVersion: '2.0.0',
+    });
+    mocks.persistDeviceIdOnGet = true;
+    seedBrowserReset({ finalInstallMarkerProjection: advanced });
+    mocks.localState[LOCAL_INSTALL_MARKER] = advanced;
+    // A stopped runtime that is not the projected one: the value a repair exists to correct.
+    mocks.localState[LOCAL_RUNTIME] = emptyRuntimeV2(Date.now(), TEST_EPOCH);
+
+    await finishBoot();
+
+    expect(storedJournal()).toBeUndefined();
+    expect(mocks.localState[LOCAL_INSTALL_MARKER]).toEqual(advanced);
+    expect(mocks.localState[LOCAL_RUNTIME]).toMatchObject({ enforcementEpoch: RESET_EPOCH });
+  });
+
   it('answers a second arrival while the clear holds the lease', async (): Promise<void> => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
     mocks.persistDeviceIdOnGet = true;

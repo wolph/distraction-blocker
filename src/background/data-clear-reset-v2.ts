@@ -139,18 +139,21 @@ function attemptBudgetSpent(progress: DataClearResetProgress, now: number): stri
 export async function finalizeAllDataClearV2(
   ports: BrowserResetPortsV2,
 ): Promise<AllDataClearFinalizationV2> {
-  // The lease is acquired here, so a caller that already holds it would queue behind itself and
-  // deadlock. Refusing says which rule was broken instead of hanging the worker.
-  if (ports.lease.held()) {
-    throw new CoreError(
-      'lease-order',
-      'finalization acquires the deletion lease and cannot run under one that is already held',
-    );
-  }
+  // Finalization acquires the lease rather than checking whether anyone holds it. `held()` counts
+  // every queued operation, so refusing on it also refuses a lifecycle append that legitimately
+  // queued ahead of this finalization, which spec 1327 requires to join the ordered replay. The
+  // reentrancy the acquisition itself cannot survive is refused by the lease's own guard.
   return ports.lease.run(
     async (token: DataClearLeaseToken): Promise<AllDataClearFinalizationV2> => {
       const journal: AllDataClearJournalV2 = await resetJournal();
-      if (!(await finalizable(ports, journal))) return 'not-finalizable';
+      const missing: string | null = await missingEvidence(ports, journal);
+      if (missing !== null) {
+        // Answering `not-finalizable` and recording nothing is how a clear stops with the barrier
+        // shut and no wake coming. The answer stays distinguishable and the reason becomes durable,
+        // so the retry the journal schedules brings the next dispatch back.
+        await failAttempt(ports, token, missing);
+        return 'not-finalizable';
+      }
       if ((await ports.replayLifecycleIntents(token)) === 'failed') {
         return scheduledOrExhausted(await failAttempt(ports, token, 'lifecycle-replay-failed'));
       }
@@ -166,7 +169,12 @@ export async function finalizeAllDataClearV2(
       // removal is a proof that no longer holds.
       const generation: number = ports.targets.readTargetGeneration();
       if (generation !== resetProgressOf(replayed).targetGeneration) {
-        return scheduledOrExhausted(await failAttempt(ports, token, 'target-generation-changed'));
+        // The stable passes were established against a target set that has moved, so they are
+        // spent with the refusal. Re-reading the number would refuse forever: it is a per-worker
+        // counter, so a restart never matches, and only a new attempt writes it again.
+        return scheduledOrExhausted(
+          await failAttempt(ports, token, 'target-generation-changed', true),
+        );
       }
       try {
         await transactDataClearJournal(ports.lease, token, (): null => null);
@@ -259,6 +267,8 @@ interface SendRecordV2 {
   reachable: number;
   acknowledgedNow: number;
   failure: string | null;
+  /** The key whose frozen command the document refused as not describing the page it is on. */
+  staleKey: string | null;
 }
 
 /**
@@ -278,7 +288,10 @@ async function runResolverPass(
   const plan: PassPlanV2 = await planPass(ports, journal);
   await freezePass(ports, token, plan);
   const record: SendRecordV2 = await sendFrozen(ports, plan);
-  if (record.failure !== null) return { kind: 'failed', detail: record.failure };
+  if (record.failure !== null) {
+    if (record.staleKey !== null) await forgetFrozenTarget(ports, token, record.staleKey);
+    return { kind: 'failed', detail: record.failure };
+  }
   const generation: number = ports.targets.readTargetGeneration();
   // The first pass adopts the generation rather than counting it as a change: the attempt has no
   // earlier reading to have been invalidated, and a change costs a pass out of three.
@@ -318,6 +331,34 @@ async function runResolverPass(
 function nextStablePasses(current: 0 | 1 | 2, stable: boolean): 0 | 1 | 2 {
   if (!stable) return 0;
   return current === 0 ? 1 : 2;
+}
+
+/**
+ * Drops one target's frozen command, its target record, and any acknowledgement under it, so the
+ * next pass derives a command from what the document is rather than from what it was.
+ */
+async function forgetFrozenTarget(
+  ports: BrowserResetPortsV2,
+  token: DataClearLeaseToken,
+  key: string,
+): Promise<void> {
+  await transactDataClearJournal(
+    ports.lease,
+    token,
+    (current: DataClearJournal | LegacyAllDataClearJournal | null): DataClearJournal => {
+      const journal: AllDataClearJournalV2 = browserResetOf(current);
+      const progress: DataClearResetProgress = resetProgressOf(journal);
+      const targets: Record<string, CleanupEnforcementTarget> = { ...progress.targets };
+      const commands: Record<string, FrozenEpochResetCommand> = { ...progress.commands };
+      const acknowledgements: Record<string, DocumentEpochResetAck> = {
+        ...progress.acknowledgements,
+      };
+      delete targets[key];
+      delete commands[key];
+      delete acknowledgements[key];
+      return { ...journal, resetProgress: { ...progress, targets, commands, acknowledgements } };
+    },
+  );
 }
 
 /**
@@ -427,6 +468,7 @@ async function sendFrozen(ports: BrowserResetPortsV2, plan: PassPlanV2): Promise
     reachable: 0,
     acknowledgedNow: 0,
     failure: null,
+    staleKey: null,
   };
   for (const frozen of plan.frozen) {
     record.reachable += 1;
@@ -463,6 +505,11 @@ async function sendFrozen(ports: BrowserResetPortsV2, plan: PassPlanV2): Promise
       outcome.kind === 'rejected'
         ? `epoch-reset-rejected on tab ${frozen.target.tabId}`
         : `reset acknowledgement mismatch on tab ${frozen.target.tabId}`;
+    // A mismatch is the document saying this command does not describe the page it is on, which is
+    // what a route change inside one document produces: the document ID survives and the URL does
+    // not. The frozen command is dropped so the next pass freezes this document again at the URL
+    // it is really on, which keeps "frozen before send" intact and gives the failure an exit.
+    if (outcome.kind !== 'rejected') record.staleKey = frozen.key;
     return record;
   }
   return record;
@@ -520,6 +567,7 @@ async function failAttempt(
   ports: BrowserResetPortsV2,
   token: DataClearLeaseToken,
   detail: string,
+  spendStability: boolean = false,
 ): Promise<'retry-scheduled' | 'exhausted'> {
   // Bootstrap resumes the reset for any journal it finds, an exhausted one included, so a batch
   // with nothing left to schedule answers rather than raising out of the entry point.
@@ -530,7 +578,20 @@ async function failAttempt(
     token,
     (current: DataClearJournal | LegacyAllDataClearJournal | null): DataClearJournal => {
       const journal: AllDataClearJournalV2 = browserResetOf(current);
-      return { ...journal, retry: recordCleanupAttemptFailureV2(journal.retry, at, detail) };
+      const progress: DataClearResetProgress = resetProgressOf(journal);
+      return {
+        ...journal,
+        // The attempt that failed is over, and the record has to say so. A start left behind is
+        // indistinguishable from a crash inside an attempt, and every retry delay is longer than
+        // the deadline, so the next wake would inherit a spent budget and do nothing at all.
+        resetProgress: {
+          ...progress,
+          attemptStartedAt: null,
+          resolverPassCount: 0,
+          stablePasses: spendStability ? 0 : progress.stablePasses,
+        },
+        retry: recordCleanupAttemptFailureV2(journal.retry, at, detail),
+      };
     },
   );
   return rearmResetAlarm(ports, token);
@@ -624,20 +685,24 @@ async function finalMarkerMatches(
  * Everything finalization requires before it replays anything: the runtime and setup evidence, a
  * reset that reached two stable passes, and a device identity the clean profile already has.
  */
-async function finalizable(
+async function missingEvidence(
   ports: BrowserResetPortsV2,
   journal: AllDataClearJournalV2,
-): Promise<boolean> {
+): Promise<string | null> {
   const materialized: { runtime: unknown; setup: unknown; installMarker: unknown } =
     await ports.readMaterialized();
-  if (!exactDataEqual(materialized.runtime, journal.runtimeProjection)) return false;
-  if (!exactDataEqual(materialized.setup, journal.setupProjection)) return false;
+  if (!exactDataEqual(materialized.runtime, journal.runtimeProjection)) {
+    return 'materialized-runtime-mismatch';
+  }
+  if (!exactDataEqual(materialized.setup, journal.setupProjection)) {
+    return 'materialized-setup-mismatch';
+  }
   // The marker is deliberately not checked here. Replay is what materializes it, so requiring it
   // before replaying would make the crash window between the projection write and the marker write
   // unrecoverable: nothing else in the system ever writes that marker. It is proved after the
   // replay instead, which is the only place it can be.
-  if (resetProgressOf(journal).stablePasses !== 2) return false;
-  return await ports.deviceIdExists();
+  if (resetProgressOf(journal).stablePasses !== 2) return 'reset-not-stable';
+  return (await ports.deviceIdExists()) ? null : 'device-identity-missing';
 }
 
 /** The stored journal, whatever its scope. A value no parser accepts raises through the reader. */

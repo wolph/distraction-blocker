@@ -477,12 +477,15 @@ describe('browser reset attempt', (): void => {
       (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
     );
 
-    // A generation change costs the stable count and nothing else: the attempt keeps its start and
-    // its pass budget, which is what bounds it.
+    // A generation change costs the stable count and nothing else, so the attempt keeps spending
+    // its own pass budget until the bound stops it. The three sends are that budget: the change
+    // cost stability rather than the attempt.
     expect(result).toBe('retry-scheduled');
     expect(h.journal().retry.lastError).toBe('reset-passes-exhausted');
-    expect(h.progress().attemptStartedAt).toBe(NOW);
-    expect(h.progress().resolverPassCount).toBe(3);
+    expect(h.sent).toHaveLength(3);
+    // The attempt that ended leaves nothing for the next wake to inherit.
+    expect(h.progress().attemptStartedAt).toBeNull();
+    expect(h.progress().resolverPassCount).toBe(0);
   });
 
   it('fails the attempt on a rejected epoch rather than deferring it', async (): Promise<void> => {
@@ -860,6 +863,172 @@ describe('all-data clear finalization', (): void => {
   });
 });
 
+describe('browser reset across attempts', (): void => {
+  beforeEach((): void => {
+    vi.restoreAllMocks();
+  });
+
+  it('gives the scheduled retry an attempt of its own', async (): Promise<void> => {
+    // The seam no single-attempt test reaches: what the next wake finds in the journal the last
+    // one left. Every retry delay is longer than the ten second deadline, so a wake that inherits
+    // the spent attempt does nothing at all and burns eleven of the twelve automatic attempts.
+    const h: ResetHarnessV2 = harness();
+    const target: FakeTargetV2 | undefined = h.tabs[0];
+    if (target === undefined) throw new Error('the harness needs its target');
+    target.answer = 'rejected';
+
+    const first: string = await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
+    expect(first).toBe('retry-scheduled');
+    const scheduled: number | null = h.journal().retry.nextAttemptAt;
+    expect(scheduled).toBeGreaterThan(NOW);
+
+    target.answer = 'reset';
+    h.clock.now = scheduled ?? NOW;
+    const sendsBefore: number = h.sent.length;
+    const second: string = await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
+
+    expect(second).toBe('stable');
+    expect(h.sent.length).toBeGreaterThan(sendsBefore);
+    expect(h.journal().retry.automaticAttempt).toBe(1);
+  });
+
+  it('leaves no spent attempt behind for the next wake to inherit', async (): Promise<void> => {
+    const h: ResetHarnessV2 = harness();
+    const target: FakeTargetV2 | undefined = h.tabs[0];
+    if (target === undefined) throw new Error('the harness needs its target');
+    target.answer = 'rejected';
+
+    await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
+
+    // An attempt that ended says so. A start left behind is indistinguishable from a crash inside
+    // an attempt, which is the state the resume rule is for.
+    expect(h.progress().attemptStartedAt).toBeNull();
+    expect(h.progress().resolverPassCount).toBe(0);
+  });
+
+  it('runs the whole automatic schedule rather than expiring it', async (): Promise<void> => {
+    const h: ResetHarnessV2 = harness();
+    const target: FakeTargetV2 | undefined = h.tabs[0];
+    if (target === undefined) throw new Error('the harness needs its target');
+    target.answer = 'rejected';
+
+    for (let attempt: number = 1; attempt <= 4; attempt += 1) {
+      const scheduled: number | null = h.journal().retry.nextAttemptAt;
+      h.clock.now = scheduled ?? h.clock.now;
+      const sendsBefore: number = h.sent.length;
+      await h.run(
+        (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+      );
+      // Every automatic attempt is a real attempt: it reaches the documents rather than expiring
+      // on a deadline the previous attempt spent.
+      expect(h.sent.length).toBeGreaterThan(sendsBefore);
+      expect(h.journal().retry.automaticAttempt).toBe(attempt);
+    }
+  });
+
+  it('re-establishes stability after a worker restart moves the generation', async (): Promise<void> => {
+    // A restart is the case that cannot be recovered by re-reading: the generation is a per-worker
+    // counter that starts again at zero, so the stored one can never match again.
+    const h: ResetHarnessV2 = harness(
+      browserResetJournal({
+        resetProgress: resetProgress({
+          attemptStartedAt: NOW,
+          stablePasses: 2,
+          targetGeneration: 7,
+        }),
+      }),
+    );
+    h.generation.value = 0;
+
+    const refused: string = await finalizeAllDataClearV2(h.ports);
+
+    expect(refused).toBe('retry-scheduled');
+    // The stable evidence belonged to a target set that has moved, so it is spent with the
+    // refusal. The next attempt is what re-establishes it against the counter this worker owns.
+    expect(h.progress().stablePasses).toBe(0);
+
+    const attempt: string = await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
+    expect(attempt).toBe('stable');
+    expect(h.progress().targetGeneration).toBe(0);
+
+    await expect(finalizeAllDataClearV2(h.ports)).resolves.toBe('removed');
+  });
+
+  it('re-derives a command for a document that changed its URL under one', async (): Promise<void> => {
+    const frozen: FrozenEpochResetCommand = {
+      version: 1,
+      command: 'reset-enforcement-epoch',
+      tabId: 11,
+      documentId: 'document-1',
+      expectedUrl: TARGET_URL,
+      operationId: RESET_OPERATION,
+      enforcementEpoch: RESET_EPOCH,
+    };
+    const h: ResetHarnessV2 = harness(
+      browserResetJournal({
+        resetProgress: resetProgress({
+          targets: {
+            [FIRST_KEY]: { tabId: 11, documentId: 'document-1', expectedUrl: TARGET_URL },
+          },
+          commands: { [FIRST_KEY]: frozen },
+        }),
+      }),
+    );
+    const target: FakeTargetV2 | undefined = h.tabs[0];
+    if (target === undefined) throw new Error('the harness needs its target');
+    // A route change inside one document, which is every single page application: the document ID
+    // survives and the URL does not.
+    target.url = OTHER_URL;
+    target.answer = 'mismatch';
+
+    const failed: string = await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
+    expect(failed).toBe('retry-scheduled');
+    // The stale command is dropped, so the next attempt freezes this document again at the URL it
+    // is really on. Without that there is no exit: the manual retry reissues the same stale URL.
+    expect(h.progress().commands[FIRST_KEY]).toBeUndefined();
+
+    target.answer = 'reset';
+    h.clock.now = h.journal().retry.nextAttemptAt ?? NOW;
+    const recovered: string = await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
+
+    expect(recovered).toBe('stable');
+    expect(h.progress().commands[FIRST_KEY]?.expectedUrl).toBe(OTHER_URL);
+  });
+
+  it('records the evidence it was missing rather than stopping silently', async (): Promise<void> => {
+    const h: ResetHarnessV2 = harness(
+      browserResetJournal({
+        resetProgress: resetProgress({
+          attemptStartedAt: NOW,
+          stablePasses: 2,
+          targetGeneration: 7,
+        }),
+      }),
+    );
+    h.materialized.runtime = { drifted: true };
+
+    const outcome: string = await finalizeAllDataClearV2(h.ports);
+
+    // A finalization that answers nothing and schedules nothing is a clear that stops with the
+    // barrier shut and no wake coming.
+    expect(outcome).toBe('not-finalizable');
+    expect(h.journal().retry.lastError).not.toBeNull();
+    expect(h.journal().retry.nextAttemptAt).not.toBeNull();
+  });
+});
+
 describe('browser reset restart recovery', (): void => {
   it('resumes on the pass budget the crashed attempt had written', async (): Promise<void> => {
     // The worker died after its second pass count was durable, so the restart owes one pass, and
@@ -874,11 +1043,13 @@ describe('browser reset restart recovery', (): void => {
       (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
     );
 
+    // One pass is all the crashed attempt's budget had left, and one pass can never reach the two
+    // stable passes completion needs, so the attempt ends failed with its budget spent.
     expect(result).toBe('retry-scheduled');
-    expect(h.progress().resolverPassCount).toBe(3);
-    expect(h.progress().attemptStartedAt).toBe(NOW);
     expect(h.sent).toHaveLength(1);
     expect(h.journal().retry.automaticAttempt).toBe(1);
+    expect(h.progress().attemptStartedAt).toBeNull();
+    expect(h.progress().resolverPassCount).toBe(0);
   });
 
   it('resumes the remaining time rather than restamping the attempt start', async (): Promise<void> => {
@@ -903,10 +1074,11 @@ describe('browser reset restart recovery', (): void => {
     );
 
     // The deadline belongs to the attempt that began, not to the wake that resumed it: one pass
-    // fits in what is left and the next is refused, with the start left where it was.
+    // fits in what is left and the next is refused rather than measured from the restart.
     expect(result).toBe('retry-scheduled');
-    expect(h.progress().attemptStartedAt).toBe(NOW);
+    expect(h.journal().retry.lastError).toBe('reset-deadline');
     expect(h.sent).toHaveLength(1);
+    expect(h.progress().attemptStartedAt).toBeNull();
   });
 
   it('advances the schedule before any effect when it restarts past the deadline', async (): Promise<void> => {
@@ -922,11 +1094,13 @@ describe('browser reset restart recovery', (): void => {
     // The budget the crashed attempt owned is spent, so this wake schedules the next attempt and
     // does nothing else: no identity, no send, and no rewritten start.
     expect(result).toBe('retry-scheduled');
-    expect(h.progress().attemptStartedAt).toBe(NOW);
     expect(h.sent).toEqual([]);
     expect(h.ensureDeviceIdCalls).toEqual([]);
     expect(h.journal().retry.automaticAttempt).toBe(1);
     expect(h.journal().retry.lastError).toContain('reset-deadline');
+    // The spent attempt is cleared with the failure, so the retry this schedules is a real one.
+    expect(h.progress().attemptStartedAt).toBeNull();
+    expect(h.progress().resolverPassCount).toBe(0);
   });
 
   it('advances the schedule before any effect when it restarts past its passes', async (): Promise<void> => {

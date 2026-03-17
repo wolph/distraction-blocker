@@ -706,11 +706,15 @@ async function runAllDataClearPhases(
   }
   const current: AllDataClearJournalV2 | null = await readUpgradedAllDataJournal(lease, token);
   if (current === null) return 'idle';
-  // Repair materializes the clean projection, which is the right value only while it is still the
-  // journal's current one. Once a lifecycle replay has advanced the final projection and written
-  // the marker from it, repairing would regress the marker that replay just produced.
-  if (exactDataEqual(current.installMarkerProjection, current.finalInstallMarkerProjection)) {
-    await storage.materializeBrowserResetProjections(token);
+  // The repair is unconditional: spec 1355 has every browser-reset dispatch repair the runtime and
+  // the setup record, and withholding that to protect the marker leaves a drifted runtime that
+  // finalization can never accept. The repair writes all three from the clean projections, so an
+  // advanced final marker is written back immediately after it, under the same token and before
+  // anything reads either value.
+  await storage.materializeBrowserResetProjections(token);
+  const finalMarker: FinalInstallMarkerProjection | null = current.finalInstallMarkerProjection;
+  if (finalMarker !== null && !exactDataEqual(current.installMarkerProjection, finalMarker)) {
+    await materializeFinalInstallMarker(finalMarker);
   }
   if (current.resetProgress?.stablePasses === 2) {
     // The crash cell between the clean-marker read-back and the identity: a reset that is already
