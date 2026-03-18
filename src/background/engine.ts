@@ -234,6 +234,20 @@ function _scheduleUnavailableNoticeToken(entry: ScheduleEntryV2, now: number): s
  * to browser effects through `EnginePorts`. Every public entry point takes the policy mutation
  * queue, so one command, alarm, or navigation finishes its writes before the next one starts.
  */
+/**
+ * The event one aggregate fold sees. A terminal event contributes its outcome count and never its
+ * focus, because the Engine credits settled focus into the day itself and folding the event's own
+ * focus again would count the same minutes twice. The two v1 terminal events and the single v2 end
+ * event are the same kind of event to that rule, so the rule names all three rather than the two
+ * that happen to reach this path today.
+ */
+export function aggregatedFocusEventV2(event: EventRecord): EventRecord {
+  if (event.t === 'sessionCompleted' || event.t === 'sessionCanceled') {
+    return { ...event, focusedMs: 0 };
+  }
+  return event.t === 'sessionEnded' ? { ...event, focusedMs: 0 } : event;
+}
+
 export class Engine {
   private pendingEvents: EventRecord[] = [];
   private dirty = false;
@@ -1727,10 +1741,7 @@ export class Engine {
   }
 
   private recordEvent(event: EventRecord): void {
-    const aggregateEvent: EventRecord =
-      event.t === 'sessionCompleted' || event.t === 'sessionCanceled'
-        ? { ...event, focusedMs: 0 }
-        : event;
+    const aggregateEvent: EventRecord = aggregatedFocusEventV2(event);
     const aggregate: DailyAgg = this.runtime.todayAgg ?? emptyDaily(this.runtime.date);
     this.runtime.todayAgg = addEvent(aggregate, aggregateEvent);
     this.pendingEvents.push(event);

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EnforcementCheckpoint } from '../../../src/background/enforcement-persistence-v2';
 import type { BlockingSweepLease, EnginePorts } from '../../../src/background/engine';
-import { Engine } from '../../../src/background/engine';
+import { aggregatedFocusEventV2, Engine } from '../../../src/background/engine';
 import { appendEventsV2, readEventsV2 } from '../../../src/background/event-log-v2';
 import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/background/list-sync-codec';
 import { clockRebaseArchiveKey } from '../../../src/background/rollover';
@@ -443,6 +443,44 @@ function oversizedSettings(overrides: Partial<Settings> = {}): Settings {
     schedule: [{ ...scheduledEntry, intention: 'x'.repeat(8_192) }],
   };
 }
+
+describe('the aggregate fold rule', (): void => {
+  const ended: EventRecord = {
+    t: 'sessionEnded',
+    eventId: '40000000-0000-4000-8000-0000000000f1',
+    at: T0,
+    sessionId: '40000000-0000-4000-8000-0000000000f2',
+    outcome: 'completed',
+    reason: 'reached-end',
+    focusedMs: 60_000,
+    duration: { kind: 'timed', minutes: 25 },
+    source: 'manual',
+    scheduleOccurrence: null,
+  } as unknown as EventRecord;
+
+  it('never lets a terminal event carry its focus into the day', (): void => {
+    // The day already holds this focus: the Engine credits settled focus as it accrues, so an end
+    // event folded with its own focus would count the same minutes twice. The v2 end event is the
+    // same kind of event as the two v1 ones the rule already named.
+    expect(aggregatedFocusEventV2(ended)).toMatchObject({ focusedMs: 0 });
+    expect(
+      aggregatedFocusEventV2({ ...ended, outcome: 'ended-early' } as unknown as EventRecord),
+    ).toMatchObject({ focusedMs: 0 });
+  });
+
+  it('leaves every other event exactly as it was', (): void => {
+    const attempt: EventRecord = {
+      t: 'attempt',
+      at: T0,
+      url: 'https://facebook.com/feed',
+      host: 'facebook.com',
+      tabId: 7,
+      kind: 'navigation',
+    } as unknown as EventRecord;
+
+    expect(aggregatedFocusEventV2(attempt)).toBe(attempt);
+  });
+});
 
 describe('Engine', () => {
   it('deduplicates an unavailable schedule notice after a worker restart', async (): Promise<void> => {
