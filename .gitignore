@@ -4,6 +4,10 @@ dist-pages/
 release/
 key.pem
 test-results/
+# Evidence scratch. One path inside it is tracked deliberately:
+# artifacts/daily-product-surfaces-task7/generate-manifest.mjs inventories its own directory, so
+# the evidence manifest records that file's SHA-256 and the QA checklist pins the manifest digest.
+# Moving the generator out changes that digest, so it is force-added here instead.
 artifacts/
 playwright-report/
 .playwright-mcp/
