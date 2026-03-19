@@ -284,14 +284,16 @@ describe('buildActiveOverlayView timed focus', () => {
     expect(validateDetachedDocumentOverlayView(view)).toBe(true);
   });
 
-  it('hides the end action for a Hard session and keeps it for Friction', () => {
+  it('hides the end action for a Hard session and routes Friction through its gate', () => {
     const hard: ActiveOverlay = activeView({ session: timedSession({ strictness: 'hard' }) });
     const friction: ActiveOverlay = activeView({
       session: timedSession({ strictness: 'friction' }),
     });
 
     expect(hard.actions.end).toBe('hidden');
-    expect(friction.actions.end).toBe('request-end');
+    // Not `request-end`: `requestSessionEnd` is refused for any strictness but Flexible, so a
+    // Friction overlay asking for it renders a control the worker answers with an error forever.
+    expect(friction.actions.end).toBe('open-end-gate');
     expect(validateDetachedDocumentOverlayView(hard)).toBe(true);
     expect(validateDetachedDocumentOverlayView(friction)).toBe(true);
   });
@@ -534,7 +536,7 @@ describe('formatLockedUntilV2 and overlayEndActionV2', () => {
 
     expect(strictnesses.map((s: Strictness): string => overlayEndActionV2(s, timed))).toEqual([
       'request-end',
-      'request-end',
+      'open-end-gate',
       'hidden',
     ]);
     expect(strictnesses.map((s: Strictness): string => overlayEndActionV2(s, indefinite))).toEqual([

@@ -28,7 +28,7 @@ type ActiveOverlayView = Extract<DocumentOverlayView, { presentation: 'active' }
 type StartingOverlayView = Extract<DocumentOverlayView, { presentation: 'starting' }>;
 type ActionRequest = Extract<
   Request,
-  { type: 'openGate' | 'confirmGate' | 'requestSessionEnd' | 'abandonGate' }
+  { type: 'openGate' | 'confirmGate' | 'requestSessionEnd' | 'abandonGate' | 'openEndGate' }
 >;
 
 interface SpendControl {
@@ -232,7 +232,9 @@ function buildButtons(overlay: MountedOverlay, view: ActiveOverlayView, now: num
   );
   overlay.spends = [unlock, pause];
   row.append(unlock.button, pause.button);
-  if (view.actions.end === 'request-end') row.appendChild(endButton(view.copy.endAction));
+  if (view.actions.end !== 'hidden') {
+    row.appendChild(endButton(view.copy.endAction, view.actions.end));
+  }
   for (const control of overlay.spends) updateSpend(control, view, now);
   return row;
 }
@@ -251,13 +253,20 @@ function spendButton(label: string, costMs: number, onClick: () => void): SpendC
   return { button, costMs, ready };
 }
 
-function endButton(label: string): HTMLButtonElement {
+/**
+ * The action the view carries decides the command, because the worker refuses `requestSessionEnd`
+ * for anything but a Flexible session. A Friction overlay opens the cancel gate instead, which is
+ * what the v1 renderer did from this same button and what the popup still does.
+ */
+function endButton(label: string, action: 'request-end' | 'open-end-gate'): HTMLButtonElement {
   const button: HTMLButtonElement = document.createElement('button');
   button.className = 'linkish';
   button.type = 'button';
   button.textContent = label;
   button.addEventListener('click', (): void => {
-    requestAction({ type: 'requestSessionEnd' });
+    requestAction(
+      action === 'open-end-gate' ? { type: 'openEndGate' } : { type: 'requestSessionEnd' },
+    );
   });
   return button;
 }

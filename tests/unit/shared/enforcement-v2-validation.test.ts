@@ -38,6 +38,7 @@ const READY_ACTIONS: ActiveActions = {
   unlock: 'request-gate',
 };
 const HIDDEN_END_ACTIONS: ActiveActions = { ...READY_ACTIONS, end: 'hidden' };
+const GATE_END_ACTIONS: ActiveActions = { ...READY_ACTIONS, end: 'open-end-gate' };
 const GATE_ACTIONS: ActiveActions = {
   state: 'gate',
   end: 'hidden',
@@ -259,7 +260,7 @@ describe('shared enforcement v2 overlay parsing', (): void => {
   it('accepts every approved active row', (): void => {
     const rows: readonly ActiveOverlay[] = [
       activeOverlay(),
-      activeOverlay({ strictness: 'friction' }),
+      activeOverlay({ strictness: 'friction', actions: GATE_END_ACTIONS }),
       activeOverlay({ strictness: 'hard', actions: HIDDEN_END_ACTIONS }),
       activeOverlay({ mode: 'whitelist', theme: 'light', copy: activeCopy({ intention: null }) }),
       indefiniteOverlay(),
@@ -320,6 +321,11 @@ describe('shared enforcement v2 overlay parsing', (): void => {
       withKey(activeOverlay(), 'duration', { kind: 'timed' }),
       withKey(activeOverlay(), 'duration', { kind: 'until-stopped', minutes: 25 }),
       withKey(activeOverlay(), 'gate', { ...PAUSE_GATE, readyAt: PAUSE_GATE.openedAt - 1 }),
+      // The End action is paired with the strictness, not free: Flexible ends immediately and
+      // Friction has to open its cancel gate, because the worker refuses an immediate end for
+      // anything but Flexible. Either row crossed over describes a control that cannot work.
+      activeOverlay({ strictness: 'friction' }),
+      activeOverlay({ actions: GATE_END_ACTIONS }),
     ]);
   });
 

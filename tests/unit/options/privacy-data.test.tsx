@@ -93,6 +93,56 @@ describe('Privacy and data', (): void => {
     expect(failed.getByRole('button', { name: 'Retry website blocking' })).toBeTruthy();
   });
 
+  it('rereads the setup record when the worker writes it while the page is open', async (): Promise<void> => {
+    // Every state below is written by the worker without this page asking, so a page that read
+    // the record once keeps reporting the old one. Website access is the one that matters most:
+    // Settings would say blocking is enabled while enforcement is off.
+    setup = setupState({ websiteAccess: 'granted', blockingRegistration: 'ready' });
+    const view = renderPrivacy();
+    await waitFor((): void => expect(view.getByText('Website blocking is enabled')).toBeTruthy());
+
+    setup = setupState({ websiteAccess: 'denied', blockingRegistration: 'unavailable' });
+    act((): void => {
+      fake.emitStorageChange({ setup: { newValue: structuredClone(setup) } });
+    });
+
+    await waitFor((): void => expect(view.getByText('Website access is off')).toBeTruthy());
+    expect(view.queryByText('Website blocking is enabled')).toBeNull();
+  });
+
+  it('surfaces a data-clear failure that the worker records while the page is open', async (): Promise<void> => {
+    const view = renderPrivacy();
+    await waitFor((): void => expect(view.getByText('Website access is off')).toBeTruthy());
+    expect(view.queryByRole('button', { name: 'Retry all data deletion' })).toBeNull();
+
+    setup = setupState({ dataClear: { status: 'error', scope: 'all', phase: 'browser-reset' } });
+    act((): void => {
+      fake.emitStorageChange({ setup: { newValue: structuredClone(setup) } });
+    });
+
+    await waitFor((): void =>
+      expect(view.getByRole('button', { name: 'Retry all data deletion' })).toBeTruthy(),
+    );
+  });
+
+  it('ignores storage changes that are not the setup record', async (): Promise<void> => {
+    setup = setupState({ websiteAccess: 'granted', blockingRegistration: 'ready' });
+    const view = renderPrivacy();
+    await waitFor((): void => expect(view.getByText('Website blocking is enabled')).toBeTruthy());
+    const before: number = fake.sent.filter(
+      (request: Request): boolean => request.type === 'getSetupState',
+    ).length;
+
+    act((): void => {
+      fake.emitStorageChange({ runtime: { newValue: {} } });
+      fake.emitStorageChange({ setup: { newValue: {} } }, 'sync');
+    });
+
+    expect(
+      fake.sent.filter((request: Request): boolean => request.type === 'getSetupState').length,
+    ).toBe(before);
+  });
+
   it('does not imply immediate privacy actions need the settings save bar', async (): Promise<void> => {
     const view = renderPrivacy();
     await waitFor((): void => expect(view.getByText('Website access is off')).toBeTruthy());

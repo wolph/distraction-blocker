@@ -595,9 +595,9 @@ function expectedEndAction(
   duration: SessionDuration,
   strictness: Strictness,
   gated: boolean,
-): 'hidden' | 'request-end' {
+): 'hidden' | 'request-end' | 'open-end-gate' {
   if (gated || duration.kind === 'until-stopped' || strictness === 'hard') return 'hidden';
-  return 'request-end';
+  return strictness === 'friction' ? 'open-end-gate' : 'request-end';
 }
 
 /** Returns capturedAt when the whole active timing row is valid, otherwise null. */
@@ -652,7 +652,7 @@ function validateDetachedActiveUnlocks(value: unknown, capturedAt: number): bool
 function validateDetachedActiveActions(
   value: unknown,
   gated: boolean,
-  end: 'hidden' | 'request-end',
+  end: 'hidden' | 'request-end' | 'open-end-gate',
 ): boolean {
   const actions: UnknownRecord | null = exactRecord(value, ACTIVE_ACTION_KEYS);
   if (actions === null || actions.end !== end) return false;

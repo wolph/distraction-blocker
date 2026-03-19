@@ -11,19 +11,26 @@ export interface ChromeFake {
   respond(type: Request['type'], value: unknown | Responder): void;
   /** deliver a broadcast to every onMessage listener */
   emit(message: unknown): void;
+  /** deliver a local storage change to every storage.onChanged listener */
+  emitStorageChange(changes: Record<string, chrome.storage.StorageChange>, area?: string): void;
   /** storage.local.get used by the Data section */
   storageGet: Mock;
 }
 
 /**
  * Installs a minimal chrome global covering what the options page calls:
- * runtime.sendMessage, runtime.onMessage, storage.local.get.
+ * runtime.sendMessage, runtime.onMessage, storage.local.get, storage.onChanged.
  */
 export function installChromeFake(): ChromeFake {
   const sent: Request[] = [];
   const responders: Map<string, unknown | Responder> = new Map();
   responders.set('getSetupState', structuredClone(DEFAULT_SETUP));
   const listeners: Set<(message: unknown) => void> = new Set();
+  type StorageListener = (
+    changes: Record<string, chrome.storage.StorageChange>,
+    area: string,
+  ) => void;
+  const storageListeners: Set<StorageListener> = new Set();
   const storageGet: Mock = vi.fn(
     async (): Promise<Record<string, unknown>> => ({
       deviceId: '123e4567-e89b-42d3-a456-426614174000',
@@ -53,6 +60,14 @@ export function installChromeFake(): ChromeFake {
       local: {
         get: storageGet,
       },
+      onChanged: {
+        addListener: (fn: StorageListener): void => {
+          storageListeners.add(fn);
+        },
+        removeListener: (fn: StorageListener): void => {
+          storageListeners.delete(fn);
+        },
+      },
     },
   };
 
@@ -65,6 +80,12 @@ export function installChromeFake(): ChromeFake {
     },
     emit: (message: unknown): void => {
       for (const fn of listeners) fn(message);
+    },
+    emitStorageChange: (
+      changes: Record<string, chrome.storage.StorageChange>,
+      area: string = 'local',
+    ): void => {
+      for (const fn of storageListeners) fn(changes, area);
     },
     storageGet,
   };

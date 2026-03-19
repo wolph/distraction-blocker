@@ -99,7 +99,7 @@ describe('shared enforcement v2 contracts', (): void => {
           actions:
             | {
                 state: 'ready';
-                end: 'hidden' | 'request-end';
+                end: 'hidden' | 'request-end' | 'open-end-gate';
                 pause: 'request-gate';
                 unlock: 'request-gate';
               }

@@ -424,6 +424,47 @@ describe('overlay-v2 actions', () => {
     ]);
   });
 
+  it('opens the End gate instead of ending outright when the view says so', async (): Promise<void> => {
+    // The Friction route. `requestSessionEnd` is refused for any strictness but Flexible, so the
+    // blocked page has to ask for the cancel gate the way the popup does, or its End control
+    // answers with a transport error on every press.
+    const sendMessage: Mock<(request: unknown) => Promise<unknown>> = stubWorker({ ok: true });
+    renderDocumentOverlay(
+      activeOverlay({
+        actions: {
+          state: 'ready',
+          end: 'open-end-gate',
+          pause: 'request-gate',
+          unlock: 'request-gate',
+        },
+      }),
+      BLOCKED_VERDICT,
+    );
+
+    buttonStartingWith('End session').click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sendMessage.mock.calls.map((call: [unknown]): unknown => call[0])).toEqual([
+      { type: 'openEndGate' },
+    ]);
+  });
+
+  it('renders no End control when the view hides it', (): void => {
+    stubWorker({ ok: true });
+    renderDocumentOverlay(
+      activeOverlay({
+        actions: { state: 'ready', end: 'hidden', pause: 'request-gate', unlock: 'request-gate' },
+      }),
+      BLOCKED_VERDICT,
+    );
+
+    expect(
+      [...shadowRoot().querySelectorAll('button')].some(
+        (button: HTMLButtonElement): boolean => button.textContent === 'End session',
+      ),
+    ).toBe(false);
+  });
+
   it('sends the gate requests with the typed phrase', async (): Promise<void> => {
     const sendMessage: Mock<(request: unknown) => Promise<unknown>> = stubWorker({ ok: true });
     renderDocumentOverlay(gatedOverlay(), BLOCKED_VERDICT);

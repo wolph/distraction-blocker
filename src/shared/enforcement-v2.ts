@@ -83,7 +83,7 @@ export type DocumentOverlayView =
       actions:
         | {
             state: 'ready';
-            end: 'hidden' | 'request-end';
+            end: 'hidden' | 'request-end' | 'open-end-gate';
             pause: 'request-gate';
             unlock: 'request-gate';
           }

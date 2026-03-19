@@ -201,13 +201,19 @@ export function formatLockedUntilV2(sessionEndsAt: number): string {
 /**
  * The End action belongs to timed Flexible and Friction sessions. Hard sessions refuse it and the
  * popup owns every indefinite ending, so those two answer `hidden` on the blocked page.
+ *
+ * The two that show it do not send the same command, which is spec 1771's "keeps existing end
+ * behavior for its session type": Flexible ends immediately, and Friction has to pass its cancel
+ * gate first. `requestSessionEnd` is refused outright for any strictness but Flexible, so a
+ * Friction overlay that sent it would render a control the worker answers with an error every
+ * time. This is the same split `endCommandOf` makes for the popup.
  */
 export function overlayEndActionV2(
   strictness: Strictness,
   duration: SessionDuration,
-): 'hidden' | 'request-end' {
+): 'hidden' | 'request-end' | 'open-end-gate' {
   if (strictness === 'hard' || duration.kind === 'until-stopped') return 'hidden';
-  return 'request-end';
+  return strictness === 'friction' ? 'open-end-gate' : 'request-end';
 }
 
 /** One frozen command for one document. The worker owns the tab, so the command carries it. */

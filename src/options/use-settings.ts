@@ -12,6 +12,7 @@ import {
   parseStoredSettingsV2,
 } from '../shared/runtime-validation';
 import { DATA_CLEAR_ERROR_COPY } from '../shared/session-copy';
+import { LOCAL_SETUP } from '../shared/storage-keys';
 import { updateTheme } from '../shared/theme';
 import type {
   ListsConfig,
@@ -209,6 +210,19 @@ export function useSettingsStore(): SettingsStore {
       }
     };
     void load();
+    /**
+     * Silent on purpose. `refreshSetup` answers a message for the control the user just pressed,
+     * but this reread follows a worker write nobody asked for, so a transient failure keeps the
+     * record it already has rather than raising a banner about an action the user did not take.
+     */
+    const rereadSetup: () => Promise<void> = async (): Promise<void> => {
+      try {
+        const response: unknown = await sendRequest({ type: 'getSetupState' });
+        if (alive && isSetupState(response)) setSetup(response);
+      } catch {
+        // Keep the record already rendered.
+      }
+    };
     const onBroadcast: (message: unknown) => void = (message: unknown): void => {
       if (isRecord(message) && message.type === 'stateChanged') {
         if (!isSessionSnapshot(message.snapshot)) {
@@ -227,9 +241,25 @@ export function useSettingsStore(): SettingsStore {
       }
     };
     chrome.runtime.onMessage.addListener(onBroadcast);
+    /**
+     * The snapshot is live through `stateChanged`, but the setup record is not, and no
+     * `setupChanged` broadcast exists. Settings renders website-access capability, the Chrome Sync
+     * write status and the data-clear journal straight out of that record, and all three are
+     * written by the worker without this page asking: a revoked host permission, a failed sync
+     * publication, and every phase of an all-data clear. Read once, Settings would keep reporting
+     * blocking as enabled while enforcement is off, and would never show the retry the person
+     * needs. This is the listener `f8d9d25` gave the popup for the same reason.
+     */
+    const onStored: (changes: Record<string, chrome.storage.StorageChange>, area: string) => void =
+      (changes: Record<string, chrome.storage.StorageChange>, area: string): void => {
+        if (area !== 'local' || !Object.hasOwn(changes, LOCAL_SETUP)) return;
+        void rereadSetup();
+      };
+    chrome.storage.onChanged.addListener(onStored);
     return (): void => {
       alive = false;
       chrome.runtime.onMessage.removeListener(onBroadcast);
+      chrome.storage.onChanged.removeListener(onStored);
     };
   }, []);
 
