@@ -25,6 +25,29 @@ function forcedChoice(onClick: () => void): VNode {
   );
 }
 
+/** The shape the schedule editor renders: live radios with no help of their own. */
+function forcedRadios(): VNode {
+  return (
+    <ForcedControl label={GROUP_LABEL} explanation={UNTIL_STOPPED_DISCLOSURE}>
+      <fieldset>
+        <legend>Session type</legend>
+        <label>
+          <input type="radio" name="strictness" value="flexible" checked />
+          Flexible
+        </label>
+        <label>
+          <input type="radio" name="strictness" value="friction" />
+          Friction
+        </label>
+        <label>
+          <input type="checkbox" name="cycling" />
+          Run cycles
+        </label>
+      </fieldset>
+    </ForcedControl>
+  );
+}
+
 /**
  * SessionTypeControl fuses each choice's help trigger with its value button, so it is the
  * hostile composition for a forced wrapper: the disclosure must open, the value must not.
@@ -60,6 +83,45 @@ describe('ForcedControl', (): void => {
     const describedBy: string = group.getAttribute('aria-describedby') ?? '';
     expect(describedBy).not.toBe('');
     expect(document.getElementById(describedBy)?.textContent).toBe(UNTIL_STOPPED_DISCLOSURE);
+  });
+
+  it('announces every forced child as disabled and takes it out of the tab order', (): void => {
+    // ARIA does not inherit `aria-disabled` from the group, so without this a screen reader
+    // reads a live radio, the person presses Space, and nothing happens or is said.
+    const view = render(forcedRadios());
+
+    const controls: HTMLInputElement[] = [...view.container.querySelectorAll('input')];
+    expect(controls).toHaveLength(3);
+    for (const control of controls) {
+      expect(control.getAttribute('aria-disabled')).toBe('true');
+      expect(control.tabIndex).toBe(-1);
+    }
+  });
+
+  it('keeps a value button that is also its own help trigger focusable', (): void => {
+    // Spec 1711's other permitted shape. This button opens the per-choice explanation, so
+    // removing its tab stop would take that explanation off the keyboard path entirely.
+    const onChange: Mock = vi.fn();
+    const view = render(forcedSessionType(onChange));
+
+    const triggers: HTMLButtonElement[] = [
+      ...view.container.querySelectorAll<HTMLButtonElement>(
+        '.forced-control__body .help-popover__trigger',
+      ),
+    ];
+    expect(triggers.length).toBeGreaterThan(0);
+    for (const trigger of triggers) {
+      expect(trigger.getAttribute('aria-disabled')).toBe('true');
+      expect(trigger.tabIndex).toBe(0);
+    }
+
+    // The wrapper's own help is the one control in here that is not forced, so it must not be
+    // announced as disabled: it is how the person finds out why the rest refuses.
+    const groupHelp: HTMLButtonElement = view.container.querySelector(
+      '.forced-control__help .help-popover__trigger',
+    ) as HTMLButtonElement;
+    expect(groupHelp.getAttribute('aria-disabled')).toBeNull();
+    expect(groupHelp.tabIndex).toBe(0);
   });
 
   it('never renders a native disabled attribute', (): void => {

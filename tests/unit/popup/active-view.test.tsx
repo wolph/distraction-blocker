@@ -287,6 +287,29 @@ describe('ActiveView', (): void => {
     expect(queryByRole('alert')).toBeNull();
   });
 
+  it('moves focus into the gate when opening it unmounts the focused control', (): void => {
+    // The End button is replaced by the panel, so without this focus falls to the body and the
+    // next Tab restarts from the top of the popup, on the one flow built to be taken slowly.
+    const authority: EndAuthorityV2 = openFriction({ requiredPhrase: 'let me stop' });
+    const view = render(h(ActiveView, { snapshot: focusSnap(authority), now: NOW + 9_000 }));
+
+    expect(document.activeElement).toBe(
+      view.getByRole('button', { name: 'Never mind, back to work' }),
+    );
+  });
+
+  it('leaves focus alone when the gate opens while something else holds it', (): void => {
+    const outside: HTMLButtonElement = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+
+    const authority: EndAuthorityV2 = openFriction({ requiredPhrase: 'let me stop' });
+    render(h(ActiveView, { snapshot: focusSnap(authority), now: NOW + 9_000 }));
+
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
+  });
+
   it('renders the persisted cancel gate and sends its commands through the v2 channel', async (): Promise<void> => {
     const authority: EndAuthorityV2 = openFriction({ requiredPhrase: 'let me stop' });
     const view = render(h(ActiveView, { snapshot: focusSnap(authority), now: NOW + 9_000 }));

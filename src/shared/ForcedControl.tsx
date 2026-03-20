@@ -1,5 +1,5 @@
 import type { ComponentChildren, RefObject, VNode } from 'preact';
-import { useId, useRef } from 'preact/hooks';
+import { useId, useLayoutEffect, useRef } from 'preact/hooks';
 import { HelpPopover } from './HelpPopover';
 import './forced-control.css';
 
@@ -10,6 +10,7 @@ export interface ForcedControlProps {
 }
 
 const HELP_ROOT_SELECTOR: string = '.help-popover';
+const FOCUSABLE_SELECTOR: string = 'a[href], button, input, select, textarea, [tabindex]';
 
 /**
  * A forced control keeps its children visible and readable while refusing every value
@@ -24,8 +25,32 @@ const HELP_ROOT_SELECTOR: string = '.help-popover';
  */
 export function ForcedControl({ label, explanation, children }: ForcedControlProps): VNode {
   const rootRef: RefObject<HTMLDivElement> = useRef<HTMLDivElement | null>(null);
+  const bodyRef: RefObject<HTMLDivElement> = useRef<HTMLDivElement | null>(null);
   const helpRef: RefObject<HTMLSpanElement> = useRef<HTMLSpanElement | null>(null);
   const explanationId: string = `forced-control-${useId()}`;
+
+  /**
+   * Spec 1711 allows two shapes, and a forced control holds both. A help trigger that doubles as
+   * the value button, which is what `SessionTypeControl` renders, is the "focusable composite
+   * button with aria-disabled" shape and keeps its tab stop, because the popover it opens is the
+   * per-choice explanation. Every other control has to become the "non-interactive visual
+   * control" shape, so it leaves the tab order and the wrapper is the single stop.
+   *
+   * Both need `aria-disabled` on the control itself. The group carries one, but ARIA does not
+   * inherit it, so without this a screen reader announces a live radio and reports nothing when
+   * the capture-phase block refuses the press. Values were already safe; the disclosure was not.
+   *
+   * No dependency array: the children re-render with the draft, and each render restores their
+   * own attributes.
+   */
+  useLayoutEffect((): void => {
+    const body: HTMLDivElement | null = bodyRef.current;
+    if (body === null) return;
+    for (const control of body.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)) {
+      control.setAttribute('aria-disabled', 'true');
+      if (control.closest(HELP_ROOT_SELECTOR) === null) control.tabIndex = -1;
+    }
+  });
 
   /** True while the event target sits in this control's own help, which stays live. */
   const isOwnHelpTarget: (target: EventTarget | null) => boolean = (
@@ -121,16 +146,15 @@ export function ForcedControl({ label, explanation, children }: ForcedControlPro
       onFocusIn={(): void => forwardToHelp('focusin')}
       onFocusOut={closeHelpOnFocusExit}
     >
-      <div class="forced-control__body">{children}</div>
+      <div ref={bodyRef} class="forced-control__body">
+        {children}
+      </div>
       <span ref={helpRef} class="forced-control__help">
         <HelpPopover label={label}>{explanation}</HelpPopover>
       </span>
       {/*
        * The explanation is `aria-describedby` copy only, so it is hidden from the
-       * reading order to keep the popover from announcing it a second time. Focusable
-       * children keep their own tab stops and announce as enabled, which a screen-reader
-       * pass should settle before the cutover: making them inert would also take the
-       * help they carry out of the keyboard path.
+       * reading order to keep the popover from announcing it a second time.
        */}
       <span id={explanationId} class="forced-control__explanation" aria-hidden="true">
         {explanation}

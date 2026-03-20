@@ -75,6 +75,12 @@ export function renderDocumentOverlay(view: DocumentOverlayView, verdict: Verdic
     return;
   }
   const overlay: MountedOverlay = current ?? mountOverlay(view, verdict);
+  // Every blocked attempt anywhere moves `attemptsToday`, which every open overlay carries, so a
+  // person typing the confirmation phrase gets a structurally different view mid-gate. The panel
+  // is rebuilt from scratch on any difference, so the phrase and the caret have to be carried
+  // across a repaint the same gate survives. The popup solves the mirror of this by keying its
+  // panel on the gate identity, which throws the phrase away when the gate is a different one.
+  const carried: CarriedGateInput | null = carriedGateInput(overlay, view);
   mounted = overlay;
   overlay.view = view;
   overlay.verdict = verdict;
@@ -82,7 +88,57 @@ export function renderDocumentOverlay(view: DocumentOverlayView, verdict: Verdic
   if (!overlay.actionPending) overlay.actionGeneration += 1;
   renderPanel(overlay);
   if (overlay.actionPending) disableAllActions(overlay);
-  focusInitialControl(overlay.root, overlay.container);
+  if (!restoreGateInput(overlay, carried)) focusInitialControl(overlay.root, overlay.container);
+}
+
+interface CarriedGateInput {
+  value: string;
+  focused: boolean;
+  selectionStart: number | null;
+  selectionEnd: number | null;
+}
+
+/** The typed phrase and caret, taken before a repaint, and only while the gate is the same one. */
+function carriedGateInput(
+  overlay: MountedOverlay,
+  next: DocumentOverlayView,
+): CarriedGateInput | null {
+  const phrase: HTMLInputElement | null = overlay.gate?.phrase ?? null;
+  if (phrase === null || gateIdentityOf(overlay.view) !== gateIdentityOf(next)) return null;
+  return {
+    value: phrase.value,
+    focused: overlay.root.activeElement === phrase,
+    selectionStart: phrase.selectionStart,
+    selectionEnd: phrase.selectionEnd,
+  };
+}
+
+/** Puts the phrase back, and answers whether it also owns the focus this repaint should keep. */
+function restoreGateInput(overlay: MountedOverlay, carried: CarriedGateInput | null): boolean {
+  const phrase: HTMLInputElement | null = overlay.gate?.phrase ?? null;
+  if (carried === null || phrase === null) return false;
+  phrase.value = carried.value;
+  updateGateFromView(overlay);
+  if (!carried.focused) return false;
+  phrase.focus();
+  phrase.setSelectionRange(carried.selectionStart, carried.selectionEnd);
+  return true;
+}
+
+/**
+ * The identity of the gate a view is showing, matching what the popup keys its panel on. A gate
+ * reopened with new bounds or a new phrase is a different gate and must not inherit typed text.
+ */
+function gateIdentityOf(view: DocumentOverlayView): string | null {
+  if (view.presentation !== 'active' || view.gate === null) return null;
+  const gate: GateState = view.gate;
+  return JSON.stringify([gate.kind, gate.host, gate.openedAt, gate.readyAt, gate.requiredPhrase]);
+}
+
+/** Re-runs the confirm button's enable rule after the carried phrase is put back. */
+function updateGateFromView(overlay: MountedOverlay): void {
+  const view: DocumentOverlayView = overlay.view;
+  if (view.presentation === 'active') updateGate(overlay, view, Date.now());
 }
 
 export function clearDocumentOverlay(): void {

@@ -1,5 +1,5 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useRef, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { CommandResponseV2, SessionCommandResultCodeV2 } from '../shared/messages';
 import type { EndAuthorityV2, GateKind, GateState } from '../shared/types';
 
@@ -68,6 +68,7 @@ export function GatePanel({
   const [pending, setPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
     useState<boolean>(false);
   const requestInFlight: { current: boolean } = useRef<boolean>(false);
+  const backButton: { current: HTMLButtonElement | null } = useRef<HTMLButtonElement>(null);
 
   const totalS: number = Math.max(1, Math.round((gate.readyAt - gate.openedAt) / 1000));
   const elapsedS: number = Math.min(totalS, Math.max(0, Math.floor((now - gate.openedAt) / 1000)));
@@ -97,6 +98,18 @@ export function GatePanel({
     }
   };
 
+  /**
+   * Opening a gate unmounts the control that opened it, so focus falls to the body on the one
+   * flow whose whole purpose is to be navigated slowly. The panel is keyed by the gate identity,
+   * so this runs once per gate. It claims focus only when nothing else holds it, which leaves a
+   * gate that opened while the person was elsewhere alone, and it takes the deliberate exit
+   * rather than the confirm, matching the dialog in Settings and the blocked-page overlay.
+   */
+  useLayoutEffect((): void => {
+    const active: Element | null = document.activeElement;
+    if (active === null || active === document.body) backButton.current?.focus();
+  }, []);
+
   const abandon: () => void = (): void => {
     void requestGateUpdate({ type: 'abandonGate' });
   };
@@ -116,7 +129,13 @@ export function GatePanel({
           A moment to decide: <span class="time">{elapsedS}</span> of {totalS} s
         </p>
       ) : null}
-      <button type="button" class="start-button" disabled={pending} onClick={abandon}>
+      <button
+        ref={backButton}
+        type="button"
+        class="start-button"
+        disabled={pending}
+        onClick={abandon}
+      >
         {BACK_TO_WORK_LABEL}
       </button>
       {gate.requiredPhrase !== null ? (

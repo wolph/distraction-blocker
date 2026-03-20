@@ -465,6 +465,55 @@ describe('overlay-v2 actions', () => {
     ).toBe(false);
   });
 
+  it('keeps the typed phrase and the caret when a blocked attempt repaints the same gate', (): void => {
+    stubWorker({ ok: true });
+    renderDocumentOverlay(gatedOverlay(), BLOCKED_VERDICT);
+    const phrase: HTMLInputElement = shadowRoot().querySelector('input.phrase') as HTMLInputElement;
+    phrase.focus();
+    phrase.value = 'let me scr';
+    phrase.setSelectionRange(4, 7);
+
+    // The only difference is the day's attempt count, which every open overlay carries and which
+    // any blocked attempt in any tab moves.
+    renderDocumentOverlay(gatedOverlay({ attemptsToday: 9 }), BLOCKED_VERDICT);
+
+    const after: HTMLInputElement = shadowRoot().querySelector('input.phrase') as HTMLInputElement;
+    expect(after.value).toBe('let me scr');
+    expect(shadowRoot().activeElement).toBe(after);
+    expect([after.selectionStart, after.selectionEnd]).toEqual([4, 7]);
+  });
+
+  it('drops the typed phrase when the repaint carries a different gate', (): void => {
+    stubWorker({ ok: true });
+    renderDocumentOverlay(gatedOverlay(), BLOCKED_VERDICT);
+    const phrase: HTMLInputElement = shadowRoot().querySelector('input.phrase') as HTMLInputElement;
+    phrase.value = 'let me scroll';
+
+    // A reopened gate is a different gate, and must not inherit what was typed into the last one.
+    renderDocumentOverlay(
+      gatedOverlay({ gate: gateState({ openedAt: NOW + 1, readyAt: NOW + 5_000 }) }),
+      BLOCKED_VERDICT,
+    );
+
+    const after: HTMLInputElement = shadowRoot().querySelector('input.phrase') as HTMLInputElement;
+    expect(after.value).toBe('');
+  });
+
+  it('leaves the confirm button enabled when the carried phrase already matched', (): void => {
+    stubWorker({ ok: true });
+    renderDocumentOverlay(gatedOverlay(), BLOCKED_VERDICT);
+    const phrase: HTMLInputElement = shadowRoot().querySelector('input.phrase') as HTMLInputElement;
+    phrase.value = 'let me scroll';
+    phrase.dispatchEvent(new Event('input'));
+
+    renderDocumentOverlay(gatedOverlay({ attemptsToday: 9 }), BLOCKED_VERDICT);
+
+    const confirm: HTMLButtonElement = shadowRoot().querySelector(
+      '.gate .pill',
+    ) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(false);
+  });
+
   it('sends the gate requests with the typed phrase', async (): Promise<void> => {
     const sendMessage: Mock<(request: unknown) => Promise<unknown>> = stubWorker({ ok: true });
     renderDocumentOverlay(gatedOverlay(), BLOCKED_VERDICT);
