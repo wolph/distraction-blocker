@@ -26,6 +26,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { BrowserContext, CDPSession, Locator, Page, Worker } from '@playwright/test';
+import type { RuntimeTabState } from '../../src/background/runtime-leaf-types';
 import type {
   EndAuthorityV2,
   ScheduleEntryV2,
@@ -46,6 +47,7 @@ import {
 import {
   browserDiagnosticsFor,
   expect,
+  readRuntimeV2,
   sendExtensionRequest,
   startTestSession,
   startUntilStoppedSession,
@@ -578,6 +580,7 @@ async function overlayPanelClip(
 async function captureOverlayStates(
   context: BrowserContext,
   extPage: Page,
+  worker: Worker,
   siteUrl: (pathname: string) => string,
   evidenceDir: string,
   maskedRegions: IndefiniteMaskedRegion[],
@@ -596,7 +599,7 @@ async function captureOverlayStates(
         const page: Page = await context.newPage();
         await page.emulateMedia({ colorScheme: theme.colorScheme });
         await page.setViewportSize({ width, height: viewportHeightFor(width) });
-        await showOverlay(page, blockedUrl, state);
+        await showOverlay(page, worker, blockedUrl, state);
         const session: CDPSession = await context.newCDPSession(page);
         const nodes: DomNodeSnapshot[] = await overlayNodes(session);
         const pinned: string[] = await pinOverlayRegions(session, nodes, state);
@@ -655,18 +658,57 @@ async function prepareOverlaySession(extPage: Page, state: IndefiniteVisualState
 /** Puts one page into the state, and answers once the overlay it needs is mounted. */
 async function showOverlay(
   page: Page,
+  worker: Worker,
   blockedUrl: string,
   state: IndefiniteVisualState,
 ): Promise<void> {
-  await page.goto(blockedUrl, state === 'overlay-stopped' ? { waitUntil: 'commit' } : {});
-  await expect(page.locator('focus-lock-overlay')).toBeAttached();
+  if (state !== 'overlay-stopped') {
+    await page.goto(blockedUrl);
+    await expect(page.locator('focus-lock-overlay')).toBeAttached();
+    return;
+  }
+  // Stopping a fresh navigation is not deterministic: Chrome sometimes injects the content script
+  // after the document has left `loading`, and there is then no fresh navigation to stop. Task 1
+  // measured that as roughly one arrival in eight and put its claims behind the worker's own stop
+  // record. This capture cannot skip a cell, so it reloads until the worker records a stop, which
+  // waits on the durable evidence rather than on a clock.
+  for (let attempt: number = 0; attempt < 8; attempt++) {
+    await page.goto(blockedUrl, { waitUntil: 'commit' });
+    if (await stoppedDocumentRecorded(worker, 4_000)) {
+      await expect(page.locator('focus-lock-overlay')).toBeAttached();
+      return;
+    }
+  }
+  throw new Error('the worker never recorded a stopped document for the stopped-page capture');
+}
+
+/** True once the worker's durable tab state names a stopped document, which is the stop's evidence. */
+async function stoppedDocumentRecorded(worker: Worker, timeoutMs: number): Promise<boolean> {
+  const deadline: number = Date.now() + timeoutMs;
+  for (;;) {
+    const stopped: boolean = Object.values((await readRuntimeV2(worker)).tabStates).some(
+      (state: RuntimeTabState): boolean => state.stoppedDocumentId !== null,
+    );
+    if (stopped) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve: (value: unknown) => void): void => {
+      setTimeout(resolve, 100);
+    });
+  }
 }
 
 /** Ends whatever session is running, so the next state starts from a known lifecycle. */
 async function endAnySession(extPage: Page): Promise<void> {
   const snapshot: SessionSnapshotV2 = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
   if (snapshot.lifecycle.kind === 'idle') return;
-  await sendExtensionRequest(extPage, { type: 'requestSessionEnd' });
+  // A refused end and a slow end look the same from the lifecycle alone, so the answer is read.
+  // Without this the failure says only that idle never arrived, which is the symptom of both.
+  const answer = await sendExtensionRequest(extPage, { type: 'requestSessionEnd' });
+  if (!answer.ok) {
+    throw new Error(
+      `the worker refused to end the ${snapshot.lifecycle.kind} session with ${answer.code}`,
+    );
+  }
   await waitForLifecycle(extPage, 'idle');
 }
 
@@ -809,8 +851,21 @@ async function captureStatsState(
       const page: Page = await context.newPage();
       await page.emulateMedia({ colorScheme: theme.colorScheme });
       await page.setViewportSize({ width, height: viewportHeightFor(width) });
-      await page.goto(`chrome-extension://${extensionId}/src/stats/stats.html`);
-      await expect(page.locator(definition.focusSelector).first()).toBeVisible();
+      await page.goto(`chrome-extension://${extensionId}/src/stats/stats.html`, {
+        timeout: 20_000,
+      });
+      // A stats page with nothing to show renders a sentence instead of the table, so the failure
+      // reports what the page said rather than only which selector was missing.
+      try {
+        await expect(page.locator(definition.focusSelector).first()).toBeVisible({
+          timeout: 10_000,
+        });
+      } catch (error: unknown) {
+        const shown: string = (await page.locator('.stats-page').innerText()).slice(0, 400);
+        throw new Error(`the stats page never showed its session table, it showed: ${shown}`, {
+          cause: error,
+        });
+      }
       await captureCell(
         page,
         evidenceDir,
@@ -885,27 +940,33 @@ async function seedScheduleEntry(extPage: Page): Promise<void> {
  */
 async function seedStatsSessions(worker: Worker): Promise<IndefiniteStorageSeed> {
   const now: number = Date.now();
+  // Minutes old, not hours. The stored log is capped by dropping its oldest records, and this run
+  // has already written real events, so a seed dated hours back is the first thing a later append
+  // would drop and the table would render empty with nothing to say why.
   const events: SessionEventRecordV2[] = [
-    startedEvent(now - 3 * 3_600_000, 'a0000000-0000-4000-8000-000000000001', {
+    startedEvent(now - 25 * 60_000, 'a0000000-0000-4000-8000-000000000001', {
       kind: 'until-stopped',
     }),
-    endedEvent(now - 2 * 3_600_000, 'a0000000-0000-4000-8000-000000000001', {
+    endedEvent(now - 20 * 60_000, 'a0000000-0000-4000-8000-000000000001', {
       duration: { kind: 'until-stopped' },
       outcome: 'completed',
       reason: 'manual-completed',
       focusedMs: 3_600_000,
     }),
-    startedEvent(now - 90 * 60_000, 'a0000000-0000-4000-8000-000000000002', {
+    startedEvent(now - 15 * 60_000, 'a0000000-0000-4000-8000-000000000002', {
       kind: 'timed',
       minutes: 45,
     }),
-    endedEvent(now - 70 * 60_000, 'a0000000-0000-4000-8000-000000000002', {
+    endedEvent(now - 8 * 60_000, 'a0000000-0000-4000-8000-000000000002', {
       duration: { kind: 'timed', minutes: 45 },
       outcome: 'canceled',
       reason: 'manual-canceled',
       focusedMs: 1_200_000,
     }),
   ];
+  // The boundary names an event by its session: a start is `<sessionId>:start` and an end is
+  // `<sessionId>:end`, and it drops any record that spells them otherwise. A seed with its own
+  // spelling parses to an empty log, which reaches the page as a stats table that never renders.
   const sha256: string = await worker.evaluate(
     async (input: { key: string; events: SessionEventRecordV2[] }): Promise<string> => {
       await chrome.storage.local.set({ [input.key]: input.events });
@@ -917,6 +978,21 @@ async function seedStatsSessions(worker: Worker): Promise<IndefiniteStorageSeed>
     },
     { key: 'events', events },
   );
+  const storedSessions: string[] = await worker.evaluate(async (key: string): Promise<string[]> => {
+    const stored: unknown = (await chrome.storage.local.get(key))[key];
+    if (!Array.isArray(stored)) return [];
+    return stored
+      .filter((entry: unknown): boolean => (entry as { t?: string }).t === 'sessionEnded')
+      .map((entry: unknown): string => String((entry as { sessionId?: string }).sessionId));
+  }, 'events');
+  for (const session of [
+    'a0000000-0000-4000-8000-000000000001',
+    'a0000000-0000-4000-8000-000000000002',
+  ]) {
+    if (!storedSessions.includes(session)) {
+      throw new Error(`the seeded log lost ${session}, it holds ${storedSessions.join(', ')}`);
+    }
+  }
   return {
     key: 'events',
     purpose:
@@ -934,7 +1010,7 @@ function startedEvent(
   return {
     version: 2,
     t: 'sessionStarted',
-    eventId: `${sessionId}-start`,
+    eventId: `${sessionId}:start`,
     at,
     sessionId,
     source: 'manual',
@@ -954,7 +1030,7 @@ function endedEvent(
   return {
     version: 2,
     t: 'sessionEnded',
-    eventId: `${sessionId}-end`,
+    eventId: `${sessionId}:end`,
     at,
     sessionId,
     source: 'manual',
@@ -1033,7 +1109,7 @@ test('captures deterministic indefinite session visual evidence', async ({
   await capturePopupStates(popupPage, extensionId, evidenceDir, source, setup, held);
   await popupPage.close();
 
-  await captureOverlayStates(context, extPage, siteUrl, evidenceDir, maskedRegions);
+  await captureOverlayStates(context, extPage, worker, siteUrl, evidenceDir, maskedRegions);
 
   const errorSnapshot: SessionSnapshotV2 = lifecycleSnapshot(source.idle, 'auto', {
     kind: 'error',
