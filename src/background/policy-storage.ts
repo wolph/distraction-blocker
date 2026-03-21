@@ -2528,8 +2528,12 @@ export function createPolicyStorage(
     const journal: AllDataClearJournalV2 | null = await readAllDataJournal(token);
     if (journal === null) return 'none';
     allDataClearQuiescenceRequired = true;
-    await assertStoppedRuntimeForAllDataClear();
+    // A clear that has reached browser reset is being continued rather than created, and the
+    // journal is the authority for it: the runtime is that journal's own projection, so the
+    // dispatcher repairs it. Gating here would refuse to continue over the very drift the repair
+    // exists to correct, before any recorder runs, which strands the clear on a reported error.
     if (journal.phase === 'browser-reset') return 'browser-reset';
+    await assertStoppedRuntimeForAllDataClear();
     const phase: 'remote' | 'local' = journal.phase;
     try {
       if (phase === 'remote') await runAllDataRemotePhase(token, journal);

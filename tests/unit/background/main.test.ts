@@ -3406,6 +3406,22 @@ describe('background all-data journal bootstrap', () => {
     expect(mocks.localState[LOCAL_RUNTIME]).toMatchObject({ enforcementEpoch: RESET_EPOCH });
   });
 
+  it('repairs a live-looking runtime rather than refusing to continue over it', async (): Promise<void> => {
+    // The gate that protects a live session from being erased underneath itself belongs to the
+    // clear that is being created. A clear that already exists is the authority, and its runtime is
+    // its own projection, so refusing to continue on a drifted one strands the clear: the refusal
+    // precedes every recorder, so no attempt is spent, no error is projected, and the alarm refires
+    // on a timestamp that has already passed.
+    mocks.persistDeviceIdOnGet = true;
+    seedBrowserReset();
+    mocks.localState[LOCAL_RUNTIME] = liveSessionRuntimeV2(Date.now());
+
+    await finishBoot();
+
+    expect(storedJournal()).toBeUndefined();
+    expect(mocks.localState[LOCAL_RUNTIME]).toMatchObject({ session: null });
+  });
+
   it('answers a second arrival while the clear holds the lease', async (): Promise<void> => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
     mocks.persistDeviceIdOnGet = true;

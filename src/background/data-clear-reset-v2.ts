@@ -150,9 +150,10 @@ export async function finalizeAllDataClearV2(
       if (missing !== null) {
         // Answering `not-finalizable` and recording nothing is how a clear stops with the barrier
         // shut and no wake coming. The answer stays distinguishable and the reason becomes durable,
-        // so the retry the journal schedules brings the next dispatch back.
-        await failAttempt(ports, token, missing);
-        return 'not-finalizable';
+        // so the retry the journal schedules brings the next dispatch back. A batch with nothing
+        // left to schedule says so instead: there is no wake for the caller to wait on.
+        const recorded: 'retry-scheduled' | 'exhausted' = await failAttempt(ports, token, missing);
+        return recorded === 'exhausted' ? 'exhausted' : 'not-finalizable';
       }
       if ((await ports.replayLifecycleIntents(token)) === 'failed') {
         return scheduledOrExhausted(await failAttempt(ports, token, 'lifecycle-replay-failed'));
@@ -505,11 +506,15 @@ async function sendFrozen(ports: BrowserResetPortsV2, plan: PassPlanV2): Promise
       outcome.kind === 'rejected'
         ? `epoch-reset-rejected on tab ${frozen.target.tabId}`
         : `reset acknowledgement mismatch on tab ${frozen.target.tabId}`;
-    // A mismatch is the document saying this command does not describe the page it is on, which is
-    // what a route change inside one document produces: the document ID survives and the URL does
-    // not. The frozen command is dropped so the next pass freezes this document again at the URL
-    // it is really on, which keeps "frozen before send" intact and gives the failure an exit.
-    if (outcome.kind !== 'rejected') record.staleKey = frozen.key;
+    // Only an answer that disputes the address invalidates the address this command froze, which
+    // is what a route change inside one document produces: the document ID survives and the URL
+    // does not. That key's command is dropped so the next pass freezes the document again at the
+    // URL it is really on, which keeps "frozen before send" intact and gives the failure an exit.
+    // Every other mismatch, a lost response or an answer no parser accepts included, disputes
+    // nothing about the address, so the durable record it would throw away is kept.
+    if (outcome.kind === 'mismatch' && outcome.field === 'observedUrl') {
+      record.staleKey = frozen.key;
+    }
     return record;
   }
   return record;

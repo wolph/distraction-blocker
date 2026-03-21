@@ -47,7 +47,14 @@ interface FakeTargetV2 {
   tabId: number;
   documentId: string | null;
   url: string | null;
-  answer: 'reset' | 'closed' | 'no-receiver' | 'mismatch' | 'rejected' | 'stale-operation';
+  answer:
+    | 'reset'
+    | 'closed'
+    | 'no-receiver'
+    | 'mismatch'
+    | 'rejected'
+    | 'stale-operation'
+    | 'stale-url';
 }
 
 interface MaterializedStateV2 {
@@ -145,7 +152,9 @@ function answerFor(target: FakeTargetV2, command: Record<string, unknown>, at: n
     operationId: target.answer === 'stale-operation' ? 'another-operation' : command.operationId,
     enforcementEpoch: command.enforcementEpoch,
     documentId: command.documentId,
-    observedUrl: command.expectedUrl,
+    // A document that answers with the URL it is really on, which is what disputes the address a
+    // frozen command carries.
+    observedUrl: target.answer === 'stale-url' ? (target.url ?? '') : command.expectedUrl,
     handledAt: at,
   };
 }
@@ -987,7 +996,7 @@ describe('browser reset across attempts', (): void => {
     // A route change inside one document, which is every single page application: the document ID
     // survives and the URL does not.
     target.url = OTHER_URL;
-    target.answer = 'mismatch';
+    target.answer = 'stale-url';
 
     const failed: string = await h.run(
       (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
@@ -1005,6 +1014,57 @@ describe('browser reset across attempts', (): void => {
 
     expect(recovered).toBe('stable');
     expect(h.progress().commands[FIRST_KEY]?.expectedUrl).toBe(OTHER_URL);
+  });
+
+  it('tells an exhausted batch apart from a scheduled one when evidence is missing', async (): Promise<void> => {
+    const h: ResetHarnessV2 = harness(
+      browserResetJournal({
+        retry: { batch: 1, automaticAttempt: 12, nextAttemptAt: null, lastError: 'reset-deadline' },
+        resetProgress: resetProgress({
+          attemptStartedAt: NOW,
+          stablePasses: 2,
+          targetGeneration: 7,
+        }),
+      }),
+    );
+    h.materialized.runtime = { drifted: true };
+
+    // No alarm is coming, so telling the caller the clear is merely not finalizable yet is the
+    // same lie as telling it a retry is scheduled.
+    await expect(finalizeAllDataClearV2(h.ports)).resolves.toBe('exhausted');
+  });
+
+  it('keeps the frozen command when the answer disputes something other than the URL', async (): Promise<void> => {
+    const frozen: FrozenEpochResetCommand = {
+      version: 1,
+      command: 'reset-enforcement-epoch',
+      tabId: 11,
+      documentId: 'document-1',
+      expectedUrl: TARGET_URL,
+      operationId: RESET_OPERATION,
+      enforcementEpoch: RESET_EPOCH,
+    };
+    const h: ResetHarnessV2 = harness(
+      browserResetJournal({
+        resetProgress: resetProgress({
+          targets: {
+            [FIRST_KEY]: { tabId: 11, documentId: 'document-1', expectedUrl: TARGET_URL },
+          },
+          commands: { [FIRST_KEY]: frozen },
+        }),
+      }),
+    );
+    const target: FakeTargetV2 | undefined = h.tabs[0];
+    if (target === undefined) throw new Error('the harness needs its target');
+    // An answer no parser accepts: nothing about it says the frozen URL is wrong, so dropping the
+    // command would throw away a durable record for a document that never disputed it.
+    target.answer = 'mismatch';
+
+    await h.run(
+      (token: DataClearLeaseToken): Promise<string> => runBrowserResetAttemptV2(h.ports, token),
+    );
+
+    expect(h.progress().commands[FIRST_KEY]).toEqual(frozen);
   });
 
   it('records the evidence it was missing rather than stopping silently', async (): Promise<void> => {
