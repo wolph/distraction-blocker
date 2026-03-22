@@ -6,12 +6,16 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { verifyIndefiniteEvidenceDirectory } from '../../../scripts/verify-indefinite-evidence';
 import {
   assertIndefiniteEvidenceCoverage,
+  definitionFor,
   evidenceFileName,
   expectedIndefiniteArtifactCount,
   INDEFINITE_THEME_CASES,
   INDEFINITE_VISUAL_STATES,
   type IndefiniteEvidenceManifest,
   type IndefiniteEvidenceRecord,
+  type IndefiniteRuntimeApiInterceptionDefinition,
+  indefiniteInterceptionsFromObservations,
+  parseEvidenceFileName,
   widthsForState,
 } from '../../../tests/e2e/indefinite-visual-manifest';
 
@@ -146,6 +150,78 @@ describe('indefinite evidence coverage', (): void => {
     expect((): void => {
       assertIndefiniteEvidenceCoverage(records);
     }).toThrow('overlay-stopped-auto-light-768-focused.png is missing');
+  });
+});
+
+describe('the matrix the capture and the verifier both read', (): void => {
+  it('reads a file name back to the cell that owns it', (): void => {
+    const name: string = evidenceFileName('popup-long-copy', 'auto-dark', 340, 'focused');
+
+    expect(parseEvidenceFileName(name)).toEqual({
+      state: 'popup-long-copy',
+      themeId: 'auto-dark',
+      width: 340,
+      scope: 'focused',
+    });
+  });
+
+  it('refuses a file name that names no cell', (): void => {
+    expect((): unknown => parseEvidenceFileName('popup-long-copy-auto-dark-999-full.png')).toThrow(
+      'does not name a cell',
+    );
+    expect((): unknown =>
+      parseEvidenceFileName(evidenceFileName('overlay-stopped', 'auto-dark', 340, 'full')),
+    ).toThrow('does not name a cell');
+  });
+
+  it('refuses a state the matrix does not declare', (): void => {
+    expect((): unknown => definitionFor('popup-nonexistent' as never)).toThrow(
+      'is not a declared visual state',
+    );
+  });
+
+  it('refuses a cell captured twice', (): void => {
+    const records: IndefiniteEvidenceRecord[] = recordsForCompleteRun();
+    const duplicated: IndefiniteEvidenceRecord | undefined = records[0];
+    if (duplicated === undefined) throw new Error('the fixture produced no records');
+
+    expect((): void => {
+      assertIndefiniteEvidenceCoverage([...records, duplicated]);
+    }).toThrow('was captured 2 times');
+  });
+
+  it('refuses an image outside the matrix', (): void => {
+    const records: IndefiniteEvidenceRecord[] = recordsForCompleteRun();
+    const stray: IndefiniteEvidenceRecord = {
+      ...(records[0] as IndefiniteEvidenceRecord),
+      width: 999,
+    };
+
+    expect((): void => {
+      assertIndefiniteEvidenceCoverage([...records, stray]);
+    }).toThrow('is unexpected');
+  });
+
+  it('counts what the run observed against what it declared', (): void => {
+    const declared: IndefiniteRuntimeApiInterceptionDefinition[] = [
+      {
+        behavior: 'fixed-snapshot',
+        expectedCount: 2,
+        passthrough: 'all-other-calls',
+        purpose: 'the snapshot the popup cannot outrun',
+        requestType: 'getSnapshot',
+        scope: 'chrome.runtime.sendMessage',
+        state: 'popup-long-copy',
+      },
+    ];
+
+    expect(
+      indefiniteInterceptionsFromObservations(declared, [
+        { state: 'popup-long-copy', requestType: 'getSnapshot' },
+        { state: 'popup-long-copy', requestType: 'getSetupState' },
+        { state: 'popup-forced-focus', requestType: 'getSnapshot' },
+      ]),
+    ).toEqual([{ ...declared[0], observedCount: 1 }]);
   });
 });
 
