@@ -1,6 +1,7 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
 import { ALL_CATEGORIES } from '../core/categories';
+import { MODE_LABELS } from '../shared/session-copy';
 import type { CategoryId, CategoryList, ListsConfig } from '../shared/types';
 
 export interface StartingListsStepProps {
@@ -40,8 +41,8 @@ export function StartingListsStep(props: StartingListsStepProps): VNode {
         Choose your starting block list
       </h1>
       <p>
-        In <strong>Block selected sites</strong>, enabled categories and extra blocked sites are
-        unavailable. In <strong>Allow selected sites only</strong>, every site is unavailable except
+        In <strong>{MODE_LABELS.blacklist}</strong>, enabled categories and extra blocked sites are
+        unavailable. In <strong>{MODE_LABELS.whitelist}</strong>, every site is unavailable except
         your allow list.
       </p>
       <p>These choices become defaults for future sessions. You can edit them later.</p>

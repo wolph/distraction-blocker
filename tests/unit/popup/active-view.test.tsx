@@ -287,6 +287,34 @@ describe('ActiveView', (): void => {
     expect(queryByRole('alert')).toBeNull();
   });
 
+  it('names the reason the gate confirm is refusing, for both reasons', (): void => {
+    const authority: EndAuthorityV2 = openFriction({ requiredPhrase: 'let me stop' });
+    const waiting = render(h(ActiveView, { snapshot: focusSnap(authority), now: NOW }));
+    const duringCountdown: HTMLButtonElement = waiting.getByRole('button', {
+      name: 'End the session',
+    }) as HTMLButtonElement;
+
+    expect(duringCountdown.disabled).toBe(true);
+    expect(
+      document.getElementById(duringCountdown.getAttribute('aria-describedby') ?? '')?.textContent,
+    ).toContain('A moment to decide');
+    cleanup();
+
+    const ready = render(h(ActiveView, { snapshot: focusSnap(authority), now: NOW + 9_000 }));
+    const unmatched: HTMLButtonElement = ready.getByRole('button', {
+      name: 'End the session',
+    }) as HTMLButtonElement;
+
+    expect(unmatched.disabled).toBe(true);
+    expect(
+      document.getElementById(unmatched.getAttribute('aria-describedby') ?? '')?.textContent,
+    ).toContain('let me stop');
+
+    fireEvent.input(ready.getByRole('textbox'), { target: { value: 'let me stop' } });
+    expect(unmatched.disabled).toBe(false);
+    expect(unmatched.getAttribute('aria-describedby')).toBeNull();
+  });
+
   it('moves focus into the gate when opening it unmounts the focused control', (): void => {
     // The End button is replaced by the panel, so without this focus falls to the body and the
     // next Tab restarts from the top of the popup, on the one flow built to be taken slowly.

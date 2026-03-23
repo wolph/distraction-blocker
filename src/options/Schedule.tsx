@@ -3,6 +3,8 @@ import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
 import { scheduleEntriesOverlap, validateEntry } from '../core/schedule';
 import { ForcedControl } from '../shared/ForcedControl';
 import {
+  FORCED_CYCLES_LABEL,
+  FORCED_TYPE_LABEL,
   SCHEDULE_UNTIL_STOPPED_COPY,
   SCHEDULE_WINDOW_LABEL,
   UNTIL_STOPPED_DISCLOSURE,
@@ -21,8 +23,6 @@ export interface ScheduleProps {
 const DAY_LABELS: readonly string[] = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_ORDER: readonly number[] = [1, 2, 3, 4, 5, 6, 0];
 
-const FORCED_TYPE_LABEL: string = 'Session type forced by Until stopped';
-const FORCED_CYCLES_LABEL: string = 'Cycles forced by Until stopped';
 const CYCLES_LABEL: string = 'Cycle focus and breaks';
 
 interface StrictnessChoice {

@@ -465,6 +465,34 @@ describe('overlay-v2 actions', () => {
     ).toBe(false);
   });
 
+  it('names the reason the gate confirm is refusing on the blocked page too', (): void => {
+    stubWorker({ ok: true });
+    renderDocumentOverlay(
+      gatedOverlay({ gate: gateState({ openedAt: NOW, readyAt: NOW + 5_000 }) }),
+      BLOCKED_VERDICT,
+    );
+    const confirm: HTMLButtonElement = shadowRoot().querySelector(
+      '.gate .pill',
+    ) as HTMLButtonElement;
+
+    const waitId: string = confirm.getAttribute('aria-describedby') ?? '';
+    expect(shadowRoot().getElementById(waitId)).not.toBeNull();
+
+    renderDocumentOverlay(gatedOverlay(), BLOCKED_VERDICT);
+    const ready: HTMLButtonElement = shadowRoot().querySelector('.gate .pill') as HTMLButtonElement;
+    const phraseId: string = ready.getAttribute('aria-describedby') ?? '';
+
+    expect(ready.disabled).toBe(true);
+    expect(shadowRoot().getElementById(phraseId)?.textContent).toBe('let me scroll');
+
+    const phrase: HTMLInputElement = shadowRoot().querySelector('input.phrase') as HTMLInputElement;
+    phrase.value = 'let me scroll';
+    phrase.dispatchEvent(new Event('input'));
+
+    expect(ready.disabled).toBe(false);
+    expect(ready.getAttribute('aria-describedby')).toBeNull();
+  });
+
   it('keeps the typed phrase and the caret when a blocked attempt repaints the same gate', (): void => {
     stubWorker({ ok: true });
     renderDocumentOverlay(gatedOverlay(), BLOCKED_VERDICT);

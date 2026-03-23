@@ -540,7 +540,13 @@ export function activeOverlay(
     activeUnlocks: [{ host: 'example.com', until: capturedAt + 30_000 }],
     attemptsToday: 2,
     stoppedPage: false,
-    actions: { state: 'ready', end: 'request-end', pause: 'request-gate', unlock: 'request-gate' },
+    // The fixture session is Friction, whose End control opens the cancel gate.
+    actions: {
+      state: 'ready',
+      end: 'open-end-gate',
+      pause: 'request-gate',
+      unlock: 'request-gate',
+    },
     copy: activeCopy(),
     ...overrides,
   };

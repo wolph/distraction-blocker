@@ -344,20 +344,6 @@ describe('StartForm start command', (): void => {
     expect((view.getByLabelText('Intention') as HTMLInputElement).value).toBe('ship the release');
   });
 
-  it('disables the start action through the startsDisabled prop', (): void => {
-    const view = render(
-      <StartForm settings={SETTINGS} lists={DEFAULT_LISTS} startsDisabled={true} />,
-    );
-    const start: HTMLButtonElement = view.getByRole('button', {
-      name: TIMED_START_LABEL,
-    }) as HTMLButtonElement;
-
-    expect(start.disabled).toBe(true);
-    fireEvent.click(start);
-
-    expect(startRequests()).toHaveLength(0);
-  });
-
   it('keeps fallback category controls out of the draft', (): void => {
     const view = render(
       <StartForm settings={SETTINGS} lists={DEFAULT_LISTS} categoriesEditable={false} />,

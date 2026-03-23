@@ -1,5 +1,5 @@
 import { isRelativeMinuteDuration } from '../shared/numeric-validation';
-import { START_UNTIL_STOPPED_LABEL } from '../shared/session-copy';
+import { MODE_LABELS, START_UNTIL_STOPPED_LABEL } from '../shared/session-copy';
 import type {
   CycleConfig,
   ListsConfig,
@@ -32,11 +32,6 @@ export interface StartDraft {
   intention: string;
   rules: SessionRuleSnapshot;
 }
-
-const MODE_START_LABELS: Record<SessionMode, string> = {
-  blacklist: 'Block selected sites',
-  whitelist: 'Allow selected sites only',
-};
 
 const INVALID_DURATION_LABEL: string = 'invalid time';
 
@@ -121,7 +116,7 @@ export function startLabel(draft: StartDraft): string {
   if (draft.duration.kind === 'until-stopped') return START_UNTIL_STOPPED_LABEL;
   const minutes: number | null = effectiveTimedMinutes(draft);
   const durationLabel: string = minutes === null ? INVALID_DURATION_LABEL : `${minutes} min`;
-  return `Start ${durationLabel} - ${MODE_START_LABELS[draft.mode]}`;
+  return `Start ${durationLabel} - ${MODE_LABELS[draft.mode]}`;
 }
 
 /** null when the timed draft has no usable length. Until stopped always submits. */

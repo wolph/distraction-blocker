@@ -26,6 +26,15 @@ export interface RuleSummaryProps {
   onOpenSettings: () => void;
 }
 
+/**
+ * Why the category toggles refuse. It existed only as a suffix on a page-level alert below the
+ * whole form, so a screen reader reading a disabled button was told nothing about it. Named here,
+ * beside the buttons it describes, and pointed at by `aria-describedby`.
+ */
+export const CATEGORIES_LOCKED_COPY: string =
+  'Category editing is disabled until blocked-site lists reload.';
+const CATEGORIES_LOCKED_ID: string = 'draft-categories-locked';
+
 function plural(count: number, singular: string, pluralValue: string): string {
   return count === 1 ? singular : pluralValue;
 }
@@ -90,6 +99,11 @@ function BlockRules({ draft, categoriesEditable, onCategoryToggle }: RuleSummary
     <div class="rule-sections">
       <section class="rule-section" aria-labelledby="draft-categories-heading">
         <h3 id="draft-categories-heading">Blocked categories</h3>
+        {categoriesEditable ? null : (
+          <p id={CATEGORIES_LOCKED_ID} class="radio-hint">
+            {CATEGORIES_LOCKED_COPY}
+          </p>
+        )}
         <div class="draft-categories">
           {ALL_CATEGORIES.map((category: CategoryList): VNode => {
             const enabled: boolean = draft.rules.categories[category.id];
@@ -109,6 +123,7 @@ function BlockRules({ draft, categoriesEditable, onCategoryToggle }: RuleSummary
                   aria-label={category.title}
                   aria-pressed={enabled}
                   disabled={!categoriesEditable}
+                  aria-describedby={categoriesEditable ? undefined : CATEGORIES_LOCKED_ID}
                   onClick={(): void => onCategoryToggle(category.id)}
                 >
                   <span>{category.title}</span>

@@ -30,6 +30,7 @@ import type {
 import { type WebsiteAccessOutcome, websiteAccessOutcome } from '../shared/website-access-state';
 import { ActiveView } from './ActiveView';
 import { LifecycleView } from './LifecycleView';
+import { CATEGORIES_LOCKED_COPY } from './RuleSummary';
 import { StartForm } from './StartForm';
 import { useSnapshot } from './use-snapshot';
 
@@ -156,7 +157,7 @@ function Footer({ snapshot }: { snapshot: SessionSnapshot }): VNode {
   );
 }
 
-function IdleView({ startsDisabled }: { startsDisabled: boolean }): VNode {
+function IdleView(): VNode {
   const [settings, setSettings]: [Settings | null, Dispatch<StateUpdater<Settings | null>>] =
     useState<Settings | null>(null);
   const [lists, setLists]: [ListsConfig | null, Dispatch<StateUpdater<ListsConfig | null>>] =
@@ -197,16 +198,11 @@ function IdleView({ startsDisabled }: { startsDisabled: boolean }): VNode {
   }
   return (
     <>
-      <StartForm
-        settings={settings}
-        lists={lists}
-        categoriesEditable={listsEditable}
-        startsDisabled={startsDisabled}
-      />
+      <StartForm settings={settings} lists={lists} categoriesEditable={listsEditable} />
       {loadError ? (
         <p class="form-error" role="alert">
           Could not load session settings. Reload the popup to try again. Defaults are shown.
-          {!listsEditable ? ' Category editing is disabled until blocked-site lists reload.' : ''}
+          {!listsEditable ? ` ${CATEGORIES_LOCKED_COPY}` : ''}
         </p>
       ) : null}
     </>
@@ -245,7 +241,7 @@ function Body({
   if (journal !== null) {
     return <LifecycleView snapshot={snapshot} now={now} dataClear={journal} />;
   }
-  if (snapshot.lifecycle.kind === 'idle') return <IdleView startsDisabled={false} />;
+  if (snapshot.lifecycle.kind === 'idle') return <IdleView />;
   if (snapshot.lifecycle.kind === 'active') return <ActiveView snapshot={snapshot} now={now} />;
   return <LifecycleView snapshot={snapshot} now={now} dataClear={dataClear} />;
 }

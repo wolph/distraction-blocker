@@ -9,33 +9,70 @@ import {
   parseEventExportResponse,
 } from '../shared/runtime-validation';
 import { updateTheme } from '../shared/theme';
-import type { EventRecord, PauseEconomy, Settings, ThemeMode } from '../shared/types';
+import type {
+  EventRecord,
+  PauseEconomy,
+  SessionLifecycleV2,
+  Settings,
+  ThemeMode,
+} from '../shared/types';
 
 export interface StatsLoadState {
   bundle: StatsBundle | null;
   error: boolean;
 }
 
-/** One getStats request on mount feeds the whole page. */
+/** The stats bundle, refetched when the session lifecycle moves under an open page. */
 export function useStats(): StatsLoadState {
   const [bundle, setBundle]: [StatsBundle | null, Dispatch<StateUpdater<StatsBundle | null>>] =
     useState<StatsBundle | null>(null);
   const [error, setError]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
-  useEffect((): void => {
-    sendRequest({ type: 'getStats', days: 30 })
-      .then((loaded: unknown): void => {
-        if (isStatsBundle(loaded)) {
-          setBundle(loaded);
-          setError(false);
-        } else {
+  useEffect((): (() => void) => {
+    const load: () => void = (): void => {
+      sendRequest({ type: 'getStats', days: 30 })
+        .then((loaded: unknown): void => {
+          if (isStatsBundle(loaded)) {
+            setBundle(loaded);
+            setError(false);
+          } else {
+            setBundle(null);
+            setError(true);
+          }
+        })
+        .catch((): void => {
           setBundle(null);
           setError(true);
-        }
-      })
-      .catch((): void => {
-        setBundle(null);
-        setError(true);
-      });
+        });
+    };
+    load();
+    /**
+     * The session log's Running chip and every tile come from this bundle, so a Stats tab left
+     * open through the end of a session kept describing it as running. The page already receives
+     * the broadcast that says otherwise.
+     *
+     * The refetch is on the lifecycle kind rather than on every broadcast, because the snapshot
+     * moves on each tick and each blocked attempt, and none of those changes a finished row. A
+     * session starting, ending, or entering cleanup does.
+     */
+    let lastKind: SessionLifecycleV2['kind'] | null = null;
+    const onBroadcast: (message: unknown) => void = (message: unknown): void => {
+      if (
+        typeof message !== 'object' ||
+        message === null ||
+        !('type' in message) ||
+        message.type !== 'stateChanged' ||
+        !('snapshot' in message) ||
+        !isSessionSnapshot(message.snapshot)
+      ) {
+        return;
+      }
+      const kind: SessionLifecycleV2['kind'] = message.snapshot.lifecycle.kind;
+      const changed: boolean = lastKind !== null && lastKind !== kind;
+      lastKind = kind;
+      if (changed) load();
+    };
+    chrome.runtime.onMessage?.addListener(onBroadcast);
+    return (): void => chrome.runtime.onMessage?.removeListener(onBroadcast);
   }, []);
   return { bundle, error };
 }

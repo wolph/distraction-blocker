@@ -24,6 +24,10 @@ import {
 } from './overlay-host';
 import { OVERLAY_TICK_MS } from './overlay-styles';
 
+/** Ids inside the overlay's own shadow root, where `aria-describedby` resolves. */
+const GATE_WAIT_ID: string = 'focus-lock-gate-wait';
+const PHRASE_TEXT_ID: string = 'focus-lock-gate-phrase';
+
 type ActiveOverlayView = Extract<DocumentOverlayView, { presentation: 'active' }>;
 type StartingOverlayView = Extract<DocumentOverlayView, { presentation: 'starting' }>;
 type ActionRequest = Extract<
@@ -365,6 +369,7 @@ function buildGate(
   appendLine(wrap, 'gate-title', view.copy.gateTitle ?? '');
   const ring: { waitWrap: HTMLElement; ringFill: SVGCircleElement; count: HTMLElement } =
     buildRing();
+  ring.waitWrap.id = GATE_WAIT_ID;
   wrap.appendChild(ring.waitWrap);
   const back: HTMLButtonElement = document.createElement('button');
   back.className = 'primary';
@@ -402,7 +407,7 @@ function appendPhrase(
 ): HTMLInputElement | null {
   if (gate.requiredPhrase === null) return null;
   appendLine(wrap, 'phrase-label', view.copy.gatePhraseLabel);
-  appendLine(wrap, 'phrase-text', gate.requiredPhrase);
+  appendLine(wrap, 'phrase-text', gate.requiredPhrase).id = PHRASE_TEXT_ID;
   const input: HTMLInputElement = document.createElement('input');
   input.className = 'phrase';
   input.type = 'text';
@@ -429,6 +434,11 @@ function updateGate(overlay: MountedOverlay, view: ActiveOverlayView, now: numbe
     gate.requiredPhrase === null ||
     (controls.phrase !== null && controls.phrase.value === gate.requiredPhrase);
   controls.confirm.disabled = !(ready && phraseOk);
+  // Both reasons the confirm refuses are already written on the panel, so it names the one that
+  // currently applies rather than leaving a disabled button with nothing said about it.
+  const describedBy: string | null = !ready ? GATE_WAIT_ID : phraseOk ? null : PHRASE_TEXT_ID;
+  if (describedBy === null) controls.confirm.removeAttribute('aria-describedby');
+  else controls.confirm.setAttribute('aria-describedby', describedBy);
 }
 
 function tick(): void {

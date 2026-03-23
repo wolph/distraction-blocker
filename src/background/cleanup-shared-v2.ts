@@ -256,10 +256,7 @@ function movedDocumentResetV2(reset: EpochResetOutcomeV2): boolean {
 }
 
 /** One acknowledgement becomes durable before the clear command it authorizes is sent. */
-async function recordEpochAckV2(
-  ports: RuntimePortsV2,
-  ack: DocumentEpochResetAck,
-): Promise<void> {
+async function recordEpochAckV2(ports: RuntimePortsV2, ack: DocumentEpochResetAck): Promise<void> {
   const runtime: RuntimeStateV2 = ports.runtime();
   await ports.writeRuntime(
     validatedCleanupRuntimeV2({

@@ -1,4 +1,6 @@
 import type { JSX } from 'preact';
+import type { ChartDatum } from './BarChart';
+import { ChartTable } from './ChartTable';
 
 export interface HourlyHeatStripProps {
   values: number[];
@@ -6,6 +8,8 @@ export interface HourlyHeatStripProps {
 
 const HOURS_PER_DAY: number = 24;
 const ACCESSIBLE_NAME: string = '24-hour blocked-attempt heat strip';
+/** The width the bar charts open their tables at, so every chart agrees. */
+const AUTO_OPEN_BELOW_PX: number = 560;
 
 function hourLabel(hour: number): string {
   return `${String(hour).padStart(2, '0')}:00`;
@@ -35,28 +39,19 @@ export function HourlyHeatStrip(props: HourlyHeatStripProps): JSX.Element {
           );
         })}
       </div>
-      <details class="chart-table">
-        <summary>View as table</summary>
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Category</th>
-              <th scope="col">Value</th>
-            </tr>
-          </thead>
-          <tbody>
-            {values.map((value: number, hour: number): JSX.Element => {
-              const label: string = hourLabel(hour);
-              return (
-                <tr key={label}>
-                  <th scope="row">{label}</th>
-                  <td>{value} blocked</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </details>
+      {/*
+       * The same table the bar charts use, including its narrow-width opening. This is the one
+       * chart that prints no values at all, so it is the one whose table matters most: the strip
+       * carries everything through `--intensity` and an `aria-label` with no data in it.
+       */}
+      <ChartTable
+        autoOpenBelow={AUTO_OPEN_BELOW_PX}
+        className="chart-table"
+        data={values.map(
+          (value: number, hour: number): ChartDatum => ({ label: hourLabel(hour), value }),
+        )}
+        format={(value: number): string => `${value} blocked`}
+      />
     </div>
   );
 }

@@ -1,5 +1,12 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import {
+  type Dispatch,
+  type StateUpdater,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'preact/hooks';
 import type { CommandResponseV2, SessionCommandResultCodeV2 } from '../shared/messages';
 import type { EndAuthorityV2, GateKind, GateState } from '../shared/types';
 
@@ -69,6 +76,9 @@ export function GatePanel({
     useState<boolean>(false);
   const requestInFlight: { current: boolean } = useRef<boolean>(false);
   const backButton: { current: HTMLButtonElement | null } = useRef<HTMLButtonElement>(null);
+  const panelId: string = useId();
+  const waitId: string = `gate-wait-${panelId}`;
+  const phraseId: string = `gate-phrase-${panelId}`;
 
   const totalS: number = Math.max(1, Math.round((gate.readyAt - gate.openedAt) / 1000));
   const elapsedS: number = Math.min(totalS, Math.max(0, Math.floor((now - gate.openedAt) / 1000)));
@@ -110,6 +120,17 @@ export function GatePanel({
     if (active === null || active === document.body) backButton.current?.focus();
   }, []);
 
+  /**
+   * The confirm button refuses for three reasons and used to name only the countdown, so a
+   * person whose typed phrase does not match yet met a disabled button with nothing said about
+   * it. Both live explanations already exist on the page: point at whichever one applies.
+   */
+  const confirmDescribedBy: string | undefined = !ready
+    ? waitId
+    : !phraseOk && gate.requiredPhrase !== null
+      ? phraseId
+      : undefined;
+
   const abandon: () => void = (): void => {
     void requestGateUpdate({ type: 'abandonGate' });
   };
@@ -125,7 +146,7 @@ export function GatePanel({
     <div class="gate-panel">
       {intention !== '' ? <p class="gate-intention">You said: {intention}</p> : null}
       {!ready ? (
-        <p class="gate-wait">
+        <p class="gate-wait" id={waitId}>
           A moment to decide: <span class="time">{elapsedS}</span> of {totalS} s
         </p>
       ) : null}
@@ -140,7 +161,7 @@ export function GatePanel({
       </button>
       {gate.requiredPhrase !== null ? (
         <label class="gate-phrase">
-          <span class="radio-hint">
+          <span class="radio-hint" id={phraseId}>
             {phraseLabel} {gate.requiredPhrase}
           </span>
           <input
@@ -154,6 +175,7 @@ export function GatePanel({
         type="button"
         class="gate-confirm"
         disabled={pending || !ready || !phraseOk}
+        aria-describedby={confirmDescribedBy}
         onClick={confirm}
       >
         {CONFIRM_LABELS[gate.kind]}

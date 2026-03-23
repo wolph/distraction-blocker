@@ -112,7 +112,7 @@ function clearDataError(
   value: unknown,
   scope: 'local-history' | 'synced-policy' | 'all',
 ): string | null {
-  if (!isRecord(value)) return 'Could not delete data. Try again.';
+  if (!isRecord(value)) return DATA_CLEAR_ERROR_COPY;
   const keys: string[] = Object.keys(value).sort();
   if (
     value.ok === true &&
@@ -132,7 +132,7 @@ function clearDataError(
   ) {
     return value.error;
   }
-  return 'Could not delete data. Try again.';
+  return DATA_CLEAR_ERROR_COPY;
 }
 
 /**
@@ -341,7 +341,7 @@ export function useSettingsStore(): SettingsStore {
           });
           error = clearDataError(response, scope);
         } catch {
-          error = 'Could not delete data. Try again.';
+          error = DATA_CLEAR_ERROR_COPY;
         }
         const refreshError: string | null = await refreshSetup();
         return error ?? refreshError;

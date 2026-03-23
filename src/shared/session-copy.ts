@@ -10,6 +10,23 @@ export const UNTIL_STOPPED_DISCLOSURE: string =
   'Until stopped sessions use Flexible blocking and cannot use focus and break cycles.';
 export const END_SESSION_LABEL: string = 'End session';
 
+/**
+ * The accessible names of the two forced groups. Both the popup start form and the schedule
+ * editor render them, and a screen reader is the only place they are heard, so a copy that
+ * drifted in one file would be invisible to sighted review.
+ */
+export const FORCED_TYPE_LABEL: string = 'Session type forced by Until stopped';
+export const FORCED_CYCLES_LABEL: string = 'Cycles forced by Until stopped';
+
+/**
+ * The two blocking modes, named once. The start button reads the same pair the mode radios
+ * render, so renaming one used to leave the button and the radio disagreeing.
+ */
+export const MODE_LABELS: { blacklist: string; whitelist: string } = {
+  blacklist: 'Block selected sites',
+  whitelist: 'Allow selected sites only',
+};
+
 /** Clock labels. Focus time is wall-clock time in the focus phase. */
 export const FOCUS_TIME_LABEL: string = 'Focus time';
 export const FOCUS_PHASE_CLOCK_LABEL: string = 'focus phase';

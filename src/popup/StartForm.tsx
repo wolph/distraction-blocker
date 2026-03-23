@@ -7,7 +7,13 @@ import {
   sendRequest,
 } from '../shared/messages';
 import { isListsConfig } from '../shared/runtime-validation';
-import { UNTIL_STOPPED_DISCLOSURE, UNTIL_STOPPED_FORCED_HINT } from '../shared/session-copy';
+import {
+  FORCED_CYCLES_LABEL,
+  FORCED_TYPE_LABEL,
+  MODE_LABELS,
+  UNTIL_STOPPED_DISCLOSURE,
+  UNTIL_STOPPED_FORCED_HINT,
+} from '../shared/session-copy';
 import type {
   CategoryId,
   CycleConfig,
@@ -54,18 +60,15 @@ interface ModeChoice {
 const MODE_CHOICES: readonly ModeChoice[] = [
   {
     value: 'blacklist',
-    label: 'Block selected sites',
+    label: MODE_LABELS.blacklist,
     hint: 'The selected categories and extra rules are blocked. Other sites remain available.',
   },
   {
     value: 'whitelist',
-    label: 'Allow selected sites only',
+    label: MODE_LABELS.whitelist,
     hint: 'Only the listed sites are available. Every other website is blocked.',
   },
 ];
-
-const FORCED_TYPE_LABEL: string = 'Session type forced by Until stopped';
-const FORCED_CYCLES_LABEL: string = 'Cycles forced by Until stopped';
 const INVALID_DURATION_ERROR: string = 'Enter a session length greater than zero minutes.';
 const STALE_LISTS_UNAVAILABLE_COPY: string =
   'Defaults changed, but current lists could not be loaded. Reload the popup.';
@@ -74,7 +77,6 @@ export interface StartFormProps {
   settings: SettingsV2;
   lists: ListsConfig;
   categoriesEditable?: boolean;
-  startsDisabled?: boolean;
 }
 
 /**
@@ -91,12 +93,7 @@ function applyDraftDuration(draft: StartDraft, next: DraftDuration): StartDraft 
   return setCustomMinutes(restored, next.customMin);
 }
 
-export function StartForm({
-  settings,
-  lists,
-  categoriesEditable = true,
-  startsDisabled = false,
-}: StartFormProps): VNode {
+export function StartForm({ settings, lists, categoriesEditable = true }: StartFormProps): VNode {
   const [draft, setDraft]: [StartDraft, Dispatch<StateUpdater<StartDraft>>] = useState<StartDraft>(
     (): StartDraft => createStartDraft(settings, lists),
   );
@@ -130,7 +127,7 @@ export function StartForm({
   };
 
   const start: () => Promise<void> = async (): Promise<void> => {
-    if (starting || startsDisabled) return;
+    if (starting) return;
     const config: SessionConfigV2 | null = toSessionConfigV2(draft);
     if (config === null) {
       setError(INVALID_DURATION_ERROR);
@@ -279,7 +276,7 @@ export function StartForm({
         <button
           type="button"
           class="start-button"
-          disabled={starting || startsDisabled}
+          disabled={starting}
           onClick={(): void => void start()}
         >
           {startLabel(draft)}
