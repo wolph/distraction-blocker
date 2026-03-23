@@ -151,6 +151,81 @@ async function confirmOpenGate(
   return controller.confirmGate(ports.current().gate?.requiredPhrase ?? null);
 }
 
+describe('SessionControllerV2 writes around an outstanding commit checkpoint', (): void => {
+  /** The checkpoint an in-flight commit leaves in the runtime, projecting the runtime it saw. */
+  function outstandingCheckpoint(runtime: RuntimeStateV2): RuntimeStateV2 {
+    return {
+      ...structuredClone(runtime),
+      commitCheckpoint: {
+        version: 2,
+        checkpointId: `${runtime.enforcementEpoch}:live-${String(runtime.runtimeRevision)}`,
+        projection: {
+          session: structuredClone(runtime.session),
+          gate: structuredClone(runtime.gate),
+          unlocks: structuredClone(runtime.unlocks),
+          accruedFocusMs: runtime.accruedFocusMs,
+          handledScheduleOccurrences: structuredClone(runtime.handledScheduleOccurrences),
+          enforcementEpoch: runtime.enforcementEpoch,
+          epochResetAcks: structuredClone(runtime.epochResetAcks),
+          basePolicyRevision: runtime.basePolicyRevision,
+          runtimeRevision: runtime.runtimeRevision,
+          documentCommands: structuredClone(runtime.documentCommands),
+          enforcementCheckpoint: structuredClone(runtime.enforcementCheckpoint),
+          pendingEnforcementTransition: null,
+          pendingClosure: null,
+        },
+        bank: { balanceMs: 0 },
+        events: [],
+        syncBank: false,
+        aggregateSets: {},
+        aggregateRemoves: [],
+      },
+    };
+  }
+
+  it('hands a pulling document its epoch reset while a commit is in flight', async (): Promise<void> => {
+    // The acknowledgement is part of the projected domain, so writing one on top of a runtime that
+    // still carries an in-flight commit's checkpoint broke the checkpoint's own equality and the
+    // write was refused. The document then got its reset again on every later pull, forever, while
+    // the overlay it rendered looked perfectly correct.
+    const { controller, ports } = harness(outstandingCheckpoint(publishedFocusRuntime()), {
+      tabs: [{ tabId: 12, url: BLOCKED_URL, documentId: DOC_BLOCKED }],
+    });
+
+    const commands: DocumentContentCommand[] = await controller.documentCommandsFor(
+      { tabId: 12, documentId: DOC_BLOCKED, url: BLOCKED_URL },
+      'navigation',
+      'deliver',
+    );
+
+    expect(commands.map((command: DocumentContentCommand): string => command.command)).toEqual([
+      'reset-enforcement-epoch',
+      'apply-enforcement',
+    ]);
+    // The acknowledgement is durable, so the next pull owes this document no second reset.
+    expect(ports.current().epochResetAcks[documentKey(12, DOC_BLOCKED)]).toBeDefined();
+    expect(parseRuntimeStateV2(ports.current())).not.toBeNull();
+  });
+
+  it('refreezes a document that navigated within itself while a commit is in flight', async (): Promise<void> => {
+    const runtime: RuntimeStateV2 = outstandingCheckpoint(publishedFocusRuntime());
+    const { controller, ports } = harness(runtime, {
+      tabs: [{ tabId: 11, url: SECOND_TARGET_URL, documentId: DOC_ONE }],
+    });
+
+    await controller.documentCommandsFor(
+      { tabId: 11, documentId: DOC_ONE, url: SECOND_TARGET_URL },
+      'navigation',
+      'deliver',
+    );
+
+    expect(ports.current().documentCommands[documentKey(11, DOC_ONE)]?.expectedUrl).toBe(
+      SECOND_TARGET_URL,
+    );
+    expect(parseRuntimeStateV2(ports.current())).not.toBeNull();
+  });
+});
+
 describe('SessionControllerV2 document pull under a journal', (): void => {
   it('adds a document the durable clear batch does not name and hands it the clear', async (): Promise<void> => {
     // The map is the frozen clear batch while a journal is durable, and the validators require the
