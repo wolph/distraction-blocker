@@ -302,7 +302,9 @@ export const INDEFINITE_VISUAL_STATE_DEFINITIONS: readonly IndefiniteVisualState
     id: 'popup-data-clear-start-refused',
     surface: 'popup',
     determinism: 'fixed-snapshot',
-    focusSelector: '.form-error',
+    // The refusal and the button it answers, because the sentence alone crops to a line of text
+    // that says nothing about where the user met it.
+    focusSelector: '.start-form__actions',
   },
   {
     id: 'overlay-active-indefinite',

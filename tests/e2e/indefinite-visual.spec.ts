@@ -308,10 +308,23 @@ function popupFixtures(
     });
   }
 
+  // The published snapshot is seconds old, which renders every clock as `0:00` and every total as
+  // zero. The evidence is for a person reading a running session, so the focus states are placed
+  // three quarters of an hour in: the boundary requires the focused time to cover the phase and to
+  // fit inside the session, and a session that has only ever been focusing satisfies both exactly.
+  const focusedFor: number = 45 * 60_000;
+  const runningLong: Partial<SessionSnapshotV2> = {
+    startedAt: FIXED_NOW - focusedFor,
+    phaseStartedAt: FIXED_NOW - focusedFor,
+    sessionFocusedMs: focusedFor,
+  };
+  // The active view draws its clock immediately and fills today's focus total from the worker a
+  // moment later, so a capture taken on the clock alone shows the total present or absent depending
+  // on which won the race. Every active state waits on the total instead.
   fixtures.set('popup-active-indefinite-focus', {
     setup,
-    snapshot: active,
-    visible: '.clock-stack',
+    snapshot: fixedSnapshot(active, theme, runningLong),
+    visible: '.today-line',
   });
   fixtures.set('popup-active-indefinite-pause', {
     setup,
@@ -326,19 +339,20 @@ function popupFixtures(
       sessionFocusedMs: 18 * 60_000,
       bankAccrualPerMs: 0,
     }),
-    visible: '.clock-stack',
+    visible: '.today-line',
   });
   fixtures.set('popup-active-50-dual-clocks', {
     setup,
     snapshot: cycling,
-    visible: '.clock-stack',
+    visible: '.today-line',
   });
   fixtures.set('popup-long-copy', {
     setup,
     snapshot: fixedSnapshot(active, theme, {
+      ...runningLong,
       config: active.config === null ? null : { ...active.config, intention: LONG_INTENTION },
     }),
-    visible: '.clock-stack',
+    visible: '.today-line',
   });
 
   const cleanup: Array<[IndefiniteVisualState, 'closure' | 'transition']> = [
