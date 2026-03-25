@@ -1,205 +1,261 @@
 # Focus Lock QA checklist
 
-Last updated: 2026-09-01. The full visual browser evidence below targets exact source commit `c87383f1cd441a9ecc2d175daa3df9e4b8825b3d`. That run started from a clean worktree at the same commit as `master` and ended on that commit. It used isolated headless Chrome-for-Testing 151.0.7922.34 profiles and did not touch the user's Chrome.
+This document is a sign-off, so it is organised by who can be responsible for each claim rather
+than by feature. That is the change: it used to mix machine facts, human judgements and outstanding
+tasks in one list of prose paragraphs, and the machine facts rotted silently while the reader had no
+way to tell which claims were still true.
 
-## Exact automated gates
+Three sections, three kinds of responsibility.
 
-- [x] `NO_COLOR=1 npm run check` passed with 56 test files, 1,139 tests passed, and 2 skipped. Biome, TypeScript, deterministic icon generation, and the production build passed.
-- [x] `NO_COLOR=1 npm run e2e` rebuilt the extension and passed all 30 Playwright scenarios in isolated Chrome-for-Testing profiles.
-- [x] The exact visual and behavior run recorded 568 artifacts, including 207 surface captures and 78 hover or focus interactions. The generated review set contains 42 contact sheets.
-- [x] The report records `sameHead: true`, all three clean exact-source checks as true, and a fresh-build distribution hash match.
+1. **Machine-verified inventory.** Generated. Nobody signs it, and a stale number fails a test.
+2. **Signed judgements.** What a person looked at and concluded. Small, and re-signed when the
+   surface it covers changes.
+3. **Manual gate.** What no automation can do. Tasks rather than measurements, so it cannot rot.
 
-## Runtime permission onboarding evidence
+Anything not in one of the three is not a sign-off claim. Evidence paths appear only where the
+evidence is durable, and where it is not, this document says so rather than pointing at a location
+that no longer holds anything.
 
-Task 5 fixes are recorded in commit `364560292daa58f327802aae40082556aaa6128b` with Google Chrome for Testing 151.0.7922.34. Every browser run used an isolated Playwright profile and did not touch the user's Chrome. The verification ran in the shared integration worktree with this commit checked out plus preserved in-progress Task 2 popup edits. The results validate that integrated state, not a clean exact tree for this commit alone.
+## Machine-verified inventory
 
-- [x] `npm run build && npx playwright test tests/e2e/onboarding.spec.ts tests/e2e/restart.spec.ts` passed all 7 scenarios in 45.9 seconds. It covered a fresh install without host access, the incomplete popup, delayed onboarding loading and step transitions, denial and retry, a granted dynamic registration, local and Sync completion, browser restart, permission revocation, rejected session start after revocation, a real blocked page after grant, and restored blocking after restart.
-- [x] The real Chrome Sync quota scenario filled only test-owned keys, preserved unrelated Sync data, forced first publication to fail, and kept setup incomplete with local choices, the pending journal, and the checkpoint intact. The state survived a protocol-level background-worker stop and a browser restart. Removing only the test filler allowed retry. Both recovered local and remote settings and lists matched the captured pre-failure local snapshot.
-- [x] Playwright cannot attach listeners before `launchPersistentContext` returns. The fixture attaches page, worker, and context-level request listeners immediately after launch, then forces a monitored worker stop and restart before behavior assertions for every production, temporary permission, and restart launch. The onboarding and restart scenarios recorded zero browser console, page, worker, request, and blocked-request errors through monitored worker boot, initial navigation, permission-bootstrap launches, and restarts.
-- [x] Every final browser context closed before fixture diagnostics were asserted. Teardown failures and diagnostics failures are aggregated. Shutdown-only worker messages are retained in a separate bucket and accepted only when they exactly equal `focus-lock background error Error: The browser is shutting down.`
-- [x] `NO_COLOR=1 npm run check` passed 68 test files with 1,734 tests passed and 2 skipped. Biome, TypeScript, deterministic icon generation, and the production build passed.
-- [x] `NO_COLOR=1 npm run e2e` rebuilt the extension and passed all 37 Playwright scenarios in 3.8 minutes.
-- [x] Automated grant setup launched a test-only copy of the same extension ID with required HTTP and HTTPS host permissions, then relaunched the production optional-permission manifest. This exercised Chrome's persisted permission state, dynamic registration, revocation, and enforcement without faking extension APIs.
-- [x] Task 6 captured the native Chrome permission warning in a headed, isolated Chrome-for-Testing 151.0.7922.34 profile. The prompt was absent before clicking `Enable website blocking`, appeared only after that click, disappeared after `Deny`, reappeared after `Retry`, and disappeared after `Allow`. The user's regular Chrome was not attached, quit, restarted, or modified.
+<!-- BEGIN GENERATED: scripts/qa-checklist.mjs -->
 
-## Onboarding visual and native permission evidence
+Derived by `node scripts/qa-checklist.mjs`, guarded by
+`tests/unit/docs/qa-checklist-contract.test.ts`. Nobody signs this section. Every number here
+is asked of the runner, or of the glob the runner is configured with, so a stale one fails a
+test rather than misleading a reader.
 
-Task 6 verified the three-step onboarding UI from initial implementation commit `a5677ad`, permission-copy fix commit `c39029868c79e5dad1ced2ce99ff36de10493f24`, evidence-integrity fix commit `ed37f9848c5278ca1d550dc583647e26218201cd`, and verifier and observation fix commit `fa6a34d5409da610f80089213ffa1b0302dd4ab7`. The checks covered the production extension, the Vite development server, and a separate headed release-build launch. The longest bundled domain, `store.steampowered.com`, is the long-value boundary because onboarding deliberately offers bundled category choices rather than custom-domain entry.
+Unit suite: **162 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
+`vitest.config.ts` declares. The number of individual test cases is deliberately not recorded:
+deriving it means collecting every file, which is the expensive half of a run, and a number
+that needs a run to verify is exactly the kind that went stale here four times.
 
-- [x] `npx vitest run tests/unit/onboarding/theme-entry.test.ts tests/unit/onboarding/visual-evidence-manifest.test.ts` passed all 9 tests. Saved Light and Dark themes load through the validated settings message boundary, invalid or failed loads retain Auto, valid live snapshots update the onboarding theme, dark media gets its dark palette before the Auto attribute is applied, manifests hash only real PNG payloads, and false PNG filenames are rejected.
-- [x] `npm run build` followed by `FOCUS_LOCK_E2E_DIST=<isolated-build> npx playwright test tests/e2e/onboarding-visual.spec.ts` passed the production visual scenario in 28.9 seconds in an isolated Chrome-for-Testing profile. It captured every seeded state at 375, 768, and 1280 px in Auto with light media, Auto with dark media, explicit Light with dark media, and explicit Dark with light media. The isolated build prevents another workstream's build from removing shared `dist/` files during the run.
-- [x] Production coverage includes all three steps, an expanded Gaming category, the exact permission explanation, denied access, registration failure, Retry, Not now, Sync on and off, pending completion, invalid-draft recovery, and load-error recovery. The run captured 372 full-page, heading, explanation, list, error, button, and switch PNGs. It reported zero overflow, clipping, console errors, page errors, worker errors, request failures, and blocked requests.
-- [x] The production manifest makes no blanket no-mock claim. It records two scoped `chrome.runtime.sendMessage` interceptions: 12 observed `completeOnboarding` calls held pending for the pending-completion UI, and 12 observed first `getSetupState` calls failed for the load-error and successful Retry UI. A page binding was exposed before wrapper injection. Each wrapper called it only after matching the exact state and request type, and the test waited for the callback before capture. Manifest totals derive only from those callback records. A regression confirms that visible pending or error UI without a callback leaves both totals at zero. Every other call passed through to the real extension.
-- [x] The E2E fixture resolves the extension build once with precedence explicit override, `FOCUS_LOCK_E2E_DIST`, then repository `dist/`. It passes that resolved build to production, temporary permission-grant, and restart launches. The environment-only grant-dist regression copied a unique marker and produced the required-permission manifest without reading repository `dist/`. The isolated-environment Chromium grant scenario then retried denied access, completed setup, and blocked a real page.
-- [x] `npx vitest run tests/unit/onboarding/visual-evidence-manifest.test.ts tests/unit/e2e/extension-dist.test.ts tests/unit/onboarding/qa-evidence-verifier.test.ts` passed 21 tests. The archive adversarial cases reject duplicate, unexpected, traversal, symlink, hardlink, FIFO, block-device, character-device, socket, other special, declared-size mismatch, compressed oversize, per-file oversize, excess-member, and expanded-size inputs before extraction.
-- [x] The fix verification rebuilt the extension and passed `FOCUS_LOCK_E2E_DIST=<isolated-build> npx playwright test tests/e2e/onboarding-visual.spec.ts` in 23.9 seconds. The separate environment-selected permission-grant scenario passed in 5.1 seconds. Scoped Biome, TypeScript, JavaScript syntax, the portable verifier, and all archive and standalone-manifest hashes passed. The tracked archives and manifests retained their documented hashes.
-- [x] The Vite development-server pass exercised the same 9 states in 108 state, theme, and viewport configurations. It captured 528 full-page, heading, list, explanation, error, button, switch, and viewport-edge PNGs. Computed colors, explicit-theme precedence, viewport containment, `store.steampowered.com` wrapping, the real `Not now` transition, load-error Retry, and browser diagnostics passed. This pass used an in-page Chrome API mock only to seed visual states.
-- [x] Representative full-page and focused captures were inspected at every width and in light and dark presentations. Headings, expanded lists, warning and recovery messages, button rows, the Sync switch, disabled pending-completion action, focus outlines, and viewport edges remained readable and contained.
+End-to-end suite: **82 scenarios in 15 spec files**, as Playwright itself
+lists them. Asking the runner rather than counting `test(` in the sources is not pedantry: a
+grep undercounts `test.skip`, which is listed and reported, and misses a spec file added
+since the grep was written. Both mistakes were present when this section was first drafted.
 
-Chrome-for-Testing 151.0.7922.34 displayed these exact browser-owned lines after the real `Enable website blocking` click:
+### blocked-navigation-load.spec.ts (1)
 
-- `"Focus Lock" has requested additional permissions.`
-- `It could:`
-- `Read and change all your data on all websites`
-- `Deny`
-- `Allow`
+- blocking still works after forty blocked navigations
 
-The onboarding explanation now reproduces Chrome's capability line exactly: `Read and change all your data on all websites`. No material capability is omitted. The surrounding onboarding copy additionally limits the product's stated use to checking addresses, applying blocking rules, and restoring pages.
+### blocking.spec.ts (5)
 
-Task 6 artifacts:
+- SPA history navigation is blocked without a reload
+- a blocked media tab is muted
+- a stopped tab reloads after the session ends
+- existing tab overlays, mutes, and resumes without reload
+- fresh navigation to a blocked site is stopped and overlaid
 
-- Portable evidence instructions and verifier: `docs/qa-artifacts/onboarding-task6/README.md` and `docs/qa-artifacts/onboarding-task6/verify.mjs`. Run `node docs/qa-artifacts/onboarding-task6/verify.mjs` on macOS or Linux. Before extraction, it validates the exact flat member set, member types, declared sizes, duplicates, paths, and compressed, count, per-file, and total-expanded safety bounds. Extraction disables owner and permission restoration.
-- Development-server archive: `docs/qa-artifacts/onboarding-task6/archives/e9212cbda6e84f19b8f4d998eba719380ea1faf9e4ab8517c18c67c2e7d98a7b.tar.gz`, 16,585,380 bytes, SHA-256 `e9212cbda6e84f19b8f4d998eba719380ea1faf9e4ab8517c18c67c2e7d98a7b`. Its standalone manifest is `docs/qa-artifacts/onboarding-task6/manifests/dev-server-manifest.json`, SHA-256 `3cbe2e5ed8bffd35cadf591a9b0d9722f897c039d85ad2cf6d9048c5f44ac13b`.
-- Production archive: `docs/qa-artifacts/onboarding-task6/archives/aefeeec2f37b11a342bf392d5df957cebb08f6fb20409a60ecad046b31233d4c.tar.gz`, 8,950,366 bytes, SHA-256 `aefeeec2f37b11a342bf392d5df957cebb08f6fb20409a60ecad046b31233d4c`. Its standalone manifest is `docs/qa-artifacts/onboarding-task6/manifests/production-manifest.json`, SHA-256 `aff6785cf48b23e285f619a62af58c8bfc67e242fbfaff8992af84e8680d0d39`.
-- Real browser-chrome evidence: `docs/qa-artifacts/onboarding-task6/real-prompt/` and `docs/qa-artifacts/onboarding-task6/manifests/real-prompt-manifest.json`, whose manifest SHA-256 is `041a35f7e8581bec4505e83c7b99f7c73ae4622b237b80d1dc218833e811acb9`. All six `.png` files contain PNG image data.
+### closure-reasons.spec.ts (4)
 
-The real prompt used headed Chrome-for-Testing 151.0.7922.34, unpacked production `dist/`, and the fresh isolated profile `/tmp/focus-lock-task6-prompt-final.7b0q5P`. Computer Use clicked the real extension controls and Chrome's browser-owned sheet. No Chrome API or prompt mock was used. The user's regular Chrome was not targeted or modified.
+- a migrated session with no valid v2 form ends as an invalid active state
+- a session whose documents cannot be reached ends as a tab enforcement failure
+- a session whose phase alarm cannot be held ends as an alarm failure
+- a session whose registration cannot be restored ends as a registration failure
 
-- Before click: `docs/qa-artifacts/onboarding-task6/real-prompt/permission-step-before-click.png`, 156,264 bytes, SHA-256 `350d20fa62932c604c4ce4de100130097667c548c31fd56df871bd08400eb04f`.
-- After click: `docs/qa-artifacts/onboarding-task6/real-prompt/real-permission-prompt.png`, 29,630 bytes, SHA-256 `60c458beff58b53faca4aedfd3fc8e06b0b9a020e1a56875ed615ef33df55048`.
-- After denial: `docs/qa-artifacts/onboarding-task6/real-prompt/after-deny.png`, 157,926 bytes, SHA-256 `a5b188078919c6da28d300ec77a7956fcbecf2fd624e526eb1fe9997367d46bb`.
-- After Retry: `docs/qa-artifacts/onboarding-task6/real-prompt/after-retry.png`, 29,630 bytes, SHA-256 `60c458beff58b53faca4aedfd3fc8e06b0b9a020e1a56875ed615ef33df55048`.
-- After grant: `docs/qa-artifacts/onboarding-task6/real-prompt/after-grant.png`, 155,471 bytes, SHA-256 `295963316595cb4d80a291297baa8994780a4695c8b9f76ad89f1997bfe0f9ef`.
+### gates.spec.ts (11)
 
-Task 5 artifacts are in `test-results/`:
+- Flexible session ending immediately removes an active block
+- abandoning a gate records a resisted temptation
+- friction cancellation with typing requires the configured phrase after its delay
+- friction cancellation without typing uses the configured delay
+- hard sessions reject cancellation gates
+- hard sessions reject weakening list changes
+- overlay unlock isolates another site and reblocks after expiry
+- pause gate rejects an early confirmation and unblocks after its delay
+- pause gate supports back to work, taking a pause, and resuming now
+- paused UI leaves when the session wall clock ends
+- zero delay removes the wait but still honors the typing setting
 
-- `test-results/.last-run.json`
-- `test-results/onboarding-fresh-install-h-1fd80--routes-to-unfinished-setup/`
-- `test-results/onboarding-denied-access-c-23193-cally-and-block-a-real-page/`
-- `test-results/onboarding-sync-completion-f5095-n-survive-a-browser-restart/`
-- `test-results/onboarding-permission-revo-bebe5-jects-another-session-start/`
-- `test-results/onboarding-quota-backed-fi-cfc63-rowser-restart-then-retries/`
-- `test-results/onboarding-setup-completio-b9e30-l-load-and-step-transitions/`
-- `test-results/restart-persistent-profile-88b20-ve-countdown-after-relaunch/`
+### indefinite-recovery.spec.ts (7)
 
-Playwright retains traces only on failure. The passing integrated run therefore records isolated profiles and `.last-run.json`, not a green trace archive.
+- a browser relaunch after a timed end closes the session at its own end instant
+- a browser relaunch after a timed end finishes its cleanup and allows the next session
+- a browser relaunch during indefinite focus keeps the session and counts the closed time
+- a scheduled indefinite session keeps its occurrence across a worker restart
+- a worker restart during an indefinite pause keeps the pause and still resumes
+- a worker restart during indefinite focus recovers the same session
+- a worker restart racing a start settles on exactly one outcome
 
-## Responsive Stats evidence
+### indefinite-visual.spec.ts (1)
 
-Task 5 verified Stats on 2026-09-01 with the current neutral labels and explicit local or Sync scope copy. Both browser passes used Playwright's bundled isolated Chromium. Neither pass attached to, closed, restarted, or modified the user's regular Chrome.
+- captures deterministic indefinite session visual evidence
 
-- [x] The seed matrix covers no activity in local mode, one active hour in Sync mode, and all 24 active hours in local mode. The boundary state includes seven-digit attempt values, a 72-character domain, one completed session, and one session ended early. Development and production use the same frozen timestamp, `2026-09-01T10:00:00.000Z`. August 31 retains current streak 1, while the visible active month is September with zero active days. Every record stores the timestamp and a per-state seed SHA-256. The isolated page and production worker clocks first audit a simulated host time of `2026-10-02T10:00:00.000Z`, then freeze `Date.now()` at the seed timestamp before any Stats module, `getStats` request, or capture. The normal product runtime clock is unchanged.
-- [x] The source-module command `STATS_DEV_EVIDENCE_DIR=artifacts/stats-task5/dev NO_COLOR=1 node scripts/capture-stats-dev-evidence.ts` passed twice with an exact 216-screenshot inventory. The consecutive directories were byte-for-byte identical with canonical tree SHA-256 `4b340c2fb52a65f5c5fdcb05d41a932ca7dee019a5cc928c4903b3a9ef5ec2ee` and report SHA-256 `d248a814f06e4a09b5047948318838518da51f72f3075eb4c476cea0f0f77216`. It starts an owned strict-port Vite child on port 4178, uses software compositing in the isolated evidence browser, requires both owned ready output and an HTTP response, and awaits bounded teardown through the existing Task 7 process helper. It writes the report only after the owned page, context, browser, and Vite process close.
-- [x] The production command `NO_COLOR=1 npm run build && STATS_EVIDENCE_DIR=artifacts/stats-task5/production STATS_CURATED_IMAGE=docs/images/focus-lock/stats.png NO_COLOR=1 npx playwright test tests/e2e/qa-flows.spec.ts --grep "Task 5 Stats responsive evidence matrix" --reporter=line` passed twice in 1.1 and 1.3 minutes. The consecutive directories were byte-for-byte identical with canonical tree SHA-256 `b241b0eca7f562c074c06deec0269b20fff43b0ab50187f6bba3dfb81290b86c` and report SHA-256 `08b1e6d430d7d93a9f6d7f97a9f6139a1e731060ba9f841b3ba8a541d7eb8f90`. It used the freshly built Manifest V3 extension with software compositing only in the isolated evidence launch, closed its owned Stats page and browser context before certification, and wrote an independent 216-screenshot inventory. The existing Task 7 production matrix remains an exact 356-record contract.
-- [x] Each 216-file inventory covers 3 states, all 4 theme and media combinations, widths 375, 768, and 1280 px, and 6 capture scopes. The scopes are full page, tiles or the empty summary, heat strip, charts, all chart tables, and responsive session records. The table capture opens every rendered disclosure, proves every table has rows, and includes all rendered tables. No focused capture substitutes a hidden or nonexistent component.
-- [x] Both 36-case geometry reports record a minimum computed visible chart-text size of 12 CSS px and zero document horizontal overflow. Each case also records a deterministic structured snapshot and SHA-256 of rendered body, card, disclosure, table, and resolved-theme state. Development and production match exactly for every state, theme, and viewport. At 375 and 768 px, populated states record the wide session table as hidden, the responsive articles as visible, and exact equality for every article's `clientWidth` and `scrollWidth`. At 1280 px, the table is visible with equal `clientWidth` and `scrollWidth`, while its duplicate articles occupy zero width.
-- [x] Every rendered chart-table disclosure received keyboard focus, changed open state with Space, stabilized, and changed back with Space. Production evidence exposed a ResizeObserver loop that reopened a keyboard-closed mobile table after its content resize. The observer now auto-opens only when crossing into the narrow layout. A focused same-width callback regression failed before the fix and passes after it.
-- [x] Development and production reports each contain zero console, page, worker, request, and blocked-request diagnostics. The development report SHA-256 is `d248a814f06e4a09b5047948318838518da51f72f3075eb4c476cea0f0f77216`. The production report SHA-256 is `08b1e6d430d7d93a9f6d7f97a9f6139a1e731060ba9f841b3ba8a541d7eb8f90`. The tracked verifier requires schema 3, exact report and nested JSON keys and types, the exact five safe-integer zero diagnostic keys, exactly 216 PNGs plus one named self-excluded report, and the exact unique 36-record state, theme, width, and height geometry inventory. It reruns every geometry assertion, resolves each declared state through the tracked state matrix, and rejects session-presence values that contradict that state. It verifies each rendered snapshot against its SHA-256 and structured contract, requires consistent build and seed identities, and rejects empty or fractional diagnostics, 1 px chart text, 999 px overflow, duplicate or missing geometry, bad keys or types, and rendered hash mutation. PNGJS fully decodes every PNG with CRC checking before staged publication and again after final publication. Each run is anchored to an explicit repository root, validates every path component, supports clean-clone directory creation, and rejects symlink ancestors or staging swaps. One outer cleanup boundary removes staging and invalidates the report after any failure, including a post-publish PNG mutation. The curated image is staged and atomically replaced before evidence publication, so copy failure cannot leave a certified report.
-- [x] Run `node scripts/hash-stats-evidence.ts dev` and `node scripts/hash-stats-evidence.ts production` to reproduce the canonical tree digests independently. The helper serializes one compact JSON record per file with fixed key order `bytes`, `file`, and `sha256`. Records use evidence-relative POSIX filenames, sort by filename, end with LF, and form the exact UTF-8 manifest whose SHA-256 the command reports.
-- [x] `docs/images/focus-lock/stats.png` is a verified full-page 1280 px production capture of the all-hours boundary state in explicit Dark with light operating-system media, SHA-256 `525c7ca164ca6aab2a5629ac8442d64f608848774d1de64ea90cc1e42e155390`. It remained byte-identical across consecutive production commands and shows current labels, local-only scope copy, September's zero active days, tiles, readable charts, the 24-hour heat strip, seven-digit values, and completed or ended-early session outcomes.
-- [x] `NO_COLOR=1 npm run check` passed 88 test files with 2,028 tests passed and 2 skipped. Biome, TypeScript, deterministic icon generation, and the production build passed.
-- [x] `NO_COLOR=1 npm run e2e` rebuilt the extension and passed all 46 Playwright scenarios in 5.5 minutes. The integrated run included the unchanged 356-record Task 7 matrix and the 216-record Task 5 Stats matrix.
+### indefinite.spec.ts (12)
 
-## Daily product surface evidence
+- a 50 minute cycling session labels its phase and its session separately
+- a pause that expires resumes indefinite focus with no end in sight
+- a scheduled until-stopped window starts once and never relocks inside itself
+- a stopped fresh navigation carries the indefinite and stopped-page copy
+- an indefinite pause freezes focus time and still ends from the popup
+- end authority follows the session type a timed session was started with
+- manual end reasons separate a timed cancel from an indefinite completion
+- manual until-stopped start forces the flexible plan and reports it everywhere
+- popup End completes the indefinite session manually and silently
+- settings reports the indefinite session and discloses that the popup owns it
+- stats reports the indefinite plan and both manual outcomes
+- the indefinite blocked page hands every ending to the popup
 
-Task 7 verified the integrated daily-use Popup, Options, Stats, gate, existing-page overlay, stopped-document overlay, and Privacy surfaces on 2026-09-01. The run used isolated headless Chrome-for-Testing 151.0.7922.34 profiles. It did not attach to, close, restart, or modify the user's regular Chrome. The category separator correction is commit `fb95ed746bdda7ed86556e13ebfddab366ea77aa`. The clean save-bar correction is commit `c2f9dbf8dc10ac12e94420c507088c7c97a4e6c9`. Commit `bf70b93743917efd20b842fda67d67a4fc3b4026` reserves a separate internal-scroll content row for dirty, pending, and error save bars. Commit `005f598bb1a52431c65f691104b70ae82bef0512` fixes the remaining transition boundary by anchoring that layout to the viewport after a previously scrolled document becomes internally scrollable. The same commit lets an already admitted persisted snapshot drain after a data-clear barrier starts synchronously. Commit `26126a6f4ff04647eaced56fb7753aa16e2560e9` remains the original persisted-snapshot serialization fix.
+### onboarding-visual.spec.ts (1)
 
-- [x] The first focused Options geometry assertion failed at 375 px because every collapsed `.category-state` started 6 px above its preceding `.cat-row` bottom border. Changing `.category-state` from `margin: -6px 0 10px 28px` to `margin: 0 0 10px 28px` made the assertion pass. The historical RED capture is excluded from the exact current inventory. The reproducible GREEN capture is `artifacts/daily-product-surfaces-task7/task7-dev-current-options-auto-light-375-partial-dirty-full.png`.
-- [x] The reproducible development command is `TASK7_DEV_EVIDENCE_DIR=artifacts/daily-product-surfaces-task7 node scripts/capture-task7-dev-evidence.ts`. It starts strict-port Vite from source modules and launches Playwright's bundled Chromium, not regular Chrome. Readiness requires both the owned Vite child's ready output and a successful response, so an unrelated listener on port 4177 cannot be mistaken for the harness. Teardown awaits the owned child after `SIGTERM`, escalates to `SIGKILL` only after a bounded timeout, and fails if the process still does not exit. It captures an exact 320-file set: 56 native-340 Popup, 72 Options, 72 Privacy, 24 overlay provenance, and 96 current Stats, typed and untyped gate, and stopped-overlay PNGs. `task7-dev-current-run-report.json` inventories every development PNG with SHA-256, byte size, complete PNG dimensions, source, theme, media, viewport, surface, state, scope, exact-copy assertions, computed background, foreground, and color-scheme assertions, and per-file diagnostics. The generator rejects duplicate, missing, unexpected, or incomplete development records.
-- [x] The native 340 px Popup evidence covers block mode, allow mode, focused invalid-domain feedback, long internal rule-list scrolling and focus, Flexible hover help, Friction keyboard-focus help, Hard lock click help, all three session types, and the unsupported-tab disabled reason. The development rerun added full and focused Hard lock click captures plus full and focused unsupported-tab captures in all four theme and media cases. The document stayed at 340 px. The rule region scrolled internally with `clientWidth` equal to `scrollWidth`. No help popover, list, action, or error escaped the viewport.
-- [x] Development overlay provenance was recaptured full-page and focused at 375, 768, and 1280 px across all four theme and media cases. All 12 Chrome DevTools Protocol accessibility checks found exactly one Focus Lock overlay. Every overlay host matched its viewport bounds.
-- [x] The expanded production extension matrix contains 356 full-page and focused captures from a fresh isolated build of application-source commit `005f598bb1a52431c65f691104b70ae82bef0512`. Popup ran at 340 px. Options, Privacy, Stats, typed and untyped gates, and both overlay forms ran at 375, 768, and 1280 px as applicable. Every surface ran in all four theme and media cases. The matrix covers long-list focus, Flexible hover, Friction focus, Hard lock click, invalid-domain error focus, category-off focus, a partial category, clean, dirty, pending, and error save bars, a real quota-backed durable Sync error, both Privacy confirmations, unsupported-tab reason, current Stats language, typed and untyped cancellation, overlay provenance, and the stopped-document message. Force-end absence is asserted in every typed and untyped gate record instead of producing redundant screenshots. After one fixture-startup failure before the test body, a fresh repository build made the normal no-environment-variable matrix pass 1 scenario in 48.3 seconds. It wrote only to the Playwright per-test output directory.
-- [x] The latest persistent production command passed in 35.3 seconds: `FOCUS_LOCK_E2E_DIST=<isolated-build> TASK7_EVIDENCE_DIR=artifacts/daily-product-surfaces-task7 NO_COLOR=1 npx playwright test tests/e2e/qa-flows.spec.ts --grep "Task 7 production evidence matrix" --reporter=line`. Evidence mode rejects repository `dist/`, missing provenance, dirty application source, application-source commit or tree mismatches, and before-to-after build mutation. The report records application-source SHA-256 `7d00d7f3e755cbafef575e43b901ab48a30e53bcff5aee17b2c91252f070537c`, dist-tree SHA-256 `a40a6695094259da3da235753e9104748220ec018d8aa243512f42870f626931`, and built-manifest SHA-256 `41932cb819617ee6bdaeb0d97ecbeedd6b3ceb315bb2d6832579e4f32f433e86`, unchanged before and after capture. Its owned-context-closed audit contains zero unexpected console, page, worker, request, or blocked-request diagnostics. Shutdown-only messages use an any-count exact-allowlist policy because teardown timing makes their count non-deterministic. Zero, two, three, and five have been observed. Every normalized message must exactly equal `focus-lock background error Error: The browser is shutting down.` The latest report stores count 0 and the complete empty message list. Changed or unclassified text fails.
-- [x] Computed theme assertions verify resolved `color-scheme`, page background, and text colors in both development and production reports. Auto follows emulated light or dark media. Explicit Light and Dark override the opposite emulated media. All 320 development records, including existing-page and stopped-document overlays, carry the resolved triple and match the production palette contract.
-- [x] The production Options report contains 84 category row-to-state gap samples, all exactly 0 px. In all 12 theme and viewport cases, clean save bars were static. Dirty, pending, and error bars occupied a separate sticky layout row. The clipped-visible geometry scan checks every visible heading, paragraph, status, alert, action, input, category row, and category state and recorded zero intersections in all states. All 36 dirty, pending, and error bottom-anchor measurements at 375, 768, and 1280 px were exactly 0 px from the viewport bottom, including the retained-document-scroll transition.
-- [x] The real projected total-quota regression fills only test-owned Sync keys, verifies the native 102,400-byte rejection response, waits for the durable error state, preserves the expanded local policy, verifies stored Sync bytes remain within quota, and removes filler in `finally`.
-- [x] `artifacts/daily-product-surfaces-task7/evidence-manifest.json` inventories every evidence file except itself, records SHA-256 and byte size for each file, validates all eight PNG signature bytes, records exact image dimensions and state metadata for each PNG, and cross-checks exact set parity for all 320 development and 356 expanded production captures. Duplicate inventory entries and any missing or unexpected image fail generation. The generator pins the canonical shutdown message in tracked code instead of trusting the report's self-declared allowlist. It accepts any number of exact canonical duplicates, including zero, and rejects a replaced allowlist, changed text, or unclassified messages. Run `node artifacts/daily-product-surfaces-task7/generate-manifest.mjs` to regenerate. Run the same command with `--check` to repeat every validation, reuse the stored `generatedAt`, and byte-compare the would-be output without writing. The real check preserved all 1,088,082 bytes and mtime `1788264056649421352` ns. The no-self-hash rule is explicit in the manifest. The current manifest SHA-256 is `0e0fbe55d562daf604d0c4bf092da67f8a51aa5089bbb0a9d45c4b993bebeab0`.
-- [x] The focused diagnostics, evidence-runner, manifest-output, safe-output, options, and engine regression run passed 229 tests across 9 files. The scoped immutable-build `qa-flows.spec.ts` and `system.spec.ts` run passed all 12 scenarios in 1.9 minutes. The schedule scenario also passed 10 consecutive isolated repetitions in 23.0 seconds with clean fixture teardown diagnostics.
-- [x] `VITEST_MAX_WORKERS=1 NO_COLOR=1 npm run check` passed 84 test files with 1,992 tests passed and 2 skipped. Biome checked 259 files. TypeScript, deterministic icon generation, and the production build passed.
-- [x] The current integrated `NO_COLOR=1 npm run e2e` rebuilt the extension and passed all 45 scenarios in 6.2 minutes. Commit `537ed1a71d7f6ad70ca2c28469bdf94d62cdf969` fixed the paused-session timeout root cause: the engine scheduled the next wake from the paused phase end even when the session wall clock ended first. It now schedules the earlier of phase and session end. A unit regression asserts the exact wake time, and the browser regression verifies paused UI leaves when the wall-clock session end arrives.
+- production onboarding states fit every viewport and theme
 
-Task 7 contains 685 PNG files, 3 inventoried support artifacts, and the self-excluded manifest in `artifacts/daily-product-surfaces-task7/`. The screenshots comprise 320 reproducible development captures and 365 production captures, including the original 9 critical production captures and the expanded 356-capture production matrix. Representative evidence:
+### onboarding.spec.ts (6)
 
-- Development Hard lock click detail: `task7-dev-current-popup-<theme-case>-340-hard-click-full.png` and matching `-focused.png` files.
-- Development unsupported-tab reason: `task7-dev-current-popup-<theme-case>-340-unsupported-tab-full.png` and matching `-focused.png` files.
-- Development Options and Privacy: `task7-dev-current-options-<theme-case>-<375|768|1280>-<state>-<full|focused>.png` and `task7-dev-current-privacy-<theme-case>-<375|768|1280>-<state>-<full|focused>.png`.
-- Development overlay provenance: `task7-dev-current-overlay-<theme-case>-<375|768|1280>-provenance-full.png` and matching `-focused.png` files.
-- Expanded production Popup: `task7-production-popup-<theme-case>-340-<state>-<full|focused>.png`.
-- Expanded production Options: `task7-production-options-<theme-case>-<375|768|1280>-<state>-<full|focused>.png`.
-- Expanded production Privacy and overlay: `task7-production-privacy-<theme-case>-<375|768|1280>-<state>-<full|focused>.png` and `task7-production-overlay-<theme-case>-<375|768|1280>-provenance-<full|focused>.png`.
-- Current Stats: `task7-<dev-current|production>-stats-<theme-case>-<375|768|1280>-current-language-<full|focused>.png`.
-- Current gate states: `task7-<dev-current|production>-gate-<theme-case>-<375|768|1280>-<typed-gate|untyped-gate>-<full|focused>.png`.
-- Current stopped-document overlay: `task7-<dev-current|production>-stopped-overlay-<theme-case>-<375|768|1280>-stopped-document-<full|focused>.png`.
-- Machine-readable audit: `evidence-manifest.json`, `production-run-report.json`, and `task7-dev-current-run-report.json`.
+- denied access can be retried, completed locally, and block a real page
+- fresh install has no host access and popup routes to unfinished setup
+- permission revocation ends a session and rejects another session start
+- quota-backed first sync checkpoint survives worker and browser restart, then retries
+- setup completion waits for delayed initial load and step transitions
+- sync completion and dynamic registration survive a browser restart
 
-## Automated browser behavior
+### package-install.spec.ts (2)
 
-- [x] The Manifest V3 worker loaded and answered extension-page requests. Popup, Options, Stats, content overlay, stopped-document overlay, and gate surfaces rendered.
-- [x] Fresh blocked navigation stopped before page content rendered. Existing pages were overlaid and muted without reload. Session completion restored page state and cleared browser effects.
-- [x] Pause, unlock, abandon, and cancellation gates used the configured delay and optional typing requirement. Gate choices include 0, 10, 30, and custom whole seconds. A 0-second delay still required the configured typed phrase. Typing-off cancellation accepted no phrase after the configured delay. Typing-on cancellation rejected missing and inexact phrases. A single-site unlock left another site blocked and reblocked after expiry.
-- [x] The removed `Ignore timeout and end anyway` bypass is absent from current typed and untyped Friction gates. Flexible sessions end directly. Hard sessions expose no end action and remain non-cancellable.
-- [x] Popup and overlay pause gates used `Take the pause`. The popup gate started disabled and exposed visible hover and keyboard-focus states after its delay.
-- [x] Hard sessions displayed the Options lock banner, rejected weakening changes with readable text, and accepted stronger rules.
-- [x] A stale popup category edit was rejected by the real worker. The popup restored the authoritative category value.
-- [x] Saved schedule rows rendered their selected day pills. An active schedule window started a scheduled focus session.
-- [x] The persistent-profile restart scenario restored the active focus phase, timer, stopped document, overlay, and extension-owned mute state.
-- [x] The theme control cycled Auto, Light, Dark, and back to Auto from Popup, Options, and Stats. Each change persisted through reload. Explicit Light stayed light under dark operating-system media, explicit Dark stayed dark under light media, and Auto followed both media modes.
-- [x] Existing-page and stopped-page overlays changed theme while already mounted. Their active and stopped presentations remained distinct.
-- [x] Stats displayed the complete settings menu. Every Options destination used the correct section hash, the active destination used `aria-current`, and a Stats to Options to Stats round trip preserved navigation parity.
-- [x] Lists and categories share one settings view and one save action. Global category actions selected and deselected all known category switches without changing site exclusions. Per-category actions selected and deselected bundled sites without changing the parent category or deleting stale exclusions.
-- [x] Green Selected and red Deselected counts matched category and bundled-site state. A persisted partial Social media selection reloaded expanded with `Selected 11`, `Deselected 1`, and its collapse action disabled.
-- [x] Sync data and local runtime data kept their documented storage split. Per-item and projected total Chrome Sync quota checks passed.
-- [x] Short, default, and deep presets saved through `Save strictness and gate` as `7.5`, `27`, and `62`. Reloaded DOM values and worker settings matched. Values `0` and `72000000001` produced field-specific errors and did not replace the saved values.
-- [x] The freeze-token interval saved through `Save pause economy` as `5`. Reloaded DOM and worker settings matched. Values `0`, `1.5`, and `100000001` produced field-specific errors without replacing the saved value.
-- [x] With `Show a system notification when a session completes` disabled, a completed short session created no notification. Enabling and saving the setting made the next completed short session create a notification.
-- [x] The schedule-start notification remained independent. It created a notification while the session-completion notification setting was disabled.
-- [x] The action badge showed the focus countdown and cleared on completion. The isolated pinned-toolbar capture from commit `0ed0c27` shows the break-state teal closed lock, progress-ring outline, and cup mark. Changes through exact source commit `9f453d6` did not alter the drawing or generated pixels. A fresh capture attempt prepared the break state in Chrome-for-Testing 151.0.7922.34, but Computer Use could not target the window because two installed Chrome-for-Testing versions expose the same bundle identifier.
+- the packaged artifact installs, onboards, blocks, and survives a browser restart
+- the release ZIP extracts under archive safety rules and is the only loaded build
 
-## Visual inspection
+### qa-flows.spec.ts (8)
 
-- [x] Popup idle, active, gate, pending-category, and category-rejection states were inspected in Auto with light media, Auto with dark media, explicit Light with dark media, and explicit Dark with light media at 1280 px, 768 px, 375 px, and native 340 px popup width where applicable.
-- [x] Existing-page overlay, stopped-document overlay, typed and untyped gates, Options, and Stats surfaces were inspected in all four theme and media cases at 1280 px, 768 px, and 375 px. Force-end absence is recorded as metadata on every typed and untyped gate capture.
-- [x] Options preset, gate controls, merged lists and categories, partial category, freeze interval, notification, and saved-schedule groups have full-page and focused component captures at all three widths in both themes.
-- [x] Options rejection has full-page and focused alert captures at 375 px in both themes.
-- [x] Component captures cover rings, budget meters, actions, schedule day pills, hard-session rejection, Options controls, Stats pause and unlock columns, and chart focus states.
-- [x] Hover and keyboard focus artifacts cover the popup cog and theme control, both settings menus, all four category bulk actions, typed and untyped gate confirmation, overlay actions, and Stats chart controls in all four theme and media cases.
-- [x] Text rendering, spacing, responsive layout, full-page captures, component captures, and all 42 contact sheets were inspected. No Critical or Important visual defect remained.
-- [x] Stats chart labels remain at least 9 rendered px across 375 through 1280 px. Boundary tests cover all container-query transitions. SVG labels remain inside their view boxes without date, tick, bar, domain, or value collisions, including first-bin maxima, long domains, and seven-digit values.
-- [x] The report records zero viewport overflow or unrelated horizontal scrollers. The wide Recent sessions table remains contained in its intentional in-viewport `.table-scroll` region at 375 px and 768 px.
+- Options exposes destination saving, category states, and scoped privacy confirmations
+- Task 5 Stats responsive evidence matrix is reproducible
+- Task 7 production evidence matrix is reproducible
+- Task 7 save bar stays bottom-anchored and unobscured after internal-scroll transition
+- completion clears browser effects and reaches sound and notification APIs
+- hard-session Options rejects weakening and saves a stronger rule
+- popup daily states keep help and long rules contained at native width
+- theme cycle persists across extension pages and live overlay hosts without reloads
 
-## Diagnostics
+### restart.spec.ts (1)
 
-- [x] Console errors: 0.
-- [x] Page errors: 0.
-- [x] Worker errors: 0.
-- [x] Request failures: 0.
-- [x] Blocked requests: 0.
-- [x] Shutdown-only worker messages are classified as `expected-browser-shutdown` under the explicit `any-count-exact-allowlist` policy. The actual count and complete normalized message list are stored for every production run. Any count, including zero, is valid only when every message exactly equals `focus-lock background error Error: The browser is shutting down.` The latest report recorded zero. Changed or unclassified text remains an error.
+- persistent profile restores a blocked muted tab and active countdown after relaunch
 
-## Manual-only checks
+### smoke.spec.ts (9)
+
+- Stats content stays inside responsive viewports
+- Stats navigation round-trips through an Options section
+- blockable test site loads without a session
+- extension loads and the worker answers getSnapshot
+- options current navigation meets light text contrast
+- options page fits a mobile viewport
+- options primary button meets dark text contrast
+- options rejection and save actions stay together at the viewport edge
+- popup page renders
+
+### store-screenshots.spec.ts (9)
+
+- captures five truthful release states with category membership in the popup and permission copy in onboarding
+- default screenshot publication compares complete bytes without changing canonical files
+- explicit update publication replaces a safe canonical fixture after staging
+- hostile Pago Pago host timezone reproduces every Amsterdam canonical byte
+- screenshot integrity rejects a transparent interior pixel
+- screenshot update mode rejects every value except the documented 1
+- store screenshot inventory is exact, intact, opaque, and 1280 by 800
+- update publication restores the complete canonical set after a later replacement fails
+- update staging leaves the canonical set untouched after a later write fails
+
+### system.spec.ts (5)
+
+- an active schedule window starts a scheduled focus session
+- badge shows a countdown during focus and clears on completion
+- privacy data deletion keeps local and remote scopes separate
+- projected first-Sync publication rejects total quota overflow and preserves local policy
+- sync and local storage keep their documented split and quota
+
+<!-- END GENERATED -->
+
+## Signed judgements
+
+Each entry names what a person looked at, what they concluded, and the surface it covers. When that
+surface changes, the entry is re-signed or struck. An entry with no signature is not a claim.
+
+Nothing in this section may restate a number, a duration, a digest or a count. Those belong above,
+where they are derived. This section holds only what a machine could not have decided.
+
+### Visual inspection of the onboarding surfaces
+
+Signed against onboarding through commit `fa6a34d`. Representative full-page and focused captures
+were inspected at 375, 768 and 1280 px, in Auto with light media, Auto with dark media, explicit
+Light with dark media, and explicit Dark with light media. Headings, expanded category lists,
+warning and recovery messages, button rows, the Sync switch, the disabled pending-completion
+action, focus outlines and viewport edges were all readable and contained. The longest bundled
+domain, `store.steampowered.com`, wraps rather than overflowing.
+
+Durable evidence: `docs/qa-artifacts/onboarding-task6/`, whose archives and manifests are tracked
+and digest-pinned, with a portable verifier at
+`docs/qa-artifacts/onboarding-task6/verify.mjs`. Run it to confirm the archives still hash to what
+the manifests record.
+
+### Hover and keyboard focus coverage
+
+Signed against the popup, Options, Stats, the gates and both overlay forms. Hover and keyboard focus
+were exercised on the popup cog and theme control, both settings menus, all four category bulk
+actions, typed and untyped gate confirmation, the overlay actions and the Stats chart controls, in
+all four theme and media cases.
+
+Evidence: `artifacts/daily-product-surfaces-task7/`, inventoried by `evidence-manifest.json`, which
+records a SHA-256 for every file including its own generator. That directory is ignored by git
+except for the generator, which is tracked deliberately because the manifest pins its bytes.
+
+### Native Chrome permission prompt
+
+Signed against the real browser-owned sheet, not a mock. Chrome-for-Testing 151.0.7922.34 showed the
+prompt only after `Enable website blocking` was clicked, removed it on `Deny`, showed it again on
+`Retry` and removed it on `Allow`. The onboarding explanation reproduces Chrome's capability line
+exactly, `Read and change all your data on all websites`, and omits no material capability.
+
+Durable evidence: `docs/qa-artifacts/onboarding-task6/real-prompt/` with
+`manifests/real-prompt-manifest.json`, both tracked and digest-pinned.
+
+### Diagnostics were clean on the runs that produced the evidence above
+
+Signed against the production and development evidence runs. Console errors, page errors, worker
+errors, request failures and blocked requests were all zero. Shutdown-only worker messages are
+classified under an exact allowlist: any count including zero is valid only while every message
+equals `focus-lock background error Error: The browser is shutting down.`, and changed or
+unclassified text is an error rather than a warning.
+
+This entry covers the runs whose reports are pinned in the evidence above. It does not cover any
+later run, which is the point of signing it against named evidence.
+
+## Manual gate
+
+Tasks no automation in this repository can perform. They describe an action rather than a
+measurement, which is why they are the only part of this document that could never go stale.
 
 - [ ] Confirm Chrome Sync across two signed-in profiles.
 - [ ] Hear session-complete, break-start, break-end, and schedule-start sounds through real speakers.
 - [ ] Confirm operating-system-visible notifications outside the isolated browser environment.
 - [ ] Confirm blocking in an incognito tab after enabling the per-extension permission in a safe isolated profile.
 - [ ] Confirm the untracked `key.pem` has an external backup.
+- [ ] Confirm the pinned-toolbar badge appearance in a real browser window, and preserve the capture
+      somewhere tracked. The previous capture is gone, as recorded under Evidence that was not
+      preserved. The drawing itself is machine-verified, because `npm run build` regenerates the four
+      icons from `padlock.svg` deterministically and the check gate fails if they change, but no
+      automated check can confirm how the badge looks pinned to a real toolbar.
 
-## Historical pre-redesign QA artifacts
+## Evidence that was not preserved
 
-The following `.playwright-mcp` directory predates the public-launch redesign and is retained for history only. It is not completion evidence for current Stats, gate, or stopped-document surfaces. Current Task 7 evidence is under `artifacts/daily-product-surfaces-task7/`.
+Kept as a record rather than deleted. A line that once claimed evidence and is now silently removed
+is worse than one that admits the evidence is gone, because the reader cannot tell the difference
+between a claim that was retired and a claim that was quietly dropped.
 
-The historical evidence directory is `.playwright-mcp/qa-final/master-c87383f1-exact-1788116604430/`.
+**The `.playwright-mcp/qa-final/` directory is gone.** It held the pre-redesign exact run: a report,
+a shutdown-message list, the contact sheets, the pinned-toolbar capture from commit `0ed0c27`, and
+the prepared profile from `9f453d6`. The directory was ignored by git and has since been removed.
+The document already described it as retained for history only and not as completion evidence for
+any current surface, so nothing signed above depended on it. Nothing replaces it. The one claim that
+rested on it, the pinned-toolbar appearance, has moved to the manual gate.
 
-- Report: `.playwright-mcp/qa-final/master-c87383f1-exact-1788116604430/qa-report.json`
-- Shutdown messages: `.playwright-mcp/qa-final/master-c87383f1-exact-1788116604430/shutdown-worker-messages.json`
-- Contact sheets: `.playwright-mcp/qa-final/master-c87383f1-exact-1788116604430/contact-*.png`
-- Pinned-toolbar capture: `.playwright-mcp/qa-final/toolbar-break-0ed0c275-1788052452918/toolbar-pinned-break-crop.png`
-- Fresh-toolbar prepared profile: `.playwright-mcp/qa-final/toolbar-break-9f453d64-1788070444526/`
+**The eight `test-results/` paths are gone.** They named Playwright's per-test output directories
+for the Task 5 onboarding and restart runs. That directory is git-ignored scratch which each run
+overwrites, and it now holds a different run's directories entirely. Those paths named a location
+rather than preserved evidence: Playwright retains traces only on failure, so a passing run leaves
+nothing worth pinning, which the document previously admitted two lines after listing them. The
+runs themselves are reproducible from the commands in the inventory above, which is the durable
+form of that claim.
 
-Curated repository screenshots use exact-run sources:
-
-- `docs/images/focus-lock/popup-active.png` from `popup-active-light-dark-media-375-full.png`
-- `docs/images/focus-lock/overlay.png` from `overlay-existing-light-dark-media-375-full.png`
-- `docs/images/focus-lock/gate.png` from `stop-session-gate-light-dark-media-1280-full.png`
-- `docs/images/focus-lock/options.png` from `options-light-dark-media-1280-full.png`
-- `docs/images/focus-lock/stats.png` from `stats-dark-light-media-1280-curated.png`
-
-## Attempt accounting prerequisite review
-
-The design spec `docs/superpowers/specs/2026-08-31-indefinite-sessions-design.md` section "Implementation prerequisite" requires three `master` commits to be ancestors of this branch, or an independent review recording that the branch carries reviewed equivalent changes. None of the three is an ancestor. The merge base is `0b40b636c732d4a56739e3415503f4038625a9a2`. The branch instead carries commit `ac7a2bd099c66eb0e1b43fad7514f54139d26600` "fix: reconcile tab attempt accounting", which touches the same two files, `src/background/tabs.ts` and `tests/unit/background/tabs.test.ts`. This review compared the master post-state at `d14e9f0277d12583246898dcefb652ce1fbd2649` against branch `feature/public-launch-trust-redesign` at commit `baca6be9d56df93aed96851fbfe49c3c1f5bf508`, hunk by hunk, for both files. All three commits are equivalent on the branch and no gap was found.
-
-- [x] `c3ca91014f0be2abc85c931ea3d04c5a6e1289ac` "fix: stop policy sweeps counting attempts" is equivalent. The invariant is that a policy sweep never counts a blocked attempt. Branch `src/background/tabs.ts` widens the `attemptKind` parameter to `'navigation' | 'existing' | null` at line 393, short-circuits attempt persistence on `attemptKind === null` at line 418, guards the stale-attempt rejection with `attemptKind !== null` at line 448, and passes `null` as the sweep attempt kind at line 1181. All four source hunks match the master post-state. Regression coverage is `keeps %s accounting authority while engine readiness is pending` at line 3872 and the sweep assertions `expect(harness.recordAttempt).not.toHaveBeenCalled()` and `expect(harness.engine.flushRuntime).toHaveBeenCalledOnce()` at lines 5407 and 5408. The master test `does not resume a stale sweep operation after newer same-tab work completes` was removed on both sides and replaced by the policy-race test recorded below.
-- [x] `de777a39891de6c1e808dc1f9e7b0f52e5b4a310` "fix: narrow boot sweep reservations" is equivalent. The invariant is that worker boot reserves only readiness-pending sweeps rather than every active tab operation. Branch `src/background/tabs.ts` declares `pendingTabReadinessLeases` at line 96, defines `acquireTabReadinessLease` at lines 117 through 133 byte-identical to master, clears the map in `invalidateRemovedTab` at line 159, snapshots `pendingReadinessTabIdsAtStart` at lines 1137 and 1138, and filters the sweep on `!pendingReadinessTabIdsAtStart.has(tabId)` at line 1174 rather than the wider `activeOperationTabIdsAtStart` that `c3ca910` had introduced. The listener releases the readiness lease on synchronous throw at line 1271, on readiness resolution at line 1278, and in the terminal `finally` at line 1321. All six source hunks match. Regression coverage is `releases the readiness reservation after %s` across success, synchronous throw, and rejection at line 3978, plus the second-listener readiness variant inside the accounting-authority test at lines 3957 and 3958.
-- [x] `d14e9f0277d12583246898dcefb652ce1fbd2649` "test: cover listener policy race" is equivalent. It is test-only. The covered scenario is that a policy sweep supersedes an after-ready navigation still waiting on attempt persistence, driven through the real `onCommitted` listener rather than a direct `applyToTab` call, and reports no error. Branch test `lets a policy sweep supersede after-ready navigation waiting for persistence` at line 5554 registers listeners at line 5607, drives `committedListener` at line 5610, asserts one `clearBlock` send, asserts no `applyBlock` send for the superseded navigation, and asserts `expect(reportError).not.toHaveBeenCalled()` at line 5635.
-- [x] Every branch deviation is an adaptation to this branch's later runtime-lease refactor, not a weakened invariant. `engine.recordAttempt` became `recordAttemptWithLease` and `e.reconcileTabs` became `reconcileTabsWithLease`, so the accounting-authority test asserts `recordAttempt.mock.calls[0]?.slice(0, 3)` at line 3973 to ignore the trailing lease argument instead of master's `toHaveBeenCalledWith`. The listener body is wrapped in `runWithRuntimeMutationLeaseOrBlockingSweep`, so the policy-race test stubs that method. `cancelMuteContinuation` moved inside the lease and is awaited. None of these changes touch attempt accounting, readiness reservation, or the policy race.
-- [x] `npx vitest run tests/unit/background/tabs.test.ts` passed 113 tests with 0 failures at commit `baca6be9d56df93aed96851fbfe49c3c1f5bf508`. No focused gap-proving test was written, because no gap was found.
+**What this cost, stated once.** Both classes of loss share a cause: the path was pinned without a
+digest, and nothing ever checked that the path still resolved. Every piece of evidence that survived
+was either tracked in git or digest-pinned, and every piece that was pinned by path alone is gone.
+That is the rule this section exists to record.
