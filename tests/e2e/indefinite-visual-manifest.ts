@@ -106,6 +106,14 @@ export interface IndefiniteEvidenceRecord {
 /** One interception of the popup's own runtime channel, with the count it is expected to reach. */
 export interface IndefiniteRuntimeApiInterception {
   behavior: 'fixed-snapshot' | 'fixed-setup-state' | 'refuse-start';
+  /**
+   * How `observedCount` is held against `expectedCount`. A snapshot is answered exactly once per
+   * load, and a second answer means the page refused the first and reloaded, which is a signal
+   * worth failing on. The setup record has no such rule: the popup rereads it whenever the stored
+   * record changes, which the worker may do at any time, so its count is a floor rather than a
+   * number.
+   */
+  countRule: 'exact' | 'at-least';
   expectedCount: number;
   observedCount: number;
   passthrough: 'all-other-calls';
@@ -364,7 +372,11 @@ export const INDEFINITE_VISUAL_STATE_DEFINITIONS: readonly IndefiniteVisualState
     id: 'stats-until-stopped-rows',
     surface: 'page',
     determinism: 'static',
-    focusSelector: '.session-table',
+    // Stats renders its recent sessions two ways: a table above 768 pixels and a card list at or
+    // below it, with the other one display: none. The card that holds whichever is showing is the
+    // only crop that exists at all three widths, and it is also the more useful one, because the
+    // evidence is about the plan and outcome wording rather than about the table element.
+    focusSelector: '.card:has-text("Recent sessions on this machine")',
   },
 ];
 
@@ -467,6 +479,18 @@ export function indefiniteInterceptionsFromObservations(
 
 const PNG_SIGNATURE: Buffer = Buffer.from('89504e470d0a1a0a', 'hex');
 
+/** Holds one interception to its declared count, by the rule that interception declared. */
+export function assertInterceptionCount(interception: IndefiniteRuntimeApiInterception): void {
+  const met: boolean =
+    interception.countRule === 'exact'
+      ? interception.observedCount === interception.expectedCount
+      : interception.observedCount >= interception.expectedCount;
+  if (met) return;
+  throw new Error(
+    `${interception.state} answered ${String(interception.observedCount)} ${interception.requestType} calls, not ${interception.countRule === 'exact' ? '' : 'at least '}${String(interception.expectedCount)}`,
+  );
+}
+
 export interface WriteIndefiniteEvidenceManifestOptions {
   chromeVersion: string;
   evidenceDir: string;
@@ -506,11 +530,7 @@ export async function writeIndefiniteEvidenceManifest(
   );
   assertIndefiniteEvidenceCoverage(artifacts);
   for (const interception of options.runtimeApiInterceptions) {
-    if (interception.observedCount !== interception.expectedCount) {
-      throw new Error(
-        `${interception.state} observed ${String(interception.observedCount)} of ${String(interception.expectedCount)} expected interceptions`,
-      );
-    }
+    assertInterceptionCount(interception);
   }
   const manifest: IndefiniteEvidenceManifest = {
     artifactCount: artifacts.length,

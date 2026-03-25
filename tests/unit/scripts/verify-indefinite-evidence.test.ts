@@ -206,6 +206,7 @@ describe('the matrix the capture and the verifier both read', (): void => {
     const declared: IndefiniteRuntimeApiInterceptionDefinition[] = [
       {
         behavior: 'fixed-snapshot',
+        countRule: 'exact',
         expectedCount: 2,
         passthrough: 'all-other-calls',
         purpose: 'the snapshot the popup cannot outrun',
@@ -316,6 +317,32 @@ describe('verifyIndefiniteEvidenceDirectory', (): void => {
     ).rejects.toThrow('declares no replayedCommands');
   });
 
+  it('accepts a reread count above the floor its rule declares', async (): Promise<void> => {
+    // The popup rereads the setup record whenever the stored one changes, so its count is a floor.
+    // A run that reread it twice for one state is a run that behaved, not one that drifted.
+    const directory: string = await seedDirectory(
+      manifestFor(recordsForCompleteRun(), {
+        runtimeApiInterceptions: [
+          {
+            behavior: 'fixed-setup-state',
+            countRule: 'at-least',
+            expectedCount: 4,
+            observedCount: 6,
+            passthrough: 'all-other-calls',
+            purpose: 'the setup record the data-clear branches switch on',
+            requestType: 'getSetupState',
+            scope: 'chrome.runtime.sendMessage',
+            state: 'popup-long-copy',
+          },
+        ],
+      }),
+    );
+
+    await expect(
+      verifyIndefiniteEvidenceDirectory({ evidenceDirectory: directory, sourceCommit: COMMIT }),
+    ).resolves.toBeDefined();
+  });
+
   it('refuses an interception that did not reach its expected count', async (): Promise<void> => {
     const directory: string = await seedDirectory(
       manifestFor(recordsForCompleteRun(), {
@@ -325,6 +352,7 @@ describe('verifyIndefiniteEvidenceDirectory', (): void => {
             state: 'popup-starting-immediate',
             requestType: 'getSnapshot',
             behavior: 'fixed-snapshot',
+            countRule: 'exact',
             passthrough: 'all-other-calls',
             purpose: 'the starting lifecycle the worker never broadcasts',
             expectedCount: 8,

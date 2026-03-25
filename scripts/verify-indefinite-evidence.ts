@@ -14,6 +14,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
   assertIndefiniteEvidenceCoverage,
+  assertInterceptionCount,
   type IndefiniteEvidenceManifest,
   type IndefiniteEvidenceRecord,
   type IndefiniteRuntimeApiInterception,
@@ -54,11 +55,7 @@ export async function verifyIndefiniteEvidenceDirectory(
     );
   }
   for (const interception of manifest.runtimeApiInterceptions) {
-    if (interception.observedCount !== interception.expectedCount) {
-      throw new Error(
-        `${interception.state} observed ${String(interception.observedCount)} of ${String(interception.expectedCount)} expected interceptions`,
-      );
-    }
+    assertInterceptionCount(interception);
   }
   assertIndefiniteEvidenceCoverage(manifest.artifacts);
   await assertDiskParity(directory, manifest.artifacts);

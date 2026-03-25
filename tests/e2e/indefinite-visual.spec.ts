@@ -74,7 +74,13 @@ import {
   writeIndefiniteEvidenceManifest,
 } from './indefinite-visual-manifest';
 
-test.setTimeout(1_800_000);
+/**
+ * The matrix itself is cheap, about a quarter of a second per cell, but a full pass starts and ends
+ * a session between states and the whole run takes around twenty-five minutes on a quiet machine.
+ * On a loaded one it takes far longer, so the budget is generous: this run is opt in, and a run
+ * that fails on its own timeout tells a reader nothing about the product.
+ */
+test.setTimeout(5_400_000);
 /**
  * Playwright's default action timeout is unbounded, so a control that never becomes actionable
  * would hang the whole run rather than fail it. Every action here gets a bound.
@@ -872,11 +878,11 @@ async function captureStatsState(
       // reports what the page said rather than only which selector was missing.
       try {
         await expect(page.locator(definition.focusSelector).first()).toBeVisible({
-          timeout: 10_000,
+          timeout: 30_000,
         });
       } catch (error: unknown) {
         const shown: string = (await page.locator('.stats-page').innerText()).slice(0, 400);
-        throw new Error(`the stats page never showed its session table, it showed: ${shown}`, {
+        throw new Error(`the stats page never showed its recent sessions, it showed: ${shown}`, {
           cause: error,
         });
       }
@@ -1187,6 +1193,7 @@ function declaredInterceptions(): IndefiniteRuntimeApiInterceptionDefinition[] {
   for (const state of POPUP_STATES) {
     definitions.push({
       behavior: 'fixed-snapshot',
+      countRule: 'exact',
       expectedCount: themes,
       passthrough: 'all-other-calls',
       purpose: 'Render the popup from a snapshot its own clock cannot outrun.',
@@ -1196,6 +1203,10 @@ function declaredInterceptions(): IndefiniteRuntimeApiInterceptionDefinition[] {
     });
     definitions.push({
       behavior: 'fixed-setup-state',
+      // The popup rereads the setup record whenever the stored one changes, and the worker writes
+      // it on its own schedule, so this count is a floor. The snapshot above is not: a second
+      // answer there means the page refused the first and reloaded.
+      countRule: 'at-least',
       expectedCount: themes,
       passthrough: 'all-other-calls',
       purpose: 'Hold the setup record, which is what the data-clear branches switch on.',
@@ -1206,6 +1217,7 @@ function declaredInterceptions(): IndefiniteRuntimeApiInterceptionDefinition[] {
   }
   definitions.push({
     behavior: 'refuse-start',
+    countRule: 'exact',
     expectedCount: themes,
     passthrough: 'all-other-calls',
     purpose: 'Answer the start the way the worker answers it while a data clear is pending.',
@@ -1215,6 +1227,7 @@ function declaredInterceptions(): IndefiniteRuntimeApiInterceptionDefinition[] {
   });
   definitions.push({
     behavior: 'fixed-snapshot',
+    countRule: 'exact',
     expectedCount: themes * 3,
     passthrough: 'all-other-calls',
     purpose:
