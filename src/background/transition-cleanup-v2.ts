@@ -42,7 +42,7 @@ import {
 } from './cleanup-shared-v2';
 import { buildClosureProjectionV2, manualEndReasonV2 } from './closure-projection-v2';
 import type { FrozenDocumentCommand } from './enforcement-persistence-v2';
-import { projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
+import { carryCommitCheckpointProjectionV2, projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
 import type {
   CleanupEnforcementTarget,
@@ -183,7 +183,9 @@ function cleanupRuntime(
       postCleanupClosure: structuredClone(row.closure),
     },
   };
-  const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(next);
+  const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(
+    carryCommitCheckpointProjectionV2(next),
+  );
   if (parsed === null) {
     throw new CoreError('invalid-rule', 'transition cleanup entry failed runtime validation');
   }

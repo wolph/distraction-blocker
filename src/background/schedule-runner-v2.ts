@@ -30,6 +30,7 @@ import type {
   ScheduleEntryV2,
   SettingsV2,
 } from '../shared/types';
+import { carryCommitCheckpointProjectionV2 } from './runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
 import type { RuntimeStateV2, SessionStartCandidate } from './runtime-v2-types';
 import {
@@ -235,7 +236,7 @@ async function withNoticeToken(
 ): Promise<RuntimeStateV2> {
   if (runtime.scheduleUnavailableNoticeToken === token) return runtime;
   const next: RuntimeStateV2 = { ...runtime, scheduleUnavailableNoticeToken: token };
-  await ports.writeRuntime(next);
+  await ports.writeRuntime(carryCommitCheckpointProjectionV2(next));
   return ports.runtime();
 }
 

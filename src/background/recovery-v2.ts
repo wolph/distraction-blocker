@@ -42,6 +42,7 @@ import {
   buildFrozenDocumentCommandV2,
   buildFrozenEpochResetCommandV2,
 } from './overlay-view-v2';
+import { carryCommitCheckpointProjectionV2 } from './runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
 import type {
   CleanupProgress,
@@ -563,7 +564,9 @@ function isSessionState(value: SessionStateV2 | RecoveryResultV2): value is Sess
 }
 
 async function writeRuntime(ports: RuntimePortsV2, next: RuntimeStateV2): Promise<void> {
-  const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(next);
+  const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(
+    carryCommitCheckpointProjectionV2(next),
+  );
   if (parsed === null) {
     throw new CoreError('invalid-rule', 'recovery would persist an invalid runtime');
   }

@@ -40,7 +40,7 @@ import {
   type TargetClassificationV2,
 } from './enforcement-targets-v2';
 import { buildFrozenEpochResetCommandV2 } from './overlay-view-v2';
-import { projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
+import { carryCommitCheckpointProjectionV2, projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
 import type {
   CleanupProgress,
@@ -571,7 +571,9 @@ function cleanupClearIdentityV2(
 }
 
 function validatedCleanupRuntimeV2(runtime: RuntimeStateV2): RuntimeStateV2 {
-  const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(runtime);
+  const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(
+    carryCommitCheckpointProjectionV2(runtime),
+  );
   if (parsed === null) throw invalidCleanup('a cleanup step built an invalid runtime');
   return parsed;
 }

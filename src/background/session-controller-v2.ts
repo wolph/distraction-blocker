@@ -74,10 +74,9 @@ import {
   buildFrozenEpochResetCommandV2,
 } from './overlay-view-v2';
 import { recoverRuntimeV2 } from './recovery-v2';
-import { projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
+import { carryCommitCheckpointProjectionV2, projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
 import type {
-  RuntimeCommitCheckpointV2,
   RuntimeStateV2,
   SessionStartCandidate,
 } from './runtime-v2-types';
@@ -795,7 +794,7 @@ export class SessionControllerV2 {
       });
     }
     const next: RuntimeStateV2 = validRuntime(
-      carryCheckpointProjection({ ...base, runtimeRevision, documentCommands }),
+      carryCommitCheckpointProjectionV2({ ...base, runtimeRevision, documentCommands }),
     );
     await this.ports.commit({
       checkpointId: `${next.enforcementEpoch}:live-${runtimeRevision}`,
@@ -1534,7 +1533,7 @@ export class SessionControllerV2 {
   }
 
   private async write(runtime: RuntimeStateV2): Promise<void> {
-    await this.ports.writeRuntime(validRuntime(carryCheckpointProjection(runtime)));
+    await this.ports.writeRuntime(validRuntime(carryCommitCheckpointProjectionV2(runtime)));
   }
 
   private async writeIfChanged(runtime: RuntimeStateV2): Promise<void> {
@@ -1632,26 +1631,6 @@ function evaluatedVerdictOf(
 }
 
 /** Nothing this controller hands a port is allowed to be a runtime the boundary would reject. */
-/**
- * The projection an in-flight commit's checkpoint holds is the runtime domain that commit intends.
- * A later write that changes a projected field, an acknowledgement handed to a pulling document or
- * a view refrozen for one that navigated within itself, changes what that commit intends with it,
- * so the checkpoint travels with the value rather than describing the value it used to sit on.
- *
- * Leaving it behind is what refused those writes: the checkpoint claimed a runtime that no longer
- * existed, so every domain write made while a commit was in flight was rejected. The visible half
- * was nothing at all, because the overlay still rendered, while the acknowledgement never became
- * durable and the same reset went out on every later pull for that document.
- */
-function carryCheckpointProjection(runtime: RuntimeStateV2): RuntimeStateV2 {
-  const checkpoint: RuntimeCommitCheckpointV2 | null = runtime.commitCheckpoint;
-  if (checkpoint === null) return runtime;
-  return {
-    ...runtime,
-    commitCheckpoint: { ...checkpoint, projection: projectRuntimeDomainV2(runtime) },
-  };
-}
-
 function validRuntime(runtime: RuntimeStateV2): RuntimeStateV2 {
   const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(runtime);
   if (parsed === null) {

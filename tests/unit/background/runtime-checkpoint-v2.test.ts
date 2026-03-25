@@ -8,6 +8,7 @@ import type { FrozenDocumentCommand } from '../../../src/background/enforcement-
 import { mergeEventLogV2 } from '../../../src/background/event-log-v2';
 import {
   applyRuntimeCheckpointV2,
+  carryCommitCheckpointProjectionV2,
   commitRuntimeCheckpointV2,
   projectRuntimeDomainV2,
   type RuntimeCheckpointPortsV2,
@@ -268,6 +269,65 @@ describe('runtime domain projection', (): void => {
         accruedFocusMs: projection.accruedFocusMs + 1,
       }),
     ).toBe(false);
+  });
+});
+
+describe('carrying an outstanding checkpoint', (): void => {
+  /** The runtime an in-flight commit leaves behind: its checkpoint projects what it saw. */
+  function inFlight(runtime: RuntimeStateV2): RuntimeStateV2 {
+    return {
+      ...structuredClone(runtime),
+      commitCheckpoint: {
+        version: 2,
+        checkpointId: `${runtime.enforcementEpoch}:live-${String(runtime.runtimeRevision)}`,
+        projection: projectRuntimeDomainV2(runtime),
+        bank: { balanceMs: 0 },
+        events: [],
+        syncBank: false,
+        aggregateSets: {},
+        aggregateRemoves: [],
+      },
+    };
+  }
+
+  it('leaves a runtime with no checkpoint exactly as it is', (): void => {
+    const runtime: RuntimeStateV2 = publishedFocusRuntime();
+
+    expect(carryCommitCheckpointProjectionV2(runtime)).toBe(runtime);
+  });
+
+  it('carries the projection onto a domain the write changed', (): void => {
+    const runtime: RuntimeStateV2 = inFlight(publishedFocusRuntime());
+    const changed: RuntimeStateV2 = {
+      ...runtime,
+      accruedFocusMs: runtime.accruedFocusMs + 1_000,
+    };
+
+    // Without this the checkpoint describes a runtime that no longer exists, and the parser
+    // refuses the write: every domain write made while a commit is in flight would be lost.
+    expect(parseRuntimeStateV2(changed)).toBeNull();
+    const carried: RuntimeStateV2 = carryCommitCheckpointProjectionV2(changed);
+    expect(parseRuntimeStateV2(carried)).not.toBeNull();
+    expect(carried.commitCheckpoint?.projection.accruedFocusMs).toBe(
+      runtime.accruedFocusMs + 1_000,
+    );
+  });
+
+  it('keeps everything the commit still owes', (): void => {
+    const runtime: RuntimeStateV2 = inFlight(publishedFocusRuntime());
+    const carried: RuntimeStateV2 = carryCommitCheckpointProjectionV2({
+      ...runtime,
+      accruedFocusMs: runtime.accruedFocusMs + 1_000,
+    });
+
+    // The replay is what makes the fix correct: it now restores the domain the last write
+    // intended, and it still owes exactly the events, bank, and aggregates it always did.
+    expect(carried.commitCheckpoint?.events).toEqual(runtime.commitCheckpoint?.events);
+    expect(carried.commitCheckpoint?.bank).toEqual(runtime.commitCheckpoint?.bank);
+    expect(carried.commitCheckpoint?.checkpointId).toBe(runtime.commitCheckpoint?.checkpointId);
+    expect(carried.commitCheckpoint?.projection.accruedFocusMs).toBe(
+      runtime.accruedFocusMs + 1_000,
+    );
   });
 });
 

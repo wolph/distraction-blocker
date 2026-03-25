@@ -91,6 +91,30 @@ export function projectRuntimeDomainV2(runtime: RuntimeStateV2): RuntimeDomainPr
   });
 }
 
+/**
+ * Carries an outstanding commit checkpoint's projection onto the runtime being written.
+ *
+ * A checkpoint's projection is the runtime domain its commit intends, and the parser requires the
+ * stored runtime to equal it field by field. So a later write that changes any projected field
+ * while that commit is still in flight leaves the checkpoint describing a runtime that no longer
+ * exists, and the write is refused. Every caller that changes the domain passes through here
+ * instead, so the checkpoint travels with the value rather than describing the value it used to
+ * sit on.
+ *
+ * Rewriting the projection is what makes the fix correct rather than merely sufficient: a crashed
+ * commit replays the domain the last write intended, not the one that preceded it, which is the
+ * same value the caller would have stored had it not crashed. A runtime with no checkpoint is
+ * returned untouched, which is every ordinary write.
+ */
+export function carryCommitCheckpointProjectionV2(runtime: RuntimeStateV2): RuntimeStateV2 {
+  const checkpoint: RuntimeCommitCheckpointV2 | null = runtime.commitCheckpoint;
+  if (checkpoint === null) return runtime;
+  return {
+    ...runtime,
+    commitCheckpoint: { ...checkpoint, projection: projectRuntimeDomainV2(runtime) },
+  };
+}
+
 /** The runtime stored around a checkpoint owes the projection exact equality, field by field. */
 export function runtimeMatchesProjectionV2(
   runtime: RuntimeStateV2,

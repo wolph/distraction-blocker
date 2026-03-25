@@ -68,7 +68,7 @@ import {
   buildFrozenEpochResetCommandV2,
   buildStartingOverlayView,
 } from './overlay-view-v2';
-import { projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
+import { carryCommitCheckpointProjectionV2, projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
 import type {
   FrozenTransitionView,
@@ -1362,7 +1362,9 @@ async function enforceableTargets(ports: EnforcementTargetPortsV2): Promise<Enfo
 
 /** No runner ever hands `writeRuntime` or `commit` a value the storage boundary would reject. */
 function requireValid(runtime: RuntimeStateV2): RuntimeStateV2 {
-  const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(runtime);
+  const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(
+    carryCommitCheckpointProjectionV2(runtime),
+  );
   if (parsed === null) {
     throw new CoreError('invalid-rule', 'the transition runner built an invalid runtime');
   }
