@@ -52,7 +52,7 @@ since the grep was written. Both mistakes were present when this section was fir
 - a migrated session with no valid v2 form ends as an invalid active state
 - a session whose documents cannot be reached ends as a tab enforcement failure
 - a session whose phase alarm cannot be held ends as an alarm failure
-- a session whose registration cannot be restored ends as a registration failure
+- a start whose registration cannot be audited fails as a registration failure
 
 ### gates.spec.ts (11)
 
