@@ -12,13 +12,22 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import {
-  assertIndefiniteEvidenceCoverage,
-  assertInterceptionCount,
-  type IndefiniteEvidenceManifest,
-  type IndefiniteEvidenceRecord,
-  type IndefiniteRuntimeApiInterception,
+import type * as IndefiniteVisualManifestModule from '../tests/e2e/indefinite-visual-manifest';
+import type {
+  IndefiniteEvidenceManifest,
+  IndefiniteEvidenceRecord,
+  IndefiniteRuntimeApiInterception,
 } from '../tests/e2e/indefinite-visual-manifest';
+
+/**
+ * Node resolves a type-stripped import by its exact file name, and the type checker resolves the
+ * same specifier without the extension, so the module is imported by URL the way the stats verifier
+ * does it. A plain static import type checks and then fails at the command line, which is the worst
+ * of both.
+ */
+const { assertIndefiniteEvidenceCoverage, assertInterceptionCount } = (await import(
+  new URL('../tests/e2e/indefinite-visual-manifest.ts', import.meta.url).href
+)) as typeof IndefiniteVisualManifestModule;
 
 const PNG_SIGNATURE: Buffer = Buffer.from('89504e470d0a1a0a', 'hex');
 const MANIFEST_NAME: string = 'manifest.json';

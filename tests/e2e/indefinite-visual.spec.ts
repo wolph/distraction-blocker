@@ -532,6 +532,13 @@ function classOf(node: DomNodeSnapshot): string {
   return '';
 }
 
+/** Raised when the overlay rebuilt itself between the node walk and the write that follows it. */
+class StaleOverlayNodes extends Error {
+  constructor() {
+    super('the overlay rebuilt itself while its live regions were being pinned');
+  }
+}
+
 /** Every node of the overlay's closed shadow root, which only CDP can reach. */
 async function overlayNodes(session: CDPSession): Promise<DomNodeSnapshot[]> {
   await session.send('DOM.enable');
@@ -568,8 +575,16 @@ async function pinOverlayText(
   for (const element of nodesWithClass(nodes, className)) {
     for (const child of element.children ?? []) {
       if (child.nodeName !== '#text') continue;
-      await session.send('DOM.setNodeValue', { nodeId: child.nodeId, value });
-      pinned += 1;
+      try {
+        await session.send('DOM.setNodeValue', { nodeId: child.nodeId, value });
+        pinned += 1;
+      } catch (error: unknown) {
+        // The overlay rebuilds its panel whenever a command arrives, which retires the node ids
+        // this walk collected. The caller re-reads and tries again rather than failing the run on a
+        // race with the product doing its job.
+        if (!String(error).includes('Could not find node')) throw error;
+        throw new StaleOverlayNodes();
+      }
     }
   }
   return pinned;
@@ -621,11 +636,12 @@ async function captureOverlayStates(
         await page.setViewportSize({ width, height: viewportHeightFor(width) });
         await showOverlay(page, worker, blockedUrl, state);
         const session: CDPSession = await context.newCDPSession(page);
-        const nodes: DomNodeSnapshot[] = await overlayNodes(session);
-        const pinned: string[] = await pinOverlayRegions(session, nodes, state);
+        const pinned: string[] = await pinnedOverlayRegions(session, state);
         if (pinned.length > 0) maskedRegions.push({ state, selectors: pinned });
         await captureCell(page, evidenceDir, state, theme, width, {
-          clip: await overlayPanelClip(session, nodes),
+          // The clip walks the tree again, because pinning may have raced a rebuild and the ids
+          // from the first walk would then name nodes that no longer exist.
+          clip: await overlayPanelClip(session, await overlayNodes(session)),
         });
         await session.detach();
         await page.close();
@@ -637,6 +653,21 @@ async function captureOverlayStates(
 
 function viewportHeightFor(width: number): number {
   return width === 375 ? 844 : 900;
+}
+
+/** Pins the live regions, re-reading the tree when the overlay rebuilds under the walk. */
+async function pinnedOverlayRegions(
+  session: CDPSession,
+  state: IndefiniteVisualState,
+): Promise<string[]> {
+  for (let attempt: number = 0; attempt < 5; attempt++) {
+    try {
+      return await pinOverlayRegions(session, await overlayNodes(session), state);
+    } catch (error: unknown) {
+      if (!(error instanceof StaleOverlayNodes)) throw error;
+    }
+  }
+  throw new Error(`${state} kept rebuilding while its live regions were pinned`);
 }
 
 /** Pins every value the worker's clock would move, and answers the selectors it pinned. */
