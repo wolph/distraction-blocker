@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { PHASE_ALARM } from '../../../src/background/alarms-v2';
 import type { FrozenDocumentCommand } from '../../../src/background/enforcement-persistence-v2';
 import { type RecoveryResultV2, recoverRuntimeV2 } from '../../../src/background/recovery-v2';
+import { emptyRuntimeV2 } from '../../../src/background/runtime-store-v2';
 import type {
   CleanupProgress,
   CleanupRetryState,
@@ -11,9 +12,16 @@ import type {
   RuntimeStateV2,
 } from '../../../src/background/runtime-v2-types';
 import type { CleanupEffectPortsV2 } from '../../../src/background/transition-cleanup-v2';
+import { focusedMsAtV2 } from '../../../src/core/session-v2';
 import { CLEANUP_MAX_AUTOMATIC_ATTEMPTS } from '../../../src/shared/constants';
 import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
 import { CoreError } from '../../../src/shared/errors';
+import type { SessionStateV2 } from '../../../src/shared/types';
+import {
+  indefiniteFocusSession,
+  indefinitePausedSession,
+  startedIndefiniteRuntime,
+} from './indefinite-restart-fixtures';
 import {
   appliedResponseFor,
   createRuntimePortsFakeV2,
@@ -29,6 +37,7 @@ import {
   CLEANUP_OPERATION_ID,
   cleanupClosureRuntime,
   cleanupTransition,
+  EPOCH_ID,
   migratedActiveFocusRuntime,
   OTHER_OPERATION_ID,
   pausedRuntime,
@@ -143,6 +152,23 @@ function notDueTransitionRuntime(): RuntimeStateV2 {
       retry: { ...progress.retry, nextAttemptAt: RECOVERY_AT + MINUTE_MS },
     },
   });
+}
+
+/** The session a recovery result carries, or a test failure if it lost one. */
+function session(result: RecoveryResultV2): SessionStateV2 {
+  const state: SessionStateV2 | null = result.runtime.session;
+  if (state === null) throw new Error('the recovery result carries no session');
+  return state;
+}
+
+/**
+ * What the person is shown. `focusedMsAtV2` is the call the snapshot projector makes for
+ * `sessionFocusedMs`, so this is the figure the popup renders rather than a restatement of it.
+ * The distinction matters most for an indefinite session: the settled `focusedMs` does not move
+ * through an unbroken focus phase, so only the projection reflects the time that passed.
+ */
+function projectedFocusMs(result: RecoveryResultV2): number {
+  return focusedMsAtV2(session(result), RECOVERY_AT);
 }
 
 /** The retry state of whichever journal the runtime carries. */
@@ -741,5 +767,169 @@ describe('recovery effect order', (): void => {
     expect(test.ports.auditCalls).toBe(1);
     expect(test.ports.writes.length).toBeGreaterThan(0);
     expect(CLEANUP_OPERATION_ID).not.toBe(OTHER_OPERATION_ID);
+  });
+});
+
+/**
+ * The one session shape that owns no phase alarm while it focuses, and therefore depends entirely
+ * on this file's subject to survive an eviction. `planPhaseAlarmV2` answers `null` for indefinite
+ * focus, so nothing wakes the worker on its behalf: every other shape has a timer that eventually
+ * fires and repairs a bad recovery, and this one does not.
+ */
+describe('recovering an indefinite session', (): void => {
+  it('keeps a focusing session alive with no end and clears the phase alarm', async (): Promise<void> => {
+    const runtime: RuntimeStateV2 = publishedFocusRuntime({
+      session: indefiniteFocusSession(ACTIVATION_AT),
+      enforcementCheckpoint: null,
+    });
+    const test: RecoveryHarness = harness(runtime);
+    healthyResponders(test.ports);
+
+    const result: RecoveryResultV2 = await recoverRuntimeV2(test.ports, test.effects);
+
+    // The session survives. A timed session five minutes past its end would have closed here.
+    expect(result.kind).toBe('published');
+    expect(result.runtime.session?.sessionId).toBe(SESSION_ID);
+    expect(result.runtime.session?.phase).toBe('focus');
+    expect(result.runtime.session?.sessionEndsAt).toBeNull();
+    expect(result.runtime.session?.phaseEndsAt).toBeNull();
+    // And it is left with no phase alarm rather than one at an invented time. A created alarm here
+    // would fire on a session that has no boundary to fire at.
+    expect(test.ports.alarmCalls).toContainEqual({ kind: 'clear', name: PHASE_ALARM });
+    expect(test.ports.alarmCalls).not.toContainEqual({ kind: 'create', name: PHASE_ALARM });
+  });
+
+  it('counts the focus the worker slept through rather than restarting the clock', async (): Promise<void> => {
+    const runtime: RuntimeStateV2 = publishedFocusRuntime({
+      session: indefiniteFocusSession(ACTIVATION_AT),
+      enforcementCheckpoint: null,
+    });
+    const test: RecoveryHarness = harness(runtime);
+    healthyResponders(test.ports);
+
+    const result: RecoveryResultV2 = await recoverRuntimeV2(test.ports, test.effects);
+
+    // Five minutes passed while the worker was evicted, and the person was focusing for all of
+    // it. The settled `focusedMs` deliberately does not move, because an unbroken focus phase has
+    // nothing to settle: what the person sees is projected from the phase start, so that is what
+    // this asserts.
+    expect(result.runtime.session?.phaseStartedAt).toBe(ACTIVATION_AT);
+    expect(projectedFocusMs(result)).toBe(RECOVERY_AT - ACTIVATION_AT);
+  });
+
+  it('holds a live pause and arms the one alarm this shape does own', async (): Promise<void> => {
+    // A pause is the only indefinite phase with a boundary, so it is the only one that arms an
+    // alarm. The pause outlasts the recovery instant, so it must survive as a pause.
+    const runtime: RuntimeStateV2 = pausedRuntime({
+      session: indefinitePausedSession(ACTIVATION_AT, ACTIVATION_AT + MINUTE_MS, 30 * MINUTE_MS),
+      enforcementCheckpoint: null,
+    });
+    const test: RecoveryHarness = harness(runtime);
+    healthyResponders(test.ports);
+
+    const result: RecoveryResultV2 = await recoverRuntimeV2(test.ports, test.effects);
+
+    expect(result.kind).toBe('published');
+    expect(result.runtime.session?.phase).toBe('paused');
+    expect(result.runtime.session?.sessionEndsAt).toBeNull();
+    expect(result.runtime.session?.pausedFrom).toEqual({ phase: 'focus', phaseEndsAt: null });
+    expect(test.ports.alarmCalls).toContainEqual({ kind: 'create', name: PHASE_ALARM });
+  });
+
+  it('does not credit the pause as focus', async (): Promise<void> => {
+    const pausedAt: number = ACTIVATION_AT + MINUTE_MS;
+    const runtime: RuntimeStateV2 = pausedRuntime({
+      session: indefinitePausedSession(ACTIVATION_AT, pausedAt, 30 * MINUTE_MS),
+      enforcementCheckpoint: null,
+    });
+    const test: RecoveryHarness = harness(runtime);
+    healthyResponders(test.ports);
+
+    const result: RecoveryResultV2 = await recoverRuntimeV2(test.ports, test.effects);
+
+    // Four of the five recovered minutes were paused, so only the first one counts, and a paused
+    // phase settles its focus rather than projecting more.
+    expect(result.runtime.session?.focusedMs).toBe(pausedAt - ACTIVATION_AT);
+    expect(projectedFocusMs(result)).toBe(pausedAt - ACTIVATION_AT);
+  });
+
+  it('resumes an indefinite session whose pause expired while the worker was gone', async (): Promise<void> => {
+    // The exposure this shape has and no other: nothing was going to wake the worker at the pause
+    // end, because the pause alarm died with the worker, so recovery is the only thing that can
+    // notice the pause is over.
+    const runtime: RuntimeStateV2 = pausedRuntime({
+      session: indefinitePausedSession(ACTIVATION_AT, ACTIVATION_AT + MINUTE_MS, MINUTE_MS),
+      enforcementCheckpoint: null,
+    });
+    const test: RecoveryHarness = harness(runtime);
+    healthyResponders(test.ports);
+
+    const result: RecoveryResultV2 = await recoverRuntimeV2(test.ports, test.effects);
+
+    // Back in focus, with no end, rather than stuck in an expired pause or closed.
+    expect(result.runtime.session?.phase).toBe('focus');
+    expect(result.runtime.session?.phaseEndsAt).toBeNull();
+    expect(result.runtime.session?.sessionEndsAt).toBeNull();
+    expect(result.runtime.session?.sessionId).toBe(SESSION_ID);
+  });
+
+  it('finishes a durable cleanup journal before it looks at the indefinite session', async (): Promise<void> => {
+    // The journal outranks the session whatever the session's shape, and an indefinite session is
+    // the one most likely to still be present when a journal is found.
+    const runtime: RuntimeStateV2 = preparedClosureRuntime({
+      session: indefiniteFocusSession(ACTIVATION_AT),
+    });
+    const test: RecoveryHarness = harness(runtime);
+    healthyResponders(test.ports);
+
+    const result: RecoveryResultV2 = await recoverRuntimeV2(test.ports, test.effects);
+
+    expect(test.ports.commits).toHaveLength(1);
+    expect(result.runtime.session).toBeNull();
+    // The journal path never asks whether enforcement is healthy, because it is tearing it down.
+    expect(test.ports.auditCalls).toBe(0);
+    expect(test.badges()).toBeGreaterThan(0);
+  });
+
+  it('closes an indefinite session when enforcement can no longer be audited', async (): Promise<void> => {
+    // Without a timer, an indefinite session that cannot enforce would otherwise persist forever.
+    const runtime: RuntimeStateV2 = publishedFocusRuntime({
+      session: indefiniteFocusSession(ACTIVATION_AT),
+      enforcementCheckpoint: null,
+    });
+    const test: RecoveryHarness = harness(runtime, { audit: 'website-access-lost' });
+    healthyResponders(test.ports);
+
+    const result: RecoveryResultV2 = await recoverRuntimeV2(test.ports, test.effects);
+
+    expect(result.runtime.session).toBeNull();
+    expect(test.ports.auditCalls).toBe(1);
+  });
+
+  it('recovers a runtime a real start wrote rather than one a fixture invented', async (): Promise<void> => {
+    // The seam this closes: `runtime-v2-fixtures.ts` never calls a production builder, so nothing
+    // else in this file hands recovery a runtime a runner produced. Between the runner and the
+    // reader sits only the parser, which does not pin stage semantics.
+    // The start runs at activation and the recovery five minutes later, which is the eviction
+    // this scenario is about.
+    const started: RecoveryHarness = harness(emptyRuntimeV2(ACTIVATION_AT, EPOCH_ID), {
+      now: ACTIVATION_AT,
+    });
+    healthyResponders(started.ports);
+    const committed: RuntimeStateV2 = await startedIndefiniteRuntime(started.ports);
+
+    expect(committed.session?.sessionEndsAt).toBeNull();
+    expect(committed.pendingEnforcementTransition).toBeNull();
+
+    const test: RecoveryHarness = harness(committed);
+    healthyResponders(test.ports);
+
+    const result: RecoveryResultV2 = await recoverRuntimeV2(test.ports, test.effects);
+
+    expect(result.kind).toBe('published');
+    expect(result.runtime.session?.sessionId).toBe(committed.session?.sessionId);
+    expect(result.runtime.session?.phase).toBe('focus');
+    expect(result.runtime.session?.sessionEndsAt).toBeNull();
+    expect(projectedFocusMs(result)).toBe(RECOVERY_AT - ACTIVATION_AT);
   });
 });
