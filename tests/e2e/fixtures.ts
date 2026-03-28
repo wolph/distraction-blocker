@@ -167,16 +167,28 @@ interface ServiceWorkerVersionInfo {
   runningStatus: 'stopped' | 'starting' | 'running' | 'stopping';
 }
 
+/**
+ * The budget for one service-worker version handshake. It was five seconds, which a machine
+ * running several extension browsers at once does not always meet: a launch would fail with
+ * "running extension worker version is unavailable" while the worker was merely slow to report
+ * itself. The wait is still on the condition, so a longer budget costs nothing when the worker is
+ * quick and only buys patience when it is not.
+ */
+const WORKER_VERSION_ATTEMPTS: number = 600;
+const WORKER_VERSION_INTERVAL_MS: number = 50;
+
 async function waitForServiceWorkerVersion(
   versions: () => readonly ServiceWorkerVersionInfo[],
   predicate: (version: ServiceWorkerVersionInfo) => boolean,
   failure: string,
+  nudge?: () => Promise<void>,
 ): Promise<ServiceWorkerVersionInfo> {
-  for (let attempt: number = 0; attempt < 100; attempt += 1) {
+  for (let attempt: number = 0; attempt < WORKER_VERSION_ATTEMPTS; attempt += 1) {
     const found: ServiceWorkerVersionInfo | undefined = versions().find(predicate);
     if (found !== undefined) return found;
+    if (nudge !== undefined) await nudge();
     await new Promise<void>((resolve: () => void): void => {
-      setTimeout(resolve, 50);
+      setTimeout(resolve, WORKER_VERSION_INTERVAL_MS);
     });
   }
   throw new Error(failure);
@@ -213,14 +225,28 @@ async function restartMonitoredWorker(launch: ExtensionLaunch): Promise<Extensio
         (version: ServiceWorkerVersionInfo): boolean => version.versionId === running.versionId,
         'extension worker did not stop',
       );
-      await launch.extPage.evaluate(
-        async (): Promise<unknown> => await chrome.runtime.sendMessage({ type: 'getSetupState' }),
-      );
+      // A stopped MV3 worker starts again when a message arrives, so the wake is the wait. Sending
+      // it once assumed the one message landed, and a message sent while the popup was busy or the
+      // machine was loaded could be the one that did not, leaving the wait to time out against a
+      // worker nobody had asked to start. Every attempt now carries its own wake.
+      const wake: () => Promise<void> = async (): Promise<void> => {
+        try {
+          await launch.extPage.evaluate(
+            async (): Promise<unknown> =>
+              await chrome.runtime.sendMessage({ type: 'getSetupState' }),
+          );
+        } catch {
+          // The page is mid-navigation or the worker is still coming up. The next attempt asks
+          // again, and the read-back below is the only thing that decides success.
+        }
+      };
+      await wake();
       await waitForServiceWorkerVersion(
         (): readonly ServiceWorkerVersionInfo[] => versions,
         (version: ServiceWorkerVersionInfo): boolean =>
           version.scriptURL.startsWith(scriptPrefix) && version.runningStatus === 'running',
         'extension worker did not restart',
+        wake,
       );
       worker =
         launch.context
@@ -245,6 +271,10 @@ async function restartMonitoredWorker(launch: ExtensionLaunch): Promise<Extensio
 
 const SYNC_FILLER_PREFIX: string = '__focusLockE2EQuota:';
 
+/** Bounded patience for Chrome to apply the granting manifest's host permissions. */
+const WEBSITE_ACCESS_GRANT_ATTEMPTS: number = 100;
+const WEBSITE_ACCESS_GRANT_INTERVAL_MS: number = 100;
+
 async function grantProfileWebsiteAccess(
   profileDir: string,
   baseDist: string,
@@ -268,7 +298,20 @@ async function grantProfileWebsiteAccess(
     diagnostics,
     timezoneId,
   );
-  await sendExtensionRequest(grantingLaunch.extPage, { type: 'reconcileWebsiteAccess' });
+  // Chrome applies the granting manifest's host permissions on its own schedule, and reconciling
+  // once assumed they were already in place. A reconcile that ran too early persisted a denial,
+  // and the launch that followed failed with "could not prepare website access". The reconcile is
+  // now repeated until it reports the grant, which is a wait on the condition it is there to
+  // establish. The caller still verifies the result, so a profile that never grants fails there.
+  for (let attempt: number = 0; attempt < WEBSITE_ACCESS_GRANT_ATTEMPTS; attempt += 1) {
+    const reconciled = await sendExtensionRequest(grantingLaunch.extPage, {
+      type: 'reconcileWebsiteAccess',
+    });
+    if (reconciled.ok && reconciled.granted) break;
+    await new Promise<void>((resolve: () => void): void => {
+      setTimeout(resolve, WEBSITE_ACCESS_GRANT_INTERVAL_MS);
+    });
+  }
   await grantingLaunch.context.close();
 }
 
