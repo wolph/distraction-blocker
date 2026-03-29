@@ -16,8 +16,11 @@
  */
 
 import { CoreError } from '../shared/errors';
+import { exactDataEqual } from '../shared/exact-data';
 import type { RetryCleanupResultCodeV2 } from '../shared/messages';
-import type { SessionEndReasonV2, SessionStateV2 } from '../shared/types';
+import { syncAggKey } from '../shared/storage-keys';
+import { localDateStr } from '../shared/time';
+import type { DailyAgg, SessionEndReasonV2, SessionStateV2 } from '../shared/types';
 import {
   type AlarmNameV2,
   clearAlarmWithReadBackV2,
@@ -289,6 +292,39 @@ async function captureClosure(
 }
 
 /**
+ * Moves the runtime onto the day the closure ended on and adopts the aggregate that closure wrote
+ * for it. This is `rebaseClosureDay`'s rule on the transition path: the ended day is not part of
+ * the projected domain, so a commit cannot carry it, and leaving the stale copy in place means the
+ * next start on that day commits it back over the aggregate the closure just stored, losing the
+ * completed session and its focus.
+ */
+async function rebaseHandOffDay(
+  ports: RuntimePortsV2,
+  projection: ClosureProjection,
+): Promise<RuntimeStateV2> {
+  const runtime: RuntimeStateV2 = ports.runtime();
+  const endedDate: string = localDateStr(projection.endedAt);
+  const aggregate: DailyAgg | undefined =
+    projection.aggregateSets[syncAggKey(ports.deviceId(), endedDate)];
+  if (aggregate === undefined) {
+    throw new CoreError(
+      'invalid-rule',
+      'the closure projection carries no aggregate for the day it ended on',
+    );
+  }
+  if (runtime.date === endedDate && exactDataEqual(runtime.todayAgg, aggregate)) {
+    return structuredClone(runtime);
+  }
+  const next: RuntimeStateV2 = validated({
+    ...structuredClone(runtime),
+    date: endedDate,
+    todayAgg: structuredClone(aggregate),
+  });
+  await ports.writeRuntime(next);
+  return next;
+}
+
+/**
  * A transition failure ends the session with the enforcement reason that caused it. Timer
  * completion and a manual end carry their own reasons, and a manual end of a timed session is an
  * early cancel rather than a completion.
@@ -527,11 +563,20 @@ async function handOffClosure(
   for (const tabId of transitionProgress.resolvedTabIds) {
     progress = resolveCleanupTabV2(progress, tabId);
   }
+  // The day and its aggregate are not part of the projected domain, so a commit cannot carry them.
+  // They are written first, exactly as the closure runner writes them, and the checkpoint below
+  // then carries the domain over the runtime this left behind.
+  const rebased: RuntimeStateV2 = await rebaseHandOffDay(ports, projection);
   const next: RuntimeStateV2 = validated({
-    ...structuredClone(runtime),
+    ...structuredClone(rebased),
     session: null,
     gate: null,
     unlocks: [],
+    // The watermark the closure builder hands over with its projection, which the closure runner
+    // and the migration checkpoint both reset. Without it the watermark keeps the ended session's
+    // focus, so the next session earns no bank and records no focus until it out-focuses a session
+    // that is already over.
+    accruedFocusMs: 0,
     runtimeRevision: clearRuntimeRevision,
     documentCommands: structuredClone(progress.clearCommands),
     enforcementCheckpoint: null,

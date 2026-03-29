@@ -76,10 +76,7 @@ import {
 import { recoverRuntimeV2 } from './recovery-v2';
 import { carryCommitCheckpointProjectionV2, projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
-import type {
-  RuntimeStateV2,
-  SessionStartCandidate,
-} from './runtime-v2-types';
+import type { RuntimeStateV2, SessionStartCandidate } from './runtime-v2-types';
 import { parseRuntimeStateV2 } from './runtime-v2-validation';
 import {
   nextScheduleInfoV2,
@@ -186,7 +183,13 @@ export class SessionControllerV2 {
     // its own clock, is already the truth for the user. Both are reported as the cleanup they will
     // become rather than as the session that is still durable, and the id comes from that durable
     // session rather than the settled read, which no longer carries it.
-    const owing: boolean = this.closurePending || read.closureOwed;
+    // A durable transition cleanup is not a closure and must not be reported as one: the
+    // projection already describes it exactly, as a transition cleanup while its batch has
+    // attempts left and as the transition error with its retry once the batch is spent. Overriding
+    // that would name a closure no runtime row backs, hide the error and the retry the person
+    // could act on, and offer a closure retry that answers `retry-not-available`.
+    const transitionOwns: boolean = durable.pendingEnforcementTransition?.stage === 'cleanup';
+    const owing: boolean = !transitionOwns && (this.closurePending || read.closureOwed);
     const owed: string | null = owing ? (durable.session?.sessionId ?? null) : null;
     return owed === null ? base : owedClosureSnapshot(base, owed);
   }
@@ -568,7 +571,13 @@ export class SessionControllerV2 {
    */
   async refreshLiveViews(): Promise<void> {
     await this.enqueue(async (): Promise<void> => {
-      await this.commitLiveViews(this.ports.runtime());
+      const runtime: RuntimeStateV2 = this.ports.runtime();
+      // A durable cleanup batch owns the command map and the revision that names it, which is why
+      // the settle persist refuses the live commit for the same state. Without the same refusal
+      // here every alarm and every sweeping command threw for the life of the journal, and the
+      // browser-effect sweep behind the refresh was skipped with it.
+      if (cleanupOwnsViewsV2(runtime)) return;
+      await this.commitLiveViews(runtime);
     });
   }
 
@@ -1003,12 +1012,16 @@ export class SessionControllerV2 {
       return;
     }
     for (let day: number = 0; day < MAX_ROLLOVER_DAYS; day++) {
-      const runtime: RuntimeStateV2 = this.ports.runtime();
-      if (runtime.date >= today) return;
-      const boundary: number = localMidnightAfter(runtime.date);
+      // The date is captured as a value rather than through the runtime it came from. The port
+      // hands out the Engine's live object, and the rollover moves the day on that same object, so
+      // comparing the object with itself afterwards always agreed and the walk returned after one
+      // day. A profile that was idle for a week then caught up one day per minute of wall clock.
+      const from: string = this.ports.runtime().date;
+      if (from >= today) return;
+      const boundary: number = localMidnightAfter(from);
       await this.settleThrough(boundary);
       await this.ports.rolloverCheck(boundary);
-      if (this.ports.runtime().date === runtime.date) return;
+      if (this.ports.runtime().date === from) return;
     }
     // The bound was reached with days still owed, which only a clock that jumped more than a year
     // can do. It converges over the next ticks, and a silent truncation would hide why.
@@ -1060,7 +1073,7 @@ export class SessionControllerV2 {
         sessionId: session.sessionId,
       });
     }
-    if (advanced.kind === 'timer-completed') {
+    if (advanced.kind === 'timer-completed' && !cleanupOwnsViewsV2(expired)) {
       // The closure one await away replaces the whole command map with its clear batch, so a live
       // update here would send every document a blocking command for a session that is over.
       await this.persistSettled(expired, false, events, now);
@@ -1069,6 +1082,15 @@ export class SessionControllerV2 {
         reason: 'timer-completed',
       });
       this.completionEffects();
+      return;
+    }
+    // A cleanup journal keeps its session frozen at the instant its closure names, and that
+    // closure is the only thing allowed to end it. Once the retained session's own clock runs out,
+    // an unguarded settle would try to close it a second time, and the closure builder refuses
+    // that on the spot, so the throw left every tick after it, and the whole minute of Engine
+    // maintenance behind it, undone for as long as the journal lived.
+    if (cleanupOwnsViewsV2(expired)) {
+      await this.persistSettled(expired, false, events, now);
       return;
     }
     // Focus earns pause budget as it is settled, exactly as the v1 engine credited it, and the
@@ -1132,8 +1154,7 @@ export class SessionControllerV2 {
     now: number,
     bank?: BankState,
   ): Promise<void> {
-    const owned: boolean =
-      next.pendingEnforcementTransition?.stage === 'cleanup' || next.pendingClosure !== null;
+    const owned: boolean = cleanupOwnsViewsV2(next);
     if (live && !owned) {
       await this.commitLiveViews(next, events, bank);
       return;
@@ -1631,6 +1652,18 @@ function evaluatedVerdictOf(
 }
 
 /** Nothing this controller hands a port is allowed to be a runtime the boundary would reject. */
+/**
+ * True while a durable cleanup batch owns the document commands and the revision that names them.
+ * Both cleanup lifecycles refuse a live view commit in that state, the transition through its own
+ * refreeze and the closure through the validator, so every caller asks this first rather than
+ * discovering it as a thrown runtime.
+ */
+function cleanupOwnsViewsV2(runtime: RuntimeStateV2): boolean {
+  return (
+    runtime.pendingEnforcementTransition?.stage === 'cleanup' || runtime.pendingClosure !== null
+  );
+}
+
 function validRuntime(runtime: RuntimeStateV2): RuntimeStateV2 {
   const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(runtime);
   if (parsed === null) {

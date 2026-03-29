@@ -362,6 +362,23 @@ describe('runTransitionCleanupAttemptV2', (): void => {
     expect(Object.keys(commit?.aggregateSets ?? {}).length).toBeGreaterThan(0);
   });
 
+  it('adopts the ended day and clears the focus watermark with the handoff', async (): Promise<void> => {
+    // The closure builder hands over three things and the handoff used to keep one. Without the
+    // other two the next session earns no pause budget until it out-focuses the dead one, and the
+    // next start on the same day commits the stale aggregate over the one this closure just wrote,
+    // losing the completed session and its focus from durable stats.
+    const fake: RuntimePortsFakeV2 = await inCleanup(committedRuntime(), 'manual-end');
+    const commitsBefore: number = fake.commits.length;
+
+    const resolved: RuntimeStateV2 = await runTransitionCleanupAttemptV2(fake, effectsFake());
+
+    expect(resolved.accruedFocusMs).toBe(0);
+    const commit: RuntimeCommitInputV2 | undefined = fake.commits[commitsBefore];
+    const endedKey: string = `agg:${fake.deviceId()}:${resolved.date}`;
+    expect(commit?.aggregateSets[endedKey]).toBeDefined();
+    expect(resolved.todayAgg).toEqual(commit?.aggregateSets[endedKey]);
+  });
+
   it('records a failed attempt and schedules its retry alarm', async (): Promise<void> => {
     const fake: RuntimePortsFakeV2 = await inCleanup(committedRuntime(), 'manual-end');
     fake.respondForDocument(11, DOC_ONE, noReceiverResponder());

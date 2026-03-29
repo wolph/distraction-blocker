@@ -151,6 +151,85 @@ async function confirmOpenGate(
   return controller.confirmGate(ports.current().gate?.requiredPhrase ?? null);
 }
 
+describe('SessionControllerV2 past the end of a session a journal retains', (): void => {
+  /** A cleanup transition that keeps its session, at an instant past that session's fixed end. */
+  function retained(): { at: number; runtime: RuntimeStateV2 } {
+    const transition: PendingEnforcementTransition = cleanupTransition(
+      'start',
+      'alarm-ready',
+      'manual-end',
+      { postCleanupClosure: transitionPostCleanupClosure() },
+    );
+    const runtime: RuntimeStateV2 = transitionRuntime(transition);
+    const session: SessionStateV2 | null = runtime.session;
+    if (session === null) throw new Error('the cleanup transition kept no session');
+    return { runtime, at: session.sessionEndsAt + 60_000 };
+  }
+
+  it('does not try to close a session the journal is already closing', async (): Promise<void> => {
+    // The closure builder refuses a session a transition owns, so an unguarded settle threw here
+    // and took the whole minute of Engine maintenance behind the tick with it, every tick, for as
+    // long as the journal lived.
+    const { controller, ports } = retainedHarness();
+
+    await expect(controller.tick(retained().at)).resolves.toBeUndefined();
+
+    // The journal's own closure is the only end this session gets. A settle that closed it too
+    // would either throw, which is what it did, or record a second end for one session.
+    const ends: unknown[] = ports.commits.flatMap((commit): unknown[] =>
+      commit.events.filter(
+        (event): boolean =>
+          (event as { reason?: unknown }).reason === 'timer-completed' &&
+          (event as { t?: unknown }).t === 'sessionEnded',
+      ),
+    );
+    expect(ends).toEqual([]);
+  });
+
+  it('reports the cleanup the journal is running rather than a closure', async (): Promise<void> => {
+    const { controller } = retainedHarness();
+
+    const snapshot: SessionSnapshotV2 = controller.snapshot(retained().at);
+
+    // The projection already describes this state exactly. Naming a closure instead hides the
+    // transition error and the retry the person could act on behind a cleanup no row backs.
+    expect(snapshot.lifecycle.kind).toBe('cleanup');
+    if (snapshot.lifecycle.kind !== 'cleanup') throw new Error('expected a cleanup lifecycle');
+    expect(snapshot.lifecycle.journal).toBe('transition');
+  });
+
+  function retainedHarness(): HarnessV2 {
+    const seeded: { at: number; runtime: RuntimeStateV2 } = retained();
+    return harness(seeded.runtime, { now: seeded.at });
+  }
+});
+
+describe('SessionControllerV2 live views under a cleanup journal', (): void => {
+  it('refreshes nothing while a closure cleanup owns the command map', async (): Promise<void> => {
+    // The refresh is the first thing the phase-change sweep calls, and the sweep's blocking work
+    // runs after it. While a cleanup batch is durable the commit is refused by the validator, so a
+    // refresh that tried it threw on every alarm and every sweeping command, and the browser-effect
+    // sweep behind it was skipped for the whole life of the journal.
+    const { controller, ports } = harness(cleanupClosureRuntime());
+    const before: RuntimeStateV2 = ports.current();
+
+    await expect(controller.refreshLiveViews()).resolves.toBeUndefined();
+
+    expect(ports.current()).toEqual(before);
+  });
+
+  it('refreshes nothing while a transition cleanup owns the command map', async (): Promise<void> => {
+    const { controller, ports } = harness(
+      transitionRuntime(cleanupTransition('start', 'starting-verified', 'start-abandon')),
+    );
+    const before: RuntimeStateV2 = ports.current();
+
+    await expect(controller.refreshLiveViews()).resolves.toBeUndefined();
+
+    expect(ports.current()).toEqual(before);
+  });
+});
+
 describe('SessionControllerV2 writes around an outstanding commit checkpoint', (): void => {
   /** The checkpoint an in-flight commit leaves in the runtime, projecting the runtime it saw. */
   function outstandingCheckpoint(runtime: RuntimeStateV2): RuntimeStateV2 {
