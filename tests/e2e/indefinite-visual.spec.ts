@@ -627,15 +627,18 @@ async function captureOverlayStates(
     'overlay-active-timed',
     'overlay-stopped',
   ] as const) {
-    await prepareOverlaySession(extPage, state);
     for (const theme of INDEFINITE_THEME_CASES) {
       await sendExtensionRequest(extPage, { type: 'updateTheme', theme: theme.theme });
       for (const width of widthsForState(state)) {
         const page: Page = await context.newPage();
         await page.emulateMedia({ colorScheme: theme.colorScheme });
         await page.setViewportSize({ width, height: viewportHeightFor(width) });
-        await showOverlay(page, worker, blockedUrl, state);
+        await showOverlay(page, extPage, worker, blockedUrl, state);
         const session: CDPSession = await context.newCDPSession(page);
+        // The overlay recomputes its bank, its readiness and its clock every 250 ms, which would
+        // overwrite a pinned value before the screenshot. Pausing the document's virtual time stops
+        // that loop without touching the worker, whose clock this capture deliberately leaves alone.
+        await session.send('Emulation.setVirtualTimePolicy', { policy: 'pause' });
         const pinned: string[] = await pinnedOverlayRegions(session, state);
         if (pinned.length > 0) maskedRegions.push({ state, selectors: pinned });
         await captureCell(page, evidenceDir, state, theme, width, {
@@ -662,7 +665,7 @@ async function pinnedOverlayRegions(
 ): Promise<string[]> {
   for (let attempt: number = 0; attempt < 5; attempt++) {
     try {
-      return await pinOverlayRegions(session, await overlayNodes(session), state);
+      return await pinOverlayRegions(session, await overlayNodes(session));
     } catch (error: unknown) {
       if (!(error instanceof StaleOverlayNodes)) throw error;
     }
@@ -674,9 +677,7 @@ async function pinnedOverlayRegions(
 async function pinOverlayRegions(
   session: CDPSession,
   nodes: readonly DomNodeSnapshot[],
-  state: IndefiniteVisualState,
 ): Promise<string[]> {
-  if (state === 'overlay-stopped') return [];
   const pinned: string[] = [];
   if ((await pinOverlayText(session, nodes, 'clock', PINNED_CLOCK)) > 0) pinned.push('.clock');
   if ((await pinOverlayText(session, nodes, 'bank', PINNED_BANK)) > 0) pinned.push('.bank');
@@ -692,9 +693,45 @@ async function pinOverlayRegions(
   return pinned;
 }
 
-/** The session each overlay state needs, started once for the twelve cells that share it. */
-async function prepareOverlaySession(extPage: Page, state: IndefiniteVisualState): Promise<void> {
+/**
+ * Puts one page into the state and answers once its overlay is mounted.
+ *
+ * The two active states open their page before the session starts, so the document finishes loading
+ * and the command lands on a page that is already there. That is the difference between them and
+ * the stopped state: a fresh navigation to a blocked page is stopped mid-load and says so, and
+ * capturing all three from a fresh navigation made three states that rendered the same panel.
+ */
+async function showOverlay(
+  page: Page,
+  extPage: Page,
+  worker: Worker,
+  blockedUrl: string,
+  state: IndefiniteVisualState,
+): Promise<void> {
   await endAnySession(extPage);
+  if (state === 'overlay-stopped') {
+    await startOverlaySession(extPage, state);
+    // Stopping a fresh navigation is not deterministic: Chrome sometimes injects the content script
+    // after the document has left `loading`, and there is then no fresh navigation to stop. Task 1
+    // measured that as roughly one arrival in eight. This reloads until the worker's own durable
+    // record shows a stopped document, so the wait is on the evidence rather than on a clock.
+    for (let attempt: number = 0; attempt < 8; attempt++) {
+      await page.goto(blockedUrl, { waitUntil: 'commit' });
+      if (await stoppedDocumentRecorded(worker, 4_000)) {
+        await expect(page.locator('focus-lock-overlay')).toBeAttached();
+        return;
+      }
+    }
+    throw new Error('the worker never recorded a stopped document for the stopped-page capture');
+  }
+  await page.goto(blockedUrl);
+  await expect(page.locator('#marker')).toBeAttached();
+  await startOverlaySession(extPage, state);
+  await expect(page.locator('focus-lock-overlay')).toBeAttached();
+}
+
+/** The session one overlay state is about, started fresh for the page that will show it. */
+async function startOverlaySession(extPage: Page, state: IndefiniteVisualState): Promise<void> {
   if (state === 'overlay-active-timed') {
     await startTestSession(extPage, {
       duration: { kind: 'timed', minutes: 45 },
@@ -706,39 +743,12 @@ async function prepareOverlaySession(extPage: Page, state: IndefiniteVisualState
   await startUntilStoppedSession(extPage, { intention: 'Write the release notes' });
 }
 
-/** Puts one page into the state, and answers once the overlay it needs is mounted. */
-async function showOverlay(
-  page: Page,
-  worker: Worker,
-  blockedUrl: string,
-  state: IndefiniteVisualState,
-): Promise<void> {
-  if (state !== 'overlay-stopped') {
-    await page.goto(blockedUrl);
-    await expect(page.locator('focus-lock-overlay')).toBeAttached();
-    return;
-  }
-  // Stopping a fresh navigation is not deterministic: Chrome sometimes injects the content script
-  // after the document has left `loading`, and there is then no fresh navigation to stop. Task 1
-  // measured that as roughly one arrival in eight and put its claims behind the worker's own stop
-  // record. This capture cannot skip a cell, so it reloads until the worker records a stop, which
-  // waits on the durable evidence rather than on a clock.
-  for (let attempt: number = 0; attempt < 8; attempt++) {
-    await page.goto(blockedUrl, { waitUntil: 'commit' });
-    if (await stoppedDocumentRecorded(worker, 4_000)) {
-      await expect(page.locator('focus-lock-overlay')).toBeAttached();
-      return;
-    }
-  }
-  throw new Error('the worker never recorded a stopped document for the stopped-page capture');
-}
-
 /** True once the worker's durable tab state names a stopped document, which is the stop's evidence. */
 async function stoppedDocumentRecorded(worker: Worker, timeoutMs: number): Promise<boolean> {
   const deadline: number = Date.now() + timeoutMs;
   for (;;) {
     const stopped: boolean = Object.values((await readRuntimeV2(worker)).tabStates).some(
-      (state: RuntimeTabState): boolean => state.stoppedDocumentId !== null,
+      (tab: RuntimeTabState): boolean => tab.stoppedDocumentId !== null,
     );
     if (stopped) return true;
     if (Date.now() >= deadline) return false;
@@ -792,7 +802,8 @@ async function capturePageSurfaces(
     'schedule-editor-until-stopped',
   );
 
-  await prepareOverlaySession(extPage, 'overlay-active-indefinite');
+  await endAnySession(extPage);
+  await startOverlaySession(extPage, 'overlay-active-indefinite');
   await captureOptionsState(
     context,
     extPage,
@@ -800,7 +811,8 @@ async function capturePageSurfaces(
     evidenceDir,
     'settings-session-status-indefinite',
   );
-  await prepareOverlaySession(extPage, 'overlay-active-timed');
+  await endAnySession(extPage);
+  await startOverlaySession(extPage, 'overlay-active-timed');
   await captureOptionsState(
     context,
     extPage,
