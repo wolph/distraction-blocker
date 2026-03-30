@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { mergeEventLogV2 } from '../../../src/background/event-log-v2';
 import {
@@ -40,6 +42,7 @@ import type {
   PauseEconomy,
   SessionEventRecordV2,
 } from '../../../src/shared/types';
+import { indefiniteFocusSession, indefinitePausedSession } from './indefinite-restart-fixtures';
 
 interface BootStorage {
   runtime: unknown;
@@ -865,5 +868,133 @@ describe('v2 boot crash recovery', (): void => {
       expect(storage.migration, `crash at ${failing}`).toBeUndefined();
       expect(storage.runtime, `crash at ${failing}`).toEqual(result.runtime);
     }
+  });
+});
+
+/**
+ * The session shape with no end. Boot reads aggregates from the session start through now, and an
+ * indefinite session is the only one whose start can be arbitrarily far back, because nothing
+ * bounds it. It is also the only shape that survives a worker eviction with no alarm scheduled on
+ * its behalf, so what boot restores is the whole of what the person gets back.
+ */
+describe('v2 boot with an indefinite session', (): void => {
+  it('restores a focusing session with no end, unchanged and unwritten', async (): Promise<void> => {
+    const stored: RuntimeStateV2 = storedV2Runtime({
+      session: indefiniteFocusSession(START_AT),
+      date: LOCAL_DATE,
+    });
+    const test: BootHarness = harness(emptyStorage({ runtime: stored }));
+
+    const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
+
+    expect(result.kind).toBe('v2');
+    expect(result.runtime.session?.sessionEndsAt).toBeNull();
+    expect(result.runtime.session?.phaseEndsAt).toBeNull();
+    expect(result.runtime.session?.phase).toBe('focus');
+    expect(result.runtime.session?.config.duration).toEqual({ kind: 'until-stopped' });
+    // A journal-free v2 runtime is returned as found. Boot is not allowed to invent an end for a
+    // session that has none, and rewriting here would be the first place one could appear.
+    expect(test.calls).not.toContain('saveRuntime');
+  });
+
+  it('reads no aggregate across a missed midnight, because settling is the legacy path', async (): Promise<void> => {
+    // I expected a span of keys here and measured otherwise. `loadSettlementAggregates` takes a
+    // legacy runtime and its own comment says only a legacy session can settle, so a stored v2
+    // runtime reads nothing however many days it has spanned. That matters for this shape more
+    // than any other, because an indefinite session is the only one whose start can be
+    // arbitrarily far back, so it is the one that would have paid for an unbounded read.
+    const startedAt: number = START_AT - 3 * DAY_MS;
+    const stored: RuntimeStateV2 = storedV2Runtime({
+      session: indefiniteFocusSession(startedAt),
+      date: localDateStr(startedAt),
+    });
+    const test: BootHarness = harness(emptyStorage({ runtime: stored }));
+
+    await bootRuntimeAuthorityV2(test.ports);
+
+    expect(test.aggregateKeyReads).toEqual([]);
+    expect(test.calls).not.toContain('loadAggregates');
+  });
+
+  it('cannot meet an indefinite session on the migration path at all', (): void => {
+    // The other half of the same fact, and the reason the settlement path never has to reason
+    // about a null session end: a legacy config carries `durationMin`, a number, and both
+    // migration sites map it to a timed duration. There is no v1 shape that becomes
+    // until-stopped, so the only indefinite session boot can ever see is one v2 already wrote.
+    const migration: string = readFileSync(
+      path.join(__dirname, '../../../src/background/runtime-migration-v2.ts'),
+      'utf8',
+    );
+
+    expect(migration).toContain("duration: { kind: 'timed', minutes: config.durationMin }");
+    expect(migration).toContain("duration: { kind: 'timed', minutes: legacy.config.durationMin }");
+    expect(migration).not.toContain("kind: 'until-stopped'");
+  });
+
+  it('leaves the stale day on the runtime for the rollover that owns it', async (): Promise<void> => {
+    const startedAt: number = START_AT - DAY_MS;
+    const stale: string = localDateStr(startedAt);
+    const stored: RuntimeStateV2 = storedV2Runtime({
+      session: indefiniteFocusSession(startedAt),
+      date: stale,
+    });
+    const test: BootHarness = harness(emptyStorage({ runtime: stored }));
+
+    const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
+
+    // Boot restores authority; the Engine's `rolloverCheck` credits the finished day and moves the
+    // streak. Boot closing the day itself would credit yesterday's focus twice, once here and once
+    // on the tick that follows.
+    expect(result.runtime.date).toBe(stale);
+    expect(stale).not.toBe(LOCAL_DATE);
+    expect(result.runtime.session?.sessionEndsAt).toBeNull();
+  });
+
+  it('replays a checkpoint over an indefinite session without ending it', async (): Promise<void> => {
+    const stored: RuntimeStateV2 = storedV2Runtime({
+      session: indefiniteFocusSession(START_AT),
+      date: LOCAL_DATE,
+    });
+    const checkpoint: RuntimeCommitCheckpointV2 = {
+      version: 2,
+      checkpointId: 'indefinite-checkpoint',
+      projection: projectRuntimeDomainV2({ ...stored, accruedFocusMs: 12 * MINUTE_MS }),
+      bank: { balanceMs: 2_000 },
+      events: [{ t: 'budgetEarned', at: NOW, ms: 2_000 }],
+      syncBank: true,
+      aggregateSets: {},
+      aggregateRemoves: [],
+    };
+    const test: BootHarness = harness(
+      emptyStorage({ runtime: applyRuntimeCheckpointV2(stored, checkpoint) }),
+    );
+
+    const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
+
+    expect(result.runtime.commitCheckpoint).toBeNull();
+    expect(result.runtime.accruedFocusMs).toBe(12 * MINUTE_MS);
+    // The replay must not touch the session's shape. A projection that carried an end would be
+    // how an indefinite session silently acquires one.
+    expect(result.runtime.session?.sessionEndsAt).toBeNull();
+    expect(result.runtime.session?.phaseEndsAt).toBeNull();
+    expect(test.storage.bank).toEqual({ balanceMs: 2_000 });
+  });
+
+  it('restores a paused indefinite session with the null focus end it returns to', async (): Promise<void> => {
+    const pausedAt: number = START_AT + 10 * MINUTE_MS;
+    const stored: RuntimeStateV2 = storedV2Runtime({
+      session: indefinitePausedSession(START_AT, pausedAt, 30 * MINUTE_MS),
+      date: LOCAL_DATE,
+    });
+    const test: BootHarness = harness(emptyStorage({ runtime: stored }));
+
+    const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
+
+    expect(result.runtime.session?.phase).toBe('paused');
+    expect(result.runtime.session?.phaseEndsAt).toBe(pausedAt + 30 * MINUTE_MS);
+    // The phase it resumes into has no end, which is the field a timed paused session cannot have
+    // and the one a restore could most easily drop.
+    expect(result.runtime.session?.pausedFrom).toEqual({ phase: 'focus', phaseEndsAt: null });
+    expect(result.runtime.session?.sessionEndsAt).toBeNull();
   });
 });
