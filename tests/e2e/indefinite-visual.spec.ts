@@ -94,6 +94,7 @@ const LONG_INTENTION: string =
 const PINNED_CLOCK: string = '18:24';
 const PINNED_BANK: string = '3:00 pause banked';
 const PINNED_READY: string = 'ready in 2:00';
+const PINNED_LOCKED_UNTIL: string = 'Locked until 10:15';
 /** The session a cleanup journal in these fixtures names, in the two spellings the two journals use. */
 const CLEANUP_SESSION_ID: string = '40000000-0000-4000-8000-000000000001';
 
@@ -679,14 +680,22 @@ async function pinOverlayRegions(
   nodes: readonly DomNodeSnapshot[],
 ): Promise<string[]> {
   const pinned: string[] = [];
-  if ((await pinOverlayText(session, nodes, 'clock', PINNED_CLOCK)) > 0) pinned.push('.clock');
+  if ((await pinOverlayText(session, nodes, 'clock', PINNED_CLOCK)) > 0) {
+    pinned.push('.clock');
+    // A timed page's status sentence names the wall clock the session ends at, which moves with the
+    // run. Only the timed page has a clock, so the sentence is pinned exactly where it is unstable.
+    await pinOverlayText(session, nodes, 'until', PINNED_LOCKED_UNTIL);
+    pinned.push('.until');
+  }
   if ((await pinOverlayText(session, nodes, 'bank', PINNED_BANK)) > 0) pinned.push('.bank');
   if ((await pinOverlayText(session, nodes, 'ready', PINNED_READY)) > 0) pinned.push('.ready');
   for (const fill of nodesWithClass(nodes, 'meter-fill')) {
     await session.send('DOM.setAttributeValue', {
       nodeId: fill.nodeId,
       name: 'style',
-      value: 'width: 45%',
+      // The fill animates its width, and paused virtual time never advances that animation, so the
+      // pinned value would sit behind a transition that never runs. The transition goes with it.
+      value: 'width: 45%; transition: none',
     });
     pinned.push('.meter-fill');
   }
@@ -1002,25 +1011,28 @@ async function seedScheduleEntry(extPage: Page): Promise<void> {
  * fixed date would only be today's stats on that date.
  */
 async function seedStatsSessions(worker: Worker): Promise<IndefiniteStorageSeed> {
-  const now: number = Date.now();
-  // Minutes old, not hours. The stored log is capped by dropping its oldest records, and this run
-  // has already written real events, so a seed dated hours back is the first thing a later append
-  // would drop and the table would render empty with nothing to say why.
+  // Fixed local times on the previous day, so the times the table prints are the same in every run
+  // and only the date moves with the calendar. An earlier seed placed them minutes back from the
+  // capture instant, which put a different start time in the evidence every time it ran.
+  const yesterday: Date = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const at: (hours: number, minutes: number) => number = (hours: number, minutes: number): number =>
+    new Date(yesterday).setHours(hours, minutes, 0, 0);
   const events: SessionEventRecordV2[] = [
-    startedEvent(now - 25 * 60_000, 'a0000000-0000-4000-8000-000000000001', {
+    startedEvent(at(9, 0), 'a0000000-0000-4000-8000-000000000001', {
       kind: 'until-stopped',
     }),
-    endedEvent(now - 20 * 60_000, 'a0000000-0000-4000-8000-000000000001', {
+    endedEvent(at(10, 0), 'a0000000-0000-4000-8000-000000000001', {
       duration: { kind: 'until-stopped' },
       outcome: 'completed',
       reason: 'manual-completed',
       focusedMs: 3_600_000,
     }),
-    startedEvent(now - 15 * 60_000, 'a0000000-0000-4000-8000-000000000002', {
+    startedEvent(at(11, 0), 'a0000000-0000-4000-8000-000000000002', {
       kind: 'timed',
       minutes: 45,
     }),
-    endedEvent(now - 8 * 60_000, 'a0000000-0000-4000-8000-000000000002', {
+    endedEvent(at(11, 30), 'a0000000-0000-4000-8000-000000000002', {
       duration: { kind: 'timed', minutes: 45 },
       outcome: 'canceled',
       reason: 'manual-canceled',
