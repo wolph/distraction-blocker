@@ -105,6 +105,29 @@ function canonicalHosts(hosts: string[]): string[] {
   return [...new Set(hosts.map(canonicalHost))].sort();
 }
 
+/**
+ * Deduplicates on the canonical host and keeps the stored order, which is what
+ * `normalizeSessionRules` does. Sorting belongs to `policyRevision`, where the token must not
+ * change when the user reorders a list. The snapshot keeps the order the user sees.
+ */
+function canonicalExclusions(exclusions: ListsConfig['exclusions']): ListsConfig['exclusions'] {
+  const canonical: ListsConfig['exclusions'] = {};
+  for (const id of CATEGORY_IDS) {
+    if (!Object.hasOwn(exclusions, id)) continue;
+    const hosts: string[] = exclusions[id] ?? [];
+    const seen: Set<string> = new Set<string>();
+    const kept: string[] = [];
+    for (const host of hosts) {
+      const normalized: string = canonicalHost(host);
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      kept.push(normalized);
+    }
+    canonical[id] = kept;
+  }
+  return canonical;
+}
+
 function canonicalPolicy(lists: ListsConfig): unknown {
   const categories: Array<[CategoryId, boolean]> = CATEGORY_IDS.map(
     (id: CategoryId): [CategoryId, boolean] => [id, lists.categories[id]],
@@ -131,14 +154,21 @@ export function policyRevision(lists: ListsConfig): string {
   return `lists-v1:${canonical}`;
 }
 
+/**
+ * Builds the snapshot a v2 session captures. Every host pattern is canonicalized here, because the
+ * Settings editor stores what the user typed and the runtime validator
+ * (`validateDetachedCanonicalSessionRuleSnapshot`) accepts only the normalized form. Shipping the
+ * raw list left every scheduled start throwing on `Facebook.com`, while the manual path, which
+ * normalizes on the way in, started the same list fine.
+ */
 export function rulesFromLists(lists: ListsConfig): SessionRuleSnapshot {
   return {
     baselineRevision: policyRevision(lists),
     baselineCategories: { ...lists.categories },
     categories: { ...lists.categories },
-    exclusions: structuredClone(lists.exclusions),
-    permanentBlacklist: structuredClone(lists.custom),
-    permanentAllowlist: structuredClone(lists.whitelist),
+    exclusions: canonicalExclusions(lists.exclusions),
+    permanentBlacklist: lists.custom.map(canonicalRule),
+    permanentAllowlist: lists.whitelist.map(canonicalRule),
     sessionBlacklist: [],
     sessionAllowlist: [],
   };

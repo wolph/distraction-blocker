@@ -374,6 +374,52 @@ describe('runtime and worker request validation parity', (): void => {
     expect(snapshot.permanentAllowlist).toEqual([{ kind: 'host', pattern: 'github.com' }]);
   });
 
+  it('canonicalizes a stored list the Settings editor accepts but the validator would refuse', (): void => {
+    // Exactly what RulesEditor stores: validateRule passes on these, and nothing lowercases them.
+    const lists: ListsConfig = {
+      custom: [
+        { kind: 'host', pattern: 'Facebook.com' },
+        { kind: 'host', pattern: 'example.com.' },
+      ],
+      whitelist: [{ kind: 'host', pattern: 'Docs.Example.com' }],
+      categories: { ...DEFAULT_LISTS.categories, social: true },
+      exclusions: { social: ['Workplace.com.'] },
+    };
+    expect(isListsConfig(lists)).toBe(true);
+
+    const snapshot: SessionRuleSnapshot = rulesFromLists(lists);
+
+    expect(snapshot.permanentBlacklist).toEqual([
+      { kind: 'host', pattern: 'facebook.com' },
+      { kind: 'host', pattern: 'example.com' },
+    ]);
+    expect(snapshot.permanentAllowlist).toEqual([{ kind: 'host', pattern: 'docs.example.com' }]);
+    expect(snapshot.exclusions.social).toEqual(['workplace.com']);
+    expect(isCanonicalSessionRuleSnapshot(snapshot)).toBe(true);
+  });
+
+  it('leaves a regex rule and the order of the stored list alone', (): void => {
+    const lists: ListsConfig = {
+      custom: [
+        { kind: 'host', pattern: 'Zebra.example' },
+        { kind: 'regex', pattern: 'News|Sport' },
+        { kind: 'host', pattern: 'alpha.example' },
+      ],
+      whitelist: [],
+      categories: { ...DEFAULT_LISTS.categories },
+      exclusions: {},
+    };
+
+    const snapshot: SessionRuleSnapshot = rulesFromLists(lists);
+
+    expect(snapshot.permanentBlacklist).toEqual([
+      { kind: 'host', pattern: 'zebra.example' },
+      { kind: 'regex', pattern: 'News|Sport' },
+      { kind: 'host', pattern: 'alpha.example' },
+    ]);
+    expect(isCanonicalSessionRuleSnapshot(snapshot)).toBe(true);
+  });
+
   it('computes policy revisions independently of object insertion order', (): void => {
     const first: ListsConfig = {
       custom: [{ kind: 'host', pattern: 'reddit.com' }],

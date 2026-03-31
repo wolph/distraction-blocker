@@ -113,6 +113,7 @@ function harness(
     websiteBlockingReady?: boolean;
     now?: number;
     audit?: 'ready' | 'website-access-lost' | 'content-registration-failed';
+    lists?: ListsConfig;
   } = {},
 ): ScheduleHarness {
   const notices: Array<{ title: string; body: string }> = [];
@@ -125,7 +126,7 @@ function harness(
   });
   const schedule: ScheduleRunnerPortsV2 = {
     settings: (): SettingsV2 => settingsWith(entries),
-    lists: (): ListsConfig => DEFAULT_LISTS,
+    lists: (): ListsConfig => options.lists ?? DEFAULT_LISTS,
     websiteBlockingReady: (): boolean => options.websiteBlockingReady ?? true,
     notify: (title: string, body: string): void => {
       notices.push({ title, body });
@@ -360,6 +361,41 @@ describe('schedule start', (): void => {
 
     expect(result.started).toBe(true);
     expect(result.runtime.scheduleUnavailableNoticeToken).toBeNull();
+  });
+
+  /**
+   * The Settings editor stores what the user typed, so a capitalised host or a trailing root dot
+   * reaches the schedule runner verbatim. The runtime validator only accepts the normalized form,
+   * so before the producer canonicalized, this start threw out of every tick forever.
+   */
+  it('starts over a stored list carrying a capitalised host and a trailing dot', async (): Promise<void> => {
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [
+        { kind: 'host', pattern: 'Facebook.com' },
+        { kind: 'host', pattern: 'news.example.com.' },
+      ],
+      whitelist: [{ kind: 'host', pattern: 'Docs.Example.com' }],
+    };
+    const test: ScheduleHarness = harness(idleRuntime(), [windowEntry()], { lists });
+
+    const result: { runtime: RuntimeStateV2; started: boolean } = await runScheduleCheckV2(
+      test.ports,
+      test.schedule,
+    );
+
+    expect(result.started).toBe(true);
+    expect(result.runtime.session?.config.rules.permanentBlacklist).toEqual([
+      { kind: 'host', pattern: 'facebook.com' },
+      { kind: 'host', pattern: 'news.example.com' },
+    ]);
+    expect(result.runtime.session?.config.rules.permanentAllowlist).toEqual([
+      { kind: 'host', pattern: 'docs.example.com' },
+    ]);
+    expect(preparedCandidate(test.ports).rules).toEqual(rulesFromLists(lists));
+    expect(test.notices).toEqual([
+      { title: SCHEDULE_STARTED_TITLE, body: scheduleWindowBody(windowEntry()) },
+    ]);
   });
 });
 
