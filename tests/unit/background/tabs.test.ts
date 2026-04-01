@@ -6,7 +6,7 @@ import {
   type LiveTabState,
 } from '../../../src/background/engine';
 import { emptyRuntimeV2 } from '../../../src/background/runtime-store-v2';
-import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
+import type { CleanupTabClaim, RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import {
   applyBlockingFactory,
   applyToTab,
@@ -14,6 +14,7 @@ import {
   invalidateRemovedTab,
   planTabAction,
   registerTabListeners,
+  restoreClaimedTabs,
 } from '../../../src/background/tabs';
 import {
   DEFAULT_LISTS,
@@ -6525,5 +6526,78 @@ describe('applyBlockingFactory', () => {
       persistenceOrder.indexOf('effect'),
     );
     expect(reportError).not.toHaveBeenCalled();
+  });
+});
+
+describe('restoreClaimedTabs across a browser restart', (): void => {
+  const CLAIM_URL: string = 'https://blocked.example/feed';
+
+  /** The claim a closure captured before the browser closed, holding the mute we applied. */
+  function claim(tabId: number): CleanupTabClaim {
+    return {
+      tabId,
+      state: { muteUrl: CLAIM_URL, priorMuted: false, stoppedDocumentId: null },
+    };
+  }
+
+  it('settles a claim whose tab the browser renumbered on restore', async (): Promise<void> => {
+    // Chrome hands every restored tab a new ID, so the claim's own ID reads as gone from the first
+    // attempt. Skipping it leaves the closure cleaning forever, every start refused, and the person
+    // unable to start another session at all: the claim is unresolvable rather than merely slow.
+    const update = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('chrome', {
+      runtime: { id: 'focus-lock-test', lastError: undefined },
+      tabs: {
+        get: vi.fn().mockRejectedValue(new Error('No tab with id: 7.')),
+        query: vi.fn().mockResolvedValue([
+          {
+            id: 91,
+            url: CLAIM_URL,
+            mutedInfo: { muted: true, extensionId: 'focus-lock-test' },
+          },
+        ]),
+        update,
+      },
+    });
+
+    await expect(restoreClaimedTabs([claim(7)])).resolves.toEqual([7]);
+    // The effect is undone where it actually lives now, on the tab that carries it.
+    expect(update).toHaveBeenCalledWith(91, { muted: false });
+  });
+
+  it('settles a claim whose tab carries no effect any more', async (): Promise<void> => {
+    const update = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('chrome', {
+      runtime: { id: 'focus-lock-test', lastError: undefined },
+      tabs: {
+        get: vi.fn().mockRejectedValue(new Error('No tab with id: 7.')),
+        query: vi
+          .fn()
+          .mockResolvedValue([{ id: 91, url: 'https://other.example/', mutedInfo: {} }]),
+        update,
+      },
+    });
+
+    // Nothing in the browser carries the mute this claim describes, so there is nothing left to
+    // undo and the claim is settled rather than retried for the life of the batch.
+    await expect(restoreClaimedTabs([claim(7)])).resolves.toEqual([7]);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('keeps a claim whose own tab is still there and refuses the update', async (): Promise<void> => {
+    vi.stubGlobal('chrome', {
+      runtime: { id: 'focus-lock-test', lastError: undefined },
+      tabs: {
+        get: vi.fn().mockResolvedValue({
+          id: 7,
+          url: CLAIM_URL,
+          mutedInfo: { muted: true, extensionId: 'focus-lock-test' },
+        }),
+        query: vi.fn().mockResolvedValue([]),
+        update: vi.fn().mockRejectedValue(new Error('Tabs cannot be edited right now')),
+      },
+    });
+
+    await expect(restoreClaimedTabs([claim(7)])).resolves.toEqual([]);
   });
 });

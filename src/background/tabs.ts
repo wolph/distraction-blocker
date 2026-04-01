@@ -1380,20 +1380,52 @@ export async function restoreClaimedTabs(claims: readonly CleanupTabClaim[]): Pr
   const settled: number[] = [];
   for (const claim of claims) {
     const read: TabReadResult = await readTab(claim.tabId);
-    if (!read.ok) continue;
-    const tab: chrome.tabs.Tab = read.tab;
+    const tab: chrome.tabs.Tab | null = read.ok ? read.tab : await restoredClaimTab(claim);
+    if (tab === null || tab.id === undefined) {
+      // The identifier is gone and no tab in this browser carries the effect this claim describes,
+      // so there is nothing left to undo. Keeping the claim here is what left a closure cleaning
+      // for the life of its batch after a restart, with every start refused behind it.
+      settled.push(claim.tabId);
+      continue;
+    }
     const ownsMute: boolean = tab.mutedInfo?.extensionId === chrome.runtime.id;
     const priorMuted: boolean = claim.state.priorMuted ?? false;
     try {
       if (ownsMute && (tab.mutedInfo?.muted ?? false) !== priorMuted) {
-        await chrome.tabs.update(claim.tabId, { muted: priorMuted });
+        await chrome.tabs.update(tab.id, { muted: priorMuted });
       }
       settled.push(claim.tabId);
     } catch {
-      // The tab went away or refused the update. The claim survives for the next attempt.
+      // The tab refused the update. The claim survives for the next attempt.
     }
   }
   return settled;
+}
+
+/**
+ * The tab a restored claim belongs to, matched by the effect rather than by the identifier.
+ *
+ * Chrome renumbers every tab it restores, so a claim taken before a relaunch names an identifier
+ * that can never exist again. What survives the restart is the mute this extension applied and the
+ * URL it applied it to, so the claim is matched on those, and the restore then runs against the tab
+ * that is actually carrying the effect.
+ */
+async function restoredClaimTab(claim: CleanupTabClaim): Promise<chrome.tabs.Tab | null> {
+  const muteUrl: string | null = claim.state.muteUrl;
+  if (muteUrl === null) return null;
+  try {
+    const tabs: chrome.tabs.Tab[] = await chrome.tabs.query({});
+    return (
+      tabs.find(
+        (candidate: chrome.tabs.Tab): boolean =>
+          candidate.id !== undefined &&
+          candidate.url === muteUrl &&
+          candidate.mutedInfo?.extensionId === chrome.runtime.id,
+      ) ?? null
+    );
+  } catch {
+    return null;
+  }
 }
 
 /** Reloads the documents this session stopped, so a page left blank comes back on its own. */
