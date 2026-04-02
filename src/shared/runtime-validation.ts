@@ -898,13 +898,37 @@ function isHiddenAuthority(value: unknown): value is { kind: 'hidden' } {
   return candidate !== null && candidate.kind === 'hidden';
 }
 
+type ImmediateEndAuthorityV2 = Extract<EndAuthorityV2, { kind: 'immediate' }>;
+type ClosedEndGateAuthorityV2 = Extract<EndAuthorityV2, { gate: null }>;
+type OpenEndGateAuthorityV2 = Extract<EndAuthorityV2, { copy: { confirm: string } }>;
+
+/**
+ * The published End and gate copy, pinned to the authority type the validator claims to prove. An
+ * edit to one of these strings in `types.ts` now fails to compile here, the way it already fails in
+ * both producers, instead of quietly turning this validator into a refusal of every Friction
+ * snapshot. The intersection also states the rule that the two End labels are one string.
+ */
+const END_ACTION_LABEL: ImmediateEndAuthorityV2['actionLabel'] &
+  ClosedEndGateAuthorityV2['copy']['actionLabel'] = 'End session';
+const OPEN_END_GATE_ACTION: ClosedEndGateAuthorityV2['actions']['open'] = 'open-end-gate';
+const CANCEL_GATE_COPY: Readonly<Omit<OpenEndGateAuthorityV2['copy'], 'intentionReminder'>> = {
+  title: 'End this session',
+  back: 'Never mind, back to work',
+  phraseLabel: 'Type this to confirm:',
+  confirm: 'End the session',
+};
+const CANCEL_GATE_ACTIONS: Readonly<OpenEndGateAuthorityV2['actions']> = {
+  abandon: 'abandon-gate',
+  confirm: 'confirm-gate',
+};
+
 function isEndAuthorityV2Value(value: unknown): value is EndAuthorityV2 {
   const hidden: UnknownRecord | null = exactOwnDataSnapshot(value, ['kind']);
   if (hidden !== null) return hidden.kind === 'hidden';
 
   const immediate: UnknownRecord | null = exactOwnDataSnapshot(value, ['kind', 'actionLabel']);
   if (immediate !== null) {
-    return immediate.kind === 'immediate' && immediate.actionLabel === 'End session';
+    return immediate.kind === 'immediate' && immediate.actionLabel === END_ACTION_LABEL;
   }
 
   const friction: UnknownRecord | null = exactOwnDataSnapshot(value, [
@@ -920,9 +944,9 @@ function isEndAuthorityV2Value(value: unknown): value is EndAuthorityV2 {
     const actions: UnknownRecord | null = exactOwnDataSnapshot(friction.actions, ['open']);
     return (
       copy !== null &&
-      copy.actionLabel === 'End session' &&
+      copy.actionLabel === END_ACTION_LABEL &&
       actions !== null &&
-      actions.open === 'open-end-gate'
+      actions.open === OPEN_END_GATE_ACTION
     );
   }
 
@@ -941,14 +965,14 @@ function isEndAuthorityV2Value(value: unknown): value is EndAuthorityV2 {
     isExactGateState(friction.gate) &&
     friction.gate.kind === 'cancel' &&
     copy !== null &&
-    copy.title === 'End this session' &&
-    copy.back === 'Never mind, back to work' &&
-    copy.phraseLabel === 'Type this to confirm:' &&
-    copy.confirm === 'End the session' &&
+    copy.title === CANCEL_GATE_COPY.title &&
+    copy.back === CANCEL_GATE_COPY.back &&
+    copy.phraseLabel === CANCEL_GATE_COPY.phraseLabel &&
+    copy.confirm === CANCEL_GATE_COPY.confirm &&
     isNullableString(copy.intentionReminder) &&
     actions !== null &&
-    actions.abandon === 'abandon-gate' &&
-    actions.confirm === 'confirm-gate'
+    actions.abandon === CANCEL_GATE_ACTIONS.abandon &&
+    actions.confirm === CANCEL_GATE_ACTIONS.confirm
   );
 }
 
