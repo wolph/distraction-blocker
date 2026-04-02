@@ -207,6 +207,63 @@ exactly, `Read and change all your data on all websites`, and omits no material 
 Durable evidence: `docs/qa-artifacts/onboarding-task6/real-prompt/` with
 `manifests/real-prompt-manifest.json`, both tracked and digest-pinned.
 
+### Visual inspection of the indefinite-session surfaces
+
+Signed against the surfaces as they stood at commit `54713a7`, which is the commit the capture run
+recorded. Inspected in Auto with light media, Auto with dark media, explicit Light with dark media,
+and explicit Dark with light media. Popup states were inspected at the width Chrome gives the
+toolbar popup, and the overlay, schedule, Settings and Stats surfaces at 375, 768 and 1280 px. I
+looked at a spread across states and themes rather than at everything the run wrote, which is the
+honest description of what a person can examine.
+
+The popup half and the other half were inspected in separate passes. Two popup states changed after
+their pass, because the inspection is what showed they needed to, and both were looked at again
+afterwards.
+
+What I concluded:
+
+- The start form states the plan it is about. The `Until stopped` chip reads as pressed, the hint
+  below it says the session is Flexible with cycles off and ends from the popup, the session type
+  group is greyed with Flexible chosen, and the button reads `Start until stopped`.
+- The disclosure on the forced group opens on hover, on keyboard focus and on click, and explains
+  that until-stopped sessions use Flexible blocking and cannot use focus and break cycles. It
+  inverts against the surface in both themes, dark on light and light on dark, which is a tooltip
+  treatment rather than a theme that was missed.
+- An until-stopped session says `Until stopped` where a timed one shows a countdown, in the popup's
+  clock stack and again in the overlay's status sentence. A timed session shows both its phase and
+  its session clock, and the overlay says the wall clock it is locked until above its countdown.
+- A long intention wraps inside the popup's own width, with no truncation and no horizontal
+  overflow, and the same intention reads correctly in the overlay at every width.
+- The overlay tells its three states apart: a page that was already open and is now blocked, a timed
+  page with its countdown, and a stopped page that says it did not load and will load by itself when
+  the session ends.
+- Settings reports the session in one sentence that hands control back to the popup, and the
+  schedule editor offers `Until stopped` beside `Until window ends` with the chosen one marked.
+- Stats prints the plan and the outcome wording the spec fixes: `Completed manually` against a plan
+  of `Until stopped`, and `Ended early` against a timed plan, laid out as cards at 375 px and as a
+  table at 1280 px.
+
+A limitation that belongs in the judgement rather than under it: the Stats rows are seeded at fixed
+local times on the previous day, so the times that table prints are the same in every run while the
+date moves with the calendar. A seed at a fixed date would be today's stats on one day of the year
+and stale on every other, which is why the date is relative and the times are not.
+
+What I did not examine: everything the run wrote, since I looked at a spread rather than all of it.
+The toolbar badge, whose pixels sit outside a page capture and whose text is asserted in the product
+flows instead. Any surface outside the ones named above. The starting overlay, which is not captured
+at all and whose absence is recorded with its measurement in the slice report. And the printed date
+in the Stats rows, which moves by design.
+
+Durability: none, and that is the weaker of the two forms this document allows. The images live in an
+ignored directory that each run overwrites, and the manifest hashing them sits in that same
+directory, so nothing here is digest-pinned anywhere tracked. This entry is signed against what a
+person looked at on a named run rather than against evidence a later reader can rehash.
+
+Certification: the run I inspected is not certified. Its verifier refuses it, because a source file
+the build reads was modified in the worktree while the capture ran, so the build may not match the
+commit the manifest names. Certifying a capture is a release-gate step against a clean tree, and
+this entry deliberately claims only what was seen rather than what was certified.
+
 ### Diagnostics were clean on the runs that produced the evidence above
 
 Signed against the production and development evidence runs. Console errors, page errors, worker
