@@ -125,6 +125,25 @@ function liveWorker(launch: ExtensionLaunch): Worker {
   return launch.context.serviceWorkers()[0] ?? launch.worker;
 }
 
+/**
+ * The tab IDs at `url` still carrying a mute this extension applied. A cleanup that settled a claim
+ * without undoing its effect, or that undid one tab's mute twice and never the other's, leaves an
+ * entry here.
+ */
+async function mutedByExtension(worker: Worker, url: string): Promise<number[]> {
+  return await worker.evaluate(async (target: string): Promise<number[]> => {
+    const tabs: chrome.tabs.Tab[] = await chrome.tabs.query({});
+    return tabs
+      .filter(
+        (tab: chrome.tabs.Tab): boolean =>
+          tab.url === target &&
+          tab.mutedInfo?.muted === true &&
+          tab.mutedInfo.extensionId === chrome.runtime.id,
+      )
+      .map((tab: chrome.tabs.Tab): number => tab.id ?? -1);
+  }, url);
+}
+
 function requireCheckpoint(runtime: RuntimeStateV2): EnforcementCheckpoint {
   const checkpoint: EnforcementCheckpoint | null = runtime.enforcementCheckpoint;
   if (checkpoint === null) throw new Error('the runtime carries no enforcement checkpoint');
@@ -333,8 +352,14 @@ async function relaunchPastTimedEnd(
   firstKind: string;
 }> {
   const first: ExtensionLaunch = await restartableExtension.launch();
-  const blockedPage: Page = await first.context.newPage();
-  await blockedPage.goto(url);
+  // Two tabs on one address, because a cleanup claim records the effect this extension applied and
+  // the address it applied it to rather than the tab it applied it through. Two claims then
+  // describe the same effect, and the restore may undo either one for either claim. This
+  // arrangement is what keeps the assertions below on the effect rather than on a tab.
+  for (let opened: number = 0; opened < 2; opened += 1) {
+    const blockedPage: Page = await first.context.newPage();
+    await blockedPage.goto(url);
+  }
   await startTestSession(first.extPage, {
     duration: { kind: 'timed', minutes: 0.2 },
     strictness: 'flexible',
@@ -342,6 +367,14 @@ async function relaunchPastTimedEnd(
   const running: SessionSnapshotV2 = await snapshotOf(first.extPage);
   const sessionEndsAt: number | null = running.sessionEndsAt;
   if (sessionEndsAt === null) throw new Error('a timed session has no end');
+  // Both tabs must actually be holding the mute before the browser closes, or the assertion after
+  // the relaunch that none of them still holds it would be true of a session that never muted
+  // anything.
+  await expect
+    .poll(async (): Promise<number> => (await mutedByExtension(liveWorker(first), url)).length, {
+      timeout: 20_000,
+    })
+    .toBe(2);
   const sessionId: string = requireSessionId(await readRuntimeV2(liveWorker(first)));
   await restartableExtension.close();
 
@@ -404,6 +437,9 @@ test('a browser relaunch after a timed end closes the session and frees the next
   expect((await readRuntimeV2(liveWorker(launch))).pendingClosure).toBeNull();
   const restored: Page = await restoredPage(launch, url);
   await expect(restored.locator('focus-lock-overlay')).toHaveCount(0);
+  // Both tabs carried the mute and either could have satisfied either claim, so what is asserted is
+  // that no tab is left holding this extension's mute, not which tab a given claim matched.
+  expect(await mutedByExtension(liveWorker(launch), url)).toEqual([]);
   await startUntilStoppedSession(launch.extPage);
   await waitForLifecycle(launch.extPage, 'active', 60_000);
 
