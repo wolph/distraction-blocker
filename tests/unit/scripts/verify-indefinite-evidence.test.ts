@@ -120,8 +120,15 @@ describe('indefinite evidence coverage', (): void => {
     }).not.toThrow();
   });
 
-  it('counts the matrix the same way the capture does', (): void => {
-    expect(recordsForCompleteRun()).toHaveLength(expectedIndefiniteArtifactCount());
+  it('keeps the matrix the size a person signed off on', (): void => {
+    // The sizes are written down rather than recomputed. This test used to hold the fixture against
+    // `expectedIndefiniteArtifactCount`, and both sides were the same product of the same three
+    // constants, so a state added or dropped moved both at once and nothing objected. Stated here,
+    // a change to the matrix has to be typed in as well, which is what makes it deliberate: the
+    // reviewer who signed the evidence signed a matrix of this shape.
+    expect(INDEFINITE_VISUAL_STATES).toHaveLength(29);
+    expect(expectedIndefiniteArtifactCount()).toBe(392);
+    expect(recordsForCompleteRun()).toHaveLength(392);
   });
 
   it('captures every popup state at the popup width and nothing else', (): void => {
