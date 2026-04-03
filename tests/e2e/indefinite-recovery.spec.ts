@@ -360,21 +360,21 @@ async function relaunchPastTimedEnd(
   };
 }
 
-test('a browser relaunch after a timed end closes the session at its own end instant', async ({
+test('a browser relaunch after a timed end closes the session and frees the next one', async ({
   restartableExtension,
   siteUrl,
 }) => {
   const url: string = siteUrl('/plain.html');
   const relaunched = await relaunchPastTimedEnd(restartableExtension, url);
+  const launch: ExtensionLaunch = relaunched.launch;
 
   // A session that came back from the dead would show here, and nowhere else in this suite.
   expect(relaunched.firstKind).not.toBe('active');
   expect(['cleanup', 'idle']).toContain(relaunched.firstKind);
-  expect((await readRuntimeV2(liveWorker(relaunched.launch))).session).toBeNull();
+  expect((await readRuntimeV2(liveWorker(launch))).session).toBeNull();
 
   // The closure journal is durable before its checkpoint appends the end event, so the wait is on
   // the event arriving rather than on the journal existing.
-  const launch: ExtensionLaunch = relaunched.launch;
   await expect
     .poll(
       async (): Promise<string[]> =>
@@ -394,50 +394,23 @@ test('a browser relaunch after a timed end closes the session at its own end ins
   // Exactly the stored end, not the instant the browser happened to come back.
   expect(ended.at).toBe(relaunched.sessionEndsAt);
 
-  // Two defects live in this window, both recorded in the task report, and both are pinned here
-  // rather than left to fail the fixture's teardown assertion with no explanation. The first is
-  // that a live-view refresh during closure cleanup builds a runtime the storage boundary refuses,
-  // because the closure owns `runtimeRevision` and `documentCommands` while it cleans. When that
-  // is fixed these errors stop arriving and this scenario fails, which is the point.
-  const workerErrors: string[] = [...restartableExtension.diagnostics.workerErrors];
-  expect(workerErrors.length).toBeGreaterThan(0);
-  for (const error of workerErrors) {
-    expect(error).toContain('the session controller built an invalid runtime');
-  }
-  for (const error of restartableExtension.diagnostics.consoleErrors) {
-    expect(error).toContain('the session controller built an invalid runtime');
-  }
-  restartableExtension.diagnostics.workerErrors.length = 0;
-  restartableExtension.diagnostics.consoleErrors.length = 0;
-});
-
-/**
- * Known defect, and the reason this scenario is expected to fail. The closure captured its tab
- * claim from the runtime the previous browser left behind, and Chrome hands a restored tab a new
- * ID, so `restoreClaimedTabs` in `src/background/tabs.ts` reads a tab that no longer exists,
- * skips it without settling it, and the closure reports `closure cleanup left 1 claims unresolved`
- * on every attempt. The cleanup never finishes, every start is refused with
- * `closure-cleanup-pending`, and the backoff pushes the next attempt minutes out. Measured: still
- * cleaning 150 seconds and four attempts after the relaunch, with the next attempt scheduled about
- * a quarter of an hour later.
- *
- * A user who closes the browser during a timed session and opens it again after that session would
- * have ended cannot start another one.
- */
-test('a browser relaunch after a timed end finishes its cleanup and allows the next session', async ({
-  restartableExtension,
-  siteUrl,
-}) => {
-  test.fail();
-  const url: string = siteUrl('/plain.html');
-  const relaunched = await relaunchPastTimedEnd(restartableExtension, url);
-
-  await waitForLifecycle(relaunched.launch.extPage, 'idle', 90_000);
-  expect((await readRuntimeV2(liveWorker(relaunched.launch))).pendingClosure).toBeNull();
-  const restored: Page = await restoredPage(relaunched.launch, url);
+  // The half this scenario was written to catch. The closure's tab claim was taken before the
+  // relaunch and Chrome renumbers every restored tab, so a cleanup that matched claims by tab ID
+  // could never settle this one: the profile stayed in cleanup, every start answered
+  // `closure-cleanup-pending`, and the backoff pushed the next attempt a quarter of an hour out.
+  // Fixed in `6cda903`. Reaching idle, releasing the stopped page, and starting the next session
+  // is what proves it, and the three assertions below are the ones that went red before it.
+  await waitForLifecycle(launch.extPage, 'idle', 90_000);
+  expect((await readRuntimeV2(liveWorker(launch))).pendingClosure).toBeNull();
+  const restored: Page = await restoredPage(launch, url);
   await expect(restored.locator('focus-lock-overlay')).toHaveCount(0);
-  await startUntilStoppedSession(relaunched.launch.extPage);
-  await waitForLifecycle(relaunched.launch.extPage, 'active', 60_000);
+  await startUntilStoppedSession(launch.extPage);
+  await waitForLifecycle(launch.extPage, 'active', 60_000);
+
+  // A live-view refresh during closure cleanup used to build a runtime the storage boundary
+  // refused, and the restored blocked page drove one on every boot down this path. Fixed in
+  // `bd3024d`, so this window is now expected to be quiet like any other.
+  expectNoDiagnostics(restartableExtension.diagnostics);
 });
 
 test('a worker restart racing a start settles on exactly one outcome', async ({
