@@ -29,6 +29,7 @@ import {
   appliedResponseFor,
   createRuntimePortsFakeV2,
   epochResetResponseFor,
+  type FakeSendV2,
   type FakeTabRowV2,
   noReceiverResponder,
   type RuntimePortsFakeV2,
@@ -725,14 +726,21 @@ describe('driveTransitionV2 concurrent navigation', (): void => {
     };
   }
 
+  /**
+   * The third column is whether the starting view must also carry the late document, which depends
+   * on whether that view was still being written when the navigation landed. It is measured
+   * rather than assumed: a navigation arriving at `committed-pending-verification` reaches only
+   * the active view, because the starting view was frozen before it existed. Asserting both views
+   * everywhere would be false, and asserting either view anywhere is the weakness these cases had.
+   */
   it.each([
-    ['prepared', 'onAudit'],
-    ['starting-verified', 'onQueryTabs'],
-    ['starting-verified', 'onLoadAggregates'],
-    ['committed-pending-verification', 'onAlarmCreate'],
+    ['prepared', 'onAudit', true],
+    ['starting-verified', 'onQueryTabs', true],
+    ['starting-verified', 'onLoadAggregates', true],
+    ['committed-pending-verification', 'onAlarmCreate', false],
   ])(
-    'keeps a navigation that landed while %s was awaiting %s',
-    async (stage: string, hook: string): Promise<void> => {
+    'enforces a navigation that landed while %s was awaiting %s',
+    async (stage: string, hook: string, startingViewCarries: boolean): Promise<void> => {
       let ports: RuntimePortsFakeV2 | null = null;
       let compiled: CompiledMatcher | null = null;
       const navigate: () => Promise<void> = navigateDuring(
@@ -756,6 +764,20 @@ describe('driveTransitionV2 concurrent navigation', (): void => {
       );
 
       expect(result.kind).toBe('published');
+
+      // The requirement. A navigation that lands mid-transition has to end up enforced, and
+      // neither half of that was asserted before: the loop below skips the publishing write,
+      // which is the only one that shows the document reaching publication, and nothing looked at
+      // what was sent. The published runtime is the authority a restarted worker reads back.
+      expect(Object.keys(result.runtime.documentCommands)).toContain(LATE_KEY);
+      expect(result.runtime.pendingEnforcementTransition).toBeNull();
+
+      const lateCommands: string[] = ports.sends
+        .filter((send: FakeSendV2): boolean => send.tabId === 13 && send.documentId === LATE_DOC)
+        .map((send: FakeSendV2): string => send.message.command);
+      expect(lateCommands).toContain('reset-enforcement-epoch');
+      expect(lateCommands).toContain('apply-enforcement');
+
       // Once a frozen view carries the document, no later write of that same view may drop it.
       // Checking the two views separately is what catches a stage writing one of them from a
       // stale snapshot while the other happens to carry the document anyway.
@@ -771,7 +793,11 @@ describe('driveTransitionV2 concurrent navigation', (): void => {
         seenStarting = seenStarting || inStarting;
         seenActive = seenActive || inActive;
       }
-      expect(seenStarting || seenActive).toBe(true);
+      // The active view is what publication is built from, so it carries the document in every
+      // case. The starting view carries it only while it is still being written, which is why the
+      // expectation is a parameter rather than a constant.
+      expect(seenActive).toBe(true);
+      expect(seenStarting).toBe(startingViewCarries);
       for (let index: number = 1; index < revisions.length; index++) {
         expect(revisions[index] ?? 0).toBeGreaterThanOrEqual(revisions[index - 1] ?? 0);
       }

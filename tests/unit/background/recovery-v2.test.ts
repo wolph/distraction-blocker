@@ -77,9 +77,21 @@ const OTHER_URL: string = 'https://news.example.com/story';
 const DOC_ONE: string = 'document-11';
 const DOC_TWO: string = 'document-12';
 
+/**
+ * How the browser answers a request to restore a claimed tab.
+ *
+ * `all` is what every effects fake outside the closure suite assumed: production returns only the
+ * tabs it could actually restore, and a fake that resolves every claim by construction cannot
+ * observe a claim that never resolves. That gap is not hypothetical. A claim carrying a tab
+ * identifier from before a restart can never resolve, because the browser renumbers restored tabs,
+ * and this file is the restart file.
+ */
+type ClaimResolution = 'all' | 'none';
+
 function harness(
   runtime: RuntimeStateV2,
   options: Parameters<typeof createRuntimePortsFakeV2>[1] = {},
+  claims: ClaimResolution = 'all',
 ): RecoveryHarness {
   const restored: number[] = [];
   let badges: number = 0;
@@ -93,8 +105,9 @@ function harness(
     ...options,
   });
   const effects: CleanupEffectPortsV2 = {
-    restoreTabClaims: async (claims: readonly CleanupTabClaim[]): Promise<number[]> => {
-      const ids: number[] = claims.map((claim: CleanupTabClaim): number => claim.tabId);
+    restoreTabClaims: async (claimed: readonly CleanupTabClaim[]): Promise<number[]> => {
+      if (claims === 'none') return [];
+      const ids: number[] = claimed.map((claim: CleanupTabClaim): number => claim.tabId);
       restored.push(...ids);
       return ids;
     },
@@ -931,5 +944,59 @@ describe('recovering an indefinite session', (): void => {
     expect(result.runtime.session?.phase).toBe('focus');
     expect(result.runtime.session?.sessionEndsAt).toBeNull();
     expect(projectedFocusMs(result)).toBe(RECOVERY_AT - ACTIVATION_AT);
+  });
+});
+
+/**
+ * The asymmetry no test could observe, because every effects fake outside the closure suite
+ * resolved every claim by construction while production returns only the tabs it could restore.
+ *
+ * This is the restart file, so it is the right place for it: a claim carrying a tab identifier
+ * from before a restart can never resolve, because the browser renumbers restored tabs. The two
+ * cleanup paths answer that differently, and the difference is deliberate rather than an
+ * oversight, so it is worth pinning in both directions.
+ */
+describe('recovery cleanup with a claim the browser cannot restore', (): void => {
+  it('refuses to finish a closure cleanup while a claim is unresolved', async (): Promise<void> => {
+    const test: RecoveryHarness = harness(cleanupClosureRuntime(), {}, 'none');
+    healthyResponders(test.ports);
+
+    const result: RecoveryResultV2 = await recoverRuntimeV2(test.ports, test.effects);
+
+    // The journal stays open and records why, so the next attempt has something to retry.
+    expect(result.kind).toBe('closure');
+    expect(result.runtime.pendingClosure?.stage).toBe('cleanup');
+    expect(retryOf(result.runtime).lastError).not.toBeNull();
+    expect(test.restored).toEqual([]);
+  });
+
+  it('finishes the same closure cleanup once the claims resolve', async (): Promise<void> => {
+    // The control. Same runtime, same responders, only the browser's answer differs, which is what
+    // makes the previous case a statement about the claim rather than about the fixture.
+    const test: RecoveryHarness = harness(cleanupClosureRuntime());
+    healthyResponders(test.ports);
+
+    const result: RecoveryResultV2 = await recoverRuntimeV2(test.ports, test.effects);
+
+    expect(result.runtime.pendingClosure).toBeNull();
+    expect(test.restored).not.toEqual([]);
+  });
+
+  it('lets a transition cleanup finish with a claim the browser never restored', async (): Promise<void> => {
+    // The other half of the asymmetry, and the reason it is worth writing down: the transition
+    // path carries no unresolved-claim guard, so an unrestorable claim does not hold it open the
+    // way it holds the closure open. Pinned so that a later change to either path has to decide
+    // about this difference rather than discover it.
+    const test: RecoveryHarness = harness(
+      transitionRuntime(cleanupTransition('start', 'prepared', 'start-abandon')),
+      {},
+      'none',
+    );
+    healthyResponders(test.ports);
+
+    const result: RecoveryResultV2 = await recoverRuntimeV2(test.ports, test.effects);
+
+    expect(result.runtime.pendingEnforcementTransition).toBeNull();
+    expect(test.restored).toEqual([]);
   });
 });

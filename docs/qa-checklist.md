@@ -30,7 +30,7 @@ Unit suite: **162 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
 deriving it means collecting every file, which is the expensive half of a run, and a number
 that needs a run to verify is exactly the kind that went stale here four times.
 
-End-to-end suite: **82 scenarios in 15 spec files**, as Playwright itself
+End-to-end suite: **81 scenarios in 15 spec files**, as Playwright itself
 lists them. Asking the runner rather than counting `test(` in the sources is not pedantry: a
 grep undercounts `test.skip`, which is listed and reported, and misses a spec file added
 since the grep was written. Both mistakes were present when this section was first drafted.
@@ -68,10 +68,9 @@ since the grep was written. Both mistakes were present when this section was fir
 - paused UI leaves when the session wall clock ends
 - zero delay removes the wait but still honors the typing setting
 
-### indefinite-recovery.spec.ts (7)
+### indefinite-recovery.spec.ts (6)
 
-- a browser relaunch after a timed end closes the session at its own end instant
-- a browser relaunch after a timed end finishes its cleanup and allows the next session
+- a browser relaunch after a timed end closes the session and frees the next one
 - a browser relaunch during indefinite focus keeps the session and counts the closed time
 - a scheduled indefinite session keeps its occurrence across a worker restart
 - a worker restart during an indefinite pause keeps the pause and still resumes
