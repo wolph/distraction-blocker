@@ -15,7 +15,7 @@ import type {
 
 type UnknownRecord = Record<string, unknown>;
 
-const SESSION_RULE_SNAPSHOT_KEYS: readonly string[] = [
+export const SESSION_RULE_SNAPSHOT_KEYS: readonly string[] = [
   'baselineRevision',
   'baselineCategories',
   'categories',
@@ -31,7 +31,7 @@ const CYCLE_CONFIG_KEYS: readonly string[] = [
   'longBreakMin',
   'longEvery',
 ];
-const SESSION_CONFIG_V2_KEYS: readonly string[] = [
+export const SESSION_CONFIG_V2_KEYS: readonly string[] = [
   'mode',
   'strictness',
   'duration',

@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   isCanonicalSessionRuleSnapshot,
   isCycleConfig,
+  isEventRecord,
+  isListsConfig,
+  isPauseEconomy,
   isScheduleDuration,
   isScheduleEntryV2,
   isScheduleOccurrenceRef,
@@ -12,6 +15,7 @@ import {
   isSessionSnapshotV2,
   isSessionStartedEventV2,
   isSessionStateV2,
+  isSettings,
   parseStoredSettingsV2,
 } from '../../../src/shared/runtime-validation';
 import type { SessionStateV2, SettingsV2 } from '../../../src/shared/types';
@@ -78,6 +82,14 @@ describe('v2 validator hostile inputs', (): void => {
       isSessionStateV2,
       isSessionLifecycleV2,
       isSessionSnapshotV2,
+      // These four read the raw value through this module's own record helpers rather than through
+      // a detaching snapshot, so they are where the boundary catch has to live. `Array.isArray`
+      // throws on a revoked proxy and `Reflect.ownKeys` throws on the trap below.
+      isCycleConfig,
+      isListsConfig,
+      isSettings,
+      isPauseEconomy,
+      isEventRecord,
     ];
 
     for (const hostile of [revocable.proxy, throwing]) {

@@ -185,7 +185,8 @@ export function isDenseArray(value: unknown): value is unknown[] {
   return true;
 }
 
-function exactDenseArrayLength(value: unknown[]): number | null {
+/** Dense-array length read from the own `length` descriptor, or null when the array is not exact. */
+export function exactDenseArrayLength(value: unknown[]): number | null {
   const lengthDescriptor: PropertyDescriptor | undefined = Reflect.getOwnPropertyDescriptor(
     value,
     'length',

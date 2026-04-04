@@ -5,6 +5,7 @@ import { CATEGORY_IDS, cancelPhrase, MAX_FREEZE_TOKENS } from './constants';
 import {
   type ExactDataSnapshot,
   exactDataEqual,
+  exactDenseArrayLength,
   isDenseArray,
   snapshotExactData,
 } from './exact-data';
@@ -61,6 +62,14 @@ import type {
   Strictness,
 } from './types';
 import {
+  hasExactKeys as hasExactKeysUnguarded,
+  isNonBlankString,
+  isNonNegativeInteger,
+  isRecord as isRecordUnguarded,
+  isSafeTimestamp,
+  isUuid,
+  SESSION_CONFIG_V2_KEYS,
+  SESSION_RULE_SNAPSHOT_KEYS,
   validateDetachedCanonicalSessionRuleSnapshot,
   validateDetachedCycleConfigV2,
   validateDetachedGateState,
@@ -115,37 +124,17 @@ const SETTINGS_KEYS: readonly string[] = [
   'streakFreezeIntervalDays',
   'retentionDays',
 ];
-const SESSION_RULE_SNAPSHOT_KEYS: readonly string[] = [
-  'baselineRevision',
-  'baselineCategories',
-  'categories',
-  'exclusions',
-  'permanentBlacklist',
-  'permanentAllowlist',
-  'sessionBlacklist',
-  'sessionAllowlist',
-];
-const CYCLE_CONFIG_KEYS: readonly string[] = [
-  'focusMin',
-  'shortBreakMin',
-  'longBreakMin',
-  'longEvery',
-];
-const SESSION_CONFIG_V2_KEYS: readonly string[] = [
-  'mode',
-  'strictness',
-  'duration',
-  'cycling',
-  'intention',
-  'source',
-  'scheduleOccurrence',
-  'rules',
-];
-const UUID_RE: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
+/**
+ * The rule lives once, in `v2-domain-intrinsics.ts`. The catch stays here because the imported
+ * intrinsics document a detached precondition and so let a hostile object throw: `Array.isArray`
+ * throws on a revoked proxy and `Reflect.ownKeys` throws on a hostile `ownKeys` trap, while this
+ * module runs against raw stored and messaged values. Every exported validator is wrapped in
+ * `safelyValidate` today, so the catch is currently redundant. It is kept so the guarantee holds by
+ * construction rather than by an audit of thirty call sites staying true.
+ */
 function isRecord(value: unknown): value is UnknownRecord {
   try {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
+    return isRecordUnguarded(value);
   } catch {
     return false;
   }
@@ -153,11 +142,7 @@ function isRecord(value: unknown): value is UnknownRecord {
 
 function hasExactKeys(value: UnknownRecord, keys: readonly string[]): boolean {
   try {
-    const actual: PropertyKey[] = Reflect.ownKeys(value);
-    return (
-      actual.length === keys.length &&
-      actual.every((key: PropertyKey): boolean => typeof key === 'string' && keys.includes(key))
-    );
+    return hasExactKeysUnguarded(value, keys);
   } catch {
     return false;
   }
@@ -416,16 +401,8 @@ function isNonNegativeNumber(value: unknown): value is number {
   return isFiniteNumber(value) && value >= 0;
 }
 
-function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
-}
-
-function isUuid(value: unknown): value is string {
-  return typeof value === 'string' && UUID_RE.test(value);
 }
 
 /** The one closure journal identity: the closed session's UUID plus this suffix. */
@@ -449,35 +426,6 @@ function isClosureId(value: unknown): value is string {
 function isCleanupJournalId(journal: unknown, id: unknown): boolean {
   if (journal === 'transition') return isUuid(id);
   return journal === 'closure' && isClosureId(id);
-}
-
-function isSafeTimestamp(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
-function isNonBlankString(value: unknown): value is string {
-  return typeof value === 'string' && /\S/.test(value);
-}
-
-function exactDenseArrayLength(value: unknown[]): number | null {
-  const lengthDescriptor: PropertyDescriptor | undefined = Reflect.getOwnPropertyDescriptor(
-    value,
-    'length',
-  );
-  if (
-    lengthDescriptor === undefined ||
-    typeof lengthDescriptor.value !== 'number' ||
-    !Number.isSafeInteger(lengthDescriptor.value) ||
-    lengthDescriptor.value < 0
-  ) {
-    return null;
-  }
-  const length: number = lengthDescriptor.value;
-  if (Reflect.ownKeys(value).length !== length + 1) return null;
-  for (let index: number = 0; index < length; index++) {
-    if (!Object.hasOwn(value, index)) return null;
-  }
-  return length;
 }
 
 function isCanonicalSessionRuleSnapshotValue(value: unknown): value is SessionRuleSnapshot {
@@ -546,19 +494,13 @@ function isRule(value: unknown): value is Rule {
   return validateRule({ kind: value.kind, pattern: value.pattern }) === null;
 }
 
-function isCycleConfigValue(value: unknown): value is CycleConfig {
-  return (
-    isRecord(value) &&
-    hasExactKeys(value, CYCLE_CONFIG_KEYS) &&
-    isRelativeMinuteDuration(value.focusMin) &&
-    isRelativeMinuteDuration(value.shortBreakMin) &&
-    isRelativeMinuteDuration(value.longBreakMin) &&
-    isPositiveInteger(value.longEvery)
-  );
-}
-
+/**
+ * One cycle-config rule for Settings, for a v1 schedule entry, and for a v2 one. The private second
+ * implementation this replaced could accept a `CycleConfig` the v2 schedule entry refused, or the
+ * reverse, because both were reachable from this file.
+ */
 export function isCycleConfig(value: unknown): value is CycleConfig {
-  return safelyValidate((): boolean => isCycleConfigValue(value));
+  return safelyValidate((): boolean => validateDetachedCycleConfigV2(value));
 }
 
 function isScheduleEntry(value: unknown): value is NormalizedScheduleEntryV1 {
@@ -1604,5 +1546,5 @@ export function parseEventExportResponse(value: unknown): EventRecord[] | null {
 }
 
 export function isDeviceId(value: unknown): value is string {
-  return typeof value === 'string' && UUID_RE.test(value);
+  return isUuid(value);
 }
