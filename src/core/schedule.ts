@@ -2,7 +2,14 @@ import type { NormalizedScheduleEntryV1 } from '../shared/types';
 
 const TIME_RE: RegExp = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
-function toMinutes(hhmm: string): number {
+/**
+ * The one `HH:MM` parse. `schedule-v2.ts` used to keep a `slice`-based copy with no format check,
+ * which turned a malformed stored time into `NaN` on both sides of its eligibility comparison, so
+ * the entry read as open and the resolver threw on the boundary rather than skipping one bad
+ * entry. Nothing can store a malformed time today, so that was defence in depth, and defence in
+ * depth written twice is one copy that will drift.
+ */
+export function toMinutes(hhmm: string): number {
   const m: RegExpMatchArray | null = hhmm.match(TIME_RE);
   if (m === null) return Number.NaN;
   return Number(m[1]) * 60 + Number(m[2]);

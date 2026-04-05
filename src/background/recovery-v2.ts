@@ -559,9 +559,23 @@ function resultFor(runtime: RuntimeStateV2): RecoveryResultV2 {
   return { kind: 'idle', runtime };
 }
 
+/**
+ * `RecoveryResultV2` is a tagged union, so ask its tag. The structural test this replaces was
+ * correct only because the result happens to carry no `version` and the session happens to carry
+ * no `kind`: either type is one field away from routing a recovery result back into the session
+ * path, and neither field is declared anywhere that would make the coupling visible.
+ */
 function isSessionState(value: SessionStateV2 | RecoveryResultV2): value is SessionStateV2 {
-  return !Object.hasOwn(value, 'kind') || Object.hasOwn(value, 'version');
+  const kind: unknown = (value as { kind?: unknown }).kind;
+  return typeof kind !== 'string' || !RECOVERY_RESULT_KINDS.has(kind);
 }
+
+const RECOVERY_RESULT_KINDS: ReadonlySet<string> = new Set<RecoveryResultV2['kind']>([
+  'published',
+  'closure',
+  'transition',
+  'idle',
+]);
 
 async function writeRuntime(ports: RuntimePortsV2, next: RuntimeStateV2): Promise<void> {
   const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(

@@ -1035,7 +1035,9 @@ describe('handleContentCommandV2 hostile input', () => {
       NOW + 24,
     );
 
-    expect(result.response === null || result.response.disposition === 'reset-required').toBe(true);
+    // Not an either. The two neighbouring cases assert `toBeNull()` outright, and an assertion
+    // that holds whichever way the code answers cannot notice the answer changing.
+    expect(result.response).toBeNull();
     expect(result.render).toBe('none');
     expect(result.state).toEqual(state);
   });

@@ -108,7 +108,15 @@ describe('Chrome Web Store release documentation contract', (): void => {
       'streak',
     ]);
     expect(historyKeysSource).toContain('[LOCAL_EVENTS]');
+    // The negative half was one-sided: `local.remove('runtime')` or a renamed constant makes the
+    // privacy claim false and leaves this passing. Pin the whole removal set instead, so a key
+    // added by any spelling has to show up here.
     expect(historyKeysSource).not.toContain('LOCAL_RUNTIME');
+    expect(historyKeysSource).not.toContain('runtime');
+    const removalKeys: string[] = [...historyKeysSource.matchAll(/\[([A-Z_]+)\]/g)].map(
+      (match: RegExpMatchArray): string => match[1] ?? '',
+    );
+    expect(removalKeys).toEqual(['LOCAL_EVENTS']);
     expect(disclosures).toContain('| Full URLs | Yes | No | No |');
     expect(disclosures).toContain('| Live session, gates, and temporary unlocks | Yes | No | No |');
     expect(disclosures).toContain(

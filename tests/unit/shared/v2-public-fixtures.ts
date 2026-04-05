@@ -1,3 +1,4 @@
+import { endAuthorityV2 } from '../../../src/background/lifecycle-projection-v2';
 import { emptySnapshotV2 } from '../../../src/shared/constants';
 import type { EndAuthorityV2, SessionConfigV2, SessionSnapshotV2 } from '../../../src/shared/types';
 import { MANUAL_TIMED_CONFIG, NOW } from './v2-runtime-fixtures';
@@ -51,12 +52,10 @@ export function activeSnapshotV2(config: SessionConfigV2 = MANUAL_TIMED_CONFIG):
     ...emptySnapshotV2(NOW + 10_000),
     lifecycle: {
       kind: 'active',
-      endAuthority:
-        config.strictness === 'hard'
-          ? HIDDEN_AUTHORITY
-          : config.strictness === 'friction'
-            ? CLOSED_FRICTION_AUTHORITY
-            : IMMEDIATE_AUTHORITY,
+      // Derived rather than restated. This is the same rule the production projection applies,
+      // and a fixture that spells it out by hand is how the wrong end action was frozen into nine
+      // suites at once: the fixture agreed with the code until the code was corrected.
+      endAuthority: endAuthorityV2(config.strictness, null, config.intention),
     },
     phase: 'focus',
     config,

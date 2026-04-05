@@ -26,6 +26,7 @@ import type {
 } from '../shared/types';
 import type { EnforcementCheckpoint } from './enforcement-persistence-v2';
 import type {
+  CleanupProgress,
   PendingClosure,
   PendingEnforcementTransition,
   RuntimeStateV2,
@@ -262,9 +263,18 @@ function transitionLifecycle(
   };
 }
 
+/**
+ * One rule, one spelling. The two cleanup lifecycles decide "this batch is spent" from the same
+ * `number | null` field, and used to write it two ways on either side of the seam, which agreed
+ * only because the field cannot be undefined.
+ */
+function batchIsSpent(progress: CleanupProgress | null | undefined): boolean {
+  return progress == null || progress.retry.nextAttemptAt === null;
+}
+
 /** Cleanup keeps reporting itself while a retry is scheduled, and reports error once none is. */
 function transitionCleanupLifecycle(transition: PendingEnforcementTransition): SessionLifecycleV2 {
-  if (transition.cleanupProgress?.retry.nextAttemptAt == null) {
+  if (batchIsSpent(transition.cleanupProgress)) {
     return {
       kind: 'error',
       code: 'transition-cleanup-failed',
@@ -285,7 +295,7 @@ function transitionCleanupLifecycle(transition: PendingEnforcementTransition): S
  * closure copy. The public identifier is the journal's own `closureId`.
  */
 function closureLifecycle(closure: PendingClosure): SessionLifecycleV2 {
-  if (closure.stage === 'cleanup' && closure.cleanupProgress.retry.nextAttemptAt === null) {
+  if (closure.stage === 'cleanup' && batchIsSpent(closure.cleanupProgress)) {
     return {
       kind: 'error',
       code: 'closure-cleanup-failed',

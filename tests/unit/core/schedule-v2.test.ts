@@ -114,6 +114,29 @@ describe('v2 schedule occurrence resolution', (): void => {
     expect(resolveOpenScheduleOccurrencesV2([entry()], fridayEnd)).toEqual([]);
   });
 
+  it('skips a malformed time rather than failing every other entry', (): void => {
+    // Defence in depth: `isScheduleEntryV2Value` routes every stored entry through `validateEntry`,
+    // so the product cannot store these. If one ever arrived, both bounds parsed to NaN, neither
+    // half of the eligibility comparison was true, the entry read as open, and the boundary
+    // conversion threw, which lost the resolution of every well-formed entry beside it.
+    const friday: number = new Date(2026, 7, 28, 10, 0).getTime();
+
+    for (const malformed of ['25:00', '9:00', 'ab:cd', '', '10:60']) {
+      expect(
+        resolveOpenScheduleOccurrencesV2([entry({ start: malformed })], friday),
+        malformed,
+      ).toEqual([]);
+      expect(
+        resolveOpenScheduleOccurrencesV2([entry({ end: malformed })], friday),
+        malformed,
+      ).toEqual([]);
+      expect(
+        resolveOpenScheduleOccurrencesV2([entry({ id: 'bad', start: malformed }), entry()], friday),
+        malformed,
+      ).toHaveLength(1);
+    }
+  });
+
   it('omits disabled entries and entries for another local weekday', (): void => {
     const friday: number = new Date(2026, 7, 28, 10, 0).getTime();
 

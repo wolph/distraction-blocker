@@ -64,7 +64,12 @@ export const SETTINGS_INDEFINITE_COPY: string =
   'Until stopped session active. Use the toolbar popup to view or end it.';
 export const SETTINGS_STARTING_COPY: string =
   'Focus Lock is starting. Checking website access and applying your rules.';
-export const SETTINGS_CLEANUP_COPY: string = 'Session ended. Finishing browser cleanup.';
+/**
+ * The specification lists this line in two sections, so two names are right. Two independent
+ * literals were not: editing the popup line left Settings on the old wording, and the copy test
+ * would have passed because it spelled the string twice as well.
+ */
+export const SETTINGS_CLEANUP_COPY: string = POPUP_CLOSURE_CLEANUP_COPY;
 export const SETTINGS_ERROR_COPY: string =
   'Focus Lock could not finish browser cleanup. Open the popup and retry.';
 export const SETTINGS_SESSION_DISCLOSURE: string =

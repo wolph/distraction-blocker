@@ -8,6 +8,7 @@ import type {
   ScheduleEntryV2,
   ScheduleOccurrenceRef,
 } from '../shared/types';
+import { toMinutes } from './schedule';
 
 export interface ResolvedScheduleOccurrenceV2 {
   entry: ScheduleEntryV2;
@@ -39,10 +40,6 @@ function dateForObservation(at: number): Date {
     invalidSchedule('schedule observation time must have a four-digit local year');
   }
   return date;
-}
-
-function toMinutes(value: string): number {
-  return Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5));
 }
 
 function localDateString(date: Date): string {
@@ -113,6 +110,11 @@ export function resolveOpenScheduleOccurrencesV2(
     if (!entry.enabled || !entry.days.includes(weekday)) continue;
     const startMinutes: number = toMinutes(entry.start);
     const endMinutes: number = toMinutes(entry.end);
+    // A malformed time parses to NaN, and both halves of the comparison below are then false, so
+    // the entry would read as open and `absoluteBoundary` would throw, taking down the resolution
+    // of every well-formed entry beside it. Skip the one bad entry instead. Nothing can store a
+    // malformed time today, so this is defence in depth, which is why it skips rather than errors.
+    if (!Number.isFinite(startMinutes) || !Number.isFinite(endMinutes)) continue;
     if (localMinutes < startMinutes || localMinutes >= endMinutes) continue;
 
     const windowStartsAt: number = absoluteBoundary(

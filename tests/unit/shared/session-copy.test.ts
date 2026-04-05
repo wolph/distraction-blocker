@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -138,13 +138,47 @@ describe('session copy', (): void => {
     expect(statsPlanLabelV2(long)).toBe('1 h 30 m');
   });
 
-  it('never describes focus time as active computer use', (): void => {
-    const source: string = readFileSync(resolve('src/shared/session-copy.ts'), 'utf8');
-    const lowered: string = source.toLowerCase();
+  it('never describes focus time as active computer use, on any surface', (): void => {
+    // The rule is about product copy, so this reads the copy rather than the source. Scanning file
+    // text finds `KeyboardEvent` and `onKeyDown`, which are DOM identifiers and not copy, and
+    // scanning only `session-copy.ts` could not fail for any reason the byte-for-byte assertions
+    // above would not already have caught. String literals across the surfaces are the copy.
+    const literals: Array<{ file: string; text: string }> = [
+      'src/popup',
+      'src/options',
+      'src/stats',
+      'src/content',
+      'src/shared',
+    ].flatMap(
+      (directory: string): Array<{ file: string; text: string }> =>
+        readdirSync(resolve(directory), { recursive: true, encoding: 'utf8' })
+          .filter((entry: string): boolean => /\.(ts|tsx)$/.test(entry))
+          .flatMap((entry: string): Array<{ file: string; text: string }> => {
+            const file: string = resolve(directory, entry);
+            const source: string = readFileSync(file, 'utf8');
+            return [...source.matchAll(/'([^'\\\n]*)'|`([^`\\]*)`/g)].map(
+              (match: RegExpMatchArray): { file: string; text: string } => ({
+                file,
+                text: (match[1] ?? match[2] ?? '').toLowerCase(),
+              }),
+            );
+          }),
+    );
 
-    for (const term of ['active computer use', 'keyboard', 'mouse']) {
-      expect(lowered).not.toContain(term);
+    expect(literals.length).toBeGreaterThan(500);
+    for (const literal of literals) {
+      // The phrase itself is banned outright, wherever it appears.
+      expect(literal.text, literal.file).not.toContain('active computer use');
+      // The two mechanism words are banned only in copy that is about focus time. The charts say
+      // "use the keyboard to move through data points", which is a navigation hint and not a
+      // claim about what focus time measures.
+      if (!literal.text.includes('focus time')) continue;
+      for (const term of ['keyboard', 'mouse']) {
+        expect(literal.text, `${literal.file} describes focus time with "${term}"`).not.toContain(
+          term,
+        );
+      }
     }
-    expect(source).toContain("'Focus time'");
+    expect(FOCUS_TIME_LABEL).toBe('Focus time');
   });
 });

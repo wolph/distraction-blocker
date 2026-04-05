@@ -572,7 +572,11 @@ describe('handled occurrence pruning on the tick', (): void => {
     expect(pruned.handledScheduleOccurrences).toEqual([live]);
     expect(pruned).not.toBe(runtime);
     expect(pruneHandledOccurrencesOnTickV2(pruned, NOW)).toBe(pruned);
-    expect(pruneHandledOccurrencesOnTickV2(idleRuntime(), NOW)).toEqual(idleRuntime());
+    // An empty runtime returns the same object rather than an equal one, which is the claim worth
+    // making: pruning nothing must not allocate. Asserting it equalled a fresh `idleRuntime()`
+    // could not fail for any implementation, because both sides held no occurrences either way.
+    const empty: RuntimeStateV2 = idleRuntime();
+    expect(pruneHandledOccurrencesOnTickV2(empty, NOW)).toBe(empty);
   });
 });
 
