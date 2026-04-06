@@ -80,6 +80,8 @@ Focus Lock sends no extension data to a developer-controlled server. Settings > 
 
 The end-to-end suite uses local test pages and an isolated browser profile. It does not need your normal Chrome profile.
 
+Before adding tests, read [docs/testing-rules.md](docs/testing-rules.md). It is four rules with the evidence that earned them, and the first one is the one that catches everybody.
+
 ## Known limitations and non-goals
 
 - The user can disable the extension at `chrome://extensions`. No
