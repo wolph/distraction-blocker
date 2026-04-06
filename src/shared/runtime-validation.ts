@@ -1,4 +1,4 @@
-import { normalizeSessionRules, validateRule } from '../core/matcher';
+import { validateRule } from '../core/matcher';
 import { scheduleEntriesOverlap, validateEntry } from '../core/schedule';
 import { isDailyDate, parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { CATEGORY_IDS, cancelPhrase, MAX_FREEZE_TOKENS } from './constants';
@@ -42,7 +42,6 @@ import type {
   ScheduleDuration,
   ScheduleEntryV2,
   ScheduleOccurrenceRef,
-  SessionConfig,
   SessionConfigV2,
   SessionDuration,
   SessionEndedEventV2,
@@ -765,42 +764,6 @@ export function isListsConfig(value: unknown): value is ListsConfig {
   return safelyValidate((): boolean => isListsConfigValue(value));
 }
 
-function isSessionConfig(value: unknown): value is SessionConfig {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, [
-      'mode',
-      'strictness',
-      'durationMin',
-      'cycling',
-      'intention',
-      'source',
-      'scheduleEntryId',
-      'rules',
-    ])
-  ) {
-    return false;
-  }
-  if (
-    (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
-    (value.strictness !== 'flexible' &&
-      value.strictness !== 'hard' &&
-      value.strictness !== 'friction') ||
-    !isRelativeMinuteDuration(value.durationMin) ||
-    (value.cycling !== null && !isCycleConfig(value.cycling)) ||
-    typeof value.intention !== 'string' ||
-    (value.source !== 'manual' && value.source !== 'schedule') ||
-    !isNullableString(value.scheduleEntryId) ||
-    normalizeSessionRules(value.rules) === null
-  ) {
-    return false;
-  }
-  return (
-    (value.source === 'manual' && value.scheduleEntryId === null) ||
-    (value.source === 'schedule' && isNonBlankString(value.scheduleEntryId))
-  );
-}
-
 function isSessionConfigV2Value(value: unknown): value is SessionConfigV2 {
   const candidate: UnknownRecord | null = stableExactOwnDataSnapshot(value, SESSION_CONFIG_V2_KEYS);
   return validateDetachedSessionConfigV2(candidate);
@@ -1161,82 +1124,7 @@ export function isSessionSnapshotV2(value: unknown): value is SessionSnapshotV2 
   return safelyValidate((): boolean => isSessionSnapshotV2Value(value));
 }
 
-function isGate(value: unknown): value is GateState {
-  if (!isRecord(value)) return false;
-  if (
-    (value.kind !== 'pause' && value.kind !== 'unlockSite' && value.kind !== 'cancel') ||
-    !isNullableString(value.host) ||
-    !isNonNegativeNumber(value.openedAt) ||
-    !isNonNegativeNumber(value.readyAt) ||
-    value.readyAt < value.openedAt ||
-    !isNullableString(value.requiredPhrase)
-  ) {
-    return false;
-  }
-  return value.kind === 'unlockSite' ? isNonBlankString(value.host) : value.host === null;
-}
-
-function isSiteUnlock(value: unknown): value is SiteUnlock {
-  return isRecord(value) && isNonBlankString(value.host) && isNonNegativeNumber(value.until);
-}
-
-function isNextSchedule(value: unknown): boolean {
-  return isRecord(value) && isNonBlankString(value.entryId) && isNonNegativeNumber(value.startsAt);
-}
-
-function _isSessionSnapshotValue(value: unknown): value is SessionSnapshot {
-  if (!isRecord(value)) return false;
-  const phaseValid: boolean =
-    value.phase === 'idle' ||
-    value.phase === 'focus' ||
-    value.phase === 'break' ||
-    value.phase === 'paused';
-  if (
-    !isNonNegativeNumber(value.at) ||
-    !isThemeMode(value.theme) ||
-    !phaseValid ||
-    !isNonNegativeInteger(value.cycleIndex) ||
-    !isNonNegativeNumber(value.bankMs) ||
-    !isNonNegativeNumber(value.bankAccrualPerMs) ||
-    !isNonNegativeInteger(value.bankCapMs) ||
-    !isRelativeMillisecondDuration(value.pauseCostMs, true) ||
-    !isRelativeMillisecondDuration(value.unlockCostMs, true) ||
-    !isDenseArray(value.activeUnlocks) ||
-    !value.activeUnlocks.every(isSiteUnlock) ||
-    (value.gate !== null && !isGate(value.gate)) ||
-    !isNonNegativeInteger(value.attemptsToday) ||
-    typeof value.scheduleActive !== 'boolean' ||
-    (value.nextSchedule !== null && !isNextSchedule(value.nextSchedule))
-  ) {
-    return false;
-  }
-  if (value.phase === 'idle') {
-    return (
-      value.config === null &&
-      value.startedAt === null &&
-      value.phaseStartedAt === null &&
-      value.phaseEndsAt === null &&
-      value.sessionEndsAt === null &&
-      value.gate === null
-    );
-  }
-  if (
-    !isSessionConfig(value.config) ||
-    !isNonNegativeNumber(value.startedAt) ||
-    !isNonNegativeNumber(value.phaseStartedAt) ||
-    !isNonNegativeNumber(value.phaseEndsAt) ||
-    !isNonNegativeNumber(value.sessionEndsAt) ||
-    value.sessionEndsAt < value.startedAt ||
-    value.phaseStartedAt < value.startedAt ||
-    value.phaseEndsAt < value.phaseStartedAt ||
-    (value.phase !== 'paused' && value.phaseEndsAt > value.sessionEndsAt)
-  ) {
-    return false;
-  }
-  return value.phase !== 'break' || value.config.cycling !== null;
-}
-
-/** The live snapshot contract is v2. The v1 predicate stays for migration and legacy input. */
+/** The live snapshot contract is v2, and this name is the alias the v1 callers still spell. */
 export function isSessionSnapshot(value: unknown): value is SessionSnapshot {
   return isSessionSnapshotV2(value);
 }
