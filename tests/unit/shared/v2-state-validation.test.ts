@@ -139,6 +139,62 @@ describe('v2 persisted session state matrix', (): void => {
     expect(isSessionStateV2(value)).toBe(false);
   });
 
+  /**
+   * An indefinite session never enters break, so its cycle index never leaves zero. The producer
+   * only advances it on the timed focus-to-break edge, which requires a finite session end.
+   */
+  it('rejects an indefinite session whose cycle index advanced', (): void => {
+    expect(isSessionStateV2({ ...INDEFINITE_FOCUS_STATE, cycleIndex: 1 })).toBe(false);
+  });
+
+  /**
+   * The cycling tail rule is strict: a break is started only when it ends before the session does,
+   * so a break landing exactly on the session end is a state no producer can reach.
+   */
+  it('rejects a timed break that ends exactly at the session end', (): void => {
+    const sessionEndsAt: number = NOW + 50 * 60_000;
+    expect(
+      isSessionStateV2({
+        ...TIMED_FOCUS_STATE,
+        config: {
+          ...MANUAL_TIMED_CONFIG,
+          duration: { kind: 'timed', minutes: 50 },
+          cycling: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 },
+        },
+        sessionEndsAt,
+        phase: 'break',
+        phaseStartedAt: NOW + 25 * 60_000,
+        phaseEndsAt: sessionEndsAt,
+        cycleIndex: 1,
+      }),
+    ).toBe(false);
+  });
+
+  /** The same break one millisecond earlier is the state the producer does build. */
+  it('accepts a timed break that ends before the session end', (): void => {
+    const sessionEndsAt: number = NOW + 50 * 60_000;
+    expect(
+      isSessionStateV2({
+        ...TIMED_FOCUS_STATE,
+        config: {
+          ...MANUAL_TIMED_CONFIG,
+          duration: { kind: 'timed', minutes: 50 },
+          cycling: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 },
+        },
+        sessionEndsAt,
+        phase: 'break',
+        phaseStartedAt: NOW + 25 * 60_000,
+        phaseEndsAt: sessionEndsAt - 1,
+        cycleIndex: 1,
+      }),
+    ).toBe(true);
+  });
+
+  /** A timed focus phase may run through the fixed end, which is the exact-fit row. */
+  it('still accepts a timed focus phase that ends exactly at the session end', (): void => {
+    expect(isSessionStateV2(TIMED_FOCUS_STATE)).toBe(true);
+  });
+
   it('rejects mutable accessor boundaries', (): void => {
     const rootAccessor: Record<string, unknown> = { ...TIMED_FOCUS_STATE };
     Object.defineProperty(rootAccessor, 'phase', {

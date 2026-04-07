@@ -162,7 +162,9 @@ export function validateDetachedSessionStateV2(value: unknown): value is Session
     return false;
   }
   if (config.duration.kind === 'until-stopped') {
+    // An indefinite session never enters break, so the producer never advances its cycle index.
     if (candidate.sessionEndsAt !== null || candidate.phase === 'break') return false;
+    if (candidate.cycleIndex !== 0) return false;
     if (candidate.phase === 'focus') {
       return candidate.phaseEndsAt === null && candidate.pausedFrom === null;
     }
@@ -188,7 +190,14 @@ export function validateDetachedSessionStateV2(value: unknown): value is Session
   }
   if (candidate.phase === 'focus') return candidate.pausedFrom === null;
   if (candidate.phase === 'break') {
-    return config.cycling !== null && candidate.pausedFrom === null;
+    // The cycling tail rule is strict. A break is started only when it ends before the session
+    // does, so a break landing exactly on the session end is a state no producer can reach. A
+    // focus phase may run through that end, which is why the comparison above stays inclusive.
+    return (
+      config.cycling !== null &&
+      candidate.pausedFrom === null &&
+      candidate.phaseEndsAt < candidate.sessionEndsAt
+    );
   }
   return (
     validateDetachedPausedFromStateV2(candidate.pausedFrom) &&
