@@ -139,6 +139,14 @@ export interface RuntimePortsFakeV2 extends RuntimePortsV2 {
   bumpGeneration(): void;
   setAudit(result: 'ready' | 'website-access-lost' | 'content-registration-failed'): void;
   setAlarmReadBack(mode: 'exact' | 'missing' | 'other-time'): void;
+  /**
+   * Holds every later commit at its checkpoint write, which is where production sits while it
+   * replays. It is the only way to produce the state a domain write has to survive: a durable
+   * runtime carrying a commit checkpoint whose projection describes the value before that write.
+   */
+  holdCommitReplay(): void;
+  /** Finishes the held commit the way the replay does, by clearing the checkpoint it wrote. */
+  completeCommitReplay(): void;
   /** Answers every send for one `${tabId}:${documentId}` target. */
   respondForDocument(tabId: number, documentId: string, responder: FakeResponderV2): void;
   /** Puts a document in the epoch it would hold after answering that epoch's reset. */
@@ -188,6 +196,7 @@ export function createRuntimePortsFakeV2(
     byDocument: new Map<string, FakeResponderV2>(),
     byOperation: new Map<string, FakeResponderV2>(),
     documentEpochs: seededDocumentEpochs(initial, options.documentEpochs),
+    holdCommitReplay: false,
   };
   const writes: RuntimeStateV2[] = [];
   const commits: RuntimeCommitInputV2[] = [];
@@ -231,15 +240,37 @@ export function createRuntimePortsFakeV2(
       // Production writes the bank the checkpoint carries whatever `syncBank` says, so the fake
       // does too: `syncBank` selects the sync mirror, not whether the local bank lands.
       state.bank = structuredClone(input.bank);
-      // Production writes the checkpointed runtime and then replays until the checkpoint clears,
-      // so the durable value a caller receives is the projection with no checkpoint left. One
-      // write is recorded per commit, and `commits` holds the batch the checkpoint carried.
-      const applied: RuntimeStateV2 = structuredClone({
-        ...state.runtime,
-        ...input.projection,
-        commitCheckpoint: null,
-      });
-      state.runtime = requireValidRuntime(applied, 'commit produced an invalid runtime');
+      // Production commits in two phases: it writes the runtime with the checkpoint attached, then
+      // replays that checkpoint and clears it. Both are composed here, so the intermediate state is
+      // a real value the fake can hold rather than a step it skips. A caller that holds the replay
+      // keeps the checkpointed runtime durable, which is the window every domain write has to
+      // survive and which no suite could produce while this collapsed into one step.
+      const checkpointed: RuntimeStateV2 = requireValidRuntime(
+        structuredClone({
+          ...state.runtime,
+          ...input.projection,
+          commitCheckpoint: {
+            version: 2,
+            checkpointId: input.checkpointId,
+            projection: structuredClone(input.projection),
+            bank: structuredClone(input.bank),
+            events: structuredClone(input.events),
+            syncBank: input.syncBank,
+            aggregateSets: structuredClone(input.aggregateSets),
+            aggregateRemoves: [...input.aggregateRemoves],
+          },
+        }),
+        'commit produced an invalid checkpointed runtime',
+      );
+      if (state.holdCommitReplay) {
+        state.runtime = checkpointed;
+        writes.push(structuredClone(state.runtime));
+        return structuredClone(state.runtime);
+      }
+      state.runtime = requireValidRuntime(
+        structuredClone({ ...checkpointed, commitCheckpoint: null }),
+        'commit produced an invalid runtime',
+      );
       writes.push(structuredClone(state.runtime));
       return structuredClone(state.runtime);
     },
@@ -313,6 +344,18 @@ export function createRuntimePortsFakeV2(
     },
     setAudit: (result: 'ready' | 'website-access-lost' | 'content-registration-failed'): void => {
       state.audit = result;
+    },
+    holdCommitReplay: (): void => {
+      state.holdCommitReplay = true;
+    },
+    completeCommitReplay: (): void => {
+      state.holdCommitReplay = false;
+      if (state.runtime.commitCheckpoint === null) return;
+      state.runtime = requireValidRuntime(
+        structuredClone({ ...state.runtime, commitCheckpoint: null }),
+        'the replayed commit produced an invalid runtime',
+      );
+      writes.push(structuredClone(state.runtime));
     },
     setAlarmReadBack: (mode: 'exact' | 'missing' | 'other-time'): void => {
       state.alarmReadBack = mode;
@@ -412,6 +455,8 @@ export function silentResponder(): FakeResponderV2 {
 interface FakeStateV2 {
   runtime: RuntimeStateV2;
   now: number;
+  /** While true, a commit stops after its checkpoint write, as production does before its replay. */
+  holdCommitReplay: boolean;
   /** The enforcement epoch each `${tabId}:${documentId}` currently holds, as the document sees it. */
   documentEpochs: Map<string, string>;
   ids: string[];
