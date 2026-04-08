@@ -36,6 +36,7 @@ import {
 import {
   ACTIVATION_AT,
   CLEANUP_OPERATION_ID,
+  commitCheckpointRuntime,
   dailyAgg,
   documentKey,
   LOCAL_DATE,
@@ -166,6 +167,18 @@ describe('prepareClosureV2', (): void => {
     expect(next.pendingClosure?.stage).toBe('prepared');
     expect(next.session).toEqual(closingRuntime().session);
     expect(parseRuntimeStateV2(next)).not.toBeNull();
+  });
+
+  it('prepares the closure while a commit is in flight', async (): Promise<void> => {
+    // Preparing is what a session end does first, and it writes the pending closure, a projected
+    // field. Refused while a checkpoint was outstanding, the end threw and the session stayed
+    // open, which is the shape the user sees as an end button that does nothing.
+    const fake: RuntimePortsFakeV2 = fakeFor(commitCheckpointRuntime(closingRuntime()));
+
+    const next: RuntimeStateV2 = await prepared(fake);
+
+    expect(next.pendingClosure?.stage).toBe('prepared');
+    expect(fake.current().commitCheckpoint?.projection.pendingClosure).toEqual(next.pendingClosure);
   });
 
   it('keeps the enforcement checkpoint and captures the phase alarm and claims', async (): Promise<void> => {

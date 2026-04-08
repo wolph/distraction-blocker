@@ -38,6 +38,7 @@ import {
 import {
   ACTIVATION_AT,
   CLEANUP_OPERATION_ID,
+  commitCheckpointRuntime,
   documentKey,
   emptyRuntimeV2,
   OTHER_OPERATION_ID,
@@ -141,6 +142,24 @@ describe('enterTransitionCleanupV2', (): void => {
     expect(Object.keys(progress.clearCommands).length).toBeGreaterThan(0);
     expect(fake.sends).toHaveLength(0);
     expect(fake.alarmCalls).toHaveLength(0);
+  });
+
+  it('writes its entry while a commit is in flight', async (): Promise<void> => {
+    // The entry composes a new transition, which is a projected field, so with a checkpoint
+    // outstanding it wrote a runtime the checkpoint no longer described and the storage boundary
+    // refused it. A refused entry leaves the transition where it was, so nothing cleans up.
+    const fake: RuntimePortsFakeV2 = fakeFor(commitCheckpointRuntime(committedRuntime()));
+
+    await enterTransitionCleanupV2(fake, {
+      cause: 'manual-end',
+      failure: null,
+      endedAt: fake.now(),
+    });
+
+    expect(storedTransition(fake).stage).toBe('cleanup');
+    expect(fake.current().commitCheckpoint?.projection.pendingEnforcementTransition).toEqual(
+      storedTransition(fake),
+    );
   });
 
   it('freezes clear commands under the identity the source stage had', async (): Promise<void> => {
@@ -362,6 +381,34 @@ describe('runTransitionCleanupAttemptV2', (): void => {
     expect(Object.keys(commit?.aggregateSets ?? {}).length).toBeGreaterThan(0);
   });
 
+  it('resolves an attempt while a commit is in flight', async (): Promise<void> => {
+    // The attempt's own writes change the transition and the command map, both projected. With a
+    // checkpoint outstanding the storage boundary refused the resolve, so the cleanup that had
+    // already sent every clear could never record that it had finished, and it retried forever.
+    const fake: RuntimePortsFakeV2 = await inCleanup(
+      commitCheckpointRuntime(preCommitRuntime()),
+      'start-abandon',
+    );
+
+    // Anything the attempt commits stays in flight too, so every later write in the attempt runs
+    // against an outstanding checkpoint rather than only the first one.
+    fake.holdCommitReplay();
+    const resolved: RuntimeStateV2 = await runTransitionCleanupAttemptV2(fake, effectsFake());
+
+    expect(resolved.pendingEnforcementTransition).toBeNull();
+    expect(fake.current().pendingEnforcementTransition).toBeNull();
+    expect(fake.current().commitCheckpoint?.projection.pendingEnforcementTransition).toBeNull();
+    expect(fake.current().commitCheckpoint?.projection.documentCommands).toEqual(
+      fake.current().documentCommands,
+    );
+
+    // And the window closes the way production closes it, leaving the resolved runtime durable
+    // with nothing left to replay.
+    fake.completeCommitReplay();
+    expect(fake.current().commitCheckpoint).toBeNull();
+    expect(parseRuntimeStateV2(fake.current())).not.toBeNull();
+  });
+
   it('adopts the ended day and clears the focus watermark with the handoff', async (): Promise<void> => {
     // The closure builder hands over three things and the handoff used to keep one. Without the
     // other two the next session earns no pause budget until it out-focuses the dead one, and the
@@ -517,6 +564,30 @@ describe('handleCleanupNavigationV2', (): void => {
     }
     expect(fake.sends.some((send): boolean => send.documentId === 'document-12')).toBe(true);
     expect(parseRuntimeStateV2(fake.current())).not.toBeNull();
+  });
+
+  it('records a discovered target while a commit is in flight', async (): Promise<void> => {
+    // Discovery is the shared cleanup step every journal uses, and it writes the progress before
+    // it sends. Refused while a checkpoint was outstanding, the document was cleared with nothing
+    // durable saying so, so the cleanup could never account for the tab it had already handled.
+    const fake: RuntimePortsFakeV2 = fakeFor(commitCheckpointRuntime(committedRuntime()));
+    await enterTransitionCleanupV2(fake, {
+      cause: 'manual-end',
+      failure: null,
+      endedAt: fake.now(),
+    });
+
+    await handleCleanupNavigationV2(fake, {
+      tabId: 12,
+      documentId: 'document-12',
+      url: 'https://news.example.com/story',
+    });
+
+    const key: string = documentKey(12, 'document-12');
+    expect(storedProgress(fake).targets[key]).toBeDefined();
+    expect(fake.current().commitCheckpoint?.projection.pendingEnforcementTransition).toEqual(
+      storedTransition(fake),
+    );
   });
 
   it('resets the discovered document before it sends that document its clear', async (): Promise<void> => {

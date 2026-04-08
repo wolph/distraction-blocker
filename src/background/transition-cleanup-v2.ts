@@ -696,7 +696,9 @@ function requireProgress(transition: PendingEnforcementTransition): CleanupProgr
 }
 
 function validated(runtime: RuntimeStateV2): RuntimeStateV2 {
-  const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(runtime);
+  const parsed: RuntimeStateV2 | null = parseRuntimeStateV2(
+    carryCommitCheckpointProjectionV2(runtime),
+  );
   if (parsed === null) {
     throw new CoreError('invalid-rule', 'transition cleanup built an invalid runtime');
   }
