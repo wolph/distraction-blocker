@@ -52,15 +52,23 @@ import {
 const DOC_ONE: string = 'document-1';
 const BLOCKED_URL: string = 'https://facebook.com/feed';
 
+/**
+ * Production restores the tabs it can and answers with those alone, so a claim it could not settle
+ * comes back unresolved. `unresolved` names the tab ids this fake withholds, which is the only way
+ * a test can ask what this journal does with a claim that did not settle.
+ */
 function effectsFake(
   onRestore?: () => Promise<void> | void,
+  unresolved: readonly number[] = [],
 ): CleanupEffectPortsV2 & { badges: number; reloaded: number } {
   const record = {
     badges: 0,
     reloaded: 0,
     restoreTabClaims: async (claims: readonly CleanupTabClaim[]): Promise<number[]> => {
       await onRestore?.();
-      return claims.map((claim: CleanupTabClaim): number => claim.tabId);
+      return claims
+        .map((claim: CleanupTabClaim): number => claim.tabId)
+        .filter((tabId: number): boolean => !unresolved.includes(tabId));
     },
     reloadStoppedDocuments: async (): Promise<void> => {
       record.reloaded += 1;
@@ -379,6 +387,61 @@ describe('runTransitionCleanupAttemptV2', (): void => {
     const commit: RuntimeCommitInputV2 | undefined = fake.commits[commitsBefore];
     expect(commit?.events.length).toBeGreaterThan(0);
     expect(Object.keys(commit?.aggregateSets ?? {}).length).toBeGreaterThan(0);
+  });
+
+  it('hands an unresolved claim to the closure that inherits it', async (): Promise<void> => {
+    // Production restores what it can and answers with those tabs alone. The closure runner treats
+    // a claim it could not settle as a failed attempt; this journal has no such guard, and this is
+    // what makes that difference safe for a cause that hands off: the claim travels into the
+    // closure journal unresolved, and the closure's own guard then owns it.
+    const fake: RuntimePortsFakeV2 = await inCleanup(committedRuntime(), 'manual-end');
+    expect(
+      storedProgress(fake).tabClaims.map((claim: CleanupTabClaim): number => claim.tabId),
+    ).toEqual([11]);
+
+    const resolved: RuntimeStateV2 = await runTransitionCleanupAttemptV2(
+      fake,
+      effectsFake(undefined, [11]),
+    );
+
+    const closure: PendingClosure | null = resolved.pendingClosure;
+    if (closure?.stage !== 'cleanup') throw new Error('expected a cleanup closure');
+    expect(
+      closure.cleanupProgress.tabClaims.map((claim: CleanupTabClaim): number => claim.tabId),
+    ).toEqual([11]);
+    expect(closure.cleanupProgress.resolvedTabIds).toEqual([]);
+  });
+
+  it('clears an abandoned start whose claim never resolved, and nothing inherits it', async (): Promise<void> => {
+    // The same unresolved claim under a cause that hands nothing off. The transition clears, so
+    // the mute this claim describes outlives every journal that could restore it: there is no
+    // pending closure, no transition, and no retry. Measured, not assumed, and the asymmetry with
+    // the closure runner's guard is reported rather than closed here, because whether an abandoned
+    // start should keep retrying a tab it cannot restore is a rule this file does not own.
+    const fake: RuntimePortsFakeV2 = await inCleanup(
+      transitionRuntime(pendingTransition('start', 'registration-audited'), {
+        tabStates: { 11: { muteUrl: BLOCKED_URL, priorMuted: false, stoppedDocumentId: DOC_ONE } },
+      }),
+      'start-abandon',
+    );
+    expect(
+      storedProgress(fake).tabClaims.map((claim: CleanupTabClaim): number => claim.tabId),
+    ).toEqual([11]);
+
+    const resolved: RuntimeStateV2 = await runTransitionCleanupAttemptV2(
+      fake,
+      effectsFake(undefined, [11]),
+    );
+
+    expect(resolved.pendingEnforcementTransition).toBeNull();
+    expect(resolved.pendingClosure).toBeNull();
+    expect(fake.alarmCalls.filter((call): boolean => call.kind === 'create')).toEqual([]);
+    // And the claim really was unresolved when that happened: no write this attempt made ever
+    // recorded tab 11 as settled, so the clear above is the journal ending on an open claim.
+    const everResolved: boolean = fake.writes.some((write: RuntimeStateV2): boolean =>
+      (write.pendingEnforcementTransition?.cleanupProgress?.resolvedTabIds ?? []).includes(11),
+    );
+    expect(everResolved).toBe(false);
   });
 
   it('resolves an attempt while a commit is in flight', async (): Promise<void> => {
