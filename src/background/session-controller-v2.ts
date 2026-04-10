@@ -55,6 +55,7 @@ import {
 import { closureIdV2, manualEndReasonV2 } from './closure-projection-v2';
 import {
   closeSessionV2,
+  commitClosureV2,
   prepareClosureV2,
   retryClosureCleanupV2,
   runClosureCleanupAttemptV2,
@@ -1250,7 +1251,6 @@ export class SessionControllerV2 {
 
   /** Commits and cleans the closure whose prepared write just became durable. */
   private async finishOwedClosure(): Promise<void> {
-    const { commitClosureV2 } = await import('./closure-runner-v2');
     await commitClosureV2(this.ports);
     await runClosureCleanupAttemptV2(this.ports, this.effects);
   }
