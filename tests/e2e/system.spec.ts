@@ -1,6 +1,8 @@
 import type { Worker } from '@playwright/test';
 import type { ListsConfig, SessionSnapshot, Settings } from '../../src/shared/types';
+import { beginExpectedWorkerErrorWindow } from './browser-diagnostics';
 import {
+  browserDiagnosticsFor,
   clearNotifications,
   expect,
   hasOffscreenAudioDocument,
@@ -147,6 +149,7 @@ test('sync and local storage keep their documented split and quota', async ({
 });
 
 test('projected first-Sync publication rejects total quota overflow and preserves local policy', async ({
+  context,
   extPage,
   worker,
 }) => {
@@ -172,6 +175,13 @@ test('projected first-Sync publication rejects total quota overflow and preserve
     await sendExtensionRequest(extPage, { type: 'updateLists', lists: expandedLists }),
   ).toEqual({ ok: true });
 
+  // The refusal this scenario exists to assert is one the worker reports, and every fixture
+  // forbids worker errors, so the one error being driven is declared. Every other error still
+  // fails, and the close raises if this one never arrives.
+  const closeQuotaErrorWindow: () => void = beginExpectedWorkerErrorWindow(
+    browserDiagnosticsFor(context),
+    'SyncQuotaError: Cannot sync batch:',
+  );
   try {
     const filled: { bytes: number; quota: number } = await fillSyncForProjectedQuota(worker);
     expect(filled.bytes).toBeGreaterThanOrEqual(filled.quota - 128);
@@ -211,6 +221,7 @@ test('projected first-Sync publication rejects total quota overflow and preserve
   } finally {
     await clearProjectedQuotaFiller(worker);
     await sendExtensionRequest(extPage, { type: 'updateLists', lists: originalLists });
+    closeQuotaErrorWindow();
   }
 });
 
