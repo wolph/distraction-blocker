@@ -460,6 +460,26 @@ describe('injectIntoExistingTabs', () => {
     expect(reportError).not.toHaveBeenCalled();
   });
 
+  it('treats a tab showing an error page as nothing to inject into', async (): Promise<void> => {
+    // A main frame that failed to load carries no document a content script could inhabit, and no
+    // retry changes that while the error page is on screen. The next successful navigation gets
+    // the registered script, so reporting this failure only fills the log with a fact about the
+    // browser: the sweep is complete, and there is nothing to enforce on an error page.
+    const reportError = vi.fn();
+    vi.stubGlobal('chrome', {
+      tabs: { query: vi.fn().mockResolvedValue([{ id: 7 }]) },
+      scripting: {
+        executeScript: vi
+          .fn()
+          .mockRejectedValueOnce(new Error('Frame with ID 0 is showing error page.')),
+      },
+    });
+
+    await expect(injectIntoExistingTabs('assets/content.js', reportError)).resolves.toBe(true);
+
+    expect(reportError).not.toHaveBeenCalled();
+  });
+
   it('reports an existing-tab query failure without rejecting worker boot', async (): Promise<void> => {
     const failure: Error = new Error('tab query failed');
     const reportError = vi.fn();

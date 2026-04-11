@@ -1448,7 +1448,11 @@ function isIgnorableInjectionFailure(error: unknown): boolean {
     message.includes('The extensions gallery cannot be scripted') ||
     message.includes('Cannot access a chrome:// URL') ||
     message.includes('No tab with id') ||
-    message.includes('The tab was closed')
+    message.includes('The tab was closed') ||
+    // A main frame that failed to load has no document to script, and it stays that way until the
+    // user navigates again, which the registered script covers. Reporting it says nothing anyone
+    // can act on, and it fires for every open error page on every registration sweep.
+    message.includes('is showing error page')
   );
 }
 
