@@ -5,7 +5,7 @@ import {
   ALWAYS_ALLOW_SCHEMES,
   CATEGORY_IDS,
 } from '../shared/constants';
-import { isDenseArray } from '../shared/exact-data';
+import { hasExactKeys, isDenseArray, isRecord as isPlainRecord } from '../shared/exact-data';
 import { normalizeHost } from '../shared/host-normalization';
 import type {
   CategoryId,
@@ -145,9 +145,15 @@ export function normalizeSessionHostInput(value: string): string | null {
   }
 }
 
+/**
+ * The rules live once, in `shared/exact-data.ts`, which imports nothing and so can be reached from
+ * here without inverting the layer direction. The catch stays because this module normalizes raw
+ * stored and messaged values, where `Array.isArray` throws on a revoked proxy and `Reflect.ownKeys`
+ * throws on a hostile `ownKeys` trap.
+ */
 function isRecord(value: unknown): value is Record<string, unknown> {
   try {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
+    return isPlainRecord(value);
   } catch {
     return false;
   }
@@ -155,11 +161,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasExactOwnKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   try {
-    const ownKeys: PropertyKey[] = Reflect.ownKeys(value);
-    return (
-      ownKeys.length === keys.length &&
-      ownKeys.every((key: PropertyKey): boolean => typeof key === 'string' && keys.includes(key))
-    );
+    return hasExactKeys(value, keys);
   } catch {
     return false;
   }
@@ -513,15 +515,6 @@ export function buildMatcherCache(
     },
     compiled,
   };
-}
-
-function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
-  const actual: string[] = Object.keys(value).sort();
-  const expected: string[] = [...keys].sort();
-  return (
-    actual.length === expected.length &&
-    actual.every((key: string, i: number): boolean => key === expected[i])
-  );
 }
 
 function isNormalizedHost(value: unknown): value is string {

@@ -852,4 +852,23 @@ describe('persisted matcher cache', () => {
 
     expect(restoreMatcherCache(raw, cacheLists, CATS)).not.toBeNull();
   });
+
+  /**
+   * The cache gate used to read `Object.keys`, which sees neither of these, so both restored as a
+   * cache with the exact key set. It reads `Reflect.ownKeys` now, like every other exact-key gate.
+   */
+  it('refuses a cache carrying a symbol or a non-enumerable own key', (): void => {
+    const symbolKeyed = JSON.parse(
+      JSON.stringify(buildMatcherCache(cacheLists, CATS).stored),
+    ) as Record<string, unknown>;
+    (symbolKeyed as Record<symbol, unknown>)[Symbol('smuggled')] = true;
+
+    const hiddenKeyed = JSON.parse(
+      JSON.stringify(buildMatcherCache(cacheLists, CATS).stored),
+    ) as Record<string, unknown>;
+    Object.defineProperty(hiddenKeyed, 'smuggled', { enumerable: false, value: true });
+
+    expect(restoreMatcherCache(symbolKeyed, cacheLists, CATS)).toBeNull();
+    expect(restoreMatcherCache(hiddenKeyed, cacheLists, CATS)).toBeNull();
+  });
 });

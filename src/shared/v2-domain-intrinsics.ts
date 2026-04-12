@@ -1,5 +1,13 @@
 import { normalizeSessionRules } from '../core/matcher';
-import { exactDataEqual, isDenseArray } from './exact-data';
+import { exactDataEqual, hasExactKeys, isDenseArray, isRecord } from './exact-data';
+
+/**
+ * Both primitives are implemented in `exact-data.ts`, which imports nothing and so is reachable
+ * from `src/core` without inverting the layer direction. They are re-exported here because this is
+ * the intrinsics surface every consumer of the validators below already imports.
+ */
+export { hasExactKeys, isRecord } from './exact-data';
+
 import { isRelativeMinuteDuration } from './numeric-validation';
 import type {
   CycleConfig,
@@ -245,18 +253,6 @@ export function validateDetachedSiteUnlock(value: unknown): value is SiteUnlock 
 export function exactRecord(value: unknown, keys: readonly string[]): UnknownRecord | null {
   if (!isRecord(value) || !hasExactKeys(value, keys)) return null;
   return value;
-}
-
-export function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-export function hasExactKeys(value: UnknownRecord, keys: readonly string[]): boolean {
-  const actual: PropertyKey[] = Reflect.ownKeys(value);
-  return (
-    actual.length === keys.length &&
-    actual.every((key: PropertyKey): boolean => typeof key === 'string' && keys.includes(key))
-  );
 }
 
 /** Dense-array gate plus per-entry validation for already-detached exact plain data. */

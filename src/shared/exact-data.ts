@@ -207,6 +207,21 @@ export function exactDenseArrayLength(value: unknown[]): number | null {
   return length;
 }
 
-function isRecord(value: unknown): value is UnknownRecord {
+/**
+ * The one home for both record primitives. This module imports nothing, so `src/core` can reach
+ * them without inverting the layer direction. Neither catches: `Array.isArray` throws on a revoked
+ * proxy and `Reflect.ownKeys` throws on a hostile `ownKeys` trap, and the callers that meet raw
+ * input own that catch.
+ */
+export function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Own keys exactly, by `Reflect.ownKeys`, so a symbol or non-enumerable key is a refusal. */
+export function hasExactKeys(value: UnknownRecord, keys: readonly string[]): boolean {
+  const actual: PropertyKey[] = Reflect.ownKeys(value);
+  return (
+    actual.length === keys.length &&
+    actual.every((key: PropertyKey): boolean => typeof key === 'string' && keys.includes(key))
+  );
 }

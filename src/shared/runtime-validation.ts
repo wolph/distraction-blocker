@@ -6,7 +6,9 @@ import {
   type ExactDataSnapshot,
   exactDataEqual,
   exactDenseArrayLength,
+  hasExactKeys as hasExactKeysUnguarded,
   isDenseArray,
+  isRecord as isRecordUnguarded,
   snapshotExactData,
 } from './exact-data';
 import type {
@@ -61,10 +63,8 @@ import type {
   Strictness,
 } from './types';
 import {
-  hasExactKeys as hasExactKeysUnguarded,
   isNonBlankString,
   isNonNegativeInteger,
-  isRecord as isRecordUnguarded,
   isSafeTimestamp,
   isUuid,
   SESSION_CONFIG_V2_KEYS,
@@ -124,7 +124,7 @@ const SETTINGS_KEYS: readonly string[] = [
   'retentionDays',
 ];
 /**
- * The rule lives once, in `v2-domain-intrinsics.ts`. The catch stays here because the imported
+ * The rule lives once, in `exact-data.ts`. The catch stays here because the imported
  * intrinsics document a detached precondition and so let a hostile object throw: `Array.isArray`
  * throws on a revoked proxy and `Reflect.ownKeys` throws on a hostile `ownKeys` trap, while this
  * module runs against raw stored and messaged values. Every exported validator is wrapped in
