@@ -364,11 +364,11 @@ describe('schedule start', (): void => {
   });
 
   /**
-   * The Settings editor stores what the user typed, so a capitalised host or a trailing root dot
+   * The Settings editor stores what the user typed, so a capitalized host or a trailing root dot
    * reaches the schedule runner verbatim. The runtime validator only accepts the normalized form,
    * so before the producer canonicalized, this start threw out of every tick forever.
    */
-  it('starts over a stored list carrying a capitalised host and a trailing dot', async (): Promise<void> => {
+  it('starts over a stored list carrying a capitalized host and a trailing dot', async (): Promise<void> => {
     const lists: ListsConfig = {
       ...DEFAULT_LISTS,
       custom: [
