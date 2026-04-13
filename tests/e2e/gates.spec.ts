@@ -188,8 +188,17 @@ test('paused UI leaves when the session wall clock ends', async ({ extPage }) =>
 
   await extPage.getByRole('button', { name: 'Pause blocking for 0 min' }).click();
   await extPage.getByRole('button', { name: 'Take the pause' }).click();
+  // The worker answers getSnapshot off its mutation queue on purpose, because serializing the read
+  // made it reject for the whole of any storage transition. So a read taken the instant a command
+  // is acknowledged can still describe the state before the commit, and the pause is waited for
+  // rather than assumed.
+  await expect
+    .poll(
+      async (): Promise<string> =>
+        (await sendExtensionRequest(extPage, { type: 'getSnapshot' })).phase,
+    )
+    .toBe('paused');
   const paused: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
-  expect(paused.phase).toBe('paused');
   const sessionEndsAt: number | null = paused.sessionEndsAt;
   if (sessionEndsAt === null) throw new Error('paused session has no end');
 

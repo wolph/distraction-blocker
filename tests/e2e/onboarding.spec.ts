@@ -154,6 +154,14 @@ test('sync completion and dynamic registration survive a browser restart', async
   expect(await freshInstallExtension.syncItems()).toHaveProperty(SYNC_SETTINGS);
 
   launch = await freshInstallExtension.relaunch();
+  // A boot republishes the completed setup to Sync, and the status reads `pending` while it does.
+  // Measured at about ten seconds on this machine, so the comparison waits for the write to settle
+  // rather than racing it. A write that failed would report `error` here and fail the comparison.
+  await expect
+    .poll(async (): Promise<string> => (await currentSetup(launch)).syncWriteStatus, {
+      timeout: 60_000,
+    })
+    .toBe('idle');
   expect(await currentSetup(launch)).toEqual(completed);
   expect(await freshInstallExtension.hasWebsiteAccess()).toBe(true);
   expect(await freshInstallExtension.dynamicRegistrations()).toHaveLength(1);
@@ -196,7 +204,11 @@ test('permission revocation ends a session and rejects another session start', a
       type: 'startSession',
       config,
     }),
-  ).toEqual({ ok: false, code: 'website-access-lost', error: 'website-access-lost' });
+    // Refused at admission, before any transition runs, so the answer is the boundary code rather
+    // than a transition failure reason. Naming a step would claim the start reached one. The popup
+    // cannot reach this: it renders the website-blocking screen instead of the start form whenever
+    // `blockingRegistration` is not ready, which the assertions below check.
+  ).toEqual({ ok: false, code: 'invalid-request', error: 'invalid-request' });
   await launch.extPage.reload();
   await expect(
     launch.extPage.getByText('Your session ended because website access was removed.'),
