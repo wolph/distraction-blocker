@@ -164,7 +164,9 @@ describe('SessionControllerV2 past the end of a session a journal retains', (): 
     const runtime: RuntimeStateV2 = transitionRuntime(transition);
     const session: SessionStateV2 | null = runtime.session;
     if (session === null) throw new Error('the cleanup transition kept no session');
-    return { runtime, at: session.sessionEndsAt + 60_000 };
+    const endsAt: number | null = session.sessionEndsAt;
+    if (endsAt === null) throw new Error('the retained session carries no fixed end');
+    return { runtime, at: endsAt + 60_000 };
   }
 
   it('does not try to close a session the journal is already closing', async (): Promise<void> => {
@@ -173,7 +175,7 @@ describe('SessionControllerV2 past the end of a session a journal retains', (): 
     // long as the journal lived.
     const { controller, ports } = retainedHarness();
 
-    await expect(controller.tick(retained().at)).resolves.toBeUndefined();
+    await expect(controller.tick()).resolves.toBeUndefined();
 
     // The journal's own closure is the only end this session gets. A settle that closed it too
     // would either throw, which is what it did, or record a second end for one session.
