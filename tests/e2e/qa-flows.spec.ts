@@ -21,6 +21,7 @@ import type { ListsConfig, SessionSnapshot, Settings, ThemeMode } from '../../sr
 import {
   assertNoUnexpectedBrowserDiagnostics,
   type BrowserDiagnostics,
+  beginExpectedWorkerErrorWindow,
 } from './browser-diagnostics';
 import {
   browserDiagnosticsFor,
@@ -1399,6 +1400,7 @@ test('Task 7 production evidence matrix is reproducible', async ({
   let blockedPage: Page | null = null;
   let stoppedPage: Page | null = null;
   let syncFiller: { bytes: number; keys: string[]; quota: number } | null = null;
+  let closeQuotaErrorWindow: (() => void) | null = null;
   const gateGeometry: Record<string, unknown>[] = [];
   let optionsGeometry: Record<string, unknown>[] = [];
   let privacyGeometry: Record<string, unknown>[] = [];
@@ -1436,6 +1438,15 @@ test('Task 7 production evidence matrix is reproducible', async ({
     expect(await sendExtensionRequest(extPage, { type: 'updateLists', lists: longLists })).toEqual({
       ok: true,
     });
+    // The privacy matrix drives a real quota refusal so it can photograph the copy that reports it,
+    // and the worker reports that refusal as an error. It is declared for exactly as long as the
+    // quota is tight: every other error still fails, and the close raises if it never arrived. The
+    // evidence report still counts it, under `expectedWorkerErrors`, so it is recorded rather than
+    // hidden.
+    closeQuotaErrorWindow = beginExpectedWorkerErrorWindow(
+      diagnostics,
+      'SyncQuotaError: Cannot sync batch:',
+    );
     syncFiller = await fillTask7SyncQuota(worker);
     expect(syncFiller.bytes).toBeGreaterThanOrEqual(syncFiller.quota - 128);
     privacyGeometry = await captureTask7PrivacyMatrix({
@@ -1523,6 +1534,7 @@ test('Task 7 production evidence matrix is reproducible', async ({
       ...(stoppedPage === null ? [] : [stoppedPage.close()]),
     ]);
     await sendExtensionRequest(extPage, { type: 'updateLists', lists });
+    closeQuotaErrorWindow?.();
   }
 
   expect((): void => assertTask7CurrentSurfaceCoverage(capture.records)).not.toThrow();
