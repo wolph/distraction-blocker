@@ -417,6 +417,25 @@ describe('runClosureCleanupAttemptV2', (): void => {
     expect(cleanupProgressOf(next).retry.lastError).not.toBeNull();
   });
 
+  it('finishes on the last attempt rather than stranding a claim nothing can restore', async (): Promise<void> => {
+    // A tab the browser will never bring back leaves a claim that no attempt can resolve. Holding
+    // the journal for it strands the person: the closure is owed forever, every start is refused
+    // behind it, and the manual retry they are offered can never succeed either. So the automatic
+    // budget bounds it. The last attempt finishes the closure and reports the claims it could not
+    // restore, which is the one thing about this the user's log should carry.
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await inCleanup(fake);
+
+    let next: RuntimeStateV2 = fake.current();
+    for (let attempt: number = 0; attempt < CLEANUP_MAX_AUTOMATIC_ATTEMPTS; attempt++) {
+      next = await runClosureCleanupAttemptV2(fake, unresolvedEffects());
+    }
+
+    expect(next.pendingClosure).toBeNull();
+    expect(fake.errors).toHaveLength(1);
+    expect(String(fake.errors[0])).toContain('1');
+  });
+
   it('stops scheduling after the twelfth failed attempt', async (): Promise<void> => {
     const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
     await inCleanup(fake);

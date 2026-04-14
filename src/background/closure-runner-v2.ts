@@ -25,6 +25,7 @@ import {
 import {
   buildCleanupProgressV2,
   buildCleanupSeedV2,
+  nextCleanupAttemptAtV2,
   resolveCleanupTabV2,
 } from './cleanup-progress-v2';
 import {
@@ -359,9 +360,10 @@ async function reissueClearCommands(
 }
 
 /**
- * Removes the journal, and only after every captured claim is resolved. An unresolved claim is a
- * failed attempt rather than a completion, and a removal that does not persist leaves the journal
- * exactly where it was with the next attempt scheduled.
+ * Removes the journal, and only after every captured claim is resolved, or after the automatic
+ * budget that waits for them is spent. An unresolved claim is a failed attempt rather than a
+ * completion, and a removal that does not persist leaves the journal exactly where it was with the
+ * next attempt scheduled.
  */
 async function removeClosureJournal(ports: RuntimePortsV2): Promise<RuntimeStateV2> {
   const closure: CleanupClosureV2 = cleanupClosureOf(ports);
@@ -370,12 +372,15 @@ async function removeClosureJournal(ports: RuntimePortsV2): Promise<RuntimeState
     (claim: CleanupTabClaim): boolean => !progress.resolvedTabIds.includes(claim.tabId),
   );
   if (unresolved.length > 0) {
-    return recordCleanupFailureAndRearmV2(
-      ports,
-      'closure',
-      `closure cleanup left ${unresolved.length} claims unresolved`,
-      'closure cleanup',
-    );
+    const detail: string = `closure cleanup left ${unresolved.length} claims unresolved`;
+    // A tab the browser is still restoring earns another attempt. A tab that is never coming back
+    // would earn them forever, and the closure it holds refuses every start behind it while the
+    // manual retry the person is offered can never resolve it either. So the budget bounds the
+    // wait: the last attempt finishes and reports what it could not restore.
+    if (nextCleanupAttemptAtV2(progress.retry.automaticAttempt + 1, ports.now()) !== null) {
+      return recordCleanupFailureAndRearmV2(ports, 'closure', detail, 'closure cleanup');
+    }
+    ports.reportError(new CoreError('invalid-rule', `${detail} after its last automatic attempt`));
   }
   const next: RuntimeStateV2 = validated({
     ...structuredClone(ports.runtime()),

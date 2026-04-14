@@ -1381,13 +1381,11 @@ export async function restoreClaimedTabs(claims: readonly CleanupTabClaim[]): Pr
   for (const claim of claims) {
     const read: TabReadResult = await readTab(claim.tabId);
     const tab: chrome.tabs.Tab | null = read.ok ? read.tab : await restoredClaimTab(claim);
-    if (tab === null || tab.id === undefined) {
-      // The identifier is gone and no tab in this browser carries the effect this claim describes,
-      // so there is nothing left to undo. Keeping the claim here is what left a closure cleaning
-      // for the life of its batch after a restart, with every start refused behind it.
-      settled.push(claim.tabId);
-      continue;
-    }
+    // The identifier is gone and nothing in the browser carries this claim's effect yet. Chrome
+    // restores tabs lazily, so that is not proof the tab will never arrive, and settling here would
+    // drop the mute for good on one that shows up a moment later. The claim survives for the next
+    // attempt, and the journal's own retry budget is what bounds the wait.
+    if (tab === null || tab.id === undefined) continue;
     const ownsMute: boolean = tab.mutedInfo?.extensionId === chrome.runtime.id;
     const priorMuted: boolean = claim.state.priorMuted ?? false;
     try {
