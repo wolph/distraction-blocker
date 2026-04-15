@@ -103,6 +103,47 @@ async function expectPageTheme(page: Page, theme: ThemeMode): Promise<void> {
   ).toBeEnabled();
 }
 
+const STOPPED_DOCUMENT_TITLE: string = 'Locked - Focus Lock';
+
+/**
+ * The attempts one arrangement gets. Whether a navigation is fresh enough to stop is Chrome's call
+ * rather than the product's: the content script reads `document.readyState` when it installs, and
+ * on a page this small Chrome sometimes injects it after the document has already left `loading`.
+ * Measured at about one navigation in eight, so six attempts leave a residual near one in a
+ * quarter of a million, which is below the rate of everything else this file depends on.
+ */
+const STOPPED_NAVIGATION_ATTEMPTS: number = 6;
+
+/**
+ * Opens a blocked page the worker actually stopped, which the captures below need because a page
+ * that merely loaded with an overlay over it is a different surface.
+ *
+ * Two details are load-bearing. The retry reloads rather than closing and reopening, because
+ * closing a blocked tab leaves the worker reporting `No tab with id` for the tab it was still
+ * enforcing, and a retry should not manufacture the errors the run then has to explain. And the
+ * miss is read from the stopped title timing out, never from the page's own content being present:
+ * the parser can append that content before the stop reaches the document, so treating it as proof
+ * of a miss reports every stop as a failure. That mistake cost a round here.
+ */
+async function openStoppedBlockedPage(context: BrowserContext, url: string): Promise<Page> {
+  const page: Page = await context.newPage();
+  await page.goto(url, { waitUntil: 'commit' });
+  for (let attempt: number = 1; attempt <= STOPPED_NAVIGATION_ATTEMPTS; attempt += 1) {
+    try {
+      await expect
+        .poll(async (): Promise<string> => await page.title(), { timeout: 4_000 })
+        .toBe(STOPPED_DOCUMENT_TITLE);
+      return page;
+    } catch {
+      if (attempt === STOPPED_NAVIGATION_ATTEMPTS) break;
+      await page.reload({ waitUntil: 'commit' });
+    }
+  }
+  throw new Error(
+    `Chrome injected the content script too late to stop any of ${String(STOPPED_NAVIGATION_ATTEMPTS)} navigations`,
+  );
+}
+
 async function overlayHandle(page: Page): Promise<ElementHandle<HTMLElement | SVGElement>> {
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
   const handle: ElementHandle<HTMLElement | SVGElement> | null = await page
@@ -1515,8 +1556,7 @@ test('Task 7 production evidence matrix is reproducible', async ({
       page: blockedPage,
       viewports: pageViewports,
     });
-    stoppedPage = await context.newPage();
-    await stoppedPage.goto(siteUrl('/plain.html'), { waitUntil: 'commit' });
+    stoppedPage = await openStoppedBlockedPage(context, siteUrl('/plain.html'));
     await expect(stoppedPage.locator('#marker')).toHaveCount(0);
     stoppedOverlayGeometry = await captureTask7StoppedOverlayMatrix({
       capture,
@@ -1782,8 +1822,7 @@ test('completion clears browser effects and reaches sound and notification APIs'
     },
   });
   await expect(existingPage.locator('focus-lock-overlay')).toBeAttached();
-  const stoppedPage: Page = await context.newPage();
-  await stoppedPage.goto(siteUrl('/plain.html'), { waitUntil: 'commit' });
+  const stoppedPage: Page = await openStoppedBlockedPage(context, siteUrl('/plain.html'));
   await expect(stoppedPage.locator('focus-lock-overlay')).toBeAttached();
   await expect(stoppedPage.locator('#marker')).toHaveCount(0);
   await expect
@@ -1899,10 +1938,9 @@ test('theme cycle persists across extension pages and live overlay hosts without
     if (frame === normalPage.mainFrame()) normalNavigations += 1;
   });
 
-  const stoppedPage: Page = await context.newPage();
-  await stoppedPage.goto(siteUrl('/plain.html'), { waitUntil: 'commit' });
+  const stoppedPage: Page = await openStoppedBlockedPage(context, siteUrl('/plain.html'));
   await expect(stoppedPage.locator('#marker')).toHaveCount(0);
-  await expect(stoppedPage).toHaveTitle('Locked - Focus Lock');
+  await expect(stoppedPage).toHaveTitle(STOPPED_DOCUMENT_TITLE);
   const stoppedOverlay: ElementHandle<HTMLElement | SVGElement> = await overlayHandle(stoppedPage);
   let stoppedNavigations: number = 0;
   stoppedPage.on('framenavigated', (frame: Frame): void => {
