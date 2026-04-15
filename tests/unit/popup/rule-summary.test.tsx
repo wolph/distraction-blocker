@@ -78,6 +78,7 @@ describe('RuleSummary', (): void => {
     const view = render(
       <RuleSummary
         draft={createSessionDraft(DEFAULT_SETTINGS, lists)}
+        lists={lists}
         categoriesEditable={true}
         onCategoryToggle={vi.fn()}
         onOpenSettings={vi.fn()}
@@ -99,6 +100,53 @@ describe('RuleSummary', (): void => {
     expect(view.getByRole('button', { name: 'Open Settings for permanent defaults' })).toBeTruthy();
   });
 
+  /**
+   * Settings stores the pattern the person typed and the session snapshot canonicalizes it, so the
+   * summary reads the list rather than the snapshot. Otherwise the two surfaces disagree about one
+   * rule: Settings shows `Facebook.com` and the popup shows `facebook.com`.
+   */
+  it('shows the blocked pattern the person typed, not the canonical one the session captures', (): void => {
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      categories: { ...DEFAULT_LISTS.categories, social: true },
+      exclusions: { social: ['Instagram.com.'] },
+      custom: [{ kind: 'host', pattern: 'News.Example' }],
+    };
+    const view = render(
+      <RuleSummary
+        draft={createSessionDraft(DEFAULT_SETTINGS, lists)}
+        lists={lists}
+        categoriesEditable={true}
+        onCategoryToggle={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    expect(view.getByText('News.Example')).toBeTruthy();
+    expect(view.getByText('Instagram.com.')).toBeTruthy();
+    expect(view.queryByText('news.example')).toBeNull();
+    expect(view.queryByText('instagram.com')).toBeNull();
+  });
+
+  it('shows the allowed pattern the person typed in allow-only mode', (): void => {
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      whitelist: [{ kind: 'host', pattern: 'Docs.Example.com.' }],
+    };
+    const view = render(
+      <RuleSummary
+        draft={{ ...createSessionDraft(DEFAULT_SETTINGS, lists), mode: 'whitelist' }}
+        lists={lists}
+        categoriesEditable={true}
+        onCategoryToggle={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    expect(view.getByText('Docs.Example.com.')).toBeTruthy();
+    expect(view.queryByText('docs.example.com')).toBeNull();
+  });
+
   it('does not show exceptions for a disabled category', (): void => {
     const lists: ListsConfig = {
       ...DEFAULT_LISTS,
@@ -108,6 +156,7 @@ describe('RuleSummary', (): void => {
     const view = render(
       <RuleSummary
         draft={createSessionDraft(DEFAULT_SETTINGS, lists)}
+        lists={lists}
         categoriesEditable={true}
         onCategoryToggle={vi.fn()}
         onOpenSettings={vi.fn()}
@@ -131,6 +180,7 @@ describe('RuleSummary', (): void => {
     const view = render(
       <RuleSummary
         draft={createSessionDraft(DEFAULT_SETTINGS, lists)}
+        lists={lists}
         categoriesEditable={true}
         onCategoryToggle={vi.fn()}
         onOpenSettings={vi.fn()}
@@ -160,6 +210,7 @@ describe('RuleSummary', (): void => {
     const view = render(
       <RuleSummary
         draft={draft}
+        lists={lists}
         categoriesEditable={true}
         onCategoryToggle={vi.fn()}
         onOpenSettings={vi.fn()}
@@ -183,6 +234,7 @@ describe('RuleSummary', (): void => {
     const view = render(
       <RuleSummary
         draft={createSessionDraft(DEFAULT_SETTINGS, DEFAULT_LISTS)}
+        lists={DEFAULT_LISTS}
         categoriesEditable={true}
         onCategoryToggle={vi.fn()}
         onOpenSettings={vi.fn()}
@@ -209,6 +261,7 @@ describe('RuleSummary', (): void => {
     const view = render(
       <RuleSummary
         draft={createSessionDraft(DEFAULT_SETTINGS, lists)}
+        lists={lists}
         categoriesEditable={true}
         onCategoryToggle={vi.fn()}
         onOpenSettings={vi.fn()}
@@ -240,6 +293,7 @@ describe('RuleSummary', (): void => {
     const view = render(
       <RuleSummary
         draft={createSessionDraft(DEFAULT_SETTINGS, lists)}
+        lists={lists}
         categoriesEditable={true}
         onCategoryToggle={vi.fn()}
         onOpenSettings={vi.fn()}

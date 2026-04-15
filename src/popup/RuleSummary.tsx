@@ -5,6 +5,7 @@ import { HelpPopover } from '../shared/HelpPopover';
 import type {
   CategoryId,
   CategoryList,
+  ListsConfig,
   Rule,
   SessionMode,
   SessionRuleSnapshot,
@@ -21,6 +22,16 @@ export interface RuleSummaryDraft {
 
 export interface RuleSummaryProps {
   draft: RuleSummaryDraft;
+  /**
+   * The permanent lists as the person edited them, which is what this summary renders for them.
+   * `rulesFromLists` canonicalizes every host on the way into the snapshot, because the runtime
+   * validator accepts only the normalized form, so reading `draft.rules.permanentBlacklist` here
+   * would show `facebook.com` to someone who typed `Facebook.com` in Settings while Settings itself
+   * still showed what they typed. The rules are the same rules: the draft's permanent lists are
+   * these lists mapped one to one, in order. Only the session lists come from the draft, and those
+   * were normalized by `addDraftAllowHost` as the person added them.
+   */
+  lists: ListsConfig;
   categoriesEditable: boolean;
   onCategoryToggle: (id: CategoryId) => void;
   onOpenSettings: () => void;
@@ -84,12 +95,17 @@ function customHostRuleOverridesException(host: string, rules: Rule[]): boolean 
   return rules.some((rule: Rule): boolean => hostRuleCoversHost(rule, host));
 }
 
-function BlockRules({ draft, categoriesEditable, onCategoryToggle }: RuleSummaryProps): VNode {
-  const extraRules: Rule[] = [...draft.rules.permanentBlacklist, ...draft.rules.sessionBlacklist];
+function BlockRules({
+  draft,
+  lists,
+  categoriesEditable,
+  onCategoryToggle,
+}: RuleSummaryProps): VNode {
+  const extraRules: Rule[] = [...lists.custom, ...draft.rules.sessionBlacklist];
   const exclusionRows: Array<{ category: CategoryList; host: string }> = ALL_CATEGORIES.flatMap(
     (category: CategoryList): Array<{ category: CategoryList; host: string }> =>
       draft.rules.categories[category.id]
-        ? (draft.rules.exclusions[category.id] ?? [])
+        ? (lists.exclusions[category.id] ?? [])
             .filter((host: string): boolean => !customHostRuleOverridesException(host, extraRules))
             .map((host: string): { category: CategoryList; host: string } => ({ category, host }))
         : [],
@@ -182,8 +198,8 @@ function BlockRules({ draft, categoriesEditable, onCategoryToggle }: RuleSummary
   );
 }
 
-function AllowRules({ draft }: Pick<RuleSummaryProps, 'draft'>): VNode {
-  const allowedRules: Rule[] = [...draft.rules.permanentAllowlist, ...draft.rules.sessionAllowlist];
+function AllowRules({ draft, lists }: Pick<RuleSummaryProps, 'draft' | 'lists'>): VNode {
+  const allowedRules: Rule[] = [...lists.whitelist, ...draft.rules.sessionAllowlist];
   return (
     <section class="rule-section" aria-labelledby="draft-allowed-heading">
       <h3 id="draft-allowed-heading">Allowed sites and rules</h3>
@@ -207,9 +223,9 @@ export function RuleSummary(props: RuleSummaryProps): VNode {
     (category: CategoryList): boolean => props.draft.rules.categories[category.id],
   ).length;
   const extraBlockedCount: number =
-    props.draft.rules.permanentBlacklist.length + props.draft.rules.sessionBlacklist.length;
+    props.lists.custom.length + props.draft.rules.sessionBlacklist.length;
   const allowedCount: number =
-    props.draft.rules.permanentAllowlist.length + props.draft.rules.sessionAllowlist.length;
+    props.lists.whitelist.length + props.draft.rules.sessionAllowlist.length;
 
   return (
     <section class="rule-summary" aria-labelledby="rule-summary-heading">
@@ -252,7 +268,7 @@ export function RuleSummary(props: RuleSummaryProps): VNode {
         {props.draft.mode === 'blacklist' ? (
           <BlockRules {...props} />
         ) : (
-          <AllowRules draft={props.draft} />
+          <AllowRules draft={props.draft} lists={props.lists} />
         )}
       </section>
     </section>

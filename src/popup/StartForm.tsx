@@ -253,6 +253,7 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
 
         <RuleSummary
           draft={draft}
+          lists={activeLists}
           categoriesEditable={categoriesEditable}
           onCategoryToggle={(id: CategoryId): void => {
             if (categoriesEditable) setDraft(toggleDraftCategory(draft, id));
