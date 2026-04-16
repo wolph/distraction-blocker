@@ -5,17 +5,20 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { CDPSession, Page, TestInfo, Worker } from '@playwright/test';
 import { PNG } from 'pngjs';
+import type { FrozenDocumentCommand } from '../../src/background/enforcement-persistence-v2';
+import type { RuntimeStateV2 } from '../../src/background/runtime-v2-types';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, rulesFromLists } from '../../src/shared/constants';
 import type { Ack } from '../../src/shared/messages';
 import type { ListsConfig, OnboardingDraft, SessionConfig, Settings } from '../../src/shared/types';
 import { assertNoUnexpectedBrowserDiagnostics } from './browser-diagnostics';
-import { browserDiagnosticsFor, expect, sendExtensionRequest, test } from './fixtures';
-import { freezeStatsVisualWorkerClock, installStatsVisualPageClock } from './stats-visual-evidence';
 import {
-  buildStatsVisualSeed,
-  STATS_VISUAL_SEED_AT,
-  type StatsVisualSeed,
-} from './stats-visual-seeds';
+  browserDiagnosticsFor,
+  expect,
+  readRuntimeV2,
+  sendExtensionRequest,
+  test,
+} from './fixtures';
+import { buildStatsVisualSeed, type StatsVisualSeed } from './stats-visual-seeds';
 
 const REPOSITORY_ROOT: string = fileURLToPath(new URL('../../', import.meta.url));
 const SCREENSHOT_DIRECTORY: string = path.join(REPOSITORY_ROOT, 'store/assets/screenshots');
@@ -76,6 +79,19 @@ const STORE_INTENTION: string = 'Finish the release notes';
 const STORE_TIMEZONE: string = 'Europe/Amsterdam';
 const HOSTILE_TIMEZONE: string = 'Pacific/Pago_Pago';
 const EXPECTED_HOST_TIMEZONE_ENV: string = 'STORE_SCREENSHOT_EXPECT_HOST_TIMEZONE';
+/**
+ * The instant every clock in this capture is frozen at.
+ *
+ * It is a morning in the store timezone, which is what makes the hostile Pago Pago run land on a
+ * different calendar day whatever the offset Amsterdam is currently on, and it is always ahead of
+ * the real clock, because `chrome.alarms` schedules on the real one: a session started on a frozen
+ * clock that sits in the past asks the browser for an alarm that has already passed, and the read
+ * back answers `alarm-failed`. It was a fixed timestamp, which meant this whole capture only ran on
+ * the day it was written.
+ */
+const CAPTURE_HOUR: number = 9;
+const CAPTURE_MINUTE: number = 45;
+const CAPTURE_MARGIN_MS: number = 5 * 60_000;
 // Set UPDATE_STORE_SCREENSHOTS=1 to replace tracked PNGs after every capture validates. Unset compares only.
 const UPDATE_SCREENSHOTS_ENV: string = 'UPDATE_STORE_SCREENSHOTS';
 
@@ -408,7 +424,7 @@ async function freezeIsolatedPageWorlds(
     [...isolatedContextIds].map(async (contextId: number): Promise<void> => {
       await session.send('Runtime.evaluate', {
         contextId,
-        expression: `Date.now = () => ${String(STATS_VISUAL_SEED_AT)}`,
+        expression: `Date.now = () => ${String(captureInstant())}`,
       });
     }),
   );
@@ -469,17 +485,19 @@ async function requireAck(ack: Ack, operation: string): Promise<void> {
 }
 
 async function freezeWorkerClock(worker: Worker): Promise<void> {
-  const clock = await freezeStatsVisualWorkerClock(worker);
-  expect(clock).toEqual({
-    beforeFreeze: expect.any(Number),
-    now: STATS_VISUAL_SEED_AT,
-  });
+  const frozenAt: number = captureInstant();
+  const clock = await worker.evaluate((at: number): { beforeFreeze: number; now: number } => {
+    const beforeFreeze: number = Date.now();
+    Date.now = (): number => at;
+    return { beforeFreeze, now: Date.now() };
+  }, frozenAt);
+  expect(clock).toEqual({ beforeFreeze: expect.any(Number), now: frozenAt });
 }
 
 async function installPageClock(page: Page): Promise<void> {
   await page.addInitScript((at: number): void => {
     Date.now = (): number => at;
-  }, STATS_VISUAL_SEED_AT);
+  }, captureInstant());
 }
 
 async function settleSync(controlPage: Page): Promise<void> {
@@ -559,6 +577,29 @@ function zonedTimestamp(dateKey: string, hour: number, minute: number, timezone:
   return candidate;
 }
 
+/** The wall clock the overlay prints for an instant, in the timezone every capture runs in. */
+function zonedClockLabel(at: number, timezone: string): string {
+  const parts: ZonedDateTimeParts = zonedDateTimeParts(at, timezone);
+  return `${String(parts.hour)}:${String(parts.minute).padStart(2, '0')}`;
+}
+
+let frozenCaptureAt: number | null = null;
+
+/** The frozen instant, computed once per process and shared by the worker, the pages and the seed. */
+function captureInstant(): number {
+  frozenCaptureAt ??= nextCaptureInstant(Date.now());
+  return frozenCaptureAt;
+}
+
+/** The next store-timezone morning that is still ahead of the real clock. */
+function nextCaptureInstant(realNow: number): number {
+  const todayKey: string = zonedDateKey(realNow, STORE_TIMEZONE);
+  const today: number = zonedTimestamp(todayKey, CAPTURE_HOUR, CAPTURE_MINUTE, STORE_TIMEZONE);
+  if (today >= realNow + CAPTURE_MARGIN_MS) return today;
+  const tomorrowKey: string = zonedDateKey(today + 36 * 3_600_000, STORE_TIMEZONE);
+  return zonedTimestamp(tomorrowKey, CAPTURE_HOUR, CAPTURE_MINUTE, STORE_TIMEZONE);
+}
+
 async function seedStoreStats(controlPage: Page, worker: Worker): Promise<void> {
   const setup = await sendExtensionRequest(controlPage, { type: 'getSetupState' });
   expect(setup).toMatchObject({
@@ -566,8 +607,8 @@ async function seedStoreStats(controlPage: Page, worker: Worker): Promise<void> 
     storageMode: 'sync',
     syncWriteStatus: 'idle',
   });
-  const seed: StatsVisualSeed = buildStatsVisualSeed('one-active-hour-sync', STATS_VISUAL_SEED_AT);
-  const currentDateKey: string = zonedDateKey(STATS_VISUAL_SEED_AT, STORE_TIMEZONE);
+  const seed: StatsVisualSeed = buildStatsVisualSeed('one-active-hour-sync', captureInstant());
+  const currentDateKey: string = zonedDateKey(captureInstant(), STORE_TIMEZONE);
   const seededDay = seed.bundle.days[0];
   if (seededDay === undefined) throw new Error('store Stats seed is missing its active day');
   seededDay.date = currentDateKey;
@@ -624,6 +665,15 @@ async function seedStoreStats(controlPage: Page, worker: Worker): Promise<void> 
     aggregates.streak = payload.bundle.streak;
     await chrome.storage.sync.set(aggregates);
   }, seed);
+}
+
+/**
+ * The seeded day is the frozen instant's day, so it is only "today" once the worker's clock is
+ * frozen there. Read against the live clock this passed on the day the seed was written and has
+ * been reading zero for today's totals ever since, while the seven-day total, which does not care
+ * which day it is, kept matching.
+ */
+async function expectStoreStatsSeeded(controlPage: Page): Promise<void> {
   const stats = await sendExtensionRequest(controlPage, { type: 'getStats', days: 14 });
   expect(stats).toMatchObject({
     totals: {
@@ -812,8 +862,8 @@ test('screenshot integrity rejects a transparent interior pixel', async ({
 test('hostile Pago Pago host timezone reproduces every Amsterdam canonical byte', async ({
   browserName: _browserName,
 }, testInfo: TestInfo): Promise<void> => {
-  expect(zonedDateKey(STATS_VISUAL_SEED_AT, HOSTILE_TIMEZONE)).not.toBe(
-    zonedDateKey(STATS_VISUAL_SEED_AT, STORE_TIMEZONE),
+  expect(zonedDateKey(captureInstant(), HOSTILE_TIMEZONE)).not.toBe(
+    zonedDateKey(captureInstant(), STORE_TIMEZONE),
   );
   const before: Buffer[] = await Promise.all(
     SCREENSHOT_FILES.map(
@@ -874,6 +924,7 @@ test('captures five truthful release states with category membership in the popu
   await seedStoreStats(extPage, worker);
   await settleSync(extPage);
   await freezeWorkerClock(worker);
+  await expectStoreStatsSeeded(extPage);
 
   await test.step('01 uses the 25-minute Friction draft to show effective category membership', async (): Promise<void> => {
     const timezoneSession: CDPSession = await setCaptureTimezone(extPage);
@@ -1001,28 +1052,27 @@ test('captures five truthful release states with category membership in the popu
         strictness: 'friction',
       },
       phase: 'focus',
-      phaseEndsAt: STATS_VISUAL_SEED_AT + 25 * 60_000,
-      sessionEndsAt: STATS_VISUAL_SEED_AT + 25 * 60_000,
-      startedAt: STATS_VISUAL_SEED_AT,
+      phaseEndsAt: captureInstant() + 25 * 60_000,
+      sessionEndsAt: captureInstant() + 25 * 60_000,
+      startedAt: captureInstant(),
     });
     await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
-    const blockedState = await sendExtensionRequest(blockedLaunch.extPage, {
-      type: 'getBlockState',
-      docState: 'loaded',
-      url: siteUrl('/plain.html'),
-    });
-    // The worker answers with the commands a document applies, and a blocked page gets the
-    // active view with the verdict frozen into it.
-    const applied = blockedState.commands.find(
-      (command): boolean => command.command === 'apply-enforcement',
+    // The verdict is read from the command the worker froze for that document rather than by
+    // asking for another page's block state: the worker derives the target from the sender now, so
+    // a pull from the extension page is answered with nothing at all, by design.
+    const blockedRuntime: RuntimeStateV2 = await readRuntimeV2(blockedLaunch.worker);
+    const applied: FrozenDocumentCommand | undefined = Object.values(
+      blockedRuntime.documentCommands,
+    ).find(
+      (command: FrozenDocumentCommand): boolean => command.expectedUrl === siteUrl('/plain.html'),
     );
-    expect(applied?.command === 'apply-enforcement' ? applied.verdict : null).toEqual({
+    expect(applied?.verdict).toEqual({
       blocked: true,
       categoryId: null,
       matchedPattern: 'blocked.example',
       reason: 'custom',
     });
-    expect(applied?.command === 'apply-enforcement' ? applied.presentation : null).toBe('active');
+    expect(applied?.presentation).toBe('active');
     try {
       await accessibilitySession.send('Accessibility.enable');
       await expect
@@ -1034,7 +1084,7 @@ test('captures five truthful release states with category membership in the popu
         })
         .toEqual(
           expect.arrayContaining([
-            'Locked until 12:25',
+            `Locked until ${zonedClockLabel(captureInstant() + 25 * 60_000, STORE_TIMEZONE)}`,
             '25:00',
             STORE_INTENTION,
             'Blocked by your block list: blocked.example',
@@ -1115,7 +1165,7 @@ test('captures five truthful release states with category membership in the popu
   await test.step('04 captures representative synchronized totals with explicit machine-only panels', async (): Promise<void> => {
     const statsPage: Page = await context.newPage();
     const statsTimezoneSession: CDPSession = await setCaptureTimezone(statsPage);
-    await installStatsVisualPageClock(statsPage);
+    await installPageClock(statsPage);
     await statsPage.setViewportSize(STATS_CAPTURE.viewport);
     await statsPage.goto(`chrome-extension://${extensionId}/src/stats/stats.html`);
     await expect(
