@@ -82,6 +82,8 @@ The end-to-end suite uses local test pages and an isolated browser profile. It d
 
 Before adding tests, read [docs/testing-rules.md](docs/testing-rules.md). It is four rules with the evidence that earned them, and the first one is the one that catches everybody.
 
+Before preparing a Chrome Web Store submission, read [docs/release-candidate-gate.md](docs/release-candidate-gate.md). It is ten ordered steps with the symptom each failure presents, because most of them fail in more than one way and several look like product defects while being the opposite.
+
 ## Known limitations and non-goals
 
 - The user can disable the extension at `chrome://extensions`. No
