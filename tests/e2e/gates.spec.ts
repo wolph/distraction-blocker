@@ -425,15 +425,21 @@ test('overlay unlock isolates another site and reblocks after expiry', async ({
   await expect(otherPage.locator('focus-lock-overlay')).toBeAttached();
   await waitForBank(extPage, unlockMs, 15_000);
 
+  // The click and the durable gate are one round trip apart, so a poll that clicks unconditionally
+  // asks for a button the click it already landed has just replaced with the gate panel, and can
+  // never recover. It clicks only while the button is still offered, and settles on the gate.
   await expect
-    .poll(async (): Promise<boolean> => {
-      await clickClosedShadowButton(context, page, 'Unlock this site');
+    .poll(async (): Promise<string | null> => {
+      const names: string[] = await closedShadowButtonNames(context, page);
+      if (names.some((name: string): boolean => name.startsWith('Unlock this site'))) {
+        await clickClosedShadowButton(context, page, 'Unlock this site');
+      }
       const opened: SessionSnapshot = await sendExtensionRequest(extPage, {
         type: 'getSnapshot',
       });
-      return opened.gate?.kind === 'unlockSite';
+      return opened.gate?.kind ?? null;
     })
-    .toBe(true);
+    .toBe('unlockSite');
   await expect
     .poll(async (): Promise<boolean> => {
       const ack = await sendExtensionRequest(extPage, {
