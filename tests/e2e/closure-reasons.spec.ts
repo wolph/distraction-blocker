@@ -18,6 +18,7 @@ import type { SessionEventRecordV2, SessionSnapshotV2, SetupState } from '../../
 import {
   assertNoUnexpectedBrowserDiagnostics,
   type BrowserDiagnostics,
+  beginExpectedWorkerErrorWindow,
 } from './browser-diagnostics';
 import {
   expect,
@@ -256,13 +257,18 @@ test.skip('a start whose registration cannot be audited fails as a registration 
 test.skip('a session whose documents cannot be reached ends as a tab enforcement failure', async ({
   freshInstallExtension,
 }) => {
-  // Pinned, with the measurement, rather than shipped failing. Driving this reason needs a tab the
-  // worker classifies as enforceable and no content script can inhabit, and the only such state a
-  // browser reaches on its own is an error document. In that state the worker reports two errors
-  // repeatedly, `Frame with ID 0 is showing error page` and `CoreError: the session controller
-  // built an invalid runtime` from `commitLiveViews`, and the session settles into `cleanup`
-  // rather than closing, so the reason under test is never reached. Both errors are findings for
-  // the owning slice, and this scenario is what will prove them fixed.
+  // Still pinned, with today's measurement rather than the old one. The two worker errors it was
+  // pinned on are fixed and it now drives the browser with none reported at all: the projection
+  // defect went with the commit carry, and the error-page injection failure is no longer reported
+  // because an error page can host no content script under any retry.
+  //
+  // Two things still stand between this and green, and neither is the reason under test. The
+  // worker publishes `cleanup` and stays there for the life of the batch, because the document it
+  // must clear is on a tab no content script can reach, so `idle` needs either a longer wait than
+  // this scenario should hold or a step that closes the tab and lets the retry finish. And the
+  // deliberate connection refusal lands in the request-error bucket, which has no equivalent of
+  // the declared worker-error window, so the fixture fails on the very navigation the scenario
+  // exists to make.
   const launch: FreshInstallLaunch = await completedFreshInstall(freshInstallExtension);
   await startTestSession(launch.extPage, {
     duration: { kind: 'timed', minutes: 30 },
@@ -285,14 +291,12 @@ test.skip('a session whose documents cannot be reached ends as a tab enforcement
   await unreachable.close();
 });
 
-test.skip('a session whose phase alarm cannot be held ends as an alarm failure', async ({
+test('a session whose phase alarm cannot be held ends as an alarm failure', async ({
   freshInstallExtension,
 }) => {
-  // Pinned on a fixture, not on the product. Every assertion below passes today: the quota fills,
-  // the phase alarm cannot be held, and recovery closes the session with `alarm-failed`. What
-  // fails is the fixture's teardown, which refuses any worker error, and this scenario drives one
-  // the worker reports correctly, `the periodic tick alarm was refused`. It runs as soon as the
-  // diagnostics helper can be told which error a scenario expects.
+  // The failure this drives is one the worker reports, correctly, so it is declared: only the
+  // refused tick alarm is diverted from the strict buckets, every other error still fails the
+  // scenario, and the window raises if the refusal it declared never arrives.
   const launch: FreshInstallLaunch = await completedFreshInstall(freshInstallExtension);
   await startTestSession(launch.extPage, {
     duration: { kind: 'timed', minutes: 30 },
@@ -320,7 +324,15 @@ test.skip('a session whose phase alarm cannot be held ends as an alarm failure',
   });
   expect(alarmCount).toBeGreaterThanOrEqual(500);
 
-  const restarted: FreshInstallLaunch = await freshInstallExtension.restartWorker();
+  const closeWindow: () => void = beginExpectedWorkerErrorWindow(
+    freshInstallExtension.diagnostics,
+    'the periodic tick alarm was refused',
+  );
+  try {
+    const restarted: FreshInstallLaunch = await freshInstallExtension.restartWorker();
 
-  await expectSessionClosed(restarted, 'alarm-failed');
+    await expectSessionClosed(restarted, 'alarm-failed');
+  } finally {
+    closeWindow();
+  }
 });
