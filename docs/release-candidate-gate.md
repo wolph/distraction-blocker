@@ -29,12 +29,17 @@ you ignore them.**
   A hash that moved means somebody built underneath you and the run certifies nothing. Re-run it
   rather than reading it. Failures have been observed that were absent before a run and passed on
   re-run against the identical build, and that is only knowable with this bracket.
-- **Start from clean evidence directories.** `artifacts/` is shared mutable state exactly as `dist/`
-  is, and the evidence specs verify a directory's contents against a manifest. Leftover files from
-  an earlier or repeated run fail that parity check, and the failure names the directory rather
-  than the cause. `Task 5 Stats responsive evidence matrix` fails this way inside a full-file run
-  and passes alone. Clear the evidence directory a step is about to write, or expect to spend the
-  triage.
+- **Clear `test-results/` before you start, and leave `artifacts/` alone.** The evidence specs
+  verify a directory's contents against a manifest, and leftover files from an earlier or partial
+  run fail that parity check with a message that names the directory rather than the cause.
+  `Task 5 Stats responsive evidence matrix` fails this way inside a full-file run and passes alone.
+  The directory at fault is Playwright's own `test-results/`, because with no evidence environment
+  variable set these specs write to `testInfo.outputPath(...)` underneath it, and a filtered run
+  leaves output the next run reads. `rm -rf test-results` is safe: it is gitignored and entirely
+  regenerated. `artifacts/` is a different thing and this gate never writes it, since no step sets
+  `STATS_EVIDENCE_DIR`, `INDEFINITE_EVIDENCE_DIR`, `TASK4_EVIDENCE_DIR` or `TASK7_EVIDENCE_DIR`. It
+  holds evidence from earlier captures and at least one tracked file, so deleting it destroys work
+  this gate did not produce.
 - **Nothing here may run against a dirty or moving tree.** Step 0 establishes that, and step 5's
   whole purpose is defeated if a commit lands mid-gate.
 
@@ -80,7 +85,10 @@ production build. It cannot run a Playwright spec: `vitest.config.ts` includes o
 - **TypeScript.** Read the file path before assuming it is yours. On a shared branch the failing
   file is often somebody else's in-flight test.
 - **Vitest.** If the count of failures is large and the files are unrelated to each other, look for
-  one shared fixture or one contract change rather than for many small breaks.
+  one shared fixture or one contract change rather than for many small breaks. If the only failure
+  is `tests/unit/docs/qa-checklist-contract.test.ts`, the inventory is stale rather than the code:
+  run `npm run qa:checklist`, commit the regenerated block, and start again. That contract is in
+  the Vitest glob, so this step already enforces what step 2 checks, and it fails here first.
 - **Build.** A real outage. The chunking warning about a module both statically and dynamically
   imported is not a failure and does not block.
 
@@ -96,8 +104,17 @@ actually contain.
 **A failure means:** the suites moved and the checklist did not. Run `npm run qa:checklist` to
 regenerate, then commit that change before continuing, because step 8 signs this document.
 
-This is the one step worth running before the gate rather than during it. A stale inventory is a
-commit rather than a rerun, and you do not want to discover that between two browser steps.
+Run this before the gate rather than during it. A stale inventory is a commit rather than a rerun,
+and step 1 fails on it anyway through the contract test, so discovering it here means you have
+already paid for a full `npm run check`.
+
+Neither the regeneration nor the check needs a build. `npm run qa:checklist` asks Vitest's
+configured glob for the unit files and asks `playwright test --list` for the end-to-end scenarios,
+and listing collects the spec sources without launching a browser or reading `dist/`, which is
+verifiable by moving `dist/` aside and listing anyway. What it does depend on is every spec file
+being importable, so a spec with a collection error fails this step and the contract test together.
+The practical consequence is that the inventory tracks spec sources, not the build, so it needs
+regenerating after the last spec change and not after a rebuild or a capture.
 
 ## Step 3. Package, then immediately validate
 
