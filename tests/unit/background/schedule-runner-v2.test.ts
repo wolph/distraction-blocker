@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { RuntimePortsV2 } from '../../../src/background/runtime-ports-v2';
 import type {
   RuntimeStateV2,
   SessionStartCandidate,
@@ -200,6 +201,30 @@ describe('schedule check guards', (): void => {
       expect(test.notices).toEqual([]);
       expect(test.sounds).toEqual([]);
     }
+  });
+
+  it('writes the notice over the runtime as it stands, not the one the check read', async (): Promise<void> => {
+    // The notice write used the runtime the check read at its start. Nothing awaits between those
+    // two points today, so the copy is current and the write is safe by that absence rather than
+    // by construction: the day an await appears in between, this write silently reverts whatever
+    // landed in the gap, including fields a commit checkpoint is describing.
+    const test: ScheduleHarness = harness(idleRuntime({ scheduleUnavailableNoticeToken: TOKEN }), [
+      windowEntry({ enabled: false }),
+    ]);
+    const drifted: RuntimeStateV2 = { ...test.ports.current(), accruedFocusMs: 5_000 };
+    let reads: number = 0;
+    const ports: RuntimePortsV2 = {
+      ...test.ports,
+      runtime: (): RuntimeStateV2 => {
+        reads += 1;
+        return reads === 1 ? test.ports.current() : drifted;
+      },
+    };
+
+    await runScheduleCheckV2(ports, test.schedule);
+
+    expect(test.ports.current().scheduleUnavailableNoticeToken).toBeNull();
+    expect(test.ports.current().accruedFocusMs).toBe(5_000);
   });
 
   it('never rewrites a committed session config when a stronger entry opens', async (): Promise<void> => {

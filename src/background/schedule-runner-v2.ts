@@ -228,14 +228,21 @@ async function reportUnavailable(
   return next;
 }
 
-/** Writes the notice token only when it actually changes, so a quiet check stays quiet. */
+/**
+ * Writes the notice token only when it actually changes, so a quiet check stays quiet.
+ *
+ * The value written is the runtime as it stands at the write, not the copy the check read at its
+ * start. Nothing awaits between those two points today, so the copy is current, and a write built
+ * on it is correct only for as long as that stays true. Reading here makes it correct by
+ * construction: this write carries one field of its own and everything else exactly as stored.
+ */
 async function withNoticeToken(
   ports: RuntimePortsV2,
   runtime: RuntimeStateV2,
   token: string | null,
 ): Promise<RuntimeStateV2> {
   if (runtime.scheduleUnavailableNoticeToken === token) return runtime;
-  const next: RuntimeStateV2 = { ...runtime, scheduleUnavailableNoticeToken: token };
+  const next: RuntimeStateV2 = { ...ports.runtime(), scheduleUnavailableNoticeToken: token };
   await ports.writeRuntime(carryCommitCheckpointProjectionV2(next));
   return ports.runtime();
 }
