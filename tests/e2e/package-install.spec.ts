@@ -158,12 +158,55 @@ async function expectBlockedPage(launch: FreshInstallLaunch, url: string): Promi
   await expect(page.locator('#marker')).toHaveCount(0);
 }
 
+/**
+ * Every packaged file must be byte-identical to the `dist/` this run actually has.
+ *
+ * The manifest and the archive are already checked against each other, and that proves only that
+ * they came from the same moment rather than that the moment is this one. `store:validate` makes
+ * this comparison against the live `dist/` when the archive is built, and nothing made it again
+ * here, so a build landing between packaging and installing left this spec installing a stale
+ * artifact and reporting success. On a shared branch that window is real: any build by anyone
+ * rewrites `dist/`, and the release gate runs two other steps inside it.
+ */
+async function assertArchiveMatchesCurrentDist(
+  directory: string,
+  fileNames: readonly string[],
+): Promise<void> {
+  const distDirectory: string = path.join(REPOSITORY_ROOT, 'dist');
+  const missing: string[] = [];
+  const differing: string[] = [];
+  for (const name of fileNames) {
+    let built: Buffer;
+    try {
+      built = await readFile(path.join(distDirectory, name));
+    } catch {
+      missing.push(name);
+      continue;
+    }
+    const packaged: Buffer = await readFile(path.join(directory, name));
+    if (!packaged.equals(built)) differing.push(name);
+  }
+  if (missing.length === 0 && differing.length === 0) return;
+  throw new Error(
+    [
+      'The packaged archive no longer matches dist/, so this spec would install an artifact that',
+      'is not this build. Something rebuilt dist/ after the package was created. Re-run',
+      '`npm run store:package` and try again.',
+      missing.length === 0 ? '' : ` Absent from dist/: ${missing.sort().join(', ')}.`,
+      differing.length === 0 ? '' : ` Differing bytes: ${differing.sort().join(', ')}.`,
+    ]
+      .join(' ')
+      .trim(),
+  );
+}
+
 test.beforeAll(async (): Promise<void> => {
   const manifest: PackageManifest = await readPackageManifest(REPOSITORY_ROOT);
   const archive: Buffer = await readPackageArchive(REPOSITORY_ROOT, manifest);
   const directory: string = await mkdtemp(path.join(tmpdir(), 'focus-lock-package-install-'));
   extractedDirectory = directory;
   extractedFileNames = await extractPackageArchive(archive, directory);
+  await assertArchiveMatchesCurrentDist(directory, extractedFileNames);
   extractedManifestText = await readFile(path.join(directory, 'manifest.json'), 'utf8');
   packageManifest = manifest;
   originalDistOverride = process.env.FOCUS_LOCK_E2E_DIST;
