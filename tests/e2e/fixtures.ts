@@ -42,6 +42,12 @@ import { startServer, type TestServer } from './server';
 
 interface ExtFixtures {
   extensionTimezone: string | undefined;
+  /**
+   * Launches the browser with GPU rasterization off, for a spec whose captures are compared byte
+   * for byte. On the compositor's own path the same build paints a handful of edge pixels
+   * differently between runs, which is enough to fail a comparison that has to stay exact.
+   */
+  extensionDeterministicPaint: boolean;
   context: BrowserContext;
   worker: Worker;
   extensionId: string;
@@ -105,6 +111,12 @@ export interface RestartableExtension {
   close(): Promise<void>;
 }
 
+/** What a launch needs from the environment beyond the profile and the build under test. */
+interface LaunchEnvironmentV2 {
+  timezoneId?: string | undefined;
+  deterministicPaint?: boolean;
+}
+
 function extensionArgs(dist: string): string[] {
   return [
     `--disable-extensions-except=${dist}`,
@@ -118,11 +130,12 @@ async function extensionLaunch(
   restoreLastSession: boolean,
   distOverride?: string,
   diagnostics: BrowserDiagnostics = createBrowserDiagnostics(),
-  timezoneId?: string,
+  environment: LaunchEnvironmentV2 = {},
 ): Promise<ExtensionLaunch> {
+  const timezoneId: string | undefined = environment.timezoneId;
   const dist: string = resolveExtensionDist(distOverride);
   const args: string[] = extensionArgs(dist);
-  if (process.env.STATS_EVIDENCE_DIR !== undefined) {
+  if (process.env.STATS_EVIDENCE_DIR !== undefined || environment.deterministicPaint === true) {
     args.push('--disable-gpu', '--disable-gpu-compositing');
   }
   if (restoreLastSession) args.push('--restore-last-session');
@@ -280,14 +293,14 @@ async function grantProfileWebsiteAccess(
   baseDist: string,
   grantDist: string,
   diagnostics: BrowserDiagnostics,
-  timezoneId?: string,
+  environment: LaunchEnvironmentV2 = {},
 ): Promise<void> {
   const optionalLaunch: ExtensionLaunch = await extensionLaunch(
     profileDir,
     false,
     baseDist,
     diagnostics,
-    timezoneId,
+    environment,
   );
   await sendExtensionRequest(optionalLaunch.extPage, { type: 'getSetupState' });
   await optionalLaunch.context.close();
@@ -296,7 +309,7 @@ async function grantProfileWebsiteAccess(
     false,
     grantDist,
     diagnostics,
-    timezoneId,
+    environment,
   );
   // Chrome applies the granting manifest's host permissions on its own schedule, and reconciling
   // once assumed they were already in place. A reconcile that ran too early persisted a denial,
@@ -320,15 +333,15 @@ async function completedExtensionLaunch(
   baseDist: string,
   grantDist: string,
   diagnostics: BrowserDiagnostics,
-  timezoneId?: string,
+  environment: LaunchEnvironmentV2 = {},
 ): Promise<ExtensionLaunch> {
-  await grantProfileWebsiteAccess(profileDir, baseDist, grantDist, diagnostics, timezoneId);
+  await grantProfileWebsiteAccess(profileDir, baseDist, grantDist, diagnostics, environment);
   const launch: ExtensionLaunch = await extensionLaunch(
     profileDir,
     false,
     baseDist,
     diagnostics,
-    timezoneId,
+    environment,
   );
   const reconciled = await sendExtensionRequest(launch.extPage, {
     type: 'reconcileWebsiteAccess',
@@ -364,7 +377,8 @@ async function completedExtensionLaunch(
 
 export const test = base.extend<ExtFixtures>({
   extensionTimezone: [undefined, { option: true }],
-  context: async ({ extensionTimezone }, use, testInfo) => {
+  extensionDeterministicPaint: [false, { option: true }],
+  context: async ({ extensionTimezone, extensionDeterministicPaint }, use, testInfo) => {
     const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
     const profileDir: string = testInfo.outputPath('default-profile');
     const baseDist: string = resolveExtensionDist();
@@ -377,7 +391,7 @@ export const test = base.extend<ExtFixtures>({
       baseDist,
       grantDist,
       diagnostics,
-      extensionTimezone,
+      { timezoneId: extensionTimezone, deterministicPaint: extensionDeterministicPaint },
     );
     fixtureDiagnostics.set(launch.context, diagnostics);
     try {
@@ -415,7 +429,11 @@ export const test = base.extend<ExtFixtures>({
     });
     await server.close();
   },
-  restartableExtension: async ({ extensionTimezone }, use, testInfo) => {
+  restartableExtension: async (
+    { extensionTimezone, extensionDeterministicPaint },
+    use,
+    testInfo,
+  ) => {
     const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
     const profileDir: string = testInfo.outputPath('restart-profile');
     const baseDist: string = resolveExtensionDist();
@@ -423,12 +441,16 @@ export const test = base.extend<ExtFixtures>({
       testInfo.outputPath('restart-permission-grant-dist'),
       baseDist,
     );
+    const environment: LaunchEnvironmentV2 = {
+      timezoneId: extensionTimezone,
+      deterministicPaint: extensionDeterministicPaint,
+    };
     const prepared: ExtensionLaunch = await completedExtensionLaunch(
       profileDir,
       baseDist,
       grantDist,
       diagnostics,
-      extensionTimezone,
+      environment,
     );
     await prepared.context.close();
     let current: ExtensionLaunch | null = null;
@@ -440,7 +462,7 @@ export const test = base.extend<ExtFixtures>({
     };
     const launch = async (): Promise<ExtensionLaunch> => {
       if (current !== null) throw new Error('close the isolated browser before relaunching it');
-      current = await extensionLaunch(profileDir, true, baseDist, diagnostics, extensionTimezone);
+      current = await extensionLaunch(profileDir, true, baseDist, diagnostics, environment);
       return current;
     };
 
@@ -450,7 +472,11 @@ export const test = base.extend<ExtFixtures>({
       await closeAndAssertBrowserDiagnostics(close, diagnostics);
     }
   },
-  freshInstallExtension: async ({ extensionTimezone }, use, testInfo) => {
+  freshInstallExtension: async (
+    { extensionTimezone, extensionDeterministicPaint },
+    use,
+    testInfo,
+  ) => {
     const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
     const profileDir: string = testInfo.outputPath('fresh-install-profile');
     const baseDist: string = resolveExtensionDist();
@@ -476,7 +502,7 @@ export const test = base.extend<ExtFixtures>({
         true,
         baseDist,
         diagnostics,
-        extensionTimezone,
+        { timezoneId: extensionTimezone, deterministicPaint: extensionDeterministicPaint },
       );
       const onboardingPage: Page = await baseLaunch.context.newPage();
       await onboardingPage.goto(
@@ -515,13 +541,10 @@ export const test = base.extend<ExtFixtures>({
       );
     const grantWebsiteAccess = async (): Promise<FreshInstallLaunch> => {
       await close();
-      await grantProfileWebsiteAccess(
-        profileDir,
-        baseDist,
-        grantDist,
-        diagnostics,
-        extensionTimezone,
-      );
+      await grantProfileWebsiteAccess(profileDir, baseDist, grantDist, diagnostics, {
+        timezoneId: extensionTimezone,
+        deterministicPaint: extensionDeterministicPaint,
+      });
       return await launch();
     };
     const revokeWebsiteAccess = async (): Promise<void> => {

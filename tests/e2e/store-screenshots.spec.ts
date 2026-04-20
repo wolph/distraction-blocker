@@ -95,7 +95,9 @@ const CAPTURE_MARGIN_MS: number = 5 * 60_000;
 // Set UPDATE_STORE_SCREENSHOTS=1 to replace tracked PNGs after every capture validates. Unset compares only.
 const UPDATE_SCREENSHOTS_ENV: string = 'UPDATE_STORE_SCREENSHOTS';
 
-test.use({ extensionTimezone: STORE_TIMEZONE });
+// Every image here is compared byte for byte, so the browser paints without the GPU: on the
+// compositor's path the same build differed from itself between runs, a few edge pixels at a time.
+test.use({ extensionTimezone: STORE_TIMEZONE, extensionDeterministicPaint: true });
 
 function parseScreenshotUpdateMode(value: string | undefined): boolean {
   if (value === undefined) return false;
