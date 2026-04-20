@@ -44,6 +44,8 @@
     "pages:validate": "npm run pages:build && node scripts/validate-pages.mjs && html-validate 'dist-pages/**/*.html'",
     "qa:checklist": "node scripts/qa-checklist.mjs",
     "qa:validate": "node scripts/qa-checklist.mjs --check",
+    "stats:dev-evidence": "STATS_DEV_EVIDENCE_DIR=artifacts/stats-task5/dev node --experimental-strip-types scripts/capture-stats-dev-evidence.ts",
+    "stats:evidence": "STATS_EVIDENCE_DIR=artifacts/stats-task5/production playwright test tests/e2e/qa-flows.spec.ts -g \"Task 5 Stats responsive evidence matrix\"",
     "store:package": "npm run build && node scripts/validate-store-package.mjs --zip",
     "store:validate": "node scripts/validate-store-package.mjs",
     "test": "vitest run",

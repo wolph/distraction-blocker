@@ -294,6 +294,39 @@ releases. An empty release checklist reads as a completed one to the next person
 **Mark the privacy URL as `awaiting master deployment`, not as passed.** It cannot be true yet, and
 the reason is in step 9.
 
+## Stats evidence parity, and why the gate does not run it
+
+Not a gate step. Run it when the Stats surfaces have changed and you want the cross-check that the
+production capture agrees with the development one, which is two assertions the ordinary suite never
+reaches.
+
+```bash
+npm run stats:dev-evidence
+npm run stats:evidence
+```
+
+The first captures development evidence into `artifacts/stats-task5/dev`, including
+`stats-dev-run-report.json`. The second re-runs the Stats matrix with `STATS_EVIDENCE_DIR` pointed
+at `artifacts/stats-task5/production`, which is the only condition under which the matrix compares
+seed parity and rendered geometry against that report. Without it, those two
+`expect(...).not.toThrow()` calls are skipped entirely, so a default run counts them as coverage it
+did not obtain. Both commands write inside `artifacts/`, which nothing else here does.
+
+**Run it separately from the gate, never as part of step 7.** Setting `STATS_EVIDENCE_DIR` also adds
+`--disable-gpu --disable-gpu-compositing` to every browser launch in the run, not only to the
+capture that asked for it, so folding it into step 7 would certify all eighty-one scenarios under a
+rendering configuration nothing else was measured under. Fixing two unreachable assertions by making
+eighty reachable ones less trustworthy is a bad trade. The launch site names the coupling, and an
+explicit `deterministicPaint` option now exists beside it for callers that genuinely need a stable
+paint; retiring the variable arm is post-merge work, because the captures already on disk were taken
+under those flags.
+
+One note for anyone auditing this the way it was found. The producer of that report,
+`scripts/capture-stats-dev-evidence.ts`, was first reported as not existing, because a search for
+the literal `stats-dev-run-report.json` missed a script that assembles the path from constants. That
+mistake has now been made six times on this branch. When a search for a path comes back empty, search
+for the directory, the constant and the writer before believing it.
+
 ## Step 9. What this gate does not certify
 
 The gate makes the branch a release candidate. It does not make the listing submittable, because the

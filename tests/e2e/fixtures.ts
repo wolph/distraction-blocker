@@ -135,6 +135,15 @@ async function extensionLaunch(
   const timezoneId: string | undefined = environment.timezoneId;
   const dist: string = resolveExtensionDist(distOverride);
   const args: string[] = extensionArgs(dist);
+  // `deterministicPaint` is the honest half of this condition: a caller that needs a stable paint
+  // says so. The environment-variable arm beside it is a coupling worth knowing about, because a
+  // variable named for where evidence is written also decides how the browser draws, and it does so
+  // for every launch in the run rather than only for the capture that wanted it. Setting
+  // `STATS_EVIDENCE_DIR` to enable the Stats parity assertions therefore changes the rendering
+  // configuration of every other scenario too, which is why the release gate does not set it and
+  // the evidence procedure in `docs/release-candidate-gate.md` is run on its own. Retiring the
+  // variable arm in favour of the explicit option is post-merge work: the captures already on disk
+  // were taken under these flags.
   if (process.env.STATS_EVIDENCE_DIR !== undefined || environment.deterministicPaint === true) {
     args.push('--disable-gpu', '--disable-gpu-compositing');
   }
