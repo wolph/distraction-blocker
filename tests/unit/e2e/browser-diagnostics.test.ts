@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { BrowserDiagnostics } from '../../../tests/e2e/browser-diagnostics';
 import {
   assertNoUnexpectedBrowserDiagnostics,
+  beginExpectedRequestErrorWindow,
   beginIntentionalWorkerStopDiagnosticWindow,
   closeAndAssertBrowserDiagnostics,
   createBrowserDiagnostics,
@@ -193,6 +194,107 @@ describe('monitorBrowserContext', (): void => {
     expect(diagnostics.intentionalWorkerStopMessages).toEqual([]);
     expect(diagnostics.workerErrors).toEqual([message]);
     expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).toThrow(message);
+  });
+});
+
+describe('beginExpectedRequestErrorWindow', (): void => {
+  it('diverts only the declared failure and keeps every other one fatal', (): void => {
+    const context: FakeContext = fakeContext();
+    const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
+    monitorBrowserContext(context as unknown as BrowserContext, diagnostics);
+
+    const close: () => void = beginExpectedRequestErrorWindow(
+      diagnostics,
+      'http://unreachable.test/',
+    );
+    context.emit(
+      'requestfailed',
+      requestFailure('http://unreachable.test/', 'net::ERR_CONNECTION_REFUSED'),
+    );
+    context.emit(
+      'requestfailed',
+      requestFailure('http://other.test/', 'net::ERR_CONNECTION_REFUSED'),
+    );
+    close();
+
+    expect(diagnostics.expectedRequestErrors).toEqual([
+      'http://unreachable.test/: net::ERR_CONNECTION_REFUSED',
+    ]);
+    expect(diagnostics.requestErrors).toEqual(['http://other.test/: net::ERR_CONNECTION_REFUSED']);
+    expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).toThrow(
+      'http://other.test/',
+    );
+  });
+
+  it('raises when the declared failure never happened', (): void => {
+    const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
+
+    const close: () => void = beginExpectedRequestErrorWindow(diagnostics, 'http://never.test/');
+
+    expect(close).toThrow('the declared request failure was never reported: http://never.test/');
+  });
+
+  it('keeps the same failure fatal once the window has closed', (): void => {
+    const context: FakeContext = fakeContext();
+    const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
+    monitorBrowserContext(context as unknown as BrowserContext, diagnostics);
+
+    const close: () => void = beginExpectedRequestErrorWindow(diagnostics, 'http://twice.test/');
+    context.emit(
+      'requestfailed',
+      requestFailure('http://twice.test/', 'net::ERR_CONNECTION_REFUSED'),
+    );
+    close();
+    context.emit(
+      'requestfailed',
+      requestFailure('http://twice.test/', 'net::ERR_CONNECTION_REFUSED'),
+    );
+
+    expect(diagnostics.requestErrors).toEqual(['http://twice.test/: net::ERR_CONNECTION_REFUSED']);
+  });
+
+  it('refuses a second window and fails an assertion made while one is open', (): void => {
+    const context: FakeContext = fakeContext();
+    const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
+    monitorBrowserContext(context as unknown as BrowserContext, diagnostics);
+
+    const close: () => void = beginExpectedRequestErrorWindow(diagnostics, 'http://open.test/');
+    expect((): unknown =>
+      beginExpectedRequestErrorWindow(diagnostics, 'http://second.test/'),
+    ).toThrow('an expected request error window is already open');
+    expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).toThrow(
+      'an expected request error window is still open',
+    );
+    context.emit(
+      'requestfailed',
+      requestFailure('http://open.test/', 'net::ERR_CONNECTION_REFUSED'),
+    );
+    close();
+    expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).not.toThrow();
+  });
+
+  it('never diverts a request the extension itself blocked', (): void => {
+    const context: FakeContext = fakeContext();
+    const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
+    monitorBrowserContext(context as unknown as BrowserContext, diagnostics);
+
+    const close: () => void = beginExpectedRequestErrorWindow(diagnostics, 'http://blocked.test/');
+    context.emit(
+      'requestfailed',
+      requestFailure('http://blocked.test/', 'net::ERR_BLOCKED_BY_CLIENT'),
+    );
+    context.emit(
+      'requestfailed',
+      requestFailure('http://blocked.test/', 'net::ERR_CONNECTION_REFUSED'),
+    );
+    close();
+
+    expect(diagnostics.blockedRequests).toEqual([
+      'http://blocked.test/: net::ERR_BLOCKED_BY_CLIENT',
+    ]);
+    expect(diagnostics.expectedRequestErrors).toEqual([
+      'http://blocked.test/: net::ERR_CONNECTION_REFUSED',
+    ]);
   });
 });
 

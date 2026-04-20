@@ -11,6 +11,8 @@ export interface BrowserDiagnostics {
   consoleErrors: string[];
   /** Errors a scenario declared it was driving, kept as evidence rather than as a failure. */
   expectedWorkerErrors: string[];
+  /** Request failures a scenario declared it was driving, kept the same way. */
+  expectedRequestErrors: string[];
   intentionalWorkerStopMessages: string[];
   pageErrors: string[];
   requestErrors: string[];
@@ -34,10 +36,20 @@ interface ExpectedWorkerErrorWindow {
 const expectedWorkerErrorWindows: WeakMap<BrowserDiagnostics, ExpectedWorkerErrorWindow> =
   new WeakMap<BrowserDiagnostics, ExpectedWorkerErrorWindow>();
 
+/** The same declaration for the network: one failure a scenario is deliberately causing. */
+interface ExpectedRequestErrorWindow {
+  fragment: string;
+  seen: string[];
+}
+
+const expectedRequestErrorWindows: WeakMap<BrowserDiagnostics, ExpectedRequestErrorWindow> =
+  new WeakMap<BrowserDiagnostics, ExpectedRequestErrorWindow>();
+
 export function createBrowserDiagnostics(): BrowserDiagnostics {
   return {
     blockedRequests: [],
     consoleErrors: [],
+    expectedRequestErrors: [],
     expectedWorkerErrors: [],
     intentionalWorkerStopMessages: [],
     pageErrors: [],
@@ -107,6 +119,49 @@ export function beginExpectedWorkerErrorWindow(
   };
 }
 
+/**
+ * Declares the one request failure a scenario is deliberately causing, and answers the close.
+ *
+ * A scenario that has to drive an unreachable address makes the browser report a failed request,
+ * and every fixture asserts none. This is the network's half of the worker-error window and it is
+ * narrow in the same way: only a failure whose rendered `url: errorText` carries `urlFragment` is
+ * diverted, everything else still fails, the close raises when the declared failure never
+ * happened, and only one window is open at a time. A request the extension itself blocked is never
+ * diverted, whatever is declared, because that bucket is the product working.
+ */
+export function beginExpectedRequestErrorWindow(
+  diagnostics: BrowserDiagnostics,
+  urlFragment: string,
+): () => void {
+  if (urlFragment.trim() === '') {
+    throw new Error('an expected request error window needs the address it expects');
+  }
+  if (expectedRequestErrorWindows.has(diagnostics)) {
+    throw new Error('an expected request error window is already open');
+  }
+  const declared: ExpectedRequestErrorWindow = { fragment: urlFragment, seen: [] };
+  expectedRequestErrorWindows.set(diagnostics, declared);
+  let closed: boolean = false;
+  return (): void => {
+    if (closed) return;
+    closed = true;
+    expectedRequestErrorWindows.delete(diagnostics);
+    diagnostics.expectedRequestErrors.push(...declared.seen);
+    if (declared.seen.length === 0) {
+      throw new Error(`the declared request failure was never reported: ${urlFragment}`);
+    }
+  };
+}
+
+/** True while this failure is the one an open window declared, which keeps it out of the strict bucket. */
+function classifyExpectedRequestError(diagnostics: BrowserDiagnostics, rendered: string): boolean {
+  const declared: ExpectedRequestErrorWindow | undefined =
+    expectedRequestErrorWindows.get(diagnostics);
+  if (declared === undefined || !rendered.includes(declared.fragment)) return false;
+  declared.seen.push(rendered);
+  return true;
+}
+
 /** True while this message is the one an open window declared, which diverts it from the strict buckets. */
 function classifyExpectedWorkerError(diagnostics: BrowserDiagnostics, text: string): boolean {
   const declared: ExpectedWorkerErrorWindow | undefined =
@@ -140,6 +195,9 @@ export function assertNoUnexpectedBrowserDiagnostics(diagnostics: BrowserDiagnos
   // has to be closed before anything is judged.
   if (expectedWorkerErrorWindows.has(diagnostics)) {
     throw new Error('an expected worker error window is still open');
+  }
+  if (expectedRequestErrorWindows.has(diagnostics)) {
+    throw new Error('an expected request error window is still open');
   }
   const invalidIntentionalWorkerStopMessages: string[] =
     diagnostics.intentionalWorkerStopMessages.filter(
@@ -226,7 +284,9 @@ export function monitorBrowserContext(
     const failure: string = request.failure()?.errorText ?? 'failed';
     const rendered: string = `${request.url()}: ${failure}`;
     if (failure.includes('ERR_BLOCKED')) diagnostics.blockedRequests.push(rendered);
-    else diagnostics.requestErrors.push(rendered);
+    else if (!classifyExpectedRequestError(diagnostics, rendered)) {
+      diagnostics.requestErrors.push(rendered);
+    }
   });
   context.on('page', monitorPage);
   context.on('serviceworker', monitorWorker);
