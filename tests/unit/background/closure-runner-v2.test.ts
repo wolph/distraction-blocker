@@ -397,6 +397,25 @@ describe('runClosureCleanupAttemptV2', (): void => {
     expect(fake.alarmCalls).toContainEqual({ kind: 'create', name: CLOSURE_CLEANUP_ALARM });
   });
 
+  it('finishes when the tab behind a no-receiver answer is gone from the browser', async (): Promise<void> => {
+    // A tab the person closed answers no-receiver rather than naming itself closed, because the
+    // runtime reports a missing listener before it reports a missing tab. Treated as a refusal,
+    // that held the journal for the life of its batch over a page that no longer exists, with
+    // every start refused behind it and a manual retry the person is only offered at the end.
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    await inCleanup(fake);
+    // The tab was there when the batch froze and the person closes it before the attempt sends.
+    fake.setTabs([]);
+    fake.respondForDocument(11, DOC_ONE, noReceiverResponder());
+
+    const next: RuntimeStateV2 = await runClosureCleanupAttemptV2(fake, effectsFake());
+
+    // The clear really was attempted against that document, so this is the no-receiver path and
+    // not a batch that quietly had nothing in it.
+    expect(fake.sends.some((send: FakeSendV2): boolean => send.documentId === DOC_ONE)).toBe(true);
+    expect(next.pendingClosure).toBeNull();
+  });
+
   it('treats a closed document as resolved without inventing an acknowledgement', async (): Promise<void> => {
     const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime({ epochResetAcks: {} }), { tabs: [] });
     await inCleanup(fake);

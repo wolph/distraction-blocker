@@ -18,6 +18,7 @@ import type { SessionEventRecordV2, SessionSnapshotV2, SetupState } from '../../
 import {
   assertNoUnexpectedBrowserDiagnostics,
   type BrowserDiagnostics,
+  beginExpectedRequestErrorWindow,
   beginExpectedWorkerErrorWindow,
 } from './browser-diagnostics';
 import {
@@ -34,6 +35,8 @@ import {
 test.setTimeout(180_000);
 
 const MINUTE_MS: number = 60_000;
+/** A blocked host on a port nothing answers, which is the only error document a test can cause. */
+const UNREACHABLE_URL: string = 'http://blocked.example:44321/';
 const LEGACY_SESSION_ID: string = '60000000-0000-4000-8000-000000000001';
 const LEGACY_ENTRY_ID: string = '60000000-0000-4000-8000-000000000002';
 
@@ -254,41 +257,53 @@ test.skip('a start whose registration cannot be audited fails as a registration 
   expect(runtime.session).toBeNull();
 });
 
-test.skip('a session whose documents cannot be reached ends as a tab enforcement failure', async ({
+test('a session whose documents cannot be reached ends as a tab enforcement failure', async ({
   freshInstallExtension,
+  siteUrl,
 }) => {
-  // Still pinned, with today's measurement rather than the old one. The two worker errors it was
-  // pinned on are fixed and it now drives the browser with none reported at all: the projection
-  // defect went with the commit carry, and the error-page injection failure is no longer reported
-  // because an error page can host no content script under any retry.
-  //
-  // Two things still stand between this and green, and neither is the reason under test. The
-  // worker publishes `cleanup` and stays there for the life of the batch, because the document it
-  // must clear is on a tab no content script can reach, so `idle` needs either a longer wait than
-  // this scenario should hold or a step that closes the tab and lets the retry finish. And the
-  // deliberate connection refusal lands in the request-error bucket, which has no equivalent of
-  // the declared worker-error window, so the fixture fails on the very navigation the scenario
-  // exists to make.
   const launch: FreshInstallLaunch = await completedFreshInstall(freshInstallExtension);
   await startTestSession(launch.extPage, {
     duration: { kind: 'timed', minutes: 30 },
     intention: 'unreachable document',
   });
 
-  // A blocked host on a port nothing answers. The tab is an enforceable http target the worker
-  // must verify, and its error document can host no content script, so no pass can ever verify it.
-  const unreachable: Page = await launch.context.newPage();
-  await unreachable
-    .goto('http://blocked.example:44321/', { waitUntil: 'commit' })
-    .catch((): null => null);
-  await expect
-    .poll(async (): Promise<number> => (await launch.context.pages()).length)
-    .toBeGreaterThan(1);
+  // The address the scenario cannot reach is the point of it, so the refusal it causes is
+  // declared: that one failure is kept as evidence and every other request failure still fails.
+  const closeRequestWindow: () => void = beginExpectedRequestErrorWindow(
+    freshInstallExtension.diagnostics,
+    UNREACHABLE_URL,
+  );
+  try {
+    // A blocked host on a port nothing answers. The tab is an enforceable http target the worker
+    // must verify, and its error document can host no content script, so no pass can verify it.
+    const unreachable: Page = await launch.context.newPage();
+    await unreachable.goto(UNREACHABLE_URL, { waitUntil: 'commit' }).catch((): null => null);
+    await expect
+      .poll(async (): Promise<number> => (await launch.context.pages()).length)
+      .toBeGreaterThan(1);
 
-  const restarted: FreshInstallLaunch = await freshInstallExtension.restartWorker();
+    const restarted: FreshInstallLaunch = await freshInstallExtension.restartWorker();
 
-  await expectSessionClosed(restarted, 'tab-enforcement-failed');
-  await unreachable.close();
+    // Recovery cannot verify that tab, so it ends the session, and the closure it leaves cannot
+    // clear a document no content script inhabits. The person sees the session end and the worker
+    // says it is still cleaning up.
+    await waitForLifecycle(restarted.extPage, 'cleanup', 30_000);
+
+    // Leaving the address that will not load is what a person does next, and it is what the
+    // cleanup was waiting for: the error document is gone, and the tab it held a claim on is
+    // still there to be unmuted. The batch's own schedule is a minute away at its shortest and six
+    // hours at its longest, and the manual retry is only offered once that schedule is spent, so
+    // the scenario asks the browser for the alarm the journal is already waiting on rather than
+    // waiting it out.
+    await unreachable.close();
+    await restarted.worker.evaluate(async (): Promise<void> => {
+      await chrome.alarms.create('closure-cleanup', { when: Date.now() });
+    });
+
+    await expectSessionClosed(restarted, 'tab-enforcement-failed');
+  } finally {
+    closeRequestWindow();
+  }
 });
 
 test('a session whose phase alarm cannot be held ends as an alarm failure', async ({

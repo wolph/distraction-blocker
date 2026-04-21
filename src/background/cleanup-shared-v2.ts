@@ -220,7 +220,9 @@ export async function resetAndClearDocumentV2(
     );
     // A closed document owes nothing further this attempt, and its claim decides its resolution.
     if (reset.kind === 'closed') return null;
-    if (reset.kind === 'no-receiver' && policy.tolerateNoReceiver) return null;
+    if (reset.kind === 'no-receiver' && (await toleratedNoReceiverV2(ports, command, policy))) {
+      return null;
+    }
     if (reset.kind !== 'reset' && !movedDocumentResetV2(reset)) {
       return `${label} reset for ${key} answered ${reset.kind}`;
     }
@@ -236,9 +238,31 @@ export async function resetAndClearDocumentV2(
   if (outcome.kind === 'applied' || outcome.kind === 'closed' || outcome.kind === 'changed') {
     return null;
   }
-  if (outcome.kind === 'no-receiver' && policy.tolerateNoReceiver) return null;
+  if (outcome.kind === 'no-receiver' && (await toleratedNoReceiverV2(ports, command, policy))) {
+    return null;
+  }
   // Nothing may outrank the clear revision, so a stale answer during cleanup is fatal too.
   return `${label} clear for ${key} answered ${outcome.kind}`;
+}
+
+/**
+ * Whether a missing listener ends this target rather than failing the attempt.
+ *
+ * The policy answers for a document this journal never overlaid. Beyond that, Chrome answers a send
+ * to a tab that has gone with the missing-listener message rather than the missing-tab one, so the
+ * browser's own tab list is asked: a target whose tab the browser no longer lists has no overlay
+ * left to clear, and treating that as a refusal held the journal for the life of its batch over a
+ * page the person had closed, with every start refused behind it.
+ */
+async function toleratedNoReceiverV2(
+  ports: RuntimePortsV2,
+  command: FrozenDocumentCommand,
+  policy: CleanupSendPolicyV2,
+): Promise<boolean> {
+  if (policy.tolerateNoReceiver) return true;
+  const open: Array<{ tabId: number; url: string | null }> =
+    await ports.targets.queryTopFrameTabs();
+  return !open.some((tab: { tabId: number }): boolean => tab.tabId === command.tabId);
 }
 
 /**
