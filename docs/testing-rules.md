@@ -1,4 +1,4 @@
-# Four rules for tests in this repository
+# Five rules for tests in this repository
 
 Each of these was learned the expensive way on one branch. They are written with the evidence that
 earned them, because the evidence is the part that makes them stick.
@@ -77,9 +77,32 @@ A test pinned to the requirement goes red the moment the defect is repaired, whi
 and makes the fix visible in the diff. That is the behaviour you want from a suite: it should
 disagree with the code until the code is right.
 
+## 5. A frozen clock ages, and a test frozen to a date fails on the next one
+
+Freezing time makes a test deterministic. Freezing it to a fixed timestamp makes it deterministic
+until that day passes, and then it fails for a reason nobody changed.
+
+The store screenshot capture froze every clock at a timestamp written into the file on the first of
+September. It passed that day. From the second, the day it seeded stopped being today, so the daily
+totals read zero while the seven-day total kept matching, because that window does not care which
+day it is. That split is the tell: one figure wrong and its neighbour right, where the neighbour is
+the one whose question the frozen day cannot spoil.
+
+The same rot hid a second failure behind the first. A session started on a clock frozen in the past
+asks `chrome.alarms` for a boundary that has already gone, and the browser answers with no alarm,
+which the read back reports as `alarm-failed`. That is the constraint to carry: **a frozen clock and
+real alarms cannot both hold.** The alarm scheduler runs on the real clock whatever the page
+believes, so any instant you freeze has to stay ahead of it.
+
+Freeze to an instant derived at run time, not to one typed into the file. Pick the property the
+scenario actually needs from that instant, a morning in a named timezone, a day boundary not yet
+crossed, and compute the next one that satisfies it. The capture that failed now freezes at the next
+morning in the store timezone still ahead of the real clock, which keeps the hostile-timezone run on
+a different calendar day and keeps the alarms schedulable.
+
 ## The common thread
 
-All four are the same question asked at different scales. **Is the thing you checked the thing you
-meant?** A proxy value, a partial suite, a permissive fake, and a test pinned to the current
-behaviour are four ways of answering a question next to the one you asked, and all four come back
-green.
+All five are the same question asked at different scales. **Is the thing you checked the thing you
+meant?** A proxy value, a partial suite, a permissive fake, a test pinned to the current behaviour,
+and a clock pinned to a date that has passed are five ways of answering a question next to the one
+you asked, and all five come back green until the day they do not.
