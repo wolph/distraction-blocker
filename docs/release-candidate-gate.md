@@ -8,6 +8,13 @@ Several of the steps report by what they produced rather than by their exit code
 matters more here than anywhere else in the repository: a green exit on a stale artifact is the
 failure this gate exists to prevent.
 
+**This gate cannot be completed by an agent alone.** Step 5 ends in a human looking at five
+images, and no digest substitutes for it: the provenance check proves the screenshots came from
+this build, which is a different claim from their showing the product well. An agent can run every
+command here and report every artifact, and the run is still incomplete until a person has looked.
+Step 8 records that item as outstanding rather than passed, and step 9 lists the other two things
+this gate does not certify.
+
 **Read these five constraints first. Three of the steps are destructive of other people's work if
 you ignore them.**
 
@@ -42,6 +49,28 @@ you ignore them.**
   this gate did not produce.
 - **Nothing here may run against a dirty or moving tree.** Step 0 establishes that, and step 5's
   whole purpose is defeated if a commit lands mid-gate.
+
+## What it costs
+
+Measured on one full run on an idle machine, so budget from these rather than from feel. Steps 0
+through 4 together are about four minutes and safe to interleave with reading. The two long ones
+are where the plan goes wrong if you start them without the time.
+
+| Step | Wall clock | What it produced |
+| --- | --- | --- |
+| 0 | seconds | one commit hash |
+| 1 | about 2 minutes | Biome over 423 files, TypeScript, Vitest 162 files and 4286 cases in 66s, one build |
+| 2 | seconds | one line of output |
+| 3 | under a minute | one archive, two validator passes |
+| 4 | about a minute | the archive inspection, most of it the per-entry byte comparison |
+| 5 | seconds when the provenance already matches, about 25 minutes when it does not | five PNGs, and a human look that is not on this clock |
+| 6 | under a minute | 2 scenarios |
+| 7 | about 10 minutes | 81 scenarios, 2 of them skipped by design |
+
+Step 5 is the one that ruins an estimate. If `screenshots-provenance.json` already records the
+digest of the `dist/` in front of you, there is nothing to recapture and the step is seconds. If it
+does not, you are recapturing, and that is the 25 minute browser step plus the human look after it.
+Check the provenance before you plan the afternoon.
 
 ## Step 0. Establish the tree you are gating
 
@@ -193,8 +222,12 @@ the exact capture geometry the spec annotates, and the host and worker clocks ag
 - **`git diff --stat` shows no change.** Suspicious rather than good. Either the capture did not
   publish or the surfaces genuinely did not move. Confirm which before believing it.
 
-Then look at all five. This is a human step and cannot be delegated to the spec: the capture proves
-the pixels are current, not that they show the product well.
+Then look at all five. **This is the step that needs a person, and it is the reason this gate
+cannot be finished by an agent.** The provenance digest proves the images came from this build and
+the inventory check proves they are 1280x800 and opaque. Neither can tell you that a screenshot is
+cropped through a heading, shows an empty state where the feature should be visible, or documents a
+flow in an order nobody uses. Record it in step 8 as outstanding until somebody has actually
+looked.
 
 ## Step 6. Install the exact packaged artifact
 
