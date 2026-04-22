@@ -351,8 +351,8 @@ capture that asked for it, so folding it into step 7 would certify all eighty-on
 rendering configuration nothing else was measured under. Fixing two unreachable assertions by making
 eighty reachable ones less trustworthy is a bad trade. The launch site names the coupling, and an
 explicit `deterministicPaint` option now exists beside it for callers that genuinely need a stable
-paint; retiring the variable arm is post-merge work, because the captures already on disk were taken
-under those flags.
+paint. Retiring the variable arm is post-merge work, because the captures already on disk were
+taken under those flags.
 
 One note for anyone auditing this the way it was found. The producer of that report,
 `scripts/capture-stats-dev-evidence.ts`, was first reported as not existing, because a search for
