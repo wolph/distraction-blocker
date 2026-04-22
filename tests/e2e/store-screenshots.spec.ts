@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +30,26 @@ const SCREENSHOT_FILES: readonly string[] = [
   '04-stats.png',
   '05-privacy-data.png',
 ];
+
+/**
+ * What the tracked images claim about the build that produced them.
+ *
+ * It lives beside the directory rather than inside it, because the inventory asserts that
+ * directory holds exactly the five images and nothing else.
+ */
+const SCREENSHOT_PROVENANCE_PATH: string = path.join(
+  REPOSITORY_ROOT,
+  'store/assets/screenshots-provenance.json',
+);
+const DIST_DIRECTORY: string = path.join(REPOSITORY_ROOT, 'dist');
+const RECAPTURE_HINT: string =
+  'Rebuild and recapture: `npm run build`, then `UPDATE_STORE_SCREENSHOTS=1 npx playwright test tests/e2e/store-screenshots.spec.ts -g "captures five truthful release states"`.';
+
+interface ScreenshotProvenance {
+  capturedAt: string;
+  distSha256: string;
+  version: string;
+}
 
 interface CaptureGeometry {
   deviceScaleFactor: number;
@@ -128,6 +148,79 @@ function requireExactScreenshotFilenames(entries: readonly string[], location: s
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error(`${location} screenshot inventory is not exact: ${JSON.stringify(actual)}`);
   }
+}
+
+/**
+ * One digest over every file in the built extension, which is what identifies a build here.
+ *
+ * The whole tree counts, not the pages alone: what a captured page shows is decided by the worker
+ * that answers it as much as by the markup that renders it. Two builds of unchanged sources digest
+ * identically, so this is stable evidence rather than a timestamp.
+ */
+async function buildDigest(): Promise<string> {
+  const files: string[] = await distFiles(DIST_DIRECTORY);
+  const hash = createHash('sha256');
+  for (const relative of files) {
+    hash.update(relative);
+    hash.update('\0');
+    hash.update(await readFile(path.join(DIST_DIRECTORY, relative)));
+    hash.update('\0');
+  }
+  return hash.digest('hex');
+}
+
+async function distFiles(directory: string, base: string = directory): Promise<string[]> {
+  const found: string[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const full: string = path.join(directory, entry.name);
+    if (entry.isDirectory()) found.push(...(await distFiles(full, base)));
+    else found.push(path.relative(base, full));
+  }
+  return found.sort();
+}
+
+async function writeScreenshotProvenance(): Promise<void> {
+  const manifest = JSON.parse(
+    await readFile(path.join(DIST_DIRECTORY, 'manifest.json'), 'utf8'),
+  ) as { version?: unknown };
+  const provenance: ScreenshotProvenance = {
+    capturedAt: new Date().toISOString(),
+    distSha256: await buildDigest(),
+    version: typeof manifest.version === 'string' ? manifest.version : 'unknown',
+  };
+  await writeFile(SCREENSHOT_PROVENANCE_PATH, `${JSON.stringify(provenance, null, 2)}\n`);
+}
+
+/**
+ * Proves the tracked images came from the build that is present now.
+ *
+ * The inventory below proves the five files are well-formed images of the right size, which it can
+ * do just as happily for images that predate the interface they claim to show. That is how this set
+ * drifted behind a slice of surfaces work with nothing complaining. This is the half that can tell.
+ */
+async function assertScreenshotsMatchThisBuild(): Promise<void> {
+  let recorded: ScreenshotProvenance;
+  try {
+    recorded = JSON.parse(
+      await readFile(SCREENSHOT_PROVENANCE_PATH, 'utf8'),
+    ) as ScreenshotProvenance;
+  } catch (error: unknown) {
+    throw new Error(
+      `The store screenshots record no build, so nothing can say whether they show this one. ${RECAPTURE_HINT} Cause: ${String(error)}`,
+    );
+  }
+  let current: string;
+  try {
+    current = await buildDigest();
+  } catch (error: unknown) {
+    throw new Error(
+      `dist/ is unreadable, so the build the store screenshots claim cannot be checked. Run \`npm run build\` first. Cause: ${String(error)}`,
+    );
+  }
+  if (recorded.distSha256 === current) return;
+  throw new Error(
+    `The store screenshots were captured from a different build than the one in dist/. They record ${recorded.distSha256.slice(0, 12)} taken at ${recorded.capturedAt}, and this build is ${current.slice(0, 12)}. A listing image of an interface the product no longer has is a false claim about the product. ${RECAPTURE_HINT}`,
+  );
 }
 
 async function assertScreenshotInventory(directory: string): Promise<void> {
@@ -884,8 +977,9 @@ test('hostile Pago Pago host timezone reproduces every Amsterdam canonical byte'
   expect(after).toEqual(before);
 });
 
-test('store screenshot inventory is exact, intact, opaque, and 1280 by 800', async (): Promise<void> => {
+test('store screenshot inventory is exact, intact, opaque, 1280 by 800, and from this build', async (): Promise<void> => {
   await assertScreenshotInventory(SCREENSHOT_DIRECTORY);
+  await assertScreenshotsMatchThisBuild();
 });
 
 test('captures five truthful release states with category membership in the popup and permission copy in onboarding', async ({
@@ -1265,5 +1359,9 @@ test('captures five truthful release states with category membership in the popu
   assertNoUnexpectedBrowserDiagnostics(freshInstallExtension.diagnostics);
   assertNoUnexpectedBrowserDiagnostics(restartableExtension.diagnostics);
   await publishCapturedScreenshots(captureDirectory, SCREENSHOT_DIRECTORY, updateCanonical);
+  // The provenance is written by the run that published the images, from the build those images
+  // were captured against. Written anywhere else it would record a build they did not come from.
+  if (updateCanonical) await writeScreenshotProvenance();
   await assertScreenshotInventory(SCREENSHOT_DIRECTORY);
+  await assertScreenshotsMatchThisBuild();
 });
