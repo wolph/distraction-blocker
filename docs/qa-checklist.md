@@ -149,7 +149,7 @@ since the grep was written. Both mistakes were present when this section was fir
 - hostile Pago Pago host timezone reproduces every Amsterdam canonical byte
 - screenshot integrity rejects a transparent interior pixel
 - screenshot update mode rejects every value except the documented 1
-- store screenshot inventory is exact, intact, opaque, and 1280 by 800
+- store screenshot inventory is exact, intact, opaque, 1280 by 800, and from this build
 - update publication restores the complete canonical set after a later replacement fails
 - update staging leaves the canonical set untouched after a later write fails
 
