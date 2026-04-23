@@ -52,7 +52,7 @@ import {
  * A relaunch costs several browser starts, a recovery, and sometimes a closure cleanup, and these
  * scenarios share a machine with the rest of the suite. Measured with a load average near thirty,
  * one of them spent more than three minutes before reaching its first assertion, so the budget is
- * five minutes. Every wait inside is still on a condition; this only says how long the file is
+ * five minutes. Every wait inside is still on a condition. This only says how long the file is
  * willing to be patient before calling a hang a hang.
  */
 const RECOVERY_TIMEOUT_MS: number = 300_000;
