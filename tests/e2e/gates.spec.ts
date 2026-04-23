@@ -249,7 +249,7 @@ test('friction cancellation without typing uses the configured delay', async ({ 
   const gateDelayMs: number = 3_000;
   await configureFastEconomy(extPage, { gateDelayMs, requireTypedPhrase: false });
   await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.3 } });
-  // A Friction End opens the gate; only a Flexible session ends on the request itself.
+  // A Friction End opens the gate. Only a Flexible session ends on the request itself.
   expect(await sendExtensionRequest(extPage, { type: 'openEndGate' })).toEqual({
     ok: true,
     code: 'ok',
