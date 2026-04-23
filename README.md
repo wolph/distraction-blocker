@@ -80,7 +80,7 @@ Focus Lock sends no extension data to a developer-controlled server. Settings > 
 
 The end-to-end suite uses local test pages and an isolated browser profile. It does not need your normal Chrome profile.
 
-Before adding tests, read [docs/testing-rules.md](docs/testing-rules.md). It is five rules with the evidence that earned them, and the first one is the one that catches everybody.
+Before adding tests, read [docs/testing-rules.md](docs/testing-rules.md). It is six rules with the evidence that earned them, and the first one is the one that catches everybody.
 
 Before preparing a Chrome Web Store submission, read [docs/release-candidate-gate.md](docs/release-candidate-gate.md). It is ten ordered steps with the symptom each failure presents, because most of them fail in more than one way and several look like product defects while being the opposite.
 

@@ -1,4 +1,4 @@
-# Five rules for tests in this repository
+# Six rules for tests in this repository
 
 Each of these was learned the expensive way on one branch. They are written with the evidence that
 earned them, because the evidence is the part that makes them stick.
@@ -100,9 +100,37 @@ crossed, and compute the next one that satisfies it. The capture that failed now
 morning in the store timezone still ahead of the real clock, which keeps the hostile-timezone run on
 a different calendar day and keeps the alarms schedulable.
 
+## 6. A comment is prose, and the file it sits in will not tell you
+
+The project's writing rules apply to every word anyone reads: documentation, commit messages, and
+the comments in a test. Straight quotes, ASCII hyphens, no ellipsis character, and no semicolons
+joining two sentences that a period would join better.
+
+Documentation is the easy half. Someone writing a document expects prose rules, because a document
+is obviously prose. A comment in a test is where the rule fails, and the reason is the file around
+it. Three lines above your comment a semicolon ends a statement and is correct. Inside the comment
+block it is punctuation and is not. Nothing marks the boundary: the formatter reads the whole file
+as TypeScript and is happy either way, the type checker has no opinion about English, and a review
+reads comments for what they say rather than for how they are punctuated.
+
+So the only thing that finds these is a deliberate scan, which means they accumulate until somebody
+runs one. When this rule was written, a scan across one branch's authored files found exactly two
+violations in prose, and **both were in test comments**. None were in the documentation the same
+people wrote in the same week.
+
+Two exemptions, and they are the same exemption twice. Literal command text keeps its own
+punctuation, and so does code inside a JSDoc `@example` block, because both must run as written and
+rewriting them to satisfy a rule about English would break them. Say so when you exclude them from
+a scan rather than passing over them silently, so the next reader knows the call was made and by
+whom.
+
 ## The common thread
 
-All five are the same question asked at different scales. **Is the thing you checked the thing you
-meant?** A proxy value, a partial suite, a permissive fake, a test pinned to the current behaviour,
-and a clock pinned to a date that has passed are five ways of answering a question next to the one
-you asked, and all five come back green until the day they do not.
+The first five are the same question asked at different scales. **Is the thing you checked the
+thing you meant?** A proxy value, a partial suite, a permissive fake, a test pinned to the current
+behaviour, and a clock pinned to a date that has passed are five ways of answering a question next
+to the one you asked, and all five come back green until the day they do not.
+
+The sixth is the same question about the words rather than the code. A comment that explains the
+wrong thing, or explains the right thing in prose nobody edits to the standard the documents get,
+is a check on the reader's understanding that nothing runs.
