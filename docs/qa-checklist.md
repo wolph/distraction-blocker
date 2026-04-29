@@ -30,7 +30,7 @@ Unit suite: **162 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
 deriving it means collecting every file, which is the expensive half of a run, and a number
 that needs a run to verify is exactly the kind that went stale here four times.
 
-End-to-end suite: **81 scenarios in 15 spec files**, as Playwright itself
+End-to-end suite: **82 scenarios in 16 spec files**, as Playwright itself
 lists them. Asking the runner rather than counting `test(` in the sources is not pedantry: a
 grep undercounts `test.skip`, which is listed and reported, and misses a spec file added
 since the grep was written. Both mistakes were present when this section was first drafted.
@@ -95,6 +95,10 @@ since the grep was written. Both mistakes were present when this section was fir
 - settings reports the indefinite session and discloses that the popup owns it
 - stats reports the indefinite plan and both manual outcomes
 - the indefinite blocked page hands every ending to the popup
+
+### mute-survival.spec.ts (1)
+
+- a browser relaunch discards the mute this extension applied, and its attribution
 
 ### onboarding-visual.spec.ts (1)
 
