@@ -1471,6 +1471,15 @@ test('Task 7 production evidence matrix is reproducible', async ({
         deleteRemote: false,
       }),
     ).toEqual({ ok: true });
+    // The same unguarded read that failed in two other specs: a sync write settles on its own
+    // schedule, so the status is waited for rather than sampled.
+    await expect
+      .poll(
+        async (): Promise<unknown> =>
+          (await sendExtensionRequest(extPage, { type: 'getSetupState' })).syncWriteStatus,
+        { timeout: 30_000 },
+      )
+      .toBe('idle');
     expect(
       await extPage.evaluate(
         async (): Promise<unknown> => await chrome.runtime.sendMessage({ type: 'getSetupState' }),

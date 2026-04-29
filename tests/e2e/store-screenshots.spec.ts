@@ -696,6 +696,10 @@ function nextCaptureInstant(realNow: number): number {
 }
 
 async function seedStoreStats(controlPage: Page, worker: Worker): Promise<void> {
+  // A completed sync setup reports `pending` while the boot republishes it, measured at about ten
+  // seconds, so reading the status once is a check racing the thing it checks. It wins that race
+  // when this spec runs alone and loses it behind a full suite. This file already owns the wait.
+  await settleSync(controlPage);
   const setup = await sendExtensionRequest(controlPage, { type: 'getSetupState' });
   expect(setup).toMatchObject({
     completed: true,
