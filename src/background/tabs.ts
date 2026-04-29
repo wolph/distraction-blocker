@@ -1374,18 +1374,27 @@ export function enforcementTargetPortsV2(): EnforcementTargetPortsV2 {
 
 /**
  * Restores the mute state every claimed tab had before the session and reports the tabs that no
- * longer need the claim. A tab that cannot be read keeps its claim for the next attempt.
+ * longer need the claim. A tab that is present and refuses the update keeps its claim for the next
+ * attempt. A claim nothing in the browser carries is finished, not pending.
  */
 export async function restoreClaimedTabs(claims: readonly CleanupTabClaim[]): Promise<number[]> {
   const settled: number[] = [];
   for (const claim of claims) {
     const read: TabReadResult = await readTab(claim.tabId);
     const tab: chrome.tabs.Tab | null = read.ok ? read.tab : await restoredClaimTab(claim);
-    // The identifier is gone and nothing in the browser carries this claim's effect yet. Chrome
-    // restores tabs lazily, so that is not proof the tab will never arrive, and settling here would
-    // drop the mute for good on one that shows up a moment later. The claim survives for the next
-    // attempt, and the journal's own retry budget is what bounds the wait.
-    if (tab === null || tab.id === undefined) continue;
+    // The identifier is gone and nothing in the browser carries this claim's effect. Waiting for a
+    // lazily restored tab was the earlier reading, and it is wrong: Chrome discards an extension's
+    // mute and its attribution across a relaunch, measured on the tab we had muted ourselves, which
+    // came back `muted: false` with no `extensionId` and a new identifier. So a tab that arrives a
+    // moment later arrives carrying nothing, `restoredClaimTab` cannot match it either, and the
+    // wait can only ever end in the retry budget expiring hours later with every session start
+    // refused behind it. The state this claim exists to reach is the state the browser is already
+    // in, so it is settled. Re-applying a mute to a tab we cannot identify would be guessing, not
+    // restoring.
+    if (tab === null || tab.id === undefined) {
+      settled.push(claim.tabId);
+      continue;
+    }
     const ownsMute: boolean = tab.mutedInfo?.extensionId === chrome.runtime.id;
     const priorMuted: boolean = claim.state.priorMuted ?? false;
     try {

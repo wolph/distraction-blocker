@@ -6585,7 +6585,7 @@ describe('restoreClaimedTabs across a browser restart', (): void => {
     expect(update).toHaveBeenCalledWith(91, { muted: false });
   });
 
-  it('keeps a claim no tab carries yet, because a restore is not instant', async (): Promise<void> => {
+  it('settles a claim no tab carries, because a relaunch already dropped the mute', async (): Promise<void> => {
     const update = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('chrome', {
       runtime: { id: 'focus-lock-test', lastError: undefined },
@@ -6598,11 +6598,16 @@ describe('restoreClaimedTabs across a browser restart', (): void => {
       },
     });
 
-    // Chrome restores tabs lazily, so a browser that carries the effect nowhere right now may
-    // still be about to. Settling here would drop the mute for good on a tab that arrives a moment
-    // later, so the claim survives for the next attempt. The journal, not this layer, owns how
-    // long that can go on.
-    await expect(restoreClaimedTabs([claim(7)])).resolves.toEqual([]);
+    // This pinned the opposite until a probe measured it. Mute a tab from the extension, close the
+    // browser, reopen it: the tab comes back `muted: false`, `extensionId: null`, `reason: null`,
+    // under a new identifier, sampled six times across twelve seconds and never changing. So a
+    // browser carrying the effect nowhere is not about to carry it again. Waiting cannot end in a
+    // restore, only in the retry budget expiring hours later with every session start refused, so
+    // the claim is finished here. There is nothing left to undo, which is the whole of what it
+    // asked for.
+    await expect(restoreClaimedTabs([claim(7)])).resolves.toEqual([7]);
+    // Settled without touching a tab. The claim is satisfied by the browser's own state, and
+    // muting something we cannot identify would be guessing rather than restoring.
     expect(update).not.toHaveBeenCalled();
   });
 
