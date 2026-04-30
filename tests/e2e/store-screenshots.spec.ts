@@ -275,6 +275,18 @@ async function captureStoreScreenshot(
       width: geometry.viewport.width,
     });
     await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' });
+    // The last unpinned thing about this capture, and it moved 24,955 pixels between two runs of
+    // the same build. macOS decides scrollbar width from the pointing device: a trackpad draws
+    // overlay scrollbars that take no layout space, a mouse draws a gutter about 20 pixels wide,
+    // and `AppleShowScrollBars` is unset here so the machine switches between them on its own. The
+    // gutter narrows every panel and re-wraps every line beneath it, which reads as a redesign
+    // rather than as a scrollbar. Everything else about this capture is declared, the device scale
+    // factor, the viewport, the colour scheme, motion and fonts, so this is declared too. It
+    // reproduces the tracked bytes rather than replacing them, which is how we know the images
+    // were always right and only the host had moved.
+    await page.addStyleTag({
+      content: '::-webkit-scrollbar { width: 0 !important; height: 0 !important; }',
+    });
     await page.evaluate(async (): Promise<void> => {
       await document.fonts.ready;
       await new Promise<void>((resolve: () => void): void => {
