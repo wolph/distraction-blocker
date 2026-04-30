@@ -229,6 +229,12 @@ the exact capture geometry the spec annotates, and the host and worker clocks ag
 - **`git diff --stat` shows no change.** Suspicious rather than good. Either the capture did not
   publish or the surfaces genuinely did not move. Confirm which before believing it.
 
+**Read the provenance check for exactly what it claims.** A matching digest proves a capture was
+run against a `dist/` with that digest. It does not prove the tracked bytes are what that capture
+produced, and those are different claims with the stronger one implied by the name. The pixel
+comparison inside step 7 does make the stronger check, so the gate is not blind, but a green step 5
+on its own earns less than a reader would assume.
+
 Then look at all five. **This is the step that needs a person, and it is the reason this gate
 cannot be finished by an agent.** The provenance digest proves the images came from this build and
 the inventory check proves they are 1280x800 and opaque. Neither can tell you that a screenshot is
