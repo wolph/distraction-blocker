@@ -77,7 +77,7 @@ A test pinned to the requirement goes red the moment the defect is repaired, whi
 and makes the fix visible in the diff. That is the behaviour you want from a suite: it should
 disagree with the code until the code is right.
 
-## 5. A frozen clock ages, and a test frozen to a date fails on the next one
+## 5. A frozen clock ages, whether you froze a date or a time of day
 
 Freezing time makes a test deterministic. Freezing it to a fixed timestamp makes it deterministic
 until that day passes, and then it fails for a reason nobody changed.
@@ -99,6 +99,23 @@ scenario actually needs from that instant, a morning in a named timezone, a day 
 crossed, and compute the next one that satisfies it. The capture that failed now freezes at the next
 morning in the store timezone still ahead of the real clock, which keeps the hostile-timezone run on
 a different calendar day and keeps the alarms schedulable.
+
+**A frozen time of day rots the same way, and it rots worse.** A scheduled-session test froze the
+worker clock to noon and opened a wall-clock window at 11:59 to 12:01. It passed at 11:10 and failed
+at 23:55, on identical code, with nothing changed but the hour somebody ran it. The mechanism is the
+distance: the worker can be evicted and restarted at any moment, which drops the override, and the
+real clock is then judged against the window. At 11:10 that is harmless, because the real clock is
+an hour from the frozen one and still inside a window built around it. At 23:55 it is twelve hours
+away and outside.
+
+A frozen date fails once and then keeps failing, which is loud. A frozen time of day fails for part
+of every day and passes for the rest, which is worse, because a test that is green all morning and
+red all evening gets rerun until it goes green and then believed. If you have written a clock
+constant of any shape into a test, that is the rule reaching you.
+
+The fix is the same sentence as above applied to the hour: derive the instant at run time and build
+the window around it, so the real clock stays inside whatever the frozen one describes and the
+scenario survives an eviction it cannot prevent.
 
 ## 6. A comment is prose, and the file it sits in will not tell you
 
@@ -128,8 +145,8 @@ whom.
 
 The first five are the same question asked at different scales. **Is the thing you checked the
 thing you meant?** A proxy value, a partial suite, a permissive fake, a test pinned to the current
-behaviour, and a clock pinned to a date that has passed are five ways of answering a question next
-to the one you asked, and all five come back green until the day they do not.
+behaviour, and a clock pinned to an instant the real one has left behind are five ways of answering a question
+next to the one you asked, and all five come back green until the day, or the hour, they do not.
 
 The sixth is the same question about the words rather than the code. A comment that explains the
 wrong thing, or explains the right thing in prose nobody edits to the standard the documents get,

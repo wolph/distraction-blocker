@@ -15,7 +15,7 @@ command here and report every artifact, and the run is still incomplete until a 
 Step 8 records that item as outstanding rather than passed, and step 9 lists the other two things
 this gate does not certify.
 
-**Read these five constraints first. Three of the steps are destructive of other people's work if
+**Read these six constraints first. Three of the steps are destructive of other people's work if
 you ignore them.**
 
 - **Steps 4 through 7 need a quiet machine.** They launch real browsers. The visual capture in
@@ -47,6 +47,13 @@ you ignore them.**
   `STATS_EVIDENCE_DIR`, `INDEFINITE_EVIDENCE_DIR`, `TASK4_EVIDENCE_DIR` or `TASK7_EVIDENCE_DIR`. It
   holds evidence from earlier captures and at least one tracked file, so deleting it destroys work
   this gate did not produce.
+- **Do not start a run near local midnight.** Several scenarios open a wall-clock schedule window
+  on the current local day, which cannot be built across the boundary, so they skip rather than
+  fail. That is correct behaviour and it is also a gate that quietly certifies less than a full one:
+  the only trace is a higher skip count that nobody reads. A run finishing at 23:54 lost two
+  scenarios this way, so **start at least thirty minutes clear of local midnight**, which is the
+  twenty minute guard the scenarios use plus the ten a full step 7 takes. If you cannot, record in
+  step 8 which scenarios the guard skipped and why, so the evidence says what the run did not cover.
 - **Nothing here may run against a dirty or moving tree.** Step 0 establishes that, and step 5's
   whole purpose is defeated if a commit lands mid-gate.
 
@@ -296,10 +303,12 @@ had been assigned to the wrong person.
    look like new breakage.
 5. **A real defect.** What is left after the four above are excluded, and only then.
 
-One expected result that is not a failure: a **skip** in `tests/e2e/indefinite.spec.ts` about one
+Two expected results that are not failures. A **skip** in `tests/e2e/indefinite.spec.ts` about one
 run in eight. Whether a fresh navigation can be stopped is Chrome's content-script injection timing
 rather than a product rule, and that scenario checks the worker's own durable stop record instead of
-asserting into the race.
+asserting into the race. And the three schedule scenarios skipping together within twenty minutes of
+local midnight, for the reason in the constraints above. Count the skips against a run you trust
+before reading a low number as a clean sweep.
 
 ## Step 8. Record the evidence and commit
 

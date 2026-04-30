@@ -17,6 +17,9 @@ import {
 
 const PROJECTED_QUOTA_PREFIX: string = 'task7-system-quota:';
 
+/** A local wall-clock window cannot straddle local midnight, so a run this close to it skips. */
+const MIDNIGHT_GUARD_MINUTES: number = 20;
+
 async function fillSyncForProjectedQuota(worker: Worker): Promise<{
   bytes: number;
   quota: number;
@@ -229,15 +232,29 @@ test('an active schedule window starts a scheduled focus session', async ({ extP
   await clearNotifications(worker);
   await observeSoundMessages(extPage);
   const settings: Settings = await sendExtensionRequest(extPage, { type: 'getSettings' });
-  const scheduleClock: { at: number; day: number } = await worker.evaluate(
-    (): { at: number; day: number } => {
+  // Frozen to the instant this run started rather than to a noon typed into the file. A frozen
+  // time of day is deterministic only while the wall clock stays near it: with noon written here
+  // this test passed at 11:10 and failed at 23:55 on identical code, because losing the override
+  // to a worker eviction left the real clock outside a window built around a time twelve hours
+  // away. Freezing to now keeps the real clock inside the window, so the scenario survives the
+  // eviction it cannot prevent.
+  const scheduleClock: { at: number; day: number; minutes: number } = await worker.evaluate(
+    (): { at: number; day: number; minutes: number } => {
       const fixed: Date = new Date();
-      fixed.setHours(12, 0, 0, 0);
       const at: number = fixed.getTime();
       Date.now = (): number => at;
-      return { at, day: fixed.getDay() };
+      return { at, day: fixed.getDay(), minutes: fixed.getHours() * 60 + fixed.getMinutes() };
     },
   );
+  // The window is a local wall-clock range on one day, so it cannot be built across midnight. Six
+  // minutes before the boundary was observed to be too close on this suite.
+  test.skip(
+    scheduleClock.minutes < MIDNIGHT_GUARD_MINUTES ||
+      scheduleClock.minutes > 24 * 60 - MIDNIGHT_GUARD_MINUTES,
+    'a local wall-clock schedule window cannot straddle local midnight',
+  );
+  const asHhMm: (minutes: number) => string = (minutes: number): string =>
+    `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
   expect(
     await sendExtensionRequest(extPage, {
       type: 'updateSettings',
@@ -252,8 +269,8 @@ test('an active schedule window starts a scheduled focus session', async ({ extP
           {
             id: 'e2e-active-window',
             days: [scheduleClock.day],
-            start: '11:59',
-            end: '12:01',
+            start: asHhMm(scheduleClock.minutes - 1),
+            end: asHhMm(scheduleClock.minutes + 1),
             duration: { kind: 'window' },
             mode: 'blacklist',
             strictness: 'friction',
