@@ -259,7 +259,6 @@ test.skip('a start whose registration cannot be audited fails as a registration 
 
 test('a session whose documents cannot be reached ends as a tab enforcement failure', async ({
   freshInstallExtension,
-  siteUrl,
 }) => {
   const launch: FreshInstallLaunch = await completedFreshInstall(freshInstallExtension);
   await startTestSession(launch.extPage, {
