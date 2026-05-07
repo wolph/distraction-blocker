@@ -46,7 +46,7 @@ import {
   enumerateEnforcementTargetsV2,
 } from './enforcement-targets-v2';
 import { buildFrozenEpochResetCommandV2 } from './overlay-view-v2';
-import type { CleanupEnforcementTarget } from './runtime-v2-types';
+import type { CleanupEnforcementTarget, RuntimeStateV2 } from './runtime-v2-types';
 
 /** Every seam the reset needs that it is not allowed to own. */
 export interface BrowserResetPortsV2 {
@@ -67,7 +67,7 @@ export interface BrowserResetPortsV2 {
    * The caller's own in-memory reset, run while the lease is still held, so no later operation can
    * begin against a caller that is half reset.
    */
-  afterRemoval?(): Promise<void>;
+  afterRemoval?(runtime: RuntimeStateV2): Promise<void>;
   reportError(error: unknown): void;
 }
 
@@ -146,6 +146,8 @@ export async function finalizeAllDataClearV2(
   return ports.lease.run(
     async (token: DataClearLeaseToken): Promise<AllDataClearFinalizationV2> => {
       const journal: AllDataClearJournalV2 = await resetJournal();
+      const projection: RuntimeStateV2 | null = journal.runtimeProjection;
+      if (projection === null) throw new Error('browser reset requires a runtime projection');
       const missing: string | null = await missingEvidence(ports, journal);
       if (missing !== null) {
         // Answering `not-finalizable` and recording nothing is how a clear stops with the barrier
@@ -191,7 +193,7 @@ export async function finalizeAllDataClearV2(
       }
       // The caller's own reset happens while the lease is still held, so nothing can begin a new
       // clear against a caller that is half reset.
-      await ports.afterRemoval?.();
+      await ports.afterRemoval?.(structuredClone(projection));
       return 'removed';
     },
   );

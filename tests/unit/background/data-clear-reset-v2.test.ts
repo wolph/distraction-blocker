@@ -849,15 +849,17 @@ describe('all-data clear finalization', (): void => {
       }),
     );
     const held: boolean[] = [];
-    h.ports.afterRemoval = async (): Promise<void> => {
+    const projection: unknown = structuredClone(h.journal().runtimeProjection);
+    h.ports.afterRemoval = vi.fn(async (): Promise<void> => {
       held.push(h.lease.held());
-    };
+    });
 
     const outcome: string = await finalizeAllDataClearV2(h.ports);
 
     // A clear that began against a half-reset caller would be reasoning about state nobody owns.
     expect(outcome).toBe('removed');
     expect(held).toEqual([true]);
+    expect(h.ports.afterRemoval).toHaveBeenCalledWith(projection);
   });
 
   it('schedules a retry when the lifecycle replay fails', async (): Promise<void> => {

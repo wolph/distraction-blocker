@@ -30,7 +30,7 @@ Unit suite: **162 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
 deriving it means collecting every file, which is the expensive half of a run, and a number
 that needs a run to verify is exactly the kind that went stale here four times.
 
-End-to-end suite: **82 scenarios in 16 spec files**, as Playwright itself
+End-to-end suite: **83 scenarios in 16 spec files**, as Playwright itself
 lists them. Asking the runner rather than counting `test(` in the sources is not pedantry: a
 grep undercounts `test.skip`, which is listed and reported, and misses a spec file added
 since the grep was written. Both mistakes were present when this section was first drafted.
@@ -81,12 +81,13 @@ since the grep was written. Both mistakes were present when this section was fir
 
 - captures deterministic indefinite session visual evidence
 
-### indefinite.spec.ts (12)
+### indefinite.spec.ts (13)
 
 - a 50 minute cycling session labels its phase and its session separately
 - a pause that expires resumes indefinite focus with no end in sight
 - a scheduled until-stopped window starts once and never relocks inside itself
 - a stopped fresh navigation carries the indefinite and stopped-page copy
+- all-data deletion blocks starts and popup retry completes the exhausted real journal
 - an indefinite pause freezes focus time and still ends from the popup
 - end authority follows the session type a timed session was started with
 - manual end reasons separate a timed cancel from an indefinite completion

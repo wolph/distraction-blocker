@@ -1484,6 +1484,28 @@ describe('worker cutover to v2 session authority', (): void => {
     expect(worker.broadcasts.at(-1)?.lifecycle.kind).toBe('idle');
   });
 
+  it('retains the browser reset epoch after all-data finalization', async (): Promise<void> => {
+    const document: FakeDocument = {
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    };
+    const worker: WorkerHarness = await bootWorker(installedSeed(), { documents: [document] });
+    await worker.settle();
+    document.received.length = 0;
+    expect(await worker.send({ type: 'clearFocusLockData', scope: 'all' })).toMatchObject({
+      ok: true,
+      status: 'cleared',
+    });
+    await worker.settle();
+    const reset: DocumentContentCommand | undefined = document.received.find(
+      (command: DocumentContentCommand): boolean => command.command === 'reset-enforcement-epoch',
+    );
+    expect(reset).toBeDefined();
+    expect(worker.runtime().enforcementEpoch).toBe(reset?.enforcementEpoch);
+  });
+
   it('leaves the epoch reset for the push that delivers it', async (): Promise<void> => {
     const worker: WorkerHarness = await bootWorker(installedSeed());
     worker.documents.push({

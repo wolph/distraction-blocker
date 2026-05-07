@@ -11,6 +11,7 @@
  */
 
 import type { BrowserContext, CDPSession, Locator, Page, Worker } from '@playwright/test';
+import type { AllDataClearJournalV2 } from '../../src/background/data-clear-journal';
 import type { RuntimeTabState } from '../../src/background/runtime-leaf-types';
 import type {
   DailyAgg,
@@ -817,7 +818,143 @@ test('settings reports the indefinite session and discloses that the popup owns 
   expectNoDiagnostics(context);
 });
 
-// TODO(all-data clear): the all-data clear flow belongs here once the journal slice lands. It owes
-// a request that answers `data-clear-pending` for a start, the popup copy `Deleting Focus Lock
-// data. Finishing cleanup.`, the exhausted-error copy with `Retry cleanup` clicked end to end, and
-// the journal advancing behind that retry. Carved out of this task by the plan ledger.
+interface DataClearProbe {
+  remove: typeof chrome.storage.sync.remove;
+  journals: (AllDataClearJournalV2 | null)[];
+  listener(changes: Record<string, chrome.storage.StorageChange>, area: string): void;
+}
+
+async function readDataClearJournal(worker: Worker): Promise<AllDataClearJournalV2 | null> {
+  return await worker.evaluate(async (): Promise<AllDataClearJournalV2 | null> => {
+    const stored: Record<string, unknown> = await chrome.storage.local.get('dataClearJournal');
+    return (stored.dataClearJournal as AllDataClearJournalV2 | undefined) ?? null;
+  });
+}
+
+/** Fail only the browser deletion boundary. Every journal write and retry remains real. */
+async function interceptDataClear(worker: Worker): Promise<void> {
+  await worker.evaluate((): void => {
+    const probe: DataClearProbe = {
+      remove: chrome.storage.sync.remove,
+      journals: [],
+      listener: (changes: Record<string, chrome.storage.StorageChange>, area: string): void => {
+        if (area !== 'local' || !Object.hasOwn(changes, 'dataClearJournal')) return;
+        probe.journals.push(
+          (changes.dataClearJournal?.newValue as AllDataClearJournalV2 | undefined) ?? null,
+        );
+      },
+    };
+    (globalThis as unknown as { dataClearProbe: DataClearProbe }).dataClearProbe = probe;
+    chrome.storage.sync.remove = async (): Promise<void> => {
+      throw new Error('e2e remote deletion unavailable');
+    };
+    chrome.storage.onChanged.addListener(probe.listener);
+  });
+}
+
+async function restoreDataClear(worker: Worker, stopObserving: boolean = false): Promise<void> {
+  await worker.evaluate((stop: boolean): void => {
+    const scope: { dataClearProbe?: DataClearProbe } = globalThis as unknown as {
+      dataClearProbe?: DataClearProbe;
+    };
+    const probe: DataClearProbe | undefined = scope.dataClearProbe;
+    if (probe === undefined) return;
+    chrome.storage.sync.remove = probe.remove;
+    if (stop) {
+      chrome.storage.onChanged.removeListener(probe.listener);
+      delete scope.dataClearProbe;
+    }
+  }, stopObserving);
+}
+
+test('all-data deletion blocks starts and popup retry completes the exhausted real journal', async ({
+  context,
+  extPage,
+  worker,
+}) => {
+  await startUntilStoppedSession(extPage);
+  const active: SessionSnapshotV2 = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+  if (active.config === null) throw new Error('the started session has no configuration');
+  await extPage.reload();
+  await extPage.getByRole('button', { name: END_SESSION_LABEL }).click();
+  await waitForLifecycle(extPage, 'idle');
+  await interceptDataClear(worker);
+  try {
+    expect(
+      await sendExtensionRequest(extPage, { type: 'clearFocusLockData', scope: 'all' }),
+    ).toEqual({
+      ok: false,
+      scope: 'all',
+      status: 'pending',
+      error: 'e2e remote deletion unavailable',
+    });
+    const pending: AllDataClearJournalV2 | null = await readDataClearJournal(worker);
+    expect(pending).toMatchObject({
+      version: 2,
+      scope: 'all',
+      phase: 'remote',
+      retry: {
+        automaticAttempt: 1,
+        lastError: 'e2e remote deletion unavailable',
+      },
+    });
+    expect(pending?.retry.nextAttemptAt).toEqual(expect.any(Number));
+    expect(
+      await sendExtensionRequest(extPage, { type: 'startSession', config: active.config }),
+    ).toMatchObject({ ok: false, code: 'data-clear-pending' });
+    await extPage.reload();
+    await expect(
+      extPage.getByText('Deleting Focus Lock data. Finishing cleanup.', { exact: true }),
+    ).toBeVisible();
+    await expect(extPage.getByRole('button', { name: 'Retry cleanup' })).toHaveCount(0);
+    expect(await sendExtensionRequest(extPage, { type: 'retryDataClear' })).toMatchObject({
+      ok: false,
+      code: 'retry-not-available',
+    });
+
+    // Reissuing deletion spends the actual durable budget without waiting hours for its alarms.
+    for (let attempt: number = 2; attempt <= 12; attempt += 1) {
+      expect(
+        await sendExtensionRequest(extPage, { type: 'clearFocusLockData', scope: 'all' }),
+      ).toMatchObject({ ok: false, status: 'pending' });
+      expect((await readDataClearJournal(worker))?.retry.automaticAttempt).toBe(attempt);
+    }
+    const exhausted: AllDataClearJournalV2 | null = await readDataClearJournal(worker);
+    expect(exhausted?.retry.nextAttemptAt).toBeNull();
+    await extPage.reload();
+    await expect(
+      extPage.getByText('Could not delete data. Try again.', { exact: true }),
+    ).toBeVisible();
+    await restoreDataClear(worker);
+    await extPage.getByRole('button', { name: 'Retry cleanup', exact: true }).click();
+    await expect
+      .poll(async (): Promise<AllDataClearJournalV2 | null> => await readDataClearJournal(worker))
+      .toBeNull();
+    const journals: (AllDataClearJournalV2 | null)[] = await worker.evaluate(
+      (): (AllDataClearJournalV2 | null)[] =>
+        (globalThis as unknown as { dataClearProbe: DataClearProbe }).dataClearProbe.journals,
+    );
+    const retried: AllDataClearJournalV2[] = journals.filter(
+      (journal: AllDataClearJournalV2 | null): journal is AllDataClearJournalV2 =>
+        journal !== null && journal.retry.batch === (exhausted?.retry.batch ?? -1) + 1,
+    );
+    expect([
+      ...new Set(retried.map((journal: AllDataClearJournalV2): string => journal.phase)),
+    ]).toEqual(['remote', 'local', 'browser-reset']);
+    expect(journals.at(-1)).toBeNull();
+    expect(
+      await worker.evaluate(
+        async (): Promise<Record<string, unknown>> => await chrome.storage.sync.get(null),
+      ),
+    ).toEqual({});
+    expect(await sendExtensionRequest(extPage, { type: 'getSetupState' })).toMatchObject({
+      completed: false,
+      dataClear: { status: 'idle', scope: null, phase: null },
+    });
+    expect((await readRuntimeV2(worker)).enforcementEpoch).toBe(pending?.resetEpoch);
+    await expect(extPage.getByRole('button', { name: 'Retry cleanup' })).toHaveCount(0);
+    expectNoDiagnostics(context);
+  } finally {
+    await restoreDataClear(worker, true);
+  }
+});

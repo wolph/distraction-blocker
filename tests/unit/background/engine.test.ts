@@ -1598,6 +1598,51 @@ describe('Engine', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('settles pending-clear navigation without admitting mutations', async (): Promise<void> => {
+    const h: Harness = makeEngine();
+    await h.engine.retainDataClearQuiescence();
+    const navigation: () => Promise<void> = vi.fn(async (): Promise<void> => undefined);
+    await expect(
+      h.engine.runWithRuntimeMutationLeaseOrBlockingSweep(navigation),
+    ).resolves.toBeUndefined();
+    expect(navigation).not.toHaveBeenCalled();
+    await expect(h.engine.runWithRuntimeMutationLease(navigation)).rejects.toThrow(
+      'runtime mutation rejected',
+    );
+    expect(navigation).not.toHaveBeenCalled();
+  });
+
+  it('settles deferred navigation when an in-flight clear becomes pending', async (): Promise<void> => {
+    const h: Harness = makeEngine();
+    let release: () => void = (): void => undefined;
+    let entered: () => void = (): void => undefined;
+    const held: Promise<void> = new Promise((resolve: () => void): void => {
+      release = resolve;
+    });
+    const ready: Promise<void> = new Promise((resolve: () => void): void => {
+      entered = resolve;
+    });
+    const clearing: Promise<void> = h.engine.runWithDataClearBarrier(
+      async (): Promise<void> => {
+        entered();
+        await held;
+        throw new Error('remote deletion unavailable');
+      },
+      (): boolean => true,
+    );
+    await ready;
+    const navigation: () => Promise<void> = vi.fn(async (): Promise<void> => undefined);
+    const deferred: Promise<void> = h.engine.runWithRuntimeMutationLeaseOrBlockingSweep(navigation);
+    const navigationSettled: Promise<void> = expect(deferred).resolves.toBeUndefined();
+    release();
+    await expect(clearing).rejects.toThrow('remote deletion unavailable');
+    await navigationSettled;
+    expect(navigation).not.toHaveBeenCalled();
+    await expect(h.engine.runWithRuntimeMutationLease(navigation)).rejects.toThrow(
+      'runtime mutation rejected',
+    );
+  });
+
   it('serializes local and live list caches and reconciles a pending local Sync value', async () => {
     let releaseFirstCache: () => void = (): void => {};
     let signalFirstCacheStarted: () => void = (): void => {};

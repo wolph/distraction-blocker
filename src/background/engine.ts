@@ -537,6 +537,9 @@ export class Engine {
   ): Promise<void> {
     if (this.dataClearBarrierState === 'open') return this.trackRuntimeMutation(operation);
     if (!this.dataClearOperationRunning) {
+      // Navigation still advances the tab inventory before it reaches this gate. The pending
+      // clear's next reset enumerates those tabs, so no ordinary runtime mutation is needed here.
+      if (this.allDataClearPending) return Promise.resolve();
       return Promise.reject(
         new Error(
           'runtime mutation rejected while storage transition or data clear is in progress',
@@ -595,9 +598,7 @@ export class Engine {
         await this.flushDeferredBlockingSweep();
         await this.flushDeferredAttempts();
       } else {
-        this.rejectDeferredBlockingSweep(
-          new Error('runtime mutation deferred while all-data deletion remains pending'),
-        );
+        this.settleDataClearNavigation();
       }
     }
   }
@@ -619,8 +620,8 @@ export class Engine {
       ...this.browserResetPorts(),
       // The in-memory reset runs while the deletion lease is still held, so nothing can begin a
       // second clear against an Engine that is half reset.
-      afterRemoval: async (): Promise<void> => {
-        await this.resetAfterAllDataClear();
+      afterRemoval: async (runtime: RuntimeStateV2): Promise<void> => {
+        await this.resetAfterAllDataClear(runtime);
         this.openRuntimeMutationBarrier();
         await this.applyPendingWebsiteBlockingLoss();
         await this.flushDeferredAttempts();
@@ -666,9 +667,7 @@ export class Engine {
       this.dataClearBarrierState = 'quiesced';
     } finally {
       this.dataClearOperationRunning = false;
-      this.rejectDeferredBlockingSweep(
-        new Error('runtime mutation deferred while all-data deletion remains pending'),
-      );
+      this.settleDataClearNavigation();
     }
   }
 
@@ -2047,6 +2046,14 @@ export class Engine {
     this.allDataClearPending = false;
   }
 
+  /** The reset resolver owns these targets while deletion is pending. No mutation is admitted. */
+  private settleDataClearNavigation(): void {
+    const deferred: DeferredBlockingSweep | null = this.deferredBlockingSweep;
+    this.deferredBlockingSweep = null;
+    this.deferredBlockingSweepRequested = false;
+    deferred?.resolve();
+  }
+
   private rejectDeferredBlockingSweep(error: Error): void {
     const deferred: DeferredBlockingSweep | null = this.deferredBlockingSweep;
     if (deferred === null) return;
@@ -2088,13 +2095,16 @@ export class Engine {
     return requested;
   }
 
-  private async resetAfterAllDataClear(): Promise<void> {
+  private async resetAfterAllDataClear(projection?: RuntimeStateV2): Promise<void> {
     const now: number = this.ports.now();
     this.settings = structuredClone(DEFAULT_SETTINGS);
     this.lists = structuredClone(DEFAULT_LISTS);
     this.bank = { balanceMs: 0 };
     this.streak = null;
-    this.runtime = emptyRuntimeV2(now, this.ports.newId());
+    this.runtime =
+      projection === undefined
+        ? emptyRuntimeV2(now, this.ports.newId())
+        : structuredClone(projection);
     this.deviceId = await this.ports.rehydrateAfterDataClear();
     this.pendingEvents = [];
     this.dirty = false;
