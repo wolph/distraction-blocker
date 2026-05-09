@@ -582,25 +582,41 @@ test('a pause that expires resumes indefinite focus with no end in sight', async
   expectNoDiagnostics(context);
 });
 
-test('a 50 minute cycling session labels its phase and its session separately', async ({
+test('a 50 minute popup start makes the total session prominent above its focus phase', async ({
   context,
   extPage,
   worker,
 }) => {
-  await startTestSession(extPage, {
-    duration: { kind: 'timed', minutes: 50 },
-    strictness: 'flexible',
-    cycling: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 },
-  });
+  await extPage
+    .getByRole('button', { name: '50 deep work (preference, not science)', exact: true })
+    .click();
+  await extPage.getByText('Cycle options', { exact: true }).click();
+  await extPage.getByRole('checkbox', { name: /^Cycles:/ }).check();
+  await extPage.getByRole('button', { name: /^Start 50 min -/ }).click();
+  const snapshot: SessionSnapshotV2 = await waitForLifecycle(extPage, 'active');
+
+  const primaryRow: Locator = extPage.locator(
+    '.clock-stack__row:not(.clock-stack__row--secondary)',
+  );
+  const secondaryRow: Locator = extPage.locator('.clock-stack__row--secondary');
+  await expect(primaryRow.locator('.clock-stack__label')).toHaveText(TOTAL_SESSION_CLOCK_LABEL);
+  await expect(secondaryRow.locator('.clock-stack__label')).toHaveText(FOCUS_PHASE_CLOCK_LABEL);
 
   // Both clocks are read once, right after activation. They tick down, so the tolerance covers the
   // render latency between the durable start and this read and nothing more.
   await expect(clockValue(extPage, FOCUS_PHASE_CLOCK_LABEL)).toHaveText(/^(25:00|24:59|24:58)$/);
   await expect(clockValue(extPage, TOTAL_SESSION_CLOCK_LABEL)).toHaveText(/^(50:00|49:59|49:58)$/);
 
-  const snapshot: SessionSnapshotV2 = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+  expect(snapshot.config?.duration).toEqual({ kind: 'timed', minutes: 50 });
+  expect(snapshot.config?.cycling?.focusMin).toBe(25);
+  expect((await readRuntimeV2(worker)).session?.config.duration).toEqual({
+    kind: 'timed',
+    minutes: 50,
+  });
   const startedAt: number | null = snapshot.startedAt;
   expect(startedAt).not.toBeNull();
+  expect(snapshot.sessionEndsAt).toBe((startedAt ?? 0) + 50 * 60_000);
+  expect(snapshot.phaseEndsAt).toBe((startedAt ?? 0) + 25 * 60_000);
   const phaseAlarm: chrome.alarms.Alarm | undefined = await worker.evaluate(
     async (): Promise<chrome.alarms.Alarm | undefined> => await chrome.alarms.get('phase'),
   );

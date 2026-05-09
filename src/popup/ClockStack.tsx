@@ -63,7 +63,7 @@ function timedRows(snapshot: SessionSnapshotV2, now: number, sessionMs: number):
   }
   const phaseMs: number | null = remainingPhaseMsV2(snapshot, now);
   if (phaseMs === null || snapshot.phaseEndsAt === snapshot.sessionEndsAt) return [total];
-  return [{ key: 'phase', value: formatClock(phaseMs), label: FOCUS_PHASE_CLOCK_LABEL }, total];
+  return [total, { key: 'phase', value: formatClock(phaseMs), label: FOCUS_PHASE_CLOCK_LABEL }];
 }
 
 function clockRows(snapshot: SessionSnapshotV2, now: number): ClockRow[] {

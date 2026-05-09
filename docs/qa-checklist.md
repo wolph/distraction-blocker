@@ -83,7 +83,7 @@ since the grep was written. Both mistakes were present when this section was fir
 
 ### indefinite.spec.ts (13)
 
-- a 50 minute cycling session labels its phase and its session separately
+- a 50 minute popup start makes the total session prominent above its focus phase
 - a pause that expires resumes indefinite focus with no end in sight
 - a scheduled until-stopped window starts once and never relocks inside itself
 - a stopped fresh navigation carries the indefinite and stopped-page copy

@@ -116,13 +116,19 @@ afterEach((): void => {
 });
 
 describe('ClockStack', (): void => {
-  it('shows the focus phase first and the total session second while timed cycling', (): void => {
+  it('shows the total session prominently and the focus phase second while timed cycling', (): void => {
     const { container } = render(h(ClockStack, { snapshot: timedCyclingFocus(), now: NOW }));
 
     expect(rows(container)).toEqual([
-      { value: '25:00', label: FOCUS_PHASE_CLOCK_LABEL },
       { value: '50:00', label: TOTAL_SESSION_CLOCK_LABEL },
+      { value: '25:00', label: FOCUS_PHASE_CLOCK_LABEL },
     ]);
+    expect(
+      container.querySelector('.clock-stack__row:not(.clock-stack__row--secondary)')?.textContent,
+    ).toBe(`50:00${TOTAL_SESSION_CLOCK_LABEL}`);
+    expect(container.querySelector('.clock-stack__row--secondary')?.textContent).toBe(
+      `25:00${FOCUS_PHASE_CLOCK_LABEL}`,
+    );
   });
 
   it('keeps the total session honest after a phase transition', (): void => {
@@ -136,8 +142,8 @@ describe('ClockStack', (): void => {
     const { container } = render(h(ClockStack, { snapshot: secondPhase, now: NOW + 30 * MIN }));
 
     expect(rows(container)).toEqual([
-      { value: '25:00', label: FOCUS_PHASE_CLOCK_LABEL },
       { value: '1:00:00', label: TOTAL_SESSION_CLOCK_LABEL },
+      { value: '25:00', label: FOCUS_PHASE_CLOCK_LABEL },
     ]);
   });
 
