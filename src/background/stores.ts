@@ -257,7 +257,7 @@ export type StoredSettingsParseResult =
   | { valid: false }
   | { valid: true; changed: boolean; legacy: boolean; settings: Settings };
 
-/** Accepts canonical Settings or the one supported mixed-version predecessor. */
+/** Accepts canonical Settings and legacy boolean force-end fields. */
 export function parseStoredSettings(
   value: unknown,
   current: Settings = DEFAULT_SETTINGS,
@@ -273,15 +273,20 @@ export function parseStoredSettings(
         settings: parsed,
       };
     }
-    if (
-      !isRecord(value) ||
-      !Object.hasOwn(value, 'allowForceEnd') ||
-      typeof value.allowForceEnd !== 'boolean'
-    ) {
-      return { valid: false };
-    }
+    if (!isRecord(value)) return { valid: false };
+    const rootLegacy: boolean = Object.hasOwn(value, 'allowForceEnd');
+    const gate: unknown = value.gate;
+    const gateLegacy: boolean = isRecord(gate) && Object.hasOwn(gate, 'allowForceEnd');
+    if (!rootLegacy && !gateLegacy) return { valid: false };
+    if (rootLegacy && typeof value.allowForceEnd !== 'boolean') return { valid: false };
     const legacy: Record<string, unknown> = { ...value };
-    delete legacy.allowForceEnd;
+    if (rootLegacy) delete legacy.allowForceEnd;
+    if (gateLegacy) {
+      if (!isRecord(gate) || typeof gate.allowForceEnd !== 'boolean') return { valid: false };
+      const legacyGate: Record<string, unknown> = { ...gate };
+      delete legacyGate.allowForceEnd;
+      legacy.gate = legacyGate;
+    }
     const legacySettings: SettingsV2 | null = parseStoredSettingsV2(legacy);
     if (legacySettings === null) return { valid: false };
     const settings: Settings = legacySettings;

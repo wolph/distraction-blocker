@@ -2529,6 +2529,29 @@ describe('background boot state convergence', () => {
     expect(engineSettings()).not.toHaveProperty('allowForceEnd');
   });
 
+  it.each([false, true])(
+    'serves setup after importing installed writer gate.allowForceEnd=%s',
+    async (allowForceEnd: boolean): Promise<void> => {
+      const settings: Settings = { ...structuredClone(DEFAULT_SETTINGS), retentionDays: 30 };
+      mocks.scenario.storedSync = {
+        [SYNC_SETTINGS]: { ...settings, gate: { ...settings.gate, allowForceEnd } },
+      };
+      const actualRouter: typeof import('../../../src/background/router') = await vi.importActual(
+        '../../../src/background/router',
+      );
+      vi.mocked(routeMessage).mockImplementationOnce(actualRouter.routeMessage);
+
+      main();
+      await expect(dispatchRuntime({ type: 'getSetupState' })).resolves.toMatchObject({
+        version: 1,
+        legacyImported: true,
+        storageError: null,
+      });
+      expect(engineSettings()).toEqual(settings);
+      expect(mocks.localState[LOCAL_SETUP]).toMatchObject({ legacyImported: true });
+    },
+  );
+
   it('preserves valid pending base state over older sync state', async () => {
     const pendingSettings: Settings = { ...DEFAULT_SETTINGS, retentionDays: 14 };
     const syncedSettings: Settings = { ...DEFAULT_SETTINGS, retentionDays: 30 };

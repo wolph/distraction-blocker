@@ -138,6 +138,44 @@ describe('matcher cache storage', () => {
 });
 
 describe('storage default merging', () => {
+  it.each([false, true])(
+    'migrates the installed writer gate.allowForceEnd=%s without mutation',
+    (allowForceEnd: boolean): void => {
+      const settings: Settings = {
+        ...structuredClone(DEFAULT_SETTINGS),
+        retentionDays: 30,
+        gate: { delayMs: 30_000, requireTypedPhrase: true },
+      };
+      const legacy: Record<string, unknown> = {
+        ...structuredClone(settings),
+        gate: Object.freeze({ ...settings.gate, allowForceEnd }),
+      };
+      const original: Record<string, unknown> = structuredClone(legacy);
+      Object.freeze(legacy);
+
+      expect(parseStoredSettings(legacy)).toEqual({
+        valid: true,
+        changed: true,
+        legacy: true,
+        settings,
+      });
+      expect(parseStoredSettings(legacy, settings)).toMatchObject({ valid: true, changed: false });
+      expect(legacy).toEqual(original);
+    },
+  );
+
+  it.each([
+    { gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: 'false' } },
+    { gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: false, unexpected: true } },
+    { gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: true }, unexpected: true },
+    { gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: true }, allowForceEnd: 'false' },
+    { gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: true, delayMs: -1 } },
+  ])('rejects invalid installed writer settings %#', (overrides: Record<string, unknown>): void => {
+    expect(parseStoredSettings({ ...structuredClone(DEFAULT_SETTINGS), ...overrides })).toEqual({
+      valid: false,
+    });
+  });
+
   it('accepts the exact legacy settings shape and distinguishes unchanged normalization', (): void => {
     const legacy: Record<string, unknown> = {
       ...structuredClone(DEFAULT_SETTINGS),
