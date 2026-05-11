@@ -83,7 +83,7 @@ input[type="checkbox"] {
 body {
   margin: 0;
   width: 340px;
-  block-size: 100vh;
+  block-size: 600px;
   min-block-size: 0;
   overflow: hidden;
   background: var(--bg);
@@ -101,6 +101,7 @@ body {
 .app {
   display: flex;
   block-size: 100%;
+  max-block-size: 100vh;
   min-block-size: 0;
   flex-direction: column;
 }

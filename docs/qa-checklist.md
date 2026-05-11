@@ -30,7 +30,7 @@ Unit suite: **162 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
 deriving it means collecting every file, which is the expensive half of a run, and a number
 that needs a run to verify is exactly the kind that went stale here four times.
 
-End-to-end suite: **83 scenarios in 16 spec files**, as Playwright itself
+End-to-end suite: **84 scenarios in 16 spec files**, as Playwright itself
 lists them. Asking the runner rather than counting `test(` in the sources is not pedantry: a
 grep undercounts `test.skip`, which is listed and reported, and misses a spec file added
 since the grep was written. Both mistakes were present when this section was first drafted.
@@ -134,7 +134,7 @@ since the grep was written. Both mistakes were present when this section was fir
 
 - persistent profile restores a blocked muted tab and active countdown after relaunch
 
-### smoke.spec.ts (9)
+### smoke.spec.ts (10)
 
 - Stats content stays inside responsive viewports
 - Stats navigation round-trips through an Options section
@@ -144,6 +144,7 @@ since the grep was written. Both mistakes were present when this section was fir
 - options page fits a mobile viewport
 - options primary button meets dark text contrast
 - options rejection and save actions stay together at the viewport edge
+- popup keeps its preferred height and fits controls into shorter hosts
 - popup page renders
 
 ### store-screenshots.spec.ts (9)

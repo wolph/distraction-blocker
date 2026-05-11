@@ -1,4 +1,10 @@
-import { type BrowserContext, chromium, type Page, type Worker } from '@playwright/test';
+import {
+  type BrowserContext,
+  chromium,
+  type Locator,
+  type Page,
+  type Worker,
+} from '@playwright/test';
 import { resolveExtensionDist } from './extension-dist';
 import { expect, test } from './fixtures';
 
@@ -116,6 +122,43 @@ test('popup page renders', async ({ context, extensionId }) => {
   const page = await context.newPage();
   await page.goto(`chrome-extension://${extensionId}/src/popup/popup.html`);
   await expect(page.getByRole('heading', { level: 1, name: 'Focus Lock' })).toBeVisible();
+});
+
+test('popup keeps its preferred height and fits controls into shorter hosts', async ({
+  extPage,
+}) => {
+  await expect(extPage.locator('.start-form')).toBeVisible();
+  const viewports: ReadonlyArray<{ width: number; height: number }> = [
+    { width: 340, height: 760 },
+    { width: 340, height: 600 },
+    { width: 375, height: 400 },
+    { width: 768, height: 600 },
+  ];
+  for (const viewport of viewports) {
+    await extPage.setViewportSize(viewport);
+    const bodyHeight: number = await extPage
+      .locator('body')
+      .evaluate((element: HTMLElement): number => element.getBoundingClientRect().height);
+    expect(bodyHeight).toBe(600);
+    const appHeight: number = await extPage
+      .locator('.app')
+      .evaluate((element: HTMLElement): number => element.getBoundingClientRect().height);
+    expect(appHeight).toBe(Math.min(bodyHeight, viewport.height));
+    await expect(extPage.locator('.start-button')).toBeInViewport({ ratio: 1 });
+    const scroll: Locator = extPage.locator('.start-form__scroll');
+    expect(
+      await scroll.evaluate((element: HTMLElement): number => element.clientHeight),
+    ).toBeGreaterThan(0);
+    if (viewport.height < bodyHeight) {
+      await scroll.evaluate((element: HTMLElement): void => {
+        element.scrollTop = element.scrollHeight;
+      });
+      expect(
+        await scroll.evaluate((element: HTMLElement): number => element.scrollTop),
+      ).toBeGreaterThan(0);
+      await expect(extPage.locator('.start-button')).toBeInViewport({ ratio: 1 });
+    }
+  }
 });
 
 test('Stats navigation round-trips through an Options section', async ({
