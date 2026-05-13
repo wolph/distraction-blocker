@@ -1,8 +1,8 @@
 /**
  * Sends one frozen document command over an injected port and turns the document's answer into an
  * exact worker outcome. The worker owns the tab, so `tabId` is stripped before the send and added
- * back only when wrapping an acknowledgement. Nothing here reads a browser API, a clock, or
- * storage, and nothing retries: a caller owns the reissue policy for every outcome below.
+ * back only when wrapping an acknowledgement. Each send has a bounded acknowledgement deadline.
+ * Nothing here reads a browser API or storage, and a caller owns the reissue policy.
  *
  * This module owns the whole runtime-error vocabulary, so a caller never inspects an error message.
  * The outcomes fall into four classes, each naming one row of the spec's target-classification
@@ -97,6 +97,30 @@ const CLOSED_TARGET_MESSAGES: readonly string[] = [
 ];
 const REJECTED_DETAIL: string = 'the document rejected the command and answered nothing';
 const UNPARSABLE_DETAIL: string = 'the answer is not an exact content enforcement response';
+// Leave room for reset and apply within the transition runner's ten-second freshness budget.
+const DOCUMENT_ACK_TIMEOUT_MS: number = 2_000;
+
+/** A late settlement is consumed but cannot become an acknowledgement after the deadline. */
+async function boundedSend(
+  ports: ContentTransportPortsV2,
+  tabId: number,
+  documentId: string,
+  message: DocumentContentCommand,
+): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      new Promise<never>((_resolve, reject): void => {
+        timer = setTimeout((): void => {
+          reject(new Error('document acknowledgement deadline exceeded'));
+        }, DOCUMENT_ACK_TIMEOUT_MS);
+      }),
+      ports.sendToDocument(tabId, documentId, message),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 /**
  * True only for the runtime's missing-receiver family. Every other rejection, a closed tab
@@ -117,7 +141,7 @@ export async function sendDocumentEnforcementCommand(
 ): Promise<DocumentCommandOutcomeV2> {
   let raw: unknown;
   try {
-    raw = await ports.sendToDocument(command.tabId, command.documentId, wireCommand(command));
+    raw = await boundedSend(ports, command.tabId, command.documentId, wireCommand(command));
   } catch (error: unknown) {
     return sendFailureOutcome(error);
   }
@@ -145,7 +169,7 @@ export async function sendEpochResetCommand(
 ): Promise<EpochResetOutcomeV2> {
   let raw: unknown;
   try {
-    raw = await ports.sendToDocument(command.tabId, command.documentId, wireResetCommand(command));
+    raw = await boundedSend(ports, command.tabId, command.documentId, wireResetCommand(command));
   } catch (error: unknown) {
     return sendFailureOutcome(error);
   }

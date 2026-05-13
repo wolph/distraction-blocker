@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   PHASE_ALARM,
   TICK_ALARM,
@@ -132,6 +132,138 @@ function overlayGate(command: FrozenDocumentCommand | undefined): GateState | nu
   const overlay = command?.overlay ?? null;
   return overlay !== null && overlay.presentation === 'active' ? overlay.gate : null;
 }
+
+describe('bounded live document delivery', (): void => {
+  it('merges concurrent reset acknowledgements before sending either replacement view', async (): Promise<void> => {
+    const runtime: RuntimeStateV2 = publishedFocusRuntime({
+      accruedFocusMs: SETTLED_WATERMARK_MS,
+      unlocks: [],
+      epochResetAcks: {},
+    });
+    const original: FrozenDocumentCommand = Object.values(
+      runtime.documentCommands,
+    )[0] as FrozenDocumentCommand;
+    runtime.documentCommands[documentKey(12, 'document-2')] = {
+      ...original,
+      tabId: 12,
+      documentId: 'document-2',
+    };
+    const { controller, ports } = harness(runtime, { bank: { balanceMs: 600_000 } });
+    expect((await controller.openGate('unlockSite', 'facebook.com')).ok).toBe(true);
+    expect(Object.keys(ports.current().epochResetAcks)).toHaveLength(2);
+    expect(ports.sends.map((sent): string => sent.message.command)).toEqual([
+      'reset-enforcement-epoch',
+      'reset-enforcement-epoch',
+      'apply-enforcement',
+      'apply-enforcement',
+    ]);
+    const ackWrites: RuntimeStateV2[] = ports.writes.filter(
+      (write): boolean => Object.keys(write.epochResetAcks).length > 0,
+    );
+    expect(ackWrites).toHaveLength(1);
+    expect(Object.keys(ackWrites[0]?.epochResetAcks ?? {})).toHaveLength(2);
+  });
+
+  it('does not persist a timed out reset or apply its old gate after cancellation', async (): Promise<void> => {
+    vi.useFakeTimers();
+    try {
+      const { controller, ports } = harness(
+        publishedFocusRuntime({
+          accruedFocusMs: SETTLED_WATERMARK_MS,
+          unlocks: [],
+          epochResetAcks: {},
+        }),
+        { bank: { balanceMs: 600_000 } },
+      );
+      let answer: (value: unknown) => void = (): void => {};
+      ports.respondForDocument(
+        11,
+        DOC_ONE,
+        (): Promise<unknown> =>
+          new Promise((resolve): void => {
+            answer = resolve;
+          }),
+      );
+      const opening = controller.openGate('unlockSite', 'facebook.com');
+      await vi.advanceTimersByTimeAsync(0);
+      const reset: DocumentContentCommand | undefined = ports.sends[0]?.message;
+      if (reset?.command !== 'reset-enforcement-epoch') throw new Error('expected reset command');
+      const lateAnswer: (value: unknown) => void = answer;
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect((await opening).ok).toBe(true);
+      const cancellation = controller.abandonGate();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect((await cancellation).ok).toBe(true);
+      const writes: number = ports.writes.length;
+      lateAnswer({
+        version: 1,
+        operationId: reset.operationId,
+        enforcementEpoch: reset.enforcementEpoch,
+        documentId: reset.documentId,
+        disposition: 'epoch-reset',
+        observedUrl: reset.expectedUrl,
+        handledAt: AT,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ports.current().gate).toBeNull();
+      expect(ports.current().epochResetAcks[documentKey(11, DOC_ONE)]).toBeUndefined();
+      expect(ports.writes).toHaveLength(writes);
+      expect(
+        ports.sends
+          .filter((sent): boolean => sent.tabId === 11)
+          .every((sent): boolean => sent.message.command === 'reset-enforcement-epoch'),
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('persists a gate before parallel sends and releases its queued cancellation after one deadline', async (): Promise<void> => {
+    vi.useFakeTimers();
+    try {
+      const runtime: RuntimeStateV2 = publishedFocusRuntime({
+        accruedFocusMs: SETTLED_WATERMARK_MS,
+        unlocks: [],
+      });
+      const original: FrozenDocumentCommand = Object.values(
+        runtime.documentCommands,
+      )[0] as FrozenDocumentCommand;
+      runtime.documentCommands[documentKey(12, 'document-2')] = {
+        ...original,
+        tabId: 12,
+        documentId: 'document-2',
+      };
+      runtime.epochResetAcks[documentKey(12, 'document-2')] = epochResetAck({
+        tabId: 12,
+        documentId: 'document-2',
+      });
+      const { controller, ports } = harness(runtime, { bank: { balanceMs: 600_000 } });
+      for (const command of Object.values(runtime.documentCommands)) {
+        ports.respondForDocument(
+          command.tabId,
+          command.documentId,
+          (): Promise<unknown> => new Promise((): void => {}),
+        );
+      }
+      let opened: boolean = false;
+      const opening = controller.openGate('unlockSite', 'facebook.com').then((response): void => {
+        opened = response.ok;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ports.current().gate?.kind).toBe('unlockSite');
+      expect(ports.sends).toHaveLength(2);
+      const cancellation = controller.abandonGate();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(opened).toBe(true);
+      expect(ports.current().gate).toBeNull();
+      await vi.advanceTimersByTimeAsync(2_000);
+      await opening;
+      expect((await cancellation).ok).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 /** Every legacy event of one kind the controller committed, in order. */
 function eventsOf(ports: RuntimePortsFakeV2, t: string): Array<Record<string, unknown>> {

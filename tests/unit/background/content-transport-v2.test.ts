@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   type ContentTransportPortsV2,
   type DocumentCommandOutcomeV2,
@@ -346,6 +346,59 @@ function detailOf(outcome: DocumentCommandOutcomeV2 | EpochResetOutcomeV2): stri
 }
 
 describe('v2 content transport send', (): void => {
+  it('clears deadlines for immediate success and rejection and consumes late rejection', async (): Promise<void> => {
+    vi.useFakeTimers();
+    try {
+      await sendDocumentEnforcementCommand(
+        fakePort(appliedFor(documentCommand())).ports,
+        documentCommand(),
+      );
+      await sendEpochResetCommand(throwingPort(new Error('send failed')), resetCommand());
+      expect(vi.getTimerCount()).toBe(0);
+      let reject: (reason: unknown) => void = (): void => {};
+      const pending: Promise<unknown> = new Promise((_resolve, fail): void => {
+        reject = fail;
+      });
+      const outcome: Promise<DocumentCommandOutcomeV2> = sendDocumentEnforcementCommand(
+        { sendToDocument: (): Promise<unknown> => pending },
+        documentCommand(),
+      );
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect((await outcome).kind).toBe('mismatch');
+      reject(new Error('late transport failure'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds unanswered apply and reset commands without acknowledging late answers', async (): Promise<void> => {
+    vi.useFakeTimers();
+    try {
+      let resolve: (value: unknown) => void = (): void => {};
+      const pending: Promise<unknown> = new Promise((done): void => {
+        resolve = done;
+      });
+      const ports: ContentTransportPortsV2 = { sendToDocument: (): Promise<unknown> => pending };
+      const outcomes: Array<DocumentCommandOutcomeV2 | EpochResetOutcomeV2> = [];
+      void sendDocumentEnforcementCommand(ports, documentCommand()).then((outcome): void => {
+        outcomes.push(outcome);
+      });
+      void sendEpochResetCommand(ports, resetCommand()).then((outcome): void => {
+        outcomes.push(outcome);
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(outcomes.map((outcome): string => outcome.kind)).toEqual(['mismatch', 'mismatch']);
+      resolve(appliedFor(documentCommand()));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outcomes).toHaveLength(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('sends the frozen command stripped of the worker-owned tab', async (): Promise<void> => {
     const command: FrozenDocumentCommand = documentCommand();
     const port: FakePort = fakePort(appliedFor(command));

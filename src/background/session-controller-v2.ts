@@ -787,9 +787,7 @@ export class SessionControllerV2 {
       // stage back off any checkpoint the refreeze invalidated and carried the attempt count and
       // the ten-second deadline through, so the pass that reads this row resumes on what is left of
       // the original budget rather than a fresh one.
-      for (const command of Object.values(this.ports.runtime().documentCommands)) {
-        await this.deliver(command);
-      }
+      await this.deliverBatch(Object.values(this.ports.runtime().documentCommands));
       this.publish();
       return;
     }
@@ -815,9 +813,7 @@ export class SessionControllerV2 {
       aggregateSets: {},
       aggregateRemoves: [],
     });
-    for (const command of Object.values(documentCommands)) {
-      await this.deliver(command);
-    }
+    await this.deliverBatch(Object.values(documentCommands));
     this.publish();
   }
 
@@ -1304,27 +1300,67 @@ export class SessionControllerV2 {
    * refuses and an overlay that never changes. A refused reset sends nothing.
    */
   private async deliver(command: FrozenDocumentCommand): Promise<void> {
-    if (!this.hasCurrentEpochAck(command.tabId, command.documentId)) {
-      const outcome = await sendEpochResetCommand(
-        this.ports.transport,
-        this.resetCommandFor({
-          tabId: command.tabId,
-          documentId: command.documentId,
-          url: command.expectedUrl,
-        }),
-      );
-      if (outcome.kind !== 'reset') return;
-      await this.write({
-        ...structuredClone(this.ports.runtime()),
-        epochResetAcks: {
-          ...structuredClone(this.ports.runtime().epochResetAcks),
-          [documentCommandKeyV2(outcome.ack.tabId, outcome.ack.documentId)]: structuredClone(
-            outcome.ack,
-          ),
+    await this.deliverBatch([command]);
+  }
+
+  /** Reset independent documents together, then persist all valid answers in one write. */
+  private async deliverBatch(commands: FrozenDocumentCommand[]): Promise<void> {
+    const resets: Array<DocumentEpochResetAck | null> = await Promise.all(
+      commands.map(
+        async (command: FrozenDocumentCommand): Promise<DocumentEpochResetAck | null> => {
+          if (
+            !this.isCurrentDelivery(command) ||
+            this.hasCurrentEpochAck(command.tabId, command.documentId)
+          )
+            return null;
+          const outcome = await sendEpochResetCommand(
+            this.ports.transport,
+            this.resetCommandFor({
+              tabId: command.tabId,
+              documentId: command.documentId,
+              url: command.expectedUrl,
+            }),
+          );
+          return outcome.kind === 'reset' && this.isCurrentDelivery(command) ? outcome.ack : null;
         },
+      ),
+    );
+    const runtime: RuntimeStateV2 = this.ports.runtime();
+    const epochResetAcks: RuntimeStateV2['epochResetAcks'] = structuredClone(
+      runtime.epochResetAcks,
+    );
+    for (const ack of resets) {
+      if (ack !== null && ack.enforcementEpoch === runtime.enforcementEpoch) {
+        epochResetAcks[documentCommandKeyV2(ack.tabId, ack.documentId)] = structuredClone(ack);
+      }
+    }
+    if (!exactDataEqual(epochResetAcks, runtime.epochResetAcks)) {
+      await this.write({
+        ...structuredClone(runtime),
+        epochResetAcks,
       });
     }
-    await sendDocumentEnforcementCommand(this.ports.transport, command);
+    await Promise.all(
+      commands.map(async (command: FrozenDocumentCommand): Promise<void> => {
+        if (
+          this.isCurrentDelivery(command) &&
+          this.hasCurrentEpochAck(command.tabId, command.documentId)
+        ) {
+          await sendDocumentEnforcementCommand(this.ports.transport, command);
+        }
+      }),
+    );
+  }
+
+  private isCurrentDelivery(command: FrozenDocumentCommand): boolean {
+    const runtime: RuntimeStateV2 = this.ports.runtime();
+    return (
+      command.enforcementEpoch === runtime.enforcementEpoch &&
+      exactDataEqual(
+        runtime.documentCommands[documentCommandKeyV2(command.tabId, command.documentId)],
+        command,
+      )
+    );
   }
 
   /**
