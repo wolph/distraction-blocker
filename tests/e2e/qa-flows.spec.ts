@@ -1536,7 +1536,11 @@ test('Task 7 production evidence matrix is reproducible', async ({
         viewports: pageViewports,
       })),
     );
-    expect(await sendExtensionRequest(extPage, { type: 'abandonGate' })).toEqual({
+    const typedGate = (await sendExtensionRequest(extPage, { type: 'getSnapshot' })).gate;
+    if (typedGate === null) throw new Error('Expected the typed gate');
+    expect(
+      await sendExtensionRequest(extPage, { type: 'abandonGate', expectedGate: typedGate }),
+    ).toEqual({
       ok: true,
       code: 'ok',
     });
@@ -1555,7 +1559,11 @@ test('Task 7 production evidence matrix is reproducible', async ({
         viewports: pageViewports,
       })),
     );
-    expect(await sendExtensionRequest(extPage, { type: 'abandonGate' })).toEqual({
+    const untypedGate = (await sendExtensionRequest(extPage, { type: 'getSnapshot' })).gate;
+    if (untypedGate === null) throw new Error('Expected the untyped gate');
+    expect(
+      await sendExtensionRequest(extPage, { type: 'abandonGate', expectedGate: untypedGate }),
+    ).toEqual({
       ok: true,
       code: 'ok',
     });

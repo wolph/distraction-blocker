@@ -1,7 +1,13 @@
 import type { BrowserContext, CDPSession, Page } from '@playwright/test';
 import { cancelPhrase } from '../../src/shared/constants';
-import type { SessionSnapshot, Settings } from '../../src/shared/types';
+import type { GateState, SessionSnapshot, Settings } from '../../src/shared/types';
 import { expect, sendExtensionRequest, startTestSession, test } from './fixtures';
+
+async function captureGate(extPage: Page): Promise<GateState> {
+  const snapshot: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+  if (snapshot.gate === null) throw new Error('Expected an open gate');
+  return snapshot.gate;
+}
 
 interface FastEconomyOptions {
   pauseMs?: number;
@@ -65,6 +71,12 @@ async function clickClosedShadowButton(
     let backendNodeId: number | undefined;
     for (const node of tree.nodes) {
       if (node.role?.value === 'button' && node.name?.value?.startsWith(accessibleName)) {
+        if (
+          node.properties?.some(
+            (property): boolean => property.name === 'disabled' && property.value.value === true,
+          )
+        )
+          return;
         backendNodeId = node.backendDOMNodeId;
         break;
       }
@@ -93,6 +105,25 @@ async function closedShadowButtonNames(context: BrowserContext, page: Page): Pro
   }
 }
 
+async function openOverlayUnlock(
+  context: BrowserContext,
+  page: Page,
+  extPage: Page,
+  host: string,
+): Promise<void> {
+  await expect
+    .poll(async (): Promise<string | null> => {
+      const current: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+      if (current.gate?.host === host) return host;
+      const names: string[] = await closedShadowButtonNames(context, page);
+      if (names.some((name: string): boolean => name.startsWith('Unlock this site for'))) {
+        await clickClosedShadowButton(context, page, 'Unlock this site for');
+      }
+      return (await sendExtensionRequest(extPage, { type: 'getSnapshot' })).gate?.host ?? null;
+    })
+    .toBe(host);
+}
+
 test('pause gate rejects an early confirmation and unblocks after its delay', async ({
   context,
   extPage,
@@ -117,6 +148,7 @@ test('pause gate rejects an early confirmation and unblocks after its delay', as
   ).toEqual({ ok: true, code: 'ok' });
   const early = await sendExtensionRequest(extPage, {
     type: 'confirmGate',
+    expectedGate: await captureGate(extPage),
     typedPhrase: null,
   });
   expect(early.ok).toBe(false);
@@ -125,6 +157,7 @@ test('pause gate rejects an early confirmation and unblocks after its delay', as
     .poll(async (): Promise<boolean> => {
       const ack = await sendExtensionRequest(extPage, {
         type: 'confirmGate',
+        expectedGate: await captureGate(extPage),
         typedPhrase: null,
       });
       return ack.ok;
@@ -217,7 +250,12 @@ test('abandoning a gate records a resisted temptation', async ({ extPage }) => {
   expect(
     await sendExtensionRequest(extPage, { type: 'openGate', gate: 'pause', host: null }),
   ).toEqual({ ok: true, code: 'ok' });
-  expect(await sendExtensionRequest(extPage, { type: 'abandonGate' })).toEqual({
+  expect(
+    await sendExtensionRequest(extPage, {
+      type: 'abandonGate',
+      expectedGate: await captureGate(extPage),
+    }),
+  ).toEqual({
     ok: true,
     code: 'ok',
   });
@@ -257,6 +295,7 @@ test('friction cancellation without typing uses the configured delay', async ({ 
 
   const early = await sendExtensionRequest(extPage, {
     type: 'confirmGate',
+    expectedGate: await captureGate(extPage),
     typedPhrase: null,
   });
   expect(early.ok).toBe(false);
@@ -280,6 +319,7 @@ test('friction cancellation without typing uses the configured delay', async ({ 
   expect(
     await sendExtensionRequest(extPage, {
       type: 'confirmGate',
+      expectedGate: await captureGate(extPage),
       typedPhrase: null,
     }),
   ).toEqual({ ok: true, code: 'ok' });
@@ -322,10 +362,18 @@ test('zero delay removes the wait but still honors the typing setting', async ({
   const opened: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
   expect(opened.gate?.readyAt).toBe(opened.gate?.openedAt);
   expect(
-    await sendExtensionRequest(extPage, { type: 'confirmGate', typedPhrase: null }),
+    await sendExtensionRequest(extPage, {
+      type: 'confirmGate',
+      expectedGate: await captureGate(extPage),
+      typedPhrase: null,
+    }),
   ).toMatchObject({ ok: false });
   expect(
-    await sendExtensionRequest(extPage, { type: 'confirmGate', typedPhrase: requiredPhrase }),
+    await sendExtensionRequest(extPage, {
+      type: 'confirmGate',
+      expectedGate: await captureGate(extPage),
+      typedPhrase: requiredPhrase,
+    }),
   ).toEqual({ ok: true, code: 'ok' });
 });
 
@@ -343,6 +391,7 @@ test('friction cancellation with typing requires the configured phrase after its
 
   const early = await sendExtensionRequest(extPage, {
     type: 'confirmGate',
+    expectedGate: await captureGate(extPage),
     typedPhrase: requiredPhrase,
   });
   expect(early.ok).toBe(false);
@@ -365,17 +414,20 @@ test('friction cancellation with typing requires the configured phrase after its
 
   const missing = await sendExtensionRequest(extPage, {
     type: 'confirmGate',
+    expectedGate: await captureGate(extPage),
     typedPhrase: null,
   });
   expect(missing.ok).toBe(false);
   const wrong = await sendExtensionRequest(extPage, {
     type: 'confirmGate',
+    expectedGate: await captureGate(extPage),
     typedPhrase: 'let me out',
   });
   expect(wrong.ok).toBe(false);
   expect(
     await sendExtensionRequest(extPage, {
       type: 'confirmGate',
+      expectedGate: await captureGate(extPage),
       typedPhrase: requiredPhrase,
     }),
   ).toEqual({ ok: true, code: 'ok' });
@@ -398,6 +450,67 @@ test('hard sessions reject cancellation gates', async ({ extPage }) => {
   const snapshot: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
   expect(snapshot.phase).toBe('focus');
   expect(snapshot.gate).toBeNull();
+});
+
+test('a newly blocked domain replaces an unlock gate and rejects the old confirmation', async ({
+  context,
+  extPage,
+  siteUrl,
+}) => {
+  const unlockMs: number = 30_000;
+  const gateDelayMs: number = 1_500;
+  await configureFastEconomy(extPage, { unlockMs, gateDelayMs });
+  const first: Page = await context.newPage();
+  await first.goto(siteUrl('/plain.html'));
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 2 } }, [
+    { kind: 'host', pattern: 'blocked.example' },
+    { kind: 'host', pattern: 'other.example' },
+  ]);
+  await expect(first.locator('focus-lock-overlay')).toBeAttached();
+  await waitForBank(extPage, unlockMs, 10_000);
+  await openOverlayUnlock(context, first, extPage, 'blocked.example');
+  const original: GateState = await captureGate(extPage);
+
+  const second: Page = await context.newPage();
+  await second.goto(siteUrl('/plain.html').replace('blocked.example', 'other.example'));
+  await expect(second.locator('focus-lock-overlay')).toBeAttached();
+  const names: string[] = await closedShadowButtonNames(context, second);
+  expect(names).not.toContain('Never mind, back to work');
+  expect(names).toContain('Unlock this site for 1 min');
+  await openOverlayUnlock(context, second, extPage, 'other.example');
+  const replacement: GateState = await captureGate(extPage);
+  expect(replacement.openedAt).toBeGreaterThan(original.openedAt);
+  expect(replacement.readyAt - replacement.openedAt).toBe(gateDelayMs);
+  expect((await sendExtensionRequest(extPage, { type: 'getSnapshot' })).activeUnlocks).toEqual([]);
+  await expect
+    .poll(
+      async (): Promise<boolean> =>
+        (await closedShadowButtonNames(context, first)).includes('Never mind, back to work'),
+    )
+    .toBe(false);
+  await expect.poll((): boolean => Date.now() >= replacement.readyAt).toBe(true);
+  expect(
+    await sendExtensionRequest(extPage, {
+      type: 'confirmGate',
+      typedPhrase: null,
+      expectedGate: original,
+    }),
+  ).toMatchObject({ ok: false, code: 'no-active-gate' });
+  expect(
+    await sendExtensionRequest(extPage, { type: 'abandonGate', expectedGate: original }),
+  ).toMatchObject({ ok: false, code: 'no-active-gate' });
+  expect(await captureGate(extPage)).toEqual(replacement);
+  await expect
+    .poll(
+      async (): Promise<boolean> =>
+        (await closedShadowButtonNames(context, second)).includes('Unlock this site'),
+    )
+    .toBe(true);
+  await clickClosedShadowButton(context, second, 'Unlock this site');
+  await expect(second.locator('focus-lock-overlay')).toHaveCount(0);
+  await expect(first.locator('focus-lock-overlay')).toBeAttached();
+  const after: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
+  expect(after.activeUnlocks.map((unlock): string => unlock.host)).toEqual(['other.example']);
 });
 
 test('overlay unlock isolates another site and reblocks after expiry', async ({
@@ -444,6 +557,7 @@ test('overlay unlock isolates another site and reblocks after expiry', async ({
     .poll(async (): Promise<boolean> => {
       const ack = await sendExtensionRequest(extPage, {
         type: 'confirmGate',
+        expectedGate: await captureGate(extPage),
         typedPhrase: null,
       });
       return ack.ok;

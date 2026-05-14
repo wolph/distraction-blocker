@@ -2,6 +2,7 @@ import type { DocumentContentCommand } from './enforcement-v2';
 import type {
   DailyAgg,
   EventRecord,
+  GateState,
   ListsConfig,
   MonthlyAgg,
   OnboardingDraft,
@@ -244,8 +245,8 @@ export type SessionRequestV2 =
   | SessionStartRequestV2
   | { type: 'requestSessionEnd' }
   | { type: 'openEndGate' }
-  | { type: 'abandonGate' }
-  | { type: 'confirmGate'; typedPhrase: string | null }
+  | { type: 'abandonGate'; expectedGate: GateState }
+  | { type: 'confirmGate'; typedPhrase: string | null; expectedGate: GateState }
   | { type: 'openGate'; gate: 'pause' | 'unlockSite'; host: string | null }
   | { type: 'resumeFromPause' }
   | { type: 'startNextFocusEarly' }

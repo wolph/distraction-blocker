@@ -118,6 +118,7 @@ function untilStoppedSession(): SessionStateV2 {
 
 function activeView(): DocumentOverlayView {
   return buildActiveOverlayView({
+    targetUrl: 'https://example.com',
     capturedAt: NOW,
     theme: 'dark',
     session: untilStoppedSession(),

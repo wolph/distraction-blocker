@@ -28,6 +28,7 @@ import type {
   ThemeMode,
   Verdict,
 } from '../shared/types';
+import { unlockHostMatchesUrl } from '../shared/unlock-host';
 import { isNonBlankString, isSafeTimestamp } from '../shared/v2-domain-intrinsics';
 import { verdictLabel } from '../shared/verdict-label';
 import type { FrozenDocumentCommand, FrozenEpochResetCommand } from './enforcement-persistence-v2';
@@ -88,6 +89,7 @@ export interface StartingViewInputV2 {
 }
 
 export interface ActiveViewInputV2 {
+  targetUrl: string;
   capturedAt: number;
   theme: ThemeMode;
   /** phase must be focus: pause and break are non-blocking and receive no active view */
@@ -157,7 +159,13 @@ export function buildActiveOverlayView(input: ActiveViewInputV2): DocumentOverla
     invalidView(`an active overlay view needs a focus phase, not ${session.phase}`);
   }
   const duration: SessionDuration = session.config.duration;
-  const gate: GateState | null = input.gate;
+  if (input.gate?.kind === 'unlockSite' && !isNonBlankString(input.gate.host)) {
+    invalidView('an unlock gate names the host it unlocks');
+  }
+  const gate: GateState | null =
+    input.gate?.kind === 'unlockSite' && !unlockHostMatchesUrl(input.gate.host, input.targetUrl)
+      ? null
+      : input.gate;
   return validatedView({
     version: 1,
     presentation: 'active',

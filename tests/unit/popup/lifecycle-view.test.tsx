@@ -173,7 +173,13 @@ describe('LifecycleView starting', (): void => {
     fireEvent.click(confirm);
 
     await waitFor((): void => {
-      expect(sessionRequests()).toEqual([{ type: 'confirmGate', typedPhrase: 'let me stop' }]);
+      expect(sessionRequests()).toEqual([
+        {
+          type: 'confirmGate',
+          typedPhrase: 'let me stop',
+          expectedGate: authority.kind === 'friction-gate' ? authority.gate : null,
+        },
+      ]);
     });
     await settled(confirm);
     expect(rendered.queryByRole('alert')).toBeNull();

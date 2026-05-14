@@ -11,8 +11,8 @@ import type { CommandResponseV2, SessionCommandResultCodeV2 } from '../shared/me
 import type { EndAuthorityV2, GateKind, GateState } from '../shared/types';
 
 export type GateRequest =
-  | { type: 'abandonGate' }
-  | { type: 'confirmGate'; typedPhrase: string | null };
+  | { type: 'abandonGate'; expectedGate: GateState }
+  | { type: 'confirmGate'; typedPhrase: string | null; expectedGate: GateState };
 
 /** The transport this panel sends through. Every surface answers with a coded v2 result. */
 export type GateCommandSender = (
@@ -132,12 +132,13 @@ export function GatePanel({
       : undefined;
 
   const abandon: () => void = (): void => {
-    void requestGateUpdate({ type: 'abandonGate' });
+    void requestGateUpdate({ type: 'abandonGate', expectedGate: gate });
   };
 
   const confirm: () => void = (): void => {
     void requestGateUpdate({
       type: 'confirmGate',
+      expectedGate: gate,
       typedPhrase: gate.requiredPhrase === null ? null : typed,
     });
   };

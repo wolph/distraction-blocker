@@ -351,7 +351,13 @@ describe('ActiveView', (): void => {
     }) as HTMLButtonElement;
     fireEvent.click(confirm);
     await waitFor((): void => {
-      expect(sessionRequests()).toEqual([{ type: 'confirmGate', typedPhrase: 'let me stop' }]);
+      expect(sessionRequests()).toEqual([
+        {
+          type: 'confirmGate',
+          typedPhrase: 'let me stop',
+          expectedGate: authority.kind === 'friction-gate' ? authority.gate : null,
+        },
+      ]);
     });
     await settled(confirm);
     expect(view.queryByRole('alert')).toBeNull();
@@ -362,8 +368,15 @@ describe('ActiveView', (): void => {
     fireEvent.click(abandon);
     await waitFor((): void => {
       expect(sessionRequests()).toEqual([
-        { type: 'confirmGate', typedPhrase: 'let me stop' },
-        { type: 'abandonGate' },
+        {
+          type: 'confirmGate',
+          typedPhrase: 'let me stop',
+          expectedGate: authority.kind === 'friction-gate' ? authority.gate : null,
+        },
+        {
+          type: 'abandonGate',
+          expectedGate: authority.kind === 'friction-gate' ? authority.gate : null,
+        },
       ]);
     });
     await settled(abandon);

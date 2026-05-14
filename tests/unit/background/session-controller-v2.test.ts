@@ -133,6 +133,12 @@ function overlayGate(command: FrozenDocumentCommand | undefined): GateState | nu
   return overlay !== null && overlay.presentation === 'active' ? overlay.gate : null;
 }
 
+function capturedGate(ports: RuntimePortsFakeV2): GateState {
+  const gate: GateState | null = ports.current().gate;
+  if (gate === null) throw new Error('Expected an open gate');
+  return structuredClone(gate);
+}
+
 describe('bounded live document delivery', (): void => {
   it('merges concurrent reset acknowledgements before sending either replacement view', async (): Promise<void> => {
     const runtime: RuntimeStateV2 = publishedFocusRuntime({
@@ -1041,6 +1047,91 @@ describe('SessionControllerV2 end and gate commands', (): void => {
     expect(ports.current().session?.phase).toBe('paused');
     expect(ports.current().gate).toBeNull();
   });
+
+  it('replaces a different domain gate with fresh bounds and rejects captured stale actions', async (): Promise<void> => {
+    const { controller, ports } = harness(
+      publishedFocusRuntime({ accruedFocusMs: SETTLED_WATERMARK_MS }),
+      { bank: { balanceMs: DEFAULT_SETTINGS.pause.unlockMs } },
+    );
+    expect((await controller.openGate('unlockSite', 'www.reddit.com')).code).toBe('ok');
+    const reddit: GateState = capturedGate(ports);
+    const balance: number = ports.bank().balanceMs;
+    await controller.handleNavigation(
+      { tabId: 11, documentId: DOC_BLOCKED, url: BLOCKED_URL },
+      'navigation',
+    );
+    expect(overlayGate(ports.current().documentCommands[documentKey(11, DOC_BLOCKED)])).toBeNull();
+    expect((await controller.openGate('unlockSite', 'reddit.com')).code).toBe('ok');
+    expect(ports.current().gate).toEqual(reddit);
+    expect((await controller.openGate('unlockSite', 'facebook.com')).code).toBe('ok');
+    const facebook: GateState = capturedGate(ports);
+    expect(facebook.host).toBe('facebook.com');
+    expect(facebook.openedAt).toBeGreaterThan(reddit.openedAt);
+    expect(facebook.readyAt - facebook.openedAt).toBe(reddit.readyAt - reddit.openedAt);
+    expect((await controller.confirmGate(reddit.requiredPhrase, reddit)).code).toBe(
+      'no-active-gate',
+    );
+    expect((await controller.abandonGate(reddit)).code).toBe('no-active-gate');
+    expect(ports.current().gate).toEqual(facebook);
+    expect(ports.bank().balanceMs).toBe(balance);
+    expect((await controller.openGate('unlockSite', 'reddit.com')).code).toBe('ok');
+    expect(ports.current().gate?.openedAt).toBeGreaterThan(facebook.openedAt);
+    expect((await controller.abandonGate(reddit)).code).toBe('no-active-gate');
+    expect((await controller.openGate('pause', null)).code).toBe('end-not-allowed');
+    expect(eventsOf(ports, 'gateOpened')).toHaveLength(3);
+    expect(eventsOf(ports, 'gateResisted')).toHaveLength(2);
+  });
+
+  it('accepts a captured current gate after an unrelated attempt and spends exactly once', async (): Promise<void> => {
+    const cost: number = DEFAULT_SETTINGS.pause.unlockMs;
+    const { controller, ports } = harness(
+      publishedFocusRuntime({ accruedFocusMs: SETTLED_WATERMARK_MS }),
+      { bank: { balanceMs: cost } },
+    );
+    await controller.openGate('unlockSite', 'facebook.com');
+    const expectedGate: GateState = capturedGate(ports);
+    await controller.handleNavigation(
+      { tabId: 11, documentId: DOC_BLOCKED, url: BLOCKED_URL },
+      'navigation',
+    );
+    expect(ports.current().gate).toEqual(expectedGate);
+    ports.advance(60_000);
+    expect((await controller.confirmGate(expectedGate.requiredPhrase, expectedGate)).code).toBe(
+      'ok',
+    );
+    expect((await controller.confirmGate(expectedGate.requiredPhrase, expectedGate)).code).toBe(
+      'no-active-gate',
+    );
+    expect(ports.bank().balanceMs).toBe(0);
+    expect(eventsOf(ports, 'unlockTaken')).toHaveLength(1);
+  });
+
+  it.each(['kind', 'host', 'openedAt', 'readyAt', 'requiredPhrase'] as const)(
+    'compares captured gate field %s before spending or clearing',
+    async (field: keyof GateState): Promise<void> => {
+      const { controller, ports } = harness(
+        publishedFocusRuntime({ accruedFocusMs: SETTLED_WATERMARK_MS }),
+        { bank: { balanceMs: DEFAULT_SETTINGS.pause.unlockMs } },
+      );
+      await controller.openGate('unlockSite', 'facebook.com');
+      const current: GateState = capturedGate(ports);
+      const changed: GateState = { ...current };
+      Object.assign(changed, {
+        [field]: {
+          kind: 'pause',
+          host: 'reddit.com',
+          openedAt: current.openedAt + 1,
+          readyAt: current.readyAt + 1,
+          requiredPhrase: 'another phrase',
+        }[field],
+      });
+      expect((await controller.confirmGate(current.requiredPhrase, changed)).code).toBe(
+        'no-active-gate',
+      );
+      expect((await controller.abandonGate(changed)).code).toBe('no-active-gate');
+      expect(ports.current().gate).toEqual(current);
+    },
+  );
 
   it('charges the bank and records one event for an unlock', async (): Promise<void> => {
     const economy = { ...DEFAULT_SETTINGS.pause };

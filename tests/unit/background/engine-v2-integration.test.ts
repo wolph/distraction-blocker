@@ -28,6 +28,7 @@ import {
 import { localDateStr, localMidnightAfter } from '../../../src/shared/time';
 import type {
   DailyAgg,
+  GateState,
   NormalizedSessionConfigV1,
   ScheduleEntryV2,
   SessionConfigV2,
@@ -1748,6 +1749,28 @@ describe('worker cutover to v2 session authority', (): void => {
     }
   });
 
+  it('does not sweep or persist when a captured gate confirmation is stale', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker({
+      ...installedSeed(),
+      [LOCAL_BANK]: { balanceMs: 10 * 60_000 },
+    });
+    await worker.send({ type: 'startSession', config: indefiniteConfig() });
+    await worker.settle();
+    await worker.send({ type: 'openGate', gate: 'pause', host: null });
+    await worker.settle();
+    const gate: GateState | null = worker.runtime().gate;
+    if (gate === null) throw new Error('Expected a pause gate');
+    const expectedGate: GateState = { ...gate, openedAt: gate.openedAt - 1 };
+    const before: RuntimeStateV2 = structuredClone(worker.runtime());
+    const writes: number = worker.writes();
+    expect(
+      await worker.send({ type: 'confirmGate', typedPhrase: null, expectedGate }),
+    ).toMatchObject({ ok: false, code: 'no-active-gate' });
+    await worker.settle();
+    expect(worker.runtime()).toEqual(before);
+    expect(worker.writes()).toBe(writes);
+  });
+
   it('clears the pages a pause is taken over', async (): Promise<void> => {
     const worker: WorkerHarness = await bootWorker({
       ...installedSeed(),
@@ -1770,7 +1793,9 @@ describe('worker cutover to v2 session authority', (): void => {
     try {
       await worker.send({ type: 'openGate', gate: 'pause', host: null } as Request);
       vi.setSystemTime(started + DEFAULT_SETTINGS.gate.delayMs + 1_000);
-      confirmed = await worker.send({ type: 'confirmGate', typedPhrase: null } as Request);
+      const expectedGate: GateState | null = worker.runtime().gate;
+      if (expectedGate === null) throw new Error('Expected a pause gate');
+      confirmed = await worker.send({ type: 'confirmGate', typedPhrase: null, expectedGate });
       await worker.settle();
     } finally {
       vi.useRealTimers();
@@ -1815,7 +1840,9 @@ describe('worker cutover to v2 session authority', (): void => {
         host: 'm.facebook.com',
       } as Request);
       vi.setSystemTime(started + DEFAULT_SETTINGS.gate.delayMs + 1_000);
-      await worker.send({ type: 'confirmGate', typedPhrase: null } as Request);
+      const expectedGate: GateState | null = worker.runtime().gate;
+      if (expectedGate === null) throw new Error('Expected an unlock gate');
+      await worker.send({ type: 'confirmGate', typedPhrase: null, expectedGate });
       await worker.settle();
     } finally {
       vi.useRealTimers();
@@ -1965,8 +1992,10 @@ describe('worker cutover to v2 session authority', (): void => {
         host: 'facebook.com',
       } as Request);
       vi.setSystemTime(started + DEFAULT_SETTINGS.gate.delayMs + 1_000);
+      const expectedGate: GateState | null = worker.runtime().gate;
+      if (expectedGate === null) throw new Error('Expected an unlock gate');
       expect(
-        (await worker.send({ type: 'confirmGate', typedPhrase: null } as Request)) as {
+        (await worker.send({ type: 'confirmGate', typedPhrase: null, expectedGate })) as {
           ok: boolean;
         },
       ).toMatchObject({ ok: true });
@@ -2018,7 +2047,9 @@ describe('worker cutover to v2 session authority', (): void => {
     ).toMatchObject({
       ok: true,
     });
-    await worker.send({ type: 'abandonGate' } as Request);
+    const expectedGate: GateState | null = worker.runtime().gate;
+    if (expectedGate === null) throw new Error('Expected a cancellation gate');
+    await worker.send({ type: 'abandonGate', expectedGate });
     await worker.settle();
 
     // Stats read the day, not the log, so an event a commit carries is folded into it.

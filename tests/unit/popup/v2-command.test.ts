@@ -252,17 +252,25 @@ describe('useV2Command', (): void => {
 
 describe('gate transport', (): void => {
   it('sends gate commands through the v2 channel', async (): Promise<void> => {
-    const abandon: unknown = await sendGateCommand({ type: 'abandonGate' });
+    const expectedGate: import('../../../src/shared/types').GateState = {
+      kind: 'cancel',
+      host: null,
+      openedAt: 1,
+      readyAt: 2,
+      requiredPhrase: 'let me stop',
+    };
+    const abandon: unknown = await sendGateCommand({ type: 'abandonGate', expectedGate });
     const confirm: unknown = await sendGateCommand({
       type: 'confirmGate',
+      expectedGate,
       typedPhrase: 'let me stop',
     });
 
     expect(abandon).toEqual({ ok: true, code: 'ok' });
     expect(confirm).toEqual({ ok: true, code: 'ok' });
     expect(requests()).toEqual([
-      { type: 'abandonGate' },
-      { type: 'confirmGate', typedPhrase: 'let me stop' },
+      { type: 'abandonGate', expectedGate },
+      { type: 'confirmGate', typedPhrase: 'let me stop', expectedGate },
     ]);
   });
 

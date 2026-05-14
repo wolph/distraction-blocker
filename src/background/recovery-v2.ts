@@ -390,6 +390,7 @@ function recoveryCommand(
     presentation: 'active',
     overlay: verdict.blocked
       ? buildActiveOverlayView({
+          targetUrl: target.url,
           capturedAt: identity.capturedAt,
           theme: ports.theme(),
           session,

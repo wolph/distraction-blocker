@@ -1128,6 +1128,7 @@ function activeCommand(
     presentation: 'active',
     overlay: verdict.blocked
       ? buildActiveOverlayView({
+          targetUrl: target.url,
           capturedAt: identity.capturedAt,
           theme: ports.theme(),
           session: identity.session,

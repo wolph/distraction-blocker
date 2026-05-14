@@ -558,10 +558,76 @@ describe('overlay-v2 actions', () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(sendMessage.mock.calls.map((call: [unknown]): unknown => call[0])).toEqual([
-      { type: 'confirmGate', typedPhrase: 'let me scroll' },
-      { type: 'abandonGate' },
+      { type: 'confirmGate', typedPhrase: 'let me scroll', expectedGate: gateState() },
+      { type: 'abandonGate', expectedGate: gateState() },
     ]);
   });
+
+  it('releases an old pending action when the authoritative gate changes and ignores its late failure', async (): Promise<void> => {
+    let resolveOld!: (value: unknown) => void;
+    let resolveNew!: (value: unknown) => void;
+    const sendMessage: Mock<(request: unknown) => Promise<unknown>> = stubWorker({ ok: true });
+    sendMessage.mockReturnValueOnce(
+      new Promise<unknown>((resolve: (value: unknown) => void): void => {
+        resolveOld = resolve;
+      }),
+    );
+    sendMessage.mockReturnValueOnce(
+      new Promise<unknown>((resolve: (value: unknown) => void): void => {
+        resolveNew = resolve;
+      }),
+    );
+    renderDocumentOverlay(activeOverlay(), BLOCKED_VERDICT);
+    const pause: HTMLButtonElement | undefined = Array.from(
+      shadowRoot().querySelectorAll('button'),
+    ).find(
+      (button: HTMLButtonElement): boolean =>
+        button.textContent?.startsWith('Pause blocking') === true,
+    );
+    if (pause === undefined) throw new Error('Expected a pause button');
+    pause.click();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    renderDocumentOverlay(gatedOverlay(), BLOCKED_VERDICT);
+    expect((shadowRoot().querySelector('.primary') as HTMLButtonElement).disabled).toBe(false);
+    (shadowRoot().querySelector('.primary') as HTMLButtonElement).click();
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    resolveOld({ ok: false, error: 'old action failed' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(shadowRoot().querySelector('.action-error')).toBeNull();
+    expect((shadowRoot().querySelector('.primary') as HTMLButtonElement).disabled).toBe(true);
+    resolveNew({ ok: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect((shadowRoot().querySelector('.primary') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it.each(['replaced', 'cleared', 'same'] as const)(
+    'handles a %s gate while its old action is pending',
+    async (change: 'replaced' | 'cleared' | 'same'): Promise<void> => {
+      let resolveOld!: (value: unknown) => void;
+      const sendMessage: Mock<(request: unknown) => Promise<unknown>> = stubWorker({ ok: true });
+      sendMessage.mockReturnValueOnce(
+        new Promise<unknown>((resolve: (value: unknown) => void): void => {
+          resolveOld = resolve;
+        }),
+      );
+      renderDocumentOverlay(gatedOverlay(), BLOCKED_VERDICT);
+      (shadowRoot().querySelector('.primary') as HTMLButtonElement).click();
+      const next: ActiveOverlay =
+        change === 'cleared'
+          ? activeOverlay()
+          : change === 'same'
+            ? gatedOverlay({ attemptsToday: 9 })
+            : gatedOverlay({ gate: gateState({ openedAt: NOW - 20_000 }) });
+      renderDocumentOverlay(next, BLOCKED_VERDICT);
+      const buttons: HTMLButtonElement[] = Array.from(shadowRoot().querySelectorAll('button'));
+      expect(buttons.every((button: HTMLButtonElement): boolean => button.disabled)).toBe(
+        change === 'same',
+      );
+      resolveOld({ ok: false });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(shadowRoot().querySelector('.action-error') !== null).toBe(change === 'same');
+    },
+  );
 
   it('shows the view transport error on a rejected action and re-enables the controls', async (): Promise<void> => {
     stubWorker({ ok: false, error: 'gate timing changed' });
@@ -637,6 +703,7 @@ describe('renderDocumentOverlay against the worker builders', () => {
 
   function builderInput(session: SessionStateV2): ActiveViewInputV2 {
     return {
+      targetUrl: 'https://example.com',
       capturedAt: LOCKED_AT,
       theme: 'dark',
       session,

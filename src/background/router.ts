@@ -16,6 +16,7 @@ import type {
   SoundSettings,
   StorageMode,
 } from '../shared/types';
+import { unlockHostMatchesUrl } from '../shared/unlock-host';
 import { playSound } from './audio';
 import type { AllDataClearPublicState } from './data-clear-journal';
 import type { Engine } from './engine';
@@ -117,6 +118,22 @@ export async function routeMessage(
   policyStorage?: PolicyStorage,
   onboardingServices?: OnboardingRouterServices,
 ): Promise<unknown> {
+  const unlockHost: string | null =
+    msg.type === 'openGate' && msg.gate === 'unlockSite'
+      ? msg.host
+      : (msg.type === 'confirmGate' || msg.type === 'abandonGate') &&
+          msg.expectedGate.kind === 'unlockSite'
+        ? msg.expectedGate.host
+        : null;
+  const extensionPage: boolean = sender.url?.startsWith('chrome-extension://') === true;
+  if (
+    unlockHost !== null &&
+    !extensionPage &&
+    (sender.tab !== undefined || sender.url !== undefined) &&
+    !unlockHostMatchesUrl(unlockHost, sender.url ?? '')
+  ) {
+    return { ok: false, code: 'end-not-allowed', error: 'end-not-allowed' };
+  }
   switch (msg.type) {
     case 'getSnapshot':
       // The read model is a settle at an instant, so it is read rather than committed. Waiting on
@@ -379,11 +396,11 @@ export async function routeMessage(
     case 'openEndGate':
       return engine.openEndGate();
     case 'confirmGate':
-      return engine.confirmGate(msg.typedPhrase);
+      return engine.confirmGate(msg.typedPhrase, msg.expectedGate);
     case 'requestSessionEnd':
       return engine.requestSessionEnd();
     case 'abandonGate':
-      return engine.abandonGate();
+      return engine.abandonGate(msg.expectedGate);
     case 'resumeFromPause':
       return engine.resumeFromPause();
     case 'startNextFocusEarly':

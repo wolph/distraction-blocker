@@ -317,11 +317,11 @@ describe('RuleSummary', (): void => {
     expect(css).toMatch(/\.help-popover__trigger\.rule-detail\s*\{[^}]*font-weight:\s*500/s);
   });
 
-  it('uses viewport-owned popup layout without fixed header arithmetic', (): void => {
+  it('uses intrinsic popup height without fixed header arithmetic', (): void => {
     const css: string = readFileSync(resolve('src/popup/popup.css'), 'utf8');
 
     expect(css).not.toContain('calc(100vh - 86px)');
-    expect(css).toMatch(/body\s*\{[^}]*block-size:\s*100vh/s);
+    expect(css).toMatch(/body\s*\{[^}]*block-size:\s*600px/s);
     expect(css).toMatch(/#app\s*\{[^}]*min-block-size:\s*0/s);
     expect(css).toMatch(/\.app\s*\{[^}]*min-block-size:\s*0/s);
     expect(css).toMatch(/\.start-form\s*\{[^}]*min-block-size:\s*0/s);

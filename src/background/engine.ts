@@ -835,19 +835,24 @@ export class Engine {
 
   async confirmGate(
     typedPhrase: string | null,
+    expectedGate?: import('../shared/types').GateState,
   ): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
     return this.enqueuePolicyMutation(
-      (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
-        this.commandWithSweep(
-          (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
-            this.controller.confirmGate(typedPhrase),
-        ),
+      async (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> => {
+        const response: CommandResponseV2<SessionCommandResultCodeV2> =
+          await this.controller.confirmGate(typedPhrase, expectedGate);
+        if (response.ok) await this.sweepAfterPhaseChange();
+        return response;
+      },
     );
   }
 
-  async abandonGate(): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
+  async abandonGate(
+    expectedGate?: import('../shared/types').GateState,
+  ): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
     return this.enqueuePolicyMutation(
-      (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> => this.controller.abandonGate(),
+      (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
+        this.controller.abandonGate(expectedGate),
     );
   }
 

@@ -1,7 +1,7 @@
 import { normalizeSessionRules, validateRule } from '../core/matcher';
 import { scheduleEntriesOverlap } from '../core/schedule';
 import { CATEGORY_IDS } from '../shared/constants';
-import { isDenseArray } from '../shared/exact-data';
+import { isDenseArray, snapshotExactData } from '../shared/exact-data';
 import type { Request, SessionStartRequestV2 } from '../shared/messages';
 import {
   isPositiveMinuteValue,
@@ -27,6 +27,7 @@ import type {
   SessionRuleSnapshot,
   Settings,
 } from '../shared/types';
+import { validateDetachedGateState } from '../shared/v2-domain-intrinsics';
 import { canEncodeListsForSync } from './list-sync-codec';
 import { assertSyncItemWithinQuota } from './sync-quota';
 
@@ -542,7 +543,6 @@ function parseRecord(value: Record<string, unknown>): Request | null {
     case 'cleanupOnboardingDraft':
     case 'reconcileWebsiteAccess':
     case 'dismissWebsiteAccessNotice':
-    case 'abandonGate':
     case 'requestSessionEnd':
     case 'resumeFromPause':
     case 'startNextFocusEarly':
@@ -600,7 +600,7 @@ function parseRecord(value: Record<string, unknown>): Request | null {
     case 'openGate':
       if (
         !hasExactKeys(value, ['type', 'gate', 'host']) ||
-        (value.gate !== 'pause' && value.gate !== 'unlockSite' && value.gate !== 'cancel')
+        (value.gate !== 'pause' && value.gate !== 'unlockSite')
       ) {
         return null;
       }
@@ -611,10 +611,20 @@ function parseRecord(value: Record<string, unknown>): Request | null {
         : value.host === null
           ? (value as Request)
           : null;
-    case 'confirmGate':
-      return hasExactKeys(value, ['type', 'typedPhrase']) && isNullableString(value.typedPhrase)
-        ? (value as Request)
+    case 'abandonGate':
+    case 'confirmGate': {
+      const detached: unknown = snapshotExactData(value)?.value;
+      if (!isRecord(detached)) return null;
+      const keys: string[] =
+        detached.type === 'confirmGate'
+          ? ['type', 'typedPhrase', 'expectedGate']
+          : ['type', 'expectedGate'];
+      return hasExactKeys(detached, keys) &&
+        validateDetachedGateState(detached.expectedGate) &&
+        (detached.type === 'abandonGate' || isNullableString(detached.typedPhrase))
+        ? (detached as Request)
         : null;
+    }
     case 'updateSettings':
       return hasExactKeys(value, ['type', 'settings']) &&
         isWithinSyncQuota(SYNC_SETTINGS, value.settings) &&

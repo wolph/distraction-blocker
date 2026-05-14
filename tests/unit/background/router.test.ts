@@ -58,6 +58,57 @@ const overlay: ReturnType<Engine['statsOverlay']> = {
 };
 const engine: Engine = { statsOverlay: vi.fn(() => overlay) } as unknown as Engine;
 const sender: chrome.runtime.MessageSender = {};
+
+describe('content unlock domain authority', (): void => {
+  it('rejects another domain for opening, confirming and abandoning', async (): Promise<void> => {
+    const expectedGate = {
+      kind: 'unlockSite' as const,
+      host: 'reddit.com',
+      openedAt: 1,
+      readyAt: 2,
+      requiredPhrase: null,
+    };
+    const openGate = vi.fn().mockResolvedValue({ ok: true });
+    const confirmGate = vi.fn().mockResolvedValue({ ok: true });
+    const abandonGate = vi.fn().mockResolvedValue({ ok: true });
+    const engine: Engine = { openGate, confirmGate, abandonGate } as unknown as Engine;
+    for (const url of ['https://facebook.com', 'invalid', 'http://127.0.0.1']) {
+      const content: chrome.runtime.MessageSender = { tab: { id: 1 } as chrome.tabs.Tab, url };
+      expect(
+        await routeMessage(
+          engine,
+          { type: 'openGate', gate: 'unlockSite', host: 'reddit.com' },
+          content,
+        ),
+      ).toMatchObject({ ok: false });
+      expect(
+        await routeMessage(
+          engine,
+          { type: 'confirmGate', typedPhrase: null, expectedGate },
+          content,
+        ),
+      ).toMatchObject({ ok: false });
+      expect(
+        await routeMessage(engine, { type: 'abandonGate', expectedGate }, content),
+      ).toMatchObject({ ok: false });
+    }
+    expect(openGate).not.toHaveBeenCalled();
+    expect(confirmGate).not.toHaveBeenCalled();
+    expect(abandonGate).not.toHaveBeenCalled();
+    await routeMessage(
+      engine,
+      { type: 'confirmGate', typedPhrase: null, expectedGate },
+      { url: 'https://www.reddit.com', tab: { id: 1 } as chrome.tabs.Tab },
+    );
+    expect(confirmGate).toHaveBeenCalledWith(null, expectedGate);
+    await routeMessage(
+      engine,
+      { type: 'abandonGate', expectedGate },
+      { url: 'chrome-extension://test/popup.html' },
+    );
+    expect(abandonGate).toHaveBeenCalledWith(expectedGate);
+  });
+});
 const stats: StatsBundle = {
   days: [],
   months: [],

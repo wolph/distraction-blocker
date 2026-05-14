@@ -11,11 +11,45 @@ import {
 import type { Request } from '../../../src/shared/messages';
 import { SYNC_LISTS } from '../../../src/shared/storage-keys';
 import type {
+  GateState,
   ListsConfig,
   OnboardingDraft,
   SessionConfig,
   Settings,
 } from '../../../src/shared/types';
+
+describe('captured gate request binding', (): void => {
+  const expectedGate: GateState = {
+    kind: 'unlockSite',
+    host: 'reddit.com',
+    openedAt: 1,
+    readyAt: 2,
+    requiredPhrase: null,
+  };
+  it.each(['confirmGate', 'abandonGate'])(
+    'requires a complete detached gate for %s',
+    (type: string): void => {
+      const request: Record<string, unknown> = {
+        type,
+        ...(type === 'confirmGate' ? { typedPhrase: null } : {}),
+      };
+      expect(parseRequest(request)).toBeNull();
+      const invalidGates: unknown[] = [
+        null,
+        {},
+        { ...expectedGate, extra: true },
+        { ...expectedGate, host: null },
+      ];
+      for (const invalid of invalidGates) {
+        expect(parseRequest({ ...request, expectedGate: invalid })).toBeNull();
+      }
+      const parsed: Request | null = parseRequest({ ...request, expectedGate });
+      expect(parsed).toEqual({ ...request, expectedGate });
+      if (parsed?.type === 'confirmGate' || parsed?.type === 'abandonGate')
+        expect(parsed.expectedGate).not.toBe(expectedGate);
+    },
+  );
+});
 
 type RequestByType = {
   [Type in Request['type']]: Extract<Request, { type: Type }>;
@@ -79,10 +113,17 @@ const VALID_REQUESTS: RequestByType = {
   },
   startSession: { type: 'startSession', config: SESSION_CONFIG },
   openGate: { type: 'openGate', gate: 'unlockSite', host: 'news.example' },
-  confirmGate: { type: 'confirmGate', typedPhrase: null },
+  confirmGate: {
+    type: 'confirmGate',
+    typedPhrase: null,
+    expectedGate: { kind: 'pause', host: null, openedAt: 1, readyAt: 2, requiredPhrase: null },
+  },
   requestSessionEnd: { type: 'requestSessionEnd' },
   openEndGate: { type: 'openEndGate' },
-  abandonGate: { type: 'abandonGate' },
+  abandonGate: {
+    type: 'abandonGate',
+    expectedGate: { kind: 'pause', host: null, openedAt: 1, readyAt: 2, requiredPhrase: null },
+  },
   retryTransitionCleanup: { type: 'retryTransitionCleanup' },
   retryClosureCleanup: { type: 'retryClosureCleanup' },
   retryDataClear: { type: 'retryDataClear' },
@@ -262,7 +303,7 @@ describe('parseRequest', (): void => {
 
   it('accepts null hosts for gates that do not target a site', (): void => {
     expect(parseRequest({ type: 'openGate', gate: 'pause', host: null })).not.toBeNull();
-    expect(parseRequest({ type: 'openGate', gate: 'cancel', host: null })).not.toBeNull();
+    expect(parseRequest({ type: 'openGate', gate: 'cancel', host: null })).toBeNull();
   });
 
   it.each(['localhost', 'intranet', '[::1]', '[2001:db8::1]'])(

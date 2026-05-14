@@ -12,7 +12,6 @@
  */
 
 import { accrue } from '../core/budget';
-import { registrableHost } from '../core/matcher';
 import {
   advanceSessionV2,
   assertCanStartNextFocusEarlyV2,
@@ -44,6 +43,7 @@ import type {
   SiteUnlock,
   Verdict,
 } from '../shared/types';
+import { canonicalUnlockHost } from '../shared/unlock-host';
 import { ensurePhaseAlarmV2, parseAlarmNameV2 } from './alarms-v2';
 import { documentCommandKeyV2 } from './cleanup-progress-v2';
 import {
@@ -352,8 +352,8 @@ export class SessionControllerV2 {
       if (this.ports.runtime().pendingEnforcementTransition !== null) {
         return failure('end-not-allowed');
       }
-      if (this.ports.runtime().gate !== null) return failure('end-not-allowed');
-      if (gate === 'unlockSite' && (host === null || host.trim() === '')) {
+      const unlockHost: string | null = gate === 'unlockSite' ? canonicalUnlockHost(host) : null;
+      if (gate === 'unlockSite' && unlockHost === null) {
         return failure('end-not-allowed');
       }
       // A gate the user cannot afford is not opened at all, which is what the v1 economy did: the
@@ -361,29 +361,42 @@ export class SessionControllerV2 {
       const economy: PauseEconomy = this.ports.economy();
       const cost: number = gate === 'pause' ? economy.pauseMs : economy.unlockMs;
       if (this.ports.bank().balanceMs < cost) return failure('end-not-allowed');
-      const unlockHost: string | null =
-        gate === 'unlockSite' && host !== null ? (registrableHost(host) ?? host) : null;
+      const previous: GateState | null = this.ports.runtime().gate;
+      if (previous !== null) {
+        if (previous.kind !== 'unlockSite' || gate !== 'unlockSite')
+          return failure('end-not-allowed');
+        if (canonicalUnlockHost(previous.host) === unlockHost) return OK;
+      }
+      const openedAt: number = Math.max(
+        this.ports.now(),
+        previous === null ? 0 : previous.openedAt + 1,
+      );
       await this.commitLiveGate(
         {
           kind: gate,
           host: unlockHost,
-          openedAt: this.ports.now(),
-          readyAt: this.ports.now() + this.ports.gateSettings().delayMs,
+          openedAt,
+          readyAt: openedAt + this.ports.gateSettings().delayMs,
           requiredPhrase: this.gatePhrase(gate, unlockHost),
         },
-        this.gateEvent('gateOpened', gate, session),
+        [
+          ...(previous === null ? [] : this.gateEvent('gateResisted', previous.kind, session)),
+          ...this.gateEvent('gateOpened', gate, session),
+        ],
       );
       return OK;
     });
   }
 
   /** Clears the gate, records the resistance, and refreshes the live views. */
-  async abandonGate(): Promise<CommandResultV2> {
+  async abandonGate(expectedGate?: GateState): Promise<CommandResultV2> {
     return this.command(async (): Promise<CommandResultV2> => {
       const guard: CommandResultV2 | null = this.gateGuard(this.ports.runtime().session);
       if (guard !== null) return guard;
       const open: GateState | null = this.ports.runtime().gate;
       if (open === null) return failure('no-active-gate');
+      if (expectedGate !== undefined && !exactDataEqual(open, expectedGate))
+        return failure('no-active-gate');
       await this.commitLiveGate(
         null,
         this.gateEvent('gateResisted', open.kind, this.ports.runtime().session),
@@ -400,8 +413,14 @@ export class SessionControllerV2 {
   }
 
   /** Spends a ready gate. The cancel gate closes the session, the others buy their relief. */
-  async confirmGate(typedPhrase: string | null): Promise<CommandResultV2> {
+  async confirmGate(
+    typedPhrase: string | null,
+    expectedGate?: GateState,
+  ): Promise<CommandResultV2> {
     return this.command(async (): Promise<CommandResultV2> => {
+      if (expectedGate !== undefined && !exactDataEqual(this.ports.runtime().gate, expectedGate)) {
+        return failure('no-active-gate');
+      }
       // A spend is a durable transaction against the bank, so the focus earned since the last
       // settle is credited before the balance is read. The tick is a minute apart, and a user who
       // just earned a pause may not be refused it because nothing has settled yet.
@@ -412,6 +431,8 @@ export class SessionControllerV2 {
       if (this.inTransitionCleanup()) return failure('transition-cleanup-pending');
       if (runtime.pendingClosure !== null) return failure('closure-cleanup-pending');
       if (gate === null || session === null) return failure('no-active-gate');
+      if (expectedGate !== undefined && !exactDataEqual(gate, expectedGate))
+        return failure('no-active-gate');
       if (this.ports.now() < gate.readyAt) return failure('gate-not-ready');
       if (gate.requiredPhrase !== null && typedPhrase !== gate.requiredPhrase) {
         return failure('confirmation-mismatch');
@@ -875,6 +896,7 @@ export class SessionControllerV2 {
   ): ReturnType<typeof buildActiveOverlayView> {
     const economy = this.ports.economy();
     return buildActiveOverlayView({
+      targetUrl: previous.expectedUrl,
       capturedAt: this.ports.now(),
       theme: this.ports.theme(),
       session,

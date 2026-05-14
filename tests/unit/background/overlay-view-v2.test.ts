@@ -130,6 +130,7 @@ function economy(overrides: Partial<ActiveEconomy> = {}): ActiveEconomy {
 
 function activeInput(overrides: Partial<ActiveViewInputV2> = {}): ActiveViewInputV2 {
   return {
+    targetUrl: EXPECTED_URL,
     capturedAt: NOW,
     theme: 'dark',
     session: timedSession(),
@@ -142,6 +143,26 @@ function activeInput(overrides: Partial<ActiveViewInputV2> = {}): ActiveViewInpu
     ...overrides,
   };
 }
+
+describe('unlock gate document binding', (): void => {
+  it.each([
+    ['https://www.reddit.com/r/test', 'reddit.com', true],
+    ['https://facebook.com', 'reddit.com', false],
+    ['https://127.0.0.1/path', '127.0.0.1', true],
+    ['https://127.0.0.2', '127.0.0.1', false],
+    ['http://localhost/path', 'localhost', true],
+    ['http://[::1]/path', '[::1]', true],
+    ['http://[::2]/path', '[::1]', false],
+    ['invalid', 'localhost', false],
+  ])('binds %s to %s: %s', (targetUrl: string, host: string, visible: boolean): void => {
+    const view: ActiveOverlay = buildActiveOverlayView(
+      activeInput({ targetUrl, gate: gateState({ kind: 'unlockSite', host }) }),
+    ) as ActiveOverlay;
+    expect(view.gate !== null).toBe(visible);
+    expect(view.actions.state).toBe(visible ? 'gate' : 'ready');
+    expect(view.copy.gateTitle).toBe(visible ? `Unlock ${host}?` : null);
+  });
+});
 
 function startingInput(overrides: Partial<StartingViewInputV2> = {}): StartingViewInputV2 {
   return {

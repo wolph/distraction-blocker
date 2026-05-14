@@ -85,6 +85,11 @@ export function renderDocumentOverlay(view: DocumentOverlayView, verdict: Verdic
   // across a repaint the same gate survives. The popup solves the mirror of this by keying its
   // panel on the gate identity, which throws the phrase away when the gate is a different one.
   const carried: CarriedGateInput | null = carriedGateInput(overlay, view);
+  if (gateIdentityOf(overlay.view) !== gateIdentityOf(view)) {
+    overlay.actionPending = false;
+    overlay.actionError = null;
+    overlay.actionGeneration += 1;
+  }
   mounted = overlay;
   overlay.view = view;
   overlay.verdict = verdict;
@@ -376,7 +381,7 @@ function buildGate(
   back.type = 'button';
   back.textContent = view.copy.gateBack;
   back.addEventListener('click', (): void => {
-    requestAction({ type: 'abandonGate' });
+    requestAction({ type: 'abandonGate', expectedGate: gate });
   });
   wrap.appendChild(back);
   const phrase: HTMLInputElement | null = appendPhrase(wrap, view, gate);
@@ -386,7 +391,7 @@ function buildGate(
   confirm.textContent = view.copy.gateConfirm ?? '';
   confirm.hidden = true;
   confirm.addEventListener('click', (): void => {
-    requestAction({ type: 'confirmGate', typedPhrase: phrase?.value ?? null });
+    requestAction({ type: 'confirmGate', typedPhrase: phrase?.value ?? null, expectedGate: gate });
   });
   wrap.appendChild(confirm);
   overlay.gate = {

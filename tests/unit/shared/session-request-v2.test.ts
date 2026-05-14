@@ -8,7 +8,7 @@ import {
   type StartSessionResponseV2,
   sendRequest,
 } from '../../../src/shared/messages';
-import type { SessionConfigV2 } from '../../../src/shared/types';
+import type { GateState, SessionConfigV2 } from '../../../src/shared/types';
 import { MANUAL_INDEFINITE_CONFIG } from './v2-runtime-fixtures';
 
 const sendMessageMock: Mock = vi.fn();
@@ -25,9 +25,20 @@ const REQUEST_SESSION_END: Extract<SessionRequestV2, { type: 'requestSessionEnd'
   type: 'requestSessionEnd',
 };
 const OPEN_END_GATE: Extract<SessionRequestV2, { type: 'openEndGate' }> = { type: 'openEndGate' };
-const ABANDON_GATE: Extract<SessionRequestV2, { type: 'abandonGate' }> = { type: 'abandonGate' };
+const EXPECTED_GATE: GateState = {
+  kind: 'cancel',
+  host: null,
+  openedAt: 1,
+  readyAt: 2,
+  requiredPhrase: null,
+};
+const ABANDON_GATE: Extract<SessionRequestV2, { type: 'abandonGate' }> = {
+  type: 'abandonGate',
+  expectedGate: EXPECTED_GATE,
+};
 const CONFIRM_GATE: Extract<SessionRequestV2, { type: 'confirmGate' }> = {
   type: 'confirmGate',
+  expectedGate: EXPECTED_GATE,
   typedPhrase: 'I am ending this session before: Review the release',
 };
 const OPEN_GATE: Extract<SessionRequestV2, { type: 'openGate' }> = {
@@ -132,9 +143,11 @@ describe('v2 session request channel', (): void => {
     }>();
     expectTypeOf<Extract<SessionRequestV2, { type: 'abandonGate' }>>().toEqualTypeOf<{
       type: 'abandonGate';
+      expectedGate: GateState;
     }>();
     expectTypeOf<Extract<SessionRequestV2, { type: 'confirmGate' }>>().toEqualTypeOf<{
       type: 'confirmGate';
+      expectedGate: GateState;
       typedPhrase: string | null;
     }>();
     expectTypeOf<Extract<SessionRequestV2, { type: 'openGate' }>>().toEqualTypeOf<{
