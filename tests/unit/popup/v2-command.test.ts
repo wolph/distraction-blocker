@@ -149,6 +149,19 @@ describe('endCommandOf', (): void => {
 });
 
 describe('endControl', (): void => {
+  it.each([IMMEDIATE, CLOSED_FRICTION])(
+    'marks the available End control as a destructive button for $kind authority',
+    (authority: EndAuthorityV2): void => {
+      const { getByRole } = render(h(Harness, { authority }));
+      const end: HTMLButtonElement = getByRole('button', {
+        name: END_SESSION_LABEL,
+      }) as HTMLButtonElement;
+
+      expect(end.classList.contains('end-session-button')).toBe(true);
+      expect(end.disabled).toBe(false);
+    },
+  );
+
   it('renders nothing for an authority that hides End', (): void => {
     const { container } = render(h(Harness, { authority: HIDDEN }));
 

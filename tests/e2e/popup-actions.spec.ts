@@ -1,0 +1,117 @@
+import type { Locator, Page } from '@playwright/test';
+import type { Settings } from '../../src/shared/types';
+import { expect, sendExtensionRequest, startTestSession, test } from './fixtures';
+
+test('popup shows an unlock confirmation and a red End session control', async ({
+  context,
+  extPage,
+  siteUrl,
+}, testInfo): Promise<void> => {
+  const settings: Settings = await sendExtensionRequest(extPage, { type: 'getSettings' });
+  await sendExtensionRequest(extPage, {
+    type: 'updateSettings',
+    settings: {
+      ...settings,
+      pause: { earnRatio: 10, capMs: 600_000, pauseMs: 300_000, unlockMs: 300_000 },
+      gate: { delayMs: 1_000, requireTypedPhrase: false },
+    },
+  });
+  const site: Page = await context.newPage();
+  await site.goto(siteUrl('/plain.html'));
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 5 } });
+  await expect(site.locator('focus-lock-overlay')).toBeAttached();
+  await expect(extPage.getByRole('button', { name: 'End session', exact: true })).toBeVisible();
+  for (const theme of ['light', 'dark']) {
+    await extPage.evaluate((value: string): void => {
+      document.documentElement.dataset.theme = value;
+    }, theme);
+    for (const width of [440, 375, 768]) {
+      await extPage.setViewportSize({ width, height: 600 });
+      const end: Locator = extPage.getByRole('button', { name: 'End session', exact: true });
+      await expect(end).toBeInViewport({ ratio: 1 });
+      await extPage.screenshot({
+        path: testInfo.outputPath(`end-${theme}-${width}-full.png`),
+        fullPage: true,
+      });
+      await end.screenshot({ path: testInfo.outputPath(`end-${theme}-${width}-detail.png`) });
+      await end.hover();
+      await end.screenshot({ path: testInfo.outputPath(`end-${theme}-${width}-hover.png`) });
+      await end.focus();
+      await extPage
+        .locator('.actions')
+        .screenshot({ path: testInfo.outputPath(`end-${theme}-${width}-focus.png`) });
+      await end.evaluate((element: HTMLButtonElement): void => element.blur());
+    }
+  }
+  await expect
+    .poll(
+      async (): Promise<number> =>
+        (await sendExtensionRequest(extPage, { type: 'getSnapshot' })).bankMs,
+      { timeout: 40_000 },
+    )
+    .toBeGreaterThanOrEqual(300_000);
+  await site.bringToFront();
+  await extPage.evaluate(async (): Promise<void> => {
+    await chrome.action.openPopup();
+  });
+  await expect
+    .poll(
+      async (): Promise<string | null> =>
+        extPage.evaluate((): string | null => {
+          const popup: Window | undefined = chrome.extension.getViews({ type: 'popup' })[0];
+          const button: HTMLButtonElement | undefined = Array.from(
+            popup?.document.querySelectorAll('button') ?? [],
+          ).find(
+            (element: HTMLButtonElement): boolean =>
+              element.textContent?.includes('Unlock this site for 5 min') === true,
+          );
+          if (button === undefined || button.disabled) return null;
+          return button.textContent;
+        }),
+    )
+    .toContain('blocked.example');
+  await extPage.evaluate((): void => {
+    const popup: Window | undefined = chrome.extension.getViews({ type: 'popup' })[0];
+    const button: HTMLButtonElement | undefined = Array.from(
+      popup?.document.querySelectorAll('button') ?? [],
+    ).find(
+      (element: HTMLButtonElement): boolean =>
+        element.textContent?.includes('Unlock this site for 5 min') === true,
+    );
+    if (button === undefined) throw new Error('Missing native popup unlock button');
+    button.click();
+  });
+  await expect
+    .poll(
+      async (): Promise<string> =>
+        extPage.evaluate(
+          (): string =>
+            chrome.extension.getViews({ type: 'popup' })[0]?.document.body.textContent ?? '',
+        ),
+    )
+    .toContain('Never mind, back to work');
+  expect((await sendExtensionRequest(extPage, { type: 'getSnapshot' })).gate?.host).toBe(
+    'blocked.example',
+  );
+  await expect
+    .poll(
+      async (): Promise<boolean> =>
+        extPage.evaluate((): boolean => {
+          const popup: Window | undefined = chrome.extension.getViews({ type: 'popup' })[0];
+          const confirm: HTMLButtonElement | null | undefined =
+            popup?.document.querySelector<HTMLButtonElement>('.gate-confirm');
+          return confirm !== undefined && confirm !== null && !confirm.disabled;
+        }),
+    )
+    .toBe(true);
+  await extPage.evaluate((): void => {
+    const popup: Window | undefined = chrome.extension.getViews({ type: 'popup' })[0];
+    popup?.document.querySelector<HTMLButtonElement>('.gate-confirm')?.click();
+  });
+  await expect(site.locator('focus-lock-overlay')).toHaveCount(0);
+  expect(
+    (await sendExtensionRequest(extPage, { type: 'getSnapshot' })).activeUnlocks.map(
+      (unlock): string => unlock.host,
+    ),
+  ).toEqual(['blocked.example']);
+});

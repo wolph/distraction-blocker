@@ -880,20 +880,29 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.cancel-link {
+.end-session-button {
   border: none;
-  background: transparent;
-  color: var(--text-soft);
+  border-radius: 4px;
+  background: var(--danger);
+  color: var(--surface);
   font-size: 12.5px;
-  text-decoration: underline;
   cursor: pointer;
   padding: 4px;
 }
 
-.cancel-link:disabled {
+.end-session-button:hover:enabled {
+  background: color-mix(in srgb, var(--danger) 90%, var(--danger-soft));
+}
+
+.end-session-button:focus-visible {
+  outline: 2px solid var(--danger);
+  outline-offset: 3px;
+}
+
+.end-session-button:disabled {
+  background: var(--danger-soft);
+  color: var(--danger);
   cursor: default;
-  text-decoration: none;
-  opacity: 0.65;
 }
 
 .gate-panel {
