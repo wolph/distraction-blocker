@@ -29,6 +29,24 @@ test('popup shows an unlock confirmation and a red End session control', async (
       await extPage.setViewportSize({ width, height: 600 });
       const end: Locator = extPage.getByRole('button', { name: 'End session', exact: true });
       await expect(end).toBeInViewport({ ratio: 1 });
+      const actionStyles: Record<string, string | number>[] = await extPage
+        .locator('.actions > button')
+        .evaluateAll((buttons: Element[]): Record<string, string | number>[] =>
+          buttons.map((button: Element): Record<string, string | number> => {
+            const style: CSSStyleDeclaration = getComputedStyle(button);
+            return {
+              height: button.getBoundingClientRect().height,
+              width: button.getBoundingClientRect().width,
+              padding: style.padding,
+              radius: style.borderRadius,
+              fontSize: style.fontSize,
+              fontWeight: style.fontWeight,
+            };
+          }),
+        );
+      expect(actionStyles).toHaveLength(3);
+      expect(actionStyles[2]).toEqual(actionStyles[0]);
+      expect(actionStyles[2]).toEqual(actionStyles[1]);
       await extPage.screenshot({
         path: testInfo.outputPath(`end-${theme}-${width}-full.png`),
         fullPage: true,

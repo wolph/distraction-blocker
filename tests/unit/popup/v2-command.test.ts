@@ -158,6 +158,7 @@ describe('endControl', (): void => {
       }) as HTMLButtonElement;
 
       expect(end.classList.contains('end-session-button')).toBe(true);
+      expect(end.classList.contains('spend-button')).toBe(true);
       expect(end.disabled).toBe(false);
     },
   );

@@ -131,7 +131,7 @@ export function endControl(authority: EndAuthorityV2, command: V2Command): JSX.E
   return (
     <button
       type="button"
-      class="end-session-button"
+      class="spend-button end-session-button"
       disabled={command.pending}
       onClick={(): void => void command.run(request, END_FAILED_COPY)}
     >
