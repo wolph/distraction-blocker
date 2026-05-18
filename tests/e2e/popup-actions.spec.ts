@@ -59,6 +59,9 @@ test('popup shows an unlock confirmation and a red End session control', async (
         .locator('.actions')
         .screenshot({ path: testInfo.outputPath(`end-${theme}-${width}-focus.png`) });
       await end.evaluate((element: HTMLButtonElement): void => element.blur());
+      // The hover above leaves the pointer on the button, and the next width's resting shots
+      // would show the hover fill. Park the pointer so every full and detail image is at rest.
+      await extPage.mouse.move(0, 0);
     }
   }
   await expect
