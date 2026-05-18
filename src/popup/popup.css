@@ -882,15 +882,16 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Outlined rather than filled: the same shape as the two actions above it, marked in red by its
+   border and text only, so ending a session reads as a distinct choice without shouting. */
 .end-session-button {
   border-color: var(--danger);
-  background: var(--danger);
-  color: var(--surface);
+  color: var(--danger);
 }
 
 .end-session-button:hover:enabled {
   border-color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 90%, var(--danger-soft));
+  background: var(--danger-soft);
 }
 
 .end-session-button:focus-visible {
@@ -900,8 +901,8 @@ body {
 }
 
 .spend-button.end-session-button:disabled {
-  background: var(--danger-soft);
-  color: var(--danger);
+  border-color: var(--border);
+  color: var(--text-soft);
 }
 
 .gate-panel {
