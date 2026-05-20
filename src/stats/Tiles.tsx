@@ -65,7 +65,7 @@ function buildTiles(bundle: StatsBundle, now: number): TileSpec[] {
       subline: null,
     },
     {
-      label: 'Pause spent today',
+      label: 'Site access credit spent today',
       value: formatDuration(spentMs),
       subline: `of ${formatDuration(earnedMs)} earned`,
     },

@@ -110,7 +110,7 @@ describe('PauseEconomy', () => {
     const { getByLabelText }: ReturnType<typeof render> = render(
       <PauseEconomy settings={DEFAULT_SETTINGS} onChange={onChange} />,
     );
-    fireEvent.input(getByLabelText('Minutes of pause per 30 minutes of focus'), {
+    fireEvent.input(getByLabelText('Minutes of site access per 30 minutes of focus'), {
       target: { value: '10' },
     });
     expect(onChange).toHaveBeenCalledTimes(1);
@@ -124,7 +124,7 @@ describe('PauseEconomy', () => {
     const { getByLabelText }: ReturnType<typeof render> = render(
       <PauseEconomy settings={DEFAULT_SETTINGS} onChange={onChange} />,
     );
-    fireEvent.input(getByLabelText('Minutes of pause per 30 minutes of focus'), {
+    fireEvent.input(getByLabelText('Minutes of site access per 30 minutes of focus'), {
       target: { value: '-3' },
     });
     expect(onChange).not.toHaveBeenCalled();
@@ -135,7 +135,7 @@ describe('PauseEconomy', () => {
     const { getByLabelText } = render(
       <PauseEconomy settings={DEFAULT_SETTINGS} onChange={onChange} />,
     );
-    fireEvent.input(getByLabelText('Minutes of pause per 30 minutes of focus'), {
+    fireEvent.input(getByLabelText('Minutes of site access per 30 minutes of focus'), {
       target: { value: '0' },
     });
     const next: Settings = onChange.mock.calls[0]?.[0] as Settings;
@@ -147,9 +147,13 @@ describe('PauseEconomy', () => {
     const { getByLabelText, getByText }: ReturnType<typeof render> = render(
       <PauseEconomy settings={DEFAULT_SETTINGS} onChange={onChange} />,
     );
-    fireEvent.input(getByLabelText('Pause length (minutes)'), { target: { value: '1.5' } });
+    fireEvent.input(getByLabelText('All-site access length (minutes)'), {
+      target: { value: '1.5' },
+    });
     expect(onChange).not.toHaveBeenCalled();
-    expect(getByText('Pause length (minutes) must be a positive whole number.')).toBeTruthy();
+    expect(
+      getByText('All-site access length (minutes) must be a positive whole number.'),
+    ).toBeTruthy();
   });
 });
 

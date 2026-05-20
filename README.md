@@ -1,10 +1,10 @@
 # Focus Lock
 
-Focus Lock is a Chrome extension for focus sessions that blocks distracting sites without redirecting them. It stops fresh blocked navigations before page content renders, overlays and mutes already-open blocked tabs without reloading them, handles single-page app URL changes, earns a capped budget for pauses or one-site unlocks behind a deliberation gate, and restores scheduled sessions and local session state after the Manifest V3 worker wakes again.
+Focus Lock is a Chrome extension for focus sessions that blocks distracting sites without redirecting them. It stops fresh blocked navigations before page content renders, overlays and mutes already-open blocked tabs without reloading them, handles single-page app URL changes, earns capped site access credit for temporary access behind a deliberation gate, and restores scheduled sessions and local session state after the Manifest V3 worker wakes again.
 
 ## Research foundation
 
-The defaults are evidence-informed, not a treatment claim. A short deliberation gate is based on the [one sec field experiment in PNAS](https://www.pnas.org/doi/abs/10.1073/pnas.2213114120) and its [longitudinal CHI follow-up](https://dl.acm.org/doi/10.1145/3613904.3642370). Scheduled breaks are supported by the [Biwer et al. comparison of systematic and self-regulated breaks](https://bpspsychub.onlinelibrary.wiley.com/doi/abs/10.1111/bjep.12593), while the [Albulescu et al. meta-analysis](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0272460) supports short breaks for vigor and fatigue more clearly than for performance. Visible time follows the adult ADHD time-perception evidence summarized in this [peer-reviewed review](https://pmc.ncbi.nlm.nih.gov/articles/PMC9962130/). Precommitted strictness follows the drift documented by [Not Now, Ask Later](https://dl.acm.org/doi/fullHtml/10.1145/3411764.3445695). No published trial establishes Focus Lock itself, a 25/5 optimum for adults with ADHD, a 52/17 rule, a 90-minute biological work cycle, a 23-minute refocus time, or a benefit from completion sounds. Those claims are deliberately absent from the UI.
+The defaults are evidence-informed, not a treatment claim. A short deliberation gate is based on the [one sec field experiment in PNAS](https://www.pnas.org/doi/abs/10.1073/pnas.2213114120) and its [longitudinal CHI follow-up](https://dl.acm.org/doi/10.1145/3613904.3642370). Scheduled breaks are supported by the [Biwer et al. comparison of systematic and self-regulated breaks](https://bpspsychub.onlinelibrary.wiley.com/doi/abs/10.1111/bjep.12593), while the [Albulescu et al. meta-analysis](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0272460) supports short breaks for vigour and fatigue more clearly than for performance. Visible time follows the adult ADHD time-perception evidence summarised in this [peer-reviewed review](https://pmc.ncbi.nlm.nih.gov/articles/PMC9962130/). Precommitted strictness follows the drift documented by [Not Now, Ask Later](https://dl.acm.org/doi/fullHtml/10.1145/3411764.3445695). No published trial establishes Focus Lock itself, a 25/5 optimum for adults with ADHD, a 52/17 rule, a 90-minute biological work cycle, a 23-minute refocus time, or a benefit from completion sounds. Those claims are deliberately absent from the UI.
 
 ## Install from source
 
@@ -31,16 +31,26 @@ After another build, use the Reload button on `chrome://extensions` to load the 
 
 ## Usage
 
-Open the popup, choose a duration, enter the task you intend to finish, select categories, and start focusing. The default presets are 15, 25, and 50 minutes. The 50-minute preset is labeled as a preference rather than a scientific optimum.
+Open the popup, choose a duration, enter your next small step, select categories, and start focusing. The current allowed tab is suggested as your work tab. You can choose another tab or start without one. The default presets are 15, 25, and 50 minutes. The 50-minute preset is labelled as a preference rather than a scientific optimum.
 
 - Blacklist mode blocks enabled categories and custom host or URL-regex rules. Whitelist mode blocks the web except for the listed rules.
-- Friction sessions can end early only after a worker-enforced wait and an exact typed sentence. Hard sessions cannot end early, and settings or list changes that would weaken the active lock are rejected.
-- Focus time earns pause time continuously. The default rate is 5 minutes per 30 focused minutes, capped at 30 minutes. A default spend buys either a 5-minute pause for all sites or a 5-minute unlock for the current registrable site.
-- Pause and unlock actions pass through a 10-second deliberation gate with an immediate Back to work choice. A pause can be resumed early.
+- Friction sessions can end early through the configured deliberation gate. The worker enforces its delay and optional typed sentence unless the force-end option is enabled and used. Hard sessions cannot end early, and settings or list changes that would weaken the active lock are rejected.
+- Focus time earns site access credit continuously. The default rate is 5 minutes per 30 focused minutes, capped at 30 minutes. A default spend buys either 5 minutes of access to all sites or a 5-minute unlock for the current registrable site. You can step away from the screen at any time without spending credit.
+- Temporary access actions use the configured deliberation gate, with a 10-second default. Back to work cancels an open gate and activates your chosen work tab immediately. Access to all sites can be ended early.
 - Cycling alternates focus with short and long breaks. Schedules can start blacklist or whitelist sessions on selected weekdays and local time windows.
-- Options contains category switches, per-site category exclusions, custom domain and URL-regex rules, whitelist rules, schedule entries, pause economy settings, sounds, badge behavior, and data export.
+- Options contains category switches, per-site category exclusions, custom domain and URL-regex rules, whitelist rules, schedule entries, site access credit settings, sounds, badge behaviour, and data export.
 
 Fresh blocked navigations show an opaque locked document. A page that was already open receives an overlay and is muted in place. When blocking ends, the existing page retains its form, scroll, and JavaScript state. A navigation that was stopped reloads so the requested page can render.
+
+## Returning to work
+
+The lockscreen shows your next step, time until the next break or session end, and one Back to work button. It activates the chosen tab and its window without navigating away from either page. Long tasks wrap, and the overlay scrolls independently of the blocked page.
+
+Open Need a break or site access? for credit and temporary access options. Each action shows its own cost and the time needed to afford it. When the credit limit or remaining focus time makes a spend unavailable, the screen explains why instead of counting down to a button that stays disabled.
+
+Change your work tab in the active popup. A closed or newly blocked work tab cannot be used as a return destination. Scheduled sessions and sessions started without a target show an instruction to choose one in the popup. A work tab never bypasses your blocklist or whitelist.
+
+The work-tab reference stays in worker-only `chrome.storage.session`. It survives a service-worker restart but is cleared when Chrome restarts or the extension reloads. Choose the tab again after a restart. The saved focus session and site access credit use their existing storage and continue independently.
 
 ## Screenshots
 
@@ -52,9 +62,9 @@ Fresh blocked navigations show an opaque locked document. A page that was alread
 
 ## Stats and storage
 
-The stats page reports focus time, blocked attempts, resisted gates, pause spending, recent sessions, hourly and daily activity, streaks, and freeze tokens. The options page can export the detailed local event log as JSON.
+The stats page reports focus time, blocked attempts, resisted gates, site access credit spending, recent sessions, hourly and daily activity, streaks, and freeze tokens. The options page can export the detailed local event log as JSON.
 
-Chrome Sync stores settings, lists, pause bank, streak state, and per-device daily and monthly aggregates. Detailed events, the active runtime session, and the device ID stay in `chrome.storage.local`. An active session therefore resumes in the same Chrome profile, but it does not move live to another machine. Aggregate sync is eventually consistent and can briefly show different totals across machines.
+Chrome Sync stores settings, lists, site access credit, streak state, and per-device daily and monthly aggregates. Detailed events, the active runtime session, and the device ID stay in `chrome.storage.local`. An active session therefore resumes in the same Chrome profile, but it does not move live to another machine. Aggregate sync is eventually consistent and can briefly show different totals across machines.
 
 ## Development
 

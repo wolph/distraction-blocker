@@ -285,7 +285,7 @@ describe('App frame', () => {
       'Lists and categories',
       'Schedule',
       'Strictness and gate',
-      'Pause economy',
+      'Site access credit',
       'Sounds and badge',
       'Data',
     ]) {
@@ -352,7 +352,7 @@ describe('App frame', () => {
     fireEvent.input(getByLabelText('Daily streak goal (focus minutes)'), {
       target: { value: '30' },
     });
-    fireEvent.click(getByRole('button', { name: 'Save pause economy' }));
+    fireEvent.click(getByRole('button', { name: 'Save site access credit' }));
     await waitFor((): void =>
       expect(
         fake.sent.some(
@@ -442,11 +442,11 @@ describe('App frame', () => {
     fireEvent.click(
       getByLabelText('Friction: stopping early uses the configured deliberation gate'),
     );
-    fireEvent.click(getByRole('link', { name: 'Pause economy' }));
+    fireEvent.click(getByRole('link', { name: 'Site access credit' }));
     fireEvent.input(getByLabelText('Daily streak goal (focus minutes)'), {
       target: { value: '30' },
     });
-    fireEvent.click(getByRole('button', { name: 'Save pause economy' }));
+    fireEvent.click(getByRole('button', { name: 'Save site access credit' }));
 
     await waitFor((): void => {
       expect(fake.sent.some((request: Request): boolean => request.type === 'updateSettings')).toBe(
@@ -494,11 +494,11 @@ describe('App frame', () => {
     fake.respond('updateSettings', { ok: true });
     const { getByLabelText, getByRole }: ReturnType<typeof render> = render(<App />);
     await waitFor((): void => {
-      expect(getByRole('link', { name: 'Pause economy' })).toBeTruthy();
+      expect(getByRole('link', { name: 'Site access credit' })).toBeTruthy();
     });
-    fireEvent.click(getByRole('link', { name: 'Pause economy' }));
+    fireEvent.click(getByRole('link', { name: 'Site access credit' }));
     fireEvent.input(getByLabelText('Freeze token interval (days)'), { target: { value: '9' } });
-    fireEvent.click(getByRole('button', { name: 'Save pause economy' }));
+    fireEvent.click(getByRole('button', { name: 'Save site access credit' }));
 
     await waitFor((): void => {
       expect(fake.sent.some((request: Request): boolean => request.type === 'updateSettings')).toBe(

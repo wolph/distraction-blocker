@@ -171,7 +171,7 @@ export function BehaviorDefaults(props: BehaviorProps): VNode {
               props.onChange({ ...s, defaultStrictness: 'hard' });
             }}
           />
-          Hard: no cancel, pauses and site unlocks are the only escapes
+          Hard: no early end, temporary site access only
         </label>
       </div>
       <h3>Focus and break cycle</h3>
@@ -220,8 +220,9 @@ export function BehaviorDefaults(props: BehaviorProps): VNode {
       />
       <h3>Deliberation gate</h3>
       <p class="help">
-        A 10 second wait with an explicit back-to-work button measurably reduces impulse visits
-        (field study, PNAS 2023). The longer wait and the typed sentence roughly double the effect.
+        A controlled experiment found that an explicit option to dismiss an opening attempt and a
+        short delay reduced consumption (PNAS 2023). It did not establish an optimal delay for ADHD
+        or test Focus Lock. Choose a delay that helps you reconsider opening a distracting site.
       </p>
       <div class="field">
         <label class="check">
@@ -320,11 +321,11 @@ export function PauseEconomy(props: BehaviorProps): VNode {
   return (
     <div>
       <p class="help">
-        Pause minutes accrue while you focus and spend from one bank, whether you pause everything
-        or unlock a single site. The cap keeps a saved-up bank from funding a binge.
+        Site access credit accrues while you focus. Both access to all sites and a single-site
+        unlock spend from the same balance. You can step away at any time without spending credit.
       </p>
       <NumberField
-        label="Minutes of pause per 30 minutes of focus"
+        label="Minutes of site access per 30 minutes of focus"
         value={earnPer30}
         allowZero
         allowFraction
@@ -333,7 +334,7 @@ export function PauseEconomy(props: BehaviorProps): VNode {
         }}
       />
       <NumberField
-        label="Pause bank cap (minutes)"
+        label="Site access credit limit (minutes)"
         value={s.pause.capMs / 60_000}
         allowZero
         onValue={(value: number): void => {
@@ -341,7 +342,7 @@ export function PauseEconomy(props: BehaviorProps): VNode {
         }}
       />
       <NumberField
-        label="Pause length (minutes)"
+        label="All-site access length (minutes)"
         value={s.pause.pauseMs / 60_000}
         onValue={(value: number): void => {
           props.onChange({ ...s, pause: { ...s.pause, pauseMs: minToMs(value) } });

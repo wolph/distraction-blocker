@@ -153,7 +153,7 @@ describe('Tiles', () => {
     expect(tileValue(container, 'Current streak')).toBe('4 days');
     expect(tileValue(container, 'Attempts blocked today')).toBe('6');
     expect(tileValue(container, 'Temptations resisted today')).toBe('2');
-    expect(tileValue(container, 'Pause spent today')).toBe('7 m');
+    expect(tileValue(container, 'Site access credit spent today')).toBe('7 m');
     expect(container.textContent).toContain('of 17 m earned');
     expect(container.textContent).toContain('2 freezes banked');
   });

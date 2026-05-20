@@ -136,10 +136,10 @@ function PauseSection(props: SectionProps): VNode {
   const committed: Settings = props.store.settings ?? props.settings;
   return (
     <section>
-      <h2>Pause economy</h2>
+      <h2>Site access credit</h2>
       <PauseEconomy settings={props.settings} onChange={props.onSettings} />
       <SaveRow
-        label="Save pause economy"
+        label="Save site access credit"
         onSave={(): Promise<string | null> =>
           props.store.saveSettings({
             ...committed,

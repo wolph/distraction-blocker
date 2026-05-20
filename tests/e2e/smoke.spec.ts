@@ -132,7 +132,7 @@ test('Stats navigation round-trips through an Options section', async ({
     { name: 'Lists and categories', id: 'lists' },
     { name: 'Schedule', id: 'schedule' },
     { name: 'Strictness and gate', id: 'strictness' },
-    { name: 'Pause economy', id: 'pause' },
+    { name: 'Site access credit', id: 'pause' },
     { name: 'Sounds and badge', id: 'sounds' },
     { name: 'Data', id: 'data' },
   ];
@@ -143,15 +143,15 @@ test('Stats navigation round-trips through an Options section', async ({
     );
   }
 
-  await statsNavigation.getByRole('link', { name: 'Pause economy' }).click();
+  await statsNavigation.getByRole('link', { name: 'Site access credit' }).click();
   await expect(page).toHaveURL(`chrome-extension://${extensionId}/src/options/options.html#pause`);
   const optionsNavigation = page.getByRole('navigation', { name: 'Settings sections' });
   await expect(optionsNavigation).toBeVisible();
-  await expect(optionsNavigation.getByRole('link', { name: 'Pause economy' })).toHaveAttribute(
+  await expect(optionsNavigation.getByRole('link', { name: 'Site access credit' })).toHaveAttribute(
     'aria-current',
     'page',
   );
-  await expect(page.getByRole('heading', { level: 2, name: 'Pause economy' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 2, name: 'Site access credit' })).toBeVisible();
 
   await optionsNavigation.getByRole('link', { name: 'Stats' }).click();
   await expect(page).toHaveURL(`chrome-extension://${extensionId}/src/stats/stats.html`);

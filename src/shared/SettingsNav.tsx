@@ -8,7 +8,7 @@ export const SETTINGS_SECTIONS: ReadonlyArray<{ id: SettingsSectionId; label: st
   { id: 'lists', label: 'Lists and categories' },
   { id: 'schedule', label: 'Schedule' },
   { id: 'strictness', label: 'Strictness and gate' },
-  { id: 'pause', label: 'Pause economy' },
+  { id: 'pause', label: 'Site access credit' },
   { id: 'sounds', label: 'Sounds and badge' },
   { id: 'data', label: 'Data' },
 ];
