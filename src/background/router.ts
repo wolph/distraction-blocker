@@ -4,6 +4,19 @@ import { playSound } from './audio';
 import type { Engine } from './engine';
 import { fetchStats } from './stats-service';
 import { readEvents } from './stores';
+import { chromeWorkTargetPorts, WorkTargetService } from './work-target';
+
+const workTargetServices: WeakMap<Engine, WorkTargetService> = new WeakMap();
+
+function workTargets(engine: Engine, supplied?: WorkTargetService): WorkTargetService {
+  if (supplied !== undefined) return supplied;
+  let service: WorkTargetService | undefined = workTargetServices.get(engine);
+  if (service === undefined) {
+    service = new WorkTargetService(engine, chromeWorkTargetPorts());
+    workTargetServices.set(engine, service);
+  }
+  return service;
+}
 
 /**
  * One exhaustive switch from typed requests to engine calls. The never
@@ -13,6 +26,7 @@ export async function routeMessage(
   engine: Engine,
   msg: Request,
   sender: chrome.runtime.MessageSender,
+  targetService?: WorkTargetService,
 ): Promise<unknown> {
   switch (msg.type) {
     case 'getSnapshot':
@@ -34,7 +48,27 @@ export async function routeMessage(
       return { verdict, snapshot: await engine.snapshotPersisted() };
     }
     case 'startSession':
-      return engine.startSession(msg.config);
+      return msg.workTabId === undefined
+        ? engine.startSession(msg.config)
+        : workTargets(engine, targetService).startSession(
+            msg.config,
+            msg.workTabId,
+            msg.windowId as number,
+            sender,
+          );
+    case 'getWorkTabs':
+      return workTargets(engine, targetService).getWorkTabs(msg.mode, msg.windowId, sender);
+    case 'getWorkTarget':
+      return workTargets(engine, targetService).getWorkTarget(msg.windowId, sender);
+    case 'setWorkTarget':
+      return workTargets(engine, targetService).setWorkTarget(
+        msg.sessionId,
+        msg.tabId,
+        msg.windowId,
+        sender,
+      );
+    case 'returnToWork':
+      return workTargets(engine, targetService).returnToWork(msg.sessionId, msg.windowId, sender);
     case 'openGate':
       return engine.openGate(msg.gate, msg.host);
     case 'confirmGate':

@@ -12,13 +12,19 @@ import type {
   Verdict,
 } from './types';
 
+import type { WorkTabsResult, WorkTargetResult } from './work-target';
+
 export type SoundId = 'sessionComplete' | 'breakStart' | 'breakEnd' | 'scheduleStart';
 
 export type Request =
   | { type: 'getSnapshot' }
   /** docState fresh = document_start on a new navigation (worker records the tab as stopped when blocked), loaded = an already-rendered page */
   | { type: 'getBlockState'; url: string; docState: 'fresh' | 'loaded' }
-  | { type: 'startSession'; config: SessionConfig }
+  | { type: 'startSession'; config: SessionConfig; workTabId?: number; windowId?: number }
+  | { type: 'getWorkTabs'; mode: SessionConfig['mode']; windowId: number }
+  | { type: 'getWorkTarget'; windowId?: number }
+  | { type: 'setWorkTarget'; sessionId: string; tabId: number; windowId: number }
+  | { type: 'returnToWork'; sessionId: string; windowId?: number }
   | { type: 'openGate'; gate: GateKind; host: string | null }
   | { type: 'confirmGate'; typedPhrase: string | null }
   | { type: 'forceEndGate' }
@@ -40,6 +46,8 @@ export interface Rejection {
 }
 export type Ack = { ok: true } | Rejection;
 
+export type StartSessionResult = Ack | (Rejection & { sessionStarted: true });
+
 export interface StatsBundle {
   /** merged across devices, oldest first */
   days: DailyAgg[];
@@ -58,7 +66,11 @@ export interface StatsBundle {
 export interface ResponseMap {
   getSnapshot: SessionSnapshot;
   getBlockState: { verdict: Verdict; snapshot: SessionSnapshot };
-  startSession: Ack;
+  startSession: StartSessionResult;
+  getWorkTabs: WorkTabsResult;
+  getWorkTarget: WorkTargetResult;
+  setWorkTarget: Ack;
+  returnToWork: Ack;
   openGate: Ack;
   confirmGate: Ack;
   forceEndGate: Ack;
@@ -76,6 +88,7 @@ export interface ResponseMap {
 }
 
 export type Broadcast =
+  | { type: 'workTargetChanged' }
   | { type: 'stateChanged'; snapshot: SessionSnapshot }
   /** content scripts must re-run getBlockState with their current URL */
   | { type: 'reevaluate' };

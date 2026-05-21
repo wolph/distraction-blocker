@@ -74,6 +74,7 @@ import {
   invalidateRemovedTab,
   registerTabListeners,
 } from './tabs';
+import { broadcastWorkTargetChanged, registerWorkTargetListeners } from './work-target';
 
 const SYNC_FLUSH_MS: number = 10_000;
 const TICK_ALARM: string = 'tick';
@@ -325,6 +326,7 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
   }
   onSyncWriterReady(syncWriter);
   await syncWriter.whenJournalDurable();
+  const applyBlocking: () => Promise<void> = applyBlockingFactory(currentEngine);
   const ports: EnginePorts = {
     now: (): number => Date.now(),
     newId: (): string => crypto.randomUUID(),
@@ -342,7 +344,10 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
         return undefined;
       });
     },
-    applyBlocking: applyBlockingFactory(currentEngine),
+    applyBlocking: async (): Promise<void> => {
+      await applyBlocking();
+      broadcastWorkTargetChanged();
+    },
     playSound: (sound: SoundId): void => {
       void playSound(sound, currentEngine().getSettings().sounds);
     },
@@ -479,6 +484,7 @@ export function main(): void {
   });
 
   registerTabListeners((): Promise<Engine> => ready, reportBackgroundError);
+  registerWorkTargetListeners();
 
   chrome.runtime.onInstalled.addListener((): void => {
     void chrome.alarms.create(TICK_ALARM, { periodInMinutes: 1 }).catch(reportBackgroundError);

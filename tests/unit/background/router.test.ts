@@ -164,3 +164,34 @@ describe('routeMessage tab identity wiring', () => {
     expect(markStopped).not.toHaveBeenCalled();
   });
 });
+
+describe('work target routing', (): void => {
+  it('routes target operations through the injected service with sender identity', async (): Promise<void> => {
+    const getWorkTabs: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue({ ok: true, tabs: [] });
+    const service: import('../../../src/background/work-target').WorkTargetService = {
+      getWorkTabs,
+    } as unknown as import('../../../src/background/work-target').WorkTargetService;
+    await routeMessage(
+      engine,
+      { type: 'getWorkTabs', mode: 'blacklist', windowId: 4 },
+      sender,
+      service,
+    );
+    expect(getWorkTabs).toHaveBeenCalledWith('blacklist', 4, sender);
+  });
+  it('keeps legacy start requests on the existing engine path', async (): Promise<void> => {
+    const startSession: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue({ ok: true });
+    const legacyEngine: Engine = { startSession } as unknown as Engine;
+    const config: import('../../../src/shared/types').SessionConfig = {
+      mode: 'blacklist',
+      strictness: 'friction',
+      durationMin: 25,
+      cycling: null,
+      intention: '',
+      source: 'manual',
+      scheduleEntryId: null,
+    };
+    await routeMessage(legacyEngine, { type: 'startSession', config }, sender);
+    expect(startSession).toHaveBeenCalledWith(config);
+  });
+});

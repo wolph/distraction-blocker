@@ -35,6 +35,10 @@ const MAX_RELATIVE_DURATION_MS: number = DATE_MAX_MS / 2;
 
 const VALID_REQUESTS: RequestByType = {
   getSnapshot: { type: 'getSnapshot' },
+  getWorkTabs: { type: 'getWorkTabs', mode: 'blacklist', windowId: 1 },
+  getWorkTarget: { type: 'getWorkTarget' },
+  setWorkTarget: { type: 'setWorkTarget', sessionId: 'session', tabId: 1, windowId: 1 },
+  returnToWork: { type: 'returnToWork', sessionId: 'session' },
   getBlockState: {
     type: 'getBlockState',
     url: 'https://news.example/story',
@@ -703,3 +707,28 @@ function parseSettingsOrListsRequest(update: Record<string, unknown>): Request |
     ? parseRequest({ type: 'updateLists', lists: { ...LISTS, ...update } })
     : parseSettingsRequest(update);
 }
+
+describe('work target request validation', (): void => {
+  it('accepts an optional work destination without changing the legacy start request', (): void => {
+    const request: unknown = {
+      type: 'startSession',
+      config: SESSION_CONFIG,
+      workTabId: 7,
+      windowId: 1,
+    };
+    expect(parseRequest(request)).toEqual(request);
+    expect(parseRequest({ type: 'startSession', config: SESSION_CONFIG, workTabId: 7 })).toBeNull();
+  });
+  it.each([-1, 1.5, NaN, Infinity, '1'])(
+    'rejects invalid destination identity %s',
+    (tabId: unknown): void => {
+      expect(
+        parseRequest({ type: 'setWorkTarget', sessionId: 'session', tabId, windowId: 1 }),
+      ).toBeNull();
+    },
+  );
+  it('rejects arbitrary IDs in a return request', (): void => {
+    expect(parseRequest({ type: 'returnToWork', sessionId: 'session', tabId: 1 })).toBeNull();
+    expect(parseRequest({ type: 'returnToWork', sessionId: '' })).toBeNull();
+  });
+});

@@ -27,7 +27,7 @@ import {
   TOP_SITES_DAILY,
 } from '../shared/constants';
 import { CoreError } from '../shared/errors';
-import type { Ack, SoundId } from '../shared/messages';
+import type { Ack, SoundId, StartSessionResult } from '../shared/messages';
 import { SYNC_BANK, SYNC_SETTINGS, SYNC_STREAK, syncAggKey } from '../shared/storage-keys';
 import { localDateStr, localMonthStr } from '../shared/time';
 import type {
@@ -58,6 +58,7 @@ import {
 import type { RuntimeCommitCheckpoint, RuntimeState, RuntimeTabState } from './stores';
 import { chooseNewerStreak, rebaseStreakForDate, streaksEqual } from './streak-sync';
 import { assertSyncItemWithinQuota, SyncQuotaError } from './sync-quota';
+import type { WorkSession } from './work-target';
 
 export interface EnginePorts {
   now(): number;
@@ -201,11 +202,38 @@ export class Engine {
     return evaluateUrl(this.ensureMatcher(session.config.mode), url, this.runtime.unlocks, now);
   }
 
-  async startSession(config: SessionConfig): Promise<Ack> {
-    return this.enqueuePolicyMutation((): Promise<Ack> => this.startSessionNow(config));
+  workTargetSession(): WorkSession | null {
+    this.snapshot();
+    const session: SessionState | null = this.runtime.session;
+    return session?.sessionId === undefined
+      ? null
+      : { sessionId: session.sessionId, mode: session.config.mode };
   }
 
-  private async startSessionNow(config: SessionConfig): Promise<Ack> {
+  workTargetAllowed(url: string, mode: SessionConfig['mode']): boolean {
+    return !evaluateUrl(this.ensureMatcher(mode), url, [], this.ports.now()).blocked;
+  }
+
+  runWorkTargetAction(sessionId: string, action: () => Promise<Ack>): Promise<Ack> {
+    return this.enqueuePolicyMutation(async (): Promise<Ack> => {
+      if (this.workTargetSession()?.sessionId !== sessionId) {
+        return { ok: false, error: 'The focus session has changed. Reopen the popup.' };
+      }
+      return action();
+    });
+  }
+
+  async startSession(
+    config: SessionConfig,
+    afterStart?: (sessionId: string) => Promise<Ack>,
+  ): Promise<Ack> {
+    return this.enqueuePolicyMutation((): Promise<Ack> => this.startSessionNow(config, afterStart));
+  }
+
+  private async startSessionNow(
+    config: SessionConfig,
+    afterStart?: (sessionId: string) => Promise<Ack>,
+  ): Promise<Ack> {
     const now: number = this.ports.now();
     this.catchUp(now);
     if (this.runtime.session !== null) return this.fail(now, 'a session is already running');
@@ -226,8 +254,20 @@ export class Engine {
     });
     this.dirty = true;
     this.needsBlocking = true;
-    await this.commit(now);
-    return { ok: true };
+    try {
+      await this.commit(now);
+    } catch (error: unknown) {
+      if (afterStart === undefined) throw error;
+      this.reportError(error);
+      const failure: StartSessionResult = {
+        ok: false,
+        error:
+          'The session is running, but saving it failed. Reopen the popup to check its status and choose a work tab.',
+        sessionStarted: true,
+      };
+      return failure;
+    }
+    return afterStart === undefined ? { ok: true } : afterStart(sessionId);
   }
 
   async openGate(gate: GateKind, host: string | null): Promise<Ack> {
@@ -240,11 +280,12 @@ export class Engine {
         return this.fail(now, 'hard sessions cannot be canceled');
       }
     } else {
-      if (session.phase !== 'focus') return this.fail(now, 'pauses only apply during focus');
+      if (session.phase !== 'focus')
+        return this.fail(now, 'site access credit can only be spent during focus');
       if (gate === 'unlockSite' && host === null) return this.fail(now, 'no site given to unlock');
       const cost: number =
         gate === 'pause' ? this.settings.pause.pauseMs : this.settings.pause.unlockMs;
-      if (this.bank.balanceMs < cost) return this.fail(now, 'not enough pause budget yet');
+      if (this.bank.balanceMs < cost) return this.fail(now, 'not enough site access credit yet');
     }
     const needsPhrase: boolean = this.settings.gate.requireTypedPhrase;
     const unlockHost: string | null =
@@ -369,9 +410,12 @@ export class Engine {
     }
   }
 
-  async abandonGate(): Promise<Ack> {
+  async abandonGate(expectedSessionId?: string): Promise<Ack> {
     const now: number = this.ports.now();
     this.catchUp(now);
+    if (expectedSessionId !== undefined && this.runtime.session?.sessionId !== expectedSessionId) {
+      return this.fail(now, 'The focus session has changed. Reopen the popup.');
+    }
     if (this.runtime.gate !== null) {
       this.recordEvent({
         t: 'gateResisted',

@@ -299,6 +299,10 @@ function stubChrome(): void {
       },
     },
     tabs: {
+      query: vi.fn().mockResolvedValue([]),
+      onCreated: { addListener: vi.fn() },
+      onUpdated: { addListener: vi.fn() },
+      onReplaced: { addListener: vi.fn() },
       onRemoved: {
         addListener: vi.fn((listener: RemovedListener): void => {
           mocks.removedListener = listener;

@@ -18,6 +18,7 @@ import type {
   SessionConfig,
   Settings,
 } from '../shared/types';
+import { isBrowserTabId } from '../shared/work-target';
 import { canEncodeListsForSync } from './list-sync-codec';
 import { assertSyncItemWithinQuota } from './sync-quota';
 
@@ -378,7 +379,36 @@ function parseRecord(value: Record<string, unknown>): Request | null {
         ? (value as Request)
         : null;
     case 'startSession':
-      return hasExactKeys(value, ['type', 'config']) && isSessionConfig(value.config)
+      return isSessionConfig(value.config) &&
+        (hasExactKeys(value, ['type', 'config']) ||
+          (hasExactKeys(value, ['type', 'config', 'workTabId', 'windowId']) &&
+            isBrowserTabId(value.workTabId) &&
+            isBrowserTabId(value.windowId)))
+        ? (value as Request)
+        : null;
+    case 'getWorkTabs':
+      return hasExactKeys(value, ['type', 'mode', 'windowId']) &&
+        (value.mode === 'blacklist' || value.mode === 'whitelist') &&
+        isBrowserTabId(value.windowId)
+        ? (value as Request)
+        : null;
+    case 'getWorkTarget':
+      return hasExactKeys(value, ['type']) ||
+        (hasExactKeys(value, ['type', 'windowId']) && isBrowserTabId(value.windowId))
+        ? (value as Request)
+        : null;
+    case 'setWorkTarget':
+      return hasExactKeys(value, ['type', 'sessionId', 'tabId', 'windowId']) &&
+        isNonBlankString(value.sessionId) &&
+        isBrowserTabId(value.tabId) &&
+        isBrowserTabId(value.windowId)
+        ? (value as Request)
+        : null;
+    case 'returnToWork':
+      return isNonBlankString(value.sessionId) &&
+        (hasExactKeys(value, ['type', 'sessionId']) ||
+          (hasExactKeys(value, ['type', 'sessionId', 'windowId']) &&
+            isBrowserTabId(value.windowId)))
         ? (value as Request)
         : null;
     case 'openGate':

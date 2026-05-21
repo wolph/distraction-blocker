@@ -3124,3 +3124,56 @@ describe('Engine', () => {
     expect(write).not.toHaveBeenCalled();
   });
 });
+
+describe('work target policy boundary', (): void => {
+  it('reports session identity separately from snapshots and ignores temporary unlocks', async (): Promise<void> => {
+    const harness: Harness = makeEngine();
+    expect(harness.engine.workTargetSession()).toBeNull();
+    await harness.engine.startSession(manualConfig);
+    expect(harness.engine.workTargetSession()).toEqual({
+      sessionId: 'archive-id',
+      mode: 'blacklist',
+    });
+    expect(harness.engine.workTargetAllowed('https://facebook.com', 'blacklist')).toBe(false);
+    expect(harness.engine.workTargetAllowed('https://work.example', 'blacklist')).toBe(true);
+    expect(harness.engine.snapshot()).not.toHaveProperty('sessionId');
+  });
+  it('rejects stale return actions without invoking their browser effects', async (): Promise<void> => {
+    const harness: Harness = makeEngine();
+    await harness.engine.startSession(manualConfig);
+    const action: ReturnType<typeof vi.fn<() => Promise<Ack>>> = vi
+      .fn<() => Promise<Ack>>()
+      .mockResolvedValue({ ok: true });
+    expect(await harness.engine.runWorkTargetAction('stale', action)).toMatchObject({ ok: false });
+    expect(action).not.toHaveBeenCalled();
+  });
+  it('passes the started identity after durable start while keeping the policy queue locked', async (): Promise<void> => {
+    const harness: Harness = makeEngine();
+    const observed: string[] = [];
+    await harness.engine.startSession(manualConfig, async (sessionId: string): Promise<Ack> => {
+      expect(harness.ports.saveRuntime).toHaveBeenCalled();
+      observed.push(sessionId);
+      return { ok: true };
+    });
+    expect(observed).toEqual(['archive-id']);
+  });
+});
+
+it('reports a running session after a target-aware start fails to persist', async (): Promise<void> => {
+  const harness: Harness = makeEngine();
+  harness.ports.saveRuntime.mockRejectedValueOnce(new Error('disk failure'));
+  const result: Ack = await harness.engine.startSession(
+    manualConfig,
+    async (): Promise<Ack> => ({ ok: true }),
+  );
+  expect(result).toMatchObject({ ok: false, sessionStarted: true });
+  expect(harness.engine.workTargetSession()?.sessionId).toBe('archive-id');
+});
+
+it('does not clear a gate from a different session during return', async (): Promise<void> => {
+  const harness: Harness = makeEngine();
+  await harness.engine.startSession(manualConfig);
+  await harness.engine.openGate('cancel', null);
+  expect(await harness.engine.abandonGate('stale')).toMatchObject({ ok: false });
+  expect(harness.engine.snapshot().gate).not.toBeNull();
+});
