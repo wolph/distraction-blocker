@@ -135,6 +135,7 @@ function makeEngine(opts?: {
         : vi.fn(opts.persistSyncJournal),
     appendEvents: vi.fn().mockResolvedValue(undefined),
     broadcast: vi.fn(),
+    workTargetChanged: vi.fn(),
     applyBlocking: vi.fn().mockResolvedValue(undefined),
     playSound: vi.fn(),
     notify: vi.fn(),
@@ -3176,4 +3177,21 @@ it('does not clear a gate from a different session during return', async (): Pro
   await harness.engine.openGate('cancel', null);
   expect(await harness.engine.abandonGate('stale')).toMatchObject({ ok: false });
   expect(harness.engine.snapshot().gate).not.toBeNull();
+});
+
+describe('idle work target policy notifications', (): void => {
+  it.each(['local', 'sync'])(
+    'refreshes candidates after an idle %s list update without a blocking sweep',
+    async (source: string): Promise<void> => {
+      const harness: Harness = makeEngine();
+      const lists: ListsConfig = {
+        ...DEFAULT_LISTS,
+        custom: [{ kind: 'host', pattern: 'work.example' }],
+      };
+      if (source === 'local') await harness.engine.updateLists(lists);
+      else await harness.engine.applySyncedLists(lists);
+      expect(harness.ports.workTargetChanged).toHaveBeenCalledTimes(1);
+      expect(harness.ports.applyBlocking).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -72,6 +72,7 @@ export interface EnginePorts {
   persistSyncJournal(): Promise<void>;
   appendEvents(evs: EventRecord[]): Promise<void>;
   broadcast(snapshot: SessionSnapshot): void;
+  workTargetChanged?(): void;
   applyBlocking(): Promise<void>;
   playSound(sound: SoundId): void;
   notify(title: string, message: string): void;
@@ -789,6 +790,7 @@ export class Engine {
     }
     this.lists = l;
     this.matchers = bundle.compiled;
+    this.ports.workTargetChanged?.();
     if (queueForSync || reconcilePendingSync) this.queueListsEncoding(encoding);
     this.dirty = true;
     this.needsBlocking = this.runtime.session !== null;

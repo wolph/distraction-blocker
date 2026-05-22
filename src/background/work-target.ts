@@ -161,15 +161,15 @@ export class WorkTargetService {
       if (session === null || stored?.sessionId !== session.sessionId)
         return { ...base, state: 'missing' };
       if (stored.incognito !== incognito) return { ...base, state: 'unavailable' };
-      let tab: chrome.tabs.Tab;
+      let tab: chrome.tabs.Tab | null = null;
       try {
         tab = await this.ports.tab(stored.tabId);
       } catch {
-        return { ...base, state: 'unavailable' };
+        // A closed tab is unavailable, but its session may also have ended during the lookup.
       }
       if (this.engine.workTargetSession()?.sessionId !== session.sessionId)
         return this.getWorkTarget(windowId, sender);
-      return this.suitable(tab, session.mode, incognito)
+      return tab !== null && this.suitable(tab, session.mode, incognito)
         ? { ...base, state: 'ready', title: tab.title || new URL(tab.url as string).hostname }
         : { ...base, state: 'unavailable' };
     } catch (error: unknown) {

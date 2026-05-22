@@ -344,6 +344,7 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
         return undefined;
       });
     },
+    workTargetChanged: broadcastWorkTargetChanged,
     applyBlocking: async (): Promise<void> => {
       await applyBlocking();
       broadcastWorkTargetChanged();

@@ -177,6 +177,19 @@ describe('work targets', (): void => {
     };
     expect(await service.returnToWork('session-1', 1, popup)).toMatchObject({ ok: false });
   });
+  it('returns the current session after a target lookup fails during a session change', async (): Promise<void> => {
+    await service.setWorkTarget('session-1', 1, 1, popup);
+    ports.tab = async (): Promise<chrome.tabs.Tab> => {
+      session = { sessionId: 'replacement', mode: 'blacklist' };
+      throw new Error('tab closed');
+    };
+    expect(await service.getWorkTarget(1, popup)).toEqual({
+      ok: true,
+      sessionId: 'replacement',
+      state: 'missing',
+      title: null,
+    });
+  });
   it('serialises competing selections so the last request wins', async (): Promise<void> => {
     tabs.push(tab(5, 'https://second.example'));
     const results: Ack[] = await Promise.all([
