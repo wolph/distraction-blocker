@@ -114,6 +114,10 @@ vi.mock('../../../src/background/engine', () => ({
       mocks.engineArguments = args;
     }
 
+    workTargetSession(): null {
+      return null;
+    }
+
     async tick(): Promise<void> {
       mocks.bootTrace.push('tick');
       mocks.tickCalls += 1;

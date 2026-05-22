@@ -12,7 +12,7 @@ function workTargets(engine: Engine, supplied?: WorkTargetService): WorkTargetSe
   if (supplied !== undefined) return supplied;
   let service: WorkTargetService | undefined = workTargetServices.get(engine);
   if (service === undefined) {
-    service = new WorkTargetService(engine, chromeWorkTargetPorts());
+    service = new WorkTargetService(engine, chromeWorkTargetPorts(engine));
     workTargetServices.set(engine, service);
   }
   return service;

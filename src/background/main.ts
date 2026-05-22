@@ -344,10 +344,11 @@ async function boot(onSyncWriterReady: (writer: SyncWriter) => void): Promise<En
         return undefined;
       });
     },
-    workTargetChanged: broadcastWorkTargetChanged,
+    workTargetChanged: (): void =>
+      broadcastWorkTargetChanged(currentEngine().workTargetSession()?.sessionId ?? null),
     applyBlocking: async (): Promise<void> => {
       await applyBlocking();
-      broadcastWorkTargetChanged();
+      broadcastWorkTargetChanged(currentEngine().workTargetSession()?.sessionId ?? null);
     },
     playSound: (sound: SoundId): void => {
       void playSound(sound, currentEngine().getSettings().sounds);
@@ -485,7 +486,9 @@ export function main(): void {
   });
 
   registerTabListeners((): Promise<Engine> => ready, reportBackgroundError);
-  registerWorkTargetListeners();
+  registerWorkTargetListeners(
+    (): string | null => engineInstance?.workTargetSession()?.sessionId ?? null,
+  );
 
   chrome.runtime.onInstalled.addListener((): void => {
     void chrome.alarms.create(TICK_ALARM, { periodInMinutes: 1 }).catch(reportBackgroundError);

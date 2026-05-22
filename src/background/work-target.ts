@@ -276,7 +276,9 @@ export class WorkTargetService {
   }
 }
 
-export function chromeWorkTargetPorts(): WorkTargetPorts {
+export function chromeWorkTargetPorts(
+  engine: Pick<WorkTargetEngine, 'workTargetSession'>,
+): WorkTargetPorts {
   return {
     extensionId: chrome.runtime.id,
     popupUrl: chrome.runtime.getURL('src/popup/popup.html'),
@@ -293,36 +295,85 @@ export function chromeWorkTargetPorts(): WorkTargetPorts {
     focus: async (windowId: number): Promise<void> => {
       await chrome.windows.update(windowId, { focused: true });
     },
-    broadcast: broadcastWorkTargetChanged,
+    broadcast: (): void =>
+      broadcastWorkTargetChanged(engine.workTargetSession()?.sessionId ?? null),
   };
 }
 
-export function broadcastWorkTargetChanged(): void {
+interface PendingNotification {
+  sessionId: string;
+  allTargets: boolean;
+  tabIds: Set<number>;
+}
+
+let pendingNotification: PendingNotification | null = null;
+let notificationScheduled: boolean = false;
+let latestSessionId: string | null = null;
+
+export function broadcastWorkTargetChanged(sessionId: string | null, tabId?: number): void {
   void chrome.runtime.sendMessage({ type: 'workTargetChanged' }).catch((): void => undefined);
-  void chrome.tabs
-    .query({})
-    .then(async (tabs: chrome.tabs.Tab[]): Promise<void> => {
-      await Promise.all(
-        tabs
-          .filter((tab: chrome.tabs.Tab): boolean => tab.id !== undefined)
-          .map(async (tab: chrome.tabs.Tab): Promise<void> => {
-            await chrome.tabs
-              .sendMessage(tab.id as number, { type: 'workTargetChanged' })
-              .catch((): void => undefined);
-          }),
-      );
-    })
-    .catch((): void => undefined);
+  latestSessionId = sessionId;
+  if (sessionId === null) return;
+  if (pendingNotification?.sessionId !== sessionId) {
+    pendingNotification = { sessionId, allTargets: false, tabIds: new Set<number>() };
+  }
+  if (tabId === undefined) pendingNotification.allTargets = true;
+  else pendingNotification.tabIds.add(tabId);
+  scheduleNotification();
+}
+
+function scheduleNotification(): void {
+  if (notificationScheduled || pendingNotification === null) return;
+  notificationScheduled = true;
+  setTimeout((): void => {
+    void flushNotification()
+      .catch((): void => undefined)
+      .finally((): void => {
+        notificationScheduled = false;
+        scheduleNotification();
+      });
+  }, 25);
+}
+
+async function flushNotification(): Promise<void> {
+  const notification: PendingNotification | null = pendingNotification;
+  pendingNotification = null;
+  if (notification === null || latestSessionId !== notification.sessionId) return;
+  const stored: StoredWorkTarget | null = parseStoredWorkTarget(
+    (await chrome.storage.session.get(SESSION_WORK_TARGET))[SESSION_WORK_TARGET],
+  );
+  if (
+    stored?.sessionId !== notification.sessionId ||
+    latestSessionId !== notification.sessionId ||
+    (!notification.allTargets && !notification.tabIds.has(stored.tabId))
+  )
+    return;
+  const tabs: chrome.tabs.Tab[] = await chrome.tabs.query({});
+  if (latestSessionId !== notification.sessionId) return;
+  await Promise.all(
+    tabs
+      .filter((tab: chrome.tabs.Tab): boolean => tab.id !== undefined)
+      .map(async (tab: chrome.tabs.Tab): Promise<void> => {
+        await chrome.tabs
+          .sendMessage(tab.id as number, { type: 'workTargetChanged' })
+          .catch((): void => undefined);
+      }),
+  );
 }
 
 export function registerWorkTargetListeners(
-  broadcast: () => void = broadcastWorkTargetChanged,
+  currentSessionId: () => string | null,
+  broadcast: (sessionId: string | null, tabId?: number) => void = broadcastWorkTargetChanged,
 ): void {
   chrome.tabs.onUpdated.addListener((_tabId: number, change: chrome.tabs.OnUpdatedInfo): void => {
     if (change.url !== undefined || change.title !== undefined || change.status === 'complete')
-      broadcast();
+      broadcast(currentSessionId(), _tabId);
   });
-  chrome.tabs.onCreated.addListener(broadcast);
-  chrome.tabs.onRemoved.addListener(broadcast);
-  chrome.tabs.onReplaced.addListener(broadcast);
+  chrome.tabs.onCreated.addListener((tab: chrome.tabs.Tab): void => {
+    if (tab.id !== undefined) broadcast(currentSessionId(), tab.id);
+  });
+  chrome.tabs.onRemoved.addListener((tabId: number): void => broadcast(currentSessionId(), tabId));
+  chrome.tabs.onReplaced.addListener((_addedTabId: number, removedTabId: number): void =>
+    broadcast(currentSessionId(), removedTabId),
+  );
 }

@@ -219,14 +219,18 @@ describe('Chrome work target ports', (): void => {
     });
     const { chromeWorkTargetPorts }: typeof import('../../../src/background/work-target') =
       await import('../../../src/background/work-target');
-    const browserPorts: WorkTargetPorts = chromeWorkTargetPorts();
+    const browserPorts: WorkTargetPorts = chromeWorkTargetPorts({
+      workTargetSession: (): WorkSession => ({ sessionId: 's', mode: 'blacklist' }),
+    });
     expect(await browserPorts.read()).toMatchObject({ tabId: 7 });
     await browserPorts.write({ sessionId: 's', tabId: 7, incognito: false });
     expect(set).toHaveBeenCalledWith({
       workTarget: { sessionId: 's', tabId: 7, incognito: false },
     });
     browserPorts.broadcast();
-    await Promise.resolve();
+    await new Promise<void>((resolve: () => void): void => {
+      setTimeout(resolve, 35);
+    });
     expect(sendMessage).toHaveBeenCalledWith({ type: 'workTargetChanged' });
     expect(sendMessage).toHaveBeenCalledWith(7, { type: 'workTargetChanged' });
     vi.unstubAllGlobals();
@@ -252,14 +256,154 @@ it('refreshes mounted interfaces for relevant tab changes only', async (): Promi
   });
   const { registerWorkTargetListeners }: typeof import('../../../src/background/work-target') =
     await import('../../../src/background/work-target');
-  registerWorkTargetListeners(broadcast);
+  registerWorkTargetListeners((): string => 's', broadcast);
   events.updated?.(1, { status: 'loading' });
   expect(broadcast).not.toHaveBeenCalled();
   events.updated?.(1, { url: 'https://work.example' });
   events.updated?.(1, { title: 'New title' });
-  events.created?.();
-  events.removed?.();
-  events.replaced?.();
+  events.created?.(tab(1, 'https://work.example'));
+  events.removed?.(1);
+  events.replaced?.(2, 1);
   expect(broadcast).toHaveBeenCalledTimes(5);
+  vi.unstubAllGlobals();
+});
+
+describe('work target notification fanout', (): void => {
+  it.each([
+    { label: 'idle', sessionId: null, storedSessionId: null, changedTabId: 7, expectedFanout: 0 },
+    {
+      label: 'active without a target',
+      sessionId: 'active',
+      storedSessionId: null,
+      changedTabId: 7,
+      expectedFanout: 0,
+    },
+    {
+      label: 'stale stored target',
+      sessionId: 'active',
+      storedSessionId: 'old',
+      changedTabId: 7,
+      expectedFanout: 0,
+    },
+    {
+      label: 'unrelated tab',
+      sessionId: 'active',
+      storedSessionId: 'active',
+      changedTabId: 8,
+      expectedFanout: 0,
+    },
+    {
+      label: 'selected tab',
+      sessionId: 'active',
+      storedSessionId: 'active',
+      changedTabId: 7,
+      expectedFanout: 100,
+    },
+  ])(
+    'coalesces title updates for $label',
+    async ({
+      sessionId,
+      storedSessionId,
+      changedTabId,
+      expectedFanout,
+    }: {
+      sessionId: string | null;
+      storedSessionId: string | null;
+      changedTabId: number;
+      expectedFanout: number;
+    }): Promise<void> => {
+      let onUpdated: ((tabId: number, change: chrome.tabs.OnUpdatedInfo) => void) | undefined;
+      const runtimeMessage: ReturnType<typeof vi.fn<() => Promise<void>>> = vi
+        .fn<() => Promise<void>>()
+        .mockResolvedValue(undefined);
+      const contentMessage: ReturnType<typeof vi.fn<() => Promise<void>>> = vi
+        .fn<() => Promise<void>>()
+        .mockResolvedValue(undefined);
+      const query: ReturnType<typeof vi.fn<() => Promise<chrome.tabs.Tab[]>>> = vi
+        .fn<() => Promise<chrome.tabs.Tab[]>>()
+        .mockResolvedValue(
+          Array.from(
+            { length: 100 },
+            (_: unknown, index: number): chrome.tabs.Tab => tab(index, 'https://work.example'),
+          ),
+        );
+      vi.stubGlobal('chrome', {
+        runtime: { sendMessage: runtimeMessage },
+        storage: {
+          session: {
+            get: vi.fn().mockResolvedValue({
+              workTarget:
+                storedSessionId === null
+                  ? undefined
+                  : { sessionId: storedSessionId, tabId: 7, incognito: false },
+            }),
+          },
+        },
+        tabs: {
+          query,
+          sendMessage: contentMessage,
+          onUpdated: {
+            addListener: (
+              listener: (tabId: number, change: chrome.tabs.OnUpdatedInfo) => void,
+            ): void => {
+              onUpdated = listener;
+            },
+          },
+          onCreated: { addListener: vi.fn() },
+          onRemoved: { addListener: vi.fn() },
+          onReplaced: { addListener: vi.fn() },
+        },
+      });
+      const { registerWorkTargetListeners }: typeof import('../../../src/background/work-target') =
+        await import('../../../src/background/work-target');
+      registerWorkTargetListeners((): string | null => sessionId);
+      for (let index: number = 0; index < 3; index++)
+        onUpdated?.(changedTabId, { title: `Title ${index}` });
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 35);
+      });
+      expect(runtimeMessage).toHaveBeenCalledTimes(3);
+      expect(contentMessage).toHaveBeenCalledTimes(expectedFanout);
+      expect(query).toHaveBeenCalledTimes(expectedFanout === 0 ? 0 : 1);
+      vi.unstubAllGlobals();
+    },
+  );
+});
+
+it('coalesces policy notifications and drops a pending fanout when the session ends', async (): Promise<void> => {
+  const contentMessage: ReturnType<typeof vi.fn<() => Promise<void>>> = vi
+    .fn<() => Promise<void>>()
+    .mockResolvedValue(undefined);
+  const query: ReturnType<typeof vi.fn<() => Promise<chrome.tabs.Tab[]>>> = vi
+    .fn<() => Promise<chrome.tabs.Tab[]>>()
+    .mockResolvedValue([tab(7, 'https://work.example')]);
+  vi.stubGlobal('chrome', {
+    runtime: { sendMessage: vi.fn().mockResolvedValue(undefined) },
+    storage: {
+      session: {
+        get: vi
+          .fn()
+          .mockResolvedValue({ workTarget: { sessionId: 'active', tabId: 7, incognito: false } }),
+      },
+    },
+    tabs: { query, sendMessage: contentMessage },
+  });
+  const { broadcastWorkTargetChanged }: typeof import('../../../src/background/work-target') =
+    await import('../../../src/background/work-target');
+  broadcastWorkTargetChanged('active');
+  await Promise.resolve();
+  broadcastWorkTargetChanged('active');
+  await new Promise<void>((resolve: () => void): void => {
+    setTimeout(resolve, 35);
+  });
+  expect(query).toHaveBeenCalledTimes(1);
+  expect(contentMessage).toHaveBeenCalledTimes(1);
+  broadcastWorkTargetChanged('active');
+  broadcastWorkTargetChanged(null);
+  await new Promise<void>((resolve: () => void): void => {
+    setTimeout(resolve, 35);
+  });
+  expect(query).toHaveBeenCalledTimes(1);
+  expect(contentMessage).toHaveBeenCalledTimes(1);
   vi.unstubAllGlobals();
 });
