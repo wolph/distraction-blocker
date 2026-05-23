@@ -172,8 +172,8 @@ export function SessionLog(props: { events: EventRecord[] }): JSX.Element {
               <th>Start</th>
               <th>Planned</th>
               <th>Focused</th>
-              <th>Pause</th>
-              <th>Unlock</th>
+              <th>All sites</th>
+              <th>One site</th>
               <th>Intention</th>
               <th>Outcome</th>
               <th>

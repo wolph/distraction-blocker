@@ -3,7 +3,7 @@
     "preact": "10.24.0",
     "tldts": "6.1.46"
   },
-  "description": "Focus Lock: focus sessions that lock distracting sites, with earned pauses.",
+  "description": "Focus Lock: focus sessions that lock distracting sites, with earned site access credit.",
   "devDependencies": {
     "@biomejs/biome": "1.9.1",
     "@crxjs/vite-plugin": "2.0.0-beta.25",

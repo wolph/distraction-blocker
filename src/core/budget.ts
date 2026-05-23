@@ -11,7 +11,7 @@ export function accrue(bank: BankState, focusMsDelta: number, eco: PauseEconomy)
 /** Throws CoreError('insufficient-budget'). */
 export function spend(bank: BankState, ms: number): BankState {
   if (ms > bank.balanceMs) {
-    throw new CoreError('insufficient-budget', 'not enough pause budget banked');
+    throw new CoreError('insufficient-budget', 'not enough site access credit');
   }
   return { balanceMs: bank.balanceMs - ms };
 }

@@ -65,7 +65,7 @@ describe('Stats request errors', (): void => {
     await waitFor((): void => {
       expect(getByText('Stats appear after your first session.')).toBeTruthy();
       expect(getByRole('alert').textContent).toBe(
-        'Hourly attempts and pause settings are unavailable.',
+        'Hourly attempts and site access credit settings are unavailable.',
       );
     });
   });

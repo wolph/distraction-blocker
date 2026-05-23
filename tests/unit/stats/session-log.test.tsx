@@ -311,8 +311,8 @@ describe('SessionLog', () => {
     expect(container.querySelectorAll('.chip.running').length).toBe(1);
     expect(container.textContent).toContain('thesis chapter');
     expect(container.textContent).toContain('ended early');
-    expect(container.textContent).toContain('Pause');
-    expect(container.textContent).toContain('Unlock');
+    expect(container.textContent).toContain('All sites');
+    expect(container.textContent).toContain('One site');
   });
 
   it('renders the quiet first-run line with no sessions', () => {

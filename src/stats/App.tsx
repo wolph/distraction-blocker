@@ -18,9 +18,10 @@ import {
 } from './use-stats';
 
 function partialLoadError(attempts: boolean, economy: boolean): string | null {
-  if (attempts && economy) return 'Hourly attempts and pause settings are unavailable.';
+  if (attempts && economy)
+    return 'Hourly attempts and site access credit settings are unavailable.';
   if (attempts) return 'Hourly attempts are unavailable.';
-  if (economy) return 'Pause settings are unavailable.';
+  if (economy) return 'Site access credit settings are unavailable.';
   return null;
 }
 
