@@ -1,8 +1,8 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
-import type { Ack } from '../shared/messages';
+import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'preact/hooks';
+import type { StartSessionResult } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
-import { ackError } from '../shared/runtime-validation';
+import { isSessionSnapshot } from '../shared/runtime-validation';
 import type {
   CycleConfig,
   ListsConfig,
@@ -11,8 +11,10 @@ import type {
   Settings,
   Strictness,
 } from '../shared/types';
+import { parseStartSessionResult, type WorkTab } from '../shared/work-target';
 import { CategoryControls } from './category-controls';
 import { Chip, RadioRow } from './form-controls';
+import { useWorkTabs, type WorkTabsState } from './use-work-tabs';
 
 /** Positional labels for the three presets, per the weak-evidence ledger. */
 const PRESET_LABELS: readonly [string, string, string] = [
@@ -23,7 +25,7 @@ const PRESET_LABELS: readonly [string, string, string] = [
 
 const STRICTNESS_HINTS: Record<Strictness, string> = {
   friction: 'can end early after 30 s wait typing sentence',
-  hard: 'no way out until timer ends, pauses excepted',
+  hard: 'sites stay locked until the timer ends, paid access excepted',
 };
 
 const MODE_HINTS: Record<SessionMode, string> = {
@@ -35,10 +37,12 @@ export function StartForm({
   settings,
   lists,
   categoriesEditable = true,
+  onStartFeedback,
 }: {
   settings: Settings;
   lists: ListsConfig;
   categoriesEditable?: boolean;
+  onStartFeedback?: (error: string | null) => void;
 }): VNode {
   const [selectedMin, setSelectedMin]: [number, Dispatch<StateUpdater<number>>] = useState<number>(
     settings.presetsMin[1],
@@ -63,10 +67,24 @@ export function StartForm({
     Dispatch<StateUpdater<boolean>>,
   ] = useState<boolean>(false);
 
+  const work: WorkTabsState = useWorkTabs(mode, categoryUpdatePending);
+  const [workTabId, setWorkTabId]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
+  const explicitChoice: { current: boolean } = useRef<boolean>(false);
+  const startInFlight: { current: boolean } = useRef<boolean>(false);
+  useEffect((): void => {
+    if (explicitChoice.current) return;
+    const activeTabId: number | null = work.context?.activeTabId ?? null;
+    setWorkTabId(
+      work.tabs.some((tab: WorkTab): boolean => tab.tabId === activeTabId)
+        ? String(activeTabId)
+        : '',
+    );
+  }, [work]);
+
   const durationMin: number = customMin.trim() === '' ? selectedMin : Number(customMin);
 
   const start: () => Promise<void> = async (): Promise<void> => {
-    if (starting || categoryUpdatePending) return;
+    if (startInFlight.current || starting || categoryUpdatePending) return;
     if (!Number.isFinite(durationMin) || durationMin <= 0) {
       setError('enter a session length in minutes');
       return;
@@ -81,15 +99,40 @@ export function StartForm({
       source: 'manual',
       scheduleEntryId: null,
     };
+    startInFlight.current = true;
     setStarting(true);
+    onStartFeedback?.(null);
+    let sessionStarted: boolean = false;
     try {
-      const ack: Ack = await sendRequest({ type: 'startSession', config });
-      const responseError: string | null = ackError(ack, 'Could not start session. Try again.');
-      if (responseError !== null) setError(responseError);
+      const result: StartSessionResult | null = parseStartSessionResult(
+        await sendRequest({
+          type: 'startSession',
+          config,
+          ...(workTabId !== '' && work.context !== null
+            ? { workTabId: Number(workTabId), windowId: work.context.windowId }
+            : {}),
+        }),
+      );
+      sessionStarted =
+        result?.ok === true ||
+        (result !== null && 'sessionStarted' in result && result.sessionStarted);
+      const responseError: string | null =
+        result === null ? 'Could not start session. Try again.' : result.ok ? null : result.error;
+      if (responseError !== null && onStartFeedback === undefined) setError(responseError);
+      onStartFeedback?.(responseError);
     } catch {
-      setError('Could not start the session. Try again.');
+      const message: string = 'Could not start the session. Try again.';
+      if (onStartFeedback === undefined) setError(message);
+      onStartFeedback?.(message);
     } finally {
-      setStarting(false);
+      try {
+        const snapshot: unknown = await sendRequest({ type: 'getSnapshot' });
+        if (isSessionSnapshot(snapshot)) sessionStarted = snapshot.phase !== 'idle';
+      } catch {
+        /* Keep the acknowledged start locked against duplicate requests. */
+      }
+      startInFlight.current = sessionStarted;
+      setStarting(sessionStarted);
     }
   };
 
@@ -124,13 +167,44 @@ export function StartForm({
         />
       </fieldset>
 
+      <label class="work-tab-label" htmlFor="next-step">
+        What's your next small step?
+      </label>
       <input
+        id="next-step"
         class="intention-input"
         type="text"
-        placeholder="What you working on?"
+        placeholder="Continue your current task"
         value={intention}
         onInput={(e: Event): void => setIntention((e.currentTarget as HTMLInputElement).value)}
       />
+
+      <label class="work-tab-label">
+        Work tab
+        <select
+          aria-label="Work tab"
+          value={workTabId}
+          disabled={work.context === null || starting}
+          onChange={(event: Event): void => {
+            explicitChoice.current = true;
+            setWorkTabId((event.currentTarget as HTMLSelectElement).value);
+          }}
+        >
+          <option value="">No work tab (optional)</option>
+          {workTabId !== '' &&
+          !work.tabs.some((tab: WorkTab): boolean => String(tab.tabId) === workTabId) ? (
+            <option value={workTabId}>Selected tab unavailable - choose another</option>
+          ) : null}
+          {work.tabs.map(
+            (tab: WorkTab): VNode => (
+              <option key={tab.tabId} value={tab.tabId}>
+                {tab.title}
+              </option>
+            ),
+          )}
+        </select>
+      </label>
+      {work.error !== null ? <p class="work-tab-hint">{work.error}</p> : null}
 
       <CategoryControls
         lists={lists}

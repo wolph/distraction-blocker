@@ -64,13 +64,11 @@ describe('overlay', () => {
     showOverlay(verdict, focusSnap());
     const styles: string = shadowRoot().querySelector('style')?.textContent ?? '';
 
-    expect(styles).toContain('--overlay-bg: rgba(248, 250, 252, 0.98);');
+    expect(styles).toContain('--overlay-bg: #f8fafc;');
     expect(styles).toContain('--overlay-text: #0f172a;');
     expect(styles).toContain(':host([data-theme="dark"])');
     expect(styles).toContain(':host([data-theme="auto"])');
-    expect(styles).toMatch(
-      /@media \(prefers-color-scheme: dark\)[\s\S]*--overlay-bg: rgba\(15, 23, 42, 0\.97\);/,
-    );
+    expect(styles).toMatch(/@media \(prefers-color-scheme: dark\)[\s\S]*--overlay-bg: #0f172a;/);
     expect(styles).toMatch(/@media \(prefers-color-scheme: dark\)[\s\S]*--overlay-text: #f8fafc;/);
     expect(styles).toMatch(
       /@media \(prefers-color-scheme: dark\)[\s\S]*--overlay-subtle: #94a3b8;/,
@@ -103,7 +101,7 @@ describe('overlay', () => {
       config: snap.config === null ? null : { ...snap.config, strictness: 'hard' },
     };
     showOverlay(verdict, hardSnap);
-    expect(root?.textContent).not.toContain('End session');
+    expect(root?.querySelector<HTMLButtonElement>('.linkish')?.hidden).toBe(true);
     hideOverlay(emptySnapshot(Date.now()));
   });
   it('paints the stopped-tab presentation only when asked', () => {
@@ -112,8 +110,8 @@ describe('overlay', () => {
     expect(root?.textContent).toContain('This page did not load.');
     expect(root?.querySelector('.backdrop')?.classList.contains('opaque')).toBe(true);
     showOverlay(verdict, focusSnap());
-    expect(root?.textContent).not.toContain('This page did not load.');
-    expect(root?.querySelector('.backdrop')?.classList.contains('opaque')).toBe(false);
+    expect(root?.querySelector<HTMLElement>('.notloaded')?.hidden).toBe(true);
+    expect(root?.querySelector('.backdrop')?.classList.contains('opaque')).toBe(true);
     hideOverlay(emptySnapshot(Date.now()));
   });
 
@@ -135,7 +133,7 @@ describe('overlay', () => {
     endSession?.click();
 
     await vi.waitFor((): void => {
-      expect(sendMessage).toHaveBeenCalledTimes(2);
+      expect(sendMessage).toHaveBeenCalledWith({ type: 'getSnapshot' });
       expect(root.querySelector('.backdrop')?.classList.contains('opaque')).toBe(true);
       expect(root.querySelector('.notloaded')?.textContent).toBe(
         'This page did not load. It will load by itself when the session ends.',
@@ -144,7 +142,7 @@ describe('overlay', () => {
   });
 
   it.each([
-    { kind: 'pause' as const, label: 'Take the pause' },
+    { kind: 'pause' as const, label: 'Unlock all sites' },
     { kind: 'unlockSite' as const, label: 'Unlock this site' },
     { kind: 'cancel' as const, label: 'End the session' },
   ])('uses the shared $kind confirmation label', ({ kind, label }): void => {
@@ -199,7 +197,7 @@ describe('overlay', () => {
     });
   });
 
-  it('owns focus and traps Tab when hard mode has no enabled controls', () => {
+  it('owns focus and traps Tab on the access summary when hard mode has no enabled actions', () => {
     const outside: HTMLButtonElement = document.createElement('button');
     document.body.appendChild(outside);
     outside.focus();
@@ -215,20 +213,19 @@ describe('overlay', () => {
 
     const host: HTMLElement = document.querySelector('focus-lock-overlay') as HTMLElement;
     const root: ShadowRoot = shadowRoot();
-    const dialog: HTMLElement = root.querySelector('[role="dialog"]') as HTMLElement;
     const tab: KeyboardEvent = new KeyboardEvent('keydown', {
       key: 'Tab',
       bubbles: true,
       cancelable: true,
       composed: true,
     });
-    dialog.dispatchEvent(tab);
+    (root.querySelector('summary') as HTMLElement).dispatchEvent(tab);
     expect(document.activeElement).toBe(host);
-    expect(root.activeElement).toBe(dialog);
+    expect(root.activeElement).toBe(root.querySelector('summary'));
     expect(tab.defaultPrevented).toBe(true);
   });
 
-  it('shows time until the next earned pause minute while spends remain disabled', () => {
+  it('does not promise access that cannot be earned in this focus block', () => {
     const snap: SessionSnapshot = {
       ...focusSnap(),
       bankMs: 0,
@@ -246,7 +243,7 @@ describe('overlay', () => {
     expect(spendButtons).toHaveLength(2);
     expect(spendButtons.every((button: HTMLButtonElement): boolean => button.disabled)).toBe(true);
     expect(root.querySelectorAll('.ready')).toHaveLength(2);
-    expect(root.textContent).toContain('ready in 6:00');
+    expect(root.textContent).toContain('Not enough time in this focus block');
     expect(root.textContent).not.toContain('ready in 30:00');
   });
 
@@ -255,7 +252,8 @@ describe('overlay', () => {
     vi.setSystemTime(new Date('2026-08-29T12:00:00Z'));
     const snap: SessionSnapshot = {
       ...focusSnap(),
-      bankMs: 59_900,
+      bankMs: 299_900,
+      bankCapMs: 600_000,
       bankAccrualPerMs: 1,
       pauseCostMs: 5 * 60_000,
       unlockCostMs: 5 * 60_000,
@@ -264,8 +262,8 @@ describe('overlay', () => {
     showOverlay(verdict, snap);
 
     const root: ShadowRoot = shadowRoot();
-    expect(root.textContent).toContain('ready in 0:01');
-    expect(root.textContent).not.toContain('ready in 0:00');
+    expect(root.textContent).toContain('Ready in 0:01');
+    expect(root.textContent).not.toContain('Ready in 0:00');
   });
 
   it('does not promise an earned minute above the configured bank cap', () => {
@@ -279,7 +277,7 @@ describe('overlay', () => {
 
     const root: ShadowRoot = shadowRoot();
     expect(root.querySelectorAll('.ready')).toHaveLength(2);
-    expect(root.textContent).toContain('earn pause time by focusing');
+    expect(root.textContent).toContain('Cost exceeds the credit limit');
     expect(root.textContent).not.toContain('ready in 6:00');
   });
 
@@ -432,8 +430,11 @@ describe('overlay action failures', () => {
     const second: Deferred<unknown> = deferred<unknown>();
     const third: Deferred<unknown> = deferred<unknown>();
     const replies: Promise<unknown>[] = [first.promise, second.promise, third.promise];
-    const sendMessage: Mock<() => Promise<unknown>> = vi.fn(
-      async (): Promise<unknown> => replies.shift() as Promise<unknown>,
+    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+      async (request: { type: string }): Promise<unknown> =>
+        request.type === 'getWorkTarget'
+          ? { ok: true, sessionId: null, state: 'missing', title: null }
+          : (replies.shift() as Promise<unknown>),
     );
     vi.stubGlobal('chrome', { runtime: { sendMessage } });
     showOverlay(verdict, focusSnap());

@@ -107,14 +107,18 @@ describe('ActiveView', () => {
     expect(getByText('focusing')).toBeTruthy();
     expect(container.querySelector('.phase-label-focus')).toBeTruthy();
     expect(container.querySelectorAll('circle')[1]?.getAttribute('stroke')).toBe('#22c55e');
-    expect(getByRole('button', { name: /Unlock this site 5 min/ })).toBeTruthy();
-    expect(getByRole('button', { name: /Pause everything 5 min/ })).toBeTruthy();
+    expect(getByRole('button', { name: /Unlock this site 5:00/ })).toBeTruthy();
+    expect(getByRole('button', { name: /Unlock all sites 5:00/ })).toBeTruthy();
     expect(getByRole('button', { name: 'End session' })).toBeTruthy();
     expect(
       Array.from(container.querySelectorAll('.actions button')).map((button: Element): string =>
         (button.querySelector('.spend-label')?.textContent ?? button.textContent ?? '').trim(),
       ),
-    ).toEqual(['Unlock this site 5 min', 'Pause everything 5 min', 'End session']);
+    ).toEqual([
+      'Unlock this site 5:00 - costs 5:00 credit',
+      'Unlock all sites 5:00 - costs 5:00 credit',
+      'End session',
+    ]);
     await waitFor((): void => {
       expect(getByText('52 min focused today')).toBeTruthy();
     });
@@ -129,28 +133,30 @@ describe('ActiveView', () => {
     expect(queryByRole('button', { name: 'End session' })).toBeNull();
   });
 
-  it('shows time until the next earned pause minute while a spend is unaffordable', (): void => {
+  it('does not promise access beyond the current focus block', async (): Promise<void> => {
     const snapshot: SessionSnapshot = { ...focusSnap(), bankMs: 0 };
     const { getAllByText, queryByText } = render(h(ActiveView, { snapshot, now: NOW }));
 
-    expect(getAllByText('ready in 6:00')).toHaveLength(2);
+    await waitFor((): void =>
+      expect(getAllByText('Not enough time in this focus block')).toHaveLength(2),
+    );
     expect(queryByText('enough in 30:00')).toBeNull();
     expect(queryByText('ready in 30:00')).toBeNull();
   });
 
-  it('never renders ready in zero for a positive sub-second wait', (): void => {
+  it('never renders ready in zero for a positive sub-second wait', async (): Promise<void> => {
     const snapshot: SessionSnapshot = {
       ...focusSnap(),
-      bankMs: 59_900,
+      bankMs: 299_900,
       bankAccrualPerMs: 1,
     };
     const { getAllByText, queryByText } = render(h(ActiveView, { snapshot, now: NOW }));
 
-    expect(getAllByText('ready in 0:01')).toHaveLength(2);
+    await waitFor((): void => expect(getAllByText('Ready in 0:01')).toHaveLength(2));
     expect(queryByText('ready in 0:00')).toBeNull();
   });
 
-  it('does not promise an earned minute above the configured bank cap', (): void => {
+  it('does not promise access above the configured credit cap', async (): Promise<void> => {
     const snapshot: SessionSnapshot = {
       ...focusSnap(),
       bankMs: 0,
@@ -158,7 +164,9 @@ describe('ActiveView', () => {
     };
     const { getAllByText, queryByText } = render(h(ActiveView, { snapshot, now: NOW }));
 
-    expect(getAllByText('earn pause time by focusing')).toHaveLength(2);
+    await waitFor((): void =>
+      expect(getAllByText('Cost exceeds the credit limit')).toHaveLength(2),
+    );
     expect(queryByText('ready in 6:00')).toBeNull();
   });
 
@@ -172,7 +180,7 @@ describe('ActiveView', () => {
     const { container, getByRole } = render(h(ActiveView, { snapshot: gateSnap(), now: NOW }));
 
     const backToWork: HTMLButtonElement = getByRole('button', {
-      name: 'Never mind, back to work',
+      name: 'Keep focusing',
     }) as HTMLButtonElement;
     expect(backToWork.disabled).toBe(false);
 
@@ -185,7 +193,7 @@ describe('ActiveView', () => {
   it('enables the gate confirm once readyAt has passed', (): void => {
     const { getByRole } = render(h(ActiveView, { snapshot: gateSnap(), now: NOW + 9_000 }));
     const confirm: HTMLButtonElement = getByRole('button', {
-      name: 'Take the pause',
+      name: 'Unlock all sites',
     }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(false);
   });
@@ -239,7 +247,7 @@ describe('ActiveView', () => {
     );
 
     expect(queryByRole('button', { name: /Unlock this site/ })).toBeNull();
-    expect(queryByRole('button', { name: /Pause everything/ })).toBeNull();
+    expect(queryByRole('button', { name: /Unlock all sites/ })).toBeNull();
     expect(queryByRole('button', { name: 'End session' })).toBeNull();
     expect(queryByRole('button', { name: 'Start next focus early' })).toBeNull();
   });
@@ -251,7 +259,7 @@ describe('ActiveView', () => {
 
     expect(getByRole('button', { name: 'Start next focus early' })).toBeTruthy();
     expect(queryByRole('button', { name: /Unlock this site/ })).toBeNull();
-    expect(queryByRole('button', { name: /Pause everything/ })).toBeNull();
+    expect(queryByRole('button', { name: /Unlock all sites/ })).toBeNull();
     expect(queryByRole('button', { name: 'End session' })).toBeNull();
   });
 });

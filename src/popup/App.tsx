@@ -133,7 +133,7 @@ function Footer({ snapshot }: { snapshot: SessionSnapshot }): VNode {
   );
 }
 
-function IdleView(): VNode {
+function IdleView({ onStartFeedback }: { onStartFeedback: (error: string | null) => void }): VNode {
   const [settings, setSettings]: [Settings | null, Dispatch<StateUpdater<Settings | null>>] =
     useState<Settings | null>(null);
   const [lists, setLists]: [ListsConfig | null, Dispatch<StateUpdater<ListsConfig | null>>] =
@@ -174,7 +174,12 @@ function IdleView(): VNode {
   }
   return (
     <>
-      <StartForm settings={settings} lists={lists} categoriesEditable={listsEditable} />
+      <StartForm
+        settings={settings}
+        lists={lists}
+        categoriesEditable={listsEditable}
+        onStartFeedback={onStartFeedback}
+      />
       {loadError ? (
         <p class="form-error" role="alert">
           Could not load session settings. Reload the popup to try again. Defaults are shown.
@@ -185,19 +190,36 @@ function IdleView(): VNode {
   );
 }
 
-function Body({ snapshot, now }: { snapshot: SessionSnapshot; now: number }): VNode {
+function Body({
+  snapshot,
+  now,
+  onStartFeedback,
+}: {
+  snapshot: SessionSnapshot;
+  now: number;
+  onStartFeedback: (error: string | null) => void;
+}): VNode {
   if (snapshot.phase === 'idle') {
-    return <IdleView />;
+    return <IdleView onStartFeedback={onStartFeedback} />;
   }
   return <ActiveView snapshot={snapshot} now={now} />;
 }
 
 export function App(): VNode {
+  const [startFeedback, setStartFeedback]: [string | null, Dispatch<StateUpdater<string | null>>] =
+    useState<string | null>(null);
+  const [refreshVersion, setRefreshVersion]: [number, Dispatch<StateUpdater<number>>] =
+    useState<number>(0);
+  const onStartFeedback: (error: string | null) => void = (error: string | null): void => {
+    setStartFeedback(error);
+    setRefreshVersion((value: number): number => value + 1);
+  };
   const {
     error,
     snapshot,
     now,
-  }: { snapshot: SessionSnapshot | null; now: number; error: boolean } = useSnapshot();
+  }: { snapshot: SessionSnapshot | null; now: number; error: boolean } =
+    useSnapshot(refreshVersion);
   const [theme, setTheme]: [ThemeMode | null, Dispatch<StateUpdater<ThemeMode | null>>] =
     useState<ThemeMode | null>(null);
 
@@ -227,8 +249,13 @@ export function App(): VNode {
       ) : snapshot === null ? (
         <section class="view" aria-busy="true" />
       ) : (
-        <Body snapshot={snapshot} now={now} />
+        <Body snapshot={snapshot} now={now} onStartFeedback={onStartFeedback} />
       )}
+      {startFeedback !== null ? (
+        <p class="form-error" role="alert">
+          {startFeedback}
+        </p>
+      ) : null}
       {snapshot === null ? null : <Footer snapshot={snapshot} />}
     </div>
   );

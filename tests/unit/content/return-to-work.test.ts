@@ -1,0 +1,138 @@
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
+import { hideOverlay, showOverlay } from '../../../src/content/overlay';
+import { emptySnapshot } from '../../../src/shared/constants';
+import type { SessionSnapshot, Verdict } from '../../../src/shared/types';
+
+const verdict: Verdict = { blocked: true, reason: 'default', matchedPattern: null };
+function snapshot(): SessionSnapshot {
+  return {
+    ...emptySnapshot(Date.now()),
+    startedAt: 1,
+    phase: 'focus',
+    phaseStartedAt: Date.now() - 60_000,
+    phaseEndsAt: Date.now() + 120_000,
+    sessionEndsAt: Date.now() + 120_000,
+  };
+}
+function root(): ShadowRoot {
+  return (globalThis as unknown as { __focusLockShadow: ShadowRoot }).__focusLockShadow;
+}
+afterEach((): void => {
+  hideOverlay(emptySnapshot(Date.now()));
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+describe('return to work overlay', (): void => {
+  it('shows a next step, collapsed site access, and no attempts', (): void => {
+    showOverlay(verdict, snapshot());
+    expect(root().querySelector('.intention')?.textContent).toBe('Continue your current task');
+    expect(root().querySelector('summary')?.textContent).toBe('Need a break or site access?');
+    expect(root().querySelector('details')?.open).toBe(false);
+    expect(root().querySelector('.attempts')).toBeNull();
+  });
+  it('preserves the exact gate input, selection, focus and scroll on broadcasts', (): void => {
+    const snap: SessionSnapshot = {
+      ...snapshot(),
+      gate: {
+        kind: 'cancel',
+        host: null,
+        openedAt: 1,
+        readyAt: 20_000,
+        requiredPhrase: 'I choose to stop',
+        forceEndAvailable: false,
+      },
+    };
+    showOverlay(verdict, snap);
+    const input: HTMLInputElement = root().querySelector('.phrase') as HTMLInputElement;
+    input.value = 'I choose';
+    input.focus();
+    input.setSelectionRange(2, 5);
+    const backdrop: HTMLElement = root().querySelector('.backdrop') as HTMLElement;
+    backdrop.scrollTop = 50;
+    showOverlay(verdict, { ...snap, theme: 'dark', attemptsToday: 4 });
+    expect(root().querySelector('.phrase')).toBe(input);
+    expect(input.value).toBe('I choose');
+    expect(input.selectionStart).toBe(2);
+    expect(input.selectionEnd).toBe(5);
+    expect(root().activeElement).toBe(input);
+    expect(backdrop.scrollTop).toBe(50);
+  });
+  it('activates the saved target without requesting block state', async (): Promise<void> => {
+    const sendMessage: Mock<(req: { type: string }) => Promise<unknown>> = vi.fn(
+      async (req: { type: string }): Promise<unknown> =>
+        req.type === 'getWorkTarget'
+          ? { ok: true, state: 'ready', title: 'Report', sessionId: 'one' }
+          : { ok: true },
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    showOverlay(verdict, snapshot());
+    await vi.waitFor((): void =>
+      expect(root().querySelector('.work-target')?.textContent).toBe('Report'),
+    );
+    (root().querySelector('.return-work') as HTMLButtonElement).click();
+    await vi.waitFor((): void =>
+      expect(sendMessage).toHaveBeenCalledWith({ type: 'returnToWork', sessionId: 'one' }),
+    );
+    expect(
+      sendMessage.mock.calls.some(
+        ([req]: [{ type: string }]): boolean => req.type === 'getBlockState',
+      ),
+    ).toBe(false);
+  });
+});
+
+it('moves initial focus to the ready work button without stealing deliberate focus', async (): Promise<void> => {
+  let resolveTarget: (value: unknown) => void = (): void => {};
+  const sendMessage: Mock<() => Promise<unknown>> = vi.fn(
+    async (): Promise<unknown> =>
+      new Promise<unknown>((resolve: (value: unknown) => void): void => {
+        resolveTarget = resolve;
+      }),
+  );
+  vi.stubGlobal('chrome', { runtime: { sendMessage } });
+  showOverlay(verdict, snapshot());
+  expect(root().activeElement).toBe(root().querySelector('[role="dialog"]'));
+  resolveTarget({ ok: true, state: 'ready', title: 'Report', sessionId: 'one' });
+  await vi.waitFor((): void =>
+    expect(root().activeElement).toBe(root().querySelector('.return-work')),
+  );
+});
+
+it('ignores an older target reply and never refreshes the target on timer ticks', async (): Promise<void> => {
+  vi.useFakeTimers();
+  const resolvers: Array<(value: unknown) => void> = [];
+  const sendMessage: Mock<() => Promise<unknown>> = vi.fn(
+    async (): Promise<unknown> =>
+      new Promise<unknown>((resolve: (value: unknown) => void): void => {
+        resolvers.push(resolve);
+      }),
+  );
+  vi.stubGlobal('chrome', { runtime: { sendMessage } });
+  const snap: SessionSnapshot = snapshot();
+  showOverlay(verdict, snap);
+  showOverlay(verdict, { ...snap, theme: 'dark' });
+  resolvers[1]?.({ ok: true, state: 'ready', title: 'New report', sessionId: 'one' });
+  await Promise.resolve();
+  await Promise.resolve();
+  resolvers[0]?.({ ok: true, state: 'ready', title: 'Old report', sessionId: 'one' });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(root().querySelector('.work-target')?.textContent).toBe('New report');
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(sendMessage).toHaveBeenCalledTimes(2);
+  vi.useRealTimers();
+});
+
+it('updates action costs in place while preserving expanded site access', (): void => {
+  const snap: SessionSnapshot = snapshot();
+  showOverlay(verdict, snap);
+  const details: HTMLDetailsElement = root().querySelector('details') as HTMLDetailsElement;
+  details.open = true;
+  const button: HTMLButtonElement = root().querySelector('.buttons .pill') as HTMLButtonElement;
+  showOverlay(verdict, { ...snap, unlockCostMs: 35_000 });
+  expect(root().querySelector('details')).toBe(details);
+  expect(details.open).toBe(true);
+  expect(root().querySelector('.buttons .pill')).toBe(button);
+  expect(button.textContent).toContain('Unlock this site 0:35 - costs 0:35 credit');
+});

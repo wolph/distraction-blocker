@@ -1,7 +1,7 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 import { getDomain } from 'tldts';
-import { msUntilNextEarnedMinute } from '../core/budget';
+import { type AccessAvailability, accessAvailability } from '../shared/budget-display';
 import { MIN_BREAK_BEFORE_EARLY_MS } from '../shared/constants';
 import { extrapolatedBank } from '../shared/live';
 import type { Ack, StatsBundle } from '../shared/messages';
@@ -11,6 +11,8 @@ import { formatClock } from '../shared/time';
 import type { GateKind, SessionSnapshot } from '../shared/types';
 import { GatePanel } from './GatePanel';
 import { Ring } from './Ring';
+import { useWorkTarget, type WorkTargetState } from './use-work-tabs';
+import { WorkTabControl } from './WorkTabControl';
 
 function useActiveHost(): { host: string | null; error: boolean } {
   const [host, setHost]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
@@ -92,7 +94,7 @@ function SpendButton({
           <span class="spend-sub">{sub}</span>
         ) : null
       ) : (
-        <span class="spend-sub">{countdown ?? 'earn pause time by focusing'}</span>
+        <span class="spend-sub">{countdown ?? 'Site access unavailable'}</span>
       )}
     </button>
   );
@@ -104,6 +106,7 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
   >(null);
   const [actionPending, setActionPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
     useState<boolean>(false);
+  const work: WorkTargetState = useWorkTarget(snapshot);
   const activeSite: { host: string | null; error: boolean } = useActiveHost();
   const activeHost: string | null = activeSite.host;
   const focusedToday: { ms: number | null; error: boolean } = useFocusedTodayMs();
@@ -148,16 +151,8 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
   const affordability: (costMs: number) => { affordable: boolean; countdown: string | null } = (
     costMs: number,
   ): { affordable: boolean; countdown: string | null } => {
-    if (bankMs >= costMs) return { affordable: true, countdown: null };
-    const waitMs: number | null = msUntilNextEarnedMinute(
-      bankMs,
-      snapshot.bankAccrualPerMs,
-      snapshot.bankCapMs,
-    );
-    return {
-      affordable: false,
-      countdown: waitMs === null ? null : `ready in ${formatClock(waitMs)}`,
-    };
+    const availability: AccessAvailability = accessAvailability(snapshot, now, costMs);
+    return { affordable: availability.affordable, countdown: availability.message };
   };
 
   const unlockAfford: { affordable: boolean; countdown: string | null } = affordability(
@@ -166,7 +161,28 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
   const pauseAfford: { affordable: boolean; countdown: string | null } = affordability(
     snapshot.pauseCostMs,
   );
-  const costMin: (ms: number) => number = (ms: number): number => Math.round(ms / 60_000);
+  const returnToWork: () => Promise<void> = async (): Promise<void> => {
+    if (!work.target?.ok || work.target.sessionId === null || work.windowId === null) return;
+    setActionPending(true);
+    setError(null);
+    try {
+      setError(
+        ackError(
+          await sendRequest({
+            type: 'returnToWork',
+            sessionId: work.target.sessionId,
+            windowId: work.windowId,
+          }),
+          'Could not return to work. Try again.',
+        ),
+      );
+    } catch {
+      setError('Could not return to work. Try again.');
+    } finally {
+      setActionPending(false);
+      work.refresh();
+    }
+  };
   const breakEarlyVisible: boolean =
     snapshot.phase === 'break' &&
     snapshot.phaseStartedAt !== null &&
@@ -176,6 +192,19 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
     <section class="view active-view">
       <Ring snapshot={snapshot} now={now} />
       {intention !== '' ? <p class="intention-line">{intention}</p> : null}
+      <WorkTabControl snapshot={snapshot} work={work} />
+      {snapshot.gate === null && work.target?.ok && work.target.state === 'ready' ? (
+        <button
+          type="button"
+          class="start-button"
+          disabled={actionPending}
+          onClick={(): void => {
+            void returnToWork();
+          }}
+        >
+          Back to work
+        </button>
+      ) : null}
       {focusedToday.ms !== null ? (
         <p class="today-line">{Math.floor(focusedToday.ms / 60_000)} min focused today</p>
       ) : focusedToday.error ? (
@@ -193,11 +222,18 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
         <div class="meter-bar">
           <div class="meter-fill" style={{ width: `${bankFill * 100}%` }} />
         </div>
-        <span class="meter-label">{formatClock(bankMs)} pause banked</span>
+        <span class="meter-label">{formatClock(bankMs)} site access credit</span>
       </div>
 
       {snapshot.gate !== null ? (
-        <GatePanel gate={snapshot.gate} now={now} intention={intention} />
+        <GatePanel
+          key={`${snapshot.startedAt}-${snapshot.gate.openedAt}-${snapshot.gate.kind}`}
+          gate={snapshot.gate}
+          now={now}
+          intention={intention}
+          returnToWork={work.target?.ok && work.target.state === 'ready' ? returnToWork : undefined}
+          returnPending={actionPending}
+        />
       ) : snapshot.phase === 'paused' ? (
         <button
           type="button"
@@ -223,15 +259,15 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
       ) : (
         <div class="actions">
           <SpendButton
-            label={`Unlock this site ${costMin(snapshot.unlockCostMs)} min`}
+            label={`Unlock this site ${formatClock(snapshot.unlockCostMs)} - costs ${formatClock(snapshot.unlockCostMs)} credit`}
             sub={activeHost}
             affordable={unlockAfford.affordable && activeHost !== null}
-            countdown={unlockAfford.countdown}
+            countdown={activeHost === null ? 'Open a website to unlock it' : unlockAfford.countdown}
             pending={actionPending}
             onClick={(): void => void openGate('unlockSite', activeHost)}
           />
           <SpendButton
-            label={`Pause everything ${costMin(snapshot.pauseCostMs)} min`}
+            label={`Unlock all sites ${formatClock(snapshot.pauseCostMs)} - costs ${formatClock(snapshot.pauseCostMs)} credit`}
             sub={null}
             affordable={pauseAfford.affordable}
             countdown={pauseAfford.countdown}
@@ -250,6 +286,7 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
           ) : null}
         </div>
       )}
+      <p class="work-tab-hint">You can step away at any time. Site access uses credit.</p>
       {error !== null ? (
         <p class="form-error" role="alert">
           {error}

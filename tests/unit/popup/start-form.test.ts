@@ -48,9 +48,9 @@ describe('StartForm', () => {
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
 
-    expect(getByPlaceholderText('What you working on?')).toBeTruthy();
+    expect(getByPlaceholderText('Continue your current task')).toBeTruthy();
     expect(getByText('can end early after 30 s wait typing sentence')).toBeTruthy();
-    expect(getByText('no way out until timer ends, pauses excepted')).toBeTruthy();
+    expect(getByText('sites stay locked until the timer ends, paid access excepted')).toBeTruthy();
   });
 
   it('starts a session from the chosen preset and typed intention', async (): Promise<void> => {
@@ -59,7 +59,7 @@ describe('StartForm', () => {
     );
 
     fireEvent.click(getByRole('button', { name: '25 focus' }));
-    fireEvent.input(getByPlaceholderText('What you working on?'), {
+    fireEvent.input(getByPlaceholderText('Continue your current task'), {
       target: { value: 'write the report' },
     });
     fireEvent.click(getByRole('button', { name: 'Start focusing' }));

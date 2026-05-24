@@ -11,7 +11,7 @@ type GateRequest =
   | { type: 'forceEndGate' };
 
 const CONFIRM_LABELS: Record<GateKind, string> = {
-  pause: 'Take the pause',
+  pause: 'Unlock all sites',
   unlockSite: 'Unlock this site',
   cancel: 'End the session',
 };
@@ -24,10 +24,14 @@ export function GatePanel({
   gate,
   now,
   intention,
+  returnToWork,
+  returnPending = false,
 }: {
   gate: GateState;
   now: number;
   intention: string;
+  returnToWork?: () => Promise<void>;
+  returnPending?: boolean;
 }): VNode {
   const [typed, setTyped]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
   const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
@@ -78,8 +82,16 @@ export function GatePanel({
       <p class="gate-wait">
         A moment to decide: <span class="time">{elapsedS}</span> of {totalS} s
       </p>
-      <button type="button" class="start-button" disabled={pending} onClick={abandon}>
-        Never mind, back to work
+      <button
+        type="button"
+        class="start-button"
+        disabled={pending || returnPending}
+        onClick={(): void => {
+          if (returnToWork !== undefined) void returnToWork();
+          else abandon();
+        }}
+      >
+        {returnToWork === undefined ? 'Keep focusing' : 'Back to work'}
       </button>
       {gate.requiredPhrase !== null ? (
         <label class="gate-phrase">

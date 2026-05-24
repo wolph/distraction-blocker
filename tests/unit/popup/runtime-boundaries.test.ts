@@ -272,7 +272,7 @@ describe('popup runtime response boundaries', (): void => {
   });
 
   it.each([
-    ['openGate' as const, activeSnapshot('focus'), /Pause everything/],
+    ['openGate' as const, activeSnapshot('focus'), /Unlock all sites/],
     ['resumeFromPause' as const, activeSnapshot('paused'), 'Resume now'],
     ['startNextFocusEarly' as const, activeSnapshot('break'), 'Start next focus early'],
   ])(
@@ -299,8 +299,8 @@ describe('popup runtime response boundaries', (): void => {
   );
 
   it.each([
-    ['abandonGate' as const, 'Never mind, back to work'],
-    ['confirmGate' as const, 'Take the pause'],
+    ['abandonGate' as const, 'Keep focusing'],
+    ['confirmGate' as const, 'Unlock all sites'],
   ])(
     'treats a malformed %s acknowledgement as an error',
     async (requestType: 'abandonGate' | 'confirmGate', buttonName: string): Promise<void> => {

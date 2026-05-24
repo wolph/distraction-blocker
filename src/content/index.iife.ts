@@ -1,4 +1,4 @@
-import type { ContentCommand } from '../shared/messages';
+import type { Broadcast, ContentCommand } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import type { SessionSnapshot, Verdict } from '../shared/types';
 import {
@@ -8,7 +8,7 @@ import {
   recoverRestoredOverlay,
   shouldStop,
 } from './gate';
-import { hideOverlay, showOverlay } from './overlay';
+import { hideOverlay, refreshWorkTarget, showOverlay, updateOverlaySnapshot } from './overlay';
 
 /** True once this document stopped before loading. A stopped tab keeps
  * opaque presentation for every later overlay update. The worker
@@ -56,9 +56,11 @@ async function evaluate(docState: 'fresh' | 'loaded'): Promise<void> {
 
 if (claimContentLifecycle(globalThis as unknown as Record<string, unknown>)) {
   wasStopped = recoverRestoredOverlay(document);
-  chrome.runtime.onMessage.addListener((msg: ContentCommand): void => {
+  chrome.runtime.onMessage.addListener((msg: ContentCommand | Broadcast): void => {
     if (msg.type === 'applyBlock') showOverlay(msg.verdict, msg.snapshot, wasStopped);
     else if (msg.type === 'clearBlock') hideOverlay(msg.snapshot);
+    else if (msg.type === 'workTargetChanged') refreshWorkTarget();
+    else if (msg.type === 'stateChanged') updateOverlaySnapshot(msg.snapshot);
     else if (msg.type === 'reevaluate') void evaluate('loaded');
   });
   installPersistedPageShow(window, (): void => {

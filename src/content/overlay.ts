@@ -1,10 +1,13 @@
-import { msUntilNextEarnedMinute } from '../shared/budget-display';
-import { extrapolatedBank, remainingPhaseMs } from '../shared/live';
+import { type AccessAvailability, accessAvailability } from '../shared/budget-display';
+import { focusDisplay } from '../shared/focus-display';
+import { extrapolatedBank } from '../shared/live';
 import type { Ack, Request } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
+import { ackError, isSessionSnapshot } from '../shared/runtime-validation';
 import { applyTheme } from '../shared/theme';
 import { formatClock } from '../shared/time';
 import type { GateKind, GateState, SessionSnapshot, Verdict } from '../shared/types';
+import { parseWorkTargetResult, type WorkTargetResult } from '../shared/work-target';
 
 /** The block overlay. One closed shadow root, rendered from the worker's
  * SessionSnapshot. This module displays state, it never decides it. */
@@ -38,7 +41,8 @@ const RANGE_KEYS: ReadonlySet<string> = new Set<string>([
 
 interface SpendRef {
   button: HTMLButtonElement;
-  costMs: number;
+  kind: 'unlockSite' | 'pause';
+  text: HTMLSpanElement;
   ready: HTMLSpanElement;
 }
 
@@ -65,6 +69,11 @@ interface Mounted {
   gate: GateRefs | null;
   actionGeneration: number;
   actionError: string | null;
+  initialFocus: boolean;
+  sessionKey: string | null;
+  renderKey: string | null;
+  targetGeneration: number;
+  target: WorkTargetResult | null;
 }
 
 let mounted: Mounted | null = null;
@@ -93,7 +102,7 @@ const OVERLAY_CSS: string = `
 :host,
 :host([data-theme="light"]) {
   color-scheme: light;
-  --overlay-bg: rgba(248, 250, 252, 0.98);
+  --overlay-bg: #f8fafc;
   --overlay-opaque: #f8fafc;
   --overlay-text: #0f172a;
   --overlay-muted: #475569;
@@ -114,7 +123,7 @@ const OVERLAY_CSS: string = `
 @media (prefers-color-scheme: dark) {
   :host([data-theme="auto"]) {
     color-scheme: dark;
-    --overlay-bg: rgba(15, 23, 42, 0.97);
+    --overlay-bg: #0f172a;
     --overlay-opaque: #0f172a;
     --overlay-text: #f8fafc;
     --overlay-muted: #94a3b8;
@@ -135,7 +144,7 @@ const OVERLAY_CSS: string = `
 }
 :host([data-theme="dark"]) {
   color-scheme: dark;
-  --overlay-bg: rgba(15, 23, 42, 0.97);
+  --overlay-bg: #0f172a;
   --overlay-opaque: #0f172a;
   --overlay-text: #f8fafc;
   --overlay-muted: #94a3b8;
@@ -159,21 +168,26 @@ const OVERLAY_CSS: string = `
   background: var(--overlay-bg);
   color: var(--overlay-text);
   font-family: system-ui, -apple-system, sans-serif;
-  display: flex; align-items: center; justify-content: center;
+  display: flex; align-items: flex-start; justify-content: center;
+  overflow-y: auto; overscroll-behavior: contain;
   text-align: center;
 }
 .backdrop.opaque { background: var(--overlay-opaque); }
 .notloaded { font-size: 0.9rem; color: var(--overlay-muted); }
 .panel {
-  max-width: 40rem; padding: 2rem;
+  width: 100%; max-width: 480px; padding: 2rem 1.5rem; margin-block: auto;
   display: flex; flex-direction: column; align-items: center; gap: 0.9rem;
 }
-.padlock { width: 3.5rem; height: 3.5rem; }
+.padlock { width: 1.5rem; height: 1.5rem; }
+.access { width: 100%; margin-top: 1rem; }
+summary { cursor: pointer; color: var(--overlay-muted); padding: 0.5rem; }
+summary:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid #22c55e; outline-offset: 4px; }
+.access-note, .work-target { font-size: 0.9rem; color: var(--overlay-muted); overflow-wrap: anywhere; }
+.access-note { margin-top: 0.8rem; }
 .until { font-size: 1rem; color: var(--overlay-muted); }
 .clock {
-  font-size: 4.5rem; font-weight: 700; line-height: 1;
+  font-size: 1rem; font-weight: 400; line-height: 1.5; color: var(--overlay-muted);
   font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
-  animation: pulse 2.4s ease-in-out infinite;
 }
 .intention { font-size: 1.5rem; font-weight: 600; color: var(--overlay-intention); overflow-wrap: anywhere; }
 .attempts { font-size: 0.9rem; color: var(--overlay-subtle); }
@@ -196,7 +210,7 @@ button:disabled { cursor: default; }
   background: var(--overlay-pill); color: var(--overlay-text); font-size: 1rem;
 }
 .pill:hover:not(:disabled) { background: var(--overlay-pill-hover); }
-.pill:disabled { opacity: 0.55; }
+.pill:disabled { color: var(--overlay-muted); }
 .force-end {
   border: 1px solid var(--overlay-danger); border-radius: 999px; padding: 0.55rem 1.2rem;
   background: var(--overlay-danger-soft); color: var(--overlay-danger); font-size: 0.9rem;
@@ -226,7 +240,8 @@ button:disabled { cursor: default; }
   background: #22c55e; color: #052e16; font-weight: 700;
   font-size: 1.25rem; padding: 1rem 2.2rem; border-radius: 999px;
 }
-.primary:hover { background: #4ade80; }
+.primary:disabled { opacity: 0.55; }
+.primary:hover:not(:disabled) { background: #4ade80; }
 .phrase-label { font-size: 0.9rem; color: var(--overlay-muted); }
 .phrase-text { font-size: 0.95rem; color: var(--overlay-intention); font-style: italic; overflow-wrap: anywhere; }
 .phrase {
@@ -253,12 +268,19 @@ button:disabled { cursor: default; }
 export function showOverlay(verdict: Verdict, snapshot: SessionSnapshot, stopped?: boolean): void {
   if (mounted === null) mounted = mount();
   applyTheme(mounted.host, snapshot.theme);
-  mounted.actionGeneration += 1;
+
   mounted.verdict = verdict;
   mounted.snapshot = snapshot;
   mounted.stopped = stopped ?? false;
   render(mounted);
   focusInitial(mounted);
+  refreshWorkTarget();
+}
+
+export function updateOverlaySnapshot(snapshot: unknown): void {
+  if (mounted === null || !isSessionSnapshot(snapshot)) return;
+  if (snapshot.phase === 'idle') hideOverlay(snapshot);
+  else showOverlay(mounted.verdict, snapshot, mounted.stopped);
 }
 
 export function hideOverlay(_snapshot: SessionSnapshot): void {
@@ -305,6 +327,11 @@ function mount(): Mounted {
     gate: null,
     actionGeneration: 0,
     actionError: null,
+    initialFocus: true,
+    sessionKey: null,
+    renderKey: null,
+    targetGeneration: 0,
+    target: null,
   };
 }
 
@@ -319,21 +346,46 @@ function applyHostStyle(host: HTMLElement): void {
 }
 
 function trapInteraction(host: HTMLElement, root: ShadowRoot): void {
-  host.addEventListener('wheel', (ev: WheelEvent): void => ev.preventDefault(), {
-    passive: false,
-  });
-  host.addEventListener('touchmove', (ev: TouchEvent): void => ev.preventDefault(), {
-    passive: false,
+  const stopOutsideScroll: (event: Event) => void = (event: Event): void => {
+    const path: EventTarget[] = event.composedPath();
+    if (
+      !path.some(
+        (target: EventTarget): boolean =>
+          target instanceof Element && target.classList.contains('backdrop'),
+      )
+    )
+      event.preventDefault();
+  };
+  host.addEventListener('wheel', stopOutsideScroll, { passive: false });
+  host.addEventListener('touchmove', stopOutsideScroll, { passive: false });
+  root.addEventListener('pointerdown', (): void => {
+    if (mounted !== null) mounted.initialFocus = false;
   });
   root.addEventListener('keydown', (event: Event): void => {
+    if (mounted !== null) mounted.initialFocus = false;
     const ev: KeyboardEvent = event as KeyboardEvent;
     if (ev.key !== 'Tab') {
-      if (shouldPreventKeyboardScroll(ev)) ev.preventDefault();
+      if (shouldPreventKeyboardScroll(ev)) {
+        ev.preventDefault();
+        const container: HTMLElement | null = root.querySelector('.backdrop');
+        if (container !== null) {
+          const step: number =
+            ev.key === 'PageDown' || ev.key === 'PageUp' || ev.key === ' '
+              ? container.clientHeight * 0.8
+              : 40;
+          if (ev.key === 'Home') container.scrollTop = 0;
+          else if (ev.key === 'End') container.scrollTop = container.scrollHeight;
+          else container.scrollTop += (ev.key === 'ArrowUp' || ev.key === 'PageUp' ? -1 : 1) * step;
+        }
+      }
       return;
     }
     const focusables: HTMLElement[] = Array.from(
-      root.querySelectorAll<HTMLElement>('button:not([disabled]):not([hidden]), input'),
-    );
+      root.querySelectorAll<HTMLElement>('button:not([disabled]):not([hidden]), input, summary'),
+    ).filter((element: HTMLElement): boolean => {
+      const details: HTMLDetailsElement | null = element.closest('details');
+      return details === null || details.open || element.tagName === 'SUMMARY';
+    });
     if (focusables.length === 0) {
       ev.preventDefault();
       root.querySelector<HTMLElement>('[role="dialog"]')?.focus();
@@ -342,10 +394,16 @@ function trapInteraction(host: HTMLElement, root: ShadowRoot): void {
     const first: HTMLElement = focusables[0] as HTMLElement;
     const last: HTMLElement = focusables[focusables.length - 1] as HTMLElement;
     const active: Element | null = root.activeElement;
-    if (ev.shiftKey && (active === first || active === null)) {
+    if (
+      ev.shiftKey &&
+      (active === first || active === null || active.getAttribute('role') === 'dialog')
+    ) {
       ev.preventDefault();
       last.focus();
-    } else if (!ev.shiftKey && (active === last || active === null)) {
+    } else if (
+      !ev.shiftKey &&
+      (active === last || active === null || active.getAttribute('role') === 'dialog')
+    ) {
       ev.preventDefault();
       first.focus();
     }
@@ -367,13 +425,13 @@ function shouldPreventKeyboardScroll(event: KeyboardEvent): boolean {
   if (editable instanceof HTMLSelectElement) return false;
   if (editable !== null) return event.key === 'PageUp' || event.key === 'PageDown';
   const space: boolean = event.key === ' ' || event.key === 'Spacebar';
-  return !(space && effectiveTarget.closest('button') !== null);
+  return !(space && effectiveTarget.closest('button, summary') !== null);
 }
 
 function focusInitial(m: Mounted): void {
   if (m.root.activeElement !== null) return;
   const target: HTMLElement | null = m.root.querySelector<HTMLElement>(
-    'button:not([disabled]):not([hidden])',
+    '.return-work:not([disabled])',
   );
   (target ?? m.container).focus();
 }
@@ -381,52 +439,149 @@ function focusInitial(m: Mounted): void {
 function render(m: Mounted): void {
   const now: number = Date.now();
   const snap: SessionSnapshot = m.snapshot;
+  const sessionKey: string = JSON.stringify([snap.startedAt, snap.sessionEndsAt]);
+  const key: string = JSON.stringify([
+    sessionKey,
+    snap.gate?.kind,
+    snap.gate?.openedAt,
+    snap.gate?.host,
+    snap.gate?.requiredPhrase,
+  ]);
+  m.container.className = 'backdrop opaque';
+  if (m.renderKey === key) {
+    updateStatic(m);
+    tick();
+    return;
+  }
+  const sameSession: boolean = m.sessionKey === sessionKey;
+  m.sessionKey = sessionKey;
+  const open: boolean = sameSession && (m.root.querySelector('details')?.open ?? false);
+  if (!sameSession) {
+    m.target = null;
+    m.actionError = null;
+  }
+  m.renderKey = key;
+  m.actionGeneration += 1;
   m.spends = [];
   m.gate = null;
-  m.container.className = m.stopped ? 'backdrop opaque' : 'backdrop';
   const panel: HTMLElement = document.createElement('div');
   panel.className = 'panel';
   panel.appendChild(padlockSvg());
-  appendLockedUntil(panel, snap);
-  m.clock = appendClock(panel, snap, now);
-  appendIntention(panel, snap);
-  appendAttempts(panel, snap);
-  if (m.stopped) appendNotLoaded(panel);
-  appendBank(m, panel, snap, now);
-  if (snap.gate === null) panel.appendChild(buildButtons(m, snap, now));
-  else panel.appendChild(buildGate(m, snap.gate, snap, now));
+  const heading: HTMLElement = document.createElement('p');
+  heading.className = 'until';
+  heading.textContent = 'Your next step';
+  const intention: HTMLElement = document.createElement('h1');
+  intention.className = 'intention';
+  panel.append(heading, intention);
+  m.clock = document.createElement('p');
+  m.clock.className = 'clock';
+  panel.append(m.clock);
+  const progress: HTMLElement = document.createElement('div');
+  progress.className = 'meter';
+  m.meterFill = document.createElement('div');
+  m.meterFill.className = 'meter-fill';
+  progress.append(m.meterFill);
+  panel.append(progress);
+  const primary: HTMLButtonElement = document.createElement('button');
+  primary.type = 'button';
+  primary.className = 'primary return-work';
+  primary.addEventListener('click', (): void => {
+    if (m.target?.ok && m.target.state === 'ready' && m.target.sessionId !== null)
+      void returnToWork(m, m.target.sessionId);
+    else if (m.snapshot.gate !== null) requestAbandonGate();
+  });
+  const title: HTMLElement = document.createElement('p');
+  title.className = 'work-target';
+  panel.append(primary, title);
+  appendNotLoaded(panel);
+  const details: HTMLDetailsElement = document.createElement('details');
+  details.className = 'access';
+  details.open = snap.gate !== null || open;
+  const summary: HTMLElement = document.createElement('summary');
+  summary.textContent = 'Need a break or site access?';
+  details.append(summary);
+  m.bankLabel = document.createElement('p');
+  m.bankLabel.className = 'bank';
+  details.append(m.bankLabel);
+  if (snap.gate === null) details.appendChild(buildButtons(m, snap, now));
+  else details.appendChild(buildGate(m, snap.gate, snap, now));
+  const note: HTMLElement = document.createElement('p');
+  note.className = 'access-note';
+  note.textContent = 'You can step away at any time. Site access uses credit.';
+  details.append(note);
+  panel.append(details);
   if (m.actionError !== null) panel.appendChild(actionErrorElement(m.actionError));
   m.container.replaceChildren(panel);
+  updateStatic(m);
+  tick();
 }
 
-function appendLockedUntil(panel: HTMLElement, snap: SessionSnapshot): void {
-  if (snap.sessionEndsAt === null) return;
-  const el: HTMLElement = document.createElement('div');
-  el.className = 'until';
-  el.textContent = `Locked until ${formatWallClock(snap.sessionEndsAt)}`;
-  panel.appendChild(el);
+function updateStatic(m: Mounted): void {
+  const intention: HTMLElement | null = m.root.querySelector('.intention');
+  if (intention !== null)
+    intention.textContent = m.snapshot.config?.intention.trim() || 'Continue your current task';
+  const stopped: HTMLElement | null = m.root.querySelector('.notloaded');
+  if (stopped !== null) stopped.hidden = !m.stopped;
+  const cancel: HTMLElement | null = m.root.querySelector('.linkish');
+  if (cancel !== null) cancel.hidden = m.snapshot.config?.strictness !== 'friction';
+  const gateTitleElement: HTMLElement | null = m.root.querySelector('.gate-title');
+  if (gateTitleElement !== null && m.snapshot.gate !== null)
+    gateTitleElement.textContent = gateTitle(m.snapshot.gate, m.snapshot);
+  const forceEnd: HTMLElement | null = m.root.querySelector('.force-end');
+  if (forceEnd !== null) forceEnd.hidden = !m.snapshot.gate?.forceEndAvailable;
+  updateTarget(m);
 }
 
-function formatWallClock(at: number): string {
-  const d: Date = new Date(at);
-  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+function updateTarget(m: Mounted): void {
+  const button: HTMLButtonElement | null = m.root.querySelector('.return-work');
+  const title: HTMLElement | null = m.root.querySelector('.work-target');
+  const ready: boolean = m.target?.ok === true && m.target.state === 'ready';
+  if (button !== null) {
+    button.textContent = ready
+      ? 'Back to work'
+      : m.snapshot.gate !== null
+        ? 'Keep focusing'
+        : 'Choose a work tab';
+    button.disabled = !ready && m.snapshot.gate === null;
+    if (ready && m.initialFocus && m.root.activeElement === m.container) button.focus();
+  }
+  if (title !== null)
+    title.textContent =
+      ready && m.target?.ok
+        ? m.target.title
+        : 'Choose or replace your work tab in the Focus Lock popup.';
 }
 
-function appendClock(panel: HTMLElement, snap: SessionSnapshot, now: number): HTMLElement {
-  const el: HTMLElement = document.createElement('div');
-  el.className = 'clock';
-  el.textContent = formatClock(remainingPhaseMs(snap, now));
-  panel.appendChild(el);
-  return el;
+export function refreshWorkTarget(): void {
+  const mount: Mounted | null = mounted;
+  if (mount === null) return;
+  const generation: number = ++mount.targetGeneration;
+  void sendRequest({ type: 'getWorkTarget' })
+    .then((value: unknown): void => {
+      if (mounted !== mount || generation !== mount.targetGeneration) return;
+      mount.target = parseWorkTargetResult(value);
+      updateTarget(mount);
+    })
+    .catch((): void => {
+      if (mounted !== mount || generation !== mount.targetGeneration) return;
+      mount.target = null;
+      updateTarget(mount);
+    });
 }
 
-function appendIntention(panel: HTMLElement, snap: SessionSnapshot): void {
-  const intention: string = snap.config?.intention.trim() ?? '';
-  if (intention === '') return;
-  const el: HTMLElement = document.createElement('div');
-  el.className = 'intention';
-  el.textContent = intention;
-  panel.appendChild(el);
+async function returnToWork(m: Mounted, sessionId: string): Promise<void> {
+  clearActionError(m);
+  try {
+    const error: string | null = ackError(
+      await sendRequest({ type: 'returnToWork', sessionId }),
+      TRANSPORT_ERROR,
+    );
+    if (mounted !== m) return;
+    if (error !== null) showActionError(m, error);
+  } catch {
+    if (mounted === m) showActionError(m, TRANSPORT_ERROR);
+  }
+  if (mounted === m) refreshWorkTarget();
 }
 
 function appendNotLoaded(panel: HTMLElement): void {
@@ -436,57 +591,22 @@ function appendNotLoaded(panel: HTMLElement): void {
   panel.appendChild(el);
 }
 
-function appendAttempts(panel: HTMLElement, snap: SessionSnapshot): void {
-  const el: HTMLElement = document.createElement('div');
-  el.className = 'attempts';
-  const n: number = snap.attemptsToday;
-  el.textContent = n === 1 ? '1 attempt blocked today' : `${n} attempts blocked today`;
-  panel.appendChild(el);
-}
-
-function appendBank(m: Mounted, panel: HTMLElement, snap: SessionSnapshot, now: number): void {
-  const meter: HTMLElement = document.createElement('div');
-  meter.className = 'meter';
-  const fill: HTMLElement = document.createElement('div');
-  fill.className = 'meter-fill';
-  meter.appendChild(fill);
-  const label: HTMLElement = document.createElement('div');
-  label.className = 'bank';
-  panel.append(meter, label);
-  m.meterFill = fill;
-  m.bankLabel = label;
-  updateBank(m, snap, now);
-}
-
 function updateBank(m: Mounted, snap: SessionSnapshot, now: number): void {
   const bank: number = extrapolatedBank(snap, now);
-  if (m.meterFill !== null) {
-    const ratio: number = snap.bankCapMs > 0 ? bank / snap.bankCapMs : 0;
-    m.meterFill.style.width = `${Math.min(100, ratio * 100)}%`;
-  }
-  if (m.bankLabel !== null) m.bankLabel.textContent = `${formatClock(bank)} pause banked`;
-}
-
-function costMin(costMs: number): number {
-  return Math.round(costMs / 60_000);
+  if (m.meterFill !== null) m.meterFill.style.width = `${focusDisplay(snap, now).progress * 100}%`;
+  if (m.bankLabel !== null) m.bankLabel.textContent = `${formatClock(bank)} site access credit`;
 }
 
 function buildButtons(m: Mounted, snap: SessionSnapshot, now: number): HTMLElement {
   const row: HTMLElement = document.createElement('div');
   row.className = 'buttons';
-  const unlock: SpendRef = spendButton(
-    `Unlock this site ${costMin(snap.unlockCostMs)} min`,
-    snap.unlockCostMs,
-    (): void => requestOpenGate('unlockSite', location.hostname),
+  const unlock: SpendRef = spendButton('unlockSite', (): void =>
+    requestOpenGate('unlockSite', location.hostname),
   );
-  const pause: SpendRef = spendButton(
-    `Pause everything ${costMin(snap.pauseCostMs)} min`,
-    snap.pauseCostMs,
-    (): void => requestOpenGate('pause', null),
-  );
+  const pause: SpendRef = spendButton('pause', (): void => requestOpenGate('pause', null));
   m.spends = [unlock, pause];
   row.append(unlock.button, pause.button);
-  if (snap.config?.strictness === 'friction') {
+  {
     const cancel: HTMLButtonElement = document.createElement('button');
     cancel.className = 'linkish';
     cancel.type = 'button';
@@ -498,46 +618,40 @@ function buildButtons(m: Mounted, snap: SessionSnapshot, now: number): HTMLEleme
   return row;
 }
 
-function spendButton(label: string, costMs: number, onClick: () => void): SpendRef {
+function spendButton(kind: 'unlockSite' | 'pause', onClick: () => void): SpendRef {
   const button: HTMLButtonElement = document.createElement('button');
   button.className = 'pill';
   button.type = 'button';
   const text: HTMLSpanElement = document.createElement('span');
-  text.textContent = label;
   const ready: HTMLSpanElement = document.createElement('span');
   ready.className = 'ready';
   ready.hidden = true;
   button.append(text, ready);
   button.addEventListener('click', onClick);
-  return { button, costMs, ready };
+  return { button, kind, text, ready };
 }
 
 function updateSpend(ref: SpendRef, snap: SessionSnapshot, now: number): void {
-  const bank: number = extrapolatedBank(snap, now);
-  const affordable: boolean = bank >= ref.costMs;
-  ref.button.disabled = !affordable;
-  ref.ready.hidden = affordable;
-  if (!affordable) {
-    const waitMs: number | null = msUntilNextEarnedMinute(
-      bank,
-      snap.bankAccrualPerMs,
-      snap.bankCapMs,
-    );
-    ref.ready.textContent =
-      waitMs === null ? 'earn pause time by focusing' : `ready in ${formatClock(waitMs)}`;
-  }
+  const costMs: number = ref.kind === 'unlockSite' ? snap.unlockCostMs : snap.pauseCostMs;
+  const label: string = ref.kind === 'unlockSite' ? 'Unlock this site' : 'Unlock all sites';
+  ref.text.textContent = `${label} ${formatClock(costMs)} - costs ${formatClock(costMs)} credit`;
+  const availability: AccessAvailability = accessAvailability(snap, now, costMs);
+  ref.button.disabled = !availability.affordable;
+  ref.ready.hidden = availability.message === null;
+  ref.ready.textContent = availability.message;
 }
 
 function gateTitle(gate: GateState, snap: SessionSnapshot): string {
-  if (gate.kind === 'pause') return `Pause everything ${costMin(snap.pauseCostMs)} min`;
+  if (gate.kind === 'pause')
+    return `Unlock all sites ${formatClock(snap.pauseCostMs)} - costs ${formatClock(snap.pauseCostMs)} credit`;
   if (gate.kind === 'unlockSite') {
-    return `Unlock ${gate.host ?? 'this site'} ${costMin(snap.unlockCostMs)} min`;
+    return `Unlock ${gate.host ?? 'this site'} ${formatClock(snap.unlockCostMs)}`;
   }
   return 'End this session';
 }
 
 function gateConfirmLabel(kind: GateKind): string {
-  if (kind === 'pause') return 'Take the pause';
+  if (kind === 'pause') return 'Unlock all sites';
   if (kind === 'unlockSite') return 'Unlock this site';
   return 'End the session';
 }
@@ -562,12 +676,6 @@ function buildGate(m: Mounted, gate: GateState, snap: SessionSnapshot, now: numb
     count,
   }: { waitWrap: HTMLElement; ringFill: SVGCircleElement; count: HTMLElement } = buildRing();
   wrap.appendChild(waitWrap);
-  const primary: HTMLButtonElement = document.createElement('button');
-  primary.className = 'primary';
-  primary.type = 'button';
-  primary.textContent = 'Never mind, back to work';
-  primary.addEventListener('click', (): void => requestAbandonGate());
-  wrap.appendChild(primary);
   const phrase: HTMLInputElement | null = appendPhrase(wrap, gate);
   const confirm: HTMLButtonElement = document.createElement('button');
   confirm.className = 'pill';
@@ -576,7 +684,7 @@ function buildGate(m: Mounted, gate: GateState, snap: SessionSnapshot, now: numb
   confirm.hidden = true;
   confirm.addEventListener('click', (): void => requestConfirmGate(phrase?.value ?? null));
   wrap.appendChild(confirm);
-  if (gate.forceEndAvailable) {
+  {
     const forceEnd: HTMLButtonElement = document.createElement('button');
     forceEnd.className = 'force-end';
     forceEnd.type = 'button';
@@ -657,7 +765,7 @@ function tick(): void {
   const now: number = Date.now();
   const snap: SessionSnapshot = mounted.snapshot;
   if (mounted.clock !== null) {
-    mounted.clock.textContent = formatClock(remainingPhaseMs(snap, now));
+    mounted.clock.textContent = focusDisplay(snap, now).text;
   }
   updateBank(mounted, snap, now);
   for (const ref of mounted.spends) updateSpend(ref, snap, now);
@@ -697,6 +805,10 @@ async function sendAndRefresh(
     }
     const snapshot: SessionSnapshot = await sendRequest({ type: 'getSnapshot' });
     if (!isCurrentAction(mount, generation)) return;
+    if (!isSessionSnapshot(snapshot)) {
+      showActionError(mount, TRANSPORT_ERROR);
+      return;
+    }
     showOverlay(mount.verdict, snapshot, mount.stopped);
   } catch {
     if (isCurrentAction(mount, generation)) showActionError(mount, TRANSPORT_ERROR);
