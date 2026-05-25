@@ -3195,3 +3195,89 @@ describe('idle work target policy notifications', (): void => {
     },
   );
 });
+
+describe('work target identity reads', (): void => {
+  it('does not persist or broadcast repeated reads at fixed or advancing times', async (): Promise<void> => {
+    const harness: Harness = makeEngine();
+    await harness.engine.startSession(manualConfig);
+    harness.ports.saveRuntime.mockClear();
+    harness.ports.broadcast.mockClear();
+    harness.ports.appendEvents.mockClear();
+    for (const elapsed of [0, 0, 1, 2, 50, 1_000]) {
+      harness.setNow(T0 + elapsed);
+      expect(harness.engine.workTargetSession()).toEqual({
+        sessionId: 'archive-id',
+        mode: 'blacklist',
+      });
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 0);
+      });
+    }
+    expect(harness.ports.saveRuntime).not.toHaveBeenCalled();
+    expect(harness.ports.broadcast).not.toHaveBeenCalled();
+    expect(harness.ports.appendEvents).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: 'wall-clock expiry', durationMin: 8, cycling: null, completedAfterMin: 8 },
+    {
+      label: 'early cycling completion',
+      durationMin: 8,
+      cycling: { focusMin: 5, shortBreakMin: 5, longBreakMin: 5, longEvery: 4 },
+      completedAfterMin: 5,
+    },
+  ])(
+    'rejects a target after $label before an alarm wakes the engine',
+    async ({
+      durationMin,
+      cycling,
+      completedAfterMin,
+    }: {
+      durationMin: number;
+      cycling: SessionConfig['cycling'];
+      completedAfterMin: number;
+    }): Promise<void> => {
+      const harness: Harness = makeEngine();
+      await harness.engine.startSession({ ...manualConfig, durationMin, cycling });
+      harness.ports.saveRuntime.mockClear();
+      harness.ports.broadcast.mockClear();
+      harness.setNow(T0 + completedAfterMin * 60_000 - 1);
+      expect(harness.engine.workTargetSession()?.sessionId).toBe('archive-id');
+      harness.setNow(T0 + completedAfterMin * 60_000);
+      expect(harness.engine.workTargetSession()).toBeNull();
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 0);
+      });
+      expect(harness.ports.saveRuntime).not.toHaveBeenCalled();
+      expect(harness.ports.broadcast).not.toHaveBeenCalled();
+      const action: ReturnType<typeof vi.fn<() => Promise<Ack>>> = vi
+        .fn<() => Promise<Ack>>()
+        .mockResolvedValue({ ok: true });
+      expect(await harness.engine.runWorkTargetAction('archive-id', action)).toMatchObject({
+        ok: false,
+      });
+      expect(action).not.toHaveBeenCalled();
+    },
+  );
+
+  it('settles and persists elapsed session state before an actual target action runs', async (): Promise<void> => {
+    const harness: Harness = makeEngine();
+    await harness.engine.startSession(manualConfig);
+    harness.setNow(T0 + 1_000);
+    let releasePersist: () => void = (): void => undefined;
+    const persisted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+      releasePersist = resolve;
+    });
+    harness.ports.saveRuntime.mockImplementationOnce((): Promise<void> => persisted);
+    const action: ReturnType<typeof vi.fn<() => Promise<Ack>>> = vi
+      .fn<() => Promise<Ack>>()
+      .mockResolvedValue({ ok: true });
+    const result: Promise<Ack> = harness.engine.runWorkTargetAction('archive-id', action);
+    for (let index: number = 0; index < 10; index++) await Promise.resolve();
+    const ranBeforePersistence: boolean = action.mock.calls.length > 0;
+    releasePersist();
+    expect(await result).toEqual({ ok: true });
+    expect(ranBeforePersistence).toBe(false);
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+});

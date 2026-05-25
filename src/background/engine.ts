@@ -204,11 +204,12 @@ export class Engine {
   }
 
   workTargetSession(): WorkSession | null {
-    this.snapshot();
     const session: SessionState | null = this.runtime.session;
-    return session?.sessionId === undefined
+    if (session === null) return null;
+    const projected: SessionState | null = advance(session, this.ports.now()).next;
+    return projected?.sessionId === undefined
       ? null
-      : { sessionId: session.sessionId, mode: session.config.mode };
+      : { sessionId: projected.sessionId, mode: projected.config.mode };
   }
 
   workTargetAllowed(url: string, mode: SessionConfig['mode']): boolean {
@@ -217,6 +218,7 @@ export class Engine {
 
   runWorkTargetAction(sessionId: string, action: () => Promise<Ack>): Promise<Ack> {
     return this.enqueuePolicyMutation(async (): Promise<Ack> => {
+      await this.snapshotPersisted();
       if (this.workTargetSession()?.sessionId !== sessionId) {
         return { ok: false, error: 'The focus session has changed. Reopen the popup.' };
       }
