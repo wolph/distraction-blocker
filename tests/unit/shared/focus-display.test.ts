@@ -17,6 +17,15 @@ function snapshot(overrides: Partial<SessionSnapshot> = {}): SessionSnapshot {
     bankMs: 2 * MINUTE,
     bankCapMs: 10 * MINUTE,
     bankAccrualPerMs: 1 / 5,
+    config: {
+      mode: 'blacklist',
+      strictness: 'friction',
+      durationMin: 100,
+      cycling: { focusMin: 30, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 },
+      intention: 'Write the example',
+      source: 'manual',
+      scheduleEntryId: null,
+    },
     ...overrides,
   };
 }
@@ -101,6 +110,25 @@ describe('focusDisplay', (): void => {
     expect(focusDisplay(snap, NOW).text).toBe('Less than a minute until your break');
     expect(focusDisplay(snap, NOW + MINUTE).text).toBe('Updating session');
     expect(focusDisplay(snap, NOW + MINUTE).progress).toBe(1);
+  });
+
+  it.each([
+    [0, 25],
+    [3, 35],
+  ])(
+    'shows early completion instead of a final break for cycle %i',
+    (cycleIndex, minutes): void => {
+      const snap: SessionSnapshot = snapshot({ cycleIndex, sessionEndsAt: NOW + minutes * MINUTE });
+      expect(focusDisplay(snap, NOW).text).toBe('20 min left in this session');
+    },
+  );
+
+  it('does not promise a zero-length break', (): void => {
+    const snap: SessionSnapshot = snapshot({ sessionEndsAt: NOW + 90 * MINUTE });
+    if (snap.config?.cycling === null || snap.config?.cycling === undefined)
+      throw new Error('Missing test cycle');
+    snap.config.cycling.shortBreakMin = 0;
+    expect(focusDisplay(snap, NOW).text).toBe('20 min left in this session');
   });
 
   it('handles a shortened session and absent phase timestamps', (): void => {
