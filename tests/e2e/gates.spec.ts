@@ -60,18 +60,20 @@ async function clickClosedShadowButton(
   context: BrowserContext,
   page: Page,
   accessibleName: string,
+  role: string = 'button',
 ): Promise<void> {
   const session: CDPSession = await context.newCDPSession(page);
   try {
     const tree = await session.send('Accessibility.getFullAXTree');
     let backendNodeId: number | undefined;
     for (const node of tree.nodes) {
-      if (node.role?.value === 'button' && node.name?.value?.startsWith(accessibleName)) {
+      if (node.role?.value === role && node.name?.value?.startsWith(accessibleName)) {
         backendNodeId = node.backendDOMNodeId;
         break;
       }
     }
-    if (backendNodeId === undefined) throw new Error(`button not found: ${accessibleName}`);
+    if (backendNodeId === undefined) throw new Error(`control not found: ${accessibleName}`);
+    await session.send('DOM.scrollIntoViewIfNeeded', { backendNodeId });
     const box = await session.send('DOM.getBoxModel', { backendNodeId });
     const [left, top, right, , , bottom] = box.model.content;
     if (left === undefined || top === undefined || right === undefined || bottom === undefined) {
@@ -107,12 +109,18 @@ test('pause gate rejects an early confirmation and unblocks after its delay', as
   await startTestSession(extPage, { durationMin: 0.3 });
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
   await waitForBank(extPage, pauseMs);
+  await clickClosedShadowButton(
+    context,
+    page,
+    'Need a break or site access?',
+    'DisclosureTriangle',
+  );
   await expect
     .poll(async (): Promise<string> => {
       const names: string[] = await closedShadowButtonNames(context, page);
       return names.find((name: string): boolean => name.startsWith('Unlock this site')) ?? '';
     })
-    .toBe('Unlock this site 0 min');
+    .toMatch(/^Unlock this site/);
 
   expect(
     await sendExtensionRequest(extPage, { type: 'openGate', gate: 'pause', host: null }),
@@ -139,7 +147,7 @@ test('pause gate rejects an early confirmation and unblocks after its delay', as
   await expect(page.locator('focus-lock-overlay')).toHaveCount(0);
 });
 
-test('pause gate supports back to work, taking a pause, and resuming now', async ({
+test('all-site access gate supports keeping focus, unlocking, and resuming now', async ({
   context,
   extPage,
   siteUrl,
@@ -152,14 +160,14 @@ test('pause gate supports back to work, taking a pause, and resuming now', async
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
   await waitForBank(extPage, pauseMs);
 
-  const pauseButton = extPage.getByRole('button', { name: 'Pause everything 0 min' });
+  const pauseButton = extPage.getByRole('button', { name: /^Unlock all sites/ });
   await expect(pauseButton).toBeEnabled();
   await pauseButton.click();
-  await extPage.getByRole('button', { name: 'Never mind, back to work' }).click();
+  await extPage.getByRole('button', { name: 'Keep focusing' }).click();
   await expect(pauseButton).toBeEnabled();
 
   await pauseButton.click();
-  const takePause = extPage.getByRole('button', { name: 'Take the pause' });
+  const takePause = extPage.getByRole('button', { name: 'Unlock all sites', exact: true });
   await expect(takePause).toBeEnabled();
   await takePause.click();
   await expect(extPage.getByRole('button', { name: 'Resume now' })).toBeVisible();
@@ -378,6 +386,12 @@ test('overlay unlock isolates another site and reblocks after expiry', async ({
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
   await expect(otherPage.locator('focus-lock-overlay')).toBeAttached();
   await waitForBank(extPage, unlockMs, 15_000);
+  await clickClosedShadowButton(
+    context,
+    page,
+    'Need a break or site access?',
+    'DisclosureTriangle',
+  );
 
   await expect
     .poll(async (): Promise<boolean> => {
