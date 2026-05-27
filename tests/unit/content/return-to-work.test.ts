@@ -136,3 +136,75 @@ it('updates action costs in place while preserving expanded site access', (): vo
   expect(root().querySelector('.buttons .pill')).toBe(button);
   expect(button.textContent).toContain('Unlock this site 0:35 - costs 0:35 credit');
 });
+
+it.each([{ ok: false, error: 'Old return failed' }, { ok: true }])(
+  'ignores a stale return reply after a new session starts: %j',
+  async (reply: { ok: boolean; error?: string }): Promise<void> => {
+    let resolveReturn: (value: unknown) => void = (): void => {};
+    let sessionId: string = 'one';
+    const sendMessage: Mock<(req: { type: string }) => Promise<unknown>> = vi.fn(
+      async (req: { type: string }): Promise<unknown> => {
+        if (req.type === 'getWorkTarget')
+          return { ok: true, state: 'ready', title: sessionId, sessionId };
+        return new Promise<unknown>((resolve: (value: unknown) => void): void => {
+          resolveReturn = resolve;
+        });
+      },
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const snap: SessionSnapshot = snapshot();
+    showOverlay(verdict, snap);
+    await vi.waitFor((): void =>
+      expect(root().querySelector('.work-target')?.textContent).toBe('one'),
+    );
+    (root().querySelector('.return-work') as HTMLButtonElement).click();
+    sessionId = 'two';
+    showOverlay(verdict, { ...snap, startedAt: 2 });
+    await vi.waitFor((): void =>
+      expect(root().querySelector('.work-target')?.textContent).toBe('two'),
+    );
+    const requestCount: number = sendMessage.mock.calls.length;
+    resolveReturn(reply);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(root().querySelector('.action-error')).toBeNull();
+    expect(root().querySelector('.work-target')?.textContent).toBe('two');
+    expect(sendMessage).toHaveBeenCalledTimes(requestCount);
+  },
+);
+
+it.each([{ ok: false, error: 'Old return failed' }, { ok: true }])(
+  'keeps a newer action result when an older return settles: %j',
+  async (reply: { ok: boolean; error?: string }): Promise<void> => {
+    const resolvers: Array<(value: unknown) => void> = [];
+    const sendMessage: Mock<(req: { type: string }) => Promise<unknown>> = vi.fn(
+      async (req: { type: string }): Promise<unknown> => {
+        if (req.type === 'getWorkTarget')
+          return { ok: true, state: 'ready', title: 'Report', sessionId: 'one' };
+        return new Promise<unknown>((resolve: (value: unknown) => void): void => {
+          resolvers.push(resolve);
+        });
+      },
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    showOverlay(verdict, snapshot());
+    await vi.waitFor((): void =>
+      expect(root().querySelector('.work-target')?.textContent).toBe('Report'),
+    );
+    const button: HTMLButtonElement = root().querySelector('.return-work') as HTMLButtonElement;
+    button.click();
+    button.click();
+    resolvers[1]?.({ ok: false, error: 'Newer return failed' });
+    await vi.waitFor((): void =>
+      expect(root().querySelector('.action-error')?.textContent).toBe('Newer return failed'),
+    );
+    const requestCount: number = sendMessage.mock.calls.length;
+    resolvers[0]?.(reply);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(root().querySelector('.action-error')?.textContent).toBe('Newer return failed');
+    expect(sendMessage).toHaveBeenCalledTimes(requestCount);
+  },
+);

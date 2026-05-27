@@ -570,18 +570,20 @@ export function refreshWorkTarget(): void {
 }
 
 async function returnToWork(m: Mounted, sessionId: string): Promise<void> {
+  const generation: number = ++m.actionGeneration;
   clearActionError(m);
   try {
     const error: string | null = ackError(
       await sendRequest({ type: 'returnToWork', sessionId }),
       TRANSPORT_ERROR,
     );
-    if (mounted !== m) return;
+    if (!isCurrentAction(m, generation)) return;
     if (error !== null) showActionError(m, error);
   } catch {
-    if (mounted === m) showActionError(m, TRANSPORT_ERROR);
+    if (!isCurrentAction(m, generation)) return;
+    showActionError(m, TRANSPORT_ERROR);
   }
-  if (mounted === m) refreshWorkTarget();
+  if (isCurrentAction(m, generation)) refreshWorkTarget();
 }
 
 function appendNotLoaded(panel: HTMLElement): void {
