@@ -7,7 +7,7 @@ const RING_SIZE: number = 140;
 const RING_RADIUS: number = 62;
 const RING_CIRCUMFERENCE: number = 2 * Math.PI * RING_RADIUS;
 
-/** Phase colors from the icon language: green focus, teal break, amber pause. */
+/** Phase colours: green focus, teal break, amber site access. */
 const PHASE_COLORS: Record<'focus' | 'break' | 'paused', string> = {
   focus: '#22c55e',
   break: '#14b8a6',
@@ -19,7 +19,7 @@ function phaseLabel(snapshot: SessionSnapshot): string {
     const backAt: Date = new Date(snapshot.phaseEndsAt ?? snapshot.at);
     const hh: string = String(backAt.getHours()).padStart(2, '0');
     const mm: string = String(backAt.getMinutes()).padStart(2, '0');
-    return `paused, back at ${hh}:${mm}`;
+    return `site access until ${hh}:${mm}`;
   }
   if (snapshot.phase === 'break') return 'break';
   return 'focusing';

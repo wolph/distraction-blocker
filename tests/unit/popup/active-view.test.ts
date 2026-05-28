@@ -238,7 +238,7 @@ describe('ActiveView', () => {
   it('renders paused state with a resume button', (): void => {
     const { getByRole, getByText } = render(h(ActiveView, { snapshot: pausedSnap(), now: NOW }));
     expect(getByRole('button', { name: 'Resume now' })).toBeTruthy();
-    expect(getByText(/paused, back at/)).toBeTruthy();
+    expect(getByText(/site access until/)).toBeTruthy();
   });
 
   it('renders no escape controls during the first two minutes of a break', (): void => {
