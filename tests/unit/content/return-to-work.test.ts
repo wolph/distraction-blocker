@@ -10,6 +10,15 @@ function snapshot(): SessionSnapshot {
     ...emptySnapshot(Date.now()),
     startedAt: 1,
     phase: 'focus',
+    config: {
+      mode: 'blacklist',
+      strictness: 'friction',
+      durationMin: 3,
+      cycling: null,
+      intention: '',
+      source: 'manual',
+      scheduleEntryId: null,
+    },
     phaseStartedAt: Date.now() - 60_000,
     phaseEndsAt: Date.now() + 120_000,
     sessionEndsAt: Date.now() + 120_000,
@@ -206,5 +215,107 @@ it.each([{ ok: false, error: 'Old return failed' }, { ok: true }])(
     await Promise.resolve();
     expect(root().querySelector('.action-error')?.textContent).toBe('Newer return failed');
     expect(sendMessage).toHaveBeenCalledTimes(requestCount);
+  },
+);
+
+it('allows wheel and touch scrolling inside its closed shadow root', (): void => {
+  showOverlay(verdict, snapshot());
+  const backdrop: HTMLElement = root().querySelector('.backdrop') as HTMLElement;
+  for (const type of ['wheel', 'touchmove']) {
+    const event: Event = new Event(type, { bubbles: true, composed: true, cancelable: true });
+    backdrop.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+  }
+});
+
+it('refreshes the local gate from the worker after returning to work', async (): Promise<void> => {
+  const snap: SessionSnapshot = snapshot();
+  const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+    async (request: { type: string }): Promise<unknown> => {
+      if (request.type === 'getWorkTarget')
+        return { ok: true, state: 'ready', title: 'Report', sessionId: 'one' };
+      if (request.type === 'getSnapshot') return snap;
+      return { ok: true };
+    },
+  );
+  vi.stubGlobal('chrome', { runtime: { sendMessage } });
+  showOverlay(verdict, {
+    ...snap,
+    gate: {
+      kind: 'cancel',
+      host: null,
+      openedAt: 1,
+      readyAt: 20_000,
+      requiredPhrase: 'I choose to stop',
+      forceEndAvailable: false,
+    },
+  });
+  await vi.waitFor((): void =>
+    expect(root().querySelector('.work-target')?.textContent).toBe('Report'),
+  );
+  expect(root().querySelector('.phrase')).not.toBeNull();
+  (root().querySelector('.return-work') as HTMLButtonElement).click();
+  await vi.waitFor((): void => expect(root().querySelector('.phrase')).toBeNull());
+  expect(sendMessage).toHaveBeenCalledWith({ type: 'getSnapshot' });
+  expect(
+    sendMessage.mock.calls.some(
+      ([request]: [{ type: string }]): boolean => request.type === 'getBlockState',
+    ),
+  ).toBe(false);
+});
+
+it.each(['session', 'action'] as const)(
+  'ignores a late return snapshot after a newer %s',
+  async (replacement: 'session' | 'action'): Promise<void> => {
+    let resolveSnapshot: (value: unknown) => void = (): void => {};
+    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+      async (request: { type: string }): Promise<unknown> => {
+        if (request.type === 'getWorkTarget')
+          return { ok: true, state: 'ready', title: 'Report', sessionId: 'one' };
+        if (request.type === 'getSnapshot')
+          return new Promise<unknown>((resolve: (value: unknown) => void): void => {
+            resolveSnapshot = resolve;
+          });
+        if (request.type === 'openGate') return { ok: false, error: 'New action failed' };
+        return { ok: true };
+      },
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const snap: SessionSnapshot = snapshot();
+    showOverlay(verdict, snap);
+    await vi.waitFor((): void =>
+      expect(root().querySelector('.work-target')?.textContent).toBe('Report'),
+    );
+    (root().querySelector('.return-work') as HTMLButtonElement).click();
+    await vi.waitFor((): void => expect(sendMessage).toHaveBeenCalledWith({ type: 'getSnapshot' }));
+    if (replacement === 'session') {
+      showOverlay(verdict, {
+        ...snap,
+        startedAt: 2,
+        config: snap.config === null ? null : { ...snap.config, intention: 'New session task' },
+      });
+      await vi.waitFor((): void =>
+        expect(root().querySelector('.work-target')?.textContent).toBe('Report'),
+      );
+    } else {
+      (root().querySelector('.linkish') as HTMLButtonElement).click();
+      await vi.waitFor((): void =>
+        expect(root().querySelector('.action-error')?.textContent).toBe('New action failed'),
+      );
+    }
+    const requestCount: number = sendMessage.mock.calls.length;
+    resolveSnapshot({
+      ...snap,
+      config: snap.config === null ? null : { ...snap.config, intention: 'Obsolete snapshot task' },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(root().querySelector('.intention')?.textContent).toBe(
+      replacement === 'session' ? 'New session task' : 'Continue your current task',
+    );
+    expect(sendMessage).toHaveBeenCalledTimes(requestCount);
+    if (replacement === 'action')
+      expect(root().querySelector('.action-error')?.textContent).toBe('New action failed');
   },
 );

@@ -306,7 +306,7 @@ function mount(): Mounted {
   container.setAttribute('aria-label', 'Focus Lock');
   container.tabIndex = -1;
   root.append(style, container);
-  trapInteraction(host, root);
+  trapInteraction(root);
   document.documentElement.appendChild(host);
   const timer: number = window.setInterval(tick, TICK_MS);
   if (import.meta.env.MODE === 'test') {
@@ -345,7 +345,7 @@ function applyHostStyle(host: HTMLElement): void {
   host.style.setProperty('unicode-bidi', 'isolate', 'important');
 }
 
-function trapInteraction(host: HTMLElement, root: ShadowRoot): void {
+function trapInteraction(root: ShadowRoot): void {
   const stopOutsideScroll: (event: Event) => void = (event: Event): void => {
     const path: EventTarget[] = event.composedPath();
     if (
@@ -356,8 +356,8 @@ function trapInteraction(host: HTMLElement, root: ShadowRoot): void {
     )
       event.preventDefault();
   };
-  host.addEventListener('wheel', stopOutsideScroll, { passive: false });
-  host.addEventListener('touchmove', stopOutsideScroll, { passive: false });
+  root.addEventListener('wheel', stopOutsideScroll, { passive: false });
+  root.addEventListener('touchmove', stopOutsideScroll, { passive: false });
   root.addEventListener('pointerdown', (): void => {
     if (mounted !== null) mounted.initialFocus = false;
   });
@@ -578,12 +578,23 @@ async function returnToWork(m: Mounted, sessionId: string): Promise<void> {
       TRANSPORT_ERROR,
     );
     if (!isCurrentAction(m, generation)) return;
-    if (error !== null) showActionError(m, error);
+    if (error !== null) {
+      showActionError(m, error);
+      refreshWorkTarget();
+      return;
+    }
+    const snapshot: unknown = await sendRequest({ type: 'getSnapshot' });
+    if (!isCurrentAction(m, generation)) return;
+    if (!isSessionSnapshot(snapshot)) {
+      showActionError(m, TRANSPORT_ERROR);
+      return;
+    }
+    updateOverlaySnapshot(snapshot);
   } catch {
     if (!isCurrentAction(m, generation)) return;
     showActionError(m, TRANSPORT_ERROR);
+    refreshWorkTarget();
   }
-  if (isCurrentAction(m, generation)) refreshWorkTarget();
 }
 
 function appendNotLoaded(panel: HTMLElement): void {
