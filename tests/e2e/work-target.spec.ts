@@ -130,9 +130,19 @@ test('returning abandons an open gate without spending access credit', async ({
   const blockedPage: Page = await context.newPage();
   await blockedPage.goto(siteUrl('/plain.html'), { waitUntil: 'commit' });
   await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
-  expect(
-    await sendExtensionRequest(extPage, { type: 'openGate', gate: 'cancel', host: null }),
-  ).toEqual({ ok: true });
+  await clickOverlay(context, blockedPage, 'Need a break or site access?', 'DisclosureTriangle');
+  await clickOverlay(context, blockedPage, 'End session');
+  const beforeReturn: CDPSession = await context.newCDPSession(blockedPage);
+  try {
+    await expect
+      .poll(async (): Promise<boolean> => {
+        const tree = await beforeReturn.send('Accessibility.getFullAXTree');
+        return tree.nodes.some((node): boolean => node.name?.value === 'End this session');
+      })
+      .toBe(true);
+  } finally {
+    await beforeReturn.detach();
+  }
   await clickOverlay(context, blockedPage, 'Back to work');
   await expect
     .poll(async (): Promise<boolean> => {
@@ -149,6 +159,71 @@ test('returning abandons an open gate without spending access credit', async ({
   expect(events.json).toContain('gateResisted');
   expect(events.json).not.toContain('pauseTaken');
   expect(events.json).not.toContain('unlockTaken');
+  const cdp: CDPSession = await context.newCDPSession(blockedPage);
+  try {
+    await expect
+      .poll(async (): Promise<boolean> => {
+        const tree = await cdp.send('Accessibility.getFullAXTree');
+        return tree.nodes.some(
+          (node): boolean => node.role?.value === 'button' && node.name?.value === 'End session',
+        );
+      })
+      .toBe(true);
+  } finally {
+    await cdp.detach();
+  }
+});
+
+test('long next steps scroll with a trackpad and touch while the blocked page stays still', async ({
+  context,
+  extPage,
+  siteUrl,
+}) => {
+  const page: Page = await context.newPage();
+  await page.setViewportSize({ width: 375, height: 500 });
+  await page.goto(siteUrl('/plain.html'));
+  await page.evaluate((): void => window.scrollTo(0, 300));
+  await startTestSession(extPage, {
+    durationMin: 2,
+    intention: 'Write one small example, then check the result. '.repeat(30),
+  });
+  await expect(page.locator('focus-lock-overlay')).toBeAttached();
+  const cdp: CDPSession = await context.newCDPSession(page);
+  try {
+    const tree = await cdp.send('Accessibility.getFullAXTree');
+    const dialog = tree.nodes.find((node): boolean => node.role?.value === 'dialog');
+    if (dialog?.backendDOMNodeId === undefined) throw new Error('Overlay dialog missing');
+    const remote = await cdp.send('DOM.resolveNode', {
+      backendNodeId: dialog.backendDOMNodeId,
+    });
+    const scrollTop: () => Promise<number> = async (): Promise<number> => {
+      const result = await cdp.send('Runtime.callFunctionOn', {
+        objectId: remote.object.objectId,
+        functionDeclaration: 'function() { return this.scrollTop; }',
+        returnByValue: true,
+      });
+      return Number(result.result.value);
+    };
+    await page.mouse.move(180, 250);
+    await page.mouse.wheel(0, 400);
+    await expect.poll(scrollTop).toBeGreaterThan(0);
+    expect(await page.evaluate((): number => window.scrollY)).toBe(300);
+
+    await cdp.send('DOM.focus', { backendNodeId: dialog.backendDOMNodeId });
+    await page.keyboard.press('Home');
+    await expect.poll(scrollTop).toBe(0);
+    await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+    await cdp.send('Input.synthesizeScrollGesture', {
+      x: 180,
+      y: 400,
+      yDistance: -300,
+      gestureSourceType: 'touch',
+    });
+    await expect.poll(scrollTop).toBeGreaterThan(0);
+    expect(await page.evaluate((): number => window.scrollY)).toBe(300);
+  } finally {
+    await cdp.detach();
+  }
 });
 
 test('a closed work tab can be replaced and stale session actions are rejected', async ({
