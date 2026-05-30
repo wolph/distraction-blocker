@@ -572,27 +572,27 @@ export function refreshWorkTarget(): void {
 async function returnToWork(m: Mounted, sessionId: string): Promise<void> {
   const generation: number = ++m.actionGeneration;
   clearActionError(m);
+  let error: string | null;
   try {
-    const error: string | null = ackError(
-      await sendRequest({ type: 'returnToWork', sessionId }),
-      TRANSPORT_ERROR,
-    );
-    if (!isCurrentAction(m, generation)) return;
-    if (error !== null) {
-      showActionError(m, error);
-      refreshWorkTarget();
-      return;
-    }
+    error = ackError(await sendRequest({ type: 'returnToWork', sessionId }), TRANSPORT_ERROR);
+  } catch {
+    error = TRANSPORT_ERROR;
+  }
+  if (!isCurrentAction(m, generation)) return;
+  if (error !== null) showActionError(m, error);
+  try {
     const snapshot: unknown = await sendRequest({ type: 'getSnapshot' });
     if (!isCurrentAction(m, generation)) return;
     if (!isSessionSnapshot(snapshot)) {
-      showActionError(m, TRANSPORT_ERROR);
+      if (error === null) showActionError(m, TRANSPORT_ERROR);
+      refreshWorkTarget();
       return;
     }
     updateOverlaySnapshot(snapshot);
+    if (mounted === m && error !== null) showActionError(m, error);
   } catch {
     if (!isCurrentAction(m, generation)) return;
-    showActionError(m, TRANSPORT_ERROR);
+    if (error === null) showActionError(m, TRANSPORT_ERROR);
     refreshWorkTarget();
   }
 }

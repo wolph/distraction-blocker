@@ -319,3 +319,45 @@ it.each(['session', 'action'] as const)(
       expect(root().querySelector('.action-error')?.textContent).toBe('New action failed');
   },
 );
+
+it.each([true, false])(
+  'preserves a return error while reconciling whether the worker abandoned the gate: %s',
+  async (abandoned: boolean): Promise<void> => {
+    const snap: SessionSnapshot = {
+      ...snapshot(),
+      gate: {
+        kind: 'cancel',
+        host: null,
+        openedAt: 1,
+        readyAt: 20_000,
+        requiredPhrase: 'I choose to stop',
+        forceEndAvailable: false,
+      },
+    };
+    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+      async (request: { type: string }): Promise<unknown> => {
+        if (request.type === 'getWorkTarget')
+          return { ok: true, state: 'ready', title: 'Report', sessionId: 'one' };
+        if (request.type === 'getSnapshot') return { ...snap, gate: abandoned ? null : snap.gate };
+        return { ok: false, error: 'Work window unavailable' };
+      },
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    showOverlay(verdict, snap);
+    await vi.waitFor((): void =>
+      expect(root().querySelector('.work-target')?.textContent).toBe('Report'),
+    );
+    const input: HTMLInputElement = root().querySelector('.phrase') as HTMLInputElement;
+    input.value = 'I choose';
+    (root().querySelector('.return-work') as HTMLButtonElement).click();
+    await vi.waitFor((): void => expect(sendMessage).toHaveBeenCalledWith({ type: 'getSnapshot' }));
+    await vi.waitFor((): void =>
+      expect(root().querySelector('.action-error')?.textContent).toBe('Work window unavailable'),
+    );
+    if (abandoned) expect(root().querySelector('.phrase')).toBeNull();
+    else {
+      expect(root().querySelector('.phrase')).toBe(input);
+      expect(input.value).toBe('I choose');
+    }
+  },
+);
