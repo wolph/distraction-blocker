@@ -1,5 +1,25 @@
 # Focus Lock QA checklist
 
+## Return-to-work verification: 2026-09-07
+
+The checks below cover source commit `9cf571ce51a1895ab14e55ae8c58beb0f504a0a3`. All browser runs used isolated Chromium profiles. The screenshots use demonstration tasks and seeded aggregate statistics.
+
+- [x] `npm run check`: Biome, TypeScript, 61 test files, 1,231 passing tests, 2 skipped tests, icon generation and production build passed.
+- [x] `npm run e2e`: all 37 browser scenarios passed.
+- [x] Returning activates the selected tab and its window while preserving both pages, including draft text, scroll position and JavaScript state.
+- [x] The popup suggests the current suitable work tab, saves the selected next step, and replaces a closed target. Stale sessions and newly blocked targets are rejected. Browser restart preserves the focus session while clearing the work-tab reference.
+- [x] Returning abandons the gate without spending credit and clears its visible controls. Delayed responses cannot replace feedback from a newer action or session. Failed activation also reconciles the gate while retaining the error.
+- [x] Work-target reads do not commit session state or trigger notification loops. Unrelated tab events do not fan out content messages. Existing attempt accounting tests pass.
+- [x] Typed gate text, selection, keyboard focus, expanded details and overlay scroll survive updates. Real wheel and touch gestures scroll long content while the blocked document stays still.
+- [x] Access actions show their own duration, cost and readiness. Credit limits, disabled earning, insufficient remaining focus and exact phase boundaries have regression coverage. Final breaks that leave no further focus time display session completion.
+- [x] Vite ran on a dedicated development port. Dev-browser inspected the production extension with full-page and component captures in light and dark at 1280, 768 and 375 px.
+- [x] Visual coverage includes popup start, active and gate states, existing and stopped documents, expanded access controls, missing targets, typed and untyped gates, force-end controls, long next steps, Options and Stats. Hover and keyboard-focus captures cover primary actions, selectors and gate controls.
+- [x] No browser console errors or page exceptions were recorded. Chromium emitted module-preload warnings on extension documents. These warnings did not prevent modules or controls from working.
+
+Evidence is retained in `.playwright-mcp/return-to-work-qa/`, including screenshots, capture scripts and test logs. The five screenshots in `docs/images/focus-lock/` were refreshed from this run.
+
+## Archived verification: 2026-08-30
+
 Last updated: 2026-08-30. Automated browser evidence targets exact source commit `c87383f1cd441a9ecc2d175daa3df9e4b8825b3d`. The run started from a clean worktree at the same commit as `master` and ended on that commit. It used isolated headless Chrome-for-Testing 151.0.7922.34 profiles and did not touch the user's Chrome.
 
 ## Exact automated gates

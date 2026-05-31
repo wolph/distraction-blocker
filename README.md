@@ -54,6 +54,8 @@ The work-tab reference stays in worker-only `chrome.storage.session`. It survive
 
 ## Screenshots
 
+The screenshots use an isolated Chrome profile with demonstration data.
+
 | Active popup | Existing-page overlay | Deliberation gate |
 | --- | --- | --- |
 | ![Active focus popup](https://raw.githubusercontent.com/WoLpH/distraction-blocker/master/docs/images/focus-lock/popup-active.png) | ![Blocked existing page overlay](https://raw.githubusercontent.com/WoLpH/distraction-blocker/master/docs/images/focus-lock/overlay.png) | ![Deliberation gate](https://raw.githubusercontent.com/WoLpH/distraction-blocker/master/docs/images/focus-lock/gate.png) |
