@@ -8,6 +8,7 @@ import { applyTheme } from '../shared/theme';
 import { formatClock } from '../shared/time';
 import type { GateKind, GateState, SessionSnapshot, Verdict } from '../shared/types';
 import { parseWorkTargetResult, type WorkTargetResult } from '../shared/work-target';
+import { createWorkTabPicker, WORK_PICKER_CSS, type WorkTabPicker } from './work-tab-picker';
 
 /** The block overlay. One closed shadow root, rendered from the worker's
  * SessionSnapshot. This module displays state, it never decides it. */
@@ -74,6 +75,7 @@ interface Mounted {
   renderKey: string | null;
   targetGeneration: number;
   target: WorkTargetResult | null;
+  picker: WorkTabPicker | null;
 }
 
 let mounted: Mounted | null = null;
@@ -285,6 +287,7 @@ export function updateOverlaySnapshot(snapshot: unknown): void {
 
 export function hideOverlay(_snapshot: SessionSnapshot): void {
   if (mounted === null) return;
+  mounted.picker?.close(false);
   window.clearInterval(mounted.timer);
   mounted.host.remove();
   mounted = null;
@@ -298,7 +301,7 @@ function mount(): Mounted {
   applyHostStyle(host);
   const root: ShadowRoot = host.attachShadow({ mode: 'closed' });
   const style: HTMLStyleElement = document.createElement('style');
-  style.textContent = OVERLAY_CSS;
+  style.textContent = OVERLAY_CSS + WORK_PICKER_CSS;
   const container: HTMLElement = document.createElement('div');
   container.className = 'backdrop';
   container.setAttribute('role', 'dialog');
@@ -332,6 +335,7 @@ function mount(): Mounted {
     renderKey: null,
     targetGeneration: 0,
     target: null,
+    picker: null,
   };
 }
 
@@ -364,6 +368,12 @@ function trapInteraction(root: ShadowRoot): void {
   root.addEventListener('keydown', (event: Event): void => {
     if (mounted !== null) mounted.initialFocus = false;
     const ev: KeyboardEvent = event as KeyboardEvent;
+    if (ev.defaultPrevented) return;
+    if (ev.key === 'Escape' && mounted?.picker !== null) {
+      mounted?.picker?.close();
+      ev.preventDefault();
+      return;
+    }
     if (ev.key !== 'Tab') {
       if (shouldPreventKeyboardScroll(ev)) {
         ev.preventDefault();
@@ -460,6 +470,7 @@ function render(m: Mounted): void {
     m.target = null;
     m.actionError = null;
   }
+  m.picker?.close(false);
   m.renderKey = key;
   m.actionGeneration += 1;
   m.spends = [];
@@ -488,11 +499,16 @@ function render(m: Mounted): void {
   primary.addEventListener('click', (): void => {
     if (m.target?.ok && m.target.state === 'ready' && m.target.sessionId !== null)
       void returnToWork(m, m.target.sessionId);
-    else if (m.snapshot.gate !== null) requestAbandonGate();
+    else openWorkPicker(m, primary);
   });
   const title: HTMLElement = document.createElement('p');
   title.className = 'work-target';
-  panel.append(primary, title);
+  const change: HTMLButtonElement = document.createElement('button');
+  change.type = 'button';
+  change.className = 'change-work';
+  change.textContent = 'Change work tab';
+  change.addEventListener('click', (): void => openWorkPicker(m, change));
+  panel.append(primary, title, change);
   appendNotLoaded(panel);
   const details: HTMLDetailsElement = document.createElement('details');
   details.className = 'access';
@@ -537,19 +553,19 @@ function updateTarget(m: Mounted): void {
   const title: HTMLElement | null = m.root.querySelector('.work-target');
   const ready: boolean = m.target?.ok === true && m.target.state === 'ready';
   if (button !== null) {
-    button.textContent = ready
-      ? 'Back to work'
-      : m.snapshot.gate !== null
-        ? 'Keep focusing'
-        : 'Choose a work tab';
-    button.disabled = !ready && m.snapshot.gate === null;
+    button.textContent = ready ? 'Back to work' : 'Choose a work tab';
+    button.disabled = !(m.target?.ok && m.target.sessionId !== null);
     if (ready && m.initialFocus && m.root.activeElement === m.container) button.focus();
   }
   if (title !== null)
     title.textContent =
       ready && m.target?.ok
         ? m.target.title
-        : 'Choose or replace your work tab in the Focus Lock popup.';
+        : m.target?.ok
+          ? 'Pick an open tab to continue your task.'
+          : 'Could not load your work tab. Try again from the Focus Lock popup.';
+  const change: HTMLElement | null = m.root.querySelector('.change-work');
+  if (change !== null) change.hidden = !ready;
 }
 
 export function refreshWorkTarget(): void {
@@ -559,7 +575,10 @@ export function refreshWorkTarget(): void {
   void sendRequest({ type: 'getWorkTarget' })
     .then((value: unknown): void => {
       if (mounted !== mount || generation !== mount.targetGeneration) return;
-      mount.target = parseWorkTargetResult(value);
+      const target: WorkTargetResult | null = parseWorkTargetResult(value);
+      if (mount.target?.ok && (!target?.ok || target.sessionId !== mount.target.sessionId))
+        mount.picker?.close(false);
+      mount.target = target;
       updateTarget(mount);
     })
     .catch((): void => {
@@ -567,6 +586,49 @@ export function refreshWorkTarget(): void {
       mount.target = null;
       updateTarget(mount);
     });
+}
+
+function openWorkPicker(m: Mounted, trigger: HTMLElement): void {
+  const sessionId: string | null = m.target?.ok ? m.target.sessionId : null;
+  if (sessionId === null) return;
+  if (m.picker !== null) {
+    m.picker.close();
+    return;
+  }
+  m.actionGeneration += 1;
+  clearActionError(m);
+  m.picker = createWorkTabPicker(
+    sessionId,
+    trigger,
+    m.container,
+    (tabId: number): Promise<string | null> => selectWorkTab(m, sessionId, tabId),
+    (): void => {
+      m.picker = null;
+      m.actionGeneration += 1;
+    },
+  );
+  m.root.querySelector('.change-work')?.after(m.picker.element);
+  m.picker.element
+    .querySelector<HTMLButtonElement>('.work-picker-cancel')
+    ?.focus({ preventScroll: true });
+}
+
+async function selectWorkTab(m: Mounted, sessionId: string, tabId: number): Promise<string | null> {
+  const generation: number = ++m.actionGeneration;
+  let error: string | null;
+  try {
+    error = ackError(
+      await sendRequest({ type: 'setWorkTarget', sessionId, tabId }),
+      TRANSPORT_ERROR,
+    );
+  } catch {
+    error = TRANSPORT_ERROR;
+  }
+  if (!isCurrentAction(m, generation)) return null;
+  if (error !== null) return error;
+  m.picker?.close();
+  await returnToWork(m, sessionId);
+  return null;
 }
 
 async function returnToWork(m: Mounted, sessionId: string): Promise<void> {
@@ -672,6 +734,14 @@ function gateConfirmLabel(kind: GateKind): string {
 function buildGate(m: Mounted, gate: GateState, snap: SessionSnapshot, now: number): HTMLElement {
   const wrap: HTMLElement = document.createElement('div');
   wrap.className = 'gate';
+  const keep: HTMLButtonElement = document.createElement('button');
+  keep.type = 'button';
+  keep.className = 'keep-focusing pill';
+  keep.textContent = 'Keep focusing';
+  keep.addEventListener('click', (): void => {
+    void sendAndRefresh({ type: 'abandonGate' });
+  });
+  wrap.append(keep);
   const title: HTMLElement = document.createElement('div');
   title.className = 'gate-title';
   title.textContent = gateTitle(gate, snap);
@@ -787,10 +857,6 @@ function tick(): void {
 
 function requestOpenGate(kind: GateKind, host: string | null): void {
   void sendAndRefresh({ type: 'openGate', gate: kind, host });
-}
-
-function requestAbandonGate(): void {
-  void sendAndRefresh({ type: 'abandonGate' });
 }
 
 function requestConfirmGate(typedPhrase: string | null): void {

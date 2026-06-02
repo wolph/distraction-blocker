@@ -57,7 +57,9 @@ export async function routeMessage(
             sender,
           );
     case 'getWorkTabs':
-      return workTargets(engine, targetService).getWorkTabs(msg.mode, msg.windowId, sender);
+      return 'sessionId' in msg
+        ? workTargets(engine, targetService).getContentWorkTabs(msg.sessionId, sender)
+        : workTargets(engine, targetService).getWorkTabs(msg.mode, msg.windowId, sender);
     case 'getWorkTarget':
       return workTargets(engine, targetService).getWorkTarget(msg.windowId, sender);
     case 'setWorkTarget':

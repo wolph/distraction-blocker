@@ -709,6 +709,22 @@ function parseSettingsOrListsRequest(update: Record<string, unknown>): Request |
 }
 
 describe('work target request validation', (): void => {
+  it('accepts session-bound content choices and rejects mixed policy contexts', (): void => {
+    for (const request of [
+      { type: 'getWorkTabs', sessionId: 'one' },
+      { type: 'setWorkTarget', sessionId: 'one', tabId: 7 },
+    ]) {
+      expect(parseRequest(request)).toEqual(request);
+    }
+    for (const request of [
+      { type: 'getWorkTabs', sessionId: 'one', mode: 'blacklist' },
+      { type: 'getWorkTabs', sessionId: 'one', windowId: 2 },
+      { type: 'getWorkTabs', sessionId: '' },
+      { type: 'setWorkTarget', sessionId: 'one', tabId: 7, url: 'https://work.example' },
+    ]) {
+      expect(parseRequest(request)).toBeNull();
+    }
+  });
   it('accepts an optional work destination without changing the legacy start request', (): void => {
     const request: unknown = {
       type: 'startSession',

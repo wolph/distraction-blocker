@@ -1,9 +1,10 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'preact/hooks';
 import { sendRequest } from '../shared/messages';
 import { ackError } from '../shared/runtime-validation';
 import type { SessionSnapshot } from '../shared/types';
 import type { WorkTab } from '../shared/work-target';
+import { ThisTabButton } from './ThisTabButton';
 import { useWorkTabs, type WorkTabsState, type WorkTargetState } from './use-work-tabs';
 
 export function WorkTabControl({
@@ -20,37 +21,70 @@ export function WorkTabControl({
   const [pending, setPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
     useState<boolean>(false);
   const sessionId: string | null = work.target?.ok ? work.target.sessionId : null;
+  const identity: string = JSON.stringify([sessionId, snapshot.startedAt, snapshot.sessionEndsAt]);
+  const currentIdentity: { current: string } = useRef<string>(identity);
+  currentIdentity.current = identity;
+  const generation: { current: number } = useRef<number>(0);
+  const inFlight: { current: boolean } = useRef<boolean>(false);
+  useEffect((): (() => void) => {
+    inFlight.current = false;
+    setPending(false);
+    setError(null);
+    return (): void => {
+      generation.current += 1;
+    };
+  }, [identity]);
   const select: (tabId: number) => Promise<void> = async (tabId: number): Promise<void> => {
-    if (sessionId === null || work.windowId === null || pending) return;
+    if (sessionId === null || work.windowId === null || pending || inFlight.current) return;
+    const request: number = ++generation.current;
+    inFlight.current = true;
     setPending(true);
     setError(null);
     try {
-      setError(
-        ackError(
-          await sendRequest({ type: 'setWorkTarget', sessionId, tabId, windowId: work.windowId }),
-          'Could not save the work tab. Try again.',
-        ),
-      );
+      const response: unknown = await sendRequest({
+        type: 'setWorkTarget',
+        sessionId,
+        tabId,
+        windowId: work.windowId,
+      });
+      if (request !== generation.current || currentIdentity.current !== identity) return;
+      setError(ackError(response, 'Could not save the work tab. Try again.'));
     } catch {
+      if (request !== generation.current || currentIdentity.current !== identity) return;
       setError('Could not save the work tab. Try again.');
     } finally {
-      setPending(false);
-      work.refresh();
+      if (request === generation.current && currentIdentity.current === identity) {
+        inFlight.current = false;
+        setPending(false);
+        work.refresh();
+      }
     }
   };
   return (
     <div class="work-tab-control">
       <p class="work-target">
         {work.target?.ok && work.target.state === 'ready'
-          ? work.target.title
+          ? `Work tab: ${work.target.title}`
           : 'Choose or replace your work tab.'}
       </p>
+      <ThisTabButton
+        key={identity}
+        choiceKey={String(generation.current)}
+        mode={snapshot.config?.mode ?? 'blacklist'}
+        work={candidates}
+        disabled={pending || sessionId === null}
+        onSelect={(tabId: number): void => {
+          void select(tabId);
+        }}
+      />
       <label class="work-tab-label">
-        Work tab
+        Or choose another tab
         <select
           aria-label="Work tab"
           value=""
-          disabled={pending || sessionId === null || candidates.context === null}
+          disabled={
+            pending || sessionId === null || candidates.context === null || candidates.loading
+          }
           onChange={(event: Event): void => {
             const value: string = (event.currentTarget as HTMLSelectElement).value;
             if (value !== '') void select(Number(value));
@@ -71,7 +105,11 @@ export function WorkTabControl({
           {error}
         </p>
       ) : null}
-      {candidates.error !== null ? <p class="work-tab-hint">{candidates.error}</p> : null}
+      {pending ? (
+        <p class="work-tab-hint" role="status">
+          Saving work tab...
+        </p>
+      ) : null}
     </div>
   );
 }

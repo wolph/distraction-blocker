@@ -14,6 +14,7 @@ import type {
 import { parseStartSessionResult, type WorkTab } from '../shared/work-target';
 import { CategoryControls } from './category-controls';
 import { Chip, RadioRow } from './form-controls';
+import { ThisTabButton } from './ThisTabButton';
 import { useWorkTabs, type WorkTabsState } from './use-work-tabs';
 
 /** Positional labels for the three presets, per the weak-evidence ledger. */
@@ -179,12 +180,23 @@ export function StartForm({
         onInput={(e: Event): void => setIntention((e.currentTarget as HTMLInputElement).value)}
       />
 
+      <ThisTabButton
+        key={mode}
+        choiceKey={workTabId}
+        mode={mode}
+        work={work}
+        disabled={starting || categoryUpdatePending}
+        onSelect={(tabId: number): void => {
+          explicitChoice.current = true;
+          setWorkTabId(String(tabId));
+        }}
+      />
       <label class="work-tab-label">
-        Work tab
+        Or choose another tab
         <select
           aria-label="Work tab"
           value={workTabId}
-          disabled={work.context === null || starting}
+          disabled={work.context === null || starting || work.loading}
           onChange={(event: Event): void => {
             explicitChoice.current = true;
             setWorkTabId((event.currentTarget as HTMLSelectElement).value);
@@ -204,7 +216,6 @@ export function StartForm({
           )}
         </select>
       </label>
-      {work.error !== null ? <p class="work-tab-hint">{work.error}</p> : null}
 
       <CategoryControls
         lists={lists}

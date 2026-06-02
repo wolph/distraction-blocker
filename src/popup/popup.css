@@ -546,3 +546,46 @@ body {
   overflow-wrap: anywhere;
   color: var(--text-soft);
 }
+
+.this-tab-choice {
+  width: 100%;
+  display: grid;
+  gap: 0.35rem;
+}
+.this-tab-button {
+  width: 100%;
+  padding: 0.7rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: #22c55e;
+  color: #052e16;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+.this-tab-button:hover:enabled {
+  background: #4ade80;
+}
+.this-tab-button:disabled {
+  background: var(--surface);
+  color: var(--text-soft);
+  cursor: default;
+}
+.this-tab-button:focus-visible {
+  outline: 2px solid #22c55e;
+  outline-offset: 3px;
+}
+.this-tab-choice .work-tab-hint {
+  margin: 0;
+}
+
+.work-tab-control .this-tab-button {
+  background: var(--surface);
+  color: var(--text);
+}
+.work-tab-control .this-tab-button:hover:enabled {
+  background: var(--bg);
+}
+.work-tab-control .this-tab-button:disabled {
+  color: var(--text-soft);
+}

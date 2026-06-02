@@ -95,7 +95,7 @@ describe('work targets', (): void => {
     });
     expect(await service.getWorkTabs('whitelist', 2, popup)).toEqual({ ok: true, tabs: [] });
   });
-  it('rejects content scripts and other extension pages from listing or choosing', async (): Promise<void> => {
+  it('rejects popup-shaped content requests and other extension pages', async (): Promise<void> => {
     const content: chrome.runtime.MessageSender = {
       id: 'extension',
       url: tabs[0]?.url,
@@ -109,6 +109,57 @@ describe('work targets', (): void => {
         url: 'chrome-extension://extension/src/options/options.html',
       }),
     ).toMatchObject({ ok: false });
+  });
+  it('lists and selects from trusted content using the live session policy', async (): Promise<void> => {
+    const content: chrome.runtime.MessageSender = {
+      id: 'extension',
+      url: tabs[1]?.url,
+      tab: tabs[1],
+      frameId: 0,
+    };
+    tabs.push(tab(5, 'https://other.example'));
+    session = { sessionId: 'session-1', mode: 'whitelist' };
+    expect(await service.getContentWorkTabs('session-1', content)).toEqual({
+      ok: true,
+      tabs: [{ tabId: 1, title: 'Tab 1' }],
+    });
+    expect(await service.setWorkTarget('session-1', 1, undefined, content)).toEqual({ ok: true });
+    expect(stored).toEqual({ sessionId: 'session-1', tabId: 1, incognito: false });
+    expect(await service.setWorkTarget('session-1', 5, undefined, content)).toMatchObject({
+      ok: false,
+    });
+    expect(await service.setWorkTarget('old', 1, undefined, content)).toMatchObject({ ok: false });
+    expect(calls).toEqual([]);
+  });
+  it('rejects stale content lists and untrusted frame or privacy contexts', async (): Promise<void> => {
+    const content: chrome.runtime.MessageSender = {
+      id: 'extension',
+      url: tabs[1]?.url,
+      tab: tabs[1],
+      frameId: 0,
+    };
+    expect(await service.getContentWorkTabs('old', content)).toMatchObject({ ok: false });
+    for (const unsafe of [
+      { ...content, frameId: 1 },
+      { ...content, id: 'other' },
+      { ...content, url: 'https://changed.example' },
+      { ...content, tab: { ...(tabs[1] as chrome.tabs.Tab), incognito: true } },
+      popup,
+    ]) {
+      expect(await service.getContentWorkTabs('session-1', unsafe)).toMatchObject({ ok: false });
+      expect(await service.setWorkTarget('session-1', 1, undefined, unsafe)).toMatchObject({
+        ok: false,
+      });
+    }
+    expect(await service.setWorkTarget('session-1', 4, undefined, content)).toMatchObject({
+      ok: false,
+    });
+    ports.tabs = async (): Promise<chrome.tabs.Tab[]> => {
+      session = { sessionId: 'replacement', mode: 'blacklist' };
+      return tabs;
+    };
+    expect(await service.getContentWorkTabs('session-1', content)).toMatchObject({ ok: false });
+    expect(stored).toBeUndefined();
   });
   it('persists only session identity, tab identity and privacy context across worker wake', async (): Promise<void> => {
     expect(await service.setWorkTarget('session-1', 1, 1, popup)).toEqual({ ok: true });

@@ -387,9 +387,10 @@ function parseRecord(value: Record<string, unknown>): Request | null {
         ? (value as Request)
         : null;
     case 'getWorkTabs':
-      return hasExactKeys(value, ['type', 'mode', 'windowId']) &&
-        (value.mode === 'blacklist' || value.mode === 'whitelist') &&
-        isBrowserTabId(value.windowId)
+      return (hasExactKeys(value, ['type', 'sessionId']) && isNonBlankString(value.sessionId)) ||
+        (hasExactKeys(value, ['type', 'mode', 'windowId']) &&
+          (value.mode === 'blacklist' || value.mode === 'whitelist') &&
+          isBrowserTabId(value.windowId))
         ? (value as Request)
         : null;
     case 'getWorkTarget':
@@ -398,10 +399,11 @@ function parseRecord(value: Record<string, unknown>): Request | null {
         ? (value as Request)
         : null;
     case 'setWorkTarget':
-      return hasExactKeys(value, ['type', 'sessionId', 'tabId', 'windowId']) &&
-        isNonBlankString(value.sessionId) &&
+      return isNonBlankString(value.sessionId) &&
         isBrowserTabId(value.tabId) &&
-        isBrowserTabId(value.windowId)
+        (hasExactKeys(value, ['type', 'sessionId', 'tabId']) ||
+          (hasExactKeys(value, ['type', 'sessionId', 'tabId', 'windowId']) &&
+            isBrowserTabId(value.windowId)))
         ? (value as Request)
         : null;
     case 'returnToWork':

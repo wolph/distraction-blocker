@@ -361,3 +361,290 @@ it.each([true, false])(
     }
   },
 );
+
+it('opens an inline picker, preserves gate editing on cancel, then saves and returns', async (): Promise<void> => {
+  const snap: SessionSnapshot = {
+    ...snapshot(),
+    gate: {
+      kind: 'cancel',
+      host: null,
+      openedAt: 1,
+      readyAt: 20_000,
+      requiredPhrase: 'I choose to stop',
+      forceEndAvailable: false,
+    },
+  };
+  const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+    async (request: { type: string }): Promise<unknown> => {
+      if (request.type === 'getWorkTarget')
+        return { ok: true, sessionId: 'one', state: 'missing', title: null };
+      if (request.type === 'getWorkTabs')
+        return {
+          ok: true,
+          tabs: [
+            { tabId: 7, title: 'Report <script>safe title</script>' },
+            { tabId: 8, title: 'Notes' },
+          ],
+        };
+      if (request.type === 'getSnapshot') return { ...snap, gate: null };
+      return { ok: true };
+    },
+  );
+  vi.stubGlobal('chrome', { runtime: { sendMessage } });
+  showOverlay(verdict, snap);
+  await vi.waitFor((): void =>
+    expect((root().querySelector('.return-work') as HTMLButtonElement).disabled).toBe(false),
+  );
+  const input: HTMLInputElement = root().querySelector('.phrase') as HTMLInputElement;
+  const details: HTMLDetailsElement = root().querySelector('details') as HTMLDetailsElement;
+  input.value = 'I choose';
+  input.setSelectionRange(2, 5);
+  const primary: HTMLButtonElement = root().querySelector('.return-work') as HTMLButtonElement;
+  primary.focus();
+  primary.click();
+  await vi.waitFor((): void => expect(root().querySelectorAll('.work-tab-option')).toHaveLength(2));
+  expect(sendMessage).toHaveBeenCalledWith({ type: 'getWorkTabs', sessionId: 'one' });
+  const first: HTMLButtonElement = root().querySelector('.work-tab-option') as HTMLButtonElement;
+  expect(first.textContent).toContain('Report <script>safe title</script>');
+  expect(root().querySelector('script')).toBeNull();
+  first.focus();
+  first.dispatchEvent(
+    new KeyboardEvent('keydown', {
+      key: 'ArrowDown',
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }),
+  );
+  expect(root().activeElement?.textContent).toContain('Notes');
+  first.dispatchEvent(
+    new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }),
+  );
+  expect(root().querySelector('.work-picker')).toBeNull();
+  expect(root().activeElement).toBe(primary);
+  expect(root().querySelector('.phrase')).toBe(input);
+  expect(input.value).toBe('I choose');
+  expect(input.selectionStart).toBe(2);
+  expect(root().querySelector('details')).toBe(details);
+  expect(details.open).toBe(true);
+  primary.click();
+  await vi.waitFor((): void => expect(root().querySelector('.work-tab-option')).not.toBeNull());
+  (root().querySelector('.work-tab-option') as HTMLButtonElement).click();
+  await vi.waitFor((): void =>
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'returnToWork', sessionId: 'one' }),
+  );
+  expect(sendMessage).toHaveBeenCalledWith({ type: 'setWorkTarget', sessionId: 'one', tabId: 7 });
+  await vi.waitFor((): void => expect(root().querySelector('.phrase')).toBeNull());
+});
+
+it.each(['cancel', 'session'] as const)(
+  'ignores deferred picker selections after %s',
+  async (replacement: 'cancel' | 'session'): Promise<void> => {
+    let resolveSave: (value: unknown) => void = (): void => {};
+    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+      async (request: { type: string }): Promise<unknown> => {
+        if (request.type === 'getWorkTarget')
+          return { ok: true, sessionId: 'one', state: 'missing', title: null };
+        if (request.type === 'getWorkTabs')
+          return { ok: true, tabs: [{ tabId: 7, title: 'Report' }] };
+        return new Promise<unknown>((resolve: (value: unknown) => void): void => {
+          resolveSave = resolve;
+        });
+      },
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const snap: SessionSnapshot = snapshot();
+    showOverlay(verdict, snap);
+    await vi.waitFor((): void =>
+      expect((root().querySelector('.return-work') as HTMLButtonElement).disabled).toBe(false),
+    );
+    (root().querySelector('.return-work') as HTMLButtonElement).click();
+    await vi.waitFor((): void => expect(root().querySelector('.work-tab-option')).not.toBeNull());
+    (root().querySelector('.work-tab-option') as HTMLButtonElement).click();
+    if (replacement === 'cancel')
+      (root().querySelector('.work-picker-cancel') as HTMLButtonElement).click();
+    else showOverlay(verdict, { ...snap, startedAt: 2 });
+    resolveSave({ ok: true });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      sendMessage.mock.calls.some(
+        ([request]: [{ type: string }]): boolean => request.type === 'returnToWork',
+      ),
+    ).toBe(false);
+    expect(root().querySelector('.work-picker')).toBeNull();
+  },
+);
+
+it('offers retry for failed listing and handles an empty list without altering the session', async (): Promise<void> => {
+  let list: unknown = { ok: false, error: 'Could not load tabs' };
+  const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+    async (request: { type: string }): Promise<unknown> =>
+      request.type === 'getWorkTarget'
+        ? { ok: true, sessionId: 'one', state: 'missing', title: null }
+        : list,
+  );
+  vi.stubGlobal('chrome', { runtime: { sendMessage } });
+  showOverlay(verdict, snapshot());
+  await vi.waitFor((): void =>
+    expect((root().querySelector('.return-work') as HTMLButtonElement).disabled).toBe(false),
+  );
+  (root().querySelector('.return-work') as HTMLButtonElement).click();
+  await vi.waitFor((): void =>
+    expect(root().querySelector('.work-picker [role="alert"]')).not.toBeNull(),
+  );
+  list = { ok: true, tabs: [] };
+  (root().querySelector('.work-picker-retry') as HTMLButtonElement).click();
+  await vi.waitFor((): void =>
+    expect(root().querySelector('.work-picker')?.textContent).toContain('No available work tabs'),
+  );
+  expect(root().querySelector('.work-tab-option')).toBeNull();
+});
+
+it('can keep focusing without a selected work tab or abandoning the inline chooser gate implicitly', async (): Promise<void> => {
+  const snap: SessionSnapshot = snapshot();
+  const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+    async (request: { type: string }): Promise<unknown> => {
+      if (request.type === 'getWorkTarget')
+        return { ok: true, sessionId: 'one', state: 'missing', title: null };
+      if (request.type === 'getSnapshot') return snap;
+      return { ok: true };
+    },
+  );
+  vi.stubGlobal('chrome', { runtime: { sendMessage } });
+  showOverlay(verdict, {
+    ...snap,
+    gate: {
+      kind: 'cancel',
+      host: null,
+      openedAt: 1,
+      readyAt: 20_000,
+      requiredPhrase: 'I choose to stop',
+      forceEndAvailable: false,
+    },
+  });
+  const keep: HTMLButtonElement | undefined = Array.from(root().querySelectorAll('button')).find(
+    (button: HTMLButtonElement): boolean => button.textContent === 'Keep focusing',
+  );
+  expect(keep).toBeDefined();
+  keep?.click();
+  await vi.waitFor((): void => expect(sendMessage).toHaveBeenCalledWith({ type: 'abandonGate' }));
+  await vi.waitFor((): void => expect(root().querySelector('.phrase')).toBeNull());
+});
+
+it('keeps the chooser open after a denied selection and never returns to that tab', async (): Promise<void> => {
+  const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+    async (request: { type: string }): Promise<unknown> => {
+      if (request.type === 'getWorkTarget')
+        return { ok: true, sessionId: 'one', state: 'ready', title: 'Previous' };
+      if (request.type === 'getWorkTabs')
+        return { ok: true, tabs: [{ tabId: 7, title: 'Report' }] };
+      return { ok: false, error: 'That tab is no longer available.' };
+    },
+  );
+  vi.stubGlobal('chrome', { runtime: { sendMessage } });
+  showOverlay(verdict, snapshot());
+  await vi.waitFor((): void =>
+    expect((root().querySelector('.change-work') as HTMLButtonElement).hidden).toBe(false),
+  );
+  (root().querySelector('.change-work') as HTMLButtonElement).click();
+  await vi.waitFor((): void => expect(root().querySelector('.work-tab-option')).not.toBeNull());
+  const row: HTMLButtonElement = root().querySelector('.work-tab-option') as HTMLButtonElement;
+  row.click();
+  await vi.waitFor((): void =>
+    expect(root().querySelector('.work-picker [role="alert"]')?.textContent).toBe(
+      'That tab is no longer available.',
+    ),
+  );
+  expect(row.disabled).toBe(false);
+  expect(root().activeElement).toBe(row);
+  expect(
+    sendMessage.mock.calls.some(
+      ([request]: [{ type: string }]): boolean => request.type === 'returnToWork',
+    ),
+  ).toBe(false);
+});
+
+it('does not insert a deferred tab list after its chooser is cancelled', async (): Promise<void> => {
+  let resolveList: (value: unknown) => void = (): void => {};
+  const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+    async (request: { type: string }): Promise<unknown> =>
+      request.type === 'getWorkTarget'
+        ? { ok: true, sessionId: 'one', state: 'missing', title: null }
+        : new Promise<unknown>((resolve: (value: unknown) => void): void => {
+            resolveList = resolve;
+          }),
+  );
+  vi.stubGlobal('chrome', { runtime: { sendMessage } });
+  showOverlay(verdict, snapshot());
+  await vi.waitFor((): void =>
+    expect((root().querySelector('.return-work') as HTMLButtonElement).disabled).toBe(false),
+  );
+  (root().querySelector('.return-work') as HTMLButtonElement).click();
+  expect(root().querySelector('.work-picker')?.textContent).toContain('Finding available tabs...');
+  (root().querySelector('.work-picker-cancel') as HTMLButtonElement).click();
+  resolveList({ ok: true, tabs: [{ tabId: 7, title: 'Report' }] });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(root().querySelector('.work-picker')).toBeNull();
+});
+
+it('keeps focus inside the overlay while retrying a failed list', async (): Promise<void> => {
+  let pending: boolean = false;
+  const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+    async (request: { type: string }): Promise<unknown> => {
+      if (request.type === 'getWorkTarget')
+        return { ok: true, sessionId: 'one', state: 'missing', title: null };
+      if (!pending) return { ok: false, error: 'Unavailable' };
+      return new Promise<unknown>((): void => {});
+    },
+  );
+  vi.stubGlobal('chrome', { runtime: { sendMessage } });
+  showOverlay(verdict, snapshot());
+  await vi.waitFor((): void =>
+    expect((root().querySelector('.return-work') as HTMLButtonElement).disabled).toBe(false),
+  );
+  (root().querySelector('.return-work') as HTMLButtonElement).click();
+  await vi.waitFor((): void => expect(root().querySelector('.work-picker-retry')).not.toBeNull());
+  const retry: HTMLButtonElement = root().querySelector('.work-picker-retry') as HTMLButtonElement;
+  retry.focus();
+  pending = true;
+  retry.click();
+  expect(root().activeElement).toBe(root().querySelector('.work-picker-cancel'));
+});
+
+it('restores overlay focus before a selected work tab fails to activate', async (): Promise<void> => {
+  const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+    async (request: { type: string }): Promise<unknown> => {
+      if (request.type === 'getWorkTarget')
+        return { ok: true, sessionId: 'one', state: 'missing', title: null };
+      if (request.type === 'getWorkTabs')
+        return { ok: true, tabs: [{ tabId: 7, title: 'Report' }] };
+      if (request.type === 'getSnapshot') return new Promise<unknown>((): void => {});
+      return request.type === 'setWorkTarget'
+        ? { ok: true }
+        : { ok: false, error: 'Activation failed' };
+    },
+  );
+  vi.stubGlobal('chrome', { runtime: { sendMessage } });
+  showOverlay(verdict, snapshot());
+  await vi.waitFor((): void =>
+    expect((root().querySelector('.return-work') as HTMLButtonElement).disabled).toBe(false),
+  );
+  const primary: HTMLButtonElement = root().querySelector('.return-work') as HTMLButtonElement;
+  primary.click();
+  await vi.waitFor((): void => expect(root().querySelector('.work-tab-option')).not.toBeNull());
+  const row: HTMLButtonElement = root().querySelector('.work-tab-option') as HTMLButtonElement;
+  row.focus();
+  row.click();
+  await vi.waitFor((): void =>
+    expect(root().querySelector('.action-error')?.textContent).toBe('Activation failed'),
+  );
+  expect(root().activeElement).not.toBeNull();
+});

@@ -21,9 +21,10 @@ export type Request =
   /** docState fresh = document_start on a new navigation (worker records the tab as stopped when blocked), loaded = an already-rendered page */
   | { type: 'getBlockState'; url: string; docState: 'fresh' | 'loaded' }
   | { type: 'startSession'; config: SessionConfig; workTabId?: number; windowId?: number }
+  | { type: 'getWorkTabs'; sessionId: string }
   | { type: 'getWorkTabs'; mode: SessionConfig['mode']; windowId: number }
   | { type: 'getWorkTarget'; windowId?: number }
-  | { type: 'setWorkTarget'; sessionId: string; tabId: number; windowId: number }
+  | { type: 'setWorkTarget'; sessionId: string; tabId: number; windowId?: number }
   | { type: 'returnToWork'; sessionId: string; windowId?: number }
   | { type: 'openGate'; gate: GateKind; host: string | null }
   | { type: 'confirmGate'; typedPhrase: string | null }

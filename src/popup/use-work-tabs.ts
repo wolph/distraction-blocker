@@ -15,6 +15,7 @@ interface WorkContext {
   activeTabId: number | null;
 }
 export interface WorkTabsState {
+  loading: boolean;
   context: WorkContext | null;
   tabs: WorkTab[];
   error: string | null;
@@ -39,11 +40,12 @@ function isWorkNotification(value: unknown): boolean {
 
 export function useWorkTabs(mode: SessionMode, refreshKey: unknown = null): WorkTabsState {
   const [state, setState]: [WorkTabsState, Dispatch<StateUpdater<WorkTabsState>>] =
-    useState<WorkTabsState>({ context: null, tabs: [], error: null });
+    useState<WorkTabsState>({ loading: true, context: null, tabs: [], error: null });
   useEffect((): (() => void) => {
     let generation: number = 0;
     const refresh: () => Promise<void> = async (): Promise<void> => {
       const request: number = ++generation;
+      setState((previous: WorkTabsState): WorkTabsState => ({ ...previous, loading: true }));
       try {
         const context: WorkContext = await currentContext();
         const result: WorkTabsResult | null = parseWorkTabsResult(
@@ -51,6 +53,7 @@ export function useWorkTabs(mode: SessionMode, refreshKey: unknown = null): Work
         );
         if (request !== generation) return;
         setState({
+          loading: false,
           context,
           tabs: result?.ok ? result.tabs : [],
           error: result?.ok ? null : 'Could not load work tabs. Reopen the popup to try again.',
@@ -58,6 +61,7 @@ export function useWorkTabs(mode: SessionMode, refreshKey: unknown = null): Work
       } catch {
         if (request === generation)
           setState({
+            loading: false,
             context: null,
             tabs: [],
             error: 'Could not load work tabs. Reopen the popup to try again.',

@@ -38,7 +38,7 @@ export interface WorkTargetPorts {
 }
 
 const SESSION_WORK_TARGET: string = 'workTarget';
-const CHOOSE_TARGET: string = 'Choose an available work tab in the Focus Lock popup.';
+const CHOOSE_TARGET: string = 'Choose an available work tab.';
 
 function failure(error: string): Ack & { ok: false } {
   return { ok: false, error };
@@ -117,7 +117,7 @@ export class WorkTargetService {
   private current(sessionId: string): WorkSession {
     const session: WorkSession | null = this.engine.workTargetSession();
     if (session?.sessionId !== sessionId)
-      throw new Error('The focus session has changed. Reopen the popup.');
+      throw new Error('The focus session has changed. Choose your work tab again.');
     return session;
   }
 
@@ -131,18 +131,41 @@ export class WorkTargetService {
       const tabs: chrome.tabs.Tab[] = await this.ports.tabs();
       return {
         ok: true,
-        tabs: tabs
-          .filter((tab: chrome.tabs.Tab): boolean => this.suitable(tab, mode, incognito))
-          .map(
-            (tab: chrome.tabs.Tab): WorkTab => ({
-              tabId: tab.id as number,
-              title: tab.title || new URL(tab.url as string).hostname,
-            }),
-          ),
+        tabs: this.candidates(tabs, mode, incognito),
       };
     } catch (error: unknown) {
       return failure(this.error(error));
     }
+  }
+
+  async getContentWorkTabs(
+    sessionId: string,
+    sender: chrome.runtime.MessageSender,
+  ): Promise<WorkTabsResult> {
+    try {
+      const incognito: boolean = await this.context(undefined, sender);
+      this.current(sessionId);
+      const tabs: chrome.tabs.Tab[] = await this.ports.tabs();
+      const session: WorkSession = this.current(sessionId);
+      return { ok: true, tabs: this.candidates(tabs, session.mode, incognito) };
+    } catch (error: unknown) {
+      return failure(this.error(error));
+    }
+  }
+
+  private candidates(
+    tabs: chrome.tabs.Tab[],
+    mode: SessionConfig['mode'],
+    incognito: boolean,
+  ): WorkTab[] {
+    return tabs
+      .filter((tab: chrome.tabs.Tab): boolean => this.suitable(tab, mode, incognito))
+      .map(
+        (tab: chrome.tabs.Tab): WorkTab => ({
+          tabId: tab.id as number,
+          title: tab.title || new URL(tab.url as string).hostname,
+        }),
+      );
   }
 
   async getWorkTarget(
@@ -180,12 +203,12 @@ export class WorkTargetService {
   setWorkTarget(
     sessionId: string,
     tabId: number,
-    windowId: number,
+    windowId: number | undefined,
     sender: chrome.runtime.MessageSender,
   ): Promise<Ack> {
     return this.serialise(async (): Promise<Ack> => {
       try {
-        const incognito: boolean = await this.context(windowId, sender, true);
+        const incognito: boolean = await this.context(windowId, sender);
         return await this.engine.runWorkTargetAction(
           sessionId,
           (): Promise<Ack> => this.select(sessionId, tabId, incognito),
