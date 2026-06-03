@@ -648,3 +648,68 @@ it('restores overlay focus before a selected work tab fails to activate', async 
   );
   expect(root().activeElement).not.toBeNull();
 });
+
+it('focuses Cancel before disabling the selected row during a pending save', async (): Promise<void> => {
+  const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+    async (request: { type: string }): Promise<unknown> => {
+      if (request.type === 'getWorkTarget')
+        return { ok: true, sessionId: 'one', state: 'missing', title: null };
+      if (request.type === 'getWorkTabs')
+        return { ok: true, tabs: [{ tabId: 7, title: 'Report' }] };
+      return new Promise<unknown>((): void => {});
+    },
+  );
+  vi.stubGlobal('chrome', { runtime: { sendMessage } });
+  showOverlay(verdict, snapshot());
+  await vi.waitFor((): void =>
+    expect((root().querySelector('.return-work') as HTMLButtonElement).disabled).toBe(false),
+  );
+  (root().querySelector('.return-work') as HTMLButtonElement).click();
+  await vi.waitFor((): void => expect(root().querySelector('.work-tab-option')).not.toBeNull());
+  const row: HTMLButtonElement = root().querySelector('.work-tab-option') as HTMLButtonElement;
+  row.focus();
+  row.click();
+  expect(row.disabled).toBe(true);
+  expect(root().activeElement).toBe(root().querySelector('.work-picker-cancel'));
+  root().activeElement?.dispatchEvent(
+    new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }),
+  );
+  expect(root().querySelector('.work-picker')).toBeNull();
+});
+
+it('restores focus to the primary action when the picker trigger becomes hidden', async (): Promise<void> => {
+  let ready: boolean = true;
+  const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+    async (request: { type: string }): Promise<unknown> =>
+      request.type === 'getWorkTarget'
+        ? {
+            ok: true,
+            sessionId: 'one',
+            state: ready ? 'ready' : 'unavailable',
+            title: ready ? 'Report' : null,
+          }
+        : { ok: true, tabs: [{ tabId: 7, title: 'Notes' }] },
+  );
+  vi.stubGlobal('chrome', { runtime: { sendMessage } });
+  const snap: SessionSnapshot = snapshot();
+  showOverlay(verdict, snap);
+  await vi.waitFor((): void =>
+    expect((root().querySelector('.change-work') as HTMLButtonElement).hidden).toBe(false),
+  );
+  const change: HTMLButtonElement = root().querySelector('.change-work') as HTMLButtonElement;
+  const backdrop: HTMLElement = root().querySelector('.backdrop') as HTMLElement;
+  backdrop.scrollTop = 50;
+  change.focus();
+  change.click();
+  ready = false;
+  showOverlay(verdict, snap);
+  await vi.waitFor((): void => expect(change.hidden).toBe(true));
+  (root().querySelector('.work-picker-cancel') as HTMLButtonElement).click();
+  expect(root().activeElement).toBe(root().querySelector('.return-work'));
+  expect(backdrop.scrollTop).toBe(50);
+});

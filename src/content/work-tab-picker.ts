@@ -36,7 +36,7 @@ export function createWorkTabPicker(
     trigger.setAttribute('aria-expanded', 'false');
     onClose();
     if (restoreFocus) {
-      trigger.focus({ preventScroll: true });
+      restorePickerFocus(trigger, container);
       container.scrollTop = scrollTop;
     }
   };
@@ -97,6 +97,7 @@ export function createWorkTabPicker(
     const request: number = ++generation;
     body.setAttribute('aria-busy', 'true');
     body.querySelector('[role="alert"]')?.remove();
+    cancel.focus({ preventScroll: true });
     for (const item of body.querySelectorAll<HTMLButtonElement>('button')) item.disabled = true;
     const pending: HTMLElement = status('Saving work tab...');
     body.append(pending);
@@ -114,6 +115,19 @@ export function createWorkTabPicker(
   };
   void load();
   return { element, close };
+}
+
+function restorePickerFocus(trigger: HTMLElement, container: HTMLElement): void {
+  const available: boolean =
+    trigger.isConnected && trigger.closest('[hidden]') === null && !trigger.matches(':disabled');
+  const destination: HTMLElement = available
+    ? trigger
+    : (container.querySelector<HTMLElement>('.return-work:not([disabled]):not([hidden])') ??
+      container);
+  destination.focus({ preventScroll: true });
+  const root: Node = container.getRootNode();
+  if (root instanceof ShadowRoot && root.activeElement !== destination)
+    container.focus({ preventScroll: true });
 }
 
 function button(text: string, className: string): HTMLButtonElement {
