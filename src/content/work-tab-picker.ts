@@ -188,7 +188,7 @@ export const WORK_PICKER_CSS: string = `
 .change-work[hidden] { display: none; }
 .work-picker-status { font-size: 0.85rem; line-height: 1.5; color: var(--overlay-muted); margin-block: 0.7rem; overflow-wrap: anywhere; }
 .work-picker [role="alert"] { color: var(--overlay-error-text); background: var(--overlay-error-bg); padding: 0.65rem; border-radius: 0.5rem; }
-.work-picker-list { display: grid; gap: 0.5rem; max-height: 19rem; overflow-y: auto; overscroll-behavior: contain; padding: 0.3rem; margin: -0.3rem; }
+.work-picker-list { display: grid; gap: 0.75rem; max-height: 19rem; overflow-y: auto; overscroll-behavior: contain; padding: 0.5rem; margin: -0.5rem; }
 .work-tab-option { display: flex; align-items: center; gap: 0.75rem; width: 100%; padding: 0.8rem; border: 1px solid var(--overlay-meter); border-radius: 0.7rem; background: var(--overlay-pill); color: var(--overlay-text); text-align: left; }
 .work-tab-option:hover:enabled { background: var(--overlay-pill-hover); border-color: var(--overlay-bank); }
 .work-tab-option:disabled { opacity: 0.55; }
