@@ -3,6 +3,21 @@ import type { SessionSnapshot } from '../../src/shared/types';
 import type { WorkTargetResult } from '../../src/shared/work-target';
 import { expect, sendExtensionRequest, startTestSession, test } from './fixtures';
 
+interface AccessibilityProperty {
+  name: string;
+  value: { value?: unknown };
+}
+
+interface AccessibilityNode {
+  role?: { value?: unknown };
+  name?: { value?: unknown };
+  properties?: AccessibilityProperty[];
+}
+
+interface AccessibilityTree {
+  nodes: AccessibilityNode[];
+}
+
 interface TabIdentity {
   tabId: number;
   windowId: number;
@@ -320,6 +335,9 @@ test('the popup defaults to the current work tab and can replace a closed target
   await workPage.bringToFront();
   await extPage.reload();
   await expect(extPage.getByLabel('Work tab', { exact: true })).toHaveValue(String(work.tabId));
+  await extPage.getByLabel('Work tab', { exact: true }).selectOption('');
+  await extPage.getByRole('button', { name: 'Use this tab', exact: true }).click();
+  await expect(extPage.getByLabel('Work tab', { exact: true })).toHaveValue(String(work.tabId));
   await extPage.getByLabel("What's your next small step?").fill('Write the first assertion');
   await extPage.getByRole('button', { name: 'Start focusing' }).click();
   await expect(extPage.getByRole('button', { name: 'Back to work', exact: true })).toBeEnabled();
@@ -335,7 +353,9 @@ test('the popup defaults to the current work tab and can replace a closed target
     document.title = 'Finish the example';
   });
   const replacementTab: TabIdentity = await identity(worker, replacement);
-  await extPage.getByLabel('Work tab', { exact: true }).selectOption(String(replacementTab.tabId));
+  await replacement.bringToFront();
+  await extPage.reload();
+  await extPage.getByRole('button', { name: 'Use this tab', exact: true }).click();
   await expect
     .poll(async (): Promise<string | null> => {
       const current: WorkTargetResult = await target(extPage, work.windowId);
@@ -352,6 +372,200 @@ test('the popup defaults to the current work tab and can replace a closed target
         }, replacementTab.tabId),
     )
     .toBe(true);
+});
+
+test('the inline picker offers allowed tabs and returns without losing page input', async ({
+  context,
+  extPage,
+  worker,
+  siteUrl,
+}) => {
+  const workPage: Page = await context.newPage();
+  await workPage.goto(siteUrl('/plain.html').replace('blocked.example', 'other.example'));
+  await workPage.evaluate((): void => {
+    document.title = 'Write the next example';
+    document.body.innerHTML = '<label>Draft<input id="draft"></label>';
+  });
+  await workPage.locator('#draft').fill('Keep my draft');
+  const work: TabIdentity = await identity(worker, workPage);
+  const blockedPage: Page = await context.newPage();
+  await blockedPage.goto(siteUrl('/plain.html'));
+  await blockedPage.evaluate((): void => {
+    document.title = 'Distracting page';
+    (window as unknown as { preserved: string }).preserved = 'existing content';
+  });
+  await startTestSession(extPage, { durationMin: 2, intention: 'Write one example' });
+  await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
+  await clickOverlay(context, blockedPage, 'Choose a work tab');
+  const cdp: CDPSession = await context.newCDPSession(blockedPage);
+  try {
+    await expect
+      .poll(async (): Promise<boolean> => {
+        const tree: AccessibilityTree = await cdp.send('Accessibility.getFullAXTree');
+        return tree.nodes.some(
+          (node: AccessibilityNode): boolean =>
+            node.role?.value === 'button' &&
+            String(node.name?.value).startsWith('Write the next example'),
+        );
+      })
+      .toBe(true);
+    const tree: AccessibilityTree = await cdp.send('Accessibility.getFullAXTree');
+    expect(
+      tree.nodes.some(
+        (node: AccessibilityNode): boolean =>
+          node.role?.value === 'button' && String(node.name?.value).includes('Distracting page'),
+      ),
+    ).toBe(false);
+  } finally {
+    await cdp.detach();
+  }
+  await clickOverlay(context, blockedPage, 'Write the next example');
+  await expect
+    .poll(
+      async (): Promise<boolean> =>
+        worker.evaluate(async (tabId: number): Promise<boolean> => {
+          const tab: chrome.tabs.Tab = await chrome.tabs.get(tabId);
+          return tab.active;
+        }, work.tabId),
+    )
+    .toBe(true);
+  expect(await target(extPage, work.windowId)).toMatchObject({
+    ok: true,
+    state: 'ready',
+    title: 'Write the next example',
+  });
+  await expect(workPage.locator('#draft')).toHaveValue('Keep my draft');
+  expect(
+    await blockedPage.evaluate(
+      (): string => (window as unknown as { preserved: string }).preserved,
+    ),
+  ).toBe('existing content');
+  await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
+});
+
+test('refreshing an empty picker keeps keyboard focus inside the lockscreen', async ({
+  context,
+  extPage,
+  siteUrl,
+}) => {
+  const page: Page = await context.newPage();
+  await page.goto(siteUrl('/plain.html'));
+  await startTestSession(extPage, { durationMin: 2 });
+  await expect(page.locator('focus-lock-overlay')).toBeAttached();
+  await clickOverlay(context, page, 'Choose a work tab');
+  await clickOverlay(context, page, 'Refresh tabs');
+  const cdp: CDPSession = await context.newCDPSession(page);
+  const focused: (name: string) => Promise<boolean> = async (name: string): Promise<boolean> => {
+    const tree: AccessibilityTree = await cdp.send('Accessibility.getFullAXTree');
+    return tree.nodes.some(
+      (node: AccessibilityNode): boolean =>
+        node.role?.value === 'button' &&
+        node.name?.value === name &&
+        node.properties?.some(
+          (property: AccessibilityProperty): boolean =>
+            property.name === 'focused' && property.value.value === true,
+        ) === true,
+    );
+  };
+  try {
+    await expect.poll((): Promise<boolean> => focused('Cancel')).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect.poll((): Promise<boolean> => focused('Choose a work tab')).toBe(true);
+  } finally {
+    await cdp.detach();
+  }
+});
+
+test('a pending work tab save can be cancelled with Escape without activating that tab', async ({
+  context,
+  extPage,
+  worker,
+  siteUrl,
+}) => {
+  const work: Page = await context.newPage();
+  await work.goto(siteUrl('/plain.html').replace('blocked.example', 'other.example'));
+  await work.evaluate((): void => {
+    document.title = 'Continue the draft';
+  });
+  const workTab: TabIdentity = await identity(worker, work);
+  const blocked: Page = await context.newPage();
+  await blocked.goto(siteUrl('/plain.html'));
+  await startTestSession(extPage, { durationMin: 2 });
+  await clickOverlay(context, blocked, 'Choose a work tab');
+  await worker.evaluate((): void => {
+    const original: typeof chrome.storage.session.set = chrome.storage.session.set.bind(
+      chrome.storage.session,
+    );
+    const state: { release?: () => void } = {};
+    (globalThis as unknown as { releaseWorkSave: () => void }).releaseWorkSave = (): void => {
+      state.release?.();
+    };
+    Object.defineProperty(chrome.storage.session, 'set', {
+      configurable: true,
+      value: async (items: Record<string, unknown>): Promise<void> => {
+        if ('workTarget' in items)
+          await new Promise<void>((resolve: () => void): void => {
+            state.release = resolve;
+            (globalThis as unknown as { workSavePending: boolean }).workSavePending = true;
+          });
+        await original(items);
+      },
+    });
+  });
+  await blocked.bringToFront();
+  await clickOverlay(context, blocked, 'Continue the draft');
+  await expect
+    .poll(
+      async (): Promise<boolean> =>
+        worker.evaluate(
+          (): boolean =>
+            (globalThis as unknown as { workSavePending?: boolean }).workSavePending === true,
+        ),
+    )
+    .toBe(true);
+  const cdp: CDPSession = await context.newCDPSession(blocked);
+  try {
+    await expect
+      .poll(async (): Promise<boolean> => {
+        const tree: AccessibilityTree = await cdp.send('Accessibility.getFullAXTree');
+        return tree.nodes.some(
+          (node: AccessibilityNode): boolean =>
+            node.role?.value === 'button' &&
+            node.name?.value === 'Cancel' &&
+            node.properties?.some(
+              (property: AccessibilityProperty): boolean =>
+                property.name === 'focused' && property.value.value === true,
+            ) === true,
+        );
+      })
+      .toBe(true);
+    await blocked.keyboard.press('Escape');
+    await expect
+      .poll(async (): Promise<boolean> => {
+        const tree: AccessibilityTree = await cdp.send('Accessibility.getFullAXTree');
+        return tree.nodes.some(
+          (node: AccessibilityNode): boolean => node.name?.value === 'Available work tabs',
+        );
+      })
+      .toBe(false);
+  } finally {
+    await worker.evaluate((): void =>
+      (globalThis as unknown as { releaseWorkSave: () => void }).releaseWorkSave(),
+    );
+    await cdp.detach();
+  }
+  await expect
+    .poll(async (): Promise<string | null> => {
+      const current: WorkTargetResult = await target(extPage, workTab.windowId);
+      return current.ok ? current.title : null;
+    })
+    .toBe('Continue the draft');
+  expect(
+    await worker.evaluate(
+      async (id: number): Promise<boolean> => (await chrome.tabs.get(id)).active,
+      workTab.tabId,
+    ),
+  ).toBe(false);
 });
 
 test('typed gate confirmation survives theme and work-tab status updates', async ({

@@ -1,5 +1,20 @@
 # Focus Lock QA checklist
 
+## Work tab picker verification: 2026-09-08
+
+Source commit `2176e9fb4f93367e209eeb938ef4523aac9ef5d0`. Browser checks used an isolated Chromium profile with demonstration tabs.
+
+- [x] `npm run check`: Biome, TypeScript, 61 test files, 1,251 passing tests, 2 skipped tests and production build passed.
+- [x] `npm run e2e`: all 40 browser scenarios passed on the final source.
+- [x] The popup chooses the actual current allowed tab and retains another-tab selection. A delayed lookup cannot overwrite a newer manual choice.
+- [x] The inline picker filters allowed tabs, saves the selected target and returns without losing page input. Empty, closed and stale targets have recovery paths.
+- [x] Retry, pending save cancellation, unavailable triggers and failed returns retain keyboard focus within the lockscreen. Gate abandonment remains available without a work target.
+- [x] A dedicated Vite server ran during dev-browser checks of the production extension. Full-page, component, hover and keyboard-focus captures cover both themes at 1280, 768 and 375 px.
+- [x] Independent visual review approved popup start and active states plus missing, open, ready, long-title, unavailable, empty and gate-without-target overlay states.
+- [x] Browser logs contain no console errors or page exceptions. Chromium emitted 25 module-preload warnings on extension pages.
+
+Evidence is retained in `.playwright-mcp/work-tab-picker-qa/`. The guide includes the inline chooser and refreshed popup, overlay and gate screenshots.
+
 ## Return-to-work verification: 2026-09-07
 
 The checks below cover source commit `9cf571ce51a1895ab14e55ae8c58beb0f504a0a3`. All browser runs used isolated Chromium profiles. The screenshots use demonstration tasks and seeded aggregate statistics.

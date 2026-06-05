@@ -48,13 +48,17 @@ The lockscreen shows your next step, time until the next break or session end, a
 
 Open Need a break or site access? for credit and temporary access options. Each action shows its own cost and the time needed to afford it. When the credit limit or remaining focus time makes a spend unavailable, the screen explains why instead of counting down to a button that stays disabled.
 
-Change your work tab in the active popup. A closed or newly blocked work tab cannot be used as a return destination. Scheduled sessions and sessions started without a target show an instruction to choose one in the popup. A work tab never bypasses your blocklist or whitelist.
+Choose a work tab directly on the lockscreen. The inline list shows allowed open tabs. Selecting a title saves that tab and takes you back to it. Change work tab opens the list again.
+
+In the popup, Use this tab selects the current allowed tab. The Work tab menu lets you choose another. A closed or newly blocked work tab cannot be used as a return destination. A work tab never bypasses your blocklist or whitelist.
 
 The work-tab reference stays in worker-only `chrome.storage.session`. It survives a service-worker restart but is cleared when Chrome restarts or the extension reloads. Choose the tab again after a restart. The saved focus session and site access credit use their existing storage and continue independently.
 
 ## Screenshots
 
 The screenshots use an isolated Chrome profile with demonstration data.
+
+![Choose a work tab directly on the lockscreen](https://raw.githubusercontent.com/WoLpH/distraction-blocker/master/docs/images/focus-lock/work-tab-picker.png)
 
 | Active popup | Existing-page overlay | Deliberation gate |
 | --- | --- | --- |
