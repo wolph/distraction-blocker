@@ -221,7 +221,13 @@ export class WorkTargetService {
 
   private async select(sessionId: string, tabId: number, incognito: boolean): Promise<Ack> {
     this.current(sessionId);
-    const tab: chrome.tabs.Tab = await this.ports.tab(tabId);
+    let tab: chrome.tabs.Tab;
+    try {
+      tab = await this.ports.tab(tabId);
+    } catch {
+      this.current(sessionId);
+      return failure('That tab is no longer available. Choose another work tab.');
+    }
     if (!this.suitable(tab, this.current(sessionId).mode, incognito)) return failure(CHOOSE_TARGET);
     await this.ports.write({ sessionId, tabId, incognito });
     this.current(sessionId);

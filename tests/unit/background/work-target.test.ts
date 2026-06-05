@@ -241,6 +241,17 @@ describe('work targets', (): void => {
       title: null,
     });
   });
+  it('explains a closed selection without exposing browser tab identifiers', async (): Promise<void> => {
+    ports.tab = async (): Promise<chrome.tabs.Tab> => {
+      throw new Error('No tab with id: 7.');
+    };
+    expect(await service.setWorkTarget('session-1', 7, 1, popup)).toEqual({
+      ok: false,
+      error: 'That tab is no longer available. Choose another work tab.',
+    });
+    expect(stored).toBeUndefined();
+    expect(calls).toEqual([]);
+  });
   it('serialises competing selections so the last request wins', async (): Promise<void> => {
     tabs.push(tab(5, 'https://second.example'));
     const results: Ack[] = await Promise.all([
