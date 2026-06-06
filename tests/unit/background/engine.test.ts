@@ -1021,6 +1021,55 @@ describe('Engine', () => {
     expect(durableJournal).toEqual({ sets: {}, removes: [] });
   });
 
+  it.each(['local', 'synced'] as const)(
+    'reserves list arrival order before a delayed %s fingerprint',
+    async (source: 'local' | 'synced'): Promise<void> => {
+      const h: Harness = makeEngine({ hasPendingSync: (): boolean => true });
+      const older: ListsConfig = {
+        ...DEFAULT_LISTS,
+        custom: [{ kind: 'host', pattern: 'older.example' }],
+      };
+      const newer: ListsConfig = {
+        ...DEFAULT_LISTS,
+        custom: [{ kind: 'host', pattern: 'newer.example' }],
+      };
+      let releaseHash: () => void = (): void => {};
+      let signalHashStarted: () => void = (): void => {};
+      const hashBlocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
+        releaseHash = resolve;
+      });
+      const hashStarted: Promise<void> = new Promise<void>((resolve: () => void): void => {
+        signalHashStarted = resolve;
+      });
+      const digest: typeof crypto.subtle.digest = crypto.subtle.digest.bind(crypto.subtle);
+      const digestSpy: ReturnType<typeof vi.spyOn> = vi
+        .spyOn(crypto.subtle, 'digest')
+        .mockImplementationOnce(
+          async (algorithm: AlgorithmIdentifier, data: BufferSource): Promise<ArrayBuffer> => {
+            signalHashStarted();
+            await hashBlocked;
+            return digest(algorithm, data);
+          },
+        );
+      const first: Promise<Ack> =
+        source === 'local' ? h.engine.updateLists(older) : h.engine.applySyncedLists(older);
+      await hashStarted;
+      const second: Promise<Ack> = h.engine.applySyncedLists(newer);
+      try {
+        expect(digestSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        releaseHash();
+        await Promise.all([first, second]);
+        digestSpy.mockRestore();
+      }
+      expect(h.engine.getLists()).toEqual(newer);
+      const listsWrites: unknown[][] = h.ports.queueSync.mock.calls.filter(
+        ([key]: unknown[]): boolean => key === SYNC_LISTS,
+      );
+      expect(listsWrites.at(-1)).toEqual([SYNC_LISTS, newer]);
+    },
+  );
+
   it('keeps later live lists after a same-value event and pending local flush', async () => {
     const syncWrites: Array<Record<string, unknown>> = [];
     const writer: SyncWriter = new SyncWriter(
