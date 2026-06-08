@@ -2,10 +2,12 @@
 
 ## Work tab picker verification: 2026-09-08
 
-Source commit `2176e9fb4f93367e209eeb938ef4523aac9ef5d0`. Browser checks used an isolated Chromium profile with demonstration tabs.
+The picker screenshots cover source commit `2176e9fb4f93367e209eeb938ef4523aac9ef5d0`. Final automated checks also include list ordering fix `7502644`. Browser checks used isolated Chromium profiles with demonstration tabs.
 
-- [x] `npm run check`: Biome, TypeScript, 61 test files, 1,251 passing tests, 2 skipped tests and production build passed.
+- [x] `npm run check`: Biome, TypeScript, 61 test files, 1,253 passing tests, 2 skipped tests and production build passed.
 - [x] `npm run e2e`: all 40 browser scenarios passed on the final source.
+- [x] Delayed hashing preserves the arrival order of local and synced list updates. Held-hash regressions cover both sources.
+- [x] The normal checkout passes `npm run check`. Generated design mockups are excluded from source lint. Its rebuilt `dist` matches all 28 tested build files byte for byte.
 - [x] The popup chooses the actual current allowed tab and retains another-tab selection. A delayed lookup cannot overwrite a newer manual choice.
 - [x] The inline picker filters allowed tabs, saves the selected target and returns without losing page input. Empty, closed and stale targets have recovery paths.
 - [x] Retry, pending save cancellation, unavailable triggers and failed returns retain keyboard focus within the lockscreen. Gate abandonment remains available without a work target.
