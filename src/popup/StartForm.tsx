@@ -17,12 +17,8 @@ import { Chip, RadioRow } from './form-controls';
 import { ThisTabButton } from './ThisTabButton';
 import { useWorkTabs, type WorkTabsState } from './use-work-tabs';
 
-/** Positional labels for the three presets, per the weak-evidence ledger. */
-const PRESET_LABELS: readonly [string, string, string] = [
-  'short',
-  'focus',
-  'deep work (preference, not science)',
-];
+/** Positional labels for the three presets. */
+const PRESET_LABELS: readonly [string, string, string] = ['short', 'focus', 'deep work'];
 
 const STRICTNESS_HINTS: Record<Strictness, string> = {
   friction: 'can end early after 30 s wait typing sentence',

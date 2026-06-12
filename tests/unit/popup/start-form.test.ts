@@ -34,13 +34,13 @@ describe('StartForm', () => {
     cleanup();
   });
 
-  it('labels the presets per the research copy rules', (): void => {
+  it('labels the presets concisely', (): void => {
     const { getByRole } = render(
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
     expect(getByRole('button', { name: '15 short' })).toBeTruthy();
     expect(getByRole('button', { name: '25 focus' })).toBeTruthy();
-    expect(getByRole('button', { name: '50 deep work (preference, not science)' })).toBeTruthy();
+    expect(getByRole('button', { name: '50 deep work' })).toBeTruthy();
   });
 
   it('renders the prescribed strictness hints exactly', (): void => {
