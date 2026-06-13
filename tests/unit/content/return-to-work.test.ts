@@ -713,3 +713,145 @@ it('restores focus to the primary action when the picker trigger becomes hidden'
   expect(root().activeElement).toBe(root().querySelector('.return-work'));
   expect(backdrop.scrollTop).toBe(50);
 });
+
+it('lets a stopped page retry a transient work-target lookup before opening the chooser', async (): Promise<void> => {
+  let lookups: number = 0;
+  const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+    async (request: { type: string }): Promise<unknown> => {
+      if (request.type === 'getWorkTarget') {
+        lookups += 1;
+        if (lookups === 1) throw new Error('Message port closed');
+        return { ok: true, sessionId: 'one', state: 'missing', title: null };
+      }
+      if (request.type === 'getWorkTabs')
+        return { ok: true, tabs: [{ tabId: 7, title: 'Report' }] };
+      throw new Error('Unexpected request');
+    },
+  );
+  vi.stubGlobal('chrome', { runtime: { sendMessage } });
+  showOverlay(verdict, snapshot(), true);
+  await vi.waitFor((): void =>
+    expect(root().querySelector('.work-target')?.textContent).toContain('Could not'),
+  );
+  const choose: HTMLButtonElement = root().querySelector('.return-work') as HTMLButtonElement;
+  expect(choose.disabled).toBe(false);
+  choose.click();
+  await vi.waitFor((): void =>
+    expect(root().querySelector('.work-tab-option')?.textContent).toContain('Report'),
+  );
+  expect(
+    sendMessage.mock.calls.map(([request]: [{ type: string }]): string => request.type),
+  ).toEqual(['getWorkTarget', 'getWorkTarget', 'getWorkTabs']);
+});
+
+it.each([
+  {
+    reply: { ok: false, error: 'The requesting page has changed. Reload the page.' },
+    message: 'The requesting page has changed. Reload the page.',
+  },
+  {
+    reply: { ok: true, sessionId: null, state: 'missing', title: null },
+    message: 'Your focus session is not available. Try again, or reload this page.',
+  },
+])(
+  'keeps retry available without inventing a session for %j',
+  async ({ reply, message }): Promise<void> => {
+    const sendMessage: Mock<() => Promise<unknown>> = vi.fn(async (): Promise<unknown> => reply);
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    showOverlay(verdict, snapshot());
+    await vi.waitFor((): void =>
+      expect(root().querySelector('.work-target')?.textContent).toBe(message),
+    );
+    const choose: HTMLButtonElement = root().querySelector('.return-work') as HTMLButtonElement;
+    expect(choose.disabled).toBe(false);
+    choose.click();
+    await vi.waitFor((): void => expect(sendMessage).toHaveBeenCalledTimes(2));
+    await vi.waitFor((): void => expect(choose.disabled).toBe(false));
+    expect(root().querySelector('.work-picker')).toBeNull();
+    expect(sendMessage.mock.calls).toEqual([
+      [{ type: 'getWorkTarget' }],
+      [{ type: 'getWorkTarget' }],
+    ]);
+  },
+);
+
+it('keeps failed retry focus and gate editing inside the stopped overlay', async (): Promise<void> => {
+  let resolveRetry: (value: unknown) => void = (): void => {};
+  const sendMessage: Mock<() => Promise<unknown>> = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('Extension context invalidated.'))
+    .mockImplementationOnce(
+      async (): Promise<unknown> =>
+        new Promise<unknown>((resolve: (value: unknown) => void): void => {
+          resolveRetry = resolve;
+        }),
+    );
+  vi.stubGlobal('chrome', { runtime: { sendMessage } });
+  const snap: SessionSnapshot = {
+    ...snapshot(),
+    gate: {
+      kind: 'cancel',
+      host: null,
+      openedAt: 1,
+      readyAt: 20_000,
+      requiredPhrase: 'I choose to stop',
+      forceEndAvailable: false,
+    },
+  };
+  showOverlay(verdict, snap, true);
+  await vi.waitFor((): void =>
+    expect(root().querySelector('.work-target')?.textContent).toContain('Reload this page'),
+  );
+  const input: HTMLInputElement = root().querySelector('.phrase') as HTMLInputElement;
+  input.value = 'I choose';
+  input.setSelectionRange(2, 5);
+  const backdrop: HTMLElement = root().querySelector('.backdrop') as HTMLElement;
+  backdrop.scrollTop = 50;
+  const choose: HTMLButtonElement = root().querySelector('.return-work') as HTMLButtonElement;
+  choose.focus();
+  choose.click();
+  expect(choose.disabled).toBe(true);
+  expect(root().activeElement).toBe(backdrop);
+  resolveRetry({ ok: false, error: 'The requesting page has changed. Reload the page.' });
+  await vi.waitFor((): void => expect(choose.disabled).toBe(false));
+  expect(root().activeElement).toBe(choose);
+  expect(root().querySelector('.phrase')).toBe(input);
+  expect(input.value).toBe('I choose');
+  expect(input.selectionStart).toBe(2);
+  expect(root().querySelector('details')?.open).toBe(true);
+  expect(backdrop.scrollTop).toBe(50);
+});
+
+it('does not open a chooser from a retry reply belonging to the previous session', async (): Promise<void> => {
+  let resolveRetry: (value: unknown) => void = (): void => {};
+  let lookups: number = 0;
+  const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+    async (request: { type: string }): Promise<unknown> => {
+      if (request.type !== 'getWorkTarget') throw new Error('Unexpected request');
+      lookups += 1;
+      if (lookups === 1) throw new Error('Message port closed');
+      if (lookups === 2)
+        return new Promise<unknown>((resolve: (value: unknown) => void): void => {
+          resolveRetry = resolve;
+        });
+      return { ok: true, sessionId: 'two', state: 'ready', title: 'New task' };
+    },
+  );
+  vi.stubGlobal('chrome', { runtime: { sendMessage } });
+  const snap: SessionSnapshot = snapshot();
+  showOverlay(verdict, snap);
+  await vi.waitFor((): void =>
+    expect(root().querySelector('.work-target')?.textContent).toContain('Could not'),
+  );
+  (root().querySelector('.return-work') as HTMLButtonElement).click();
+  showOverlay(verdict, { ...snap, startedAt: 2 });
+  await vi.waitFor((): void =>
+    expect(root().querySelector('.work-target')?.textContent).toBe('New task'),
+  );
+  resolveRetry({ ok: true, sessionId: 'one', state: 'missing', title: null });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(root().querySelector('.work-target')?.textContent).toBe('New task');
+  expect(root().querySelector('.work-picker')).toBeNull();
+  expect(sendMessage).toHaveBeenCalledTimes(3);
+});

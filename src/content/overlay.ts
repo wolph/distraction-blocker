@@ -75,6 +75,8 @@ interface Mounted {
   renderKey: string | null;
   targetGeneration: number;
   target: WorkTargetResult | null;
+  targetPending: boolean;
+  targetError: string | null;
   picker: WorkTabPicker | null;
 }
 
@@ -335,6 +337,8 @@ function mount(): Mounted {
     renderKey: null,
     targetGeneration: 0,
     target: null,
+    targetPending: true,
+    targetError: null,
     picker: null,
   };
 }
@@ -468,6 +472,8 @@ function render(m: Mounted): void {
   const open: boolean = sameSession && (m.root.querySelector('details')?.open ?? false);
   if (!sameSession) {
     m.target = null;
+    m.targetPending = true;
+    m.targetError = null;
     m.actionError = null;
   }
   m.picker?.close(false);
@@ -499,7 +505,11 @@ function render(m: Mounted): void {
   primary.addEventListener('click', (): void => {
     if (m.target?.ok && m.target.state === 'ready' && m.target.sessionId !== null)
       void returnToWork(m, m.target.sessionId);
-    else openWorkPicker(m, primary);
+    else if (m.target?.ok && m.target.sessionId !== null) openWorkPicker(m, primary);
+    else {
+      m.actionGeneration += 1;
+      void loadWorkTarget(m, primary);
+    }
   });
   const title: HTMLElement = document.createElement('p');
   title.className = 'work-target';
@@ -554,38 +564,63 @@ function updateTarget(m: Mounted): void {
   const ready: boolean = m.target?.ok === true && m.target.state === 'ready';
   if (button !== null) {
     button.textContent = ready ? 'Back to work' : 'Choose a work tab';
-    button.disabled = !(m.target?.ok && m.target.sessionId !== null);
+    button.disabled = m.targetPending && !(m.target?.ok && m.target.sessionId !== null);
+    button.setAttribute('aria-busy', String(m.targetPending));
     if (ready && m.initialFocus && m.root.activeElement === m.container) button.focus();
   }
   if (title !== null)
     title.textContent =
       ready && m.target?.ok
         ? m.target.title
-        : m.target?.ok
-          ? 'Pick an open tab to continue your task.'
-          : 'Could not load your work tab. Try again from the Focus Lock popup.';
+        : m.targetPending
+          ? 'Checking available work tabs...'
+          : (m.targetError ??
+            (m.target?.ok && m.target.sessionId !== null
+              ? 'Pick an open tab to continue your task.'
+              : 'Your focus session is not available. Try again, or reload this page.'));
   const change: HTMLElement | null = m.root.querySelector('.change-work');
   if (change !== null) change.hidden = !ready;
 }
 
 export function refreshWorkTarget(): void {
-  const mount: Mounted | null = mounted;
-  if (mount === null) return;
+  if (mounted !== null) void loadWorkTarget(mounted);
+}
+
+async function loadWorkTarget(mount: Mounted, trigger: HTMLElement | null = null): Promise<void> {
   const generation: number = ++mount.targetGeneration;
-  void sendRequest({ type: 'getWorkTarget' })
-    .then((value: unknown): void => {
-      if (mounted !== mount || generation !== mount.targetGeneration) return;
-      const target: WorkTargetResult | null = parseWorkTargetResult(value);
-      if (mount.target?.ok && (!target?.ok || target.sessionId !== mount.target.sessionId))
-        mount.picker?.close(false);
-      mount.target = target;
-      updateTarget(mount);
-    })
-    .catch((): void => {
-      if (mounted !== mount || generation !== mount.targetGeneration) return;
-      mount.target = null;
-      updateTarget(mount);
-    });
+  const action: number = mount.actionGeneration;
+  const scrollTop: number = mount.container.scrollTop;
+  const restoreFocus: boolean = trigger !== null && mount.root.activeElement === trigger;
+  if (restoreFocus) mount.container.focus({ preventScroll: true });
+  mount.targetPending = true;
+  updateTarget(mount);
+  let target: WorkTargetResult | null = null;
+  let error: string | null = null;
+  try {
+    target = parseWorkTargetResult(await sendRequest({ type: 'getWorkTarget' }));
+    if (!target?.ok) error = workTargetLookupError(target?.error);
+  } catch (cause: unknown) {
+    error = workTargetLookupError(cause instanceof Error ? cause.message : undefined);
+  }
+  if (mounted !== mount || generation !== mount.targetGeneration) return;
+  if (mount.target?.ok && (!target?.ok || target.sessionId !== mount.target.sessionId))
+    mount.picker?.close();
+  mount.target = target;
+  mount.targetPending = false;
+  mount.targetError = error;
+  updateTarget(mount);
+  if (trigger === null || !isCurrentAction(mount, action)) return;
+  if (restoreFocus && mount.root.activeElement === mount.container)
+    trigger.focus({ preventScroll: true });
+  mount.container.scrollTop = scrollTop;
+  if (target?.ok && target.sessionId !== null) openWorkPicker(mount, trigger);
+}
+
+function workTargetLookupError(error: string | undefined): string {
+  if (error === 'The requesting page has changed. Reload the page.') return error;
+  if (error?.includes('Extension context invalidated'))
+    return 'Reload this page to reconnect to Focus Lock.';
+  return 'Could not load your work tab. Try again, or reload this page.';
 }
 
 function openWorkPicker(m: Mounted, trigger: HTMLElement): void {
