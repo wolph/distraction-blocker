@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
-import { hideOverlay, showOverlay } from '../../../src/content/overlay';
+import { hideOverlay, refreshWorkTarget, showOverlay } from '../../../src/content/overlay';
 import { emptySnapshot } from '../../../src/shared/constants';
 import type { SessionSnapshot, Verdict } from '../../../src/shared/types';
 
@@ -855,3 +855,60 @@ it('does not open a chooser from a retry reply belonging to the previous session
   expect(root().querySelector('.work-picker')).toBeNull();
   expect(sendMessage).toHaveBeenCalledTimes(3);
 });
+
+it.each([
+  { ok: false, error: 'Unavailable' },
+  { malformed: true },
+  { ok: true, sessionId: null, state: 'missing', title: null },
+])(
+  'restores visible focus when a target refresh invalidates the change picker: %j',
+  async (reply: unknown): Promise<void> => {
+    let current: unknown = { ok: true, sessionId: 'one', state: 'ready', title: 'Report' };
+    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+      async (request: { type: string }): Promise<unknown> =>
+        request.type === 'getWorkTarget' ? current : { ok: true, tabs: [] },
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    showOverlay(verdict, snapshot());
+    await vi.waitFor((): void =>
+      expect((root().querySelector('.change-work') as HTMLButtonElement).hidden).toBe(false),
+    );
+    (root().querySelector('.change-work') as HTMLButtonElement).click();
+    expect(root().activeElement).toBe(root().querySelector('.work-picker-cancel'));
+    current = reply;
+    refreshWorkTarget();
+    await vi.waitFor((): void => expect(root().querySelector('.work-picker')).toBeNull());
+    expect(root().activeElement).toBe(root().querySelector('.return-work'));
+  },
+);
+
+it.each([false, true])(
+  'preserves focus during a background retry lookup, deliberate focus move: %s',
+  async (moveFocus: boolean): Promise<void> => {
+    let resolveRefresh: (value: unknown) => void = (): void => {};
+    const sendMessage: Mock<() => Promise<unknown>> = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Unavailable'))
+      .mockImplementationOnce(
+        async (): Promise<unknown> =>
+          new Promise<unknown>((resolve: (value: unknown) => void): void => {
+            resolveRefresh = resolve;
+          }),
+      );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    showOverlay(verdict, snapshot());
+    await vi.waitFor((): void =>
+      expect(root().querySelector('.work-target')?.textContent).toContain('Could not'),
+    );
+    const primary: HTMLButtonElement = root().querySelector('.return-work') as HTMLButtonElement;
+    primary.focus();
+    refreshWorkTarget();
+    expect(primary.disabled).toBe(true);
+    expect(root().activeElement).toBe(root().querySelector('[role="dialog"]'));
+    const summary: HTMLElement = root().querySelector('summary') as HTMLElement;
+    if (moveFocus) summary.focus();
+    resolveRefresh({ ok: false, error: 'Unavailable' });
+    await vi.waitFor((): void => expect(primary.disabled).toBe(false));
+    expect(root().activeElement).toBe(moveFocus ? summary : primary);
+  },
+);

@@ -590,8 +590,15 @@ async function loadWorkTarget(mount: Mounted, trigger: HTMLElement | null = null
   const generation: number = ++mount.targetGeneration;
   const action: number = mount.actionGeneration;
   const scrollTop: number = mount.container.scrollTop;
-  const restoreFocus: boolean = trigger !== null && mount.root.activeElement === trigger;
-  if (restoreFocus) mount.container.focus({ preventScroll: true });
+  const active: Element | null = mount.root.activeElement;
+  const restoreTarget: HTMLButtonElement | null =
+    active instanceof HTMLButtonElement &&
+    (active === trigger ||
+      (active.classList.contains('return-work') &&
+        !(mount.target?.ok && mount.target.sessionId !== null)))
+      ? active
+      : null;
+  if (restoreTarget !== null) mount.container.focus({ preventScroll: true });
   mount.targetPending = true;
   updateTarget(mount);
   let target: WorkTargetResult | null = null;
@@ -603,15 +610,18 @@ async function loadWorkTarget(mount: Mounted, trigger: HTMLElement | null = null
     error = workTargetLookupError(cause instanceof Error ? cause.message : undefined);
   }
   if (mounted !== mount || generation !== mount.targetGeneration) return;
-  if (mount.target?.ok && (!target?.ok || target.sessionId !== mount.target.sessionId))
-    mount.picker?.close();
+  const closePicker: boolean =
+    mount.target?.ok === true && (!target?.ok || target.sessionId !== mount.target.sessionId);
   mount.target = target;
   mount.targetPending = false;
   mount.targetError = error;
   updateTarget(mount);
-  if (trigger === null || !isCurrentAction(mount, action)) return;
-  if (restoreFocus && mount.root.activeElement === mount.container)
-    trigger.focus({ preventScroll: true });
+  if (closePicker && mount.picker !== null)
+    mount.picker.close(mount.picker.element.contains(mount.root.activeElement));
+  if (!isCurrentAction(mount, action)) return;
+  if (restoreTarget !== null && mount.root.activeElement === mount.container)
+    restoreTarget.focus({ preventScroll: true });
+  if (trigger === null) return;
   mount.container.scrollTop = scrollTop;
   if (target?.ok && target.sessionId !== null) openWorkPicker(mount, trigger);
 }
