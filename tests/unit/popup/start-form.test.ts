@@ -80,6 +80,48 @@ describe('StartForm', () => {
     });
   });
 
+  it('starts the deep work preset as uninterrupted focus despite default cycling', async (): Promise<void> => {
+    const view: ReturnType<typeof render> = render(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
+    );
+    fireEvent.click(view.getByRole('button', { name: '50 deep work' }));
+    expect(view.getByText('50 min uninterrupted focus')).toBeTruthy();
+    fireEvent.click(view.getByRole('button', { name: 'Start focusing' }));
+    await waitFor((): void => {
+      expect(sendMessageMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'startSession',
+          config: expect.objectContaining({ durationMin: 50, cycling: null }),
+        }),
+      );
+    });
+  });
+
+  it('allows an explicit cycling choice after selecting deep work and explains its timer', async (): Promise<void> => {
+    const view: ReturnType<typeof render> = render(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
+    );
+    fireEvent.click(view.getByRole('button', { name: '50 deep work' }));
+    const checkbox: HTMLInputElement = view.getByRole('checkbox', {
+      name: /cycles:/,
+    }) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    fireEvent.click(checkbox);
+    expect(view.getByText('50 min total, with 25 min focus blocks')).toBeTruthy();
+    fireEvent.click(view.getByRole('button', { name: 'Start focusing' }));
+    await waitFor((): void => {
+      expect(sendMessageMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'startSession',
+          config: expect.objectContaining({
+            durationMin: 50,
+            cycling: DEFAULT_SETTINGS.defaultCycling,
+          }),
+        }),
+      );
+    });
+  });
+
   it('toggles a category pill by sending updateLists immediately', async (): Promise<void> => {
     const { getByRole } = render(
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),

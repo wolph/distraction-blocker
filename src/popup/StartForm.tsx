@@ -135,6 +135,12 @@ export function StartForm({
 
   const c: CycleConfig = settings.defaultCycling;
   const cyclingLabel: string = `cycles: ${c.focusMin} min focus, ${c.shortBreakMin} min break, ${c.longBreakMin} min long break every ${c.longEvery}th`;
+  const timingSummary: string | null =
+    !Number.isFinite(durationMin) || durationMin <= 0
+      ? null
+      : cyclingOn && c.focusMin < durationMin
+        ? `${durationMin} min total, with ${c.focusMin} min focus blocks`
+        : `${durationMin} min uninterrupted focus`;
 
   return (
     <section class="view start-form">
@@ -148,6 +154,7 @@ export function StartForm({
               onClick={(): void => {
                 setSelectedMin(min);
                 setCustomMin('');
+                if (i === 2) setCyclingOn(false);
               }}
             />
           ),
@@ -163,6 +170,12 @@ export function StartForm({
           onInput={(e: Event): void => setCustomMin((e.currentTarget as HTMLInputElement).value)}
         />
       </fieldset>
+
+      {timingSummary !== null ? (
+        <p class="session-timing" role="status">
+          {timingSummary}
+        </p>
+      ) : null}
 
       <label class="work-tab-label" htmlFor="next-step">
         What's your next small step?

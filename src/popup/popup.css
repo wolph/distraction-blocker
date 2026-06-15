@@ -143,6 +143,13 @@ body {
   padding: 14px;
 }
 
+.session-timing {
+  margin: 8px 0 12px;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .footer {
   display: flex;
   justify-content: space-between;

@@ -23,6 +23,84 @@ interface TabIdentity {
   windowId: number;
 }
 
+test('a stopped page can retry a failed work-tab lookup and choose its target', async ({
+  context,
+  extPage,
+  worker,
+  siteUrl,
+}) => {
+  const work: Page = await context.newPage();
+  await work.goto(siteUrl('/plain.html').replace('blocked.example', 'other.example'));
+  await work.evaluate((): void => {
+    document.title = 'Continue this task';
+  });
+  const chosen: TabIdentity = await identity(worker, work);
+  await startTestSession(extPage, { durationMin: 2 });
+  await worker.evaluate((): void => {
+    (globalThis as unknown as { rejectWorkLookup: boolean }).rejectWorkLookup = true;
+    chrome.runtime.onMessage.addListener(
+      (
+        message: unknown,
+        sender: chrome.runtime.MessageSender,
+        reply: (value: unknown) => void,
+      ): void => {
+        if (
+          (globalThis as unknown as { rejectWorkLookup: boolean }).rejectWorkLookup &&
+          sender.url?.startsWith('http://blocked.example:') &&
+          typeof message === 'object' &&
+          message !== null &&
+          'type' in message &&
+          message.type === 'getWorkTarget'
+        ) {
+          reply({ ok: false, error: 'Temporary lookup failure' });
+        }
+      },
+    );
+  });
+  const blocked: Page = await context.newPage();
+  await blocked.goto(siteUrl('/plain.html'), { waitUntil: 'commit' });
+  await expect(blocked.locator('focus-lock-overlay')).toBeAttached();
+  const cdp: CDPSession = await context.newCDPSession(blocked);
+  try {
+    await expect
+      .poll(async (): Promise<boolean> => {
+        const tree: AccessibilityTree = await cdp.send('Accessibility.getFullAXTree');
+        return tree.nodes.some(
+          (node: AccessibilityNode): boolean =>
+            node.name?.value === 'Could not load your work tab. Try again, or reload this page.',
+        );
+      })
+      .toBe(true);
+    const tree: AccessibilityTree = await cdp.send('Accessibility.getFullAXTree');
+    const button: AccessibilityNode | undefined = tree.nodes.find(
+      (node: AccessibilityNode): boolean =>
+        node.role?.value === 'button' && node.name?.value === 'Choose a work tab',
+    );
+    expect(
+      button?.properties?.some(
+        (property: AccessibilityProperty): boolean =>
+          property.name === 'disabled' && property.value.value === true,
+      ),
+    ).toBe(false);
+  } finally {
+    await cdp.detach();
+  }
+  await worker.evaluate((): void => {
+    (globalThis as unknown as { rejectWorkLookup: boolean }).rejectWorkLookup = false;
+  });
+  await clickOverlay(context, blocked, 'Choose a work tab');
+  await clickOverlay(context, blocked, 'Continue this task');
+  await expect
+    .poll(
+      async (): Promise<boolean> =>
+        worker.evaluate(
+          async (tabId: number): Promise<boolean> => (await chrome.tabs.get(tabId)).active,
+          chosen.tabId,
+        ),
+    )
+    .toBe(true);
+});
+
 async function identity(worker: Worker, page: Page): Promise<TabIdentity> {
   return worker.evaluate(async (url: string): Promise<TabIdentity> => {
     const tabs: chrome.tabs.Tab[] = await chrome.tabs.query({ url });
