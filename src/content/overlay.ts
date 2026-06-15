@@ -579,7 +579,11 @@ function updateTarget(m: Mounted): void {
               ? 'Pick an open tab to continue your task.'
               : 'Your focus session is not available. Try again, or reload this page.'));
   const change: HTMLElement | null = m.root.querySelector('.change-work');
-  if (change !== null) change.hidden = !ready;
+  if (change !== null) {
+    if (!ready && m.root.activeElement === change)
+      (button !== null && !button.disabled ? button : m.container).focus({ preventScroll: true });
+    change.hidden = !ready;
+  }
 }
 
 export function refreshWorkTarget(): void {

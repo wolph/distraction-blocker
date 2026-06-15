@@ -912,3 +912,36 @@ it.each([false, true])(
     expect(root().activeElement).toBe(moveFocus ? summary : primary);
   },
 );
+
+it.each([
+  { ok: false, error: 'Unavailable' },
+  { ok: true, sessionId: null, state: 'missing', title: null },
+])(
+  'moves focus off Change work tab before a reply hides it: %j',
+  async (reply: unknown): Promise<void> => {
+    let resolveRefresh: (value: unknown) => void = (): void => {};
+    let lookups: number = 0;
+    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+      async (request: { type: string }): Promise<unknown> => {
+        if (request.type !== 'getWorkTarget') return { ok: true, tabs: [] };
+        lookups += 1;
+        if (lookups === 1) return { ok: true, sessionId: 'one', state: 'ready', title: 'Report' };
+        return new Promise<unknown>((resolve: (value: unknown) => void): void => {
+          resolveRefresh = resolve;
+        });
+      },
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    showOverlay(verdict, snapshot());
+    await vi.waitFor((): void =>
+      expect((root().querySelector('.change-work') as HTMLButtonElement).hidden).toBe(false),
+    );
+    const change: HTMLButtonElement = root().querySelector('.change-work') as HTMLButtonElement;
+    change.click();
+    refreshWorkTarget();
+    change.focus();
+    resolveRefresh(reply);
+    await vi.waitFor((): void => expect(change.hidden).toBe(true));
+    expect(root().activeElement).toBe(root().querySelector('.return-work'));
+  },
+);
