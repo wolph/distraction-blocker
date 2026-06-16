@@ -1,5 +1,20 @@
 # Focus Lock QA checklist
 
+## Uninterrupted deep work and work-tab retry: 2026-09-08
+
+The final source is `1c91ebe`. Browser checks used disposable Chromium profiles and demonstration tabs. The retry scenario deliberately injected a failed target lookup. The cause of the user's original lookup failure was not verified in their live browser.
+
+- [x] Reproduced the old 50-minute preset starting with a 25-minute focus phase. Selecting deep work now disables cycles for that draft. Explicitly enabling cycles afterwards remains possible, and the timing preview describes the resulting plan.
+- [x] The browser shows `50:00` at session start. The focus phase and session share the same end timestamp, 50 minutes after the start. Existing sessions and saved cycle defaults remain unchanged.
+- [x] A failed work-target lookup leaves an enabled retry action. Retrying opens the inline chooser after obtaining a valid worker session ID. Trusted sender validation and attempt accounting remain unchanged.
+- [x] Failed, malformed and missing-session refreshes retain visible keyboard focus. Pending background retries preserve deliberate focus changes and gate input.
+- [x] The normal checkout passes `npm run check`: Biome, TypeScript, 61 test files, 1,267 passing tests, 2 skipped tests and production build.
+- [x] All 42 browser scenarios passed before the final focus handoff adjustment. The 12 session-length and work-target browser scenarios passed again on the final normal-checkout build.
+- [x] A dedicated Vite server ran during dev-browser verification. The final build has 108 captures across light and dark themes at 1280, 768 and 375 px. All five states have full-page and component captures. Changed preset and retry controls also have hover and keyboard-focus captures.
+- [x] Independent visual review approved the timing preview, countdown, retry guidance and recovered picker. Final browser logs contain no console errors or page exceptions. Chromium emitted module-preload warnings on extension pages.
+
+Evidence is retained in `.playwright-mcp/countdown-qa/`. Reload the unpacked extension and affected pages to load the new code. An already-started session keeps its original cycle configuration.
+
 ## Work tab picker verification: 2026-09-08
 
 The picker screenshots cover source commit `2176e9fb4f93367e209eeb938ef4523aac9ef5d0`. Final automated checks also include list ordering fix `7502644`. Browser checks used isolated Chromium profiles with demonstration tabs.
