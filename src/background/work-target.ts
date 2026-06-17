@@ -163,6 +163,7 @@ export class WorkTargetService {
       .map(
         (tab: chrome.tabs.Tab): WorkTab => ({
           tabId: tab.id as number,
+          hostname: new URL(tab.url as string).hostname,
           title: tab.title || new URL(tab.url as string).hostname,
         }),
       );

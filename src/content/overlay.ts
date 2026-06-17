@@ -653,12 +653,14 @@ function openWorkPicker(m: Mounted, trigger: HTMLElement): void {
     (tabId: number): Promise<string | null> => selectWorkTab(m, sessionId, tabId),
     (): void => {
       m.picker = null;
+      m.root.querySelector('.panel')?.classList.remove('panel-picker');
       m.actionGeneration += 1;
     },
   );
+  m.root.querySelector('.panel')?.classList.add('panel-picker');
   m.root.querySelector('.change-work')?.after(m.picker.element);
   m.picker.element
-    .querySelector<HTMLButtonElement>('.work-picker-cancel')
+    .querySelector<HTMLInputElement>('.work-picker-search')
     ?.focus({ preventScroll: true });
 }
 

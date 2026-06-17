@@ -611,7 +611,9 @@ it('keeps focus inside the overlay while retrying a failed list', async (): Prom
     expect((root().querySelector('.return-work') as HTMLButtonElement).disabled).toBe(false),
   );
   (root().querySelector('.return-work') as HTMLButtonElement).click();
-  await vi.waitFor((): void => expect(root().querySelector('.work-picker-retry')).not.toBeNull());
+  await vi.waitFor((): void =>
+    expect((root().querySelector('.work-picker-retry') as HTMLButtonElement).disabled).toBe(false),
+  );
   const retry: HTMLButtonElement = root().querySelector('.work-picker-retry') as HTMLButtonElement;
   retry.focus();
   pending = true;
@@ -874,7 +876,7 @@ it.each([
       expect((root().querySelector('.change-work') as HTMLButtonElement).hidden).toBe(false),
     );
     (root().querySelector('.change-work') as HTMLButtonElement).click();
-    expect(root().activeElement).toBe(root().querySelector('.work-picker-cancel'));
+    expect(root().activeElement).toBe(root().querySelector('.work-picker-search'));
     current = reply;
     refreshWorkTarget();
     await vi.waitFor((): void => expect(root().querySelector('.work-picker')).toBeNull());

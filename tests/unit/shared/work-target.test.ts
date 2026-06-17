@@ -56,6 +56,66 @@ describe('work target response boundaries', (): void => {
       }),
     ).toBeNull();
   });
+  it('accepts validated hostnames and legacy title-only candidates', (): void => {
+    for (const hostname of [
+      'work.example',
+      'localhost',
+      '127.0.0.1',
+      '[::1]',
+      'xn--bcher-kva.example',
+    ]) {
+      const result: unknown = { ok: true, tabs: [{ tabId: 7, title: 'Report', hostname }] };
+      expect(parseWorkTabsResult(result)).toEqual(result);
+    }
+    expect(parseWorkTabsResult({ ok: true, tabs: [{ tabId: 7, title: 'Report' }] })).toEqual({
+      ok: true,
+      tabs: [{ tabId: 7, title: 'Report' }],
+    });
+  });
+  it.each([
+    '',
+    'https://work.example',
+    'work.example/path',
+    'work.example?secret=1',
+    'work.example:443',
+    'user@work.example',
+    ' work.example',
+    null,
+    undefined,
+  ])('rejects invalid candidate hostname %s', (hostname: unknown): void => {
+    expect(
+      parseWorkTabsResult({ ok: true, tabs: [{ tabId: 7, title: 'Report', hostname }] }),
+    ).toBeNull();
+  });
+  it('rejects extra fields alongside hostname and hostile hostname accessors', (): void => {
+    expect(
+      parseWorkTabsResult({
+        ok: true,
+        tabs: [
+          {
+            tabId: 7,
+            title: 'Report',
+            hostname: 'work.example',
+            url: 'https://work.example/private',
+          },
+        ],
+      }),
+    ).toBeNull();
+    expect(
+      parseWorkTabsResult({
+        ok: true,
+        tabs: [
+          {
+            tabId: 7,
+            title: 'Report',
+            get hostname(): string {
+              throw new Error('hostile');
+            },
+          },
+        ],
+      }),
+    ).toBeNull();
+  });
   it('fails closed on hostile accessors', (): void => {
     const hostile: unknown = {
       get ok(): boolean {

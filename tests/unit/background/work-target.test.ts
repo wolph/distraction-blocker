@@ -91,9 +91,16 @@ describe('work targets', (): void => {
   it('lists only eligible HTTP tabs in the popup context', async (): Promise<void> => {
     expect(await service.getWorkTabs('blacklist', 1, popup)).toEqual({
       ok: true,
-      tabs: [{ tabId: 1, title: 'Tab 1' }],
+      tabs: [{ tabId: 1, title: 'Tab 1', hostname: 'work.example' }],
     });
     expect(await service.getWorkTabs('whitelist', 2, popup)).toEqual({ ok: true, tabs: [] });
+  });
+  it('projects only hostname alongside the title and tab identity', async (): Promise<void> => {
+    tabs[0] = tab(1, 'https://work.example/private/report?token=private#section');
+    expect(await service.getWorkTabs('blacklist', 1, popup)).toEqual({
+      ok: true,
+      tabs: [{ tabId: 1, title: 'Tab 1', hostname: 'work.example' }],
+    });
   });
   it('rejects popup-shaped content requests and other extension pages', async (): Promise<void> => {
     const content: chrome.runtime.MessageSender = {
@@ -121,7 +128,7 @@ describe('work targets', (): void => {
     session = { sessionId: 'session-1', mode: 'whitelist' };
     expect(await service.getContentWorkTabs('session-1', content)).toEqual({
       ok: true,
-      tabs: [{ tabId: 1, title: 'Tab 1' }],
+      tabs: [{ tabId: 1, title: 'Tab 1', hostname: 'work.example' }],
     });
     expect(await service.setWorkTarget('session-1', 1, undefined, content)).toEqual({ ok: true });
     expect(stored).toEqual({ sessionId: 'session-1', tabId: 1, incognito: false });

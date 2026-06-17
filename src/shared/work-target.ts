@@ -3,6 +3,7 @@ import type { Rejection, StartSessionResult } from './messages';
 export interface WorkTab {
   tabId: number;
   title: string;
+  hostname?: string;
 }
 
 export interface StoredWorkTarget {
@@ -117,15 +118,31 @@ export function parseWorkTabsResult(value: unknown): WorkTabsResult | null {
       const tab: Record<string, unknown> | null = dataRecord(value);
       if (
         tab === null ||
-        !exact(tab, ['tabId', 'title']) ||
+        !(
+          exact(tab, ['tabId', 'title']) ||
+          (exact(tab, ['tabId', 'title', 'hostname']) && isWorkHostname(tab.hostname))
+        ) ||
         !isBrowserTabId(tab.tabId) ||
         typeof tab.title !== 'string'
       )
         return null;
-      tabs.push({ tabId: tab.tabId, title: tab.title });
+      tabs.push({
+        tabId: tab.tabId,
+        title: tab.title,
+        ...(Object.hasOwn(tab, 'hostname') ? { hostname: tab.hostname as string } : {}),
+      });
     }
   } catch {
     return null;
   }
   return { ok: true, tabs };
+}
+
+function isWorkHostname(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.trim() !== value) return false;
+  try {
+    return new URL(`http://${value}/`).hostname === value;
+  } catch {
+    return false;
+  }
 }
