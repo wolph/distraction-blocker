@@ -26,7 +26,10 @@ function markStopped(): void {
   wasStopped = true;
   const head: HTMLHeadElement = document.createElement('head');
   const overlay: Element | null = document.querySelector('focus-lock-overlay');
-  document.documentElement.replaceChildren(head, ...(overlay === null ? [] : [overlay]));
+  for (const child of Array.from(document.documentElement.childNodes)) {
+    if (child !== overlay) child.remove();
+  }
+  document.documentElement.prepend(head);
   const observer: MutationObserver = new MutationObserver(removeStoppedPageContent);
   observer.observe(document.documentElement, { childList: true });
   document.title = 'Locked - Focus Lock';
