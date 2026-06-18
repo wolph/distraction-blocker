@@ -318,6 +318,7 @@ export const WORK_PICKER_CSS: string = `
 .change-work[hidden] { display: none; }
 .work-picker-status { font-size: 0.85rem; line-height: 1.5; color: var(--overlay-muted); margin-block: 0.7rem; overflow-wrap: anywhere; }
 .work-picker [role="alert"] { color: var(--overlay-error-text); background: var(--overlay-error-bg); padding: 0.65rem; border-radius: 0.5rem; }
+.work-picker-body { display: flow-root; min-height: min(24rem, 45vh); }
 .work-picker-list { display: grid; gap: 0.75rem; max-height: min(24rem, 45vh); overflow-y: auto; overscroll-behavior: contain; padding: 0.5rem; margin: -0.5rem; }
 .work-tab-option { display: flex; align-items: center; gap: 0.75rem; width: 100%; padding: 0.8rem; border: 1px solid var(--overlay-meter); border-radius: 0.7rem; background: var(--overlay-pill); color: var(--overlay-text); text-align: left; }
 .work-tab-option:hover:enabled { background: var(--overlay-pill-hover); border-color: var(--overlay-bank); }
