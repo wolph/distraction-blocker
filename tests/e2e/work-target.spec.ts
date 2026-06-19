@@ -9,6 +9,8 @@ interface AccessibilityProperty {
 }
 
 interface AccessibilityNode {
+  backendDOMNodeId?: number;
+  value?: { value?: unknown };
   role?: { value?: unknown };
   name?: { value?: unknown };
   properties?: AccessibilityProperty[];
@@ -286,7 +288,7 @@ test('long next steps scroll with a trackpad and touch while the blocked page st
     const tree = await cdp.send('Accessibility.getFullAXTree');
     const dialog = tree.nodes.find((node): boolean => node.role?.value === 'dialog');
     if (dialog?.backendDOMNodeId === undefined) throw new Error('Overlay dialog missing');
-    const remote = await cdp.send('DOM.resolveNode', {
+    const remote: { object: { objectId?: string } } = await cdp.send('DOM.resolveNode', {
       backendNodeId: dialog.backendDOMNodeId,
     });
     const scrollTop: () => Promise<number> = async (): Promise<number> => {
@@ -519,6 +521,146 @@ test('the inline picker offers allowed tabs and returns without losing page inpu
     ),
   ).toBe('existing content');
   await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
+});
+
+test('the larger picker searches titles and domains before keyboard selection', async ({
+  context,
+  extPage,
+  worker,
+  siteUrl,
+}) => {
+  const work: Page = await context.newPage();
+  await work.goto(siteUrl('/plain.html').replace('blocked.example', 'other.example'));
+  await work.evaluate((): void => {
+    document.title = 'Write the generator example';
+  });
+  const chosen: TabIdentity = await identity(worker, work);
+  const notes: Page = await context.newPage();
+  await notes.goto(siteUrl('/plain.html').replace('blocked.example', '127.0.0.1'));
+  await notes.evaluate((): void => {
+    document.title = 'Meeting notes';
+  });
+  const notesTab: TabIdentity = await identity(worker, notes);
+  await expect
+    .poll(
+      async (): Promise<string | undefined> =>
+        worker.evaluate(
+          async (tabId: number): Promise<string | undefined> =>
+            (await chrome.tabs.get(tabId)).title,
+          notesTab.tabId,
+        ),
+    )
+    .toBe('Meeting notes');
+  await startTestSession(extPage, { durationMin: 2 });
+  const blocked: Page = await context.newPage();
+  await blocked.setViewportSize({ width: 1280, height: 1000 });
+  await blocked.goto(siteUrl('/plain.html'), { waitUntil: 'commit' });
+  await expect(blocked.locator('focus-lock-overlay')).toBeAttached();
+  await clickOverlay(context, blocked, 'Choose a work tab');
+  const cdp: CDPSession = await context.newCDPSession(blocked);
+  const hasRow: (title: string) => Promise<boolean> = async (title: string): Promise<boolean> => {
+    const tree: AccessibilityTree = await cdp.send('Accessibility.getFullAXTree');
+    return tree.nodes.some(
+      (node: AccessibilityNode): boolean =>
+        node.role?.value === 'button' && String(node.name?.value).startsWith(title),
+    );
+  };
+  const search: (query: string) => Promise<void> = async (query: string): Promise<void> => {
+    await blocked.bringToFront();
+    const tree: AccessibilityTree = await cdp.send('Accessibility.getFullAXTree');
+    const field: AccessibilityNode | undefined = tree.nodes.find(
+      (node: AccessibilityNode): boolean => node.role?.value === 'searchbox',
+    );
+    if (field?.backendDOMNodeId === undefined) throw new Error('Search field is missing');
+    await cdp.send('DOM.focus', { backendNodeId: field.backendDOMNodeId });
+    await blocked.keyboard.press('ControlOrMeta+A');
+    await blocked.keyboard.press('Backspace');
+    if (query.length > 0) await blocked.keyboard.insertText(query);
+    await expect
+      .poll(async (): Promise<unknown> => {
+        const updated: AccessibilityTree = await cdp.send('Accessibility.getFullAXTree');
+        return (
+          updated.nodes.find((node: AccessibilityNode): boolean => node.role?.value === 'searchbox')
+            ?.value?.value ?? ''
+        );
+      })
+      .toBe(query);
+  };
+  try {
+    await expect
+      .poll(async (): Promise<boolean> => {
+        const tree: AccessibilityTree = await cdp.send('Accessibility.getFullAXTree');
+        return tree.nodes.some(
+          (node: AccessibilityNode): boolean =>
+            node.role?.value === 'searchbox' &&
+            node.name?.value === 'Search work tabs' &&
+            node.properties?.some(
+              (property: AccessibilityProperty): boolean =>
+                property.name === 'focused' && property.value.value === true,
+            ) === true,
+        );
+      })
+      .toBe(true);
+    const tree: AccessibilityTree = await cdp.send('Accessibility.getFullAXTree');
+    const field: AccessibilityNode | undefined = tree.nodes.find(
+      (node: AccessibilityNode): boolean => node.role?.value === 'searchbox',
+    );
+    if (field?.backendDOMNodeId === undefined) throw new Error('Search field is missing');
+    const remote: { object: { objectId?: string } } = await cdp.send('DOM.resolveNode', {
+      backendNodeId: field.backendDOMNodeId,
+    });
+    const size: { result: { value?: unknown } } = await cdp.send('Runtime.callFunctionOn', {
+      objectId: remote.object.objectId,
+      functionDeclaration:
+        'function() { return this.closest(".work-picker").getBoundingClientRect().width; }',
+      returnByValue: true,
+    });
+    expect(size.result.value).toBeGreaterThan(650);
+    await expect.poll((): Promise<boolean> => hasRow('Meeting notes')).toBe(true);
+    const pickerHeight: () => Promise<number> = async (): Promise<number> => {
+      const result: { result: { value?: unknown } } = await cdp.send('Runtime.callFunctionOn', {
+        objectId: remote.object.objectId,
+        functionDeclaration:
+          'function() { return this.closest(".work-picker").getBoundingClientRect().height; }',
+        returnByValue: true,
+      });
+      if (typeof result.result.value !== 'number') throw new Error('Picker height is missing');
+      return result.result.value;
+    };
+    const beforeSearch: number = await pickerHeight();
+    await search('  GeNeRaToR  example ');
+    await expect.poll((): Promise<boolean> => hasRow('Write the generator example')).toBe(true);
+    await expect.poll((): Promise<boolean> => hasRow('Meeting notes')).toBe(false);
+    await search('127.0.0.1');
+    await expect.poll((): Promise<boolean> => hasRow('Meeting notes')).toBe(true);
+    await expect.poll((): Promise<boolean> => hasRow('Write the generator example')).toBe(false);
+    await search('no matching work tab');
+    await expect.poll((): Promise<boolean> => hasRow('Meeting notes')).toBe(false);
+    await expect.poll((): Promise<boolean> => hasRow('Write the generator example')).toBe(false);
+    expect(await pickerHeight()).toBeCloseTo(beforeSearch, 0);
+    await search('');
+    await expect.poll((): Promise<boolean> => hasRow('Meeting notes')).toBe(true);
+    await search('other.example');
+    await expect.poll((): Promise<boolean> => hasRow('Write the generator example')).toBe(true);
+    await blocked.keyboard.press('ArrowDown');
+    await blocked.keyboard.press('Enter');
+    await expect
+      .poll(
+        async (): Promise<boolean> =>
+          worker.evaluate(
+            async (tabId: number): Promise<boolean> => (await chrome.tabs.get(tabId)).active,
+            chosen.tabId,
+          ),
+      )
+      .toBe(true);
+    expect(await target(extPage, chosen.windowId)).toMatchObject({
+      ok: true,
+      state: 'ready',
+      title: 'Write the generator example',
+    });
+  } finally {
+    await cdp.detach();
+  }
 });
 
 test('refreshing an empty picker keeps keyboard focus inside the lockscreen', async ({
