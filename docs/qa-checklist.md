@@ -1,5 +1,22 @@
 # Focus Lock QA checklist
 
+## Larger searchable work-tab picker: 2026-09-08
+
+These checks cover source and browser regression commit `194cff3`. Browser screenshots use a disposable Chromium profile with twelve demonstration tabs.
+
+- [x] The chooser expands its panel to 760px while open and fits narrower viewports. A taller scrolling result area reserves its height so the search field stays in place when matches change.
+- [x] Search filters locally by title and hostname, ignoring case and surrounding whitespace. Multiple words must all match. Titles, domains and result counts distinguish candidates, and clearing restores the list.
+- [x] Search receives focus on open. Arrow Down enters the results, row navigation and Escape work, and pending saves prevent search or refresh from creating selectable rows.
+- [x] Refresh and failed-request retry preserve the query. Hostname metadata remains optional for older replies, and new worker replies contain no URL path or query. Existing sender, session and candidate checks remain enforced.
+- [x] A delayed initial navigation check no longer detaches an already interactive overlay. The regression covers the actual content entry point and verifies retained search focus, text, selection and a continuously connected host while blocked page content is removed.
+- [x] Biome, TypeScript and all 63 unit-test files pass: 1,284 tests passed and 2 skipped. The production build passes.
+- [x] The browser search scenario passes five consecutive runs, including actual title/domain filtering, no matches, clearing, stable picker height and keyboard selection of the saved tab.
+- [x] All 43 browser scenarios pass. The normal checkout passes `npm run check`, and its 28 rebuilt extension files match the tested bundle byte for byte.
+- [x] A dedicated Vite server ran during dev-browser verification. One hundred captures cover full, filtered and empty results in both themes at 1280, 768 and 375px, including component, hover and keyboard-focus detail. Short-viewport captures verify scrolling to the final row at 375x600.
+- [x] Independent spec, code and visual reviews passed. Final browser logs contain no console errors or page exceptions. Chromium emitted ten module-preload warnings on extension pages.
+
+Evidence is retained in `.playwright-mcp/searchable-picker-qa/`. The README includes the new chooser screenshot and search controls. Reload the unpacked extension and affected page to load the changes.
+
 ## Uninterrupted deep work and work-tab retry: 2026-09-08
 
 The final source is `1c91ebe`. Browser checks used disposable Chromium profiles and demonstration tabs. The retry scenario deliberately injected a failed target lookup. The cause of the user's original lookup failure was not verified in their live browser.
