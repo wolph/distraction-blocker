@@ -1,5 +1,20 @@
 # Focus Lock QA checklist
 
+## Work-tab scale and destination labels: 2026-09-08
+
+Verification used isolated Chromium 151 profiles and demonstration tabs. The scale measurement supplied 10,000 synthetic metadata records and empty icon responses to the production chooser. Real cached icons and recent-tab ordering were checked separately.
+
+- [x] `npm run check`: Biome, TypeScript, 66 test files, 1,324 passing tests, 2 skipped tests and production build passed.
+- [x] All 45 Playwright browser scenarios passed, including search, offscreen keyboard navigation, cached favicons, recent ordering and destination labels in the popup, gate and lockscreen.
+- [x] At 1280 by 1000 pixels, 10,000 records produced at most 13 rendered rows. Opening took 209 ms. Four searches took 178 to 212 ms. End reached record 10,000 in 6 ms. The browser recorded no tasks longer than 50 ms during this sample. Timings include automation overhead and describe this machine and synthetic dataset.
+- [x] Icon work is limited to four active requests, a bounded worker queue and bounded caches. Tests cover stale responses, metadata refresh, missing icons, oversized data and revoked session, source, policy or privacy context.
+- [x] A real discarded tab remained listed and discarded after its cached favicon was read. The local fixture received no extra requests. Raw CDP attached only to the owned extension worker and popup for this check. Discarding a Playwright-attached page triggered a Chromium SIGSEGV, so the raw CDP probe avoids that test-runtime failure.
+- [x] Independent spec and quality review approved the implementation after fixes for stale same-domain favicons on refresh and unbounded destination titles.
+- [x] Independent visual review approved 44 inspected captures from the 178-image verification matrix. Browser logs contain no console errors or page exceptions. Chromium emitted module-preload warnings on extension pages.
+- [x] A dedicated Vite server was started and visited through dev-browser. Production extension screenshots cover full pages, changed components, hover and keyboard focus in light and dark at 1280, 768 and 375 px, plus short windows. Captures verify the actual browser viewport after switching between pages.
+
+Evidence is retained in `.playwright-mcp/tab-picker-scale-qa/`. The README chooser image uses demonstration tabs and locally served test favicons.
+
 ## Larger searchable work-tab picker: 2026-09-08
 
 These checks cover source and browser regression commit `194cff3`. Browser screenshots use a disposable Chromium profile with twelve demonstration tabs.

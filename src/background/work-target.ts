@@ -1,12 +1,15 @@
 import type { Ack, StartSessionResult } from '../shared/messages';
 import type { SessionConfig } from '../shared/types';
 import {
+  isWorkLastAccessed,
   parseStoredWorkTarget,
   type StoredWorkTarget,
   type WorkTab,
+  type WorkTabIconResult,
   type WorkTabsResult,
   type WorkTargetResult,
 } from '../shared/work-target';
+import { chromeWorkTabIconPorts, type IconTarget, WorkTabIconService } from './work-tab-icons';
 
 export interface WorkSession {
   sessionId: string;
@@ -51,6 +54,7 @@ export class WorkTargetService {
   constructor(
     private readonly engine: WorkTargetEngine,
     private readonly ports: WorkTargetPorts,
+    private readonly icons: WorkTabIconService = new WorkTabIconService(chromeWorkTabIconPorts()),
   ) {}
 
   private serialise<T>(action: () => Promise<T>): Promise<T> {
@@ -153,6 +157,26 @@ export class WorkTargetService {
     }
   }
 
+  async getWorkTabIcon(
+    sessionId: string,
+    tabId: number,
+    sender: chrome.runtime.MessageSender,
+  ): Promise<WorkTabIconResult> {
+    try {
+      const icon: string | null = await this.icons.get(async (): Promise<IconTarget> => {
+        const incognito: boolean = await this.context(undefined, sender);
+        this.current(sessionId);
+        const tab: chrome.tabs.Tab = await this.ports.tab(tabId);
+        if (!this.suitable(tab, this.current(sessionId).mode, incognito))
+          throw new Error(CHOOSE_TARGET);
+        return { url: tab.url as string, incognito, favicon: tab.favIconUrl };
+      });
+      return { ok: true, icon };
+    } catch (error: unknown) {
+      return failure(this.error(error));
+    }
+  }
+
   private candidates(
     tabs: chrome.tabs.Tab[],
     mode: SessionConfig['mode'],
@@ -163,9 +187,14 @@ export class WorkTargetService {
       .map(
         (tab: chrome.tabs.Tab): WorkTab => ({
           tabId: tab.id as number,
+          ...(isWorkLastAccessed(tab.lastAccessed) ? { lastAccessed: tab.lastAccessed } : {}),
           hostname: new URL(tab.url as string).hostname,
           title: tab.title || new URL(tab.url as string).hostname,
         }),
+      )
+      .sort(
+        (left: WorkTab, right: WorkTab): number =>
+          (right.lastAccessed ?? -1) - (left.lastAccessed ?? -1),
       );
   }
 
@@ -194,7 +223,12 @@ export class WorkTargetService {
       if (this.engine.workTargetSession()?.sessionId !== session.sessionId)
         return this.getWorkTarget(windowId, sender);
       return tab !== null && this.suitable(tab, session.mode, incognito)
-        ? { ...base, state: 'ready', title: tab.title || new URL(tab.url as string).hostname }
+        ? {
+            ...base,
+            state: 'ready',
+            title: tab.title || new URL(tab.url as string).hostname,
+            hostname: new URL(tab.url as string).hostname,
+          }
         : { ...base, state: 'unavailable' };
     } catch (error: unknown) {
       return failure(this.error(error));

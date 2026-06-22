@@ -4,6 +4,7 @@ import type { Ack } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import { ackError } from '../shared/runtime-validation';
 import type { GateKind, GateState } from '../shared/types';
+import { ReturnToWorkButton, type WorkDestination } from './ReturnToWorkButton';
 
 type GateRequest =
   | { type: 'abandonGate' }
@@ -25,12 +26,14 @@ export function GatePanel({
   now,
   intention,
   returnToWork,
+  returnDestination,
   returnPending = false,
 }: {
   gate: GateState;
   now: number;
   intention: string;
   returnToWork?: () => Promise<void>;
+  returnDestination?: WorkDestination;
   returnPending?: boolean;
 }): VNode {
   const [typed, setTyped]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
@@ -82,17 +85,22 @@ export function GatePanel({
       <p class="gate-wait">
         A moment to decide: <span class="time">{elapsedS}</span> of {totalS} s
       </p>
-      <button
-        type="button"
-        class="start-button"
-        disabled={pending || returnPending}
-        onClick={(): void => {
-          if (returnToWork !== undefined) void returnToWork();
-          else abandon();
-        }}
-      >
-        {returnToWork === undefined ? 'Keep focusing' : 'Back to work'}
-      </button>
+      {returnToWork !== undefined ? (
+        <ReturnToWorkButton
+          destination={returnDestination ?? { title: null }}
+          disabled={pending || returnPending}
+          onClick={(): void => void returnToWork()}
+        />
+      ) : (
+        <button
+          type="button"
+          class="start-button"
+          disabled={pending || returnPending}
+          onClick={abandon}
+        >
+          Keep focusing
+        </button>
+      )}
       {gate.requiredPhrase !== null ? (
         <label class="gate-phrase">
           <span class="radio-hint">Type: {gate.requiredPhrase}</span>

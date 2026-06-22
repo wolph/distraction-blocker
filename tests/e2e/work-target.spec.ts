@@ -420,7 +420,7 @@ test('the popup defaults to the current work tab and can replace a closed target
   await expect(extPage.getByLabel('Work tab', { exact: true })).toHaveValue(String(work.tabId));
   await extPage.getByLabel("What's your next small step?").fill('Write the first assertion');
   await extPage.getByRole('button', { name: 'Start focusing' }).click();
-  await expect(extPage.getByRole('button', { name: 'Back to work', exact: true })).toBeEnabled();
+  await expect(extPage.getByRole('button', { name: /^Back to work:/ })).toBeEnabled();
   const selected: WorkTargetResult = await target(extPage, work.windowId);
   expect(selected.ok && selected.title).toBe('Write the generator example');
   const snapshot: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
@@ -442,7 +442,7 @@ test('the popup defaults to the current work tab and can replace a closed target
       return current.ok ? current.title : null;
     })
     .toBe('Finish the example');
-  await extPage.getByRole('button', { name: 'Back to work', exact: true }).click();
+  await extPage.getByRole('button', { name: /^Back to work:/ }).click();
   await expect
     .poll(
       async (): Promise<boolean> =>

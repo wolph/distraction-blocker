@@ -35,6 +35,7 @@ const MAX_RELATIVE_DURATION_MS: number = DATE_MAX_MS / 2;
 
 const VALID_REQUESTS: RequestByType = {
   getSnapshot: { type: 'getSnapshot' },
+  getWorkTabIcon: { type: 'getWorkTabIcon', sessionId: 'session', tabId: 1 },
   getWorkTabs: { type: 'getWorkTabs', mode: 'blacklist', windowId: 1 },
   getWorkTarget: { type: 'getWorkTarget' },
   setWorkTarget: { type: 'setWorkTarget', sessionId: 'session', tabId: 1, windowId: 1 },
@@ -747,4 +748,13 @@ describe('work target request validation', (): void => {
     expect(parseRequest({ type: 'returnToWork', sessionId: 'session', tabId: 1 })).toBeNull();
     expect(parseRequest({ type: 'returnToWork', sessionId: '' })).toBeNull();
   });
+});
+
+it('rejects icon requests with arbitrary URL or missing session identity', (): void => {
+  for (const value of [
+    { type: 'getWorkTabIcon', sessionId: 'session', tabId: 1, url: 'https://private.example' },
+    { type: 'getWorkTabIcon', sessionId: '', tabId: 1 },
+    { type: 'getWorkTabIcon', sessionId: 'session', tabId: -1 },
+  ])
+    expect(parseRequest(value)).toBeNull();
 });

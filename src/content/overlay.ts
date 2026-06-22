@@ -381,7 +381,8 @@ function trapInteraction(root: ShadowRoot): void {
     if (ev.key !== 'Tab') {
       if (shouldPreventKeyboardScroll(ev)) {
         ev.preventDefault();
-        const container: HTMLElement | null = root.querySelector('.backdrop');
+        const container: HTMLElement | null =
+          root.querySelector('.work-picker-list') ?? root.querySelector('.backdrop');
         if (container !== null) {
           const step: number =
             ev.key === 'PageDown' || ev.key === 'PageUp' || ev.key === ' '
@@ -397,6 +398,7 @@ function trapInteraction(root: ShadowRoot): void {
     const focusables: HTMLElement[] = Array.from(
       root.querySelectorAll<HTMLElement>('button:not([disabled]):not([hidden]), input, summary'),
     ).filter((element: HTMLElement): boolean => {
+      if (element.closest('[inert]') !== null || element.matches(':disabled')) return false;
       const details: HTMLDetailsElement | null = element.closest('details');
       return details === null || details.open || element.tagName === 'SUMMARY';
     });
@@ -503,7 +505,7 @@ function render(m: Mounted): void {
   primary.type = 'button';
   primary.className = 'primary return-work';
   primary.addEventListener('click', (): void => {
-    if (m.target?.ok && m.target.state === 'ready' && m.target.sessionId !== null)
+    if (workTargetReady(m) && m.target?.ok && m.target.sessionId !== null)
       void returnToWork(m, m.target.sessionId);
     else if (m.target?.ok && m.target.sessionId !== null) openWorkPicker(m, primary);
     else {
@@ -561,9 +563,13 @@ function updateStatic(m: Mounted): void {
 function updateTarget(m: Mounted): void {
   const button: HTMLButtonElement | null = m.root.querySelector('.return-work');
   const title: HTMLElement | null = m.root.querySelector('.work-target');
-  const ready: boolean = m.target?.ok === true && m.target.state === 'ready';
+  const ready: boolean = workTargetReady(m);
   if (button !== null) {
-    button.textContent = ready ? 'Back to work' : 'Choose a work tab';
+    updateReturnButton(
+      button,
+      ready && m.target?.ok ? m.target.title : null,
+      ready && m.target?.ok ? m.target.hostname : undefined,
+    );
     button.disabled = m.targetPending && !(m.target?.ok && m.target.sessionId !== null);
     button.setAttribute('aria-busy', String(m.targetPending));
     if (ready && m.initialFocus && m.root.activeElement === m.container) button.focus();
@@ -583,6 +589,45 @@ function updateTarget(m: Mounted): void {
     if (!ready && m.root.activeElement === change)
       (button !== null && !button.disabled ? button : m.container).focus({ preventScroll: true });
     change.hidden = !ready;
+  }
+}
+
+function workTargetReady(m: Mounted): boolean {
+  return (
+    m.target?.ok === true &&
+    m.target.state === 'ready' &&
+    Boolean(m.target.title?.trim() || m.target.hostname)
+  );
+}
+
+function updateReturnButton(
+  button: HTMLButtonElement,
+  title: string | null,
+  hostname: string | undefined,
+): void {
+  const destination: string = title?.trim() || hostname || '';
+  const label: string =
+    destination === ''
+      ? 'Choose a work tab'
+      : `Back to work: ${destination}${hostname !== undefined && hostname !== destination ? ` (${hostname})` : ''}`;
+  if (button.getAttribute('aria-label') === label) return;
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  button.replaceChildren();
+  const action: HTMLElement = document.createElement('span');
+  action.className = 'work-action-label';
+  action.textContent = destination === '' ? 'Choose a work tab' : 'Back to work';
+  button.append(action);
+  if (destination === '') return;
+  const text: HTMLElement = document.createElement('span');
+  text.className = 'work-action-title';
+  text.textContent = destination;
+  button.append(text);
+  if (hostname !== undefined && hostname !== destination) {
+    const host: HTMLElement = document.createElement('span');
+    host.className = 'work-action-host';
+    host.textContent = hostname;
+    button.append(host);
   }
 }
 

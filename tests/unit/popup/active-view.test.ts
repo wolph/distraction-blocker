@@ -98,6 +98,50 @@ describe('ActiveView', () => {
     cleanup();
   });
 
+  it.each([
+    { gate: false, hostname: 'docs.example' },
+    { gate: true, hostname: 'docs.example' },
+    { gate: false, hostname: undefined },
+    { gate: true, hostname: undefined },
+  ])(
+    'shows the destination on the return button (gate=$gate, hostname=$hostname)',
+    async ({ gate, hostname }: { gate: boolean; hostname: string | undefined }): Promise<void> => {
+      const title: string = 'Chapter 8 - generator expressions and lazy evaluation';
+      sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+        if (request.type === 'getStats') return statsBundle;
+        if (request.type === 'getWorkTarget')
+          return {
+            ok: true,
+            sessionId: 'session-one',
+            state: 'ready',
+            title,
+            ...(hostname === undefined ? {} : { hostname }),
+          };
+        return { ok: true };
+      });
+      tabsQueryMock.mockResolvedValue([{ id: 4, windowId: 2, url: 'https://current.example' }]);
+      const view: ReturnType<typeof render> = render(
+        h(ActiveView, { snapshot: gate ? gateSnap() : focusSnap(), now: NOW }),
+      );
+      const name: string = `Back to work: ${title}${hostname === undefined ? '' : ` (${hostname})`}`;
+      await waitFor((): void => expect(view.getByRole('button', { name })).toBeTruthy());
+      const button: HTMLButtonElement = view.getByRole('button', { name }) as HTMLButtonElement;
+      expect(button.textContent).toContain(title);
+      expect(button.title).toBe(name);
+      if (hostname !== undefined) expect(button.textContent).toContain(hostname);
+      expect(button.textContent).not.toContain('undefined');
+      expect(button.disabled).toBe(false);
+      fireEvent.click(button);
+      await waitFor((): void =>
+        expect(sendMessageMock).toHaveBeenCalledWith({
+          type: 'returnToWork',
+          sessionId: 'session-one',
+          windowId: 2,
+        }),
+      );
+    },
+  );
+
   it('renders the clock and overlay action labels in matching order', async (): Promise<void> => {
     const { container, getByText, getByRole } = render(
       h(ActiveView, { snapshot: focusSnap(), now: NOW }),
@@ -122,6 +166,32 @@ describe('ActiveView', () => {
     await waitFor((): void => {
       expect(getByText('52 min focused today')).toBeTruthy();
     });
+  });
+
+  it('does not activate a legacy target whose destination cannot be identified', async (): Promise<void> => {
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getStats') return statsBundle;
+      if (request.type === 'getWorkTarget')
+        return { ok: true, sessionId: 'session-one', state: 'ready', title: '   ' };
+      return { ok: true };
+    });
+    tabsQueryMock.mockResolvedValue([{ id: 4, windowId: 2, url: 'https://current.example' }]);
+    const view: ReturnType<typeof render> = render(
+      h(ActiveView, { snapshot: focusSnap(), now: NOW }),
+    );
+    await waitFor((): void =>
+      expect(
+        view.getByRole('button', { name: 'Back to work: Destination unavailable' }),
+      ).toBeTruthy(),
+    );
+    const button: HTMLButtonElement = view.getByRole('button', {
+      name: 'Back to work: Destination unavailable',
+    }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    button.click();
+    expect(sendMessageMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'returnToWork' }),
+    );
   });
 
   it('hides the friction cancel for hard sessions', (): void => {

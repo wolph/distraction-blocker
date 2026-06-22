@@ -10,6 +10,7 @@ import { ackError, isStatsBundle } from '../shared/runtime-validation';
 import { formatClock } from '../shared/time';
 import type { GateKind, SessionSnapshot } from '../shared/types';
 import { GatePanel } from './GatePanel';
+import { ReturnToWorkButton } from './ReturnToWorkButton';
 import { Ring } from './Ring';
 import { useWorkTarget, type WorkTargetState } from './use-work-tabs';
 import { WorkTabControl } from './WorkTabControl';
@@ -194,16 +195,13 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
       {intention !== '' ? <p class="intention-line">{intention}</p> : null}
       <WorkTabControl snapshot={snapshot} work={work} />
       {snapshot.gate === null && work.target?.ok && work.target.state === 'ready' ? (
-        <button
-          type="button"
-          class="start-button"
+        <ReturnToWorkButton
+          destination={work.target}
           disabled={actionPending}
           onClick={(): void => {
             void returnToWork();
           }}
-        >
-          Back to work
-        </button>
+        />
       ) : null}
       {focusedToday.ms !== null ? (
         <p class="today-line">{Math.floor(focusedToday.ms / 60_000)} min focused today</p>
@@ -232,6 +230,9 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
           now={now}
           intention={intention}
           returnToWork={work.target?.ok && work.target.state === 'ready' ? returnToWork : undefined}
+          returnDestination={
+            work.target?.ok && work.target.state === 'ready' ? work.target : undefined
+          }
           returnPending={actionPending}
         />
       ) : snapshot.phase === 'paused' ? (

@@ -48,7 +48,9 @@ The lockscreen shows your next step, time until the next break or session end, a
 
 Open Need a break or site access? for credit and temporary access options. Each action shows its own cost and the time needed to afford it. When the credit limit or remaining focus time makes a spend unavailable, the screen explains why instead of counting down to a button that stays disabled.
 
-Choose a work tab directly on the lockscreen. The larger inline list shows allowed open tabs with their titles and domains. Search by title or domain to narrow the list, then select a tab to return to it. Arrow Down moves from search into the results. Escape closes the chooser. Change work tab opens the list again.
+Choose a work tab directly on the lockscreen. The chooser uses almost the whole window and shows recently active tabs first. Each row includes its title, domain, cached favicon and a consistent colour for that domain. Search by title or domain to narrow the list, then select a tab to return to it. Only visible rows and a small buffer are rendered, keeping the list small even with thousands of tabs. Arrow Down moves from search into the results. Home and End reach the first and last result. Escape closes the chooser. Change work tab opens the list again.
+
+Back to work shows the destination title and domain on the button, both on the lockscreen and in the popup. Long titles are shortened visually, with the full destination available to screen readers and on hover. Favicons come from Chrome's local cache. Reading the list and icons does not activate sleeping tabs.
 
 In the popup, Use this tab selects the current allowed tab. The Work tab menu lets you choose another. A closed or newly blocked work tab cannot be used as a return destination. A work tab never bypasses your blocklist or whitelist.
 

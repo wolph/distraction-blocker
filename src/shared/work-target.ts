@@ -4,6 +4,7 @@ export interface WorkTab {
   tabId: number;
   title: string;
   hostname?: string;
+  lastAccessed?: number;
 }
 
 export interface StoredWorkTarget {
@@ -12,6 +13,8 @@ export interface StoredWorkTarget {
   incognito: boolean;
 }
 
+export type WorkTabIconResult = { ok: true; icon: string | null } | Rejection;
+
 export type WorkTabsResult = { ok: true; tabs: WorkTab[] } | Rejection;
 export type WorkTargetResult =
   | {
@@ -19,6 +22,7 @@ export type WorkTargetResult =
       sessionId: string | null;
       state: 'ready' | 'missing' | 'unavailable';
       title: string | null;
+      hostname?: string;
     }
   | Rejection;
 
@@ -95,12 +99,27 @@ export function parseWorkTargetResult(value: unknown): WorkTargetResult | null {
   const record: Record<string, unknown> | null = dataRecord(value);
   if (record === null) return null;
   if (record.ok === false) return rejection(record);
-  if (record.ok !== true || !exact(record, ['ok', 'sessionId', 'state', 'title'])) return null;
+  if (
+    record.ok !== true ||
+    !(
+      exact(record, ['ok', 'sessionId', 'state', 'title']) ||
+      (record.state === 'ready' &&
+        exact(record, ['ok', 'sessionId', 'state', 'title', 'hostname']) &&
+        isWorkHostname(record.hostname))
+    )
+  )
+    return null;
   const { sessionId, state, title }: Record<string, unknown> = record;
   if (sessionId !== null && (typeof sessionId !== 'string' || sessionId.trim().length === 0))
     return null;
   if (state === 'ready' && typeof sessionId === 'string' && typeof title === 'string')
-    return { ok: true, sessionId, state, title };
+    return {
+      ok: true,
+      sessionId,
+      state,
+      title,
+      ...(Object.hasOwn(record, 'hostname') ? { hostname: record.hostname as string } : {}),
+    };
   if ((state === 'missing' || state === 'unavailable') && title === null)
     return { ok: true, sessionId, state, title };
   return null;
@@ -118,10 +137,11 @@ export function parseWorkTabsResult(value: unknown): WorkTabsResult | null {
       const tab: Record<string, unknown> | null = dataRecord(value);
       if (
         tab === null ||
-        !(
-          exact(tab, ['tabId', 'title']) ||
-          (exact(tab, ['tabId', 'title', 'hostname']) && isWorkHostname(tab.hostname))
+        !Object.keys(tab).every((key: string): boolean =>
+          ['tabId', 'title', 'hostname', 'lastAccessed'].includes(key),
         ) ||
+        (Object.hasOwn(tab, 'hostname') && !isWorkHostname(tab.hostname)) ||
+        (Object.hasOwn(tab, 'lastAccessed') && !isWorkLastAccessed(tab.lastAccessed)) ||
         !isBrowserTabId(tab.tabId) ||
         typeof tab.title !== 'string'
       )
@@ -130,6 +150,7 @@ export function parseWorkTabsResult(value: unknown): WorkTabsResult | null {
         tabId: tab.tabId,
         title: tab.title,
         ...(Object.hasOwn(tab, 'hostname') ? { hostname: tab.hostname as string } : {}),
+        ...(Object.hasOwn(tab, 'lastAccessed') ? { lastAccessed: tab.lastAccessed as number } : {}),
       });
     }
   } catch {
@@ -144,5 +165,50 @@ function isWorkHostname(value: unknown): value is string {
     return new URL(`http://${value}/`).hostname === value;
   } catch {
     return false;
+  }
+}
+
+export function isWorkLastAccessed(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+export const MAX_WORK_ICON_BYTES: number = 32 * 1024;
+const PNG_PREFIX: string = 'data:image/png;base64,';
+
+export function isWorkIconBytes(bytes: Uint8Array): boolean {
+  if (bytes.length < 33 || bytes.length > MAX_WORK_ICON_BYTES) return false;
+  const signature: number[] = [137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82];
+  if (!signature.every((value: number, index: number): boolean => bytes[index] === value))
+    return false;
+  const view: DataView = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const width: number = view.getUint32(16);
+  const height: number = view.getUint32(20);
+  return width > 0 && width <= 128 && height > 0 && height <= 128;
+}
+
+export function parseWorkTabIconResult(value: unknown): WorkTabIconResult | null {
+  const record: Record<string, unknown> | null = dataRecord(value);
+  if (record === null) return null;
+  if (record.ok === false) return rejection(record);
+  if (record.ok !== true || !exact(record, ['ok', 'icon'])) return null;
+  if (record.icon === null) return { ok: true, icon: null };
+  const icon: unknown = record.icon;
+  if (
+    typeof icon !== 'string' ||
+    !icon.startsWith(PNG_PREFIX) ||
+    icon.length > PNG_PREFIX.length + 4 * Math.ceil(MAX_WORK_ICON_BYTES / 3)
+  )
+    return null;
+  const encoded: string = icon.slice(PNG_PREFIX.length);
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded))
+    return null;
+  try {
+    const decoded: string = atob(encoded);
+    const bytes: Uint8Array = Uint8Array.from(decoded, (character: string): number =>
+      character.charCodeAt(0),
+    );
+    return isWorkIconBytes(bytes) ? { ok: true, icon } : null;
+  } catch {
+    return null;
   }
 }

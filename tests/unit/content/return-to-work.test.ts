@@ -743,7 +743,7 @@ it('lets a stopped page retry a transient work-target lookup before opening the 
   );
   expect(
     sendMessage.mock.calls.map(([request]: [{ type: string }]): string => request.type),
-  ).toEqual(['getWorkTarget', 'getWorkTarget', 'getWorkTabs']);
+  ).toEqual(['getWorkTarget', 'getWorkTarget', 'getWorkTabs', 'getWorkTabIcon']);
 });
 
 it.each([

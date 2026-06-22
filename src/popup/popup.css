@@ -299,6 +299,29 @@ body {
   background: var(--primary-bg-hover);
 }
 
+.return-work-button {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  text-align: center;
+}
+
+.return-work-title,
+.return-work-hostname {
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.return-work-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
 .form-error {
   margin: 0;
   color: var(--paused-text);

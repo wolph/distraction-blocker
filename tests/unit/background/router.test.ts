@@ -3,6 +3,7 @@ import type { Engine } from '../../../src/background/engine';
 import { routeMessage } from '../../../src/background/router';
 import { fetchStats } from '../../../src/background/stats-service';
 import { readEvents } from '../../../src/background/stores';
+import type { WorkTargetService } from '../../../src/background/work-target';
 import { emptySnapshot } from '../../../src/shared/constants';
 import type { StatsBundle } from '../../../src/shared/messages';
 import type { EventRecord } from '../../../src/shared/types';
@@ -194,4 +195,21 @@ describe('work target routing', (): void => {
     await routeMessage(legacyEngine, { type: 'startSession', config }, sender);
     expect(startSession).toHaveBeenCalledWith(config);
   });
+});
+
+it('routes icon requests through the trusted work target service', async (): Promise<void> => {
+  const getWorkTabIcon: ReturnType<typeof vi.fn> = vi
+    .fn()
+    .mockResolvedValue({ ok: true, icon: null });
+  const supplied: WorkTargetService = { getWorkTabIcon } as unknown as WorkTargetService;
+  const sender: chrome.runtime.MessageSender = { id: 'extension' };
+  expect(
+    await routeMessage(
+      {} as Engine,
+      { type: 'getWorkTabIcon', sessionId: 'one', tabId: 7 },
+      sender,
+      supplied,
+    ),
+  ).toEqual({ ok: true, icon: null });
+  expect(getWorkTabIcon).toHaveBeenCalledWith('one', 7, sender);
 });

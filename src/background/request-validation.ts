@@ -393,6 +393,12 @@ function parseRecord(value: Record<string, unknown>): Request | null {
           isBrowserTabId(value.windowId))
         ? (value as Request)
         : null;
+    case 'getWorkTabIcon':
+      return hasExactKeys(value, ['type', 'sessionId', 'tabId']) &&
+        isNonBlankString(value.sessionId) &&
+        isBrowserTabId(value.tabId)
+        ? (value as Request)
+        : null;
     case 'getWorkTarget':
       return hasExactKeys(value, ['type']) ||
         (hasExactKeys(value, ['type', 'windowId']) && isBrowserTabId(value.windowId))

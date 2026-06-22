@@ -12,7 +12,7 @@ import type {
   Verdict,
 } from './types';
 
-import type { WorkTabsResult, WorkTargetResult } from './work-target';
+import type { WorkTabIconResult, WorkTabsResult, WorkTargetResult } from './work-target';
 
 export type SoundId = 'sessionComplete' | 'breakStart' | 'breakEnd' | 'scheduleStart';
 
@@ -23,6 +23,7 @@ export type Request =
   | { type: 'startSession'; config: SessionConfig; workTabId?: number; windowId?: number }
   | { type: 'getWorkTabs'; sessionId: string }
   | { type: 'getWorkTabs'; mode: SessionConfig['mode']; windowId: number }
+  | { type: 'getWorkTabIcon'; sessionId: string; tabId: number }
   | { type: 'getWorkTarget'; windowId?: number }
   | { type: 'setWorkTarget'; sessionId: string; tabId: number; windowId?: number }
   | { type: 'returnToWork'; sessionId: string; windowId?: number }
@@ -70,6 +71,7 @@ export interface ResponseMap {
   startSession: StartSessionResult;
   getWorkTabs: WorkTabsResult;
   getWorkTarget: WorkTargetResult;
+  getWorkTabIcon: WorkTabIconResult;
   setWorkTarget: Ack;
   returnToWork: Ack;
   openGate: Ack;

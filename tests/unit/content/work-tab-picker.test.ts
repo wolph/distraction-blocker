@@ -35,6 +35,7 @@ async function open(
       if (request.type === 'getWorkTarget')
         return { ok: true, sessionId: 'one', state: 'missing', title: null };
       if (request.type === 'getWorkTabs') return list();
+      if (request.type === 'getWorkTabIcon') return { ok: true, icon: null };
       return select?.() ?? { ok: false, error: 'Selection denied' };
     },
   );
@@ -76,10 +77,11 @@ describe('searchable work tab chooser', (): void => {
     expect(search().value).toBe('');
     expect(rows()).toHaveLength(4);
     expect(root().activeElement).toBe(search());
-    expect(sendMessage.mock.calls).toEqual([
-      [{ type: 'getWorkTarget' }],
-      [{ type: 'getWorkTabs', sessionId: 'one' }],
-    ]);
+    expect(
+      sendMessage.mock.calls.filter(
+        ([request]: [{ type: string }]): boolean => request.type !== 'getWorkTabIcon',
+      ),
+    ).toEqual([[{ type: 'getWorkTarget' }], [{ type: 'getWorkTabs', sessionId: 'one' }]]);
     search().dispatchEvent(
       new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }),
     );

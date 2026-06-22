@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
+import { type WorkTabIconPorts, WorkTabIconService } from '../../../src/background/work-tab-icons';
 import {
   type WorkSession,
   type WorkTargetEngine,
@@ -7,6 +8,7 @@ import {
 } from '../../../src/background/work-target';
 import type { Ack } from '../../../src/shared/messages';
 import type { SessionConfig } from '../../../src/shared/types';
+import type { WorkTabsResult } from '../../../src/shared/work-target';
 
 const popup: chrome.runtime.MessageSender = {
   id: 'extension',
@@ -88,12 +90,103 @@ describe('work targets', (): void => {
     };
     service = new WorkTargetService(engine, ports);
   });
+  it('serves icons only to current trusted content for a suitable tab without activation', async (): Promise<void> => {
+    const encoded: string =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6Tf8AAAAASUVORK5CYII=';
+    const fetch: Mock<WorkTabIconPorts['fetch']> = vi.fn(
+      async (): Promise<Response> =>
+        new Response(
+          Uint8Array.from(atob(encoded), (value: string): number => value.charCodeAt(0)),
+        ),
+    );
+    const icons: WorkTabIconService = new WorkTabIconService({
+      url: (url: string): string => url,
+      fetch,
+    });
+    service = new WorkTargetService(engine, ports, icons);
+    const content: chrome.runtime.MessageSender = {
+      id: 'extension',
+      url: tabs[1]?.url,
+      tab: { ...tabs[1] } as chrome.tabs.Tab,
+      frameId: 0,
+    };
+    expect(await service.getWorkTabIcon('session-1', 1, content)).toEqual({
+      ok: true,
+      icon: `data:image/png;base64,${encoded}`,
+    });
+    for (const sender of [
+      popup,
+      { ...content, id: 'other' },
+      { ...content, frameId: 1 },
+      { ...content, url: 'https://changed.example' },
+    ])
+      expect(await service.getWorkTabIcon('session-1', 1, sender)).toMatchObject({ ok: false });
+    for (const id of [2, 3, 4, 99])
+      expect(await service.getWorkTabIcon('session-1', id, content)).toMatchObject({ ok: false });
+    expect(await service.getWorkTabIcon('old', 1, content)).toMatchObject({ ok: false });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(calls).toEqual([]);
+    expect(stored).toBeUndefined();
+    expect(ports.broadcast).not.toHaveBeenCalled();
+  });
+  it.each(['source', 'session', 'policy', 'privacy', 'destination'])(
+    'revalidates %s after fetching an icon',
+    async (changed: string): Promise<void> => {
+      const content: chrome.runtime.MessageSender = {
+        id: 'extension',
+        url: tabs[1]?.url,
+        tab: { ...tabs[1] } as chrome.tabs.Tab,
+        frameId: 0,
+      };
+      const icons: WorkTabIconService = new WorkTabIconService({
+        url: (url: string): string => url,
+        fetch: async (): Promise<Response> => {
+          if (changed === 'source') tabs[1] = tab(2, 'https://changed.example');
+          if (changed === 'session') session = null;
+          if (changed === 'policy') session = { sessionId: 'session-1', mode: 'whitelist' };
+          if (changed === 'policy') engine.workTargetAllowed = (): boolean => false;
+          if (changed === 'privacy') tabs[0] = tab(1, 'https://work.example', true);
+          if (changed === 'destination') tabs[0] = tab(1, 'https://changed.example');
+          return new Response(new Uint8Array([1, 2, 3]));
+        },
+      });
+      service = new WorkTargetService(engine, ports, icons);
+      expect(await service.getWorkTabIcon('session-1', 1, content)).toMatchObject({ ok: false });
+      expect(calls).toEqual([]);
+    },
+  );
   it('lists only eligible HTTP tabs in the popup context', async (): Promise<void> => {
     expect(await service.getWorkTabs('blacklist', 1, popup)).toEqual({
       ok: true,
       tabs: [{ tabId: 1, title: 'Tab 1', hostname: 'work.example' }],
     });
     expect(await service.getWorkTabs('whitelist', 2, popup)).toEqual({ ok: true, tabs: [] });
+  });
+  it('orders eligible tabs by MRU with unknown timestamps last and stable ties', async (): Promise<void> => {
+    tabs = [
+      tab(1, 'https://work.example'),
+      { ...tab(5, 'https://five.example'), lastAccessed: 20 },
+      { ...tab(6, 'https://six.example'), lastAccessed: 10 },
+      { ...tab(7, 'https://seven.example'), lastAccessed: 20 },
+    ];
+    const result: WorkTabsResult = await service.getWorkTabs('blacklist', 1, popup);
+    expect(result).toEqual({
+      ok: true,
+      tabs: [
+        { tabId: 5, title: 'Tab 5', hostname: 'five.example', lastAccessed: 20 },
+        { tabId: 7, title: 'Tab 7', hostname: 'seven.example', lastAccessed: 20 },
+        { tabId: 6, title: 'Tab 6', hostname: 'six.example', lastAccessed: 10 },
+        { tabId: 1, title: 'Tab 1', hostname: 'work.example' },
+      ],
+    });
+    stored = { sessionId: 'session-1', tabId: 1, incognito: false };
+    expect(await service.getWorkTarget(1, popup)).toEqual({
+      ok: true,
+      sessionId: 'session-1',
+      state: 'ready',
+      title: 'Tab 1',
+      hostname: 'work.example',
+    });
   });
   it('projects only hostname alongside the title and tab identity', async (): Promise<void> => {
     tabs[0] = tab(1, 'https://work.example/private/report?token=private#section');
@@ -177,6 +270,7 @@ describe('work targets', (): void => {
       sessionId: 'session-1',
       state: 'ready',
       title: 'Tab 1',
+      hostname: 'work.example',
     });
     stored = undefined;
     expect(await restarted.getWorkTarget(1, popup)).toMatchObject({ state: 'missing' });
