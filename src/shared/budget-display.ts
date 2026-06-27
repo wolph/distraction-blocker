@@ -14,9 +14,14 @@ export function accessAvailability(
   now: number,
   costMs: number,
 ): AccessAvailability {
-  const endsAt: number = Math.min(snapshot.phaseEndsAt ?? now, snapshot.sessionEndsAt ?? now);
-  if (now >= endsAt) return { affordable: false, waitMs: null, message: 'Updating session' };
-  const bank: number = extrapolatedBank(snapshot, Math.min(now, endsAt));
+  const indefinite: boolean = snapshot.phase === 'focus' && snapshot.config?.durationMin === null;
+  const endsAt: number | null =
+    indefinite && snapshot.phaseEndsAt === null && snapshot.sessionEndsAt === null
+      ? null
+      : Math.min(snapshot.phaseEndsAt ?? now, snapshot.sessionEndsAt ?? now);
+  if (endsAt !== null && now >= endsAt)
+    return { affordable: false, waitMs: null, message: 'Updating session' };
+  const bank: number = extrapolatedBank(snapshot, endsAt === null ? now : Math.min(now, endsAt));
   if (bank >= costMs) return { affordable: true, waitMs: 0, message: null };
   const unavailable: (message: string) => AccessAvailability = (
     message: string,
@@ -25,7 +30,7 @@ export function accessAvailability(
   if (snapshot.phase !== 'focus') return unavailable('Credit earning resumes during focus');
   if (snapshot.bankAccrualPerMs <= 0) return unavailable('Credit earning is turned off');
   const rawWait: number = (costMs - bank) / snapshot.bankAccrualPerMs;
-  if (!Number.isFinite(rawWait) || rawWait >= Math.max(0, endsAt - now)) {
+  if (!Number.isFinite(rawWait) || (endsAt !== null && rawWait >= Math.max(0, endsAt - now))) {
     return unavailable('Not enough time in this focus block');
   }
   const waitMs: number = Math.ceil(rawWait / 1_000) * 1_000;

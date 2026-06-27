@@ -43,6 +43,9 @@ export function badgeFor(
   countdown: boolean,
 ): { text: string; color: string } {
   const color: string = STATE_COLORS[snapshot.phase];
+  if (countdown && snapshot.phase === 'focus' && snapshot.config?.durationMin === null) {
+    return { text: '∞', color };
+  }
   if (!countdown || snapshot.phase === 'idle' || snapshot.phaseEndsAt === null) {
     return { text: '', color };
   }

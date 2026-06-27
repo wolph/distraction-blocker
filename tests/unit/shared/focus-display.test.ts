@@ -30,7 +30,37 @@ function snapshot(overrides: Partial<SessionSnapshot> = {}): SessionSnapshot {
   };
 }
 
+function indefiniteSnapshot(): SessionSnapshot {
+  const snap: SessionSnapshot = snapshot();
+  if (snap.config === null) throw new Error('Missing session config');
+  return {
+    ...snap,
+    config: { ...snap.config, durationMin: null, cycling: null },
+    phaseEndsAt: null,
+    sessionEndsAt: null,
+  };
+}
+
 describe('accessAvailability', (): void => {
+  it('keeps earning credit without a focus deadline', (): void => {
+    const snap: SessionSnapshot = indefiniteSnapshot();
+    expect(accessAvailability(snap, NOW, 5 * MINUTE)).toEqual({
+      affordable: false,
+      waitMs: 15 * MINUTE,
+      message: 'Ready in 15:00',
+    });
+    expect(accessAvailability(snap, NOW + 15 * MINUTE, 5 * MINUTE)).toEqual({
+      affordable: true,
+      waitMs: 0,
+      message: null,
+    });
+    expect(accessAvailability(snap, NOW + 365 * 24 * 60 * MINUTE, 5 * MINUTE).affordable).toBe(
+      true,
+    );
+    expect(accessAvailability(snap, NOW, 11 * MINUTE).message).toBe(
+      'Cost exceeds the credit limit',
+    );
+  });
   it('counts to each action cost rather than the next whole minute', (): void => {
     expect(accessAvailability(snapshot(), NOW, 5 * MINUTE)).toEqual({
       affordable: false,
@@ -91,6 +121,13 @@ describe('accessAvailability', (): void => {
 });
 
 describe('focusDisplay', (): void => {
+  it('describes indefinite focus without a timer or automatic break', (): void => {
+    expect(focusDisplay(indefiniteSnapshot(), NOW)).toEqual({
+      text: 'Until manual unlock',
+      endsAt: null,
+      progress: 0,
+    });
+  });
   it('shows session end with clamped focus progress', (): void => {
     expect(focusDisplay(snapshot(), NOW)).toEqual({
       text: '20 min left in this session',

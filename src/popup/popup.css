@@ -78,7 +78,8 @@ input[type="checkbox"] {
 
 body {
   margin: 0;
-  width: 340px;
+  width: 480px;
+  max-width: 100vw;
   background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -150,6 +151,13 @@ body {
   line-height: 1.4;
 }
 
+.unlock-confirmation {
+  margin: -8px 0 0;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .footer {
   display: flex;
   justify-content: space-between;
@@ -197,6 +205,11 @@ body {
 
 .chip:hover {
   border-color: var(--focus-color);
+}
+
+.chip:focus-visible {
+  outline: 2px solid var(--focus-color);
+  outline-offset: 2px;
 }
 
 .chip-selected {
@@ -258,6 +271,11 @@ body {
   align-items: flex-start;
   padding: 4px 0;
   cursor: pointer;
+}
+
+.radio-row:has(input:disabled),
+.check-row:has(input:disabled) {
+  cursor: default;
 }
 
 .radio-text {

@@ -350,13 +350,21 @@ function isSessionConfig(value: unknown): value is SessionConfig {
   if (
     (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
     (value.strictness !== 'hard' && value.strictness !== 'friction') ||
-    !isRelativeMinuteDuration(value.durationMin) ||
+    (value.durationMin !== null && !isRelativeMinuteDuration(value.durationMin)) ||
     (value.cycling !== null && !isCycleConfig(value.cycling)) ||
     typeof value.intention !== 'string' ||
     (value.source !== 'manual' && value.source !== 'schedule') ||
     !isNullableString(value.scheduleEntryId)
   ) {
     return false;
+  }
+  if (value.durationMin === null) {
+    return (
+      value.source === 'manual' &&
+      value.scheduleEntryId === null &&
+      value.strictness === 'friction' &&
+      value.cycling === null
+    );
   }
   return (
     (value.source === 'manual' && value.scheduleEntryId === null) ||
@@ -428,10 +436,23 @@ function isSessionSnapshotValue(value: unknown): value is SessionSnapshot {
     !isSessionConfig(value.config) ||
     !isNonNegativeNumber(value.startedAt) ||
     !isNonNegativeNumber(value.phaseStartedAt) ||
+    value.phaseStartedAt < value.startedAt
+  ) {
+    return false;
+  }
+  if (value.config.durationMin === null) {
+    return (
+      value.sessionEndsAt === null &&
+      ((value.phase === 'focus' && value.phaseEndsAt === null) ||
+        (value.phase === 'paused' &&
+          isNonNegativeNumber(value.phaseEndsAt) &&
+          value.phaseEndsAt >= value.phaseStartedAt))
+    );
+  }
+  if (
     !isNonNegativeNumber(value.phaseEndsAt) ||
     !isNonNegativeNumber(value.sessionEndsAt) ||
     value.sessionEndsAt < value.startedAt ||
-    value.phaseStartedAt < value.startedAt ||
     value.phaseEndsAt < value.phaseStartedAt ||
     (value.phase !== 'paused' && value.phaseEndsAt > value.sessionEndsAt)
   ) {
@@ -487,7 +508,9 @@ function isEventRecordValue(value: unknown): value is EventRecord {
         (value.source === 'manual' || value.source === 'schedule') &&
         (value.mode === 'blacklist' || value.mode === 'whitelist') &&
         (value.strictness === 'hard' || value.strictness === 'friction') &&
-        isRelativeMinuteDuration(value.durationMin) &&
+        (value.durationMin === null
+          ? value.source === 'manual' && value.strictness === 'friction'
+          : isRelativeMinuteDuration(value.durationMin)) &&
         typeof value.intention === 'string'
       );
     case 'sessionCompleted':

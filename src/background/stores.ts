@@ -556,7 +556,7 @@ function parseSessionConfig(value: unknown): SessionConfig | null {
   if (
     (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
     (value.strictness !== 'hard' && value.strictness !== 'friction') ||
-    !isNonNegativeNumber(value.durationMin) ||
+    (value.durationMin !== null && !isNonNegativeNumber(value.durationMin)) ||
     (value.cycling !== null && cycling === null) ||
     typeof value.intention !== 'string' ||
     (value.source !== 'manual' && value.source !== 'schedule') ||
@@ -570,6 +570,11 @@ function parseSessionConfig(value: unknown): SessionConfig | null {
   ) {
     return null;
   }
+  if (
+    value.durationMin === null &&
+    (value.source !== 'manual' || value.strictness !== 'friction' || value.cycling !== null)
+  )
+    return null;
   return {
     mode: value.mode,
     strictness: value.strictness,
@@ -581,11 +586,11 @@ function parseSessionConfig(value: unknown): SessionConfig | null {
   };
 }
 
-function parsePausedFrom(value: unknown): { phase: 'focus' | 'break'; phaseEndsAt: number } | null {
+function parsePausedFrom(value: unknown): SessionState['pausedFrom'] {
   if (!isRecord(value)) return null;
   if (
     (value.phase !== 'focus' && value.phase !== 'break') ||
-    !isNonNegativeNumber(value.phaseEndsAt)
+    !isNullableDeadline(value.phaseEndsAt)
   ) {
     return null;
   }
@@ -595,41 +600,18 @@ function parsePausedFrom(value: unknown): { phase: 'focus' | 'break'; phaseEndsA
 function parseSession(value: unknown): SessionState | null {
   if (!isRecord(value)) return null;
   const config: SessionConfig | null = parseSessionConfig(value.config);
-  const pausedFrom: { phase: 'focus' | 'break'; phaseEndsAt: number } | null = parsePausedFrom(
-    value.pausedFrom,
-  );
+  const pausedFrom: SessionState['pausedFrom'] = parsePausedFrom(value.pausedFrom);
   if (
     config === null ||
     (value.sessionId !== undefined && !isNonBlankString(value.sessionId)) ||
     (value.phase !== 'focus' && value.phase !== 'break' && value.phase !== 'paused') ||
     !isNonNegativeNumber(value.startedAt) ||
-    !isNonNegativeNumber(value.sessionEndsAt) ||
+    !isNullableDeadline(value.sessionEndsAt) ||
     !isNonNegativeNumber(value.phaseStartedAt) ||
-    !isNonNegativeNumber(value.phaseEndsAt) ||
+    !isNullableDeadline(value.phaseEndsAt) ||
     !isNonNegativeInteger(value.cycleIndex) ||
     !isNonNegativeNumber(value.focusedMs)
   ) {
-    return null;
-  }
-  if (
-    value.sessionEndsAt < value.startedAt ||
-    value.phaseStartedAt < value.startedAt ||
-    value.phaseEndsAt < value.startedAt ||
-    (value.phase === 'paused' && value.phaseEndsAt < value.phaseStartedAt) ||
-    (value.phase !== 'paused' && value.phaseEndsAt > value.sessionEndsAt) ||
-    (value.phase === 'break' && config.cycling === null)
-  ) {
-    return null;
-  }
-  if (value.phase === 'paused') {
-    if (
-      pausedFrom === null ||
-      pausedFrom.phaseEndsAt < value.phaseStartedAt ||
-      pausedFrom.phaseEndsAt > value.sessionEndsAt
-    ) {
-      return null;
-    }
-  } else if (value.pausedFrom !== null && value.pausedFrom !== undefined) {
     return null;
   }
   const session: SessionState = {
@@ -643,8 +625,55 @@ function parseSession(value: unknown): SessionState | null {
     pausedFrom: value.phase === 'paused' ? pausedFrom : null,
     focusedMs: value.focusedMs,
   };
+  if (!validSessionTiming(session)) return null;
+  if (session.phase !== 'paused' && value.pausedFrom !== null && value.pausedFrom !== undefined)
+    return null;
   if (isNonBlankString(value.sessionId)) session.sessionId = value.sessionId;
   return session;
+}
+
+function isNullableDeadline(value: unknown): value is number | null {
+  return value === null || isNonNegativeNumber(value);
+}
+
+function validSessionTiming(session: SessionState): boolean {
+  const {
+    config,
+    phase,
+    startedAt,
+    phaseStartedAt,
+    phaseEndsAt,
+    sessionEndsAt,
+    pausedFrom,
+  }: SessionState = session;
+  if (phaseStartedAt < startedAt) return false;
+  if (config.durationMin === null) {
+    if (sessionEndsAt !== null || session.cycleIndex !== 0) return false;
+    if (phase === 'focus') return phaseEndsAt === null && pausedFrom === null;
+    return (
+      phase === 'paused' &&
+      phaseEndsAt !== null &&
+      phaseEndsAt >= phaseStartedAt &&
+      pausedFrom?.phase === 'focus' &&
+      pausedFrom.phaseEndsAt === null
+    );
+  }
+  if (
+    sessionEndsAt === null ||
+    phaseEndsAt === null ||
+    sessionEndsAt < startedAt ||
+    phaseEndsAt < startedAt
+  )
+    return false;
+  if (phase === 'paused')
+    return (
+      phaseEndsAt >= phaseStartedAt &&
+      pausedFrom !== null &&
+      pausedFrom.phaseEndsAt !== null &&
+      pausedFrom.phaseEndsAt >= phaseStartedAt &&
+      pausedFrom.phaseEndsAt <= sessionEndsAt
+    );
+  return phaseEndsAt <= sessionEndsAt && (phase !== 'break' || config.cycling !== null);
 }
 
 function parseGate(value: unknown): GateState | null {
@@ -734,11 +763,16 @@ function parseEventRecord(value: unknown): EventRecord | null {
         (value.source !== 'manual' && value.source !== 'schedule') ||
         (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
         (value.strictness !== 'hard' && value.strictness !== 'friction') ||
-        !isNonNegativeNumber(value.durationMin) ||
+        (value.durationMin !== null && !isNonNegativeNumber(value.durationMin)) ||
         typeof value.intention !== 'string'
       ) {
         return null;
       }
+      if (
+        value.durationMin === null &&
+        (value.source !== 'manual' || value.strictness !== 'friction')
+      )
+        return null;
       return {
         t: value.t,
         at: value.at,

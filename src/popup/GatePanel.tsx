@@ -25,6 +25,7 @@ export function GatePanel({
   gate,
   now,
   intention,
+  indefinite = false,
   returnToWork,
   returnDestination,
   returnPending = false,
@@ -32,6 +33,7 @@ export function GatePanel({
   gate: GateState;
   now: number;
   intention: string;
+  indefinite?: boolean;
   returnToWork?: () => Promise<void>;
   returnDestination?: WorkDestination;
   returnPending?: boolean;
@@ -117,7 +119,7 @@ export function GatePanel({
         disabled={pending || !ready || !phraseOk}
         onClick={confirm}
       >
-        {CONFIRM_LABELS[gate.kind]}
+        {indefinite && gate.kind === 'cancel' ? 'Unlock' : CONFIRM_LABELS[gate.kind]}
       </button>
       {gate.forceEndAvailable ? (
         <button type="button" class="gate-force-end" disabled={pending} onClick={forceEnd}>

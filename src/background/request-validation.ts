@@ -134,7 +134,7 @@ function isSessionConfig(value: unknown): value is SessionConfig {
   if (
     (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
     (value.strictness !== 'hard' && value.strictness !== 'friction') ||
-    !isRelativeMinuteDuration(value.durationMin) ||
+    (value.durationMin !== null && !isRelativeMinuteDuration(value.durationMin)) ||
     (value.cycling !== null && !isCycleConfig(value.cycling)) ||
     typeof value.intention !== 'string' ||
     (value.source !== 'manual' && value.source !== 'schedule') ||
@@ -142,6 +142,11 @@ function isSessionConfig(value: unknown): value is SessionConfig {
   ) {
     return false;
   }
+  if (
+    value.durationMin === null &&
+    (value.source !== 'manual' || value.strictness !== 'friction' || value.cycling !== null)
+  )
+    return false;
   return (
     (value.source === 'manual' && value.scheduleEntryId === null) ||
     (value.source === 'schedule' && isNonBlankString(value.scheduleEntryId))

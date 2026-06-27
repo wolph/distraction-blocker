@@ -24,6 +24,14 @@ function hasUpcomingBreak(
 export function focusDisplay(snapshot: SessionSnapshot, now: number): FocusDisplay {
   const phaseEnd: number | null = snapshot.phaseEndsAt;
   const sessionEnd: number | null = snapshot.sessionEndsAt;
+  if (
+    snapshot.phase === 'focus' &&
+    snapshot.config?.durationMin === null &&
+    phaseEnd === null &&
+    sessionEnd === null
+  ) {
+    return { text: 'Until manual unlock', endsAt: null, progress: 0 };
+  }
   if (phaseEnd === null || sessionEnd === null || snapshot.phaseStartedAt === null) {
     return { text: 'Updating session', endsAt: null, progress: 0 };
   }

@@ -6,6 +6,7 @@ import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
+import type { CycleConfig } from '../../../src/shared/types';
 import { resetChromeFake, sendMessageMock } from './chrome-fake';
 
 vi.mock('../../../src/core/categories', () => ({
@@ -43,15 +44,64 @@ describe('StartForm', () => {
     expect(getByRole('button', { name: '50 deep work' })).toBeTruthy();
   });
 
-  it('renders the prescribed strictness hints exactly', (): void => {
-    const { getByPlaceholderText, getByText } = render(
+  it('renders the configured strictness hints', (): void => {
+    const { getByPlaceholderText, getByText, getByRole } = render(
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
 
     expect(getByPlaceholderText('Continue your current task')).toBeTruthy();
-    expect(getByText('can end early after 30 s wait typing sentence')).toBeTruthy();
+    expect(getByText('can end early after 10 s wait')).toBeTruthy();
     expect(getByText('sites stay locked until the timer ends, paid access excepted')).toBeTruthy();
+    fireEvent.click(getByRole('button', { name: 'Until manual unlock' }));
+    expect(getByText('Unlock confirmation: 10 s wait.')).toBeTruthy();
   });
+
+  it.each([
+    {
+      delayMs: 1250,
+      requireTypedPhrase: true,
+      hint: 'can end early after 1.25 s wait and typing the confirmation phrase',
+      detail: 'Unlock confirmation: 1.25 s wait and typing the confirmation phrase.',
+    },
+    {
+      delayMs: 0,
+      requireTypedPhrase: false,
+      hint: 'can end early without waiting or typing a phrase',
+      detail: 'Unlock confirmation: none.',
+    },
+  ])(
+    'explains custom confirmation delay $delayMs and typed phrase $requireTypedPhrase',
+    ({
+      delayMs,
+      requireTypedPhrase,
+      hint,
+      detail,
+    }: {
+      delayMs: number;
+      requireTypedPhrase: boolean;
+      hint: string;
+      detail: string;
+    }): void => {
+      const view: ReturnType<typeof render> = render(
+        h(StartForm, {
+          settings: {
+            ...DEFAULT_SETTINGS,
+            gate: { ...DEFAULT_SETTINGS.gate, delayMs, requireTypedPhrase },
+          },
+          lists: DEFAULT_LISTS,
+        }),
+      );
+      expect(view.getByText(hint)).toBeTruthy();
+      expect(view.queryByText(detail)).toBeNull();
+      fireEvent.click(view.getByRole('button', { name: 'Until manual unlock' }));
+      const confirmation: HTMLElement = view.getByText(detail);
+      expect(confirmation.closest('details')).toBeNull();
+      expect(view.getByText('Locked until you manually unlock')).toBeTruthy();
+      fireEvent.click(view.getByRole('button', { name: '25 focus' }));
+      expect(view.getByText(hint)).toBeTruthy();
+      expect(view.queryByText(detail)).toBeNull();
+    },
+  );
 
   it('starts a session from the chosen preset and typed intention', async (): Promise<void> => {
     const { getByRole, getByPlaceholderText } = render(
@@ -92,6 +142,107 @@ describe('StartForm', () => {
         expect.objectContaining({
           type: 'startSession',
           config: expect.objectContaining({ durationMin: 50, cycling: null }),
+        }),
+      );
+    });
+  });
+
+  it('starts manual unlock without a deadline, hard strictness or cycles', async (): Promise<void> => {
+    const view: ReturnType<typeof render> = render(
+      h(StartForm, {
+        settings: { ...DEFAULT_SETTINGS, defaultStrictness: 'hard' },
+        lists: DEFAULT_LISTS,
+      }),
+    );
+    const preset: HTMLButtonElement = view.getByRole('button', {
+      name: 'Until manual unlock',
+    }) as HTMLButtonElement;
+    expect(preset.textContent).toBe('∞');
+    expect(preset.title).toBe('Until manual unlock');
+    fireEvent.click(preset);
+    expect(preset.getAttribute('aria-pressed')).toBe('true');
+    expect(view.getByText('Locked until you manually unlock')).toBeTruthy();
+    const hard: HTMLInputElement = view.getByRole('radio', { name: /^hard/ }) as HTMLInputElement;
+    const cycles: HTMLInputElement = view.getByRole('checkbox', {
+      name: /cycles:/,
+    }) as HTMLInputElement;
+    expect(hard.disabled).toBe(true);
+    expect(hard.checked).toBe(false);
+    expect(cycles.disabled).toBe(true);
+    expect(cycles.checked).toBe(false);
+    expect(
+      view.getByText('Manual unlock requires friction and has no automatic breaks.'),
+    ).toBeTruthy();
+    fireEvent.click(view.getByRole('button', { name: 'Lock until manual unlock' }));
+    await waitFor((): void => {
+      expect(sendMessageMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'startSession',
+          config: expect.objectContaining({
+            durationMin: null,
+            cycling: null,
+            strictness: 'friction',
+            source: 'manual',
+            scheduleEntryId: null,
+          }),
+        }),
+      );
+    });
+  });
+
+  it.each([
+    { label: '25 focus', durationMin: 25, cycling: DEFAULT_SETTINGS.defaultCycling },
+    { label: '50 deep work', durationMin: 50, cycling: null },
+  ])(
+    'restores timed strictness and the $label cycle behaviour after infinity',
+    async ({
+      label,
+      durationMin,
+      cycling,
+    }: {
+      label: string;
+      durationMin: number;
+      cycling: CycleConfig | null;
+    }): Promise<void> => {
+      const view: ReturnType<typeof render> = render(
+        h(StartForm, {
+          settings: { ...DEFAULT_SETTINGS, defaultStrictness: 'hard' },
+          lists: DEFAULT_LISTS,
+        }),
+      );
+      fireEvent.click(view.getByRole('button', { name: 'Until manual unlock' }));
+      fireEvent.click(view.getByRole('button', { name: label }));
+      expect((view.getByRole('radio', { name: /^hard/ }) as HTMLInputElement).checked).toBe(true);
+      fireEvent.click(view.getByRole('button', { name: 'Start focusing' }));
+      await waitFor((): void => {
+        expect(sendMessageMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'startSession',
+            config: expect.objectContaining({ durationMin, cycling, strictness: 'hard' }),
+          }),
+        );
+      });
+    },
+  );
+
+  it('returns to timed settings when custom minutes replace infinity', async (): Promise<void> => {
+    const view: ReturnType<typeof render> = render(
+      h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
+    );
+    fireEvent.click(view.getByRole('button', { name: 'Until manual unlock' }));
+    fireEvent.input(view.getByRole('spinbutton', { name: 'Custom minutes' }), {
+      target: { value: '40' },
+    });
+    expect(view.getByText('40 min total, with 25 min focus blocks')).toBeTruthy();
+    fireEvent.click(view.getByRole('button', { name: 'Start focusing' }));
+    await waitFor((): void => {
+      expect(sendMessageMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'startSession',
+          config: expect.objectContaining({
+            durationMin: 40,
+            cycling: DEFAULT_SETTINGS.defaultCycling,
+          }),
         }),
       );
     });

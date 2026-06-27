@@ -22,12 +22,14 @@ function phaseLabel(snapshot: SessionSnapshot): string {
     return `site access until ${hh}:${mm}`;
   }
   if (snapshot.phase === 'break') return 'break';
+  if (snapshot.config?.durationMin === null) return 'Until manual unlock';
   return 'focusing';
 }
 
 function cycleLabel(snapshot: SessionSnapshot): string | null {
   const cycling: CycleConfig | null = snapshot.config?.cycling ?? null;
-  if (cycling === null || snapshot.config === null) return null;
+  if (cycling === null || snapshot.config === null || snapshot.config.durationMin === null)
+    return null;
   const perCycleMin: number = cycling.focusMin + cycling.shortBreakMin;
   const estimate: number = Math.max(
     snapshot.cycleIndex + 1,
@@ -42,6 +44,7 @@ export function Ring({ snapshot, now }: { snapshot: SessionSnapshot; now: number
   const progress: number = phaseProgress(snapshot, now);
   const dash: number = progress * RING_CIRCUMFERENCE;
   const cycle: string | null = cycleLabel(snapshot);
+  const indefinite: boolean = snapshot.phase === 'focus' && snapshot.config?.durationMin === null;
 
   return (
     <div class="ring-wrap">
@@ -73,7 +76,18 @@ export function Ring({ snapshot, now }: { snapshot: SessionSnapshot; now: number
         />
       </svg>
       <div class="ring-center">
-        <span class="clock">{formatClock(remainingPhaseMs(snapshot, now))}</span>
+        {indefinite ? (
+          <span
+            class="clock"
+            role="img"
+            title="Until manual unlock"
+            aria-label="Until manual unlock"
+          >
+            ∞
+          </span>
+        ) : (
+          <span class="clock">{formatClock(remainingPhaseMs(snapshot, now))}</span>
+        )}
       </div>
       <p class={`phase-label phase-label-${phase}`}>
         {phaseLabel(snapshot)}

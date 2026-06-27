@@ -758,3 +758,20 @@ it('rejects icon requests with arbitrary URL or missing session identity', (): v
   ])
     expect(parseRequest(value)).toBeNull();
 });
+
+describe('manual unlock request', () => {
+  it('accepts no deadline only for a manual friction session without cycles', () => {
+    const config: SessionConfig = { ...SESSION_CONFIG, durationMin: null, cycling: null };
+    expect(parseRequest({ type: 'startSession', config })).toEqual({
+      type: 'startSession',
+      config,
+    });
+    for (const change of [
+      { strictness: 'hard' },
+      { cycling: DEFAULT_SETTINGS.defaultCycling },
+      { source: 'schedule', scheduleEntryId: 'scheduled' },
+    ]) {
+      expect(parseRequest({ type: 'startSession', config: { ...config, ...change } })).toBeNull();
+    }
+  });
+});

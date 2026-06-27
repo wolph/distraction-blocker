@@ -124,3 +124,88 @@ describe('startNextFocusEarly', () => {
     expect(early.cycleIndex).toBe(1);
   });
 });
+
+describe('indefinite manual sessions', (): void => {
+  function startIndefinite(): SessionState {
+    return startSession(cfg({ durationMin: null, cycling: null }), T0, 'manual-session');
+  }
+
+  it('stores null deadlines that survive JSON persistence', (): void => {
+    const started: SessionState = startIndefinite();
+    const restored: SessionState = JSON.parse(JSON.stringify(started)) as SessionState;
+
+    expect(started.config.durationMin).toBeNull();
+    expect(started.sessionEndsAt).toBeNull();
+    expect(started.phaseEndsAt).toBeNull();
+    expect(restored).toEqual(started);
+  });
+
+  it('keeps focus active across a large clock jump without machine events', (): void => {
+    const started: SessionState = startIndefinite();
+    const result: ReturnType<typeof advance> = advance(started, Number.MAX_SAFE_INTEGER);
+
+    expect(result.next).toEqual(started);
+    expect(result.events).toEqual([]);
+  });
+
+  it('gives a paid pause a finite deadline and then restores indefinite focus', (): void => {
+    const paused: SessionState = beginPause(startIndefinite(), T0 + 10 * MIN, 5 * MIN);
+    const beforeResume: ReturnType<typeof advance> = advance(paused, T0 + 15 * MIN - 1);
+    const resumed: ReturnType<typeof advance> = advance(paused, T0 + 15 * MIN);
+
+    expect(paused.sessionEndsAt).toBeNull();
+    expect(paused.phaseEndsAt).toBe(T0 + 15 * MIN);
+    expect(paused.pausedFrom).toEqual({ phase: 'focus', phaseEndsAt: null });
+    expect(beforeResume.next).toEqual(paused);
+    expect(beforeResume.events).toEqual([]);
+    expect(resumed.next).toMatchObject({
+      phase: 'focus',
+      phaseStartedAt: T0 + 15 * MIN,
+      sessionEndsAt: null,
+      phaseEndsAt: null,
+      pausedFrom: null,
+      focusedMs: 10 * MIN,
+    });
+    expect(resumed.events).toEqual([
+      { type: 'phaseChanged', from: 'paused', to: 'focus', at: T0 + 15 * MIN },
+    ]);
+  });
+
+  it('catches up a missed paid pause alarm without completing indefinite focus', (): void => {
+    const paused: SessionState = beginPause(startIndefinite(), T0 + 10 * MIN, 5 * MIN);
+    const resumed: ReturnType<typeof advance> = advance(paused, Number.MAX_SAFE_INTEGER);
+
+    expect(resumed.next).toMatchObject({
+      phase: 'focus',
+      phaseStartedAt: T0 + 15 * MIN,
+      phaseEndsAt: null,
+      sessionEndsAt: null,
+      focusedMs: 10 * MIN,
+    });
+    expect(resumed.events).toEqual([
+      { type: 'phaseChanged', from: 'paused', to: 'focus', at: T0 + 15 * MIN },
+    ]);
+  });
+
+  it('excludes a completed paid pause from subsequent focus accounting', (): void => {
+    const paused: SessionState = beginPause(startIndefinite(), T0 + 10 * MIN, 5 * MIN);
+    const resumed: SessionState | null = advance(paused, T0 + 15 * MIN).next;
+    expect(resumed).not.toBeNull();
+    if (resumed === null) throw new Error('Expected indefinite focus to resume');
+    const pausedAgain: SessionState = beginPause(resumed, T0 + 20 * MIN, MIN);
+
+    expect(pausedAgain.focusedMs).toBe(15 * MIN);
+  });
+
+  it('restores indefinite focus after an early pause end and excludes paused time', (): void => {
+    const paused: SessionState = beginPause(startIndefinite(), T0 + 10 * MIN, 5 * MIN);
+    const resumed: SessionState = endPauseEarly(paused, T0 + 12 * MIN);
+    const pausedAgain: SessionState = beginPause(resumed, T0 + 20 * MIN, MIN);
+
+    expect(resumed.phase).toBe('focus');
+    expect(resumed.phaseEndsAt).toBeNull();
+    expect(resumed.sessionEndsAt).toBeNull();
+    expect(resumed.pausedFrom).toBeNull();
+    expect(pausedAgain.focusedMs).toBe(18 * MIN);
+  });
+});

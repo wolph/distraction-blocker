@@ -8,7 +8,7 @@ afterEach(cleanup);
 
 function started(
   at: number,
-  durationMin: number,
+  durationMin: number | null,
   intention: string,
   source: 'manual' | 'schedule',
   sessionId?: string,
@@ -50,6 +50,13 @@ const EVENTS: EventRecord[] = [
 ];
 
 describe('pairSessions', () => {
+  it('preserves indefinite duration and displays its manual unlock label', (): void => {
+    const events: EventRecord[] = [started(T13, null, 'Write the next page', 'manual')];
+    expect(pairSessions(events)[0]?.plannedMin).toBeNull();
+    const view: ReturnType<typeof render> = render(<SessionLog events={events} />);
+    expect(view.getByText('Until manual unlock')).toBeTruthy();
+    expect(view.container.textContent).not.toContain('NaN');
+  });
   it('pairs starts with completions and cancels, dangling start runs', () => {
     const rows: SessionRow[] = pairSessions(EVENTS);
     expect(rows.length).toBe(3);

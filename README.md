@@ -33,6 +33,8 @@ After another build, use the Reload button on `chrome://extensions` to load the 
 
 Open the popup, choose a duration, enter your next small step, select categories, and start focusing. The current allowed tab is suggested as your work tab. You can choose another tab or start without one. The default presets are 15, 25, and 50 minutes. Choosing deep work starts uninterrupted focus. You can enable cycles afterwards in Session options. The timing preview shows whether the session includes breaks.
 
+Choose the infinity preset to lock until manual unlock. It has no end time or automatic breaks and stays active after a browser restart. The popup shows the configured unlock confirmation before you start. Select Unlock in the popup or lockscreen access panel to end it through that confirmation.
+
 - Blacklist mode blocks enabled categories and custom host or URL-regex rules. Whitelist mode blocks the web except for the listed rules.
 - Friction sessions can end early through the configured deliberation gate. The worker enforces its delay and optional typed sentence unless the force-end option is enabled and used. Hard sessions cannot end early, and settings or list changes that would weaken the active lock are rejected.
 - Focus time earns site access credit continuously. The default rate is 5 minutes per 30 focused minutes, capped at 30 minutes. A default spend buys either 5 minutes of access to all sites or a 5-minute unlock for the current registrable site. You can step away from the screen at any time without spending credit.

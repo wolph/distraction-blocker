@@ -873,3 +873,75 @@ describe('event storage replay', () => {
     expect(state[LOCAL_EVENTS]).toEqual([second]);
   });
 });
+
+describe('manual unlock persistence', () => {
+  const session: import('../../../src/shared/types').SessionState = {
+    sessionId: 'manual-unlock',
+    config: {
+      mode: 'blacklist',
+      strictness: 'friction',
+      durationMin: null,
+      cycling: null,
+      intention: '',
+      source: 'manual',
+      scheduleEntryId: null,
+    },
+    startedAt: 1000,
+    sessionEndsAt: null,
+    phase: 'focus',
+    phaseStartedAt: 1000,
+    phaseEndsAt: null,
+    cycleIndex: 0,
+    pausedFrom: null,
+    focusedMs: 0,
+  };
+  it('round-trips indefinite focus and a paid pause through JSON', () => {
+    expect(mergeRuntime(JSON.parse(JSON.stringify({ session })), 2000).session).toEqual(session);
+    const paused: typeof session = {
+      ...session,
+      phase: 'paused',
+      phaseStartedAt: 2000,
+      phaseEndsAt: 62000,
+      pausedFrom: { phase: 'focus', phaseEndsAt: null },
+      focusedMs: 1000,
+    };
+    expect(mergeRuntime(JSON.parse(JSON.stringify({ session: paused })), 3000).session).toEqual(
+      paused,
+    );
+  });
+  it('rejects mixed timed and indefinite states', () => {
+    const malformed: object[] = [
+      { ...session, config: { ...session.config, durationMin: 25 } },
+      { ...session, config: { ...session.config, strictness: 'hard' } },
+      { ...session, config: { ...session.config, cycling: DEFAULT_SETTINGS.defaultCycling } },
+      { ...session, phase: 'break' },
+      { ...session, phaseEndsAt: 3000 },
+      {
+        ...session,
+        phase: 'paused',
+        phaseEndsAt: null,
+        pausedFrom: { phase: 'focus', phaseEndsAt: null },
+      },
+    ];
+    for (const invalid of malformed)
+      expect(mergeRuntime({ session: invalid }, 2000).session).toBeNull();
+  });
+  it('keeps the indefinite start event in the durable checkpoint', () => {
+    const event: EventRecord = {
+      t: 'sessionStarted',
+      at: 1000,
+      source: 'manual',
+      mode: 'blacklist',
+      strictness: 'friction',
+      durationMin: null,
+      intention: '',
+      sessionId: 'manual-unlock',
+    };
+    expect(
+      mergeRuntime(
+        { commitCheckpoint: { bank: { balanceMs: 0 }, events: [event], syncBank: false } },
+        2000,
+      ).commitCheckpoint?.events,
+    ).toEqual([event]);
+  });
+});

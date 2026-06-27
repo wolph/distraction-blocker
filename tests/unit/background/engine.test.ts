@@ -1912,6 +1912,7 @@ describe('Engine', () => {
     const started = startSession(config, T0, 'resumed-session');
     const paused = beginPause(started, T0 + 4 * 60_000, 5 * 60_000);
     const resumed = endPauseEarly(paused, T0 + 6 * 60_000);
+    if (resumed.phaseEndsAt === null) throw new Error('Timed phase deadline is missing');
     expect(resumed.phaseStartedAt).toBeGreaterThan(resumed.phaseEndsAt);
     const runtime: RuntimeState = mergeRuntime(
       {
@@ -3328,5 +3329,103 @@ describe('work target identity reads', (): void => {
     expect(await result).toEqual({ ok: true });
     expect(ranBeforePersistence).toBe(false);
     expect(action).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('manual unlock lifecycle', () => {
+  it('stays locked across midnight and restart, accrues focus and ends only after confirmation', async () => {
+    const settings: Partial<Settings> = {
+      gate: { ...DEFAULT_SETTINGS.gate, delayMs: 1000, requireTypedPhrase: false },
+    };
+    const h: Harness = makeEngine({ settings });
+    expect(await h.engine.startSession({ ...manualConfig, durationMin: null })).toEqual({
+      ok: true,
+    });
+    expect(h.engine.snapshot()).toMatchObject({
+      phase: 'focus',
+      sessionEndsAt: null,
+      phaseEndsAt: null,
+    });
+    expect(h.ports.scheduleWake).toHaveBeenLastCalledWith(null);
+    h.setNow(T0 + DAY_MS + 60_000);
+    await h.engine.tick();
+    expect(h.engine.snapshot().phase).toBe('focus');
+    expect(h.engine.snapshot().bankMs).toBeGreaterThan(0);
+    const saved: RuntimeState = h.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState;
+    const restored: RuntimeState = mergeRuntime(
+      JSON.parse(JSON.stringify(saved)),
+      T0 + DAY_MS + 60_000,
+    );
+    const restarted: Harness = makeEngine({ settings, runtime: restored });
+    restarted.setNow(T0 + DAY_MS + 60_000);
+    await restarted.engine.tick();
+    expect(restarted.engine.snapshot().phase).toBe('focus');
+    expect(await restarted.engine.openGate('cancel', null)).toEqual({ ok: true });
+    expect((await restarted.engine.confirmGate(null)).ok).toBe(false);
+    restarted.setNow(T0 + DAY_MS + 61_000);
+    expect(await restarted.engine.confirmGate(null)).toEqual({ ok: true });
+    expect(restarted.engine.snapshot().phase).toBe('idle');
+    expect(restarted.loggedEvents()).toContainEqual(
+      expect.objectContaining({ t: 'sessionCanceled', focusedMs: DAY_MS + 61_000 }),
+    );
+    expect(h.loggedEvents()).not.toContainEqual(expect.objectContaining({ t: 'sessionCompleted' }));
+  });
+});
+
+describe('manual lock temporary access', () => {
+  it('expires paid pauses and site access without ending the manual lock', async () => {
+    const h: Harness = makeEngine({
+      bankMs: 100_000,
+      settings: {
+        gate: { ...DEFAULT_SETTINGS.gate, delayMs: 0, requireTypedPhrase: false },
+        pause: { ...DEFAULT_SETTINGS.pause, pauseMs: 10_000, unlockMs: 5000 },
+      },
+    });
+    await h.engine.startSession({ ...manualConfig, durationMin: null });
+    expect(await h.engine.openGate('pause', null)).toEqual({ ok: true });
+    expect(await h.engine.confirmGate(null)).toEqual({ ok: true });
+    expect(h.engine.snapshot()).toMatchObject({
+      phase: 'paused',
+      sessionEndsAt: null,
+      phaseEndsAt: T0 + 10_000,
+    });
+    expect(h.ports.scheduleWake).toHaveBeenLastCalledWith(T0 + 10_000);
+    h.setNow(T0 + 15_000);
+    await h.engine.tick();
+    expect(h.engine.snapshot()).toMatchObject({ phase: 'focus', phaseEndsAt: null });
+    expect(h.ports.scheduleWake).toHaveBeenLastCalledWith(null);
+    expect(await h.engine.openGate('unlockSite', 'facebook.com')).toEqual({ ok: true });
+    expect(await h.engine.confirmGate(null)).toEqual({ ok: true });
+    expect(h.engine.snapshot().activeUnlocks).toEqual([
+      { host: 'facebook.com', until: T0 + 20_000 },
+    ]);
+    expect(h.ports.scheduleWake).toHaveBeenLastCalledWith(T0 + 20_000);
+    h.setNow(T0 + 21_000);
+    await h.engine.tick();
+    expect(h.engine.snapshot()).toMatchObject({
+      phase: 'focus',
+      phaseEndsAt: null,
+      activeUnlocks: [],
+    });
+    expect(h.ports.scheduleWake).toHaveBeenLastCalledWith(null);
+  });
+});
+
+describe('manual lock during scheduled windows', () => {
+  it('keeps an indefinite session manually unlockable when a hard schedule begins', async () => {
+    const h: Harness = makeEngine({ settings: { schedule: [scheduledEntry] } });
+    await h.engine.startSession({ ...manualConfig, durationMin: null });
+    h.setNow(T0 + 16 * 60_000);
+    await h.engine.tick();
+    expect(h.engine.snapshot()).toMatchObject({
+      config: { durationMin: null, strictness: 'friction' },
+      phaseEndsAt: null,
+      sessionEndsAt: null,
+    });
+    expect(await h.engine.openGate('cancel', null)).toEqual({ ok: true });
+    const saved: RuntimeState = h.ports.saveRuntime.mock.calls.at(-1)?.[0] as RuntimeState;
+    expect(
+      mergeRuntime(JSON.parse(JSON.stringify(saved)), T0 + 16 * 60_000).session,
+    ).not.toBeNull();
   });
 });

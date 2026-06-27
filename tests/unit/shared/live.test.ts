@@ -22,6 +22,12 @@ describe('live extrapolation', () => {
     expect(extrapolatedBank(snap, 5_000)).toBe(8_000);
     expect(extrapolatedBank(snap, 60_000)).toBe(10_000);
   });
+  it('continues accrual without deadlines and keeps its progress finite', (): void => {
+    const indefinite: SessionSnapshot = { ...snap, phaseEndsAt: null, sessionEndsAt: null };
+    expect(extrapolatedBank(indefinite, 5_000)).toBe(8_000);
+    expect(extrapolatedBank(indefinite, 60_000)).toBe(10_000);
+    expect(phaseProgress(indefinite, 60_000)).toBe(0);
+  });
   it('reports phase progress in [0, 1]', () => {
     expect(phaseProgress(snap, 5_500)).toBeCloseTo(0.5);
     expect(

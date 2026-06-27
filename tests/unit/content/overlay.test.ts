@@ -44,6 +44,57 @@ afterEach((): void => {
 });
 
 describe('overlay', () => {
+  it('shows indefinite focus and requests the cancel gate through Unlock', async (): Promise<void> => {
+    const snap: SessionSnapshot = focusSnap();
+    if (snap.config === null) throw new Error('Missing session config');
+    snap.config = { ...snap.config, durationMin: null };
+    snap.phaseEndsAt = null;
+    snap.sessionEndsAt = null;
+    const sendMessage: Mock = vi.fn(async (): Promise<unknown> => ({ ok: true }));
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    showOverlay(verdict, snap);
+    const root: ShadowRoot = shadowRoot();
+    expect(root.querySelector('.clock')?.textContent).toBe('Until manual unlock');
+    const unlock: HTMLButtonElement = root.querySelector('.linkish') as HTMLButtonElement;
+    expect(unlock.textContent).toBe('Unlock');
+    unlock.click();
+    await vi.waitFor((): void =>
+      expect(sendMessage).toHaveBeenCalledWith({ type: 'openGate', gate: 'cancel', host: null }),
+    );
+    expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'confirmGate' }));
+  });
+
+  it('labels the indefinite cancel confirmation Unlock and preserves its wait and phrase', (): void => {
+    vi.useFakeTimers();
+    const now: number = Date.now();
+    const snap: SessionSnapshot = focusSnap();
+    if (snap.config === null) throw new Error('Missing session config');
+    snap.config = { ...snap.config, durationMin: null };
+    snap.phaseEndsAt = null;
+    snap.sessionEndsAt = null;
+    snap.gate = {
+      kind: 'cancel',
+      host: null,
+      openedAt: now,
+      readyAt: now + 30_000,
+      requiredPhrase: 'I choose to stop',
+      forceEndAvailable: false,
+    };
+    showOverlay(verdict, snap);
+    const root: ShadowRoot = shadowRoot();
+    const confirm: HTMLButtonElement | undefined = Array.from(
+      root.querySelectorAll<HTMLButtonElement>('button'),
+    ).find((button: HTMLButtonElement): boolean => button.textContent === 'Unlock');
+    expect(confirm).toBeTruthy();
+    expect(confirm?.hidden).toBe(true);
+    vi.advanceTimersByTime(30_000);
+    expect(confirm?.hidden).toBe(false);
+    expect(confirm?.disabled).toBe(true);
+    const phrase: HTMLInputElement = root.querySelector('.phrase') as HTMLInputElement;
+    phrase.value = 'I choose to stop';
+    phrase.dispatchEvent(new Event('input'));
+    expect(confirm?.disabled).toBe(false);
+  });
   it.each(['auto', 'light', 'dark'] as const)(
     'applies the %s theme to normal and stopped overlays without remounting',
     (theme): void => {

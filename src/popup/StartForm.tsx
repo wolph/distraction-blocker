@@ -5,6 +5,7 @@ import { sendRequest } from '../shared/messages';
 import { isSessionSnapshot } from '../shared/runtime-validation';
 import type {
   CycleConfig,
+  GateSettings,
   ListsConfig,
   SessionConfig,
   SessionMode,
@@ -20,15 +21,17 @@ import { useWorkTabs, type WorkTabsState } from './use-work-tabs';
 /** Positional labels for the three presets. */
 const PRESET_LABELS: readonly [string, string, string] = ['short', 'focus', 'deep work'];
 
-const STRICTNESS_HINTS: Record<Strictness, string> = {
-  friction: 'can end early after 30 s wait typing sentence',
-  hard: 'sites stay locked until the timer ends, paid access excepted',
-};
-
 const MODE_HINTS: Record<SessionMode, string> = {
   blacklist: 'block the listed sites, allow the rest',
   whitelist: 'allow the listed sites, block the rest',
 };
+
+function unlockRequirements(gate: GateSettings): string | null {
+  const requirements: string[] = [];
+  if (gate.delayMs > 0) requirements.push(`${gate.delayMs / 1_000} s wait`);
+  if (gate.requireTypedPhrase) requirements.push('typing the confirmation phrase');
+  return requirements.length === 0 ? null : requirements.join(' and ');
+}
 
 export function StartForm({
   settings,
@@ -41,9 +44,8 @@ export function StartForm({
   categoriesEditable?: boolean;
   onStartFeedback?: (error: string | null) => void;
 }): VNode {
-  const [selectedMin, setSelectedMin]: [number, Dispatch<StateUpdater<number>>] = useState<number>(
-    settings.presetsMin[1],
-  );
+  const [selectedMin, setSelectedMin]: [number | null, Dispatch<StateUpdater<number | null>>] =
+    useState<number | null>(settings.presetsMin[1]);
   const [customMin, setCustomMin]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
   const [intention, setIntention]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
   const [mode, setMode]: [SessionMode, Dispatch<StateUpdater<SessionMode>>] = useState<SessionMode>(
@@ -78,20 +80,29 @@ export function StartForm({
     );
   }, [work]);
 
-  const durationMin: number = customMin.trim() === '' ? selectedMin : Number(customMin);
+  const durationMin: number | null = customMin.trim() === '' ? selectedMin : Number(customMin);
+  const indefinite: boolean = durationMin === null;
+  const confirmation: string | null = unlockRequirements(settings.gate);
+  const strictnessHints: Record<Strictness, string> = {
+    friction:
+      confirmation === null
+        ? 'can end early without waiting or typing a phrase'
+        : `can end early after ${confirmation}`,
+    hard: 'sites stay locked until the timer ends, paid access excepted',
+  };
 
   const start: () => Promise<void> = async (): Promise<void> => {
     if (startInFlight.current || starting || categoryUpdatePending) return;
-    if (!Number.isFinite(durationMin) || durationMin <= 0) {
+    if (durationMin !== null && (!Number.isFinite(durationMin) || durationMin <= 0)) {
       setError('enter a session length in minutes');
       return;
     }
     setError(null);
     const config: SessionConfig = {
       mode,
-      strictness,
+      strictness: indefinite ? 'friction' : strictness,
       durationMin,
-      cycling: cyclingOn ? settings.defaultCycling : null,
+      cycling: !indefinite && cyclingOn ? settings.defaultCycling : null,
       intention: intention.trim(),
       source: 'manual',
       scheduleEntryId: null,
@@ -136,11 +147,13 @@ export function StartForm({
   const c: CycleConfig = settings.defaultCycling;
   const cyclingLabel: string = `cycles: ${c.focusMin} min focus, ${c.shortBreakMin} min break, ${c.longBreakMin} min long break every ${c.longEvery}th`;
   const timingSummary: string | null =
-    !Number.isFinite(durationMin) || durationMin <= 0
-      ? null
-      : cyclingOn && c.focusMin < durationMin
-        ? `${durationMin} min total, with ${c.focusMin} min focus blocks`
-        : `${durationMin} min uninterrupted focus`;
+    durationMin === null
+      ? 'Locked until you manually unlock'
+      : !Number.isFinite(durationMin) || durationMin <= 0
+        ? null
+        : cyclingOn && c.focusMin < durationMin
+          ? `${durationMin} min total, with ${c.focusMin} min focus blocks`
+          : `${durationMin} min uninterrupted focus`;
 
   return (
     <section class="view start-form">
@@ -159,6 +172,15 @@ export function StartForm({
             />
           ),
         )}
+        <Chip
+          label="∞"
+          accessibleLabel="Until manual unlock"
+          selected={indefinite}
+          onClick={(): void => {
+            setSelectedMin(null);
+            setCustomMin('');
+          }}
+        />
         <input
           class="custom-min"
           type="number"
@@ -175,6 +197,9 @@ export function StartForm({
         <p class="session-timing" role="status">
           {timingSummary}
         </p>
+      ) : null}
+      {indefinite ? (
+        <p class="unlock-confirmation">Unlock confirmation: {confirmation ?? 'none'}.</p>
       ) : null}
 
       <label class="work-tab-label" htmlFor="next-step">
@@ -258,8 +283,10 @@ export function StartForm({
                 key={s}
                 name="strictness"
                 label={s}
-                hint={STRICTNESS_HINTS[s]}
-                checked={strictness === s}
+                hint={strictnessHints[s]}
+                checked={(indefinite ? 'friction' : strictness) === s}
+                disabled={indefinite && s === 'hard'}
+                describedBy={indefinite && s === 'hard' ? 'manual-unlock-options' : undefined}
                 onSelect={(): void => setStrictness(s)}
               />
             ),
@@ -268,13 +295,20 @@ export function StartForm({
         <label class="check-row">
           <input
             type="checkbox"
-            checked={cyclingOn}
+            checked={!indefinite && cyclingOn}
+            disabled={indefinite}
+            aria-describedby={indefinite ? 'manual-unlock-options' : undefined}
             onChange={(e: Event): void =>
               setCyclingOn((e.currentTarget as HTMLInputElement).checked)
             }
           />
           <span>{cyclingLabel}</span>
         </label>
+        {indefinite ? (
+          <p id="manual-unlock-options" class="radio-hint">
+            Manual unlock requires friction and has no automatic breaks.
+          </p>
+        ) : null}
       </details>
 
       <button
@@ -283,7 +317,7 @@ export function StartForm({
         disabled={starting || categoryUpdatePending}
         onClick={(): void => void start()}
       >
-        Start focusing
+        {indefinite ? 'Lock until manual unlock' : 'Start focusing'}
       </button>
       {error !== null ? (
         <p class="form-error" role="alert">

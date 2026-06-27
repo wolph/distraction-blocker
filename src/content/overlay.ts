@@ -551,7 +551,10 @@ function updateStatic(m: Mounted): void {
   const stopped: HTMLElement | null = m.root.querySelector('.notloaded');
   if (stopped !== null) stopped.hidden = !m.stopped;
   const cancel: HTMLElement | null = m.root.querySelector('.linkish');
-  if (cancel !== null) cancel.hidden = m.snapshot.config?.strictness !== 'friction';
+  if (cancel !== null) {
+    cancel.hidden = m.snapshot.config?.strictness !== 'friction';
+    cancel.textContent = m.snapshot.config?.durationMin === null ? 'Unlock' : 'End session';
+  }
   const gateTitleElement: HTMLElement | null = m.root.querySelector('.gate-title');
   if (gateTitleElement !== null && m.snapshot.gate !== null)
     gateTitleElement.textContent = gateTitle(m.snapshot.gate, m.snapshot);
@@ -781,7 +784,7 @@ function buildButtons(m: Mounted, snap: SessionSnapshot, now: number): HTMLEleme
     const cancel: HTMLButtonElement = document.createElement('button');
     cancel.className = 'linkish';
     cancel.type = 'button';
-    cancel.textContent = 'End session';
+    cancel.textContent = snap.config?.durationMin === null ? 'Unlock' : 'End session';
     cancel.addEventListener('click', (): void => requestOpenGate('cancel', null));
     row.appendChild(cancel);
   }
@@ -818,13 +821,13 @@ function gateTitle(gate: GateState, snap: SessionSnapshot): string {
   if (gate.kind === 'unlockSite') {
     return `Unlock ${gate.host ?? 'this site'} ${formatClock(snap.unlockCostMs)}`;
   }
-  return 'End this session';
+  return snap.config?.durationMin === null ? 'Unlock' : 'End this session';
 }
 
-function gateConfirmLabel(kind: GateKind): string {
+function gateConfirmLabel(kind: GateKind, snap: SessionSnapshot): string {
   if (kind === 'pause') return 'Unlock all sites';
   if (kind === 'unlockSite') return 'Unlock this site';
-  return 'End the session';
+  return snap.config?.durationMin === null ? 'Unlock' : 'End the session';
 }
 
 function buildGate(m: Mounted, gate: GateState, snap: SessionSnapshot, now: number): HTMLElement {
@@ -859,7 +862,7 @@ function buildGate(m: Mounted, gate: GateState, snap: SessionSnapshot, now: numb
   const confirm: HTMLButtonElement = document.createElement('button');
   confirm.className = 'pill';
   confirm.type = 'button';
-  confirm.textContent = gateConfirmLabel(gate.kind);
+  confirm.textContent = gateConfirmLabel(gate.kind, snap);
   confirm.hidden = true;
   confirm.addEventListener('click', (): void => requestConfirmGate(phrase?.value ?? null));
   wrap.appendChild(confirm);

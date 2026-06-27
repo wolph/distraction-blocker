@@ -38,6 +38,15 @@ function focusSnap(): SessionSnapshot {
   };
 }
 
+function indefiniteSnap(): SessionSnapshot {
+  return {
+    ...focusSnap(),
+    config: { ...config, durationMin: null, cycling: null },
+    phaseEndsAt: null,
+    sessionEndsAt: null,
+  };
+}
+
 function gateSnap(): SessionSnapshot {
   const gate: GateState = {
     kind: 'pause',
@@ -96,6 +105,80 @@ describe('ActiveView', () => {
 
   afterEach((): void => {
     cleanup();
+  });
+
+  it('shows infinity and opens the existing cancel gate from Unlock', async (): Promise<void> => {
+    const view: ReturnType<typeof render> = render(
+      h(ActiveView, { snapshot: indefiniteSnap(), now: NOW }),
+    );
+    expect(view.container.querySelector('.clock')?.textContent).toBe('∞');
+    expect(view.container.querySelector('.clock')?.getAttribute('title')).toBe(
+      'Until manual unlock',
+    );
+    expect(view.getByText('Until manual unlock')).toBeTruthy();
+    expect(view.getByRole('img', { name: 'Until manual unlock' })).toBeTruthy();
+    expect(view.queryByText('0:00')).toBeNull();
+    const unlock: HTMLButtonElement = view.getByRole('button', {
+      name: 'Unlock',
+      exact: true,
+    }) as HTMLButtonElement;
+    fireEvent.click(unlock);
+    await waitFor((): void =>
+      expect(sendMessageMock).toHaveBeenCalledWith({
+        type: 'openGate',
+        gate: 'cancel',
+        host: null,
+      }),
+    );
+    expect(sendMessageMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'confirmGate' }),
+    );
+  });
+
+  it('keeps indefinite Unlock confirmation gated by the configured wait and phrase', async (): Promise<void> => {
+    const snapshot: SessionSnapshot = {
+      ...indefiniteSnap(),
+      gate: {
+        kind: 'cancel',
+        host: null,
+        openedAt: NOW,
+        readyAt: NOW + 30_000,
+        requiredPhrase: 'I choose to stop',
+        forceEndAvailable: false,
+      },
+    };
+    const view: ReturnType<typeof render> = render(h(ActiveView, { snapshot, now: NOW }));
+    const confirm: HTMLButtonElement = view.getByRole('button', {
+      name: 'Unlock',
+      exact: true,
+    }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    view.rerender(h(ActiveView, { snapshot, now: NOW + 30_000 }));
+    expect(confirm.disabled).toBe(true);
+    fireEvent.input(view.getByRole('textbox'), { target: { value: 'I choose to stop' } });
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
+    await waitFor((): void =>
+      expect(sendMessageMock).toHaveBeenCalledWith({
+        type: 'confirmGate',
+        typedPhrase: 'I choose to stop',
+      }),
+    );
+  });
+
+  it('shows finite paid access countdown while an indefinite session is paused', (): void => {
+    const snapshot: SessionSnapshot = {
+      ...indefiniteSnap(),
+      phase: 'paused',
+      phaseStartedAt: NOW - 60_000,
+      phaseEndsAt: NOW + 4 * 60_000,
+      bankAccrualPerMs: 0,
+    };
+    const view: ReturnType<typeof render> = render(h(ActiveView, { snapshot, now: NOW }));
+    expect(view.getByText('4:00')).toBeTruthy();
+    expect(view.getByText(/site access until/)).toBeTruthy();
+    expect(view.getByRole('button', { name: 'Resume now' })).toBeTruthy();
+    expect(view.queryByText('∞')).toBeNull();
   });
 
   it.each([

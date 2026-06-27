@@ -38,8 +38,8 @@ export interface CycleConfig {
 export interface SessionConfig {
   mode: SessionMode;
   strictness: Strictness;
-  /** total session length in minutes, fractional allowed (tests use 0.1) */
-  durationMin: number;
+  /** Total minutes, fractional allowed. Null means manual unlock, with friction and no cycling. */
+  durationMin: number | null;
   cycling: CycleConfig | null;
   intention: string;
   source: 'manual' | 'schedule';
@@ -52,14 +52,14 @@ export interface SessionState {
   sessionId?: string;
   config: SessionConfig;
   startedAt: number;
-  sessionEndsAt: number;
+  sessionEndsAt: number | null;
   phase: 'focus' | 'break' | 'paused';
   phaseStartedAt: number;
-  phaseEndsAt: number;
+  phaseEndsAt: number | null;
   /** 0-based index of the current focus cycle */
   cycleIndex: number;
   /** set while paused: what to restore on resume */
-  pausedFrom: { phase: 'focus' | 'break'; phaseEndsAt: number } | null;
+  pausedFrom: { phase: 'focus' | 'break'; phaseEndsAt: number | null } | null;
   /** focus ms completed so far, maintained by advance(), excludes breaks and pauses */
   focusedMs: number;
 }
@@ -222,7 +222,7 @@ export type EventRecord =
       source: 'manual' | 'schedule';
       mode: SessionMode;
       strictness: Strictness;
-      durationMin: number;
+      durationMin: number | null;
       intention: string;
       sessionId?: string;
     }

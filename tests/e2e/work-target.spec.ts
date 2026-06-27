@@ -225,6 +225,25 @@ test('returning abandons an open gate without spending access credit', async ({
   const blockedPage: Page = await context.newPage();
   await blockedPage.goto(siteUrl('/plain.html'), { waitUntil: 'commit' });
   await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
+  const readiness: CDPSession = await context.newCDPSession(blockedPage);
+  try {
+    // Both async updates move the disclosure while the centred panel settles.
+    await expect
+      .poll(async (): Promise<boolean> => {
+        const tree: AccessibilityTree = await readiness.send('Accessibility.getFullAXTree');
+        const hasTarget: boolean = tree.nodes.some(
+          (node: AccessibilityNode): boolean =>
+            node.role?.value === 'button' && String(node.name?.value).startsWith('Back to work'),
+        );
+        const hasStoppedNotice: boolean = tree.nodes.some((node: AccessibilityNode): boolean =>
+          String(node.name?.value).startsWith('This page did not load.'),
+        );
+        return hasTarget && hasStoppedNotice;
+      })
+      .toBe(true);
+  } finally {
+    await readiness.detach();
+  }
   await clickOverlay(context, blockedPage, 'Need a break or site access?', 'DisclosureTriangle');
   await clickOverlay(context, blockedPage, 'End session');
   const beforeReturn: CDPSession = await context.newCDPSession(blockedPage);

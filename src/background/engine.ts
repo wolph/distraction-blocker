@@ -1069,9 +1069,13 @@ export class Engine {
       this.startFromScheduleEntry(active, now);
       return;
     }
-    // One session at a time. A hard window upgrades a running friction
-    // session, never the other way around (spec section 5).
-    if (active.strictness === 'hard' && session.config.strictness === 'friction') {
+    // A timed friction session can become hard when a scheduled window starts.
+    // Indefinite sessions retain their manual exit.
+    if (
+      active.strictness === 'hard' &&
+      session.config.strictness === 'friction' &&
+      session.config.durationMin !== null
+    ) {
       this.runtime.session = {
         ...session,
         config: { ...session.config, strictness: 'hard' },
@@ -1234,7 +1238,7 @@ export class Engine {
     const wakeCandidates: number[] = this.runtime.unlocks.map(
       (unlock: SiteUnlock): number => unlock.until,
     );
-    if (this.runtime.session?.phaseEndsAt !== undefined) {
+    if (this.runtime.session?.phaseEndsAt != null) {
       wakeCandidates.push(this.runtime.session.phaseEndsAt);
     }
     this.ports.scheduleWake(wakeCandidates.length === 0 ? null : Math.min(...wakeCandidates));
@@ -1400,7 +1404,11 @@ function hostOf(url: string): string {
 
 function focusedMsAt(session: SessionState, now: number): number {
   if (session.phase !== 'focus') return session.focusedMs;
-  const focusedUntil: number = Math.min(now, session.phaseEndsAt, session.sessionEndsAt);
+  const focusedUntil: number = Math.min(
+    now,
+    session.phaseEndsAt ?? now,
+    session.sessionEndsAt ?? now,
+  );
   return session.focusedMs + Math.max(0, focusedUntil - session.phaseStartedAt);
 }
 

@@ -1,5 +1,20 @@
 # Focus Lock QA checklist
 
+## Manual unlock and wider popup: 2026-09-09
+
+Verification used isolated Chromium profiles and demonstration tabs.
+
+- [x] The popup is 480 px wide and fits 375 px viewports. The infinity preset starts a session without an end time or automatic breaks. Its confirmation detail reflects the configured delay and optional phrase.
+- [x] Unit tests cover indefinite focus accounting, finite paid access, explicit unlock, validation, storage restoration and a hard schedule starting during a manual lock. Timed session behaviour remains covered.
+- [x] Independent spec and code review approved the core, background and UI changes. The review found and fixed a hard-schedule upgrade that would have removed the manual exit.
+- [x] `npm run check`: Biome, TypeScript, 67 test files, 1,381 passing tests, 2 skipped tests and production build passed.
+- [x] All 46 Playwright scenarios passed, including manual lock across browser restart and delayed explicit unlock. A pre-existing coordinate race in the return-to-work test now waits for the stopped-page notice and resolved destination before clicking. The focused test passed ten consecutive runs after the change.
+- [x] A dedicated Vite server was started and visited through dev-browser. Production screenshots cover timed and indefinite setup, session options, active popup and overlay, unlock gates and stats in both themes at 1280, 768 and 375 px. Component captures include hover, keyboard focus and disabled controls. The 375 by 500 px overlay scrolls to the confirmation field and Unlock button.
+- [x] Independent visual review approved 43 inspected captures, including the infinity preset focus outline and the short overlay's scrolled confirmation controls.
+- [x] Browser logs contain no console errors or page exceptions. Chromium emitted module-preload warnings on extension pages.
+
+Evidence is retained in `.playwright-mcp/manual-unlock-qa/`.
+
 ## Work-tab scale and destination labels: 2026-09-08
 
 Verification used isolated Chromium 151 profiles and demonstration tabs. The scale measurement supplied 10,000 synthetic metadata records and empty icon responses to the production chooser. Real cached icons and recent-tab ordering were checked separately.

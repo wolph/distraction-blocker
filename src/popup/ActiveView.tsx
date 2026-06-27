@@ -229,6 +229,7 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
           gate={snapshot.gate}
           now={now}
           intention={intention}
+          indefinite={snapshot.config?.durationMin === null}
           returnToWork={work.target?.ok && work.target.state === 'ready' ? returnToWork : undefined}
           returnDestination={
             work.target?.ok && work.target.state === 'ready' ? work.target : undefined
@@ -282,7 +283,7 @@ export function ActiveView({ snapshot, now }: { snapshot: SessionSnapshot; now: 
               disabled={actionPending}
               onClick={(): void => void openGate('cancel', null)}
             >
-              End session
+              {snapshot.config?.durationMin === null ? 'Unlock' : 'End session'}
             </button>
           ) : null}
         </div>

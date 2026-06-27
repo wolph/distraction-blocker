@@ -6,7 +6,7 @@ const MAX_ROWS: number = 20;
 
 export interface SessionRow {
   startedAt: number;
-  plannedMin: number;
+  plannedMin: number | null;
   intention: string;
   source: 'manual' | 'schedule';
   outcome: 'completed' | 'ended early' | 'running';
@@ -20,7 +20,7 @@ interface OpenRow {
   sessionId?: string;
   superseded: boolean;
   startedAt: number;
-  plannedMin: number;
+  plannedMin: number | null;
   intention: string;
   source: 'manual' | 'schedule';
   pauseMs: number;
@@ -187,7 +187,11 @@ export function SessionLog(props: { events: EventRecord[] }): JSX.Element {
                 <tr key={row.startedAt}>
                   <td>{new Date(row.startedAt).toLocaleDateString()}</td>
                   <td>{formatTimeOfDay(row.startedAt)}</td>
-                  <td>{formatDuration(row.plannedMin * 60_000)}</td>
+                  <td>
+                    {row.plannedMin === null
+                      ? 'Until manual unlock'
+                      : formatDuration(row.plannedMin * 60_000)}
+                  </td>
                   <td>{row.focusedMs === null ? '-' : formatDuration(row.focusedMs)}</td>
                   <td>{formatDuration(row.pauseMs)}</td>
                   <td>{formatDuration(row.unlockMs)}</td>
