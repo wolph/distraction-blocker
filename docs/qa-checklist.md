@@ -1,10 +1,22 @@
 # Focus Lock QA checklist
 
+## Actual toolbar popup width: 2026-09-09
+
+The earlier width checks opened the extension page in a normal tab. They missed Chrome's automatic sizing of the actual toolbar popup.
+
+- [x] Reproduced the defect through `chrome.action.openPopup()`. The old viewport-based maximum width produced 156 px in the headless regression and about 380 px in the visible browser.
+- [x] Replacing `max-width: 100vw` with `max-width: 100%` preserves the intended 480 px toolbar width. The regression reads the real popup window through `chrome.extension.getViews({ type: 'popup' })`, without changing its viewport.
+- [x] Both sizing tests pass. Three repeated runs in a visible browser also pass. The popup page still fits a 375 px tab viewport without horizontal overflow.
+- [x] `npm run check` passed with 1,381 tests and 2 skipped tests. All 12 selected browser scenarios passed, covering native sizing, manual unlock, uninterrupted deep work and smoke checks.
+- [x] Dev-browser visited the dedicated Vite server and captured the actual toolbar popup in both themes. Both measured 480 px. Full, component, hover and keyboard-focus captures pass visual inspection. Responsive tab captures at 375 and 768 px also pass. The native capture recorded no console errors or page exceptions.
+
+Evidence is retained in `.playwright-mcp/popup-width-qa/`.
+
 ## Manual unlock and wider popup: 2026-09-09
 
 Verification used isolated Chromium profiles and demonstration tabs.
 
-- [x] The popup is 480 px wide and fits 375 px viewports. The infinity preset starts a session without an end time or automatic breaks. Its confirmation detail reflects the configured delay and optional phrase.
+- [x] The popup page was checked at 480 px and in 375 px tab viewports. Native toolbar sizing was not checked in this pass. The infinity preset starts a session without an end time or automatic breaks. Its confirmation detail reflects the configured delay and optional phrase.
 - [x] Unit tests cover indefinite focus accounting, finite paid access, explicit unlock, validation, storage restoration and a hard schedule starting during a manual lock. Timed session behaviour remains covered.
 - [x] Independent spec and code review approved the core, background and UI changes. The review found and fixed a hard-schedule upgrade that would have removed the manual exit.
 - [x] `npm run check`: Biome, TypeScript, 67 test files, 1,381 passing tests, 2 skipped tests and production build passed.
