@@ -115,7 +115,7 @@ export interface EconomyState {
   saveTheme(next: ThemeMode): Promise<string | null>;
 }
 
-/** Pause settings for the spent-versus-earned tile. */
+/** Site access settings for the spent-versus-earned tile. */
 export function useEconomy(): EconomyState {
   const [economy, setEconomy]: [PauseEconomy, Dispatch<StateUpdater<PauseEconomy>>] =
     useState<PauseEconomy>(DEFAULT_SETTINGS.pause);

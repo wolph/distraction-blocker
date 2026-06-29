@@ -15,7 +15,7 @@ function isRecord(value: unknown): value is UnknownRecord {
  * getSnapshot request, updates arrive as stateChanged broadcasts, and `now`
  * ticks every 250 ms so views can extrapolate with src/shared/live.ts.
  */
-export function useSnapshot(): {
+export function useSnapshot(refreshVersion: number = 0): {
   snapshot: SessionSnapshot | null;
   now: number;
   error: boolean;
@@ -29,9 +29,10 @@ export function useSnapshot(): {
 
   useEffect((): (() => void) => {
     let receivedBroadcast: boolean = false;
+    let disposed: boolean = false;
     void sendRequest({ type: 'getSnapshot' })
       .then((value: unknown): void => {
-        if (receivedBroadcast) return;
+        if (disposed || receivedBroadcast) return;
         if (isSessionSnapshot(value)) {
           setSnapshot(value);
           setError(false);
@@ -42,7 +43,7 @@ export function useSnapshot(): {
         setError(true);
       })
       .catch((): void => {
-        if (receivedBroadcast) return;
+        if (disposed || receivedBroadcast) return;
         setSnapshot(null);
         setError(true);
       });
@@ -61,10 +62,11 @@ export function useSnapshot(): {
     chrome.runtime.onMessage.addListener(onMsg);
     const timer: ReturnType<typeof setInterval> = setInterval((): void => setNow(Date.now()), 250);
     return (): void => {
+      disposed = true;
       chrome.runtime.onMessage.removeListener(onMsg);
       clearInterval(timer);
     };
-  }, []);
+  }, [refreshVersion]);
 
   return { snapshot, now, error };
 }
