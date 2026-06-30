@@ -179,7 +179,7 @@ describe('ActiveView', (): void => {
     expect(getByText(TOTAL_SESSION_CLOCK_LABEL)).toBeTruthy();
     expect(getByText('write the report')).toBeTruthy();
     expect(container.querySelector('.meter-fill')).toBeTruthy();
-    expect(getByText('10:00 pause banked')).toBeTruthy();
+    expect(getByText('10:00 site access credit')).toBeTruthy();
     expect(getByRole('button', { name: /Unlock this site for 5 min/ })).toBeTruthy();
     expect(getByRole('button', { name: /Pause blocking for 5 min/ })).toBeTruthy();
     await waitFor((): void => {
@@ -622,9 +622,9 @@ describe('ActiveView disabled reasons', (): void => {
     const { container } = render(h(ActiveView, { snapshot, now: NOW }));
 
     await waitFor((): void => {
-      expect(spendSub(spendControls(container).unlock)).toBe('earn pause time by focusing');
+      expect(spendSub(spendControls(container).unlock)).toBe('earn site access credit by focusing');
     });
-    expect(spendSub(spendControls(container).pause)).toBe('earn pause time by focusing');
+    expect(spendSub(spendControls(container).pause)).toBe('earn site access credit by focusing');
     expect(container.textContent).not.toContain('ready in');
   });
 });

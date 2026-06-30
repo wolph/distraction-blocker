@@ -66,9 +66,9 @@ const FIXED_ACTIVE_COPY: Readonly<
     | 'transportError'
   >
 > = {
-  bankUnit: 'pause banked',
+  bankUnit: 'site access credit',
   endAction: 'End session',
-  bankWaitFallback: 'earn pause time by focusing',
+  bankWaitFallback: 'earn site access credit by focusing',
   bankWaitPrefix: 'ready in',
   gateBack: 'Never mind, back to work',
   gatePhraseLabel: 'Type this to confirm:',

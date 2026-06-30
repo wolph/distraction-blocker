@@ -176,7 +176,7 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
     affordable: boolean;
     countdown: string | null;
   }): string | null =>
-    value.affordable ? null : (value.countdown ?? 'earn pause time by focusing');
+    value.affordable ? null : (value.countdown ?? 'earn site access credit by focusing');
   const pendingReason: string | null = command.pending ? 'Action in progress' : null;
   const activeSiteReason: string | null =
     activeSite.status === 'loading'
@@ -265,7 +265,7 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
         <div class="meter-bar">
           <div class="meter-fill" style={{ width: `${bankFill * 100}%` }} />
         </div>
-        <span class="meter-label">{formatClock(bankMs)} pause banked</span>
+        <span class="meter-label">{formatClock(bankMs)} site access credit</span>
       </div>
 
       {activeGate !== null ? (

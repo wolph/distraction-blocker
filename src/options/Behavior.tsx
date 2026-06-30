@@ -171,7 +171,7 @@ export function BehaviorDefaults(props: BehaviorProps): VNode {
               props.onChange({ ...s, defaultStrictness: 'hard' });
             }}
           />
-          Hard: no cancel, pauses and site unlocks are the only escapes
+          Hard: no early end, temporary site access only
         </label>
       </div>
       <h3>Focus and break cycle</h3>
@@ -307,11 +307,11 @@ export function PauseEconomy(props: BehaviorProps): VNode {
   return (
     <div>
       <p class="help">
-        Pause minutes accrue while you focus and spend from one bank, whether you pause blocking or
-        unlock a single site. The cap helps keep the pause bank bounded.
+        Site access credit accrues while you focus. Both access to all sites and a single-site
+        unlock spend from the same balance. You can step away at any time without spending credit.
       </p>
       <NumberField
-        label="Minutes of pause per 30 minutes of focus"
+        label="Minutes of site access per 30 minutes of focus"
         value={earnPer30}
         allowZero
         allowFraction
@@ -320,7 +320,7 @@ export function PauseEconomy(props: BehaviorProps): VNode {
         }}
       />
       <NumberField
-        label="Pause bank cap (minutes)"
+        label="Site access credit limit (minutes)"
         value={s.pause.capMs / 60_000}
         allowZero
         onValue={(value: number): void => {
@@ -328,7 +328,7 @@ export function PauseEconomy(props: BehaviorProps): VNode {
         }}
       />
       <NumberField
-        label="Pause length (minutes)"
+        label="All-site access length (minutes)"
         value={s.pause.pauseMs / 60_000}
         onValue={(value: number): void => {
           props.onChange({ ...s, pause: { ...s.pause, pauseMs: minToMs(value) } });

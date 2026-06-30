@@ -52,8 +52,8 @@ describe('SessionLog', () => {
     expect(container.querySelectorAll('.session-table .chip.running').length).toBe(1);
     expect(container.textContent).toContain('thesis chapter');
     expect(container.textContent).toContain('Ended early');
-    expect(container.textContent).toContain('Pause');
-    expect(container.textContent).toContain('Unlock');
+    expect(container.textContent).toContain('All sites');
+    expect(container.textContent).toContain('One site');
   });
 
   it('renders a v2 row with the shared outcome wording', () => {

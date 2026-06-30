@@ -271,10 +271,10 @@ describe('buildActiveOverlayView timed focus', () => {
     expect(view.copy.lockedUntil).toBe(lockedUntil);
     expect(view.copy.pauseAction).toBe('Pause blocking for 1 min');
     expect(view.copy.unlockAction).toBe('Unlock this site for 2 min');
-    expect(view.copy.bankUnit).toBe('pause banked');
+    expect(view.copy.bankUnit).toBe('site access credit');
     expect(view.copy.endAction).toBe('End session');
     expect(view.copy.bankWaitPrefix).toBe('ready in');
-    expect(view.copy.bankWaitFallback).toBe('earn pause time by focusing');
+    expect(view.copy.bankWaitFallback).toBe('earn site access credit by focusing');
     expect(view.copy.gateBack).toBe('Never mind, back to work');
     expect(view.copy.gatePhraseLabel).toBe('Type this to confirm:');
     expect(view.copy.transportError).toBe('Focus Lock could not update this action. Try again.');

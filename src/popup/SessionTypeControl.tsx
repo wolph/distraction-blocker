@@ -47,7 +47,7 @@ export function SessionTypeControl({
     {
       value: 'hard',
       label: 'Hard lock',
-      consequence: 'The session cannot end early. Earned pauses still work.',
+      consequence: 'The session cannot end early. Site access credit still works.',
     },
   ];
   return (

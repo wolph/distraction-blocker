@@ -1334,7 +1334,7 @@ test('captures five truthful release states with category membership in the popu
     await expect(syncedScope.getByRole('listitem')).toHaveText([
       'Settings',
       'Block and allow lists',
-      'Pause balance',
+      'Site access credit',
       'Streaks',
       'Domain-level blocked-attempt aggregates',
     ]);

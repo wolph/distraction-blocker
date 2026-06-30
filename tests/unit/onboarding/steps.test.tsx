@@ -133,7 +133,7 @@ describe('SyncChoiceStep', (): void => {
     for (const label of [
       'Settings',
       'Block and allow lists',
-      'Pause balance',
+      'Site access credit',
       'Streaks',
       'Domain-level blocked-attempt aggregates',
       'Full URLs',

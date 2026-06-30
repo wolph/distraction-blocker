@@ -8,7 +8,7 @@ import type { Strictness } from '../../../src/shared/types';
 const EXPLANATIONS: Record<Strictness, string> = {
   flexible: 'End the session immediately whenever you choose.',
   friction: 'Ending early requires a 10-second wait. No typing is required.',
-  hard: 'The session cannot end early. Earned pauses still work.',
+  hard: 'The session cannot end early. Site access credit still works.',
 };
 
 function SessionTypes({

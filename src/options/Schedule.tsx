@@ -33,7 +33,7 @@ interface StrictnessChoice {
 const STRICTNESS_CHOICES: readonly StrictnessChoice[] = [
   { value: 'flexible', label: 'Flexible: end the session whenever you choose' },
   { value: 'friction', label: 'Friction: stopping early uses the configured deliberation gate' },
-  { value: 'hard', label: 'Hard: no cancel, pauses and unlocks are the only escapes' },
+  { value: 'hard', label: 'Hard: no early end, temporary site access only' },
 ];
 
 /** The timed choices an indefinite entry never submits. */

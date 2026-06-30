@@ -361,7 +361,9 @@ test('popup daily states keep help and long rules contained at native width', as
   const hardTooltip: Locator = extPage
     .getByRole('tooltip')
     .filter({ hasText: 'The session cannot end early' });
-  await expect(hardTooltip).toHaveText('The session cannot end early. Earned pauses still work.');
+  await expect(hardTooltip).toHaveText(
+    'The session cannot end early. Site access credit still works.',
+  );
   await expectWithinViewport(hardTooltip);
   await extPage.keyboard.press('Escape');
 

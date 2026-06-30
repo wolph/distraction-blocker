@@ -14,7 +14,7 @@ export const SETTINGS_SECTIONS: ReadonlyArray<{ id: SettingsSectionId; label: st
   { id: 'blocking', label: 'Blocking' },
   { id: 'schedule', label: 'Schedule' },
   { id: 'behavior', label: 'Session behavior' },
-  { id: 'budget', label: 'Pause budget' },
+  { id: 'budget', label: 'Site access credit' },
   { id: 'notifications', label: 'Notifications' },
   { id: 'privacy', label: 'Privacy and data' },
 ];

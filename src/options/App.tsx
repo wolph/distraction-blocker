@@ -93,7 +93,7 @@ function BehaviorSection(props: SectionProps): VNode {
 function BudgetSection(props: SectionProps): VNode {
   return (
     <section>
-      <h2>Pause budget</h2>
+      <h2>Site access credit</h2>
       <PauseEconomy settings={props.settings} onChange={props.onSettings} />
     </section>
   );

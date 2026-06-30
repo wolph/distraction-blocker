@@ -53,8 +53,8 @@ export function SessionLog(props: { events: EventRecord[] }): JSX.Element {
               <th>Start</th>
               <th>Planned</th>
               <th>Focused</th>
-              <th>Pause</th>
-              <th>Unlock</th>
+              <th>All sites</th>
+              <th>One site</th>
               <th>Intention</th>
               <th>Outcome</th>
               <th>
@@ -115,11 +115,11 @@ export function SessionLog(props: { events: EventRecord[] }): JSX.Element {
                   <dd>{row.focusedMs === null ? '-' : formatDuration(row.focusedMs)}</dd>
                 </div>
                 <div>
-                  <dt>Pause</dt>
+                  <dt>All sites</dt>
                   <dd>{formatDuration(row.pauseMs)}</dd>
                 </div>
                 <div>
-                  <dt>Unlock</dt>
+                  <dt>One site</dt>
                   <dd>{formatDuration(row.unlockMs)}</dd>
                 </div>
                 <div>

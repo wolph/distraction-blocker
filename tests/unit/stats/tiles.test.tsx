@@ -161,9 +161,9 @@ describe('Tiles', () => {
     expect(tileValue(container, 'Focus in the last 7 days')).toBe('1 h 55 m');
     expect(tileValue(container, 'Attempts blocked today')).toBe('6');
     expect(tileValue(container, 'Gate requests dismissed today')).toBe('2');
-    expect(tileValue(container, 'Pause and unlock time spent today')).toBe('7 m');
-    expect(tileSubline(container, 'Pause and unlock time spent today')).toBe(
-      'Pause 5 m, unlock 2 m, 17 m earned',
+    expect(tileValue(container, 'Site access credit spent today')).toBe('7 m');
+    expect(tileSubline(container, 'Site access credit spent today')).toBe(
+      'All sites 5 m, one site 2 m, 17 m earned',
     );
     expect(container.textContent).not.toContain('Current streak');
     expect(container.textContent).not.toContain('2 freezes banked');
@@ -195,8 +195,8 @@ describe('Tiles', () => {
 
       const { container } = render(<Tiles bundle={bundle} economy={ECONOMY} now={NOW} />);
 
-      expect(tileSubline(container, 'Pause and unlock time spent today')).toBe(
-        `Pause ${formatDuration(pauseMs)}, unlock ${formatDuration(unlockMs)}, 0 m earned`,
+      expect(tileSubline(container, 'Site access credit spent today')).toBe(
+        `All sites ${formatDuration(pauseMs)}, one site ${formatDuration(unlockMs)}, 0 m earned`,
       );
     },
   );

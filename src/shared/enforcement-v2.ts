@@ -29,11 +29,11 @@ export interface ActiveOverlayCopy {
   attempts: string;
   verdictProvenance: string;
   stoppedPage: 'This page did not load. It will load by itself when the session ends.' | null;
-  bankUnit: 'pause banked';
+  bankUnit: 'site access credit';
   pauseAction: string;
   unlockAction: string;
   endAction: 'End session';
-  bankWaitFallback: 'earn pause time by focusing';
+  bankWaitFallback: 'earn site access credit by focusing';
   bankWaitPrefix: 'ready in';
   gateTitle: string | null;
   gateBack: 'Never mind, back to work';

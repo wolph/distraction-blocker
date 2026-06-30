@@ -453,7 +453,7 @@ describe('App frame', () => {
       'Blocking',
       'Schedule',
       'Session behavior',
-      'Pause budget',
+      'Site access credit',
       'Notifications',
       'Privacy and data',
     ]) {
@@ -523,8 +523,10 @@ describe('App frame', () => {
     const update: Deferred<{ ok: true }> = deferred<{ ok: true }>();
     fake.respond('updateSettings', update.promise);
     const { getByLabelText, getByRole, getByText } = render(<App />);
-    await waitFor((): void => expect(getByRole('link', { name: 'Pause budget' })).toBeTruthy());
-    fireEvent.click(getByRole('link', { name: 'Pause budget' }));
+    await waitFor((): void =>
+      expect(getByRole('link', { name: 'Site access credit' })).toBeTruthy(),
+    );
+    fireEvent.click(getByRole('link', { name: 'Site access credit' }));
     fireEvent.input(getByLabelText('Daily streak goal (focus minutes)'), {
       target: { value: '30' },
     });
@@ -546,9 +548,11 @@ describe('App frame', () => {
     const update: Deferred<{ ok: false; error: string }> = deferred<{ ok: false; error: string }>();
     fake.respond('updateSettings', update.promise);
     const { getByLabelText, getByRole, getByText, queryByRole } = render(<App />);
-    await waitFor((): void => expect(getByRole('link', { name: 'Pause budget' })).toBeTruthy());
+    await waitFor((): void =>
+      expect(getByRole('link', { name: 'Site access credit' })).toBeTruthy(),
+    );
 
-    fireEvent.click(getByRole('link', { name: 'Pause budget' }));
+    fireEvent.click(getByRole('link', { name: 'Site access credit' }));
     fireEvent.input(getByLabelText('Daily streak goal (focus minutes)'), {
       target: { value: '30' },
     });
@@ -565,7 +569,7 @@ describe('App frame', () => {
     await waitFor((): void => expect(getByText('No unsaved changes')).toBeTruthy());
     expect(queryByRole('alert')).toBeNull();
 
-    fireEvent.click(getByRole('link', { name: 'Pause budget' }));
+    fireEvent.click(getByRole('link', { name: 'Site access credit' }));
     await waitFor((): void => {
       expect(getByRole('alert').textContent).toBe('budget write rejected');
     });
@@ -586,7 +590,7 @@ describe('App frame', () => {
     );
 
     fireEvent.click(theme);
-    fireEvent.click(getByRole('link', { name: 'Pause budget' }));
+    fireEvent.click(getByRole('link', { name: 'Site access credit' }));
     fireEvent.input(getByLabelText('Daily streak goal (focus minutes)'), {
       target: { value: '30' },
     });
@@ -616,9 +620,11 @@ describe('App frame', () => {
     fake.respond('updateSettings', settingsUpdate.promise);
     fake.respond('updateTheme', themeUpdate.promise);
     const { getByLabelText, getByRole, getByText } = render(<App />);
-    await waitFor((): void => expect(getByRole('link', { name: 'Pause budget' })).toBeTruthy());
+    await waitFor((): void =>
+      expect(getByRole('link', { name: 'Site access credit' })).toBeTruthy(),
+    );
 
-    fireEvent.click(getByRole('link', { name: 'Pause budget' }));
+    fireEvent.click(getByRole('link', { name: 'Site access credit' }));
     fireEvent.input(getByLabelText('Daily streak goal (focus minutes)'), {
       target: { value: '30' },
     });
@@ -642,7 +648,7 @@ describe('App frame', () => {
     expect(getByText('No unsaved changes')).toBeTruthy();
   });
 
-  it('rebases a queued Notifications save on an accepted Pause budget save', async (): Promise<void> => {
+  it('rebases a queued Notifications save on an accepted Site access credit save', async (): Promise<void> => {
     const budgetUpdate: Deferred<{ ok: true }> = deferred<{ ok: true }>();
     const notificationsUpdate: Deferred<{ ok: true }> = deferred<{ ok: true }>();
     let writeIndex: number = 0;
@@ -651,9 +657,11 @@ describe('App frame', () => {
       return writeIndex === 1 ? budgetUpdate.promise : notificationsUpdate.promise;
     });
     const { getByLabelText, getByRole } = render(<App />);
-    await waitFor((): void => expect(getByRole('link', { name: 'Pause budget' })).toBeTruthy());
+    await waitFor((): void =>
+      expect(getByRole('link', { name: 'Site access credit' })).toBeTruthy(),
+    );
 
-    fireEvent.click(getByRole('link', { name: 'Pause budget' }));
+    fireEvent.click(getByRole('link', { name: 'Site access credit' }));
     fireEvent.input(getByLabelText('Daily streak goal (focus minutes)'), {
       target: { value: '30' },
     });
@@ -847,7 +855,7 @@ describe('App frame', () => {
     fireEvent.click(
       getByLabelText('Friction: stopping early uses the configured deliberation gate'),
     );
-    fireEvent.click(getByRole('link', { name: 'Pause budget' }));
+    fireEvent.click(getByRole('link', { name: 'Site access credit' }));
     fireEvent.input(getByLabelText('Daily streak goal (focus minutes)'), {
       target: { value: '30' },
     });
@@ -899,9 +907,9 @@ describe('App frame', () => {
     fake.respond('updateSettings', { ok: true });
     const { getByLabelText, getByRole }: ReturnType<typeof render> = render(<App />);
     await waitFor((): void => {
-      expect(getByRole('link', { name: 'Pause budget' })).toBeTruthy();
+      expect(getByRole('link', { name: 'Site access credit' })).toBeTruthy();
     });
-    fireEvent.click(getByRole('link', { name: 'Pause budget' }));
+    fireEvent.click(getByRole('link', { name: 'Site access credit' }));
     fireEvent.input(getByLabelText('Freeze token interval (days)'), { target: { value: '9' } });
     fireEvent.click(getByRole('button', { name: 'Save changes' }));
 

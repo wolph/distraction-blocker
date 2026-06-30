@@ -56,11 +56,11 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     attempts: '2 attempts blocked today',
     verdictProvenance: PROVENANCE,
     stoppedPage: null,
-    bankUnit: 'pause banked',
+    bankUnit: 'site access credit',
     pauseAction: 'Pause blocking for 1 min',
     unlockAction: 'Unlock this site for 2 min',
     endAction: 'End session',
-    bankWaitFallback: 'earn pause time by focusing',
+    bankWaitFallback: 'earn site access credit by focusing',
     bankWaitPrefix: 'ready in',
     gateTitle: null,
     gateBack: 'Never mind, back to work',
@@ -241,7 +241,7 @@ describe('renderDocumentOverlay active view', () => {
     expect(text('.intention')).toBe('Finish the release notes');
     expect(text('.attempts')).toBe('2 attempts blocked today');
     expect(text('.provenance')).toBe(PROVENANCE);
-    expect(text('.bank')).toBe(`${formatClock(300_000)} pause banked`);
+    expect(text('.bank')).toBe(`${formatClock(300_000)} site access credit`);
     expect(shadowRoot().querySelector('.meter-fill')?.getAttribute('style')).toContain('width');
     expect(buttonStartingWith('Pause blocking for 1 min')).toBeInstanceOf(HTMLButtonElement);
     expect(buttonStartingWith('Unlock this site for 2 min')).toBeInstanceOf(HTMLButtonElement);
@@ -287,7 +287,7 @@ describe('renderDocumentOverlay active view', () => {
     vi.advanceTimersByTime(1_000);
 
     expect(pause.textContent).toBe('Pause blocking for 1 minready in 1:59');
-    expect(text('.bank')).toBe(`${formatClock(500)} pause banked`);
+    expect(text('.bank')).toBe(`${formatClock(500)} site access credit`);
 
     vi.advanceTimersByTime(119_000);
 
@@ -303,7 +303,7 @@ describe('renderDocumentOverlay active view', () => {
     const pause: HTMLButtonElement = buttonStartingWith('Pause blocking for 1 min');
 
     expect(pause.disabled).toBe(true);
-    expect(pause.textContent).toBe('Pause blocking for 1 minearn pause time by focusing');
+    expect(pause.textContent).toBe('Pause blocking for 1 minearn site access credit by focusing');
   });
 
   it('renders the gate with its exact copy and hides the ordinary actions', () => {

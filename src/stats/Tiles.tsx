@@ -53,7 +53,7 @@ function buildTiles(bundle: StatsBundle, now: number): TileSpec[] {
   const earnedMs: number = today?.pauseMsEarned ?? 0;
   const spendingSubline: string =
     spentMs > 0
-      ? `Pause ${formatDuration(pauseMs)}, unlock ${formatDuration(unlockMs)}, ${formatDuration(earnedMs)} earned`
+      ? `All sites ${formatDuration(pauseMs)}, one site ${formatDuration(unlockMs)}, ${formatDuration(earnedMs)} earned`
       : `${formatDuration(earnedMs)} earned`;
   return [
     { label: 'Focus today', value: formatDuration(bundle.totals.focusMsToday), subline: null },
@@ -69,7 +69,7 @@ function buildTiles(bundle: StatsBundle, now: number): TileSpec[] {
       subline: null,
     },
     {
-      label: 'Pause and unlock time spent today',
+      label: 'Site access credit spent today',
       value: formatDuration(spentMs),
       subline: spendingSubline,
     },
