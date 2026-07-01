@@ -90,8 +90,14 @@ describe('v2 configuration validation', (): void => {
     expect(isSessionConfigV2(config)).toBe(true);
   });
 
+  it('accepts a Friction until-stopped config, which ends through its deliberation gate', (): void => {
+    expect(isSessionConfigV2({ ...MANUAL_INDEFINITE_CONFIG, strictness: 'friction' })).toBe(true);
+    expect(isSessionConfigV2({ ...SCHEDULED_INDEFINITE_CONFIG, strictness: 'friction' })).toBe(
+      true,
+    );
+  });
+
   it.each([
-    { ...MANUAL_INDEFINITE_CONFIG, strictness: 'friction' },
     { ...MANUAL_INDEFINITE_CONFIG, strictness: 'hard' },
     {
       ...MANUAL_INDEFINITE_CONFIG,

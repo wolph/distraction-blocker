@@ -55,7 +55,11 @@ describe('startSessionV2', (): void => {
     expect(scheduled.phaseEndsAt).toBeNull();
   });
 
-  it('accepts until-stopped only through the Flexible non-cycling contract', (): void => {
+  it('accepts until-stopped for Flexible and Friction, never for Hard or with cycling', (): void => {
+    const frictionConfig: SessionConfigV2 = {
+      ...structuredClone(MANUAL_INDEFINITE_CONFIG),
+      strictness: 'friction',
+    };
     const hardConfig: SessionConfigV2 = {
       ...structuredClone(MANUAL_INDEFINITE_CONFIG),
       strictness: 'hard',
@@ -67,8 +71,14 @@ describe('startSessionV2', (): void => {
 
     expect(isSessionConfigV2(MANUAL_INDEFINITE_CONFIG)).toBe(true);
     expect(isSessionConfigV2(SCHEDULED_INDEFINITE_CONFIG)).toBe(true);
+    expect(isSessionConfigV2(frictionConfig)).toBe(true);
     expect(isSessionConfigV2(hardConfig)).toBe(false);
     expect(isSessionConfigV2(cycling)).toBe(false);
+
+    const friction: SessionStateV2 = startSessionV2(frictionConfig, NOW, SESSION_ID);
+    expect(friction.config.strictness).toBe('friction');
+    expect(friction.sessionEndsAt).toBeNull();
+    expect(friction.phaseEndsAt).toBeNull();
     expect((): SessionStateV2 => startSessionV2(hardConfig, NOW, SESSION_ID)).toThrow(CoreError);
     expect((): SessionStateV2 => startSessionV2(cycling, NOW, SESSION_ID)).toThrow(CoreError);
   });

@@ -106,6 +106,18 @@ describe('detached v2 domain intrinsics', (): void => {
 
     expect(validateDetachedSessionStateV2(TIMED_STATE)).toBe(true);
     expect(validateDetachedSessionStateV2(indefinite)).toBe(true);
+    expect(
+      validateDetachedSessionStateV2({
+        ...indefinite,
+        config: { ...MANUAL_INDEFINITE_CONFIG, strictness: 'friction' },
+      }),
+    ).toBe(true);
+    expect(
+      validateDetachedSessionStateV2({
+        ...indefinite,
+        config: { ...MANUAL_INDEFINITE_CONFIG, strictness: 'hard' },
+      }),
+    ).toBe(false);
     expect(validateDetachedSessionStateV2({ ...indefinite, sessionEndsAt: NOW + 1 })).toBe(false);
   });
 

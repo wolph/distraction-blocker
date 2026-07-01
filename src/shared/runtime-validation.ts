@@ -560,7 +560,7 @@ function isScheduleEntryV2Value(value: unknown): value is ScheduleEntryV2 {
   if (!isScheduleEntry(legacyShape)) return false;
   return (
     candidate.duration.kind === 'window' ||
-    (candidate.strictness === 'flexible' && candidate.cycling === null)
+    (candidate.strictness !== 'hard' && candidate.cycling === null)
   );
 }
 
@@ -1273,7 +1273,7 @@ export function isSessionStartedEventV2(value: unknown): value is SessionStarted
     ) {
       return false;
     }
-    return duration.kind !== 'until-stopped' || candidate.strictness === 'flexible';
+    return duration.kind !== 'until-stopped' || candidate.strictness !== 'hard';
   });
 }
 

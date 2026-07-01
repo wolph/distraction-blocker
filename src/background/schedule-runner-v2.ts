@@ -180,8 +180,9 @@ async function startFromSchedule(
 }
 
 /**
- * An indefinite entry starts a Flexible session with no cycling whatever the entry stored, because
- * an until-stopped session has no other legal shape and the user must always be able to end it.
+ * An indefinite entry keeps the Flexible or Friction type it stored and starts with no cycling
+ * whatever the entry stored, because cycling needs a finite session end. The settings boundary
+ * refuses a Hard indefinite entry, so none reaches this function.
  */
 function scheduleStartCandidate(
   candidate: ResolvedScheduleOccurrenceV2,
@@ -191,7 +192,7 @@ function scheduleStartCandidate(
   const indefinite: boolean = entry.duration.kind === 'until-stopped';
   return {
     mode: entry.mode,
-    strictness: indefinite ? 'flexible' : entry.strictness,
+    strictness: entry.strictness,
     duration: indefinite ? { kind: 'until-stopped' } : { kind: 'schedule-window' },
     cycling: indefinite ? null : structuredClone(entry.cycling),
     intention: entry.intention,

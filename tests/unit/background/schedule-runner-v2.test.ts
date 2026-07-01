@@ -96,8 +96,8 @@ function windowEntry(overrides: Partial<ScheduleEntryV2> = {}): ScheduleEntryV2 
 function untilStoppedEntry(overrides: Partial<ScheduleEntryV2> = {}): ScheduleEntryV2 {
   return windowEntry({
     duration: { kind: 'until-stopped' },
-    // Stored strictness and cycling that an indefinite session may not carry.
-    strictness: 'hard',
+    // Stored cycling that an indefinite session may not carry. The type it stores is kept.
+    strictness: 'friction',
     cycling: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 },
     ...overrides,
   });
@@ -322,14 +322,14 @@ describe('schedule start', (): void => {
     expect(test.ports.writes[0]?.pendingEnforcementTransition?.trigger).toBe('schedule');
   });
 
-  it('forces an indefinite entry to Flexible with no cycling', async (): Promise<void> => {
+  it('keeps the session type of an indefinite entry and turns cycling off', async (): Promise<void> => {
     const test: ScheduleHarness = harness(idleRuntime(), [untilStoppedEntry()]);
 
     await runScheduleCheckV2(test.ports, test.schedule);
     const candidate: SessionStartCandidate = preparedCandidate(test.ports);
 
     expect(candidate.duration).toEqual({ kind: 'until-stopped' });
-    expect(candidate.strictness).toBe('flexible');
+    expect(candidate.strictness).toBe('friction');
     expect(candidate.cycling).toBeNull();
     expect(candidate.scheduleWindow).toEqual({
       windowStartsAt: WINDOW_STARTS_AT,

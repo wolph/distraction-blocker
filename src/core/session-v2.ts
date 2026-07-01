@@ -126,8 +126,8 @@ export function startSessionV2(
   const detachedConfig: SessionConfigV2 = structuredClone(config);
 
   if (detachedConfig.duration.kind === 'until-stopped') {
-    if (detachedConfig.strictness !== 'flexible' || detachedConfig.cycling !== null) {
-      invalidArithmetic('until-stopped sessions must be Flexible with cycling disabled');
+    if (detachedConfig.strictness === 'hard' || detachedConfig.cycling !== null) {
+      invalidArithmetic('until-stopped sessions cannot be Hard and cannot cycle');
     }
     return {
       version: 2,
