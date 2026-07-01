@@ -94,7 +94,7 @@ export function validManifest(): Record<string, unknown> {
     manifest_version: 3,
     name: 'Focus Lock',
     version: '0.1.0',
-    description: 'Focus sessions that lock distracting sites, with earned pauses.',
+    description: 'Focus sessions that lock distracting sites, with earned site access credit.',
     key: 'public-extension-identity',
     icons: { '128': 'assets/icons/idle-128.png' },
     action: { default_popup: 'src/popup/popup.html' },
@@ -115,7 +115,7 @@ export function validSubmissionManifest(): SubmissionManifest {
   return {
     schemaVersion: 1,
     version: '0.1.0',
-    shortDescription: 'Focus sessions that lock distracting sites, with earned pauses.',
+    shortDescription: 'Focus sessions that lock distracting sites, with earned site access credit.',
     privacyPolicyUrl: PRIVACY_URL,
     permissions: [...PERMISSIONS],
     optionalHostPermissions: [...OPTIONAL_HOST_PERMISSIONS],

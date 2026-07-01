@@ -35,7 +35,7 @@ No account, payment, external service, or test credential is required. The exten
 ## Expected boundaries
 
 - Full URLs, focus intentions, detailed events, and live sessions remain in `chrome.storage.local`.
-- Settings, lists, pause balance, streaks, and aggregate session totals with domain-level blocked-attempt counts use `chrome.storage.sync` only after the setup confirmation in step 4.
+- Settings, lists, site access credit, streaks, and aggregate session totals with domain-level blocked-attempt counts use `chrome.storage.sync` only after the setup confirmation in step 4.
 - Focus Lock reads, writes, and deletes the disclosed Chrome Sync data through Chrome's extension APIs. The developer does not receive or retain a separate copy.
 - No extension data is sent to a developer-controlled server.
 - The extension does not load or execute remote code.

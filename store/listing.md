@@ -1,4 +1,4 @@
-Focus Lock blocks distracting websites during deliberate focus sessions. Choose what gets blocked, decide how difficult early exit should be, and earn bounded pauses without losing the state of pages you already had open.
+Focus Lock blocks distracting websites during deliberate focus sessions. Choose what gets blocked, decide how difficult early exit should be, and earn bounded site access credit without losing the state of pages you already had open.
 
 ## Features
 
@@ -6,14 +6,14 @@ Focus Lock blocks distracting websites during deliberate focus sessions. Choose 
 - Set a session length, or run a session until you stop it. A timed session ends on its own. A session set to run until stopped ends when you end it from the popup. A schedule can start either kind, and a scheduled timed session runs to the end of its window.
 - Choose Flexible, Friction, or Hard lock before a timed session. Friction can require a wait and typed confirmation. Hard lock cannot end early. A session set to run until stopped is always Flexible and runs no focus and break cycles, and the popup shows both settings as fixed while it is selected.
 - Focus Lock checks top-level navigations and replaces blocked pages with its blocking surface. Already-open pages receive an in-place overlay and keep their form, scroll, and JavaScript state.
-- Earn pause time at a configurable rate and cap. Pause and one-site unlock actions use a deliberation gate.
+- Earn site access credit at a configurable rate and limit. Access to all sites and one-site unlock actions use a deliberation gate.
 - Start a session yourself or on a schedule, run focus and break cycles in a timed one, and inspect session and blocking records in Statistics.
 
 ## Privacy boundaries
 
 Full URLs, focus intentions, detailed events, and live sessions remain in the local Chrome profile. Focus Lock sends nothing to a developer-controlled server. It has no advertising, sale of user data, behavioral profiling, or remote code.
 
-If Chrome Sync is enabled after setup confirmation, it receives settings, block and allow lists, pause balance, streaks, and per-device daily and monthly session totals with domain-level blocked-attempt counts. Full URLs, intentions, detailed events, and live sessions never enter Chrome Sync through Focus Lock.
+If Chrome Sync is enabled after setup confirmation, it receives settings, block and allow lists, site access credit, streaks, and per-device daily and monthly session totals with domain-level blocked-attempt counts. Full URLs, intentions, detailed events, and live sessions never enter Chrome Sync through Focus Lock.
 
 Focus Lock reads, writes, and deletes the disclosed Chrome Sync data through Chrome's extension APIs. The developer does not receive or retain a separate copy.
 

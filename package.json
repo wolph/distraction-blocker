@@ -3,7 +3,7 @@
     "preact": "10.27.0",
     "tldts": "7.0.10"
   },
-  "description": "Focus Lock: focus sessions that lock distracting sites, with earned pauses.",
+  "description": "Focus Lock: focus sessions that lock distracting sites, with earned site access credit.",
   "devDependencies": {
     "@babel/parser": "7.28.0",
     "@babel/traverse": "7.28.0",

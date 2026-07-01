@@ -1,6 +1,6 @@
 # Focus Lock
 
-Focus Lock is a Chrome extension for focus sessions that blocks distracting sites without redirecting them. It checks top-level navigations and replaces blocked pages with the Focus Lock blocking surface, overlays and mutes already-open blocked tabs without reloading them, handles single-page app URL changes, earns a capped budget for pauses or one-site unlocks behind a deliberation gate, and restores scheduled sessions and local session state after the Manifest V3 worker wakes again.
+Focus Lock is a Chrome extension for focus sessions that blocks distracting sites without redirecting them. It checks top-level navigations and replaces blocked pages with the Focus Lock blocking surface, overlays and mutes already-open blocked tabs without reloading them, handles single-page app URL changes, earns capped site access credit for temporary access behind a deliberation gate, and restores scheduled sessions and local session state after the Manifest V3 worker wakes again.
 
 ## Research foundation
 
@@ -35,10 +35,10 @@ Open the popup, choose a duration, enter the task you intend to finish, select c
 
 - Blacklist mode blocks enabled categories and custom host or URL-regex rules. Whitelist mode blocks the web except for the listed rules.
 - Friction sessions can end early only after a worker-enforced wait and an exact typed sentence. Hard sessions cannot end early, and settings or list changes that would weaken the active lock are rejected.
-- Focus time earns pause time continuously. The default rate is 5 minutes per 30 focused minutes, capped at 30 minutes. A default spend buys either a 5-minute pause for all sites or a 5-minute unlock for the current registrable site.
-- Pause and unlock actions pass through a 10-second deliberation gate with an immediate Back to work choice. A pause can be resumed early.
+- Focus time earns site access credit continuously. The default rate is 5 minutes per 30 focused minutes, capped at 30 minutes. A default spend buys either 5 minutes of access to all sites or a 5-minute unlock for the current registrable site. You can step away from the screen at any time without spending credit.
+- Temporary access actions use the configured deliberation gate, with a 10-second default and an immediate Back to work choice. Access to all sites can be ended early.
 - Cycling alternates focus with short and long breaks. Schedules can start blacklist or whitelist sessions on selected weekdays and local time windows.
-- Options contains category switches, per-site category exclusions, custom domain and URL-regex rules, whitelist rules, schedule entries, pause economy settings, sounds, badge behavior, and data export.
+- Options contains category switches, per-site category exclusions, custom domain and URL-regex rules, whitelist rules, schedule entries, site access credit settings, sounds, badge behaviour, and data export.
 
 Fresh blocked navigations show an opaque locked document. A page that was already open receives an overlay and is muted in place. When blocking ends, the existing page retains its form, scroll, and JavaScript state. A navigation that was stopped reloads so the requested page can render.
 
@@ -52,9 +52,9 @@ Fresh blocked navigations show an opaque locked document. A page that was alread
 
 ## Stats and storage
 
-The stats page reports focus time, blocked attempts, resisted gates, pause spending, recent sessions, hourly and daily activity, streaks, and freeze tokens. The options page can export the detailed local event log as JSON.
+The stats page reports focus time, blocked attempts, resisted gates, site access credit spending, recent sessions, hourly and daily activity, streaks, and freeze tokens. The options page can export the detailed local event log as JSON.
 
-Full URLs, focus intentions, detailed events, and live sessions remain in the local Chrome profile. Chrome Sync receives settings, lists, pause bank, streak state, and per-device daily and monthly session totals with domain-level blocked-attempt counts only after setup is confirmed with sync enabled. An active session therefore resumes in the same Chrome profile, but it does not move live to another machine. Aggregate sync is eventually consistent and can briefly show different totals across machines.
+Full URLs, focus intentions, detailed events, and live sessions remain in the local Chrome profile. Chrome Sync receives settings, lists, site access credit, streak state, and per-device daily and monthly session totals with domain-level blocked-attempt counts only after setup is confirmed with sync enabled. An active session therefore resumes in the same Chrome profile, but it does not move live to another machine. Aggregate sync is eventually consistent and can briefly show different totals across machines.
 
 Focus Lock reads, writes, and deletes the disclosed Chrome Sync data through Chrome's extension APIs. The developer does not receive or retain a separate copy. Chrome and Google handle Chrome Sync under their own terms.
 

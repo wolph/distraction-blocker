@@ -27,7 +27,7 @@ interface DocumentPaths {
 }
 
 const LISTING_OPENER: string =
-  'Focus Lock blocks distracting websites during deliberate focus sessions. Choose what gets blocked, decide how difficult early exit should be, and earn bounded pauses without losing the state of pages you already had open.';
+  'Focus Lock blocks distracting websites during deliberate focus sessions. Choose what gets blocked, decide how difficult early exit should be, and earn bounded site access credit without losing the state of pages you already had open.';
 
 /** The worker-dependent limit the spec requires store-facing trust documentation to state. */
 const WORKER_BOUNDARY: string =
@@ -122,7 +122,7 @@ describe('Chrome Web Store release documentation contract', (): void => {
     expect(disclosures).toContain(
       '| Settings and block or allow lists | Working copy | Yes | No |',
     );
-    expect(disclosures).toContain('| Pause balance and streaks | Working copy | Yes | No |');
+    expect(disclosures).toContain('| Site access credit and streaks | Working copy | Yes | No |');
     expect(disclosures).toContain(
       '| Daily and monthly session totals and domain-level blocked-attempt counts | Working copy for this device | Yes | No |',
     );

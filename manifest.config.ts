@@ -5,7 +5,7 @@ export default defineManifest({
   manifest_version: 3,
   name: 'Focus Lock',
   version: '0.1.0',
-  description: 'Focus sessions that lock distracting sites, with earned pauses.',
+  description: 'Focus sessions that lock distracting sites, with earned site access credit.',
   key: MANIFEST_KEY,
   icons: {
     16: 'assets/icons/idle-16.png',
