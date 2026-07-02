@@ -383,6 +383,36 @@ describe('ActiveView', (): void => {
     expect(view.queryByRole('alert')).toBeNull();
   });
 
+  it('labels the gate confirm Unlock when the authority publishes it', async (): Promise<void> => {
+    const opened: EndAuthorityV2 = openFriction({ requiredPhrase: null });
+    const authority: EndAuthorityV2 =
+      opened.kind === 'friction-gate' && opened.gate !== null
+        ? { ...opened, copy: { ...opened.copy, confirm: 'Unlock' } }
+        : opened;
+    const view = render(
+      h(ActiveView, {
+        snapshot: { ...focusSnap(authority), config: INDEFINITE_CONFIG, sessionEndsAt: null },
+        now: NOW + 9_000,
+      }),
+    );
+
+    expect(view.queryByRole('button', { name: 'End the session' })).toBeNull();
+    const confirm: HTMLButtonElement = view.getByRole('button', {
+      name: 'Unlock',
+    }) as HTMLButtonElement;
+    fireEvent.click(confirm);
+
+    await waitFor((): void => {
+      expect(sessionRequests()).toEqual([
+        {
+          type: 'confirmGate',
+          typedPhrase: null,
+          expectedGate: authority.kind === 'friction-gate' ? authority.gate : null,
+        },
+      ]);
+    });
+  });
+
   it('shows the worker text for a rejected gate command', async (): Promise<void> => {
     sendMessageMock.mockImplementation(async (request: AnyRequest): Promise<unknown> => {
       if (request.type === 'getStats') return statsBundle;

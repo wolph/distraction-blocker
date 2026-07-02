@@ -33,6 +33,7 @@ import {
   statsOutcomeLabelV2,
   statsPlanLabelV2,
   TOTAL_SESSION_CLOCK_LABEL,
+  UNLOCK_LABEL,
   UNTIL_STOPPED_DISCLOSURE,
   UNTIL_STOPPED_FORCED_HINT,
   UNTIL_STOPPED_LABEL,
@@ -61,6 +62,7 @@ describe('session copy', (): void => {
       'Until stopped sessions use Flexible blocking and cannot use focus and break cycles.',
     );
     expect(END_SESSION_LABEL).toBe('End session');
+    expect(UNLOCK_LABEL).toBe('Unlock');
   });
 
   it('publishes the exact clock labels', (): void => {

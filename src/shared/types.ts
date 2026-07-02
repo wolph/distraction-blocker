@@ -269,13 +269,22 @@ export interface NormalizedSessionSnapshotV1 {
 
 export type SessionSnapshot = SessionSnapshotV2;
 
+/**
+ * The label on the control that opens a Friction End. A timed session ends, an until-stopped
+ * session unlocks: the worker chooses, and the popup and the overlay only render what it published.
+ */
+export type EndActionLabelV2 = 'End session' | 'Unlock';
+
+/** The label on the Friction gate's confirm button, chosen by the same rule. */
+export type EndGateConfirmLabelV2 = 'End the session' | 'Unlock';
+
 export type EndAuthorityV2 =
   | { kind: 'hidden' }
   | { kind: 'immediate'; actionLabel: 'End session' }
   | {
       kind: 'friction-gate';
       gate: null;
-      copy: { actionLabel: 'End session' };
+      copy: { actionLabel: EndActionLabelV2 };
       actions: { open: 'open-end-gate' };
     }
   | {
@@ -285,7 +294,7 @@ export type EndAuthorityV2 =
         title: 'End this session';
         back: 'Never mind, back to work';
         phraseLabel: 'Type this to confirm:';
-        confirm: 'End the session';
+        confirm: EndGateConfirmLabelV2;
         intentionReminder: string | null;
       };
       actions: {

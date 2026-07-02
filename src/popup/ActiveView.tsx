@@ -14,6 +14,7 @@ import { ClockStack } from './ClockStack';
 import { GatePanel } from './GatePanel';
 import {
   endControl,
+  gateConfirmLabel,
   gateIdentity,
   gateIntention,
   gatePhraseLabel,
@@ -275,6 +276,7 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
           now={now}
           intention={gateIntention(authority, activeGate, snapshot.config)}
           phraseLabel={gatePhraseLabel(authority, activeGate)}
+          confirmLabel={gateConfirmLabel(authority, activeGate)}
           sendCommand={sendGateCommand}
           commandError={mapGateError}
         />

@@ -7,7 +7,7 @@ import type {
   SessionRequestV2,
 } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
-import { END_FAILED_COPY, END_SESSION_LABEL } from '../shared/session-copy';
+import { END_FAILED_COPY } from '../shared/session-copy';
 import type { EndAuthorityV2, GateState, SessionConfigV2 } from '../shared/types';
 import { commandErrorMessage } from './command-errors';
 import type { GateCommandErrorMapper, GateRequest } from './GatePanel';
@@ -73,6 +73,26 @@ export function gatePhraseLabel(authority: EndAuthorityV2, gate: GateState): str
 }
 
 /**
+ * The cancel gate's confirm reads the label the worker published with the End authority, so a
+ * Friction until-stopped session confirms with Unlock. A pause or unlock gate keeps the panel's
+ * own label for its kind.
+ */
+export function gateConfirmLabel(authority: EndAuthorityV2, gate: GateState): string | undefined {
+  return authority.kind === 'friction-gate' && authority.gate !== null && gate.kind === 'cancel'
+    ? authority.copy.confirm
+    : undefined;
+}
+
+/** The label on the visible End control, published by the worker with the authority. */
+export function endActionLabel(authority: EndAuthorityV2): string | null {
+  if (authority.kind === 'immediate') return authority.actionLabel;
+  if (authority.kind === 'friction-gate' && authority.gate === null) {
+    return authority.copy.actionLabel;
+  }
+  return null;
+}
+
+/**
  * The cancel gate reminds the user of the intention the worker persisted with the End
  * authority. A pause or unlock gate carries no persisted copy, so it shows the session's
  * own intention.
@@ -127,7 +147,8 @@ export function useV2Command(options: V2CommandOptions = {}): V2Command {
 /** The End control both v2 views render, null when the authority hides End. */
 export function endControl(authority: EndAuthorityV2, command: V2Command): JSX.Element | null {
   const request: V2EndCommand | null = endCommandOf(authority);
-  if (request === null) return null;
+  const label: string | null = endActionLabel(authority);
+  if (request === null || label === null) return null;
   return (
     <button
       type="button"
@@ -135,7 +156,7 @@ export function endControl(authority: EndAuthorityV2, command: V2Command): JSX.E
       disabled={command.pending}
       onClick={(): void => void command.run(request, END_FAILED_COPY)}
     >
-      {END_SESSION_LABEL}
+      {label}
     </button>
   );
 }

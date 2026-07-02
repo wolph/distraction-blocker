@@ -58,6 +58,8 @@ export interface GatePanelProps {
   commandError: GateCommandErrorMapper;
   /** An End authority passes its exact published `copy.phraseLabel`. */
   phraseLabel?: string;
+  /** An open End authority passes its exact published `copy.confirm`. */
+  confirmLabel?: string;
 }
 
 export function GatePanel({
@@ -67,6 +69,7 @@ export function GatePanel({
   sendCommand,
   commandError,
   phraseLabel = DEFAULT_PHRASE_LABEL,
+  confirmLabel,
 }: GatePanelProps): VNode {
   const [typed, setTyped]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
   const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
@@ -179,7 +182,7 @@ export function GatePanel({
         aria-describedby={confirmDescribedBy}
         onClick={confirm}
       >
-        {CONFIRM_LABELS[gate.kind]}
+        {confirmLabel ?? CONFIRM_LABELS[gate.kind]}
       </button>
       {error !== null ? (
         <p class="form-error" role="alert">

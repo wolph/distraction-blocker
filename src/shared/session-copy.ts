@@ -9,6 +9,8 @@ export const UNTIL_STOPPED_FORCED_HINT: string =
 export const UNTIL_STOPPED_DISCLOSURE: string =
   'Until stopped sessions use Flexible blocking and cannot use focus and break cycles.';
 export const END_SESSION_LABEL: string = 'End session';
+/** The End control and the gate confirm of a Friction until-stopped session. */
+export const UNLOCK_LABEL: string = 'Unlock';
 
 /**
  * The accessible names of the two forced groups. Both the popup start form and the schedule
