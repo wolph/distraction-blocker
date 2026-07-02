@@ -527,7 +527,7 @@ describe('Privacy and data', (): void => {
     for (const text of [
       'settings',
       'block and allow lists',
-      'pause balance',
+      'site access credit',
       'streaks',
       'domain-level blocked-attempt aggregates',
       'Local settings and statistics stay on this device.',

@@ -50,7 +50,7 @@ describe('shared enforcement v2 contracts', (): void => {
       unlockAction: string;
       endAction: 'End session';
       bankWaitFallback: 'earn site access credit by focusing';
-      bankWaitPrefix: 'ready in';
+      bankWaitPrefix: 'Ready in';
       gateTitle: string | null;
       gateBack: 'Never mind, back to work';
       gatePhraseLabel: 'Type this to confirm:';

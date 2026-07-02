@@ -157,8 +157,8 @@ function ConfirmationDialog(props: {
         </p>
       ) : (
         <p>
-          This permanently deletes remote settings, block and allow lists, pause balance, streaks,
-          and domain-level blocked-attempt aggregates from Chrome Sync. Local settings and
+          This permanently deletes remote settings, block and allow lists, site access credit,
+          streaks, and domain-level blocked-attempt aggregates from Chrome Sync. Local settings and
           statistics stay on this device.
         </p>
       )}

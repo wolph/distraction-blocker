@@ -69,7 +69,7 @@ const FIXED_ACTIVE_COPY: Readonly<
   bankUnit: 'site access credit',
   endAction: 'End session',
   bankWaitFallback: 'earn site access credit by focusing',
-  bankWaitPrefix: 'ready in',
+  bankWaitPrefix: 'Ready in',
   gateBack: 'Never mind, back to work',
   gatePhraseLabel: 'Type this to confirm:',
   transportError: 'Focus Lock could not update this action. Try again.',

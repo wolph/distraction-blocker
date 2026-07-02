@@ -565,7 +565,7 @@ describe('ActiveView disabled reasons', (): void => {
     await waitFor((): void => {
       expect(spendSub(spendControls(container).unlock)).toBe('Open a regular website to unlock it');
     });
-    expect(spendSub(spendControls(container).pause)).toBe('ready in 6:00');
+    expect(spendSub(spendControls(container).pause)).toBe('Ready in 6:00');
     expect(spendControls(container).unlock.disabled).toBe(true);
     expect(spendControls(container).pause.disabled).toBe(true);
   });
@@ -595,10 +595,10 @@ describe('ActiveView disabled reasons', (): void => {
     const { container } = render(h(ActiveView, { snapshot: unaffordableSnap(), now: NOW }));
 
     await waitFor((): void => {
-      expect(spendSub(spendControls(container).unlock)).toBe('ready in 6:00');
+      expect(spendSub(spendControls(container).unlock)).toBe('Ready in 6:00');
     });
-    expect(spendSub(spendControls(container).pause)).toBe('ready in 6:00');
-    expect(container.textContent).not.toContain('ready in 30:00');
+    expect(spendSub(spendControls(container).pause)).toBe('Ready in 6:00');
+    expect(container.textContent).not.toContain('Ready in 30:00');
     expect(spendControls(container).unlock.disabled).toBe(true);
     expect(spendControls(container).pause.disabled).toBe(true);
   });
@@ -612,9 +612,9 @@ describe('ActiveView disabled reasons', (): void => {
     const { container } = render(h(ActiveView, { snapshot, now: NOW }));
 
     await waitFor((): void => {
-      expect(spendSub(spendControls(container).unlock)).toBe('ready in 0:01');
+      expect(spendSub(spendControls(container).unlock)).toBe('Ready in 0:01');
     });
-    expect(container.textContent).not.toContain('ready in 0:00');
+    expect(container.textContent).not.toContain('Ready in 0:00');
   });
 
   it('does not promise an earned minute above the configured bank cap', async (): Promise<void> => {
@@ -625,6 +625,6 @@ describe('ActiveView disabled reasons', (): void => {
       expect(spendSub(spendControls(container).unlock)).toBe('earn site access credit by focusing');
     });
     expect(spendSub(spendControls(container).pause)).toBe('earn site access credit by focusing');
-    expect(container.textContent).not.toContain('ready in');
+    expect(container.textContent).not.toContain('Ready in');
   });
 });

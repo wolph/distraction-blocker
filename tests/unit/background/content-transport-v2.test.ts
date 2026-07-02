@@ -134,7 +134,7 @@ function activeOverlay(overrides: Partial<ActiveOverlay> = {}): ActiveOverlay {
       unlockAction: 'Unlock this site for 2 min',
       endAction: 'End session',
       bankWaitFallback: 'earn site access credit by focusing',
-      bankWaitPrefix: 'ready in',
+      bankWaitPrefix: 'Ready in',
       gateTitle: null,
       gateBack: 'Never mind, back to work',
       gatePhraseLabel: 'Type this to confirm:',

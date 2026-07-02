@@ -273,7 +273,7 @@ describe('buildActiveOverlayView timed focus', () => {
     expect(view.copy.unlockAction).toBe('Unlock this site for 2 min');
     expect(view.copy.bankUnit).toBe('site access credit');
     expect(view.copy.endAction).toBe('End session');
-    expect(view.copy.bankWaitPrefix).toBe('ready in');
+    expect(view.copy.bankWaitPrefix).toBe('Ready in');
     expect(view.copy.bankWaitFallback).toBe('earn site access credit by focusing');
     expect(view.copy.gateBack).toBe('Never mind, back to work');
     expect(view.copy.gatePhraseLabel).toBe('Type this to confirm:');

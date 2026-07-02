@@ -61,7 +61,7 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     unlockAction: 'Unlock this site for 2 min',
     endAction: 'End session',
     bankWaitFallback: 'earn site access credit by focusing',
-    bankWaitPrefix: 'ready in',
+    bankWaitPrefix: 'Ready in',
     gateTitle: null,
     gateBack: 'Never mind, back to work',
     gatePhraseLabel: 'Type this to confirm:',
@@ -282,11 +282,11 @@ describe('renderDocumentOverlay active view', () => {
     const pause: HTMLButtonElement = buttonStartingWith('Pause blocking for 1 min');
 
     expect(pause.disabled).toBe(true);
-    expect(pause.textContent).toBe('Pause blocking for 1 minready in 2:00');
+    expect(pause.textContent).toBe('Pause blocking for 1 minReady in 2:00');
 
     vi.advanceTimersByTime(1_000);
 
-    expect(pause.textContent).toBe('Pause blocking for 1 minready in 1:59');
+    expect(pause.textContent).toBe('Pause blocking for 1 minReady in 1:59');
     expect(text('.bank')).toBe(`${formatClock(500)} site access credit`);
 
     vi.advanceTimersByTime(119_000);

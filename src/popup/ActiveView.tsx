@@ -159,7 +159,7 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
     );
     return {
       affordable: false,
-      countdown: waitMs === null ? null : `ready in ${formatClock(waitMs)}`,
+      countdown: waitMs === null ? null : `Ready in ${formatClock(waitMs)}`,
     };
   };
 

@@ -93,7 +93,7 @@ const LONG_INTENTION: string =
   'Finish the quarterly accessibility review and write up every finding before the release meeting';
 const PINNED_CLOCK: string = '18:24';
 const PINNED_BANK: string = '3:00 site access credit';
-const PINNED_READY: string = 'ready in 2:00';
+const PINNED_READY: string = 'Ready in 2:00';
 const PINNED_LOCKED_UNTIL: string = 'Locked until 10:15';
 /** The session a cleanup journal in these fixtures names, in the two spellings the two journals use. */
 const CLEANUP_SESSION_ID: string = '40000000-0000-4000-8000-000000000001';
