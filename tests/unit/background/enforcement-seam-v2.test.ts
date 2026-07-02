@@ -49,7 +49,7 @@ const STARTING_OPERATION_ID: string = '20000000-0000-4000-8000-000000000001';
 const RESET_OPERATION_ID: string = '20000000-0000-4000-8000-000000000002';
 const STALE_OPERATION_ID: string = '20000000-0000-4000-8000-000000000003';
 const EPOCH_ID: string = '30000000-0000-4000-8000-000000000001';
-const UNTIL_STOPPED_TEXT: string = 'Focus Lock is active until you end it from the popup.';
+const UNTIL_STOPPED_TEXT: string = 'Focus Lock is active until you stop it.';
 const BLOCKED_VERDICT: Verdict = {
   blocked: true,
   reason: 'category',
@@ -231,7 +231,8 @@ describe('worker to content enforcement seam', () => {
     expect(outcome.ack.verdict).toEqual(BLOCKED_VERDICT);
     expect(overlayText()).toContain(UNTIL_STOPPED_TEXT);
     expect(overlayText()).toContain('2 attempts blocked today');
-    expect(overlayText()).not.toContain('End session');
+    // A Flexible until-stopped page offers the same immediate End the popup does.
+    expect(overlayText()).toContain('End session');
   });
 
   it('refuses an enforcement command before the epoch handshake', async (): Promise<void> => {

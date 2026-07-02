@@ -38,7 +38,7 @@ describe('shared enforcement v2 contracts', (): void => {
         | { kind: 'timed'; text: string }
         | {
             kind: 'until-stopped';
-            text: 'Focus Lock is active until you end it from the popup.';
+            text: 'Focus Lock is active until you stop it.';
           };
       lockedUntil: string | null;
       intention: string | null;
@@ -48,7 +48,7 @@ describe('shared enforcement v2 contracts', (): void => {
       bankUnit: 'pause banked';
       pauseAction: string;
       unlockAction: string;
-      endAction: 'End session';
+      endAction: 'End session' | 'Unlock';
       bankWaitFallback: 'earn pause time by focusing';
       bankWaitPrefix: 'ready in';
       gateTitle: string | null;

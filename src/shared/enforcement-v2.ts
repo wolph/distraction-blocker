@@ -1,4 +1,5 @@
 import type {
+  EndActionLabelV2,
   GateState,
   SessionDuration,
   SessionMode,
@@ -22,7 +23,7 @@ export interface ActiveOverlayCopy {
     | { kind: 'timed'; text: string }
     | {
         kind: 'until-stopped';
-        text: 'Focus Lock is active until you end it from the popup.';
+        text: 'Focus Lock is active until you stop it.';
       };
   lockedUntil: string | null;
   intention: string | null;
@@ -32,7 +33,8 @@ export interface ActiveOverlayCopy {
   bankUnit: 'pause banked';
   pauseAction: string;
   unlockAction: string;
-  endAction: 'End session';
+  /** The End control's label. A Friction until-stopped page unlocks, every other page ends. */
+  endAction: EndActionLabelV2;
   bankWaitFallback: 'earn pause time by focusing';
   bankWaitPrefix: 'ready in';
   gateTitle: string | null;

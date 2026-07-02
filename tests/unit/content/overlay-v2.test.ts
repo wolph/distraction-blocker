@@ -27,7 +27,7 @@ const PROVENANCE: string = 'Blocked by Social media: example.com';
 const STOPPED_COPY: NonNullable<StartingOverlay['copy']['stoppedPage']> =
   'This page did not load. It will load by itself when the session ends.';
 const UNTIL_STOPPED_TEXT: Extract<ActiveCopy['status'], { kind: 'until-stopped' }>['text'] =
-  'Focus Lock is active until you end it from the popup.';
+  'Focus Lock is active until you stop it.';
 const TRANSPORT_ERROR: ActiveCopy['transportError'] =
   'Focus Lock could not update this action. Try again.';
 const BLOCKED_VERDICT: Verdict = {
@@ -107,7 +107,7 @@ function untilStoppedOverlay(overrides: Partial<ActiveOverlay> = {}): ActiveOver
       phaseEndsAt: null,
       sessionEndsAt: null,
     },
-    actions: { state: 'ready', end: 'hidden', pause: 'request-gate', unlock: 'request-gate' },
+    actions: { state: 'ready', end: 'request-end', pause: 'request-gate', unlock: 'request-gate' },
     copy: activeCopy({
       status: { kind: 'until-stopped', text: UNTIL_STOPPED_TEXT },
       lockedUntil: null,
@@ -264,14 +264,48 @@ describe('renderDocumentOverlay active view', () => {
     expect(buttons()).toHaveLength(2);
   });
 
-  it('renders the until-stopped page without a clock, locked-until line, or end action', () => {
+  it('renders the until-stopped page without a clock or locked-until line, End included', () => {
     renderDocumentOverlay(untilStoppedOverlay(), BLOCKED_VERDICT);
 
     expect(text('.until')).toBe(UNTIL_STOPPED_TEXT);
     expect(shadowRoot().textContent).not.toContain('Locked until');
     expect(shadowRoot().querySelector('.clock')).toBeNull();
+    expect(shadowRoot().textContent).toContain('End session');
+    expect(buttons()).toHaveLength(3);
+  });
+
+  it('renders the Unlock control a Friction until-stopped view carries', async (): Promise<void> => {
+    const sendMessage: Mock<(request: unknown) => Promise<unknown>> = stubWorker({ ok: true });
+    renderDocumentOverlay(
+      untilStoppedOverlay({
+        strictness: 'friction',
+        actions: {
+          state: 'ready',
+          end: 'open-end-gate',
+          pause: 'request-gate',
+          unlock: 'request-gate',
+        },
+        copy: activeCopy({
+          status: { kind: 'until-stopped', text: UNTIL_STOPPED_TEXT },
+          lockedUntil: null,
+          endAction: 'Unlock',
+        }),
+      }),
+      BLOCKED_VERDICT,
+    );
+
     expect(shadowRoot().textContent).not.toContain('End session');
-    expect(buttons()).toHaveLength(2);
+    // Exact, because the unlock spend button also starts with the word.
+    const unlock: HTMLButtonElement | undefined = buttons().find(
+      (button: HTMLButtonElement): boolean => button.textContent === 'Unlock',
+    );
+    if (unlock === undefined) throw new Error('missing the Unlock control');
+    unlock.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sendMessage.mock.calls.map((call: [unknown]): unknown => call[0])).toEqual([
+      { type: 'openEndGate' },
+    ]);
   });
 
   it('ticks bank affordability locally from the economy row', () => {

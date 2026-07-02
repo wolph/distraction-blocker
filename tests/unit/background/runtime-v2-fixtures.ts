@@ -552,7 +552,7 @@ export function activeOverlay(
   };
 }
 
-/** Indefinite focus: no phase or session end, no timed status copy, and no immediate End action. */
+/** Indefinite Flexible focus: no phase or session end, no timed status copy, End offered. */
 export function untilStoppedActiveOverlay(
   overrides: Partial<ActiveOverlay> = {},
   capturedAt: number = ACTIVATION_AT,
@@ -567,11 +567,16 @@ export function untilStoppedActiveOverlay(
         phaseEndsAt: null,
         sessionEndsAt: null,
       },
-      actions: { state: 'ready', end: 'hidden', pause: 'request-gate', unlock: 'request-gate' },
+      actions: {
+        state: 'ready',
+        end: 'request-end',
+        pause: 'request-gate',
+        unlock: 'request-gate',
+      },
       copy: activeCopy({
         status: {
           kind: 'until-stopped',
-          text: 'Focus Lock is active until you end it from the popup.',
+          text: 'Focus Lock is active until you stop it.',
         },
         lockedUntil: null,
       }),

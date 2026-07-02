@@ -203,8 +203,8 @@ function appendStartingPage(panel: HTMLElement, view: StartingOverlayView): void
 
 /**
  * The status sentence leads both pages. A timed page says the wall clock it is locked until and
- * counts down below it, while an until-stopped page says the popup owns its ending and has no
- * clock. `copy.lockedUntil` is the bare wall clock behind the timed sentence, so it is never
+ * counts down below it, while an until-stopped page says it runs until stopped and has no clock.
+ * `copy.lockedUntil` is the bare wall clock behind the timed sentence, so it is never
  * rendered on its own: rendering it would drop the label the worker already wrote.
  */
 function appendActivePage(

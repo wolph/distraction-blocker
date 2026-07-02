@@ -19,6 +19,7 @@ import {
 import { CoreError } from '../shared/errors';
 import { snapshotExactData } from '../shared/exact-data';
 import type {
+  EndActionLabelV2,
   GateKind,
   GateState,
   SessionDuration,
@@ -51,14 +52,18 @@ const STARTING_DETAIL: StartingOverlayCopy['detail'] = 'Applying your selected r
 const STOPPED_PAGE_COPY: NonNullable<StartingOverlayCopy['stoppedPage']> =
   'This page did not load. It will load by itself when the session ends.';
 const UNTIL_STOPPED_STATUS: Extract<ActiveStatusCopy, { kind: 'until-stopped' }>['text'] =
-  'Focus Lock is active until you end it from the popup.';
+  'Focus Lock is active until you stop it.';
+/** The End control and the cancel gate's confirm on a timed page. */
+const END_ACTION_LABEL: EndActionLabelV2 = 'End session';
+const END_GATE_CONFIRM: string = 'End the session';
+/** The same control and confirm on a Friction until-stopped page, which the popup also uses. */
+const UNLOCK_ACTION_LABEL: EndActionLabelV2 = 'Unlock';
 
 /** The copy every active view repeats word for word. The view type pins each literal. */
 const FIXED_ACTIVE_COPY: Readonly<
   Pick<
     ActiveOverlayCopy,
     | 'bankUnit'
-    | 'endAction'
     | 'bankWaitFallback'
     | 'bankWaitPrefix'
     | 'gateBack'
@@ -67,7 +72,6 @@ const FIXED_ACTIVE_COPY: Readonly<
   >
 > = {
   bankUnit: 'pause banked',
-  endAction: 'End session',
   bankWaitFallback: 'earn pause time by focusing',
   bankWaitPrefix: 'ready in',
   gateBack: 'Never mind, back to work',
@@ -75,10 +79,9 @@ const FIXED_ACTIVE_COPY: Readonly<
   transportError: 'Focus Lock could not update this action. Try again.',
 };
 
-const GATE_CONFIRM_COPY: Readonly<Record<GateKind, string>> = {
+const GATE_CONFIRM_COPY: Readonly<Record<Exclude<GateKind, 'cancel'>, string>> = {
   pause: 'Take the pause',
   unlockSite: 'Unlock this site',
-  cancel: 'End the session',
 };
 
 export interface StartingViewInputV2 {
@@ -150,8 +153,9 @@ export function buildStartingOverlayView(input: StartingViewInputV2): DocumentOv
 }
 
 /**
- * The active page for one focus phase. A timed session counts down to its own end and may offer
- * the End action. An indefinite session says so in words, because the popup owns its ending.
+ * The active page for one focus phase. A timed session counts down to its own end, an indefinite
+ * session says in words that it runs until stopped, and both offer whatever End their strictness
+ * allows.
  */
 export function buildActiveOverlayView(input: ActiveViewInputV2): DocumentOverlayView {
   const session: SessionStateV2 = input.session;
@@ -186,7 +190,7 @@ export function buildActiveOverlayView(input: ActiveViewInputV2): DocumentOverla
     activeUnlocks: input.activeUnlocks,
     attemptsToday: input.attemptsToday,
     stoppedPage: input.stoppedPage,
-    actions: activeActions(session.config.strictness, duration, gate),
+    actions: activeActions(session.config.strictness, gate),
     copy: activeCopy(input, duration, gate),
   });
 }
@@ -207,8 +211,8 @@ export function formatLockedUntilV2(sessionEndsAt: number): string {
 }
 
 /**
- * The End action belongs to timed Flexible and Friction sessions. Hard sessions refuse it and the
- * popup owns every indefinite ending, so those two answer `hidden` on the blocked page.
+ * The End action belongs to Flexible and Friction sessions, timed or not. Hard sessions refuse it,
+ * so they answer `hidden` on the blocked page.
  *
  * The two that show it do not send the same command, which is spec 1771's "keeps existing end
  * behavior for its session type": Flexible ends immediately, and Friction has to pass its cancel
@@ -218,10 +222,22 @@ export function formatLockedUntilV2(sessionEndsAt: number): string {
  */
 export function overlayEndActionV2(
   strictness: Strictness,
-  duration: SessionDuration,
 ): 'hidden' | 'request-end' | 'open-end-gate' {
-  if (strictness === 'hard' || duration.kind === 'until-stopped') return 'hidden';
+  if (strictness === 'hard') return 'hidden';
   return strictness === 'friction' ? 'open-end-gate' : 'request-end';
+}
+
+/**
+ * The label on the End control, and on the cancel gate's confirm. A Friction session with no timer
+ * has nothing to end early, so it unlocks. The popup publishes the same word with its authority.
+ */
+export function overlayEndActionLabelV2(
+  strictness: Strictness,
+  duration: SessionDuration,
+): EndActionLabelV2 {
+  return strictness === 'friction' && duration.kind === 'until-stopped'
+    ? UNLOCK_ACTION_LABEL
+    : END_ACTION_LABEL;
 }
 
 /** One frozen command for one document. The worker owns the tab, so the command carries it. */
@@ -276,13 +292,12 @@ export function buildFrozenEpochResetCommandV2(
 
 function activeActions(
   strictness: Strictness,
-  duration: SessionDuration,
   gate: GateState | null,
 ): ActiveOverlayView['actions'] {
   if (gate !== null) return { state: 'gate', end: 'hidden', pause: 'hidden', unlock: 'hidden' };
   return {
     state: 'ready',
-    end: overlayEndActionV2(strictness, duration),
+    end: overlayEndActionV2(strictness),
     pause: 'request-gate',
     unlock: 'request-gate',
   };
@@ -294,8 +309,11 @@ function activeCopy(
   gate: GateState | null,
 ): ActiveOverlayCopy {
   const lead: ActiveLeadCopy = leadCopy(duration, input.session.sessionEndsAt);
+  const strictness: Strictness = input.session.config.strictness;
+  const endAction: EndActionLabelV2 = overlayEndActionLabelV2(strictness, duration);
   return {
     ...FIXED_ACTIVE_COPY,
+    endAction,
     status: lead.status,
     lockedUntil: lead.lockedUntil,
     intention: trimmedIntention(input.session.config.intention),
@@ -305,8 +323,14 @@ function activeCopy(
     pauseAction: `Pause blocking for ${costMinutes(input.economy.pauseCostMs)} min`,
     unlockAction: `Unlock this site for ${costMinutes(input.economy.unlockCostMs)} min`,
     gateTitle: gate === null ? null : gateTitleCopy(gate),
-    gateConfirm: gate === null ? null : GATE_CONFIRM_COPY[gate.kind],
+    gateConfirm: gate === null ? null : gateConfirmCopy(gate.kind, endAction),
   };
+}
+
+/** The cancel gate confirms with the End label's own word, so Unlock stays Unlock inside the gate. */
+function gateConfirmCopy(kind: GateKind, endAction: EndActionLabelV2): string {
+  if (kind !== 'cancel') return GATE_CONFIRM_COPY[kind];
+  return endAction === UNLOCK_ACTION_LABEL ? UNLOCK_ACTION_LABEL : END_GATE_CONFIRM;
 }
 
 /**

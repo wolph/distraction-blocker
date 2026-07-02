@@ -15,6 +15,7 @@ import {
   buildFrozenEpochResetCommandV2,
   buildStartingOverlayView,
   formatLockedUntilV2,
+  overlayEndActionLabelV2,
   overlayEndActionV2,
 } from '../../../src/background/overlay-view-v2';
 import { DEFAULT_LISTS, rulesFromLists } from '../../../src/shared/constants';
@@ -352,19 +353,45 @@ describe('buildActiveOverlayView timed focus', () => {
 });
 
 describe('buildActiveOverlayView until-stopped focus', () => {
-  it('builds the indefinite row with popup-only ending', () => {
+  it('builds the Flexible indefinite row with an immediate End', () => {
     const view: ActiveOverlay = activeView({ session: untilStoppedSession() });
 
     expect(view.duration).toEqual({ kind: 'until-stopped' });
     expect(view.copy.status).toEqual({
       kind: 'until-stopped',
-      text: 'Focus Lock is active until you end it from the popup.',
+      text: 'Focus Lock is active until you stop it.',
     });
     expect(view.copy.lockedUntil).toBeNull();
     expect(view.timing.phaseEndsAt).toBeNull();
     expect(view.timing.sessionEndsAt).toBeNull();
-    expect(view.actions.end).toBe('hidden');
+    expect(view.actions.end).toBe('request-end');
+    expect(view.copy.endAction).toBe('End session');
     expect(validateDetachedDocumentOverlayView(view)).toBe(true);
+  });
+
+  it('routes a Friction indefinite row through its gate and labels the action Unlock', () => {
+    const closed: ActiveOverlay = activeView({
+      session: untilStoppedSession({ strictness: 'friction' }),
+    });
+    const open: ActiveOverlay = activeView({
+      session: untilStoppedSession({ strictness: 'friction' }),
+      gate: gateState({ kind: 'cancel', requiredPhrase: 'I am ending this session' }),
+    });
+
+    expect(closed.actions.end).toBe('open-end-gate');
+    expect(closed.copy.endAction).toBe('Unlock');
+    expect(closed.copy.gateConfirm).toBeNull();
+    expect(open.actions).toEqual({
+      state: 'gate',
+      end: 'hidden',
+      pause: 'hidden',
+      unlock: 'hidden',
+    });
+    expect(open.copy.endAction).toBe('Unlock');
+    expect(open.copy.gateTitle).toBe('End this session');
+    expect(open.copy.gateConfirm).toBe('Unlock');
+    expect(validateDetachedDocumentOverlayView(closed)).toBe(true);
+    expect(validateDetachedDocumentOverlayView(open)).toBe(true);
   });
 });
 
@@ -515,11 +542,11 @@ describe('buildActiveOverlayView refusals', () => {
     );
   });
 
-  it('refuses an until-stopped session that is not Flexible', () => {
+  it('refuses a Hard until-stopped session', () => {
     expectInvalidRule(
       (): DocumentOverlayView =>
         buildActiveOverlayView(
-          activeInput({ session: untilStoppedSession({ strictness: 'friction' }) }),
+          activeInput({ session: untilStoppedSession({ strictness: 'hard' }) }),
         ),
     );
   });
@@ -550,21 +577,24 @@ describe('formatLockedUntilV2 and overlayEndActionV2', () => {
     expectInvalidRule((): string => formatLockedUntilV2(Number.NaN));
   });
 
-  it('offers the end action only to timed Flexible and Friction sessions', () => {
+  it('offers the end action by strictness alone and labels a Friction indefinite page Unlock', () => {
     const timed: SessionDuration = { kind: 'timed', minutes: 25 };
     const indefinite: SessionDuration = { kind: 'until-stopped' };
     const strictnesses: Strictness[] = ['flexible', 'friction', 'hard'];
 
-    expect(strictnesses.map((s: Strictness): string => overlayEndActionV2(s, timed))).toEqual([
+    expect(strictnesses.map((s: Strictness): string => overlayEndActionV2(s))).toEqual([
       'request-end',
       'open-end-gate',
       'hidden',
     ]);
-    expect(strictnesses.map((s: Strictness): string => overlayEndActionV2(s, indefinite))).toEqual([
-      'hidden',
-      'hidden',
-      'hidden',
+    expect(strictnesses.map((s: Strictness): string => overlayEndActionLabelV2(s, timed))).toEqual([
+      'End session',
+      'End session',
+      'End session',
     ]);
+    expect(
+      strictnesses.map((s: Strictness): string => overlayEndActionLabelV2(s, indefinite)),
+    ).toEqual(['End session', 'Unlock', 'End session']);
   });
 });
 

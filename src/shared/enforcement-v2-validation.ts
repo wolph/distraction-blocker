@@ -191,12 +191,14 @@ const STOPPED_PAGE_COPY: NonNullable<StartingOverlayCopy['stoppedPage']> =
 const UNTIL_STOPPED_STATUS_TEXT: Extract<
   ActiveOverlayCopy['status'],
   { kind: 'until-stopped' }
->['text'] = 'Focus Lock is active until you end it from the popup.';
+>['text'] = 'Focus Lock is active until you stop it.';
+/** The two End labels the worker may publish, pinned to the copy type. */
+const END_ACTION_LABEL: ActiveOverlayCopy['endAction'] = 'End session';
+const UNLOCK_ACTION_LABEL: ActiveOverlayCopy['endAction'] = 'Unlock';
 const FIXED_ACTIVE_COPY: Readonly<
   Pick<
     ActiveOverlayCopy,
     | 'bankUnit'
-    | 'endAction'
     | 'bankWaitFallback'
     | 'bankWaitPrefix'
     | 'gateBack'
@@ -205,7 +207,6 @@ const FIXED_ACTIVE_COPY: Readonly<
   >
 > = {
   bankUnit: 'pause banked',
-  endAction: 'End session',
   bankWaitFallback: 'earn pause time by focusing',
   bankWaitPrefix: 'ready in',
   gateBack: 'Never mind, back to work',
@@ -574,30 +575,36 @@ function validateDetachedActiveOverlay(value: UnknownRecord): boolean {
   return (
     validateDetachedActiveEconomy(value.economy) &&
     validateDetachedActiveUnlocks(value.activeUnlocks, capturedAt) &&
-    validateDetachedActiveActions(
-      value.actions,
-      gated,
-      expectedEndAction(duration, strictness, gated),
-    ) &&
-    validateDetachedActiveCopy(value.copy, duration, gated, stoppedPage)
+    validateDetachedActiveActions(value.actions, gated, expectedEndAction(strictness, gated)) &&
+    validateDetachedActiveCopy(value.copy, duration, strictness, gated, stoppedPage)
   );
 }
 
-/** Until-stopped sessions are Flexible only, matching the SessionConfigV2 duration invariant. */
+/** Until-stopped sessions are never Hard, matching the SessionConfigV2 duration invariant. */
 function hasDurationCompatibleStrictness(
   duration: SessionDuration,
   strictness: Strictness,
 ): boolean {
-  return duration.kind === 'timed' || strictness === 'flexible';
+  return duration.kind === 'timed' || strictness !== 'hard';
 }
 
+/** Mirrors `overlayEndActionV2`: the End action follows strictness alone once no gate is open. */
 function expectedEndAction(
-  duration: SessionDuration,
   strictness: Strictness,
   gated: boolean,
 ): 'hidden' | 'request-end' | 'open-end-gate' {
-  if (gated || duration.kind === 'until-stopped' || strictness === 'hard') return 'hidden';
+  if (gated || strictness === 'hard') return 'hidden';
   return strictness === 'friction' ? 'open-end-gate' : 'request-end';
+}
+
+/** Mirrors `overlayEndActionLabelV2`: a Friction until-stopped page unlocks, the rest end. */
+function expectedEndActionLabel(
+  duration: SessionDuration,
+  strictness: Strictness,
+): ActiveOverlayCopy['endAction'] {
+  return strictness === 'friction' && duration.kind === 'until-stopped'
+    ? UNLOCK_ACTION_LABEL
+    : END_ACTION_LABEL;
 }
 
 /** Returns capturedAt when the whole active timing row is valid, otherwise null. */
@@ -666,6 +673,7 @@ function validateDetachedActiveActions(
 function validateDetachedActiveCopy(
   value: unknown,
   duration: SessionDuration,
+  strictness: Strictness,
   gated: boolean,
   stoppedPage: boolean,
 ): boolean {
@@ -673,6 +681,7 @@ function validateDetachedActiveCopy(
   if (
     copy === null ||
     !hasFixedActiveCopy(copy) ||
+    copy.endAction !== expectedEndActionLabel(duration, strictness) ||
     !isNonBlankString(copy.attempts) ||
     !isNonBlankString(copy.pauseAction) ||
     !isNonBlankString(copy.unlockAction) ||

@@ -29,7 +29,7 @@ const EPOCH_ID: string = '30000000-0000-4000-8000-000000000001';
 const STOPPED_COPY: NonNullable<ActiveCopy['stoppedPage']> =
   'This page did not load. It will load by itself when the session ends.';
 const UNTIL_STOPPED_TEXT: Extract<ActiveCopy['status'], { kind: 'until-stopped' }>['text'] =
-  'Focus Lock is active until you end it from the popup.';
+  'Focus Lock is active until you stop it.';
 const PROVENANCE: string = 'Blocked by Social media: example.com';
 const READY_ACTIONS: ActiveActions = {
   state: 'ready',
@@ -162,8 +162,18 @@ function indefiniteOverlay(overrides: Partial<ActiveOverlay> = {}): ActiveOverla
       phaseEndsAt: null,
       sessionEndsAt: null,
     },
-    actions: HIDDEN_END_ACTIONS,
+    actions: READY_ACTIONS,
     copy: indefiniteCopy(),
+    ...overrides,
+  });
+}
+
+/** A Friction until-stopped page routes End through its gate and calls the action Unlock. */
+function frictionIndefiniteOverlay(overrides: Partial<ActiveOverlay> = {}): ActiveOverlay {
+  return indefiniteOverlay({
+    strictness: 'friction',
+    actions: GATE_END_ACTIONS,
+    copy: indefiniteCopy({ endAction: 'Unlock' }),
     ...overrides,
   });
 }
@@ -374,6 +384,23 @@ describe('shared enforcement v2 overlay parsing', (): void => {
       indefiniteOverlay({ copy: indefiniteCopy({ lockedUntil: 'Locked until tomorrow' }) }),
       indefiniteOverlay({ strictness: 'friction' }),
       indefiniteOverlay({ strictness: 'hard' }),
+      frictionIndefiniteOverlay({ strictness: 'hard' }),
+    ]);
+  });
+
+  it('accepts a Friction indefinite page and pins its Unlock label to its type and duration', (): void => {
+    expect(parseDocumentOverlayView(frictionIndefiniteOverlay())).not.toBeNull();
+    expect(parseDocumentOverlayView(indefiniteOverlay())).not.toBeNull();
+    expectOverlayRejected([
+      frictionIndefiniteOverlay({ copy: indefiniteCopy({ endAction: 'End session' }) }),
+      frictionIndefiniteOverlay({ actions: READY_ACTIONS }),
+      indefiniteOverlay({ copy: indefiniteCopy({ endAction: 'Unlock' }) }),
+      activeOverlay({
+        strictness: 'friction',
+        actions: GATE_END_ACTIONS,
+        copy: activeCopy({ endAction: 'Unlock' }),
+      }),
+      withCopyKey(activeOverlay(), 'endAction', 'Unlock'),
     ]);
   });
 
@@ -382,7 +409,8 @@ describe('shared enforcement v2 overlay parsing', (): void => {
       activeOverlay({ actions: HIDDEN_END_ACTIONS }),
       activeOverlay({ strictness: 'friction', actions: HIDDEN_END_ACTIONS }),
       activeOverlay({ strictness: 'hard' }),
-      indefiniteOverlay({ actions: READY_ACTIONS }),
+      indefiniteOverlay({ actions: HIDDEN_END_ACTIONS }),
+      indefiniteOverlay({ strictness: 'hard', actions: HIDDEN_END_ACTIONS }),
       withKey(gatedOverlay(PAUSE_GATE), 'actions', { ...GATE_ACTIONS, end: 'request-end' }),
     ]);
   });
