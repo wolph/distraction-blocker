@@ -51,7 +51,6 @@ export function untilStoppedHint(
  * editor render it, and a screen reader is the only place it is heard, so a copy that drifted
  * in one file would be invisible to sighted review.
  */
-export const FORCED_TYPE_LABEL: string = 'Session type forced by Until stopped';
 export const FORCED_CYCLES_LABEL: string = 'Cycles forced by Until stopped';
 
 /**

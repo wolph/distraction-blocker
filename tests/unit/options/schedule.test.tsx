@@ -7,6 +7,7 @@ import { Schedule } from '../../../src/options/Schedule';
 import { DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import { isScheduleEntryV2 } from '../../../src/shared/runtime-validation';
 import {
+  HARD_UNAVAILABLE_REASON,
   SCHEDULE_UNTIL_STOPPED_COPY,
   SCHEDULE_WINDOW_LABEL,
   UNTIL_STOPPED_DISCLOSURE,
@@ -15,7 +16,6 @@ import {
 import type { ScheduleEntryV2, SettingsV2 } from '../../../src/shared/types';
 
 const DEFAULTS: SettingsV2 = { ...DEFAULT_SETTINGS, schedule: [] };
-const FORCED_TYPE_LABEL: string = 'Session type forced by Until stopped';
 const FORCED_CYCLES_LABEL: string = 'Cycles forced by Until stopped';
 
 function windowEntry(): ScheduleEntryV2 {
@@ -67,20 +67,23 @@ describe('Schedule duration choices', (): void => {
     ).toBe(true);
   });
 
-  it('forces Flexible and no cycles for an indefinite entry and saves those values', (): void => {
+  it('keeps the entry type, disables Hard with its reason, and forces no cycles when indefinite', (): void => {
     const onChange: Mock = vi.fn();
     const view = render(<Schedule entries={[]} defaults={DEFAULTS} onChange={onChange} />);
 
     fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
     fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
 
-    const forcedType: HTMLElement = view.getByRole('group', { name: FORCED_TYPE_LABEL });
-    const flexible: HTMLInputElement = view.getByRole('radio', {
-      name: /Flexible/,
+    const friction: HTMLInputElement = view.getByRole('radio', {
+      name: /Friction/,
     }) as HTMLInputElement;
-    expect(forcedType.getAttribute('aria-disabled')).toBe('true');
-    expect(forcedType.contains(flexible)).toBe(true);
-    expect(flexible.checked).toBe(true);
+    const hard: HTMLInputElement = view.getByRole('radio', { name: /Hard/ }) as HTMLInputElement;
+    expect(friction.checked).toBe(true);
+    expect(friction.disabled).toBe(false);
+    expect(friction.closest('.forced-control')).toBeNull();
+    expect(hard.disabled).toBe(true);
+    expect(view.getByText(HARD_UNAVAILABLE_REASON)).toBeTruthy();
+    expect(hard.getAttribute('aria-describedby')).toBe(view.getByText(HARD_UNAVAILABLE_REASON).id);
 
     const forcedCycles: HTMLElement = view.getByRole('group', { name: FORCED_CYCLES_LABEL });
     const cycles: HTMLInputElement = view.getByRole('checkbox', {
@@ -97,17 +100,18 @@ describe('Schedule duration choices', (): void => {
     const saved: ScheduleEntryV2[] = savedEntries(onChange);
     expect(saved).toHaveLength(1);
     expect(saved[0]?.duration).toEqual({ kind: 'until-stopped' });
-    expect(saved[0]?.strictness).toBe('flexible');
+    expect(saved[0]?.strictness).toBe(DEFAULTS.defaultStrictness);
     expect(saved[0]?.cycling).toBeNull();
     expect(isScheduleEntryV2(saved[0])).toBe(true);
   });
 
-  it('refuses a session type or cycle change while the entry is indefinite', (): void => {
+  it('accepts Flexible, refuses Hard and cycles, while the entry is indefinite', (): void => {
     const onChange: Mock = vi.fn();
     const view = render(<Schedule entries={[]} defaults={DEFAULTS} onChange={onChange} />);
 
     fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
     fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
+    fireEvent.click(view.getByRole('radio', { name: /Flexible/ }));
     fireEvent.click(view.getByRole('radio', { name: /Hard/ }));
     fireEvent.click(view.getByRole('checkbox', { name: /Cycle focus and breaks/ }));
     fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
@@ -115,16 +119,35 @@ describe('Schedule duration choices', (): void => {
     const saved: ScheduleEntryV2[] = savedEntries(onChange);
     expect(saved[0]?.strictness).toBe('flexible');
     expect(saved[0]?.cycling).toBeNull();
+    expect(isScheduleEntryV2(saved[0])).toBe(true);
   });
 
-  it('keeps an indefinite entry Flexible when the forced wrapper is bypassed', (): void => {
+  it('clamps a Hard entry to Friction when it becomes indefinite and restores Hard for a window', (): void => {
+    const onChange: Mock = vi.fn();
+    const view = render(<Schedule entries={[]} defaults={DEFAULTS} onChange={onChange} />);
+
+    fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
+    fireEvent.click(view.getByRole('radio', { name: /Hard/ }));
+    fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
+
+    expect((view.getByRole('radio', { name: /Friction/ }) as HTMLInputElement).checked).toBe(true);
+    expect((view.getByRole('radio', { name: /Hard/ }) as HTMLInputElement).checked).toBe(false);
+
+    fireEvent.click(view.getByRole('radio', { name: SCHEDULE_WINDOW_LABEL }));
+
+    expect((view.getByRole('radio', { name: /Hard/ }) as HTMLInputElement).checked).toBe(true);
+    expect((view.getByRole('radio', { name: /Hard/ }) as HTMLInputElement).disabled).toBe(false);
+    expect(view.queryByText(HARD_UNAVAILABLE_REASON)).toBeNull();
+  });
+
+  it('keeps an indefinite entry away from Hard when the disabled radio is bypassed', (): void => {
     const onChange: Mock = vi.fn();
     const view = render(<Schedule entries={[]} defaults={DEFAULTS} onChange={onChange} />);
 
     fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
     fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
 
-    // Out of the wrapper, so no capture-phase block stands between the click and the draft.
+    // Out of the form, so nothing stands between the synthetic click and the draft.
     const hard: HTMLElement = view.getByRole('radio', { name: /Hard/ });
     document.body.appendChild(hard);
     fireEvent.click(hard);
@@ -132,7 +155,7 @@ describe('Schedule duration choices', (): void => {
 
     const saved: ScheduleEntryV2[] = savedEntries(onChange);
     expect(saved[0]?.duration).toEqual({ kind: 'until-stopped' });
-    expect(saved[0]?.strictness).toBe('flexible');
+    expect(saved[0]?.strictness).toBe(DEFAULTS.defaultStrictness);
     expect(saved[0]?.cycling).toBeNull();
     expect(isScheduleEntryV2(saved[0])).toBe(true);
     hard.remove();
@@ -157,23 +180,19 @@ describe('Schedule duration choices', (): void => {
     expect(isScheduleEntryV2(saved[0])).toBe(true);
   });
 
-  it('retains a bypassed session type edit for the timed duration', (): void => {
+  it('carries a type chosen while indefinite back to the window duration', (): void => {
     const onChange: Mock = vi.fn();
     const view = render(<Schedule entries={[]} defaults={DEFAULTS} onChange={onChange} />);
 
     fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
     fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
-
-    const hard: HTMLElement = view.getByRole('radio', { name: /Hard/ });
-    document.body.appendChild(hard);
-    fireEvent.click(hard);
-    hard.remove();
+    fireEvent.click(view.getByRole('radio', { name: /Flexible/ }));
     fireEvent.click(view.getByRole('radio', { name: SCHEDULE_WINDOW_LABEL }));
     fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
 
     const saved: ScheduleEntryV2[] = savedEntries(onChange);
     expect(saved[0]?.duration).toEqual({ kind: 'window' });
-    expect(saved[0]?.strictness).toBe('hard');
+    expect(saved[0]?.strictness).toBe('flexible');
     expect(isScheduleEntryV2(saved[0])).toBe(true);
   });
 
@@ -190,7 +209,7 @@ describe('Schedule duration choices', (): void => {
     expect(
       (view.getByRole('checkbox', { name: /Cycle focus and breaks/ }) as HTMLInputElement).checked,
     ).toBe(true);
-    expect(view.queryByRole('group', { name: FORCED_TYPE_LABEL })).toBeNull();
+    expect(view.queryByRole('group', { name: FORCED_CYCLES_LABEL })).toBeNull();
     expect(view.queryByText(SCHEDULE_UNTIL_STOPPED_COPY)).toBeNull();
 
     fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
@@ -202,18 +221,19 @@ describe('Schedule duration choices', (): void => {
     expect(isScheduleEntryV2(saved[0])).toBe(true);
   });
 
-  it('uses the current schedule defaults when a saved indefinite entry becomes timed', (): void => {
+  it('keeps its own type and takes the default cycles when a saved indefinite entry becomes timed', (): void => {
     const onChange: Mock = vi.fn();
     const view = render(
       <Schedule entries={[indefiniteEntry()]} defaults={DEFAULTS} onChange={onChange} />,
     );
 
     fireEvent.click(view.getByRole('button', { name: 'Edit' }));
+    expect((view.getByRole('radio', { name: /Flexible/ }) as HTMLInputElement).checked).toBe(true);
     fireEvent.click(view.getByRole('radio', { name: SCHEDULE_WINDOW_LABEL }));
     fireEvent.click(view.getByRole('button', { name: 'Save entry' }));
 
     const saved: ScheduleEntryV2[] = savedEntries(onChange);
-    expect(saved[0]?.strictness).toBe(DEFAULTS.defaultStrictness);
+    expect(saved[0]?.strictness).toBe('flexible');
     expect(saved[0]?.cycling).toEqual(DEFAULTS.defaultCycling);
   });
 
@@ -236,7 +256,7 @@ describe('Schedule duration choices', (): void => {
 
     fireEvent.click(view.getByRole('button', { name: 'Add schedule entry' }));
     fireEvent.click(view.getByRole('radio', { name: UNTIL_STOPPED_LABEL }));
-    fireEvent.pointerEnter(view.getByRole('group', { name: FORCED_TYPE_LABEL }));
+    fireEvent.pointerEnter(view.getByRole('group', { name: FORCED_CYCLES_LABEL }));
 
     expect(view.getByRole('tooltip').textContent).toContain(UNTIL_STOPPED_DISCLOSURE);
   });
