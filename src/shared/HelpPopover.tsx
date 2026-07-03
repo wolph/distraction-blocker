@@ -245,6 +245,11 @@ export type HelpPopoverProps = {
   triggerContent?: ComponentChildren;
   triggerClassName?: string;
   triggerPressed?: boolean;
+  /**
+   * A disabled trigger keeps hover, focus, and click disclosure, because the popover is where
+   * the reason it is disabled lives, and only skips `onTriggerClick`.
+   */
+  triggerDisabled?: boolean;
   onTriggerClick?: () => void;
 };
 
@@ -254,6 +259,7 @@ export function HelpPopover({
   triggerContent,
   triggerClassName,
   triggerPressed,
+  triggerDisabled = false,
   onTriggerClick,
 }: HelpPopoverProps): JSX.Element {
   const rootRef = useRef<HTMLSpanElement | null>(null);
@@ -284,8 +290,9 @@ export function HelpPopover({
         aria-describedby={interaction.open ? contentId : undefined}
         aria-expanded={interaction.open}
         aria-pressed={triggerPressed}
+        aria-disabled={triggerDisabled ? 'true' : undefined}
         onClick={(): void => {
-          onTriggerClick?.();
+          if (!triggerDisabled) onTriggerClick?.();
           interaction.handleClick();
         }}
       >

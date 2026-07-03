@@ -387,6 +387,19 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* An unavailable choice stays readable and disclosable, and reads its reason in place. */
+.help-popover__trigger.session-type-choice[aria-disabled="true"],
+.help-popover__trigger.session-type-choice[aria-disabled="true"]:hover {
+  border-style: dashed;
+  border-color: var(--border);
+  background: var(--surface);
+  cursor: not-allowed;
+}
+
+.help-popover__trigger.session-type-choice[aria-disabled="true"] .session-type-choice__label {
+  color: var(--text-soft);
+}
+
 .mode-control {
   padding: 8px 10px;
   border: 1px solid var(--border);

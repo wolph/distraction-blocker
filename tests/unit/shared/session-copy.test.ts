@@ -10,7 +10,9 @@ import {
   END_SESSION_LABEL,
   FOCUS_PHASE_CLOCK_LABEL,
   FOCUS_TIME_LABEL,
+  HARD_UNAVAILABLE_REASON,
   INDEFINITE_BADGE_TEXT,
+  LOCK_UNTIL_MANUAL_UNLOCK_LABEL,
   PAUSE_CLOCK_LABEL,
   POPUP_CLOSURE_CLEANUP_COPY,
   POPUP_CLOSURE_ERROR_COPY,
@@ -35,8 +37,8 @@ import {
   TOTAL_SESSION_CLOCK_LABEL,
   UNLOCK_LABEL,
   UNTIL_STOPPED_DISCLOSURE,
-  UNTIL_STOPPED_FORCED_HINT,
   UNTIL_STOPPED_LABEL,
+  untilStoppedHint,
 } from '../../../src/shared/session-copy';
 import type { SessionDuration, SessionEndReasonV2 } from '../../../src/shared/types';
 
@@ -55,14 +57,30 @@ describe('session copy', (): void => {
   it('publishes the exact duration and forced-control copy', (): void => {
     expect(UNTIL_STOPPED_LABEL).toBe('Until stopped');
     expect(START_UNTIL_STOPPED_LABEL).toBe('Start until stopped');
-    expect(UNTIL_STOPPED_FORCED_HINT).toBe(
-      'Flexible session. Cycles off. End it manually from the popup.',
-    );
+    expect(LOCK_UNTIL_MANUAL_UNLOCK_LABEL).toBe('Lock until manual unlock');
     expect(UNTIL_STOPPED_DISCLOSURE).toBe(
-      'Until stopped sessions use Flexible blocking and cannot use focus and break cycles.',
+      'Until stopped sessions keep Flexible or Friction and cannot use focus and break cycles.',
+    );
+    expect(HARD_UNAVAILABLE_REASON).toBe(
+      'Hard lock is not available for Until stopped: with no timer and no manual end, the session could never end.',
     );
     expect(END_SESSION_LABEL).toBe('End session');
     expect(UNLOCK_LABEL).toBe('Unlock');
+  });
+
+  it('states the end behaviour of an until-stopped session before it starts', (): void => {
+    expect(untilStoppedHint('flexible', { delayMs: 10_000, requireTypedPhrase: false })).toBe(
+      'Runs until you end it with End session. Cycles off.',
+    );
+    expect(untilStoppedHint('friction', { delayMs: 10_000, requireTypedPhrase: false })).toBe(
+      'Runs until you unlock it: a 10-second wait, then Unlock. Cycles off.',
+    );
+    expect(untilStoppedHint('friction', { delayMs: 30_000, requireTypedPhrase: true })).toBe(
+      'Runs until you unlock it: a 30-second wait and a typed sentence, then Unlock. Cycles off.',
+    );
+    expect(untilStoppedHint('friction', { delayMs: 0, requireTypedPhrase: true })).toBe(
+      'Runs until you unlock it: no wait and a typed sentence, then Unlock. Cycles off.',
+    );
   });
 
   it('publishes the exact clock labels', (): void => {
@@ -96,10 +114,10 @@ describe('session copy', (): void => {
   it('publishes the exact schedule copy', (): void => {
     expect(SCHEDULE_WINDOW_LABEL).toBe('Until window ends');
     expect(SCHEDULE_UNTIL_STOPPED_COPY).toBe(
-      'Starts on schedule and continues until you end it manually.',
+      'Starts on schedule and runs until you stop it: End session for Flexible, Unlock through the deliberation gate for Friction. Cycles off.',
     );
     expect(SCHEDULE_STARTED_TITLE).toBe('Focus schedule started');
-    expect(SCHEDULE_UNTIL_STOPPED_BODY).toBe('Active until you end it manually.');
+    expect(SCHEDULE_UNTIL_STOPPED_BODY).toBe('Active until you stop it.');
   });
 
   it('publishes the exact Settings session copy', (): void => {

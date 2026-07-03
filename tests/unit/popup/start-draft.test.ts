@@ -87,7 +87,7 @@ describe('createStartDraft', (): void => {
 });
 
 describe('selectUntilStopped', (): void => {
-  it('forces Flexible and cycles off without destroying the timed draft', (): void => {
+  it('clamps Hard to Friction and turns cycles off without destroying the timed draft', (): void => {
     const timed: StartDraft = timedDraft();
     const indefinite: StartDraft = selectUntilStopped(timed);
 
@@ -97,12 +97,23 @@ describe('selectUntilStopped', (): void => {
     });
     expect(indefinite.timedStrictness).toBe('hard');
     expect(indefinite.timedCycling).toEqual(CUSTOM_CYCLE);
-    expect(effectiveStrictness(indefinite)).toBe('flexible');
+    expect(effectiveStrictness(indefinite)).toBe('friction');
     expect(effectiveCycling(indefinite)).toBeNull();
     expect(effectiveTimedMinutes(indefinite)).toBeNull();
     expect(timed.duration).toEqual({ kind: 'timed', presetMin: 50, customMin: '' });
     expect(timed.timedStrictness).toBe('hard');
     expect(timed.timedCycling).toEqual(CUSTOM_CYCLE);
+  });
+
+  it('keeps Flexible and Friction as chosen while until stopped', (): void => {
+    const flexible: StartDraft = selectUntilStopped(setTimedStrictness(timedDraft(), 'flexible'));
+    const friction: StartDraft = selectUntilStopped(setTimedStrictness(timedDraft(), 'friction'));
+
+    expect(effectiveStrictness(flexible)).toBe('flexible');
+    expect(effectiveStrictness(friction)).toBe('friction');
+    // A type chosen during the detour is the draft's type, not a hidden timed one.
+    expect(effectiveStrictness(setTimedStrictness(friction, 'flexible'))).toBe('flexible');
+    expect(effectiveStrictness(setTimedStrictness(flexible, 'hard'))).toBe('friction');
   });
 
   it('restores the timed session type, cycles, and the newly chosen preset', (): void => {
@@ -203,19 +214,31 @@ describe('startLabel', (): void => {
     );
   });
 
-  it('names the indefinite plan', (): void => {
-    expect(startLabel(selectUntilStopped(timedDraft()))).toBe('Start until stopped');
+  it('names the indefinite plan by its session type', (): void => {
+    const flexible: StartDraft = selectUntilStopped(setTimedStrictness(timedDraft(), 'flexible'));
+    const friction: StartDraft = selectUntilStopped(setTimedStrictness(timedDraft(), 'friction'));
+
+    expect(startLabel(flexible)).toBe('Start until stopped');
+    expect(startLabel(friction)).toBe('Lock until manual unlock');
+    // Hard clamps to Friction, so the button says what will actually start.
+    expect(startLabel(selectUntilStopped(timedDraft()))).toBe('Lock until manual unlock');
   });
 });
 
 describe('toSessionConfigV2', (): void => {
-  it('submits a Flexible non-cycling until-stopped manual config', (): void => {
+  it('submits a non-cycling until-stopped manual config with the chosen type', (): void => {
     const draft: StartDraft = selectUntilStopped({
-      ...timedDraft(),
+      ...setTimedStrictness(timedDraft(), 'flexible'),
       intention: '  write the report  ',
     });
     const config: SessionConfigV2 | null = toSessionConfigV2(draft);
+    const friction: SessionConfigV2 | null = toSessionConfigV2(
+      setTimedStrictness(draft, 'friction'),
+    );
 
+    expect(friction?.strictness).toBe('friction');
+    expect(friction?.duration).toEqual({ kind: 'until-stopped' });
+    expect(isSessionConfigV2(friction)).toBe(true);
     expect(config).toEqual({
       mode: 'blacklist',
       strictness: 'flexible',
