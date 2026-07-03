@@ -1,5 +1,18 @@
 import type { Rejection } from './messages';
 
+/** The one answer every ineligible or vanished work tab gets, from the popup and the overlay. */
+export const CHOOSE_WORK_TAB_ERROR: string = 'Choose an available work tab.';
+export const WORK_TAB_CLOSED_ERROR: string =
+  'That tab is no longer available. Choose another work tab.';
+/** The `work-target-not-saved` start code carries this when the save itself failed. */
+export const WORK_TARGET_NOT_SAVED_ERROR: string = `Session started, but the work tab could not be saved. ${CHOOSE_WORK_TAB_ERROR}`;
+/** The service found another session than the one the request named. */
+export const WORK_SESSION_CHANGED_ERROR: string =
+  'The focus session has changed. Choose your work tab again.';
+/** The engine refused a work target action because the named session is not the live one. */
+export const WORK_TARGET_ACTION_STALE_ERROR: string =
+  'The focus session has changed. Reopen the popup.';
+
 /** One eligible tab as the pickers see it: identity, title and hostname, never the full URL. */
 export interface WorkTab {
   tabId: number;

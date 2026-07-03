@@ -20,6 +20,7 @@ import {
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
   emptySnapshot,
+  rulesFromLists,
   TOP_SITES_DAILY,
 } from '../shared/constants';
 import type { DocumentContentCommand } from '../shared/enforcement-v2';
@@ -41,6 +42,7 @@ import type {
   DailyAgg,
   EventRecord,
   GateSettings,
+  GateState,
   ListsConfig,
   PauseEconomy,
   ScheduleEntryV2,
@@ -57,6 +59,7 @@ import type {
   ThemeMode,
   Verdict,
 } from '../shared/types';
+import { WORK_TARGET_ACTION_STALE_ERROR, WORK_TARGET_NOT_SAVED_ERROR } from '../shared/work-target';
 import { type AlarmNameV2, type AlarmPortsV2, parseAlarmNameV2, TICK_ALARM } from './alarms-v2';
 import type { ContentTransportPortsV2 } from './content-transport-v2';
 import type { AllDataClearLease, DataClearLeaseToken } from './data-clear-lease';
@@ -103,6 +106,7 @@ import {
 } from './stores';
 import { chooseNewerStreak, rebaseStreakForDate } from './streak-sync';
 import { assertSyncItemWithinQuota, SyncQuotaError } from './sync-quota';
+import type { WorkSession, WorkTargetFrame, WorkTargetPolicy } from './work-target';
 
 declare const runtimeMutationLeaseBrand: unique symbol;
 
@@ -147,6 +151,12 @@ export interface EnginePorts {
   persistSyncJournal(): Promise<void>;
   appendEvents(evs: readonly EventRecord[]): Promise<void>;
   broadcast(snapshot: SessionSnapshot): void;
+  /**
+   * Fired after every session publish and every committed lists change, so the work tab pickers
+   * refresh under the policy that now decides which tabs are eligible. Optional, because a worker
+   * without work targets owes nobody that fanout.
+   */
+  workTargetChanged?(): void;
   applyBlocking(lease: BlockingSweepLease): Promise<void>;
   playSound(sound: SoundId): void;
   notify(title: string, message: string): void;
@@ -298,6 +308,11 @@ export class Engine {
   private allDataClearPending = false;
   private websiteBlockingLossPending = false;
   private readonly controller: SessionControllerV2;
+  /** Compiled work target matchers, one per policy and mode, dropped with the rules they serve. */
+  private readonly workTargetMatchers: WeakMap<
+    SessionRuleSnapshot,
+    Map<SessionMode, CompiledMatcher>
+  > = new WeakMap<SessionRuleSnapshot, Map<SessionMode, CompiledMatcher>>();
 
   constructor(
     private readonly ports: EnginePorts,
@@ -387,7 +402,12 @@ export class Engine {
 
   private controllerEffects(): SessionControllerEffectsV2 {
     return {
-      broadcast: (snapshot: SessionSnapshot): void => this.ports.broadcast(snapshot),
+      broadcast: (snapshot: SessionSnapshot): void => {
+        this.ports.broadcast(snapshot);
+        // Every publish is a session boundary or a gate move, and each one changes which tab can
+        // be the work tab, so the pickers refresh with the same beat as the popup.
+        this.ports.workTargetChanged?.();
+      },
       updateBadge: (snapshot: SessionSnapshot): void => this.ports.updateIcon(snapshot),
       playSound: (sound: SoundId): void => this.ports.playSound(sound),
       notify: (title: string, body: string): void => this.ports.notify(title, body),
@@ -749,21 +769,119 @@ export class Engine {
     await this.controller.recover();
   }
 
-  async startSession(config: SessionConfig): Promise<StartSessionResponseV2> {
+  /**
+   * `afterStart` runs inside the start's own mutation frame with the session id the controller
+   * just minted, which is how the work tab picker binds its choice to the right session without
+   * that id ever travelling through `SessionConfigV2`.
+   */
+  async startSession(
+    config: SessionConfig,
+    afterStart?: (sessionId: string) => Promise<Ack>,
+  ): Promise<StartSessionResponseV2> {
     // A profile that is being erased has no session to start, and the queue behind this barrier
     // would refuse the write anyway, with a message the popup cannot render.
     if (this.allDataClearPending) {
       return { ok: false, code: 'data-clear-pending', error: 'data-clear-pending' };
     }
     return this.enqueuePolicyMutation(async (): Promise<StartSessionResponseV2> => {
-      const response: StartSessionResponseV2 = await this.controller.startSession(config);
+      const started: StartSessionResponseV2 = await this.controller.startSession(config);
+      const response: StartSessionResponseV2 =
+        started.ok && afterStart !== undefined ? await this.settleAfterStart(afterStart) : started;
       await this.sweepAfterPhaseChange();
       return response;
     });
   }
 
+  /**
+   * The session is live by the time this runs, so a refused or failed hook cannot undo it: the
+   * answer says so with its own code and the popup shows the session with the tab left to choose.
+   */
+  private async settleAfterStart(
+    afterStart: (sessionId: string) => Promise<Ack>,
+  ): Promise<StartSessionResponseV2> {
+    const sessionId: string | undefined = this.runtime.session?.sessionId;
+    const notSaved = (error: string): StartSessionResponseV2 => ({
+      ok: false,
+      code: 'work-target-not-saved',
+      error,
+    });
+    if (sessionId === undefined) {
+      this.ports.reportError(new Error('a started session has no identity to bind a work tab to'));
+      return notSaved(WORK_TARGET_NOT_SAVED_ERROR);
+    }
+    try {
+      const saved: Ack = await afterStart(sessionId);
+      return saved.ok ? { ok: true, code: 'ok' } : notSaved(saved.error);
+    } catch (error: unknown) {
+      this.ports.reportError(error);
+      return notSaved(WORK_TARGET_NOT_SAVED_ERROR);
+    }
+  }
+
   hasActiveSession(): boolean {
     return this.controller.hasActiveSession();
+  }
+
+  /** The live session as the work tab pickers see it: its identity and the policy it captured. */
+  workTargetSession(): WorkSession | null {
+    const session: SessionState | null = this.runtime.session;
+    if (session === null) return null;
+    return { sessionId: session.sessionId, mode: session.config.mode, rules: session.config.rules };
+  }
+
+  /** What a picker lists under before a session exists: the draft's rules, else the saved lists. */
+  workTargetDraftPolicy(mode: SessionMode, rules?: SessionRuleSnapshot): WorkTargetPolicy {
+    return { mode, rules: rules ?? rulesFromLists(this.lists) };
+  }
+
+  /**
+   * Whether a tab at `url` may be the work tab under `policy`. Temporary unlocks never count: a
+   * page that is only open because a pause or a site unlock let it through is not a place to
+   * return to once the unlock ends.
+   */
+  workTargetAllowed(url: string, policy: WorkTargetPolicy): boolean {
+    return !evaluateUrl(this.workTargetMatcher(policy), url, [], this.ports.now()).blocked;
+  }
+
+  private workTargetMatcher(policy: WorkTargetPolicy): CompiledMatcher {
+    let byMode: Map<SessionMode, CompiledMatcher> | undefined = this.workTargetMatchers.get(
+      policy.rules,
+    );
+    if (byMode === undefined) {
+      byMode = new Map<SessionMode, CompiledMatcher>();
+      this.workTargetMatchers.set(policy.rules, byMode);
+    }
+    let matcher: CompiledMatcher | undefined = byMode.get(policy.mode);
+    if (matcher === undefined) {
+      matcher = this.compileSessionPolicy(policy.rules, ALL_CATEGORIES, policy.mode);
+      byMode.set(policy.mode, matcher);
+    }
+    return matcher;
+  }
+
+  /**
+   * Runs one work target action on the policy mutation queue for the session the caller named.
+   * Holding the queue is what makes the action's session checks sound: no start, end or gate
+   * command can commit while it runs. The frame carries the one session command the action may
+   * need in there, because the queued `abandonGate` would wait behind the frame that holds it.
+   */
+  async runWorkTargetAction(
+    sessionId: string,
+    action: (frame: WorkTargetFrame) => Promise<Ack>,
+  ): Promise<Ack> {
+    return this.enqueuePolicyMutation(async (): Promise<Ack> => {
+      await this.snapshotPersistedNow();
+      if (this.runtime.session?.sessionId !== sessionId) {
+        return { ok: false, error: WORK_TARGET_ACTION_STALE_ERROR };
+      }
+      return action({
+        gate: (): GateState | null => this.controller.snapshot(this.ports.now()).gate,
+        abandonGate: (
+          expectedGate: GateState,
+        ): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
+          this.controller.abandonGate(expectedGate),
+      });
+    });
   }
 
   async endSessionForWebsiteBlockingLoss(): Promise<boolean> {
@@ -1395,6 +1513,8 @@ export class Engine {
     await this.commit(committedAt);
     // A lists change moves what every open document must show, so the frozen views follow it.
     await this.refreshLiveViewsIfLive();
+    // It also moves which tabs a pre-start picker may offer, so the pickers refresh too.
+    this.ports.workTargetChanged?.();
     return { ok: true };
   }
 

@@ -22,6 +22,7 @@ const START_FAILURE_CODES: readonly StartFailureCode[] = [
   'transition-cleanup-pending',
   'closure-cleanup-pending',
   'data-clear-pending',
+  'work-target-not-saved',
 ];
 
 const COMMAND_FAILURE_CODES: readonly CommandFailureCode[] = [

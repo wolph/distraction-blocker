@@ -34,7 +34,9 @@ export type StartSessionResultCodeV2 =
   | TransitionFailureReasonV2
   | 'transition-cleanup-pending'
   | 'closure-cleanup-pending'
-  | 'data-clear-pending';
+  | 'data-clear-pending'
+  /** The session started. Only the work tab named in the start request was not saved. */
+  | 'work-target-not-saved';
 
 export type SessionCommandResultCodeV2 =
   | 'ok'
@@ -64,7 +66,8 @@ type StartRejectionWithoutCleanupV2 = {
     | 'invalid-request'
     | 'transition-cleanup-pending'
     | 'closure-cleanup-pending'
-    | 'data-clear-pending';
+    | 'data-clear-pending'
+    | 'work-target-not-saved';
   error: string;
   cleanupPending?: never;
 };
