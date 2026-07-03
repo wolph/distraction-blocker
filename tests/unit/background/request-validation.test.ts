@@ -71,6 +71,7 @@ const SESSION_CONFIG: SessionConfig = {
   rules: rulesFromLists(DEFAULT_LISTS),
 };
 
+const WORK_SESSION_ID: string = '10000000-0000-4000-8000-000000000001';
 const SETTINGS: Settings = structuredClone(DEFAULT_SETTINGS);
 const LISTS: ListsConfig = structuredClone(DEFAULT_LISTS);
 const DAY_MS: number = 86_400_000;
@@ -137,6 +138,11 @@ const VALID_REQUESTS: RequestByType = {
   getStats: { type: 'getStats', days: 30 },
   exportEvents: { type: 'exportEvents' },
   previewSound: { type: 'previewSound', sound: 'breakStart' },
+  getWorkTabs: { type: 'getWorkTabs', sessionId: WORK_SESSION_ID },
+  getWorkTabIcon: { type: 'getWorkTabIcon', sessionId: WORK_SESSION_ID, tabId: 4 },
+  getWorkTarget: { type: 'getWorkTarget' },
+  setWorkTarget: { type: 'setWorkTarget', sessionId: WORK_SESSION_ID, tabId: 4 },
+  returnToWork: { type: 'returnToWork', sessionId: WORK_SESSION_ID },
 };
 
 function replaceNested(
@@ -995,3 +1001,91 @@ function parseSettingsOrListsRequest(update: Record<string, unknown>): Request |
     ? parseRequest({ type: 'updateLists', lists: { ...LISTS, ...update } })
     : parseSettingsRequest(update);
 }
+
+describe('work target requests', (): void => {
+  const popupTabs: Record<string, unknown> = {
+    type: 'getWorkTabs',
+    mode: 'blacklist',
+    windowId: 3,
+  };
+  it('accepts the popup listing with or without the draft rules and detaches the result', (): void => {
+    expect(parseRequest(popupTabs)).toEqual(popupTabs);
+    const withRules: Record<string, unknown> = { ...popupTabs, rules: rulesFromLists(LISTS) };
+    const parsed: Request | null = parseRequest(withRules);
+    expect(parsed).toEqual(withRules);
+    expect(parsed).not.toBe(withRules);
+    if (parsed?.type === 'getWorkTabs' && 'rules' in parsed)
+      expect(parsed.rules).not.toBe(withRules.rules);
+  });
+  it('normalises session host additions in the popup listing rules', (): void => {
+    const parsed: Request | null = parseRequest({
+      ...popupTabs,
+      rules: {
+        ...rulesFromLists(LISTS),
+        sessionAllowlist: [{ kind: 'host', pattern: '  HTTPS://Docs.Python.org/3/  ' }],
+      },
+    });
+    expect(parsed).toMatchObject({
+      rules: { sessionAllowlist: [{ kind: 'host', pattern: 'docs.python.org' }] },
+    });
+  });
+  it.each([
+    { ...popupTabs, mode: 'other' },
+    { ...popupTabs, windowId: -1 },
+    { ...popupTabs, windowId: 1.5 },
+    { ...popupTabs, windowId: '3' },
+    { ...popupTabs, rules: null },
+    { ...popupTabs, rules: {} },
+    { ...popupTabs, rules: { ...rulesFromLists(LISTS), extra: true } },
+    { type: 'getWorkTabs', mode: 'blacklist' },
+    { type: 'getWorkTabs', sessionId: 'not-a-uuid' },
+    { type: 'getWorkTabs', sessionId: '' },
+    { type: 'getWorkTabs', sessionId: WORK_SESSION_ID, windowId: 3 },
+    { type: 'getWorkTabIcon', sessionId: WORK_SESSION_ID, tabId: -1 },
+    { type: 'getWorkTabIcon', sessionId: WORK_SESSION_ID, tabId: 1.5 },
+    { type: 'getWorkTabIcon', sessionId: WORK_SESSION_ID },
+    { type: 'getWorkTabIcon', sessionId: 'session', tabId: 4 },
+    { type: 'getWorkTarget', windowId: null },
+    { type: 'getWorkTarget', windowId: -2 },
+    { type: 'setWorkTarget', sessionId: WORK_SESSION_ID, tabId: '4' },
+    { type: 'setWorkTarget', sessionId: WORK_SESSION_ID, tabId: 4, windowId: undefined },
+    { type: 'setWorkTarget', sessionId: WORK_SESSION_ID, tabId: 4, windowId: Number.NaN },
+    { type: 'setWorkTarget', sessionId: 'x', tabId: 4 },
+    { type: 'returnToWork', sessionId: WORK_SESSION_ID, windowId: '1' },
+    { type: 'returnToWork', sessionId: 7 },
+    { type: 'returnToWork' },
+  ])('rejects the malformed work target request %#', (request: unknown): void => {
+    expect(parseRequest(request)).toBeNull();
+  });
+  it('accepts the optional popup window on the shared requests', (): void => {
+    for (const request of [
+      { type: 'getWorkTarget', windowId: 0 },
+      { type: 'setWorkTarget', sessionId: WORK_SESSION_ID, tabId: 4, windowId: 2 },
+      { type: 'returnToWork', sessionId: WORK_SESSION_ID, windowId: 2 },
+    ]) {
+      const parsed: Request | null = parseRequest(request);
+      expect(parsed).toEqual(request);
+      expect(parsed).not.toBe(request);
+    }
+  });
+  it('rejects accessor-backed fields without invoking their getters', (): void => {
+    for (const type of ['getWorkTabs', 'getWorkTabIcon', 'setWorkTarget', 'returnToWork']) {
+      let getterCalls: number = 0;
+      const request: Record<string, unknown> = { type, tabId: 4 };
+      Object.defineProperty(request, 'sessionId', {
+        enumerable: true,
+        get: (): string => {
+          getterCalls += 1;
+          return WORK_SESSION_ID;
+        },
+      });
+      expect(parseRequest(request)).toBeNull();
+      expect(getterCalls).toBe(0);
+    }
+    const revocable: { proxy: object; revoke: () => void } = Proxy.revocable<object>({}, {});
+    revocable.revoke();
+    expect(
+      parseRequest({ type: 'getWorkTabs', mode: 'blacklist', windowId: 1, rules: revocable.proxy }),
+    ).toBeNull();
+  });
+});

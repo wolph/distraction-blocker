@@ -7,6 +7,8 @@ import type {
   MonthlyAgg,
   OnboardingDraft,
   SessionConfigV2,
+  SessionMode,
+  SessionRuleSnapshot,
   SessionSnapshot,
   SessionSnapshotV2,
   Settings,
@@ -15,12 +17,17 @@ import type {
   StreakState,
   ThemeMode,
 } from './types';
+import type { WorkTabIconResult, WorkTabsResult, WorkTargetResult } from './work-target';
 
-/** A type alias, not an interface, so callers can still pass it where a record is wanted. */
-export type SessionStartRequestV2 = {
-  type: 'startSession';
-  config: SessionConfigV2;
-};
+/**
+ * A type alias, not an interface, so callers can still pass it where a record is wanted. The
+ * second member is the popup's start with a chosen work tab: `workTabId` is saved for the session
+ * the start mints and `windowId` is the popup's own window, which fixes the privacy context. The
+ * two extra keys come together or not at all.
+ */
+export type SessionStartRequestV2 =
+  | { type: 'startSession'; config: SessionConfigV2 }
+  | { type: 'startSession'; config: SessionConfigV2; workTabId: number; windowId: number };
 
 export type TransitionFailureReasonV2 =
   | 'website-access-lost'
@@ -121,7 +128,19 @@ export type NonSessionRequest =
   | { type: 'getLists' }
   | { type: 'getStats'; days: number }
   | { type: 'exportEvents' }
-  | { type: 'previewSound'; sound: SoundId };
+  | { type: 'previewSound'; sound: SoundId }
+  /** Content only: the live session's eligible tabs, under the rules it captured at start. */
+  | { type: 'getWorkTabs'; sessionId: string }
+  /** Popup only, before a start: eligible tabs under the draft's rules, or the saved lists when omitted. */
+  | { type: 'getWorkTabs'; mode: SessionMode; windowId: number; rules?: SessionRuleSnapshot }
+  /** Content only: one eligible tab's favicon, read from Chrome's local favicon cache. */
+  | { type: 'getWorkTabIcon'; sessionId: string; tabId: number }
+  /** Popup (with its windowId) or content (without): where the chosen work tab stands now. */
+  | { type: 'getWorkTarget'; windowId?: number }
+  /** Popup (with its windowId) or content (without): choose the work tab for the live session. */
+  | { type: 'setWorkTarget'; sessionId: string; tabId: number; windowId?: number }
+  /** Popup (with its windowId) or content (without): close any open gate and switch to the work tab. */
+  | { type: 'returnToWork'; sessionId: string; windowId?: number };
 
 export type Request = NonSessionRequest | SessionRequestV2;
 
@@ -218,6 +237,11 @@ export interface NonSessionResponseMap {
   getStats: StatsBundle;
   exportEvents: { json: string };
   previewSound: Ack;
+  getWorkTabs: WorkTabsResult;
+  getWorkTabIcon: WorkTabIconResult;
+  getWorkTarget: WorkTargetResult;
+  setWorkTarget: Ack;
+  returnToWork: Ack;
 }
 
 export interface ResponseMap extends NonSessionResponseMap, SessionResponseMapV2 {
@@ -228,10 +252,15 @@ export interface ResponseMap extends NonSessionResponseMap, SessionResponseMapV2
 export type Broadcast =
   | { type: 'stateChanged'; snapshot: SessionSnapshotV2 }
   /** content scripts must re-run getBlockState with their current URL */
-  | { type: 'reevaluate' };
+  | { type: 'reevaluate' }
+  /** the work tab pickers and the return control must re-read getWorkTarget or getWorkTabs */
+  | { type: 'workTargetChanged' };
 
 /** Worker-to-content-script push commands, sent via chrome.tabs.sendMessage. */
-export type ContentCommand = DocumentContentCommand | { type: 'reevaluate' };
+export type ContentCommand =
+  | DocumentContentCommand
+  | { type: 'reevaluate' }
+  | { type: 'workTargetChanged' };
 
 export async function sendRequest<T extends Request['type']>(
   req: Extract<Request, { type: T }>,

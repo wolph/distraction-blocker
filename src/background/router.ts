@@ -23,6 +23,23 @@ import type { Engine } from './engine';
 import { readEventsV2 } from './event-log-v2';
 import type { PolicyStorage } from './policy-storage';
 import { fetchStats } from './stats-service';
+import { chromeWorkTargetPorts, WorkTargetService } from './work-target';
+
+const workTargetServices: WeakMap<Engine, WorkTargetService> = new WeakMap<
+  Engine,
+  WorkTargetService
+>();
+
+/** One service per engine, built on the browser ports the first time a work target request lands. */
+function workTargets(engine: Engine, supplied?: WorkTargetService): WorkTargetService {
+  if (supplied !== undefined) return supplied;
+  let service: WorkTargetService | undefined = workTargetServices.get(engine);
+  if (service === undefined) {
+    service = new WorkTargetService(engine, chromeWorkTargetPorts(engine));
+    workTargetServices.set(engine, service);
+  }
+  return service;
+}
 
 export interface OnboardingRouterServices {
   reconcileWebsiteAccess(): Promise<{
@@ -117,6 +134,7 @@ export async function routeMessage(
   sender: chrome.runtime.MessageSender,
   policyStorage?: PolicyStorage,
   onboardingServices?: OnboardingRouterServices,
+  targetService?: WorkTargetService,
 ): Promise<unknown> {
   const unlockHost: string | null =
     msg.type === 'openGate' && msg.gate === 'unlockSite'
@@ -390,7 +408,33 @@ export async function routeMessage(
       return { commands };
     }
     case 'startSession':
-      return engine.startSession(msg.config);
+      // A start that names a work tab goes through the service, which checks the tab before the
+      // start and saves it for the minted session inside the start's own mutation frame.
+      return 'workTabId' in msg
+        ? workTargets(engine, targetService).startSession(
+            msg.config,
+            msg.workTabId,
+            msg.windowId,
+            sender,
+          )
+        : engine.startSession(msg.config);
+    case 'getWorkTabs':
+      return 'sessionId' in msg
+        ? workTargets(engine, targetService).getContentWorkTabs(msg.sessionId, sender)
+        : workTargets(engine, targetService).getWorkTabs(msg.mode, msg.windowId, msg.rules, sender);
+    case 'getWorkTabIcon':
+      return workTargets(engine, targetService).getWorkTabIcon(msg.sessionId, msg.tabId, sender);
+    case 'getWorkTarget':
+      return workTargets(engine, targetService).getWorkTarget(msg.windowId, sender);
+    case 'setWorkTarget':
+      return workTargets(engine, targetService).setWorkTarget(
+        msg.sessionId,
+        msg.tabId,
+        msg.windowId,
+        sender,
+      );
+    case 'returnToWork':
+      return workTargets(engine, targetService).returnToWork(msg.sessionId, msg.windowId, sender);
     case 'openGate':
       return engine.openGate(msg.gate, msg.host);
     case 'openEndGate':

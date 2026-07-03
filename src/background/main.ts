@@ -155,6 +155,7 @@ import {
   reloadClaimedDocuments,
   restoreClaimedTabs,
 } from './tabs';
+import { broadcastWorkTargetChanged, registerWorkTargetListeners } from './work-target';
 
 const DAILY_AGG_KEY_RE: RegExp = /^agg:[^:]+:(\d{4}-\d{2}-\d{2})$/;
 const MONTHLY_AGG_KEY_RE: RegExp = /^aggm:[^:]+:(\d{4}-\d{2})$/;
@@ -1191,6 +1192,10 @@ async function boot(
         return undefined;
       });
     },
+    // Read through `engineInstance` rather than `currentEngine()`: the first publish can land
+    // while boot is still assigning the instance, and an idle answer is the right one then.
+    workTargetChanged: (): void =>
+      broadcastWorkTargetChanged(engineInstance?.workTargetSession()?.sessionId ?? null),
     applyBlocking: applyBlockingFactory(currentEngine),
     playSound: (sound: SoundId): void => {
       void playSound(sound, currentEngine().getSettings().sounds);
@@ -1636,6 +1641,9 @@ export function main(): void {
   });
 
   registerTabListeners((): Promise<Engine> => ready, reportBackgroundError);
+  registerWorkTargetListeners(
+    (): string | null => engineInstance?.workTargetSession()?.sessionId ?? null,
+  );
 
   chrome.tabs.onRemoved.addListener((tabId: number): void => {
     const invalidationCleanup: Promise<void> = invalidateRemovedTab(tabId);
