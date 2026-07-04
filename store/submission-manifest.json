@@ -7,6 +7,7 @@
     "storage",
     "alarms",
     "tabs",
+    "favicon",
     "webNavigation",
     "offscreen",
     "notifications",

@@ -20,6 +20,7 @@ export default defineManifest({
     'storage',
     'alarms',
     'tabs',
+    'favicon',
     'webNavigation',
     'offscreen',
     'notifications',

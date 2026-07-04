@@ -23,7 +23,7 @@ Privacy policy: https://wolph.github.io/distraction-blocker/privacy/
 
 Focus Lock requests optional access to HTTP and HTTPS websites during onboarding. This access lets it read page addresses for local rule matching, check top-level navigations, replace blocked pages with its blocking surface, and mute or restore affected tabs. It does not inspect page text, form fields, passwords, or messages.
 
-The extension also uses Chrome permissions for local and optional synced storage, session and schedule alarms, tab state, top-level navigation changes, extension-packaged audio, notifications, and dynamic registration of its packaged blocking script.
+The extension also uses Chrome permissions for local and optional synced storage, session and schedule alarms, tab state, site icons from Chrome's local favicon cache for the work tab picker, top-level navigation changes, extension-packaged audio, notifications, and dynamic registration of its packaged blocking script.
 
 ## Sync choice and data controls
 
