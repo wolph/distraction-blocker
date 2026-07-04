@@ -205,7 +205,7 @@ async function configureFastEconomy(extPage: Page, pauseMs: number): Promise<voi
     settings: {
       ...settings,
       pause: { earnRatio: 10, capMs: Math.max(60_000, pauseMs), pauseMs, unlockMs: pauseMs },
-      gate: { delayMs: 500, requireTypedPhrase: false },
+      gate: { delayMs: 500, requireTypedPhrase: false, allowForceEnd: false },
     },
   });
   if (!ack.ok) throw new Error(ack.error);

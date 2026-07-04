@@ -25,7 +25,7 @@ export async function configureTask7Gate(page: Page, requireTypedPhrase: boolean
       type: 'updateSettings',
       settings: {
         ...settings,
-        gate: { delayMs: 30_000, requireTypedPhrase },
+        gate: { delayMs: 30_000, requireTypedPhrase, allowForceEnd: false },
       },
     }),
   ).toEqual({ ok: true });

@@ -547,6 +547,15 @@ describe('parseRequest', (): void => {
     expect(parseSettingsRequest({ ...SETTINGS, defaultStrictness: 'flexible' })).not.toBeNull();
   });
 
+  it('accepts the force end bypass setting in either state', (): void => {
+    expect(
+      parseSettingsRequest({ ...SETTINGS, gate: { ...SETTINGS.gate, allowForceEnd: true } }),
+    ).not.toBeNull();
+    expect(
+      parseSettingsRequest({ ...SETTINGS, gate: { ...SETTINGS.gate, allowForceEnd: false } }),
+    ).not.toBeNull();
+  });
+
   it.each([
     { presetsMin: [15, 25] },
     { presetsMin: [15, -1, 50] },
@@ -559,6 +568,13 @@ describe('parseRequest', (): void => {
     { pause: { ...SETTINGS.pause, extra: true } },
     { gate: { ...SETTINGS.gate, delayMs: 1.5 } },
     { gate: { ...SETTINGS.gate, extra: true } },
+    { gate: { ...SETTINGS.gate, allowForceEnd: 'yes' } },
+    {
+      gate: {
+        delayMs: SETTINGS.gate.delayMs,
+        requireTypedPhrase: SETTINGS.gate.requireTypedPhrase,
+      },
+    },
     { badgeCountdown: 1 },
     { sounds: { ...SETTINGS.sounds, masterVolume: 1.1 } },
     { sounds: { ...SETTINGS.sounds, extra: true } },

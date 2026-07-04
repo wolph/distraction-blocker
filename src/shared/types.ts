@@ -362,6 +362,11 @@ export interface PauseEconomy {
 export interface GateSettings {
   delayMs: number;
   requireTypedPhrase: boolean;
+  /**
+   * Opt-in bypass of a Friction session's cancel gate: an "Ignore timeout and end anyway" button
+   * that ends the session before the delay and without the typed phrase. Off by default.
+   */
+  allowForceEnd: boolean;
 }
 
 export interface SoundSettings {

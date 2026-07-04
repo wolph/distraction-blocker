@@ -32,12 +32,18 @@ function makeEngine(overrides: Partial<SyncChangeEngine> = {}): SyncChangeEngine
 
 describe('handleSyncChanges', () => {
   it('accepts mixed-version authoritative settings and mirrors only the canonical shape', async (): Promise<void> => {
+    const { allowForceEnd: _nested, ...v1Gate } = DEFAULT_SETTINGS.gate;
     const legacy: Record<string, unknown> = {
       ...structuredClone(DEFAULT_SETTINGS),
       retentionDays: 30,
-      allowForceEnd: false,
+      gate: v1Gate,
+      allowForceEnd: true,
     };
-    const canonical: Settings = { ...DEFAULT_SETTINGS, retentionDays: 30 };
+    const canonical: Settings = {
+      ...DEFAULT_SETTINGS,
+      retentionDays: 30,
+      gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: true },
+    };
     const transactSyncedPolicy = vi.fn(
       async (
         changes: Partial<PolicyValueByKey>,

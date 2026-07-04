@@ -607,9 +607,10 @@ export function isPauseEconomy(value: unknown): value is PauseEconomy {
 function isGateSettings(value: unknown): boolean {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['delayMs', 'requireTypedPhrase']) &&
+    hasExactKeys(value, ['delayMs', 'requireTypedPhrase', 'allowForceEnd']) &&
     isRelativeMillisecondDuration(value.delayMs, true) &&
-    typeof value.requireTypedPhrase === 'boolean'
+    typeof value.requireTypedPhrase === 'boolean' &&
+    typeof value.allowForceEnd === 'boolean'
   );
 }
 

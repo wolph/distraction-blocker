@@ -135,7 +135,11 @@ async function configureFastEconomy(extPage: Page, options: FastEconomyOptions):
         pauseMs: options.pauseMs,
         unlockMs: options.pauseMs,
       },
-      gate: { delayMs: options.gateDelayMs ?? 500, requireTypedPhrase: false },
+      gate: {
+        delayMs: options.gateDelayMs ?? 500,
+        requireTypedPhrase: false,
+        allowForceEnd: false,
+      },
     },
   });
   if (!ack.ok) throw new Error(ack.error);

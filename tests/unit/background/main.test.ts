@@ -2516,38 +2516,50 @@ describe('background boot state convergence', () => {
   });
 
   it.each([
-    ['old defaults', DEFAULT_SETTINGS],
-    ['old customized settings', { ...DEFAULT_SETTINGS, retentionDays: 30 }],
-  ] as const)('imports %s with the deprecated boolean removed', async (_label, settings) => {
-    mocks.scenario.storedSync = {
-      [SYNC_SETTINGS]: { ...structuredClone(settings), allowForceEnd: false },
-    };
+    ['old defaults', DEFAULT_SETTINGS, false],
+    ['old customized settings', { ...DEFAULT_SETTINGS, retentionDays: 30 }, true],
+  ] as const)(
+    'imports %s with the root-level boolean moved into the gate',
+    async (_label, settings, allowForceEnd) => {
+      // A v1 record carries the boolean beside `gate`, never inside it.
+      const { allowForceEnd: _nested, ...v1Gate } = settings.gate;
+      mocks.scenario.storedSync = {
+        [SYNC_SETTINGS]: { ...structuredClone(settings), gate: v1Gate, allowForceEnd },
+      };
 
-    await finishBoot();
+      await finishBoot();
 
-    expect(engineSettings()).toEqual(settings);
-    expect(engineSettings()).not.toHaveProperty('allowForceEnd');
-  });
+      expect(engineSettings()).toEqual({
+        ...settings,
+        gate: { ...settings.gate, allowForceEnd },
+      });
+      expect(engineSettings()).not.toHaveProperty('allowForceEnd');
+    },
+  );
 
   it.each([false, true])(
-    'serves setup after importing installed writer gate.allowForceEnd=%s',
+    'serves setup after importing canonical gate.allowForceEnd=%s from the legacy layout',
     async (allowForceEnd: boolean): Promise<void> => {
-      const settings: Settings = { ...structuredClone(DEFAULT_SETTINGS), retentionDays: 30 };
-      mocks.scenario.storedSync = {
-        [SYNC_SETTINGS]: { ...settings, gate: { ...settings.gate, allowForceEnd } },
+      const settings: Settings = {
+        ...structuredClone(DEFAULT_SETTINGS),
+        retentionDays: 30,
+        gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd },
       };
+      mocks.scenario.storedSync = { [SYNC_SETTINGS]: settings };
       const actualRouter: typeof import('../../../src/background/router') = await vi.importActual(
         '../../../src/background/router',
       );
       vi.mocked(routeMessage).mockImplementationOnce(actualRouter.routeMessage);
 
       main();
+      // `legacyImported` names the storage layout that was imported, not the settings shape.
       await expect(dispatchRuntime({ type: 'getSetupState' })).resolves.toMatchObject({
         version: 1,
         legacyImported: true,
         storageError: null,
       });
       expect(engineSettings()).toEqual(settings);
+      expect(engineSettings().gate.allowForceEnd).toBe(allowForceEnd);
       expect(mocks.localState[LOCAL_SETUP]).toMatchObject({ legacyImported: true });
     },
   );
