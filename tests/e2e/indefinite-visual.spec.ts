@@ -232,6 +232,7 @@ function frictionOpen(): EndAuthorityV2 {
       openedAt: FIXED_NOW - 20_000,
       readyAt: FIXED_NOW - 5_000,
       requiredPhrase: null,
+      forceEndAvailable: false,
       host: null,
     },
     copy: {

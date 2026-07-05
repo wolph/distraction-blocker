@@ -235,6 +235,11 @@ export interface GateState {
   readyAt: number;
   /** exact phrase the user must type, null when typing is not required */
   requiredPhrase: string | null;
+  /**
+   * Worker-approved escape from a Friction session's cancel gate, minted at open time from
+   * `GateSettings.allowForceEnd`. Always false on a pause or unlock gate.
+   */
+  forceEndAvailable: boolean;
 }
 
 export interface SiteUnlock {

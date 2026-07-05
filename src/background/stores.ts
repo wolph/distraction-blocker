@@ -860,6 +860,8 @@ function parseGate(value: unknown): GateState | null {
     openedAt: value.openedAt,
     readyAt: value.readyAt,
     requiredPhrase: value.requiredPhrase,
+    // A v1 gate that never minted the flag reads as one that offers no bypass.
+    forceEndAvailable: value.forceEndAvailable === true,
   };
 }
 

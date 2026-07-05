@@ -134,6 +134,7 @@ describe('v2 public snapshot validation', (): void => {
       openedAt: NOW + 1_000,
       readyAt: NOW + 11_000,
       requiredPhrase: null,
+      forceEndAvailable: false,
     };
     const unlock: SiteUnlock = { host: 'example.com', until: NOW + 20_000 };
 
@@ -347,6 +348,7 @@ describe('v2 public snapshot validation', (): void => {
       openedAt: NOW,
       readyAt: NOW + 1,
       requiredPhrase: null,
+      forceEndAvailable: false,
     };
     const unlockGate: GateState = {
       ...pauseGate,

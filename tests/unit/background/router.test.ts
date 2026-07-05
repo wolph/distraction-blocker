@@ -67,6 +67,7 @@ describe('content unlock domain authority', (): void => {
       openedAt: 1,
       readyAt: 2,
       requiredPhrase: null,
+      forceEndAvailable: false,
     };
     const openGate = vi.fn().mockResolvedValue({ ok: true });
     const confirmGate = vi.fn().mockResolvedValue({ ok: true });

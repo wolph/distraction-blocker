@@ -25,6 +25,7 @@ describe('captured gate request binding', (): void => {
     openedAt: 1,
     readyAt: 2,
     requiredPhrase: null,
+    forceEndAvailable: false,
   };
   it.each(['confirmGate', 'abandonGate'])(
     'requires a complete detached gate for %s',
@@ -116,13 +117,27 @@ const VALID_REQUESTS: RequestByType = {
   confirmGate: {
     type: 'confirmGate',
     typedPhrase: null,
-    expectedGate: { kind: 'pause', host: null, openedAt: 1, readyAt: 2, requiredPhrase: null },
+    expectedGate: {
+      kind: 'pause',
+      host: null,
+      openedAt: 1,
+      readyAt: 2,
+      requiredPhrase: null,
+      forceEndAvailable: false,
+    },
   },
   requestSessionEnd: { type: 'requestSessionEnd' },
   openEndGate: { type: 'openEndGate' },
   abandonGate: {
     type: 'abandonGate',
-    expectedGate: { kind: 'pause', host: null, openedAt: 1, readyAt: 2, requiredPhrase: null },
+    expectedGate: {
+      kind: 'pause',
+      host: null,
+      openedAt: 1,
+      readyAt: 2,
+      requiredPhrase: null,
+      forceEndAvailable: false,
+    },
   },
   retryTransitionCleanup: { type: 'retryTransitionCleanup' },
   retryClosureCleanup: { type: 'retryClosureCleanup' },

@@ -123,6 +123,7 @@ function gateState(overrides: Partial<GateState> = {}): GateState {
     openedAt: NOW - 10_000,
     readyAt: NOW - 1_000,
     requiredPhrase: 'let me scroll',
+    forceEndAvailable: false,
     ...overrides,
   };
 }

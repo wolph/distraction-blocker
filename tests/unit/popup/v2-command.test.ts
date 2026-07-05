@@ -44,6 +44,7 @@ const CANCEL_GATE: GateState & { kind: 'cancel' } = {
   openedAt: NOW - 2_000,
   readyAt: NOW + 8_000,
   requiredPhrase: null,
+  forceEndAvailable: false,
 };
 const OPEN_FRICTION: EndAuthorityV2 = {
   kind: 'friction-gate',
@@ -73,6 +74,7 @@ const PAUSE_GATE: GateState = {
   openedAt: NOW - 2_000,
   readyAt: NOW + 8_000,
   requiredPhrase: null,
+  forceEndAvailable: false,
 };
 
 const RULES: SessionRuleSnapshot = rulesFromLists(DEFAULT_LISTS);
@@ -301,6 +303,7 @@ describe('gate transport', (): void => {
       openedAt: 1,
       readyAt: 2,
       requiredPhrase: 'let me stop',
+      forceEndAvailable: false,
     };
     const abandon: unknown = await sendGateCommand({ type: 'abandonGate', expectedGate });
     const confirm: unknown = await sendGateCommand({

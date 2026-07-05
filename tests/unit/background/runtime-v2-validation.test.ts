@@ -96,6 +96,7 @@ const VALID_GATE: GateState = {
   openedAt: ACTIVATION_AT,
   readyAt: ACTIVATION_AT + 5_000,
   requiredPhrase: null,
+  forceEndAvailable: false,
 };
 
 function withKey(value: object, key: string, replacement: unknown): UnknownRecord {

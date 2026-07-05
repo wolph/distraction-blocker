@@ -120,6 +120,7 @@ function liveGate(): GateState {
     openedAt: START_AT + MINUTE_MS,
     readyAt: START_AT + 2 * MINUTE_MS,
     requiredPhrase: 'end my session',
+    forceEndAvailable: false,
   };
 }
 

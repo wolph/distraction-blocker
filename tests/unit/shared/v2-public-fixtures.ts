@@ -25,6 +25,7 @@ export const OPEN_FRICTION_AUTHORITY: Extract<
     openedAt: NOW,
     readyAt: NOW + 10_000,
     requiredPhrase: 'I am ending this session before: Review the release',
+    forceEndAvailable: false,
   },
   copy: {
     title: 'End this session',

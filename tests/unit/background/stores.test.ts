@@ -575,6 +575,7 @@ describe('runtime storage migration', () => {
         openedAt: now,
         readyAt: now + 1_000,
         requiredPhrase: null,
+        forceEndAvailable: false,
       },
       unlocks: [{ host: 'allowed.example', until: now + 60_000 }],
       todayAgg: { ...emptyDaily('2026-08-29'), focusMs: 60_000 },

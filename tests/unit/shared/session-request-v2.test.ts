@@ -31,6 +31,7 @@ const EXPECTED_GATE: GateState = {
   openedAt: 1,
   readyAt: 2,
   requiredPhrase: null,
+  forceEndAvailable: false,
 };
 const ABANDON_GATE: Extract<SessionRequestV2, { type: 'abandonGate' }> = {
   type: 'abandonGate',

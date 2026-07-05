@@ -182,6 +182,7 @@ function gateState(overrides: Partial<GateState> = {}): GateState {
     openedAt: NOW - 5_000,
     readyAt: NOW + 5_000,
     requiredPhrase: 'I am pausing blocking',
+    forceEndAvailable: false,
     ...overrides,
   };
 }

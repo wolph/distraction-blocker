@@ -109,6 +109,7 @@ function gateSnapshot(): SessionSnapshot {
     openedAt: NOW - 2_000,
     readyAt: NOW + 8_000,
     requiredPhrase: null,
+    forceEndAvailable: false,
   };
   return { ...focusSnapshot(), gate };
 }

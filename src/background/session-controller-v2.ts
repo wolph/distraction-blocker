@@ -33,6 +33,7 @@ import { localDateStr, localMidnightAfter } from '../shared/time';
 import type {
   BankState,
   GateKind,
+  GateSettings,
   GateState,
   PauseEconomy,
   SessionConfigV2,
@@ -321,15 +322,19 @@ export class SessionControllerV2 {
       }
       const gate: GateState | null = this.ports.runtime().gate;
       if (gate !== null) return gate.kind === 'cancel' ? OK : failure('end-not-allowed');
+      // The bypass is minted here, from the setting as it stands when the gate opens, so a
+      // setting toggled later neither offers nor revokes the button on a gate already open.
+      const settings: GateSettings = this.ports.gateSettings();
       await this.commitLiveGate(
         {
           kind: 'cancel',
           host: null,
           openedAt: this.ports.now(),
-          readyAt: this.ports.now() + this.ports.gateSettings().delayMs,
-          requiredPhrase: this.ports.gateSettings().requireTypedPhrase
+          readyAt: this.ports.now() + settings.delayMs,
+          requiredPhrase: settings.requireTypedPhrase
             ? cancelPhrase(session.config.intention)
             : null,
+          forceEndAvailable: settings.allowForceEnd,
         },
         this.gateEvent('gateOpened', 'cancel', session),
       );
@@ -378,6 +383,7 @@ export class SessionControllerV2 {
           openedAt,
           readyAt: openedAt + this.ports.gateSettings().delayMs,
           requiredPhrase: this.gatePhrase(gate, unlockHost),
+          forceEndAvailable: false,
         },
         [
           ...(previous === null ? [] : this.gateEvent('gateResisted', previous.kind, session)),

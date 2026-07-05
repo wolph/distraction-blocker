@@ -165,7 +165,14 @@ describe('endAuthorityV2', (): void => {
       endAuthorityV2(
         'friction',
         TIMED,
-        { kind: 'pause', host: null, openedAt: AT, readyAt: AT, requiredPhrase: null },
+        {
+          kind: 'pause',
+          host: null,
+          openedAt: AT,
+          readyAt: AT,
+          requiredPhrase: null,
+          forceEndAvailable: false,
+        },
         INTENTION,
       ),
     ).toEqual(closed);
@@ -641,6 +648,7 @@ describe('buildSessionSnapshotV2', (): void => {
         openedAt: AT - 1_000,
         readyAt: AT,
         requiredPhrase: cancelPhrase(INTENTION),
+        forceEndAvailable: false,
       }),
       unlocks: [{ host: 'live.example', until: AT + 1 }],
     });

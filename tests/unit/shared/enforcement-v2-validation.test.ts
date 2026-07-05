@@ -51,6 +51,7 @@ const PAUSE_GATE: GateState = {
   openedAt: NOW - 500,
   readyAt: NOW + 500,
   requiredPhrase: null,
+  forceEndAvailable: false,
 };
 const UNLOCK_GATE: GateState = {
   kind: 'unlockSite',
@@ -58,6 +59,7 @@ const UNLOCK_GATE: GateState = {
   openedAt: NOW - 500,
   readyAt: NOW + 500,
   requiredPhrase: 'unlock example.com',
+  forceEndAvailable: false,
 };
 const CANCEL_GATE: GateState = {
   kind: 'cancel',
@@ -65,6 +67,7 @@ const CANCEL_GATE: GateState = {
   openedAt: NOW - 500,
   readyAt: NOW + 500,
   requiredPhrase: 'end session',
+  forceEndAvailable: false,
 };
 const BLOCKED_VERDICT: Verdict = {
   blocked: true,

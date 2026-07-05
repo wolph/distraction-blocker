@@ -710,6 +710,38 @@ describe('SessionControllerV2 end and gate commands', (): void => {
     expect((await controller.openEndGate()).code).toBe('ok');
   });
 
+  it('mints the force end flag on the cancel gate only while the setting is on', async (): Promise<void> => {
+    const friction: RuntimeStateV2 = publishedFocusRuntime({
+      session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
+    });
+    const off: HarnessV2 = harness(friction);
+    const on: HarnessV2 = harness(friction, {
+      gateSettings: { ...DEFAULT_SETTINGS.gate, allowForceEnd: true },
+    });
+
+    expect((await off.controller.openEndGate()).code).toBe('ok');
+    expect((await on.controller.openEndGate()).code).toBe('ok');
+
+    expect(off.ports.current().gate?.forceEndAvailable).toBe(false);
+    expect(on.ports.current().gate?.forceEndAvailable).toBe(true);
+  });
+
+  it('never mints the force end flag on a pause or unlock gate', async (): Promise<void> => {
+    const { controller, ports } = harness(
+      publishedFocusRuntime({ accruedFocusMs: SETTLED_WATERMARK_MS }),
+      {
+        bank: { balanceMs: 600_000 },
+        gateSettings: { ...DEFAULT_SETTINGS.gate, allowForceEnd: true },
+      },
+    );
+
+    expect((await controller.openGate('pause', null)).code).toBe('ok');
+    expect(ports.current().gate?.forceEndAvailable).toBe(false);
+    await controller.abandonGate();
+    expect((await controller.openGate('unlockSite', 'facebook.com')).code).toBe('ok');
+    expect(ports.current().gate?.forceEndAvailable).toBe(false);
+  });
+
   it('refuses the End gate for other strictness', async (): Promise<void> => {
     for (const strictness of ['flexible', 'hard'] as const) {
       const { controller } = harness(
@@ -1123,6 +1155,7 @@ describe('SessionControllerV2 end and gate commands', (): void => {
           openedAt: current.openedAt + 1,
           readyAt: current.readyAt + 1,
           requiredPhrase: 'another phrase',
+          forceEndAvailable: false,
         }[field],
       });
       expect((await controller.confirmGate(current.requiredPhrase, changed)).code).toBe(

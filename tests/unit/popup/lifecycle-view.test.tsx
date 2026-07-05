@@ -49,6 +49,7 @@ function openFriction(gate: Partial<GateState & { kind: 'cancel' }> = {}): EndAu
       openedAt: NOW - 2_000,
       readyAt: NOW + 8_000,
       requiredPhrase: null,
+      forceEndAvailable: false,
       ...gate,
     },
     copy: {

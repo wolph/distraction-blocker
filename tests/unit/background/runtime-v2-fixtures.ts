@@ -597,6 +597,7 @@ export function cancelGateState(overrides: Partial<GateState> = {}): GateState {
     openedAt: ACTIVATION_AT + 3_000,
     readyAt: ACTIVATION_AT + 8_000,
     requiredPhrase: 'end my session',
+    forceEndAvailable: false,
     ...overrides,
   };
 }

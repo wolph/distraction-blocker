@@ -226,6 +226,7 @@ export function validateDetachedGateState(value: unknown): value is GateState {
     'openedAt',
     'readyAt',
     'requiredPhrase',
+    'forceEndAvailable',
   ]);
   if (
     candidate === null ||
@@ -236,7 +237,8 @@ export function validateDetachedGateState(value: unknown): value is GateState {
     !isSafeTimestamp(candidate.openedAt) ||
     !isSafeTimestamp(candidate.readyAt) ||
     candidate.readyAt < candidate.openedAt ||
-    !isNullableString(candidate.requiredPhrase)
+    !isNullableString(candidate.requiredPhrase) ||
+    typeof candidate.forceEndAvailable !== 'boolean'
   ) {
     return false;
   }
