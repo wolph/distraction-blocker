@@ -594,6 +594,7 @@ function parseRecord(value: Record<string, unknown>): Request | null {
       // The live start request is the v2 one, which owns the tagged duration and the exact keys.
       return parseSessionStartRequestV2(value);
     case 'openEndGate':
+    case 'forceEndGate':
     case 'retryTransitionCleanup':
     case 'retryClosureCleanup':
     case 'retryDataClear':

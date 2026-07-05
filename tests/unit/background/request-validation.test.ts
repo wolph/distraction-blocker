@@ -128,6 +128,7 @@ const VALID_REQUESTS: RequestByType = {
   },
   requestSessionEnd: { type: 'requestSessionEnd' },
   openEndGate: { type: 'openEndGate' },
+  forceEndGate: { type: 'forceEndGate' },
   abandonGate: {
     type: 'abandonGate',
     expectedGate: {

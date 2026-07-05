@@ -1028,6 +1028,97 @@ describe('SessionControllerV2 end and gate commands', (): void => {
     expect(ports.current().session).toBeNull();
   });
 
+  it('force ends a Friction session before the gate is ready and without the phrase', async (): Promise<void> => {
+    const { controller, ports, effects } = harness(
+      publishedFocusRuntime({
+        session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
+      }),
+      { gateSettings: { ...DEFAULT_SETTINGS.gate, requireTypedPhrase: true, allowForceEnd: true } },
+    );
+    await controller.openEndGate();
+    const gate: GateState = capturedGate(ports);
+    expect(gate.forceEndAvailable).toBe(true);
+    expect(ports.now()).toBeLessThan(gate.readyAt);
+
+    const response: CommandResponseV2<SessionCommandResultCodeV2> = await controller.forceEndGate();
+
+    expect(response).toEqual({ ok: true, code: 'ok' });
+    expect(ports.current().session).toBeNull();
+    expect(ports.current().gate).toBeNull();
+    // A timed session ended by hand is canceled, the same reason the confirmed gate records.
+    const reasons: string[] = ports.commits.flatMap((commit): string[] =>
+      commit.events
+        .filter((event): boolean => event.t === 'sessionEnded')
+        .map((event): string => ('reason' in event ? String(event.reason) : '')),
+    );
+    expect(reasons).toContain('manual-canceled');
+    expect(effects.sounds).not.toContain('sessionComplete');
+  });
+
+  it('refuses the force end without a gate, on an economy gate, and for the wrong type', async (): Promise<void> => {
+    const on: Parameters<typeof harness>[1] = {
+      bank: { balanceMs: 600_000 },
+      gateSettings: { ...DEFAULT_SETTINGS.gate, allowForceEnd: true },
+    };
+    const friction: RuntimeStateV2 = publishedFocusRuntime({
+      session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
+      accruedFocusMs: SETTLED_WATERMARK_MS,
+    });
+
+    // No gate is open: nothing to bypass.
+    const idle: HarnessV2 = harness(friction, on);
+    expect((await idle.controller.forceEndGate()).code).toBe('no-active-gate');
+    expect(idle.ports.current().session).not.toBeNull();
+
+    // A pause gate, then an unlock gate: the bypass only ends a session.
+    const economy: HarnessV2 = harness(friction, on);
+    expect((await economy.controller.openGate('pause', null)).code).toBe('ok');
+    expect((await economy.controller.forceEndGate()).code).toBe('end-not-allowed');
+    await economy.controller.abandonGate();
+    expect((await economy.controller.openGate('unlockSite', 'facebook.com')).code).toBe('ok');
+    expect((await economy.controller.forceEndGate()).code).toBe('end-not-allowed');
+    expect(economy.ports.current().session).not.toBeNull();
+
+    // A cancel gate persisted against a Hard or Flexible session is no bypass either.
+    for (const strictness of ['hard', 'flexible'] as const) {
+      const wrongType: HarnessV2 = harness(
+        publishedFocusRuntime({
+          session: timedFocusSession({ config: sessionConfigV2({ strictness }) }),
+          gate: cancelGateState({ forceEndAvailable: true }),
+        }),
+        on,
+      );
+      expect((await wrongType.controller.forceEndGate()).code).toBe('end-not-allowed');
+      expect(wrongType.ports.current().session).not.toBeNull();
+    }
+  });
+
+  it('refuses the force end when either the live setting or the minted flag is off', async (): Promise<void> => {
+    const frictionWith: (gate: GateState) => RuntimeStateV2 = (gate: GateState): RuntimeStateV2 =>
+      publishedFocusRuntime({
+        session: timedFocusSession({ config: sessionConfigV2({ strictness: 'friction' }) }),
+        gate,
+      });
+
+    // The gate was minted with the bypass, but the setting has since been turned off.
+    const settingOff: HarnessV2 = harness(
+      frictionWith(cancelGateState({ forceEndAvailable: true })),
+      { gateSettings: { ...DEFAULT_SETTINGS.gate, allowForceEnd: false } },
+    );
+    expect((await settingOff.controller.forceEndGate()).code).toBe('end-not-allowed');
+    expect(settingOff.ports.current().session).not.toBeNull();
+    expect(settingOff.ports.current().gate?.kind).toBe('cancel');
+
+    // The setting is on now, but this gate opened while it was off.
+    const flagOff: HarnessV2 = harness(
+      frictionWith(cancelGateState({ forceEndAvailable: false })),
+      { gateSettings: { ...DEFAULT_SETTINGS.gate, allowForceEnd: true } },
+    );
+    expect((await flagOff.controller.forceEndGate()).code).toBe('end-not-allowed');
+    expect(flagOff.ports.current().session).not.toBeNull();
+    expect(flagOff.ports.current().gate?.kind).toBe('cancel');
+  });
+
   it('spends the bank and begins a pause with a read-back alarm before the commit', async (): Promise<void> => {
     const { controller, ports, effects } = harness(
       publishedFocusRuntime({ accruedFocusMs: SETTLED_WATERMARK_MS }),

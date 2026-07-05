@@ -2057,6 +2057,40 @@ describe('worker cutover to v2 session authority', (): void => {
     expect(worker.runtime().todayAgg?.sessionsStarted ?? 0).toBe(1);
   });
 
+  it('force ends a Friction session through the worker and sweeps blocking away', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker({
+      ...installedSeed(),
+      [LOCAL_SETTINGS]: {
+        ...DEFAULT_SETTINGS,
+        gate: { ...DEFAULT_SETTINGS.gate, requireTypedPhrase: true, allowForceEnd: true },
+      },
+    });
+    await worker.send({
+      type: 'startSession',
+      config: {
+        ...indefiniteConfig(),
+        strictness: 'friction',
+        duration: { kind: 'timed', minutes: 25 },
+      },
+    } as Request);
+    await worker.settle();
+
+    expect(await worker.send({ type: 'openEndGate' } as Request)).toMatchObject({ ok: true });
+    const gate: GateState | null = worker.runtime().gate;
+    expect(gate?.forceEndAvailable).toBe(true);
+    expect(gate?.requiredPhrase).not.toBeNull();
+
+    expect(await worker.send({ type: 'forceEndGate' } as Request)).toEqual({
+      ok: true,
+      code: 'ok',
+    });
+    await worker.settle();
+
+    expect(worker.runtime().session).toBeNull();
+    expect(worker.runtime().gate).toBeNull();
+    expect(worker.runtime().pendingClosure).toBeNull();
+  });
+
   it('never writes runtime or event keys into sync', async (): Promise<void> => {
     const worker: WorkerHarness = await bootWorker(installedSeed());
     await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);

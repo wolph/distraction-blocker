@@ -1521,6 +1521,17 @@ describe('routeMessage session ending wiring', () => {
     });
     expect(requestSessionEnd).toHaveBeenCalledTimes(1);
   });
+
+  it('delegates the force end bypass to the engine', async (): Promise<void> => {
+    const forceEndGate = vi.fn().mockResolvedValue({ ok: true, code: 'ok' });
+    const endingEngine: Engine = { forceEndGate } as unknown as Engine;
+
+    expect(await routeMessage(endingEngine, { type: 'forceEndGate' }, sender)).toEqual({
+      ok: true,
+      code: 'ok',
+    });
+    expect(forceEndGate).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('routeMessage tab identity wiring', () => {

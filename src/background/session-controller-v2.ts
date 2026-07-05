@@ -451,6 +451,32 @@ export class SessionControllerV2 {
     });
   }
 
+  /**
+   * The opt-in bypass of the cancel gate: ends a Friction session at once, skipping `readyAt` and
+   * the typed phrase. It needs an open cancel gate on a Friction session, the live setting on, and
+   * the flag the worker minted when that gate opened. Anything else is refused, and a pause or
+   * unlock gate is refused outright because the bypass only ever ends a session.
+   */
+  async forceEndGate(): Promise<CommandResultV2> {
+    return this.command(async (): Promise<CommandResultV2> => {
+      const runtime: RuntimeStateV2 = this.ports.runtime();
+      const session: SessionStateV2 | null = runtime.session;
+      const guard: CommandResultV2 | null = this.endFamilyGuard(session);
+      if (guard !== null) return guard;
+      const gate: GateState | null = runtime.gate;
+      if (gate === null) return failure('no-active-gate');
+      if (gate.kind !== 'cancel') return failure('end-not-allowed');
+      if (session === null || session.config.strictness !== 'friction') {
+        return failure('end-not-allowed');
+      }
+      if (!this.ports.gateSettings().allowForceEnd || !gate.forceEndAvailable) {
+        return failure('end-not-allowed');
+      }
+      await this.closeActiveSession(session, this.ports.now());
+      return OK;
+    });
+  }
+
   /** A manual resume of a durable pause. */
   async resumeFromPause(): Promise<CommandResultV2> {
     return this.command((): Promise<CommandResultV2> => this.driveResume('manual', 'paused'));
