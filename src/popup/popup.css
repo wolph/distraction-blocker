@@ -971,6 +971,23 @@ body {
   cursor: default;
 }
 
+/* The opt-in bypass of the gate: destructive, so it never reads as the ordinary confirm. */
+.gate-force-end {
+  padding: 8px 12px;
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.gate-force-end:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .clock-stack {
   display: flex;
   flex-direction: column;

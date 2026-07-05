@@ -414,6 +414,41 @@ describe('ActiveView', (): void => {
     });
   });
 
+  it('offers the force end bypass only on a gate the worker minted it for', async (): Promise<void> => {
+    const plain: EndAuthorityV2 = openFriction({ requiredPhrase: 'let me stop' });
+    const plainView = render(h(ActiveView, { snapshot: focusSnap(plain), now: NOW }));
+    expect(plainView.queryByRole('button', { name: 'Ignore timeout and end anyway' })).toBeNull();
+    plainView.unmount();
+
+    const authority: EndAuthorityV2 = openFriction({
+      requiredPhrase: 'let me stop',
+      forceEndAvailable: true,
+    });
+    const view = render(h(ActiveView, { snapshot: focusSnap(authority), now: NOW }));
+    const forceEnd: HTMLButtonElement = view.getByRole('button', {
+      name: 'Ignore timeout and end anyway',
+    }) as HTMLButtonElement;
+    const confirm: HTMLButtonElement = view.getByRole('button', {
+      name: 'End the session',
+    }) as HTMLButtonElement;
+
+    // The gate is not ready and the phrase is untyped, but the bypass is live regardless.
+    expect(confirm.disabled).toBe(true);
+    expect(forceEnd.disabled).toBe(false);
+    expect(forceEnd.classList.contains('gate-force-end')).toBe(true);
+    expect(
+      confirm.compareDocumentPosition(forceEnd) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    fireEvent.click(forceEnd);
+
+    await waitFor((): void => {
+      expect(sessionRequests()).toEqual([{ type: 'forceEndGate' }]);
+    });
+    await settled(forceEnd);
+    expect(view.queryByRole('alert')).toBeNull();
+  });
+
   it('shows the worker text for a rejected gate command', async (): Promise<void> => {
     sendMessageMock.mockImplementation(async (request: AnyRequest): Promise<unknown> => {
       if (request.type === 'getStats') return statsBundle;

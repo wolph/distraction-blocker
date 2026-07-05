@@ -12,7 +12,11 @@ import type { EndAuthorityV2, GateKind, GateState } from '../shared/types';
 
 export type GateRequest =
   | { type: 'abandonGate'; expectedGate: GateState }
-  | { type: 'confirmGate'; typedPhrase: string | null; expectedGate: GateState };
+  | { type: 'confirmGate'; typedPhrase: string | null; expectedGate: GateState }
+  | { type: 'forceEndGate' };
+
+/** The opt-in bypass, worded exactly as the Options checkbox names it. */
+const FORCE_END_LABEL: string = 'Ignore timeout and end anyway';
 
 /** The transport this panel sends through. Every surface answers with a coded v2 result. */
 export type GateCommandSender = (
@@ -146,6 +150,11 @@ export function GatePanel({
     });
   };
 
+  /** The worker re-checks the setting and the minted flag, so this sends no gate identity. */
+  const forceEnd: () => void = (): void => {
+    void requestGateUpdate({ type: 'forceEndGate' });
+  };
+
   return (
     <div class="gate-panel">
       {intention !== '' ? <p class="gate-intention">You said: {intention}</p> : null}
@@ -184,6 +193,11 @@ export function GatePanel({
       >
         {confirmLabel ?? CONFIRM_LABELS[gate.kind]}
       </button>
+      {gate.forceEndAvailable ? (
+        <button type="button" class="gate-force-end" disabled={pending} onClick={forceEnd}>
+          {FORCE_END_LABEL}
+        </button>
+      ) : null}
       {error !== null ? (
         <p class="form-error" role="alert">
           {error}
