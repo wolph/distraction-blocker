@@ -54,6 +54,7 @@ describe('shared enforcement v2 contracts', (): void => {
       gateTitle: string | null;
       gateBack: 'Never mind, back to work';
       gatePhraseLabel: 'Type this to confirm:';
+      gateForceEnd: 'Ignore timeout and end anyway';
       gateConfirm: string | null;
       transportError: 'Focus Lock could not update this action. Try again.';
     }>();

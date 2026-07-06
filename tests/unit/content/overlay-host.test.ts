@@ -350,7 +350,16 @@ describe('OVERLAY_STYLES', (): void => {
       /@media \(prefers-color-scheme: dark\)[\s\S]*--overlay-subtle: #94a3b8;/,
     );
     expect(OVERLAY_STYLES).toContain('.backdrop:focus { outline: none; }');
-    expect(OVERLAY_STYLES).not.toContain('--overlay-danger');
+    // The force end bypass is destructive in both schemes, so each block names its own pair.
+    expect(OVERLAY_STYLES).toContain('--overlay-danger: #a4251b;');
+    expect(OVERLAY_STYLES).toContain('--overlay-danger-soft: #fce8e6;');
+    expect(OVERLAY_STYLES).toMatch(
+      /@media \(prefers-color-scheme: dark\)[\s\S]*--overlay-danger: #ff8a80;/,
+    );
+    expect(OVERLAY_STYLES).toMatch(
+      /:host\(\[data-theme="dark"\]\)[\s\S]*--overlay-danger-soft: #3d2422;/,
+    );
+    expect(OVERLAY_STYLES).toMatch(/\.force-end\s*\{[^}]*var\(--overlay-danger\)/s);
   });
 
   it('styles a pending primary gate control as inactive', (): void => {

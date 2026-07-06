@@ -466,6 +466,8 @@ describe('buildActiveOverlayView gate rows', () => {
     expect(unlock.copy.gateConfirm).toBe('Unlock this site');
     expect(cancel.copy.gateTitle).toBe('End this session');
     expect(cancel.copy.gateConfirm).toBe('End the session');
+    expect(cancel.copy.gateForceEnd).toBe('Ignore timeout and end anyway');
+    expect(unlock.copy.gateForceEnd).toBe('Ignore timeout and end anyway');
     expect(validateDetachedDocumentOverlayView(unlock)).toBe(true);
     expect(validateDetachedDocumentOverlayView(cancel)).toBe(true);
   });

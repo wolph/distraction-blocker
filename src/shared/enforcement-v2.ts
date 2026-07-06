@@ -40,6 +40,8 @@ export interface ActiveOverlayCopy {
   gateTitle: string | null;
   gateBack: 'Never mind, back to work';
   gatePhraseLabel: 'Type this to confirm:';
+  /** The opt-in bypass, rendered only while the gate carries `forceEndAvailable`. */
+  gateForceEnd: 'Ignore timeout and end anyway';
   gateConfirm: string | null;
   transportError: 'Focus Lock could not update this action. Try again.';
 }

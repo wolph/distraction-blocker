@@ -65,6 +65,7 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     gateTitle: null,
     gateBack: 'Never mind, back to work',
     gatePhraseLabel: 'Type this to confirm:',
+    gateForceEnd: 'Ignore timeout and end anyway',
     gateConfirm: null,
     transportError: TRANSPORT_ERROR,
     ...overrides,
@@ -457,6 +458,54 @@ describe('overlay-v2 actions', () => {
       { type: 'openGate', gate: 'unlockSite', host: window.location.hostname },
       { type: 'requestSessionEnd' },
     ]);
+  });
+
+  it('offers the force end only on a gate the worker minted it for', async (): Promise<void> => {
+    const sendMessage: Mock<(request: unknown) => Promise<unknown>> = stubWorker({ ok: true });
+    // Still pending, so the ordinary confirm is not yet on screen while the bypass is.
+    const plain: GateState = gateState({
+      kind: 'cancel',
+      openedAt: NOW - 1_000,
+      readyAt: NOW + 9_000,
+      requiredPhrase: 'let me stop',
+    });
+    renderDocumentOverlay(
+      activeOverlay({
+        gate: plain,
+        actions: { state: 'gate', end: 'hidden', pause: 'hidden', unlock: 'hidden' },
+        copy: activeCopy({ gateTitle: 'End this session', gateConfirm: 'End the session' }),
+      }),
+      BLOCKED_VERDICT,
+    );
+    expect(shadowRoot().querySelector('.force-end')).toBeNull();
+    clearDocumentOverlay();
+
+    const minted: GateState = { ...plain, forceEndAvailable: true };
+    renderDocumentOverlay(
+      activeOverlay({
+        gate: minted,
+        actions: { state: 'gate', end: 'hidden', pause: 'hidden', unlock: 'hidden' },
+        copy: activeCopy({ gateTitle: 'End this session', gateConfirm: 'End the session' }),
+      }),
+      BLOCKED_VERDICT,
+    );
+    const forceEnd: HTMLButtonElement | null =
+      shadowRoot().querySelector<HTMLButtonElement>('.force-end');
+    if (forceEnd === null) throw new Error('missing the force end control');
+
+    // Not ready and untyped, so the ordinary confirm stays hidden while the bypass is live.
+    expect(forceEnd.textContent).toBe('Ignore timeout and end anyway');
+    expect(forceEnd.hidden).toBe(false);
+    expect(forceEnd.disabled).toBe(false);
+    expect((shadowRoot().querySelector('.gate .pill') as HTMLButtonElement).hidden).toBe(true);
+
+    forceEnd.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sendMessage.mock.calls.map((call: [unknown]): unknown => call[0])).toEqual([
+      { type: 'forceEndGate' },
+    ]);
+    expect(forceEnd.disabled).toBe(false);
   });
 
   it('opens the End gate instead of ending outright when the view says so', async (): Promise<void> => {

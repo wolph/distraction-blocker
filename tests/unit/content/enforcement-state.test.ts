@@ -74,6 +74,7 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     gateTitle: null,
     gateBack: 'Never mind, back to work',
     gatePhraseLabel: 'Type this to confirm:',
+    gateForceEnd: 'Ignore timeout and end anyway',
     gateConfirm: null,
     transportError: 'Focus Lock could not update this action. Try again.',
     ...overrides,

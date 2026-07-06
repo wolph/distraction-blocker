@@ -68,6 +68,7 @@ const FIXED_ACTIVE_COPY: Readonly<
     | 'bankWaitPrefix'
     | 'gateBack'
     | 'gatePhraseLabel'
+    | 'gateForceEnd'
     | 'transportError'
   >
 > = {
@@ -76,6 +77,7 @@ const FIXED_ACTIVE_COPY: Readonly<
   bankWaitPrefix: 'ready in',
   gateBack: 'Never mind, back to work',
   gatePhraseLabel: 'Type this to confirm:',
+  gateForceEnd: 'Ignore timeout and end anyway',
   transportError: 'Focus Lock could not update this action. Try again.',
 };
 

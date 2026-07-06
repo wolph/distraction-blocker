@@ -32,7 +32,15 @@ type ActiveOverlayView = Extract<DocumentOverlayView, { presentation: 'active' }
 type StartingOverlayView = Extract<DocumentOverlayView, { presentation: 'starting' }>;
 type ActionRequest = Extract<
   Request,
-  { type: 'openGate' | 'confirmGate' | 'requestSessionEnd' | 'abandonGate' | 'openEndGate' }
+  {
+    type:
+      | 'openGate'
+      | 'confirmGate'
+      | 'requestSessionEnd'
+      | 'abandonGate'
+      | 'openEndGate'
+      | 'forceEndGate';
+  }
 >;
 
 interface SpendControl {
@@ -394,6 +402,18 @@ function buildGate(
     requestAction({ type: 'confirmGate', typedPhrase: phrase?.value ?? null, expectedGate: gate });
   });
   wrap.appendChild(confirm);
+  // The bypass exists only on a gate the worker minted it for. The worker re-checks the setting
+  // and the flag, so the command carries no gate identity.
+  if (gate.forceEndAvailable) {
+    const forceEnd: HTMLButtonElement = document.createElement('button');
+    forceEnd.className = 'force-end';
+    forceEnd.type = 'button';
+    forceEnd.textContent = view.copy.gateForceEnd;
+    forceEnd.addEventListener('click', (): void => {
+      requestAction({ type: 'forceEndGate' });
+    });
+    wrap.appendChild(forceEnd);
+  }
   overlay.gate = {
     ringFill: ring.ringFill,
     count: ring.count,
@@ -507,7 +527,9 @@ function finishAction(overlay: MountedOverlay): void {
     for (const control of overlay.spends) updateSpend(control, view, now);
     updateGate(overlay, view, now);
   }
-  for (const button of overlay.root.querySelectorAll<HTMLButtonElement>('.linkish, .primary')) {
+  for (const button of overlay.root.querySelectorAll<HTMLButtonElement>(
+    '.linkish, .primary, .force-end',
+  )) {
     button.disabled = false;
   }
 }

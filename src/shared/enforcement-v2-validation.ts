@@ -91,6 +91,7 @@ const ACTIVE_COPY_KEYS: readonly string[] = [
   'gateTitle',
   'gateBack',
   'gatePhraseLabel',
+  'gateForceEnd',
   'gateConfirm',
   'transportError',
 ];
@@ -203,6 +204,7 @@ const FIXED_ACTIVE_COPY: Readonly<
     | 'bankWaitPrefix'
     | 'gateBack'
     | 'gatePhraseLabel'
+    | 'gateForceEnd'
     | 'transportError'
   >
 > = {
@@ -211,6 +213,7 @@ const FIXED_ACTIVE_COPY: Readonly<
   bankWaitPrefix: 'ready in',
   gateBack: 'Never mind, back to work',
   gatePhraseLabel: 'Type this to confirm:',
+  gateForceEnd: 'Ignore timeout and end anyway',
   transportError: 'Focus Lock could not update this action. Try again.',
 };
 /** The one verdict every clear command carries. Producers import it so no copy can drift. */
