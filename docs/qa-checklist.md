@@ -92,11 +92,11 @@ since the grep was written. Both mistakes were present when this section was fir
 - an indefinite pause freezes focus time and still ends from the popup
 - end authority follows the session type a timed session was started with
 - manual end reasons separate a timed cancel from an indefinite completion
-- manual until-stopped start forces the flexible plan and reports it everywhere
+- manual until-stopped start keeps the chosen plan and reports it everywhere
 - popup End completes the indefinite session manually and silently
 - settings reports the indefinite session and discloses that the popup owns it
 - stats reports the indefinite plan and both manual outcomes
-- the indefinite blocked page hands every ending to the popup
+- the indefinite blocked page offers the same End the popup does
 
 ### mute-survival.spec.ts (1)
 
