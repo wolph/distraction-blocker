@@ -941,6 +941,17 @@ export class Engine {
     );
   }
 
+  /** The force end closes the session like `requestSessionEnd`, so it sweeps blocking the same way. */
+  async forceEndGate(): Promise<CommandResponseV2<SessionCommandResultCodeV2>> {
+    return this.enqueuePolicyMutation(
+      (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
+        this.commandWithSweep(
+          (): Promise<CommandResponseV2<SessionCommandResultCodeV2>> =>
+            this.controller.forceEndGate(),
+        ),
+    );
+  }
+
   async openGate(
     gate: 'pause' | 'unlockSite',
     host: string | null,

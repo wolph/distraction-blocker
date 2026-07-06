@@ -52,16 +52,20 @@ import {
  */
 const UNTIL_STOPPED_LABEL: string = 'Until stopped';
 const START_UNTIL_STOPPED_LABEL: string = 'Start until stopped';
-const UNTIL_STOPPED_FORCED_HINT: string =
-  'Flexible session. Cycles off. End it manually from the popup.';
+const LOCK_UNTIL_MANUAL_UNLOCK_LABEL: string = 'Lock until manual unlock';
+/** The hint for the default Friction type under the default ten-second gate with no phrase. */
+const UNTIL_STOPPED_FRICTION_HINT: string =
+  'Runs until you unlock it: a 10-second wait, then Unlock. Cycles off.';
+const UNTIL_STOPPED_FLEXIBLE_HINT: string = 'Runs until you end it with End session. Cycles off.';
+const HARD_UNAVAILABLE_REASON: string =
+  'Hard lock is not available for Until stopped: with no timer and no manual end, the session could never end.';
 const END_SESSION_LABEL: string = 'End session';
 const FOCUS_TIME_LABEL: string = 'Focus time';
 const FOCUS_PHASE_CLOCK_LABEL: string = 'focus phase';
 const TOTAL_SESSION_CLOCK_LABEL: string = 'total session';
 const PAUSE_CLOCK_LABEL: string = 'pause';
 const INDEFINITE_BADGE_TEXT: string = 'ON';
-const OVERLAY_UNTIL_STOPPED_STATUS: string =
-  'Focus Lock is active until you end it from the popup.';
+const OVERLAY_UNTIL_STOPPED_STATUS: string = 'Focus Lock is active until you stop it.';
 const OVERLAY_STOPPED_PAGE_COPY: string =
   'This page did not load. It will load by itself when the session ends.';
 const SETTINGS_INDEFINITE_COPY: string =
@@ -76,7 +80,6 @@ const CANCEL_GATE_BACK: string = 'Never mind, back to work';
 const STATS_COMPLETED_MANUALLY: string = 'Completed manually';
 const STATS_ENDED_EARLY: string = 'Ended early';
 
-const FORCED_TYPE_LABEL: string = 'Session type forced by Until stopped';
 const FORCED_CYCLES_LABEL: string = 'Cycles forced by Until stopped';
 const SESSION_STATUS_LABEL: string = 'Session status';
 const BLOCKED_HOST: string = 'blocked.example';
@@ -135,7 +138,11 @@ async function configureFastEconomy(extPage: Page, options: FastEconomyOptions):
         pauseMs: options.pauseMs,
         unlockMs: options.pauseMs,
       },
-      gate: { delayMs: options.gateDelayMs ?? 500, requireTypedPhrase: false },
+      gate: {
+        delayMs: options.gateDelayMs ?? 500,
+        requireTypedPhrase: false,
+        allowForceEnd: false,
+      },
     },
   });
   if (!ack.ok) throw new Error(ack.error);
@@ -315,7 +322,7 @@ async function activeSessionId(worker: Worker): Promise<string> {
   return sessionId;
 }
 
-test('manual until-stopped start forces the flexible plan and reports it everywhere', async ({
+test('manual until-stopped start keeps the chosen plan and reports it everywhere', async ({
   context,
   extPage,
   worker,
@@ -325,13 +332,18 @@ test('manual until-stopped start forces the flexible plan and reports it everywh
 
   await extPage.getByRole('button', { name: UNTIL_STOPPED_LABEL, exact: true }).click();
 
-  const forcedType: Locator = extPage.getByRole('group', { name: FORCED_TYPE_LABEL });
-  await expect(forcedType).toHaveAttribute('aria-disabled', 'true');
-  await expect(forcedType.getByRole('button', { name: 'Flexible' })).toHaveAttribute(
+  const hardLock: Locator = extPage.getByRole('button', { name: 'Hard lock' });
+  await expect(hardLock).toHaveAttribute('aria-disabled', 'true');
+  await expect(hardLock).toContainText(HARD_UNAVAILABLE_REASON);
+  await expect(extPage.getByRole('button', { name: 'Friction' })).toHaveAttribute(
     'aria-pressed',
     'true',
   );
-  await expect(extPage.getByText(UNTIL_STOPPED_FORCED_HINT, { exact: true })).toBeVisible();
+  await expect(extPage.getByText(UNTIL_STOPPED_FRICTION_HINT, { exact: true })).toBeVisible();
+  await expect(extPage.getByRole('button', { name: LOCK_UNTIL_MANUAL_UNLOCK_LABEL })).toBeEnabled();
+
+  await extPage.getByRole('button', { name: 'Flexible' }).click();
+  await expect(extPage.getByText(UNTIL_STOPPED_FLEXIBLE_HINT, { exact: true })).toBeVisible();
 
   await extPage.getByText('Cycle options').click();
   const forcedCycles: Locator = extPage.getByRole('group', { name: FORCED_CYCLES_LABEL });
@@ -367,7 +379,7 @@ test('manual until-stopped start forces the flexible plan and reports it everywh
   expectNoDiagnostics(context);
 });
 
-test('the indefinite blocked page hands every ending to the popup', async ({
+test('the indefinite blocked page offers the same End the popup does', async ({
   context,
   extPage,
   siteUrl,
@@ -384,7 +396,8 @@ test('the indefinite blocked page hands every ending to the popup', async ({
   expect(
     existingCopy.statics.filter((text: string): boolean => text.startsWith('Locked until')),
   ).toEqual([]);
-  expect(existingCopy.buttons).not.toContain(END_SESSION_LABEL);
+  // A Flexible until-stopped page ends at once from the page, the way the popup does.
+  expect(existingCopy.buttons).toContain(END_SESSION_LABEL);
   expect(existingCopy.statics).not.toContain(OVERLAY_STOPPED_PAGE_COPY);
 
   expectNoDiagnostics(context);

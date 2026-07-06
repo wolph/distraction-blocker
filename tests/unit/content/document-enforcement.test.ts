@@ -30,7 +30,7 @@ const OPERATION_D: string = '20000000-0000-4000-8000-000000000004';
 const EPOCH_A: string = '30000000-0000-4000-8000-000000000001';
 const PROVENANCE: string = 'Blocked by Social media: example.com';
 const UNTIL_STOPPED_TEXT: Extract<ActiveCopy['status'], { kind: 'until-stopped' }>['text'] =
-  'Focus Lock is active until you end it from the popup.';
+  'Focus Lock is active until you stop it.';
 const STOPPED_TITLE: string = 'Locked - Focus Lock';
 const BLOCKED_VERDICT: Verdict = {
   blocked: true,
@@ -74,6 +74,7 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     gateTitle: null,
     gateBack: 'Never mind, back to work',
     gatePhraseLabel: 'Type this to confirm:',
+    gateForceEnd: 'Ignore timeout and end anyway',
     gateConfirm: null,
     transportError: 'Focus Lock could not update this action. Try again.',
     ...overrides,
@@ -107,7 +108,7 @@ function activeOverlay(overrides: Partial<ActiveOverlay> = {}): ActiveOverlay {
     activeUnlocks: [],
     attemptsToday: 2,
     stoppedPage: false,
-    actions: { state: 'ready', end: 'hidden', pause: 'request-gate', unlock: 'request-gate' },
+    actions: { state: 'ready', end: 'request-end', pause: 'request-gate', unlock: 'request-gate' },
     copy: activeCopy(),
     ...overrides,
   };
@@ -375,7 +376,7 @@ describe('installDocumentEnforcement command loop', () => {
     expect(applied[0]?.disposition).toBe('applied');
     expect(parseContentEnforcementResponse(applied[0])).not.toBeNull();
     expect(overlayText()).toContain(UNTIL_STOPPED_TEXT);
-    expect(overlayText()).not.toContain('End session');
+    expect(overlayText()).toContain('End session');
     expect(stopSpy).not.toHaveBeenCalled();
   });
 

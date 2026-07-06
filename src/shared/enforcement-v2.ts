@@ -1,4 +1,5 @@
 import type {
+  EndActionLabelV2,
   GateState,
   SessionDuration,
   SessionMode,
@@ -22,7 +23,7 @@ export interface ActiveOverlayCopy {
     | { kind: 'timed'; text: string }
     | {
         kind: 'until-stopped';
-        text: 'Focus Lock is active until you end it from the popup.';
+        text: 'Focus Lock is active until you stop it.';
       };
   lockedUntil: string | null;
   intention: string | null;
@@ -32,12 +33,15 @@ export interface ActiveOverlayCopy {
   bankUnit: 'site access credit';
   pauseAction: string;
   unlockAction: string;
-  endAction: 'End session';
+  /** The End control's label. A Friction until-stopped page unlocks, every other page ends. */
+  endAction: EndActionLabelV2;
   bankWaitFallback: 'earn site access credit by focusing';
   bankWaitPrefix: 'Ready in';
   gateTitle: string | null;
   gateBack: 'Never mind, back to work';
   gatePhraseLabel: 'Type this to confirm:';
+  /** The opt-in bypass, rendered only while the gate carries `forceEndAvailable`. */
+  gateForceEnd: 'Ignore timeout and end anyway';
   gateConfirm: string | null;
   transportError: 'Focus Lock could not update this action. Try again.';
 }

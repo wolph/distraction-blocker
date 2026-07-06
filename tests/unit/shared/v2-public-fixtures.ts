@@ -25,6 +25,7 @@ export const OPEN_FRICTION_AUTHORITY: Extract<
     openedAt: NOW,
     readyAt: NOW + 10_000,
     requiredPhrase: 'I am ending this session before: Review the release',
+    forceEndAvailable: false,
   },
   copy: {
     title: 'End this session',
@@ -34,6 +35,16 @@ export const OPEN_FRICTION_AUTHORITY: Extract<
     intentionReminder: 'Review the release',
   },
   actions: { abandon: 'abandon-gate', confirm: 'confirm-gate' },
+};
+
+/** The closed Friction End of an until-stopped session, which the popup labels Unlock. */
+export const UNLOCK_CLOSED_FRICTION_AUTHORITY: Extract<EndAuthorityV2, { gate: null }> = {
+  ...CLOSED_FRICTION_AUTHORITY,
+  copy: { actionLabel: 'Unlock' },
+};
+export const UNLOCK_OPEN_FRICTION_AUTHORITY: typeof OPEN_FRICTION_AUTHORITY = {
+  ...OPEN_FRICTION_AUTHORITY,
+  copy: { ...OPEN_FRICTION_AUTHORITY.copy, confirm: 'Unlock' },
 };
 
 export function activeSnapshotV2(config: SessionConfigV2 = MANUAL_TIMED_CONFIG): SessionSnapshotV2 {
@@ -55,7 +66,7 @@ export function activeSnapshotV2(config: SessionConfigV2 = MANUAL_TIMED_CONFIG):
       // Derived rather than restated. This is the same rule the production projection applies,
       // and a fixture that spells it out by hand is how the wrong end action was frozen into nine
       // suites at once: the fixture agreed with the code until the code was corrected.
-      endAuthority: endAuthorityV2(config.strictness, null, config.intention),
+      endAuthority: endAuthorityV2(config.strictness, config.duration, null, config.intention),
     },
     phase: 'focus',
     config,

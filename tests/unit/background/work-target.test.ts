@@ -38,6 +38,7 @@ const PAUSE_GATE: GateState = {
   openedAt: 1,
   readyAt: 2,
   requiredPhrase: null,
+  forceEndAvailable: false,
 };
 const popup: chrome.runtime.MessageSender = {
   id: 'extension',

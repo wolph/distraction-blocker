@@ -111,7 +111,7 @@ function storedTransition(fake: RuntimePortsFakeV2): PendingEnforcementTransitio
 describe('prepareStartTransitionV2', (): void => {
   it('validates the candidate and compiles the matcher before any write', async (): Promise<void> => {
     const invalid: readonly SessionStartCandidate[] = [
-      untilStoppedCandidate({ strictness: 'friction' }),
+      untilStoppedCandidate({ strictness: 'hard' }),
       manualCandidate({ scheduleOccurrence: scheduleOccurrence() }),
       scheduleCandidate({ scheduleWindow: null }),
     ];

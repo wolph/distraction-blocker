@@ -133,8 +133,10 @@ export function validateDetachedSessionConfigV2(value: unknown): value is Sessio
   ) {
     return false;
   }
+  // An indefinite session keeps the Flexible or Friction type the user chose. Hard has no manual
+  // end, so with no timer it would never end at all, and cycling needs a finite session end.
   if (duration.kind === 'until-stopped') {
-    if (candidate.strictness !== 'flexible' || candidate.cycling !== null) return false;
+    if (candidate.strictness === 'hard' || candidate.cycling !== null) return false;
   }
   return candidate.source === 'manual'
     ? candidate.scheduleOccurrence === null
@@ -224,6 +226,7 @@ export function validateDetachedGateState(value: unknown): value is GateState {
     'openedAt',
     'readyAt',
     'requiredPhrase',
+    'forceEndAvailable',
   ]);
   if (
     candidate === null ||
@@ -234,7 +237,8 @@ export function validateDetachedGateState(value: unknown): value is GateState {
     !isSafeTimestamp(candidate.openedAt) ||
     !isSafeTimestamp(candidate.readyAt) ||
     candidate.readyAt < candidate.openedAt ||
-    !isNullableString(candidate.requiredPhrase)
+    !isNullableString(candidate.requiredPhrase) ||
+    typeof candidate.forceEndAvailable !== 'boolean'
   ) {
     return false;
   }

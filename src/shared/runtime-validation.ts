@@ -30,7 +30,9 @@ import {
 import type {
   CategoryId,
   CycleConfig,
+  EndActionLabelV2,
   EndAuthorityV2,
+  EndGateConfirmLabelV2,
   EventRecord,
   GateState,
   InstallMarker,
@@ -560,7 +562,7 @@ function isScheduleEntryV2Value(value: unknown): value is ScheduleEntryV2 {
   if (!isScheduleEntry(legacyShape)) return false;
   return (
     candidate.duration.kind === 'window' ||
-    (candidate.strictness === 'flexible' && candidate.cycling === null)
+    (candidate.strictness !== 'hard' && candidate.cycling === null)
   );
 }
 
@@ -605,9 +607,10 @@ export function isPauseEconomy(value: unknown): value is PauseEconomy {
 function isGateSettings(value: unknown): boolean {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['delayMs', 'requireTypedPhrase']) &&
+    hasExactKeys(value, ['delayMs', 'requireTypedPhrase', 'allowForceEnd']) &&
     isRelativeMillisecondDuration(value.delayMs, true) &&
-    typeof value.requireTypedPhrase === 'boolean'
+    typeof value.requireTypedPhrase === 'boolean' &&
+    typeof value.allowForceEnd === 'boolean'
   );
 }
 
@@ -811,10 +814,14 @@ type OpenEndGateAuthorityV2 = Extract<EndAuthorityV2, { copy: { confirm: string 
  * The published End and gate copy, pinned to the authority type the validator claims to prove. An
  * edit to one of these strings in `types.ts` now fails to compile here, the way it already fails in
  * both producers, instead of quietly turning this validator into a refusal of every Friction
- * snapshot. The intersection also states the rule that the two End labels are one string.
+ * snapshot. The intersection also states the rule that the immediate End label and the timed
+ * Friction End label are one string.
  */
 const END_ACTION_LABEL: ImmediateEndAuthorityV2['actionLabel'] &
   ClosedEndGateAuthorityV2['copy']['actionLabel'] = 'End session';
+/** The Friction End of an until-stopped session, on the opening control and the gate confirm. */
+const UNLOCK_ACTION_LABEL: ClosedEndGateAuthorityV2['copy']['actionLabel'] &
+  OpenEndGateAuthorityV2['copy']['confirm'] = 'Unlock';
 const OPEN_END_GATE_ACTION: ClosedEndGateAuthorityV2['actions']['open'] = 'open-end-gate';
 const CANCEL_GATE_COPY: Readonly<Omit<OpenEndGateAuthorityV2['copy'], 'intentionReminder'>> = {
   title: 'End this session',
@@ -822,6 +829,23 @@ const CANCEL_GATE_COPY: Readonly<Omit<OpenEndGateAuthorityV2['copy'], 'intention
   phraseLabel: 'Type this to confirm:',
   confirm: 'End the session',
 };
+
+function isEndActionLabel(value: unknown): value is EndActionLabelV2 {
+  return value === END_ACTION_LABEL || value === UNLOCK_ACTION_LABEL;
+}
+
+function isEndGateConfirmLabel(value: unknown): value is EndGateConfirmLabelV2 {
+  return value === CANCEL_GATE_COPY.confirm || value === UNLOCK_ACTION_LABEL;
+}
+
+/** The one label rule: a Friction until-stopped session unlocks, every other End ends. */
+function expectedEndActionLabel(config: SessionConfigV2): EndActionLabelV2 {
+  return config.duration.kind === 'until-stopped' ? UNLOCK_ACTION_LABEL : END_ACTION_LABEL;
+}
+
+function expectedEndGateConfirmLabel(config: SessionConfigV2): EndGateConfirmLabelV2 {
+  return config.duration.kind === 'until-stopped' ? UNLOCK_ACTION_LABEL : CANCEL_GATE_COPY.confirm;
+}
 const CANCEL_GATE_ACTIONS: Readonly<OpenEndGateAuthorityV2['actions']> = {
   abandon: 'abandon-gate',
   confirm: 'confirm-gate',
@@ -849,7 +873,7 @@ function isEndAuthorityV2Value(value: unknown): value is EndAuthorityV2 {
     const actions: UnknownRecord | null = exactOwnDataSnapshot(friction.actions, ['open']);
     return (
       copy !== null &&
-      copy.actionLabel === END_ACTION_LABEL &&
+      isEndActionLabel(copy.actionLabel) &&
       actions !== null &&
       actions.open === OPEN_END_GATE_ACTION
     );
@@ -873,7 +897,7 @@ function isEndAuthorityV2Value(value: unknown): value is EndAuthorityV2 {
     copy.title === CANCEL_GATE_COPY.title &&
     copy.back === CANCEL_GATE_COPY.back &&
     copy.phraseLabel === CANCEL_GATE_COPY.phraseLabel &&
-    copy.confirm === CANCEL_GATE_COPY.confirm &&
+    isEndGateConfirmLabel(copy.confirm) &&
     isNullableString(copy.intentionReminder) &&
     actions !== null &&
     actions.abandon === CANCEL_GATE_ACTIONS.abandon &&
@@ -976,17 +1000,20 @@ function authorityMatchesConfigAndGate(
 ): boolean {
   const cancelGate: (GateState & { kind: 'cancel' }) | null =
     gate?.kind === 'cancel' ? { ...gate, kind: 'cancel' } : null;
-  if (config.duration.kind === 'until-stopped' || config.strictness === 'flexible') {
+  if (config.strictness === 'flexible') {
     return authority.kind === 'immediate' && cancelGate === null;
   }
   if (config.strictness === 'hard') return authority.kind === 'hidden' && cancelGate === null;
   if (authority.kind !== 'friction-gate') return false;
-  if (cancelGate === null) return authority.gate === null;
+  if (cancelGate === null) {
+    return authority.gate === null && authority.copy.actionLabel === expectedEndActionLabel(config);
+  }
   const requiredPhrase: string | null = authority.gate?.requiredPhrase ?? null;
   return (
     authority.gate !== null &&
     exactDataEqual(authority.gate, cancelGate) &&
     (requiredPhrase === null || requiredPhrase === cancelPhrase(config.intention)) &&
+    authority.copy.confirm === expectedEndGateConfirmLabel(config) &&
     authority.copy.intentionReminder === intentionReminder(config)
   );
 }
@@ -1273,7 +1300,7 @@ export function isSessionStartedEventV2(value: unknown): value is SessionStarted
     ) {
       return false;
     }
-    return duration.kind !== 'until-stopped' || candidate.strictness === 'flexible';
+    return duration.kind !== 'until-stopped' || candidate.strictness !== 'hard';
   });
 }
 

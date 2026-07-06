@@ -296,6 +296,19 @@ export function BehaviorDefaults(props: BehaviorProps): VNode {
         />
         Also require typing a sentence
       </label>
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={s.gate.allowForceEnd}
+          onClick={(): void => {
+            props.onChange({
+              ...s,
+              gate: { ...s.gate, allowForceEnd: !s.gate.allowForceEnd },
+            });
+          }}
+        />
+        Enable "Ignore timeout and end anyway" button
+      </label>
     </div>
   );
 }

@@ -139,30 +139,44 @@ describe('matcher cache storage', () => {
 
 describe('storage default merging', () => {
   it.each([false, true])(
-    'migrates the installed writer gate.allowForceEnd=%s without mutation',
+    'accepts the canonical gate.allowForceEnd=%s as is, with no migration',
     (allowForceEnd: boolean): void => {
       const settings: Settings = {
         ...structuredClone(DEFAULT_SETTINGS),
         retentionDays: 30,
-        gate: { delayMs: 30_000, requireTypedPhrase: true },
+        gate: { delayMs: 30_000, requireTypedPhrase: true, allowForceEnd },
       };
-      const legacy: Record<string, unknown> = {
-        ...structuredClone(settings),
-        gate: Object.freeze({ ...settings.gate, allowForceEnd }),
-      };
-      const original: Record<string, unknown> = structuredClone(legacy);
-      Object.freeze(legacy);
+      const stored: Settings = structuredClone(settings);
+      Object.freeze(stored);
+      Object.freeze(stored.gate);
 
-      expect(parseStoredSettings(legacy)).toEqual({
+      expect(parseStoredSettings(stored)).toEqual({
         valid: true,
         changed: true,
-        legacy: true,
+        legacy: false,
         settings,
       });
-      expect(parseStoredSettings(legacy, settings)).toMatchObject({ valid: true, changed: false });
-      expect(legacy).toEqual(original);
+      expect(parseStoredSettings(stored, settings)).toMatchObject({ valid: true, changed: false });
     },
   );
+
+  /** The root-level v1 record: the boolean beside `gate`, and a gate that never carried it. */
+  function v1Settings(
+    overrides: Partial<Settings>,
+    allowForceEnd: boolean,
+  ): Record<string, unknown> {
+    const { allowForceEnd: _nested, ...gate } = { ...DEFAULT_SETTINGS.gate, ...overrides.gate };
+    return { ...structuredClone(DEFAULT_SETTINGS), ...overrides, gate, allowForceEnd };
+  }
+
+  it('rejects a gate that lacks allowForceEnd, which is no longer a legacy shape', (): void => {
+    expect(
+      parseStoredSettings({
+        ...structuredClone(DEFAULT_SETTINGS),
+        gate: { delayMs: 10_000, requireTypedPhrase: false },
+      }),
+    ).toEqual({ valid: false });
+  });
 
   it.each([
     { gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: 'false' } },
@@ -190,19 +204,30 @@ describe('storage default merging', () => {
     });
   });
 
-  it('preserves customized legacy settings while dropping the deprecated field', (): void => {
-    const legacy: Record<string, unknown> = {
-      ...structuredClone(DEFAULT_SETTINGS),
-      retentionDays: 30,
-      allowForceEnd: true,
-    };
+  it('moves the root-level v1 boolean into the gate and keeps customized settings', (): void => {
+    const legacy: Record<string, unknown> = v1Settings({ retentionDays: 30 }, true);
 
+    expect(legacy.gate).not.toHaveProperty('allowForceEnd');
     expect(parseStoredSettings(legacy, DEFAULT_SETTINGS)).toEqual({
       valid: true,
       changed: true,
       legacy: true,
-      settings: { ...DEFAULT_SETTINGS, retentionDays: 30 },
+      settings: {
+        ...DEFAULT_SETTINGS,
+        retentionDays: 30,
+        gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: true },
+      },
     });
+  });
+
+  it('lets a nested field win over a root-level one when a record carries both', (): void => {
+    expect(
+      parseStoredSettings({
+        ...structuredClone(DEFAULT_SETTINGS),
+        allowForceEnd: true,
+        gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: false },
+      }),
+    ).toEqual({ valid: true, changed: false, legacy: true, settings: DEFAULT_SETTINGS });
   });
 
   it('compares canonical and legacy settings by value instead of property order', (): void => {
@@ -473,7 +498,11 @@ describe('storage default merging', () => {
         pauseMs: DEFAULT_SETTINGS.pause.pauseMs,
         unlockMs: 456,
       },
-      gate: { delayMs: DEFAULT_SETTINGS.gate.delayMs, requireTypedPhrase: true },
+      gate: {
+        delayMs: DEFAULT_SETTINGS.gate.delayMs,
+        requireTypedPhrase: true,
+        allowForceEnd: DEFAULT_SETTINGS.gate.allowForceEnd,
+      },
       badgeCountdown: DEFAULT_SETTINGS.badgeCountdown,
       sounds: {
         masterVolume: DEFAULT_SETTINGS.sounds.masterVolume,
@@ -546,6 +575,7 @@ describe('runtime storage migration', () => {
         openedAt: now,
         readyAt: now + 1_000,
         requiredPhrase: null,
+        forceEndAvailable: false,
       },
       unlocks: [{ host: 'allowed.example', until: now + 60_000 }],
       todayAgg: { ...emptyDaily('2026-08-29'), focusMs: 60_000 },

@@ -85,6 +85,38 @@ describe('SessionTypeControl', (): void => {
     expect(onChange).toHaveBeenCalledWith('hard');
   });
 
+  it('renders Hard lock disabled with a visible reason while it is unavailable', async (): Promise<void> => {
+    const onChange = vi.fn<(value: Strictness) => void>();
+    const reason: string = 'Hard lock is not available for Until stopped.';
+    const view = render(
+      <SessionTypeControl
+        value="friction"
+        frictionDelayMs={10_000}
+        requireTypedPhrase={false}
+        hardUnavailableReason={reason}
+        onChange={onChange}
+      />,
+    );
+    const hard: HTMLButtonElement = view.getByRole('button', {
+      name: 'Hard lock',
+    }) as HTMLButtonElement;
+
+    expect(view.getAllByRole('button')).toHaveLength(3);
+    expect(hard.getAttribute('aria-disabled')).toBe('true');
+    expect(hard.textContent).toContain(reason);
+    expect(hard.textContent).not.toContain(EXPLANATIONS.hard);
+
+    fireEvent.click(hard);
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect((await view.findByRole('tooltip')).textContent).toContain(reason);
+
+    fireEvent.click(view.getByRole('button', { name: 'Flexible' }));
+
+    expect(onChange).toHaveBeenCalledWith('flexible');
+    expect(view.getByRole('button', { name: 'Flexible' }).getAttribute('aria-disabled')).toBeNull();
+  });
+
   it('describes the default ten-second gate without claiming typing is required', async (): Promise<void> => {
     const view = render(<SessionTypes />);
 

@@ -25,12 +25,16 @@ const REQUEST_SESSION_END: Extract<SessionRequestV2, { type: 'requestSessionEnd'
   type: 'requestSessionEnd',
 };
 const OPEN_END_GATE: Extract<SessionRequestV2, { type: 'openEndGate' }> = { type: 'openEndGate' };
+const FORCE_END_GATE: Extract<SessionRequestV2, { type: 'forceEndGate' }> = {
+  type: 'forceEndGate',
+};
 const EXPECTED_GATE: GateState = {
   kind: 'cancel',
   host: null,
   openedAt: 1,
   readyAt: 2,
   requiredPhrase: null,
+  forceEndAvailable: false,
 };
 const ABANDON_GATE: Extract<SessionRequestV2, { type: 'abandonGate' }> = {
   type: 'abandonGate',
@@ -95,6 +99,10 @@ const CHANNEL_CALLS: readonly ChannelCall[] = [
     send: (): Promise<SessionResponseMapV2['openGate']> => sendRequest(OPEN_GATE),
   },
   {
+    request: FORCE_END_GATE,
+    send: (): Promise<SessionResponseMapV2['forceEndGate']> => sendRequest(FORCE_END_GATE),
+  },
+  {
     request: RESUME_FROM_PAUSE,
     send: (): Promise<SessionResponseMapV2['resumeFromPause']> => sendRequest(RESUME_FROM_PAUSE),
   },
@@ -155,6 +163,9 @@ describe('v2 session request channel', (): void => {
       gate: 'pause' | 'unlockSite';
       host: string | null;
     }>();
+    expectTypeOf<Extract<SessionRequestV2, { type: 'forceEndGate' }>>().toEqualTypeOf<{
+      type: 'forceEndGate';
+    }>();
     expectTypeOf<Extract<SessionRequestV2, { type: 'resumeFromPause' }>>().toEqualTypeOf<{
       type: 'resumeFromPause';
     }>();
@@ -177,6 +188,7 @@ describe('v2 session request channel', (): void => {
       | 'abandonGate'
       | 'confirmGate'
       | 'openGate'
+      | 'forceEndGate'
       | 'resumeFromPause'
       | 'startNextFocusEarly'
       | 'retryTransitionCleanup'
@@ -200,6 +212,9 @@ describe('v2 session request channel', (): void => {
       CommandResponseV2<SessionCommandResultCodeV2>
     >();
     expectTypeOf<SessionResponseMapV2['openGate']>().toEqualTypeOf<
+      CommandResponseV2<SessionCommandResultCodeV2>
+    >();
+    expectTypeOf<SessionResponseMapV2['forceEndGate']>().toEqualTypeOf<
       CommandResponseV2<SessionCommandResultCodeV2>
     >();
     expectTypeOf<SessionResponseMapV2['resumeFromPause']>().toEqualTypeOf<

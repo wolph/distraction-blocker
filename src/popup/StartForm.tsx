@@ -9,10 +9,10 @@ import {
 import { isListsConfig } from '../shared/runtime-validation';
 import {
   FORCED_CYCLES_LABEL,
-  FORCED_TYPE_LABEL,
+  HARD_UNAVAILABLE_REASON,
   MODE_LABELS,
   UNTIL_STOPPED_DISCLOSURE,
-  UNTIL_STOPPED_FORCED_HINT,
+  untilStoppedHint,
 } from '../shared/session-copy';
 import type {
   CategoryId,
@@ -112,6 +112,10 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
   }, [lists]);
 
   const indefinite: boolean = draft.duration.kind === 'until-stopped';
+  const strictness: Strictness = effectiveStrictness(draft);
+  /** Hard never survives an indefinite draft, so the hint only ever names the other two. */
+  const indefiniteHint: string | null =
+    indefinite && strictness !== 'hard' ? untilStoppedHint(strictness, draft.frictionGate) : null;
   const cycle: CycleConfig = settings.defaultCycling;
   const cyclingLabel: string = `Cycles: ${cycle.focusMin} min focus, ${cycle.shortBreakMin} min break, ${cycle.longBreakMin} min long break every ${cycle.longEvery}th`;
 
@@ -175,10 +179,11 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
 
   const sessionType: VNode = (
     <SessionTypeControl
-      value={effectiveStrictness(draft)}
+      value={strictness}
       frictionDelayMs={draft.frictionGate.delayMs}
       requireTypedPhrase={draft.frictionGate.requireTypedPhrase}
-      onChange={(strictness: Strictness): void => setDraft(setTimedStrictness(draft, strictness))}
+      hardUnavailableReason={indefinite ? HARD_UNAVAILABLE_REASON : undefined}
+      onChange={(next: Strictness): void => setDraft(setTimedStrictness(draft, next))}
     />
   );
 
@@ -207,7 +212,7 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
           }
         />
 
-        {indefinite ? <span class="radio-hint">{UNTIL_STOPPED_FORCED_HINT}</span> : null}
+        {indefiniteHint !== null ? <span class="radio-hint">{indefiniteHint}</span> : null}
 
         <div class="field-control">
           <label class="field-label" for="session-intention">
@@ -225,13 +230,7 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
           />
         </div>
 
-        {indefinite ? (
-          <ForcedControl label={FORCED_TYPE_LABEL} explanation={UNTIL_STOPPED_DISCLOSURE}>
-            {sessionType}
-          </ForcedControl>
-        ) : (
-          sessionType
-        )}
+        {sessionType}
 
         <fieldset class="mode-control" aria-label="Blocking mode">
           <legend>Blocking mode</legend>

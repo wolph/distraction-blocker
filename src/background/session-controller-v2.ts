@@ -33,6 +33,7 @@ import { localDateStr, localMidnightAfter } from '../shared/time';
 import type {
   BankState,
   GateKind,
+  GateSettings,
   GateState,
   PauseEconomy,
   SessionConfigV2,
@@ -321,15 +322,19 @@ export class SessionControllerV2 {
       }
       const gate: GateState | null = this.ports.runtime().gate;
       if (gate !== null) return gate.kind === 'cancel' ? OK : failure('end-not-allowed');
+      // The bypass is minted here, from the setting as it stands when the gate opens, so a
+      // setting toggled later neither offers nor revokes the button on a gate already open.
+      const settings: GateSettings = this.ports.gateSettings();
       await this.commitLiveGate(
         {
           kind: 'cancel',
           host: null,
           openedAt: this.ports.now(),
-          readyAt: this.ports.now() + this.ports.gateSettings().delayMs,
-          requiredPhrase: this.ports.gateSettings().requireTypedPhrase
+          readyAt: this.ports.now() + settings.delayMs,
+          requiredPhrase: settings.requireTypedPhrase
             ? cancelPhrase(session.config.intention)
             : null,
+          forceEndAvailable: settings.allowForceEnd,
         },
         this.gateEvent('gateOpened', 'cancel', session),
       );
@@ -378,6 +383,7 @@ export class SessionControllerV2 {
           openedAt,
           readyAt: openedAt + this.ports.gateSettings().delayMs,
           requiredPhrase: this.gatePhrase(gate, unlockHost),
+          forceEndAvailable: false,
         },
         [
           ...(previous === null ? [] : this.gateEvent('gateResisted', previous.kind, session)),
@@ -442,6 +448,32 @@ export class SessionControllerV2 {
         return OK;
       }
       return this.spendGate(gate, session);
+    });
+  }
+
+  /**
+   * The opt-in bypass of the cancel gate: ends a Friction session at once, skipping `readyAt` and
+   * the typed phrase. It needs an open cancel gate on a Friction session, the live setting on, and
+   * the flag the worker minted when that gate opened. Anything else is refused, and a pause or
+   * unlock gate is refused outright because the bypass only ever ends a session.
+   */
+  async forceEndGate(): Promise<CommandResultV2> {
+    return this.command(async (): Promise<CommandResultV2> => {
+      const runtime: RuntimeStateV2 = this.ports.runtime();
+      const session: SessionStateV2 | null = runtime.session;
+      const guard: CommandResultV2 | null = this.endFamilyGuard(session);
+      if (guard !== null) return guard;
+      const gate: GateState | null = runtime.gate;
+      if (gate === null) return failure('no-active-gate');
+      if (gate.kind !== 'cancel') return failure('end-not-allowed');
+      if (session === null || session.config.strictness !== 'friction') {
+        return failure('end-not-allowed');
+      }
+      if (!this.ports.gateSettings().allowForceEnd || !gate.forceEndAvailable) {
+        return failure('end-not-allowed');
+      }
+      await this.closeActiveSession(session, this.ports.now());
+      return OK;
     });
   }
 

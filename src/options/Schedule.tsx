@@ -1,10 +1,10 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useId, useState } from 'preact/hooks';
 import { scheduleEntriesOverlap, validateEntry } from '../core/schedule';
 import { ForcedControl } from '../shared/ForcedControl';
 import {
   FORCED_CYCLES_LABEL,
-  FORCED_TYPE_LABEL,
+  HARD_UNAVAILABLE_REASON,
   SCHEDULE_UNTIL_STOPPED_COPY,
   SCHEDULE_WINDOW_LABEL,
   UNTIL_STOPPED_DISCLOSURE,
@@ -36,7 +36,10 @@ const STRICTNESS_CHOICES: readonly StrictnessChoice[] = [
   { value: 'hard', label: 'Hard: no early end, temporary site access only' },
 ];
 
-/** The timed choices an indefinite entry never submits. */
+/**
+ * The choices a window entry submits and an indefinite entry holds back: cycling always, and the
+ * session type only when it was Hard, which an indefinite entry cannot carry.
+ */
 interface TimedChoices {
   strictness: Strictness;
   cycling: CycleConfig | null;
@@ -46,6 +49,11 @@ interface TimedChoices {
 interface EntryDraft {
   entry: ScheduleEntryV2;
   timed: TimedChoices;
+}
+
+/** An indefinite entry keeps Flexible or Friction. Hard has no manual end, so it becomes Friction. */
+function indefiniteStrictness(strictness: Strictness): Exclude<Strictness, 'hard'> {
+  return strictness === 'hard' ? 'friction' : strictness;
 }
 
 function defaultTimedChoices(defaults: SettingsV2): TimedChoices {
@@ -72,8 +80,8 @@ function newEntry(defaults: SettingsV2): ScheduleEntryV2 {
 }
 
 /**
- * A saved indefinite entry persists no hidden timed choices, so editing one starts its
- * timed draft from the current schedule defaults. A window entry keeps its own values.
+ * A saved indefinite entry persists its session type but no hidden cycle choice, so editing one
+ * starts its timed cycles from the current schedule defaults. A window entry keeps its own values.
  */
 function draftOf(entry: ScheduleEntryV2, defaults: SettingsV2): EntryDraft {
   const copy: ScheduleEntryV2 = structuredClone(entry);
@@ -82,18 +90,21 @@ function draftOf(entry: ScheduleEntryV2, defaults: SettingsV2): EntryDraft {
     timed:
       copy.duration.kind === 'window'
         ? { strictness: copy.strictness, cycling: copy.cycling }
-        : defaultTimedChoices(defaults),
+        : { strictness: copy.strictness, cycling: defaultTimedChoices(defaults).cycling },
   };
 }
 
-/** Indefinite entries submit Flexible with cycles off. The timed draft waits in `timed`. */
+/**
+ * Indefinite entries keep their session type, clamp Hard to Friction, and submit cycles off. The
+ * pre-detour type and cycles wait in `timed` for the duration to toggle back.
+ */
 function selectUntilStopped(draft: EntryDraft): EntryDraft {
   if (draft.entry.duration.kind === 'until-stopped') return draft;
   return {
     entry: {
       ...draft.entry,
       duration: { kind: 'until-stopped' },
-      strictness: 'flexible',
+      strictness: indefiniteStrictness(draft.entry.strictness),
       cycling: null,
     },
     timed: { strictness: draft.entry.strictness, cycling: draft.entry.cycling },
@@ -115,16 +126,20 @@ function selectWindow(draft: EntryDraft): EntryDraft {
 }
 
 /**
- * An indefinite entry submits Flexible with cycles off, so a session type or cycle edit
- * reaches only the held timed choices. The invariant `isScheduleEntryV2` enforces at the
- * boundary holds here structurally, and the forced wrapper stays a UX affordance.
+ * A session type edit reaches the entry and the held timed choices alike, so a type chosen
+ * during an indefinite detour is the type the window duration comes back to. Hard is refused
+ * while the entry is indefinite: the radio is disabled, and a bypassed click changes nothing. The
+ * invariant `isScheduleEntryV2` enforces at the boundary holds here structurally.
  */
 function setStrictness(draft: EntryDraft, strictness: Strictness): EntryDraft {
-  const timed: TimedChoices = { ...draft.timed, strictness };
-  if (draft.entry.duration.kind === 'until-stopped') return { entry: draft.entry, timed };
-  return { entry: { ...draft.entry, strictness }, timed };
+  if (draft.entry.duration.kind === 'until-stopped' && strictness === 'hard') return draft;
+  return {
+    entry: { ...draft.entry, strictness },
+    timed: { ...draft.timed, strictness },
+  };
 }
 
+/** An indefinite entry submits cycles off, so a cycle edit reaches only the held choice. */
 function setCycling(draft: EntryDraft, cycling: CycleConfig | null): EntryDraft {
   const timed: TimedChoices = { ...draft.timed, cycling };
   if (draft.entry.duration.kind === 'until-stopped') return { entry: draft.entry, timed };
@@ -187,24 +202,33 @@ interface EntryFormProps {
 function EntryForm(props: EntryFormProps): VNode {
   const entry: ScheduleEntryV2 = props.draft.entry;
   const indefinite: boolean = entry.duration.kind === 'until-stopped';
+  const hardReasonId: string = `schedule-hard-reason-${useId()}`;
 
   const strictnessField: VNode = (
     <fieldset class="field" aria-label="Session type">
-      {STRICTNESS_CHOICES.map(
-        (choice: StrictnessChoice): VNode => (
+      {STRICTNESS_CHOICES.map((choice: StrictnessChoice): VNode => {
+        const unavailable: boolean = indefinite && choice.value === 'hard';
+        return (
           <label class="check" key={choice.value}>
             <input
               type="radio"
               name="entry-v2-strictness"
               checked={entry.strictness === choice.value}
+              disabled={unavailable}
+              aria-describedby={unavailable ? hardReasonId : undefined}
               onClick={(): void => {
                 props.onDraft(setStrictness(props.draft, choice.value));
               }}
             />
             {choice.label}
           </label>
-        ),
-      )}
+        );
+      })}
+      {indefinite ? (
+        <p class="schedule-duration-note" id={hardReasonId}>
+          {HARD_UNAVAILABLE_REASON}
+        </p>
+      ) : null}
     </fieldset>
   );
 
@@ -311,13 +335,7 @@ function EntryForm(props: EntryFormProps): VNode {
           Whitelist: allow only listed sites
         </label>
       </div>
-      {indefinite ? (
-        <ForcedControl label={FORCED_TYPE_LABEL} explanation={UNTIL_STOPPED_DISCLOSURE}>
-          {strictnessField}
-        </ForcedControl>
-      ) : (
-        strictnessField
-      )}
+      {strictnessField}
       {indefinite ? (
         <ForcedControl label={FORCED_CYCLES_LABEL} explanation={UNTIL_STOPPED_DISCLOSURE}>
           {cyclingField}
@@ -358,8 +376,9 @@ function EntryForm(props: EntryFormProps): VNode {
 
 /**
  * Schedule entry list plus a single editor form. The duration choice is the entry's own,
- * `validateEntry` and the overlap check gate every save, and an indefinite entry submits
- * Flexible with cycles off while its timed draft waits for the duration to toggle back.
+ * `validateEntry` and the overlap check gate every save, and an indefinite entry submits its
+ * Flexible or Friction type with cycles off while its timed cycles wait for the duration to
+ * toggle back.
  */
 export function Schedule(props: ScheduleProps): VNode {
   const [draft, setDraft]: [EntryDraft | null, Dispatch<StateUpdater<EntryDraft | null>>] =

@@ -15,6 +15,7 @@ import {
   HIDDEN_AUTHORITY,
   IMMEDIATE_AUTHORITY,
   OPEN_FRICTION_AUTHORITY,
+  UNLOCK_CLOSED_FRICTION_AUTHORITY,
 } from './v2-public-fixtures';
 import {
   MANUAL_INDEFINITE_CONFIG,
@@ -95,6 +96,36 @@ describe('v2 public snapshot validation', (): void => {
     ).toBe(true);
   });
 
+  it('pins the End label to the session type and duration', (): void => {
+    const frictionIndefinite: SessionConfigV2 = {
+      ...MANUAL_INDEFINITE_CONFIG,
+      strictness: 'friction',
+    };
+    const frictionTimed: SessionConfigV2 = { ...MANUAL_TIMED_CONFIG, strictness: 'friction' };
+    const unlockSnapshot: SessionSnapshotV2 = activeSnapshotV2(frictionIndefinite);
+
+    expect(unlockSnapshot.lifecycle.endAuthority).toEqual(UNLOCK_CLOSED_FRICTION_AUTHORITY);
+    expect(isSessionSnapshotV2(unlockSnapshot)).toBe(true);
+    expect(
+      isSessionSnapshotV2({
+        ...unlockSnapshot,
+        lifecycle: { kind: 'active', endAuthority: CLOSED_FRICTION_AUTHORITY },
+      }),
+    ).toBe(false);
+    expect(
+      isSessionSnapshotV2({
+        ...activeSnapshotV2(frictionTimed),
+        lifecycle: { kind: 'active', endAuthority: UNLOCK_CLOSED_FRICTION_AUTHORITY },
+      }),
+    ).toBe(false);
+    expect(
+      isSessionSnapshotV2({
+        ...activeSnapshotV2(MANUAL_INDEFINITE_CONFIG),
+        lifecycle: { kind: 'active', endAuthority: UNLOCK_CLOSED_FRICTION_AUTHORITY },
+      }),
+    ).toBe(false);
+  });
+
   it('accepts settled focus, break, pause, unlock, gate, and schedule read models', (): void => {
     const at: number = NOW + 25 * 60_000 + 10_000;
     const pauseGate: GateState = {
@@ -103,6 +134,7 @@ describe('v2 public snapshot validation', (): void => {
       openedAt: NOW + 1_000,
       readyAt: NOW + 11_000,
       requiredPhrase: null,
+      forceEndAvailable: false,
     };
     const unlock: SiteUnlock = { host: 'example.com', until: NOW + 20_000 };
 
@@ -316,6 +348,7 @@ describe('v2 public snapshot validation', (): void => {
       openedAt: NOW,
       readyAt: NOW + 1,
       requiredPhrase: null,
+      forceEndAvailable: false,
     };
     const unlockGate: GateState = {
       ...pauseGate,

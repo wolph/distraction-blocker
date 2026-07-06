@@ -12,9 +12,11 @@ import {
   type StartSessionResponseV2,
 } from '../../../src/shared/messages';
 import {
+  HARD_UNAVAILABLE_REASON,
+  LOCK_UNTIL_MANUAL_UNLOCK_LABEL,
   START_UNTIL_STOPPED_LABEL,
-  UNTIL_STOPPED_FORCED_HINT,
   UNTIL_STOPPED_LABEL,
+  untilStoppedHint,
 } from '../../../src/shared/session-copy';
 import type { ListsConfig, SettingsV2 } from '../../../src/shared/types';
 import { openOptionsPageMock, resetChromeFake, sendMessageMock } from './chrome-fake';
@@ -30,8 +32,9 @@ import { StartForm } from '../../../src/popup/StartForm';
 
 const SETTINGS: SettingsV2 = { ...DEFAULT_SETTINGS, schedule: [] };
 const TIMED_START_LABEL: string = 'Start 25 min - Block selected sites';
-const FORCED_TYPE_LABEL: string = 'Session type forced by Until stopped';
 const FORCED_CYCLES_LABEL: string = 'Cycles forced by Until stopped';
+const FRICTION_HINT: string = untilStoppedHint('friction', DEFAULT_SETTINGS.gate);
+const FLEXIBLE_HINT: string = untilStoppedHint('flexible', DEFAULT_SETTINGS.gate);
 
 type StartRequest = Extract<SessionRequestV2, { type: 'startSession' }>;
 
@@ -64,16 +67,19 @@ afterEach((): void => {
 });
 
 describe('StartForm duration and forced controls', (): void => {
-  it('forces Flexible and no cycles while Until stopped is selected', (): void => {
+  it('keeps the chosen type, disables Hard, and forces no cycles while Until stopped is selected', (): void => {
     const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
 
-    const forcedType: HTMLElement = view.getByRole('group', { name: FORCED_TYPE_LABEL });
-    const flexible: HTMLElement = view.getByRole('button', { name: 'Flexible' });
-    expect(forcedType.getAttribute('aria-disabled')).toBe('true');
-    expect(forcedType.contains(flexible)).toBe(true);
-    expect(flexible.getAttribute('aria-pressed')).toBe('true');
+    const friction: HTMLElement = view.getByRole('button', { name: 'Friction' });
+    const hard: HTMLElement = view.getByRole('button', { name: 'Hard lock' });
+    expect(friction.getAttribute('aria-pressed')).toBe('true');
+    expect(friction.getAttribute('aria-disabled')).toBeNull();
+    expect(hard.getAttribute('aria-disabled')).toBe('true');
+    expect(hard.textContent).toContain(HARD_UNAVAILABLE_REASON);
+    // No forced wrapper around the type any more: the choices are live, Hard alone refuses.
+    expect(hard.closest('.forced-control')).toBeNull();
 
     const forcedCycles: HTMLElement = view.getByRole('group', { name: FORCED_CYCLES_LABEL });
     const cycles: HTMLInputElement = view.getByRole('checkbox') as HTMLInputElement;
@@ -81,25 +87,15 @@ describe('StartForm duration and forced controls', (): void => {
     expect(forcedCycles.contains(cycles)).toBe(true);
     expect(cycles.checked).toBe(false);
 
-    expect(view.getByText(UNTIL_STOPPED_FORCED_HINT)).toBeTruthy();
-    expect(view.getByRole('button', { name: START_UNTIL_STOPPED_LABEL })).toBeTruthy();
+    expect(view.getByText(FRICTION_HINT)).toBeTruthy();
+    expect(view.getByRole('button', { name: LOCK_UNTIL_MANUAL_UNLOCK_LABEL })).toBeTruthy();
   });
 
-  it('refuses a session type change while the control is forced', (): void => {
+  it('switches the hint and start label with the type, and refuses Hard', (): void => {
     const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
     fireEvent.click(view.getByRole('button', { name: 'Hard lock' }));
-
-    expect(view.getByRole('button', { name: 'Flexible' }).getAttribute('aria-pressed')).toBe(
-      'true',
-    );
-    expect(view.getByRole('button', { name: 'Hard lock' }).getAttribute('aria-pressed')).toBe(
-      'false',
-    );
-    expect(view.getByRole('button', { name: START_UNTIL_STOPPED_LABEL })).toBeTruthy();
-
-    fireEvent.click(view.getByRole('button', { name: '25 focus' }));
 
     expect(view.getByRole('button', { name: 'Friction' }).getAttribute('aria-pressed')).toBe(
       'true',
@@ -107,6 +103,27 @@ describe('StartForm duration and forced controls', (): void => {
     expect(view.getByRole('button', { name: 'Hard lock' }).getAttribute('aria-pressed')).toBe(
       'false',
     );
+    expect(view.getByRole('button', { name: LOCK_UNTIL_MANUAL_UNLOCK_LABEL })).toBeTruthy();
+
+    fireEvent.click(view.getByRole('button', { name: 'Flexible' }));
+
+    expect(view.getByRole('button', { name: 'Flexible' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    expect(view.getByText(FLEXIBLE_HINT)).toBeTruthy();
+    expect(view.queryByText(FRICTION_HINT)).toBeNull();
+    expect(view.getByRole('button', { name: START_UNTIL_STOPPED_LABEL })).toBeTruthy();
+
+    fireEvent.click(view.getByRole('button', { name: '25 focus' }));
+
+    // The type chosen during the detour is the draft's type, and Hard is available again.
+    expect(view.getByRole('button', { name: 'Flexible' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    expect(
+      view.getByRole('button', { name: 'Hard lock' }).getAttribute('aria-disabled'),
+    ).toBeNull();
+    expect(view.queryByText(FLEXIBLE_HINT)).toBeNull();
   });
 
   it('restores the timed session type, cycles, and start label when a preset returns', (): void => {
@@ -115,13 +132,12 @@ describe('StartForm duration and forced controls', (): void => {
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
     fireEvent.click(view.getByRole('button', { name: '25 focus' }));
 
-    expect(view.queryByRole('group', { name: FORCED_TYPE_LABEL })).toBeNull();
     expect(view.queryByRole('group', { name: FORCED_CYCLES_LABEL })).toBeNull();
     expect(view.getByRole('button', { name: 'Friction' }).getAttribute('aria-pressed')).toBe(
       'true',
     );
     expect((view.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
-    expect(view.queryByText(UNTIL_STOPPED_FORCED_HINT)).toBeNull();
+    expect(view.queryByText(FRICTION_HINT)).toBeNull();
     expect(view.getByRole('button', { name: TIMED_START_LABEL })).toBeTruthy();
   });
 
@@ -131,7 +147,7 @@ describe('StartForm duration and forced controls', (): void => {
     fireEvent.input(view.getByLabelText('Custom minutes'), { target: { value: '45' } });
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
 
-    expect(view.getByRole('button', { name: START_UNTIL_STOPPED_LABEL })).toBeTruthy();
+    expect(view.getByRole('button', { name: LOCK_UNTIL_MANUAL_UNLOCK_LABEL })).toBeTruthy();
     expect((view.getByLabelText('Custom minutes') as HTMLInputElement).value).toBe('45');
 
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
@@ -171,10 +187,36 @@ describe('StartForm duration and forced controls', (): void => {
 });
 
 describe('StartForm start command', (): void => {
-  it('sends the exact until-stopped start request the worker accepts', async (): Promise<void> => {
+  it('sends the exact Friction until-stopped start request the worker accepts', async (): Promise<void> => {
     const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
+    fireEvent.input(view.getByLabelText('Intention'), { target: { value: 'ship the release' } });
+    fireEvent.click(view.getByRole('button', { name: LOCK_UNTIL_MANUAL_UNLOCK_LABEL }));
+
+    await waitFor((): void => expect(startRequests()).toHaveLength(1));
+    const request: StartRequest | undefined = startRequests()[0];
+    expect(request).toEqual({
+      type: 'startSession',
+      config: {
+        mode: 'blacklist',
+        strictness: 'friction',
+        duration: { kind: 'until-stopped' },
+        cycling: null,
+        intention: 'ship the release',
+        source: 'manual',
+        scheduleOccurrence: null,
+        rules: rulesFromLists(DEFAULT_LISTS),
+      },
+    });
+    expect(parseSessionStartRequestV2(request)).toEqual(request);
+  });
+
+  it('sends the exact Flexible until-stopped start request the worker accepts', async (): Promise<void> => {
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
+
+    fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
+    fireEvent.click(view.getByRole('button', { name: 'Flexible' }));
     fireEvent.input(view.getByLabelText('Intention'), { target: { value: 'ship the release' } });
     fireEvent.click(view.getByRole('button', { name: START_UNTIL_STOPPED_LABEL }));
 
@@ -251,13 +293,13 @@ describe('StartForm start command', (): void => {
 
     fireEvent.input(view.getByLabelText('Intention'), { target: { value: 'write the report' } });
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
-    fireEvent.click(view.getByRole('button', { name: START_UNTIL_STOPPED_LABEL }));
+    fireEvent.click(view.getByRole('button', { name: LOCK_UNTIL_MANUAL_UNLOCK_LABEL }));
 
     await waitFor((): void => {
       expect(view.getByRole('alert').textContent).toBe('Blocking could not start on an open tab.');
     });
     expect((view.getByLabelText('Intention') as HTMLInputElement).value).toBe('write the report');
-    expect(view.getByRole('button', { name: START_UNTIL_STOPPED_LABEL })).toBeTruthy();
+    expect(view.getByRole('button', { name: LOCK_UNTIL_MANUAL_UNLOCK_LABEL })).toBeTruthy();
   });
 
   it('shows the fallback when the worker answers with a malformed response', async (): Promise<void> => {
@@ -319,7 +361,8 @@ describe('StartForm start command', (): void => {
     fireEvent.input(view.getByLabelText('Intention'), { target: { value: 'ship the release' } });
     fireEvent.click(view.getByRole('button', { name: 'Hard lock' }));
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
-    fireEvent.click(view.getByRole('button', { name: START_UNTIL_STOPPED_LABEL }));
+    // Hard clamps to Friction for an indefinite draft, so the button locks rather than starts.
+    fireEvent.click(view.getByRole('button', { name: LOCK_UNTIL_MANUAL_UNLOCK_LABEL }));
 
     await waitFor((): void => {
       expect(view.getByRole('button', { name: TIMED_START_LABEL })).toBeTruthy();

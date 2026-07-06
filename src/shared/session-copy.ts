@@ -1,21 +1,56 @@
 import { formatMinutes } from './format';
-import type { SessionDuration, SessionEndReasonV2 } from './types';
+import type { GateSettings, SessionDuration, SessionEndReasonV2, Strictness } from './types';
 
-/** Duration control and the forced session type and cycle disclosure. */
+/** Duration control, the start button, and the forced cycle disclosure. */
 export const UNTIL_STOPPED_LABEL: string = 'Until stopped';
+/** The start button of a Flexible until-stopped draft. */
 export const START_UNTIL_STOPPED_LABEL: string = 'Start until stopped';
-export const UNTIL_STOPPED_FORCED_HINT: string =
-  'Flexible session. Cycles off. End it manually from the popup.';
+/** The start button of a Friction until-stopped draft, which ends through its gate. */
+export const LOCK_UNTIL_MANUAL_UNLOCK_LABEL: string = 'Lock until manual unlock';
 export const UNTIL_STOPPED_DISCLOSURE: string =
-  'Until stopped sessions use Flexible blocking and cannot use focus and break cycles.';
+  'Until stopped sessions keep Flexible or Friction and cannot use focus and break cycles.';
+/**
+ * Why Hard lock is disabled while Until stopped is selected. One sentence, rendered on the
+ * choice itself in the popup and next to the schedule editor's radio.
+ */
+export const HARD_UNAVAILABLE_REASON: string =
+  'Hard lock is not available for Until stopped: with no timer and no manual end, the session could never end.';
 export const END_SESSION_LABEL: string = 'End session';
+/** The End control and the gate confirm of a Friction until-stopped session. */
+export const UNLOCK_LABEL: string = 'Unlock';
+
+function formatDelaySeconds(delayMs: number): string {
+  const seconds: number = delayMs / 1_000;
+  return Number.isInteger(seconds) ? String(seconds) : String(Number(seconds.toFixed(3)));
+}
+
+/** The deliberation wait as a phrase: "no wait" or "a 10-second wait". */
+export function formatGateWait(delayMs: number): string {
+  return delayMs === 0 ? 'no wait' : `a ${formatDelaySeconds(delayMs)}-second wait`;
+}
 
 /**
- * The accessible names of the two forced groups. Both the popup start form and the schedule
- * editor render them, and a screen reader is the only place they are heard, so a copy that
- * drifted in one file would be invisible to sighted review.
+ * The hint under the duration control while Until stopped is selected. It says how the session
+ * will end before it starts, with the configured wait and phrase for Friction, and that cycles are
+ * off. Hard never reaches this hint, because the draft clamps it away from Until stopped.
  */
-export const FORCED_TYPE_LABEL: string = 'Session type forced by Until stopped';
+export function untilStoppedHint(
+  strictness: Exclude<Strictness, 'hard'>,
+  gate: Pick<GateSettings, 'delayMs' | 'requireTypedPhrase'>,
+): string {
+  if (strictness === 'flexible') {
+    return `Runs until you end it with ${END_SESSION_LABEL}. Cycles off.`;
+  }
+  const wait: string = formatGateWait(gate.delayMs);
+  const requirement: string = gate.requireTypedPhrase ? `${wait} and a typed sentence` : wait;
+  return `Runs until you unlock it: ${requirement}, then ${UNLOCK_LABEL}. Cycles off.`;
+}
+
+/**
+ * The accessible name of the forced cycles group. Both the popup start form and the schedule
+ * editor render it, and a screen reader is the only place it is heard, so a copy that drifted
+ * in one file would be invisible to sighted review.
+ */
 export const FORCED_CYCLES_LABEL: string = 'Cycles forced by Until stopped';
 
 /**
@@ -55,9 +90,9 @@ export const DATA_CLEAR_ERROR_COPY: string = 'Could not delete data. Try again.'
 /** Schedule editor and the scheduled start notification. */
 export const SCHEDULE_WINDOW_LABEL: string = 'Until window ends';
 export const SCHEDULE_UNTIL_STOPPED_COPY: string =
-  'Starts on schedule and continues until you end it manually.';
+  'Starts on schedule and runs until you stop it: End session for Flexible, Unlock through the deliberation gate for Friction. Cycles off.';
 export const SCHEDULE_STARTED_TITLE: string = 'Focus schedule started';
-export const SCHEDULE_UNTIL_STOPPED_BODY: string = 'Active until you end it manually.';
+export const SCHEDULE_UNTIL_STOPPED_BODY: string = 'Active until you stop it.';
 
 /** Settings, which is read-only for active session control. */
 export const SETTINGS_INDEFINITE_COPY: string =

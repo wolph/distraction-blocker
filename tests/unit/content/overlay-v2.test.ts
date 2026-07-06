@@ -27,7 +27,7 @@ const PROVENANCE: string = 'Blocked by Social media: example.com';
 const STOPPED_COPY: NonNullable<StartingOverlay['copy']['stoppedPage']> =
   'This page did not load. It will load by itself when the session ends.';
 const UNTIL_STOPPED_TEXT: Extract<ActiveCopy['status'], { kind: 'until-stopped' }>['text'] =
-  'Focus Lock is active until you end it from the popup.';
+  'Focus Lock is active until you stop it.';
 const TRANSPORT_ERROR: ActiveCopy['transportError'] =
   'Focus Lock could not update this action. Try again.';
 const BLOCKED_VERDICT: Verdict = {
@@ -65,6 +65,7 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     gateTitle: null,
     gateBack: 'Never mind, back to work',
     gatePhraseLabel: 'Type this to confirm:',
+    gateForceEnd: 'Ignore timeout and end anyway',
     gateConfirm: null,
     transportError: TRANSPORT_ERROR,
     ...overrides,
@@ -107,7 +108,7 @@ function untilStoppedOverlay(overrides: Partial<ActiveOverlay> = {}): ActiveOver
       phaseEndsAt: null,
       sessionEndsAt: null,
     },
-    actions: { state: 'ready', end: 'hidden', pause: 'request-gate', unlock: 'request-gate' },
+    actions: { state: 'ready', end: 'request-end', pause: 'request-gate', unlock: 'request-gate' },
     copy: activeCopy({
       status: { kind: 'until-stopped', text: UNTIL_STOPPED_TEXT },
       lockedUntil: null,
@@ -123,6 +124,7 @@ function gateState(overrides: Partial<GateState> = {}): GateState {
     openedAt: NOW - 10_000,
     readyAt: NOW - 1_000,
     requiredPhrase: 'let me scroll',
+    forceEndAvailable: false,
     ...overrides,
   };
 }
@@ -264,14 +266,48 @@ describe('renderDocumentOverlay active view', () => {
     expect(buttons()).toHaveLength(2);
   });
 
-  it('renders the until-stopped page without a clock, locked-until line, or end action', () => {
+  it('renders the until-stopped page without a clock or locked-until line, End included', () => {
     renderDocumentOverlay(untilStoppedOverlay(), BLOCKED_VERDICT);
 
     expect(text('.until')).toBe(UNTIL_STOPPED_TEXT);
     expect(shadowRoot().textContent).not.toContain('Locked until');
     expect(shadowRoot().querySelector('.clock')).toBeNull();
+    expect(shadowRoot().textContent).toContain('End session');
+    expect(buttons()).toHaveLength(3);
+  });
+
+  it('renders the Unlock control a Friction until-stopped view carries', async (): Promise<void> => {
+    const sendMessage: Mock<(request: unknown) => Promise<unknown>> = stubWorker({ ok: true });
+    renderDocumentOverlay(
+      untilStoppedOverlay({
+        strictness: 'friction',
+        actions: {
+          state: 'ready',
+          end: 'open-end-gate',
+          pause: 'request-gate',
+          unlock: 'request-gate',
+        },
+        copy: activeCopy({
+          status: { kind: 'until-stopped', text: UNTIL_STOPPED_TEXT },
+          lockedUntil: null,
+          endAction: 'Unlock',
+        }),
+      }),
+      BLOCKED_VERDICT,
+    );
+
     expect(shadowRoot().textContent).not.toContain('End session');
-    expect(buttons()).toHaveLength(2);
+    // Exact, because the unlock spend button also starts with the word.
+    const unlock: HTMLButtonElement | undefined = buttons().find(
+      (button: HTMLButtonElement): boolean => button.textContent === 'Unlock',
+    );
+    if (unlock === undefined) throw new Error('missing the Unlock control');
+    unlock.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sendMessage.mock.calls.map((call: [unknown]): unknown => call[0])).toEqual([
+      { type: 'openEndGate' },
+    ]);
   });
 
   it('ticks bank affordability locally from the economy row', () => {
@@ -422,6 +458,54 @@ describe('overlay-v2 actions', () => {
       { type: 'openGate', gate: 'unlockSite', host: window.location.hostname },
       { type: 'requestSessionEnd' },
     ]);
+  });
+
+  it('offers the force end only on a gate the worker minted it for', async (): Promise<void> => {
+    const sendMessage: Mock<(request: unknown) => Promise<unknown>> = stubWorker({ ok: true });
+    // Still pending, so the ordinary confirm is not yet on screen while the bypass is.
+    const plain: GateState = gateState({
+      kind: 'cancel',
+      openedAt: NOW - 1_000,
+      readyAt: NOW + 9_000,
+      requiredPhrase: 'let me stop',
+    });
+    renderDocumentOverlay(
+      activeOverlay({
+        gate: plain,
+        actions: { state: 'gate', end: 'hidden', pause: 'hidden', unlock: 'hidden' },
+        copy: activeCopy({ gateTitle: 'End this session', gateConfirm: 'End the session' }),
+      }),
+      BLOCKED_VERDICT,
+    );
+    expect(shadowRoot().querySelector('.force-end')).toBeNull();
+    clearDocumentOverlay();
+
+    const minted: GateState = { ...plain, forceEndAvailable: true };
+    renderDocumentOverlay(
+      activeOverlay({
+        gate: minted,
+        actions: { state: 'gate', end: 'hidden', pause: 'hidden', unlock: 'hidden' },
+        copy: activeCopy({ gateTitle: 'End this session', gateConfirm: 'End the session' }),
+      }),
+      BLOCKED_VERDICT,
+    );
+    const forceEnd: HTMLButtonElement | null =
+      shadowRoot().querySelector<HTMLButtonElement>('.force-end');
+    if (forceEnd === null) throw new Error('missing the force end control');
+
+    // Not ready and untyped, so the ordinary confirm stays hidden while the bypass is live.
+    expect(forceEnd.textContent).toBe('Ignore timeout and end anyway');
+    expect(forceEnd.hidden).toBe(false);
+    expect(forceEnd.disabled).toBe(false);
+    expect((shadowRoot().querySelector('.gate .pill') as HTMLButtonElement).hidden).toBe(true);
+
+    forceEnd.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(sendMessage.mock.calls.map((call: [unknown]): unknown => call[0])).toEqual([
+      { type: 'forceEndGate' },
+    ]);
+    expect(forceEnd.disabled).toBe(false);
   });
 
   it('opens the End gate instead of ending outright when the view says so', async (): Promise<void> => {

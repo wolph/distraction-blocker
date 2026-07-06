@@ -12,7 +12,11 @@ import type { EndAuthorityV2, GateKind, GateState } from '../shared/types';
 
 export type GateRequest =
   | { type: 'abandonGate'; expectedGate: GateState }
-  | { type: 'confirmGate'; typedPhrase: string | null; expectedGate: GateState };
+  | { type: 'confirmGate'; typedPhrase: string | null; expectedGate: GateState }
+  | { type: 'forceEndGate' };
+
+/** The opt-in bypass, worded exactly as the Options checkbox names it. */
+const FORCE_END_LABEL: string = 'Ignore timeout and end anyway';
 
 /** The transport this panel sends through. Every surface answers with a coded v2 result. */
 export type GateCommandSender = (
@@ -58,6 +62,8 @@ export interface GatePanelProps {
   commandError: GateCommandErrorMapper;
   /** An End authority passes its exact published `copy.phraseLabel`. */
   phraseLabel?: string;
+  /** An open End authority passes its exact published `copy.confirm`. */
+  confirmLabel?: string;
 }
 
 export function GatePanel({
@@ -67,6 +73,7 @@ export function GatePanel({
   sendCommand,
   commandError,
   phraseLabel = DEFAULT_PHRASE_LABEL,
+  confirmLabel,
 }: GatePanelProps): VNode {
   const [typed, setTyped]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
   const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
@@ -143,6 +150,11 @@ export function GatePanel({
     });
   };
 
+  /** The worker re-checks the setting and the minted flag, so this sends no gate identity. */
+  const forceEnd: () => void = (): void => {
+    void requestGateUpdate({ type: 'forceEndGate' });
+  };
+
   return (
     <div class="gate-panel">
       {intention !== '' ? <p class="gate-intention">You said: {intention}</p> : null}
@@ -179,8 +191,13 @@ export function GatePanel({
         aria-describedby={confirmDescribedBy}
         onClick={confirm}
       >
-        {CONFIRM_LABELS[gate.kind]}
+        {confirmLabel ?? CONFIRM_LABELS[gate.kind]}
       </button>
+      {gate.forceEndAvailable ? (
+        <button type="button" class="gate-force-end" disabled={pending} onClick={forceEnd}>
+          {FORCE_END_LABEL}
+        </button>
+      ) : null}
       {error !== null ? (
         <p class="form-error" role="alert">
           {error}

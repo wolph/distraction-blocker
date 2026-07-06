@@ -118,11 +118,11 @@ function activeOverlay(overrides: Partial<ActiveOverlay> = {}): ActiveOverlay {
     activeUnlocks: [],
     attemptsToday: 2,
     stoppedPage: false,
-    actions: { state: 'ready', end: 'hidden', pause: 'request-gate', unlock: 'request-gate' },
+    actions: { state: 'ready', end: 'request-end', pause: 'request-gate', unlock: 'request-gate' },
     copy: {
       status: {
         kind: 'until-stopped',
-        text: 'Focus Lock is active until you end it from the popup.',
+        text: 'Focus Lock is active until you stop it.',
       },
       lockedUntil: null,
       intention: 'Finish the release notes',
@@ -138,6 +138,7 @@ function activeOverlay(overrides: Partial<ActiveOverlay> = {}): ActiveOverlay {
       gateTitle: null,
       gateBack: 'Never mind, back to work',
       gatePhraseLabel: 'Type this to confirm:',
+      gateForceEnd: 'Ignore timeout and end anyway',
       gateConfirm: null,
       transportError: 'Focus Lock could not update this action. Try again.',
     },

@@ -118,6 +118,7 @@ function currentSnapshot(now: number, theme: ThemeMode): SessionSnapshot {
             openedAt: now,
             readyAt: now + 30_000,
             requiredPhrase,
+            forceEndAvailable: false,
           },
     phase: 'focus',
     phaseEndsAt: now + 24 * 60_000,

@@ -22,6 +22,7 @@ import type {
 import { GatePanel } from './GatePanel';
 import {
   endControl,
+  gateConfirmLabel,
   gateIdentity,
   gateIntention,
   gatePhraseLabel,
@@ -73,6 +74,7 @@ interface EndGateView {
   gate: GateState;
   title: string;
   phraseLabel: string | undefined;
+  confirmLabel: string | undefined;
   intention: string;
 }
 
@@ -128,6 +130,7 @@ function endGateView(
     gate: authority.gate,
     title: authority.copy.title,
     phraseLabel: gatePhraseLabel(authority, authority.gate),
+    confirmLabel: gateConfirmLabel(authority, authority.gate),
     intention: gateIntention(authority, authority.gate, config),
   };
 }
@@ -174,6 +177,7 @@ export function LifecycleView({ snapshot, now, dataClear }: LifecycleViewProps):
             now={now}
             intention={endGate.intention}
             phraseLabel={endGate.phraseLabel}
+            confirmLabel={endGate.confirmLabel}
             sendCommand={sendGateCommand}
             commandError={mapGateError}
           />

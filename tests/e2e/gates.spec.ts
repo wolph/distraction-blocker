@@ -36,6 +36,7 @@ async function configureFastEconomy(
       gate: {
         delayMs: options.gateDelayMs ?? 500,
         requireTypedPhrase: options.requireTypedPhrase ?? false,
+        allowForceEnd: false,
       },
     },
   });

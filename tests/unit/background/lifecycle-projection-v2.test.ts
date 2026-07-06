@@ -14,12 +14,13 @@ import {
   isSessionLifecycleV2,
   isSessionSnapshotV2,
 } from '../../../src/shared/runtime-validation';
-import { END_SESSION_LABEL } from '../../../src/shared/session-copy';
+import { END_SESSION_LABEL, UNLOCK_LABEL } from '../../../src/shared/session-copy';
 import type {
   BankState,
   EndAuthorityV2,
   GateState,
   SessionConfigV2,
+  SessionDuration,
   SessionLifecycleV2,
   SessionSnapshotV2,
   SessionStateV2,
@@ -79,6 +80,8 @@ const PAUSED_AT: number = ACTIVATION_AT - 500_000;
 const SETTINGS: SettingsV2 = { ...DEFAULT_SETTINGS, schedule: [] };
 const BANK: BankState = { balanceMs: 120_000 };
 const INTENTION: string = 'Finish the release notes';
+const TIMED: SessionDuration = { kind: 'timed', minutes: 25 };
+const INDEFINITE: SessionDuration = { kind: 'until-stopped' };
 
 function snapshotInput(
   runtime: RuntimeStateV2,
@@ -141,9 +144,9 @@ function committedRuntime(
 
 describe('endAuthorityV2', (): void => {
   it('hides End for Hard and offers it immediately for Flexible', (): void => {
-    expect(endAuthorityV2('hard', null, INTENTION)).toEqual({ kind: 'hidden' });
-    expect(endAuthorityV2('hard', cancelGateState(), INTENTION)).toEqual({ kind: 'hidden' });
-    expect(endAuthorityV2('flexible', null, INTENTION)).toEqual({
+    expect(endAuthorityV2('hard', TIMED, null, INTENTION)).toEqual({ kind: 'hidden' });
+    expect(endAuthorityV2('hard', TIMED, cancelGateState(), INTENTION)).toEqual({ kind: 'hidden' });
+    expect(endAuthorityV2('flexible', TIMED, null, INTENTION)).toEqual({
       kind: 'immediate',
       actionLabel: END_SESSION_LABEL,
     });
@@ -157,11 +160,19 @@ describe('endAuthorityV2', (): void => {
       actions: { open: 'open-end-gate' },
     };
 
-    expect(endAuthorityV2('friction', null, INTENTION)).toEqual(closed);
+    expect(endAuthorityV2('friction', TIMED, null, INTENTION)).toEqual(closed);
     expect(
       endAuthorityV2(
         'friction',
-        { kind: 'pause', host: null, openedAt: AT, readyAt: AT, requiredPhrase: null },
+        TIMED,
+        {
+          kind: 'pause',
+          host: null,
+          openedAt: AT,
+          readyAt: AT,
+          requiredPhrase: null,
+          forceEndAvailable: false,
+        },
         INTENTION,
       ),
     ).toEqual(closed);
@@ -170,7 +181,7 @@ describe('endAuthorityV2', (): void => {
   it('opens the Friction gate on the exact persisted cancel gate', (): void => {
     const gate: GateState = cancelGateState({ requiredPhrase: cancelPhrase(INTENTION) });
 
-    expect(endAuthorityV2('friction', gate, INTENTION)).toEqual({
+    expect(endAuthorityV2('friction', TIMED, gate, INTENTION)).toEqual({
       kind: 'friction-gate',
       gate,
       copy: {
@@ -184,11 +195,66 @@ describe('endAuthorityV2', (): void => {
     });
   });
 
+  it('labels the End of a Friction until-stopped session Unlock, closed and open', (): void => {
+    const gate: GateState = cancelGateState({ requiredPhrase: cancelPhrase(INTENTION) });
+
+    expect(endAuthorityV2('friction', INDEFINITE, null, INTENTION)).toEqual({
+      kind: 'friction-gate',
+      gate: null,
+      copy: { actionLabel: UNLOCK_LABEL },
+      actions: { open: 'open-end-gate' },
+    });
+    expect(endAuthorityV2('friction', INDEFINITE, gate, INTENTION)).toEqual({
+      kind: 'friction-gate',
+      gate,
+      copy: {
+        title: 'End this session',
+        back: 'Never mind, back to work',
+        phraseLabel: 'Type this to confirm:',
+        confirm: UNLOCK_LABEL,
+        intentionReminder: INTENTION,
+      },
+      actions: { abandon: 'abandon-gate', confirm: 'confirm-gate' },
+    });
+  });
+
+  it('keeps End session for a Flexible until-stopped session and hides it for Hard', (): void => {
+    expect(endAuthorityV2('flexible', INDEFINITE, null, INTENTION)).toEqual({
+      kind: 'immediate',
+      actionLabel: END_SESSION_LABEL,
+    });
+    expect(endAuthorityV2('hard', INDEFINITE, null, INTENTION)).toEqual({ kind: 'hidden' });
+  });
+
+  it('publishes a Friction indefinite snapshot the public validator accepts', (): void => {
+    const runtime: RuntimeStateV2 = publishedFocusRuntime({
+      session: untilStoppedFocusSession({
+        config: sessionConfigV2({
+          strictness: 'friction',
+          duration: { kind: 'until-stopped' },
+          intention: INTENTION,
+        }),
+      }),
+    });
+    const snapshot: SessionSnapshotV2 = buildSessionSnapshotV2(snapshotInput(runtime));
+
+    expect(snapshot.lifecycle).toEqual({
+      kind: 'active',
+      endAuthority: {
+        kind: 'friction-gate',
+        gate: null,
+        copy: { actionLabel: UNLOCK_LABEL },
+        actions: { open: 'open-end-gate' },
+      },
+    });
+    expect(isSessionSnapshotV2(snapshot)).toBe(true);
+  });
+
   it('projects the reminder the snapshot guard cross-checks it against', (): void => {
     const gate: GateState = cancelGateState();
 
     for (const intention of [`  ${INTENTION}  `, '   ', '', '\n\t']) {
-      const authority: EndAuthorityV2 = endAuthorityV2('friction', gate, intention);
+      const authority: EndAuthorityV2 = endAuthorityV2('friction', TIMED, gate, intention);
 
       expect(
         authority.kind === 'friction-gate' && authority.gate !== null && authority.copy,
@@ -198,8 +264,8 @@ describe('endAuthorityV2', (): void => {
 
   it('reports a blank intention as no reminder', (): void => {
     const gate: GateState = cancelGateState();
-    const blank: EndAuthorityV2 = endAuthorityV2('friction', gate, '   ');
-    const padded: EndAuthorityV2 = endAuthorityV2('friction', gate, `  ${INTENTION}  `);
+    const blank: EndAuthorityV2 = endAuthorityV2('friction', TIMED, gate, '   ');
+    const padded: EndAuthorityV2 = endAuthorityV2('friction', TIMED, gate, `  ${INTENTION}  `);
 
     expect(
       blank.kind === 'friction-gate' && blank.gate !== null && blank.copy.intentionReminder,
@@ -582,6 +648,7 @@ describe('buildSessionSnapshotV2', (): void => {
         openedAt: AT - 1_000,
         readyAt: AT,
         requiredPhrase: cancelPhrase(INTENTION),
+        forceEndAvailable: false,
       }),
       unlocks: [{ host: 'live.example', until: AT + 1 }],
     });

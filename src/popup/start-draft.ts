@@ -1,5 +1,9 @@
 import { isRelativeMinuteDuration } from '../shared/numeric-validation';
-import { MODE_LABELS, START_UNTIL_STOPPED_LABEL } from '../shared/session-copy';
+import {
+  LOCK_UNTIL_MANUAL_UNLOCK_LABEL,
+  MODE_LABELS,
+  START_UNTIL_STOPPED_LABEL,
+} from '../shared/session-copy';
 import type {
   CycleConfig,
   ListsConfig,
@@ -25,7 +29,9 @@ export type TimedDurationDraft = { presetMin: number | null; customMin: string }
 
 export interface StartDraft {
   mode: SessionMode;
+  /** The chosen session type for either duration. Until stopped only clamps Hard away. */
   timedStrictness: Strictness;
+  /** The chosen cycle config, which only a timed session submits. */
   timedCycling: CycleConfig | null;
   duration: DraftDuration;
   frictionGate: { delayMs: number; requireTypedPhrase: boolean };
@@ -85,9 +91,13 @@ export function setTimedCycling(draft: StartDraft, cycling: CycleConfig | null):
   return { ...draft, timedCycling: cycling === null ? null : structuredClone(cycling) };
 }
 
-/** Until stopped forces Flexible. The unsent timed session type survives untouched. */
+/**
+ * Until stopped keeps the chosen type and clamps Hard to Friction, the nearest type that still
+ * has a manual end. The stored Hard survives untouched for the return to a timed duration.
+ */
 export function effectiveStrictness(draft: StartDraft): Strictness {
-  return draft.duration.kind === 'until-stopped' ? 'flexible' : draft.timedStrictness;
+  if (draft.duration.kind !== 'until-stopped') return draft.timedStrictness;
+  return draft.timedStrictness === 'hard' ? 'friction' : draft.timedStrictness;
 }
 
 /** Until stopped forces cycles off. The unsent timed cycle choice survives untouched. */
@@ -112,8 +122,13 @@ function effectiveDuration(draft: StartDraft): SessionDuration | null {
   return minutes === null ? null : { kind: 'timed', minutes };
 }
 
+/** The start button says how the session will end, so a Friction indefinite draft locks. */
 export function startLabel(draft: StartDraft): string {
-  if (draft.duration.kind === 'until-stopped') return START_UNTIL_STOPPED_LABEL;
+  if (draft.duration.kind === 'until-stopped') {
+    return effectiveStrictness(draft) === 'friction'
+      ? LOCK_UNTIL_MANUAL_UNLOCK_LABEL
+      : START_UNTIL_STOPPED_LABEL;
+  }
   const minutes: number | null = effectiveTimedMinutes(draft);
   const durationLabel: string = minutes === null ? INVALID_DURATION_LABEL : `${minutes} min`;
   return `Start ${durationLabel} - ${MODE_LABELS[draft.mode]}`;

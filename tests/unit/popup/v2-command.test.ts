@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   endCommandOf,
   endControl,
+  gateConfirmLabel,
   gateIdentity,
   gateIntention,
   mapGateError,
@@ -17,7 +18,7 @@ import {
 } from '../../../src/popup/v2-command';
 import { DEFAULT_LISTS, rulesFromLists } from '../../../src/shared/constants';
 import type { SessionRequestV2 } from '../../../src/shared/messages';
-import { END_SESSION_LABEL } from '../../../src/shared/session-copy';
+import { END_SESSION_LABEL, UNLOCK_LABEL } from '../../../src/shared/session-copy';
 import type {
   EndAuthorityV2,
   GateState,
@@ -43,6 +44,7 @@ const CANCEL_GATE: GateState & { kind: 'cancel' } = {
   openedAt: NOW - 2_000,
   readyAt: NOW + 8_000,
   requiredPhrase: null,
+  forceEndAvailable: false,
 };
 const OPEN_FRICTION: EndAuthorityV2 = {
   kind: 'friction-gate',
@@ -57,12 +59,22 @@ const OPEN_FRICTION: EndAuthorityV2 = {
   actions: { abandon: 'abandon-gate', confirm: 'confirm-gate' },
 };
 
+const UNLOCK_CLOSED_FRICTION: EndAuthorityV2 = {
+  ...CLOSED_FRICTION,
+  copy: { actionLabel: 'Unlock' },
+};
+const UNLOCK_OPEN_FRICTION: EndAuthorityV2 = {
+  ...OPEN_FRICTION,
+  copy: { ...OPEN_FRICTION.copy, confirm: 'Unlock' },
+};
+
 const PAUSE_GATE: GateState = {
   kind: 'pause',
   host: null,
   openedAt: NOW - 2_000,
   readyAt: NOW + 8_000,
   requiredPhrase: null,
+  forceEndAvailable: false,
 };
 
 const RULES: SessionRuleSnapshot = rulesFromLists(DEFAULT_LISTS);
@@ -139,6 +151,16 @@ describe('gateIntention', (): void => {
   });
 });
 
+describe('gateConfirmLabel', (): void => {
+  it('reads the published confirm label from an open friction authority only', (): void => {
+    expect(gateConfirmLabel(OPEN_FRICTION, CANCEL_GATE)).toBe('End the session');
+    expect(gateConfirmLabel(UNLOCK_OPEN_FRICTION, CANCEL_GATE)).toBe(UNLOCK_LABEL);
+    expect(gateConfirmLabel(UNLOCK_OPEN_FRICTION, PAUSE_GATE)).toBeUndefined();
+    expect(gateConfirmLabel(IMMEDIATE, CANCEL_GATE)).toBeUndefined();
+    expect(gateConfirmLabel(CLOSED_FRICTION, CANCEL_GATE)).toBeUndefined();
+  });
+});
+
 describe('endCommandOf', (): void => {
   it('maps every End authority to its command', (): void => {
     expect(endCommandOf(HIDDEN)).toBeNull();
@@ -162,6 +184,15 @@ describe('endControl', (): void => {
       expect(end.disabled).toBe(false);
     },
   );
+
+  it('reads the End label the authority publishes', async (): Promise<void> => {
+    const { getByRole, queryByRole } = render(h(Harness, { authority: UNLOCK_CLOSED_FRICTION }));
+
+    expect(queryByRole('button', { name: END_SESSION_LABEL })).toBeNull();
+    fireEvent.click(getByRole('button', { name: UNLOCK_LABEL }));
+
+    await waitFor((): void => expect(requests()).toEqual([{ type: 'openEndGate' }]));
+  });
 
   it('renders nothing for an authority that hides End', (): void => {
     const { container } = render(h(Harness, { authority: HIDDEN }));
@@ -272,6 +303,7 @@ describe('gate transport', (): void => {
       openedAt: 1,
       readyAt: 2,
       requiredPhrase: 'let me stop',
+      forceEndAvailable: false,
     };
     const abandon: unknown = await sendGateCommand({ type: 'abandonGate', expectedGate });
     const confirm: unknown = await sendGateCommand({

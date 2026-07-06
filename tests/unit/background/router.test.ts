@@ -68,6 +68,7 @@ describe('content unlock domain authority', (): void => {
       openedAt: 1,
       readyAt: 2,
       requiredPhrase: null,
+      forceEndAvailable: false,
     };
     const openGate = vi.fn().mockResolvedValue({ ok: true });
     const confirmGate = vi.fn().mockResolvedValue({ ok: true });
@@ -1520,6 +1521,17 @@ describe('routeMessage session ending wiring', () => {
       ok: true,
     });
     expect(requestSessionEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('delegates the force end bypass to the engine', async (): Promise<void> => {
+    const forceEndGate = vi.fn().mockResolvedValue({ ok: true, code: 'ok' });
+    const endingEngine: Engine = { forceEndGate } as unknown as Engine;
+
+    expect(await routeMessage(endingEngine, { type: 'forceEndGate' }, sender)).toEqual({
+      ok: true,
+      code: 'ok',
+    });
+    expect(forceEndGate).toHaveBeenCalledTimes(1);
   });
 });
 

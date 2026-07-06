@@ -15,8 +15,11 @@ import { intentionReminderFor } from '../shared/runtime-validation';
 import type {
   BankState,
   DailyAgg,
+  EndActionLabelV2,
   EndAuthorityV2,
+  EndGateConfirmLabelV2,
   GateState,
+  SessionDuration,
   SessionLifecycleV2,
   SessionSnapshotV2,
   SessionStateV2,
@@ -44,9 +47,10 @@ export interface SnapshotInputV2 {
 /**
  * The public types pin these strings as literals, so they are written out here rather than read
  * from `session-copy.ts`, whose constants are typed `string`. A test asserts `END_ACTION_LABEL`
- * still equals the shared `END_SESSION_LABEL`.
+ * still equals the shared `END_SESSION_LABEL` and `UNLOCK_ACTION_LABEL` the shared `UNLOCK_LABEL`.
  */
 const END_ACTION_LABEL: 'End session' = 'End session';
+const UNLOCK_ACTION_LABEL: 'Unlock' = 'Unlock';
 const GATE_TITLE: 'End this session' = 'End this session';
 const GATE_BACK: 'Never mind, back to work' = 'Never mind, back to work';
 const GATE_PHRASE_LABEL: 'Type this to confirm:' = 'Type this to confirm:';
@@ -62,24 +66,29 @@ const COMMITTED_TRANSITION_STAGES: ReadonlySet<TransitionStage> = new Set<Transi
 /**
  * End authority for one durable strictness. Hard renders no End, Flexible ends immediately, and
  * Friction renders the cancel deliberation gate: closed until one is persisted, then the exact
- * persisted gate. Every indefinite session is Flexible, so it always reaches the immediate branch.
+ * persisted gate. A Friction session with no timer has nothing to end early, so its End control
+ * and its gate confirm read Unlock: the same gate, the same command, a different word.
  */
 export function endAuthorityV2(
   strictness: Strictness,
+  duration: SessionDuration,
   gate: GateState | null,
   intention: string,
 ): EndAuthorityV2 {
   if (strictness === 'hard') return { kind: 'hidden' };
   if (strictness === 'flexible') return { kind: 'immediate', actionLabel: END_ACTION_LABEL };
+  const indefinite: boolean = duration.kind === 'until-stopped';
   const cancelGate: (GateState & { kind: 'cancel' }) | null = openCancelGate(gate);
   if (cancelGate === null) {
+    const actionLabel: EndActionLabelV2 = indefinite ? UNLOCK_ACTION_LABEL : END_ACTION_LABEL;
     return {
       kind: 'friction-gate',
       gate: null,
-      copy: { actionLabel: END_ACTION_LABEL },
+      copy: { actionLabel },
       actions: { open: 'open-end-gate' },
     };
   }
+  const confirm: EndGateConfirmLabelV2 = indefinite ? UNLOCK_ACTION_LABEL : GATE_CONFIRM;
   return {
     kind: 'friction-gate',
     gate: cancelGate,
@@ -87,7 +96,7 @@ export function endAuthorityV2(
       title: GATE_TITLE,
       back: GATE_BACK,
       phraseLabel: GATE_PHRASE_LABEL,
-      confirm: GATE_CONFIRM,
+      confirm,
       intentionReminder: intentionReminderFor(intention),
     },
     actions: { abandon: 'abandon-gate', confirm: 'confirm-gate' },
@@ -337,7 +346,12 @@ function committedAuthority(runtime: RuntimeStateV2): EndAuthorityV2 {
 }
 
 function sessionAuthority(runtime: RuntimeStateV2, session: SessionStateV2): EndAuthorityV2 {
-  return endAuthorityV2(session.config.strictness, runtime.gate, session.config.intention);
+  return endAuthorityV2(
+    session.config.strictness,
+    session.config.duration,
+    runtime.gate,
+    session.config.intention,
+  );
 }
 
 /** The published checkpoint names this session under the current epoch and base policy revision. */

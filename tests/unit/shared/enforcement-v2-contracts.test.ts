@@ -38,7 +38,7 @@ describe('shared enforcement v2 contracts', (): void => {
         | { kind: 'timed'; text: string }
         | {
             kind: 'until-stopped';
-            text: 'Focus Lock is active until you end it from the popup.';
+            text: 'Focus Lock is active until you stop it.';
           };
       lockedUntil: string | null;
       intention: string | null;
@@ -48,12 +48,13 @@ describe('shared enforcement v2 contracts', (): void => {
       bankUnit: 'site access credit';
       pauseAction: string;
       unlockAction: string;
-      endAction: 'End session';
+      endAction: 'End session' | 'Unlock';
       bankWaitFallback: 'earn site access credit by focusing';
       bankWaitPrefix: 'Ready in';
       gateTitle: string | null;
       gateBack: 'Never mind, back to work';
       gatePhraseLabel: 'Type this to confirm:';
+      gateForceEnd: 'Ignore timeout and end anyway';
       gateConfirm: string | null;
       transportError: 'Focus Lock could not update this action. Try again.';
     }>();

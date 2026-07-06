@@ -19,13 +19,21 @@ const ENTRY_EXTRA_CASES: EntryExtraCase[] = [
 ];
 
 describe('v2 schedule validation and v1 Settings compatibility', (): void => {
-  it('accepts exact v2 window and forced indefinite entries', (): void => {
+  it('accepts exact v2 window entries and Flexible or Friction indefinite entries', (): void => {
     expect(isScheduleEntryV2(WINDOW_ENTRY)).toBe(true);
     expect(
       isScheduleEntryV2({
         ...WINDOW_ENTRY,
         duration: { kind: 'until-stopped' },
         strictness: 'flexible',
+        cycling: null,
+      }),
+    ).toBe(true);
+    expect(
+      isScheduleEntryV2({
+        ...WINDOW_ENTRY,
+        duration: { kind: 'until-stopped' },
+        strictness: 'friction',
         cycling: null,
       }),
     ).toBe(true);

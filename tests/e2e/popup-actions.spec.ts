@@ -13,7 +13,7 @@ test('popup shows an unlock confirmation and a red End session control', async (
     settings: {
       ...settings,
       pause: { earnRatio: 10, capMs: 600_000, pauseMs: 300_000, unlockMs: 300_000 },
-      gate: { delayMs: 1_000, requireTypedPhrase: false },
+      gate: { delayMs: 1_000, requireTypedPhrase: false, allowForceEnd: false },
     },
   });
   const site: Page = await context.newPage();

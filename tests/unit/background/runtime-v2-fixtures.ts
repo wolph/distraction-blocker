@@ -504,6 +504,7 @@ export function activeCopy(overrides: Partial<ActiveOverlayCopy> = {}): ActiveOv
     gateTitle: null,
     gateBack: 'Never mind, back to work',
     gatePhraseLabel: 'Type this to confirm:',
+    gateForceEnd: 'Ignore timeout and end anyway',
     gateConfirm: null,
     transportError: 'Focus Lock could not update this action. Try again.',
     ...overrides,
@@ -552,7 +553,7 @@ export function activeOverlay(
   };
 }
 
-/** Indefinite focus: no phase or session end, no timed status copy, and no immediate End action. */
+/** Indefinite Flexible focus: no phase or session end, no timed status copy, End offered. */
 export function untilStoppedActiveOverlay(
   overrides: Partial<ActiveOverlay> = {},
   capturedAt: number = ACTIVATION_AT,
@@ -567,11 +568,16 @@ export function untilStoppedActiveOverlay(
         phaseEndsAt: null,
         sessionEndsAt: null,
       },
-      actions: { state: 'ready', end: 'hidden', pause: 'request-gate', unlock: 'request-gate' },
+      actions: {
+        state: 'ready',
+        end: 'request-end',
+        pause: 'request-gate',
+        unlock: 'request-gate',
+      },
       copy: activeCopy({
         status: {
           kind: 'until-stopped',
-          text: 'Focus Lock is active until you end it from the popup.',
+          text: 'Focus Lock is active until you stop it.',
         },
         lockedUntil: null,
       }),
@@ -592,6 +598,7 @@ export function cancelGateState(overrides: Partial<GateState> = {}): GateState {
     openedAt: ACTIVATION_AT + 3_000,
     readyAt: ACTIVATION_AT + 8_000,
     requiredPhrase: 'end my session',
+    forceEndAvailable: false,
     ...overrides,
   };
 }

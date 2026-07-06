@@ -81,6 +81,17 @@ describe('detached v2 domain intrinsics', (): void => {
         openedAt: NOW,
         readyAt: NOW + 1,
         requiredPhrase: null,
+        forceEndAvailable: false,
+      }),
+    ).toBe(true);
+    expect(
+      validateDetachedGateState({
+        kind: 'cancel',
+        host: null,
+        openedAt: NOW,
+        readyAt: NOW + 1,
+        requiredPhrase: null,
+        forceEndAvailable: true,
       }),
     ).toBe(true);
     expect(
@@ -90,6 +101,27 @@ describe('detached v2 domain intrinsics', (): void => {
         openedAt: NOW,
         readyAt: NOW + 1,
         requiredPhrase: null,
+        forceEndAvailable: false,
+      }),
+    ).toBe(false);
+    // The worker-minted force end flag is part of the exact gate, never optional or loose.
+    expect(
+      validateDetachedGateState({
+        kind: 'cancel',
+        host: null,
+        openedAt: NOW,
+        readyAt: NOW + 1,
+        requiredPhrase: null,
+      }),
+    ).toBe(false);
+    expect(
+      validateDetachedGateState({
+        kind: 'cancel',
+        host: null,
+        openedAt: NOW,
+        readyAt: NOW + 1,
+        requiredPhrase: null,
+        forceEndAvailable: 'true',
       }),
     ).toBe(false);
     expect(validateDetachedSiteUnlock({ host: 'example.com', until: NOW + 1 })).toBe(true);
@@ -106,6 +138,18 @@ describe('detached v2 domain intrinsics', (): void => {
 
     expect(validateDetachedSessionStateV2(TIMED_STATE)).toBe(true);
     expect(validateDetachedSessionStateV2(indefinite)).toBe(true);
+    expect(
+      validateDetachedSessionStateV2({
+        ...indefinite,
+        config: { ...MANUAL_INDEFINITE_CONFIG, strictness: 'friction' },
+      }),
+    ).toBe(true);
+    expect(
+      validateDetachedSessionStateV2({
+        ...indefinite,
+        config: { ...MANUAL_INDEFINITE_CONFIG, strictness: 'hard' },
+      }),
+    ).toBe(false);
     expect(validateDetachedSessionStateV2({ ...indefinite, sessionEndsAt: NOW + 1 })).toBe(false);
   });
 

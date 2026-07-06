@@ -280,6 +280,8 @@ export type SessionRequestV2 =
   | { type: 'abandonGate'; expectedGate: GateState }
   | { type: 'confirmGate'; typedPhrase: string | null; expectedGate: GateState }
   | { type: 'openGate'; gate: 'pause' | 'unlockSite'; host: string | null }
+  /** Ends a Friction session from its open cancel gate at once, when the worker minted the flag. */
+  | { type: 'forceEndGate' }
   | { type: 'resumeFromPause' }
   | { type: 'startNextFocusEarly' }
   | { type: 'retryTransitionCleanup' }
@@ -293,6 +295,7 @@ export interface SessionResponseMapV2 {
   abandonGate: CommandResponseV2<SessionCommandResultCodeV2>;
   confirmGate: CommandResponseV2<SessionCommandResultCodeV2>;
   openGate: CommandResponseV2<SessionCommandResultCodeV2>;
+  forceEndGate: CommandResponseV2<SessionCommandResultCodeV2>;
   resumeFromPause: CommandResponseV2<SessionCommandResultCodeV2>;
   startNextFocusEarly: CommandResponseV2<SessionCommandResultCodeV2>;
   retryTransitionCleanup: CommandResponseV2<RetryCleanupResultCodeV2>;

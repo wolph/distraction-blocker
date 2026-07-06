@@ -62,6 +62,16 @@ describe('v2 event validation', (): void => {
     expect(isSessionEndedEventV2(ENDED)).toBe(true);
   });
 
+  it('accepts a Friction until-stopped start event', (): void => {
+    expect(
+      isSessionStartedEventV2({
+        ...STARTED,
+        strictness: 'friction',
+        duration: { kind: 'until-stopped' },
+      }),
+    ).toBe(true);
+  });
+
   it.each([
     { ...STARTED, eventId: 'wrong:start' },
     { ...STARTED, sessionId: 'not-a-uuid' },

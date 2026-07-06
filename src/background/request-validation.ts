@@ -456,9 +456,10 @@ function isPauseSettings(value: unknown): boolean {
 function isGateSettings(value: unknown): boolean {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['delayMs', 'requireTypedPhrase']) &&
+    hasExactKeys(value, ['delayMs', 'requireTypedPhrase', 'allowForceEnd']) &&
     isRelativeMillisecondDuration(value.delayMs, true) &&
-    typeof value.requireTypedPhrase === 'boolean'
+    typeof value.requireTypedPhrase === 'boolean' &&
+    typeof value.allowForceEnd === 'boolean'
   );
 }
 
@@ -672,6 +673,7 @@ function parseRecord(value: Record<string, unknown>): Request | null {
       // The live start request is the v2 one, which owns the tagged duration and the exact keys.
       return parseSessionStartRequestV2(value);
     case 'openEndGate':
+    case 'forceEndGate':
     case 'retryTransitionCleanup':
     case 'retryClosureCleanup':
     case 'retryDataClear':

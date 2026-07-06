@@ -10,7 +10,6 @@ import {
 const validRecord = {
   assertions: {
     exactCopy: ['A moment to decide'],
-    forceEndControlCount: 0,
     resolvedTheme: {
       backgroundColor: 'rgb(247, 250, 248)',
       color: 'rgb(22, 33, 26)',

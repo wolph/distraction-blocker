@@ -27,6 +27,8 @@ export const OVERLAY_STYLES: string = `
   --overlay-error-border: #d97706;
   --overlay-error-bg: #fffbeb;
   --overlay-error-text: #78350f;
+  --overlay-danger: #a4251b;
+  --overlay-danger-soft: #fce8e6;
 }
 @media (prefers-color-scheme: dark) {
   :host([data-theme="auto"]) {
@@ -46,6 +48,8 @@ export const OVERLAY_STYLES: string = `
     --overlay-error-border: rgba(251, 191, 36, 0.45);
     --overlay-error-bg: rgba(120, 53, 15, 0.35);
     --overlay-error-text: #fde68a;
+    --overlay-danger: #ff8a80;
+    --overlay-danger-soft: #3d2422;
   }
 }
 :host([data-theme="dark"]) {
@@ -65,6 +69,8 @@ export const OVERLAY_STYLES: string = `
   --overlay-error-border: rgba(251, 191, 36, 0.45);
   --overlay-error-bg: rgba(120, 53, 15, 0.35);
   --overlay-error-text: #fde68a;
+  --overlay-danger: #ff8a80;
+  --overlay-danger-soft: #3d2422;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 .backdrop {
@@ -140,6 +146,12 @@ button:disabled { cursor: default; }
 }
 .primary:hover:not(:disabled) { background: #4ade80; }
 .primary:disabled { cursor: default; opacity: 0.55; }
+.force-end {
+  border: 1px solid var(--overlay-danger); border-radius: 999px; padding: 0.55rem 1.2rem;
+  background: var(--overlay-danger-soft); color: var(--overlay-danger); font-size: 0.9rem;
+}
+.force-end:hover:not(:disabled) { filter: brightness(0.96); }
+.force-end:disabled { opacity: 0.55; }
 .phrase-label { font-size: 0.9rem; color: var(--overlay-muted); }
 .phrase-text { font-size: 0.95rem; color: var(--overlay-intention); font-style: italic; overflow-wrap: anywhere; }
 .phrase {

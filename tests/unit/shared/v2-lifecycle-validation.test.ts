@@ -6,6 +6,8 @@ import {
   HIDDEN_AUTHORITY,
   IMMEDIATE_AUTHORITY,
   OPEN_FRICTION_AUTHORITY,
+  UNLOCK_CLOSED_FRICTION_AUTHORITY,
+  UNLOCK_OPEN_FRICTION_AUTHORITY,
 } from './v2-public-fixtures';
 import { NOW, SESSION_ID } from './v2-runtime-fixtures';
 
@@ -43,6 +45,8 @@ describe('v2 public lifecycle validation', (): void => {
       endAuthority: HIDDEN_AUTHORITY,
     },
     { kind: 'active', endAuthority: CLOSED_FRICTION_AUTHORITY },
+    { kind: 'active', endAuthority: UNLOCK_CLOSED_FRICTION_AUTHORITY },
+    { kind: 'active', endAuthority: UNLOCK_OPEN_FRICTION_AUTHORITY },
     {
       kind: 'error',
       code: 'transition-cleanup-failed',
@@ -64,6 +68,18 @@ describe('v2 public lifecycle validation', (): void => {
   it.each([
     { kind: 'idle', endAuthority: IMMEDIATE_AUTHORITY },
     { kind: 'idle', canEnd: false, endAuthority: HIDDEN_AUTHORITY },
+    { kind: 'active', endAuthority: { ...IMMEDIATE_AUTHORITY, actionLabel: 'Unlock' } },
+    {
+      kind: 'active',
+      endAuthority: { ...CLOSED_FRICTION_AUTHORITY, copy: { actionLabel: 'End the session' } },
+    },
+    {
+      kind: 'active',
+      endAuthority: {
+        ...OPEN_FRICTION_AUTHORITY,
+        copy: { ...OPEN_FRICTION_AUTHORITY.copy, confirm: 'End session' },
+      },
+    },
     {
       kind: 'starting',
       operationId: 'not-a-uuid',

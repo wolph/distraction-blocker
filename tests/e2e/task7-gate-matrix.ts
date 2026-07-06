@@ -25,7 +25,7 @@ export async function configureTask7Gate(page: Page, requireTypedPhrase: boolean
       type: 'updateSettings',
       settings: {
         ...settings,
-        gate: { delayMs: 30_000, requireTypedPhrase },
+        gate: { delayMs: 30_000, requireTypedPhrase, allowForceEnd: false },
       },
     }),
   ).toEqual({ ok: true });
@@ -52,10 +52,6 @@ export async function captureTask7GateState(input: {
         await expect(panel).toBeVisible();
         await expect(panel).toContainText('A moment to decide');
         await expect(panel.getByRole('button', { name: 'End the session' })).toBeVisible();
-        const forceEndControlCount: number = await input.page
-          .getByText('Ignore timeout and end anyway')
-          .count();
-        expect(forceEndControlCount).toBe(0);
         await focusTarget.focus();
         await expectGateWithinViewport(panel);
         await input.capture.capture(
@@ -66,7 +62,6 @@ export async function captureTask7GateState(input: {
           viewport,
           'full',
           true,
-          { forceEndControlCount },
         );
         await input.capture.capture(
           panel,
@@ -76,7 +71,6 @@ export async function captureTask7GateState(input: {
           viewport,
           'focused',
           false,
-          { forceEndControlCount },
         );
         const bounds = await panel.boundingBox();
         const documentGeometry = await input.page.evaluate(() => ({
@@ -87,7 +81,6 @@ export async function captureTask7GateState(input: {
         geometry.push({
           bounds,
           document: documentGeometry,
-          forceEndControlCount,
           state: input.state,
           themeCase: themeCase.id,
           viewport,

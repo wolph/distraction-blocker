@@ -50,6 +50,7 @@ function openFriction(gate: Partial<GateState & { kind: 'cancel' }> = {}): EndAu
       openedAt: NOW - 2_000,
       readyAt: NOW + 8_000,
       requiredPhrase: null,
+      forceEndAvailable: false,
       ...gate,
     },
     copy: {
@@ -380,6 +381,71 @@ describe('ActiveView', (): void => {
       ]);
     });
     await settled(abandon);
+    expect(view.queryByRole('alert')).toBeNull();
+  });
+
+  it('labels the gate confirm Unlock when the authority publishes it', async (): Promise<void> => {
+    const opened: EndAuthorityV2 = openFriction({ requiredPhrase: null });
+    const authority: EndAuthorityV2 =
+      opened.kind === 'friction-gate' && opened.gate !== null
+        ? { ...opened, copy: { ...opened.copy, confirm: 'Unlock' } }
+        : opened;
+    const view = render(
+      h(ActiveView, {
+        snapshot: { ...focusSnap(authority), config: INDEFINITE_CONFIG, sessionEndsAt: null },
+        now: NOW + 9_000,
+      }),
+    );
+
+    expect(view.queryByRole('button', { name: 'End the session' })).toBeNull();
+    const confirm: HTMLButtonElement = view.getByRole('button', {
+      name: 'Unlock',
+    }) as HTMLButtonElement;
+    fireEvent.click(confirm);
+
+    await waitFor((): void => {
+      expect(sessionRequests()).toEqual([
+        {
+          type: 'confirmGate',
+          typedPhrase: null,
+          expectedGate: authority.kind === 'friction-gate' ? authority.gate : null,
+        },
+      ]);
+    });
+  });
+
+  it('offers the force end bypass only on a gate the worker minted it for', async (): Promise<void> => {
+    const plain: EndAuthorityV2 = openFriction({ requiredPhrase: 'let me stop' });
+    const plainView = render(h(ActiveView, { snapshot: focusSnap(plain), now: NOW }));
+    expect(plainView.queryByRole('button', { name: 'Ignore timeout and end anyway' })).toBeNull();
+    plainView.unmount();
+
+    const authority: EndAuthorityV2 = openFriction({
+      requiredPhrase: 'let me stop',
+      forceEndAvailable: true,
+    });
+    const view = render(h(ActiveView, { snapshot: focusSnap(authority), now: NOW }));
+    const forceEnd: HTMLButtonElement = view.getByRole('button', {
+      name: 'Ignore timeout and end anyway',
+    }) as HTMLButtonElement;
+    const confirm: HTMLButtonElement = view.getByRole('button', {
+      name: 'End the session',
+    }) as HTMLButtonElement;
+
+    // The gate is not ready and the phrase is untyped, but the bypass is live regardless.
+    expect(confirm.disabled).toBe(true);
+    expect(forceEnd.disabled).toBe(false);
+    expect(forceEnd.classList.contains('gate-force-end')).toBe(true);
+    expect(
+      confirm.compareDocumentPosition(forceEnd) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    fireEvent.click(forceEnd);
+
+    await waitFor((): void => {
+      expect(sessionRequests()).toEqual([{ type: 'forceEndGate' }]);
+    });
+    await settled(forceEnd);
     expect(view.queryByRole('alert')).toBeNull();
   });
 

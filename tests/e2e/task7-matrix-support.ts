@@ -6,7 +6,6 @@ import type { ThemeMode } from '../../src/shared/types';
 import type { Task7ThemeCase, Task7ThemeSurface } from './task7-evidence';
 
 export interface Task7EvidenceAssertions {
-  forceEndControlCount?: number;
   visibleResponsiveCopies?: number;
 }
 

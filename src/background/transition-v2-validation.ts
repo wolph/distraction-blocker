@@ -332,7 +332,7 @@ function validateDetachedSessionStartCandidate(value: unknown): value is Session
     return false;
   }
   if (duration.kind === 'until-stopped') {
-    if (candidate.strictness !== 'flexible' || candidate.cycling !== null) return false;
+    if (candidate.strictness === 'hard' || candidate.cycling !== null) return false;
   }
   return candidate.source === 'manual'
     ? candidate.scheduleOccurrence === null &&

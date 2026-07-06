@@ -267,6 +267,28 @@ describe('BehaviorDefaults', () => {
     ).toBeTruthy();
   });
 
+  it('offers the force end bypass directly after the typed sentence checkbox', (): void => {
+    const onChange = vi.fn();
+    const { getByLabelText } = render(
+      <BehaviorDefaults settings={DEFAULT_SETTINGS} onChange={onChange} />,
+    );
+    const typed: HTMLInputElement = getByLabelText(
+      'Also require typing a sentence',
+    ) as HTMLInputElement;
+    const forceEnd: HTMLInputElement = getByLabelText(
+      'Enable "Ignore timeout and end anyway" button',
+    ) as HTMLInputElement;
+
+    expect(forceEnd.checked).toBe(false);
+    expect(typed.compareDocumentPosition(forceEnd) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(forceEnd.closest('label')?.previousElementSibling).toBe(typed.closest('label'));
+
+    fireEvent.click(forceEnd);
+
+    const next: Settings = onChange.mock.calls[0]?.[0] as Settings;
+    expect(next.gate).toEqual({ ...DEFAULT_SETTINGS.gate, allowForceEnd: true });
+  });
+
   it('switches the gate delay to 30 seconds', (): void => {
     const onChange = vi.fn();
     const { getByLabelText } = render(

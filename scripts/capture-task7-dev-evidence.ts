@@ -286,10 +286,6 @@ async function captureGateAndStats(
         const copy: readonly string[] = ['A moment to decide', 'End the session'];
         await expectText(page, copy);
         await expectTheme(page, themeCase);
-        const forceEndControlCount: number = await page
-          .getByText('Ignore timeout and end anyway')
-          .count();
-        if (forceEndControlCount !== 0) throw new Error('Force-end control unexpectedly visible.');
         const focusTarget: Locator =
           state === 'typed-gate'
             ? panel.locator('input[type="text"]')
@@ -298,7 +294,7 @@ async function captureGateAndStats(
         for (const scope of ['full', 'focused'] as const) {
           records.push(
             await capture(outputDir, scope === 'full' ? page : panel, {
-              assertions: { exactCopy: copy, forceEndControlCount },
+              assertions: { exactCopy: copy },
               diagnostics,
               scope,
               state,

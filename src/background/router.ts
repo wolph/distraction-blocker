@@ -439,6 +439,8 @@ export async function routeMessage(
       return engine.openGate(msg.gate, msg.host);
     case 'openEndGate':
       return engine.openEndGate();
+    case 'forceEndGate':
+      return engine.forceEndGate();
     case 'confirmGate':
       return engine.confirmGate(msg.typedPhrase, msg.expectedGate);
     case 'requestSessionEnd':

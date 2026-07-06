@@ -422,11 +422,13 @@ describe('background transition candidate', (): void => {
     ]);
   });
 
-  it('keeps an until-stopped candidate flexible and uncycled', (): void => {
-    expectRejected([
+  it('keeps an until-stopped candidate uncycled and never Hard', (): void => {
+    expectAccepted([
       pendingTransition('start', 'prepared', {
         candidate: untilStoppedCandidate({ strictness: 'friction' }),
       }),
+    ]);
+    expectRejected([
       pendingTransition('start', 'prepared', {
         candidate: untilStoppedCandidate({ strictness: 'hard' }),
       }),
