@@ -272,6 +272,9 @@ function popupFixtures(
       visible: '.forced-control',
       prepare: async (page: Page): Promise<void> => {
         await page.getByRole('button', { name: 'Until stopped' }).click();
+        // The session type is live now, so the one forced control left is the cycles row,
+        // which sits inside the collapsed cycle options.
+        await page.getByText('Cycle options').click();
         await expect(page.locator('.forced-control').first()).toBeVisible();
         const forced: Locator = page.locator('.forced-control').first();
         if (state === 'popup-forced-hover') {
@@ -295,7 +298,10 @@ function popupFixtures(
     visible: '.session-type-control',
     prepare: async (page: Page): Promise<void> => {
       await page.getByRole('button', { name: 'Until stopped' }).click();
-      await expect(page.locator('.forced-control').first()).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Hard lock' })).toHaveAttribute(
+        'aria-disabled',
+        'true',
+      );
     },
   });
   startForm('popup-forced-hover');

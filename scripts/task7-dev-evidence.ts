@@ -13,7 +13,6 @@ function task7ProcessStopped(process: Task7StoppableProcess): boolean {
 export interface Task7DevEvidenceRecord {
   assertions: {
     exactCopy: readonly string[];
-    forceEndControlCount?: number;
     resolvedTheme: {
       backgroundColor: string;
       color: string;

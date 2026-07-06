@@ -849,9 +849,9 @@ export async function waitForActiveSession(
 }
 
 /**
- * Starts an until-stopped session. The three fields an indefinite session has no freedom in are
- * not overridable, because a start that named a duration, a strictness, or a cycle plan of its own
- * would not be the session this helper's name promises.
+ * Starts a Flexible until-stopped session. The duration and the cycle plan are not overridable,
+ * because a start that named its own would not be the session this helper's name promises, and
+ * the type stays Flexible so every caller gets the immediate End the suite asserts on.
  */
 export async function startUntilStoppedSession(
   extPage: Page,
