@@ -295,6 +295,11 @@ async function bootWorker(
       unregisterContentScripts: vi.fn().mockResolvedValue(undefined),
     },
     storage: {
+      // The work target lives here for the browser's lifetime. No scenario here chooses one.
+      session: {
+        get: vi.fn().mockResolvedValue({}),
+        set: vi.fn().mockResolvedValue(undefined),
+      },
       onChanged: { addListener: vi.fn() },
       local: {
         get: vi.fn(async (keys: string | string[] | null): Promise<Record<string, unknown>> => {
@@ -382,7 +387,10 @@ async function bootWorker(
         }
         return {};
       }),
+      onCreated: { addListener: vi.fn() },
       onRemoved: { addListener: vi.fn() },
+      onReplaced: { addListener: vi.fn() },
+      onUpdated: { addListener: vi.fn() },
     },
     webNavigation: {
       getFrame: vi.fn(
@@ -404,7 +412,11 @@ async function bootWorker(
         }),
       },
     },
-    windows: { update: vi.fn().mockResolvedValue({}) },
+    windows: {
+      get: vi.fn().mockResolvedValue({ id: 1, incognito: false }),
+      getCurrent: vi.fn().mockResolvedValue({ id: 1, incognito: false }),
+      update: vi.fn().mockResolvedValue({}),
+    },
   });
 
   main();

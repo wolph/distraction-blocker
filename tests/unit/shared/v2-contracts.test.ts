@@ -131,6 +131,7 @@ describe('additive v2 contracts', (): void => {
       | 'transition-cleanup-pending'
       | 'closure-cleanup-pending'
       | 'data-clear-pending'
+      | 'work-target-not-saved'
     >();
     expectTypeOf<TransitionFailureReasonV2>().toEqualTypeOf<
       | 'website-access-lost'
@@ -165,6 +166,7 @@ describe('additive v2 contracts', (): void => {
       | 'transition-cleanup-pending'
       | 'closure-cleanup-pending'
       | 'data-clear-pending'
+      | 'work-target-not-saved'
       | 'retry-not-available'
     >();
     expectTypeOf<

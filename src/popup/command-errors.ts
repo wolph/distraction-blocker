@@ -26,6 +26,7 @@ const START_FAILURE_CODES: Readonly<Record<StartFailureCode, true>> = {
   'transition-cleanup-pending': true,
   'closure-cleanup-pending': true,
   'data-clear-pending': true,
+  'work-target-not-saved': true,
 };
 
 /** Only a failed transition step reports that its effects still need cleanup. */

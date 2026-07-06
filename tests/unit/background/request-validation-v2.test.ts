@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { parseSessionStartRequestV2 } from '../../../src/background/request-validation';
+import {
+  parseRequest,
+  parseSessionStartRequestV2,
+} from '../../../src/background/request-validation';
 import { DEFAULT_LISTS, rulesFromLists } from '../../../src/shared/constants';
 import type { SessionStartRequestV2 } from '../../../src/shared/messages';
 import { isSessionConfigV2 } from '../../../src/shared/runtime-validation';
@@ -463,5 +466,53 @@ describe('parseSessionStartRequestV2', (): void => {
     } finally {
       descriptorSpy.mockRestore();
     }
+  });
+});
+
+describe('the start request with a chosen work tab', (): void => {
+  const WORK_TAB_REQUEST: SessionStartRequestV2 = { ...REQUEST, workTabId: 4, windowId: 2 };
+
+  it('accepts the four-key request, keeps both ids and still clones the config', (): void => {
+    const parsed: SessionStartRequestV2 | null = parseSessionStartRequestV2(WORK_TAB_REQUEST);
+    expect(parsed).toEqual(WORK_TAB_REQUEST);
+    expect(parsed?.config).not.toBe(WORK_TAB_REQUEST.config);
+    expect(parseRequest(WORK_TAB_REQUEST)).toEqual(WORK_TAB_REQUEST);
+    expect(parseRequest({ ...REQUEST, workTabId: 0, windowId: 0 })).toEqual({
+      ...REQUEST,
+      workTabId: 0,
+      windowId: 0,
+    });
+  });
+
+  it.each([
+    { ...REQUEST, workTabId: 4 },
+    { ...REQUEST, windowId: 2 },
+    { ...WORK_TAB_REQUEST, workTabId: -1 },
+    { ...WORK_TAB_REQUEST, workTabId: 1.5 },
+    { ...WORK_TAB_REQUEST, workTabId: '4' },
+    { ...WORK_TAB_REQUEST, windowId: Number.NaN },
+    { ...WORK_TAB_REQUEST, windowId: null },
+    { ...WORK_TAB_REQUEST, windowId: undefined },
+    { ...WORK_TAB_REQUEST, extra: true },
+    { ...WORK_TAB_REQUEST, tabId: 4 },
+    { type: 'startSession', workTabId: 4, windowId: 2 },
+  ])('rejects a start request with the wrong work tab keys %#', (request: unknown): void => {
+    expect(parseSessionStartRequestV2(request)).toBeNull();
+    expect(parseRequest(request)).toBeNull();
+  });
+
+  it('rejects a work tab accessor without invoking its getter', (): void => {
+    let getterCalls: number = 0;
+    const request: Record<string, unknown> = { ...REQUEST, windowId: 2 };
+    Object.defineProperty(request, 'workTabId', {
+      enumerable: true,
+      get: (): number => {
+        getterCalls += 1;
+        return 4;
+      },
+    });
+
+    expect(parseSessionStartRequestV2(request)).toBeNull();
+    expect(getterCalls).toBe(0);
   });
 });

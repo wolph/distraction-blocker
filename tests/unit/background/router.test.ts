@@ -6,6 +6,7 @@ import { routeMessage } from '../../../src/background/router';
 import { emptyRuntimeV2 } from '../../../src/background/runtime-store-v2';
 import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import { type AggregateStorage, fetchStats } from '../../../src/background/stats-service';
+import type { WorkTargetService } from '../../../src/background/work-target';
 import {
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
@@ -1607,5 +1608,102 @@ describe('routeMessage tab identity wiring', () => {
     expect(rebindTab).not.toHaveBeenCalled();
     expect(documentCommandsFor).not.toHaveBeenCalled();
     expect(markStopped).not.toHaveBeenCalled();
+  });
+});
+
+describe('work target routing', (): void => {
+  const WORK_SESSION_ID: string = '10000000-0000-4000-8000-000000000001';
+  const popup: chrome.runtime.MessageSender = {
+    id: 'extension',
+    url: 'chrome-extension://extension/src/popup/popup.html',
+  };
+  type ServiceMocks = {
+    getWorkTabs: ReturnType<typeof vi.fn>;
+    getContentWorkTabs: ReturnType<typeof vi.fn>;
+    getWorkTabIcon: ReturnType<typeof vi.fn>;
+    getWorkTarget: ReturnType<typeof vi.fn>;
+    setWorkTarget: ReturnType<typeof vi.fn>;
+    returnToWork: ReturnType<typeof vi.fn>;
+    startSession: ReturnType<typeof vi.fn>;
+  };
+  function fakeService(): { mocks: ServiceMocks; service: WorkTargetService } {
+    const mocks: ServiceMocks = {
+      getWorkTabs: vi.fn().mockResolvedValue({ ok: true, tabs: [] }),
+      getContentWorkTabs: vi.fn().mockResolvedValue({ ok: true, tabs: [] }),
+      getWorkTabIcon: vi.fn().mockResolvedValue({ ok: true, icon: null }),
+      getWorkTarget: vi
+        .fn()
+        .mockResolvedValue({ ok: true, sessionId: null, state: 'missing', title: null }),
+      setWorkTarget: vi.fn().mockResolvedValue({ ok: true }),
+      returnToWork: vi.fn().mockResolvedValue({ ok: true }),
+      startSession: vi.fn().mockResolvedValue({ ok: true, code: 'ok' }),
+    };
+    return { mocks, service: mocks as unknown as WorkTargetService };
+  }
+
+  it('dispatches every work target request to the injected service with the sender', async (): Promise<void> => {
+    const { mocks, service } = fakeService();
+    const engine: Engine = {} as unknown as Engine;
+    const rules = rulesFromLists(DEFAULT_LISTS);
+    const route = (msg: Parameters<typeof routeMessage>[1]): Promise<unknown> =>
+      routeMessage(engine, msg, popup, undefined, undefined, service);
+
+    expect(await route({ type: 'getWorkTabs', mode: 'blacklist', windowId: 3 })).toEqual({
+      ok: true,
+      tabs: [],
+    });
+    expect(mocks.getWorkTabs).toHaveBeenLastCalledWith('blacklist', 3, undefined, popup);
+    await route({ type: 'getWorkTabs', mode: 'whitelist', windowId: 3, rules });
+    expect(mocks.getWorkTabs).toHaveBeenLastCalledWith('whitelist', 3, rules, popup);
+    await route({ type: 'getWorkTabs', sessionId: WORK_SESSION_ID });
+    expect(mocks.getContentWorkTabs).toHaveBeenCalledExactlyOnceWith(WORK_SESSION_ID, popup);
+    await route({ type: 'getWorkTabIcon', sessionId: WORK_SESSION_ID, tabId: 4 });
+    expect(mocks.getWorkTabIcon).toHaveBeenCalledExactlyOnceWith(WORK_SESSION_ID, 4, popup);
+    await route({ type: 'getWorkTarget' });
+    expect(mocks.getWorkTarget).toHaveBeenLastCalledWith(undefined, popup);
+    await route({ type: 'getWorkTarget', windowId: 3 });
+    expect(mocks.getWorkTarget).toHaveBeenLastCalledWith(3, popup);
+    await route({ type: 'setWorkTarget', sessionId: WORK_SESSION_ID, tabId: 4 });
+    expect(mocks.setWorkTarget).toHaveBeenLastCalledWith(WORK_SESSION_ID, 4, undefined, popup);
+    await route({ type: 'setWorkTarget', sessionId: WORK_SESSION_ID, tabId: 4, windowId: 3 });
+    expect(mocks.setWorkTarget).toHaveBeenLastCalledWith(WORK_SESSION_ID, 4, 3, popup);
+    await route({ type: 'returnToWork', sessionId: WORK_SESSION_ID });
+    expect(mocks.returnToWork).toHaveBeenLastCalledWith(WORK_SESSION_ID, undefined, popup);
+    await route({ type: 'returnToWork', sessionId: WORK_SESSION_ID, windowId: 3 });
+    expect(mocks.returnToWork).toHaveBeenLastCalledWith(WORK_SESSION_ID, 3, popup);
+    expect(mocks.startSession).not.toHaveBeenCalled();
+  });
+
+  it('starts through the engine without a work tab and through the service with one', async (): Promise<void> => {
+    const { mocks, service } = fakeService();
+    const startSession = vi.fn().mockResolvedValue({ ok: true, code: 'ok' });
+    const engine: Engine = { startSession } as unknown as Engine;
+    const config: SessionConfig = focusSessionConfig();
+
+    expect(
+      await routeMessage(
+        engine,
+        { type: 'startSession', config },
+        popup,
+        undefined,
+        undefined,
+        service,
+      ),
+    ).toEqual({ ok: true, code: 'ok' });
+    expect(startSession).toHaveBeenCalledExactlyOnceWith(config);
+    expect(mocks.startSession).not.toHaveBeenCalled();
+
+    expect(
+      await routeMessage(
+        engine,
+        { type: 'startSession', config, workTabId: 4, windowId: 3 },
+        popup,
+        undefined,
+        undefined,
+        service,
+      ),
+    ).toEqual({ ok: true, code: 'ok' });
+    expect(mocks.startSession).toHaveBeenCalledExactlyOnceWith(config, 4, 3, popup);
+    expect(startSession).toHaveBeenCalledTimes(1);
   });
 });

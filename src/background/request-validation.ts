@@ -27,7 +27,8 @@ import type {
   SessionRuleSnapshot,
   Settings,
 } from '../shared/types';
-import { validateDetachedGateState } from '../shared/v2-domain-intrinsics';
+import { isUuid, validateDetachedGateState } from '../shared/v2-domain-intrinsics';
+import { isBrowserTabId } from '../shared/work-target';
 import { canEncodeListsForSync } from './list-sync-codec';
 import { assertSyncItemWithinQuota } from './sync-quota';
 
@@ -310,12 +311,25 @@ function isManualSessionConfigEnvelope(
   );
 }
 
+const START_REQUEST_KEYS: readonly string[] = ['type', 'config'];
+const WORK_TAB_START_REQUEST_KEYS: readonly string[] = ['type', 'config', 'workTabId', 'windowId'];
+
+/**
+ * Which start shape the raw value claims, decided from its own key count alone, so no getter and
+ * no proxy trap runs before the exact snapshot below refuses it.
+ */
+function startRequestKeys(value: unknown): readonly string[] | null {
+  if (!isRecord(value)) return null;
+  const count: number = Reflect.ownKeys(value).length;
+  if (count === START_REQUEST_KEYS.length) return START_REQUEST_KEYS;
+  return count === WORK_TAB_START_REQUEST_KEYS.length ? WORK_TAB_START_REQUEST_KEYS : null;
+}
+
 export function parseSessionStartRequestV2(value: unknown): SessionStartRequestV2 | null {
   try {
-    const requestCandidate: Record<string, unknown> | null = exactOwnDataSnapshot(value, [
-      'type',
-      'config',
-    ]);
+    const keys: readonly string[] | null = startRequestKeys(value);
+    if (keys === null) return null;
+    const requestCandidate: Record<string, unknown> | null = exactOwnDataSnapshot(value, keys);
     if (requestCandidate === null || requestCandidate.type !== 'startSession') return null;
     const configCandidate: Record<string, unknown> | null = exactOwnDataSnapshot(
       requestCandidate.config,
@@ -323,10 +337,7 @@ export function parseSessionStartRequestV2(value: unknown): SessionStartRequestV
     );
     if (configCandidate === null || !isManualSessionConfigEnvelope(configCandidate)) return null;
 
-    const request: Record<string, unknown> | null = stableExactOwnDataSnapshot(value, [
-      'type',
-      'config',
-    ]);
+    const request: Record<string, unknown> | null = stableExactOwnDataSnapshot(value, keys);
     if (request === null || request.type !== 'startSession') return null;
     const configInput: Record<string, unknown> | null = exactOwnDataSnapshot(
       request.config,
@@ -354,9 +365,77 @@ export function parseSessionStartRequestV2(value: unknown): SessionStartRequestV
       rules,
     };
     if (!isSessionConfigV2(config)) return null;
-    return { type: 'startSession', config };
+    if (keys === START_REQUEST_KEYS) return { type: 'startSession', config };
+    if (!isBrowserTabId(request.workTabId) || !isBrowserTabId(request.windowId)) return null;
+    return {
+      type: 'startSession',
+      config,
+      workTabId: request.workTabId,
+      windowId: request.windowId,
+    };
   } catch {
     return null;
+  }
+}
+
+/** Exactly `keys`, or `keys` plus a browser `windowId`: the popup names its window, content never does. */
+function hasOptionalWindow(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return (
+    hasExactKeys(value, keys) ||
+    (hasExactKeys(value, [...keys, 'windowId']) && isBrowserTabId(value.windowId))
+  );
+}
+
+function parseWorkTabsRequest(value: Record<string, unknown>): Request | null {
+  if (hasExactKeys(value, ['type', 'sessionId'])) {
+    return isUuid(value.sessionId) ? { type: 'getWorkTabs', sessionId: value.sessionId } : null;
+  }
+  const withRules: boolean = hasExactKeys(value, ['type', 'mode', 'windowId', 'rules']);
+  if (!withRules && !hasExactKeys(value, ['type', 'mode', 'windowId'])) return null;
+  if (
+    (value.mode !== 'blacklist' && value.mode !== 'whitelist') ||
+    !isBrowserTabId(value.windowId)
+  ) {
+    return null;
+  }
+  if (!withRules) return { type: 'getWorkTabs', mode: value.mode, windowId: value.windowId };
+  // The draft's rules take the same road as a start request's: normalized, or refused.
+  const rules: SessionRuleSnapshot | null = normalizeSessionRules(value.rules);
+  return rules === null
+    ? null
+    : { type: 'getWorkTabs', mode: value.mode, windowId: value.windowId, rules };
+}
+
+/**
+ * The work target requests are detached before any field is read, the way the gate requests are,
+ * so an accessor or a proxy on the wire never reaches a check and the router gets plain data.
+ */
+function parseWorkTargetRequest(value: Record<string, unknown>): Request | null {
+  const detached: unknown = snapshotExactData(value)?.value;
+  if (!isRecord(detached)) return null;
+  switch (detached.type) {
+    case 'getWorkTabs':
+      return parseWorkTabsRequest(detached);
+    case 'getWorkTabIcon':
+      return hasExactKeys(detached, ['type', 'sessionId', 'tabId']) &&
+        isUuid(detached.sessionId) &&
+        isBrowserTabId(detached.tabId)
+        ? (detached as Request)
+        : null;
+    case 'getWorkTarget':
+      return hasOptionalWindow(detached, ['type']) ? (detached as Request) : null;
+    case 'setWorkTarget':
+      return hasOptionalWindow(detached, ['type', 'sessionId', 'tabId']) &&
+        isUuid(detached.sessionId) &&
+        isBrowserTabId(detached.tabId)
+        ? (detached as Request)
+        : null;
+    case 'returnToWork':
+      return hasOptionalWindow(detached, ['type', 'sessionId']) && isUuid(detached.sessionId)
+        ? (detached as Request)
+        : null;
+    default:
+      return null;
   }
 }
 
@@ -652,6 +731,12 @@ function parseRecord(value: Record<string, unknown>): Request | null {
           value.sound === 'scheduleStart')
         ? (value as Request)
         : null;
+    case 'getWorkTabs':
+    case 'getWorkTabIcon':
+    case 'getWorkTarget':
+    case 'setWorkTarget':
+    case 'returnToWork':
+      return parseWorkTargetRequest(value);
     default:
       return null;
   }

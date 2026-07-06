@@ -104,6 +104,7 @@ const mocks = vi.hoisted(
     dropTabCalls: number[];
     dropTabSignal: (() => void) | null;
     removedListener: RemovedListener | null;
+    removedListeners: RemovedListener[];
     runtimeListener: RuntimeListener | null;
     storageListener: StorageListener | null;
     savedJournals: SyncJournal[];
@@ -154,6 +155,7 @@ const mocks = vi.hoisted(
     dropTabCalls: [],
     dropTabSignal: null,
     removedListener: null,
+    removedListeners: [],
     runtimeListener: null,
     storageListener: null,
     savedJournals: [],
@@ -269,6 +271,11 @@ vi.mock('../../../src/background/engine', () => ({
         | LegacyRuntimeStateV1
         | undefined;
       return runtime?.session !== null && runtime !== undefined;
+    }
+
+    /** No test here chooses a work tab, so the listeners always read an idle worker. */
+    workTargetSession(): null {
+      return null;
     }
 
     /** The boot resolves the durable authority here before any listener may act. */
@@ -546,6 +553,7 @@ function stubChrome(): void {
       },
     },
     runtime: {
+      id: 'test-id',
       getURL: vi.fn((path: string): string => `chrome-extension://test-id/${path}`),
       onInstalled: {
         addListener: vi.fn((listener: InstalledListener): void => {
@@ -577,6 +585,12 @@ function stubChrome(): void {
         addListener: vi.fn((listener: StorageListener): void => {
           mocks.storageListener = listener;
         }),
+      },
+      // The work target lives here for the browser's lifetime. Nothing in these tests chooses
+      // one, so the store answers empty and accepts writes.
+      session: {
+        get: vi.fn().mockResolvedValue({}),
+        set: vi.fn().mockResolvedValue(undefined),
       },
       local: {
         get: vi.fn(async (keys: string | string[] | null): Promise<Record<string, unknown>> => {
@@ -679,15 +693,27 @@ function stubChrome(): void {
     },
     tabs: {
       create: vi.fn().mockResolvedValue({}),
+      get: vi.fn().mockRejectedValue(new Error('No tab with that id.')),
       query: vi.fn().mockResolvedValue([]),
+      sendMessage: vi.fn().mockResolvedValue(undefined),
       update: vi.fn().mockResolvedValue({}),
+      onCreated: { addListener: vi.fn() },
+      onUpdated: { addListener: vi.fn() },
+      onReplaced: { addListener: vi.fn() },
+      // The worker registers two removal listeners, its own tab drop and the work target
+      // refresh, so a removal in these tests reaches both in registration order.
       onRemoved: {
         addListener: vi.fn((listener: RemovedListener): void => {
-          mocks.removedListener = listener;
+          mocks.removedListeners.push(listener);
+          mocks.removedListener = (tabId: number): void => {
+            for (const registered of mocks.removedListeners) registered(tabId);
+          };
         }),
       },
     },
     windows: {
+      get: vi.fn().mockResolvedValue({ id: 1, incognito: false }),
+      getCurrent: vi.fn().mockResolvedValue({ id: 1, incognito: false }),
       update: vi.fn().mockResolvedValue({}),
     },
   });
@@ -771,6 +797,7 @@ beforeEach((): void => {
   mocks.dropTabCalls = [];
   mocks.dropTabSignal = null;
   mocks.removedListener = null;
+  mocks.removedListeners = [];
   mocks.runtimeListener = null;
   mocks.storageListener = null;
   mocks.savedJournals = [];
@@ -3464,5 +3491,34 @@ describe('background all-data journal bootstrap', () => {
     expect(storedJournal()).toBeUndefined();
     expect(attemptStarts()).toHaveLength(1);
     expect(consoleError).not.toHaveBeenCalled();
+  });
+});
+
+describe('background work target wiring', (): void => {
+  it('registers the work tab listeners and binds a fanout port to the extension pages', async (): Promise<void> => {
+    await finishBoot();
+
+    expect(chrome.tabs.onUpdated.addListener).toHaveBeenCalledOnce();
+    expect(chrome.tabs.onCreated.addListener).toHaveBeenCalledOnce();
+    expect(chrome.tabs.onReplaced.addListener).toHaveBeenCalledOnce();
+    // The worker's own tab drop and the work target refresh both listen for removals.
+    expect(chrome.tabs.onRemoved.addListener).toHaveBeenCalledTimes(2);
+
+    const ports: EnginePorts = enginePorts();
+    vi.mocked(chrome.runtime.sendMessage).mockClear();
+    ports.workTargetChanged?.();
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledExactlyOnceWith({
+      type: 'workTargetChanged',
+    });
+  });
+
+  it('keeps a removed tab flowing to the worker beside the work target refresh', async (): Promise<void> => {
+    await finishBoot();
+    if (mocks.removedListener === null) throw new Error('tab removal listener was not registered');
+    vi.mocked(chrome.runtime.sendMessage).mockClear();
+
+    mocks.removedListener(7);
+    await vi.waitFor((): void => expect(mocks.dropTabCalls).toEqual([7]));
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ type: 'workTargetChanged' });
   });
 });

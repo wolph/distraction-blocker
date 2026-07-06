@@ -131,10 +131,10 @@ afterEach((): void => {
 
 describe('v2 session request channel', (): void => {
   it('pins every v2 session request variant', (): void => {
-    expectTypeOf<Extract<SessionRequestV2, { type: 'startSession' }>>().toEqualTypeOf<{
-      type: 'startSession';
-      config: SessionConfigV2;
-    }>();
+    expectTypeOf<Extract<SessionRequestV2, { type: 'startSession' }>>().toEqualTypeOf<
+      | { type: 'startSession'; config: SessionConfigV2 }
+      | { type: 'startSession'; config: SessionConfigV2; workTabId: number; windowId: number }
+    >();
     expectTypeOf<Extract<SessionRequestV2, { type: 'requestSessionEnd' }>>().toEqualTypeOf<{
       type: 'requestSessionEnd';
     }>();
