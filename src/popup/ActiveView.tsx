@@ -1,7 +1,7 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'preact/hooks';
 import { getDomain } from 'tldts';
-import { msUntilNextEarnedMinute } from '../core/budget';
+import { type AccessAvailability, accessAvailability } from '../shared/budget-display';
 import { MIN_BREAK_BEFORE_EARLY_MS } from '../shared/constants';
 import { growBank } from '../shared/live';
 import type { StatsBundle } from '../shared/messages';
@@ -149,35 +149,16 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
   const authority: EndAuthorityV2 = snapshot.lifecycle.endAuthority;
   const activeGate: GateState | null = snapshot.gate ?? endGateOf(authority);
 
-  const affordability: (costMs: number) => { affordable: boolean; countdown: string | null } = (
-    costMs: number,
-  ): { affordable: boolean; countdown: string | null } => {
-    if (bankMs >= costMs) return { affordable: true, countdown: null };
-    const waitMs: number | null = msUntilNextEarnedMinute(
-      bankMs,
-      snapshot.bankAccrualPerMs,
-      snapshot.bankCapMs,
-    );
-    return {
-      affordable: false,
-      countdown: waitMs === null ? null : `Ready in ${formatClock(waitMs)}`,
-    };
+  /**
+   * Each spend control counts to its own cost within the current focus block, or explains why
+   * that credit cannot be reached. An affordable spend has no message, so the reason is null.
+   */
+  const availabilityReason: (costMs: number) => string | null = (costMs: number): string | null => {
+    const availability: AccessAvailability = accessAvailability(snapshot, now, costMs);
+    return availability.affordable ? null : availability.message;
   };
-
-  const unlockAfford: { affordable: boolean; countdown: string | null } = affordability(
-    snapshot.unlockCostMs,
-  );
-  const pauseAfford: { affordable: boolean; countdown: string | null } = affordability(
-    snapshot.pauseCostMs,
-  );
-  const affordabilityReason: (value: {
-    affordable: boolean;
-    countdown: string | null;
-  }) => string | null = (value: {
-    affordable: boolean;
-    countdown: string | null;
-  }): string | null =>
-    value.affordable ? null : (value.countdown ?? 'earn site access credit by focusing');
+  const unlockAvailability: string | null = availabilityReason(snapshot.unlockCostMs);
+  const pauseAvailability: string | null = availabilityReason(snapshot.pauseCostMs);
   const pendingReason: string | null = command.pending ? 'Action in progress' : null;
   const activeSiteReason: string | null =
     activeSite.status === 'loading'
@@ -188,8 +169,8 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
           ? 'Could not identify the active site'
           : null;
   const unlockDisabledReason: string | null =
-    pendingReason ?? activeSiteReason ?? affordabilityReason(unlockAfford);
-  const pauseDisabledReason: string | null = pendingReason ?? affordabilityReason(pauseAfford);
+    pendingReason ?? activeSiteReason ?? unlockAvailability;
+  const pauseDisabledReason: string | null = pendingReason ?? pauseAvailability;
   const costMin: (ms: number) => number = (ms: number): number => Math.round(ms / 60_000);
   const breakEarlyVisible: boolean =
     snapshot.phase === 'break' &&

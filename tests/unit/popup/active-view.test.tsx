@@ -580,11 +580,15 @@ function unaffordableSnap(endAuthority: EndAuthorityV2 = CLOSED_FRICTION): Sessi
   return { ...focusSnap(endAuthority), bankMs: 0 };
 }
 
+/** One credit minute short of the five minute actions, earned in six minutes at 5 per 30. */
+function nearlyAffordableSnap(endAuthority: EndAuthorityV2 = CLOSED_FRICTION): SessionSnapshotV2 {
+  return { ...focusSnap(endAuthority), bankMs: 4 * MIN };
+}
+
 /**
- * `unlockDisabledReason` is `pending ?? activeSite ?? affordability` and `pauseDisabledReason`
- * drops the middle link, so the pause control is what tells the two apart. The popup authors
- * both affordability strings itself; the worker authors the same two for the blocked page and
- * only the worker's copy was pinned.
+ * `unlockDisabledReason` is `pending ?? activeSite ?? availability` and `pauseDisabledReason`
+ * drops the middle link, so the pause control is what tells the two apart. The availability
+ * wording comes from `accessAvailability`, counted to each action's own cost.
  */
 describe('ActiveView disabled reasons', (): void => {
   it('reports active-site loading, ready, unsupported, and error states truthfully', async (): Promise<void> => {
@@ -626,7 +630,7 @@ describe('ActiveView disabled reasons', (): void => {
 
   it('prioritizes the unsupported-tab reason over insufficient budget', async (): Promise<void> => {
     tabsQueryMock.mockResolvedValue([{ url: 'chrome://extensions/' }]);
-    const { container } = render(h(ActiveView, { snapshot: unaffordableSnap(), now: NOW }));
+    const { container } = render(h(ActiveView, { snapshot: nearlyAffordableSnap(), now: NOW }));
 
     await waitFor((): void => {
       expect(spendSub(spendControls(container).unlock)).toBe('Open a regular website to unlock it');
@@ -657,22 +661,34 @@ describe('ActiveView disabled reasons', (): void => {
     expect(spendSub(spendControls(container).pause)).toBe('Action in progress');
   });
 
-  it('shows time until the next earned pause minute while a spend is unaffordable', async (): Promise<void> => {
+  it('counts to each action cost while a spend is unaffordable', async (): Promise<void> => {
+    const snapshot: SessionSnapshotV2 = { ...nearlyAffordableSnap(), unlockCostMs: 10 * MIN };
+    const { container } = render(h(ActiveView, { snapshot, now: NOW }));
+
+    await waitFor((): void => {
+      expect(spendSub(spendControls(container).pause)).toBe('Ready in 6:00');
+    });
+    // Ten minutes of credit needs 36 more minutes of focus, and this block ends in 20.
+    expect(spendSub(spendControls(container).unlock)).toBe('Not enough time in this focus block');
+    expect(container.textContent).not.toContain('Ready in 36:00');
+    expect(spendControls(container).unlock.disabled).toBe(true);
+    expect(spendControls(container).pause.disabled).toBe(true);
+  });
+
+  it('explains credit that this focus block can never reach', async (): Promise<void> => {
     const { container } = render(h(ActiveView, { snapshot: unaffordableSnap(), now: NOW }));
 
     await waitFor((): void => {
-      expect(spendSub(spendControls(container).unlock)).toBe('Ready in 6:00');
+      expect(spendSub(spendControls(container).unlock)).toBe('Not enough time in this focus block');
     });
-    expect(spendSub(spendControls(container).pause)).toBe('Ready in 6:00');
-    expect(container.textContent).not.toContain('Ready in 30:00');
-    expect(spendControls(container).unlock.disabled).toBe(true);
-    expect(spendControls(container).pause.disabled).toBe(true);
+    expect(spendSub(spendControls(container).pause)).toBe('Not enough time in this focus block');
+    expect(container.textContent).not.toContain('Ready in');
   });
 
   it('never renders ready in zero for a positive sub-second wait', async (): Promise<void> => {
     const snapshot: SessionSnapshotV2 = {
       ...focusSnap(),
-      bankMs: 59_900,
+      bankMs: 5 * MIN - 100,
       bankAccrualPerMs: 1,
     };
     const { container } = render(h(ActiveView, { snapshot, now: NOW }));
@@ -683,14 +699,23 @@ describe('ActiveView disabled reasons', (): void => {
     expect(container.textContent).not.toContain('Ready in 0:00');
   });
 
-  it('does not promise an earned minute above the configured bank cap', async (): Promise<void> => {
+  it('explains a cost above the credit limit instead of promising a wait', async (): Promise<void> => {
     const snapshot: SessionSnapshotV2 = { ...focusSnap(), bankMs: 0, bankCapMs: 0 };
     const { container } = render(h(ActiveView, { snapshot, now: NOW }));
 
     await waitFor((): void => {
-      expect(spendSub(spendControls(container).unlock)).toBe('earn site access credit by focusing');
+      expect(spendSub(spendControls(container).unlock)).toBe('Cost exceeds the credit limit');
     });
-    expect(spendSub(spendControls(container).pause)).toBe('earn site access credit by focusing');
+    expect(spendSub(spendControls(container).pause)).toBe('Cost exceeds the credit limit');
     expect(container.textContent).not.toContain('Ready in');
+  });
+
+  it('explains credit earning that is turned off', async (): Promise<void> => {
+    const snapshot: SessionSnapshotV2 = { ...focusSnap(), bankMs: 0, bankAccrualPerMs: 0 };
+    const { container } = render(h(ActiveView, { snapshot, now: NOW }));
+
+    await waitFor((): void => {
+      expect(spendSub(spendControls(container).pause)).toBe('Credit earning is turned off');
+    });
   });
 });
