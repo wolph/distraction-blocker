@@ -6,12 +6,14 @@ import {
   BREAK_CLOCK_LABEL,
   DATA_CLEAR_ERROR_COPY,
   DATA_CLEAR_PENDING_COPY,
+  DEEP_WORK_NOTE,
   END_FAILED_COPY,
   END_SESSION_LABEL,
   FOCUS_PHASE_CLOCK_LABEL,
   FOCUS_TIME_LABEL,
   HARD_UNAVAILABLE_REASON,
   INDEFINITE_BADGE_TEXT,
+  INFINITY_GLYPH,
   LOCK_UNTIL_MANUAL_UNLOCK_LABEL,
   PAUSE_CLOCK_LABEL,
   POPUP_CLOSURE_CLEANUP_COPY,
@@ -19,6 +21,7 @@ import {
   POPUP_STARTING_COPY,
   POPUP_TRANSITION_CLEANUP_COPY,
   POPUP_TRANSITION_ERROR_COPY,
+  PRESET_LABELS,
   RETRY_CLEANUP_LABEL,
   RETRY_FAILED_COPY,
   SCHEDULE_STARTED_TITLE,
@@ -35,12 +38,13 @@ import {
   statsOutcomeLabelV2,
   statsPlanLabelV2,
   TOTAL_SESSION_CLOCK_LABEL,
+  timedDurationHint,
   UNLOCK_LABEL,
   UNTIL_STOPPED_DISCLOSURE,
   UNTIL_STOPPED_LABEL,
   untilStoppedHint,
 } from '../../../src/shared/session-copy';
-import type { SessionDuration, SessionEndReasonV2 } from '../../../src/shared/types';
+import type { CycleConfig, SessionDuration, SessionEndReasonV2 } from '../../../src/shared/types';
 
 const OUTCOME_LABELS: ReadonlyArray<readonly [SessionEndReasonV2, string]> = [
   ['timer-completed', 'Completed'],
@@ -81,6 +85,24 @@ describe('session copy', (): void => {
     expect(untilStoppedHint('friction', { delayMs: 0, requireTypedPhrase: true })).toBe(
       'Runs until you unlock it: no wait and a typed sentence, then Unlock. Cycles off.',
     );
+  });
+
+  it('publishes the exact preset labels and the deep work note', (): void => {
+    expect(PRESET_LABELS).toEqual(['short', 'focus', 'deep work']);
+    expect(DEEP_WORK_NOTE).toBe(
+      'A preference, not science: one long uninterrupted block, with no automatic breaks.',
+    );
+    expect(INFINITY_GLYPH).toBe('∞');
+  });
+
+  it('states the timed plan under the presets from the effective minutes and cycles', (): void => {
+    const cycle: CycleConfig = { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 };
+
+    expect(timedDurationHint(50, null)).toBe('50 min uninterrupted focus');
+    expect(timedDurationHint(50, cycle)).toBe('50 min total, with 25 min focus blocks');
+    // A focus block that is not shorter than the session never interrupts it.
+    expect(timedDurationHint(25, cycle)).toBe('25 min uninterrupted focus');
+    expect(timedDurationHint(20, cycle)).toBe('20 min uninterrupted focus');
   });
 
   it('publishes the exact clock labels', (): void => {

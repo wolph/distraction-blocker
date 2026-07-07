@@ -11,6 +11,7 @@ import {
   FORCED_CYCLES_LABEL,
   HARD_UNAVAILABLE_REASON,
   MODE_LABELS,
+  timedDurationHint,
   UNTIL_STOPPED_DISCLOSURE,
   untilStoppedHint,
 } from '../shared/session-copy';
@@ -40,6 +41,7 @@ import {
   type DraftDuration,
   effectiveCycling,
   effectiveStrictness,
+  effectiveTimedMinutes,
   restoreTimedDuration,
   type StartDraft,
   selectTimedPreset,
@@ -113,9 +115,18 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
 
   const indefinite: boolean = draft.duration.kind === 'until-stopped';
   const strictness: Strictness = effectiveStrictness(draft);
-  /** Hard never survives an indefinite draft, so the hint only ever names the other two. */
-  const indefiniteHint: string | null =
-    indefinite && strictness !== 'hard' ? untilStoppedHint(strictness, draft.frictionGate) : null;
+  const timedMinutes: number | null = effectiveTimedMinutes(draft);
+  /**
+   * The plan under the presets. Hard never survives an indefinite draft, so the until-stopped
+   * branch only ever names the other two types. An unusable timed length shows no hint.
+   */
+  const durationHint: string | null = indefinite
+    ? strictness === 'hard'
+      ? null
+      : untilStoppedHint(strictness, draft.frictionGate)
+    : timedMinutes === null
+      ? null
+      : timedDurationHint(timedMinutes, effectiveCycling(draft));
   const cycle: CycleConfig = settings.defaultCycling;
   const cyclingLabel: string = `Cycles: ${cycle.focusMin} min focus, ${cycle.shortBreakMin} min break, ${cycle.longBreakMin} min long break every ${cycle.longEvery}th`;
 
@@ -212,7 +223,11 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
           }
         />
 
-        {indefiniteHint !== null ? <span class="radio-hint">{indefiniteHint}</span> : null}
+        {durationHint !== null ? (
+          <p class="session-timing" role="status">
+            {durationHint}
+          </p>
+        ) : null}
 
         <div class="field-control">
           <label class="field-label" for="session-intention">

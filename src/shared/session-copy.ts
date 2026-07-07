@@ -1,8 +1,32 @@
 import { formatMinutes } from './format';
-import type { GateSettings, SessionDuration, SessionEndReasonV2, Strictness } from './types';
+import type {
+  CycleConfig,
+  GateSettings,
+  SessionDuration,
+  SessionEndReasonV2,
+  Strictness,
+} from './types';
 
 /** Duration control, the start button, and the forced cycle disclosure. */
 export const UNTIL_STOPPED_LABEL: string = 'Until stopped';
+/** The Until stopped chip shows this glyph and carries UNTIL_STOPPED_LABEL as its name. */
+export const INFINITY_GLYPH: string = '∞';
+/** Positional labels for the three timed presets, read after the minutes: "50 deep work". */
+export const PRESET_LABELS: readonly [string, string, string] = ['short', 'focus', 'deep work'];
+/** The hover explanation of the deep work chip. The label itself stays short. */
+export const DEEP_WORK_NOTE: string =
+  'A preference, not science: one long uninterrupted block, with no automatic breaks.';
+
+/**
+ * The hint under the presets for a timed draft. Cycles only interrupt a session longer than one
+ * focus block, so a 25 minute session under 25 minute blocks reads as uninterrupted.
+ */
+export function timedDurationHint(minutes: number, cycling: CycleConfig | null): string {
+  if (cycling !== null && cycling.focusMin < minutes) {
+    return `${minutes} min total, with ${cycling.focusMin} min focus blocks`;
+  }
+  return `${minutes} min uninterrupted focus`;
+}
 /** The start button of a Flexible until-stopped draft. */
 export const START_UNTIL_STOPPED_LABEL: string = 'Start until stopped';
 /** The start button of a Friction until-stopped draft, which ends through its gate. */

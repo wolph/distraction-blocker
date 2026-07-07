@@ -1,14 +1,15 @@
 import type { VNode } from 'preact';
-import { UNTIL_STOPPED_LABEL } from '../shared/session-copy';
+import {
+  DEEP_WORK_NOTE,
+  INFINITY_GLYPH,
+  PRESET_LABELS,
+  UNTIL_STOPPED_LABEL,
+} from '../shared/session-copy';
 import { Chip } from './form-controls';
 import { type DraftDuration, type TimedDurationDraft, timedDurationOf } from './start-draft';
 
-/** Preset labels, matching the timed duration row the popup already ships. */
-const PRESET_LABELS: readonly [string, string, string] = [
-  'short',
-  'focus',
-  'deep work (preference, not science)',
-];
+/** The third preset is deep work. Its research note is a hover explanation, not a label. */
+const DEEP_WORK_INDEX: number = 2;
 
 export interface DurationControlProps {
   presets: readonly [number, number, number];
@@ -34,6 +35,7 @@ export function DurationControl({ presets, value, onChange }: DurationControlPro
           <Chip
             key={min}
             label={`${min} ${PRESET_LABELS[index] ?? ''}`.trim()}
+            hint={index === DEEP_WORK_INDEX ? DEEP_WORK_NOTE : undefined}
             selected={presetSelected(min)}
             onClick={(): void => onChange({ kind: 'timed', presetMin: min, customMin: '' })}
           />
@@ -56,7 +58,8 @@ export function DurationControl({ presets, value, onChange }: DurationControlPro
         }
       />
       <Chip
-        label={UNTIL_STOPPED_LABEL}
+        label={INFINITY_GLYPH}
+        accessibleLabel={UNTIL_STOPPED_LABEL}
         selected={indefinite}
         onClick={(): void =>
           onChange(indefinite ? { kind: 'timed', ...timed } : { kind: 'until-stopped', timed })

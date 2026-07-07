@@ -34,6 +34,8 @@ export interface StartDraft {
   /** The chosen cycle config, which only a timed session submits. */
   timedCycling: CycleConfig | null;
   duration: DraftDuration;
+  /** The third preset from Settings. Choosing it turns cycles off, typing the same minutes does not. */
+  deepWorkMin: number;
   frictionGate: { delayMs: number; requireTypedPhrase: boolean };
   intention: string;
   rules: SessionRuleSnapshot;
@@ -48,6 +50,7 @@ export function createStartDraft(settings: SettingsV2, lists: ListsConfig): Star
     timedStrictness: base.strictness,
     timedCycling: base.cycling,
     duration: { kind: 'timed', presetMin: settings.presetsMin[1], customMin: '' },
+    deepWorkMin: settings.presetsMin[2],
     frictionGate: base.frictionGate,
     intention: base.intention,
     rules: base.rules,
@@ -73,8 +76,16 @@ export function restoreTimedDuration(draft: StartDraft): StartDraft {
   return { ...draft, duration: { kind: 'timed', ...draft.duration.timed } };
 }
 
+/**
+ * The deep work preset means one uninterrupted block, so choosing it turns cycles off. The
+ * cycle checkbox can turn them back on afterwards, and the other presets leave cycles alone.
+ */
 export function selectTimedPreset(draft: StartDraft, minutes: number): StartDraft {
-  return { ...draft, duration: { kind: 'timed', presetMin: minutes, customMin: '' } };
+  const selected: StartDraft = {
+    ...draft,
+    duration: { kind: 'timed', presetMin: minutes, customMin: '' },
+  };
+  return minutes === draft.deepWorkMin ? setTimedCycling(selected, null) : selected;
 }
 
 /** Restores the stored timed duration first, so the selected preset survives the detour. */

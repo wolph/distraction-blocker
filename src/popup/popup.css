@@ -254,6 +254,14 @@ body {
   font-weight: 650;
 }
 
+/* The plan under the presets: "50 min uninterrupted focus" or the until-stopped hint. */
+.session-timing {
+  margin: -6px 0 0;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .chip-row,
 .duration-control,
 .pill-row {

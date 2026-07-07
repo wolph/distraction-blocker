@@ -7,7 +7,11 @@ import { cleanup, fireEvent, render, within } from '@testing-library/preact';
 import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
 import { DurationControl } from '../../../src/popup/DurationControl';
 import type { DraftDuration } from '../../../src/popup/start-draft';
-import { UNTIL_STOPPED_LABEL } from '../../../src/shared/session-copy';
+import {
+  DEEP_WORK_NOTE,
+  INFINITY_GLYPH,
+  UNTIL_STOPPED_LABEL,
+} from '../../../src/shared/session-copy';
 
 const PRESETS: readonly [number, number, number] = [15, 25, 50];
 
@@ -35,13 +39,28 @@ describe('DurationControl', (): void => {
     expect(chips.map((chip: HTMLElement): string | null => chip.textContent)).toEqual([
       '15 short',
       '25 focus',
-      '50 deep work (preference, not science)',
-      UNTIL_STOPPED_LABEL,
+      '50 deep work',
+      INFINITY_GLYPH,
     ]);
     const custom: HTMLInputElement = within(group).getByLabelText(
       'Custom minutes',
     ) as HTMLInputElement;
     expect(custom.type).toBe('number');
+  });
+
+  it('names the infinity chip Until stopped and explains deep work on hover only', (): void => {
+    const view = render(
+      <DurationControl presets={PRESETS} value={timed(25, '')} onChange={vi.fn()} />,
+    );
+
+    const infinity: HTMLElement = view.getByRole('button', { name: UNTIL_STOPPED_LABEL });
+    expect(infinity.textContent).toBe(INFINITY_GLYPH);
+    expect(infinity.getAttribute('title')).toBe(UNTIL_STOPPED_LABEL);
+
+    const deepWork: HTMLElement = view.getByRole('button', { name: '50 deep work' });
+    expect(deepWork.getAttribute('title')).toBe(DEEP_WORK_NOTE);
+    expect(deepWork.getAttribute('aria-label')).toBeNull();
+    expect(view.getByRole('button', { name: '15 short' }).getAttribute('title')).toBeNull();
   });
 
   it('emits the clicked preset and clears typed custom minutes', (): void => {
@@ -50,7 +69,7 @@ describe('DurationControl', (): void => {
       <DurationControl presets={PRESETS} value={timed(25, '42')} onChange={onChange} />,
     );
 
-    fireEvent.click(view.getByRole('button', { name: '50 deep work (preference, not science)' }));
+    fireEvent.click(view.getByRole('button', { name: '50 deep work' }));
 
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith({ kind: 'timed', presetMin: 50, customMin: '' });

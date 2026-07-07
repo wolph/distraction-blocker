@@ -174,7 +174,7 @@ describe('StartForm duration and forced controls', (): void => {
   it('keeps the stored preset when custom minutes are typed during the detour', (): void => {
     const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
-    fireEvent.click(view.getByRole('button', { name: '50 deep work (preference, not science)' }));
+    fireEvent.click(view.getByRole('button', { name: '50 deep work' }));
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
     fireEvent.input(view.getByLabelText('Custom minutes'), { target: { value: '7' } });
 
@@ -183,6 +183,54 @@ describe('StartForm duration and forced controls', (): void => {
     fireEvent.input(view.getByLabelText('Custom minutes'), { target: { value: '' } });
 
     expect(view.getByRole('button', { name: 'Start 50 min - Block selected sites' })).toBeTruthy();
+  });
+});
+
+describe('StartForm presets and the timed hint', (): void => {
+  it('opens on the focus preset with cycles and states the plan under the presets', (): void => {
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
+
+    expect(view.getByRole('status').textContent).toBe('25 min uninterrupted focus');
+    expect((view.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('turns cycles off for deep work, keeps them for the other presets, and follows the checkbox', async (): Promise<void> => {
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
+
+    fireEvent.click(view.getByRole('button', { name: '50 deep work' }));
+
+    expect(view.getByRole('status').textContent).toBe('50 min uninterrupted focus');
+    expect((view.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+
+    fireEvent.click(view.getByRole('checkbox'));
+
+    expect(view.getByRole('status').textContent).toBe('50 min total, with 25 min focus blocks');
+    expect((view.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
+
+    fireEvent.click(view.getByRole('button', { name: '15 short' }));
+
+    expect(view.getByRole('status').textContent).toBe('15 min uninterrupted focus');
+    expect((view.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
+
+    fireEvent.click(view.getByRole('button', { name: '50 deep work' }));
+    fireEvent.click(view.getByRole('button', { name: 'Start 50 min - Block selected sites' }));
+
+    await waitFor((): void => expect(startRequests()).toHaveLength(1));
+    expect(startRequests()[0]?.config.duration).toEqual({ kind: 'timed', minutes: 50 });
+    expect(startRequests()[0]?.config.cycling).toBeNull();
+  });
+
+  it('keeps the timed hint off while the length is unusable or Until stopped is selected', (): void => {
+    const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
+
+    fireEvent.input(view.getByLabelText('Custom minutes'), { target: { value: '0' } });
+    expect(view.queryByRole('status')).toBeNull();
+
+    fireEvent.input(view.getByLabelText('Custom minutes'), { target: { value: '40' } });
+    expect(view.getByRole('status').textContent).toBe('40 min total, with 25 min focus blocks');
+
+    fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
+    expect(view.getByRole('status').textContent).toBe(FRICTION_HINT);
   });
 });
 

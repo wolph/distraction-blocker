@@ -43,7 +43,10 @@ function baseDraft(): StartDraft {
   return createStartDraft(SETTINGS, DEFAULT_LISTS);
 }
 
-/** A timed draft that differs from every Settings default, so restores are provable. */
+/**
+ * A timed draft that differs from every Settings default, so restores are provable. The cycle
+ * config lands after the deep work preset, because that preset turns cycles off.
+ */
 function timedDraft(): StartDraft {
   return setTimedCycling(
     setTimedStrictness(selectTimedPreset(baseDraft(), 50), 'hard'),
@@ -83,6 +86,50 @@ describe('createStartDraft', (): void => {
     );
 
     expect(draft.timedCycling).toBeNull();
+  });
+
+  it('remembers which preset is deep work from Settings', (): void => {
+    expect(baseDraft().deepWorkMin).toBe(SETTINGS.presetsMin[2]);
+    expect(
+      createStartDraft({ ...SETTINGS, presetsMin: [10, 20, 90] }, DEFAULT_LISTS).deepWorkMin,
+    ).toBe(90);
+  });
+});
+
+describe('selectTimedPreset', (): void => {
+  it('turns cycles off for the deep work preset and keeps them for the others', (): void => {
+    const draft: StartDraft = baseDraft();
+    expect(draft.timedCycling).not.toBeNull();
+
+    const deepWork: StartDraft = selectTimedPreset(draft, 50);
+    expect(deepWork.duration).toEqual({ kind: 'timed', presetMin: 50, customMin: '' });
+    expect(effectiveCycling(deepWork)).toBeNull();
+    expect(draft.timedCycling).not.toBeNull();
+
+    expect(effectiveCycling(selectTimedPreset(draft, 15))).toEqual(draft.timedCycling);
+    expect(effectiveCycling(selectTimedPreset(draft, 25))).toEqual(draft.timedCycling);
+  });
+
+  it('lets the cycle checkbox turn cycles back on after deep work', (): void => {
+    const deepWork: StartDraft = selectTimedPreset(baseDraft(), 50);
+    const cycling: StartDraft = setTimedCycling(deepWork, CUSTOM_CYCLE);
+
+    expect(effectiveCycling(cycling)).toEqual(CUSTOM_CYCLE);
+    expect(effectiveTimedMinutes(cycling)).toBe(50);
+  });
+
+  it('keeps cycles when the deep work minutes are typed rather than chosen', (): void => {
+    const typed: StartDraft = setCustomMinutes(baseDraft(), '50');
+
+    expect(effectiveTimedMinutes(typed)).toBe(50);
+    expect(effectiveCycling(typed)).toEqual(baseDraft().timedCycling);
+  });
+
+  it('applies the deep work rule to the preset chosen after an Until stopped detour', (): void => {
+    const back: StartDraft = selectTimedPreset(selectUntilStopped(baseDraft()), 50);
+
+    expect(back.duration).toEqual({ kind: 'timed', presetMin: 50, customMin: '' });
+    expect(effectiveCycling(back)).toBeNull();
   });
 });
 

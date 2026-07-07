@@ -4,11 +4,15 @@ import type { VNode } from 'preact';
 export function Chip({
   label,
   accessibleLabel,
+  hint,
   selected,
   onClick,
 }: {
   label: string;
+  /** Replaces the visible label as the accessible name, and doubles as the hover title. */
   accessibleLabel?: string;
+  /** A hover explanation only. The visible label stays the accessible name. */
+  hint?: string;
   selected: boolean;
   onClick: () => void;
 }): VNode {
@@ -18,7 +22,7 @@ export function Chip({
       class={selected ? 'chip chip-selected' : 'chip'}
       aria-pressed={selected}
       aria-label={accessibleLabel}
-      title={accessibleLabel}
+      title={accessibleLabel ?? hint}
       onClick={onClick}
     >
       {label}
