@@ -82,7 +82,10 @@ input[type="checkbox"] {
 
 body {
   margin: 0;
-  width: 440px;
+  width: 480px;
+  /* A percentage, not 100vw: Chrome measures the toolbar popup before its first layout, and a
+     viewport unit read at that moment clamps the popup to a fraction of this width. */
+  max-inline-size: 100%;
   block-size: 600px;
   min-block-size: 0;
   overflow: hidden;
@@ -100,8 +103,10 @@ body {
 
 .app {
   display: flex;
-  max-inline-size: 100vw;
+  max-inline-size: 100%;
   block-size: 100%;
+  /* Viewport height is safe here: the body's fixed block size decides the popup's intrinsic
+     height, and this clamp only bites when the page renders in a short tab viewport. */
   max-block-size: 100vh;
   min-block-size: 0;
   flex-direction: column;

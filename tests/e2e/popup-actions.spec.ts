@@ -25,7 +25,7 @@ test('popup shows an unlock confirmation and a red End session control', async (
     await extPage.evaluate((value: string): void => {
       document.documentElement.dataset.theme = value;
     }, theme);
-    for (const width of [440, 375, 768]) {
+    for (const width of [480, 375, 768]) {
       await extPage.setViewportSize({ width, height: 600 });
       const end: Locator = extPage.getByRole('button', { name: 'End session', exact: true });
       await expect(end).toBeInViewport({ ratio: 1 });
