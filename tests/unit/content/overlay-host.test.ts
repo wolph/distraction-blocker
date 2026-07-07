@@ -16,6 +16,7 @@ import {
   unmountOverlayHost,
 } from '../../../src/content/overlay-host';
 import { OVERLAY_STYLES, OVERLAY_TICK_MS } from '../../../src/content/overlay-styles';
+import { WORK_PICKER_CSS } from '../../../src/content/work-tab-picker-view';
 
 function shadowHandle(): ShadowRoot | undefined {
   return (globalThis as { __focusLockShadow?: ShadowRoot }).__focusLockShadow;
@@ -113,16 +114,40 @@ describe('overlay host', (): void => {
     expect(shadowHandle()).toBeUndefined();
   });
 
-  it('traps wheel and touch scrolling on the host', (): void => {
-    const { host }: OverlayHostElements = mountOverlayHost();
-    const wheel: WheelEvent = new WheelEvent('wheel', { bubbles: true, cancelable: true });
-    const touch: Event = new Event('touchmove', { bubbles: true, cancelable: true });
+  it('allows wheel and touch scrolling inside its closed shadow root', (): void => {
+    const { container }: OverlayHostElements = mountOverlayHost();
 
-    host.dispatchEvent(wheel);
-    host.dispatchEvent(touch);
+    for (const type of ['wheel', 'touchmove']) {
+      const event: Event = new Event(type, { bubbles: true, composed: true, cancelable: true });
+      container.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+  });
 
-    expect(wheel.defaultPrevented).toBe(true);
-    expect(touch.defaultPrevented).toBe(true);
+  it('reports interaction and hands Escape to the hook that consumes it', (): void => {
+    const onInteraction: Mock<() => void> = vi.fn<() => void>();
+    const onEscape: Mock<() => boolean> = vi.fn<() => boolean>().mockReturnValue(true);
+    const { container }: OverlayHostElements = mountOverlayHost({ onInteraction, onEscape });
+
+    container.dispatchEvent(new Event('pointerdown', { bubbles: true, composed: true }));
+    expect(onInteraction).toHaveBeenCalledTimes(1);
+
+    const escapeKey: KeyboardEvent = keydown('Escape');
+    container.dispatchEvent(escapeKey);
+
+    expect(onInteraction).toHaveBeenCalledTimes(2);
+    expect(onEscape).toHaveBeenCalledOnce();
+    expect(escapeKey.defaultPrevented).toBe(true);
+  });
+
+  it('leaves Escape alone when no hook consumes it', (): void => {
+    const onEscape: Mock<() => boolean> = vi.fn<() => boolean>().mockReturnValue(false);
+    const { container }: OverlayHostElements = mountOverlayHost({ onEscape });
+
+    const escapeKey: KeyboardEvent = keydown('Escape');
+    container.dispatchEvent(escapeKey);
+
+    expect(escapeKey.defaultPrevented).toBe(false);
   });
 });
 
@@ -210,21 +235,76 @@ describe('overlay host focus trap', (): void => {
     expect(root.activeElement).toBe(first);
   });
 
-  it('focuses the first enabled control on mount and the dialog when there is none', (): void => {
+  it('focuses the enabled return control on mount and the dialog otherwise', (): void => {
     const bare: OverlayHostElements = mountOverlayHost();
     focusInitialControl(bare.root, bare.container);
     expect(bare.root.activeElement).toBe(bare.container);
     unmountOverlayHost(bare.host);
 
+    // A spend control inside the collapsed drawer must not receive the page's first focus.
     const controls: OverlayHostElements = mountOverlayHost();
-    const disabled: HTMLButtonElement = button('Pause blocking');
-    disabled.disabled = true;
-    const enabled: HTMLButtonElement = button('End session');
-    controls.container.append(disabled, enabled);
+    const spend: HTMLButtonElement = button('Unlock this site');
+    const pending: HTMLButtonElement = button('Checking');
+    pending.className = 'return-work';
+    pending.disabled = true;
+    controls.container.append(pending, spend);
 
     focusInitialControl(controls.root, controls.container);
 
-    expect(controls.root.activeElement).toBe(enabled);
+    expect(controls.root.activeElement).toBe(controls.container);
+    pending.disabled = false;
+    controls.container.focus();
+    focusInitialControl(controls.root, controls.container);
+    expect(controls.root.activeElement).toBe(pending);
+  });
+
+  it('cycles Tab through summary and skips inert subtrees and closed details', (): void => {
+    const { root, container }: OverlayHostElements = mountOverlayHost();
+    const first: HTMLButtonElement = button('Back to work');
+    const inert: HTMLElement = document.createElement('div');
+    inert.setAttribute('inert', '');
+    inert.appendChild(button('Change work tab'));
+    const details: HTMLDetailsElement = document.createElement('details');
+    const summary: HTMLElement = document.createElement('summary');
+    summary.textContent = 'Need a break or site access?';
+    const hidden: HTMLButtonElement = button('Unlock this site');
+    details.append(summary, hidden);
+    container.append(first, inert, details);
+    summary.focus();
+
+    const forward: KeyboardEvent = keydown('Tab');
+    summary.dispatchEvent(forward);
+
+    expect(forward.defaultPrevented).toBe(true);
+    expect(root.activeElement).toBe(first);
+
+    details.open = true;
+    summary.focus();
+    const interior: KeyboardEvent = keydown('Tab');
+    summary.dispatchEvent(interior);
+
+    expect(interior.defaultPrevented).toBe(false);
+
+    hidden.focus();
+    const wrap: KeyboardEvent = keydown('Tab');
+    hidden.dispatchEvent(wrap);
+
+    expect(wrap.defaultPrevented).toBe(true);
+    expect(root.activeElement).toBe(first);
+  });
+
+  it('pulls Tab from the focused dialog onto the first control', (): void => {
+    const { root, container }: OverlayHostElements = mountOverlayHost();
+    const first: HTMLButtonElement = button('Back to work');
+    const last: HTMLButtonElement = button('End session');
+    container.append(first, last);
+    container.focus();
+
+    const back: KeyboardEvent = keydown('Tab', { shiftKey: true });
+    container.dispatchEvent(back);
+
+    expect(back.defaultPrevented).toBe(true);
+    expect(root.activeElement).toBe(last);
   });
 
   it('leaves an already focused control alone', (): void => {
@@ -332,6 +412,39 @@ describe('overlay host keyboard scrolling', (): void => {
 
     expect(event.defaultPrevented).toBe(false);
   });
+
+  it('leaves Space on a summary to the native toggle', (): void => {
+    const { container }: OverlayHostElements = mountOverlayHost();
+    const details: HTMLDetailsElement = document.createElement('details');
+    const summary: HTMLElement = document.createElement('summary');
+    details.appendChild(summary);
+    container.appendChild(details);
+    const event: KeyboardEvent = keydown(' ');
+
+    summary.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('redirects scroll keys into the backdrop, or the picker list when one is open', (): void => {
+    const { container }: OverlayHostElements = mountOverlayHost();
+
+    container.dispatchEvent(keydown('ArrowDown'));
+    expect(container.scrollTop).toBe(40);
+    container.dispatchEvent(keydown('ArrowUp'));
+    expect(container.scrollTop).toBe(0);
+    container.scrollTop = 120;
+    container.dispatchEvent(keydown('Home'));
+    expect(container.scrollTop).toBe(0);
+
+    const list: HTMLElement = document.createElement('div');
+    list.className = 'work-picker-list';
+    container.appendChild(list);
+    container.dispatchEvent(keydown('ArrowDown'));
+
+    expect(list.scrollTop).toBe(40);
+    expect(container.scrollTop).toBe(0);
+  });
 });
 
 describe('OVERLAY_STYLES', (): void => {
@@ -383,6 +496,20 @@ describe('OVERLAY_STYLES', (): void => {
     expect(OVERLAY_STYLES).toMatch(
       /@media \(prefers-reduced-motion: reduce\)[\s\S]*transition: none;/,
     );
+  });
+
+  it('lets the backdrop scroll on its own and keeps the clock still', (): void => {
+    expect(OVERLAY_STYLES).toMatch(
+      /\.backdrop\s*\{[^}]*align-items:\s*flex-start[^}]*overflow-y:\s*auto[^}]*overscroll-behavior:\s*contain/s,
+    );
+    expect(OVERLAY_STYLES).not.toContain('@keyframes pulse');
+    expect(OVERLAY_STYLES).not.toContain('animation:');
+    expect(OVERLAY_STYLES).toMatch(/\.padlock\s*\{[^}]*1\.5rem/s);
+  });
+
+  it('carries the work tab picker styles in the one mounted sheet', (): void => {
+    expect(OVERLAY_STYLES.endsWith(WORK_PICKER_CSS)).toBe(true);
+    expect(WORK_PICKER_CSS).toMatch(/\.work-picker\s*\{[^}]*position:\s*fixed/s);
   });
 
   it('builds the gate ring empty against the shared circumference', (): void => {

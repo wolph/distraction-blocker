@@ -5,10 +5,12 @@
  * interval never animates past its next repaint.
  */
 
+import { WORK_PICKER_CSS } from './work-tab-picker-view';
+
 /** Local repaint cadence for the clock, the bank meter, and the gate ring. */
 export const OVERLAY_TICK_MS: number = 250;
 
-export const OVERLAY_STYLES: string = `
+const LOCK_SCREEN_CSS: string = `
 :host,
 :host([data-theme="light"]) {
   color-scheme: light;
@@ -78,25 +80,32 @@ export const OVERLAY_STYLES: string = `
   background: var(--overlay-bg);
   color: var(--overlay-text);
   font-family: system-ui, -apple-system, sans-serif;
-  display: flex; align-items: center; justify-content: center;
+  display: flex; align-items: flex-start; justify-content: center;
+  overflow-y: auto; overscroll-behavior: contain;
   text-align: center;
 }
 .backdrop:focus { outline: none; }
 .backdrop.opaque { background: var(--overlay-opaque); }
 .notloaded { font-size: 0.9rem; color: var(--overlay-muted); }
 .panel {
-  max-width: 40rem; padding: 2rem;
+  width: 100%; max-width: 480px; padding: 2rem 1.5rem; margin-block: auto;
   display: flex; flex-direction: column; align-items: center; gap: 0.9rem;
 }
-.padlock { width: 3.5rem; height: 3.5rem; }
-.until { font-size: 1rem; color: var(--overlay-muted); }
+.panel[inert] { visibility: hidden; }
+.padlock { width: 1.5rem; height: 1.5rem; }
+.access { width: 100%; margin-top: 1rem; }
+summary { cursor: pointer; color: var(--overlay-muted); padding: 0.5rem; }
+summary:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid #22c55e; outline-offset: 4px; }
+.access-note, .work-target { font-size: 0.9rem; color: var(--overlay-muted); overflow-wrap: anywhere; }
+.access-note { margin-top: 0.8rem; }
+.next-step, .until { font-size: 1rem; color: var(--overlay-muted); }
 .clock {
-  font-size: 4.5rem; font-weight: 700; line-height: 1;
+  font-size: 1rem; font-weight: 400; line-height: 1.5; color: var(--overlay-muted);
   font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
-  animation: pulse 2.4s ease-in-out infinite;
+  display: flex; flex-wrap: wrap; justify-content: center; column-gap: 0.6rem;
 }
+.clock .until { font-size: 0.85rem; color: var(--overlay-subtle); }
 .intention { font-size: 1.5rem; font-weight: 600; color: var(--overlay-intention); overflow-wrap: anywhere; }
-.attempts { font-size: 0.9rem; color: var(--overlay-subtle); }
 .provenance {
   max-width: 100%; font-size: 0.85rem; color: var(--overlay-subtle); overflow-wrap: anywhere;
 }
@@ -168,9 +177,10 @@ button:disabled { cursor: default; }
   color: var(--overlay-error-text);
   font-size: 0.9rem;
 }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.82; } }
 @media (prefers-reduced-motion: reduce) {
-  .clock { animation: none; }
   .meter-fill, .ring-fill { transition: none; }
 }
 `;
+
+/** The one sheet every blocked page mounts: the lock screen and the picker it can open. */
+export const OVERLAY_STYLES: string = LOCK_SCREEN_CSS + WORK_PICKER_CSS;
