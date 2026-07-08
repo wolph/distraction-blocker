@@ -18,16 +18,34 @@ export interface StartingOverlayCopy {
   stoppedPage: 'This page did not load. It will load by itself when the session ends.' | null;
 }
 
+/** The words after the remaining minutes. Null on an until-stopped page, which has no minutes. */
+export type RemainingSuffix = 'until your break' | 'left in this session';
+
 export interface ActiveOverlayCopy {
+  /** The heading over the intention. */
+  nextStep: 'Your next step';
+  /**
+   * The time line's wall-clock half. A timed page reads `Locked until 14:35`, an until-stopped
+   * page reads `Until stopped` on its own.
+   */
   status:
     | { kind: 'timed'; text: string }
     | {
         kind: 'until-stopped';
-        text: 'Focus Lock is active until you stop it.';
+        text: 'Until stopped';
       };
   lockedUntil: string | null;
-  intention: string | null;
-  attempts: string;
+  /**
+   * Chosen by the worker from the cycling plan: the break the page counts down to has to fit
+   * before the session end, or the page counts to the end instead.
+   */
+  remainingSuffix: RemainingSuffix | null;
+  /** The renderer's number formatting for the time line, so it authors no word of its own. */
+  minuteLabel: 'min';
+  underMinuteLabel: 'Less than a minute';
+  updatingLabel: 'Updating session';
+  /** The trimmed intention, or the next-step prompt the worker writes for a blank one. */
+  intention: string;
   verdictProvenance: string;
   stoppedPage: 'This page did not load. It will load by itself when the session ends.' | null;
   bankUnit: 'site access credit';

@@ -73,7 +73,6 @@ function activeCopy(): ActiveCopy {
     status: { kind: 'timed', text: 'Focus Lock is active for 1:00 more.' },
     lockedUntil: 'Locked until 14:35',
     intention: 'Finish the release notes',
-    attempts: '2 attempts blocked today',
     verdictProvenance: PROVENANCE,
     stoppedPage: null,
     bankUnit: 'site access credit',
@@ -88,6 +87,11 @@ function activeCopy(): ActiveCopy {
     gateForceEnd: 'Ignore timeout and end anyway',
     gateConfirm: null,
     transportError: 'Focus Lock could not update this action. Try again.',
+    nextStep: 'Your next step',
+    remainingSuffix: 'left in this session',
+    minuteLabel: 'min',
+    underMinuteLabel: 'Less than a minute',
+    updatingLabel: 'Updating session',
   };
 }
 

@@ -7,7 +7,6 @@
 import { msUntilNextEarnedMinute } from '../shared/budget-display';
 import type { DocumentOverlayView } from '../shared/enforcement-v2';
 import { exactDataEqual } from '../shared/exact-data';
-import { growBank } from '../shared/live';
 import type { Ack, Request } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import { applyTheme } from '../shared/theme';
@@ -23,12 +22,12 @@ import {
   unmountOverlayHost,
 } from './overlay-host';
 import { OVERLAY_TICK_MS } from './overlay-styles';
+import { type ActiveOverlayView, bankAt, focusProgress, remainingLabel } from './overlay-timing';
 
 /** Ids inside the overlay's own shadow root, where `aria-describedby` resolves. */
 const GATE_WAIT_ID: string = 'focus-lock-gate-wait';
 const PHRASE_TEXT_ID: string = 'focus-lock-gate-phrase';
 
-type ActiveOverlayView = Extract<DocumentOverlayView, { presentation: 'active' }>;
 type StartingOverlayView = Extract<DocumentOverlayView, { presentation: 'starting' }>;
 type ActionRequest = Extract<
   Request,
@@ -210,10 +209,12 @@ function appendStartingPage(panel: HTMLElement, view: StartingOverlayView): void
 }
 
 /**
- * The status sentence leads both pages. A timed page says the wall clock it is locked until and
- * counts down below it, while an until-stopped page says it runs until stopped and has no clock.
- * `copy.lockedUntil` is the bare wall clock behind the timed sentence, so it is never
- * rendered on its own: rendering it would drop the label the worker already wrote.
+ * The next step leads the page: a small heading, the intention as the main text, the provenance
+ * line under it, then the calm time line and the progress bar for this focus block. A timed page
+ * keeps the wall clock it is locked until as the smaller half of the time line, and an
+ * until-stopped page reads its still status text there. `copy.lockedUntil` is the bare wall
+ * clock behind the timed sentence, so it is never rendered on its own: rendering it would drop
+ * the label the worker already wrote.
  */
 function appendActivePage(
   overlay: MountedOverlay,
@@ -221,13 +222,11 @@ function appendActivePage(
   view: ActiveOverlayView,
   now: number,
 ): void {
-  appendLine(panel, 'until', view.copy.status.text);
-  if (view.timing.phaseEndsAt !== null) {
-    overlay.clock = appendLine(panel, 'clock', formatClock(view.timing.phaseEndsAt - now));
-  }
-  if (view.copy.intention !== null) appendLine(panel, 'intention', view.copy.intention);
-  appendLine(panel, 'attempts', view.copy.attempts);
+  appendLine(panel, 'next-step', view.copy.nextStep);
+  appendHeading(panel, view.copy.intention);
   appendLine(panel, 'provenance', view.copy.verdictProvenance);
+  appendTimeLine(overlay, panel, view, now);
+  appendProgress(overlay, panel, view, now);
   if (view.copy.stoppedPage !== null) appendLine(panel, 'notloaded', view.copy.stoppedPage);
   appendBank(overlay, panel, view, now);
   panel.appendChild(
@@ -235,6 +234,57 @@ function appendActivePage(
       ? buildButtons(overlay, view, now)
       : buildGate(overlay, view, view.gate, now),
   );
+}
+
+function appendHeading(panel: HTMLElement, intention: string): void {
+  const heading: HTMLHeadingElement = document.createElement('h1');
+  heading.className = 'intention';
+  heading.textContent = intention;
+  panel.appendChild(heading);
+}
+
+/** The remaining minutes tick locally, the wall clock beside them is the worker's sentence. */
+function appendTimeLine(
+  overlay: MountedOverlay,
+  panel: HTMLElement,
+  view: ActiveOverlayView,
+  now: number,
+): void {
+  const line: HTMLElement = document.createElement('p');
+  line.className = 'clock';
+  const remaining: HTMLSpanElement = document.createElement('span');
+  remaining.className = 'remaining';
+  remaining.textContent = remainingLabel(view, now);
+  line.appendChild(remaining);
+  if (view.copy.status.kind === 'timed') {
+    const until: HTMLSpanElement = document.createElement('span');
+    until.className = 'until';
+    until.textContent = view.copy.status.text;
+    line.appendChild(until);
+  }
+  overlay.clock = remaining;
+  panel.appendChild(line);
+}
+
+function appendProgress(
+  overlay: MountedOverlay,
+  panel: HTMLElement,
+  view: ActiveOverlayView,
+  now: number,
+): void {
+  const meter: HTMLElement = document.createElement('div');
+  meter.className = 'meter';
+  const fill: HTMLElement = document.createElement('div');
+  fill.className = 'meter-fill';
+  meter.appendChild(fill);
+  panel.appendChild(meter);
+  overlay.meterFill = fill;
+  updateProgress(overlay, view, now);
+}
+
+function updateProgress(overlay: MountedOverlay, view: ActiveOverlayView, now: number): void {
+  if (overlay.meterFill === null) return;
+  overlay.meterFill.style.width = `${focusProgress(view, now) * 100}%`;
 }
 
 function appendLine(parent: HTMLElement, className: string, text: string): HTMLElement {
@@ -251,39 +301,16 @@ function appendBank(
   view: ActiveOverlayView,
   now: number,
 ): void {
-  const meter: HTMLElement = document.createElement('div');
-  meter.className = 'meter';
-  const fill: HTMLElement = document.createElement('div');
-  fill.className = 'meter-fill';
-  meter.appendChild(fill);
   const label: HTMLElement = document.createElement('div');
   label.className = 'bank';
-  panel.append(meter, label);
-  overlay.meterFill = fill;
+  panel.appendChild(label);
   overlay.bankLabel = label;
   updateBank(overlay, view, now);
 }
 
-/** Grows the frozen bank forward from the capture time, through the shared rule. */
-function bankAt(view: ActiveOverlayView, now: number): number {
-  return growBank(
-    view.economy.bankMs,
-    view.economy.bankAccrualPerMs,
-    view.economy.bankCapMs,
-    view.timing.capturedAt,
-    now,
-  );
-}
-
 function updateBank(overlay: MountedOverlay, view: ActiveOverlayView, now: number): void {
-  const bank: number = bankAt(view, now);
-  if (overlay.meterFill !== null) {
-    const ratio: number = view.economy.bankCapMs > 0 ? bank / view.economy.bankCapMs : 0;
-    overlay.meterFill.style.width = `${Math.min(100, ratio * 100)}%`;
-  }
-  if (overlay.bankLabel !== null) {
-    overlay.bankLabel.textContent = `${formatClock(bank)} ${view.copy.bankUnit}`;
-  }
+  if (overlay.bankLabel === null) return;
+  overlay.bankLabel.textContent = `${formatClock(bankAt(view, now))} ${view.copy.bankUnit}`;
 }
 
 function buildButtons(overlay: MountedOverlay, view: ActiveOverlayView, now: number): HTMLElement {
@@ -470,14 +497,13 @@ function tick(): void {
   if (mounted !== null) refresh(mounted);
 }
 
-/** Repaints only what the document may recompute on its own: clock, bank, and gate readiness. */
+/** Repaints only what the document may recompute on its own: time, progress, bank, and gate. */
 function refresh(overlay: MountedOverlay): void {
   const view: DocumentOverlayView = overlay.view;
   if (view.presentation !== 'active') return;
   const now: number = Date.now();
-  if (overlay.clock !== null && view.timing.phaseEndsAt !== null) {
-    overlay.clock.textContent = formatClock(view.timing.phaseEndsAt - now);
-  }
+  if (overlay.clock !== null) overlay.clock.textContent = remainingLabel(view, now);
+  updateProgress(overlay, view, now);
   updateBank(overlay, view, now);
   for (const control of overlay.spends) updateSpend(control, view, now);
   updateGate(overlay, view, now);

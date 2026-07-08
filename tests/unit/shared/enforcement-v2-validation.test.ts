@@ -29,7 +29,7 @@ const EPOCH_ID: string = '30000000-0000-4000-8000-000000000001';
 const STOPPED_COPY: NonNullable<ActiveCopy['stoppedPage']> =
   'This page did not load. It will load by itself when the session ends.';
 const UNTIL_STOPPED_TEXT: Extract<ActiveCopy['status'], { kind: 'until-stopped' }>['text'] =
-  'Focus Lock is active until you stop it.';
+  'Until stopped';
 const PROVENANCE: string = 'Blocked by Social media: example.com';
 const READY_ACTIONS: ActiveActions = {
   state: 'ready',
@@ -105,7 +105,6 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     status: { kind: 'timed', text: 'Focus Lock is active for 1:00 more.' },
     lockedUntil: 'Locked until 14:35',
     intention: 'Finish the release notes',
-    attempts: '2 attempts blocked today',
     verdictProvenance: PROVENANCE,
     stoppedPage: null,
     bankUnit: 'site access credit',
@@ -120,6 +119,11 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     gateForceEnd: 'Ignore timeout and end anyway',
     gateConfirm: null,
     transportError: 'Focus Lock could not update this action. Try again.',
+    nextStep: 'Your next step',
+    remainingSuffix: 'left in this session',
+    minuteLabel: 'min',
+    underMinuteLabel: 'Less than a minute',
+    updatingLabel: 'Updating session',
     ...overrides,
   };
 }
@@ -186,6 +190,7 @@ function indefiniteCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
   return activeCopy({
     status: { kind: 'until-stopped', text: UNTIL_STOPPED_TEXT },
     lockedUntil: null,
+    remainingSuffix: null,
     ...overrides,
   });
 }
@@ -276,7 +281,12 @@ describe('shared enforcement v2 overlay parsing', (): void => {
       activeOverlay(),
       activeOverlay({ strictness: 'friction', actions: GATE_END_ACTIONS }),
       activeOverlay({ strictness: 'hard', actions: HIDDEN_END_ACTIONS }),
-      activeOverlay({ mode: 'whitelist', theme: 'light', copy: activeCopy({ intention: null }) }),
+      activeOverlay({
+        mode: 'whitelist',
+        theme: 'light',
+        copy: activeCopy({ intention: 'Continue your current task' }),
+      }),
+      activeOverlay({ copy: activeCopy({ remainingSuffix: 'until your break' }) }),
       indefiniteOverlay(),
       gatedOverlay(PAUSE_GATE),
       gatedOverlay(UNLOCK_GATE, {
@@ -365,6 +375,8 @@ describe('shared enforcement v2 overlay parsing', (): void => {
       activeOverlay({ copy: activeCopy({ lockedUntil: '   ' }) }),
       activeOverlay({ copy: indefiniteCopy() }),
       activeOverlay({ copy: activeCopy({ status: { kind: 'timed', text: '  ' } }) }),
+      activeOverlay({ copy: activeCopy({ remainingSuffix: null }) }),
+      withCopyKey(activeOverlay(), 'remainingSuffix', 'until the end'),
       withKey(activeOverlay(), 'timing', withoutKey(timing, 'sessionEndsAt')),
     ]);
     expect(
@@ -386,6 +398,7 @@ describe('shared enforcement v2 overlay parsing', (): void => {
         text: 'Focus Lock is active.',
       }),
       indefiniteOverlay({ copy: indefiniteCopy({ lockedUntil: 'Locked until tomorrow' }) }),
+      indefiniteOverlay({ copy: indefiniteCopy({ remainingSuffix: 'left in this session' }) }),
       indefiniteOverlay({ strictness: 'friction' }),
       indefiniteOverlay({ strictness: 'hard' }),
       frictionIndefiniteOverlay({ strictness: 'hard' }),
@@ -458,17 +471,23 @@ describe('shared enforcement v2 overlay parsing', (): void => {
       withCopyKey(overlay, 'gateForceEnd', 'End anyway'),
       withKey(overlay, 'copy', withoutKey(overlay.copy, 'gateForceEnd')),
       withCopyKey(overlay, 'transportError', 'Try again.'),
+      withCopyKey(overlay, 'nextStep', 'Next step'),
+      withCopyKey(overlay, 'minuteLabel', 'minutes'),
+      withCopyKey(overlay, 'underMinuteLabel', 'Under a minute'),
+      withCopyKey(overlay, 'updatingLabel', 'Updating'),
       withCopyKey(overlay, 'headline', 'extra'),
+      // The attempts counter left the lock screen, so a view still carrying it is off contract.
+      withCopyKey(overlay, 'attempts', '2 attempts blocked today'),
       withKey(overlay, 'copy', withoutKey(overlay.copy, 'intention')),
-      activeOverlay({ copy: activeCopy({ attempts: '   ' }) }),
+      withKey(overlay, 'copy', withoutKey(overlay.copy, 'nextStep')),
+      withKey(overlay, 'copy', withoutKey(overlay.copy, 'remainingSuffix')),
       activeOverlay({ copy: activeCopy({ pauseAction: '' }) }),
       activeOverlay({ copy: activeCopy({ unlockAction: ' ' }) }),
       activeOverlay({ copy: activeCopy({ verdictProvenance: '\t' }) }),
       activeOverlay({ copy: activeCopy({ intention: '   ' }) }),
+      // The worker writes the fallback prompt itself, so a null intention no longer exists.
+      withCopyKey(overlay, 'intention', null),
     ]);
-    expect(
-      parseDocumentOverlayView(activeOverlay({ copy: activeCopy({ intention: null }) })),
-    ).not.toBeNull();
   });
 
   it('requires stopped-page copy agreement in the active row', (): void => {
@@ -532,20 +551,20 @@ describe('shared enforcement v2 overlay parsing', (): void => {
   it('never runs an overlay accessor, and never sees a value a proxy swaps in', (): void => {
     // Rejection alone does not prove the parser did not read the accessor. The repo's boundary
     // suites count getter calls, and this boundary had no such case.
-    let attemptsReads: number = 0;
+    let intentionReads: number = 0;
     const overlay: ActiveOverlay = activeOverlay();
     const accessorCopy: UnknownRecord = { ...overlay.copy };
-    Object.defineProperty(accessorCopy, 'attempts', {
+    Object.defineProperty(accessorCopy, 'intention', {
       configurable: true,
       enumerable: true,
       get: (): string => {
-        attemptsReads += 1;
-        return '2 attempts blocked today';
+        intentionReads += 1;
+        return 'Finish the release notes';
       },
     });
 
     expect(parseDocumentOverlayView(withKey(overlay, 'copy', accessorCopy))).toBeNull();
-    expect(attemptsReads).toBe(0);
+    expect(intentionReads).toBe(0);
 
     // A proxy that mutates the record while it is being inspected must not have its later value
     // observed: the snapshot the parser works from is taken before anything can change.
@@ -633,8 +652,8 @@ describe('shared enforcement v2 overlay parsing', (): void => {
     expect(parsed.activeUnlocks[0]).toBe(parsed.activeUnlocks[1]);
     expect(parsed.activeUnlocks[0]).not.toBe(shared);
 
-    source.copy.attempts = 'source mutation';
-    expect(parsed.copy.attempts).toBe('2 attempts blocked today');
+    source.copy.intention = 'source mutation';
+    expect(parsed.copy.intention).toBe('Finish the release notes');
     parsed.copy.verdictProvenance = 'snapshot mutation';
     expect(source.copy.verdictProvenance).toBe(PROVENANCE);
   });

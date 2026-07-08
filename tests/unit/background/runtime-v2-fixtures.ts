@@ -492,7 +492,6 @@ export function activeCopy(overrides: Partial<ActiveOverlayCopy> = {}): ActiveOv
     status: { kind: 'timed', text: 'Focus Lock is active for 25:00 more.' },
     lockedUntil: 'Locked until 09:55',
     intention: 'Finish the release notes',
-    attempts: '2 attempts blocked today',
     verdictProvenance: PROVENANCE,
     stoppedPage: null,
     bankUnit: 'site access credit',
@@ -507,6 +506,11 @@ export function activeCopy(overrides: Partial<ActiveOverlayCopy> = {}): ActiveOv
     gateForceEnd: 'Ignore timeout and end anyway',
     gateConfirm: null,
     transportError: 'Focus Lock could not update this action. Try again.',
+    nextStep: 'Your next step',
+    remainingSuffix: 'left in this session',
+    minuteLabel: 'min',
+    underMinuteLabel: 'Less than a minute',
+    updatingLabel: 'Updating session',
     ...overrides,
   };
 }
@@ -577,9 +581,10 @@ export function untilStoppedActiveOverlay(
       copy: activeCopy({
         status: {
           kind: 'until-stopped',
-          text: 'Focus Lock is active until you stop it.',
+          text: 'Until stopped',
         },
         lockedUntil: null,
+        remainingSuffix: null,
       }),
       ...overrides,
     },

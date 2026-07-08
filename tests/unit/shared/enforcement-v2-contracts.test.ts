@@ -34,15 +34,19 @@ describe('shared enforcement v2 contracts', (): void => {
       stoppedPage: 'This page did not load. It will load by itself when the session ends.' | null;
     }>();
     expectTypeOf<ActiveOverlayCopy>().toEqualTypeOf<{
+      nextStep: 'Your next step';
       status:
         | { kind: 'timed'; text: string }
         | {
             kind: 'until-stopped';
-            text: 'Focus Lock is active until you stop it.';
+            text: 'Until stopped';
           };
       lockedUntil: string | null;
-      intention: string | null;
-      attempts: string;
+      remainingSuffix: 'until your break' | 'left in this session' | null;
+      minuteLabel: 'min';
+      underMinuteLabel: 'Less than a minute';
+      updatingLabel: 'Updating session';
+      intention: string;
       verdictProvenance: string;
       stoppedPage: 'This page did not load. It will load by itself when the session ends.' | null;
       bankUnit: 'site access credit';

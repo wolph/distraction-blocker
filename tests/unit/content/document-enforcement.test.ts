@@ -30,7 +30,7 @@ const OPERATION_D: string = '20000000-0000-4000-8000-000000000004';
 const EPOCH_A: string = '30000000-0000-4000-8000-000000000001';
 const PROVENANCE: string = 'Blocked by Social media: example.com';
 const UNTIL_STOPPED_TEXT: Extract<ActiveCopy['status'], { kind: 'until-stopped' }>['text'] =
-  'Focus Lock is active until you stop it.';
+  'Until stopped';
 const STOPPED_TITLE: string = 'Locked - Focus Lock';
 const BLOCKED_VERDICT: Verdict = {
   blocked: true,
@@ -62,7 +62,6 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     status: { kind: 'until-stopped', text: UNTIL_STOPPED_TEXT },
     lockedUntil: null,
     intention: 'Finish the release notes',
-    attempts: '2 attempts blocked today',
     verdictProvenance: PROVENANCE,
     stoppedPage: null,
     bankUnit: 'site access credit',
@@ -77,6 +76,11 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     gateForceEnd: 'Ignore timeout and end anyway',
     gateConfirm: null,
     transportError: 'Focus Lock could not update this action. Try again.',
+    nextStep: 'Your next step',
+    remainingSuffix: null,
+    minuteLabel: 'min',
+    underMinuteLabel: 'Less than a minute',
+    updatingLabel: 'Updating session',
     ...overrides,
   };
 }
@@ -395,7 +399,7 @@ describe('installDocumentEnforcement command loop', () => {
     expect(responses).toHaveLength(1);
     expect(responses[0]?.disposition).toBe('stale-command');
     expect(panelNode()).toBe(panel);
-    expect(overlayText()).toContain('2 attempts blocked today');
+    expect(overlayText()).toContain('Finish the release notes');
   });
 
   it('answers nothing for an equal tuple carrying a different view', async (): Promise<void> => {
@@ -411,14 +415,15 @@ describe('installDocumentEnforcement command loop', () => {
         operationId: OPERATION_D,
         overlay: activeOverlay({
           attemptsToday: 9,
-          copy: activeCopy({ attempts: '9 attempts blocked today' }),
+          copy: activeCopy({ intention: 'Ship the beta' }),
         }),
       }),
     );
 
     expect(responses).toEqual([undefined]);
     expect(panelNode()).toBe(panel);
-    expect(overlayText()).toContain('2 attempts blocked today');
+    expect(overlayText()).toContain('Finish the release notes');
+    expect(overlayText()).not.toContain('Ship the beta');
   });
 
   it('does not re-render a replayed command after a worker restart', async (): Promise<void> => {

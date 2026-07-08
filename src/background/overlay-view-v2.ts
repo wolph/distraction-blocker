@@ -10,6 +10,7 @@ import type {
   ActiveOverlayCopy,
   DocumentOverlayView,
   EnforcementPresentation,
+  RemainingSuffix,
   StartingOverlayCopy,
 } from '../shared/enforcement-v2';
 import {
@@ -18,7 +19,9 @@ import {
 } from '../shared/enforcement-v2-validation';
 import { CoreError } from '../shared/errors';
 import { snapshotExactData } from '../shared/exact-data';
+import { minToMs } from '../shared/time';
 import type {
+  CycleConfig,
   EndActionLabelV2,
   GateKind,
   GateState,
@@ -52,7 +55,9 @@ const STARTING_DETAIL: StartingOverlayCopy['detail'] = 'Applying your selected r
 const STOPPED_PAGE_COPY: NonNullable<StartingOverlayCopy['stoppedPage']> =
   'This page did not load. It will load by itself when the session ends.';
 const UNTIL_STOPPED_STATUS: Extract<ActiveStatusCopy, { kind: 'until-stopped' }>['text'] =
-  'Focus Lock is active until you stop it.';
+  'Until stopped';
+/** What the intention line says when the session was started without one. */
+const NEXT_STEP_FALLBACK: string = 'Continue your current task';
 /** The End control and the cancel gate's confirm on a timed page. */
 const END_ACTION_LABEL: EndActionLabelV2 = 'End session';
 const END_GATE_CONFIRM: string = 'End the session';
@@ -63,6 +68,10 @@ const UNLOCK_ACTION_LABEL: EndActionLabelV2 = 'Unlock';
 const FIXED_ACTIVE_COPY: Readonly<
   Pick<
     ActiveOverlayCopy,
+    | 'nextStep'
+    | 'minuteLabel'
+    | 'underMinuteLabel'
+    | 'updatingLabel'
     | 'bankUnit'
     | 'bankWaitFallback'
     | 'bankWaitPrefix'
@@ -72,6 +81,10 @@ const FIXED_ACTIVE_COPY: Readonly<
     | 'transportError'
   >
 > = {
+  nextStep: 'Your next step',
+  minuteLabel: 'min',
+  underMinuteLabel: 'Less than a minute',
+  updatingLabel: 'Updating session',
   bankUnit: 'site access credit',
   bankWaitFallback: 'earn site access credit by focusing',
   bankWaitPrefix: 'Ready in',
@@ -318,8 +331,8 @@ function activeCopy(
     endAction,
     status: lead.status,
     lockedUntil: lead.lockedUntil,
-    intention: trimmedIntention(input.session.config.intention),
-    attempts: attemptsCopy(input.attemptsToday),
+    remainingSuffix: remainingSuffixCopy(input.session),
+    intention: intentionCopy(input.session.config.intention),
     verdictProvenance: verdictLabel(input.verdict),
     stoppedPage: stoppedPageCopy(input.stoppedPage),
     pauseAction: `Pause blocking for ${costMinutes(input.economy.pauseCostMs)} min`,
@@ -359,17 +372,36 @@ function gateTitleCopy(gate: GateState): string {
   return 'End this session';
 }
 
-/** A sentence, not a form field, so none of them reads as a word rather than a zero. */
-function attemptsCopy(attemptsToday: number): string {
-  if (attemptsToday === 0) return 'No attempts blocked today';
-  return attemptsToday === 1
-    ? '1 attempt blocked today'
-    : `${attemptsToday} attempts blocked today`;
+/**
+ * The page counts down to the next break only when that break fits before the session end. The
+ * session machine completes early when its final break would leave no focus time behind it, so
+ * a break that ends at or past the end is not a break the person will get.
+ */
+function remainingSuffixCopy(session: SessionStateV2): RemainingSuffix | null {
+  if (session.config.duration.kind === 'until-stopped') return null;
+  const phaseEndsAt: number | null = session.phaseEndsAt;
+  const sessionEndsAt: number | null = session.sessionEndsAt;
+  if (phaseEndsAt === null || sessionEndsAt === null) return 'left in this session';
+  return hasUpcomingBreak(session.config.cycling, session.cycleIndex, phaseEndsAt, sessionEndsAt)
+    ? 'until your break'
+    : 'left in this session';
 }
 
-function trimmedIntention(intention: string): string | null {
+function hasUpcomingBreak(
+  cycling: CycleConfig | null,
+  cycleIndex: number,
+  phaseEndsAt: number,
+  sessionEndsAt: number,
+): boolean {
+  if (cycling === null || phaseEndsAt >= sessionEndsAt) return false;
+  const isLong: boolean = (cycleIndex + 1) % cycling.longEvery === 0;
+  const breakMs: number = minToMs(isLong ? cycling.longBreakMin : cycling.shortBreakMin);
+  return breakMs > 0 && phaseEndsAt + breakMs < sessionEndsAt - 1;
+}
+
+function intentionCopy(intention: string): string {
   const goal: string = intention.trim();
-  return goal === '' ? null : goal;
+  return goal === '' ? NEXT_STEP_FALLBACK : goal;
 }
 
 function stoppedPageCopy(stoppedPage: boolean): StartingOverlayCopy['stoppedPage'] {

@@ -26,6 +26,7 @@ import {
 } from '../../../src/shared/enforcement-v2-validation';
 import { CoreError } from '../../../src/shared/errors';
 import type {
+  CycleConfig,
   GateState,
   SessionConfigV2,
   SessionDuration,
@@ -271,6 +272,11 @@ describe('buildActiveOverlayView timed focus', () => {
     });
     expect(view.copy.status).toEqual({ kind: 'timed', text: `Locked until ${lockedUntil}` });
     expect(view.copy.lockedUntil).toBe(lockedUntil);
+    expect(view.copy.nextStep).toBe('Your next step');
+    expect(view.copy.remainingSuffix).toBe('left in this session');
+    expect(view.copy.minuteLabel).toBe('min');
+    expect(view.copy.underMinuteLabel).toBe('Less than a minute');
+    expect(view.copy.updatingLabel).toBe('Updating session');
     expect(view.copy.pauseAction).toBe('Pause blocking for 1 min');
     expect(view.copy.unlockAction).toBe('Unlock this site for 2 min');
     expect(view.copy.bankUnit).toBe('site access credit');
@@ -328,18 +334,52 @@ describe('buildActiveOverlayView timed focus', () => {
     expect(view.economy).toEqual(economy());
     expect(view.activeUnlocks).toEqual(unlocks);
     expect(view.attemptsToday).toBe(1);
-    expect(view.copy.attempts).toBe('1 attempt blocked today');
-    // A sentence, not a form field: zero reads as a word.
-    expect(activeView({ attemptsToday: 0 }).copy.attempts).toBe('No attempts blocked today');
-    expect(activeView({ attemptsToday: 2 }).copy.attempts).toBe('2 attempts blocked today');
+    // The count still travels, because every blocked attempt repaints every open page, but the
+    // lock screen no longer says it, so the copy carries no sentence for it.
+    expect('attempts' in view.copy).toBe(false);
   });
 
-  it('trims the intention and drops a blank one', () => {
+  it('trims the intention and writes the next-step prompt for a blank one', () => {
     expect(activeView().copy.intention).toBe('Finish the release notes');
     expect(
       activeView({ session: timedSession({ intention: '  Ship the beta  ' }) }).copy.intention,
     ).toBe('Ship the beta');
-    expect(activeView({ session: timedSession({ intention: '   ' }) }).copy.intention).toBeNull();
+    expect(activeView({ session: timedSession({ intention: '   ' }) }).copy.intention).toBe(
+      'Continue your current task',
+    );
+  });
+
+  it('names the break only when one follows this focus block before the session ends', () => {
+    const cycling: CycleConfig = { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 };
+    const phaseEndsAt: number = NOW + 60_000;
+    const cycled: (cycleIndex: number, sessionEndsAt: number) => ActiveOverlay = (
+      cycleIndex: number,
+      sessionEndsAt: number,
+    ): ActiveOverlay =>
+      activeView({
+        session: { ...timedSession({ cycling }), cycleIndex, phaseEndsAt, sessionEndsAt },
+      });
+
+    expect(cycled(0, phaseEndsAt + 5 * 60_000 + 60_000).copy.remainingSuffix).toBe(
+      'until your break',
+    );
+    // The machine completes early when the final break would leave no focus time behind it.
+    expect(cycled(0, phaseEndsAt + 5 * 60_000).copy.remainingSuffix).toBe('left in this session');
+    // The fourth block's break is the long one, and it runs past this shorter session end.
+    expect(cycled(3, phaseEndsAt + 10 * 60_000).copy.remainingSuffix).toBe('left in this session');
+    expect(cycled(3, phaseEndsAt + 16 * 60_000).copy.remainingSuffix).toBe('until your break');
+    expect(
+      activeView({
+        session: {
+          ...timedSession({ cycling: { ...cycling, shortBreakMin: 0 } }),
+          phaseEndsAt,
+          sessionEndsAt: phaseEndsAt + 60_000,
+        },
+      }).copy.remainingSuffix,
+    ).toBe('left in this session');
+    expect(activeView({ session: timedSession() }).copy.remainingSuffix).toBe(
+      'left in this session',
+    );
   });
 
   it('marks a stopped document with its exact copy', () => {
@@ -358,11 +398,9 @@ describe('buildActiveOverlayView until-stopped focus', () => {
     const view: ActiveOverlay = activeView({ session: untilStoppedSession() });
 
     expect(view.duration).toEqual({ kind: 'until-stopped' });
-    expect(view.copy.status).toEqual({
-      kind: 'until-stopped',
-      text: 'Focus Lock is active until you stop it.',
-    });
+    expect(view.copy.status).toEqual({ kind: 'until-stopped', text: 'Until stopped' });
     expect(view.copy.lockedUntil).toBeNull();
+    expect(view.copy.remainingSuffix).toBeNull();
     expect(view.timing.phaseEndsAt).toBeNull();
     expect(view.timing.sessionEndsAt).toBeNull();
     expect(view.actions.end).toBe('request-end');

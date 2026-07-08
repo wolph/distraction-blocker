@@ -27,7 +27,7 @@ const PROVENANCE: string = 'Blocked by Social media: example.com';
 const STOPPED_COPY: NonNullable<StartingOverlay['copy']['stoppedPage']> =
   'This page did not load. It will load by itself when the session ends.';
 const UNTIL_STOPPED_TEXT: Extract<ActiveCopy['status'], { kind: 'until-stopped' }>['text'] =
-  'Focus Lock is active until you stop it.';
+  'Until stopped';
 const TRANSPORT_ERROR: ActiveCopy['transportError'] =
   'Focus Lock could not update this action. Try again.';
 const BLOCKED_VERDICT: Verdict = {
@@ -53,7 +53,6 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     status: { kind: 'timed', text: 'Locked until 14:35' },
     lockedUntil: '14:35',
     intention: 'Finish the release notes',
-    attempts: '2 attempts blocked today',
     verdictProvenance: PROVENANCE,
     stoppedPage: null,
     bankUnit: 'site access credit',
@@ -68,6 +67,11 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     gateForceEnd: 'Ignore timeout and end anyway',
     gateConfirm: null,
     transportError: TRANSPORT_ERROR,
+    nextStep: 'Your next step',
+    remainingSuffix: 'left in this session',
+    minuteLabel: 'min',
+    underMinuteLabel: 'Less than a minute',
+    updatingLabel: 'Updating session',
     ...overrides,
   };
 }
@@ -99,6 +103,15 @@ function activeOverlay(overrides: Partial<ActiveOverlay> = {}): ActiveOverlay {
   };
 }
 
+function untilStoppedCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
+  return activeCopy({
+    status: { kind: 'until-stopped', text: UNTIL_STOPPED_TEXT },
+    lockedUntil: null,
+    remainingSuffix: null,
+    ...overrides,
+  });
+}
+
 function untilStoppedOverlay(overrides: Partial<ActiveOverlay> = {}): ActiveOverlay {
   return activeOverlay({
     duration: { kind: 'until-stopped' },
@@ -109,12 +122,15 @@ function untilStoppedOverlay(overrides: Partial<ActiveOverlay> = {}): ActiveOver
       sessionEndsAt: null,
     },
     actions: { state: 'ready', end: 'request-end', pause: 'request-gate', unlock: 'request-gate' },
-    copy: activeCopy({
-      status: { kind: 'until-stopped', text: UNTIL_STOPPED_TEXT },
-      lockedUntil: null,
-    }),
+    copy: untilStoppedCopy(),
     ...overrides,
   });
+}
+
+function meterWidth(): number {
+  const fill: HTMLElement | null = shadowRoot().querySelector<HTMLElement>('.meter-fill');
+  if (fill === null) throw new Error('missing overlay element: .meter-fill');
+  return Number.parseFloat(fill.style.width);
 }
 
 function gateState(overrides: Partial<GateState> = {}): GateState {
@@ -234,24 +250,63 @@ describe('renderDocumentOverlay starting view', () => {
 });
 
 describe('renderDocumentOverlay active view', () => {
-  it('renders the timed page with a locally ticking clock and its exact copy', () => {
+  it('renders the timed page with a calm minute line, its exact copy, and no attempts', () => {
     renderDocumentOverlay(activeOverlay(), BLOCKED_VERDICT);
 
-    expect(text('.until')).toBe('Locked until 14:35');
-    expect(text('.until')).not.toBe('14:35');
-    expect(text('.clock')).toBe(formatClock(60_000));
+    expect(text('.next-step')).toBe('Your next step');
     expect(text('.intention')).toBe('Finish the release notes');
-    expect(text('.attempts')).toBe('2 attempts blocked today');
     expect(text('.provenance')).toBe(PROVENANCE);
+    expect(text('.clock .remaining')).toBe('1 min left in this session');
+    expect(text('.clock .until')).toBe('Locked until 14:35');
+    expect(text('.clock .until')).not.toBe('14:35');
+    expect(shadowRoot().querySelector('.attempts')).toBeNull();
+    expect(shadowRoot().textContent).not.toContain('attempts blocked today');
     expect(text('.bank')).toBe(`${formatClock(300_000)} site access credit`);
-    expect(shadowRoot().querySelector('.meter-fill')?.getAttribute('style')).toContain('width');
     expect(buttonStartingWith('Pause blocking for 1 min')).toBeInstanceOf(HTMLButtonElement);
     expect(buttonStartingWith('Unlock this site for 2 min')).toBeInstanceOf(HTMLButtonElement);
     expect(buttonStartingWith('End session')).toBeInstanceOf(HTMLButtonElement);
 
     vi.advanceTimersByTime(5_000);
 
-    expect(text('.clock')).toBe(formatClock(55_000));
+    expect(text('.clock .remaining')).toBe('Less than a minute left in this session');
+
+    vi.advanceTimersByTime(55_000);
+
+    expect(text('.clock .remaining')).toBe('Updating session');
+  });
+
+  it('fills the progress bar from this focus block, never from the bank', () => {
+    // One second into a block that ends in sixty, with a full bank: the bar reads the block.
+    renderDocumentOverlay(activeOverlay(), BLOCKED_VERDICT);
+    expect(meterWidth()).toBeGreaterThan(1);
+    expect(meterWidth()).toBeLessThan(2);
+
+    vi.advanceTimersByTime(30_500);
+
+    expect(meterWidth()).toBeGreaterThan(50);
+    expect(meterWidth()).toBeLessThan(52);
+
+    vi.advanceTimersByTime(60_000);
+
+    expect(meterWidth()).toBe(100);
+  });
+
+  it('bounds the progress bar by the session end when it comes before the phase end', () => {
+    renderDocumentOverlay(
+      activeOverlay({
+        timing: {
+          capturedAt: NOW,
+          phaseStartedAt: NOW - 30_000,
+          phaseEndsAt: NOW + 90_000,
+          sessionEndsAt: NOW + 30_000,
+        },
+        copy: activeCopy({ remainingSuffix: 'until your break' }),
+      }),
+      BLOCKED_VERDICT,
+    );
+
+    expect(meterWidth()).toBe(50);
+    expect(text('.clock .remaining')).toBe('Less than a minute until your break');
   });
 
   it('hides the end action unless the view asks for it', () => {
@@ -266,14 +321,19 @@ describe('renderDocumentOverlay active view', () => {
     expect(buttons()).toHaveLength(2);
   });
 
-  it('renders the until-stopped page without a clock or locked-until line, End included', () => {
+  it('renders the until-stopped page with a still time line and no wall clock, End included', () => {
     renderDocumentOverlay(untilStoppedOverlay(), BLOCKED_VERDICT);
 
-    expect(text('.until')).toBe(UNTIL_STOPPED_TEXT);
+    expect(text('.clock .remaining')).toBe(UNTIL_STOPPED_TEXT);
+    expect(shadowRoot().querySelector('.clock .until')).toBeNull();
     expect(shadowRoot().textContent).not.toContain('Locked until');
-    expect(shadowRoot().querySelector('.clock')).toBeNull();
+    expect(meterWidth()).toBe(0);
     expect(shadowRoot().textContent).toContain('End session');
     expect(buttons()).toHaveLength(3);
+
+    vi.advanceTimersByTime(90_000);
+
+    expect(text('.clock .remaining')).toBe(UNTIL_STOPPED_TEXT);
   });
 
   it('renders the Unlock control a Friction until-stopped view carries', async (): Promise<void> => {
@@ -287,11 +347,7 @@ describe('renderDocumentOverlay active view', () => {
           pause: 'request-gate',
           unlock: 'request-gate',
         },
-        copy: activeCopy({
-          status: { kind: 'until-stopped', text: UNTIL_STOPPED_TEXT },
-          lockedUntil: null,
-          endAction: 'Unlock',
-        }),
+        copy: untilStoppedCopy({ endAction: 'Unlock' }),
       }),
       BLOCKED_VERDICT,
     );
@@ -395,7 +451,7 @@ describe('renderDocumentOverlay active view', () => {
       activeOverlay({
         theme: 'light',
         attemptsToday: 3,
-        copy: activeCopy({ attempts: '3 attempts blocked today' }),
+        copy: activeCopy({ intention: 'Ship the beta' }),
       }),
       BLOCKED_VERDICT,
     );
@@ -404,7 +460,7 @@ describe('renderDocumentOverlay active view', () => {
     expect(shadowRoot()).toBe(root);
     expect(root.querySelector('.panel')).not.toBe(panel);
     expect(host.dataset.theme).toBe('light');
-    expect(text('.attempts')).toBe('3 attempts blocked today');
+    expect(text('.intention')).toBe('Ship the beta');
   });
 
   it('keeps the rendered panel for a structurally identical view', () => {
@@ -434,11 +490,14 @@ describe('clearDocumentOverlay', () => {
 });
 
 describe('overlay-v2 source boundary', () => {
-  it('never reads the public session snapshot', () => {
-    const source: string = readFileSync(resolve('src/content/overlay-v2.ts'), 'utf8');
+  it.each(['overlay-v2.ts', 'overlay-timing.ts'])(
+    'never reads the public session snapshot in %s',
+    (file: string): void => {
+      const source: string = readFileSync(resolve('src/content', file), 'utf8');
 
-    expect(source).not.toMatch(/SessionSnapshot/);
-  });
+      expect(source).not.toMatch(/SessionSnapshot/);
+    },
+  );
 });
 
 describe('overlay-v2 actions', () => {
@@ -806,12 +865,24 @@ describe('renderDocumentOverlay against the worker builders', () => {
 
     renderDocumentOverlay(view, BLOCKED_VERDICT);
 
-    expect(text('.until')).toBe('Locked until 14:35');
-    expect(text('.until')).not.toBe('14:35');
-    expect(text('.clock')).toBe(formatClock(60_000));
+    expect(text('.next-step')).toBe('Your next step');
+    expect(text('.clock .remaining')).toBe('1 min left in this session');
+    expect(text('.clock .until')).toBe('Locked until 14:35');
+    expect(text('.clock .until')).not.toBe('14:35');
   });
 
-  it('leads an until-stopped page with the popup-only sentence and no clock', () => {
+  it('writes the next-step prompt for a session started without an intention', () => {
+    vi.setSystemTime(LOCKED_AT);
+    const view: DocumentOverlayView = buildActiveOverlayView(
+      builderInput(builderSession({ intention: '   ' })),
+    );
+
+    renderDocumentOverlay(view, BLOCKED_VERDICT);
+
+    expect(text('.intention')).toBe('Continue your current task');
+  });
+
+  it('leads an until-stopped page with the still time line and no wall clock', () => {
     vi.setSystemTime(LOCKED_AT);
     const view: DocumentOverlayView = buildActiveOverlayView(
       builderInput({
@@ -823,8 +894,8 @@ describe('renderDocumentOverlay against the worker builders', () => {
 
     renderDocumentOverlay(view, BLOCKED_VERDICT);
 
-    expect(text('.until')).toBe(UNTIL_STOPPED_TEXT);
+    expect(text('.clock .remaining')).toBe(UNTIL_STOPPED_TEXT);
     expect(shadowRoot().textContent).not.toContain('Locked until');
-    expect(shadowRoot().querySelector('.clock')).toBeNull();
+    expect(shadowRoot().querySelector('.clock .until')).toBeNull();
   });
 });
