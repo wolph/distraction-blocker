@@ -908,6 +908,112 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* The work tab picker, in the start form and the active view. */
+.work-tab-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  width: 100%;
+}
+
+.work-tab-label select {
+  font: inherit;
+  width: 100%;
+  min-width: 0;
+  padding: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--bg);
+  color: inherit;
+}
+
+.work-tab-control {
+  width: 100%;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.work-target,
+.work-tab-hint {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  color: var(--text-soft);
+}
+
+.this-tab-choice {
+  width: 100%;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.this-tab-button {
+  width: 100%;
+  padding: 0.7rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: #22c55e;
+  color: #052e16;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.this-tab-button:hover:enabled {
+  background: #4ade80;
+}
+
+.this-tab-button:disabled {
+  background: var(--surface);
+  color: var(--text-soft);
+  cursor: default;
+}
+
+.this-tab-button:focus-visible {
+  outline: 2px solid #22c55e;
+  outline-offset: 3px;
+}
+
+/* In the active view the picker sits under the clock, so its button reads as a quiet choice. */
+.work-tab-control .this-tab-button {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.work-tab-control .this-tab-button:hover:enabled {
+  background: var(--bg);
+}
+
+.work-tab-control .this-tab-button:disabled {
+  color: var(--text-soft);
+}
+
+/* The return control: the start button's shape, naming its destination on two more lines. */
+.return-work-button {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  text-align: center;
+}
+
+.return-work-title,
+.return-work-hostname {
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.return-work-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
 /* Outlined rather than filled: the same shape as the two actions above it, marked in red by its
    border and text only, so ending a session reads as a distinct choice without shouting. */
 .end-session-button {
