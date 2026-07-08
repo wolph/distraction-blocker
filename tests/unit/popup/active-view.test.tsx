@@ -141,10 +141,17 @@ const statsBundle: StatsBundle = {
 
 type AnyRequest = Request | SessionRequestV2;
 
+/** Reads the view makes on its own: today's total, the work target, and the eligible tabs. */
+const VIEW_READS: ReadonlySet<AnyRequest['type']> = new Set<AnyRequest['type']>([
+  'getStats',
+  'getWorkTarget',
+  'getWorkTabs',
+]);
+
 function sessionRequests(): AnyRequest[] {
   return sendMessageMock.mock.calls
     .map(([request]: unknown[]): AnyRequest => request as AnyRequest)
-    .filter((request: AnyRequest): boolean => request.type !== 'getStats');
+    .filter((request: AnyRequest): boolean => !VIEW_READS.has(request.type));
 }
 
 /**

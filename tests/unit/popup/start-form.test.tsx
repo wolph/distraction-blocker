@@ -7,6 +7,7 @@ import { parseSessionStartRequestV2 } from '../../../src/background/request-vali
 import { START_FAILED_COPY } from '../../../src/popup/command-errors';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS, rulesFromLists } from '../../../src/shared/constants';
 import {
+  type Request,
   type SessionRequestV2,
   STALE_SESSION_RULES_ERROR,
   type StartSessionResponseV2,
@@ -38,10 +39,11 @@ const FLEXIBLE_HINT: string = untilStoppedHint('flexible', DEFAULT_SETTINGS.gate
 
 type StartRequest = Extract<SessionRequestV2, { type: 'startSession' }>;
 
+/** Every request except the work tab listing, which the form reads on its own. */
 function requests(): SessionRequestV2[] {
-  return sendMessageMock.mock.calls.map(
-    ([request]: unknown[]): SessionRequestV2 => request as SessionRequestV2,
-  );
+  return sendMessageMock.mock.calls
+    .map(([request]: unknown[]): Request => request as Request)
+    .filter((request: Request): request is SessionRequestV2 => request.type !== 'getWorkTabs');
 }
 
 function startRequests(): StartRequest[] {

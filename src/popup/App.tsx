@@ -31,7 +31,7 @@ import { type WebsiteAccessOutcome, websiteAccessOutcome } from '../shared/websi
 import { ActiveView } from './ActiveView';
 import { LifecycleView } from './LifecycleView';
 import { CATEGORIES_LOCKED_COPY } from './RuleSummary';
-import { StartForm } from './StartForm';
+import { type StartFeedback, StartForm } from './StartForm';
 import { useSnapshot } from './use-snapshot';
 
 const DAY_NAMES: readonly string[] = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -157,7 +157,7 @@ function Footer({ snapshot }: { snapshot: SessionSnapshot }): VNode {
   );
 }
 
-function IdleView(): VNode {
+function IdleView({ onStartFeedback }: { onStartFeedback: StartFeedback }): VNode {
   const [settings, setSettings]: [Settings | null, Dispatch<StateUpdater<Settings | null>>] =
     useState<Settings | null>(null);
   const [lists, setLists]: [ListsConfig | null, Dispatch<StateUpdater<ListsConfig | null>>] =
@@ -198,7 +198,12 @@ function IdleView(): VNode {
   }
   return (
     <>
-      <StartForm settings={settings} lists={lists} categoriesEditable={listsEditable} />
+      <StartForm
+        settings={settings}
+        lists={lists}
+        categoriesEditable={listsEditable}
+        onStartFeedback={onStartFeedback}
+      />
       {loadError ? (
         <p class="form-error" role="alert">
           Could not load session settings. Reload the popup to try again. Defaults are shown.
@@ -232,16 +237,18 @@ function Body({
   snapshot,
   now,
   dataClear,
+  onStartFeedback,
 }: {
   snapshot: SessionSnapshot;
   now: number;
   dataClear: SetupState['dataClear'];
+  onStartFeedback: StartFeedback;
 }): VNode {
   const journal: SetupState['dataClear'] | null = allDataJournal(dataClear);
   if (journal !== null) {
     return <LifecycleView snapshot={snapshot} now={now} dataClear={journal} />;
   }
-  if (snapshot.lifecycle.kind === 'idle') return <IdleView />;
+  if (snapshot.lifecycle.kind === 'idle') return <IdleView onStartFeedback={onStartFeedback} />;
   if (snapshot.lifecycle.kind === 'active') return <ActiveView snapshot={snapshot} now={now} />;
   return <LifecycleView snapshot={snapshot} now={now} dataClear={dataClear} />;
 }
@@ -462,6 +469,18 @@ export function App(): VNode {
     useState<SetupState | null>(null);
   const [setupError, setSetupError]: [boolean, Dispatch<StateUpdater<boolean>>] =
     useState<boolean>(false);
+  /**
+   * A start that succeeded except for its work tab answers after the snapshot has already
+   * replaced the form, so the form hands the message up here, where it outlives the form.
+   */
+  const [startFeedback, setStartFeedback]: [string | null, Dispatch<StateUpdater<string | null>>] =
+    useState<string | null>(null);
+  const onStartFeedback: StartFeedback = (message: string | null): void => {
+    setStartFeedback(message);
+  };
+  useEffect((): void => {
+    if (snapshot?.lifecycle.kind === 'idle') setStartFeedback(null);
+  }, [snapshot]);
 
   useEffect((): (() => void) => {
     let alive: boolean = true;
@@ -554,8 +573,18 @@ export function App(): VNode {
       ) : snapshot === null ? (
         <section class="view" aria-busy="true" />
       ) : (
-        <Body snapshot={snapshot} now={now} dataClear={setup.dataClear} />
+        <Body
+          snapshot={snapshot}
+          now={now}
+          dataClear={setup.dataClear}
+          onStartFeedback={onStartFeedback}
+        />
       )}
+      {startFeedback !== null ? (
+        <p class="view form-error" role="alert">
+          {startFeedback}
+        </p>
+      ) : null}
       {setup?.completed &&
       setup.blockingRegistration !== 'ready' &&
       setup.websiteAccessNotice !== null ? (

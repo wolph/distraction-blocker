@@ -7,11 +7,13 @@ import { growBank } from '../shared/live';
 import type { StatsBundle } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
 import { isStatsBundle } from '../shared/runtime-validation';
-import { ACTION_FAILED_COPY } from '../shared/session-copy';
+import { ACTION_FAILED_COPY, RETURN_TO_WORK_FAILED_COPY } from '../shared/session-copy';
 import { formatClock } from '../shared/time';
 import type { EndAuthorityV2, GateState, SessionSnapshotV2 } from '../shared/types';
 import { ClockStack } from './ClockStack';
 import { GatePanel } from './GatePanel';
+import { ReturnToWorkButton, type WorkDestination } from './ReturnToWorkButton';
+import { useWorkTarget, type WorkTargetState } from './use-work-tabs';
 import {
   endControl,
   gateConfirmLabel,
@@ -23,6 +25,7 @@ import {
   useV2Command,
   type V2Command,
 } from './v2-command';
+import { WorkTabControl } from './WorkTabControl';
 
 type ActiveHostState =
   | { status: 'loading' }
@@ -135,6 +138,7 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
   const activeSite: ActiveHostState = useActiveHost();
   const activeHost: string | null = activeSite.status === 'ready' ? activeSite.host : null;
   const focusedToday: { ms: number | null; error: boolean } = useFocusedTodayMs();
+  const work: WorkTargetState = useWorkTarget(snapshot);
 
   /** Grown to `now` so the meter moves between published snapshots. */
   const bankMs: number = growBank(
@@ -178,6 +182,21 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
     now - snapshot.phaseStartedAt >= MIN_BREAK_BEFORE_EARLY_MS;
 
   const endAction: VNode | null = endControl(authority, command);
+
+  /** Offered only while no gate is open and the chosen tab can be switched to right now. */
+  const returnDestination: WorkDestination | null =
+    activeGate === null && work.target?.ok === true && work.target.state === 'ready'
+      ? { title: work.target.title, hostname: work.target.hostname }
+      : null;
+  /** Runs under the view's one in-flight lock, so a return and a gate command cannot race. */
+  const returnToWork: () => Promise<void> = async (): Promise<void> => {
+    if (!work.target?.ok || work.target.sessionId === null || work.windowId === null) return;
+    await command.run(
+      { type: 'returnToWork', sessionId: work.target.sessionId, windowId: work.windowId },
+      RETURN_TO_WORK_FAILED_COPY,
+    );
+    work.refresh();
+  };
 
   const phaseControls: VNode | null =
     snapshot.phase === 'paused' ? (
@@ -230,6 +249,16 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
     <section ref={viewRef} class="view active-view">
       <ClockStack snapshot={snapshot} now={now} />
       {intention !== '' ? <p class="intention-line">{intention}</p> : null}
+      <WorkTabControl snapshot={snapshot} work={work} disabled={command.pending} />
+      {returnDestination !== null ? (
+        <ReturnToWorkButton
+          destination={returnDestination}
+          disabled={command.pending}
+          onClick={(): void => {
+            void returnToWork();
+          }}
+        />
+      ) : null}
       {focusedToday.ms !== null ? (
         <p class="today-line">{Math.floor(focusedToday.ms / 60_000)} min focused today</p>
       ) : focusedToday.error ? (

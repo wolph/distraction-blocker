@@ -1,5 +1,5 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'preact/hooks';
 import { ForcedControl } from '../shared/ForcedControl';
 import {
   STALE_SESSION_RULES_ERROR,
@@ -24,7 +24,8 @@ import type {
   SettingsV2,
   Strictness,
 } from '../shared/types';
-import { START_FAILED_COPY, startErrorMessage } from './command-errors';
+import type { WorkTab } from '../shared/work-target';
+import { START_FAILED_COPY, startErrorMessage, startedWithoutWorkTarget } from './command-errors';
 import { DomainInput } from './DomainInput';
 import { DurationControl } from './DurationControl';
 import { RadioRow } from './form-controls';
@@ -52,6 +53,8 @@ import {
   startLabel,
   toSessionConfigV2,
 } from './start-draft';
+import { ThisTabButton } from './ThisTabButton';
+import { useWorkTabs, type WorkTabsState } from './use-work-tabs';
 
 interface ModeChoice {
   value: SessionMode;
@@ -75,10 +78,22 @@ const INVALID_DURATION_ERROR: string = 'Enter a session length greater than zero
 const STALE_LISTS_UNAVAILABLE_COPY: string =
   'Defaults changed, but current lists could not be loaded. Reload the popup.';
 
+/** Receives a start message that must outlive the form, or null when a new start begins. */
+export type StartFeedback = (message: string | null) => void;
+
+const NO_WORK_TAB_OPTION: string = 'No work tab (optional)';
+const WORK_TAB_UNAVAILABLE_OPTION: string = 'Selected tab unavailable - choose another';
+
 export interface StartFormProps {
   settings: SettingsV2;
   lists: ListsConfig;
   categoriesEditable?: boolean;
+  /**
+   * Where a start that succeeded except for its work tab reports. The session has started, so
+   * the next snapshot replaces this form, and the message has to live in the view that stays.
+   * Without it the form shows the message inline.
+   */
+  onStartFeedback?: StartFeedback;
 }
 
 /**
@@ -95,10 +110,29 @@ function applyDraftDuration(draft: StartDraft, next: DraftDuration): StartDraft 
   return setCustomMinutes(restored, next.customMin);
 }
 
-export function StartForm({ settings, lists, categoriesEditable = true }: StartFormProps): VNode {
+export function StartForm({
+  settings,
+  lists,
+  categoriesEditable = true,
+  onStartFeedback,
+}: StartFormProps): VNode {
   const [draft, setDraft]: [StartDraft, Dispatch<StateUpdater<StartDraft>>] = useState<StartDraft>(
     (): StartDraft => createStartDraft(settings, lists),
   );
+  /** Listed under the draft's rules, so the proposal matches what the start will capture. */
+  const work: WorkTabsState = useWorkTabs(draft.mode, draft.rules);
+  const [workTabId, setWorkTabId]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
+  /** Once the user has chosen, a refreshed listing no longer re-proposes the active tab. */
+  const explicitChoice: { current: boolean } = useRef<boolean>(false);
+  useEffect((): void => {
+    if (explicitChoice.current) return;
+    const activeTabId: number | null = work.context?.activeTabId ?? null;
+    setWorkTabId(
+      work.tabs.some((tab: WorkTab): boolean => tab.tabId === activeTabId)
+        ? String(activeTabId)
+        : '',
+    );
+  }, [work]);
   /** The lists the draft is rebased onto, which a stale start refreshes from the worker. */
   const [activeLists, setActiveLists]: [ListsConfig, Dispatch<StateUpdater<ListsConfig>>] =
     useState<ListsConfig>(lists);
@@ -150,15 +184,28 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
     }
 
     setError(null);
+    onStartFeedback?.(null);
     setStarting(true);
     try {
-      const response: StartSessionResponseV2 = await sendRequest({
-        type: 'startSession',
-        config,
-      });
+      // The chosen tab travels beside the config, never inside it: the worker saves it for the
+      // session the start mints, in the privacy context of this popup's window.
+      const response: StartSessionResponseV2 = await sendRequest(
+        workTabId !== '' && work.context !== null
+          ? {
+              type: 'startSession',
+              config,
+              workTabId: Number(workTabId),
+              windowId: work.context.windowId,
+            }
+          : { type: 'startSession', config },
+      );
       const message: string | null = startErrorMessage(response);
       if (message === STALE_SESSION_RULES_ERROR) {
         await rebaseFromWorker();
+        return;
+      }
+      if (message !== null && startedWithoutWorkTarget(response) && onStartFeedback !== undefined) {
+        onStartFeedback(message);
         return;
       }
       if (message !== null) {
@@ -244,6 +291,44 @@ export function StartForm({ settings, lists, categoriesEditable = true }: StartF
             }
           />
         </div>
+
+        <ThisTabButton
+          key={draft.mode}
+          choiceKey={workTabId}
+          mode={draft.mode}
+          rules={draft.rules}
+          work={work}
+          disabled={starting}
+          onSelect={(tabId: number): void => {
+            explicitChoice.current = true;
+            setWorkTabId(String(tabId));
+          }}
+        />
+        <label class="work-tab-label">
+          Or choose another tab
+          <select
+            aria-label="Work tab"
+            value={workTabId}
+            disabled={work.context === null || starting || work.loading}
+            onChange={(event: Event): void => {
+              explicitChoice.current = true;
+              setWorkTabId((event.currentTarget as HTMLSelectElement).value);
+            }}
+          >
+            <option value="">{NO_WORK_TAB_OPTION}</option>
+            {workTabId !== '' &&
+            !work.tabs.some((tab: WorkTab): boolean => String(tab.tabId) === workTabId) ? (
+              <option value={workTabId}>{WORK_TAB_UNAVAILABLE_OPTION}</option>
+            ) : null}
+            {work.tabs.map(
+              (tab: WorkTab): VNode => (
+                <option key={tab.tabId} value={tab.tabId}>
+                  {tab.title}
+                </option>
+              ),
+            )}
+          </select>
+        </label>
 
         {sessionType}
 

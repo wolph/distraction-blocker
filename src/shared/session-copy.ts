@@ -108,6 +108,7 @@ export const RETRY_CLEANUP_LABEL: string = 'Retry cleanup';
 export const END_FAILED_COPY: string = 'Could not end session. Try again.';
 export const RETRY_FAILED_COPY: string = 'Could not retry cleanup. Try again.';
 export const ACTION_FAILED_COPY: string = 'Could not request that action. Try again.';
+export const RETURN_TO_WORK_FAILED_COPY: string = 'Could not return to work. Try again.';
 export const DATA_CLEAR_PENDING_COPY: string = 'Deleting Focus Lock data. Finishing cleanup.';
 export const DATA_CLEAR_ERROR_COPY: string = 'Could not delete data. Try again.';
 

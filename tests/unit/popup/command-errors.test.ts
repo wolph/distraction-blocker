@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { commandErrorMessage, startErrorMessage } from '../../../src/popup/command-errors';
+import {
+  commandErrorMessage,
+  startErrorMessage,
+  startedWithoutWorkTarget,
+} from '../../../src/popup/command-errors';
 import type {
   CommandResponseV2,
   RetryCleanupResultCodeV2,
@@ -149,5 +153,41 @@ describe('commandErrorMessage', (): void => {
     for (const response of malformed) {
       expect(commandMessageOf(response)).toBe(COMMAND_FALLBACK);
     }
+  });
+});
+
+describe('startedWithoutWorkTarget', (): void => {
+  it('recognises the exact answer of a start whose work tab was not saved', (): void => {
+    expect(
+      startedWithoutWorkTarget({
+        ok: false,
+        code: 'work-target-not-saved',
+        error: 'Session started, but the work tab could not be saved.',
+      }),
+    ).toBe(true);
+  });
+
+  it('refuses every other shape, including a hidden accessor and an extra key', (): void => {
+    expect(startedWithoutWorkTarget({ ok: true, code: 'ok' })).toBe(false);
+    expect(startedWithoutWorkTarget({ ok: false, code: 'invalid-request', error: 'x' })).toBe(
+      false,
+    );
+    expect(startedWithoutWorkTarget({ ok: false, code: 'work-target-not-saved', error: '' })).toBe(
+      false,
+    );
+    expect(
+      startedWithoutWorkTarget({ ok: false, code: 'work-target-not-saved', error: 'x', extra: 1 }),
+    ).toBe(false);
+    expect(
+      startedWithoutWorkTarget({
+        ok: false,
+        get code(): string {
+          return 'work-target-not-saved';
+        },
+        error: 'x',
+      }),
+    ).toBe(false);
+    expect(startedWithoutWorkTarget(null)).toBe(false);
+    expect(startedWithoutWorkTarget('work-target-not-saved')).toBe(false);
   });
 });

@@ -86,6 +86,24 @@ function resultErrorMessage(
   return cleanupPending ? value.error : fallback;
 }
 
+/**
+ * True for the exact answer that says the session started and only its work tab was not saved.
+ * The form hands that message to the view that outlives it, because the active view is about to
+ * take over on the next snapshot.
+ */
+export function startedWithoutWorkTarget(response: unknown): boolean {
+  const snapshot: ExactDataSnapshot | null = snapshotExactData(response);
+  if (snapshot === null || !isRecord(snapshot.value)) return false;
+  const value: UnknownRecord = snapshot.value;
+  return (
+    value.ok === false &&
+    value.code === 'work-target-not-saved' &&
+    typeof value.error === 'string' &&
+    value.error.trim() !== '' &&
+    hasExactKeys(value, ['ok', 'code', 'error'])
+  );
+}
+
 /** null while the start was accepted, the message to show otherwise. */
 export function startErrorMessage(response: StartSessionResponseV2): string | null {
   return resultErrorMessage(
