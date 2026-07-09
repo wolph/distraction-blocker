@@ -25,12 +25,12 @@ Derived by `node scripts/qa-checklist.mjs`, guarded by
 is asked of the runner, or of the glob the runner is configured with, so a stale one fails a
 test rather than misleading a reader.
 
-Unit suite: **167 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
+Unit suite: **169 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
 `vitest.config.ts` declares. The number of individual test cases is deliberately not recorded:
 deriving it means collecting every file, which is the expensive half of a run, and a number
 that needs a run to verify is exactly the kind that went stale here four times.
 
-End-to-end suite: **86 scenarios in 17 spec files**, as Playwright itself
+End-to-end suite: **93 scenarios in 21 spec files**, as Playwright itself
 lists them. Asking the runner rather than counting `test(` in the sources is not pedantry: a
 grep undercounts `test.skip`, which is listed and reported, and misses a spec file added
 since the grep was written. Both mistakes were present when this section was first drafted.
@@ -98,6 +98,11 @@ since the grep was written. Both mistakes were present when this section was fir
 - stats reports the indefinite plan and both manual outcomes
 - the indefinite blocked page offers the same End the popup does
 
+### manual-unlock.spec.ts (2)
+
+- a Flexible manual start reads Start until stopped and ends at once
+- a Friction manual lock survives browser restart and unlocks only through its gate
+
 ### mute-survival.spec.ts (1)
 
 - a browser relaunch discards the mute this extension applied, and its attribution
@@ -124,6 +129,15 @@ since the grep was written. Both mistakes were present when this section was fir
 
 - popup shows an unlock confirmation and a red End session control
 
+### popup-sizing.spec.ts (2)
+
+- the popup page still fits a narrow tab viewport
+- the toolbar popup opens at its intended size without viewport emulation
+
+### popup-work-tab.spec.ts (1)
+
+- the popup defaults to the current work tab and can replace a closed target
+
 ### qa-flows.spec.ts (8)
 
 - Options exposes destination saving, category states, and scoped privacy confirmations
@@ -138,6 +152,11 @@ since the grep was written. Both mistakes were present when this section was fir
 ### restart.spec.ts (1)
 
 - persistent profile restores a blocked muted tab and active countdown after relaunch
+
+### session-length.spec.ts (2)
+
+- 25 focus keeps cycling and shows the focus phase beside the total session
+- 50 deep work starts one uninterrupted 50 minute block
 
 ### smoke.spec.ts (10)
 
