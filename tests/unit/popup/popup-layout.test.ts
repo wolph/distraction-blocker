@@ -36,4 +36,13 @@ describe('popup.css sizing', (): void => {
     expect(app).toMatch(/max-block-size:\s*100vh/);
     expect(app).not.toMatch(/100vw/);
   });
+
+  it('lets the active view scroll inside the fixed popup height', (): void => {
+    // The work tab picker and the return button push the spend and End controls past 600 px,
+    // and the body clips its overflow, so the view itself has to be the scroll container.
+    const view: string = block('.active-view');
+    expect(view).toMatch(/overflow-y:\s*auto/);
+    expect(view).toMatch(/min-block-size:\s*0/);
+    expect(view).toMatch(/flex:\s*1 1 auto/);
+  });
 });

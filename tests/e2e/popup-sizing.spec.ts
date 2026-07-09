@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures';
+import { expect, startTestSession, test } from './fixtures';
 
 /**
  * Chrome measures the toolbar popup before its first layout, so a maximum width in viewport units
@@ -69,4 +69,43 @@ test('the popup page still fits a narrow tab viewport', async ({ extPage }) => {
       await extPage.evaluate((): number => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(width);
   }
+});
+
+test('the active view scrolls its controls into the real toolbar popup', async ({ extPage }) => {
+  await startTestSession(extPage, { duration: { kind: 'timed', minutes: 50 } });
+  await extPage.evaluate(async (): Promise<void> => {
+    await chrome.action.openPopup();
+  });
+  await expect
+    .poll(async (): Promise<boolean> => {
+      return await extPage.evaluate((): boolean => {
+        const popup: Window | undefined = chrome.extension.getViews({ type: 'popup' })[0];
+        return popup?.document.querySelector('.end-session-button') !== null;
+      });
+    })
+    .toBe(true);
+
+  // The picker and the return control sit above the spend and End controls. Whatever height the
+  // screen gave the popup, the End control has to be reachable by scrolling the view alone.
+  const measured: { viewport: number; scrollable: boolean; endBottom: number; scrolled: number } =
+    await extPage.evaluate(
+      (): { viewport: number; scrollable: boolean; endBottom: number; scrolled: number } => {
+        const popup: Window | undefined = chrome.extension.getViews({ type: 'popup' })[0];
+        if (popup === undefined) throw new Error('the toolbar popup is not open');
+        const view: HTMLElement | null = popup.document.querySelector('.active-view');
+        const end: HTMLElement | null = popup.document.querySelector('.end-session-button');
+        if (view === null || end === null) throw new Error('the active view did not render');
+        const scrollable: boolean = view.scrollHeight > view.clientHeight;
+        view.scrollTop = view.scrollHeight;
+        return {
+          viewport: popup.innerHeight,
+          scrollable,
+          endBottom: end.getBoundingClientRect().bottom,
+          scrolled: view.scrollTop,
+        };
+      },
+    );
+  expect(measured.endBottom).toBeGreaterThan(0);
+  expect(measured.endBottom).toBeLessThanOrEqual(measured.viewport);
+  if (measured.scrollable) expect(measured.scrolled).toBeGreaterThan(0);
 });
