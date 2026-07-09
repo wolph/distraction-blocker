@@ -25,15 +25,38 @@ test('the toolbar popup opens at its intended size without viewport emulation', 
     })
     .toBe(POPUP_WIDTH);
 
-  expect(
-    await extPage.evaluate((): { width: number; height: number; app: number } | null => {
-      const popup: Window | undefined = chrome.extension.getViews({ type: 'popup' })[0];
-      if (popup === undefined) return null;
-      const body: DOMRect = popup.document.body.getBoundingClientRect();
-      const app: number = popup.document.querySelector('.app')?.getBoundingClientRect().height ?? 0;
-      return { width: body.width, height: body.height, app };
-    }),
-  ).toEqual({ width: POPUP_WIDTH, height: POPUP_HEIGHT, app: POPUP_HEIGHT });
+  // The idle form loads its settings after the popup opens, so the layout is measured once the
+  // start button exists.
+  await expect
+    .poll(async (): Promise<boolean> => {
+      return await extPage.evaluate((): boolean => {
+        const popup: Window | undefined = chrome.extension.getViews({ type: 'popup' })[0];
+        return popup?.document.querySelector('.start-button') !== null;
+      });
+    })
+    .toBe(true);
+
+  // The body keeps its intrinsic 600 px so Chrome asks for that height. A screen too short for
+  // it gets a shorter popup window, and the app column shrinks to that window instead of being
+  // clipped, which keeps the sticky start button in view.
+  const measured: { width: number; height: number; app: number; viewport: number; start: number } =
+    await extPage.evaluate(
+      (): { width: number; height: number; app: number; viewport: number; start: number } => {
+        const popup: Window | undefined = chrome.extension.getViews({ type: 'popup' })[0];
+        if (popup === undefined) throw new Error('the toolbar popup is not open');
+        const body: DOMRect = popup.document.body.getBoundingClientRect();
+        const app: number =
+          popup.document.querySelector('.app')?.getBoundingClientRect().height ?? 0;
+        const start: number =
+          popup.document.querySelector('.start-button')?.getBoundingClientRect().bottom ?? 0;
+        return { width: body.width, height: body.height, app, viewport: popup.innerHeight, start };
+      },
+    );
+  expect(measured.width).toBe(POPUP_WIDTH);
+  expect(measured.height).toBe(POPUP_HEIGHT);
+  expect(measured.app).toBe(Math.min(POPUP_HEIGHT, measured.viewport));
+  expect(measured.start).toBeGreaterThan(0);
+  expect(measured.start).toBeLessThanOrEqual(measured.viewport);
 });
 
 test('the popup page still fits a narrow tab viewport', async ({ extPage }) => {
