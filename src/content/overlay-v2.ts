@@ -4,7 +4,6 @@
  * ticks the clock, bank affordability, and gate readiness locally from the view's timestamps and
  * waits for a newer worker command for anything else.
  */
-import { msUntilNextEarnedMinute } from '../shared/budget-display';
 import type { DocumentOverlayView } from '../shared/enforcement-v2';
 import { exactDataEqual } from '../shared/exact-data';
 import type { Ack, Request } from '../shared/messages';
@@ -22,7 +21,14 @@ import {
   unmountOverlayHost,
 } from './overlay-host';
 import { OVERLAY_TICK_MS } from './overlay-styles';
-import { type ActiveOverlayView, bankAt, focusProgress, remainingLabel } from './overlay-timing';
+import {
+  type AccessWait,
+  type ActiveOverlayView,
+  accessWait,
+  bankAt,
+  focusProgress,
+  remainingLabel,
+} from './overlay-timing';
 
 /** Ids inside the overlay's own shadow root, where `aria-describedby` resolves. */
 const GATE_WAIT_ID: string = 'focus-lock-gate-wait';
@@ -63,6 +69,7 @@ interface MountedOverlay extends OverlayHostElements {
   clock: HTMLElement | null;
   bankLabel: HTMLElement | null;
   meterFill: HTMLElement | null;
+  access: HTMLDetailsElement | null;
   spends: SpendControl[];
   gate: GateControls | null;
   actionGeneration: number;
@@ -92,6 +99,7 @@ export function renderDocumentOverlay(view: DocumentOverlayView, verdict: Verdic
   // across a repaint the same gate survives. The popup solves the mirror of this by keying its
   // panel on the gate identity, which throws the phrase away when the gate is a different one.
   const carried: CarriedGateInput | null = carriedGateInput(overlay, view);
+  const accessOpen: boolean = carriedAccessOpen(overlay, view);
   if (gateIdentityOf(overlay.view) !== gateIdentityOf(view)) {
     overlay.actionPending = false;
     overlay.actionError = null;
@@ -102,7 +110,7 @@ export function renderDocumentOverlay(view: DocumentOverlayView, verdict: Verdic
   overlay.verdict = verdict;
   applyTheme(overlay.host, view.theme);
   if (!overlay.actionPending) overlay.actionGeneration += 1;
-  renderPanel(overlay);
+  renderPanel(overlay, accessOpen);
   if (overlay.actionPending) disableAllActions(overlay);
   if (!restoreGateInput(overlay, carried)) focusInitialControl(overlay.root, overlay.container);
 }
@@ -142,6 +150,18 @@ function restoreGateInput(overlay: MountedOverlay, carried: CarriedGateInput | n
 }
 
 /**
+ * Whether the access drawer was open before this repaint, kept only within one session. A gate
+ * opens the drawer on its own, so the carried state matters for the page without one.
+ */
+function carriedAccessOpen(overlay: MountedOverlay, next: DocumentOverlayView): boolean {
+  const current: DocumentOverlayView = overlay.view;
+  if (current === next || current.presentation !== 'active' || next.presentation !== 'active') {
+    return false;
+  }
+  return current.sessionId === next.sessionId && overlay.access?.open === true;
+}
+
+/**
  * The identity of the gate a view is showing, matching what the popup keys its panel on. A gate
  * reopened with new bounds or a new phrase is a different gate and must not inherit typed text.
  */
@@ -174,6 +194,7 @@ function mountOverlay(view: DocumentOverlayView, verdict: Verdict): MountedOverl
     clock: null,
     bankLabel: null,
     meterFill: null,
+    access: null,
     spends: [],
     gate: null,
     actionGeneration: 0,
@@ -182,12 +203,13 @@ function mountOverlay(view: DocumentOverlayView, verdict: Verdict): MountedOverl
   };
 }
 
-function renderPanel(overlay: MountedOverlay): void {
+function renderPanel(overlay: MountedOverlay, accessOpen: boolean): void {
   const now: number = Date.now();
   const view: DocumentOverlayView = overlay.view;
   overlay.clock = null;
   overlay.bankLabel = null;
   overlay.meterFill = null;
+  overlay.access = null;
   overlay.spends = [];
   overlay.gate = null;
   overlay.container.className = view.stoppedPage ? 'backdrop opaque' : 'backdrop';
@@ -195,7 +217,7 @@ function renderPanel(overlay: MountedOverlay): void {
   panel.className = 'panel';
   panel.appendChild(padlockSvg());
   if (view.presentation === 'starting') appendStartingPage(panel, view);
-  else appendActivePage(overlay, panel, view, now);
+  else appendActivePage(overlay, panel, view, now, accessOpen);
   if (overlay.actionError !== null) panel.appendChild(actionErrorElement(overlay.actionError));
   overlay.container.replaceChildren(panel);
 }
@@ -221,6 +243,7 @@ function appendActivePage(
   panel: HTMLElement,
   view: ActiveOverlayView,
   now: number,
+  accessOpen: boolean,
 ): void {
   appendLine(panel, 'next-step', view.copy.nextStep);
   appendHeading(panel, view.copy.intention);
@@ -228,12 +251,37 @@ function appendActivePage(
   appendTimeLine(overlay, panel, view, now);
   appendProgress(overlay, panel, view, now);
   if (view.copy.stoppedPage !== null) appendLine(panel, 'notloaded', view.copy.stoppedPage);
-  appendBank(overlay, panel, view, now);
-  panel.appendChild(
+  panel.appendChild(buildAccessDrawer(overlay, view, now, accessOpen));
+}
+
+/**
+ * The credit line, the access actions or the open gate, and the note live in one collapsed
+ * drawer: the page leads with the next step, and site access is there for whoever asks.
+ */
+function buildAccessDrawer(
+  overlay: MountedOverlay,
+  view: ActiveOverlayView,
+  now: number,
+  accessOpen: boolean,
+): HTMLDetailsElement {
+  const details: HTMLDetailsElement = document.createElement('details');
+  details.className = 'access';
+  details.open = view.gate !== null || accessOpen;
+  const summary: HTMLElement = document.createElement('summary');
+  summary.textContent = view.copy.accessSummary;
+  details.appendChild(summary);
+  appendBank(overlay, details, view, now);
+  details.appendChild(
     view.gate === null
       ? buildButtons(overlay, view, now)
       : buildGate(overlay, view, view.gate, now),
   );
+  const note: HTMLElement = document.createElement('p');
+  note.className = 'access-note';
+  note.textContent = view.copy.accessNote;
+  details.appendChild(note);
+  overlay.access = details;
+  return details;
 }
 
 function appendHeading(panel: HTMLElement, intention: string): void {
@@ -372,21 +420,28 @@ function endButton(label: string, action: 'request-end' | 'open-end-gate'): HTML
 }
 
 function updateSpend(control: SpendControl, view: ActiveOverlayView, now: number): void {
-  const bank: number = bankAt(view, now);
-  const affordable: boolean = bank >= control.costMs;
-  control.button.disabled = !affordable;
-  control.ready.hidden = affordable;
-  control.ready.textContent = affordable ? '' : bankWaitText(view, bank);
+  const wait: AccessWait = accessWait(view, now, control.costMs);
+  control.button.disabled = !wait.affordable;
+  control.ready.hidden = wait.affordable;
+  control.ready.textContent = wait.affordable ? '' : accessWaitText(view, wait);
 }
 
-function bankWaitText(view: ActiveOverlayView, bank: number): string {
-  const waitMs: number | null = msUntilNextEarnedMinute(
-    bank,
-    view.economy.bankAccrualPerMs,
-    view.economy.bankCapMs,
-  );
-  if (waitMs === null) return view.copy.bankWaitFallback;
-  return `${view.copy.bankWaitPrefix} ${formatClock(waitMs)}`;
+/** The countdown is this module's number, every other line under an action is the view's. */
+function accessWaitText(view: ActiveOverlayView, wait: AccessWait): string {
+  switch (wait.reason) {
+    case 'ready-in':
+      return `${view.copy.bankWaitPrefix} ${formatClock(wait.waitMs ?? 0)}`;
+    case 'updating':
+      return view.copy.updatingLabel;
+    case 'above-limit':
+      return view.copy.costAboveLimit;
+    case 'earning-off':
+      return view.copy.earningOff;
+    case 'not-enough-time':
+      return view.copy.notEnoughFocus;
+    default:
+      return '';
+  }
 }
 
 /**
@@ -406,19 +461,21 @@ function buildGate(
 ): HTMLElement {
   const wrap: HTMLElement = document.createElement('div');
   wrap.className = 'gate';
+  // Keep focusing comes first: the strongest thing on a gate is the way back out of it.
+  const keep: HTMLButtonElement = document.createElement('button');
+  keep.className = 'keep-focusing pill';
+  keep.type = 'button';
+  keep.textContent = view.copy.gateBack;
+  keep.addEventListener('click', (): void => {
+    requestAction({ type: 'abandonGate', expectedGate: gate });
+  });
+  wrap.appendChild(keep);
   appendLine(wrap, 'gate-title', view.copy.gateTitle ?? '');
+  if (view.copy.gateSaid !== null) appendLine(wrap, 'gate-said', view.copy.gateSaid);
   const ring: { waitWrap: HTMLElement; ringFill: SVGCircleElement; count: HTMLElement } =
     buildRing();
   ring.waitWrap.id = GATE_WAIT_ID;
   wrap.appendChild(ring.waitWrap);
-  const back: HTMLButtonElement = document.createElement('button');
-  back.className = 'primary';
-  back.type = 'button';
-  back.textContent = view.copy.gateBack;
-  back.addEventListener('click', (): void => {
-    requestAction({ type: 'abandonGate', expectedGate: gate });
-  });
-  wrap.appendChild(back);
   const phrase: HTMLInputElement | null = appendPhrase(wrap, view, gate);
   const confirm: HTMLButtonElement = document.createElement('button');
   confirm.className = 'pill';
@@ -554,7 +611,7 @@ function finishAction(overlay: MountedOverlay): void {
     updateGate(overlay, view, now);
   }
   for (const button of overlay.root.querySelectorAll<HTMLButtonElement>(
-    '.linkish, .primary, .force-end',
+    '.linkish, .primary, .keep-focusing, .force-end',
   )) {
     button.disabled = false;
   }

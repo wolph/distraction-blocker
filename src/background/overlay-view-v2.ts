@@ -19,7 +19,7 @@ import {
 } from '../shared/enforcement-v2-validation';
 import { CoreError } from '../shared/errors';
 import { snapshotExactData } from '../shared/exact-data';
-import { minToMs } from '../shared/time';
+import { formatClock, minToMs } from '../shared/time';
 import type {
   CycleConfig,
   EndActionLabelV2,
@@ -72,9 +72,13 @@ const FIXED_ACTIVE_COPY: Readonly<
     | 'minuteLabel'
     | 'underMinuteLabel'
     | 'updatingLabel'
+    | 'accessSummary'
     | 'bankUnit'
-    | 'bankWaitFallback'
     | 'bankWaitPrefix'
+    | 'costAboveLimit'
+    | 'earningOff'
+    | 'notEnoughFocus'
+    | 'accessNote'
     | 'gateBack'
     | 'gatePhraseLabel'
     | 'gateForceEnd'
@@ -85,17 +89,24 @@ const FIXED_ACTIVE_COPY: Readonly<
   minuteLabel: 'min',
   underMinuteLabel: 'Less than a minute',
   updatingLabel: 'Updating session',
+  accessSummary: 'Need a break or site access?',
   bankUnit: 'site access credit',
-  bankWaitFallback: 'earn site access credit by focusing',
   bankWaitPrefix: 'Ready in',
-  gateBack: 'Never mind, back to work',
+  costAboveLimit: 'Cost exceeds the credit limit',
+  earningOff: 'Credit earning is turned off',
+  notEnoughFocus: 'Not enough time in this focus block',
+  accessNote: 'You can step away at any time. Site access uses credit.',
+  gateBack: 'Keep focusing',
   gatePhraseLabel: 'Type this to confirm:',
   gateForceEnd: 'Ignore timeout and end anyway',
   transportError: 'Focus Lock could not update this action. Try again.',
 };
 
+/** The two spend actions, and the confirm each one's gate ends with. */
+const PAUSE_ACTION_LABEL: string = 'Unlock all sites';
+const UNLOCK_ACTION_LABEL_PREFIX: string = 'Unlock';
 const GATE_CONFIRM_COPY: Readonly<Record<Exclude<GateKind, 'cancel'>, string>> = {
-  pause: 'Take the pause',
+  pause: PAUSE_ACTION_LABEL,
   unlockSite: 'Unlock this site',
 };
 
@@ -326,20 +337,28 @@ function activeCopy(
   const lead: ActiveLeadCopy = leadCopy(duration, input.session.sessionEndsAt);
   const strictness: Strictness = input.session.config.strictness;
   const endAction: EndActionLabelV2 = overlayEndActionLabelV2(strictness, duration);
+  const goal: string = input.session.config.intention.trim();
   return {
     ...FIXED_ACTIVE_COPY,
     endAction,
     status: lead.status,
     lockedUntil: lead.lockedUntil,
     remainingSuffix: remainingSuffixCopy(input.session),
-    intention: intentionCopy(input.session.config.intention),
+    intention: goal === '' ? NEXT_STEP_FALLBACK : goal,
     verdictProvenance: verdictLabel(input.verdict),
     stoppedPage: stoppedPageCopy(input.stoppedPage),
-    pauseAction: `Pause blocking for ${costMinutes(input.economy.pauseCostMs)} min`,
-    unlockAction: `Unlock this site for ${costMinutes(input.economy.unlockCostMs)} min`,
-    gateTitle: gate === null ? null : gateTitleCopy(gate),
+    pauseAction: spendActionCopy(PAUSE_ACTION_LABEL, input.economy.pauseCostMs),
+    unlockAction: spendActionCopy('Unlock this site', input.economy.unlockCostMs),
+    gateTitle: gate === null ? null : gateTitleCopy(gate, input.economy, endAction),
+    gateSaid: gate === null || goal === '' ? null : `You said: ${goal}`,
     gateConfirm: gate === null ? null : gateConfirmCopy(gate.kind, endAction),
   };
+}
+
+/** `Unlock all sites 5:00 - costs 5:00 credit`: the length and the cost are the same clock. */
+function spendActionCopy(label: string, costMs: number): string {
+  const clock: string = formatClock(costMs);
+  return `${label} ${clock} - costs ${clock} credit`;
 }
 
 /** The cancel gate confirms with the End label's own word, so Unlock stays Unlock inside the gate. */
@@ -360,16 +379,21 @@ function leadCopy(duration: SessionDuration, sessionEndsAt: number | null): Acti
   return { status: { kind: 'timed', text: `Locked until ${lockedUntil}` }, lockedUntil };
 }
 
-function gateTitleCopy(gate: GateState): string {
-  if (gate.kind === 'pause') return 'Take a pause?';
+/** A spend gate repeats its action's own sentence, a cancel gate names what it ends. */
+function gateTitleCopy(
+  gate: GateState,
+  economy: ActiveViewInputV2['economy'],
+  endAction: EndActionLabelV2,
+): string {
+  if (gate.kind === 'pause') return spendActionCopy(PAUSE_ACTION_LABEL, economy.pauseCostMs);
   if (gate.kind === 'unlockSite') {
     // The gate contract already binds a non-blank host to this kind, in `isGate` and in the
     // detached predicate the runtime uses, so borrowing "this site" would paper over a gate no
     // validator produced. This module raises for an unrenderable input rather than inventing copy.
     if (!isNonBlankString(gate.host)) invalidView('an unlock gate names the host it unlocks');
-    return `Unlock ${gate.host}?`;
+    return `${UNLOCK_ACTION_LABEL_PREFIX} ${gate.host} ${formatClock(economy.unlockCostMs)}`;
   }
-  return 'End this session';
+  return endAction === UNLOCK_ACTION_LABEL ? UNLOCK_ACTION_LABEL : 'End this session';
 }
 
 /**
@@ -399,17 +423,8 @@ function hasUpcomingBreak(
   return breakMs > 0 && phaseEndsAt + breakMs < sessionEndsAt - 1;
 }
 
-function intentionCopy(intention: string): string {
-  const goal: string = intention.trim();
-  return goal === '' ? NEXT_STEP_FALLBACK : goal;
-}
-
 function stoppedPageCopy(stoppedPage: boolean): StartingOverlayCopy['stoppedPage'] {
   return stoppedPage ? STOPPED_PAGE_COPY : null;
-}
-
-function costMinutes(costMs: number): number {
-  return Math.round(costMs / 60_000);
 }
 
 /** Detaches the built view and refuses anything the content parser would reject. */

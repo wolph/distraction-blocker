@@ -162,7 +162,7 @@ describe('unlock gate document binding', (): void => {
     ) as ActiveOverlay;
     expect(view.gate !== null).toBe(visible);
     expect(view.actions.state).toBe(visible ? 'gate' : 'ready');
-    expect(view.copy.gateTitle).toBe(visible ? `Unlock ${host}?` : null);
+    expect(view.copy.gateTitle).toBe(visible ? `Unlock ${host} 2:00` : null);
   });
 });
 
@@ -277,13 +277,19 @@ describe('buildActiveOverlayView timed focus', () => {
     expect(view.copy.minuteLabel).toBe('min');
     expect(view.copy.underMinuteLabel).toBe('Less than a minute');
     expect(view.copy.updatingLabel).toBe('Updating session');
-    expect(view.copy.pauseAction).toBe('Pause blocking for 1 min');
-    expect(view.copy.unlockAction).toBe('Unlock this site for 2 min');
+    expect(view.copy.pauseAction).toBe('Unlock all sites 1:00 - costs 1:00 credit');
+    expect(view.copy.unlockAction).toBe('Unlock this site 2:00 - costs 2:00 credit');
     expect(view.copy.bankUnit).toBe('site access credit');
     expect(view.copy.endAction).toBe('End session');
     expect(view.copy.bankWaitPrefix).toBe('Ready in');
-    expect(view.copy.bankWaitFallback).toBe('earn site access credit by focusing');
-    expect(view.copy.gateBack).toBe('Never mind, back to work');
+    expect('bankWaitFallback' in view.copy).toBe(false);
+    expect(view.copy.accessSummary).toBe('Need a break or site access?');
+    expect(view.copy.accessNote).toBe('You can step away at any time. Site access uses credit.');
+    expect(view.copy.costAboveLimit).toBe('Cost exceeds the credit limit');
+    expect(view.copy.earningOff).toBe('Credit earning is turned off');
+    expect(view.copy.notEnoughFocus).toBe('Not enough time in this focus block');
+    expect(view.copy.gateSaid).toBeNull();
+    expect(view.copy.gateBack).toBe('Keep focusing');
     expect(view.copy.gatePhraseLabel).toBe('Type this to confirm:');
     expect(view.copy.transportError).toBe('Focus Lock could not update this action. Try again.');
     expect(view.copy.verdictProvenance).toBe(verdictLabel(BLOCKED_VERDICT));
@@ -427,7 +433,7 @@ describe('buildActiveOverlayView until-stopped focus', () => {
       unlock: 'hidden',
     });
     expect(open.copy.endAction).toBe('Unlock');
-    expect(open.copy.gateTitle).toBe('End this session');
+    expect(open.copy.gateTitle).toBe('Unlock');
     expect(open.copy.gateConfirm).toBe('Unlock');
     expect(validateDetachedDocumentOverlayView(closed)).toBe(true);
     expect(validateDetachedDocumentOverlayView(open)).toBe(true);
@@ -444,8 +450,9 @@ describe('buildActiveOverlayView gate rows', () => {
       pause: 'hidden',
       unlock: 'hidden',
     });
-    expect(view.copy.gateTitle).toBe('Take a pause?');
-    expect(view.copy.gateConfirm).toBe('Take the pause');
+    expect(view.copy.gateTitle).toBe('Unlock all sites 1:00 - costs 1:00 credit');
+    expect(view.copy.gateConfirm).toBe('Unlock all sites');
+    expect(view.copy.gateSaid).toBe('You said: Finish the release notes');
     expect(view.gate).toEqual(gateState());
     expect(validateDetachedDocumentOverlayView(view)).toBe(true);
   });
@@ -488,7 +495,7 @@ describe('buildActiveOverlayView gate rows', () => {
       }),
     });
 
-    expect(unlock.copy.gateTitle).toBe('Unlock example.com?');
+    expect(unlock.copy.gateTitle).toBe('Unlock example.com 2:00');
     // The gate contract binds a non-blank host to this kind, so an unlock gate without one is an
     // input no validator produced. The builder refuses it rather than borrowing "this site".
     expect(
@@ -510,12 +517,25 @@ describe('buildActiveOverlayView gate rows', () => {
     expect(validateDetachedDocumentOverlayView(cancel)).toBe(true);
   });
 
+  it('quotes the intention in the gate only when one was given', () => {
+    const blank: ActiveOverlay = activeView({
+      gate: gateState(),
+      session: timedSession({ intention: '   ' }),
+    });
+
+    expect(blank.copy.intention).toBe('Continue your current task');
+    expect(blank.copy.gateSaid).toBeNull();
+    expect(activeView({ session: timedSession({ intention: '   ' }) }).copy.gateSaid).toBeNull();
+    expect(validateDetachedDocumentOverlayView(blank)).toBe(true);
+  });
+
   it('leaves the gate copy null when no gate is open', () => {
     const view: ActiveOverlay = activeView();
 
     expect(view.gate).toBeNull();
     expect(view.copy.gateTitle).toBeNull();
     expect(view.copy.gateConfirm).toBeNull();
+    expect(view.copy.gateSaid).toBeNull();
     expect(view.actions.state).toBe('ready');
   });
 

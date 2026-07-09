@@ -108,17 +108,22 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     verdictProvenance: PROVENANCE,
     stoppedPage: null,
     bankUnit: 'site access credit',
-    pauseAction: 'Pause blocking for 1 min',
-    unlockAction: 'Unlock this site for 2 min',
+    pauseAction: 'Unlock all sites 1:00 - costs 1:00 credit',
+    unlockAction: 'Unlock this site 2:00 - costs 2:00 credit',
     endAction: 'End session',
-    bankWaitFallback: 'earn site access credit by focusing',
     bankWaitPrefix: 'Ready in',
     gateTitle: null,
-    gateBack: 'Never mind, back to work',
+    gateBack: 'Keep focusing',
     gatePhraseLabel: 'Type this to confirm:',
     gateForceEnd: 'Ignore timeout and end anyway',
     gateConfirm: null,
     transportError: 'Focus Lock could not update this action. Try again.',
+    accessSummary: 'Need a break or site access?',
+    accessNote: 'You can step away at any time. Site access uses credit.',
+    costAboveLimit: 'Cost exceeds the credit limit',
+    earningOff: 'Credit earning is turned off',
+    notEnoughFocus: 'Not enough time in this focus block',
+    gateSaid: null,
     nextStep: 'Your next step',
     remainingSuffix: 'left in this session',
     minuteLabel: 'min',
@@ -195,13 +200,16 @@ function indefiniteCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
   });
 }
 
-function gatedOverlay(gate: GateState, overrides: Partial<ActiveOverlay> = {}): ActiveOverlay {
-  return activeOverlay({
-    gate,
-    actions: GATE_ACTIONS,
-    copy: activeCopy({ gateTitle: 'Pause blocking for 1 min', gateConfirm: 'Take the pause' }),
+function gatedCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
+  return activeCopy({
+    gateTitle: 'Unlock all sites 1:00 - costs 1:00 credit',
+    gateConfirm: 'Unlock all sites',
     ...overrides,
   });
+}
+
+function gatedOverlay(gate: GateState, overrides: Partial<ActiveOverlay> = {}): ActiveOverlay {
+  return activeOverlay({ gate, actions: GATE_ACTIONS, copy: gatedCopy(), ...overrides });
 }
 
 function command(overrides: Partial<DocumentEnforcementCommand> = {}): DocumentEnforcementCommand {
@@ -432,6 +440,26 @@ describe('shared enforcement v2 overlay parsing', (): void => {
     ]);
   });
 
+  it('lets a gate quote the intention only as the worker wrote it', (): void => {
+    const said: string = 'You said: Finish the release notes';
+
+    expect(
+      parseDocumentOverlayView(gatedOverlay(PAUSE_GATE, { copy: gatedCopy({ gateSaid: said }) })),
+    ).not.toBeNull();
+    expect(parseDocumentOverlayView(gatedOverlay(PAUSE_GATE))).not.toBeNull();
+    expectOverlayRejected([
+      activeOverlay({ copy: activeCopy({ gateSaid: said }) }),
+      gatedOverlay(PAUSE_GATE, { copy: gatedCopy({ gateSaid: 'You said: Ship the beta' }) }),
+      gatedOverlay(PAUSE_GATE, { copy: gatedCopy({ gateSaid: '   ' }) }),
+      withCopyKey(gatedOverlay(PAUSE_GATE), 'gateSaid', 7),
+      withKey(
+        gatedOverlay(PAUSE_GATE),
+        'copy',
+        withoutKey(gatedOverlay(PAUSE_GATE).copy, 'gateSaid'),
+      ),
+    ]);
+  });
+
   it('requires action state and gate copy to agree with gate presence', (): void => {
     const gated: ActiveOverlay = gatedOverlay(PAUSE_GATE);
 
@@ -464,8 +492,15 @@ describe('shared enforcement v2 overlay parsing', (): void => {
     expectOverlayRejected([
       withCopyKey(overlay, 'bankUnit', 'pause saved'),
       withCopyKey(overlay, 'endAction', 'Stop session'),
-      withCopyKey(overlay, 'bankWaitFallback', 'focus to earn'),
+      // The per-action explanations replaced the one fallback, so the fallback is off contract.
+      withCopyKey(overlay, 'bankWaitFallback', 'earn site access credit by focusing'),
       withCopyKey(overlay, 'bankWaitPrefix', 'ready at'),
+      withCopyKey(overlay, 'accessSummary', 'Need a break?'),
+      withCopyKey(overlay, 'accessNote', 'Site access uses credit.'),
+      withCopyKey(overlay, 'costAboveLimit', 'Too expensive'),
+      withCopyKey(overlay, 'earningOff', 'Earning off'),
+      withCopyKey(overlay, 'notEnoughFocus', 'Not enough time'),
+      withCopyKey(overlay, 'gateBack', 'Never mind, back to work'),
       withCopyKey(overlay, 'gateBack', 'Back to work'),
       withCopyKey(overlay, 'gatePhraseLabel', 'Type this:'),
       withCopyKey(overlay, 'gateForceEnd', 'End anyway'),

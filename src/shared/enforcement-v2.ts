@@ -48,15 +48,25 @@ export interface ActiveOverlayCopy {
   intention: string;
   verdictProvenance: string;
   stoppedPage: 'This page did not load. It will load by itself when the session ends.' | null;
+  /** The collapsed drawer that holds the credit line and every access action. */
+  accessSummary: 'Need a break or site access?';
   bankUnit: 'site access credit';
+  /** Each action names its own length and cost, such as `Unlock all sites 5:00 - costs 5:00 credit`. */
   pauseAction: string;
   unlockAction: string;
   /** The End control's label. A Friction until-stopped page unlocks, every other page ends. */
   endAction: EndActionLabelV2;
-  bankWaitFallback: 'earn site access credit by focusing';
+  /** Under an action the bank can still reach: the prefix before the renderer's countdown. */
   bankWaitPrefix: 'Ready in';
+  /** Under an action this focus block can never afford, one of these says why. */
+  costAboveLimit: 'Cost exceeds the credit limit';
+  earningOff: 'Credit earning is turned off';
+  notEnoughFocus: 'Not enough time in this focus block';
+  accessNote: 'You can step away at any time. Site access uses credit.';
   gateTitle: string | null;
-  gateBack: 'Never mind, back to work';
+  /** `You said: <intention>` on an open gate, null when the session was started without one. */
+  gateSaid: string | null;
+  gateBack: 'Keep focusing';
   gatePhraseLabel: 'Type this to confirm:';
   /** The opt-in bypass, rendered only while the gate carries `forceEndAvailable`. */
   gateForceEnd: 'Ignore timeout and end anyway';

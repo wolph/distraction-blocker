@@ -85,13 +85,18 @@ const ACTIVE_COPY_KEYS: readonly string[] = [
   'intention',
   'verdictProvenance',
   'stoppedPage',
+  'accessSummary',
   'bankUnit',
   'pauseAction',
   'unlockAction',
   'endAction',
-  'bankWaitFallback',
   'bankWaitPrefix',
+  'costAboveLimit',
+  'earningOff',
+  'notEnoughFocus',
+  'accessNote',
   'gateTitle',
+  'gateSaid',
   'gateBack',
   'gatePhraseLabel',
   'gateForceEnd',
@@ -210,9 +215,13 @@ const FIXED_ACTIVE_COPY: Readonly<
     | 'minuteLabel'
     | 'underMinuteLabel'
     | 'updatingLabel'
+    | 'accessSummary'
     | 'bankUnit'
-    | 'bankWaitFallback'
     | 'bankWaitPrefix'
+    | 'costAboveLimit'
+    | 'earningOff'
+    | 'notEnoughFocus'
+    | 'accessNote'
     | 'gateBack'
     | 'gatePhraseLabel'
     | 'gateForceEnd'
@@ -223,10 +232,14 @@ const FIXED_ACTIVE_COPY: Readonly<
   minuteLabel: 'min',
   underMinuteLabel: 'Less than a minute',
   updatingLabel: 'Updating session',
+  accessSummary: 'Need a break or site access?',
   bankUnit: 'site access credit',
-  bankWaitFallback: 'earn site access credit by focusing',
   bankWaitPrefix: 'Ready in',
-  gateBack: 'Never mind, back to work',
+  costAboveLimit: 'Cost exceeds the credit limit',
+  earningOff: 'Credit earning is turned off',
+  notEnoughFocus: 'Not enough time in this focus block',
+  accessNote: 'You can step away at any time. Site access uses credit.',
+  gateBack: 'Keep focusing',
   gatePhraseLabel: 'Type this to confirm:',
   gateForceEnd: 'Ignore timeout and end anyway',
   transportError: 'Focus Lock could not update this action. Try again.',
@@ -710,9 +723,19 @@ function validateDetachedActiveCopy(
   }
   if (!validateDetachedStatusCopy(copy.status, copy.lockedUntil, duration)) return false;
   if (!hasRemainingSuffix(copy.remainingSuffix, duration)) return false;
-  return gated
-    ? isNonBlankString(copy.gateTitle) && isNonBlankString(copy.gateConfirm)
-    : copy.gateTitle === null && copy.gateConfirm === null;
+  if (!gated) {
+    return copy.gateTitle === null && copy.gateConfirm === null && copy.gateSaid === null;
+  }
+  return (
+    isNonBlankString(copy.gateTitle) &&
+    isNonBlankString(copy.gateConfirm) &&
+    hasGateSaidCopy(copy.gateSaid, copy.intention)
+  );
+}
+
+/** An open gate quotes the intention word for word, or quotes nothing at all. */
+function hasGateSaidCopy(value: unknown, intention: unknown): boolean {
+  return value === null || (isNonBlankString(intention) && value === `You said: ${intention}`);
 }
 
 function hasFixedActiveCopy(copy: UnknownRecord): boolean {

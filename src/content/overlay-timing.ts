@@ -60,3 +60,43 @@ export function bankAt(view: ActiveOverlayView, now: number): number {
     now,
   );
 }
+
+/** Why an action cannot be afforded right now, or `ready-in` with the focus time still needed. */
+export type AccessWaitReason =
+  | 'ready-in'
+  | 'updating'
+  | 'above-limit'
+  | 'earning-off'
+  | 'not-enough-time';
+
+export interface AccessWait {
+  affordable: boolean;
+  /** Focus time still needed, rounded up to a whole second. 0 when affordable, null otherwise. */
+  waitMs: number | null;
+  reason: AccessWaitReason | null;
+}
+
+function unreachable(reason: AccessWaitReason): AccessWait {
+  return { affordable: false, waitMs: null, reason };
+}
+
+/**
+ * When a spend of `costMs` becomes affordable within this focus block. The wait counts to the
+ * amount this action costs, never past the block's boundary, and a cost the block can never
+ * reach gets a reason instead of a countdown. The view is always a focus phase, so the break-time
+ * explanation the popup can give has no counterpart here.
+ */
+export function accessWait(view: ActiveOverlayView, now: number, costMs: number): AccessWait {
+  const endsAt: number | null = focusBoundary(view);
+  if (endsAt !== null && now >= endsAt) return unreachable('updating');
+  const bank: number = bankAt(view, now);
+  if (bank >= costMs) return { affordable: true, waitMs: 0, reason: null };
+  if (costMs > view.economy.bankCapMs) return unreachable('above-limit');
+  if (view.economy.bankAccrualPerMs <= 0) return unreachable('earning-off');
+  const rawWait: number = (costMs - bank) / view.economy.bankAccrualPerMs;
+  if (!Number.isFinite(rawWait) || (endsAt !== null && rawWait >= endsAt - now)) {
+    return unreachable('not-enough-time');
+  }
+  const waitMs: number = Math.ceil(rawWait / 1_000) * 1_000;
+  return { affordable: false, waitMs, reason: 'ready-in' };
+}
