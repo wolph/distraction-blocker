@@ -102,6 +102,7 @@ describe('content entry message channel', (): void => {
     // open for them would hang that sender until this document unloads.
     expect(deliver({ type: 'somethingElse' })).toEqual({ held: false, responses: [] });
     expect(deliver({ type: 'reevaluate' })).toEqual({ held: false, responses: [] });
+    expect(deliver({ type: 'workTargetChanged' })).toEqual({ held: false, responses: [] });
     expect(deliver(null)).toEqual({ held: false, responses: [] });
   });
 });

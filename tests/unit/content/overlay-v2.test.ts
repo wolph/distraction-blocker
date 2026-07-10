@@ -67,6 +67,9 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     gateForceEnd: 'Ignore timeout and end anyway',
     gateConfirm: null,
     transportError: TRANSPORT_ERROR,
+    backToWork: 'Back to work',
+    chooseWorkTab: 'Choose a work tab',
+    changeWorkTab: 'Change work tab',
     accessSummary: 'Need a break or site access?',
     accessNote: 'You can step away at any time. Site access uses credit.',
     costAboveLimit: 'Cost exceeds the credit limit',
@@ -200,8 +203,18 @@ function text(selector: string): string {
   return element.textContent ?? '';
 }
 
+/** The access controls: everything but the work target's own two buttons. */
 function buttons(): HTMLButtonElement[] {
-  return Array.from(shadowRoot().querySelectorAll<HTMLButtonElement>('button'));
+  return Array.from(
+    shadowRoot().querySelectorAll<HTMLButtonElement>('button:not(.return-work):not(.change-work)'),
+  );
+}
+
+/** The requests an action sent, with the renderer's own target lookups left out. */
+function actionCalls(sendMessage: Mock<(request: unknown) => Promise<unknown>>): unknown[] {
+  return sendMessage.mock.calls
+    .map((call: [unknown]): unknown => call[0])
+    .filter((request: unknown): boolean => (request as { type: string }).type !== 'getWorkTarget');
 }
 
 function buttonStartingWith(label: string): HTMLButtonElement {
@@ -212,9 +225,21 @@ function buttonStartingWith(label: string): HTMLButtonElement {
   return found;
 }
 
-function stubWorker(response: unknown): Mock<(request: unknown) => Promise<unknown>> {
+/**
+ * A worker that answers the target lookup with nothing chosen and every action with `response`,
+ * or with the next queued answer when one is given, so a test can hold one action open.
+ */
+function stubWorker(
+  response: unknown,
+  queued: Array<Promise<unknown>> = [],
+): Mock<(request: unknown) => Promise<unknown>> {
   const sendMessage: Mock<(request: unknown) => Promise<unknown>> = vi.fn(
-    async (): Promise<unknown> => response,
+    async (request: unknown): Promise<unknown> => {
+      if ((request as { type: string }).type === 'getWorkTarget') {
+        return { ok: true, sessionId: SESSION_ID, state: 'missing', title: null };
+      }
+      return queued.shift() ?? response;
+    },
   );
   vi.stubGlobal('chrome', { runtime: { sendMessage } });
   return sendMessage;
@@ -376,9 +401,7 @@ describe('renderDocumentOverlay active view', () => {
     unlock.click();
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(sendMessage.mock.calls.map((call: [unknown]): unknown => call[0])).toEqual([
-      { type: 'openEndGate' },
-    ]);
+    expect(actionCalls(sendMessage)).toEqual([{ type: 'openEndGate' }]);
   });
 
   it('keeps the credit and the actions in a collapsed drawer with the note under them', () => {
@@ -631,7 +654,7 @@ describe('overlay-v2 actions', () => {
     buttonStartingWith('End session').click();
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(sendMessage.mock.calls.map((call: [unknown]): unknown => call[0])).toEqual([
+    expect(actionCalls(sendMessage)).toEqual([
       { type: 'openGate', gate: 'pause', host: null },
       { type: 'openGate', gate: 'unlockSite', host: window.location.hostname },
       { type: 'requestSessionEnd' },
@@ -682,9 +705,7 @@ describe('overlay-v2 actions', () => {
     forceEnd.click();
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(sendMessage.mock.calls.map((call: [unknown]): unknown => call[0])).toEqual([
-      { type: 'forceEndGate' },
-    ]);
+    expect(actionCalls(sendMessage)).toEqual([{ type: 'forceEndGate' }]);
     expect(forceEnd.disabled).toBe(false);
   });
 
@@ -708,9 +729,7 @@ describe('overlay-v2 actions', () => {
     buttonStartingWith('End session').click();
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(sendMessage.mock.calls.map((call: [unknown]): unknown => call[0])).toEqual([
-      { type: 'openEndGate' },
-    ]);
+    expect(actionCalls(sendMessage)).toEqual([{ type: 'openEndGate' }]);
   });
 
   it('renders no End control when the view hides it', (): void => {
@@ -823,7 +842,7 @@ describe('overlay-v2 actions', () => {
     (shadowRoot().querySelector('.keep-focusing') as HTMLButtonElement).click();
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(sendMessage.mock.calls.map((call: [unknown]): unknown => call[0])).toEqual([
+    expect(actionCalls(sendMessage)).toEqual([
       { type: 'confirmGate', typedPhrase: 'let me scroll', expectedGate: gateState() },
       { type: 'abandonGate', expectedGate: gateState() },
     ]);
@@ -832,17 +851,14 @@ describe('overlay-v2 actions', () => {
   it('releases an old pending action when the authoritative gate changes and ignores its late failure', async (): Promise<void> => {
     let resolveOld!: (value: unknown) => void;
     let resolveNew!: (value: unknown) => void;
-    const sendMessage: Mock<(request: unknown) => Promise<unknown>> = stubWorker({ ok: true });
-    sendMessage.mockReturnValueOnce(
+    const sendMessage: Mock<(request: unknown) => Promise<unknown>> = stubWorker({ ok: true }, [
       new Promise<unknown>((resolve: (value: unknown) => void): void => {
         resolveOld = resolve;
       }),
-    );
-    sendMessage.mockReturnValueOnce(
       new Promise<unknown>((resolve: (value: unknown) => void): void => {
         resolveNew = resolve;
       }),
-    );
+    ]);
     renderDocumentOverlay(activeOverlay(), BLOCKED_VERDICT);
     const pause: HTMLButtonElement | undefined = Array.from(
       shadowRoot().querySelectorAll('button'),
@@ -852,13 +868,13 @@ describe('overlay-v2 actions', () => {
     );
     if (pause === undefined) throw new Error('Expected a pause button');
     pause.click();
-    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(actionCalls(sendMessage)).toHaveLength(1);
     renderDocumentOverlay(gatedOverlay(), BLOCKED_VERDICT);
     expect((shadowRoot().querySelector('.keep-focusing') as HTMLButtonElement).disabled).toBe(
       false,
     );
     (shadowRoot().querySelector('.keep-focusing') as HTMLButtonElement).click();
-    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(actionCalls(sendMessage)).toHaveLength(2);
     resolveOld({ ok: false, error: 'old action failed' });
     await vi.advanceTimersByTimeAsync(0);
     expect(shadowRoot().querySelector('.action-error')).toBeNull();
@@ -874,12 +890,11 @@ describe('overlay-v2 actions', () => {
     'handles a %s gate while its old action is pending',
     async (change: 'replaced' | 'cleared' | 'same'): Promise<void> => {
       let resolveOld!: (value: unknown) => void;
-      const sendMessage: Mock<(request: unknown) => Promise<unknown>> = stubWorker({ ok: true });
-      sendMessage.mockReturnValueOnce(
+      stubWorker({ ok: true }, [
         new Promise<unknown>((resolve: (value: unknown) => void): void => {
           resolveOld = resolve;
         }),
-      );
+      ]);
       renderDocumentOverlay(gatedOverlay(), BLOCKED_VERDICT);
       (shadowRoot().querySelector('.keep-focusing') as HTMLButtonElement).click();
       const next: ActiveOverlay =

@@ -284,6 +284,9 @@ describe('buildActiveOverlayView timed focus', () => {
     expect(view.copy.bankWaitPrefix).toBe('Ready in');
     expect('bankWaitFallback' in view.copy).toBe(false);
     expect(view.copy.accessSummary).toBe('Need a break or site access?');
+    expect(view.copy.backToWork).toBe('Back to work');
+    expect(view.copy.chooseWorkTab).toBe('Choose a work tab');
+    expect(view.copy.changeWorkTab).toBe('Change work tab');
     expect(view.copy.accessNote).toBe('You can step away at any time. Site access uses credit.');
     expect(view.copy.costAboveLimit).toBe('Cost exceeds the credit limit');
     expect(view.copy.earningOff).toBe('Credit earning is turned off');

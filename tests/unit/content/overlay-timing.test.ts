@@ -47,6 +47,9 @@ function copy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     gateForceEnd: 'Ignore timeout and end anyway',
     gateConfirm: null,
     transportError: 'Focus Lock could not update this action. Try again.',
+    backToWork: 'Back to work',
+    chooseWorkTab: 'Choose a work tab',
+    changeWorkTab: 'Change work tab',
     ...overrides,
   };
 }

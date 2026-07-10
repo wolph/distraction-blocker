@@ -24,7 +24,7 @@ import {
   STOPPED_DOCUMENT_TITLE,
   shouldStop,
 } from './gate';
-import { clearDocumentOverlay, renderDocumentOverlay } from './overlay-v2';
+import { clearDocumentOverlay, refreshWorkTarget, renderDocumentOverlay } from './overlay-v2';
 
 type DocState = 'fresh' | 'loaded';
 
@@ -76,15 +76,21 @@ export function installDocumentEnforcement(host: DocumentEnforcementHostV2): voi
 /**
  * Answers every command this document parses, including a rejected one, because the listener
  * wrapper holds the channel open and an unanswered channel hangs the worker until this document
- * unloads. A message that is not a command belongs to another listener and is left alone.
+ * unloads. The two broadcasts are not commands and get no answer: one re-asks for the verdict,
+ * the other re-reads the work target the blocked page offers. Anything else belongs to another
+ * listener and is left alone.
  */
 function handleMessage(
   loop: DocumentLoop,
   message: unknown,
   respond: (response: ContentEnforcementResponse | undefined) => void,
 ): void {
-  if (isReevaluateBroadcast(message)) {
+  if (isBroadcast(message, 'reevaluate')) {
     void evaluate(loop, 'loaded');
+    return;
+  }
+  if (isBroadcast(message, 'workTargetChanged')) {
+    refreshWorkTarget();
     return;
   }
   const command: DocumentContentCommand | null = parseDocumentContentCommand(message);
@@ -92,8 +98,8 @@ function handleMessage(
   respond(applyCommand(loop, command, 'loaded') ?? undefined);
 }
 
-function isReevaluateBroadcast(message: unknown): boolean {
-  return isRecord(message) && message.type === 'reevaluate';
+function isBroadcast(message: unknown, type: 'reevaluate' | 'workTargetChanged'): boolean {
+  return isRecord(message) && message.type === type;
 }
 
 /**
@@ -155,7 +161,8 @@ function applyRender(
 
 /**
  * Stops a blocked fresh navigation before it paints. What is left is an empty document plus the
- * overlay host, and an observer removes whatever the parser appends after the stop.
+ * overlay host, and an observer removes whatever the parser appends after the stop. The host is
+ * never detached, because detaching it would drop the focus a person may already hold inside it.
  */
 function stopDocument(loop: DocumentLoop): void {
   if (loop.stopped) return;
@@ -164,7 +171,10 @@ function stopDocument(loop: DocumentLoop): void {
   loop.host.window.stop();
   const head: HTMLHeadElement = doc.createElement('head');
   const overlay: Element | null = doc.querySelector('focus-lock-overlay');
-  doc.documentElement.replaceChildren(head, ...(overlay === null ? [] : [overlay]));
+  for (const child of Array.from(doc.documentElement.childNodes)) {
+    if (child !== overlay) child.remove();
+  }
+  doc.documentElement.prepend(head);
   const observer: MutationObserver = new MutationObserver((): void => {
     removeStoppedPageContent(doc);
   });

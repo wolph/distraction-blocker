@@ -48,6 +48,10 @@ export interface ActiveOverlayCopy {
   intention: string;
   verdictProvenance: string;
   stoppedPage: 'This page did not load. It will load by itself when the session ends.' | null;
+  /** The primary control, which names the chosen tab on itself, and the two ways to choose one. */
+  backToWork: 'Back to work';
+  chooseWorkTab: 'Choose a work tab';
+  changeWorkTab: 'Change work tab';
   /** The collapsed drawer that holds the credit line and every access action. */
   accessSummary: 'Need a break or site access?';
   bankUnit: 'site access credit';

@@ -91,7 +91,6 @@ const LOCK_SCREEN_CSS: string = `
   width: 100%; max-width: 480px; padding: 2rem 1.5rem; margin-block: auto;
   display: flex; flex-direction: column; align-items: center; gap: 0.9rem;
 }
-.panel[inert] { visibility: hidden; }
 .padlock { width: 1.5rem; height: 1.5rem; }
 .access { width: 100%; margin-top: 1rem; }
 summary { cursor: pointer; color: var(--overlay-muted); padding: 0.5rem; }

@@ -49,6 +49,9 @@ describe('shared enforcement v2 contracts', (): void => {
       intention: string;
       verdictProvenance: string;
       stoppedPage: 'This page did not load. It will load by itself when the session ends.' | null;
+      backToWork: 'Back to work';
+      chooseWorkTab: 'Choose a work tab';
+      changeWorkTab: 'Change work tab';
       accessSummary: 'Need a break or site access?';
       bankUnit: 'site access credit';
       pauseAction: string;

@@ -72,6 +72,9 @@ const FIXED_ACTIVE_COPY: Readonly<
     | 'minuteLabel'
     | 'underMinuteLabel'
     | 'updatingLabel'
+    | 'backToWork'
+    | 'chooseWorkTab'
+    | 'changeWorkTab'
     | 'accessSummary'
     | 'bankUnit'
     | 'bankWaitPrefix'
@@ -89,6 +92,9 @@ const FIXED_ACTIVE_COPY: Readonly<
   minuteLabel: 'min',
   underMinuteLabel: 'Less than a minute',
   updatingLabel: 'Updating session',
+  backToWork: 'Back to work',
+  chooseWorkTab: 'Choose a work tab',
+  changeWorkTab: 'Change work tab',
   accessSummary: 'Need a break or site access?',
   bankUnit: 'site access credit',
   bankWaitPrefix: 'Ready in',

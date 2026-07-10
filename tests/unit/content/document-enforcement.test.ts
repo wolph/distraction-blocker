@@ -75,6 +75,9 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     gateForceEnd: 'Ignore timeout and end anyway',
     gateConfirm: null,
     transportError: 'Focus Lock could not update this action. Try again.',
+    backToWork: 'Back to work',
+    chooseWorkTab: 'Choose a work tab',
+    changeWorkTab: 'Change work tab',
     accessSummary: 'Need a break or site access?',
     accessNote: 'You can step away at any time. Site access uses credit.',
     costAboveLimit: 'Cost exceeds the credit limit',
@@ -506,6 +509,34 @@ describe('installDocumentEnforcement command loop', () => {
 
     expect(responses).toHaveLength(0);
     expect(panelNode()).toBe(panel);
+  });
+
+  it('re-reads the work target for a workTargetChanged message and answers nothing', async (): Promise<void> => {
+    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+      async (): Promise<unknown> => ({
+        ok: true,
+        sessionId: SESSION_ID,
+        state: 'missing',
+        title: null,
+      }),
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const harness: Harness = newHarness();
+    await install(harness);
+    deliver(harness, resetCommand());
+    deliver(harness, enforcementCommand());
+    await vi.advanceTimersByTimeAsync(0);
+    const before: number = sendMessage.mock.calls.length;
+
+    const responses: (ContentEnforcementResponse | undefined)[] = deliver(harness, {
+      type: 'workTargetChanged',
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(responses).toEqual([]);
+    expect(sendMessage.mock.calls.length).toBe(before + 1);
+    expect(sendMessage.mock.calls.at(-1)?.[0]).toEqual({ type: 'getWorkTarget' });
+    expect(harness.requestVerdict.mock.calls).toHaveLength(1);
   });
 
   it('re-requests the verdict for a reevaluate broadcast and a persisted pageshow', async (): Promise<void> => {
