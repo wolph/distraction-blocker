@@ -30,7 +30,7 @@ Unit suite: **169 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
 deriving it means collecting every file, which is the expensive half of a run, and a number
 that needs a run to verify is exactly the kind that went stale here four times.
 
-End-to-end suite: **93 scenarios in 21 spec files**, as Playwright itself
+End-to-end suite: **94 scenarios in 21 spec files**, as Playwright itself
 lists them. Asking the runner rather than counting `test(` in the sources is not pedantry: a
 grep undercounts `test.skip`, which is listed and reported, and misses a spec file added
 since the grep was written. Both mistakes were present when this section was first drafted.
@@ -129,8 +129,9 @@ since the grep was written. Both mistakes were present when this section was fir
 
 - popup shows an unlock confirmation and a red End session control
 
-### popup-sizing.spec.ts (2)
+### popup-sizing.spec.ts (3)
 
+- the active view scrolls its controls into the real toolbar popup
 - the popup page still fits a narrow tab viewport
 - the toolbar popup opens at its intended size without viewport emulation
 
@@ -308,6 +309,33 @@ later run, which is the point of signing it against named evidence.
 
 Tasks no automation in this repository can perform. They describe an action rather than a
 measurement, which is why they are the only part of this document that could never go stale.
+
+### Actual toolbar popup width
+
+The earlier width checks opened the extension page in a normal tab. They missed Chrome's automatic
+sizing of the actual toolbar popup, which is measured before the page's first layout.
+
+- [x] Reproduced the defect on the v2 popup through `chrome.action.openPopup()`: a maximum width in
+      viewport units (`100vw` on `.app`) clamps the popup to the pre-layout viewport.
+- [x] `body { width: 480px; max-inline-size: 100% }` and `.app { max-inline-size: 100% }` keep the
+      intended 480 px toolbar width. The `max-block-size: 100vh` clamp on `.app` stays: the body's
+      fixed 600 px decides the popup's intrinsic height, and the clamp only bites when the screen
+      gives the popup less than that, where it keeps the sticky start button and the scrolling
+      active view in reach.
+- [x] `tests/e2e/popup-sizing.spec.ts` reads the real popup window through
+      `chrome.extension.getViews({ type: 'popup' })` without changing its viewport: 480 px wide, the
+      body 600 px tall, the app column the popup's own height, the start button in view, and the
+      active view's End control reachable by scrolling the view. The popup page still fits 375 and
+      768 px tab viewports without horizontal overflow.
+- [x] dev-browser attached to the real toolbar popup of the built extension in an isolated Chrome
+      for Testing profile and measured 480 px in both themes on a popup viewport of 480 by 520 px.
+      Captures of the idle form with the proposed work tab, the deep work preset with its hint, the
+      infinity chip for Friction and for Flexible, and the active view with the return control and
+      the per-action availability lines, in light and dark, plus 375 and 768 px tab renders, pass
+      visual inspection. The popup recorded no console errors or page exceptions.
+
+Evidence is retained in `.playwright-mcp/task-5/`, which is ignored by git: the directory holds the
+captures of that run only.
 
 - [ ] Confirm Chrome Sync across two signed-in profiles.
 - [ ] Hear session-complete, break-start, break-end, and schedule-start sounds through real speakers.

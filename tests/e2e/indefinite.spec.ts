@@ -600,9 +600,7 @@ test('a 50 minute popup start makes the total session prominent above its focus 
   extPage,
   worker,
 }) => {
-  await extPage
-    .getByRole('button', { name: '50 deep work', exact: true })
-    .click();
+  await extPage.getByRole('button', { name: '50 deep work', exact: true }).click();
   await extPage.getByText('Cycle options', { exact: true }).click();
   await extPage.getByRole('checkbox', { name: /^Cycles:/ }).check();
   await extPage.getByRole('button', { name: /^Start 50 min -/ }).click();
