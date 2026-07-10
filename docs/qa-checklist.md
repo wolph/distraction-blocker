@@ -334,8 +334,9 @@ sizing of the actual toolbar popup, which is measured before the page's first la
       the per-action availability lines, in light and dark, plus 375 and 768 px tab renders, pass
       visual inspection. The popup recorded no console errors or page exceptions.
 
-Evidence is retained in `.playwright-mcp/task-5/`, which is ignored by git: the directory holds the
-captures of that run only.
+The captures of that run live in the git-ignored evidence scratch of the task branch and are not
+pinned here: an ignored path is a location, not preserved evidence. The regression above is the
+durable form of the claim.
 
 - [ ] Confirm Chrome Sync across two signed-in profiles.
 - [ ] Hear session-complete, break-start, break-end, and schedule-start sounds through real speakers.
