@@ -1,4 +1,5 @@
 import { createServer, type Server } from 'node:http';
+import { PNG } from 'pngjs';
 
 export interface TestServer {
   port: number;
@@ -6,6 +7,8 @@ export interface TestServer {
 }
 
 const PAGES: Readonly<Record<string, string>> = {
+  '/icon.html': `<!doctype html><html><head><title>Reference with a cached icon</title>
+    <link rel="icon" type="image/png" href="/icon.png"></head><body>Reference</body></html>`,
   '/plain.html': `<!doctype html>
     <html><head><title>Plain test page</title></head>
     <body style="min-height: 3000px"><h1 id="marker">plain page</h1><input id="keep" /></body></html>`,
@@ -30,8 +33,18 @@ document.querySelector('#navigate').addEventListener('click', () => {
 };
 
 export async function startServer(): Promise<TestServer> {
+  const icon: PNG = new PNG({ width: 32, height: 32 });
+  for (let index: number = 0; index < icon.data.length; index += 4) {
+    icon.data.set([35, 110, 210, 255], index);
+  }
+  const iconBytes: Buffer = PNG.sync.write(icon);
   const server: Server = createServer((request, response): void => {
     const pathname: string = new URL(request.url ?? '/', 'http://blocked.example').pathname;
+    if (pathname === '/icon.png') {
+      response.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'max-age=3600' });
+      response.end(iconBytes);
+      return;
+    }
     if (pathname === '/favicon.ico') {
       response.writeHead(204, { 'cache-control': 'no-store' });
       response.end();
