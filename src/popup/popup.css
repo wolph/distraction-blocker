@@ -965,15 +965,15 @@ body {
   padding: 0.7rem 1rem;
   border: 1px solid var(--border);
   border-radius: 0.65rem;
-  background: #22c55e;
-  color: #052e16;
+  background: var(--primary-bg);
+  color: var(--primary-text);
   font: inherit;
   font-weight: 650;
   cursor: pointer;
 }
 
 .this-tab-button:hover:enabled {
-  background: #4ade80;
+  background: var(--primary-bg-hover);
 }
 
 .this-tab-button:disabled {
@@ -983,7 +983,7 @@ body {
 }
 
 .this-tab-button:focus-visible {
-  outline: 2px solid #22c55e;
+  outline: 2px solid var(--focus-color);
   outline-offset: 3px;
 }
 
