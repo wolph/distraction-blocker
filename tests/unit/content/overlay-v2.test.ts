@@ -632,14 +632,18 @@ describe('clearDocumentOverlay', () => {
 });
 
 describe('overlay-v2 source boundary', () => {
-  it.each(['overlay-v2.ts', 'overlay-timing.ts'])(
-    'never reads the public session snapshot in %s',
-    (file: string): void => {
-      const source: string = readFileSync(resolve('src/content', file), 'utf8');
+  it.each([
+    'overlay-v2.ts',
+    'overlay-timing.ts',
+    'overlay-access.ts',
+    'overlay-actions.ts',
+    'overlay-work-target.ts',
+    'overlay-state.ts',
+  ])('never reads the public session snapshot in %s', (file: string): void => {
+    const source: string = readFileSync(resolve('src/content', file), 'utf8');
 
-      expect(source).not.toMatch(/SessionSnapshot/);
-    },
-  );
+    expect(source).not.toMatch(/SessionSnapshot/);
+  });
 });
 
 describe('overlay-v2 actions', () => {
