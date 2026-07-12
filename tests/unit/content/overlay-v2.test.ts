@@ -23,11 +23,12 @@ type ActiveEconomy = ActiveOverlay['economy'];
 
 const NOW: number = 1_750_000_000_000;
 const SESSION_ID: string = '10000000-0000-4000-8000-000000000001';
+const OTHER_SESSION_ID: string = '10000000-0000-4000-8000-000000000002';
 const PROVENANCE: string = 'Blocked by Social media: example.com';
 const STOPPED_COPY: NonNullable<StartingOverlay['copy']['stoppedPage']> =
   'This page did not load. It will load by itself when the session ends.';
 const UNTIL_STOPPED_TEXT: Extract<ActiveCopy['status'], { kind: 'until-stopped' }>['text'] =
-  'Focus Lock is active until you stop it.';
+  'Until stopped';
 const TRANSPORT_ERROR: ActiveCopy['transportError'] =
   'Focus Lock could not update this action. Try again.';
 const BLOCKED_VERDICT: Verdict = {
@@ -53,21 +54,33 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     status: { kind: 'timed', text: 'Locked until 14:35' },
     lockedUntil: '14:35',
     intention: 'Finish the release notes',
-    attempts: '2 attempts blocked today',
     verdictProvenance: PROVENANCE,
     stoppedPage: null,
     bankUnit: 'site access credit',
-    pauseAction: 'Pause blocking for 1 min',
-    unlockAction: 'Unlock this site for 2 min',
+    pauseAction: 'Unlock all sites 1:00 - costs 1:00 credit',
+    unlockAction: 'Unlock this site 2:00 - costs 2:00 credit',
     endAction: 'End session',
-    bankWaitFallback: 'earn site access credit by focusing',
     bankWaitPrefix: 'Ready in',
     gateTitle: null,
-    gateBack: 'Never mind, back to work',
+    gateBack: 'Keep focusing',
     gatePhraseLabel: 'Type this to confirm:',
     gateForceEnd: 'Ignore timeout and end anyway',
     gateConfirm: null,
     transportError: TRANSPORT_ERROR,
+    backToWork: 'Back to work',
+    chooseWorkTab: 'Choose a work tab',
+    changeWorkTab: 'Change work tab',
+    accessSummary: 'Need a break or site access?',
+    accessNote: 'You can step away at any time. Site access uses credit.',
+    costAboveLimit: 'Cost exceeds the credit limit',
+    earningOff: 'Credit earning is turned off',
+    notEnoughFocus: 'Not enough time in this focus block',
+    gateSaid: null,
+    nextStep: 'Your next step',
+    remainingSuffix: 'left in this session',
+    minuteLabel: 'min',
+    underMinuteLabel: 'Less than a minute',
+    updatingLabel: 'Updating session',
     ...overrides,
   };
 }
@@ -99,6 +112,15 @@ function activeOverlay(overrides: Partial<ActiveOverlay> = {}): ActiveOverlay {
   };
 }
 
+function untilStoppedCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
+  return activeCopy({
+    status: { kind: 'until-stopped', text: UNTIL_STOPPED_TEXT },
+    lockedUntil: null,
+    remainingSuffix: null,
+    ...overrides,
+  });
+}
+
 function untilStoppedOverlay(overrides: Partial<ActiveOverlay> = {}): ActiveOverlay {
   return activeOverlay({
     duration: { kind: 'until-stopped' },
@@ -109,12 +131,15 @@ function untilStoppedOverlay(overrides: Partial<ActiveOverlay> = {}): ActiveOver
       sessionEndsAt: null,
     },
     actions: { state: 'ready', end: 'request-end', pause: 'request-gate', unlock: 'request-gate' },
-    copy: activeCopy({
-      status: { kind: 'until-stopped', text: UNTIL_STOPPED_TEXT },
-      lockedUntil: null,
-    }),
+    copy: untilStoppedCopy(),
     ...overrides,
   });
+}
+
+function meterWidth(): number {
+  const fill: HTMLElement | null = shadowRoot().querySelector<HTMLElement>('.meter-fill');
+  if (fill === null) throw new Error('missing overlay element: .meter-fill');
+  return Number.parseFloat(fill.style.width);
 }
 
 function gateState(overrides: Partial<GateState> = {}): GateState {
@@ -129,11 +154,20 @@ function gateState(overrides: Partial<GateState> = {}): GateState {
   };
 }
 
+function gatedCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
+  return activeCopy({
+    gateTitle: 'Unlock all sites 1:00 - costs 1:00 credit',
+    gateConfirm: 'Unlock all sites',
+    gateSaid: 'You said: Finish the release notes',
+    ...overrides,
+  });
+}
+
 function gatedOverlay(overrides: Partial<ActiveOverlay> = {}): ActiveOverlay {
   return activeOverlay({
     gate: gateState(),
     actions: { state: 'gate', end: 'hidden', pause: 'hidden', unlock: 'hidden' },
-    copy: activeCopy({ gateTitle: 'Take a 1 min pause', gateConfirm: 'Take the pause' }),
+    copy: gatedCopy(),
     ...overrides,
   });
 }
@@ -169,8 +203,18 @@ function text(selector: string): string {
   return element.textContent ?? '';
 }
 
+/** The access controls: everything but the work target's own two buttons. */
 function buttons(): HTMLButtonElement[] {
-  return Array.from(shadowRoot().querySelectorAll<HTMLButtonElement>('button'));
+  return Array.from(
+    shadowRoot().querySelectorAll<HTMLButtonElement>('button:not(.return-work):not(.change-work)'),
+  );
+}
+
+/** The requests an action sent, with the renderer's own target lookups left out. */
+function actionCalls(sendMessage: Mock<(request: unknown) => Promise<unknown>>): unknown[] {
+  return sendMessage.mock.calls
+    .map((call: [unknown]): unknown => call[0])
+    .filter((request: unknown): boolean => (request as { type: string }).type !== 'getWorkTarget');
 }
 
 function buttonStartingWith(label: string): HTMLButtonElement {
@@ -181,9 +225,21 @@ function buttonStartingWith(label: string): HTMLButtonElement {
   return found;
 }
 
-function stubWorker(response: unknown): Mock<(request: unknown) => Promise<unknown>> {
+/**
+ * A worker that answers the target lookup with nothing chosen and every action with `response`,
+ * or with the next queued answer when one is given, so a test can hold one action open.
+ */
+function stubWorker(
+  response: unknown,
+  queued: Array<Promise<unknown>> = [],
+): Mock<(request: unknown) => Promise<unknown>> {
   const sendMessage: Mock<(request: unknown) => Promise<unknown>> = vi.fn(
-    async (): Promise<unknown> => response,
+    async (request: unknown): Promise<unknown> => {
+      if ((request as { type: string }).type === 'getWorkTarget') {
+        return { ok: true, sessionId: SESSION_ID, state: 'missing', title: null };
+      }
+      return queued.shift() ?? response;
+    },
   );
   vi.stubGlobal('chrome', { runtime: { sendMessage } });
   return sendMessage;
@@ -234,24 +290,63 @@ describe('renderDocumentOverlay starting view', () => {
 });
 
 describe('renderDocumentOverlay active view', () => {
-  it('renders the timed page with a locally ticking clock and its exact copy', () => {
+  it('renders the timed page with a calm minute line, its exact copy, and no attempts', () => {
     renderDocumentOverlay(activeOverlay(), BLOCKED_VERDICT);
 
-    expect(text('.until')).toBe('Locked until 14:35');
-    expect(text('.until')).not.toBe('14:35');
-    expect(text('.clock')).toBe(formatClock(60_000));
+    expect(text('.next-step')).toBe('Your next step');
     expect(text('.intention')).toBe('Finish the release notes');
-    expect(text('.attempts')).toBe('2 attempts blocked today');
     expect(text('.provenance')).toBe(PROVENANCE);
+    expect(text('.clock .remaining')).toBe('1 min left in this session');
+    expect(text('.clock .until')).toBe('Locked until 14:35');
+    expect(text('.clock .until')).not.toBe('14:35');
+    expect(shadowRoot().querySelector('.attempts')).toBeNull();
+    expect(shadowRoot().textContent).not.toContain('attempts blocked today');
     expect(text('.bank')).toBe(`${formatClock(300_000)} site access credit`);
-    expect(shadowRoot().querySelector('.meter-fill')?.getAttribute('style')).toContain('width');
-    expect(buttonStartingWith('Pause blocking for 1 min')).toBeInstanceOf(HTMLButtonElement);
-    expect(buttonStartingWith('Unlock this site for 2 min')).toBeInstanceOf(HTMLButtonElement);
+    expect(buttonStartingWith('Unlock all sites 1:00')).toBeInstanceOf(HTMLButtonElement);
+    expect(buttonStartingWith('Unlock this site 2:00')).toBeInstanceOf(HTMLButtonElement);
     expect(buttonStartingWith('End session')).toBeInstanceOf(HTMLButtonElement);
 
     vi.advanceTimersByTime(5_000);
 
-    expect(text('.clock')).toBe(formatClock(55_000));
+    expect(text('.clock .remaining')).toBe('Less than a minute left in this session');
+
+    vi.advanceTimersByTime(55_000);
+
+    expect(text('.clock .remaining')).toBe('Updating session');
+  });
+
+  it('fills the progress bar from this focus block, never from the bank', () => {
+    // One second into a block that ends in sixty, with a full bank: the bar reads the block.
+    renderDocumentOverlay(activeOverlay(), BLOCKED_VERDICT);
+    expect(meterWidth()).toBeGreaterThan(1);
+    expect(meterWidth()).toBeLessThan(2);
+
+    vi.advanceTimersByTime(30_500);
+
+    expect(meterWidth()).toBeGreaterThan(50);
+    expect(meterWidth()).toBeLessThan(52);
+
+    vi.advanceTimersByTime(60_000);
+
+    expect(meterWidth()).toBe(100);
+  });
+
+  it('bounds the progress bar by the session end when it comes before the phase end', () => {
+    renderDocumentOverlay(
+      activeOverlay({
+        timing: {
+          capturedAt: NOW,
+          phaseStartedAt: NOW - 30_000,
+          phaseEndsAt: NOW + 90_000,
+          sessionEndsAt: NOW + 30_000,
+        },
+        copy: activeCopy({ remainingSuffix: 'until your break' }),
+      }),
+      BLOCKED_VERDICT,
+    );
+
+    expect(meterWidth()).toBe(50);
+    expect(text('.clock .remaining')).toBe('Less than a minute until your break');
   });
 
   it('hides the end action unless the view asks for it', () => {
@@ -266,14 +361,19 @@ describe('renderDocumentOverlay active view', () => {
     expect(buttons()).toHaveLength(2);
   });
 
-  it('renders the until-stopped page without a clock or locked-until line, End included', () => {
+  it('renders the until-stopped page with a still time line and no wall clock, End included', () => {
     renderDocumentOverlay(untilStoppedOverlay(), BLOCKED_VERDICT);
 
-    expect(text('.until')).toBe(UNTIL_STOPPED_TEXT);
+    expect(text('.clock .remaining')).toBe(UNTIL_STOPPED_TEXT);
+    expect(shadowRoot().querySelector('.clock .until')).toBeNull();
     expect(shadowRoot().textContent).not.toContain('Locked until');
-    expect(shadowRoot().querySelector('.clock')).toBeNull();
+    expect(meterWidth()).toBe(0);
     expect(shadowRoot().textContent).toContain('End session');
     expect(buttons()).toHaveLength(3);
+
+    vi.advanceTimersByTime(90_000);
+
+    expect(text('.clock .remaining')).toBe(UNTIL_STOPPED_TEXT);
   });
 
   it('renders the Unlock control a Friction until-stopped view carries', async (): Promise<void> => {
@@ -287,11 +387,7 @@ describe('renderDocumentOverlay active view', () => {
           pause: 'request-gate',
           unlock: 'request-gate',
         },
-        copy: activeCopy({
-          status: { kind: 'until-stopped', text: UNTIL_STOPPED_TEXT },
-          lockedUntil: null,
-          endAction: 'Unlock',
-        }),
+        copy: untilStoppedCopy({ endAction: 'Unlock' }),
       }),
       BLOCKED_VERDICT,
     );
@@ -305,56 +401,158 @@ describe('renderDocumentOverlay active view', () => {
     unlock.click();
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(sendMessage.mock.calls.map((call: [unknown]): unknown => call[0])).toEqual([
-      { type: 'openEndGate' },
-    ]);
+    expect(actionCalls(sendMessage)).toEqual([{ type: 'openEndGate' }]);
   });
 
-  it('ticks bank affordability locally from the economy row', () => {
+  it('keeps the credit and the actions in a collapsed drawer with the note under them', () => {
+    renderDocumentOverlay(activeOverlay(), BLOCKED_VERDICT);
+    const details: HTMLDetailsElement | null = shadowRoot().querySelector('details.access');
+    if (details === null) throw new Error('missing the access drawer');
+
+    expect(details.open).toBe(false);
+    expect(text('details.access summary')).toBe('Need a break or site access?');
+    expect(details.querySelector('.bank')).not.toBeNull();
+    expect(details.querySelector('.buttons')).not.toBeNull();
+    expect(text('details.access .access-note')).toBe(
+      'You can step away at any time. Site access uses credit.',
+    );
+    expect(shadowRoot().querySelector('.panel > .buttons')).toBeNull();
+  });
+
+  it('opens the drawer for a gate and keeps an opened drawer across a same-session repaint', () => {
+    renderDocumentOverlay(activeOverlay(), BLOCKED_VERDICT);
+    const closed: HTMLDetailsElement = shadowRoot().querySelector(
+      'details.access',
+    ) as HTMLDetailsElement;
+    closed.open = true;
+
+    renderDocumentOverlay(activeOverlay({ attemptsToday: 3 }), BLOCKED_VERDICT);
+    expect((shadowRoot().querySelector('details.access') as HTMLDetailsElement).open).toBe(true);
+
+    renderDocumentOverlay(activeOverlay({ sessionId: OTHER_SESSION_ID }), BLOCKED_VERDICT);
+    expect((shadowRoot().querySelector('details.access') as HTMLDetailsElement).open).toBe(false);
+
+    renderDocumentOverlay(gatedOverlay({ sessionId: OTHER_SESSION_ID }), BLOCKED_VERDICT);
+    expect((shadowRoot().querySelector('details.access') as HTMLDetailsElement).open).toBe(true);
+  });
+
+  it('counts each action down to its own cost within this focus block', () => {
     renderDocumentOverlay(
-      activeOverlay({ economy: affordableEconomy({ bankMs: 0, bankAccrualPerMs: 0.5 }) }),
+      activeOverlay({
+        timing: {
+          capturedAt: NOW,
+          phaseStartedAt: NOW - 1_000,
+          phaseEndsAt: NOW + 300_000,
+          sessionEndsAt: NOW + 300_000,
+        },
+        economy: affordableEconomy({ bankMs: 0, bankAccrualPerMs: 0.5 }),
+      }),
       BLOCKED_VERDICT,
     );
-    const pause: HTMLButtonElement = buttonStartingWith('Pause blocking for 1 min');
+    const pause: HTMLButtonElement = buttonStartingWith('Unlock all sites 1:00');
+    const unlock: HTMLButtonElement = buttonStartingWith('Unlock this site 2:00');
 
     expect(pause.disabled).toBe(true);
-    expect(pause.textContent).toBe('Pause blocking for 1 minReady in 2:00');
+    expect(pause.textContent).toBe('Unlock all sites 1:00 - costs 1:00 creditReady in 2:00');
+    expect(unlock.textContent).toBe('Unlock this site 2:00 - costs 2:00 creditReady in 4:00');
 
     vi.advanceTimersByTime(1_000);
 
-    expect(pause.textContent).toBe('Pause blocking for 1 minReady in 1:59');
+    expect(pause.textContent).toBe('Unlock all sites 1:00 - costs 1:00 creditReady in 1:59');
     expect(text('.bank')).toBe(`${formatClock(500)} site access credit`);
 
     vi.advanceTimersByTime(119_000);
 
     expect(pause.disabled).toBe(false);
-    expect(pause.textContent).toBe('Pause blocking for 1 min');
+    expect(pause.textContent).toBe('Unlock all sites 1:00 - costs 1:00 credit');
+    expect(unlock.disabled).toBe(true);
   });
 
-  it('falls back to the earned-time copy when the bank can never reach the next minute', () => {
-    renderDocumentOverlay(
-      activeOverlay({ economy: affordableEconomy({ bankMs: 0, bankAccrualPerMs: 0 }) }),
-      BLOCKED_VERDICT,
-    );
-    const pause: HTMLButtonElement = buttonStartingWith('Pause blocking for 1 min');
+  it.each([
+    {
+      name: 'the cost is above the credit limit',
+      economy: affordableEconomy({ bankMs: 0, bankCapMs: 30_000 }),
+      expected: 'Cost exceeds the credit limit',
+    },
+    {
+      name: 'earning is turned off',
+      economy: affordableEconomy({ bankMs: 0, bankAccrualPerMs: 0 }),
+      expected: 'Credit earning is turned off',
+    },
+    {
+      name: 'the block ends before the cost is reached',
+      economy: affordableEconomy({ bankMs: 0, bankAccrualPerMs: 0.5 }),
+      expected: 'Not enough time in this focus block',
+    },
+  ])('explains an action that stays unaffordable when $name', ({ economy, expected }): void => {
+    renderDocumentOverlay(activeOverlay({ economy }), BLOCKED_VERDICT);
+    const pause: HTMLButtonElement = buttonStartingWith('Unlock all sites 1:00');
 
     expect(pause.disabled).toBe(true);
-    expect(pause.textContent).toBe('Pause blocking for 1 minearn site access credit by focusing');
+    expect(pause.textContent).toBe(`Unlock all sites 1:00 - costs 1:00 credit${expected}`);
+  });
+
+  it('stops promising a spend once the focus boundary has passed', () => {
+    renderDocumentOverlay(
+      activeOverlay({ economy: affordableEconomy({ bankMs: 0, bankAccrualPerMs: 0.5 }) }),
+      BLOCKED_VERDICT,
+    );
+    const pause: HTMLButtonElement = buttonStartingWith('Unlock all sites 1:00');
+
+    vi.advanceTimersByTime(60_000);
+
+    expect(pause.disabled).toBe(true);
+    expect(pause.textContent).toBe('Unlock all sites 1:00 - costs 1:00 creditUpdating session');
+  });
+
+  it('keeps earning towards a cost on an until-stopped page with no boundary', () => {
+    renderDocumentOverlay(
+      untilStoppedOverlay({ economy: affordableEconomy({ bankMs: 0, bankAccrualPerMs: 0.5 }) }),
+      BLOCKED_VERDICT,
+    );
+    const pause: HTMLButtonElement = buttonStartingWith('Unlock all sites 1:00');
+
+    expect(pause.textContent).toBe('Unlock all sites 1:00 - costs 1:00 creditReady in 2:00');
+
+    vi.advanceTimersByTime(120_000);
+
+    expect(pause.disabled).toBe(false);
   });
 
   it('renders the gate with its exact copy and hides the ordinary actions', () => {
     renderDocumentOverlay(gatedOverlay(), BLOCKED_VERDICT);
 
-    expect(text('.gate-title')).toBe('Take a 1 min pause');
-    expect(text('.primary')).toBe('Never mind, back to work');
+    expect(text('.gate-title')).toBe('Unlock all sites 1:00 - costs 1:00 credit');
+    expect(text('.gate-said')).toBe('You said: Finish the release notes');
+    expect(text('.keep-focusing')).toBe('Keep focusing');
+    // Keep focusing is the first and strongest thing on the gate.
+    expect(shadowRoot().querySelector('.gate button')?.className).toContain('keep-focusing');
+    expect(shadowRoot().querySelector('.gate')?.firstElementChild?.className).toContain(
+      'keep-focusing',
+    );
     expect(text('.phrase-label')).toBe('Type this to confirm:');
     expect(text('.phrase-text')).toBe('let me scroll');
     expect(shadowRoot().querySelector('input.phrase')).toBeInstanceOf(HTMLInputElement);
-    expect(text('.gate .pill')).toBe('Take the pause');
+    expect(text('.gate .pill:not(.keep-focusing)')).toBe('Unlock all sites');
     expect(shadowRoot().querySelector('.buttons')).toBeNull();
-    expect(shadowRoot().textContent).not.toContain('Pause blocking for 1 min');
-    expect(shadowRoot().textContent).not.toContain('Unlock this site for 2 min');
+    // The title repeats the action's sentence, so the spends are checked as controls, not text.
+    const labels: string[] = buttons().map((button: HTMLButtonElement): string =>
+      String(button.textContent),
+    );
+    expect(labels.some((label: string): boolean => label.startsWith('Unlock all sites 1:00'))).toBe(
+      false,
+    );
+    expect(labels.some((label: string): boolean => label.startsWith('Unlock this site 2:00'))).toBe(
+      false,
+    );
     expect(shadowRoot().textContent).not.toContain('End session');
+  });
+
+  it('omits the quoted intention when the worker sent none', () => {
+    renderDocumentOverlay(gatedOverlay({ copy: gatedCopy({ gateSaid: null }) }), BLOCKED_VERDICT);
+
+    expect(shadowRoot().querySelector('.gate-said')).toBeNull();
+    expect(shadowRoot().textContent).not.toContain('You said:');
   });
 
   it('omits the phrase input when the gate requires no phrase', () => {
@@ -373,7 +571,7 @@ describe('renderDocumentOverlay active view', () => {
       BLOCKED_VERDICT,
     );
     const confirm: HTMLButtonElement = shadowRoot().querySelector(
-      '.gate .pill',
+      '.gate .pill:not(.keep-focusing)',
     ) as HTMLButtonElement;
 
     expect(confirm.hidden).toBe(true);
@@ -395,7 +593,7 @@ describe('renderDocumentOverlay active view', () => {
       activeOverlay({
         theme: 'light',
         attemptsToday: 3,
-        copy: activeCopy({ attempts: '3 attempts blocked today' }),
+        copy: activeCopy({ intention: 'Ship the beta' }),
       }),
       BLOCKED_VERDICT,
     );
@@ -404,7 +602,7 @@ describe('renderDocumentOverlay active view', () => {
     expect(shadowRoot()).toBe(root);
     expect(root.querySelector('.panel')).not.toBe(panel);
     expect(host.dataset.theme).toBe('light');
-    expect(text('.attempts')).toBe('3 attempts blocked today');
+    expect(text('.intention')).toBe('Ship the beta');
   });
 
   it('keeps the rendered panel for a structurally identical view', () => {
@@ -434,8 +632,15 @@ describe('clearDocumentOverlay', () => {
 });
 
 describe('overlay-v2 source boundary', () => {
-  it('never reads the public session snapshot', () => {
-    const source: string = readFileSync(resolve('src/content/overlay-v2.ts'), 'utf8');
+  it.each([
+    'overlay-v2.ts',
+    'overlay-timing.ts',
+    'overlay-access.ts',
+    'overlay-actions.ts',
+    'overlay-work-target.ts',
+    'overlay-state.ts',
+  ])('never reads the public session snapshot in %s', (file: string): void => {
+    const source: string = readFileSync(resolve('src/content', file), 'utf8');
 
     expect(source).not.toMatch(/SessionSnapshot/);
   });
@@ -446,14 +651,14 @@ describe('overlay-v2 actions', () => {
     const sendMessage: Mock<(request: unknown) => Promise<unknown>> = stubWorker({ ok: true });
     renderDocumentOverlay(activeOverlay(), BLOCKED_VERDICT);
 
-    buttonStartingWith('Pause blocking for 1 min').click();
+    buttonStartingWith('Unlock all sites 1:00').click();
     await vi.advanceTimersByTimeAsync(0);
-    buttonStartingWith('Unlock this site for 2 min').click();
+    buttonStartingWith('Unlock this site 2:00').click();
     await vi.advanceTimersByTimeAsync(0);
     buttonStartingWith('End session').click();
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(sendMessage.mock.calls.map((call: [unknown]): unknown => call[0])).toEqual([
+    expect(actionCalls(sendMessage)).toEqual([
       { type: 'openGate', gate: 'pause', host: null },
       { type: 'openGate', gate: 'unlockSite', host: window.location.hostname },
       { type: 'requestSessionEnd' },
@@ -497,14 +702,14 @@ describe('overlay-v2 actions', () => {
     expect(forceEnd.textContent).toBe('Ignore timeout and end anyway');
     expect(forceEnd.hidden).toBe(false);
     expect(forceEnd.disabled).toBe(false);
-    expect((shadowRoot().querySelector('.gate .pill') as HTMLButtonElement).hidden).toBe(true);
+    expect(
+      (shadowRoot().querySelector('.gate .pill:not(.keep-focusing)') as HTMLButtonElement).hidden,
+    ).toBe(true);
 
     forceEnd.click();
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(sendMessage.mock.calls.map((call: [unknown]): unknown => call[0])).toEqual([
-      { type: 'forceEndGate' },
-    ]);
+    expect(actionCalls(sendMessage)).toEqual([{ type: 'forceEndGate' }]);
     expect(forceEnd.disabled).toBe(false);
   });
 
@@ -528,9 +733,7 @@ describe('overlay-v2 actions', () => {
     buttonStartingWith('End session').click();
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(sendMessage.mock.calls.map((call: [unknown]): unknown => call[0])).toEqual([
-      { type: 'openEndGate' },
-    ]);
+    expect(actionCalls(sendMessage)).toEqual([{ type: 'openEndGate' }]);
   });
 
   it('renders no End control when the view hides it', (): void => {
@@ -556,14 +759,16 @@ describe('overlay-v2 actions', () => {
       BLOCKED_VERDICT,
     );
     const confirm: HTMLButtonElement = shadowRoot().querySelector(
-      '.gate .pill',
+      '.gate .pill:not(.keep-focusing)',
     ) as HTMLButtonElement;
 
     const waitId: string = confirm.getAttribute('aria-describedby') ?? '';
     expect(shadowRoot().getElementById(waitId)).not.toBeNull();
 
     renderDocumentOverlay(gatedOverlay(), BLOCKED_VERDICT);
-    const ready: HTMLButtonElement = shadowRoot().querySelector('.gate .pill') as HTMLButtonElement;
+    const ready: HTMLButtonElement = shadowRoot().querySelector(
+      '.gate .pill:not(.keep-focusing)',
+    ) as HTMLButtonElement;
     const phraseId: string = ready.getAttribute('aria-describedby') ?? '';
 
     expect(ready.disabled).toBe(true);
@@ -621,7 +826,7 @@ describe('overlay-v2 actions', () => {
     renderDocumentOverlay(gatedOverlay({ attemptsToday: 9 }), BLOCKED_VERDICT);
 
     const confirm: HTMLButtonElement = shadowRoot().querySelector(
-      '.gate .pill',
+      '.gate .pill:not(.keep-focusing)',
     ) as HTMLButtonElement;
     expect(confirm.disabled).toBe(false);
   });
@@ -631,17 +836,17 @@ describe('overlay-v2 actions', () => {
     renderDocumentOverlay(gatedOverlay(), BLOCKED_VERDICT);
     const phrase: HTMLInputElement = shadowRoot().querySelector('input.phrase') as HTMLInputElement;
     const confirm: HTMLButtonElement = shadowRoot().querySelector(
-      '.gate .pill',
+      '.gate .pill:not(.keep-focusing)',
     ) as HTMLButtonElement;
 
     phrase.value = 'let me scroll';
     phrase.dispatchEvent(new Event('input'));
     confirm.click();
     await vi.advanceTimersByTimeAsync(0);
-    (shadowRoot().querySelector('.primary') as HTMLButtonElement).click();
+    (shadowRoot().querySelector('.keep-focusing') as HTMLButtonElement).click();
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(sendMessage.mock.calls.map((call: [unknown]): unknown => call[0])).toEqual([
+    expect(actionCalls(sendMessage)).toEqual([
       { type: 'confirmGate', typedPhrase: 'let me scroll', expectedGate: gateState() },
       { type: 'abandonGate', expectedGate: gateState() },
     ]);
@@ -650,52 +855,52 @@ describe('overlay-v2 actions', () => {
   it('releases an old pending action when the authoritative gate changes and ignores its late failure', async (): Promise<void> => {
     let resolveOld!: (value: unknown) => void;
     let resolveNew!: (value: unknown) => void;
-    const sendMessage: Mock<(request: unknown) => Promise<unknown>> = stubWorker({ ok: true });
-    sendMessage.mockReturnValueOnce(
+    const sendMessage: Mock<(request: unknown) => Promise<unknown>> = stubWorker({ ok: true }, [
       new Promise<unknown>((resolve: (value: unknown) => void): void => {
         resolveOld = resolve;
       }),
-    );
-    sendMessage.mockReturnValueOnce(
       new Promise<unknown>((resolve: (value: unknown) => void): void => {
         resolveNew = resolve;
       }),
-    );
+    ]);
     renderDocumentOverlay(activeOverlay(), BLOCKED_VERDICT);
     const pause: HTMLButtonElement | undefined = Array.from(
       shadowRoot().querySelectorAll('button'),
     ).find(
       (button: HTMLButtonElement): boolean =>
-        button.textContent?.startsWith('Pause blocking') === true,
+        button.textContent?.startsWith('Unlock all sites') === true,
     );
     if (pause === undefined) throw new Error('Expected a pause button');
     pause.click();
-    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(actionCalls(sendMessage)).toHaveLength(1);
     renderDocumentOverlay(gatedOverlay(), BLOCKED_VERDICT);
-    expect((shadowRoot().querySelector('.primary') as HTMLButtonElement).disabled).toBe(false);
-    (shadowRoot().querySelector('.primary') as HTMLButtonElement).click();
-    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect((shadowRoot().querySelector('.keep-focusing') as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    (shadowRoot().querySelector('.keep-focusing') as HTMLButtonElement).click();
+    expect(actionCalls(sendMessage)).toHaveLength(2);
     resolveOld({ ok: false, error: 'old action failed' });
     await vi.advanceTimersByTimeAsync(0);
     expect(shadowRoot().querySelector('.action-error')).toBeNull();
-    expect((shadowRoot().querySelector('.primary') as HTMLButtonElement).disabled).toBe(true);
+    expect((shadowRoot().querySelector('.keep-focusing') as HTMLButtonElement).disabled).toBe(true);
     resolveNew({ ok: true });
     await vi.advanceTimersByTimeAsync(0);
-    expect((shadowRoot().querySelector('.primary') as HTMLButtonElement).disabled).toBe(false);
+    expect((shadowRoot().querySelector('.keep-focusing') as HTMLButtonElement).disabled).toBe(
+      false,
+    );
   });
 
   it.each(['replaced', 'cleared', 'same'] as const)(
     'handles a %s gate while its old action is pending',
     async (change: 'replaced' | 'cleared' | 'same'): Promise<void> => {
       let resolveOld!: (value: unknown) => void;
-      const sendMessage: Mock<(request: unknown) => Promise<unknown>> = stubWorker({ ok: true });
-      sendMessage.mockReturnValueOnce(
+      stubWorker({ ok: true }, [
         new Promise<unknown>((resolve: (value: unknown) => void): void => {
           resolveOld = resolve;
         }),
-      );
+      ]);
       renderDocumentOverlay(gatedOverlay(), BLOCKED_VERDICT);
-      (shadowRoot().querySelector('.primary') as HTMLButtonElement).click();
+      (shadowRoot().querySelector('.keep-focusing') as HTMLButtonElement).click();
       const next: ActiveOverlay =
         change === 'cleared'
           ? activeOverlay()
@@ -716,7 +921,7 @@ describe('overlay-v2 actions', () => {
   it('shows the view transport error on a rejected action and re-enables the controls', async (): Promise<void> => {
     stubWorker({ ok: false, error: 'gate timing changed' });
     renderDocumentOverlay(activeOverlay(), BLOCKED_VERDICT);
-    const pause: HTMLButtonElement = buttonStartingWith('Pause blocking for 1 min');
+    const pause: HTMLButtonElement = buttonStartingWith('Unlock all sites 1:00');
 
     pause.click();
 
@@ -806,12 +1011,24 @@ describe('renderDocumentOverlay against the worker builders', () => {
 
     renderDocumentOverlay(view, BLOCKED_VERDICT);
 
-    expect(text('.until')).toBe('Locked until 14:35');
-    expect(text('.until')).not.toBe('14:35');
-    expect(text('.clock')).toBe(formatClock(60_000));
+    expect(text('.next-step')).toBe('Your next step');
+    expect(text('.clock .remaining')).toBe('1 min left in this session');
+    expect(text('.clock .until')).toBe('Locked until 14:35');
+    expect(text('.clock .until')).not.toBe('14:35');
   });
 
-  it('leads an until-stopped page with the popup-only sentence and no clock', () => {
+  it('writes the next-step prompt for a session started without an intention', () => {
+    vi.setSystemTime(LOCKED_AT);
+    const view: DocumentOverlayView = buildActiveOverlayView(
+      builderInput(builderSession({ intention: '   ' })),
+    );
+
+    renderDocumentOverlay(view, BLOCKED_VERDICT);
+
+    expect(text('.intention')).toBe('Continue your current task');
+  });
+
+  it('leads an until-stopped page with the still time line and no wall clock', () => {
     vi.setSystemTime(LOCKED_AT);
     const view: DocumentOverlayView = buildActiveOverlayView(
       builderInput({
@@ -823,8 +1040,8 @@ describe('renderDocumentOverlay against the worker builders', () => {
 
     renderDocumentOverlay(view, BLOCKED_VERDICT);
 
-    expect(text('.until')).toBe(UNTIL_STOPPED_TEXT);
+    expect(text('.clock .remaining')).toBe(UNTIL_STOPPED_TEXT);
     expect(shadowRoot().textContent).not.toContain('Locked until');
-    expect(shadowRoot().querySelector('.clock')).toBeNull();
+    expect(shadowRoot().querySelector('.clock .until')).toBeNull();
   });
 });

@@ -30,7 +30,7 @@ const OPERATION_D: string = '20000000-0000-4000-8000-000000000004';
 const EPOCH_A: string = '30000000-0000-4000-8000-000000000001';
 const PROVENANCE: string = 'Blocked by Social media: example.com';
 const UNTIL_STOPPED_TEXT: Extract<ActiveCopy['status'], { kind: 'until-stopped' }>['text'] =
-  'Focus Lock is active until you stop it.';
+  'Until stopped';
 const STOPPED_TITLE: string = 'Locked - Focus Lock';
 const BLOCKED_VERDICT: Verdict = {
   blocked: true,
@@ -62,21 +62,33 @@ function activeCopy(overrides: Partial<ActiveCopy> = {}): ActiveCopy {
     status: { kind: 'until-stopped', text: UNTIL_STOPPED_TEXT },
     lockedUntil: null,
     intention: 'Finish the release notes',
-    attempts: '2 attempts blocked today',
     verdictProvenance: PROVENANCE,
     stoppedPage: null,
     bankUnit: 'site access credit',
-    pauseAction: 'Pause blocking for 1 min',
-    unlockAction: 'Unlock this site for 2 min',
+    pauseAction: 'Unlock all sites 1:00 - costs 1:00 credit',
+    unlockAction: 'Unlock this site 2:00 - costs 2:00 credit',
     endAction: 'End session',
-    bankWaitFallback: 'earn site access credit by focusing',
     bankWaitPrefix: 'Ready in',
     gateTitle: null,
-    gateBack: 'Never mind, back to work',
+    gateBack: 'Keep focusing',
     gatePhraseLabel: 'Type this to confirm:',
     gateForceEnd: 'Ignore timeout and end anyway',
     gateConfirm: null,
     transportError: 'Focus Lock could not update this action. Try again.',
+    backToWork: 'Back to work',
+    chooseWorkTab: 'Choose a work tab',
+    changeWorkTab: 'Change work tab',
+    accessSummary: 'Need a break or site access?',
+    accessNote: 'You can step away at any time. Site access uses credit.',
+    costAboveLimit: 'Cost exceeds the credit limit',
+    earningOff: 'Credit earning is turned off',
+    notEnoughFocus: 'Not enough time in this focus block',
+    gateSaid: null,
+    nextStep: 'Your next step',
+    remainingSuffix: null,
+    minuteLabel: 'min',
+    underMinuteLabel: 'Less than a minute',
+    updatingLabel: 'Updating session',
     ...overrides,
   };
 }
@@ -395,7 +407,7 @@ describe('installDocumentEnforcement command loop', () => {
     expect(responses).toHaveLength(1);
     expect(responses[0]?.disposition).toBe('stale-command');
     expect(panelNode()).toBe(panel);
-    expect(overlayText()).toContain('2 attempts blocked today');
+    expect(overlayText()).toContain('Finish the release notes');
   });
 
   it('answers nothing for an equal tuple carrying a different view', async (): Promise<void> => {
@@ -411,14 +423,15 @@ describe('installDocumentEnforcement command loop', () => {
         operationId: OPERATION_D,
         overlay: activeOverlay({
           attemptsToday: 9,
-          copy: activeCopy({ attempts: '9 attempts blocked today' }),
+          copy: activeCopy({ intention: 'Ship the beta' }),
         }),
       }),
     );
 
     expect(responses).toEqual([undefined]);
     expect(panelNode()).toBe(panel);
-    expect(overlayText()).toContain('2 attempts blocked today');
+    expect(overlayText()).toContain('Finish the release notes');
+    expect(overlayText()).not.toContain('Ship the beta');
   });
 
   it('does not re-render a replayed command after a worker restart', async (): Promise<void> => {
@@ -496,6 +509,34 @@ describe('installDocumentEnforcement command loop', () => {
 
     expect(responses).toHaveLength(0);
     expect(panelNode()).toBe(panel);
+  });
+
+  it('re-reads the work target for a workTargetChanged message and answers nothing', async (): Promise<void> => {
+    const sendMessage: Mock<(request: { type: string }) => Promise<unknown>> = vi.fn(
+      async (): Promise<unknown> => ({
+        ok: true,
+        sessionId: SESSION_ID,
+        state: 'missing',
+        title: null,
+      }),
+    );
+    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    const harness: Harness = newHarness();
+    await install(harness);
+    deliver(harness, resetCommand());
+    deliver(harness, enforcementCommand());
+    await vi.advanceTimersByTimeAsync(0);
+    const before: number = sendMessage.mock.calls.length;
+
+    const responses: (ContentEnforcementResponse | undefined)[] = deliver(harness, {
+      type: 'workTargetChanged',
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(responses).toEqual([]);
+    expect(sendMessage.mock.calls.length).toBe(before + 1);
+    expect(sendMessage.mock.calls.at(-1)?.[0]).toEqual({ type: 'getWorkTarget' });
+    expect(harness.requestVerdict.mock.calls).toHaveLength(1);
   });
 
   it('re-requests the verdict for a reevaluate broadcast and a persisted pageshow', async (): Promise<void> => {

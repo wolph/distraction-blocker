@@ -18,27 +18,59 @@ export interface StartingOverlayCopy {
   stoppedPage: 'This page did not load. It will load by itself when the session ends.' | null;
 }
 
+/** The words after the remaining minutes. Null on an until-stopped page, which has no minutes. */
+export type RemainingSuffix = 'until your break' | 'left in this session';
+
 export interface ActiveOverlayCopy {
+  /** The heading over the intention. */
+  nextStep: 'Your next step';
+  /**
+   * The time line's wall-clock half. A timed page reads `Locked until 14:35`, an until-stopped
+   * page reads `Until stopped` on its own.
+   */
   status:
     | { kind: 'timed'; text: string }
     | {
         kind: 'until-stopped';
-        text: 'Focus Lock is active until you stop it.';
+        text: 'Until stopped';
       };
   lockedUntil: string | null;
-  intention: string | null;
-  attempts: string;
+  /**
+   * Chosen by the worker from the cycling plan: the break the page counts down to has to fit
+   * before the session end, or the page counts to the end instead.
+   */
+  remainingSuffix: RemainingSuffix | null;
+  /** The renderer's number formatting for the time line, so it authors no word of its own. */
+  minuteLabel: 'min';
+  underMinuteLabel: 'Less than a minute';
+  updatingLabel: 'Updating session';
+  /** The trimmed intention, or the next-step prompt the worker writes for a blank one. */
+  intention: string;
   verdictProvenance: string;
   stoppedPage: 'This page did not load. It will load by itself when the session ends.' | null;
+  /** The primary control, which names the chosen tab on itself, and the two ways to choose one. */
+  backToWork: 'Back to work';
+  chooseWorkTab: 'Choose a work tab';
+  changeWorkTab: 'Change work tab';
+  /** The collapsed drawer that holds the credit line and every access action. */
+  accessSummary: 'Need a break or site access?';
   bankUnit: 'site access credit';
+  /** Each action names its own length and cost, such as `Unlock all sites 5:00 - costs 5:00 credit`. */
   pauseAction: string;
   unlockAction: string;
   /** The End control's label. A Friction until-stopped page unlocks, every other page ends. */
   endAction: EndActionLabelV2;
-  bankWaitFallback: 'earn site access credit by focusing';
+  /** Under an action the bank can still reach: the prefix before the renderer's countdown. */
   bankWaitPrefix: 'Ready in';
+  /** Under an action this focus block can never afford, one of these says why. */
+  costAboveLimit: 'Cost exceeds the credit limit';
+  earningOff: 'Credit earning is turned off';
+  notEnoughFocus: 'Not enough time in this focus block';
+  accessNote: 'You can step away at any time. Site access uses credit.';
   gateTitle: string | null;
-  gateBack: 'Never mind, back to work';
+  /** `You said: <intention>` on an open gate, null when the session was started without one. */
+  gateSaid: string | null;
+  gateBack: 'Keep focusing';
   gatePhraseLabel: 'Type this to confirm:';
   /** The opt-in bypass, rendered only while the gate carries `forceEndAvailable`. */
   gateForceEnd: 'Ignore timeout and end anyway';

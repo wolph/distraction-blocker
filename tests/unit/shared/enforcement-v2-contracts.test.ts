@@ -34,25 +34,37 @@ describe('shared enforcement v2 contracts', (): void => {
       stoppedPage: 'This page did not load. It will load by itself when the session ends.' | null;
     }>();
     expectTypeOf<ActiveOverlayCopy>().toEqualTypeOf<{
+      nextStep: 'Your next step';
       status:
         | { kind: 'timed'; text: string }
         | {
             kind: 'until-stopped';
-            text: 'Focus Lock is active until you stop it.';
+            text: 'Until stopped';
           };
       lockedUntil: string | null;
-      intention: string | null;
-      attempts: string;
+      remainingSuffix: 'until your break' | 'left in this session' | null;
+      minuteLabel: 'min';
+      underMinuteLabel: 'Less than a minute';
+      updatingLabel: 'Updating session';
+      intention: string;
       verdictProvenance: string;
       stoppedPage: 'This page did not load. It will load by itself when the session ends.' | null;
+      backToWork: 'Back to work';
+      chooseWorkTab: 'Choose a work tab';
+      changeWorkTab: 'Change work tab';
+      accessSummary: 'Need a break or site access?';
       bankUnit: 'site access credit';
       pauseAction: string;
       unlockAction: string;
       endAction: 'End session' | 'Unlock';
-      bankWaitFallback: 'earn site access credit by focusing';
       bankWaitPrefix: 'Ready in';
+      costAboveLimit: 'Cost exceeds the credit limit';
+      earningOff: 'Credit earning is turned off';
+      notEnoughFocus: 'Not enough time in this focus block';
+      accessNote: 'You can step away at any time. Site access uses credit.';
       gateTitle: string | null;
-      gateBack: 'Never mind, back to work';
+      gateSaid: string | null;
+      gateBack: 'Keep focusing';
       gatePhraseLabel: 'Type this to confirm:';
       gateForceEnd: 'Ignore timeout and end anyway';
       gateConfirm: string | null;

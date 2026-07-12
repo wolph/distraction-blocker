@@ -42,7 +42,23 @@ Open the popup, choose a duration, enter the task you intend to finish, select c
 
 Fresh blocked navigations show an opaque locked document. A page that was already open receives an overlay and is muted in place. When blocking ends, the existing page retains its form, scroll, and JavaScript state. A navigation that was stopped reloads so the requested page can render.
 
+## Returning to work
+
+The lockscreen shows your next step, the time until the next break or the session end, and one Back to work button. It activates the chosen tab and its window without navigating away from either page. Long tasks wrap, and the overlay scrolls independently of the blocked page.
+
+Open Need a break or site access? for credit and temporary access options. Each action shows its own cost and the time needed to afford it. When the credit limit or the remaining focus time makes a spend unavailable, the screen explains why instead of counting down to a button that stays disabled.
+
+Choose a work tab directly on the lockscreen. The chooser uses almost the whole window and shows recently active tabs first. Each row includes its title, domain, cached favicon and a consistent colour for that domain. Search by title or domain to narrow the list, then select a tab to return to it. Only visible rows and a small buffer are rendered, keeping the list small even with thousands of tabs. Arrow Down moves from search into the results. Home and End reach the first and last result. Escape closes the chooser. Change work tab opens the list again.
+
+Back to work shows the destination title and domain on the button. Long titles are shortened visually, with the full destination available to screen readers and on hover. Favicons come from Chrome's local cache. Reading the list and icons does not activate sleeping tabs. A closed or newly blocked work tab cannot be used as a return destination. A work tab never bypasses your blocklist or whitelist.
+
+The work-tab reference stays in worker-only `chrome.storage.session`. It survives a service-worker restart but is cleared when Chrome restarts or the extension reloads. Choose the tab again after a restart. The saved focus session and site access credit use their existing storage and continue independently.
+
 ## Screenshots
+
+The screenshots use an isolated Chrome profile with demonstration data.
+
+![Choose a work tab directly on the lockscreen](https://raw.githubusercontent.com/WoLpH/distraction-blocker/master/docs/images/focus-lock/work-tab-picker.png)
 
 | Active popup | Existing-page overlay | Deliberation gate |
 | --- | --- | --- |

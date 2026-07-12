@@ -41,6 +41,14 @@ export interface OverlayHostElements {
   container: HTMLElement;
 }
 
+/** What the renderer wants to hear about from the shell's own key and pointer handling. */
+export interface OverlayHostHooks {
+  /** Escape pressed inside the root. Answers true when it consumed the key. */
+  onEscape?(): boolean;
+  /** Any pointer or key interaction inside the root, before the shell's own handling. */
+  onInteraction?(): void;
+}
+
 const SVG_NS: 'http://www.w3.org/2000/svg' = 'http://www.w3.org/2000/svg';
 
 const PADLOCK_PATH: string =
@@ -62,7 +70,7 @@ export function padlockSvg(): SVGSVGElement {
 }
 
 /** The shared closed-shadow host: overlay styles, dialog backdrop, and interaction trap. */
-export function mountOverlayHost(): OverlayHostElements {
+export function mountOverlayHost(hooks: OverlayHostHooks = {}): OverlayHostElements {
   const host: HTMLElement = document.createElement('focus-lock-overlay');
   applyHostStyle(host);
   const root: ShadowRoot = host.attachShadow({ mode: 'closed' });
@@ -75,7 +83,7 @@ export function mountOverlayHost(): OverlayHostElements {
   container.setAttribute('aria-label', 'Focus Lock');
   container.tabIndex = -1;
   root.append(style, container);
-  trapInteraction(host, root);
+  trapInteraction(root, hooks);
   document.documentElement.appendChild(host);
   if (import.meta.env.MODE === 'test') {
     (globalThis as { __focusLockShadow?: ShadowRoot }).__focusLockShadow = root;
@@ -101,38 +109,86 @@ function applyHostStyle(host: HTMLElement): void {
   host.style.setProperty('unicode-bidi', 'isolate', 'important');
 }
 
-function trapInteraction(host: HTMLElement, root: ShadowRoot): void {
-  host.addEventListener('wheel', (ev: WheelEvent): void => ev.preventDefault(), {
-    passive: false,
-  });
-  host.addEventListener('touchmove', (ev: TouchEvent): void => ev.preventDefault(), {
-    passive: false,
+/**
+ * The backdrop scrolls on its own and `overscroll-behavior: contain` keeps the page behind it
+ * still. A wheel or touch whose path reaches the backdrop is the overlay scrolling and is left
+ * alone. The listener sits on the root because a closed root hides its path from the host.
+ */
+function trapInteraction(root: ShadowRoot, hooks: OverlayHostHooks): void {
+  const stopOutsideScroll: (event: Event) => void = (event: Event): void => {
+    const insideBackdrop: boolean = event
+      .composedPath()
+      .some(
+        (target: EventTarget): boolean =>
+          target instanceof Element && target.classList.contains('backdrop'),
+      );
+    if (!insideBackdrop) event.preventDefault();
+  };
+  root.addEventListener('wheel', stopOutsideScroll, { passive: false });
+  root.addEventListener('touchmove', stopOutsideScroll, { passive: false });
+  root.addEventListener('pointerdown', (): void => {
+    hooks.onInteraction?.();
   });
   root.addEventListener('keydown', (event: Event): void => {
+    hooks.onInteraction?.();
     const ev: KeyboardEvent = event as KeyboardEvent;
+    if (ev.defaultPrevented) return;
+    if (ev.key === 'Escape') {
+      if (hooks.onEscape?.() === true) ev.preventDefault();
+      return;
+    }
     if (ev.key !== 'Tab') {
-      if (shouldPreventKeyboardScroll(ev)) ev.preventDefault();
+      if (shouldPreventKeyboardScroll(ev)) {
+        ev.preventDefault();
+        redirectKeyboardScroll(root, ev.key);
+      }
       return;
     }
-    const focusables: HTMLElement[] = Array.from(
-      root.querySelectorAll<HTMLElement>('button:not([disabled]):not([hidden]), input'),
-    );
-    if (focusables.length === 0) {
-      ev.preventDefault();
-      root.querySelector<HTMLElement>('[role="dialog"]')?.focus();
-      return;
-    }
-    const first: HTMLElement = focusables[0] as HTMLElement;
-    const last: HTMLElement = focusables[focusables.length - 1] as HTMLElement;
-    const active: Element | null = root.activeElement;
-    if (ev.shiftKey && (active === first || active === null)) {
-      ev.preventDefault();
-      last.focus();
-    } else if (!ev.shiftKey && (active === last || active === null)) {
-      ev.preventDefault();
-      first.focus();
-    }
+    cycleFocus(root, ev);
   });
+}
+
+/** Scroll keys move the picker list when one is open, otherwise the backdrop itself. */
+function redirectKeyboardScroll(root: ShadowRoot, key: string): void {
+  const container: HTMLElement | null =
+    root.querySelector<HTMLElement>('.work-picker-list') ??
+    root.querySelector<HTMLElement>('.backdrop');
+  if (container === null) return;
+  const page: boolean = key === 'PageDown' || key === 'PageUp' || key === ' ' || key === 'Spacebar';
+  const step: number = page ? container.clientHeight * 0.8 : 40;
+  if (key === 'Home') container.scrollTop = 0;
+  else if (key === 'End') container.scrollTop = container.scrollHeight;
+  else container.scrollTop += (key === 'ArrowUp' || key === 'PageUp' ? -1 : 1) * step;
+}
+
+/**
+ * Tab cycles over what a person can actually reach: enabled buttons, inputs, and summaries that
+ * are not inside an inert subtree, and inside a details only while it is open.
+ */
+function cycleFocus(root: ShadowRoot, ev: KeyboardEvent): void {
+  const focusables: HTMLElement[] = Array.from(
+    root.querySelectorAll<HTMLElement>('button:not([disabled]):not([hidden]), input, summary'),
+  ).filter((element: HTMLElement): boolean => {
+    if (element.closest('[inert]') !== null || element.matches(':disabled')) return false;
+    const details: HTMLDetailsElement | null = element.closest('details');
+    return details === null || details.open || element.tagName === 'SUMMARY';
+  });
+  if (focusables.length === 0) {
+    ev.preventDefault();
+    root.querySelector<HTMLElement>('[role="dialog"]')?.focus();
+    return;
+  }
+  const first: HTMLElement = focusables[0] as HTMLElement;
+  const last: HTMLElement = focusables[focusables.length - 1] as HTMLElement;
+  const active: Element | null = root.activeElement;
+  const outside: boolean = active === null || active.getAttribute('role') === 'dialog';
+  if (ev.shiftKey && (active === first || outside)) {
+    ev.preventDefault();
+    last.focus();
+  } else if (!ev.shiftKey && (active === last || outside)) {
+    ev.preventDefault();
+    first.focus();
+  }
 }
 
 function shouldPreventKeyboardScroll(event: KeyboardEvent): boolean {
@@ -150,16 +206,19 @@ function shouldPreventKeyboardScroll(event: KeyboardEvent): boolean {
   if (editable instanceof HTMLSelectElement) return false;
   if (editable !== null) return event.key === 'PageUp' || event.key === 'PageDown';
   const space: boolean = event.key === ' ' || event.key === 'Spacebar';
-  return !(space && effectiveTarget.closest('button') !== null);
+  return !(space && effectiveTarget.closest('button, summary') !== null);
 }
 
-/** Focuses the first enabled control, or the dialog itself when a page has none. */
+/**
+ * Focuses the enabled return control, or the dialog itself while it is pending or absent. The
+ * spend controls sit inside a collapsed drawer, so the first enabled button is never the answer.
+ */
 export function focusInitialControl(root: ShadowRoot, fallback: HTMLElement): void {
-  if (root.activeElement !== null) return;
+  if (root.activeElement !== null && root.activeElement !== fallback) return;
   const target: HTMLElement | null = root.querySelector<HTMLElement>(
-    'button:not([disabled]):not([hidden])',
+    '.return-work:not([disabled])',
   );
-  (target ?? fallback).focus();
+  (target ?? fallback).focus({ preventScroll: true });
 }
 
 /** The gate countdown ring. Both renderers read the same stroke geometry from the shared CSS. */

@@ -25,12 +25,12 @@ Derived by `node scripts/qa-checklist.mjs`, guarded by
 is asked of the runner, or of the glob the runner is configured with, so a stale one fails a
 test rather than misleading a reader.
 
-Unit suite: **169 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
+Unit suite: **175 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
 `vitest.config.ts` declares. The number of individual test cases is deliberately not recorded:
 deriving it means collecting every file, which is the expensive half of a run, and a number
 that needs a run to verify is exactly the kind that went stale here four times.
 
-End-to-end suite: **94 scenarios in 21 spec files**, as Playwright itself
+End-to-end suite: **107 scenarios in 23 spec files**, as Playwright itself
 lists them. Asking the runner rather than counting `test(` in the sources is not pedantry: a
 grep undercounts `test.skip`, which is listed and reported, and misses a spec file added
 since the grep was written. Both mistakes were present when this section was first drafted.
@@ -125,6 +125,11 @@ since the grep was written. Both mistakes were present when this section was fir
 - the packaged artifact installs, onboards, blocks, and survives a browser restart
 - the release ZIP extracts under archive safety rules and is the only loaded build
 
+### picker-scale.spec.ts (2)
+
+- ten thousand tab records keep DOM bounded and support search and offscreen keyboard navigation
+- the picker shows cached favicons, recent tabs and labelled return destinations
+
 ### popup-actions.spec.ts (1)
 
 - popup shows an unlock confirmation and a red End session control
@@ -191,6 +196,20 @@ since the grep was written. Both mistakes were present when this section was fir
 - privacy data deletion keeps local and remote scopes separate
 - projected first-Sync publication rejects total quota overflow and preserves local policy
 - sync and local storage keep their documented split and quota
+
+### work-target.spec.ts (11)
+
+- a closed work tab can be replaced and stale session actions are rejected
+- a pending work tab save can be cancelled with Escape without activating that tab
+- a stopped page can retry a failed work-tab lookup and choose its target
+- browser restart restores the focus session but clears its work-tab reference
+- long next steps scroll with a trackpad and touch while the blocked page stays still
+- refreshing an empty picker keeps keyboard focus inside the lockscreen
+- returning abandons an open gate without spending access credit
+- the inline picker offers allowed tabs and returns without losing page input
+- the larger picker searches titles and domains before keyboard selection
+- the lockscreen returns to the chosen work tab without changing either loaded page
+- typed gate confirmation survives theme and work-tab status updates
 
 <!-- END GENERATED -->
 

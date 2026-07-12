@@ -17,7 +17,6 @@ import {
   exactRecord,
   isNonBlankString,
   isNonNegativeInteger,
-  isNullableNonBlankString,
   isRecord,
   isSafeTimestamp,
   isUuid,
@@ -76,19 +75,31 @@ const ACTIVE_ECONOMY_KEYS: readonly string[] = [
 ];
 const ACTIVE_ACTION_KEYS: readonly string[] = ['state', 'end', 'pause', 'unlock'];
 const ACTIVE_COPY_KEYS: readonly string[] = [
+  'nextStep',
   'status',
   'lockedUntil',
+  'remainingSuffix',
+  'minuteLabel',
+  'underMinuteLabel',
+  'updatingLabel',
   'intention',
-  'attempts',
   'verdictProvenance',
   'stoppedPage',
+  'backToWork',
+  'chooseWorkTab',
+  'changeWorkTab',
+  'accessSummary',
   'bankUnit',
   'pauseAction',
   'unlockAction',
   'endAction',
-  'bankWaitFallback',
   'bankWaitPrefix',
+  'costAboveLimit',
+  'earningOff',
+  'notEnoughFocus',
+  'accessNote',
   'gateTitle',
+  'gateSaid',
   'gateBack',
   'gatePhraseLabel',
   'gateForceEnd',
@@ -192,26 +203,52 @@ const STOPPED_PAGE_COPY: NonNullable<StartingOverlayCopy['stoppedPage']> =
 const UNTIL_STOPPED_STATUS_TEXT: Extract<
   ActiveOverlayCopy['status'],
   { kind: 'until-stopped' }
->['text'] = 'Focus Lock is active until you stop it.';
+>['text'] = 'Until stopped';
+const REMAINING_SUFFIXES: ReadonlySet<string> = new Set<string>([
+  'until your break',
+  'left in this session',
+]);
 /** The two End labels the worker may publish, pinned to the copy type. */
 const END_ACTION_LABEL: ActiveOverlayCopy['endAction'] = 'End session';
 const UNLOCK_ACTION_LABEL: ActiveOverlayCopy['endAction'] = 'Unlock';
 const FIXED_ACTIVE_COPY: Readonly<
   Pick<
     ActiveOverlayCopy,
+    | 'nextStep'
+    | 'minuteLabel'
+    | 'underMinuteLabel'
+    | 'updatingLabel'
+    | 'backToWork'
+    | 'chooseWorkTab'
+    | 'changeWorkTab'
+    | 'accessSummary'
     | 'bankUnit'
-    | 'bankWaitFallback'
     | 'bankWaitPrefix'
+    | 'costAboveLimit'
+    | 'earningOff'
+    | 'notEnoughFocus'
+    | 'accessNote'
     | 'gateBack'
     | 'gatePhraseLabel'
     | 'gateForceEnd'
     | 'transportError'
   >
 > = {
+  nextStep: 'Your next step',
+  minuteLabel: 'min',
+  underMinuteLabel: 'Less than a minute',
+  updatingLabel: 'Updating session',
+  backToWork: 'Back to work',
+  chooseWorkTab: 'Choose a work tab',
+  changeWorkTab: 'Change work tab',
+  accessSummary: 'Need a break or site access?',
   bankUnit: 'site access credit',
-  bankWaitFallback: 'earn site access credit by focusing',
   bankWaitPrefix: 'Ready in',
-  gateBack: 'Never mind, back to work',
+  costAboveLimit: 'Cost exceeds the credit limit',
+  earningOff: 'Credit earning is turned off',
+  notEnoughFocus: 'Not enough time in this focus block',
+  accessNote: 'You can step away at any time. Site access uses credit.',
+  gateBack: 'Keep focusing',
   gatePhraseLabel: 'Type this to confirm:',
   gateForceEnd: 'Ignore timeout and end anyway',
   transportError: 'Focus Lock could not update this action. Try again.',
@@ -685,19 +722,29 @@ function validateDetachedActiveCopy(
     copy === null ||
     !hasFixedActiveCopy(copy) ||
     copy.endAction !== expectedEndActionLabel(duration, strictness) ||
-    !isNonBlankString(copy.attempts) ||
     !isNonBlankString(copy.pauseAction) ||
     !isNonBlankString(copy.unlockAction) ||
     !isNonBlankString(copy.verdictProvenance) ||
-    !isNullableNonBlankString(copy.intention) ||
+    !isNonBlankString(copy.intention) ||
     !hasStoppedPageCopy(stoppedPage, copy.stoppedPage)
   ) {
     return false;
   }
   if (!validateDetachedStatusCopy(copy.status, copy.lockedUntil, duration)) return false;
-  return gated
-    ? isNonBlankString(copy.gateTitle) && isNonBlankString(copy.gateConfirm)
-    : copy.gateTitle === null && copy.gateConfirm === null;
+  if (!hasRemainingSuffix(copy.remainingSuffix, duration)) return false;
+  if (!gated) {
+    return copy.gateTitle === null && copy.gateConfirm === null && copy.gateSaid === null;
+  }
+  return (
+    isNonBlankString(copy.gateTitle) &&
+    isNonBlankString(copy.gateConfirm) &&
+    hasGateSaidCopy(copy.gateSaid, copy.intention)
+  );
+}
+
+/** An open gate quotes the intention word for word, or quotes nothing at all. */
+function hasGateSaidCopy(value: unknown, intention: unknown): boolean {
+  return value === null || (isNonBlankString(intention) && value === `You said: ${intention}`);
 }
 
 function hasFixedActiveCopy(copy: UnknownRecord): boolean {
@@ -721,6 +768,12 @@ function validateDetachedStatusCopy(
     );
   }
   return status.kind === 'timed' && isNonBlankString(status.text) && isNonBlankString(lockedUntil);
+}
+
+/** A timed page counts to a break or to the end. An until-stopped page counts to nothing. */
+function hasRemainingSuffix(value: unknown, duration: SessionDuration): boolean {
+  if (duration.kind === 'until-stopped') return value === null;
+  return typeof value === 'string' && REMAINING_SUFFIXES.has(value);
 }
 
 function hasStoppedPageCopy(stoppedPage: boolean, copy: unknown): boolean {

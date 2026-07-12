@@ -26,6 +26,7 @@ import {
 } from '../../../src/shared/enforcement-v2-validation';
 import { CoreError } from '../../../src/shared/errors';
 import type {
+  CycleConfig,
   GateState,
   SessionConfigV2,
   SessionDuration,
@@ -161,7 +162,7 @@ describe('unlock gate document binding', (): void => {
     ) as ActiveOverlay;
     expect(view.gate !== null).toBe(visible);
     expect(view.actions.state).toBe(visible ? 'gate' : 'ready');
-    expect(view.copy.gateTitle).toBe(visible ? `Unlock ${host}?` : null);
+    expect(view.copy.gateTitle).toBe(visible ? `Unlock ${host} 2:00` : null);
   });
 });
 
@@ -271,13 +272,27 @@ describe('buildActiveOverlayView timed focus', () => {
     });
     expect(view.copy.status).toEqual({ kind: 'timed', text: `Locked until ${lockedUntil}` });
     expect(view.copy.lockedUntil).toBe(lockedUntil);
-    expect(view.copy.pauseAction).toBe('Pause blocking for 1 min');
-    expect(view.copy.unlockAction).toBe('Unlock this site for 2 min');
+    expect(view.copy.nextStep).toBe('Your next step');
+    expect(view.copy.remainingSuffix).toBe('left in this session');
+    expect(view.copy.minuteLabel).toBe('min');
+    expect(view.copy.underMinuteLabel).toBe('Less than a minute');
+    expect(view.copy.updatingLabel).toBe('Updating session');
+    expect(view.copy.pauseAction).toBe('Unlock all sites 1:00 - costs 1:00 credit');
+    expect(view.copy.unlockAction).toBe('Unlock this site 2:00 - costs 2:00 credit');
     expect(view.copy.bankUnit).toBe('site access credit');
     expect(view.copy.endAction).toBe('End session');
     expect(view.copy.bankWaitPrefix).toBe('Ready in');
-    expect(view.copy.bankWaitFallback).toBe('earn site access credit by focusing');
-    expect(view.copy.gateBack).toBe('Never mind, back to work');
+    expect('bankWaitFallback' in view.copy).toBe(false);
+    expect(view.copy.accessSummary).toBe('Need a break or site access?');
+    expect(view.copy.backToWork).toBe('Back to work');
+    expect(view.copy.chooseWorkTab).toBe('Choose a work tab');
+    expect(view.copy.changeWorkTab).toBe('Change work tab');
+    expect(view.copy.accessNote).toBe('You can step away at any time. Site access uses credit.');
+    expect(view.copy.costAboveLimit).toBe('Cost exceeds the credit limit');
+    expect(view.copy.earningOff).toBe('Credit earning is turned off');
+    expect(view.copy.notEnoughFocus).toBe('Not enough time in this focus block');
+    expect(view.copy.gateSaid).toBeNull();
+    expect(view.copy.gateBack).toBe('Keep focusing');
     expect(view.copy.gatePhraseLabel).toBe('Type this to confirm:');
     expect(view.copy.transportError).toBe('Focus Lock could not update this action. Try again.');
     expect(view.copy.verdictProvenance).toBe(verdictLabel(BLOCKED_VERDICT));
@@ -328,18 +343,52 @@ describe('buildActiveOverlayView timed focus', () => {
     expect(view.economy).toEqual(economy());
     expect(view.activeUnlocks).toEqual(unlocks);
     expect(view.attemptsToday).toBe(1);
-    expect(view.copy.attempts).toBe('1 attempt blocked today');
-    // A sentence, not a form field: zero reads as a word.
-    expect(activeView({ attemptsToday: 0 }).copy.attempts).toBe('No attempts blocked today');
-    expect(activeView({ attemptsToday: 2 }).copy.attempts).toBe('2 attempts blocked today');
+    // The count still travels, because every blocked attempt repaints every open page, but the
+    // lock screen no longer says it, so the copy carries no sentence for it.
+    expect('attempts' in view.copy).toBe(false);
   });
 
-  it('trims the intention and drops a blank one', () => {
+  it('trims the intention and writes the next-step prompt for a blank one', () => {
     expect(activeView().copy.intention).toBe('Finish the release notes');
     expect(
       activeView({ session: timedSession({ intention: '  Ship the beta  ' }) }).copy.intention,
     ).toBe('Ship the beta');
-    expect(activeView({ session: timedSession({ intention: '   ' }) }).copy.intention).toBeNull();
+    expect(activeView({ session: timedSession({ intention: '   ' }) }).copy.intention).toBe(
+      'Continue your current task',
+    );
+  });
+
+  it('names the break only when one follows this focus block before the session ends', () => {
+    const cycling: CycleConfig = { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 };
+    const phaseEndsAt: number = NOW + 60_000;
+    const cycled: (cycleIndex: number, sessionEndsAt: number) => ActiveOverlay = (
+      cycleIndex: number,
+      sessionEndsAt: number,
+    ): ActiveOverlay =>
+      activeView({
+        session: { ...timedSession({ cycling }), cycleIndex, phaseEndsAt, sessionEndsAt },
+      });
+
+    expect(cycled(0, phaseEndsAt + 5 * 60_000 + 60_000).copy.remainingSuffix).toBe(
+      'until your break',
+    );
+    // The machine completes early when the final break would leave no focus time behind it.
+    expect(cycled(0, phaseEndsAt + 5 * 60_000).copy.remainingSuffix).toBe('left in this session');
+    // The fourth block's break is the long one, and it runs past this shorter session end.
+    expect(cycled(3, phaseEndsAt + 10 * 60_000).copy.remainingSuffix).toBe('left in this session');
+    expect(cycled(3, phaseEndsAt + 16 * 60_000).copy.remainingSuffix).toBe('until your break');
+    expect(
+      activeView({
+        session: {
+          ...timedSession({ cycling: { ...cycling, shortBreakMin: 0 } }),
+          phaseEndsAt,
+          sessionEndsAt: phaseEndsAt + 60_000,
+        },
+      }).copy.remainingSuffix,
+    ).toBe('left in this session');
+    expect(activeView({ session: timedSession() }).copy.remainingSuffix).toBe(
+      'left in this session',
+    );
   });
 
   it('marks a stopped document with its exact copy', () => {
@@ -358,11 +407,9 @@ describe('buildActiveOverlayView until-stopped focus', () => {
     const view: ActiveOverlay = activeView({ session: untilStoppedSession() });
 
     expect(view.duration).toEqual({ kind: 'until-stopped' });
-    expect(view.copy.status).toEqual({
-      kind: 'until-stopped',
-      text: 'Focus Lock is active until you stop it.',
-    });
+    expect(view.copy.status).toEqual({ kind: 'until-stopped', text: 'Until stopped' });
     expect(view.copy.lockedUntil).toBeNull();
+    expect(view.copy.remainingSuffix).toBeNull();
     expect(view.timing.phaseEndsAt).toBeNull();
     expect(view.timing.sessionEndsAt).toBeNull();
     expect(view.actions.end).toBe('request-end');
@@ -389,7 +436,7 @@ describe('buildActiveOverlayView until-stopped focus', () => {
       unlock: 'hidden',
     });
     expect(open.copy.endAction).toBe('Unlock');
-    expect(open.copy.gateTitle).toBe('End this session');
+    expect(open.copy.gateTitle).toBe('Unlock');
     expect(open.copy.gateConfirm).toBe('Unlock');
     expect(validateDetachedDocumentOverlayView(closed)).toBe(true);
     expect(validateDetachedDocumentOverlayView(open)).toBe(true);
@@ -406,8 +453,9 @@ describe('buildActiveOverlayView gate rows', () => {
       pause: 'hidden',
       unlock: 'hidden',
     });
-    expect(view.copy.gateTitle).toBe('Take a pause?');
-    expect(view.copy.gateConfirm).toBe('Take the pause');
+    expect(view.copy.gateTitle).toBe('Unlock all sites 1:00 - costs 1:00 credit');
+    expect(view.copy.gateConfirm).toBe('Unlock all sites');
+    expect(view.copy.gateSaid).toBe('You said: Finish the release notes');
     expect(view.gate).toEqual(gateState());
     expect(validateDetachedDocumentOverlayView(view)).toBe(true);
   });
@@ -450,7 +498,7 @@ describe('buildActiveOverlayView gate rows', () => {
       }),
     });
 
-    expect(unlock.copy.gateTitle).toBe('Unlock example.com?');
+    expect(unlock.copy.gateTitle).toBe('Unlock example.com 2:00');
     // The gate contract binds a non-blank host to this kind, so an unlock gate without one is an
     // input no validator produced. The builder refuses it rather than borrowing "this site".
     expect(
@@ -472,12 +520,25 @@ describe('buildActiveOverlayView gate rows', () => {
     expect(validateDetachedDocumentOverlayView(cancel)).toBe(true);
   });
 
+  it('quotes the intention in the gate only when one was given', () => {
+    const blank: ActiveOverlay = activeView({
+      gate: gateState(),
+      session: timedSession({ intention: '   ' }),
+    });
+
+    expect(blank.copy.intention).toBe('Continue your current task');
+    expect(blank.copy.gateSaid).toBeNull();
+    expect(activeView({ session: timedSession({ intention: '   ' }) }).copy.gateSaid).toBeNull();
+    expect(validateDetachedDocumentOverlayView(blank)).toBe(true);
+  });
+
   it('leaves the gate copy null when no gate is open', () => {
     const view: ActiveOverlay = activeView();
 
     expect(view.gate).toBeNull();
     expect(view.copy.gateTitle).toBeNull();
     expect(view.copy.gateConfirm).toBeNull();
+    expect(view.copy.gateSaid).toBeNull();
     expect(view.actions.state).toBe('ready');
   });
 

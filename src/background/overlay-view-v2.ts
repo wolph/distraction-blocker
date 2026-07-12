@@ -10,6 +10,7 @@ import type {
   ActiveOverlayCopy,
   DocumentOverlayView,
   EnforcementPresentation,
+  RemainingSuffix,
   StartingOverlayCopy,
 } from '../shared/enforcement-v2';
 import {
@@ -18,7 +19,9 @@ import {
 } from '../shared/enforcement-v2-validation';
 import { CoreError } from '../shared/errors';
 import { snapshotExactData } from '../shared/exact-data';
+import { formatClock, minToMs } from '../shared/time';
 import type {
+  CycleConfig,
   EndActionLabelV2,
   GateKind,
   GateState,
@@ -52,7 +55,9 @@ const STARTING_DETAIL: StartingOverlayCopy['detail'] = 'Applying your selected r
 const STOPPED_PAGE_COPY: NonNullable<StartingOverlayCopy['stoppedPage']> =
   'This page did not load. It will load by itself when the session ends.';
 const UNTIL_STOPPED_STATUS: Extract<ActiveStatusCopy, { kind: 'until-stopped' }>['text'] =
-  'Focus Lock is active until you stop it.';
+  'Until stopped';
+/** What the intention line says when the session was started without one. */
+const NEXT_STEP_FALLBACK: string = 'Continue your current task';
 /** The End control and the cancel gate's confirm on a timed page. */
 const END_ACTION_LABEL: EndActionLabelV2 = 'End session';
 const END_GATE_CONFIRM: string = 'End the session';
@@ -63,26 +68,51 @@ const UNLOCK_ACTION_LABEL: EndActionLabelV2 = 'Unlock';
 const FIXED_ACTIVE_COPY: Readonly<
   Pick<
     ActiveOverlayCopy,
+    | 'nextStep'
+    | 'minuteLabel'
+    | 'underMinuteLabel'
+    | 'updatingLabel'
+    | 'backToWork'
+    | 'chooseWorkTab'
+    | 'changeWorkTab'
+    | 'accessSummary'
     | 'bankUnit'
-    | 'bankWaitFallback'
     | 'bankWaitPrefix'
+    | 'costAboveLimit'
+    | 'earningOff'
+    | 'notEnoughFocus'
+    | 'accessNote'
     | 'gateBack'
     | 'gatePhraseLabel'
     | 'gateForceEnd'
     | 'transportError'
   >
 > = {
+  nextStep: 'Your next step',
+  minuteLabel: 'min',
+  underMinuteLabel: 'Less than a minute',
+  updatingLabel: 'Updating session',
+  backToWork: 'Back to work',
+  chooseWorkTab: 'Choose a work tab',
+  changeWorkTab: 'Change work tab',
+  accessSummary: 'Need a break or site access?',
   bankUnit: 'site access credit',
-  bankWaitFallback: 'earn site access credit by focusing',
   bankWaitPrefix: 'Ready in',
-  gateBack: 'Never mind, back to work',
+  costAboveLimit: 'Cost exceeds the credit limit',
+  earningOff: 'Credit earning is turned off',
+  notEnoughFocus: 'Not enough time in this focus block',
+  accessNote: 'You can step away at any time. Site access uses credit.',
+  gateBack: 'Keep focusing',
   gatePhraseLabel: 'Type this to confirm:',
   gateForceEnd: 'Ignore timeout and end anyway',
   transportError: 'Focus Lock could not update this action. Try again.',
 };
 
+/** The two spend actions, and the confirm each one's gate ends with. */
+const PAUSE_ACTION_LABEL: string = 'Unlock all sites';
+const UNLOCK_ACTION_LABEL_PREFIX: string = 'Unlock';
 const GATE_CONFIRM_COPY: Readonly<Record<Exclude<GateKind, 'cancel'>, string>> = {
-  pause: 'Take the pause',
+  pause: PAUSE_ACTION_LABEL,
   unlockSite: 'Unlock this site',
 };
 
@@ -313,20 +343,28 @@ function activeCopy(
   const lead: ActiveLeadCopy = leadCopy(duration, input.session.sessionEndsAt);
   const strictness: Strictness = input.session.config.strictness;
   const endAction: EndActionLabelV2 = overlayEndActionLabelV2(strictness, duration);
+  const goal: string = input.session.config.intention.trim();
   return {
     ...FIXED_ACTIVE_COPY,
     endAction,
     status: lead.status,
     lockedUntil: lead.lockedUntil,
-    intention: trimmedIntention(input.session.config.intention),
-    attempts: attemptsCopy(input.attemptsToday),
+    remainingSuffix: remainingSuffixCopy(input.session),
+    intention: goal === '' ? NEXT_STEP_FALLBACK : goal,
     verdictProvenance: verdictLabel(input.verdict),
     stoppedPage: stoppedPageCopy(input.stoppedPage),
-    pauseAction: `Pause blocking for ${costMinutes(input.economy.pauseCostMs)} min`,
-    unlockAction: `Unlock this site for ${costMinutes(input.economy.unlockCostMs)} min`,
-    gateTitle: gate === null ? null : gateTitleCopy(gate),
+    pauseAction: spendActionCopy(PAUSE_ACTION_LABEL, input.economy.pauseCostMs),
+    unlockAction: spendActionCopy('Unlock this site', input.economy.unlockCostMs),
+    gateTitle: gate === null ? null : gateTitleCopy(gate, input.economy, endAction),
+    gateSaid: gate === null || goal === '' ? null : `You said: ${goal}`,
     gateConfirm: gate === null ? null : gateConfirmCopy(gate.kind, endAction),
   };
+}
+
+/** `Unlock all sites 5:00 - costs 5:00 credit`: the length and the cost are the same clock. */
+function spendActionCopy(label: string, costMs: number): string {
+  const clock: string = formatClock(costMs);
+  return `${label} ${clock} - costs ${clock} credit`;
 }
 
 /** The cancel gate confirms with the End label's own word, so Unlock stays Unlock inside the gate. */
@@ -347,37 +385,52 @@ function leadCopy(duration: SessionDuration, sessionEndsAt: number | null): Acti
   return { status: { kind: 'timed', text: `Locked until ${lockedUntil}` }, lockedUntil };
 }
 
-function gateTitleCopy(gate: GateState): string {
-  if (gate.kind === 'pause') return 'Take a pause?';
+/** A spend gate repeats its action's own sentence, a cancel gate names what it ends. */
+function gateTitleCopy(
+  gate: GateState,
+  economy: ActiveViewInputV2['economy'],
+  endAction: EndActionLabelV2,
+): string {
+  if (gate.kind === 'pause') return spendActionCopy(PAUSE_ACTION_LABEL, economy.pauseCostMs);
   if (gate.kind === 'unlockSite') {
     // The gate contract already binds a non-blank host to this kind, in `isGate` and in the
     // detached predicate the runtime uses, so borrowing "this site" would paper over a gate no
     // validator produced. This module raises for an unrenderable input rather than inventing copy.
     if (!isNonBlankString(gate.host)) invalidView('an unlock gate names the host it unlocks');
-    return `Unlock ${gate.host}?`;
+    return `${UNLOCK_ACTION_LABEL_PREFIX} ${gate.host} ${formatClock(economy.unlockCostMs)}`;
   }
-  return 'End this session';
+  return endAction === UNLOCK_ACTION_LABEL ? UNLOCK_ACTION_LABEL : 'End this session';
 }
 
-/** A sentence, not a form field, so none of them reads as a word rather than a zero. */
-function attemptsCopy(attemptsToday: number): string {
-  if (attemptsToday === 0) return 'No attempts blocked today';
-  return attemptsToday === 1
-    ? '1 attempt blocked today'
-    : `${attemptsToday} attempts blocked today`;
+/**
+ * The page counts down to the next break only when that break fits before the session end. The
+ * session machine completes early when its final break would leave no focus time behind it, so
+ * a break that ends at or past the end is not a break the person will get.
+ */
+function remainingSuffixCopy(session: SessionStateV2): RemainingSuffix | null {
+  if (session.config.duration.kind === 'until-stopped') return null;
+  const phaseEndsAt: number | null = session.phaseEndsAt;
+  const sessionEndsAt: number | null = session.sessionEndsAt;
+  if (phaseEndsAt === null || sessionEndsAt === null) return 'left in this session';
+  return hasUpcomingBreak(session.config.cycling, session.cycleIndex, phaseEndsAt, sessionEndsAt)
+    ? 'until your break'
+    : 'left in this session';
 }
 
-function trimmedIntention(intention: string): string | null {
-  const goal: string = intention.trim();
-  return goal === '' ? null : goal;
+function hasUpcomingBreak(
+  cycling: CycleConfig | null,
+  cycleIndex: number,
+  phaseEndsAt: number,
+  sessionEndsAt: number,
+): boolean {
+  if (cycling === null || phaseEndsAt >= sessionEndsAt) return false;
+  const isLong: boolean = (cycleIndex + 1) % cycling.longEvery === 0;
+  const breakMs: number = minToMs(isLong ? cycling.longBreakMin : cycling.shortBreakMin);
+  return breakMs > 0 && phaseEndsAt + breakMs < sessionEndsAt - 1;
 }
 
 function stoppedPageCopy(stoppedPage: boolean): StartingOverlayCopy['stoppedPage'] {
   return stoppedPage ? STOPPED_PAGE_COPY : null;
-}
-
-function costMinutes(costMs: number): number {
-  return Math.round(costMs / 60_000);
 }
 
 /** Detaches the built view and refuses anything the content parser would reject. */
