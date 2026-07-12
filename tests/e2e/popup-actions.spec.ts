@@ -84,7 +84,7 @@ test('popup shows an unlock confirmation and a red End session control', async (
             popup?.document.querySelectorAll('button') ?? [],
           ).find(
             (element: HTMLButtonElement): boolean =>
-              element.textContent?.includes('Unlock this site for 5 min') === true,
+              element.textContent?.includes('Unlock this site 5:00 - costs 5:00 credit') === true,
           );
           if (button === undefined || button.disabled) return null;
           return button.textContent;
@@ -97,7 +97,7 @@ test('popup shows an unlock confirmation and a red End session control', async (
       popup?.document.querySelectorAll('button') ?? [],
     ).find(
       (element: HTMLButtonElement): boolean =>
-        element.textContent?.includes('Unlock this site for 5 min') === true,
+        element.textContent?.includes('Unlock this site 5:00 - costs 5:00 credit') === true,
     );
     if (button === undefined) throw new Error('Missing native popup unlock button');
     button.click();

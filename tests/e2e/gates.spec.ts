@@ -117,8 +117,8 @@ async function openOverlayUnlock(
       const current: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
       if (current.gate?.host === host) return host;
       const names: string[] = await closedShadowButtonNames(context, page);
-      if (names.some((name: string): boolean => name.startsWith('Unlock this site for'))) {
-        await clickClosedShadowButton(context, page, 'Unlock this site for');
+      if (names.some((name: string): boolean => name.startsWith('Unlock this site '))) {
+        await clickClosedShadowButton(context, page, 'Unlock this site ');
       }
       return (await sendExtensionRequest(extPage, { type: 'getSnapshot' })).gate?.host ?? null;
     })
@@ -142,7 +142,7 @@ test('pause gate rejects an early confirmation and unblocks after its delay', as
       const names: string[] = await closedShadowButtonNames(context, page);
       return names.find((name: string): boolean => name.startsWith('Unlock this site')) ?? '';
     })
-    .toBe('Unlock this site for 0 min');
+    .toBe('Unlock this site 0:01 - costs 0:01 credit');
 
   expect(
     await sendExtensionRequest(extPage, { type: 'openGate', gate: 'pause', host: null }),
@@ -184,14 +184,16 @@ test('pause gate supports back to work, taking a pause, and resuming now', async
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
   await waitForBank(extPage, pauseMs);
 
-  const pauseButton = extPage.getByRole('button', { name: 'Pause blocking for 0 min' });
+  const pauseButton = extPage.getByRole('button', {
+    name: /^Unlock all sites 0:\d\d - costs 0:\d\d credit$/,
+  });
   await expect(pauseButton).toBeEnabled();
   await pauseButton.click();
   await extPage.getByRole('button', { name: 'Never mind, back to work' }).click();
   await expect(pauseButton).toBeEnabled();
 
   await pauseButton.click();
-  const takePause = extPage.getByRole('button', { name: 'Take the pause' });
+  const takePause = extPage.getByRole('button', { name: 'Unlock all sites', exact: true });
   await expect(takePause).toBeEnabled();
   await takePause.click();
   await expect(extPage.getByRole('button', { name: 'Resume now' })).toBeVisible();
@@ -220,8 +222,10 @@ test('paused UI leaves when the session wall clock ends', async ({ extPage }) =>
   await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.08 } });
   await waitForBank(extPage, pauseMs);
 
-  await extPage.getByRole('button', { name: 'Pause blocking for 0 min' }).click();
-  await extPage.getByRole('button', { name: 'Take the pause' }).click();
+  await extPage
+    .getByRole('button', { name: /^Unlock all sites 0:\d\d - costs 0:\d\d credit$/ })
+    .click();
+  await extPage.getByRole('button', { name: 'Unlock all sites', exact: true }).click();
   // The worker answers getSnapshot off its mutation queue on purpose, because serializing the read
   // made it reject for the whole of any storage transition. So a read taken the instant a command
   // is acknowledged can still describe the state before the commit, and the pause is waited for
@@ -477,7 +481,7 @@ test('a newly blocked domain replaces an unlock gate and rejects the old confirm
   await expect(second.locator('focus-lock-overlay')).toBeAttached();
   const names: string[] = await closedShadowButtonNames(context, second);
   expect(names).not.toContain('Never mind, back to work');
-  expect(names).toContain('Unlock this site for 1 min');
+  expect(names).toContain('Unlock this site 0:30 - costs 0:30 credit');
   await openOverlayUnlock(context, second, extPage, 'other.example');
   const replacement: GateState = await captureGate(extPage);
   expect(replacement.openedAt).toBeGreaterThan(original.openedAt);

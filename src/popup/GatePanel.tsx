@@ -37,7 +37,7 @@ const CANCEL_CONFIRM_LABEL: PublishedCancelGateCopy['confirm'] = 'End the sessio
 const BACK_TO_WORK_LABEL: PublishedCancelGateCopy['back'] = 'Never mind, back to work';
 
 const CONFIRM_LABELS: Record<GateKind, string> = {
-  pause: 'Take the pause',
+  pause: 'Unlock all sites',
   unlockSite: 'Unlock this site',
   cancel: CANCEL_CONFIRM_LABEL,
 };

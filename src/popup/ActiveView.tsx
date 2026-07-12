@@ -175,7 +175,6 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
   const unlockDisabledReason: string | null =
     pendingReason ?? activeSiteReason ?? unlockAvailability;
   const pauseDisabledReason: string | null = pendingReason ?? pauseAvailability;
-  const costMin: (ms: number) => number = (ms: number): number => Math.round(ms / 60_000);
   const breakEarlyVisible: boolean =
     snapshot.phase === 'break' &&
     snapshot.phaseStartedAt !== null &&
@@ -224,7 +223,7 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
     ) : (
       <>
         <SpendButton
-          label={`Unlock this site for ${costMin(snapshot.unlockCostMs)} min`}
+          label={`Unlock this site ${formatClock(snapshot.unlockCostMs)} - costs ${formatClock(snapshot.unlockCostMs)} credit`}
           sub={activeHost}
           disabledReason={unlockDisabledReason}
           onClick={(): void =>
@@ -235,7 +234,7 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
           }
         />
         <SpendButton
-          label={`Pause blocking for ${costMin(snapshot.pauseCostMs)} min`}
+          label={`Unlock all sites ${formatClock(snapshot.pauseCostMs)} - costs ${formatClock(snapshot.pauseCostMs)} credit`}
           sub={null}
           disabledReason={pauseDisabledReason}
           onClick={(): void =>

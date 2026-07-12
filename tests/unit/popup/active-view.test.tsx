@@ -188,8 +188,8 @@ describe('ActiveView', (): void => {
     expect(getByText('write the report')).toBeTruthy();
     expect(container.querySelector('.meter-fill')).toBeTruthy();
     expect(getByText('10:00 site access credit')).toBeTruthy();
-    expect(getByRole('button', { name: /Unlock this site for 5 min/ })).toBeTruthy();
-    expect(getByRole('button', { name: /Pause blocking for 5 min/ })).toBeTruthy();
+    expect(getByRole('button', { name: /Unlock this site 5:00 - costs 5:00 credit/ })).toBeTruthy();
+    expect(getByRole('button', { name: /Unlock all sites 5:00 - costs 5:00 credit/ })).toBeTruthy();
     await waitFor((): void => {
       expect(getByText('52 min focused today')).toBeTruthy();
     });
@@ -198,7 +198,7 @@ describe('ActiveView', (): void => {
   it('spends pause and unlock through the v2 channel', async (): Promise<void> => {
     const pauseView = render(h(ActiveView, { snapshot: focusSnap(), now: NOW }));
     const pause: HTMLButtonElement = pauseView.getByRole('button', {
-      name: /Pause blocking for 5 min/,
+      name: /Unlock all sites 5:00 - costs 5:00 credit/,
     }) as HTMLButtonElement;
     fireEvent.click(pause);
     await waitFor((): void => {
@@ -211,7 +211,7 @@ describe('ActiveView', (): void => {
 
     const unlockView = render(h(ActiveView, { snapshot: focusSnap(), now: NOW }));
     const unlock: HTMLButtonElement = unlockView.getByRole('button', {
-      name: /Unlock this site for 5 min/,
+      name: /Unlock this site 5:00 - costs 5:00 credit/,
     }) as HTMLButtonElement;
     await waitFor((): void => expect(unlock.disabled).toBe(false));
     fireEvent.click(unlock);

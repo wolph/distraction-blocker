@@ -215,8 +215,8 @@ async function takePause(extPage: Page, pauseMs: number): Promise<SessionSnapsho
   await expect
     .poll(async (): Promise<number> => (await snapshotOf(extPage)).bankMs, { timeout: 30_000 })
     .toBeGreaterThanOrEqual(pauseMs);
-  await extPage.getByRole('button', { name: /^Pause blocking for / }).click();
-  const confirm = extPage.getByRole('button', { name: 'Take the pause' });
+  await extPage.getByRole('button', { name: /^Unlock all sites / }).click();
+  const confirm = extPage.getByRole('button', { name: 'Unlock all sites', exact: true });
   await expect(confirm).toBeEnabled();
   await confirm.click();
   return await waitForPhase(extPage, 'paused', 20_000);

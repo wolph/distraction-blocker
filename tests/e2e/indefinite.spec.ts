@@ -524,8 +524,11 @@ test('an indefinite pause freezes focus time and still ends from the popup', asy
     )
     .toBeGreaterThanOrEqual(60_000);
 
-  await extPage.getByRole('button', { name: /^Pause blocking for / }).click();
-  const confirmPause: Locator = extPage.getByRole('button', { name: 'Take the pause' });
+  await extPage.getByRole('button', { name: /^Unlock all sites / }).click();
+  const confirmPause: Locator = extPage.getByRole('button', {
+    name: 'Unlock all sites',
+    exact: true,
+  });
   await expect(confirmPause).toBeEnabled();
   await confirmPause.click();
 
@@ -574,8 +577,11 @@ test('a pause that expires resumes indefinite focus with no end in sight', async
     )
     .toBeGreaterThanOrEqual(6_000);
 
-  await extPage.getByRole('button', { name: /^Pause blocking for / }).click();
-  const confirmPause: Locator = extPage.getByRole('button', { name: 'Take the pause' });
+  await extPage.getByRole('button', { name: /^Unlock all sites / }).click();
+  const confirmPause: Locator = extPage.getByRole('button', {
+    name: 'Unlock all sites',
+    exact: true,
+  });
   await expect(confirmPause).toBeEnabled();
   await confirmPause.click();
 

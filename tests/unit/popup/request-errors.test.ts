@@ -257,7 +257,12 @@ describe('popup request errors', (): void => {
   });
 
   it.each([
-    ['openGate' as const, focusSnapshot(), /Pause blocking for 5 min/, ACTION_FAILED_COPY],
+    [
+      'openGate' as const,
+      focusSnapshot(),
+      /Unlock all sites 5:00 - costs 5:00 credit/,
+      ACTION_FAILED_COPY,
+    ],
     ['openEndGate' as const, focusSnapshot(), 'End session', END_FAILED_COPY],
     ['resumeFromPause' as const, pausedSnapshot(), 'Resume now', ACTION_FAILED_COPY],
   ])(
@@ -292,7 +297,7 @@ describe('popup request errors', (): void => {
 
   it.each([
     ['abandonGate' as const, 'Never mind, back to work'],
-    ['confirmGate' as const, 'Take the pause'],
+    ['confirmGate' as const, 'Unlock all sites'],
   ])(
     'settles a rejected %s request and allows retry',
     async (requestType: 'abandonGate' | 'confirmGate', buttonName: string): Promise<void> => {
