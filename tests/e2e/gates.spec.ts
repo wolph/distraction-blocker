@@ -94,6 +94,32 @@ async function clickClosedShadowButton(
   }
 }
 
+async function openAccessDrawer(context: BrowserContext, page: Page): Promise<void> {
+  const session: CDPSession = await context.newCDPSession(page);
+  try {
+    const tree = await session.send('Accessibility.getFullAXTree');
+    const summary = tree.nodes.find(
+      (node): boolean =>
+        node.role?.value === 'DisclosureTriangle' &&
+        String(node.name?.value).startsWith('Need a break or site access?'),
+    );
+    if (summary?.backendDOMNodeId === undefined) return;
+    const expanded: boolean =
+      summary.properties?.some(
+        (property): boolean => property.name === 'expanded' && property.value.value === true,
+      ) ?? false;
+    if (expanded) return;
+    const box = await session.send('DOM.getBoxModel', { backendNodeId: summary.backendDOMNodeId });
+    const [left, top, right, , , bottom] = box.model.content;
+    if (left === undefined || top === undefined || right === undefined || bottom === undefined) {
+      throw new Error('access drawer summary has no content box');
+    }
+    await page.mouse.click((left + right) / 2, (top + bottom) / 2);
+  } finally {
+    await session.detach();
+  }
+}
+
 async function closedShadowButtonNames(context: BrowserContext, page: Page): Promise<string[]> {
   const session: CDPSession = await context.newCDPSession(page);
   try {
@@ -116,6 +142,7 @@ async function openOverlayUnlock(
     .poll(async (): Promise<string | null> => {
       const current: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
       if (current.gate?.host === host) return host;
+      await openAccessDrawer(context, page);
       const names: string[] = await closedShadowButtonNames(context, page);
       if (names.some((name: string): boolean => name.startsWith('Unlock this site '))) {
         await clickClosedShadowButton(context, page, 'Unlock this site ');
@@ -137,6 +164,7 @@ test('pause gate rejects an early confirmation and unblocks after its delay', as
   await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.3 } });
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
   await waitForBank(extPage, pauseMs);
+  await openAccessDrawer(context, page);
   await expect
     .poll(async (): Promise<string> => {
       const names: string[] = await closedShadowButtonNames(context, page);
@@ -479,8 +507,9 @@ test('a newly blocked domain replaces an unlock gate and rejects the old confirm
   const second: Page = await context.newPage();
   await second.goto(siteUrl('/plain.html').replace('blocked.example', 'other.example'));
   await expect(second.locator('focus-lock-overlay')).toBeAttached();
+  await openAccessDrawer(context, second);
   const names: string[] = await closedShadowButtonNames(context, second);
-  expect(names).not.toContain('Never mind, back to work');
+  expect(names).not.toContain('Keep focusing');
   expect(names).toContain('Unlock this site 0:30 - costs 0:30 credit');
   await openOverlayUnlock(context, second, extPage, 'other.example');
   const replacement: GateState = await captureGate(extPage);
@@ -490,7 +519,7 @@ test('a newly blocked domain replaces an unlock gate and rejects the old confirm
   await expect
     .poll(
       async (): Promise<boolean> =>
-        (await closedShadowButtonNames(context, first)).includes('Never mind, back to work'),
+        (await closedShadowButtonNames(context, first)).includes('Keep focusing'),
     )
     .toBe(false);
   await expect.poll((): boolean => Date.now() >= replacement.readyAt).toBe(true);
@@ -548,6 +577,7 @@ test('overlay unlock isolates another site and reblocks after expiry', async ({
   // never recover. It clicks only while the button is still offered, and settles on the gate.
   await expect
     .poll(async (): Promise<string | null> => {
+      await openAccessDrawer(context, page);
       const names: string[] = await closedShadowButtonNames(context, page);
       if (names.some((name: string): boolean => name.startsWith('Unlock this site'))) {
         await clickClosedShadowButton(context, page, 'Unlock this site');

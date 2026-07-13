@@ -1197,7 +1197,8 @@ test('captures five truthful release states with category membership in the popu
         .toEqual(
           expect.arrayContaining([
             `Locked until ${zonedClockLabel(captureInstant() + 25 * 60_000, STORE_TIMEZONE)}`,
-            '25:00',
+            '25 min left in this session',
+            'Your next step',
             STORE_INTENTION,
             'Blocked by your block list: blocked.example',
           ]),

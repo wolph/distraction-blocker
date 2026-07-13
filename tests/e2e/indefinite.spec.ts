@@ -65,7 +65,7 @@ const FOCUS_PHASE_CLOCK_LABEL: string = 'focus phase';
 const TOTAL_SESSION_CLOCK_LABEL: string = 'total session';
 const PAUSE_CLOCK_LABEL: string = 'pause';
 const INDEFINITE_BADGE_TEXT: string = 'ON';
-const OVERLAY_UNTIL_STOPPED_STATUS: string = 'Focus Lock is active until you stop it.';
+const OVERLAY_UNTIL_STOPPED_STATUS: string = 'Until stopped';
 const OVERLAY_STOPPED_PAGE_COPY: string =
   'This page did not load. It will load by itself when the session ends.';
 const SETTINGS_INDEFINITE_COPY: string =
@@ -73,7 +73,7 @@ const SETTINGS_INDEFINITE_COPY: string =
 const SETTINGS_SESSION_DISCLOSURE: string =
   'The toolbar popup owns session controls. The active session keeps the rules captured when it started.';
 const SCHEDULE_STARTED_TITLE: string = 'Focus schedule started';
-const SCHEDULE_UNTIL_STOPPED_BODY: string = 'Active until you end it manually.';
+const SCHEDULE_UNTIL_STOPPED_BODY: string = 'Active until you stop it.';
 const CANCEL_GATE_TITLE: string = 'End this session';
 const CANCEL_GATE_CONFIRM: string = 'End the session';
 const CANCEL_GATE_BACK: string = 'Never mind, back to work';
@@ -181,6 +181,34 @@ async function overlayNodeIds(session: CDPSession): Promise<ReadonlySet<number>>
       .flatMap((shadowRoot: DomNodeSnapshot): DomNodeSnapshot[] => flattenDomNode(shadowRoot))
       .map((node: DomNodeSnapshot): number => node.backendNodeId),
   );
+}
+
+/** Opens the blocked page's collapsed access drawer so its controls join the accessibility tree. */
+async function openAccessDrawer(context: BrowserContext, page: Page): Promise<void> {
+  const session: CDPSession = await context.newCDPSession(page);
+  try {
+    await session.send('Accessibility.enable');
+    const tree = await session.send('Accessibility.getFullAXTree');
+    const summary = tree.nodes.find(
+      (node): boolean =>
+        node.role?.value === 'DisclosureTriangle' &&
+        String(node.name?.value).startsWith('Need a break or site access?'),
+    );
+    if (summary?.backendDOMNodeId === undefined) return;
+    const expanded: boolean =
+      summary.properties?.some(
+        (property): boolean => property.name === 'expanded' && property.value.value === true,
+      ) ?? false;
+    if (expanded) return;
+    const box = await session.send('DOM.getBoxModel', { backendNodeId: summary.backendDOMNodeId });
+    const [left, top, right, , , bottom] = box.model.content;
+    if (left === undefined || top === undefined || right === undefined || bottom === undefined) {
+      throw new Error('access drawer summary has no content box');
+    }
+    await page.mouse.click((left + right) / 2, (top + bottom) / 2);
+  } finally {
+    await session.detach();
+  }
 }
 
 async function overlayCopy(context: BrowserContext, page: Page): Promise<OverlayCopy> {
@@ -392,6 +420,7 @@ test('the indefinite blocked page offers the same End the popup does', async ({
   await expect
     .poll(async (): Promise<string[]> => (await overlayCopy(context, existingPage)).statics)
     .toContain(OVERLAY_UNTIL_STOPPED_STATUS);
+  await openAccessDrawer(context, existingPage);
   const existingCopy: OverlayCopy = await overlayCopy(context, existingPage);
   expect(
     existingCopy.statics.filter((text: string): boolean => text.startsWith('Locked until')),
@@ -431,12 +460,14 @@ test('a stopped fresh navigation carries the indefinite and stopped-page copy', 
   await expect(stoppedPage.locator('focus-lock-overlay')).toBeAttached();
   await expect(stoppedPage).toHaveTitle('Locked - Focus Lock');
   await expect(stoppedPage.locator('#marker')).toHaveCount(0);
+  await openAccessDrawer(context, stoppedPage);
   const stoppedCopy: OverlayCopy = await overlayCopy(context, stoppedPage);
   expect(stoppedCopy.statics).toContain(OVERLAY_UNTIL_STOPPED_STATUS);
   expect(
     stoppedCopy.statics.filter((text: string): boolean => text.startsWith('Locked until')),
   ).toEqual([]);
-  expect(stoppedCopy.buttons).not.toContain(END_SESSION_LABEL);
+  // A Flexible until-stopped page offers End on a stopped document as it does on a loaded one.
+  expect(stoppedCopy.buttons).toContain(END_SESSION_LABEL);
 
   // The worker records the stop after it has already built the command that answered this
   // navigation, so the stopped-page sentence rides on the next live-view refresh rather than on
@@ -450,9 +481,10 @@ test('a stopped fresh navigation carries the indefinite and stopped-page copy', 
       timeout: 15_000,
     })
     .toContain(OVERLAY_STOPPED_PAGE_COPY);
+  await openAccessDrawer(context, stoppedPage);
   const refreshedCopy: OverlayCopy = await overlayCopy(context, stoppedPage);
   expect(refreshedCopy.statics).toContain(OVERLAY_UNTIL_STOPPED_STATUS);
-  expect(refreshedCopy.buttons).not.toContain(END_SESSION_LABEL);
+  expect(refreshedCopy.buttons).toContain(END_SESSION_LABEL);
 
   expectNoDiagnostics(context);
 });
