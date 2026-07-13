@@ -190,15 +190,20 @@ rg -n "fetch\(|XMLHttpRequest|WebSocket|EventSource|sendBeacon" src dist
 
 **Proves, when you read the output rather than the exit code:** the printed digest equals the digest
 of the file on disk. `manifest.json` is at the archive root. No source maps, secrets or test files
-are present, and no unreviewed network transport has appeared in the product code.
+are present, and no unreviewed network transport has appeared in the product code. The transport
+search has exactly one expected family of hits: the favicon service in
+`src/background/work-tab-icons.ts` and its bundled copy in the worker, which fetch the extension's
+own `/_favicon/` URL so Chrome answers from its local favicon cache. The validator accepts only that
+shape, listed under `extensionOriginFetch` in `store/submission-manifest.json`, and refuses every
+other transport identifier.
 
 Also confirm by inspection, because the validator does not: every entry in the archive has a
 counterpart under `dist/` and is byte-identical, every declared entry point in the manifest resolves
 inside the archive, and every local script and stylesheet reference in each packaged HTML page
 resolves to an archive entry.
 
-**A failure means:** a transport hit is the serious one. Read the match before reacting, since a
-test helper or a comment can match. A missing entry point means the build and the manifest disagree,
+**A failure means:** a transport hit outside the favicon service is the serious one. Read the
+match before reacting, since a test helper or a comment can match. A missing entry point means the build and the manifest disagree,
 which ships a broken extension.
 
 ## Step 5. Recapture the five canonical screenshots

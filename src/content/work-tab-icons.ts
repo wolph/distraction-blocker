@@ -50,11 +50,11 @@ export class WorkTabIcons {
       const row: IconRow | undefined = this.visible.get(key);
       if (row === undefined || this.active.has(key) || this.cache.has(key)) continue;
       this.active.add(key);
-      void this.fetch(key, row.tab.tabId, this.generation);
+      void this.load(key, row.tab.tabId, this.generation);
     }
   }
 
-  private async fetch(key: string, tabId: number, generation: number): Promise<void> {
+  private async load(key: string, tabId: number, generation: number): Promise<void> {
     let icon: string | null = null;
     try {
       const result: ReturnType<typeof parseWorkTabIconResult> = parseWorkTabIconResult(
