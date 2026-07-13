@@ -13,6 +13,8 @@ const TRANSPORT_IDENTIFIERS = new Set([
 const WORKER_CONSTRUCTORS = new Set(['Worker', 'SharedWorker']);
 const IMPORT_SCRIPTS = new Set(['importScripts']);
 const URL_CONSTRUCTOR = new Set(['URL']);
+const FETCH_IDENTIFIER = new Set(['fetch']);
+const FAVICON_PATH_PREFIX = '/_favicon/';
 const EXPRESSION_WRAPPERS = new Set([
   'ParenthesizedExpression',
   'TSAsExpression',
@@ -253,4 +255,92 @@ export function inspectExecutableSource(source, filePath) {
     },
   });
   return observations;
+}
+
+function isChromeRuntimeGetUrl(calleePath) {
+  const current = unwrapPath(calleePath);
+  if (!current?.isMemberExpression() || current.node.computed) return false;
+  if (!current.get('property').isIdentifier({ name: 'getURL' })) return false;
+  const runtimePath = unwrapPath(current.get('object'));
+  if (!runtimePath?.isMemberExpression() || runtimePath.node.computed) return false;
+  return (
+    runtimePath.get('object').isIdentifier({ name: 'chrome' }) &&
+    runtimePath.get('property').isIdentifier({ name: 'runtime' })
+  );
+}
+
+function hasStringProperty(objectPath, name, expected) {
+  for (const propertyPath of objectPath.get('properties')) {
+    if (!propertyPath.isObjectProperty() || propertyPath.node.computed) continue;
+    const keyPath = propertyPath.get('key');
+    const keyName = keyPath.isIdentifier()
+      ? keyPath.node.name
+      : keyPath.isStringLiteral()
+        ? keyPath.node.value
+        : null;
+    if (keyName !== name) continue;
+    const valuePath = unwrapPath(propertyPath.get('value'));
+    return valuePath.isStringLiteral({ value: expected });
+  }
+  return false;
+}
+
+function hasSafeFetchOptions(callPath) {
+  const optionsPath = unwrapPath(callPath.get('arguments')[1]);
+  if (!optionsPath?.isObjectExpression()) return false;
+  return (
+    hasStringProperty(optionsPath, 'credentials', 'omit') &&
+    hasStringProperty(optionsPath, 'redirect', 'error')
+  );
+}
+
+/**
+ * The facts the transport policy needs before it accepts a favicon read through the extension's
+ * own origin: how many fetch call sites the file has, how many of them call the global fetch with
+ * the credentials and redirect options that keep the request local, whether the file builds the
+ * chrome.runtime.getURL('/_favicon/') address, and every remote URL literal the file carries.
+ */
+export function inspectExtensionOriginFetch(source, filePath) {
+  const ast = parseExecutableSource(source, filePath);
+  const facts = {
+    fetchCalls: 0,
+    globalFetchCalls: 0,
+    safeGlobalFetchCalls: 0,
+    faviconUrlCalls: 0,
+    remoteLiterals: [],
+  };
+  const inspectCallSite = (path) => {
+    const calleePath = path.get('callee');
+    if (isChromeRuntimeGetUrl(calleePath)) {
+      const argumentPath = unwrapPath(path.get('arguments')[0]);
+      if (
+        argumentPath?.isStringLiteral() &&
+        argumentPath.node.value.startsWith(FAVICON_PATH_PREFIX)
+      ) {
+        facts.faviconUrlCalls += 1;
+      }
+      return;
+    }
+    if (callableName(calleePath, FETCH_IDENTIFIER) !== 'fetch') return;
+    facts.fetchCalls += 1;
+    if (!unwrapPath(calleePath).isIdentifier()) return;
+    facts.globalFetchCalls += 1;
+    if (hasSafeFetchOptions(path)) facts.safeGlobalFetchCalls += 1;
+  };
+  traverse(ast, {
+    CallExpression(path) {
+      inspectCallSite(path);
+    },
+    OptionalCallExpression(path) {
+      inspectCallSite(path);
+    },
+    StringLiteral(path) {
+      if (isRemoteUrl(path.node.value)) facts.remoteLiterals.push(path.node.value);
+    },
+    TemplateLiteral(path) {
+      const prefix = path.node.quasis[0]?.value.cooked ?? path.node.quasis[0]?.value.raw ?? '';
+      if (isRemoteUrl(prefix)) facts.remoteLiterals.push(prefix);
+    },
+  });
+  return facts;
 }

@@ -24,5 +24,11 @@
   "smallPromo": "store/assets/small-promo-440x280.png",
   "marquee": "store/assets/marquee-1400x560.png",
   "icon128": "assets/icons/idle-128.png",
-  "transportAllowlist": []
+  "transportAllowlist": [],
+  "extensionOriginFetch": [
+    {
+      "file": "src/background/work-tab-icons.ts",
+      "reason": "Reads favicons for the work tab picker from Chrome's local favicon cache through the extension's own /_favicon/ URL. Chrome answers the request itself, no request reaches a website, and nothing leaves the extension."
+    }
+  ]
 }

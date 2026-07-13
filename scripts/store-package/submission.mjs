@@ -9,7 +9,7 @@ import {
   readRequiredFile,
   walkRegularFiles,
 } from './files.mjs';
-import { validateTransportAllowlist } from './transport.mjs';
+import { validateExtensionOriginFetch, validateTransportAllowlist } from './transport.mjs';
 
 const PRIVACY_URL = 'https://wolph.github.io/distraction-blocker/privacy/';
 const SCREENSHOTS = [
@@ -31,7 +31,7 @@ const REQUIRED_SUBMISSION_KEYS = [
   'icon128',
   'transportAllowlist',
 ];
-const OPTIONAL_SUBMISSION_KEYS = ['marquee'];
+const OPTIONAL_SUBMISSION_KEYS = ['marquee', 'extensionOriginFetch'];
 const ALL_SITES_MATCHES = new Set(['<all_urls>', '*://*/*', 'http://*/*', 'https://*/*']);
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
@@ -89,6 +89,7 @@ export function validateSubmissionManifest(value) {
   assertStringArray(value.optionalHostPermissions, 'optionalHostPermissions');
   assertStringArray(value.screenshots, 'screenshots');
   validateTransportAllowlist(value.transportAllowlist);
+  validateExtensionOriginFetch(value.extensionOriginFetch);
   return value;
 }
 

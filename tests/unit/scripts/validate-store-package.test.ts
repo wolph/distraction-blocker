@@ -366,6 +366,142 @@ describe('built manifest and transport policy', (): void => {
     expectValidationFailure(root, new RegExp(identifier, 'i'));
   });
 
+  const FAVICON_SOURCE: string = [
+    'const ports = {',
+    '  url: (pageUrl: string): string => {',
+    "    const url: URL = new URL(chrome.runtime.getURL('/_favicon/'));",
+    "    url.searchParams.set('pageUrl', pageUrl);",
+    '    return url.href;',
+    '  },',
+    '  fetch: (url: string, signal: AbortSignal): Promise<Response> =>',
+    "    fetch(url, { signal, credentials: 'omit', redirect: 'error' }),",
+    '};',
+    'export function icon(pageUrl: string, signal: AbortSignal): Promise<Response> {',
+    '  return ports.fetch(ports.url(pageUrl), signal);',
+    '}',
+    '',
+  ].join('\n');
+  const FAVICON_BUNDLE: string = [
+    'const p = {',
+    '  url: (u) => { const x = new URL(chrome.runtime.getURL("/_favicon/")); x.searchParams.set("pageUrl", u); return x.href; },',
+    '  fetch: (u, s) => fetch(u, { signal: s, credentials: "omit", redirect: "error" }),',
+    '};',
+    'export function icon(u, s) { return p.fetch(p.url(u), s); }',
+    '',
+  ].join('\n');
+  const FAVICON_FILE: string = 'src/background/work-tab-icons.ts';
+
+  function exemptFavicon(root: string, source: string = FAVICON_SOURCE): void {
+    write(join(root, 'src', 'background', 'work-tab-icons.ts'), source);
+    write(join(root, 'dist', 'assets', 'background.js'), FAVICON_BUNDLE);
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      submission.extensionOriginFetch = [
+        { file: FAVICON_FILE, reason: 'Reads favicons through the extension origin.' },
+      ];
+    });
+  }
+
+  it('accepts a listed extension-origin favicon fetch in source and bundle', (): void => {
+    const root: string = fixture();
+    exemptFavicon(root);
+    const result: ReturnType<typeof runValidator> = validate(root);
+    expect(result.status, output(result)).toBe(0);
+  });
+
+  it('rejects the favicon fetch when the source file is not listed', (): void => {
+    const root: string = fixture();
+    exemptFavicon(root);
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      delete submission.extensionOriginFetch;
+    });
+    expectValidationFailure(
+      root,
+      /Forbidden product-data transport identifier: src\/background\/work-tab-icons\.ts:fetch/u,
+    );
+  });
+
+  it('rejects a listed file that carries a remote URL', (): void => {
+    const root: string = fixture();
+    exemptFavicon(root, `const mirror = 'https://example.com/icons';\n${FAVICON_SOURCE}`);
+    expectValidationFailure(root, /must not carry a remote URL/u);
+  });
+
+  it.each([
+    ['credentials', "fetch(url, { signal, redirect: 'error' })"],
+    ['redirect', "fetch(url, { signal, credentials: 'omit' })"],
+    ['an options object', 'fetch(url)'],
+  ])('rejects a listed file whose fetch lacks %s', (_case: string, call: string): void => {
+    const root: string = fixture();
+    exemptFavicon(
+      root,
+      FAVICON_SOURCE.replace(
+        "fetch(url, { signal, credentials: 'omit', redirect: 'error' })",
+        call,
+      ),
+    );
+    expectValidationFailure(root, /credentials 'omit' and redirect 'error'/u);
+  });
+
+  it('rejects a listed file that also uses another transport', (): void => {
+    const root: string = fixture();
+    exemptFavicon(root, `${FAVICON_SOURCE}new XMLHttpRequest();\n`);
+    expectValidationFailure(root, /may only use fetch/u);
+  });
+
+  it('rejects a listed file that never builds the favicon address', (): void => {
+    const root: string = fixture();
+    exemptFavicon(root, FAVICON_SOURCE.replace("'/_favicon/'", "'/icons/'"));
+    expectValidationFailure(root, /must build chrome\.runtime\.getURL/u);
+  });
+
+  it('rejects a listed file that does not exist', (): void => {
+    const root: string = fixture();
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      submission.extensionOriginFetch = [
+        { file: 'src/background/missing.ts', reason: 'Reads favicons.' },
+      ];
+    });
+    expectValidationFailure(root, /does not exist/u);
+  });
+
+  it('rejects a shipped bundle with more fetch call sites than the listed sources', (): void => {
+    const root: string = fixture();
+    exemptFavicon(root);
+    write(join(root, 'dist', 'assets', 'popup.js'), FAVICON_BUNDLE);
+    expectValidationFailure(root, /fetch call sites/u);
+  });
+
+  it('rejects a shipped fetch that is not the favicon read even when a source is listed', (): void => {
+    const root: string = fixture();
+    exemptFavicon(root);
+    write(
+      join(root, 'dist', 'assets', 'background.js'),
+      "fetch('https://example.com/data', { credentials: 'omit', redirect: 'error' });\n",
+    );
+    expectValidationFailure(root, /not the extension-origin favicon read/u);
+  });
+
+  it.each([
+    ['a non-array', {}],
+    ['an entry with extra keys', [{ file: 'src/a.ts', reason: 'x', extra: true }]],
+    ['an entry without a reason', [{ file: 'src/a.ts' }]],
+    ['a file outside src', [{ file: 'scripts/a.mjs', reason: 'x' }]],
+    ['a traversal path', [{ file: 'src/../a.ts', reason: 'x' }]],
+    [
+      'too many entries',
+      Array.from({ length: 5 }, (_value: unknown, index: number) => ({
+        file: `src/${index}.ts`,
+        reason: 'x',
+      })),
+    ],
+  ])('rejects extensionOriginFetch as %s', (_case: string, value: unknown): void => {
+    const root: string = fixture();
+    mutateSubmission(root, (submission: Record<string, unknown>): void => {
+      submission.extensionOriginFetch = value;
+    });
+    expectValidationFailure(root, /extensionOriginFetch/u);
+  });
+
   it('rejects transport code in shipped inline scripts', (): void => {
     const root: string = fixture();
     write(
