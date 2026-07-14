@@ -30,15 +30,28 @@ async function node(cdp: CDPSession, name: string, role: string = 'button'): Pro
 }
 
 async function click(cdp: CDPSession, page: Page, name: string): Promise<void> {
-  const id: number = await node(cdp, name);
-  await cdp.send('DOM.scrollIntoViewIfNeeded', { backendNodeId: id });
-  const box: { model: { content: number[] } } = await cdp.send('DOM.getBoxModel', {
-    backendNodeId: id,
-  });
-  await page.mouse.click(
-    ((box.model.content[0] ?? 0) + (box.model.content[2] ?? 0)) / 2,
-    ((box.model.content[1] ?? 0) + (box.model.content[5] ?? 0)) / 2,
-  );
+  // A live-view repaint can replace the control between the lookup and the scroll, which CDP
+  // reports as a detached node. The lookup is repeated on the fresh tree rather than failed.
+  for (let attempt: number = 0; ; attempt += 1) {
+    const id: number = await node(cdp, name);
+    try {
+      await cdp.send('DOM.scrollIntoViewIfNeeded', { backendNodeId: id });
+      const box: { model: { content: number[] } } = await cdp.send('DOM.getBoxModel', {
+        backendNodeId: id,
+      });
+      await page.mouse.click(
+        ((box.model.content[0] ?? 0) + (box.model.content[2] ?? 0)) / 2,
+        ((box.model.content[1] ?? 0) + (box.model.content[5] ?? 0)) / 2,
+      );
+      return;
+    } catch (error: unknown) {
+      const detached: boolean =
+        error instanceof Error &&
+        /detached from document|No node with given id/u.test(error.message);
+      if (!detached || attempt >= 4) throw error;
+      await page.waitForTimeout(100);
+    }
+  }
 }
 
 async function pickerValue<T>(cdp: CDPSession, expression: string): Promise<T> {
