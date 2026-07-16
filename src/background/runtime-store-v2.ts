@@ -33,6 +33,28 @@ const V2_ONLY_RUNTIME_KEYS: readonly string[] = [
   'handledScheduleOccurrences',
 ];
 
+/**
+ * Every key a v1 runtime ever carried. A stored record whose own keys all sit in this list is a v1
+ * runtime, possibly an older one that predates the last keys added, and the v1 reader fills the
+ * missing ones in. Any other key means the value is not a shape this worker ever wrote.
+ */
+const LEGACY_RUNTIME_V1_KEYS: readonly string[] = [
+  'session',
+  'gate',
+  'unlocks',
+  'tabStates',
+  'accruedFocusMs',
+  'attemptDebounce',
+  'deferredBlockClaims',
+  'removedTabTombstones',
+  'scheduleActiveEntryId',
+  'scheduleUnavailableNoticeToken',
+  'date',
+  'todayAgg',
+  'lastPruneDate',
+  'commitCheckpoint',
+];
+
 export interface RuntimeSchemaMarkerV2 {
   runtimeSchemaVersion: 2;
 }
@@ -43,7 +65,12 @@ const RUNTIME_SCHEMA_MARKER_V2: RuntimeSchemaMarkerV2 = { runtimeSchemaVersion: 
 export type StoredRuntimeAuthority =
   | { kind: 'absent' }
   | { kind: 'v2'; runtime: RuntimeStateV2 }
-  | { kind: 'legacy'; raw: unknown }
+  /**
+   * `staleMarker` is true when the v2 schema marker already sat over this v1 value, which is what
+   * a downgrade to a v1 build followed by an upgrade leaves behind. The value still migrates, and
+   * the flag lets the caller tell that history from a first migration.
+   */
+  | { kind: 'legacy'; raw: unknown; staleMarker: boolean }
   /**
    * `raw` is the stored value this verdict refused. It exists so the boot reader can report what it
    * threw away, is unvalidated and possibly hostile, and must never be read as authority or
@@ -104,11 +131,15 @@ export function isRuntimeSchemaMarkerV2(value: unknown): value is RuntimeSchemaM
  * an interrupted migration write or a partial local removal boots empty instead of rejecting, and a
  * value that mixes v1 and v2 keys is never accepted as either shape.
  *
- * This reads the marker alone. `marker-without-v2` therefore means only that a marker sits over a
- * runtime this reader cannot parse as v2. The spec's cutoff is conditional on the marker existing
- * *without a valid migration checkpoint*, so the caller owes the other half: resolve the stored
- * `LOCAL_RUNTIME_MIGRATION` checkpoint first and replay a valid one, and treat this verdict as the
- * refusal to migrate unversioned v1 again only when no valid checkpoint is there to replay.
+ * Everything else is classified by shape, not by the marker. A record whose own keys are all v1
+ * keys is a v1 runtime and migrates, whether or not the v2 marker sits over it: a downgrade to a v1
+ * build and a later upgrade leave exactly that pair behind, and the value under it is still the
+ * person's runtime. The marker only decides the reason a value that is neither shape is refused
+ * with, `marker-without-v2` under a marker and `invalid-v2` without one, and it is reported on the
+ * legacy verdict as `staleMarker` so the caller can tell a re-migration from a first one.
+ *
+ * The caller still owes the checkpoint half: a stored `LOCAL_RUNTIME_MIGRATION` checkpoint is
+ * resolved first and a valid one is replayed before this verdict decides anything.
  */
 export function classifyStoredRuntime(
   raw: unknown,
@@ -123,8 +154,11 @@ export function classifyStoredRuntime(
   if (isRecord(snapshot.value) && declaresV2Shape(snapshot.value)) {
     return { kind: 'rejected', reason: 'invalid-v2', raw };
   }
+  if (isRecord(snapshot.value) && isLegacyRuntimeShapeV1(snapshot.value)) {
+    return { kind: 'legacy', raw, staleMarker: marker !== null };
+  }
   if (marker !== null) return { kind: 'rejected', reason: 'marker-without-v2', raw };
-  return { kind: 'legacy', raw };
+  return { kind: 'rejected', reason: 'invalid-v2', raw };
 }
 
 export async function readRuntimeSchemaMarker(): Promise<RuntimeSchemaMarkerV2 | null> {
@@ -160,5 +194,16 @@ function declaresV2Shape(snapshot: Record<string, unknown>): boolean {
   return (
     Object.hasOwn(snapshot, 'runtimeSchemaVersion') ||
     V2_ONLY_RUNTIME_KEYS.some((key: string): boolean => Object.hasOwn(snapshot, key))
+  );
+}
+
+/**
+ * A v1 runtime is any record whose own keys are a subset of the v1 keys. The empty record counts,
+ * because the v1 reader fills every missing key in, and a record with a key no v1 build wrote does
+ * not, whatever else it carries.
+ */
+function isLegacyRuntimeShapeV1(snapshot: Record<string, unknown>): boolean {
+  return Object.keys(snapshot).every((key: string): boolean =>
+    LEGACY_RUNTIME_V1_KEYS.includes(key),
   );
 }

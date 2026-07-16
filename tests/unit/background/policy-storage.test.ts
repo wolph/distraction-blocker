@@ -57,6 +57,7 @@ import {
   LOCAL_POLICY_GENERATION_PREFIX,
   LOCAL_RUNTIME,
   LOCAL_RUNTIME_MIGRATION,
+  LOCAL_RUNTIME_REJECTED,
   LOCAL_RUNTIME_SCHEMA,
   LOCAL_SETTINGS,
   LOCAL_SETUP,
@@ -3165,6 +3166,7 @@ describe('PolicyStorage', (): void => {
       [LOCAL_RUNTIME]: emptyRuntimeV2(),
       [LOCAL_RUNTIME_SCHEMA]: { runtimeSchemaVersion: 2 },
       [LOCAL_RUNTIME_MIGRATION]: { version: 1, phase: 'projected' },
+      [LOCAL_RUNTIME_REJECTED]: { version: 1, reason: 'invalid-v2' },
       [LOCAL_CACHES]: { matcher: true },
       [LOCAL_DEVICE_ID]: 'device-id',
       'agg:device-id:2026-08-31': emptyDaily('2026-08-31'),
@@ -3194,6 +3196,7 @@ describe('PolicyStorage', (): void => {
     expect(local.state.values[LOCAL_RUNTIME]).toBeUndefined();
     expect(local.state.values[LOCAL_RUNTIME_SCHEMA]).toBeUndefined();
     expect(local.state.values[LOCAL_RUNTIME_MIGRATION]).toBeUndefined();
+    expect(local.state.values[LOCAL_RUNTIME_REJECTED]).toBeUndefined();
     expect(local.state.values[LOCAL_CACHES]).toBeUndefined();
     expect(local.state.values[LOCAL_DEVICE_ID]).toBeUndefined();
     expect(local.state.values['agg:device-id:2026-08-31']).toBeUndefined();
@@ -4510,6 +4513,7 @@ describe('PolicyStorage', (): void => {
         [LOCAL_RUNTIME]: emptyRuntimeV2(),
         [LOCAL_RUNTIME_SCHEMA]: { runtimeSchemaVersion: 2 },
         [LOCAL_RUNTIME_MIGRATION]: { version: 1, phase: 'projected' },
+        [LOCAL_RUNTIME_REJECTED]: { version: 1, reason: 'invalid-v2' },
         [LOCAL_CACHES]: { matcher: true },
         [LOCAL_DEVICE_ID]: 'device-id',
         [LOCAL_INSTALL_MARKER]: {
@@ -4657,6 +4661,7 @@ describe('PolicyStorage', (): void => {
       expect(local.state.values[LOCAL_RUNTIME]).toBeUndefined();
       expect(local.state.values[LOCAL_RUNTIME_SCHEMA]).toBeUndefined();
       expect(local.state.values[LOCAL_RUNTIME_MIGRATION]).toBeUndefined();
+      expect(local.state.values[LOCAL_RUNTIME_REJECTED]).toBeUndefined();
       expect(local.state.values[LOCAL_DEVICE_ID]).toBeUndefined();
       expect(local.state.values[LOCAL_INSTALL_MARKER]).toBeUndefined();
       expect(local.state.values['agg:device-id:2026-08-31']).toBeUndefined();
