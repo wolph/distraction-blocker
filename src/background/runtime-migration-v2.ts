@@ -24,6 +24,7 @@ import type {
   PauseEconomy,
   ScheduleOccurrenceRef,
   SessionConfigV2,
+  SessionDuration,
   SessionEndedEventV2,
   SessionStateV2,
 } from '../shared/types';
@@ -109,8 +110,11 @@ export function parseLegacyScheduleOccurrenceMarkerV1(
 
 /**
  * Maps one legacy config to its v2 shape: the numeric duration becomes the tagged timed duration,
- * the schedule entry ID becomes the validated occurrence, and every other field carries over. A
- * scheduled config without its occurrence, or a manual one carrying an occurrence, has no v2 form.
+ * the null duration of a v1 indefinite session becomes until-stopped, the schedule entry ID becomes
+ * the validated occurrence, and every other field carries over. A scheduled config without its
+ * occurrence, or a manual one carrying an occurrence, has no v2 form. Strictness is kept as stored:
+ * the v2 contract refuses Hard with no timer, and that refusal is what routes such a session to the
+ * invalid-active closure so its focus still settles.
  */
 export function migrateLegacySessionConfigV1(
   config: NormalizedSessionConfigV1,
@@ -119,14 +123,22 @@ export function migrateLegacySessionConfigV1(
   const migrated: SessionConfigV2 = {
     mode: config.mode,
     strictness: config.strictness,
-    duration: { kind: 'timed', minutes: config.durationMin },
-    cycling: config.cycling === null ? null : { ...config.cycling },
+    duration: migratedDurationV1(config.durationMin),
+    // The v1 reader never pairs cycling with a null duration, and an until-stopped session has no
+    // finite end for cycling to divide, so the pair maps to cycling off rather than to a config
+    // the v2 contract refuses.
+    cycling: config.cycling === null || config.durationMin === null ? null : { ...config.cycling },
     intention: config.intention,
     source: config.source,
     scheduleOccurrence: occurrence === null ? null : { ...occurrence },
     rules: structuredClone(config.rules),
   };
   return isSessionConfigV2(migrated) ? migrated : null;
+}
+
+/** The v1 duration was minutes or, for the indefinite session, null. */
+function migratedDurationV1(durationMin: number | null): SessionDuration {
+  return durationMin === null ? { kind: 'until-stopped' } : { kind: 'timed', minutes: durationMin };
 }
 
 /**
@@ -159,12 +171,18 @@ export function migrateLegacySessionStateV1(
  * v1 could begin a pause whose end ran past the fixed session end, which the v2 session contract
  * refuses. The pause is clamped to that end exactly as `beginPauseV2` clamps a new one, so a session
  * paused in its final minutes migrates instead of being force-closed. A clamp that still leaves an
- * invalid state falls through to the invalid-active route like any other unmigratable session.
+ * invalid state falls through to the invalid-active route like any other unmigratable session. An
+ * indefinite session has no session end to clamp to, so its deadlines carry over as stored.
  */
-function clampedPhaseEndV1(session: NormalizedSessionStateV1): number {
-  return session.phase === 'paused'
-    ? Math.min(session.phaseEndsAt, session.sessionEndsAt)
-    : session.phaseEndsAt;
+function clampedPhaseEndV1(session: NormalizedSessionStateV1): number | null {
+  if (
+    session.phase !== 'paused' ||
+    session.phaseEndsAt === null ||
+    session.sessionEndsAt === null
+  ) {
+    return session.phaseEndsAt;
+  }
+  return Math.min(session.phaseEndsAt, session.sessionEndsAt);
 }
 
 /**
@@ -360,7 +378,9 @@ function migrationClosureProjection(
     outcome: 'canceled',
     reason: 'invalid-active-state',
     focusedMs: settled.settlement.focusedMsAfter,
-    duration: { kind: 'timed', minutes: legacy.config.durationMin },
+    // The end event reports the duration the session actually had, and an invalid-active
+    // cancellation is a valid end for either kind.
+    duration: migratedDurationV1(legacy.config.durationMin),
     source: legacy.config.source,
     scheduleOccurrence: null,
   };
@@ -400,12 +420,16 @@ function settlementEvents(
  * The v2 runtime keeps every v1 field it still owns, including the live gate, the live unlocks, and
  * the accrual watermark, because dropping them would lose durable user state. `scheduleActiveEntryId`
  * is migration input only and has no v2 field. Every leaf is detached from the legacy runtime.
+ *
+ * A gate belongs to a session. A v1 worker evicted between a session end and its gate clear leaves
+ * one behind with no session, and the v2 runtime contract refuses that pair, so a gate is carried
+ * only when there is a legacy session for it to belong to.
  */
 function carriedRuntimeV2(input: MigrationInputV2): RuntimeStateV2 {
   const legacy: LegacyRuntimeStateV1 = input.runtime;
   return {
     ...emptyRuntimeV2(input.migratedAt, input.enforcementEpoch),
-    gate: legacy.gate === null ? null : { ...legacy.gate },
+    gate: legacy.gate === null || legacy.session === null ? null : { ...legacy.gate },
     unlocks: legacy.unlocks.map((unlock: LegacyRuntimeStateV1['unlocks'][number]) => ({
       ...unlock,
     })),

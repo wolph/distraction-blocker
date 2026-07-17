@@ -50,7 +50,8 @@ describe('additive v2 contracts', (): void => {
   });
 
   it('keeps the v1 shapes reachable under their explicit legacy names', (): void => {
-    expectTypeOf<NormalizedSessionConfigV1['durationMin']>().toEqualTypeOf<number>();
+    // Null is the v1 indefinite session the pre-merge build stored.
+    expectTypeOf<NormalizedSessionConfigV1['durationMin']>().toEqualTypeOf<number | null>();
     expectTypeOf<NormalizedSessionStateV1['config']>().toEqualTypeOf<NormalizedSessionConfigV1>();
     expectTypeOf<
       NormalizedSessionSnapshotV1['config']

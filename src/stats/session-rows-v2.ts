@@ -50,11 +50,17 @@ interface OpenRowV2 {
   unlockMs: number;
 }
 
-/** A legacy start stores planned minutes, so it reports as the timed plan it was. */
+/**
+ * A legacy start stores planned minutes, so it reports as the timed plan it was. A null duration
+ * is the v1 indefinite session, which reports as the until-stopped plan it was.
+ */
 function planOf(event: StartEvent): string {
-  return 'version' in event
-    ? statsPlanLabelV2(event.duration)
-    : statsPlanLabelV2({ kind: 'timed', minutes: event.durationMin });
+  if ('version' in event) return statsPlanLabelV2(event.duration);
+  return statsPlanLabelV2(
+    event.durationMin === null
+      ? { kind: 'until-stopped' }
+      : { kind: 'timed', minutes: event.durationMin },
+  );
 }
 
 function closed(

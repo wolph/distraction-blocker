@@ -730,7 +730,7 @@ function parseSessionConfig(value: unknown): ParsedSessionConfig | null {
     (value.strictness !== 'flexible' &&
       value.strictness !== 'hard' &&
       value.strictness !== 'friction') ||
-    !isRelativeMinuteDuration(value.durationMin) ||
+    (value.durationMin !== null && !isRelativeMinuteDuration(value.durationMin)) ||
     (value.cycling !== null && cycling === null) ||
     typeof value.intention !== 'string' ||
     (value.source !== 'manual' && value.source !== 'schedule') ||
@@ -743,6 +743,12 @@ function parseSessionConfig(value: unknown): ParsedSessionConfig | null {
     (value.source === 'manual' && value.scheduleEntryId !== null) ||
     (value.source === 'schedule' && value.scheduleEntryId === null)
   ) {
+    return null;
+  }
+  // The v1 indefinite session was manual and never cycled, as the pre-merge writer required. Its
+  // strictness is read as stored: the v2 contract decides what an indefinite Hard session becomes,
+  // and refusing it here would drop the session and its focus instead of settling them.
+  if (value.durationMin === null && (value.source !== 'manual' || value.cycling !== null)) {
     return null;
   }
   const config: Omit<NormalizedSessionConfigV1, 'rules'> = {
@@ -770,55 +776,37 @@ function parseSessionConfig(value: unknown): ParsedSessionConfig | null {
   return config;
 }
 
-function parsePausedFrom(value: unknown): { phase: 'focus' | 'break'; phaseEndsAt: number } | null {
+function parsePausedFrom(value: unknown): ParsedSessionState['pausedFrom'] {
   if (!isRecord(value)) return null;
   if (
     (value.phase !== 'focus' && value.phase !== 'break') ||
-    !isNonNegativeNumber(value.phaseEndsAt)
+    !isNullableDeadline(value.phaseEndsAt)
   ) {
     return null;
   }
   return { phase: value.phase, phaseEndsAt: value.phaseEndsAt };
 }
 
+/**
+ * The v1 session reader, with the timing rules of the pre-merge writer. A timed session carries
+ * both deadlines. The indefinite session carries a null duration, a null session end, and a null
+ * focus end, and may be paused with a numeric pause end that returns to that null focus end.
+ */
 function parseSession(value: unknown): ParsedSessionState | null {
   if (!isRecord(value)) return null;
   const config: ParsedSessionConfig | null = parseSessionConfig(value.config);
-  const pausedFrom: { phase: 'focus' | 'break'; phaseEndsAt: number } | null = parsePausedFrom(
-    value.pausedFrom,
-  );
+  const pausedFrom: ParsedSessionState['pausedFrom'] = parsePausedFrom(value.pausedFrom);
   if (
     config === null ||
     (value.sessionId !== undefined && !isNonBlankString(value.sessionId)) ||
     (value.phase !== 'focus' && value.phase !== 'break' && value.phase !== 'paused') ||
     !isNonNegativeNumber(value.startedAt) ||
-    !isNonNegativeNumber(value.sessionEndsAt) ||
+    !isNullableDeadline(value.sessionEndsAt) ||
     !isNonNegativeNumber(value.phaseStartedAt) ||
-    !isNonNegativeNumber(value.phaseEndsAt) ||
+    !isNullableDeadline(value.phaseEndsAt) ||
     !isNonNegativeInteger(value.cycleIndex) ||
     !isNonNegativeNumber(value.focusedMs)
   ) {
-    return null;
-  }
-  if (
-    value.sessionEndsAt < value.startedAt ||
-    value.phaseStartedAt < value.startedAt ||
-    value.phaseEndsAt < value.startedAt ||
-    (value.phase === 'paused' && value.phaseEndsAt < value.phaseStartedAt) ||
-    (value.phase !== 'paused' && value.phaseEndsAt > value.sessionEndsAt) ||
-    (value.phase === 'break' && config.cycling === null)
-  ) {
-    return null;
-  }
-  if (value.phase === 'paused') {
-    if (
-      pausedFrom === null ||
-      pausedFrom.phaseEndsAt < value.phaseStartedAt ||
-      pausedFrom.phaseEndsAt > value.sessionEndsAt
-    ) {
-      return null;
-    }
-  } else if (value.pausedFrom !== null && value.pausedFrom !== undefined) {
     return null;
   }
   const session: ParsedSessionState = {
@@ -832,8 +820,58 @@ function parseSession(value: unknown): ParsedSessionState | null {
     pausedFrom: value.phase === 'paused' ? pausedFrom : null,
     focusedMs: value.focusedMs,
   };
+  if (!validSessionTiming(session)) return null;
+  if (session.phase !== 'paused' && value.pausedFrom !== null && value.pausedFrom !== undefined) {
+    return null;
+  }
   if (isNonBlankString(value.sessionId)) session.sessionId = value.sessionId;
   return session;
+}
+
+function isNullableDeadline(value: unknown): value is number | null {
+  return value === null || isNonNegativeNumber(value);
+}
+
+/**
+ * The pre-merge writer's invariants, one branch per duration kind. An indefinite session has no
+ * session end and no cycle, focuses with no deadline and no saved phase, and pauses with a pause
+ * end at or after the pause start that returns to a focus phase with no deadline. A timed session
+ * has both deadlines at or after its start, a pause that returns to a phase ending inside the
+ * session, and a break only when it cycles.
+ */
+function validSessionTiming(session: ParsedSessionState): boolean {
+  const { config, phase, startedAt, phaseStartedAt, phaseEndsAt, sessionEndsAt, pausedFrom } =
+    session;
+  if (phaseStartedAt < startedAt) return false;
+  if (config.durationMin === null) {
+    if (sessionEndsAt !== null || session.cycleIndex !== 0) return false;
+    if (phase === 'focus') return phaseEndsAt === null && pausedFrom === null;
+    return (
+      phase === 'paused' &&
+      phaseEndsAt !== null &&
+      phaseEndsAt >= phaseStartedAt &&
+      pausedFrom?.phase === 'focus' &&
+      pausedFrom.phaseEndsAt === null
+    );
+  }
+  if (
+    sessionEndsAt === null ||
+    phaseEndsAt === null ||
+    sessionEndsAt < startedAt ||
+    phaseEndsAt < startedAt
+  ) {
+    return false;
+  }
+  if (phase === 'paused') {
+    return (
+      phaseEndsAt >= phaseStartedAt &&
+      pausedFrom !== null &&
+      pausedFrom.phaseEndsAt !== null &&
+      pausedFrom.phaseEndsAt >= phaseStartedAt &&
+      pausedFrom.phaseEndsAt <= sessionEndsAt
+    );
+  }
+  return phaseEndsAt <= sessionEndsAt && (phase !== 'break' || config.cycling !== null);
 }
 
 function parseGate(value: unknown): GateState | null {
@@ -925,7 +963,8 @@ function parseEventRecord(value: unknown): LegacyEventRecord | null {
         (value.strictness !== 'flexible' &&
           value.strictness !== 'hard' &&
           value.strictness !== 'friction') ||
-        !isNonNegativeNumber(value.durationMin) ||
+        // Null is the v1 indefinite session start, which the pre-merge build recorded this way.
+        (value.durationMin !== null && !isNonNegativeNumber(value.durationMin)) ||
         typeof value.intention !== 'string'
       ) {
         return null;

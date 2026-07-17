@@ -102,6 +102,19 @@ function legacySession(overrides: Partial<NormalizedSessionStateV1> = {}): Legac
   } as LegacyActiveSession;
 }
 
+/**
+ * The v1 indefinite session as the pre-merge build stored it: a null duration, no session end,
+ * and no focus end. Focus by default, with the caller overriding the paused shape.
+ */
+function indefiniteSession(overrides: Partial<NormalizedSessionStateV1> = {}): LegacyActiveSession {
+  return legacySession({
+    config: legacyConfig({ durationMin: null }),
+    sessionEndsAt: null,
+    phaseEndsAt: null,
+    ...overrides,
+  });
+}
+
 function deferredClaim(): DeferredBlockClaim {
   return {
     attemptAt: START_AT,
@@ -172,6 +185,12 @@ function activeInput(
   overrides: Partial<MigrationInputV2> = {},
 ): MigrationInputV2 {
   return migrationInput({ runtime: legacyRuntime({ session }), ...overrides });
+}
+
+/** A timed session's deadline, narrowed from the nullable v1 field for the assertions that need a number. */
+function fixedDeadline(value: number | null): number {
+  if (value === null) expect.unreachable('expected a fixed deadline on a timed session');
+  return value;
 }
 
 function expectCoreError(build: () => unknown, message?: RegExp): void {
@@ -278,9 +297,10 @@ describe('legacy config and state migration', (): void => {
       focusedMs: 47 * MINUTE_MS,
     });
     const migrated: SessionStateV2 | null = migrateLegacySessionStateV1(pausedLate, null);
+    const fixedEnd: number = fixedDeadline(pausedLate.sessionEndsAt);
 
-    expect(pausedLate.phaseEndsAt).toBeGreaterThan(pausedLate.sessionEndsAt);
-    expect(migrated?.phaseEndsAt).toBe(pausedLate.sessionEndsAt);
+    expect(pausedLate.phaseEndsAt).toBeGreaterThan(fixedEnd);
+    expect(migrated?.phaseEndsAt).toBe(fixedEnd);
     expect(migrated?.pausedFrom).toEqual(pausedLate.pausedFrom);
   });
 
@@ -298,6 +318,68 @@ describe('legacy config and state migration', (): void => {
     expect(
       migrateLegacySessionStateV1({ ...legacySession(), sessionId: 'session-1' }, null),
     ).toBeNull();
+  });
+
+  it('maps a null legacy duration to until-stopped with cycling off', (): void => {
+    const config: NormalizedSessionConfigV1 = legacyConfig({ durationMin: null });
+
+    expect(migrateLegacySessionConfigV1(config, null)).toEqual({
+      mode: config.mode,
+      strictness: 'friction',
+      duration: { kind: 'until-stopped' },
+      cycling: null,
+      intention: config.intention,
+      source: 'manual',
+      scheduleOccurrence: null,
+      rules: config.rules,
+    });
+    // The v1 reader never hands cycling to a null duration, and a direct caller that does gets
+    // the same until-stopped config rather than one the v2 contract refuses.
+    expect(
+      migrateLegacySessionConfigV1(
+        legacyConfig({
+          durationMin: null,
+          cycling: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 },
+        }),
+        null,
+      )?.cycling,
+    ).toBeNull();
+  });
+
+  it('migrates a v1 until-stopped focus session with null endpoints', (): void => {
+    const session: LegacyActiveSession = indefiniteSession({ focusedMs: 5 * MINUTE_MS });
+
+    expect(migrateLegacySessionStateV1(session, null)).toEqual({
+      version: 2,
+      sessionId: SESSION_ID,
+      config: migrateLegacySessionConfigV1(session.config, null),
+      startedAt: START_AT,
+      sessionEndsAt: null,
+      phase: 'focus',
+      phaseStartedAt: START_AT,
+      phaseEndsAt: null,
+      cycleIndex: 0,
+      pausedFrom: null,
+      focusedMs: 5 * MINUTE_MS,
+    });
+  });
+
+  it('migrates a v1 until-stopped paused session', (): void => {
+    const pausedAt: number = START_AT + 10 * MINUTE_MS;
+    const paused: LegacyActiveSession = indefiniteSession({
+      phase: 'paused',
+      phaseStartedAt: pausedAt,
+      phaseEndsAt: pausedAt + 5 * MINUTE_MS,
+      pausedFrom: { phase: 'focus', phaseEndsAt: null },
+      focusedMs: 10 * MINUTE_MS,
+    });
+    const migrated: SessionStateV2 | null = migrateLegacySessionStateV1(paused, null);
+
+    expect(migrated?.phase).toBe('paused');
+    // There is no session end to clamp the pause to, so the pause end carries over as stored.
+    expect(migrated?.phaseEndsAt).toBe(pausedAt + 5 * MINUTE_MS);
+    expect(migrated?.pausedFrom).toEqual({ phase: 'focus', phaseEndsAt: null });
+    expect(migrated?.sessionEndsAt).toBeNull();
   });
 });
 
@@ -338,7 +420,6 @@ describe('migration checkpoint builder', (): void => {
 
   it('carries every v1 runtime field the v2 runtime still owns', (): void => {
     const legacy: LegacyRuntimeStateV1 = legacyRuntime({
-      gate: liveGate(),
       unlocks: [liveUnlock()],
       accruedFocusMs: 90_000,
       todayAgg: { ...emptyAggregate(), focusMs: 90_000 },
@@ -348,7 +429,6 @@ describe('migration checkpoint builder', (): void => {
       migrationInput({ runtime: legacy }),
     ).projectedRuntime;
 
-    expect(runtime.gate).toEqual(legacy.gate);
     expect(runtime.unlocks).toEqual(legacy.unlocks);
     expect(runtime.accruedFocusMs).toBe(90_000);
     expect(runtime.tabStates).toEqual(legacy.tabStates);
@@ -360,6 +440,28 @@ describe('migration checkpoint builder', (): void => {
     expect(runtime.todayAgg).toEqual(legacy.todayAgg);
     expect(runtime.lastPruneDate).toBe('2026-09-01');
     expect(Object.hasOwn(runtime, 'scheduleActiveEntryId')).toBe(false);
+  });
+
+  it('drops a v1 gate that has no session to belong to', (): void => {
+    // Rick's profile stored `gate: null` beside `session: null`, but a v1 worker evicted between
+    // the session end and the gate clear leaves one behind, and the v2 runtime contract refuses a
+    // gate with no session. Carrying it would strand the whole migration on a stale gate.
+    const runtime: RuntimeStateV2 = buildRuntimeMigrationCheckpointV1ToV2(
+      migrationInput({ runtime: legacyRuntime({ gate: liveGate() }) }),
+    ).projectedRuntime;
+
+    expect(runtime.session).toBeNull();
+    expect(runtime.gate).toBeNull();
+  });
+
+  it('keeps the gate of a migrated session', (): void => {
+    const session: NormalizedSessionStateV1 = legacySession();
+    const runtime: RuntimeStateV2 = buildRuntimeMigrationCheckpointV1ToV2(
+      activeInput(session, { runtime: legacyRuntime({ session, gate: liveGate() }) }),
+    ).projectedRuntime;
+
+    expect(runtime.session?.sessionId).toBe(SESSION_ID);
+    expect(runtime.gate).toEqual(liveGate());
   });
 
   it('reserves one base policy and one runtime revision for a manual active session', (): void => {
@@ -460,6 +562,28 @@ describe('invalid active state migration', (): void => {
       expect(checkpoint.projectedRuntime.session).toBeNull();
       expect(checkpoint.cleanupPlan).not.toBeNull();
     }
+  });
+
+  it('closes a v1 until-stopped hard session as invalid-active with an until-stopped end event', (): void => {
+    // Hard has no manual end, so the v2 contract refuses it with no timer. The session still
+    // settles its focus, and the end event reports the duration the session actually had.
+    const session: NormalizedSessionStateV1 = indefiniteSession({
+      config: legacyConfig({ durationMin: null, strictness: 'hard' }),
+    });
+    const checkpoint: RuntimeMigrationCheckpointV1ToV2 = buildRuntimeMigrationCheckpointV1ToV2(
+      activeInput(session),
+    );
+    const plan: MigrationCleanupPlan | null = checkpoint.cleanupPlan;
+
+    expect(checkpoint.projectedRuntime.session).toBeNull();
+    expect(checkpoint.projectedRuntime.pendingClosure?.stage).toBe('cleanup');
+    expect(plan?.projection.endEvent).toMatchObject({
+      reason: 'invalid-active-state',
+      outcome: 'canceled',
+      duration: { kind: 'until-stopped' },
+      focusedMs: 30 * MINUTE_MS,
+    });
+    expect(plan?.settlement.settledThrough).toBe(MIGRATED_AT);
   });
 
   it('settles the legacy focus once into an immutable canceled projection', (): void => {

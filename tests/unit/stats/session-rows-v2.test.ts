@@ -71,7 +71,7 @@ function v2End(
 
 function legacyStart(
   at: number,
-  durationMin: number,
+  durationMin: number | null,
   intention: string,
   source: 'manual' | 'schedule' = 'manual',
   sessionId?: string,
@@ -265,6 +265,20 @@ describe('pairSessionRowsV2', (): void => {
       unlockMs: 5 * MIN,
     });
     expect(v2Row?.plan).toBe(statsPlanLabelV2({ kind: 'timed', minutes: 25 }));
+  });
+
+  it('labels a legacy start with a null duration as until-stopped', (): void => {
+    // The pre-merge v1 writer recorded an indefinite session start with a null duration, and the
+    // stats column spells that plan the same way it spells a v2 until-stopped start.
+    const legacy: LegacyEventRecord[] = [
+      legacyStart(T9, null, 'open ended'),
+      { t: 'sessionCanceled', at: T925, focusedMs: 20 * MIN },
+    ];
+    const row: SessionRowV2 | undefined = pairSessionRowsV2(newestFirst(legacy))[0];
+
+    expect(row?.plan).toBe(statsPlanLabelV2(UNTIL_STOPPED));
+    expect(row?.plan).not.toBe(statsPlanLabelV2({ kind: 'timed', minutes: 0 }));
+    expect(row?.intention).toBe('open ended');
   });
 
   it('runs a dangling newest start and ends a displaced one with unknown focus', (): void => {

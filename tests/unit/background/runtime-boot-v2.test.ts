@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { mergeEventLogV2 } from '../../../src/background/event-log-v2';
 import {
@@ -1021,19 +1019,65 @@ describe('v2 boot with an indefinite session', (): void => {
     expect(test.calls).not.toContain('loadAggregates');
   });
 
-  it('cannot meet an indefinite session on the migration path at all', (): void => {
-    // The other half of the same fact, and the reason the settlement path never has to reason
-    // about a null session end: a legacy config carries `durationMin`, a number, and both
-    // migration sites map it to a timed duration. There is no v1 shape that becomes
-    // until-stopped, so the only indefinite session boot can ever see is one v2 already wrote.
-    const migration: string = readFileSync(
-      path.join(__dirname, '../../../src/background/runtime-migration-v2.ts'),
-      'utf8',
+  it('migrates a v1 until-stopped session into an active until-stopped v2 session', async (): Promise<void> => {
+    // The pre-merge v1 build stored an indefinite session as a null duration with null session
+    // and focus deadlines. It migrates into the v2 until-stopped shape with nothing invented for
+    // the deadlines it never had, and the aggregate read stays the same one-day window a timed
+    // session on the same date reads.
+    const test: BootHarness = harness(
+      emptyStorage({
+        runtime: legacyRuntime({
+          session: legacySession({
+            config: legacyConfig({ durationMin: null }),
+            sessionEndsAt: null,
+            phaseEndsAt: null,
+          }),
+        }),
+      }),
     );
 
-    expect(migration).toContain("duration: { kind: 'timed', minutes: config.durationMin }");
-    expect(migration).toContain("duration: { kind: 'timed', minutes: legacy.config.durationMin }");
-    expect(migration).not.toContain("kind: 'until-stopped'");
+    const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
+
+    expect(result.kind).toBe('migrated');
+    expect(result.runtime.session?.config.duration).toEqual({ kind: 'until-stopped' });
+    expect(result.runtime.session?.sessionEndsAt).toBeNull();
+    expect(result.runtime.session?.phaseEndsAt).toBeNull();
+    expect(result.runtime.session?.phase).toBe('focus');
+    expect(result.runtime.pendingClosure).toBeNull();
+    expect(test.aggregateKeyReads).toEqual([[syncAggKey(DEVICE_ID, LOCAL_DATE)]]);
+    expect(test.errors).toEqual([]);
+  });
+
+  it('settles a v1 until-stopped hard session into a cleanup closure', async (): Promise<void> => {
+    // Hard with no timer has no v2 form, so the session closes at the migration instant and the
+    // thirty minutes it focused settle once into the bank and the day's aggregate.
+    const test: BootHarness = harness(
+      emptyStorage({
+        runtime: legacyRuntime({
+          session: legacySession({
+            config: legacyConfig({ durationMin: null, strictness: 'hard' }),
+            sessionEndsAt: null,
+            phaseEndsAt: null,
+          }),
+        }),
+      }),
+    );
+
+    const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
+    const aggregateKey: string = syncAggKey(DEVICE_ID, LOCAL_DATE);
+
+    expect(result.kind).toBe('migrated');
+    expect(result.runtime.session).toBeNull();
+    expect(result.runtime.pendingClosure?.stage).toBe('cleanup');
+    expect(test.storage.events.at(-1)).toMatchObject({
+      t: 'sessionEnded',
+      reason: 'invalid-active-state',
+      outcome: 'canceled',
+      duration: { kind: 'until-stopped' },
+      focusedMs: 30 * MINUTE_MS,
+    });
+    expect(test.storage.bank.balanceMs).toBeGreaterThan(0);
+    expect(test.storage.aggregates[aggregateKey]?.focusMs).toBe(30 * MINUTE_MS);
   });
 
   it('leaves the stale day on the runtime for the rollover that owns it', async (): Promise<void> => {

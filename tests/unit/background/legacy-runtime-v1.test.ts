@@ -508,6 +508,57 @@ describe('legacy focus settlement', (): void => {
     expect(result.accruedFocusMsAfter).toBe(30 * MINUTE_MS);
   });
 
+  it('credits an indefinite focus phase through the migration instant', (): void => {
+    // No session end and no focus end, so the migration instant is the only bound there is.
+    const result: LegacySettlementResultV1 = settleLegacySessionV1(
+      settlementInput({
+        session: focusSession({
+          config: legacyConfig({ durationMin: null, strictness: 'friction' }),
+          sessionEndsAt: null,
+          phaseEndsAt: null,
+        }),
+      }),
+    );
+
+    expect(result.settlement).toEqual({
+      settledAt: START_AT + 30 * MINUTE_MS,
+      settledThrough: START_AT + 30 * MINUTE_MS,
+      phaseAtMigration: 'focus',
+      focusedMsBefore: 0,
+      creditedFocusMs: 30 * MINUTE_MS,
+      focusedMsAfter: 30 * MINUTE_MS,
+    });
+    expect(result.aggregateSets[LOCAL_KEY]?.focusMs).toBe(30 * MINUTE_MS);
+  });
+
+  it('settles an indefinite paused session at its phase start', (): void => {
+    const pausedAt: number = START_AT + 10 * MINUTE_MS;
+    const result: LegacySettlementResultV1 = settleLegacySessionV1(
+      settlementInput({
+        session: focusSession({
+          config: legacyConfig({ durationMin: null, strictness: 'friction' }),
+          sessionEndsAt: null,
+          phase: 'paused',
+          phaseStartedAt: pausedAt,
+          phaseEndsAt: pausedAt + 5 * MINUTE_MS,
+          pausedFrom: { phase: 'focus', phaseEndsAt: null },
+          focusedMs: 10 * MINUTE_MS,
+        }),
+      }),
+    );
+
+    // The pause end is the only numeric bound, a pause credits no focus, and the ten minutes the
+    // watermark never banked land on the date the focus stopped.
+    expect(result.settlement).toMatchObject({
+      settledThrough: pausedAt + 5 * MINUTE_MS,
+      phaseAtMigration: 'paused',
+      creditedFocusMs: 0,
+      focusedMsAfter: 10 * MINUTE_MS,
+    });
+    expect(result.bankAfter).toEqual(accrue({ balanceMs: 0 }, 10 * MINUTE_MS, PAUSE_ECONOMY));
+    expect(result.aggregateSets[LOCAL_KEY]?.focusMs).toBe(10 * MINUTE_MS);
+  });
+
   it('returns the watermark the projected runtime adopts', (): void => {
     const settled: LegacySettlementResultV1 = settleLegacySessionV1(
       settlementInput({

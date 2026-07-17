@@ -12,6 +12,7 @@ import type {
  * Timing semantics, the contract plan 03 codes against:
  *
  * - The session wall clock never stops. sessionEndsAt is fixed at start.
+ *   Null session and focus deadlines keep manual sessions active until unlock.
  * - Cycling splits the session into focus phases separated by breaks.
  *   Every longEvery-th break is long. Phases clamp to sessionEndsAt,
  *   and a phase that would start with no time left completes the session.
@@ -32,9 +33,10 @@ export function startSession(
   now: number,
   sessionId?: string,
 ): NormalizedSessionStateV1 {
-  const sessionEndsAt: number = now + minToMs(config.durationMin);
-  const focusEnd: number =
-    config.cycling === null
+  const sessionEndsAt: number | null =
+    config.durationMin === null ? null : now + minToMs(config.durationMin);
+  const focusEnd: number | null =
+    config.cycling === null || sessionEndsAt === null
       ? sessionEndsAt
       : Math.min(now + minToMs(config.cycling.focusMin), sessionEndsAt);
   return {
@@ -73,7 +75,10 @@ export function advance(
   const events: MachineEvent[] = [];
 
   for (;;) {
-    const boundary: number = Math.min(s.phaseEndsAt, s.sessionEndsAt);
+    // A phase with no end has no boundary to cross: the indefinite session stays as it is.
+    if (s.phaseEndsAt === null) return { next: s, events };
+    const boundary: number =
+      s.sessionEndsAt === null ? s.phaseEndsAt : Math.min(s.phaseEndsAt, s.sessionEndsAt);
     if (now < boundary) return { next: s, events };
 
     if (s.phase === 'focus') {
@@ -82,7 +87,7 @@ export function advance(
       // phaseEndsAt, which must count as zero focus, not negative.
       s.focusedMs += Math.max(0, Math.min(boundary, s.phaseEndsAt) - s.phaseStartedAt);
     }
-    if (boundary >= s.sessionEndsAt) {
+    if (s.sessionEndsAt !== null && boundary >= s.sessionEndsAt) {
       events.push({ type: 'completed', at: s.sessionEndsAt, focusedMs: s.focusedMs });
       return { next: null, events };
     }
@@ -90,7 +95,7 @@ export function advance(
       const len: number = breakLenMs(s);
       // The - 1 makes a break that exactly touches sessionEndsAt complete
       // the session instead of scheduling a zero-length focus cycle.
-      if (len === 0 || boundary + len >= s.sessionEndsAt - 1) {
+      if (len === 0 || (s.sessionEndsAt !== null && boundary + len >= s.sessionEndsAt - 1)) {
         events.push({ type: 'completed', at: boundary, focusedMs: s.focusedMs });
         return { next: null, events };
       }
@@ -111,11 +116,12 @@ export function advance(
         phase: 'focus',
         cycleIndex: s.cycleIndex + 1,
         phaseStartedAt: boundary,
-        phaseEndsAt: Math.min(boundary + focusLen, s.sessionEndsAt),
+        phaseEndsAt:
+          s.sessionEndsAt === null ? null : Math.min(boundary + focusLen, s.sessionEndsAt),
         pausedFrom: null,
       };
     } else {
-      const from: { phase: 'focus' | 'break'; phaseEndsAt: number } | null = s.pausedFrom;
+      const from: NormalizedSessionStateV1['pausedFrom'] = s.pausedFrom;
       if (from === null) throw new CoreError('not-cancelable', 'paused without pausedFrom');
       events.push({ type: 'phaseChanged', from: 'paused', to: from.phase, at: boundary });
       s = {
@@ -178,7 +184,8 @@ export function startNextFocusEarly(
     phase: 'focus',
     cycleIndex: state.cycleIndex + 1,
     phaseStartedAt: now,
-    phaseEndsAt: Math.min(now + focusLen, state.sessionEndsAt),
+    phaseEndsAt:
+      state.sessionEndsAt === null ? null : Math.min(now + focusLen, state.sessionEndsAt),
     pausedFrom: null,
   };
 }

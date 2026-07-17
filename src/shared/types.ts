@@ -115,8 +115,11 @@ export interface CycleConfig {
 export interface NormalizedSessionConfigV1 {
   mode: SessionMode;
   strictness: Strictness;
-  /** total session length in minutes, fractional allowed (tests use 0.1) */
-  durationMin: number;
+  /**
+   * total session length in minutes, fractional allowed (tests use 0.1). Null is the v1
+   * indefinite session, which the pre-merge build stored with null session and focus deadlines.
+   */
+  durationMin: number | null;
   cycling: CycleConfig | null;
   intention: string;
   source: 'manual' | 'schedule';
@@ -133,14 +136,16 @@ export interface NormalizedSessionStateV1 {
   sessionId?: string;
   config: NormalizedSessionConfigV1;
   startedAt: number;
-  sessionEndsAt: number;
+  /** null only for the v1 indefinite session, whose duration is null */
+  sessionEndsAt: number | null;
   phase: 'focus' | 'break' | 'paused';
   phaseStartedAt: number;
-  phaseEndsAt: number;
+  /** null only for the focus phase of the v1 indefinite session */
+  phaseEndsAt: number | null;
   /** 0-based index of the current focus cycle */
   cycleIndex: number;
-  /** set while paused: what to restore on resume */
-  pausedFrom: { phase: 'focus' | 'break'; phaseEndsAt: number } | null;
+  /** set while paused: what to restore on resume, with a null end for an indefinite focus phase */
+  pausedFrom: { phase: 'focus' | 'break'; phaseEndsAt: number | null } | null;
   /** focus ms completed so far, maintained by advance(), excludes breaks and pauses */
   focusedMs: number;
 }
@@ -474,7 +479,8 @@ export type LegacyEventRecord =
       source: 'manual' | 'schedule';
       mode: SessionMode;
       strictness: Strictness;
-      durationMin: number;
+      /** null is the v1 indefinite session, recorded by the pre-merge build */
+      durationMin: number | null;
       intention: string;
       sessionId?: string;
     }

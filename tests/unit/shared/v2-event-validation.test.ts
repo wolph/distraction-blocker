@@ -329,6 +329,19 @@ describe('v2 event record union validation', (): void => {
     expect(isSessionEventRecordV2(ENDED)).toBe(true);
   });
 
+  it('accepts a legacy sessionStarted with durationMin null through every guard', (): void => {
+    // The pre-merge v1 writer recorded an indefinite session start with a null duration, and a
+    // stored log that carries one must not lose the record on the next parse.
+    const indefinite: unknown = { ...LEGACY_START, durationMin: null };
+
+    expect(isLegacyEventRecord(indefinite)).toBe(true);
+    expect(isEventRecord(indefinite)).toBe(true);
+    expect(isSessionEventRecordV2(indefinite)).toBe(true);
+    // Null is the one non-number the guard admits. Absence and other types stay refused.
+    expect(isLegacyEventRecord({ ...LEGACY_START, durationMin: undefined })).toBe(false);
+    expect(isLegacyEventRecord({ ...LEGACY_START, durationMin: 'none' })).toBe(false);
+  });
+
   it('rejects a legacy start carrying version 2 without an event ID', (): void => {
     expect(isSessionEventRecordV2({ ...LEGACY_START, version: 2 })).toBe(false);
     expect(isSessionEventRecordV2({ ...LEGACY_EARNED, version: 2 })).toBe(false);

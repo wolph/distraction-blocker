@@ -65,6 +65,15 @@ describe('startSession', () => {
     const s = startSession(cfg({ cycling: null }), T0);
     expect(s.phaseEndsAt).toBe(s.sessionEndsAt);
   });
+  it('keeps a session with no duration open with no deadlines', () => {
+    // The v1 indefinite session: no session end, no focus end, and nothing for advance to cross.
+    const s = startSession(cfg({ durationMin: null, cycling: null }), T0);
+    expect(s.sessionEndsAt).toBeNull();
+    expect(s.phaseEndsAt).toBeNull();
+    const { next, events } = advance(s, T0 + 600 * MIN);
+    expect(next).toEqual(s);
+    expect(events).toEqual([]);
+  });
 });
 
 describe('advance', () => {

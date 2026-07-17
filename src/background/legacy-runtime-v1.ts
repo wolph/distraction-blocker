@@ -152,7 +152,13 @@ function legacySettlementBoundsV1(
   accruedFocusMs: number,
   migratedAt: number,
 ): LegacySettlementBoundsV1 {
-  const settledThrough: number = Math.min(migratedAt, session.sessionEndsAt, session.phaseEndsAt);
+  // A v1 indefinite session has no session end and no focus end, so each null bound is the
+  // migration instant itself: nothing fixed ever stopped the credit before now.
+  const settledThrough: number = Math.min(
+    migratedAt,
+    session.sessionEndsAt ?? migratedAt,
+    session.phaseEndsAt ?? migratedAt,
+  );
   const creditedFocusMs: number =
     session.phase === 'focus' ? Math.max(0, settledThrough - session.phaseStartedAt) : 0;
   const focusedMsAfter: number = session.focusedMs + creditedFocusMs;
@@ -277,8 +283,13 @@ function detachedLegacyRuntime(runtime: LegacyRuntimeStateV1): LegacyRuntimeStat
 function assertLegacySettlementInput(input: LegacySettlementInputV1): void {
   assertSafeTimestamp(input.migratedAt, 'migration time');
   assertSafeTimestamp(input.session.phaseStartedAt, 'legacy phase start');
-  assertSafeTimestamp(input.session.phaseEndsAt, 'legacy phase end');
-  assertSafeTimestamp(input.session.sessionEndsAt, 'legacy session end');
+  // The v1 indefinite session stores null for the deadlines it never had.
+  if (input.session.phaseEndsAt !== null) {
+    assertSafeTimestamp(input.session.phaseEndsAt, 'legacy phase end');
+  }
+  if (input.session.sessionEndsAt !== null) {
+    assertSafeTimestamp(input.session.sessionEndsAt, 'legacy session end');
+  }
   assertSafeTimestamp(input.session.focusedMs, 'legacy settled focus');
   if (!Number.isFinite(input.accruedFocusMs) || input.accruedFocusMs < 0) {
     invalidLegacy('the accrued focus watermark must be a non-negative finite number');
