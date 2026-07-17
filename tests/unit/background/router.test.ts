@@ -427,6 +427,23 @@ describe('routeMessage onboarding wiring', (): void => {
     });
   });
 
+  it('answers getBootFailure with no failure once boot succeeded', async (): Promise<void> => {
+    // A request that reaches the router did so through a resolved boot, so there is no failure to
+    // report. Main answers the failed case itself, before any request can reach here.
+    await expect(
+      routeMessage(engine, { type: 'getBootFailure' }, sender, onboardingStorage()),
+    ).resolves.toEqual({ ok: true, failure: null });
+  });
+
+  it('answers retryBoot and refuses resetLocalRuntime when boot is healthy', async (): Promise<void> => {
+    await expect(
+      routeMessage(engine, { type: 'retryBoot' }, sender, onboardingStorage()),
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      routeMessage(engine, { type: 'resetLocalRuntime' }, sender, onboardingStorage()),
+    ).resolves.toEqual({ ok: false, error: 'Focus Lock is running, nothing to reset' });
+  });
+
   it('returns setup state without exposing a broad setup writer', async (): Promise<void> => {
     const setup: SetupState = { ...DEFAULT_SETUP, websiteAccess: 'denied' };
     const storage: PolicyStorage = onboardingStorage({

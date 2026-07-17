@@ -108,6 +108,42 @@ function NotificationsSection(props: SectionProps): VNode {
   );
 }
 
+/**
+ * The load error, with the boot retry beside it when the worker is what did not start. The retry
+ * loads the page again on its own, so a second failure lands in the same line with its reason.
+ */
+function LoadError({ store }: { store: SettingsStore }): VNode {
+  const [pending, setPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
+  const retry: () => Promise<void> = async (): Promise<void> => {
+    setPending(true);
+    try {
+      await store.retryBoot();
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <div class="load-error">
+      <p class="save-error" role="alert">
+        {store.loadError}
+      </p>
+      {store.bootFailure !== null ? (
+        <button
+          type="button"
+          class="secondary"
+          disabled={pending}
+          onClick={(): void => {
+            void retry();
+          }}
+        >
+          Retry
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function PrivacySection(props: SectionProps): VNode {
   return (
     <section>
@@ -472,9 +508,7 @@ export function App(): VNode {
           <h1>Focus Lock settings</h1>
           {store.snapshot === null ? null : <SessionStatus snapshot={store.snapshot} />}
           {store.loadError !== null ? (
-            <p class="save-error" role="alert">
-              {store.loadError}
-            </p>
+            <LoadError store={store} />
           ) : draftSettings === null || draftLists === null ? (
             <p>Loading settings</p>
           ) : (

@@ -833,6 +833,51 @@ body {
   color: var(--text-soft);
 }
 
+.snapshot-status--retry {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+/* The recovery screen for a worker that did not start: one primary retry, one guarded reset. */
+.boot-failed {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.boot-failed h2,
+.boot-failed p,
+.boot-failed .form-error {
+  margin: 0;
+}
+
+.boot-failed [role="status"] {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.secondary-button {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.secondary-button:hover:enabled {
+  border-color: var(--focus-color);
+}
+
+.secondary-button:disabled {
+  cursor: default;
+  color: var(--text-soft);
+}
+
 .cycle-note {
   color: var(--text-soft);
   font-weight: 400;

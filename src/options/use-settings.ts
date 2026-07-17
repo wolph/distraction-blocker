@@ -4,6 +4,7 @@ import { sendRequest } from '../shared/messages';
 import { reloadOnceForInvalidSnapshot } from '../shared/reload-once';
 import {
   ackError,
+  isBootFailureResponse,
   isListsConfig,
   isRetrySyncResponse,
   isSessionSnapshot,
@@ -15,6 +16,7 @@ import { DATA_CLEAR_ERROR_COPY } from '../shared/session-copy';
 import { LOCAL_SETUP } from '../shared/storage-keys';
 import { updateTheme } from '../shared/theme';
 import type {
+  BootFailure,
   ListsConfig,
   SessionSnapshot,
   Settings,
@@ -24,6 +26,20 @@ import type {
 } from '../shared/types';
 
 const LOAD_ERROR: string = 'Could not load settings. Reload the page to try again.';
+const RETRY_BOOT_ERROR: string = 'Could not restart Focus Lock. Try again.';
+
+/**
+ * The failure that stopped the worker, or null. Asked only after a load failed: a running worker
+ * answers null, and a stopped one is the reason the load failed in the first place.
+ */
+async function loadBootFailure(): Promise<BootFailure | null> {
+  try {
+    const response: unknown = await sendRequest({ type: 'getBootFailure' });
+    return isBootFailureResponse(response) ? response.failure : null;
+  } catch {
+    return null;
+  }
+}
 
 type ScheduleMutation = {
   section: 'schedule';
@@ -70,6 +86,8 @@ export interface SettingsStore {
   snapshot: SessionSnapshot | null;
   setup: SetupState | null;
   loadError: string | null;
+  /** Why the worker did not start, when that is what the load error reports. */
+  bootFailure: BootFailure | null;
   /** resolves null on success, the worker's rejection string verbatim otherwise */
   saveSettings(mutation: SettingsMutation): Promise<string | null>;
   saveTheme(next: ThemeMode): Promise<string | null>;
@@ -80,6 +98,8 @@ export interface SettingsStore {
   clearData(scope: 'local-history' | 'synced-policy' | 'all'): Promise<string | null>;
   /** Resumes an all-data deletion that ran out of automatic attempts. */
   retryDataClear(): Promise<string | null>;
+  /** Runs the worker's boot again after a failure, then loads the page again. */
+  retryBoot(): Promise<string | null>;
 }
 
 interface WriteQueue {
@@ -164,7 +184,15 @@ export function useSettingsStore(): SettingsStore {
     useState<SetupState | null>(null);
   const [loadError, setLoadError]: [string | null, Dispatch<StateUpdater<string | null>>] =
     useState<string | null>(null);
+  const [bootFailure, setBootFailure]: [
+    BootFailure | null,
+    Dispatch<StateUpdater<BootFailure | null>>,
+  ] = useState<BootFailure | null>(null);
   const settingsRef: { current: Settings | null } = useRef<Settings | null>(null);
+  /** The initial load, kept so a boot retry can run it again outside the effect that owns it. */
+  const reload: { current: () => Promise<void> } = useRef<() => Promise<void>>(
+    async (): Promise<void> => undefined,
+  );
   const settingsWrites: WriteQueue = useRef<Promise<void>>(Promise.resolve());
   const listWrites: WriteQueue = useRef<Promise<void>>(Promise.resolve());
   const setupWrites: WriteQueue = useRef<Promise<void>>(Promise.resolve());
@@ -172,6 +200,19 @@ export function useSettingsStore(): SettingsStore {
   useEffect((): (() => void) => {
     let alive: boolean = true;
     let latestBroadcast: SessionSnapshot | null = null;
+    /**
+     * A load that failed asks whether the worker started at all. A stopped worker refuses every
+     * request with the same reason, and that reason is the more useful error to show, beside the
+     * retry that can fix it.
+     */
+    const failLoad: () => Promise<void> = async (): Promise<void> => {
+      const failure: BootFailure | null = await loadBootFailure();
+      if (!alive) return;
+      setBootFailure(failure);
+      setLoadError(
+        failure === null ? LOAD_ERROR : `Focus Lock could not start: ${failure.message}`,
+      );
+    };
     const load: () => Promise<void> = async (): Promise<void> => {
       try {
         const [loadedSettings, loadedLists, loadedSnapshot, loadedSetup]: [
@@ -189,12 +230,12 @@ export function useSettingsStore(): SettingsStore {
         // A stored or synced v1 schedule entry reads as a window entry through the v2 parser.
         const parsedSettings: Settings | null = parseStoredSettingsV2(loadedSettings);
         if (parsedSettings === null || !isListsConfig(loadedLists) || !isSetupState(loadedSetup)) {
-          setLoadError(LOAD_ERROR);
+          await failLoad();
           return;
         }
         if (!isSessionSnapshot(loadedSnapshot)) {
           if (reloadOnceForInvalidSnapshot()) return;
-          setLoadError(LOAD_ERROR);
+          await failLoad();
           return;
         }
         const currentSnapshot: SessionSnapshot = latestBroadcast ?? loadedSnapshot;
@@ -204,11 +245,13 @@ export function useSettingsStore(): SettingsStore {
         setLists(loadedLists);
         setSnapshot(currentSnapshot);
         setSetup(loadedSetup);
+        setBootFailure(null);
         setLoadError(null);
       } catch {
-        if (alive) setLoadError(LOAD_ERROR);
+        if (alive) await failLoad();
       }
     };
+    reload.current = load;
     void load();
     /**
      * Silent on purpose. `refreshSetup` answers a message for the control the user just pressed,
@@ -348,6 +391,21 @@ export function useSettingsStore(): SettingsStore {
       });
     };
 
+  const retryBoot: () => Promise<string | null> = async (): Promise<string | null> => {
+    return enqueueWrite(setupWrites, async (): Promise<string | null> => {
+      let error: string | null = null;
+      try {
+        error = ackError(await sendRequest({ type: 'retryBoot' }), RETRY_BOOT_ERROR);
+      } catch {
+        error = RETRY_BOOT_ERROR;
+      }
+      // Loaded again either way: a worker that started serves the page, and one that did not
+      // reports its reason through the same load error as before.
+      await reload.current();
+      return error;
+    });
+  };
+
   const retryDataClear: () => Promise<string | null> = async (): Promise<string | null> => {
     return enqueueWrite(setupWrites, async (): Promise<string | null> => {
       let error: string | null = null;
@@ -422,6 +480,7 @@ export function useSettingsStore(): SettingsStore {
     snapshot,
     setup,
     loadError,
+    bootFailure,
     saveSettings,
     saveTheme,
     saveLists,
@@ -430,5 +489,6 @@ export function useSettingsStore(): SettingsStore {
     retrySync,
     clearData,
     retryDataClear,
+    retryBoot,
   };
 }

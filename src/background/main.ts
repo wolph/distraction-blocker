@@ -1,12 +1,17 @@
 import { parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { emptyStreak } from '../core/streak';
-import { DEFAULT_SETTINGS } from '../shared/constants';
+import { DEFAULT_SETTINGS, DEFAULT_SETUP } from '../shared/constants';
 import type { DocumentContentCommand } from '../shared/enforcement-v2';
 import { CoreError } from '../shared/errors';
 import { exactDataEqual } from '../shared/exact-data';
-import type { Request, SoundId } from '../shared/messages';
+import type { Ack, Rejection, Request, SoundId } from '../shared/messages';
 import { WEBSITE_ORIGINS } from '../shared/permissions';
-import { isInstallMarker, isListsConfig, isSettings } from '../shared/runtime-validation';
+import {
+  isInstallMarker,
+  isListsConfig,
+  isSettings,
+  isSetupState,
+} from '../shared/runtime-validation';
 import {
   LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS,
   LOCAL_CACHES,
@@ -17,8 +22,10 @@ import {
   LOCAL_INSTALL_MARKER,
   LOCAL_LISTS_SNAPSHOT,
   LOCAL_ONBOARDING_DRAFT,
+  LOCAL_POLICY_COMMIT,
   LOCAL_RUNTIME,
   LOCAL_RUNTIME_MIGRATION,
+  LOCAL_RUNTIME_REJECTED,
   LOCAL_RUNTIME_SCHEMA,
   LOCAL_SETUP,
   LOCAL_SYNC_JOURNAL,
@@ -31,6 +38,7 @@ import {
 import { localDateStr, localMonthStr } from '../shared/time';
 import type {
   BankState,
+  BootFailure,
   DailyAgg,
   EventRecord,
   InstallMarker,
@@ -59,6 +67,7 @@ import {
 } from './content-registration';
 import {
   type AllDataClearJournalV2,
+  type AllDataClearPublicState,
   type DataClearJournal,
   type DataClearResetIdsV2,
   type FinalInstallMarkerProjection,
@@ -180,6 +189,80 @@ type PendingWebsiteAccessNotice = { value: WebsiteAccessNotice | null };
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
+
+/** The boot stage a failure is attributed to. Anything left untagged is the policy-storage stage. */
+type BootStage = BootFailure['stage'];
+
+function errorMessage(error: unknown): string {
+  const message: string = error instanceof Error ? error.message : String(error);
+  return message.trim().length > 0 ? message : 'unknown error';
+}
+
+/** Tags the error that escaped one boot stage. The cause keeps its own stack and message. */
+class BootStageError extends Error {
+  readonly stage: BootStage;
+
+  constructor(stage: BootStage, cause: unknown) {
+    super(errorMessage(cause), { cause });
+    this.name = 'BootStageError';
+    this.stage = stage;
+  }
+}
+
+/** What `ready` rejects with after a failed boot, so a listener can tell it from a route error. */
+class BootFailedError extends Error {
+  readonly failure: BootFailure;
+
+  constructor(failure: BootFailure) {
+    super(bootFailureRejection(failure).error);
+    this.name = 'BootFailedError';
+    this.failure = failure;
+  }
+}
+
+async function bootStage<T>(stage: BootStage, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error: unknown) {
+    throw error instanceof BootStageError ? error : new BootStageError(stage, error);
+  }
+}
+
+function bootFailureOf(error: unknown, at: number): BootFailure {
+  return error instanceof BootStageError
+    ? { stage: error.stage, message: error.message, at }
+    : { stage: 'policy-storage', message: errorMessage(error), at };
+}
+
+/** The one answer every request gets from a worker that did not start, with the reason attached. */
+function bootFailureRejection(failure: BootFailure): Rejection {
+  return { ok: false, error: `Focus Lock did not finish starting: ${failure.message}` };
+}
+
+/** The parked diagnostic is bounded, so a corrupt runtime cannot fill local storage a second time. */
+const PARKED_RUNTIME_MAX_CHARS: number = 32 * 1024;
+
+/** Serializes a value the reset parks. It is hostile input, so nothing here may throw. */
+function parkedJson(value: unknown): string | null {
+  if (value === undefined) return null;
+  try {
+    const json: string = JSON.stringify(value) ?? String(value);
+    return json.length <= PARKED_RUNTIME_MAX_CHARS
+      ? json
+      : `${json.slice(0, PARKED_RUNTIME_MAX_CHARS)}...`;
+  } catch {
+    return '[unserializable stored value]';
+  }
+}
+
+/** The diagnostic a manual reset leaves under `LOCAL_RUNTIME_REJECTED`. Never read back as authority. */
+type ParkedRuntimeDiagnostic = {
+  version: 1;
+  reason: 'manual-reset';
+  at: number;
+  runtime: string | null;
+  migration: string | null;
+};
 
 function requiresWorkerControl(request: Request): boolean {
   switch (request.type) {
@@ -1130,32 +1213,36 @@ async function boot(
   publishSetupCompleted(setup.completed && !pendingAllDataClear);
   // One runtime authority, resolved before anything else runs. A stored migration checkpoint is
   // finished, a v2 runtime is replayed, a legacy runtime migrates once, and anything else is
-  // reported and replaced by an empty v2 runtime.
-  const boot: RuntimeBootResultV2 = pendingAllDataClear
-    ? { kind: 'v2', runtime: emptyRuntimeV2(now, crypto.randomUUID()), migrated: false }
-    : await bootRuntimeAuthorityV2(runtimeBootPorts(policyStorage, snapshot, deviceId));
-  if (boot.kind === 'rejected') {
-    reportBackgroundError(new Error(`stored runtime rejected: ${boot.reason}`));
-  }
-  const localHistoryClear: { clearAggregates: boolean } | null =
-    await policyStorage.pendingLocalHistoryClear();
-  const runtime: RuntimeStateV2 =
-    localHistoryClear === null
-      ? boot.runtime
-      : sanitizeRuntimeForLocalHistory(boot.runtime, localHistoryClear.clearAggregates);
-  if (localHistoryClear !== null) {
-    try {
-      await saveRuntimeV2(runtime);
-      await policyStorage.finishLocalHistoryClear();
-    } catch (error: unknown) {
-      reportBackgroundError(error);
+  // reported and replaced by an empty v2 runtime. A throw in here is a runtime-stage failure,
+  // which is the one stage the popup may offer the local runtime reset for.
+  const runtime: RuntimeStateV2 = await bootStage('runtime', async (): Promise<RuntimeStateV2> => {
+    const boot: RuntimeBootResultV2 = pendingAllDataClear
+      ? { kind: 'v2', runtime: emptyRuntimeV2(now, crypto.randomUUID()), migrated: false }
+      : await bootRuntimeAuthorityV2(runtimeBootPorts(policyStorage, snapshot, deviceId));
+    if (boot.kind === 'rejected') {
+      reportBackgroundError(new Error(`stored runtime rejected: ${boot.reason}`));
     }
-  } else if (!pendingAllDataClear) {
-    // A fresh profile has nothing stored, and a rejected or migrated one must not read the old
-    // value again, so the resolved authority is written before anything else runs.
-    await saveRuntimeV2(runtime);
-    await chrome.storage.local.set({ [LOCAL_RUNTIME_SCHEMA]: { runtimeSchemaVersion: 2 } });
-  }
+    const localHistoryClear: { clearAggregates: boolean } | null =
+      await policyStorage.pendingLocalHistoryClear();
+    const resolved: RuntimeStateV2 =
+      localHistoryClear === null
+        ? boot.runtime
+        : sanitizeRuntimeForLocalHistory(boot.runtime, localHistoryClear.clearAggregates);
+    if (localHistoryClear !== null) {
+      try {
+        await saveRuntimeV2(resolved);
+        await policyStorage.finishLocalHistoryClear();
+      } catch (error: unknown) {
+        reportBackgroundError(error);
+      }
+    } else if (!pendingAllDataClear) {
+      // A fresh profile has nothing stored, and a rejected or migrated one must not read the old
+      // value again, so the resolved authority is written before anything else runs.
+      await saveRuntimeV2(resolved);
+      await chrome.storage.local.set({ [LOCAL_RUNTIME_SCHEMA]: { runtimeSchemaVersion: 2 } });
+    }
+    return resolved;
+  });
   const streak: StreakState = snapshot.streak ?? emptyStreak(localMonthStr(now));
   const ports: EnginePorts = {
     now: (): number => Date.now(),
@@ -1245,49 +1332,52 @@ async function boot(
     deviceId,
   );
   engineInstance = engine;
-  let appliedCapability: ContentRegistrationState | null = null;
-  try {
-    appliedCapability = await applyWebsiteCapability(
-      policyStorage,
-      engine,
-      initialWebsiteCapability.capability,
-      'boot',
-      pendingWebsiteAccessNotice,
-      initialCapabilityIsCurrent,
-    );
-  } catch (error: unknown) {
-    reportBackgroundError(error);
-  }
-  if (appliedCapability === null || !initialCapabilityIsCurrent()) {
-    const failClosedCapability: ContentRegistrationState = websiteCapability();
-    await endActiveSessionForWebsiteCapabilityLoss(
-      engine,
-      failClosedCapability.status === 'ready'
-        ? { permission: failClosedCapability.permission, status: 'error' }
-        : failClosedCapability,
-      'boot',
-      pendingWebsiteAccessNotice,
-    );
-  } else {
-    pendingWebsiteAccessNotice.value = null;
-    publishWebsiteCapability(appliedCapability);
-  }
-  if (pendingAllDataClear) {
-    // The journals resolve on this boot too. A controller that never recovers publishes nothing
-    // for the life of the worker, so the retry that finishes the clear would leave the popup and
-    // the badge dark until the next eviction.
+  // Everything from here on runs against a built Engine, so a throw is an engine-stage failure.
+  return bootStage('engine', async (): Promise<Engine> => {
+    let appliedCapability: ContentRegistrationState | null = null;
+    try {
+      appliedCapability = await applyWebsiteCapability(
+        policyStorage,
+        engine,
+        initialWebsiteCapability.capability,
+        'boot',
+        pendingWebsiteAccessNotice,
+        initialCapabilityIsCurrent,
+      );
+    } catch (error: unknown) {
+      reportBackgroundError(error);
+    }
+    if (appliedCapability === null || !initialCapabilityIsCurrent()) {
+      const failClosedCapability: ContentRegistrationState = websiteCapability();
+      await endActiveSessionForWebsiteCapabilityLoss(
+        engine,
+        failClosedCapability.status === 'ready'
+          ? { permission: failClosedCapability.permission, status: 'error' }
+          : failClosedCapability,
+        'boot',
+        pendingWebsiteAccessNotice,
+      );
+    } else {
+      pendingWebsiteAccessNotice.value = null;
+      publishWebsiteCapability(appliedCapability);
+    }
+    if (pendingAllDataClear) {
+      // The journals resolve on this boot too. A controller that never recovers publishes nothing
+      // for the life of the worker, so the retry that finishes the clear would leave the popup and
+      // the badge dark until the next eviction.
+      await engine.recover();
+      await engine.retainDataClearQuiescence();
+      return engine;
+    }
+    // Checklist 6: the journals resolve before any alarm, message, or publication reaches the
+    // controller.
     await engine.recover();
-    await engine.retainDataClearQuiescence();
+    await engine.tick();
+    // A window that is already open belongs to this boot, not to the minute after it.
+    await engine.checkSchedule();
+    await engine.applyBlockingNow();
     return engine;
-  }
-  // Checklist 6: the journals resolve before any alarm, message, or publication reaches the
-  // controller.
-  await engine.recover();
-  await engine.tick();
-  // A window that is already open belongs to this boot, not to the minute after it.
-  await engine.checkSchedule();
-  await engine.applyBlockingNow();
-  return engine;
+  });
 }
 
 /**
@@ -1300,6 +1390,8 @@ export function main(): void {
   let listChangeApplyQueue: Promise<void> = Promise.resolve();
   let policyStorageReady: Promise<PolicyStorage>;
   let ready: Promise<Engine>;
+  /** Set when a boot settles in failure, cleared when the next one starts. */
+  let bootFailure: BootFailure | null = null;
   let websiteCapability: ContentRegistrationState = {
     permission: 'unknown',
     status: 'unavailable',
@@ -1463,29 +1555,224 @@ export function main(): void {
   chrome.permissions.onRemoved.addListener((permissions: chrome.permissions.Permissions): void => {
     if (isWebsitePermissionEvent(permissions)) reconcileAfterPermissionEvent('permission-removed');
   });
-  policyStorageReady = preparePolicyStorage(dataClearLease);
-  const initialWebsiteCapability: Promise<WebsiteReconciliation> = reconcileWebsiteCapability(
-    'boot',
-    false,
-  );
-  ready = Promise.all([policyStorageReady, initialWebsiteCapability]).then(
-    ([storage, initialCapability]: [PolicyStorage, WebsiteReconciliation]): Promise<Engine> =>
-      boot(
-        storage,
-        dataClearLease,
-        initialCapability,
-        (): ContentRegistrationState => websiteCapability,
-        (): boolean => initialCapability.generation === websiteReconciliationGeneration,
-        (capability: ContentRegistrationState): void => {
-          websiteCapability = capability;
+  /**
+   * One boot, re-runnable. Every listener reads `ready` and `policyStorageReady` when it fires
+   * rather than when it was registered, so a retry replaces both promises and the listeners follow.
+   * A failure settles into `bootFailure`, is reported once here, and rejects `ready` with a typed
+   * error the message listener answers from.
+   */
+  const startBoot = (): void => {
+    bootFailure = null;
+    engineInstance = null;
+    policyStorageReady = preparePolicyStorage(dataClearLease);
+    const initialWebsiteCapability: Promise<WebsiteReconciliation> = reconcileWebsiteCapability(
+      'boot',
+      false,
+    );
+    const booted: Promise<Engine> = Promise.all([
+      policyStorageReady,
+      initialWebsiteCapability,
+    ]).then(
+      ([storage, initialCapability]: [PolicyStorage, WebsiteReconciliation]): Promise<Engine> =>
+        boot(
+          storage,
+          dataClearLease,
+          initialCapability,
+          (): ContentRegistrationState => websiteCapability,
+          (): boolean => initialCapability.generation === websiteReconciliationGeneration,
+          (capability: ContentRegistrationState): void => {
+            websiteCapability = capability;
+          },
+          pendingWebsiteAccessNotice,
+          (): boolean => setupCompleted,
+          (completed: boolean): void => {
+            setupCompleted = completed;
+          },
+        ),
+    );
+    ready = booted.catch((error: unknown): never => {
+      const failure: BootFailure = bootFailureOf(error, Date.now());
+      bootFailure = failure;
+      // A half-built Engine is not an authority. The paths that stay open without one, the all-data
+      // clear above all, run through the module-level ports instead.
+      engineInstance = null;
+      reportBackgroundError(error instanceof BootStageError ? error.cause : error);
+      throw new BootFailedError(failure);
+    });
+    // The failure is answered by whichever request arrives first. Until one does, it must not
+    // surface as an unhandled rejection on top of the report above.
+    void ready.catch((): undefined => undefined);
+  };
+  startBoot();
+
+  /** The stored setup, best effort, for a worker that cannot serve it through Policy Storage. */
+  const bestEffortSetup = async (): Promise<SetupState> => {
+    try {
+      const storage: PolicyStorage = await policyStorageReady;
+      const setup: SetupState = await storage.loadSetup();
+      try {
+        const allData: AllDataClearPublicState = await storage.allDataClearPublicState();
+        return allData.status === 'idle' ? setup : { ...setup, dataClear: allData };
+      } catch {
+        return setup;
+      }
+    } catch {
+      // Policy Storage is what failed, so the raw record is the next best answer.
+    }
+    try {
+      const stored: Record<string, unknown> = await chrome.storage.local.get(LOCAL_SETUP);
+      const raw: unknown = stored[LOCAL_SETUP];
+      if (isSetupState(raw)) return raw;
+    } catch {
+      // Nothing readable at all: the default record carries the overlay on its own.
+    }
+    return structuredClone(DEFAULT_SETUP);
+  };
+
+  /**
+   * The answers a stopped worker still owes. Setup carries the failure as an overlay the popup
+   * reads, never written back. The all-data clear and its retry stay reachable because they are
+   * the way out of a profile that cannot boot, and they run without an Engine. Everything else is
+   * refused with the reason.
+   */
+  const routeBootFailure = async (request: Request, failure: BootFailure): Promise<unknown> => {
+    switch (request.type) {
+      case 'getSetupState': {
+        const setup: SetupState = await bestEffortSetup();
+        return {
+          ...setup,
+          storageError: failure.stage === 'runtime' ? 'runtime-boot-failed' : 'boot-failed',
+        };
+      }
+      case 'retryDataClear': {
+        try {
+          const storage: PolicyStorage = await policyStorageReady;
+          if ((await retryAllDataClear(storage, dataClearLease)) === 'ok') {
+            return { ok: true, code: 'ok' };
+          }
+          return {
+            ok: false,
+            code: 'retry-not-available',
+            error: 'Data clear retry is not available.',
+          };
+        } catch (error: unknown) {
+          return { ok: false, code: 'retry-not-available', error: errorMessage(error) };
+        }
+      }
+      case 'clearFocusLockData': {
+        if (request.scope !== 'all') {
+          return { ...bootFailureRejection(failure), scope: request.scope, status: 'pending' };
+        }
+        try {
+          const storage: PolicyStorage = await policyStorageReady;
+          if ((await storage.storageMode()) === 'sync') await storage.selectLocalMode();
+          await storage.deleteRemoteData('all');
+          await dispatchAllDataClear(storage, dataClearLease);
+        } catch (error: unknown) {
+          return { ok: false, error: errorMessage(error), scope: 'all', status: 'pending' };
+        }
+        setupCompleted = false;
+        return { ok: true, scope: 'all', status: 'cleared' };
+      }
+      default:
+        return bootFailureRejection(failure);
+    }
+  };
+
+  /** Runs the boot again after a failure. Answers only once the new boot has settled. */
+  const retryBoot = (): Promise<Ack> =>
+    runWorkerControl(async (): Promise<Ack> => {
+      if (bootFailure !== null) startBoot();
+      try {
+        await ready;
+        return { ok: true };
+      } catch (error: unknown) {
+        return error instanceof BootFailedError
+          ? bootFailureRejection(error.failure)
+          : { ok: false, error: errorMessage(error) };
+      }
+    });
+
+  /**
+   * Parks the stored runtime and its migration checkpoint under the diagnostic key, removes both,
+   * and boots again over an empty runtime. The schema marker stays, so the next boot reads an
+   * absent runtime rather than a legacy one. A runtime committed inside a policy generation lives
+   * in that record, not under `LOCAL_RUNTIME`, so it is refused rather than half removed.
+   */
+  const resetLocalRuntime = (): Promise<Ack> =>
+    runWorkerControl(async (): Promise<Ack> => {
+      const failure: BootFailure | null = bootFailure;
+      if (failure === null) return { ok: false, error: 'Focus Lock is running, nothing to reset' };
+      if (failure.stage !== 'runtime') return bootFailureRejection(failure);
+      const stored: Record<string, unknown> = await chrome.storage.local.get([
+        LOCAL_POLICY_COMMIT,
+        LOCAL_RUNTIME,
+        LOCAL_RUNTIME_MIGRATION,
+      ]);
+      const pointer: unknown = stored[LOCAL_POLICY_COMMIT];
+      if (isRecord(pointer) && pointer.source === 'generation') {
+        return {
+          ok: false,
+          error:
+            'Focus Lock cannot reset a runtime that is still committed inside a policy generation',
+        };
+      }
+      const parked: ParkedRuntimeDiagnostic = {
+        version: 1,
+        reason: 'manual-reset',
+        at: Date.now(),
+        runtime: parkedJson(stored[LOCAL_RUNTIME]),
+        migration: parkedJson(stored[LOCAL_RUNTIME_MIGRATION]),
+      };
+      await chrome.storage.local.set({ [LOCAL_RUNTIME_REJECTED]: parked });
+      await chrome.storage.local.remove([LOCAL_RUNTIME, LOCAL_RUNTIME_MIGRATION]);
+      startBoot();
+      try {
+        await ready;
+        return { ok: true };
+      } catch (error: unknown) {
+        return error instanceof BootFailedError
+          ? bootFailureRejection(error.failure)
+          : { ok: false, error: errorMessage(error) };
+      }
+    });
+
+  /** The normal path: wait for the boot, then route. A failed boot routes through its own table. */
+  const answerRequest = async (
+    request: Request,
+    sender: chrome.runtime.MessageSender,
+  ): Promise<unknown> => {
+    let engine: Engine;
+    try {
+      engine = await ready;
+    } catch (error: unknown) {
+      if (!(error instanceof BootFailedError)) throw error;
+      const failure: BootFailure = error.failure;
+      const failed: () => Promise<unknown> = (): Promise<unknown> =>
+        routeBootFailure(request, failure);
+      return requiresWorkerControl(request) ? runWorkerControl(failed) : failed();
+    }
+    const route: () => Promise<unknown> = async (): Promise<unknown> =>
+      routeMessage(engine, request, sender, await policyStorageReady, {
+        reconcileWebsiteAccess: async (): Promise<ContentRegistrationState> =>
+          (await reconcileWebsiteCapability('explicit', true, true)).capability,
+        dismissWebsiteAccessNotice,
+        openOnboarding: onboardingService.open,
+        retryDataClear: async (): Promise<'ok' | 'retry-not-available'> =>
+          retryAllDataClear(await policyStorageReady, dataClearLease),
+        continueAllDataClear: async (): Promise<void> => {
+          await dispatchAllDataClear(await policyStorageReady, dataClearLease);
         },
-        pendingWebsiteAccessNotice,
-        (): boolean => setupCompleted,
-        (completed: boolean): void => {
+        loadOnboardingDraft: onboardingService.loadDraft,
+        saveOnboardingDraft: onboardingService.saveDraft,
+        removeOnboardingDraft: onboardingService.removeDraft,
+        reportError: reportBackgroundError,
+        setupCompleted: (completed: boolean): void => {
           setupCompleted = completed;
         },
-      ),
-  );
+      });
+    return requiresWorkerControl(request) ? runWorkerControl(route) : route();
+  };
 
   chrome.runtime.onMessage.addListener(
     (
@@ -1503,33 +1790,23 @@ export function main(): void {
         );
         return true;
       }
-      ready
-        .then(async (engine: Engine): Promise<unknown> => {
-          const route: () => Promise<unknown> = async (): Promise<unknown> =>
-            routeMessage(engine, request, sender, await policyStorageReady, {
-              reconcileWebsiteAccess: async (): Promise<ContentRegistrationState> =>
-                (await reconcileWebsiteCapability('explicit', true, true)).capability,
-              dismissWebsiteAccessNotice,
-              openOnboarding: onboardingService.open,
-              retryDataClear: async (): Promise<'ok' | 'retry-not-available'> =>
-                retryAllDataClear(await policyStorageReady, dataClearLease),
-              continueAllDataClear: async (): Promise<void> => {
-                await dispatchAllDataClear(await policyStorageReady, dataClearLease);
-              },
-              loadOnboardingDraft: onboardingService.loadDraft,
-              saveOnboardingDraft: onboardingService.saveDraft,
-              removeOnboardingDraft: onboardingService.removeDraft,
-              reportError: reportBackgroundError,
-              setupCompleted: (completed: boolean): void => {
-                setupCompleted = completed;
-              },
-            });
-          return requiresWorkerControl(request) ? runWorkerControl(route) : route();
-        })
+      // The failure channel answers before the boot is consulted: the reason is readable while
+      // the worker is stopped, and the two recoveries are what start it again.
+      if (request.type === 'getBootFailure') {
+        sendResponse({ ok: true, failure: bootFailure });
+        return true;
+      }
+      const answer: Promise<unknown> =
+        request.type === 'retryBoot'
+          ? retryBoot()
+          : request.type === 'resetLocalRuntime' && bootFailure?.stage === 'runtime'
+            ? resetLocalRuntime()
+            : answerRequest(request, sender);
+      answer
         .then((response: unknown): void => sendResponse(response))
         .catch((err: unknown): void => {
-          // The asker is told, and so is the log. A boot that fails answers every request with the
-          // same error, and the one person who can diagnose it would otherwise see nothing at all.
+          // The asker is told, and so is the log. A boot failure is reported once where it
+          // settles, so what lands here is a route that threw on a running worker.
           reportBackgroundError(err);
           sendResponse({ ok: false, error: String(err) });
         });

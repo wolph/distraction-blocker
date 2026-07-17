@@ -1,5 +1,6 @@
 import type { DocumentContentCommand } from './enforcement-v2';
 import type {
+  BootFailure,
   DailyAgg,
   EventRecord,
   GateState,
@@ -115,6 +116,15 @@ export type NonSessionRequest =
   | { type: 'completeSetup'; storageMode: StorageMode; settings: Settings; lists: ListsConfig }
   | { type: 'setStorageMode'; storageMode: StorageMode; deleteRemote: boolean }
   | { type: 'retrySync' }
+  /** The failure that stopped the last boot, or null while the worker is running. */
+  | { type: 'getBootFailure' }
+  /** Runs the boot again after a failure, and answers once it has settled either way. */
+  | { type: 'retryBoot' }
+  /**
+   * Parks the stored runtime and its migration checkpoint as a diagnostic, then boots again over
+   * an empty runtime. Accepted only for a failure in the runtime stage.
+   */
+  | { type: 'resetLocalRuntime' }
   | {
       type: 'clearFocusLockData';
       scope: 'local-history' | 'synced-policy' | 'all';
@@ -200,6 +210,9 @@ export type ClearFocusLockDataResponse =
 
 export type RetrySyncResponse = { ok: true; syncWriteStatus: 'idle' } | Rejection;
 
+/** Always `ok`: a failure is an answer here, not a rejection. */
+export type BootFailureResponse = { ok: true; failure: BootFailure | null };
+
 export interface StatsBundle {
   /** merged across devices, oldest first */
   days: DailyAgg[];
@@ -228,6 +241,9 @@ export interface NonSessionResponseMap {
   completeSetup: Ack;
   setStorageMode: Ack;
   retrySync: RetrySyncResponse;
+  getBootFailure: BootFailureResponse;
+  retryBoot: Ack;
+  resetLocalRuntime: Ack;
   clearFocusLockData: ClearFocusLockDataResponse;
   updateSettings: Ack;
   updateTheme: Ack;

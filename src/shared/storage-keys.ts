@@ -19,6 +19,11 @@ export const LOCAL_RUNTIME: string = 'runtime';
  */
 export const LOCAL_RUNTIME_SCHEMA: string = 'runtimeSchema';
 export const LOCAL_RUNTIME_MIGRATION: string = 'runtimeMigration';
+/**
+ * Diagnostic copy of a runtime value that boot refused or a manual reset parked. Never read back
+ * as authority. Removed by the all-data clear.
+ */
+export const LOCAL_RUNTIME_REJECTED: string = 'runtimeRejected';
 export const LOCAL_EVENTS: string = 'events';
 export const LOCAL_DEVICE_ID: string = 'deviceId';
 export const LOCAL_SYNC_JOURNAL: string = 'syncJournal';

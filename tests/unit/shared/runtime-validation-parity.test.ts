@@ -304,6 +304,10 @@ describe('runtime and worker request validation parity', (): void => {
       }),
     ).toBe(false);
     expect(isSetupState({ ...SETUP, storageError: 'unknown' })).toBe(false);
+    // The two boot overlays are answered by the worker, never stored, and the popup validates the
+    // answer with the same guard it uses for the stored record.
+    expect(isSetupState({ ...SETUP, storageError: 'boot-failed' })).toBe(true);
+    expect(isSetupState({ ...SETUP, storageError: 'runtime-boot-failed' })).toBe(true);
     expect(isInstallMarker(INSTALL_MARKER)).toBe(true);
     expect(isInstallMarker({ ...INSTALL_MARKER, latestReason: 'startup' })).toBe(false);
   });

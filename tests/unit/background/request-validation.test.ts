@@ -107,6 +107,9 @@ const VALID_REQUESTS: RequestByType = {
   },
   setStorageMode: { type: 'setStorageMode', storageMode: 'local', deleteRemote: false },
   retrySync: { type: 'retrySync' },
+  getBootFailure: { type: 'getBootFailure' },
+  retryBoot: { type: 'retryBoot' },
+  resetLocalRuntime: { type: 'resetLocalRuntime' },
   clearFocusLockData: { type: 'clearFocusLockData', scope: 'local-history' },
   getBlockState: {
     type: 'getBlockState',

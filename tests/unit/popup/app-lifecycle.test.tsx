@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import './chrome-fake';
 
-import { cleanup, render, waitFor } from '@testing-library/preact';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from '../../../src/popup/App';
@@ -35,6 +35,8 @@ const TRANSITION_ID: string = '30000000-0000-4000-8000-000000000001';
 const START_BUTTON: RegExp = /^Start 25 min/;
 const SETUP_HEADING: string = 'Finish setting up Focus Lock';
 const BLOCKING_OFF_HEADING: string = 'Website blocking is off';
+const BOOT_FAILED_HEADING: string = 'Focus Lock could not start';
+const RESET_RUNTIME_LABEL: string = 'Reset local runtime';
 
 const COMPLETED_SETUP: SetupState = {
   ...DEFAULT_SETUP,
@@ -133,6 +135,43 @@ function installSetup(snapshot: SessionSnapshot, setup: SetupState): void {
   sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
     if (request.type === 'getSetupState') return setup;
     if (request.type === 'getSnapshot') return snapshot;
+    if (request.type === 'getSettings') return DEFAULT_SETTINGS;
+    if (request.type === 'getLists') return DEFAULT_LISTS;
+    if (request.type === 'getStats') return STATS;
+    return { ok: true };
+  });
+}
+
+/**
+ * A worker whose boot failed: the setup record carries the overlay, the failure channel names the
+ * stage and the reason, and every other request is refused until Retry or the reset succeeds. A
+ * successful Retry flips the worker to a running one, which the form then reads normally.
+ */
+function installBootFailure(
+  storageError: 'boot-failed' | 'runtime-boot-failed',
+  stage: 'policy-storage' | 'runtime' | 'engine',
+  message: string,
+  extra: (request: Request) => unknown = (): undefined => undefined,
+): void {
+  let running: boolean = false;
+  sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+    const handled: unknown = extra(request);
+    if (handled !== undefined) {
+      running = true;
+      return handled;
+    }
+    if (request.type === 'getBootFailure') {
+      return { ok: true, failure: running ? null : { stage, message, at: NOW } };
+    }
+    if (request.type === 'retryBoot') {
+      running = true;
+      return { ok: true };
+    }
+    if (request.type === 'getSetupState') {
+      return running ? COMPLETED_SETUP : { ...COMPLETED_SETUP, storageError };
+    }
+    if (!running) return { ok: false, error: `Focus Lock did not finish starting: ${message}` };
+    if (request.type === 'getSnapshot') return emptySnapshot(NOW);
     if (request.type === 'getSettings') return DEFAULT_SETTINGS;
     if (request.type === 'getLists') return DEFAULT_LISTS;
     if (request.type === 'getStats') return STATS;
@@ -374,5 +413,135 @@ describe('popup lifecycle body', (): void => {
       expect(getByText('write the report')).toBeTruthy();
     });
     expect(queryByRole('button', { name: START_BUTTON })).toBeNull();
+  });
+
+  it('renders the boot failure screen with the reason and Retry for boot-failed', async (): Promise<void> => {
+    installBootFailure('boot-failed', 'policy-storage', 'invalid local setup state');
+    const { getByRole, queryByRole } = render(h(App, null));
+
+    await waitFor((): void => {
+      expect(getByRole('heading', { name: BOOT_FAILED_HEADING })).toBeTruthy();
+    });
+    await waitFor((): void => {
+      expect(getByRole('status').textContent).toBe('invalid local setup state');
+    });
+    expect(getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect(queryByRole('button', { name: RESET_RUNTIME_LABEL })).toBeNull();
+    expect(queryByRole('button', { name: START_BUTTON })).toBeNull();
+    expect(queryByRole('heading', { name: BLOCKING_OFF_HEADING })).toBeNull();
+  });
+
+  it('adds Reset local runtime only for runtime-boot-failed', async (): Promise<void> => {
+    let reset: boolean = false;
+    installBootFailure(
+      'runtime-boot-failed',
+      'runtime',
+      'the runtime migration checkpoint survived its removal',
+      (request: Request): unknown => {
+        if (request.type !== 'resetLocalRuntime') return undefined;
+        reset = true;
+        return { ok: true };
+      },
+    );
+    const { getByRole, getByText } = render(h(App, null));
+
+    const resetButton: HTMLButtonElement = await waitFor(
+      (): HTMLButtonElement =>
+        getByRole('button', { name: RESET_RUNTIME_LABEL }) as HTMLButtonElement,
+    );
+    expect(
+      getByText('Keeps your settings, lists, and statistics. Clears the current session state.'),
+    ).toBeTruthy();
+    expect(getByRole('button', { name: 'Retry' })).toBeTruthy();
+
+    fireEvent.click(resetButton);
+
+    await waitFor((): void => {
+      expect(getByRole('button', { name: START_BUTTON })).toBeTruthy();
+    });
+    expect(reset).toBe(true);
+    expect(sendMessageMock).toHaveBeenCalledWith({ type: 'resetLocalRuntime' });
+  });
+
+  it('re-reads setup after a successful Retry', async (): Promise<void> => {
+    installBootFailure('boot-failed', 'policy-storage', 'invalid local setup state');
+    const { getByRole, queryByRole } = render(h(App, null));
+
+    const retry: HTMLButtonElement = await waitFor(
+      (): HTMLButtonElement => getByRole('button', { name: 'Retry' }) as HTMLButtonElement,
+    );
+    expect(sendMessageMock).not.toHaveBeenCalledWith({ type: 'retryBoot' });
+
+    fireEvent.click(retry);
+
+    // The worker is running now: the setup record and the snapshot are read again and the form
+    // replaces the failure screen without a reload.
+    await waitFor((): void => {
+      expect(getByRole('button', { name: START_BUTTON })).toBeTruthy();
+    });
+    expect(sendMessageMock).toHaveBeenCalledWith({ type: 'retryBoot' });
+    expect(queryByRole('heading', { name: BOOT_FAILED_HEADING })).toBeNull();
+  });
+
+  it('shows the worker rejection when Retry fails again', async (): Promise<void> => {
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getSetupState') {
+        return { ...COMPLETED_SETUP, storageError: 'boot-failed' };
+      }
+      if (request.type === 'getBootFailure') {
+        return {
+          ok: true,
+          failure: { stage: 'policy-storage', message: 'invalid local setup state', at: NOW },
+        };
+      }
+      if (request.type === 'retryBoot') {
+        return {
+          ok: false,
+          error: 'Focus Lock did not finish starting: invalid local setup state',
+        };
+      }
+      return { ok: false, error: 'Focus Lock did not finish starting: invalid local setup state' };
+    });
+    const { getByRole } = render(h(App, null));
+
+    const retry: HTMLButtonElement = await waitFor(
+      (): HTMLButtonElement => getByRole('button', { name: 'Retry' }) as HTMLButtonElement,
+    );
+    fireEvent.click(retry);
+
+    await waitFor((): void => {
+      expect(getByRole('alert').textContent).toBe(
+        'Focus Lock did not finish starting: invalid local setup state',
+      );
+    });
+    expect(getByRole('heading', { name: BOOT_FAILED_HEADING })).toBeTruthy();
+  });
+
+  it('offers Retry when the setup status is unavailable and re-reads it', async (): Promise<void> => {
+    let answering: boolean = false;
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'getSetupState') {
+        return answering ? COMPLETED_SETUP : { ok: false, error: 'invalid request' };
+      }
+      if (request.type === 'getSnapshot') return emptySnapshot(NOW);
+      if (request.type === 'getSettings') return DEFAULT_SETTINGS;
+      if (request.type === 'getLists') return DEFAULT_LISTS;
+      if (request.type === 'getStats') return STATS;
+      return { ok: true };
+    });
+    const { getByRole, queryByRole } = render(h(App, null));
+
+    await waitFor((): void => {
+      expect(getByRole('alert').textContent).toContain('Setup status unavailable');
+    });
+    expect(queryByRole('button', { name: START_BUTTON })).toBeNull();
+    answering = true;
+
+    fireEvent.click(getByRole('button', { name: 'Retry' }));
+
+    await waitFor((): void => {
+      expect(getByRole('button', { name: START_BUTTON })).toBeTruthy();
+    });
+    expect(queryByRole('alert')).toBeNull();
   });
 });
