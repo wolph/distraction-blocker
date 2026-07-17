@@ -81,6 +81,58 @@ describe('handleSyncChanges', () => {
     );
   });
 
+  it('mirrors a synced settings record whose gate predates allowForceEnd back as canonical', async (): Promise<void> => {
+    const { allowForceEnd: _nested, ...v1Gate } = DEFAULT_SETTINGS.gate;
+    const legacy: Record<string, unknown> = {
+      ...structuredClone(DEFAULT_SETTINGS),
+      theme: 'dark',
+      gate: v1Gate,
+    };
+    const canonical: Settings = {
+      ...DEFAULT_SETTINGS,
+      theme: 'dark',
+      gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: false },
+    };
+    const transactSyncedPolicy = vi.fn(
+      async (
+        changes: Partial<PolicyValueByKey>,
+        _reconcilePendingLists: boolean,
+        mirror: (accepted: Partial<PolicyValueByKey>) => Promise<void>,
+      ): Promise<{ ok: true }> => {
+        await mirror(changes);
+        return { ok: true };
+      },
+    );
+    const transaction: SyncPolicyTransaction = {
+      inboundSyncAllowed: vi.fn().mockResolvedValue(true),
+      loadSnapshot: vi.fn(),
+      mirrorAcceptedRemotePolicy: vi.fn().mockResolvedValue(undefined),
+      queueVerifiedRemoteCorrections: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await handleSyncChanges(
+      makeEngine({ transactSyncedPolicy }),
+      { [SYNC_SETTINGS]: { newValue: legacy } },
+      new SyncEchoes(),
+      vi.fn(),
+      false,
+      undefined,
+      transaction,
+    );
+
+    expect(legacy.gate).not.toHaveProperty('allowForceEnd');
+    expect(transaction.queueVerifiedRemoteCorrections).not.toHaveBeenCalled();
+    expect(transactSyncedPolicy).toHaveBeenCalledWith(
+      { settings: canonical },
+      false,
+      expect.any(Function),
+    );
+    expect(transaction.mirrorAcceptedRemotePolicy).toHaveBeenCalledWith(
+      { settings: canonical },
+      [],
+    );
+  });
+
   it('uses the engine policy mutex across preview, mirror, and commit', async () => {
     const incoming: Settings = { ...DEFAULT_SETTINGS, retentionDays: 30 };
     const transaction: SyncPolicyTransaction = {

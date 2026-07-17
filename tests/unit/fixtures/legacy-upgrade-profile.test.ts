@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { parseBank, parseStreak } from '../../../src/background/stores';
+import { parseBank, parseStoredSettings, parseStreak } from '../../../src/background/stores';
 import { assertSyncItemWithinQuota } from '../../../src/background/sync-item-size';
 import { isAuthoritativeSyncItem } from '../../../src/background/sync-item-validation';
+import { DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import {
   isInstallMarker,
   isLegacyEventRecord,
@@ -110,6 +111,18 @@ describe('legacy upgrade profile fixture', (): void => {
     expect(isSettings({ ...settings, gate: { ...settings.gate, allowForceEnd: false } })).toBe(
       true,
     );
+  });
+
+  it('parses the stored settings as the legacy shape with the bypass off', (): void => {
+    const { local }: LegacyUpgradeProfile = legacyUpgradeProfile();
+    const settings: LegacyUpgradeSettingsV1 = legacyUpgradeSettingsV1();
+
+    expect(parseStoredSettings(local[LOCAL_SETTINGS], DEFAULT_SETTINGS)).toEqual({
+      valid: true,
+      changed: true,
+      legacy: true,
+      settings: { ...settings, gate: { ...settings.gate, allowForceEnd: false } },
+    });
   });
 
   it('carries lists, bank, and streak that pass the strict validators in both areas', (): void => {
