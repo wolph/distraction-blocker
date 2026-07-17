@@ -86,7 +86,9 @@ import {
   migrateRuntimeRules,
   type ParsedRuntimeState,
   parseBank,
+  parseStoredSettings,
   parseStreak,
+  type StoredSettingsParseResult,
 } from './stores';
 import { assertSyncItemWithinQuota } from './sync-item-size';
 import {
@@ -485,15 +487,30 @@ function assertPolicyValue(key: keyof PolicyValueByKey, value: unknown): void {
   if (!valid) throw new Error(`invalid ${key} policy`);
 }
 
+/**
+ * The read side of the settings policy. Writers keep `assertPolicyValue`, so a stored record in
+ * either v1 shape can only have come from a v1 install, and `repairStoredSettingsShape` rewrites
+ * it canonical on the next `initialize()`. Until then every read migrates it in memory.
+ */
+function readStoredSettingsPolicy(value: unknown): Settings {
+  const parsed: StoredSettingsParseResult = parseStoredSettings(value, DEFAULT_SETTINGS);
+  if (!parsed.valid) throw new Error('invalid settings policy');
+  return parsed.settings;
+}
+
 function parsePolicySnapshot(value: unknown): PolicySnapshot {
   if (!isRecord(value) || !hasExactKeys(value, ['settings', 'lists', 'bank', 'streak'])) {
     throw new Error('invalid policy snapshot');
   }
-  const settings: unknown = value.settings;
+  const parsedSettings: StoredSettingsParseResult = parseStoredSettings(
+    value.settings,
+    DEFAULT_SETTINGS,
+  );
   const lists: unknown = value.lists;
   const rawBank: unknown = value.bank;
   const rawStreak: unknown = value.streak;
-  if (!isSettings(settings) || !isListsConfig(lists)) throw new Error('invalid policy snapshot');
+  if (!parsedSettings.valid || !isListsConfig(lists)) throw new Error('invalid policy snapshot');
+  const settings: Settings = parsedSettings.settings;
   const bank: BankState | null = parseBank(rawBank);
   if (!isRecord(rawBank) || !hasExactKeys(rawBank, ['balanceMs']) || bank === null) {
     throw new Error('invalid policy snapshot');
@@ -887,16 +904,17 @@ export function createPolicyStorage(
       return parsePolicySnapshot(generation.policy);
     }
     const stored: Record<string, unknown> = await local.get([...POLICY_LOCAL_KEYS]);
-    const settings: unknown = stored[LOCAL_SETTINGS];
+    const storedSettings: unknown = stored[LOCAL_SETTINGS];
     const lists: unknown = stored[LOCAL_LISTS];
     const bank: unknown = stored[LOCAL_BANK];
     const streak: unknown = stored[LOCAL_STREAK];
-    if (settings !== undefined) assertPolicyValue('settings', settings);
+    const settings: Settings =
+      storedSettings === undefined ? DEFAULT_SETTINGS : readStoredSettingsPolicy(storedSettings);
     if (lists !== undefined) assertPolicyValue('lists', lists);
     if (bank !== undefined) assertPolicyValue('bank', bank);
     if (streak !== undefined) assertPolicyValue('streak', streak);
     return parsePolicySnapshot({
-      settings: settings === undefined ? DEFAULT_SETTINGS : settings,
+      settings,
       lists: lists === undefined ? DEFAULT_LISTS : lists,
       bank: bank === undefined ? { balanceMs: 0 } : bank,
       streak: streak === undefined ? null : streak,
@@ -1267,6 +1285,7 @@ export function createPolicyStorage(
     } else if (pointer?.source === 'direct' && setup.legacyImported) {
       await cleanupStaleGenerations();
     }
+    await repairStoredSettingsShape();
     if (setup.storageMode === 'sync') {
       firstCheckpointComplete = true;
       if (setup.syncWriteStatus === 'idle') await ensurePublisher();
@@ -1276,6 +1295,33 @@ export function createPolicyStorage(
     }
     if (setup.syncWriteStatus !== 'idle') await reconstructPendingOutbox(setup);
     initialized = true;
+  }
+
+  /**
+   * Rewrites settings stored in a v1 shape as the canonical record, once. Runs after a committed
+   * generation has been materialised, so the settings it sees are either canonical already or the
+   * direct-authority record a v1 install left behind. A direct commit revision embeds the
+   * settings JSON, so it is recomputed from the migrated snapshot in the same write: the two keys
+   * stay consistent even when the worker dies between them. Runs before the Sync outbox is
+   * reconstructed, so a republication carries the canonical record. The rewritten value parses
+   * as canonical, which is what makes the next `initialize()` skip this.
+   */
+  async function repairStoredSettingsShape(): Promise<void> {
+    const stored: Record<string, unknown> = await local.get(LOCAL_SETTINGS);
+    if (!Object.hasOwn(stored, LOCAL_SETTINGS)) return;
+    const parsed: StoredSettingsParseResult = parseStoredSettings(
+      stored[LOCAL_SETTINGS],
+      DEFAULT_SETTINGS,
+    );
+    if (!parsed.valid || !parsed.legacy) return;
+    const snapshot: PolicySnapshot = await loadSnapshotInternal();
+    const pointerStored: Record<string, unknown> = await local.get(LOCAL_POLICY_COMMIT);
+    const pointer: PolicyCommit | null = parsePolicyCommit(pointerStored[LOCAL_POLICY_COMMIT]);
+    const items: Record<string, unknown> = { [LOCAL_SETTINGS]: snapshot.settings };
+    if (pointer?.source === 'direct') {
+      items[LOCAL_POLICY_COMMIT] = { source: 'direct', revision: policyRevision(snapshot) };
+    }
+    await verifiedWrite(items, 'migrated settings policy shape');
   }
 
   async function ensureInitialized(): Promise<void> {
@@ -1768,7 +1814,10 @@ export function createPolicyStorage(
       throw new Error('committed policy generation is missing or invalid');
     }
     const policy: PolicySnapshot = parsePolicySnapshot(value.policy);
-    if (policyRevision(policy) !== pointer.revision) {
+    // A generation written by a v1 install computed its revision over the raw v1 settings, so
+    // the pointer is verified against the stored record as well as its migrated reading.
+    const rawRevision: string = `policy-v1:${serialized(value.policy)}`;
+    if (policyRevision(policy) !== pointer.revision && rawRevision !== pointer.revision) {
       throw new Error('committed policy generation revision does not match');
     }
     const runtimeDate: unknown = value.runtime.date;
@@ -1833,7 +1882,9 @@ export function createPolicyStorage(
       'materialized policy and aggregate generation',
     );
     await verifiedRemove(record.aggregateTombstones, 'legacy aggregate removals');
-    const direct: PolicyCommit = { source: 'direct', revision: record.revision };
+    // The materialised policy is canonical, so the direct pointer names its revision rather than
+    // the one a v1 install computed over the raw record.
+    const direct: PolicyCommit = { source: 'direct', revision: policyRevision(record.policy) };
     await verifiedWrite({ [LOCAL_POLICY_COMMIT]: direct }, 'direct policy authority');
     await local.remove(`${LOCAL_POLICY_GENERATION_PREFIX}${record.id}`);
   }
