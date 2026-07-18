@@ -222,8 +222,9 @@ async function migrateLegacyRuntime(
 
 /**
  * Runs one pure migration step and turns a domain refusal into an outcome. A plain `Error` is how
- * the v1 reader refuses a shape, and `invalid-rule` is how the v2 domain does. Any other throw is
- * not a refusal of the value and propagates.
+ * the v1 reader refuses a shape, and `invalid-rule` is how the v2 domain does. Any other throw,
+ * including every other `Error` subclass, is a fault in the build rather than a verdict on the
+ * value, and propagates so the stored runtime stays where it was.
  */
 function migrationBuild<T>(build: () => T): MigrationBuildOutcome<T> {
   try {
@@ -234,9 +235,10 @@ function migrationBuild<T>(build: () => T): MigrationBuildOutcome<T> {
   }
 }
 
+/** Exactly the two refusal shapes: a bare `Error`, or a `CoreError` carrying `invalid-rule`. */
 function isMigrationRefusal(error: unknown): error is Error {
   if (error instanceof CoreError) return error.code === 'invalid-rule';
-  return error instanceof Error;
+  return error instanceof Error && Object.getPrototypeOf(error) === Error.prototype;
 }
 
 /**
@@ -391,7 +393,7 @@ function rejectionMessage(
 }
 
 /**
- * Serializes a refused value for the report and the parked diagnostic. It is hostile input, so
+ * Serialises a refused value for the report and the parked diagnostic. It is hostile input, so
  * nothing here may throw, and the result is bounded so neither destination can grow without limit.
  */
 export function truncatedJson(value: unknown): string | null {

@@ -35,14 +35,18 @@ const V2_ONLY_RUNTIME_KEYS: readonly string[] = [
 
 /**
  * Every key a v1 runtime ever carried. A stored record whose own keys all sit in this list is a v1
- * runtime, possibly an older one that predates the last keys added, and the v1 reader fills the
- * missing ones in. Any other key means the value is not a shape this worker ever wrote.
+ * runtime, possibly an older one that predates the last keys added or still carries a key a later
+ * v1 build retired, and the v1 reader fills the missing ones in and ignores the retired ones. Any
+ * other key means the value is not a shape this worker ever wrote.
  */
 const LEGACY_RUNTIME_V1_KEYS: readonly string[] = [
   'session',
   'gate',
   'unlocks',
   'tabStates',
+  // Retired by 9053e74 (2026-08-29), which folded both into `tabStates`. The v1 reader ignores them.
+  'stoppedTabIds',
+  'mutedTabs',
   'accruedFocusMs',
   'attemptDebounce',
   'deferredBlockClaims',
@@ -68,7 +72,8 @@ export type StoredRuntimeAuthority =
   /**
    * `staleMarker` is true when the v2 schema marker already sat over this v1 value, which is what
    * a downgrade to a v1 build followed by an upgrade leaves behind. The value still migrates, and
-   * the flag lets the caller tell that history from a first migration.
+   * the flag lets the caller tell that history from a first migration. It is informational for
+   * now: the boot reader migrates either way and nothing reads it yet.
    */
   | { kind: 'legacy'; raw: unknown; staleMarker: boolean }
   /**

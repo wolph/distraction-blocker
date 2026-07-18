@@ -91,6 +91,7 @@ const V2_WRITE_PORTS: readonly string[] = [
   'removeAggregate',
   'writeMigrationCheckpointAndMarker',
   'clearMigrationCheckpoint',
+  'parkRejectedRuntime',
 ];
 /**
  * Every write the legacy migration branch performs, in the order the boot reader issues them. No
@@ -323,6 +324,15 @@ function invalidScheduledRuntime(): LegacyRuntimeStateV1 {
     }),
     scheduleActiveEntryId: ENTRY_ID,
   });
+}
+
+/**
+ * A lists port that returns a value the type forbids, standing in for a programming fault inside
+ * the migration build: `rulesFromLists` maps over `custom` and throws a TypeError on null. The cast
+ * is the point, because no typed fixture can produce a fault the type system already rules out.
+ */
+function faultyLists(): ListsConfig {
+  return { ...DEFAULT_LISTS, custom: null } as unknown as ListsConfig;
 }
 
 function storedV2Runtime(overrides: Partial<RuntimeStateV2> = {}): RuntimeStateV2 {
@@ -841,6 +851,36 @@ describe('v2 boot rejected authority', (): void => {
     expect(test.errors).toHaveLength(1);
     expect(errorMessage(test.errors[0])).toContain('legacy-migration-invalid');
     expect(errorMessage(test.errors[0])).toContain('invalid blocking lists');
+  });
+
+  it('propagates a programming fault inside the migration build and parks nothing', async (): Promise<void> => {
+    // Only the two refusal shapes the domain throws on purpose are parked: a plain Error from the
+    // v1 reader and an invalid-rule CoreError. A TypeError is a bug, not a verdict on the value,
+    // so it reaches the boot failure channel and the stored runtime stays where it was.
+    const config: Record<string, unknown> = { ...legacyConfig() };
+    Reflect.deleteProperty(config, 'rules');
+    const raw: unknown = { ...legacyRuntime(), session: { ...legacySession(), config } };
+    const test: BootHarness = harness(emptyStorage({ runtime: raw }), null, faultyLists());
+
+    await expect(bootRuntimeAuthorityV2(test.ports)).rejects.toThrow(TypeError);
+
+    expect(test.parked).toEqual([]);
+    expect(test.errors).toEqual([]);
+    expect(test.calls).not.toContain('saveRuntime');
+    expect(test.storage.runtime).toBe(raw);
+  });
+
+  it('leaves the stored value untouched when the park itself fails', async (): Promise<void> => {
+    // The park lands before the empty runtime, so a storage fault there stops the boot with the
+    // refused value still in place and nothing overwritten. The next boot sees the same value.
+    const raw: unknown = { runtimeSchemaVersion: 2, session: 'broken' };
+    const test: BootHarness = harness(emptyStorage({ runtime: raw }), 'parkRejectedRuntime');
+
+    await expect(bootRuntimeAuthorityV2(test.ports)).rejects.toThrow(CoreError);
+
+    expect(test.calls).not.toContain('saveRuntime');
+    expect(test.storage.runtime).toBe(raw);
+    expect(test.parked).toEqual([]);
   });
 
   it('bounds the report when both the runtime and the checkpoint are oversized', async (): Promise<void> => {

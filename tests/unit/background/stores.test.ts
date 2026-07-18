@@ -778,9 +778,9 @@ describe('runtime storage migration', () => {
     expect(runtime.session).toBeNull();
   });
 
-  // The v1 indefinite session: a null duration with null session and focus deadlines. Rick's
-  // profile is the pre-merge build that wrote this shape, and a reader that refused it would
-  // drop the live session on the upgrade boot instead of migrating it.
+  // The v1 indefinite session: a null duration with null session and focus deadlines. The 7
+  // September profile comes from the pre-merge build that wrote this shape, and a reader that
+  // refused it would drop the live session on the upgrade boot instead of migrating it.
   function indefiniteConfigV1(strictness: 'friction' | 'hard' = 'friction'): object {
     return {
       mode: 'blacklist',

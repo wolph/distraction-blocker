@@ -352,7 +352,16 @@ describe('legacy config and state migration', (): void => {
     expect(migrateLegacySessionStateV1(session, null)).toEqual({
       version: 2,
       sessionId: SESSION_ID,
-      config: migrateLegacySessionConfigV1(session.config, null),
+      config: {
+        mode: 'blacklist',
+        strictness: 'friction',
+        duration: { kind: 'until-stopped' },
+        cycling: null,
+        intention: 'Ship the release',
+        source: 'manual',
+        scheduleOccurrence: null,
+        rules: session.config.rules,
+      },
       startedAt: START_AT,
       sessionEndsAt: null,
       phase: 'focus',
@@ -443,9 +452,9 @@ describe('migration checkpoint builder', (): void => {
   });
 
   it('drops a v1 gate that has no session to belong to', (): void => {
-    // Rick's profile stored `gate: null` beside `session: null`, but a v1 worker evicted between
-    // the session end and the gate clear leaves one behind, and the v2 runtime contract refuses a
-    // gate with no session. Carrying it would strand the whole migration on a stale gate.
+    // The 7 September profile stored `gate: null` beside `session: null`, but a v1 worker evicted
+    // between the session end and the gate clear leaves one behind, and the v2 runtime contract
+    // refuses a gate with no session. Carrying it would strand the whole migration on a stale gate.
     const runtime: RuntimeStateV2 = buildRuntimeMigrationCheckpointV1ToV2(
       migrationInput({ runtime: legacyRuntime({ gate: liveGate() }) }),
     ).projectedRuntime;
@@ -455,6 +464,9 @@ describe('migration checkpoint builder', (): void => {
   });
 
   it('keeps the gate of a migrated session', (): void => {
+    // This guards the inverse of the change: a gate drop that ignored the session would fail it.
+    // It was green before the change too, because the old builder carried every gate, so it is
+    // not evidence that the change happened.
     const session: NormalizedSessionStateV1 = legacySession();
     const runtime: RuntimeStateV2 = buildRuntimeMigrationCheckpointV1ToV2(
       activeInput(session, { runtime: legacyRuntime({ session, gate: liveGate() }) }),

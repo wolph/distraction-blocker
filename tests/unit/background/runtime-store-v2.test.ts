@@ -243,7 +243,7 @@ describe('stored runtime classification', (): void => {
   });
 
   it('hands a v1 subset that omits later v1 keys to migration', (): void => {
-    // Rick's 7 September profile carried the eleven-key v1 shape, without the tab claim maps the
+    // The 7 September profile carried the eleven-key v1 shape, without the tab claim maps the
     // last v1 builds added, and the v1 reader fills those in itself.
     const raw: Record<string, unknown> = {
       session: null,
@@ -262,6 +262,23 @@ describe('stored runtime classification', (): void => {
     expect(classifyStoredRuntime(raw, MARKER)).toEqual({ kind: 'legacy', raw, staleMarker: true });
   });
 
+  it('hands a v1 record that still carries the retired tab keys to migration', (): void => {
+    // The builds before 9053e74 (2026-08-29) stored `stoppedTabIds` and `mutedTabs` at the top
+    // level. The v1 reader ignores both, so a runtime last written by one of them migrates rather
+    // than being refused for a key the current v1 shape no longer has.
+    const raw: Record<string, unknown> = {
+      ...legacyRuntime(),
+      stoppedTabIds: [11],
+      mutedTabs: { 11: true },
+    };
+
+    expect(classifyStoredRuntime(raw, null)).toEqual({ kind: 'legacy', raw, staleMarker: false });
+    expect(classifyStoredRuntime(raw, MARKER)).toEqual({ kind: 'legacy', raw, staleMarker: true });
+  });
+
+  // This guards the inverse of the change: a v1 key list that admitted a foreign key would fail
+  // it. It was green before the change too, because the old classifier refused everything under
+  // a marker, so it is not evidence that the change happened.
   it.each<[string, unknown]>([
     ['a record with a key no v1 runtime carried', { session: null, date: '2026-09-09', bogus: 1 }],
     ['a bare string', 'text'],
