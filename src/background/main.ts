@@ -377,6 +377,10 @@ function currentEngine(): Engine {
 }
 
 function reportBackgroundError(error: unknown): void {
+  // A settled boot failure was reported once where it settled. Every listener that finds it
+  // afterwards, on each alarm, tab event, or storage change, would otherwise repeat it for the
+  // life of the stopped worker.
+  if (error instanceof BootFailedError) return;
   console.error('focus-lock background error', error);
 }
 

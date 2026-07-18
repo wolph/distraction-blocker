@@ -802,6 +802,7 @@ beforeEach((): void => {
   mocks.engineArguments = null;
   mocks.alarms.clear();
   mocks.alarmListener = null;
+  mocks.handledAlarms = [];
   mocks.recoverCalls = 0;
   mocks.recoverError = null;
   mocks.bootGate = null;
@@ -3700,6 +3701,19 @@ describe('background boot failure channel', (): void => {
     // The overlay is an answer, never a write: the stored record keeps the fault it was given.
     expect(mocks.localState[LOCAL_SETUP]).toEqual(storedSetup);
     expect(mocks.engineArguments).toBeNull();
+
+    // Browser events keep arriving at a stopped worker. Each one finds the same settled failure,
+    // and none of them may report it again.
+    if (mocks.alarmListener === null) throw new Error('alarm listener was not registered');
+    if (mocks.removedListener === null) throw new Error('tab removal listener was not registered');
+    mocks.alarmListener({ name: 'tick', scheduledTime: Date.now() } as chrome.alarms.Alarm);
+    mocks.removedListener(7);
+    await vi.waitFor((): void => expect(mocks.invalidatedTabIds).toEqual([7]));
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mocks.handledAlarms).toEqual([]);
+    expect(consoleError).toHaveBeenCalledTimes(1);
   });
 
   it('re-runs the boot on retryBoot once the stored fault is repaired', async (): Promise<void> => {
