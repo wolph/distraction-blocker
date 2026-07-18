@@ -13,6 +13,7 @@ import {
   isSetupState,
 } from '../shared/runtime-validation';
 import {
+  LOCAL_BANK,
   LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS,
   LOCAL_CACHES,
   LOCAL_DATA_CLEAR_JOURNAL,
@@ -27,7 +28,9 @@ import {
   LOCAL_RUNTIME_MIGRATION,
   LOCAL_RUNTIME_REJECTED,
   LOCAL_RUNTIME_SCHEMA,
+  LOCAL_SETTINGS,
   LOCAL_SETUP,
+  LOCAL_STREAK,
   LOCAL_SYNC_JOURNAL,
   LOCAL_SYNC_QUOTA_EVICTION,
   SYNC_BANK,
@@ -136,6 +139,7 @@ import {
   loadLists,
   loadRuntime,
   loadSyncJournal,
+  mergeLists,
   migrateRuntimeRules,
   type ParsedRuntimeState,
   parseBank,
@@ -479,10 +483,17 @@ function validatedPendingJournal(
   return journal;
 }
 
-function assertValidAuthoritativeRemotePolicy(
+/**
+ * The synced policy entries a legacy import cannot read, by key. Each one is replaced by the
+ * validated local value or the default and the import goes on, because one unreadable entry must
+ * not keep the whole profile from booting. The pending journal is replay transport, repaired from
+ * validated authority later, so only the entries it does not override are judged here.
+ */
+function refusedAuthoritativeRemotePolicy(
   storedSync: Record<string, unknown>,
   journal: SyncJournal,
-): void {
+): string[] {
+  const refused: string[] = [];
   const pendingSettings: StoredSettingsParseResult | null = hasPendingSet(journal, SYNC_SETTINGS)
     ? parseStoredSettings(journal.sets[SYNC_SETTINGS], DEFAULT_SETTINGS)
     : null;
@@ -491,7 +502,7 @@ function assertValidAuthoritativeRemotePolicy(
     Object.hasOwn(storedSync, SYNC_SETTINGS) &&
     !parseStoredSettings(storedSync[SYNC_SETTINGS], DEFAULT_SETTINGS).valid
   ) {
-    throw new Error('invalid authoritative legacy settings');
+    refused.push(SYNC_SETTINGS);
   }
   const pendingBank: BankState | null = hasPendingSet(journal, SYNC_BANK)
     ? parseBank(journal.sets[SYNC_BANK])
@@ -501,7 +512,7 @@ function assertValidAuthoritativeRemotePolicy(
     Object.hasOwn(storedSync, SYNC_BANK) &&
     parseBank(storedSync[SYNC_BANK]) === null
   ) {
-    throw new Error('invalid authoritative legacy bank');
+    refused.push(SYNC_BANK);
   }
   const pendingStreak: StreakState | null = hasPendingSet(journal, SYNC_STREAK)
     ? parseStreak(journal.sets[SYNC_STREAK])
@@ -511,20 +522,48 @@ function assertValidAuthoritativeRemotePolicy(
     Object.hasOwn(storedSync, SYNC_STREAK) &&
     parseStreak(storedSync[SYNC_STREAK]) === null
   ) {
-    throw new Error('invalid authoritative legacy streak');
+    refused.push(SYNC_STREAK);
   }
   const remoteHasLists: boolean = Object.keys(storedSync).some(isListSyncKey);
   const journalHasLists: boolean = hasPendingLists(journal);
-  // The pending journal is replay transport. It is repaired from validated remote
-  // or local compatibility authority later. Remote list authority must be coherent.
-  if (!remoteHasLists || journalHasLists) return;
+  if (!remoteHasLists || journalHasLists) return refused;
   const decoded = decodeListsSyncSnapshot(storedSync);
-  if (decoded.kind === 'incomplete') {
-    throw new Error('incomplete authoritative legacy lists');
+  // The strict validator refuses the whole entry for one bad rule. The local snapshot is the
+  // value that stands in, never a lenient read of the refused one.
+  if (
+    decoded.kind === 'incomplete' ||
+    (decoded.kind === 'legacy' && !isListsConfig(decoded.value))
+  ) {
+    refused.push(SYNC_LISTS);
   }
-  if (decoded.kind === 'legacy' && !isListsConfig(decoded.value)) {
-    throw new Error('invalid authoritative legacy lists');
-  }
+  return refused;
+}
+
+/** What stands in for a refused synced entry: the validated local value, or the default. */
+type RemotePolicyFallbacks = {
+  settings: Settings;
+  bank: BankState;
+  streak: StreakState | null;
+  lists: ListsConfig;
+};
+
+async function localPolicyFallbacks(): Promise<RemotePolicyFallbacks> {
+  const stored: Record<string, unknown> = await chrome.storage.local.get([
+    LOCAL_SETTINGS,
+    LOCAL_BANK,
+    LOCAL_STREAK,
+    LOCAL_LISTS_SNAPSHOT,
+  ]);
+  const settings: StoredSettingsParseResult = parseStoredSettings(
+    stored[LOCAL_SETTINGS],
+    DEFAULT_SETTINGS,
+  );
+  return {
+    settings: settings.valid ? settings.settings : DEFAULT_SETTINGS,
+    bank: parseBank(stored[LOCAL_BANK]) ?? { balanceMs: 0 },
+    streak: parseStreak(stored[LOCAL_STREAK]),
+    lists: mergeLists(stored[LOCAL_LISTS_SNAPSHOT]),
+  };
 }
 
 function assertValidResolvedLegacyPolicy(snapshot: PolicySnapshot): void {
@@ -989,7 +1028,12 @@ async function preparePolicyStorage(lease: AllDataClearLease): Promise<PolicySto
     const rawJournal: SyncJournal = await loadSyncJournal();
     const sanitized: SanitizedSyncJournal = sanitizeSyncJournal(rawJournal);
     const storedSync: Record<string, unknown> = await chrome.storage.sync.get(null);
-    assertValidAuthoritativeRemotePolicy(storedSync, sanitized.journal);
+    const refusedRemoteKeys: string[] = refusedAuthoritativeRemotePolicy(
+      storedSync,
+      sanitized.journal,
+    );
+    const fallbacks: RemotePolicyFallbacks | null =
+      refusedRemoteKeys.length > 0 ? await localPolicyFallbacks() : null;
     const journal: SyncJournal = validatedPendingJournal(sanitized.journal, storedSync, now);
     const hasRemotePolicy: boolean = Object.keys(storedSync).some((key: string): boolean =>
       isFocusLockSyncKey(key),
@@ -1006,11 +1050,13 @@ async function preparePolicyStorage(lease: AllDataClearLease): Promise<PolicySto
       decodeListsSyncSnapshot(storedSync).kind === 'incomplete';
     const decodedLists = decodeListsSyncSnapshot(effectiveListsSnapshot(storedSync, journal));
     const lists: ListsConfig =
-      !journalHadLists || decodedLists.kind === 'legacy'
-        ? storedLists
-        : decodedLists.kind === 'complete'
-          ? decodedLists.lists
-          : journalFallbackLists;
+      fallbacks !== null && refusedRemoteKeys.includes(SYNC_LISTS)
+        ? fallbacks.lists
+        : !journalHadLists || decodedLists.kind === 'legacy'
+          ? storedLists
+          : decodedLists.kind === 'complete'
+            ? decodedLists.lists
+            : journalFallbackLists;
     if (journalHadLists || remoteListsIncomplete) {
       replacePendingLists(journal, await encodeListsForSync(lists));
     }
@@ -1018,11 +1064,13 @@ async function preparePolicyStorage(lease: AllDataClearLease): Promise<PolicySto
       effectiveLegacyValue(journal, storedSync, SYNC_SETTINGS),
       DEFAULT_SETTINGS,
     );
-    const settings: Settings = parsedSettings.valid ? parsedSettings.settings : DEFAULT_SETTINGS;
-    const bank: BankState = parseBank(effectiveLegacyValue(journal, storedSync, SYNC_BANK)) ?? {
-      balanceMs: 0,
-    };
-    const syncedStreak: StreakState | null = parseStreak(storedSync[SYNC_STREAK]);
+    const settings: Settings = parsedSettings.valid
+      ? parsedSettings.settings
+      : (fallbacks?.settings ?? DEFAULT_SETTINGS);
+    const bank: BankState = parseBank(effectiveLegacyValue(journal, storedSync, SYNC_BANK)) ??
+      fallbacks?.bank ?? { balanceMs: 0 };
+    const syncedStreak: StreakState | null =
+      parseStreak(storedSync[SYNC_STREAK]) ?? fallbacks?.streak ?? null;
     const journalHasStreak: boolean = hasPendingSet(journal, SYNC_STREAK);
     const journaledStreak: StreakState | null = journalHasStreak
       ? parseStreak(journal.sets[SYNC_STREAK])
@@ -1066,6 +1114,14 @@ async function preparePolicyStorage(lease: AllDataClearLease): Promise<PolicySto
     const snapshot: PolicySnapshot = { settings, lists, bank, streak: persistedStreak };
     assertValidResolvedLegacyPolicy(snapshot);
     await storage.importLegacy(snapshot, runtime, journal, storedSync);
+    if (refusedRemoteKeys.length > 0) {
+      // A real import outcome, so it is persisted, unlike the boot-failure overlays. Settings
+      // shows it beside the other storage errors, and the log names the keys.
+      reportBackgroundError(
+        new Error(`legacy remote policy dropped: ${refusedRemoteKeys.join(', ')}`),
+      );
+      await storage.markLegacyRemotePolicyDropped();
+    }
     return storage;
   } catch (error: unknown) {
     await storage.markLegacyMigrationFailed();

@@ -21,6 +21,7 @@ import { SYNC_QUOTA_BYTES_TOTAL, syncItemBytes } from '../../../src/background/s
 import type { SyncJournal } from '../../../src/background/sync-writer';
 import type { StoredMatcherCache } from '../../../src/core/matcher';
 import { emptyDaily, rollupMonth } from '../../../src/core/stats';
+import { emptyStreak } from '../../../src/core/streak';
 import {
   CATEGORY_IDS,
   DEFAULT_LISTS,
@@ -55,6 +56,7 @@ import {
   SYNC_SETTINGS,
   SYNC_STREAK,
 } from '../../../src/shared/storage-keys';
+import { localMonthStr } from '../../../src/shared/time';
 import type {
   BankState,
   DailyAgg,
@@ -2274,13 +2276,15 @@ describe('background pending lists tracking', () => {
 });
 
 describe('background boot state convergence', () => {
-  it('fails closed when remote split-list authority is invalid', async () => {
+  it('degrades an invalid remote split-list authority to the local snapshot and records the drop', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
     const localLists: ListsConfig = {
       ...DEFAULT_LISTS,
       custom: [{ kind: 'host', pattern: 'keep-local.example' }],
     };
     mocks.localState[LOCAL_LISTS_SNAPSHOT] = localLists;
     mocks.scenario.storedSync = {
+      [SYNC_SETTINGS]: { ...DEFAULT_SETTINGS, retentionDays: 30 },
       [SYNC_LISTS]: {
         format: 'category-shards-v1',
         revision: '0'.repeat(64),
@@ -2292,12 +2296,19 @@ describe('background boot state convergence', () => {
 
     await finishBoot();
 
-    expect(mocks.engineArguments).toBeNull();
+    // The refused entry is replaced by the local snapshot, the readable one is imported, and the
+    // profile boots. The record says what happened so Settings can show it.
+    expect(engineLists()).toEqual(localLists);
+    expect(engineSettings().retentionDays).toBe(30);
     expect(mocks.localState[LOCAL_LISTS_SNAPSHOT]).toEqual(localLists);
     expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
-      legacyImported: false,
-      storageError: 'legacy-migration-failed',
+      legacyImported: true,
+      storageError: 'legacy-remote-policy-dropped',
     });
+    expect(consoleError).toHaveBeenCalledWith(
+      'focus-lock background error',
+      expect.objectContaining({ message: expect.stringContaining('lists') }),
+    );
     expect(chrome.storage.sync.set).not.toHaveBeenCalled();
     expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
   });
@@ -2329,7 +2340,13 @@ describe('background boot state convergence', () => {
     });
   });
 
-  it('fails closed when remote split-list shards are incomplete', async () => {
+  it('degrades incomplete remote split-list shards to the local snapshot and records the drop', async () => {
+    vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+    const localLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'keep-local.example' }],
+    };
+    mocks.localState[LOCAL_LISTS_SNAPSHOT] = localLists;
     const exclusions: ListsConfig['exclusions'] = {};
     for (const categoryId of CATEGORY_IDS) {
       exclusions[categoryId] = Array.from(
@@ -2346,12 +2363,13 @@ describe('background boot state convergence', () => {
     await finishBoot();
     await vi.advanceTimersByTimeAsync(10_000);
 
-    expect(mocks.engineArguments).toBeNull();
+    expect(engineLists()).toEqual(localLists);
     expect(mocks.scenario.storedSync).toEqual(staleShards);
     expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
-      legacyImported: false,
-      storageError: 'legacy-migration-failed',
+      legacyImported: true,
+      storageError: 'legacy-remote-policy-dropped',
     });
+    // Nothing reaches Chrome Sync before the person chooses a storage mode again.
     expect(chrome.storage.sync.set).not.toHaveBeenCalled();
     expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
   });
@@ -2515,7 +2533,8 @@ describe('background boot state convergence', () => {
     expect(chrome.storage.sync.set).not.toHaveBeenCalled();
   });
 
-  it('fails an invalid authoritative remote policy without mutating remote data', async () => {
+  it('degrades an invalid authoritative remote policy without mutating remote data', async () => {
+    vi.spyOn(console, 'error').mockImplementation((): void => undefined);
     const evictedKey: string = 'aggm:legacy-device:2026-07';
     const evictedMonth = rollupMonth('2026-07', []);
     const invalidRemote: Record<string, unknown> = {
@@ -2539,16 +2558,93 @@ describe('background boot state convergence', () => {
 
     await finishBoot();
 
-    expect(mocks.engineArguments).toBeNull();
+    // Both refused entries fall back to their defaults, the boot finishes, and the remote copies
+    // are left exactly as they were: nothing repairs Chrome Sync without consent.
+    expect(engineSettings()).toEqual(DEFAULT_SETTINGS);
+    expect(engineBank()).toEqual({ balanceMs: 0 });
     expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
-      legacyImported: false,
-      storageError: 'legacy-migration-failed',
+      legacyImported: true,
+      storageError: 'legacy-remote-policy-dropped',
     });
     expect(mocks.scenario.storedSync).toEqual(invalidRemote);
     expect(mocks.localState[LOCAL_SYNC_QUOTA_EVICTION]).toEqual(checkpoint);
-    expect(mocks.localState[LOCAL_SYNC_JOURNAL]).toEqual(originalJournal);
     expect(chrome.storage.sync.set).not.toHaveBeenCalled();
     expect(chrome.storage.sync.remove).not.toHaveBeenCalled();
+  });
+
+  it('drops a refused remote rule with the lists entry and keeps the local snapshot', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+    const localLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'keep-local.example' }],
+    };
+    mocks.localState[LOCAL_LISTS_SNAPSHOT] = localLists;
+    mocks.scenario.storedSync = {
+      [SYNC_SETTINGS]: { ...DEFAULT_SETTINGS, retentionDays: 30 },
+      [SYNC_BANK]: { balanceMs: 90_000 },
+      [SYNC_LISTS]: {
+        ...DEFAULT_LISTS,
+        custom: [
+          { kind: 'host', pattern: 'readable.example' },
+          { kind: 'bogus', pattern: 'refused.example' },
+        ],
+      },
+    };
+
+    await finishBoot();
+
+    // The strict validator refuses the whole lists entry for its one bad rule, so the local
+    // snapshot stands in, while the readable entries beside it are imported as they are.
+    expect(engineLists()).toEqual(localLists);
+    expect(engineSettings().retentionDays).toBe(30);
+    expect(engineBank()).toEqual({ balanceMs: 90_000 });
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      legacyImported: true,
+      storageError: 'legacy-remote-policy-dropped',
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      'focus-lock background error',
+      expect.objectContaining({ message: expect.stringContaining('lists') }),
+    );
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+  });
+
+  it('drops a refused remote streak and boots on the fresh one', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+    mocks.scenario.storedSync = {
+      [SYNC_SETTINGS]: { ...DEFAULT_SETTINGS, retentionDays: 30 },
+      [SYNC_STREAK]: { current: -1 },
+    };
+
+    await finishBoot();
+
+    expect(engineStreak()).toEqual(emptyStreak(localMonthStr(Date.now())));
+    expect(engineSettings().retentionDays).toBe(30);
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      legacyImported: true,
+      storageError: 'legacy-remote-policy-dropped',
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      'focus-lock background error',
+      expect.objectContaining({ message: expect.stringContaining('streak') }),
+    );
+    expect(chrome.storage.sync.set).not.toHaveBeenCalled();
+  });
+
+  it('records no drop when every remote entry is readable', async () => {
+    mocks.scenario.storedSync = {
+      [SYNC_SETTINGS]: { ...DEFAULT_SETTINGS, retentionDays: 30 },
+      [SYNC_LISTS]: DEFAULT_LISTS,
+      [SYNC_BANK]: { balanceMs: 90_000 },
+    };
+
+    await finishBoot();
+
+    expect(engineSettings().retentionDays).toBe(30);
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      legacyImported: true,
+      storageError: null,
+    });
   });
 
   it.each([

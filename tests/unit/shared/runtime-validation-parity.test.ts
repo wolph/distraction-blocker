@@ -308,6 +308,7 @@ describe('runtime and worker request validation parity', (): void => {
     // answer with the same guard it uses for the stored record.
     expect(isSetupState({ ...SETUP, storageError: 'boot-failed' })).toBe(true);
     expect(isSetupState({ ...SETUP, storageError: 'runtime-boot-failed' })).toBe(true);
+    expect(isSetupState({ ...SETUP, storageError: 'legacy-remote-policy-dropped' })).toBe(true);
     expect(isInstallMarker(INSTALL_MARKER)).toBe(true);
     expect(isInstallMarker({ ...INSTALL_MARKER, latestReason: 'startup' })).toBe(false);
   });
