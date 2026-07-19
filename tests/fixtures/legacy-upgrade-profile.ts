@@ -309,15 +309,15 @@ export function legacyUpgradeEventsV1(): LegacyEventRecord[] {
       sessionId: COMPLETED_SESSION_ID,
     },
     {
-      t: 'sessionCanceled',
-      at: at + 40 * MINUTE_MS,
-      focusedMs: 2 * MINUTE_MS,
-      sessionId: CANCELED_SESSION_ID,
-    },
-    {
       t: 'sessionIdentityAssigned',
       at: at + 38 * MINUTE_MS,
       startedAt: at + 38 * MINUTE_MS,
+      sessionId: CANCELED_SESSION_ID,
+    },
+    {
+      t: 'sessionCanceled',
+      at: at + 40 * MINUTE_MS,
+      focusedMs: 2 * MINUTE_MS,
       sessionId: CANCELED_SESSION_ID,
     },
   ];

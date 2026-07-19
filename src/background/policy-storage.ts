@@ -1304,7 +1304,9 @@ export function createPolicyStorage(
    * settings JSON, so it is recomputed from the migrated snapshot in the same write: the two keys
    * stay consistent even when the worker dies between them. Runs before the Sync outbox is
    * reconstructed, so a republication carries the canonical record. The rewritten value parses
-   * as canonical, which is what makes the next `initialize()` skip this.
+   * as canonical, which is what makes the next `initialize()` skip this. A Sync profile whose
+   * status is idle keeps the v1 record in the remote area until its next settings edit: every
+   * reader of that record is lenient, and the design promises convergence on the error path only.
    */
   async function repairStoredSettingsShape(): Promise<void> {
     const stored: Record<string, unknown> = await local.get(LOCAL_SETTINGS);
@@ -1314,7 +1316,14 @@ export function createPolicyStorage(
       DEFAULT_SETTINGS,
     );
     if (!parsed.valid || !parsed.legacy) return;
-    const snapshot: PolicySnapshot = await loadSnapshotInternal();
+    let snapshot: PolicySnapshot;
+    try {
+      snapshot = await loadSnapshotInternal();
+    } catch (_error: unknown) {
+      // Another policy record is invalid. The next loadSnapshot() reports the same error, and
+      // leaving the settings alone keeps initialize(), and every recovery entry behind it, open.
+      return;
+    }
     const pointerStored: Record<string, unknown> = await local.get(LOCAL_POLICY_COMMIT);
     const pointer: PolicyCommit | null = parsePolicyCommit(pointerStored[LOCAL_POLICY_COMMIT]);
     const items: Record<string, unknown> = { [LOCAL_SETTINGS]: snapshot.settings };

@@ -346,14 +346,20 @@ function storedAllDataJournal(local: FakeStorage): AllDataClearJournalV2 {
   return journal as AllDataClearJournalV2;
 }
 
-/** Every payload a `set` carried that touched `key`, in write order. */
-function writesTouching(local: FakeStorage, key: string): Record<string, unknown>[] {
+/** Every payload a `set` on `area` carried, in write order. */
+function setPayloads(area: chrome.storage.StorageArea): Record<string, unknown>[] {
   return vi
-    .mocked(local.area.set)
+    .mocked(area.set)
     .mock.calls.map(
       (call: unknown[]): Record<string, unknown> => call[0] as Record<string, unknown>,
-    )
-    .filter((items: Record<string, unknown>): boolean => Object.hasOwn(items, key));
+    );
+}
+
+/** Every payload a local `set` carried that touched `key`, in write order. */
+function writesTouching(local: FakeStorage, key: string): Record<string, unknown>[] {
+  return setPayloads(local.area).filter((items: Record<string, unknown>): boolean =>
+    Object.hasOwn(items, key),
+  );
 }
 
 /** Every payload a `set` carried that touched the journal key, in write order. */
@@ -1235,6 +1241,18 @@ describe('PolicyStorage', (): void => {
     expect(local.state.values[LOCAL_SYNC_JOURNAL]).toMatchObject({
       sets: { [SYNC_SETTINGS]: canonical },
     });
+    // The repair runs before the outbox is reconstructed, so the migration write lands before
+    // the first journal write and a worker that dies in between never leaves a journal ahead of
+    // the settings it was built from.
+    const localWrites: Record<string, unknown>[] = setPayloads(local.area);
+    const migrationIndex: number = localWrites.findIndex(
+      (items: Record<string, unknown>): boolean => Object.hasOwn(items, LOCAL_SETTINGS),
+    );
+    const journalIndex: number = localWrites.findIndex((items: Record<string, unknown>): boolean =>
+      Object.hasOwn(items, LOCAL_SYNC_JOURNAL),
+    );
+    expect(migrationIndex).toBeGreaterThanOrEqual(0);
+    expect(journalIndex).toBeGreaterThan(migrationIndex);
 
     await vi.advanceTimersByTimeAsync(10_000);
 
@@ -1244,6 +1262,67 @@ describe('PolicyStorage', (): void => {
       syncWriteStatus: 'idle',
       storageError: null,
     });
+    const remoteSettingsWrites: unknown[] = setPayloads(sync.area)
+      .filter((items: Record<string, unknown>): boolean => Object.hasOwn(items, SYNC_SETTINGS))
+      .map((items: Record<string, unknown>): unknown => items[SYNC_SETTINGS]);
+    expect(remoteSettingsWrites.length).toBeGreaterThan(0);
+    for (const value of remoteSettingsWrites) expect(value).toEqual(canonical);
+    const journalSettingsWrites: unknown[] = writesTouching(local, LOCAL_SYNC_JOURNAL).flatMap(
+      (items: Record<string, unknown>): unknown[] => {
+        const sets: Record<string, unknown> = (items[LOCAL_SYNC_JOURNAL] as SyncJournal).sets;
+        return Object.hasOwn(sets, SYNC_SETTINGS) ? [sets[SYNC_SETTINGS]] : [];
+      },
+    );
+    expect(journalSettingsWrites.length).toBeGreaterThan(0);
+    for (const value of journalSettingsWrites) expect(value).toEqual(canonical);
+  });
+
+  it('rewrites v1 settings without minting a policy commit when none is stored', async (): Promise<void> => {
+    const { stored, canonical } = preForceEndSettings();
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      legacyImported: true,
+    };
+    const local: FakeStorage = fakeStorage({ ...localPolicy(setup), [LOCAL_SETTINGS]: stored });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+
+    await storage.initialize();
+
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(canonical);
+    expect(local.state.values).not.toHaveProperty(LOCAL_POLICY_COMMIT);
+    expect(writesTouching(local, LOCAL_POLICY_COMMIT)).toEqual([]);
+    expect(
+      writesTouching(local, LOCAL_SETTINGS).map((items: Record<string, unknown>): string[] =>
+        Object.keys(items),
+      ),
+    ).toEqual([[LOCAL_SETTINGS]]);
+    expect(await storage.loadSnapshot()).toEqual({ ...SNAPSHOT, settings: canonical });
+  });
+
+  it('leaves v1 settings alone when another policy record is invalid and reports it on the first read', async (): Promise<void> => {
+    const { stored } = preForceEndSettings();
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      legacyImported: true,
+    };
+    const invalidLists: Record<string, unknown> = { ...DEFAULT_LISTS, unexpected: true };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_SETTINGS]: stored,
+      [LOCAL_LISTS]: invalidLists,
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+
+    await expect(storage.initialize()).resolves.toBeUndefined();
+
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(stored);
+    expect(writesTouching(local, LOCAL_SETTINGS)).toEqual([]);
+    expect(local.state.values[LOCAL_LISTS]).toEqual(invalidLists);
+    await expect(storage.loadSnapshot()).rejects.toThrow('invalid lists policy');
   });
 
   it.each([
