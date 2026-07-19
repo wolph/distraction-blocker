@@ -204,11 +204,17 @@ const DEFERRAL_REASONS: ReadonlySet<string> = new Set<string>(['no-document-id',
 const EXCLUSION_REASONS: ReadonlySet<string> = new Set<string>(['known-unsupported', 'closed']);
 /** The builder's instant only fills `date`, which the cleared comparison replaces. */
 const CLEARED_PROJECTION_INSTANT_MS: number = 0;
+/**
+ * Every storage error the setup record persists. The local-history clear copies the record's
+ * value into its journal, so a code missing here strands the profile behind a journal the next
+ * boot refuses. The two boot overlays are answered, never written, and stay out.
+ */
 const SETUP_STORAGE_ERRORS: ReadonlySet<string> = new Set<string>([
   'legacy-migration-failed',
   'sync-publish-failed',
   'remote-deletion-failed',
   'local-clear-failed',
+  'legacy-remote-policy-dropped',
 ]);
 
 /**

@@ -203,6 +203,23 @@ describe('useSnapshot', () => {
     expect(getByRole('status').textContent).toBe('loading');
   });
 
+  it('refuses a worker rejection without reloading the page', async (): Promise<void> => {
+    // A stopped worker answers every request with a rejection. That is not a stale page, so the
+    // reload that exists for one must not run, or the recovery screen lands behind a flash.
+    const reload: Mock<() => void> = stubReload();
+    sendMessageMock.mockResolvedValue({
+      ok: false,
+      error: 'Focus Lock did not finish starting: invalid local setup state',
+    });
+    const { getByRole } = render(h(Probe, null));
+
+    await waitFor((): void => {
+      expect(getByRole('status').textContent).toBe('unavailable');
+    });
+    expect(reload).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(RELOAD_FLAG)).toBeNull();
+  });
+
   it('never reloads a page whose session storage refuses to remember the attempt', async (): Promise<void> => {
     const reload: Mock<() => void> = stubReload();
     vi.stubGlobal('sessionStorage', {

@@ -3,7 +3,7 @@ import './chrome-fake';
 
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { h } from 'preact';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import { App } from '../../../src/popup/App';
 import {
   DEFAULT_LISTS,
@@ -37,6 +37,22 @@ const SETUP_HEADING: string = 'Finish setting up Focus Lock';
 const BLOCKING_OFF_HEADING: string = 'Website blocking is off';
 const BOOT_FAILED_HEADING: string = 'Focus Lock could not start';
 const RESET_RUNTIME_LABEL: string = 'Reset local runtime';
+const DELETE_ALL_LABEL: string = 'Delete all Focus Lock data';
+const DELETE_CONFIRM_LABEL: string = 'Delete everything and start over';
+const KEEP_DATA_LABEL: string = 'Keep my data';
+
+/**
+ * jsdom refuses to redefine location's own properties, so the whole global is stubbed. The spread
+ * carries the URL, which the assertion pins so a jsdom that moved those attributes onto the
+ * prototype would fail here rather than far away.
+ */
+function stubReload(): Mock<() => void> {
+  const reload: Mock<() => void> = vi.fn<() => void>();
+  const href: string = window.location.href;
+  vi.stubGlobal('location', { ...window.location, reload });
+  expect(location.href).toBe(href);
+  return reload;
+}
 
 const COMPLETED_SETUP: SetupState = {
   ...DEFAULT_SETUP,
@@ -188,6 +204,7 @@ describe('popup lifecycle body', (): void => {
 
   afterEach((): void => {
     cleanup();
+    vi.unstubAllGlobals();
   });
 
   it('renders the start form while idle without a journal', async (): Promise<void> => {
@@ -416,6 +433,7 @@ describe('popup lifecycle body', (): void => {
   });
 
   it('renders the boot failure screen with the reason and Retry for boot-failed', async (): Promise<void> => {
+    const reload: Mock<() => void> = stubReload();
     installBootFailure('boot-failed', 'policy-storage', 'invalid local setup state');
     const { getByRole, queryByRole } = render(h(App, null));
 
@@ -426,9 +444,103 @@ describe('popup lifecycle body', (): void => {
       expect(getByRole('status').textContent).toBe('invalid local setup state');
     });
     expect(getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect(getByRole('button', { name: DELETE_ALL_LABEL })).toBeTruthy();
     expect(queryByRole('button', { name: RESET_RUNTIME_LABEL })).toBeNull();
     expect(queryByRole('button', { name: START_BUTTON })).toBeNull();
     expect(queryByRole('heading', { name: BLOCKING_OFF_HEADING })).toBeNull();
+    // The worker's rejection is a refusal, not a stale page: no reload before the screen lands.
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('renders an active all-data journal ahead of the boot failure screen', async (): Promise<void> => {
+    // A deletion that is still running, or waiting for its retry, is the way out of a profile
+    // that cannot boot, so its copy and its retry outrank the failure screen.
+    installSetup(emptySnapshot(NOW), {
+      ...COMPLETED_SETUP,
+      storageError: 'boot-failed',
+      dataClear: ALL_DATA_ERROR,
+    });
+    const { getByRole, queryByRole } = render(h(App, null));
+
+    await waitFor((): void => {
+      expect(getByRole('status').textContent).toBe(DATA_CLEAR_ERROR_COPY);
+    });
+    expect(getByRole('button', { name: RETRY_CLEANUP_LABEL })).toBeTruthy();
+    expect(queryByRole('heading', { name: BOOT_FAILED_HEADING })).toBeNull();
+  });
+
+  it('deletes all data from the boot failure screen after an inline confirmation', async (): Promise<void> => {
+    let cleared: boolean = false;
+    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
+      if (request.type === 'clearFocusLockData') {
+        expect(request).toEqual({ type: 'clearFocusLockData', scope: 'all' });
+        cleared = true;
+        return { ok: true, scope: 'all', status: 'cleared' };
+      }
+      if (request.type === 'getSetupState') {
+        return cleared ? { ...DEFAULT_SETUP } : { ...COMPLETED_SETUP, storageError: 'boot-failed' };
+      }
+      if (request.type === 'getBootFailure') {
+        return {
+          ok: true,
+          failure: cleared
+            ? null
+            : { stage: 'policy-storage', message: 'invalid local setup state', at: NOW },
+        };
+      }
+      if (!cleared) return { ok: false, error: 'Focus Lock did not finish starting: stopped' };
+      if (request.type === 'getSnapshot') return emptySnapshot(NOW);
+      return { ok: true };
+    });
+    const { getByRole, queryByRole } = render(h(App, null));
+
+    const first: HTMLButtonElement = await waitFor(
+      (): HTMLButtonElement => getByRole('button', { name: DELETE_ALL_LABEL }) as HTMLButtonElement,
+    );
+    expect(queryByRole('button', { name: DELETE_CONFIRM_LABEL })).toBeNull();
+
+    // The first press only asks. Keeping the data returns to the first control.
+    fireEvent.click(first);
+    expect(getByRole('button', { name: DELETE_CONFIRM_LABEL })).toBeTruthy();
+    expect(queryByRole('button', { name: DELETE_ALL_LABEL })).toBeNull();
+    fireEvent.click(getByRole('button', { name: KEEP_DATA_LABEL }));
+    expect(getByRole('button', { name: DELETE_ALL_LABEL })).toBeTruthy();
+    expect(queryByRole('button', { name: DELETE_CONFIRM_LABEL })).toBeNull();
+    expect(sendMessageMock).not.toHaveBeenCalledWith({ type: 'clearFocusLockData', scope: 'all' });
+
+    fireEvent.click(getByRole('button', { name: DELETE_ALL_LABEL }));
+    fireEvent.click(getByRole('button', { name: DELETE_CONFIRM_LABEL }));
+
+    // The worker cleared the profile and booted into setup on its own, and the popup follows.
+    await waitFor((): void => {
+      expect(getByRole('heading', { name: SETUP_HEADING })).toBeTruthy();
+    });
+    expect(cleared).toBe(true);
+    expect(queryByRole('heading', { name: BOOT_FAILED_HEADING })).toBeNull();
+  });
+
+  it('shows the worker refusal when the deletion from the boot failure screen fails', async (): Promise<void> => {
+    installBootFailure(
+      'boot-failed',
+      'policy-storage',
+      'invalid local setup state',
+      (request: Request): unknown =>
+        request.type === 'clearFocusLockData'
+          ? { ok: false, error: 'remote removal unavailable', scope: 'all', status: 'pending' }
+          : undefined,
+    );
+    const { getByRole } = render(h(App, null));
+
+    const first: HTMLButtonElement = await waitFor(
+      (): HTMLButtonElement => getByRole('button', { name: DELETE_ALL_LABEL }) as HTMLButtonElement,
+    );
+    fireEvent.click(first);
+    fireEvent.click(getByRole('button', { name: DELETE_CONFIRM_LABEL }));
+
+    await waitFor((): void => {
+      expect(getByRole('alert').textContent).toBe('remote removal unavailable');
+    });
+    expect(getByRole('heading', { name: BOOT_FAILED_HEADING })).toBeTruthy();
   });
 
   it('adds Reset local runtime only for runtime-boot-failed', async (): Promise<void> => {

@@ -9,6 +9,7 @@ import {
 import type { BrowserResetEngineSeamV2, Engine, EnginePorts } from '../../../src/background/engine';
 import { encodeListsForSync, LIST_SYNC_SHARD_KEYS } from '../../../src/background/list-sync-codec';
 import { main } from '../../../src/background/main';
+import type { PolicyStorage } from '../../../src/background/policy-storage';
 import { routeMessage } from '../../../src/background/router';
 import { emptyRuntimeV2 } from '../../../src/background/runtime-store-v2';
 import { handleSyncChanges, missingSyncDefaults } from '../../../src/background/storage-sync';
@@ -56,7 +57,7 @@ import {
   SYNC_SETTINGS,
   SYNC_STREAK,
 } from '../../../src/shared/storage-keys';
-import { localMonthStr } from '../../../src/shared/time';
+import { localDateStr, localMonthStr } from '../../../src/shared/time';
 import type {
   BankState,
   DailyAgg,
@@ -2648,6 +2649,74 @@ describe('background boot state convergence', () => {
     });
   });
 
+  it('keeps the defaults for absent remote entries when one entry is refused', async () => {
+    vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+    const now: number = Date.now();
+    const localStreak: StreakState = {
+      current: 2,
+      freezeTokens: 1,
+      lastCountedDate: localDateStr(now),
+      lastFreezeGrantDate: null,
+      activeDays: [new Date(now).getDate()],
+      activeMonth: localMonthStr(now),
+    };
+    const localLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'host', pattern: 'keep-local.example' }],
+    };
+    // Every local value is present, so a fallback that reaches for local values by mistake shows.
+    mocks.localState[LOCAL_SETTINGS] = { ...DEFAULT_SETTINGS, retentionDays: 45 };
+    mocks.localState[LOCAL_BANK] = { balanceMs: 777 };
+    mocks.localState[LOCAL_STREAK] = localStreak;
+    mocks.localState[LOCAL_LISTS_SNAPSHOT] = localLists;
+    mocks.scenario.storedSync = { [SYNC_STREAK]: { current: -1 } };
+
+    await finishBoot();
+
+    // The refused streak takes the local streak. The entries that are merely absent remotely
+    // take what a clean import gives them: the defaults, and the local lists snapshot that is the
+    // v1 compatibility authority for lists.
+    expect(engineStreak()).toEqual(localStreak);
+    expect(engineSettings()).toEqual(DEFAULT_SETTINGS);
+    expect(engineBank()).toEqual({ balanceMs: 0 });
+    expect(engineLists()).toEqual(localLists);
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      legacyImported: true,
+      storageError: 'legacy-remote-policy-dropped',
+    });
+  });
+
+  it('boots again after a local-history clear over a degraded import', async () => {
+    vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+    mocks.scenario.storedSync = {
+      [SYNC_SETTINGS]: { ...DEFAULT_SETTINGS, retentionDays: 30 },
+      [SYNC_STREAK]: { current: -1 },
+    };
+    await finishBoot();
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      storageError: 'legacy-remote-policy-dropped',
+    });
+    const storage: PolicyStorage = vi.mocked(routeMessage).mock.calls.at(-1)?.[3] as PolicyStorage;
+
+    // "Delete local history" copies the record's storage error into its journal. Every code the
+    // record can carry has to parse back, or the clear strands the profile behind a journal the
+    // next boot refuses to read.
+    await storage.clearLocalHistory();
+    await storage.finishLocalHistoryClear();
+    expect(mocks.localState[LOCAL_SETUP]).toMatchObject({
+      dataClear: { status: 'idle', scope: null, phase: null },
+    });
+
+    vi.mocked(routeMessage).mockClear();
+    main();
+    await expect(dispatchRuntime({ type: 'getSetupState' })).resolves.toEqual({ ok: true });
+    expect(routeMessage).toHaveBeenCalledOnce();
+    await expect(dispatchRuntime({ type: 'getBootFailure' })).resolves.toEqual({
+      ok: true,
+      failure: null,
+    });
+  });
+
   it.each([
     ['old defaults', DEFAULT_SETTINGS, false],
     ['old customized settings', { ...DEFAULT_SETTINGS, retentionDays: 30 }, true],
@@ -3714,6 +3783,55 @@ describe('background boot failure channel', (): void => {
     await Promise.resolve();
     expect(mocks.handledAlarms).toEqual([]);
     expect(consoleError).toHaveBeenCalledTimes(1);
+
+    // The listeners that wait on Policy Storage rather than on the Engine find the same failure:
+    // an inbound Chrome Sync change, an extension update, and the data clear retry alarm.
+    if (mocks.storageListener === null) throw new Error('storage listener was not registered');
+    mocks.storageListener({ [SYNC_SETTINGS]: { newValue: DEFAULT_SETTINGS } }, 'sync');
+    installedListener()({ reason: 'update', previousVersion: '0.0.9' });
+    mocks.alarmListener({
+      name: 'data-clear-retry',
+      scheduledTime: Date.now(),
+    } as chrome.alarms.Alarm);
+    for (let turn: number = 0; turn < 12; turn += 1) await Promise.resolve();
+    expect(chrome.tabs.create).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not queue a retried boot behind a stale permission reconcile', async (): Promise<void> => {
+    vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+    // The boot's own website reconcile is still running when Policy Storage refuses, a permission
+    // removal queues behind it, and the retry queues its reconcile behind that one. The stale
+    // reconcile must step aside rather than wait on the boot it is now blocking.
+    let releaseBootReconcile: () => void = (): void => {};
+    mocks.registrationReconcileGates = [
+      new Promise<void>((resolve: () => void): void => {
+        releaseBootReconcile = resolve;
+      }),
+    ];
+    mocks.registrationStatuses = ['unavailable', 'unavailable', 'unavailable'];
+    mocks.localState[LOCAL_SETUP] = { ...DEFAULT_SETUP, version: 2 };
+
+    main();
+    await expect(dispatchRuntime({ type: 'getBootFailure' })).resolves.toEqual({
+      ok: true,
+      failure: null,
+    });
+    // The failure settles while the reconcile is gated: the setup request observes it.
+    await expect(dispatchRuntime({ type: 'getSetupState' })).resolves.toMatchObject({
+      storageError: 'boot-failed',
+    });
+    if (mocks.permissionRemovedListener === null) {
+      throw new Error('permission removal listener was not registered');
+    }
+    mocks.permissionRemovedListener({ origins: ['<all_urls>'] });
+    mocks.localState[LOCAL_SETUP] = { ...DEFAULT_SETUP };
+    const retried: Promise<unknown> = dispatchRuntime({ type: 'retryBoot' });
+    for (let turn: number = 0; turn < 12; turn += 1) await Promise.resolve();
+    releaseBootReconcile();
+
+    await expect(retried).resolves.toEqual({ ok: true });
+    expect(mocks.engineArguments).not.toBeNull();
   });
 
   it('re-runs the boot on retryBoot once the stored fault is repaired', async (): Promise<void> => {
@@ -3863,12 +3981,14 @@ describe('background boot failure channel', (): void => {
     expect(mocks.localState[LOCAL_DATA_CLEAR_JOURNAL]).toBeUndefined();
     expect(mocks.localState[LOCAL_RUNTIME_MIGRATION]).toBeUndefined();
     expect(mocks.localState[LOCAL_SETUP]).toMatchObject({ completed: false, storageError: null });
-    // The profile is clean, so the retry boots the worker over it.
-    await expect(dispatchRuntime({ type: 'retryBoot' })).resolves.toEqual({ ok: true });
+    // The profile is clean, and the worker boots over it on its own, into setup.
     expect(mocks.engineArguments).not.toBeNull();
     await expect(dispatchRuntime({ type: 'getBootFailure' })).resolves.toEqual({
       ok: true,
       failure: null,
     });
+    vi.mocked(routeMessage).mockClear();
+    await expect(dispatchRuntime({ type: 'getSetupState' })).resolves.toEqual({ ok: true });
+    expect(routeMessage).toHaveBeenCalledOnce();
   });
 });

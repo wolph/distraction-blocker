@@ -10,6 +10,11 @@ function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === 'object' && value !== null;
 }
 
+/** The worker's refusal shape, which every request gets while the worker is stopped. */
+function isRejection(value: unknown): boolean {
+  return isRecord(value) && value.ok === false;
+}
+
 /**
  * Subscribe to the worker's session snapshot. The initial value comes from a
  * getSnapshot request, updates arrive as stateChanged broadcasts, and `now`
@@ -38,7 +43,9 @@ export function useSnapshot(refreshVersion: number = 0): {
           setError(false);
           return;
         }
-        if (reloadOnceForInvalidSnapshot()) return;
+        // A worker that refused the request is not a stale page. The reload exists for a page
+        // older than the worker, and it would only put the recovery screen behind a flash here.
+        if (!isRejection(value) && reloadOnceForInvalidSnapshot()) return;
         setSnapshot(null);
         setError(true);
       })

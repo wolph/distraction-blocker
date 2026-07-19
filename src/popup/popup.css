@@ -878,6 +878,38 @@ body {
   color: var(--text-soft);
 }
 
+/* The secondary shape, marked in red by its border and text, like the end-session control. */
+.danger-button {
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--danger);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.danger-button:hover:enabled {
+  background: var(--danger-soft);
+}
+
+.danger-button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+/* The confirmation replaces the delete control in place: the destructive choice beside the exit. */
+.boot-failed__confirm {
+  display: flex;
+  gap: 8px;
+}
+
+.boot-failed__confirm > button {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
 .cycle-note {
   color: var(--text-soft);
   font-weight: 400;

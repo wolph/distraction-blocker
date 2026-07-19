@@ -230,6 +230,14 @@ button.danger:disabled {
   opacity: 0.55;
 }
 
+/* The boot retry and the all-data deletion beside it, under the load error they answer. */
+.load-error__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .privacy-data {
   display: grid;
   gap: 16px;

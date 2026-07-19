@@ -12,6 +12,8 @@ import type { StatsBundle } from '../../../src/shared/messages';
 import {
   ackError,
   isAck,
+  isBootFailure,
+  isBootFailureResponse,
   isCanonicalSessionRuleSnapshot,
   isCycleConfig,
   isDeviceId,
@@ -311,6 +313,26 @@ describe('runtime and worker request validation parity', (): void => {
     expect(isSetupState({ ...SETUP, storageError: 'legacy-remote-policy-dropped' })).toBe(true);
     expect(isInstallMarker(INSTALL_MARKER)).toBe(true);
     expect(isInstallMarker({ ...INSTALL_MARKER, latestReason: 'startup' })).toBe(false);
+  });
+
+  it('validates the boot failure answer exactly', (): void => {
+    const failure = { stage: 'policy-storage', message: 'invalid local setup state', at: 5 };
+    expect(isBootFailure(failure)).toBe(true);
+    expect(isBootFailure({ ...failure, stage: 'runtime' })).toBe(true);
+    expect(isBootFailure({ ...failure, stage: 'engine' })).toBe(true);
+    expect(isBootFailure({ ...failure, stage: 'popup' })).toBe(false);
+    expect(isBootFailure({ ...failure, extra: true })).toBe(false);
+    expect(isBootFailure({ ...failure, message: '   ' })).toBe(false);
+    expect(isBootFailure({ ...failure, at: -1 })).toBe(false);
+    expect(isBootFailure(null)).toBe(false);
+    expect(isBootFailureResponse({ ok: true, failure: null })).toBe(true);
+    expect(isBootFailureResponse({ ok: true, failure })).toBe(true);
+    expect(isBootFailureResponse({ ok: true, failure, extra: 1 })).toBe(false);
+    expect(isBootFailureResponse({ ok: true })).toBe(false);
+    expect(isBootFailureResponse({ ok: false, error: 'stopped' })).toBe(false);
+    expect(isBootFailureResponse({ ok: true, failure: { ...failure, stage: 'popup' } })).toBe(
+      false,
+    );
   });
 
   it('defines a Flexible session with a complete rules snapshot', (): void => {

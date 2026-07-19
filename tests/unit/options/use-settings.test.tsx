@@ -509,6 +509,60 @@ describe('useSettingsStore', () => {
 });
 
 describe('App frame', () => {
+  it('offers the all-data deletion beside the boot retry after an inline confirmation', async (): Promise<void> => {
+    let cleared: boolean = false;
+    const rejection: { ok: false; error: string } = {
+      ok: false,
+      error: 'Focus Lock did not finish starting: invalid local setup state',
+    };
+    fake.respond('getSettings', (): unknown => (cleared ? DEFAULT_SETTINGS : rejection));
+    fake.respond('getLists', (): unknown => (cleared ? DEFAULT_LISTS : rejection));
+    fake.respond('getSnapshot', (): unknown => (cleared ? emptySnapshot(0) : rejection));
+    fake.respond(
+      'getSetupState',
+      (): SetupState =>
+        cleared ? { ...DEFAULT_SETUP } : { ...DEFAULT_SETUP, storageError: 'boot-failed' },
+    );
+    fake.respond('getBootFailure', (): unknown =>
+      cleared
+        ? { ok: true, failure: null }
+        : {
+            ok: true,
+            failure: { stage: 'policy-storage', message: 'invalid local setup state', at: 5 },
+          },
+    );
+    fake.respond('retryBoot', (): unknown => (cleared ? { ok: true } : rejection));
+    fake.respond('clearFocusLockData', (request: Request): unknown => {
+      expect(request).toEqual({ type: 'clearFocusLockData', scope: 'all' });
+      cleared = true;
+      return { ok: true, scope: 'all', status: 'cleared' };
+    });
+    const { getByRole, queryByRole } = render(<App />);
+
+    const first: HTMLButtonElement = await waitFor(
+      (): HTMLButtonElement =>
+        getByRole('button', { name: 'Delete all Focus Lock data' }) as HTMLButtonElement,
+    );
+    expect(getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect(queryByRole('button', { name: 'Delete everything and start over' })).toBeNull();
+
+    fireEvent.click(first);
+    expect(getByRole('button', { name: 'Delete everything and start over' })).toBeTruthy();
+    fireEvent.click(getByRole('button', { name: 'Keep my data' }));
+    expect(queryByRole('button', { name: 'Delete everything and start over' })).toBeNull();
+    expect(fake.sent).not.toContainEqual({ type: 'clearFocusLockData', scope: 'all' });
+
+    fireEvent.click(getByRole('button', { name: 'Delete all Focus Lock data' }));
+    fireEvent.click(getByRole('button', { name: 'Delete everything and start over' }));
+
+    // The worker booted into setup after the clear, so the page loads without the error.
+    await waitFor((): void => {
+      expect(queryByRole('alert')).toBeNull();
+    });
+    expect(fake.sent).toContainEqual({ type: 'clearFocusLockData', scope: 'all' });
+    expect(queryByRole('button', { name: 'Delete all Focus Lock data' })).toBeNull();
+  });
+
   it('renders the six merged nav sections', async (): Promise<void> => {
     const { getByRole } = render(<App />);
     await waitFor((): void => {

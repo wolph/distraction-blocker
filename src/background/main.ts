@@ -246,7 +246,7 @@ function bootFailureRejection(failure: BootFailure): Rejection {
 /** The parked diagnostic is bounded, so a corrupt runtime cannot fill local storage a second time. */
 const PARKED_RUNTIME_MAX_CHARS: number = 32 * 1024;
 
-/** Serializes a value the reset parks. It is hostile input, so nothing here may throw. */
+/** Serialises a value the reset parks. It is hostile input, so nothing here may throw. */
 function parkedJson(value: unknown): string | null {
   if (value === undefined) return null;
   try {
@@ -1068,13 +1068,21 @@ async function preparePolicyStorage(lease: AllDataClearLease): Promise<PolicySto
       effectiveLegacyValue(journal, storedSync, SYNC_SETTINGS),
       DEFAULT_SETTINGS,
     );
+    // Each entry falls back on its own refusal only. An entry that is merely absent remotely
+    // takes what a clean import gives it, whatever else was refused beside it.
     const settings: Settings = parsedSettings.valid
       ? parsedSettings.settings
-      : (fallbacks?.settings ?? DEFAULT_SETTINGS);
-    const bank: BankState = parseBank(effectiveLegacyValue(journal, storedSync, SYNC_BANK)) ??
-      fallbacks?.bank ?? { balanceMs: 0 };
+      : fallbacks !== null && refusedRemoteKeys.includes(SYNC_SETTINGS)
+        ? fallbacks.settings
+        : DEFAULT_SETTINGS;
+    const bank: BankState =
+      parseBank(effectiveLegacyValue(journal, storedSync, SYNC_BANK)) ??
+      (fallbacks !== null && refusedRemoteKeys.includes(SYNC_BANK)
+        ? fallbacks.bank
+        : { balanceMs: 0 });
     const syncedStreak: StreakState | null =
-      parseStreak(storedSync[SYNC_STREAK]) ?? fallbacks?.streak ?? null;
+      parseStreak(storedSync[SYNC_STREAK]) ??
+      (fallbacks !== null && refusedRemoteKeys.includes(SYNC_STREAK) ? fallbacks.streak : null);
     const journalHasStreak: boolean = hasPendingSet(journal, SYNC_STREAK);
     const journaledStreak: StreakState | null = journalHasStreak
       ? parseStreak(journal.sets[SYNC_STREAK])
@@ -1490,6 +1498,11 @@ export function main(): void {
     const isCurrent: () => boolean = (): boolean => generation === websiteReconciliationGeneration;
     const reconcile: () => Promise<WebsiteReconciliation> =
       async (): Promise<WebsiteReconciliation> => {
+        // A reconcile that a newer generation has already superseded steps aside before it waits
+        // on the boot. A retried boot queues its own reconcile behind this one, and its `ready`
+        // waits on that, so waiting here would be waiting on itself. The newer generation applies
+        // the capability it was minted for, the boot through its own fail-closed cleanup.
+        if (!isCurrent()) return { capability: websiteCapability, generation };
         if (cause === 'permission-removed' && applyToEngine) {
           // Permission loss is a fail-closed safety event. A later permission
           // generation may suppress stale setup writes, but never this cleanup.
@@ -1624,7 +1637,24 @@ export function main(): void {
   const startBoot = (): void => {
     bootFailure = null;
     engineInstance = null;
-    policyStorageReady = preparePolicyStorage(dataClearLease);
+    // One settlement per boot. Policy Storage and the Engine promise reject with the same typed
+    // error, so every listener that waits on either finds a failure that was already reported.
+    let settled: BootFailedError | null = null;
+    const settle = (error: unknown): BootFailedError => {
+      if (error instanceof BootFailedError) return error;
+      if (settled !== null) return settled;
+      const failure: BootFailure = bootFailureOf(error, Date.now());
+      bootFailure = failure;
+      // A half-built Engine is not an authority. The paths that stay open without one, the all-data
+      // clear above all, run through the module-level ports instead.
+      engineInstance = null;
+      reportBackgroundError(error instanceof BootStageError ? error.cause : error);
+      settled = new BootFailedError(failure);
+      return settled;
+    };
+    policyStorageReady = preparePolicyStorage(dataClearLease).catch((error: unknown): never => {
+      throw settle(error);
+    });
     const initialWebsiteCapability: Promise<WebsiteReconciliation> = reconcileWebsiteCapability(
       'boot',
       false,
@@ -1651,13 +1681,7 @@ export function main(): void {
         ),
     );
     ready = booted.catch((error: unknown): never => {
-      const failure: BootFailure = bootFailureOf(error, Date.now());
-      bootFailure = failure;
-      // A half-built Engine is not an authority. The paths that stay open without one, the all-data
-      // clear above all, run through the module-level ports instead.
-      engineInstance = null;
-      reportBackgroundError(error instanceof BootStageError ? error.cause : error);
-      throw new BootFailedError(failure);
+      throw settle(error);
     });
     // The failure is answered by whichever request arrives first. Until one does, it must not
     // surface as an unhandled rejection on top of the report above.
@@ -1723,19 +1747,39 @@ export function main(): void {
         if (request.scope !== 'all') {
           return { ...bootFailureRejection(failure), scope: request.scope, status: 'pending' };
         }
+        let storage: PolicyStorage | null = null;
         try {
-          const storage: PolicyStorage = await policyStorageReady;
+          storage = await policyStorageReady;
           if ((await storage.storageMode()) === 'sync') await storage.selectLocalMode();
           await storage.deleteRemoteData('all');
           await dispatchAllDataClear(storage, dataClearLease);
         } catch (error: unknown) {
+          await republishSetupCompleted(storage);
           return { ok: false, error: errorMessage(error), scope: 'all', status: 'pending' };
         }
         setupCompleted = false;
+        // The profile is clean now, which is the one repair a boot failure cannot survive, so the
+        // worker boots over it on its own rather than waiting for a Retry. The clear succeeded
+        // whatever that boot does, and a boot that fails again answers the next request itself.
+        startBoot();
+        await ready.catch((): undefined => undefined);
         return { ok: true, scope: 'all', status: 'cleared' };
       }
       default:
         return bootFailureRejection(failure);
+    }
+  };
+
+  /** The router's error-path reload of `setupCompleted`, for a clear that did not finish. */
+  const republishSetupCompleted = async (storage: PolicyStorage | null): Promise<void> => {
+    if (storage === null) return;
+    try {
+      const setup: SetupState = await storage.loadSetup();
+      const allDataClearPending: boolean =
+        setup.dataClear.status !== 'idle' && setup.dataClear.scope === 'all';
+      setupCompleted = setup.completed && !allDataClearPending;
+    } catch (setupError: unknown) {
+      reportBackgroundError(setupError);
     }
   };
 

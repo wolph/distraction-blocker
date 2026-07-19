@@ -19,6 +19,7 @@ import {
   isSetupState,
   isWebsiteAccessReconciliation,
 } from '../shared/runtime-validation';
+import { DATA_CLEAR_ERROR_COPY } from '../shared/session-copy';
 import { LOCAL_SETUP } from '../shared/storage-keys';
 import { ThemeControl } from '../shared/ThemeControl';
 import { applyTheme, updateTheme } from '../shared/theme';
@@ -465,6 +466,17 @@ function bootFailed(setup: SetupState): boolean {
   return setup.storageError === 'boot-failed' || setup.storageError === 'runtime-boot-failed';
 }
 
+/** The all-data clear's answer, read exactly. Anything but the worker's own `cleared` is an error. */
+function clearAllDataError(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return DATA_CLEAR_ERROR_COPY;
+  const record: Record<string, unknown> = value as Record<string, unknown>;
+  if (record.ok === true && record.scope === 'all' && record.status === 'cleared') return null;
+  if (record.ok === false && typeof record.error === 'string' && record.error.trim().length > 0) {
+    return record.error;
+  }
+  return DATA_CLEAR_ERROR_COPY;
+}
+
 /**
  * The recovery screen for a worker whose boot failed. The reason comes from the failure channel,
  * which answers while every other request is refused. Retry runs the boot again. The runtime reset
@@ -481,6 +493,8 @@ function BootFailed(props: { setup: SetupState; onRecovered: () => void }): VNod
   const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
     string | null
   >(null);
+  const [confirmingDelete, setConfirmingDelete]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
   const actionInFlight: { current: boolean } = useRef<boolean>(false);
   const runtimeStage: boolean = props.setup.storageError === 'runtime-boot-failed';
 
@@ -528,6 +542,32 @@ function BootFailed(props: { setup: SetupState; onRecovered: () => void }): VNod
       }
     };
 
+  /**
+   * The way out of a profile no retry can fix. The worker clears everything and boots into setup
+   * on its own, so a cleared answer means the popup only has to read the record again.
+   */
+  const deleteAll: () => Promise<void> = async (): Promise<void> => {
+    if (actionInFlight.current) return;
+    actionInFlight.current = true;
+    setPending(true);
+    setError(null);
+    try {
+      const response: unknown = await sendRequest({ type: 'clearFocusLockData', scope: 'all' });
+      const clearError: string | null = clearAllDataError(response);
+      if (clearError !== null) {
+        setError(clearError);
+        return;
+      }
+      setConfirmingDelete(false);
+      props.onRecovered();
+    } catch {
+      setError(DATA_CLEAR_ERROR_COPY);
+    } finally {
+      actionInFlight.current = false;
+      setPending(false);
+    }
+  };
+
   return (
     <section class="view setup-required boot-failed" aria-labelledby="boot-failed-heading">
       <h2 id="boot-failed-heading">Focus Lock could not start</h2>
@@ -557,6 +597,35 @@ function BootFailed(props: { setup: SetupState; onRecovered: () => void }): VNod
           <p>Keeps your settings, lists, and statistics. Clears the current session state.</p>
         </>
       ) : null}
+      {confirmingDelete ? (
+        <div class="boot-failed__confirm">
+          <button
+            type="button"
+            class="danger-button"
+            disabled={pending}
+            onClick={(): void => void deleteAll()}
+          >
+            Delete everything and start over
+          </button>
+          <button
+            type="button"
+            class="secondary-button"
+            disabled={pending}
+            onClick={(): void => setConfirmingDelete(false)}
+          >
+            Keep my data
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          class="danger-button"
+          disabled={pending}
+          onClick={(): void => setConfirmingDelete(true)}
+        >
+          Delete all Focus Lock data
+        </button>
+      )}
       {error !== null ? (
         <p role="alert" class="form-error">
           {error}
@@ -683,10 +752,10 @@ export function App(): VNode {
         </section>
       ) : setup === null ? (
         <section class="view" aria-busy="true" />
-      ) : bootFailed(setup) ? (
-        <BootFailed setup={setup} onRecovered={onRecovered} />
       ) : journal !== null ? (
         <LifecycleView snapshot={snapshot} now={now} dataClear={journal} />
+      ) : bootFailed(setup) ? (
+        <BootFailed setup={setup} onRecovered={onRecovered} />
       ) : !setup.completed ? (
         <SetupRequired />
       ) : attentionSnapshot !== null ? (
