@@ -778,6 +778,284 @@ describe('runtime storage migration', () => {
     expect(runtime.session).toBeNull();
   });
 
+  // The v1 indefinite session: a null duration with null session and focus deadlines. The 7
+  // September profile comes from the pre-merge build that wrote this shape, and a reader that
+  // refused it would drop the live session on the upgrade boot instead of migrating it.
+  function indefiniteConfigV1(strictness: 'friction' | 'hard' = 'friction'): object {
+    return {
+      mode: 'blacklist',
+      strictness,
+      durationMin: null,
+      cycling: null,
+      intention: 'Ship the release',
+      source: 'manual',
+      scheduleEntryId: null,
+    };
+  }
+
+  it('parses a v1 until-stopped focus session with null deadlines', (): void => {
+    const now: number = new Date(2026, 8, 9, 12, 0).getTime();
+    const startedAt: number = now - 30 * 60_000;
+    const session: object = {
+      sessionId: 'session-one',
+      config: indefiniteConfigV1(),
+      startedAt,
+      sessionEndsAt: null,
+      phase: 'focus',
+      phaseStartedAt: startedAt,
+      phaseEndsAt: null,
+      cycleIndex: 0,
+      pausedFrom: null,
+      focusedMs: 0,
+    };
+
+    const runtime: ParsedRuntimeState = mergeRuntime({ session }, now);
+
+    expect(runtime.session).toMatchObject({
+      sessionId: 'session-one',
+      config: { durationMin: null, strictness: 'friction', cycling: null },
+      startedAt,
+      sessionEndsAt: null,
+      phase: 'focus',
+      phaseEndsAt: null,
+      pausedFrom: null,
+    });
+  });
+
+  it('parses a v1 until-stopped paused session', (): void => {
+    const now: number = new Date(2026, 8, 9, 12, 0).getTime();
+    const startedAt: number = now - 30 * 60_000;
+    const pausedAt: number = startedAt + 10 * 60_000;
+    const session: object = {
+      config: indefiniteConfigV1(),
+      startedAt,
+      sessionEndsAt: null,
+      phase: 'paused',
+      phaseStartedAt: pausedAt,
+      phaseEndsAt: pausedAt + 5 * 60_000,
+      cycleIndex: 0,
+      pausedFrom: { phase: 'focus', phaseEndsAt: null },
+      focusedMs: 10 * 60_000,
+    };
+
+    const runtime: ParsedRuntimeState = mergeRuntime({ session }, now);
+
+    expect(runtime.session).toMatchObject({
+      phase: 'paused',
+      phaseEndsAt: pausedAt + 5 * 60_000,
+      pausedFrom: { phase: 'focus', phaseEndsAt: null },
+      focusedMs: 10 * 60_000,
+    });
+  });
+
+  it('accepts a hard v1 until-stopped session so migration can settle it', (): void => {
+    // The pre-merge writer never produced this pair, but the reader does not know that, and a
+    // session it refused would lose its focus. The v2 contract refuses Hard with no end, so the
+    // migration closes and settles it instead.
+    const now: number = new Date(2026, 8, 9, 12, 0).getTime();
+    const session: object = {
+      config: indefiniteConfigV1('hard'),
+      startedAt: now - 60_000,
+      sessionEndsAt: null,
+      phase: 'focus',
+      phaseStartedAt: now - 60_000,
+      phaseEndsAt: null,
+      cycleIndex: 0,
+      pausedFrom: null,
+      focusedMs: 0,
+    };
+
+    expect(mergeRuntime({ session }, now).session?.config.strictness).toBe('hard');
+  });
+
+  it.each<[string, object]>([
+    [
+      'a null session end',
+      {
+        sessionId: 'timed-null-end',
+        config: { ...indefiniteConfigV1(), durationMin: 25 },
+        startedAt: 1,
+        sessionEndsAt: null,
+        phase: 'focus',
+        phaseStartedAt: 1,
+        phaseEndsAt: 2,
+        cycleIndex: 0,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+    ],
+    [
+      'a null phase end',
+      {
+        sessionId: 'timed-null-phase',
+        config: { ...indefiniteConfigV1(), durationMin: 25 },
+        startedAt: 1,
+        sessionEndsAt: 2,
+        phase: 'focus',
+        phaseStartedAt: 1,
+        phaseEndsAt: null,
+        cycleIndex: 0,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+    ],
+  ])('refuses a timed v1 session with %s', (_label: string, session: object): void => {
+    const now: number = new Date(2026, 8, 9, 12, 0).getTime();
+
+    expect(mergeRuntime({ session }, now).session).toBeNull();
+  });
+
+  it.each<[string, object]>([
+    [
+      'in break',
+      {
+        config: indefiniteConfigV1(),
+        startedAt: 1,
+        sessionEndsAt: null,
+        phase: 'break',
+        phaseStartedAt: 1,
+        phaseEndsAt: null,
+        cycleIndex: 0,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+    ],
+    [
+      'with a session end',
+      {
+        config: indefiniteConfigV1(),
+        startedAt: 1,
+        sessionEndsAt: 2,
+        phase: 'focus',
+        phaseStartedAt: 1,
+        phaseEndsAt: null,
+        cycleIndex: 0,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+    ],
+    [
+      'with a focus phase end',
+      {
+        config: indefiniteConfigV1(),
+        startedAt: 1,
+        sessionEndsAt: null,
+        phase: 'focus',
+        phaseStartedAt: 1,
+        phaseEndsAt: 2,
+        cycleIndex: 0,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+    ],
+    [
+      'with a cycle index',
+      {
+        config: indefiniteConfigV1(),
+        startedAt: 1,
+        sessionEndsAt: null,
+        phase: 'focus',
+        phaseStartedAt: 1,
+        phaseEndsAt: null,
+        cycleIndex: 1,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+    ],
+    [
+      'paused from a timed focus phase',
+      {
+        config: indefiniteConfigV1(),
+        startedAt: 1,
+        sessionEndsAt: null,
+        phase: 'paused',
+        phaseStartedAt: 2,
+        phaseEndsAt: 5,
+        cycleIndex: 0,
+        pausedFrom: { phase: 'focus', phaseEndsAt: 9 },
+        focusedMs: 1,
+      },
+    ],
+    [
+      'paused with no pause end',
+      {
+        config: indefiniteConfigV1(),
+        startedAt: 1,
+        sessionEndsAt: null,
+        phase: 'paused',
+        phaseStartedAt: 2,
+        phaseEndsAt: null,
+        cycleIndex: 0,
+        pausedFrom: { phase: 'focus', phaseEndsAt: null },
+        focusedMs: 1,
+      },
+    ],
+    [
+      'with cycling',
+      {
+        config: {
+          ...indefiniteConfigV1(),
+          cycling: { focusMin: 25, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 },
+        },
+        startedAt: 1,
+        sessionEndsAt: null,
+        phase: 'focus',
+        phaseStartedAt: 1,
+        phaseEndsAt: null,
+        cycleIndex: 0,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+    ],
+    [
+      'from a schedule',
+      {
+        config: { ...indefiniteConfigV1(), source: 'schedule', scheduleEntryId: 'entry-1' },
+        startedAt: 1,
+        sessionEndsAt: null,
+        phase: 'focus',
+        phaseStartedAt: 1,
+        phaseEndsAt: null,
+        cycleIndex: 0,
+        pausedFrom: null,
+        focusedMs: 0,
+      },
+    ],
+  ])('refuses an until-stopped v1 session %s', (_label: string, session: object): void => {
+    const now: number = new Date(2026, 8, 9, 12, 0).getTime();
+
+    expect(mergeRuntime({ session }, now).session).toBeNull();
+  });
+
+  it('keeps a legacy sessionStarted checkpoint event with durationMin null', (): void => {
+    const now: number = new Date(2026, 8, 9, 12, 0).getTime();
+    const started: object = {
+      t: 'sessionStarted',
+      at: now - 60_000,
+      source: 'manual',
+      mode: 'blacklist',
+      strictness: 'friction',
+      durationMin: null,
+      intention: 'Ship the release',
+      sessionId: 'session-one',
+    };
+
+    const runtime: ParsedRuntimeState = mergeRuntime(
+      {
+        commitCheckpoint: {
+          bank: { balanceMs: 1_000 },
+          events: [started],
+          syncBank: true,
+        },
+      },
+      now,
+    );
+
+    // The checkpoint parser refuses the whole checkpoint on one unreadable event, so a null
+    // duration that the v1 writer stored would otherwise lose the entire pending commit.
+    expect(runtime.commitCheckpoint?.events).toEqual([started]);
+  });
+
   it('sanitizes every malformed runtime field independently', () => {
     const now: number = new Date(2026, 7, 29, 12, 0).getTime();
     const runtime = mergeRuntime(

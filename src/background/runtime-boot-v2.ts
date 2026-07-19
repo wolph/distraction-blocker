@@ -3,9 +3,10 @@
  *
  * The order is the spec's migration order. A stored migration checkpoint outranks every other
  * stored value, because it is the durable record of a migration that was already decided and may
- * only be finished. A parseable v2 runtime is authority next. A legacy runtime migrates once. A
- * stored value this reader cannot trust is reported and replaced by an empty runtime rather than
- * reinterpreted.
+ * only be finished. A parseable v2 runtime is authority next. A legacy runtime migrates once, a
+ * stale marker over it notwithstanding. A stored value this reader cannot trust, or a legacy value
+ * the migration build refuses, is reported, parked under the diagnostic key as bounded JSON, and
+ * replaced by an empty runtime rather than reinterpreted.
  *
  * Every storage effect is a port, so this module performs no storage call, no browser call, and no
  * lifecycle projection of its own. The caller runs recovery and publication after it returns.
@@ -40,6 +41,34 @@ import type {
 import { parseRuntimeMigrationCheckpointV1ToV2 } from './runtime-v2-validation';
 import { type LegacyRuntimeStateV1, mergeRuntime, migrateRuntimeRules } from './stores';
 
+/**
+ * Why a stored runtime value was set aside. The first three are boot verdicts. `manual-reset` is
+ * written by the boot failure channel when the person clears the local runtime by hand, and is
+ * listed here so one key holds one shape.
+ */
+export type RejectedRuntimeReasonV1 =
+  | 'invalid-v2'
+  | 'marker-without-v2'
+  | 'legacy-migration-invalid'
+  | 'manual-reset';
+
+/** The reasons this reader itself can produce. A manual reset never happens inside a boot. */
+export type RuntimeBootRejectionV2 = Exclude<RejectedRuntimeReasonV1, 'manual-reset'>;
+
+/**
+ * The diagnostic copy of a refused value, stored under `LOCAL_RUNTIME_REJECTED`. Both payloads are
+ * bounded JSON strings from `truncatedJson`, never the stored graph itself, so the key can neither
+ * grow without limit nor carry a hostile value back into a later boot. Nothing reads it as
+ * authority.
+ */
+export interface RejectedRuntimeDiagnosticV1 {
+  version: 1;
+  reason: RejectedRuntimeReasonV1;
+  at: number;
+  runtime: string | null;
+  migration: string | null;
+}
+
 export interface RuntimeBootPortsV2 extends RuntimeCheckpointPortsV2, LegacyReplayPortsV1 {
   now(): number;
   newId(): string;
@@ -47,6 +76,8 @@ export interface RuntimeBootPortsV2 extends RuntimeCheckpointPortsV2, LegacyRepl
   readMigrationCheckpoint(): Promise<unknown>;
   writeMigrationCheckpointAndMarker(checkpoint: RuntimeMigrationCheckpointV1ToV2): Promise<void>;
   clearMigrationCheckpoint(): Promise<void>;
+  /** Stores the diagnostic copy of a refused value. It lands before the empty runtime does. */
+  parkRejectedRuntime(diagnostic: RejectedRuntimeDiagnosticV1): Promise<void>;
   /** Stored daily aggregates by `syncAggKey`. A key with nothing stored is omitted. */
   loadAggregates(keys: readonly string[]): Promise<Record<string, DailyAgg>>;
   /** The persisted lists snapshot the legacy rules migration completes a config from, never Settings. */
@@ -65,7 +96,10 @@ export interface RuntimeBootPortsV2 extends RuntimeCheckpointPortsV2, LegacyRepl
 export type RuntimeBootResultV2 =
   | { kind: 'v2'; runtime: RuntimeStateV2; migrated: false }
   | { kind: 'migrated'; runtime: RuntimeStateV2; migrated: true }
-  | { kind: 'rejected'; runtime: RuntimeStateV2; reason: 'marker-without-v2' | 'invalid-v2' };
+  | { kind: 'rejected'; runtime: RuntimeStateV2; reason: RuntimeBootRejectionV2 };
+
+/** A pure migration step either produced its value or was refused by the domain. */
+type MigrationBuildOutcome<T> = { ok: true; value: T } | { ok: false; cause: Error };
 
 /** The reported value is a diagnostic, not authority, so it is bounded before it leaves here. */
 const REJECTED_VALUE_MAX_CHARS: number = 4096;
@@ -108,11 +142,12 @@ export async function bootRuntimeAuthorityV2(
         migrated: false,
       };
     case 'rejected':
-      return rejectedBoot(ports, authority, storedMigration);
+      return rejectedBoot(ports, authority.reason, authority.raw, storedMigration, null);
     case 'absent':
       return { kind: 'v2', runtime: await freshRuntime(ports), migrated: false };
     default:
-      return migratedBoot(await migrateLegacyRuntime(ports, authority.raw));
+      // A stale marker over the v1 value is expected history, not a fault, so it is not reported.
+      return migrateLegacyRuntime(ports, authority.raw, storedMigration);
   }
 }
 
@@ -134,17 +169,29 @@ export function migrationStoragePayload(
  * legacy checkpoint is flushed with legacy semantics before any v2 port runs, the aggregates the
  * settlement may split are loaded, one UUID is allocated only for a session that lacks one, and the
  * whole checkpoint becomes durable in one write before any of it is replayed.
+ *
+ * The two pure builds, the v1 normalisation and the checkpoint, are the only steps the domain can
+ * refuse. A refusal parks the legacy value and boots empty, exactly like a value no parser accepts.
+ * Every port call stays outside that wrapping, so a storage fault still throws and the next boot
+ * retries it.
  */
 async function migrateLegacyRuntime(
   ports: RuntimeBootPortsV2,
   raw: unknown,
-): Promise<RuntimeStateV2> {
+  storedMigration: unknown,
+): Promise<RuntimeBootResultV2> {
   const now: number = ports.now();
-  const normalized: LegacyRuntimeStateV1 = migrateRuntimeRules(
-    mergeRuntime(raw, now),
-    ports.lists(),
+  const lists: ListsConfig = ports.lists();
+  const normalized: MigrationBuildOutcome<LegacyRuntimeStateV1> = migrationBuild(
+    (): LegacyRuntimeStateV1 => migrateRuntimeRules(mergeRuntime(raw, now), lists),
   );
-  const replayed: LegacyReplayResultV1 = await replayLegacyRuntimeCheckpointV1(ports, normalized);
+  if (!normalized.ok) {
+    return rejectedBoot(ports, 'legacy-migration-invalid', raw, storedMigration, normalized.cause);
+  }
+  const replayed: LegacyReplayResultV1 = await replayLegacyRuntimeCheckpointV1(
+    ports,
+    normalized.value,
+  );
   const priorAggregates: Record<string, DailyAgg> = await loadSettlementAggregates(
     ports,
     replayed.runtime,
@@ -163,9 +210,35 @@ async function migrateLegacyRuntime(
     assignedSessionId: assignedSessionIdFor(ports, replayed.runtime),
     priorAggregates,
   };
-  const checkpoint: RuntimeMigrationCheckpointV1ToV2 = buildRuntimeMigrationCheckpointV1ToV2(input);
-  await ports.writeMigrationCheckpointAndMarker(checkpoint);
-  return replayMigrationCheckpoint(ports, checkpoint);
+  const checkpoint: MigrationBuildOutcome<RuntimeMigrationCheckpointV1ToV2> = migrationBuild(
+    (): RuntimeMigrationCheckpointV1ToV2 => buildRuntimeMigrationCheckpointV1ToV2(input),
+  );
+  if (!checkpoint.ok) {
+    return rejectedBoot(ports, 'legacy-migration-invalid', raw, storedMigration, checkpoint.cause);
+  }
+  await ports.writeMigrationCheckpointAndMarker(checkpoint.value);
+  return migratedBoot(await replayMigrationCheckpoint(ports, checkpoint.value));
+}
+
+/**
+ * Runs one pure migration step and turns a domain refusal into an outcome. A plain `Error` is how
+ * the v1 reader refuses a shape, and `invalid-rule` is how the v2 domain does. Any other throw,
+ * including every other `Error` subclass, is a fault in the build rather than a verdict on the
+ * value, and propagates so the stored runtime stays where it was.
+ */
+function migrationBuild<T>(build: () => T): MigrationBuildOutcome<T> {
+  try {
+    return { ok: true, value: build() };
+  } catch (error: unknown) {
+    if (isMigrationRefusal(error)) return { ok: false, cause: error };
+    throw error;
+  }
+}
+
+/** Exactly the two refusal shapes: a bare `Error`, or a `CoreError` carrying `invalid-rule`. */
+function isMigrationRefusal(error: unknown): error is Error {
+  if (error instanceof CoreError) return error.code === 'invalid-rule';
+  return error instanceof Error && Object.getPrototypeOf(error) === Error.prototype;
 }
 
 /**
@@ -271,17 +344,25 @@ function assignedSessionIdFor(
 }
 
 /**
- * A stored value this reader cannot trust is reported and left alone. The empty runtime that
- * replaces it is the only write, so nothing overwrites the rejected value until that save lands,
- * and the rejected value is never parked under another key.
+ * A stored value this reader cannot trust is reported, parked as bounded JSON under the diagnostic
+ * key, and then replaced by an empty runtime. The park lands first, so a crash between the two
+ * writes leaves the diagnostic beside the untouched stored value rather than an empty runtime with
+ * no record of what it replaced.
  */
 async function rejectedBoot(
   ports: RuntimeBootPortsV2,
-  authority: Extract<StoredRuntimeAuthority, { kind: 'rejected' }>,
+  reason: RuntimeBootRejectionV2,
+  raw: unknown,
   storedMigration: unknown,
+  cause: Error | null,
 ): Promise<RuntimeBootResultV2> {
-  ports.reportError(new CoreError('invalid-rule', rejectionMessage(authority, storedMigration)));
-  return { kind: 'rejected', runtime: await freshRuntime(ports), reason: authority.reason };
+  const runtime: string | null = truncatedJson(raw);
+  const migration: string | null = truncatedJson(storedMigration);
+  ports.reportError(
+    new CoreError('invalid-rule', rejectionMessage(reason, runtime, migration, cause)),
+  );
+  await ports.parkRejectedRuntime({ version: 1, reason, at: ports.now(), runtime, migration });
+  return { kind: 'rejected', runtime: await freshRuntime(ports), reason };
 }
 
 async function freshRuntime(ports: RuntimeBootPortsV2): Promise<RuntimeStateV2> {
@@ -295,23 +376,27 @@ function migratedBoot(runtime: RuntimeStateV2): RuntimeBootResultV2 {
 }
 
 /**
- * Names both values that could have caused the refusal, so the report identifies the offending data
- * rather than only its verdict. Neither is parked under another storage key.
+ * Names both values that could have caused the refusal, and the domain's own reason when a build
+ * refused, so the report identifies the offending data rather than only its verdict.
  */
 function rejectionMessage(
-  authority: Extract<StoredRuntimeAuthority, { kind: 'rejected' }>,
-  storedMigration: unknown,
+  reason: RuntimeBootRejectionV2,
+  runtime: string | null,
+  migration: string | null,
+  cause: Error | null,
 ): string {
-  const parts: string[] = [`stored runtime authority rejected as ${authority.reason}`];
-  const runtime: string | null = truncatedJson(authority.raw);
-  const migration: string | null = truncatedJson(storedMigration);
+  const parts: string[] = [`stored runtime authority rejected as ${reason}`];
+  if (cause !== null) parts.push(`migration build refused: ${cause.message}`);
   if (runtime !== null) parts.push(`runtime ${runtime}`);
   if (migration !== null) parts.push(`migration checkpoint ${migration}`);
   return parts.join('. ');
 }
 
-/** Serializes a rejected value for the report. It is hostile input, so nothing here may throw. */
-function truncatedJson(value: unknown): string | null {
+/**
+ * Serialises a refused value for the report and the parked diagnostic. It is hostile input, so
+ * nothing here may throw, and the result is bounded so neither destination can grow without limit.
+ */
+export function truncatedJson(value: unknown): string | null {
   if (value === undefined) return null;
   try {
     const json: string = JSON.stringify(value) ?? String(value);

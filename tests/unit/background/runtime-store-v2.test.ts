@@ -214,7 +214,7 @@ describe('stored runtime classification', (): void => {
     const raw: LegacyRuntimeStateV1 = legacyRuntime();
     const authority: StoredRuntimeAuthority = classifyStoredRuntime(raw, null);
 
-    expect(authority).toEqual({ kind: 'legacy', raw });
+    expect(authority).toEqual({ kind: 'legacy', raw, staleMarker: false });
     expect(authority.kind === 'legacy' ? authority.raw : null).toBe(raw);
   });
 
@@ -231,15 +231,72 @@ describe('stored runtime classification', (): void => {
     },
   );
 
-  // The marker is only half of the spec's cutoff. The caller must resolve a stored
-  // LOCAL_RUNTIME_MIGRATION checkpoint first and replay a valid one, and may read this verdict as a
-  // refusal to migrate unversioned v1 again only when no valid checkpoint exists.
-  it('rejects unversioned v1 once the schema marker exists', (): void => {
+  // A marker over an unversioned v1 value is what a downgrade to a v1 build followed by an upgrade
+  // leaves behind. The value is still the person's runtime, so it migrates, and the stale marker
+  // is reported alongside so the caller can tell this case from a first migration.
+  it('hands an unversioned v1 runtime to migration under a stale schema marker', (): void => {
     const raw: LegacyRuntimeStateV1 = legacyRuntime();
+    const authority: StoredRuntimeAuthority = classifyStoredRuntime(raw, MARKER);
 
+    expect(authority).toEqual({ kind: 'legacy', raw, staleMarker: true });
+    expect(authority.kind === 'legacy' ? authority.raw : null).toBe(raw);
+  });
+
+  it('hands a v1 subset that omits later v1 keys to migration', (): void => {
+    // The 7 September profile carried the eleven-key v1 shape, without the tab claim maps the
+    // last v1 builds added, and the v1 reader fills those in itself.
+    const raw: Record<string, unknown> = {
+      session: null,
+      gate: null,
+      unlocks: [],
+      tabStates: {},
+      accruedFocusMs: 0,
+      attemptDebounce: {},
+      scheduleActiveEntryId: null,
+      date: '2026-09-09',
+      todayAgg: null,
+      lastPruneDate: '2026-09-07',
+      commitCheckpoint: null,
+    };
+
+    expect(classifyStoredRuntime(raw, MARKER)).toEqual({ kind: 'legacy', raw, staleMarker: true });
+  });
+
+  it('hands a v1 record that still carries the retired tab keys to migration', (): void => {
+    // The builds before 9053e74 (2026-08-29) stored `stoppedTabIds` and `mutedTabs` at the top
+    // level. The v1 reader ignores both, so a runtime last written by one of them migrates rather
+    // than being refused for a key the current v1 shape no longer has.
+    const raw: Record<string, unknown> = {
+      ...legacyRuntime(),
+      stoppedTabIds: [11],
+      mutedTabs: { 11: true },
+    };
+
+    expect(classifyStoredRuntime(raw, null)).toEqual({ kind: 'legacy', raw, staleMarker: false });
+    expect(classifyStoredRuntime(raw, MARKER)).toEqual({ kind: 'legacy', raw, staleMarker: true });
+  });
+
+  // This guards the inverse of the change: a v1 key list that admitted a foreign key would fail
+  // it. It was green before the change too, because the old classifier refused everything under
+  // a marker, so it is not evidence that the change happened.
+  it.each<[string, unknown]>([
+    ['a record with a key no v1 runtime carried', { session: null, date: '2026-09-09', bogus: 1 }],
+    ['a bare string', 'text'],
+  ])('rejects %s under the marker as neither v1 nor v2', (_label: string, raw: unknown): void => {
     expect(classifyStoredRuntime(raw, MARKER)).toEqual({
       kind: 'rejected',
       reason: 'marker-without-v2',
+      raw,
+    });
+  });
+
+  it.each<[string, unknown]>([
+    ['a record with a key no v1 runtime carried', { session: null, date: '2026-09-09', bogus: 1 }],
+    ['a bare string', 'text'],
+  ])('rejects %s without a marker as invalid', (_label: string, raw: unknown): void => {
+    expect(classifyStoredRuntime(raw, null)).toEqual({
+      kind: 'rejected',
+      reason: 'invalid-v2',
       raw,
     });
   });
@@ -344,9 +401,9 @@ describe('runtime authority loading', (): void => {
     await expect(loadRuntimeAuthority()).resolves.toEqual({ kind: 'v2', runtime });
   });
 
-  // Same caller obligation as the classifier: this verdict is about the marker, not about whether
-  // a recorded migration is still replayable.
-  it('applies the marker cutoff to the generation-resolved raw value', async (): Promise<void> => {
+  // The generation-resolved value is classified exactly like the direct one, so a v1 shape inside
+  // a committed generation migrates under a stale marker rather than being replaced.
+  it('hands the generation-resolved v1 value to migration under a stale marker', async (): Promise<void> => {
     stubStorage({
       [LOCAL_POLICY_COMMIT]: {
         source: 'generation',
@@ -362,9 +419,9 @@ describe('runtime authority loading', (): void => {
     });
 
     await expect(loadRuntimeAuthority()).resolves.toEqual({
-      kind: 'rejected',
-      reason: 'marker-without-v2',
+      kind: 'legacy',
       raw: legacyRuntime(),
+      staleMarker: true,
     });
   });
 

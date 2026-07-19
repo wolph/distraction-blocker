@@ -19,6 +19,7 @@ import {
   LOCAL_ONBOARDING_DRAFT,
   LOCAL_RUNTIME,
   LOCAL_RUNTIME_MIGRATION,
+  LOCAL_RUNTIME_REJECTED,
   LOCAL_RUNTIME_SCHEMA,
   LOCAL_SETUP,
   LOCAL_SYNC_JOURNAL,
@@ -110,6 +111,7 @@ import { routeMessage } from './router';
 import {
   bootRuntimeAuthorityV2,
   migrationStoragePayload,
+  type RejectedRuntimeDiagnosticV1,
   type RuntimeBootPortsV2,
   type RuntimeBootResultV2,
 } from './runtime-boot-v2';
@@ -1072,6 +1074,9 @@ function runtimeBootPorts(
       if (stored[LOCAL_RUNTIME_MIGRATION] !== undefined) {
         throw new CoreError('storage', 'the runtime migration checkpoint survived its removal');
       }
+    },
+    parkRejectedRuntime: async (diagnostic: RejectedRuntimeDiagnosticV1): Promise<void> => {
+      await chrome.storage.local.set({ [LOCAL_RUNTIME_REJECTED]: diagnostic });
     },
     saveRuntime: (runtime: RuntimeStateV2): Promise<void> => saveRuntimeV2(runtime),
     saveLegacyRuntime,

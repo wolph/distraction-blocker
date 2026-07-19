@@ -307,6 +307,18 @@ describe('v2 event log storage', (): void => {
     expect(fake.state[LOCAL_EVENTS]).toEqual([budgetEarnedEvent(), sessionEndedEvent()]);
   });
 
+  it('keeps a stored legacy sessionStarted with durationMin null across an append', async (): Promise<void> => {
+    // A stored record the parser drops is gone at the next append, because the corrective write
+    // stores the parsed log. The pre-merge v1 writer stored this shape for an indefinite session.
+    const indefinite: LegacyEventRecord = { ...LEGACY_START, durationMin: null };
+    const fake: StorageFake = stubEventStorage([indefinite]);
+
+    await appendEventsV2([sessionEndedEvent()]);
+
+    expect(fake.state[LOCAL_EVENTS]).toEqual([indefinite, sessionEndedEvent()]);
+    await expect(readEventsV2()).resolves.toEqual([indefinite, sessionEndedEvent()]);
+  });
+
   it('repairs a non-array stored log before appending', async (): Promise<void> => {
     const fake: StorageFake = stubEventStorage({ malformed: true });
 

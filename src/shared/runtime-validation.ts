@@ -1201,7 +1201,8 @@ function isEventRecordValue(value: unknown): value is EventRecord {
         (value.strictness === 'flexible' ||
           value.strictness === 'hard' ||
           value.strictness === 'friction') &&
-        isRelativeMinuteDuration(value.durationMin) &&
+        // Null is the v1 indefinite session start, which the pre-merge build recorded this way.
+        (value.durationMin === null || isRelativeMinuteDuration(value.durationMin)) &&
         typeof value.intention === 'string'
       );
     case 'sessionCompleted':

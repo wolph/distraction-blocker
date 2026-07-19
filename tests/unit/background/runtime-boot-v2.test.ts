@@ -1,10 +1,9 @@
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { mergeEventLogV2 } from '../../../src/background/event-log-v2';
 import {
   bootRuntimeAuthorityV2,
   migrationStoragePayload,
+  type RejectedRuntimeDiagnosticV1,
   type RuntimeBootPortsV2,
   type RuntimeBootResultV2,
 } from '../../../src/background/runtime-boot-v2';
@@ -59,6 +58,8 @@ interface BootHarness {
   storage: BootStorage;
   calls: string[];
   errors: unknown[];
+  /** Every diagnostic the reader parked, in order. Boot never reads these back. */
+  parked: RejectedRuntimeDiagnosticV1[];
   aggregateKeyReads: string[][];
   bankWrites: Array<{ bank: BankState; syncBank: boolean }>;
   issuedIds: string[];
@@ -90,6 +91,7 @@ const V2_WRITE_PORTS: readonly string[] = [
   'removeAggregate',
   'writeMigrationCheckpointAndMarker',
   'clearMigrationCheckpoint',
+  'parkRejectedRuntime',
 ];
 /**
  * Every write the legacy migration branch performs, in the order the boot reader issues them. No
@@ -136,6 +138,7 @@ function harness(
 ): BootHarness {
   const calls: string[] = [];
   const errors: unknown[] = [];
+  const parked: RejectedRuntimeDiagnosticV1[] = [];
   const aggregateKeyReads: string[][] = [];
   const bankWrites: Array<{ bank: BankState; syncBank: boolean }> = [];
   const issuedIds: string[] = [];
@@ -183,6 +186,10 @@ function harness(
     clearMigrationCheckpoint: async (): Promise<void> => {
       record('clearMigrationCheckpoint');
       storage.migration = undefined;
+    },
+    parkRejectedRuntime: async (diagnostic: RejectedRuntimeDiagnosticV1): Promise<void> => {
+      record('parkRejectedRuntime');
+      parked.push(structuredClone(diagnostic));
     },
     loadAggregates: async (keys: readonly string[]): Promise<Record<string, DailyAgg>> => {
       calls.push('loadAggregates');
@@ -237,7 +244,7 @@ function harness(
     },
   };
 
-  return { ports, storage, calls, errors, aggregateKeyReads, bankWrites, issuedIds };
+  return { ports, storage, calls, errors, parked, aggregateKeyReads, bankWrites, issuedIds };
 }
 
 function legacyConfig(
@@ -317,6 +324,15 @@ function invalidScheduledRuntime(): LegacyRuntimeStateV1 {
     }),
     scheduleActiveEntryId: ENTRY_ID,
   });
+}
+
+/**
+ * A lists port that returns a value the type forbids, standing in for a programming fault inside
+ * the migration build: `rulesFromLists` maps over `custom` and throws a TypeError on null. The cast
+ * is the point, because no typed fixture can produce a fault the type system already rules out.
+ */
+function faultyLists(): ListsConfig {
+  return { ...DEFAULT_LISTS, custom: null } as unknown as ListsConfig;
 }
 
 function storedV2Runtime(overrides: Partial<RuntimeStateV2> = {}): RuntimeStateV2 {
@@ -667,7 +683,10 @@ describe('v2 boot stored migration checkpoint', (): void => {
     expect(storage.migration).toBeUndefined();
   });
 
-  it('rejects a stored checkpoint that no longer parses', async (): Promise<void> => {
+  it('migrates the legacy runtime and reports the unparseable checkpoint', async (): Promise<void> => {
+    // The checkpoint is the record of a decided migration, and one that no longer parses cannot
+    // be finished. The runtime under it is still a v1 shape, so it migrates afresh, and the broken
+    // checkpoint is reported once rather than re-read silently on every later boot.
     const test: BootHarness = harness(
       emptyStorage({
         runtime: legacyRuntime({ session: legacySession() }),
@@ -678,14 +697,17 @@ describe('v2 boot stored migration checkpoint', (): void => {
 
     const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
 
-    expect(result.kind).toBe('rejected');
-    expect(result.kind === 'rejected' && result.reason).toBe('marker-without-v2');
+    expect(result.kind).toBe('migrated');
+    expect(result.runtime.session?.sessionId).toBe(SESSION_ID);
+    expect(test.errors).toHaveLength(1);
     expect(test.errors[0]).toBeInstanceOf(CoreError);
-    expect(test.calls).not.toContain('writeMigrationCheckpointAndMarker');
-    expect(test.calls.filter((name: string): boolean => name === 'saveRuntime')).toHaveLength(1);
+    expect(errorMessage(test.errors[0])).toContain('failed to parse');
+    expect(test.calls).toContain('writeMigrationCheckpointAndMarker');
+    expect(test.parked).toEqual([]);
+    expect(test.storage.migration).toBeUndefined();
   });
 
-  it('treats a hostile stored checkpoint as an invalid one', async (): Promise<void> => {
+  it('treats a hostile stored checkpoint as an invalid one and still migrates', async (): Promise<void> => {
     // A promise resolves by reading `then`, so only that key answers. Every other read throws,
     // which is what the exact-data snapshot behind the parser has to survive.
     const hostile: unknown = new Proxy(
@@ -707,16 +729,17 @@ describe('v2 boot stored migration checkpoint', (): void => {
 
     const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
 
-    expect(result.kind).toBe('rejected');
+    expect(result.kind).toBe('migrated');
+    expect(test.errors).toHaveLength(1);
     expect(test.errors[0]).toBeInstanceOf(CoreError);
+    expect(test.parked).toEqual([]);
   });
 });
 
 describe('v2 boot rejected authority', (): void => {
-  it('boots empty under a fresh epoch and overwrites nothing else', async (): Promise<void> => {
-    const test: BootHarness = harness(
-      emptyStorage({ runtime: { runtimeSchemaVersion: 2, session: 'broken' } }),
-    );
+  it('boots empty under a fresh epoch, parks the refused value, and overwrites nothing else', async (): Promise<void> => {
+    const raw: unknown = { runtimeSchemaVersion: 2, session: 'broken' };
+    const test: BootHarness = harness(emptyStorage({ runtime: raw }));
 
     const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
 
@@ -730,9 +753,23 @@ describe('v2 boot rejected authority', (): void => {
     expect(test.errors[0]).toBeInstanceOf(CoreError);
     expect(errorMessage(test.errors[0])).toContain('invalid-v2');
     expect(errorMessage(test.errors[0])).toContain('"session":"broken"');
+    // The park lands before the empty runtime does, so a crash between the two leaves the
+    // diagnostic and the untouched stored value rather than an empty runtime and no record.
+    expect(test.calls.indexOf('parkRejectedRuntime')).toBeLessThan(
+      test.calls.indexOf('saveRuntime'),
+    );
+    expect(test.parked).toEqual([
+      {
+        version: 1,
+        reason: 'invalid-v2',
+        at: NOW,
+        runtime: JSON.stringify(raw),
+        migration: null,
+      },
+    ]);
   });
 
-  it('reports the refused value truncated and never parks it elsewhere', async (): Promise<void> => {
+  it('reports and parks the refused value truncated', async (): Promise<void> => {
     const oversized: unknown = {
       runtimeSchemaVersion: 2,
       session: 'x'.repeat(8_192),
@@ -741,11 +778,109 @@ describe('v2 boot rejected authority', (): void => {
 
     await bootRuntimeAuthorityV2(test.ports);
     const message: string = errorMessage(test.errors[0]);
+    const parkedRuntime: string | null = test.parked[0]?.runtime ?? null;
 
     expect(message.length).toBeLessThan(4_400);
     expect(message.endsWith('...')).toBe(true);
+    // The parked copy is the same bounded serialisation, so a hostile value cannot grow the
+    // diagnostic key without limit either.
+    expect(parkedRuntime?.length).toBeLessThan(4_400);
+    expect(parkedRuntime?.endsWith('...')).toBe(true);
     expect(test.storage.migration).toBeUndefined();
     expect(test.storage.marker).toBeUndefined();
+  });
+
+  it('parks a value that is neither v1 nor v2 and boots empty', async (): Promise<void> => {
+    const raw: unknown = { session: null, date: LOCAL_DATE, bogus: 1 };
+    const test: BootHarness = harness(
+      emptyStorage({ runtime: raw, marker: { runtimeSchemaVersion: 2 } }),
+    );
+
+    const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
+
+    expect(result.kind).toBe('rejected');
+    expect(result.kind === 'rejected' && result.reason).toBe('marker-without-v2');
+    expect(result.runtime.session).toBeNull();
+    expect(
+      test.calls.filter((name: string): boolean => name === 'parkRejectedRuntime'),
+    ).toHaveLength(1);
+    expect(test.calls.filter((name: string): boolean => name === 'saveRuntime')).toHaveLength(1);
+    expect(test.calls).not.toContain('writeMigrationCheckpointAndMarker');
+    expect(test.parked).toEqual([
+      {
+        version: 1,
+        reason: 'marker-without-v2',
+        at: NOW,
+        runtime: JSON.stringify(raw),
+        migration: null,
+      },
+    ]);
+    expect(test.errors).toHaveLength(1);
+  });
+
+  it('boots empty and parks the legacy value when the migration build refuses it', async (): Promise<void> => {
+    // A session config without captured rules completes them from the lists snapshot, and a
+    // snapshot whose rules cannot normalise is the one input that makes the build itself throw.
+    const config: Record<string, unknown> = { ...legacyConfig() };
+    Reflect.deleteProperty(config, 'rules');
+    const raw: unknown = { ...legacyRuntime(), session: { ...legacySession(), config } };
+    const brokenLists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      custom: [{ kind: 'regex', pattern: '(' }],
+    };
+    const test: BootHarness = harness(emptyStorage({ runtime: raw }), null, brokenLists);
+
+    const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
+
+    expect(result.kind).toBe('rejected');
+    expect(result.kind === 'rejected' && result.reason).toBe('legacy-migration-invalid');
+    expect(result.runtime.session).toBeNull();
+    expect(test.calls).not.toContain('writeMigrationCheckpointAndMarker');
+    expect(test.calls.filter((name: string): boolean => name === 'saveRuntime')).toHaveLength(1);
+    expect(test.storage.runtime).toEqual(result.runtime);
+    expect(test.storage.marker).toBeUndefined();
+    expect(test.parked).toEqual([
+      {
+        version: 1,
+        reason: 'legacy-migration-invalid',
+        at: NOW,
+        runtime: JSON.stringify(raw),
+        migration: null,
+      },
+    ]);
+    expect(test.errors).toHaveLength(1);
+    expect(errorMessage(test.errors[0])).toContain('legacy-migration-invalid');
+    expect(errorMessage(test.errors[0])).toContain('invalid blocking lists');
+  });
+
+  it('propagates a programming fault inside the migration build and parks nothing', async (): Promise<void> => {
+    // Only the two refusal shapes the domain throws on purpose are parked: a plain Error from the
+    // v1 reader and an invalid-rule CoreError. A TypeError is a bug, not a verdict on the value,
+    // so it reaches the boot failure channel and the stored runtime stays where it was.
+    const config: Record<string, unknown> = { ...legacyConfig() };
+    Reflect.deleteProperty(config, 'rules');
+    const raw: unknown = { ...legacyRuntime(), session: { ...legacySession(), config } };
+    const test: BootHarness = harness(emptyStorage({ runtime: raw }), null, faultyLists());
+
+    await expect(bootRuntimeAuthorityV2(test.ports)).rejects.toThrow(TypeError);
+
+    expect(test.parked).toEqual([]);
+    expect(test.errors).toEqual([]);
+    expect(test.calls).not.toContain('saveRuntime');
+    expect(test.storage.runtime).toBe(raw);
+  });
+
+  it('leaves the stored value untouched when the park itself fails', async (): Promise<void> => {
+    // The park lands before the empty runtime, so a storage fault there stops the boot with the
+    // refused value still in place and nothing overwritten. The next boot sees the same value.
+    const raw: unknown = { runtimeSchemaVersion: 2, session: 'broken' };
+    const test: BootHarness = harness(emptyStorage({ runtime: raw }), 'parkRejectedRuntime');
+
+    await expect(bootRuntimeAuthorityV2(test.ports)).rejects.toThrow(CoreError);
+
+    expect(test.calls).not.toContain('saveRuntime');
+    expect(test.storage.runtime).toBe(raw);
+    expect(test.parked).toEqual([]);
   });
 
   it('bounds the report when both the runtime and the checkpoint are oversized', async (): Promise<void> => {
@@ -778,7 +913,10 @@ describe('v2 boot rejected authority', (): void => {
     expect(errorMessage(test.errors[0])).toContain('failed to parse');
   });
 
-  it('reports the marker cutoff when no checkpoint explains it', async (): Promise<void> => {
+  it('migrates a v1 runtime left under a stale marker without reporting', async (): Promise<void> => {
+    // A downgrade to a v1 build and a later upgrade leave the v2 marker over a v1 runtime. That is
+    // expected history, not a fault: the worker console is collected as a diagnostic in the
+    // browser suite, so a report here would fail the upgrade scenario that this case reproduces.
     const test: BootHarness = harness(
       emptyStorage({
         runtime: legacyRuntime({ session: legacySession() }),
@@ -788,9 +926,14 @@ describe('v2 boot rejected authority', (): void => {
 
     const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
 
-    expect(result.kind === 'rejected' && result.reason).toBe('marker-without-v2');
-    expect(test.calls).not.toContain('saveLegacyRuntime');
-    expect(test.calls).not.toContain('writeMigrationCheckpointAndMarker');
+    expect(result.kind).toBe('migrated');
+    expect(result.runtime.session?.sessionId).toBe(SESSION_ID);
+    expect(test.calls).toContain('writeMigrationCheckpointAndMarker');
+    expect(test.calls).not.toContain('parkRejectedRuntime');
+    expect(test.errors).toEqual([]);
+    expect(test.parked).toEqual([]);
+    expect(isRuntimeSchemaMarkerV2(test.storage.marker)).toBe(true);
+    expect(test.storage.migration).toBeUndefined();
   });
 });
 
@@ -916,19 +1059,65 @@ describe('v2 boot with an indefinite session', (): void => {
     expect(test.calls).not.toContain('loadAggregates');
   });
 
-  it('cannot meet an indefinite session on the migration path at all', (): void => {
-    // The other half of the same fact, and the reason the settlement path never has to reason
-    // about a null session end: a legacy config carries `durationMin`, a number, and both
-    // migration sites map it to a timed duration. There is no v1 shape that becomes
-    // until-stopped, so the only indefinite session boot can ever see is one v2 already wrote.
-    const migration: string = readFileSync(
-      path.join(__dirname, '../../../src/background/runtime-migration-v2.ts'),
-      'utf8',
+  it('migrates a v1 until-stopped session into an active until-stopped v2 session', async (): Promise<void> => {
+    // The pre-merge v1 build stored an indefinite session as a null duration with null session
+    // and focus deadlines. It migrates into the v2 until-stopped shape with nothing invented for
+    // the deadlines it never had, and the aggregate read stays the same one-day window a timed
+    // session on the same date reads.
+    const test: BootHarness = harness(
+      emptyStorage({
+        runtime: legacyRuntime({
+          session: legacySession({
+            config: legacyConfig({ durationMin: null }),
+            sessionEndsAt: null,
+            phaseEndsAt: null,
+          }),
+        }),
+      }),
     );
 
-    expect(migration).toContain("duration: { kind: 'timed', minutes: config.durationMin }");
-    expect(migration).toContain("duration: { kind: 'timed', minutes: legacy.config.durationMin }");
-    expect(migration).not.toContain("kind: 'until-stopped'");
+    const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
+
+    expect(result.kind).toBe('migrated');
+    expect(result.runtime.session?.config.duration).toEqual({ kind: 'until-stopped' });
+    expect(result.runtime.session?.sessionEndsAt).toBeNull();
+    expect(result.runtime.session?.phaseEndsAt).toBeNull();
+    expect(result.runtime.session?.phase).toBe('focus');
+    expect(result.runtime.pendingClosure).toBeNull();
+    expect(test.aggregateKeyReads).toEqual([[syncAggKey(DEVICE_ID, LOCAL_DATE)]]);
+    expect(test.errors).toEqual([]);
+  });
+
+  it('settles a v1 until-stopped hard session into a cleanup closure', async (): Promise<void> => {
+    // Hard with no timer has no v2 form, so the session closes at the migration instant and the
+    // thirty minutes it focused settle once into the bank and the day's aggregate.
+    const test: BootHarness = harness(
+      emptyStorage({
+        runtime: legacyRuntime({
+          session: legacySession({
+            config: legacyConfig({ durationMin: null, strictness: 'hard' }),
+            sessionEndsAt: null,
+            phaseEndsAt: null,
+          }),
+        }),
+      }),
+    );
+
+    const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
+    const aggregateKey: string = syncAggKey(DEVICE_ID, LOCAL_DATE);
+
+    expect(result.kind).toBe('migrated');
+    expect(result.runtime.session).toBeNull();
+    expect(result.runtime.pendingClosure?.stage).toBe('cleanup');
+    expect(test.storage.events.at(-1)).toMatchObject({
+      t: 'sessionEnded',
+      reason: 'invalid-active-state',
+      outcome: 'canceled',
+      duration: { kind: 'until-stopped' },
+      focusedMs: 30 * MINUTE_MS,
+    });
+    expect(test.storage.bank.balanceMs).toBeGreaterThan(0);
+    expect(test.storage.aggregates[aggregateKey]?.focusMs).toBe(30 * MINUTE_MS);
   });
 
   it('leaves the stale day on the runtime for the rollover that owns it', async (): Promise<void> => {
