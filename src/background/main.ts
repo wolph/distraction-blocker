@@ -125,6 +125,7 @@ import {
   type RejectedRuntimeDiagnosticV1,
   type RuntimeBootPortsV2,
   type RuntimeBootResultV2,
+  truncatedJson,
 } from './runtime-boot-v2';
 import { emptyRuntimeV2, loadRuntimeAuthority, saveRuntimeV2 } from './runtime-store-v2';
 import type {
@@ -243,31 +244,6 @@ function bootFailureOf(error: unknown, at: number): BootFailure {
 function bootFailureRejection(failure: BootFailure): Rejection {
   return { ok: false, error: `Focus Lock did not finish starting: ${failure.message}` };
 }
-
-/** The parked diagnostic is bounded, so a corrupt runtime cannot fill local storage a second time. */
-const PARKED_RUNTIME_MAX_CHARS: number = 32 * 1024;
-
-/** Serialises a value the reset parks. It is hostile input, so nothing here may throw. */
-function parkedJson(value: unknown): string | null {
-  if (value === undefined) return null;
-  try {
-    const json: string = JSON.stringify(value) ?? String(value);
-    return json.length <= PARKED_RUNTIME_MAX_CHARS
-      ? json
-      : `${json.slice(0, PARKED_RUNTIME_MAX_CHARS)}...`;
-  } catch {
-    return '[unserializable stored value]';
-  }
-}
-
-/** The diagnostic a manual reset leaves under `LOCAL_RUNTIME_REJECTED`. Never read back as authority. */
-type ParkedRuntimeDiagnostic = {
-  version: 1;
-  reason: 'manual-reset';
-  at: number;
-  runtime: string | null;
-  migration: string | null;
-};
 
 function requiresWorkerControl(request: Request): boolean {
   switch (request.type) {
@@ -1825,12 +1801,12 @@ export function main(): void {
             'Focus Lock cannot reset a runtime that is still committed inside a policy generation',
         };
       }
-      const parked: ParkedRuntimeDiagnostic = {
+      const parked: RejectedRuntimeDiagnosticV1 = {
         version: 1,
         reason: 'manual-reset',
         at: Date.now(),
-        runtime: parkedJson(stored[LOCAL_RUNTIME]),
-        migration: parkedJson(stored[LOCAL_RUNTIME_MIGRATION]),
+        runtime: truncatedJson(stored[LOCAL_RUNTIME]),
+        migration: truncatedJson(stored[LOCAL_RUNTIME_MIGRATION]),
       };
       await chrome.storage.local.set({ [LOCAL_RUNTIME_REJECTED]: parked });
       await chrome.storage.local.remove([LOCAL_RUNTIME, LOCAL_RUNTIME_MIGRATION]);
