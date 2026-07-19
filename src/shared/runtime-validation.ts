@@ -13,6 +13,7 @@ import {
 } from './exact-data';
 import type {
   Ack,
+  BootFailureResponse,
   OnboardingCleanupResponse,
   OnboardingCompletionResponse,
   OnboardingDraftLoadResponse,
@@ -28,6 +29,7 @@ import {
   isSafeDayCount,
 } from './numeric-validation';
 import type {
+  BootFailure,
   CategoryId,
   CycleConfig,
   EndActionLabelV2,
@@ -229,7 +231,10 @@ export function isSetupState(value: unknown): value is SetupState {
         value.storageError === 'legacy-migration-failed' ||
         value.storageError === 'sync-publish-failed' ||
         value.storageError === 'remote-deletion-failed' ||
-        value.storageError === 'local-clear-failed') &&
+        value.storageError === 'local-clear-failed' ||
+        value.storageError === 'legacy-remote-policy-dropped' ||
+        value.storageError === 'boot-failed' ||
+        value.storageError === 'runtime-boot-failed') &&
       isRecord(value.dataClear) &&
       hasExactKeys(value.dataClear, ['status', 'scope', 'phase']) &&
       ((value.dataClear.status === 'idle' &&
@@ -1437,6 +1442,27 @@ export function isRetrySyncResponse(value: unknown): value is RetrySyncResponse 
         (value.ok === false &&
           isNonBlankString(value.error) &&
           hasExactKeys(value, ['ok', 'error']))),
+  );
+}
+
+export function isBootFailure(value: unknown): value is BootFailure {
+  return safelyValidate(
+    (): boolean =>
+      isRecord(value) &&
+      hasExactKeys(value, ['stage', 'message', 'at']) &&
+      (value.stage === 'policy-storage' || value.stage === 'runtime' || value.stage === 'engine') &&
+      isNonBlankString(value.message) &&
+      isNonNegativeNumber(value.at),
+  );
+}
+
+export function isBootFailureResponse(value: unknown): value is BootFailureResponse {
+  return safelyValidate(
+    (): boolean =>
+      isRecord(value) &&
+      value.ok === true &&
+      hasExactKeys(value, ['ok', 'failure']) &&
+      (value.failure === null || isBootFailure(value.failure)),
   );
 }
 

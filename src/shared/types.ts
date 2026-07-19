@@ -57,6 +57,12 @@ export interface SetupState {
     | 'sync-publish-failed'
     | 'remote-deletion-failed'
     | 'local-clear-failed'
+    /** A synced legacy policy entry could not be read and was replaced on import. Persisted. */
+    | 'legacy-remote-policy-dropped'
+    /** The worker did not finish booting. Answered over the stored record, never written to it. */
+    | 'boot-failed'
+    /** The boot failed while resolving the stored runtime, so the local runtime reset is offered. */
+    | 'runtime-boot-failed'
     | null;
   dataClear:
     | { status: 'idle'; scope: null; phase: null }
@@ -76,6 +82,16 @@ export interface SetupState {
         phase: 'local' | 'runtime';
       };
   legacyImported: boolean;
+}
+
+/**
+ * What stopped the last boot. `policy-storage` covers everything before the runtime is resolved,
+ * `runtime` the stored runtime and its migration, and `engine` everything after the Engine exists.
+ */
+export interface BootFailure {
+  stage: 'policy-storage' | 'runtime' | 'engine';
+  message: string;
+  at: number;
 }
 
 export type OnboardingStep = 1 | 2 | 3;

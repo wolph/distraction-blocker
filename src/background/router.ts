@@ -307,6 +307,14 @@ export async function routeMessage(
       }
       return { ok: true, syncWriteStatus: 'idle' };
     }
+    // A request reaches the router only through a boot that resolved, so the failure channel has
+    // nothing to report here. Main answers the failed case itself, before any request gets this far.
+    case 'getBootFailure':
+      return { ok: true, failure: null };
+    case 'retryBoot':
+      return { ok: true };
+    case 'resetLocalRuntime':
+      return { ok: false, error: 'Focus Lock is running, nothing to reset' };
     case 'clearFocusLockData': {
       const storage: PolicyStorage = requirePolicyStorage(policyStorage);
       if (msg.scope === 'local-history') {

@@ -2,7 +2,11 @@ import type { TargetedEvent, TargetedMouseEvent, VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'preact/hooks';
 import { sendRequest } from '../shared/messages';
 import { WEBSITE_ORIGINS } from '../shared/permissions';
-import { LOCAL_ONLY_DATA_ITEMS, SYNCED_DATA_ITEMS } from '../shared/privacy-copy';
+import {
+  LEGACY_REMOTE_POLICY_DROPPED_COPY,
+  LOCAL_ONLY_DATA_ITEMS,
+  SYNCED_DATA_ITEMS,
+} from '../shared/privacy-copy';
 import { parseEventExportResponse } from '../shared/runtime-validation';
 import { localDateStr } from '../shared/time';
 import type { SetupState, StorageMode } from '../shared/types';
@@ -192,6 +196,9 @@ function durableError(setup: SetupState): string | null {
   }
   if (setup.syncWriteStatus === 'error') {
     return 'Chrome Sync could not save your latest changes. Your local save is safe.';
+  }
+  if (setup.storageError === 'legacy-remote-policy-dropped') {
+    return LEGACY_REMOTE_POLICY_DROPPED_COPY;
   }
   return null;
 }

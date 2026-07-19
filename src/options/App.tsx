@@ -108,6 +108,99 @@ function NotificationsSection(props: SectionProps): VNode {
   );
 }
 
+/**
+ * The load error, with the boot retry beside it when the worker is what did not start. The retry
+ * loads the page again on its own, so a second failure lands in the same line with its reason.
+ */
+function LoadError({ store }: { store: SettingsStore }): VNode {
+  const [pending, setPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
+  const [confirmingDelete, setConfirmingDelete]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
+  const [actionError, setActionError]: [string | null, Dispatch<StateUpdater<string | null>>] =
+    useState<string | null>(null);
+  const retry: () => Promise<void> = async (): Promise<void> => {
+    setPending(true);
+    setActionError(null);
+    try {
+      await store.retryBoot();
+    } finally {
+      setPending(false);
+    }
+  };
+  /**
+   * The way out of a profile no retry can fix. The worker clears everything and boots into setup
+   * on its own, so the page only has to load again once the clear answers.
+   */
+  const deleteAll: () => Promise<void> = async (): Promise<void> => {
+    setPending(true);
+    setActionError(null);
+    try {
+      const clearError: string | null = await store.clearData('all');
+      if (clearError !== null) {
+        setActionError(clearError);
+        return;
+      }
+      setConfirmingDelete(false);
+      await store.retryBoot();
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <div class="load-error">
+      <p class="save-error" role="alert">
+        {actionError ?? store.loadError}
+      </p>
+      {store.bootFailure !== null ? (
+        <div class="load-error__actions">
+          <button
+            type="button"
+            class="secondary"
+            disabled={pending}
+            onClick={(): void => {
+              void retry();
+            }}
+          >
+            Retry
+          </button>
+          {confirmingDelete ? (
+            <>
+              <button
+                type="button"
+                class="danger"
+                disabled={pending}
+                onClick={(): void => {
+                  void deleteAll();
+                }}
+              >
+                Delete everything and start over
+              </button>
+              <button
+                type="button"
+                class="secondary"
+                disabled={pending}
+                onClick={(): void => setConfirmingDelete(false)}
+              >
+                Keep my data
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              class="danger"
+              disabled={pending}
+              onClick={(): void => setConfirmingDelete(true)}
+            >
+              Delete all Focus Lock data
+            </button>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function PrivacySection(props: SectionProps): VNode {
   return (
     <section>
@@ -472,9 +565,7 @@ export function App(): VNode {
           <h1>Focus Lock settings</h1>
           {store.snapshot === null ? null : <SessionStatus snapshot={store.snapshot} />}
           {store.loadError !== null ? (
-            <p class="save-error" role="alert">
-              {store.loadError}
-            </p>
+            <LoadError store={store} />
           ) : draftSettings === null || draftLists === null ? (
             <p>Loading settings</p>
           ) : (

@@ -655,6 +655,9 @@ function parseRecord(value: Record<string, unknown>): Request | null {
         ? (value as Request)
         : null;
     case 'retrySync':
+    case 'getBootFailure':
+    case 'retryBoot':
+    case 'resetLocalRuntime':
       return hasExactKeys(value, ['type']) ? (value as Request) : null;
     case 'clearFocusLockData':
       return hasExactKeys(value, ['type', 'scope']) &&

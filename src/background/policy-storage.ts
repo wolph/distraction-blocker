@@ -191,6 +191,11 @@ export interface PolicyStorage {
   removeAggregate(key: string): Promise<void>;
   withAggregateStorage<T>(operation: (storage: AggregateStorage) => Promise<T>): Promise<T>;
   markLegacyMigrationFailed(): Promise<void>;
+  /**
+   * Records that the legacy import replaced one or more synced entries it could not read. Written
+   * after the import, because the import itself writes a clean record.
+   */
+  markLegacyRemotePolicyDropped(): Promise<void>;
   importLegacy(
     snapshot: PolicySnapshot,
     runtime: LegacyRuntimeStateV1,
@@ -2005,6 +2010,13 @@ export function createPolicyStorage(
     }
   }
 
+  async function markLegacyRemotePolicyDroppedInternal(): Promise<void> {
+    await ensureInitialized();
+    const setup: SetupState = await loadSetupInternal();
+    if (setup.storageError === 'legacy-remote-policy-dropped') return;
+    await saveSetupInternal({ ...setup, storageError: 'legacy-remote-policy-dropped' });
+  }
+
   async function markLegacyMigrationFailedInternal(): Promise<void> {
     await ensureInitialized();
     const pointerStored: Record<string, unknown> = await local.get(LOCAL_POLICY_COMMIT);
@@ -3121,6 +3133,8 @@ export function createPolicyStorage(
         return operation({ local, sync: mode === 'sync' ? sync : null });
       }),
     markLegacyMigrationFailed: (): Promise<void> => enqueue(markLegacyMigrationFailedInternal),
+    markLegacyRemotePolicyDropped: (): Promise<void> =>
+      enqueue(markLegacyRemotePolicyDroppedInternal),
     importLegacy: (
       snapshot: PolicySnapshot,
       runtime: LegacyRuntimeStateV1,

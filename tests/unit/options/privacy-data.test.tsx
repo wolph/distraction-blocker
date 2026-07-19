@@ -10,7 +10,11 @@ import {
 } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
 import { WEBSITE_ORIGINS } from '../../../src/shared/permissions';
-import { LOCAL_ONLY_DATA_ITEMS, SYNCED_DATA_ITEMS } from '../../../src/shared/privacy-copy';
+import {
+  LEGACY_REMOTE_POLICY_DROPPED_COPY,
+  LOCAL_ONLY_DATA_ITEMS,
+  SYNCED_DATA_ITEMS,
+} from '../../../src/shared/privacy-copy';
 import type { SetupState } from '../../../src/shared/types';
 import type { ChromeFake } from './chrome-fake';
 import { installChromeFake } from './chrome-fake';
@@ -244,6 +248,17 @@ describe('Privacy and data', (): void => {
       ).toBeTruthy(),
     );
     expect(failed.getByRole('button', { name: 'Retry Chrome Sync' })).toBeTruthy();
+  });
+
+  it('reports synced data from an older version that the import reset', async (): Promise<void> => {
+    setup = setupState({ storageMode: null, storageError: 'legacy-remote-policy-dropped' });
+    const view = renderPrivacy();
+
+    await waitFor((): void =>
+      expect(view.getByText(LEGACY_REMOTE_POLICY_DROPPED_COPY)).toBeTruthy(),
+    );
+    expect(view.getByRole('alert').textContent).toBe(LEGACY_REMOTE_POLICY_DROPPED_COPY);
+    expect(view.queryByRole('button', { name: 'Retry Chrome Sync' })).toBeNull();
   });
 
   it('retries Sync without deleting the accepted local save', async (): Promise<void> => {

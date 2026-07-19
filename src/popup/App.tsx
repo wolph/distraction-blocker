@@ -2,6 +2,7 @@ import type { VNode } from 'preact';
 import {
   type Dispatch,
   type StateUpdater,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -12,15 +13,18 @@ import { sendRequest } from '../shared/messages';
 import { WEBSITE_ORIGINS } from '../shared/permissions';
 import {
   isAck,
+  isBootFailureResponse,
   isListsConfig,
   isSettings,
   isSetupState,
   isWebsiteAccessReconciliation,
 } from '../shared/runtime-validation';
+import { DATA_CLEAR_ERROR_COPY } from '../shared/session-copy';
 import { LOCAL_SETUP } from '../shared/storage-keys';
 import { ThemeControl } from '../shared/ThemeControl';
 import { applyTheme, updateTheme } from '../shared/theme';
 import type {
+  BootFailure,
   ListsConfig,
   SessionSnapshot,
   Settings,
@@ -457,12 +461,190 @@ function WebsiteAccessNotice(props: {
   );
 }
 
+/** The worker did not finish starting. Its setup record carries the overlay that opens this view. */
+function bootFailed(setup: SetupState): boolean {
+  return setup.storageError === 'boot-failed' || setup.storageError === 'runtime-boot-failed';
+}
+
+/** The all-data clear's answer, read exactly. Anything but the worker's own `cleared` is an error. */
+function clearAllDataError(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return DATA_CLEAR_ERROR_COPY;
+  const record: Record<string, unknown> = value as Record<string, unknown>;
+  if (record.ok === true && record.scope === 'all' && record.status === 'cleared') return null;
+  if (record.ok === false && typeof record.error === 'string' && record.error.trim().length > 0) {
+    return record.error;
+  }
+  return DATA_CLEAR_ERROR_COPY;
+}
+
+/**
+ * The recovery screen for a worker whose boot failed. The reason comes from the failure channel,
+ * which answers while every other request is refused. Retry runs the boot again. The runtime reset
+ * is offered only when the stored runtime is what failed, because that is the one stage where
+ * parking it costs nothing the person cares about.
+ */
+function BootFailed(props: { setup: SetupState; onRecovered: () => void }): VNode {
+  const [failure, setFailure]: [BootFailure | null, Dispatch<StateUpdater<BootFailure | null>>] =
+    useState<BootFailure | null>(null);
+  const [reasonUnavailable, setReasonUnavailable]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
+  const [pending, setPending]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
+  const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
+    string | null
+  >(null);
+  const [confirmingDelete, setConfirmingDelete]: [boolean, Dispatch<StateUpdater<boolean>>] =
+    useState<boolean>(false);
+  const actionInFlight: { current: boolean } = useRef<boolean>(false);
+  const runtimeStage: boolean = props.setup.storageError === 'runtime-boot-failed';
+
+  useEffect((): (() => void) => {
+    let alive: boolean = true;
+    void sendRequest({ type: 'getBootFailure' })
+      .then((response: unknown): void => {
+        if (!alive) return;
+        if (isBootFailureResponse(response) && response.failure !== null) {
+          setFailure(response.failure);
+          return;
+        }
+        setReasonUnavailable(true);
+      })
+      .catch((): void => {
+        if (alive) setReasonUnavailable(true);
+      });
+    return (): void => {
+      alive = false;
+    };
+  }, []);
+
+  const recover: (request: { type: 'retryBoot' } | { type: 'resetLocalRuntime' }) => Promise<void> =
+    async (request: { type: 'retryBoot' } | { type: 'resetLocalRuntime' }): Promise<void> => {
+      if (actionInFlight.current) return;
+      actionInFlight.current = true;
+      setPending(true);
+      setError(null);
+      try {
+        const response: unknown = await sendRequest(request);
+        if (!isAck(response)) {
+          setError('Could not restart Focus Lock. Try again.');
+          return;
+        }
+        if (!response.ok) {
+          setError(response.error);
+          return;
+        }
+        props.onRecovered();
+      } catch {
+        setError('Could not restart Focus Lock. Try again.');
+      } finally {
+        actionInFlight.current = false;
+        setPending(false);
+      }
+    };
+
+  /**
+   * The way out of a profile no retry can fix. The worker clears everything and boots into setup
+   * on its own, so a cleared answer means the popup only has to read the record again.
+   */
+  const deleteAll: () => Promise<void> = async (): Promise<void> => {
+    if (actionInFlight.current) return;
+    actionInFlight.current = true;
+    setPending(true);
+    setError(null);
+    try {
+      const response: unknown = await sendRequest({ type: 'clearFocusLockData', scope: 'all' });
+      const clearError: string | null = clearAllDataError(response);
+      if (clearError !== null) {
+        setError(clearError);
+        return;
+      }
+      setConfirmingDelete(false);
+      props.onRecovered();
+    } catch {
+      setError(DATA_CLEAR_ERROR_COPY);
+    } finally {
+      actionInFlight.current = false;
+      setPending(false);
+    }
+  };
+
+  return (
+    <section class="view setup-required boot-failed" aria-labelledby="boot-failed-heading">
+      <h2 id="boot-failed-heading">Focus Lock could not start</h2>
+      {failure !== null ? (
+        <p role="status">{failure.message}</p>
+      ) : reasonUnavailable ? (
+        <p role="status">The reason could not be read.</p>
+      ) : null}
+      <button
+        type="button"
+        class="start-button"
+        disabled={pending}
+        onClick={(): void => void recover({ type: 'retryBoot' })}
+      >
+        Retry
+      </button>
+      {runtimeStage ? (
+        <>
+          <button
+            type="button"
+            class="secondary-button"
+            disabled={pending}
+            onClick={(): void => void recover({ type: 'resetLocalRuntime' })}
+          >
+            Reset local runtime
+          </button>
+          <p>Keeps your settings, lists, and statistics. Clears the current session state.</p>
+        </>
+      ) : null}
+      {confirmingDelete ? (
+        <div class="boot-failed__confirm">
+          <button
+            type="button"
+            class="danger-button"
+            disabled={pending}
+            onClick={(): void => void deleteAll()}
+          >
+            Delete everything and start over
+          </button>
+          <button
+            type="button"
+            class="secondary-button"
+            disabled={pending}
+            onClick={(): void => setConfirmingDelete(false)}
+          >
+            Keep my data
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          class="danger-button"
+          disabled={pending}
+          onClick={(): void => setConfirmingDelete(true)}
+        >
+          Delete all Focus Lock data
+        </button>
+      )}
+      {error !== null ? (
+        <p role="alert" class="form-error">
+          {error}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 export function App(): VNode {
+  /** Bumped after a recovery so the snapshot is read again from the worker that now runs. */
+  const [snapshotVersion, setSnapshotVersion]: [number, Dispatch<StateUpdater<number>>] =
+    useState<number>(0);
   const {
     error,
     snapshot,
     now,
-  }: { snapshot: SessionSnapshot | null; now: number; error: boolean } = useSnapshot();
+  }: { snapshot: SessionSnapshot | null; now: number; error: boolean } =
+    useSnapshot(snapshotVersion);
   const [theme, setTheme]: [ThemeMode | null, Dispatch<StateUpdater<ThemeMode | null>>] =
     useState<ThemeMode | null>(null);
   const [setup, setSetup]: [SetupState | null, Dispatch<StateUpdater<SetupState | null>>] =
@@ -482,23 +664,26 @@ export function App(): VNode {
     if (snapshot?.lifecycle.kind === 'idle') setStartFeedback(null);
   }, [snapshot]);
 
+  /** Guards a read that lands after the popup closed. Set once the effect below is torn down. */
+  const disposed: { current: boolean } = useRef<boolean>(false);
+  const readSetup: () => void = useCallback((): void => {
+    void sendRequest({ type: 'getSetupState' })
+      .then((value: SetupState): void => {
+        if (disposed.current) return;
+        if (!isSetupState(value)) {
+          setSetupError(true);
+          return;
+        }
+        setSetupError(false);
+        setSetup(value);
+      })
+      .catch((): void => {
+        if (!disposed.current) setSetupError(true);
+      });
+  }, []);
+
   useEffect((): (() => void) => {
-    let alive: boolean = true;
-    const readSetup: () => void = (): void => {
-      void sendRequest({ type: 'getSetupState' })
-        .then((value: SetupState): void => {
-          if (!alive) return;
-          if (!isSetupState(value)) {
-            setSetupError(true);
-            return;
-          }
-          setSetupError(false);
-          setSetup(value);
-        })
-        .catch((): void => {
-          if (alive) setSetupError(true);
-        });
-    };
+    disposed.current = false;
     readSetup();
     /**
      * The snapshot is live through the stateChanged broadcast, but the setup record is not, and
@@ -514,10 +699,16 @@ export function App(): VNode {
       };
     chrome.storage.onChanged.addListener(onStored);
     return (): void => {
-      alive = false;
+      disposed.current = true;
       chrome.storage.onChanged.removeListener(onStored);
     };
-  }, []);
+  }, [readSetup]);
+
+  /** A recovery means the worker runs now: the setup record and the snapshot are read again. */
+  const onRecovered: () => void = (): void => {
+    readSetup();
+    setSnapshotVersion((version: number): number => version + 1);
+  };
 
   useEffect((): void => {
     if (snapshot !== null) setTheme(snapshot.theme);
@@ -553,13 +744,18 @@ export function App(): VNode {
     <div class="app">
       <Header theme={theme} onThemeChange={saveTheme} />
       {setupError ? (
-        <section class="view snapshot-status" role="alert">
-          Setup status unavailable. Reload Focus Lock to try again.
+        <section class="view snapshot-status snapshot-status--retry" role="alert">
+          <span>Setup status unavailable. Reload Focus Lock to try again.</span>
+          <button type="button" class="secondary-button" onClick={readSetup}>
+            Retry
+          </button>
         </section>
       ) : setup === null ? (
         <section class="view" aria-busy="true" />
       ) : journal !== null ? (
         <LifecycleView snapshot={snapshot} now={now} dataClear={journal} />
+      ) : bootFailed(setup) ? (
+        <BootFailed setup={setup} onRecovered={onRecovered} />
       ) : !setup.completed ? (
         <SetupRequired />
       ) : attentionSnapshot !== null ? (

@@ -618,6 +618,25 @@ describe('data clear journal parsing', (): void => {
     expect(isLegacyAllDataClearJournal(synced)).toBe(false);
   });
 
+  it('accepts the persisted legacy drop code as a prior storage error and refuses the boot overlays', (): void => {
+    // The local-history clear copies the setup record's storage error into its journal, so every
+    // code the record can carry must parse back. The two boot overlays are answered, never written,
+    // so a journal carrying one is not a journal this worker wrote.
+    const dropped: LocalHistoryClearJournal = {
+      scope: 'local-history',
+      phase: 'local',
+      inventory: [],
+      clearAggregates: true,
+      priorStorageError: 'legacy-remote-policy-dropped',
+    };
+
+    expect(parseDataClearJournal(dropped)).toEqual(dropped);
+    expect(parseDataClearJournal({ ...dropped, priorStorageError: 'boot-failed' })).toBeNull();
+    expect(
+      parseDataClearJournal({ ...dropped, priorStorageError: 'runtime-boot-failed' }),
+    ).toBeNull();
+  });
+
   it.each([
     ['undefined', undefined],
     ['null', null],

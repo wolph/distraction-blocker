@@ -143,6 +143,71 @@ describe('useSettingsStore', () => {
     expect(store().setup).toBeNull();
   });
 
+  it('reports the boot failure reason and exposes retryBoot when the worker did not start', async (): Promise<void> => {
+    // A worker whose boot failed answers every load request with a rejection and the setup record
+    // with the boot overlay. The page asks for the reason and offers the retry, then loads again.
+    let started: boolean = false;
+    const rejection: { ok: false; error: string } = {
+      ok: false,
+      error: 'Focus Lock did not finish starting: invalid local setup state',
+    };
+    fake.respond('getSettings', (): unknown => (started ? DEFAULT_SETTINGS : rejection));
+    fake.respond('getLists', (): unknown => (started ? DEFAULT_LISTS : rejection));
+    fake.respond('getSnapshot', (): unknown => (started ? emptySnapshot(0) : rejection));
+    fake.respond(
+      'getSetupState',
+      (): SetupState =>
+        started ? { ...DEFAULT_SETUP } : { ...DEFAULT_SETUP, storageError: 'boot-failed' },
+    );
+    fake.respond('getBootFailure', (): unknown =>
+      started
+        ? { ok: true, failure: null }
+        : {
+            ok: true,
+            failure: { stage: 'policy-storage', message: 'invalid local setup state', at: 5 },
+          },
+    );
+    fake.respond('retryBoot', (): { ok: true } => {
+      started = true;
+      return { ok: true };
+    });
+    render(<Harness />);
+
+    await waitFor((): void => {
+      expect(store().loadError).toBe('Focus Lock could not start: invalid local setup state');
+    });
+    expect(store().bootFailure).toEqual({
+      stage: 'policy-storage',
+      message: 'invalid local setup state',
+      at: 5,
+    });
+    expect(store().settings).toBeNull();
+
+    let result: string | null = 'unset';
+    await act(async (): Promise<void> => {
+      result = await store().retryBoot();
+    });
+
+    expect(result).toBeNull();
+    expect(fake.sent).toContainEqual({ type: 'retryBoot' });
+    await waitFor((): void => expect(store().lists).not.toBeNull());
+    expect(store().loadError).toBeNull();
+    expect(store().bootFailure).toBeNull();
+    expect(store().settings).toEqual(DEFAULT_SETTINGS);
+  });
+
+  it('keeps the generic load error when the worker is running but answers malformed data', async (): Promise<void> => {
+    fake.respond('getSettings', { ...DEFAULT_SETTINGS, unexpected: true });
+    fake.respond('getBootFailure', { ok: true, failure: null });
+    render(<Harness />);
+
+    await waitFor((): void => {
+      expect(store().loadError).toBe('Could not load settings. Reload the page to try again.');
+    });
+    expect(store().bootFailure).toBeNull();
+    expect(fake.sent).toContainEqual({ type: 'getBootFailure' });
+  });
+
   it('refreshes durable setup state after changing storage mode', async (): Promise<void> => {
     let setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
     fake.respond('getSetupState', (): SetupState => structuredClone(setup));
@@ -444,6 +509,60 @@ describe('useSettingsStore', () => {
 });
 
 describe('App frame', () => {
+  it('offers the all-data deletion beside the boot retry after an inline confirmation', async (): Promise<void> => {
+    let cleared: boolean = false;
+    const rejection: { ok: false; error: string } = {
+      ok: false,
+      error: 'Focus Lock did not finish starting: invalid local setup state',
+    };
+    fake.respond('getSettings', (): unknown => (cleared ? DEFAULT_SETTINGS : rejection));
+    fake.respond('getLists', (): unknown => (cleared ? DEFAULT_LISTS : rejection));
+    fake.respond('getSnapshot', (): unknown => (cleared ? emptySnapshot(0) : rejection));
+    fake.respond(
+      'getSetupState',
+      (): SetupState =>
+        cleared ? { ...DEFAULT_SETUP } : { ...DEFAULT_SETUP, storageError: 'boot-failed' },
+    );
+    fake.respond('getBootFailure', (): unknown =>
+      cleared
+        ? { ok: true, failure: null }
+        : {
+            ok: true,
+            failure: { stage: 'policy-storage', message: 'invalid local setup state', at: 5 },
+          },
+    );
+    fake.respond('retryBoot', (): unknown => (cleared ? { ok: true } : rejection));
+    fake.respond('clearFocusLockData', (request: Request): unknown => {
+      expect(request).toEqual({ type: 'clearFocusLockData', scope: 'all' });
+      cleared = true;
+      return { ok: true, scope: 'all', status: 'cleared' };
+    });
+    const { getByRole, queryByRole } = render(<App />);
+
+    const first: HTMLButtonElement = await waitFor(
+      (): HTMLButtonElement =>
+        getByRole('button', { name: 'Delete all Focus Lock data' }) as HTMLButtonElement,
+    );
+    expect(getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect(queryByRole('button', { name: 'Delete everything and start over' })).toBeNull();
+
+    fireEvent.click(first);
+    expect(getByRole('button', { name: 'Delete everything and start over' })).toBeTruthy();
+    fireEvent.click(getByRole('button', { name: 'Keep my data' }));
+    expect(queryByRole('button', { name: 'Delete everything and start over' })).toBeNull();
+    expect(fake.sent).not.toContainEqual({ type: 'clearFocusLockData', scope: 'all' });
+
+    fireEvent.click(getByRole('button', { name: 'Delete all Focus Lock data' }));
+    fireEvent.click(getByRole('button', { name: 'Delete everything and start over' }));
+
+    // The worker booted into setup after the clear, so the page loads without the error.
+    await waitFor((): void => {
+      expect(queryByRole('alert')).toBeNull();
+    });
+    expect(fake.sent).toContainEqual({ type: 'clearFocusLockData', scope: 'all' });
+    expect(queryByRole('button', { name: 'Delete all Focus Lock data' })).toBeNull();
+  });
+
   it('renders the six merged nav sections', async (): Promise<void> => {
     const { getByRole } = render(<App />);
     await waitFor((): void => {

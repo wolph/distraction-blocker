@@ -1,13 +1,19 @@
 import { parseDailyAgg, parseMonthlyAgg } from '../core/stats';
 import { emptyStreak } from '../core/streak';
-import { DEFAULT_SETTINGS } from '../shared/constants';
+import { DEFAULT_SETTINGS, DEFAULT_SETUP } from '../shared/constants';
 import type { DocumentContentCommand } from '../shared/enforcement-v2';
 import { CoreError } from '../shared/errors';
 import { exactDataEqual } from '../shared/exact-data';
-import type { Request, SoundId } from '../shared/messages';
+import type { Ack, Rejection, Request, SoundId } from '../shared/messages';
 import { WEBSITE_ORIGINS } from '../shared/permissions';
-import { isInstallMarker, isListsConfig, isSettings } from '../shared/runtime-validation';
 import {
+  isInstallMarker,
+  isListsConfig,
+  isSettings,
+  isSetupState,
+} from '../shared/runtime-validation';
+import {
+  LOCAL_BANK,
   LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS,
   LOCAL_CACHES,
   LOCAL_DATA_CLEAR_JOURNAL,
@@ -17,11 +23,14 @@ import {
   LOCAL_INSTALL_MARKER,
   LOCAL_LISTS_SNAPSHOT,
   LOCAL_ONBOARDING_DRAFT,
+  LOCAL_POLICY_COMMIT,
   LOCAL_RUNTIME,
   LOCAL_RUNTIME_MIGRATION,
   LOCAL_RUNTIME_REJECTED,
   LOCAL_RUNTIME_SCHEMA,
+  LOCAL_SETTINGS,
   LOCAL_SETUP,
+  LOCAL_STREAK,
   LOCAL_SYNC_JOURNAL,
   LOCAL_SYNC_QUOTA_EVICTION,
   SYNC_BANK,
@@ -32,6 +41,7 @@ import {
 import { localDateStr, localMonthStr } from '../shared/time';
 import type {
   BankState,
+  BootFailure,
   DailyAgg,
   EventRecord,
   InstallMarker,
@@ -60,6 +70,7 @@ import {
 } from './content-registration';
 import {
   type AllDataClearJournalV2,
+  type AllDataClearPublicState,
   type DataClearJournal,
   type DataClearResetIdsV2,
   type FinalInstallMarkerProjection,
@@ -129,6 +140,7 @@ import {
   loadLists,
   loadRuntime,
   loadSyncJournal,
+  mergeLists,
   migrateRuntimeRules,
   type ParsedRuntimeState,
   parseBank,
@@ -182,6 +194,80 @@ type PendingWebsiteAccessNotice = { value: WebsiteAccessNotice | null };
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
+
+/** The boot stage a failure is attributed to. Anything left untagged is the policy-storage stage. */
+type BootStage = BootFailure['stage'];
+
+function errorMessage(error: unknown): string {
+  const message: string = error instanceof Error ? error.message : String(error);
+  return message.trim().length > 0 ? message : 'unknown error';
+}
+
+/** Tags the error that escaped one boot stage. The cause keeps its own stack and message. */
+class BootStageError extends Error {
+  readonly stage: BootStage;
+
+  constructor(stage: BootStage, cause: unknown) {
+    super(errorMessage(cause), { cause });
+    this.name = 'BootStageError';
+    this.stage = stage;
+  }
+}
+
+/** What `ready` rejects with after a failed boot, so a listener can tell it from a route error. */
+class BootFailedError extends Error {
+  readonly failure: BootFailure;
+
+  constructor(failure: BootFailure) {
+    super(bootFailureRejection(failure).error);
+    this.name = 'BootFailedError';
+    this.failure = failure;
+  }
+}
+
+async function bootStage<T>(stage: BootStage, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error: unknown) {
+    throw error instanceof BootStageError ? error : new BootStageError(stage, error);
+  }
+}
+
+function bootFailureOf(error: unknown, at: number): BootFailure {
+  return error instanceof BootStageError
+    ? { stage: error.stage, message: error.message, at }
+    : { stage: 'policy-storage', message: errorMessage(error), at };
+}
+
+/** The one answer every request gets from a worker that did not start, with the reason attached. */
+function bootFailureRejection(failure: BootFailure): Rejection {
+  return { ok: false, error: `Focus Lock did not finish starting: ${failure.message}` };
+}
+
+/** The parked diagnostic is bounded, so a corrupt runtime cannot fill local storage a second time. */
+const PARKED_RUNTIME_MAX_CHARS: number = 32 * 1024;
+
+/** Serialises a value the reset parks. It is hostile input, so nothing here may throw. */
+function parkedJson(value: unknown): string | null {
+  if (value === undefined) return null;
+  try {
+    const json: string = JSON.stringify(value) ?? String(value);
+    return json.length <= PARKED_RUNTIME_MAX_CHARS
+      ? json
+      : `${json.slice(0, PARKED_RUNTIME_MAX_CHARS)}...`;
+  } catch {
+    return '[unserializable stored value]';
+  }
+}
+
+/** The diagnostic a manual reset leaves under `LOCAL_RUNTIME_REJECTED`. Never read back as authority. */
+type ParkedRuntimeDiagnostic = {
+  version: 1;
+  reason: 'manual-reset';
+  at: number;
+  runtime: string | null;
+  migration: string | null;
+};
 
 function requiresWorkerControl(request: Request): boolean {
   switch (request.type) {
@@ -292,6 +378,10 @@ function currentEngine(): Engine {
 }
 
 function reportBackgroundError(error: unknown): void {
+  // A settled boot failure was reported once where it settled. Every listener that finds it
+  // afterwards, on each alarm, tab event, or storage change, would otherwise repeat it for the
+  // life of the stopped worker.
+  if (error instanceof BootFailedError) return;
   console.error('focus-lock background error', error);
 }
 
@@ -398,10 +488,17 @@ function validatedPendingJournal(
   return journal;
 }
 
-function assertValidAuthoritativeRemotePolicy(
+/**
+ * The synced policy entries a legacy import cannot read, by key. Each one is replaced by the
+ * validated local value or the default and the import goes on, because one unreadable entry must
+ * not keep the whole profile from booting. The pending journal is replay transport, repaired from
+ * validated authority later, so only the entries it does not override are judged here.
+ */
+function refusedAuthoritativeRemotePolicy(
   storedSync: Record<string, unknown>,
   journal: SyncJournal,
-): void {
+): string[] {
+  const refused: string[] = [];
   const pendingSettings: StoredSettingsParseResult | null = hasPendingSet(journal, SYNC_SETTINGS)
     ? parseStoredSettings(journal.sets[SYNC_SETTINGS], DEFAULT_SETTINGS)
     : null;
@@ -410,7 +507,7 @@ function assertValidAuthoritativeRemotePolicy(
     Object.hasOwn(storedSync, SYNC_SETTINGS) &&
     !parseStoredSettings(storedSync[SYNC_SETTINGS], DEFAULT_SETTINGS).valid
   ) {
-    throw new Error('invalid authoritative legacy settings');
+    refused.push(SYNC_SETTINGS);
   }
   const pendingBank: BankState | null = hasPendingSet(journal, SYNC_BANK)
     ? parseBank(journal.sets[SYNC_BANK])
@@ -420,7 +517,7 @@ function assertValidAuthoritativeRemotePolicy(
     Object.hasOwn(storedSync, SYNC_BANK) &&
     parseBank(storedSync[SYNC_BANK]) === null
   ) {
-    throw new Error('invalid authoritative legacy bank');
+    refused.push(SYNC_BANK);
   }
   const pendingStreak: StreakState | null = hasPendingSet(journal, SYNC_STREAK)
     ? parseStreak(journal.sets[SYNC_STREAK])
@@ -430,20 +527,48 @@ function assertValidAuthoritativeRemotePolicy(
     Object.hasOwn(storedSync, SYNC_STREAK) &&
     parseStreak(storedSync[SYNC_STREAK]) === null
   ) {
-    throw new Error('invalid authoritative legacy streak');
+    refused.push(SYNC_STREAK);
   }
   const remoteHasLists: boolean = Object.keys(storedSync).some(isListSyncKey);
   const journalHasLists: boolean = hasPendingLists(journal);
-  // The pending journal is replay transport. It is repaired from validated remote
-  // or local compatibility authority later. Remote list authority must be coherent.
-  if (!remoteHasLists || journalHasLists) return;
+  if (!remoteHasLists || journalHasLists) return refused;
   const decoded = decodeListsSyncSnapshot(storedSync);
-  if (decoded.kind === 'incomplete') {
-    throw new Error('incomplete authoritative legacy lists');
+  // The strict validator refuses the whole entry for one bad rule. The local snapshot is the
+  // value that stands in, never a lenient read of the refused one.
+  if (
+    decoded.kind === 'incomplete' ||
+    (decoded.kind === 'legacy' && !isListsConfig(decoded.value))
+  ) {
+    refused.push(SYNC_LISTS);
   }
-  if (decoded.kind === 'legacy' && !isListsConfig(decoded.value)) {
-    throw new Error('invalid authoritative legacy lists');
-  }
+  return refused;
+}
+
+/** What stands in for a refused synced entry: the validated local value, or the default. */
+type RemotePolicyFallbacks = {
+  settings: Settings;
+  bank: BankState;
+  streak: StreakState | null;
+  lists: ListsConfig;
+};
+
+async function localPolicyFallbacks(): Promise<RemotePolicyFallbacks> {
+  const stored: Record<string, unknown> = await chrome.storage.local.get([
+    LOCAL_SETTINGS,
+    LOCAL_BANK,
+    LOCAL_STREAK,
+    LOCAL_LISTS_SNAPSHOT,
+  ]);
+  const settings: StoredSettingsParseResult = parseStoredSettings(
+    stored[LOCAL_SETTINGS],
+    DEFAULT_SETTINGS,
+  );
+  return {
+    settings: settings.valid ? settings.settings : DEFAULT_SETTINGS,
+    bank: parseBank(stored[LOCAL_BANK]) ?? { balanceMs: 0 },
+    streak: parseStreak(stored[LOCAL_STREAK]),
+    lists: mergeLists(stored[LOCAL_LISTS_SNAPSHOT]),
+  };
 }
 
 function assertValidResolvedLegacyPolicy(snapshot: PolicySnapshot): void {
@@ -908,7 +1033,12 @@ async function preparePolicyStorage(lease: AllDataClearLease): Promise<PolicySto
     const rawJournal: SyncJournal = await loadSyncJournal();
     const sanitized: SanitizedSyncJournal = sanitizeSyncJournal(rawJournal);
     const storedSync: Record<string, unknown> = await chrome.storage.sync.get(null);
-    assertValidAuthoritativeRemotePolicy(storedSync, sanitized.journal);
+    const refusedRemoteKeys: string[] = refusedAuthoritativeRemotePolicy(
+      storedSync,
+      sanitized.journal,
+    );
+    const fallbacks: RemotePolicyFallbacks | null =
+      refusedRemoteKeys.length > 0 ? await localPolicyFallbacks() : null;
     const journal: SyncJournal = validatedPendingJournal(sanitized.journal, storedSync, now);
     const hasRemotePolicy: boolean = Object.keys(storedSync).some((key: string): boolean =>
       isFocusLockSyncKey(key),
@@ -925,11 +1055,13 @@ async function preparePolicyStorage(lease: AllDataClearLease): Promise<PolicySto
       decodeListsSyncSnapshot(storedSync).kind === 'incomplete';
     const decodedLists = decodeListsSyncSnapshot(effectiveListsSnapshot(storedSync, journal));
     const lists: ListsConfig =
-      !journalHadLists || decodedLists.kind === 'legacy'
-        ? storedLists
-        : decodedLists.kind === 'complete'
-          ? decodedLists.lists
-          : journalFallbackLists;
+      fallbacks !== null && refusedRemoteKeys.includes(SYNC_LISTS)
+        ? fallbacks.lists
+        : !journalHadLists || decodedLists.kind === 'legacy'
+          ? storedLists
+          : decodedLists.kind === 'complete'
+            ? decodedLists.lists
+            : journalFallbackLists;
     if (journalHadLists || remoteListsIncomplete) {
       replacePendingLists(journal, await encodeListsForSync(lists));
     }
@@ -937,11 +1069,21 @@ async function preparePolicyStorage(lease: AllDataClearLease): Promise<PolicySto
       effectiveLegacyValue(journal, storedSync, SYNC_SETTINGS),
       DEFAULT_SETTINGS,
     );
-    const settings: Settings = parsedSettings.valid ? parsedSettings.settings : DEFAULT_SETTINGS;
-    const bank: BankState = parseBank(effectiveLegacyValue(journal, storedSync, SYNC_BANK)) ?? {
-      balanceMs: 0,
-    };
-    const syncedStreak: StreakState | null = parseStreak(storedSync[SYNC_STREAK]);
+    // Each entry falls back on its own refusal only. An entry that is merely absent remotely
+    // takes what a clean import gives it, whatever else was refused beside it.
+    const settings: Settings = parsedSettings.valid
+      ? parsedSettings.settings
+      : fallbacks !== null && refusedRemoteKeys.includes(SYNC_SETTINGS)
+        ? fallbacks.settings
+        : DEFAULT_SETTINGS;
+    const bank: BankState =
+      parseBank(effectiveLegacyValue(journal, storedSync, SYNC_BANK)) ??
+      (fallbacks !== null && refusedRemoteKeys.includes(SYNC_BANK)
+        ? fallbacks.bank
+        : { balanceMs: 0 });
+    const syncedStreak: StreakState | null =
+      parseStreak(storedSync[SYNC_STREAK]) ??
+      (fallbacks !== null && refusedRemoteKeys.includes(SYNC_STREAK) ? fallbacks.streak : null);
     const journalHasStreak: boolean = hasPendingSet(journal, SYNC_STREAK);
     const journaledStreak: StreakState | null = journalHasStreak
       ? parseStreak(journal.sets[SYNC_STREAK])
@@ -985,6 +1127,14 @@ async function preparePolicyStorage(lease: AllDataClearLease): Promise<PolicySto
     const snapshot: PolicySnapshot = { settings, lists, bank, streak: persistedStreak };
     assertValidResolvedLegacyPolicy(snapshot);
     await storage.importLegacy(snapshot, runtime, journal, storedSync);
+    if (refusedRemoteKeys.length > 0) {
+      // A real import outcome, so it is persisted, unlike the boot-failure overlays. Settings
+      // shows it beside the other storage errors, and the log names the keys.
+      reportBackgroundError(
+        new Error(`legacy remote policy dropped: ${refusedRemoteKeys.join(', ')}`),
+      );
+      await storage.markLegacyRemotePolicyDropped();
+    }
     return storage;
   } catch (error: unknown) {
     await storage.markLegacyMigrationFailed();
@@ -1135,32 +1285,36 @@ async function boot(
   publishSetupCompleted(setup.completed && !pendingAllDataClear);
   // One runtime authority, resolved before anything else runs. A stored migration checkpoint is
   // finished, a v2 runtime is replayed, a legacy runtime migrates once, and anything else is
-  // reported and replaced by an empty v2 runtime.
-  const boot: RuntimeBootResultV2 = pendingAllDataClear
-    ? { kind: 'v2', runtime: emptyRuntimeV2(now, crypto.randomUUID()), migrated: false }
-    : await bootRuntimeAuthorityV2(runtimeBootPorts(policyStorage, snapshot, deviceId));
-  if (boot.kind === 'rejected') {
-    reportBackgroundError(new Error(`stored runtime rejected: ${boot.reason}`));
-  }
-  const localHistoryClear: { clearAggregates: boolean } | null =
-    await policyStorage.pendingLocalHistoryClear();
-  const runtime: RuntimeStateV2 =
-    localHistoryClear === null
-      ? boot.runtime
-      : sanitizeRuntimeForLocalHistory(boot.runtime, localHistoryClear.clearAggregates);
-  if (localHistoryClear !== null) {
-    try {
-      await saveRuntimeV2(runtime);
-      await policyStorage.finishLocalHistoryClear();
-    } catch (error: unknown) {
-      reportBackgroundError(error);
+  // reported and replaced by an empty v2 runtime. A throw in here is a runtime-stage failure,
+  // which is the one stage the popup may offer the local runtime reset for.
+  const runtime: RuntimeStateV2 = await bootStage('runtime', async (): Promise<RuntimeStateV2> => {
+    const boot: RuntimeBootResultV2 = pendingAllDataClear
+      ? { kind: 'v2', runtime: emptyRuntimeV2(now, crypto.randomUUID()), migrated: false }
+      : await bootRuntimeAuthorityV2(runtimeBootPorts(policyStorage, snapshot, deviceId));
+    if (boot.kind === 'rejected') {
+      reportBackgroundError(new Error(`stored runtime rejected: ${boot.reason}`));
     }
-  } else if (!pendingAllDataClear) {
-    // A fresh profile has nothing stored, and a rejected or migrated one must not read the old
-    // value again, so the resolved authority is written before anything else runs.
-    await saveRuntimeV2(runtime);
-    await chrome.storage.local.set({ [LOCAL_RUNTIME_SCHEMA]: { runtimeSchemaVersion: 2 } });
-  }
+    const localHistoryClear: { clearAggregates: boolean } | null =
+      await policyStorage.pendingLocalHistoryClear();
+    const resolved: RuntimeStateV2 =
+      localHistoryClear === null
+        ? boot.runtime
+        : sanitizeRuntimeForLocalHistory(boot.runtime, localHistoryClear.clearAggregates);
+    if (localHistoryClear !== null) {
+      try {
+        await saveRuntimeV2(resolved);
+        await policyStorage.finishLocalHistoryClear();
+      } catch (error: unknown) {
+        reportBackgroundError(error);
+      }
+    } else if (!pendingAllDataClear) {
+      // A fresh profile has nothing stored, and a rejected or migrated one must not read the old
+      // value again, so the resolved authority is written before anything else runs.
+      await saveRuntimeV2(resolved);
+      await chrome.storage.local.set({ [LOCAL_RUNTIME_SCHEMA]: { runtimeSchemaVersion: 2 } });
+    }
+    return resolved;
+  });
   const streak: StreakState = snapshot.streak ?? emptyStreak(localMonthStr(now));
   const ports: EnginePorts = {
     now: (): number => Date.now(),
@@ -1250,49 +1404,52 @@ async function boot(
     deviceId,
   );
   engineInstance = engine;
-  let appliedCapability: ContentRegistrationState | null = null;
-  try {
-    appliedCapability = await applyWebsiteCapability(
-      policyStorage,
-      engine,
-      initialWebsiteCapability.capability,
-      'boot',
-      pendingWebsiteAccessNotice,
-      initialCapabilityIsCurrent,
-    );
-  } catch (error: unknown) {
-    reportBackgroundError(error);
-  }
-  if (appliedCapability === null || !initialCapabilityIsCurrent()) {
-    const failClosedCapability: ContentRegistrationState = websiteCapability();
-    await endActiveSessionForWebsiteCapabilityLoss(
-      engine,
-      failClosedCapability.status === 'ready'
-        ? { permission: failClosedCapability.permission, status: 'error' }
-        : failClosedCapability,
-      'boot',
-      pendingWebsiteAccessNotice,
-    );
-  } else {
-    pendingWebsiteAccessNotice.value = null;
-    publishWebsiteCapability(appliedCapability);
-  }
-  if (pendingAllDataClear) {
-    // The journals resolve on this boot too. A controller that never recovers publishes nothing
-    // for the life of the worker, so the retry that finishes the clear would leave the popup and
-    // the badge dark until the next eviction.
+  // Everything from here on runs against a built Engine, so a throw is an engine-stage failure.
+  return bootStage('engine', async (): Promise<Engine> => {
+    let appliedCapability: ContentRegistrationState | null = null;
+    try {
+      appliedCapability = await applyWebsiteCapability(
+        policyStorage,
+        engine,
+        initialWebsiteCapability.capability,
+        'boot',
+        pendingWebsiteAccessNotice,
+        initialCapabilityIsCurrent,
+      );
+    } catch (error: unknown) {
+      reportBackgroundError(error);
+    }
+    if (appliedCapability === null || !initialCapabilityIsCurrent()) {
+      const failClosedCapability: ContentRegistrationState = websiteCapability();
+      await endActiveSessionForWebsiteCapabilityLoss(
+        engine,
+        failClosedCapability.status === 'ready'
+          ? { permission: failClosedCapability.permission, status: 'error' }
+          : failClosedCapability,
+        'boot',
+        pendingWebsiteAccessNotice,
+      );
+    } else {
+      pendingWebsiteAccessNotice.value = null;
+      publishWebsiteCapability(appliedCapability);
+    }
+    if (pendingAllDataClear) {
+      // The journals resolve on this boot too. A controller that never recovers publishes nothing
+      // for the life of the worker, so the retry that finishes the clear would leave the popup and
+      // the badge dark until the next eviction.
+      await engine.recover();
+      await engine.retainDataClearQuiescence();
+      return engine;
+    }
+    // Checklist 6: the journals resolve before any alarm, message, or publication reaches the
+    // controller.
     await engine.recover();
-    await engine.retainDataClearQuiescence();
+    await engine.tick();
+    // A window that is already open belongs to this boot, not to the minute after it.
+    await engine.checkSchedule();
+    await engine.applyBlockingNow();
     return engine;
-  }
-  // Checklist 6: the journals resolve before any alarm, message, or publication reaches the
-  // controller.
-  await engine.recover();
-  await engine.tick();
-  // A window that is already open belongs to this boot, not to the minute after it.
-  await engine.checkSchedule();
-  await engine.applyBlockingNow();
-  return engine;
+  });
 }
 
 /**
@@ -1305,6 +1462,8 @@ export function main(): void {
   let listChangeApplyQueue: Promise<void> = Promise.resolve();
   let policyStorageReady: Promise<PolicyStorage>;
   let ready: Promise<Engine>;
+  /** Set when a boot settles in failure, cleared when the next one starts. */
+  let bootFailure: BootFailure | null = null;
   let websiteCapability: ContentRegistrationState = {
     permission: 'unknown',
     status: 'unavailable',
@@ -1343,6 +1502,11 @@ export function main(): void {
     const isCurrent: () => boolean = (): boolean => generation === websiteReconciliationGeneration;
     const reconcile: () => Promise<WebsiteReconciliation> =
       async (): Promise<WebsiteReconciliation> => {
+        // A reconcile that a newer generation has already superseded steps aside before it waits
+        // on the boot. A retried boot queues its own reconcile behind this one, and its `ready`
+        // waits on that, so waiting here would be waiting on itself. The newer generation applies
+        // the capability it was minted for, the boot through its own fail-closed cleanup.
+        if (!isCurrent()) return { capability: websiteCapability, generation };
         if (cause === 'permission-removed' && applyToEngine) {
           // Permission loss is a fail-closed safety event. A later permission
           // generation may suppress stale setup writes, but never this cleanup.
@@ -1468,29 +1632,255 @@ export function main(): void {
   chrome.permissions.onRemoved.addListener((permissions: chrome.permissions.Permissions): void => {
     if (isWebsitePermissionEvent(permissions)) reconcileAfterPermissionEvent('permission-removed');
   });
-  policyStorageReady = preparePolicyStorage(dataClearLease);
-  const initialWebsiteCapability: Promise<WebsiteReconciliation> = reconcileWebsiteCapability(
-    'boot',
-    false,
-  );
-  ready = Promise.all([policyStorageReady, initialWebsiteCapability]).then(
-    ([storage, initialCapability]: [PolicyStorage, WebsiteReconciliation]): Promise<Engine> =>
-      boot(
-        storage,
-        dataClearLease,
-        initialCapability,
-        (): ContentRegistrationState => websiteCapability,
-        (): boolean => initialCapability.generation === websiteReconciliationGeneration,
-        (capability: ContentRegistrationState): void => {
-          websiteCapability = capability;
+  /**
+   * One boot, re-runnable. Every listener reads `ready` and `policyStorageReady` when it fires
+   * rather than when it was registered, so a retry replaces both promises and the listeners follow.
+   * A failure settles into `bootFailure`, is reported once here, and rejects `ready` with a typed
+   * error the message listener answers from.
+   */
+  const startBoot = (): void => {
+    bootFailure = null;
+    engineInstance = null;
+    // One settlement per boot. Policy Storage and the Engine promise reject with the same typed
+    // error, so every listener that waits on either finds a failure that was already reported.
+    let settled: BootFailedError | null = null;
+    const settle = (error: unknown): BootFailedError => {
+      if (error instanceof BootFailedError) return error;
+      if (settled !== null) return settled;
+      const failure: BootFailure = bootFailureOf(error, Date.now());
+      bootFailure = failure;
+      // A half-built Engine is not an authority. The paths that stay open without one, the all-data
+      // clear above all, run through the module-level ports instead.
+      engineInstance = null;
+      reportBackgroundError(error instanceof BootStageError ? error.cause : error);
+      settled = new BootFailedError(failure);
+      return settled;
+    };
+    policyStorageReady = preparePolicyStorage(dataClearLease).catch((error: unknown): never => {
+      throw settle(error);
+    });
+    const initialWebsiteCapability: Promise<WebsiteReconciliation> = reconcileWebsiteCapability(
+      'boot',
+      false,
+    );
+    const booted: Promise<Engine> = Promise.all([
+      policyStorageReady,
+      initialWebsiteCapability,
+    ]).then(
+      ([storage, initialCapability]: [PolicyStorage, WebsiteReconciliation]): Promise<Engine> =>
+        boot(
+          storage,
+          dataClearLease,
+          initialCapability,
+          (): ContentRegistrationState => websiteCapability,
+          (): boolean => initialCapability.generation === websiteReconciliationGeneration,
+          (capability: ContentRegistrationState): void => {
+            websiteCapability = capability;
+          },
+          pendingWebsiteAccessNotice,
+          (): boolean => setupCompleted,
+          (completed: boolean): void => {
+            setupCompleted = completed;
+          },
+        ),
+    );
+    ready = booted.catch((error: unknown): never => {
+      throw settle(error);
+    });
+    // The failure is answered by whichever request arrives first. Until one does, it must not
+    // surface as an unhandled rejection on top of the report above.
+    void ready.catch((): undefined => undefined);
+  };
+  startBoot();
+
+  /** The stored setup, best effort, for a worker that cannot serve it through Policy Storage. */
+  const bestEffortSetup = async (): Promise<SetupState> => {
+    try {
+      const storage: PolicyStorage = await policyStorageReady;
+      const setup: SetupState = await storage.loadSetup();
+      try {
+        const allData: AllDataClearPublicState = await storage.allDataClearPublicState();
+        return allData.status === 'idle' ? setup : { ...setup, dataClear: allData };
+      } catch {
+        return setup;
+      }
+    } catch {
+      // Policy Storage is what failed, so the raw record is the next best answer.
+    }
+    try {
+      const stored: Record<string, unknown> = await chrome.storage.local.get(LOCAL_SETUP);
+      const raw: unknown = stored[LOCAL_SETUP];
+      if (isSetupState(raw)) return raw;
+    } catch {
+      // Nothing readable at all: the default record carries the overlay on its own.
+    }
+    return structuredClone(DEFAULT_SETUP);
+  };
+
+  /**
+   * The answers a stopped worker still owes. Setup carries the failure as an overlay the popup
+   * reads, never written back. The all-data clear and its retry stay reachable because they are
+   * the way out of a profile that cannot boot, and they run without an Engine. Everything else is
+   * refused with the reason.
+   */
+  const routeBootFailure = async (request: Request, failure: BootFailure): Promise<unknown> => {
+    switch (request.type) {
+      case 'getSetupState': {
+        const setup: SetupState = await bestEffortSetup();
+        return {
+          ...setup,
+          storageError: failure.stage === 'runtime' ? 'runtime-boot-failed' : 'boot-failed',
+        };
+      }
+      case 'retryDataClear': {
+        try {
+          const storage: PolicyStorage = await policyStorageReady;
+          if ((await retryAllDataClear(storage, dataClearLease)) === 'ok') {
+            return { ok: true, code: 'ok' };
+          }
+          return {
+            ok: false,
+            code: 'retry-not-available',
+            error: 'Data clear retry is not available.',
+          };
+        } catch (error: unknown) {
+          return { ok: false, code: 'retry-not-available', error: errorMessage(error) };
+        }
+      }
+      case 'clearFocusLockData': {
+        if (request.scope !== 'all') {
+          return { ...bootFailureRejection(failure), scope: request.scope, status: 'pending' };
+        }
+        let storage: PolicyStorage | null = null;
+        try {
+          storage = await policyStorageReady;
+          if ((await storage.storageMode()) === 'sync') await storage.selectLocalMode();
+          await storage.deleteRemoteData('all');
+          await dispatchAllDataClear(storage, dataClearLease);
+        } catch (error: unknown) {
+          await republishSetupCompleted(storage);
+          return { ok: false, error: errorMessage(error), scope: 'all', status: 'pending' };
+        }
+        setupCompleted = false;
+        // The profile is clean now, which is the one repair a boot failure cannot survive, so the
+        // worker boots over it on its own rather than waiting for a Retry. The clear succeeded
+        // whatever that boot does, and a boot that fails again answers the next request itself.
+        startBoot();
+        await ready.catch((): undefined => undefined);
+        return { ok: true, scope: 'all', status: 'cleared' };
+      }
+      default:
+        return bootFailureRejection(failure);
+    }
+  };
+
+  /** The router's error-path reload of `setupCompleted`, for a clear that did not finish. */
+  const republishSetupCompleted = async (storage: PolicyStorage | null): Promise<void> => {
+    if (storage === null) return;
+    try {
+      const setup: SetupState = await storage.loadSetup();
+      const allDataClearPending: boolean =
+        setup.dataClear.status !== 'idle' && setup.dataClear.scope === 'all';
+      setupCompleted = setup.completed && !allDataClearPending;
+    } catch (setupError: unknown) {
+      reportBackgroundError(setupError);
+    }
+  };
+
+  /** Runs the boot again after a failure. Answers only once the new boot has settled. */
+  const retryBoot = (): Promise<Ack> =>
+    runWorkerControl(async (): Promise<Ack> => {
+      if (bootFailure !== null) startBoot();
+      try {
+        await ready;
+        return { ok: true };
+      } catch (error: unknown) {
+        return error instanceof BootFailedError
+          ? bootFailureRejection(error.failure)
+          : { ok: false, error: errorMessage(error) };
+      }
+    });
+
+  /**
+   * Parks the stored runtime and its migration checkpoint under the diagnostic key, removes both,
+   * and boots again over an empty runtime. The schema marker stays, so the next boot reads an
+   * absent runtime rather than a legacy one. A runtime committed inside a policy generation lives
+   * in that record, not under `LOCAL_RUNTIME`, so it is refused rather than half removed.
+   */
+  const resetLocalRuntime = (): Promise<Ack> =>
+    runWorkerControl(async (): Promise<Ack> => {
+      const failure: BootFailure | null = bootFailure;
+      if (failure === null) return { ok: false, error: 'Focus Lock is running, nothing to reset' };
+      if (failure.stage !== 'runtime') return bootFailureRejection(failure);
+      const stored: Record<string, unknown> = await chrome.storage.local.get([
+        LOCAL_POLICY_COMMIT,
+        LOCAL_RUNTIME,
+        LOCAL_RUNTIME_MIGRATION,
+      ]);
+      const pointer: unknown = stored[LOCAL_POLICY_COMMIT];
+      if (isRecord(pointer) && pointer.source === 'generation') {
+        return {
+          ok: false,
+          error:
+            'Focus Lock cannot reset a runtime that is still committed inside a policy generation',
+        };
+      }
+      const parked: ParkedRuntimeDiagnostic = {
+        version: 1,
+        reason: 'manual-reset',
+        at: Date.now(),
+        runtime: parkedJson(stored[LOCAL_RUNTIME]),
+        migration: parkedJson(stored[LOCAL_RUNTIME_MIGRATION]),
+      };
+      await chrome.storage.local.set({ [LOCAL_RUNTIME_REJECTED]: parked });
+      await chrome.storage.local.remove([LOCAL_RUNTIME, LOCAL_RUNTIME_MIGRATION]);
+      startBoot();
+      try {
+        await ready;
+        return { ok: true };
+      } catch (error: unknown) {
+        return error instanceof BootFailedError
+          ? bootFailureRejection(error.failure)
+          : { ok: false, error: errorMessage(error) };
+      }
+    });
+
+  /** The normal path: wait for the boot, then route. A failed boot routes through its own table. */
+  const answerRequest = async (
+    request: Request,
+    sender: chrome.runtime.MessageSender,
+  ): Promise<unknown> => {
+    let engine: Engine;
+    try {
+      engine = await ready;
+    } catch (error: unknown) {
+      if (!(error instanceof BootFailedError)) throw error;
+      const failure: BootFailure = error.failure;
+      const failed: () => Promise<unknown> = (): Promise<unknown> =>
+        routeBootFailure(request, failure);
+      return requiresWorkerControl(request) ? runWorkerControl(failed) : failed();
+    }
+    const route: () => Promise<unknown> = async (): Promise<unknown> =>
+      routeMessage(engine, request, sender, await policyStorageReady, {
+        reconcileWebsiteAccess: async (): Promise<ContentRegistrationState> =>
+          (await reconcileWebsiteCapability('explicit', true, true)).capability,
+        dismissWebsiteAccessNotice,
+        openOnboarding: onboardingService.open,
+        retryDataClear: async (): Promise<'ok' | 'retry-not-available'> =>
+          retryAllDataClear(await policyStorageReady, dataClearLease),
+        continueAllDataClear: async (): Promise<void> => {
+          await dispatchAllDataClear(await policyStorageReady, dataClearLease);
         },
-        pendingWebsiteAccessNotice,
-        (): boolean => setupCompleted,
-        (completed: boolean): void => {
+        loadOnboardingDraft: onboardingService.loadDraft,
+        saveOnboardingDraft: onboardingService.saveDraft,
+        removeOnboardingDraft: onboardingService.removeDraft,
+        reportError: reportBackgroundError,
+        setupCompleted: (completed: boolean): void => {
           setupCompleted = completed;
         },
-      ),
-  );
+      });
+    return requiresWorkerControl(request) ? runWorkerControl(route) : route();
+  };
 
   chrome.runtime.onMessage.addListener(
     (
@@ -1508,33 +1898,23 @@ export function main(): void {
         );
         return true;
       }
-      ready
-        .then(async (engine: Engine): Promise<unknown> => {
-          const route: () => Promise<unknown> = async (): Promise<unknown> =>
-            routeMessage(engine, request, sender, await policyStorageReady, {
-              reconcileWebsiteAccess: async (): Promise<ContentRegistrationState> =>
-                (await reconcileWebsiteCapability('explicit', true, true)).capability,
-              dismissWebsiteAccessNotice,
-              openOnboarding: onboardingService.open,
-              retryDataClear: async (): Promise<'ok' | 'retry-not-available'> =>
-                retryAllDataClear(await policyStorageReady, dataClearLease),
-              continueAllDataClear: async (): Promise<void> => {
-                await dispatchAllDataClear(await policyStorageReady, dataClearLease);
-              },
-              loadOnboardingDraft: onboardingService.loadDraft,
-              saveOnboardingDraft: onboardingService.saveDraft,
-              removeOnboardingDraft: onboardingService.removeDraft,
-              reportError: reportBackgroundError,
-              setupCompleted: (completed: boolean): void => {
-                setupCompleted = completed;
-              },
-            });
-          return requiresWorkerControl(request) ? runWorkerControl(route) : route();
-        })
+      // The failure channel answers before the boot is consulted: the reason is readable while
+      // the worker is stopped, and the two recoveries are what start it again.
+      if (request.type === 'getBootFailure') {
+        sendResponse({ ok: true, failure: bootFailure });
+        return true;
+      }
+      const answer: Promise<unknown> =
+        request.type === 'retryBoot'
+          ? retryBoot()
+          : request.type === 'resetLocalRuntime' && bootFailure?.stage === 'runtime'
+            ? resetLocalRuntime()
+            : answerRequest(request, sender);
+      answer
         .then((response: unknown): void => sendResponse(response))
         .catch((err: unknown): void => {
-          // The asker is told, and so is the log. A boot that fails answers every request with the
-          // same error, and the one person who can diagnose it would otherwise see nothing at all.
+          // The asker is told, and so is the log. A boot failure is reported once where it
+          // settles, so what lands here is a route that threw on a running worker.
           reportBackgroundError(err);
           sendResponse({ ok: false, error: String(err) });
         });
