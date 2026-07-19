@@ -169,14 +169,65 @@ describe('storage default merging', () => {
     return { ...structuredClone(DEFAULT_SETTINGS), ...overrides, gate, allowForceEnd };
   }
 
-  it('rejects a gate that lacks allowForceEnd, which is no longer a legacy shape', (): void => {
-    expect(
-      parseStoredSettings({
-        ...structuredClone(DEFAULT_SETTINGS),
-        gate: { delayMs: 10_000, requireTypedPhrase: false },
-      }),
-    ).toEqual({ valid: false });
+  it('accepts a gate that lacks allowForceEnd as the pre-force-end v1 shape and defaults it to false', (): void => {
+    const stored: Record<string, unknown> = {
+      ...structuredClone(DEFAULT_SETTINGS),
+      gate: { delayMs: 10_000, requireTypedPhrase: false },
+    };
+    const bypassOn: Settings = {
+      ...DEFAULT_SETTINGS,
+      gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: true },
+    };
+
+    expect(parseStoredSettings(stored, DEFAULT_SETTINGS)).toEqual({
+      valid: true,
+      changed: false,
+      legacy: true,
+      settings: DEFAULT_SETTINGS,
+    });
+    expect(parseStoredSettings(stored, bypassOn)).toEqual({
+      valid: true,
+      changed: true,
+      legacy: true,
+      settings: DEFAULT_SETTINGS,
+    });
+    expect(stored.gate).not.toHaveProperty('allowForceEnd');
   });
+
+  it('keeps customised settings around a pre-force-end gate', (): void => {
+    const stored: Record<string, unknown> = {
+      ...structuredClone(DEFAULT_SETTINGS),
+      theme: 'dark',
+      retentionDays: 30,
+      gate: { delayMs: 20_000, requireTypedPhrase: true },
+    };
+
+    expect(parseStoredSettings(stored, DEFAULT_SETTINGS)).toEqual({
+      valid: true,
+      changed: true,
+      legacy: true,
+      settings: {
+        ...DEFAULT_SETTINGS,
+        theme: 'dark',
+        retentionDays: 30,
+        gate: { delayMs: 20_000, requireTypedPhrase: true, allowForceEnd: false },
+      },
+    });
+  });
+
+  it.each([
+    { gate: { delayMs: 10_000 } },
+    { gate: { delayMs: 10_000, requireTypedPhrase: false, unexpected: true } },
+    { gate: { delayMs: -1, requireTypedPhrase: false } },
+    { gate: { delayMs: 10_000, requireTypedPhrase: false }, unexpected: true },
+  ])(
+    'rejects an invalid pre-force-end gate record %#',
+    (overrides: Record<string, unknown>): void => {
+      expect(parseStoredSettings({ ...structuredClone(DEFAULT_SETTINGS), ...overrides })).toEqual({
+        valid: false,
+      });
+    },
+  );
 
   it.each([
     { gate: { ...DEFAULT_SETTINGS.gate, allowForceEnd: 'false' } },

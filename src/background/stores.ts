@@ -260,9 +260,15 @@ export type StoredSettingsParseResult =
   | { valid: true; changed: boolean; legacy: boolean; settings: Settings };
 
 /**
- * Accepts canonical Settings and the root-level v1 shape, whose `allowForceEnd` boolean sat next
- * to `gate` instead of inside it. The v1 value moves into `gate.allowForceEnd`, which is the
- * canonical home of the same preference, so an upgrade keeps the bypass the user had chosen.
+ * Accepts three stored shapes. The canonical v2 record parses as is. The root-level v1 shape kept
+ * its `allowForceEnd` boolean next to `gate` instead of inside it, and that value moves into
+ * `gate.allowForceEnd`, the canonical home of the same preference, so an upgrade keeps the bypass
+ * the user had chosen. The pre-force-end v1 shape has a gate of only `delayMs` and
+ * `requireTypedPhrase`, written before the bypass existed, and reads as `allowForceEnd: false`,
+ * the default a user who never saw the option would have kept. Both v1 shapes report
+ * `legacy: true` so a caller can rewrite the record in the canonical shape. Every other record,
+ * including one with an unknown key anywhere, is invalid: the exact-key discipline lives in
+ * `parseStoredSettingsV2` and both legacy branches feed their migrated record through it.
  */
 export function parseStoredSettings(
   value: unknown,
@@ -279,17 +285,8 @@ export function parseStoredSettings(
         settings: parsed,
       };
     }
-    if (!isRecord(value) || !Object.hasOwn(value, 'allowForceEnd')) return { valid: false };
-    const allowForceEnd: unknown = value.allowForceEnd;
-    const gate: unknown = value.gate;
-    if (typeof allowForceEnd !== 'boolean' || !isRecord(gate)) return { valid: false };
-    // A v1 gate never carried the nested field. When a record somehow has both, the nested one
-    // is the canonical field a newer writer produced, so it wins and the root value is dropped.
-    const migratedGate: Record<string, unknown> = Object.hasOwn(gate, 'allowForceEnd')
-      ? { ...gate }
-      : { ...gate, allowForceEnd };
-    const legacy: Record<string, unknown> = { ...value, gate: migratedGate };
-    delete legacy.allowForceEnd;
+    const legacy: Record<string, unknown> | null = migratedLegacySettingsRecord(value);
+    if (legacy === null) return { valid: false };
     const legacySettings: SettingsV2 | null = parseStoredSettingsV2(legacy);
     if (legacySettings === null) return { valid: false };
     const settings: Settings = legacySettings;
@@ -302,6 +299,30 @@ export function parseStoredSettings(
   } catch {
     return { valid: false };
   }
+}
+
+/**
+ * Rewrites a v1 settings record into the canonical key layout without validating it, or returns
+ * null when the record is neither v1 shape. The caller runs the strict parser on the result.
+ */
+function migratedLegacySettingsRecord(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  const gate: unknown = value.gate;
+  if (!isRecord(gate)) return null;
+  if (Object.hasOwn(value, 'allowForceEnd')) {
+    const allowForceEnd: unknown = value.allowForceEnd;
+    if (typeof allowForceEnd !== 'boolean') return null;
+    // A v1 gate never carried the nested field. When a record somehow has both, the nested one
+    // is the canonical field a newer writer produced, so it wins and the root value is dropped.
+    const migratedGate: Record<string, unknown> = Object.hasOwn(gate, 'allowForceEnd')
+      ? { ...gate }
+      : { ...gate, allowForceEnd };
+    const legacy: Record<string, unknown> = { ...value, gate: migratedGate };
+    delete legacy.allowForceEnd;
+    return legacy;
+  }
+  if (Object.hasOwn(gate, 'allowForceEnd')) return null;
+  return { ...value, gate: { ...gate, allowForceEnd: false } };
 }
 
 export function mergeLists(raw: unknown, base: ListsConfig = DEFAULT_LISTS): ListsConfig {

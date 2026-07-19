@@ -82,6 +82,12 @@ import type {
   StreakState,
 } from '../../../src/shared/types';
 import {
+  type LegacyUpgradeProfile,
+  type LegacyUpgradeSettingsV1,
+  legacyUpgradeProfile,
+  legacyUpgradeSettingsV1,
+} from '../../fixtures/legacy-upgrade-profile';
+import {
   cleanupClosureRuntime,
   commitCheckpointRuntime,
   emptyRuntimeV2,
@@ -341,16 +347,31 @@ function storedAllDataJournal(local: FakeStorage): AllDataClearJournalV2 {
   return journal as AllDataClearJournalV2;
 }
 
-/** Every payload a `set` carried that touched the journal key, in write order. */
-function journalWrites(local: FakeStorage): Record<string, unknown>[] {
+/** Every payload a `set` on `area` carried, in write order. */
+function setPayloads(area: chrome.storage.StorageArea): Record<string, unknown>[] {
   return vi
-    .mocked(local.area.set)
+    .mocked(area.set)
     .mock.calls.map(
       (call: unknown[]): Record<string, unknown> => call[0] as Record<string, unknown>,
-    )
-    .filter((items: Record<string, unknown>): boolean =>
-      Object.hasOwn(items, LOCAL_DATA_CLEAR_JOURNAL),
     );
+}
+
+/** Every payload a local `set` carried that touched `key`, in write order. */
+function writesTouching(local: FakeStorage, key: string): Record<string, unknown>[] {
+  return setPayloads(local.area).filter((items: Record<string, unknown>): boolean =>
+    Object.hasOwn(items, key),
+  );
+}
+
+/** Every payload a `set` carried that touched the journal key, in write order. */
+function journalWrites(local: FakeStorage): Record<string, unknown>[] {
+  return writesTouching(local, LOCAL_DATA_CLEAR_JOURNAL);
+}
+
+/** The v1 settings the legacy upgrade profile stores, and their canonical reading. */
+function preForceEndSettings(): { stored: LegacyUpgradeSettingsV1; canonical: Settings } {
+  const stored: LegacyUpgradeSettingsV1 = legacyUpgradeSettingsV1();
+  return { stored, canonical: { ...stored, gate: { ...stored.gate, allowForceEnd: false } } };
 }
 
 function runPhase(
@@ -1127,6 +1148,220 @@ describe('PolicyStorage', (): void => {
         key.startsWith(LOCAL_POLICY_GENERATION_PREFIX),
       ),
     ).toBe(false);
+  });
+
+  it('initializes over a direct commit whose settings predate allowForceEnd, rewrites them once, and serves them migrated', async (): Promise<void> => {
+    const { stored, canonical } = preForceEndSettings();
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      legacyImported: true,
+    };
+    const storedRevision: string = `policy-v1:${JSON.stringify({ ...SNAPSHOT, settings: stored })}`;
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_SETTINGS]: stored,
+      [LOCAL_POLICY_COMMIT]: { source: 'direct', revision: storedRevision },
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+
+    await storage.initialize();
+
+    const snapshot: PolicySnapshot = await storage.loadSnapshot();
+    expect(snapshot).toEqual({ ...SNAPSHOT, settings: canonical });
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(canonical);
+    expect(local.state.values[LOCAL_POLICY_COMMIT]).toEqual({
+      source: 'direct',
+      revision: `policy-v1:${JSON.stringify(snapshot)}`,
+    });
+    expect(local.state.values[LOCAL_POLICY_COMMIT]).not.toEqual({
+      source: 'direct',
+      revision: storedRevision,
+    });
+    const migrations: Record<string, unknown>[] = writesTouching(local, LOCAL_SETTINGS);
+    expect(migrations).toHaveLength(1);
+    expect(Object.keys(migrations[0] ?? {}).sort()).toEqual(
+      [LOCAL_SETTINGS, LOCAL_POLICY_COMMIT].sort(),
+    );
+
+    vi.mocked(local.area.set).mockClear();
+    const restarted: PolicyStorage = policyStorage(local, fakeStorage());
+    await restarted.initialize();
+
+    expect(writesTouching(local, LOCAL_SETTINGS)).toEqual([]);
+    expect(writesTouching(local, LOCAL_POLICY_COMMIT)).toEqual([]);
+    expect(await restarted.loadSnapshot()).toEqual(snapshot);
+  });
+
+  it('materializes a committed generation whose settings predate allowForceEnd without a revision mismatch', async (): Promise<void> => {
+    const { stored, canonical } = preForceEndSettings();
+    const rawPolicy: Record<string, unknown> = { ...SNAPSHOT, settings: stored };
+    const rawRevision: string = `policy-v1:${JSON.stringify(rawPolicy)}`;
+    const id: string = 'legacy-generation';
+    const local: FakeStorage = fakeStorage({
+      [LOCAL_SETUP]: DEFAULT_SETUP,
+      [`${LOCAL_POLICY_GENERATION_PREFIX}${id}`]: {
+        id,
+        revision: rawRevision,
+        policy: rawPolicy,
+        runtime: emptyRuntime(Date.now()),
+        journal: { sets: {}, removes: [] },
+      },
+      [LOCAL_POLICY_COMMIT]: { source: 'generation', id, revision: rawRevision },
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+
+    await storage.initialize();
+
+    const snapshot: PolicySnapshot = await storage.loadSnapshot();
+    expect(snapshot).toEqual({ ...SNAPSHOT, settings: canonical });
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(canonical);
+    expect(local.state.values[LOCAL_POLICY_COMMIT]).toEqual({
+      source: 'direct',
+      revision: `policy-v1:${JSON.stringify(snapshot)}`,
+    });
+    expect(local.state.values[`${LOCAL_POLICY_GENERATION_PREFIX}${id}`]).toBeUndefined();
+    expect((await setupState(local)).legacyImported).toBe(true);
+  });
+
+  it('initializes a Sync profile in publish error whose settings predate allowForceEnd', async (): Promise<void> => {
+    const { canonical } = preForceEndSettings();
+    const profile: LegacyUpgradeProfile = legacyUpgradeProfile();
+    const local: FakeStorage = fakeStorage(profile.local);
+    const sync: FakeStorage = fakeStorage(profile.sync);
+    const storage: PolicyStorage = policyStorage(local, sync);
+
+    await expect(storage.initialize()).resolves.toBeUndefined();
+
+    const setup: SetupState = await storage.loadSetup();
+    expect(setup.storageMode).toBe('sync');
+    expect([null, 'sync-publish-failed']).toContain(setup.storageError);
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(canonical);
+    expect((await storage.loadSnapshot()).settings).toEqual(canonical);
+    expect(local.state.values[LOCAL_SYNC_JOURNAL]).toMatchObject({
+      sets: { [SYNC_SETTINGS]: canonical },
+    });
+    // The repair runs before the outbox is reconstructed, so the migration write lands before
+    // the first journal write and a worker that dies in between never leaves a journal ahead of
+    // the settings it was built from.
+    const localWrites: Record<string, unknown>[] = setPayloads(local.area);
+    const migrationIndex: number = localWrites.findIndex(
+      (items: Record<string, unknown>): boolean => Object.hasOwn(items, LOCAL_SETTINGS),
+    );
+    const journalIndex: number = localWrites.findIndex((items: Record<string, unknown>): boolean =>
+      Object.hasOwn(items, LOCAL_SYNC_JOURNAL),
+    );
+    expect(migrationIndex).toBeGreaterThanOrEqual(0);
+    expect(journalIndex).toBeGreaterThan(migrationIndex);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(sync.state.values[SYNC_SETTINGS]).toEqual(canonical);
+    expect(await storage.loadSetup()).toMatchObject({
+      storageMode: 'sync',
+      syncWriteStatus: 'idle',
+      storageError: null,
+    });
+    const remoteSettingsWrites: unknown[] = setPayloads(sync.area)
+      .filter((items: Record<string, unknown>): boolean => Object.hasOwn(items, SYNC_SETTINGS))
+      .map((items: Record<string, unknown>): unknown => items[SYNC_SETTINGS]);
+    expect(remoteSettingsWrites.length).toBeGreaterThan(0);
+    for (const value of remoteSettingsWrites) expect(value).toEqual(canonical);
+    const journalSettingsWrites: unknown[] = writesTouching(local, LOCAL_SYNC_JOURNAL).flatMap(
+      (items: Record<string, unknown>): unknown[] => {
+        const sets: Record<string, unknown> = (items[LOCAL_SYNC_JOURNAL] as SyncJournal).sets;
+        return Object.hasOwn(sets, SYNC_SETTINGS) ? [sets[SYNC_SETTINGS]] : [];
+      },
+    );
+    expect(journalSettingsWrites.length).toBeGreaterThan(0);
+    for (const value of journalSettingsWrites) expect(value).toEqual(canonical);
+  });
+
+  it('rewrites v1 settings without minting a policy commit when none is stored', async (): Promise<void> => {
+    const { stored, canonical } = preForceEndSettings();
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      legacyImported: true,
+    };
+    const local: FakeStorage = fakeStorage({ ...localPolicy(setup), [LOCAL_SETTINGS]: stored });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+
+    await storage.initialize();
+
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(canonical);
+    expect(local.state.values).not.toHaveProperty(LOCAL_POLICY_COMMIT);
+    expect(writesTouching(local, LOCAL_POLICY_COMMIT)).toEqual([]);
+    expect(
+      writesTouching(local, LOCAL_SETTINGS).map((items: Record<string, unknown>): string[] =>
+        Object.keys(items),
+      ),
+    ).toEqual([[LOCAL_SETTINGS]]);
+    expect(await storage.loadSnapshot()).toEqual({ ...SNAPSHOT, settings: canonical });
+  });
+
+  it('leaves v1 settings alone when another policy record is invalid and reports it on the first read', async (): Promise<void> => {
+    const { stored } = preForceEndSettings();
+    const setup: SetupState = {
+      ...DEFAULT_SETUP,
+      completed: true,
+      storageMode: 'local',
+      legacyImported: true,
+    };
+    const invalidLists: Record<string, unknown> = { ...DEFAULT_LISTS, unexpected: true };
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy(setup),
+      [LOCAL_SETTINGS]: stored,
+      [LOCAL_LISTS]: invalidLists,
+    });
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+
+    await expect(storage.initialize()).resolves.toBeUndefined();
+
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(stored);
+    expect(writesTouching(local, LOCAL_SETTINGS)).toEqual([]);
+    expect(local.state.values[LOCAL_LISTS]).toEqual(invalidLists);
+    await expect(storage.loadSnapshot()).rejects.toThrow('invalid lists policy');
+  });
+
+  it.each([
+    { ...DEFAULT_SETTINGS, unexpected: true },
+    { ...DEFAULT_SETTINGS, gate: { ...DEFAULT_SETTINGS.gate, unexpected: true } },
+    {
+      ...DEFAULT_SETTINGS,
+      gate: { delayMs: 10_000, requireTypedPhrase: false, allowForceEnd: 'no' },
+    },
+  ])(
+    'still refuses a stored settings record with an unknown key or value %#',
+    async (invalid: Record<string, unknown>): Promise<void> => {
+      const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+      const local: FakeStorage = fakeStorage({
+        ...localPolicy(setup),
+        [LOCAL_SETTINGS]: invalid,
+      });
+      const storage: PolicyStorage = policyStorage(local, fakeStorage());
+
+      await storage.initialize();
+
+      await expect(storage.loadSnapshot()).rejects.toThrow('invalid settings policy');
+      expect(local.state.values[LOCAL_SETTINGS]).toEqual(invalid);
+    },
+  );
+
+  it('keeps setPolicy strict for a settings write that lacks allowForceEnd', async (): Promise<void> => {
+    const { stored } = preForceEndSettings();
+    const setup: SetupState = { ...DEFAULT_SETUP, completed: true, storageMode: 'local' };
+    const local: FakeStorage = fakeStorage(localPolicy(setup));
+    const storage: PolicyStorage = policyStorage(local, fakeStorage());
+    await storage.initialize();
+
+    await expect(Reflect.apply(storage.setPolicy, storage, ['settings', stored])).rejects.toThrow(
+      'invalid settings policy',
+    );
+
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(SNAPSHOT.settings);
   });
 
   it('publishes verified local authority before switching to sync mode', async (): Promise<void> => {
