@@ -562,6 +562,97 @@ describe('Privacy and data', (): void => {
     expect(syncing.queryByRole('button', { name: 'Delete remote Sync data' })).toBeNull();
   });
 
+  it('confirms deleting all Focus Lock data with every scope named and returns to setup', async (): Promise<void> => {
+    fake.respond('clearFocusLockData', (request: Request): object => {
+      expect(request).toEqual({ type: 'clearFocusLockData', scope: 'all' });
+      setup = setupState({ completed: false, storageMode: null });
+      return { ok: true, scope: 'all', status: 'cleared' };
+    });
+    const view = renderPrivacy();
+    const open: HTMLButtonElement = await waitFor(
+      (): HTMLButtonElement =>
+        view.getByRole('button', { name: 'Delete all Focus Lock data' }) as HTMLButtonElement,
+    );
+    expect(open.disabled).toBe(false);
+
+    fireEvent.click(open);
+    const dialog: HTMLElement = view.getByRole('dialog', { name: 'Delete all Focus Lock data?' });
+    // The body is composed from the same two item lists the Chrome Sync card shows, so a scope
+    // added to either list reaches this dialog without a second copy of it.
+    for (const item of [...SYNCED_DATA_ITEMS, ...LOCAL_ONLY_DATA_ITEMS]) {
+      expect(within(dialog).getByText(item)).toBeTruthy();
+    }
+    expect(dialog.textContent).toContain('current session state');
+    expect(dialog.textContent).toContain('returns to setup');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(view.queryByRole('dialog')).toBeNull();
+    expect(fake.sent).not.toContainEqual({ type: 'clearFocusLockData', scope: 'all' });
+
+    fireEvent.click(open);
+    fireEvent.click(
+      within(view.getByRole('dialog', { name: 'Delete all Focus Lock data?' })).getByRole(
+        'button',
+        { name: 'Confirm delete all Focus Lock data' },
+      ),
+    );
+    await waitFor((): void =>
+      expect(view.getByRole('status').textContent).toBe('All Focus Lock data deleted.'),
+    );
+    expect(fake.sent).toContainEqual({ type: 'clearFocusLockData', scope: 'all' });
+    expect(view.queryByRole('dialog')).toBeNull();
+  });
+
+  it.each([
+    { status: 'error' as const, scope: 'all' as const, phase: 'browser-reset' as const },
+    { status: 'error' as const, scope: 'local-history' as const, phase: 'local' as const },
+    { status: 'error' as const, scope: 'synced-policy' as const, phase: 'remote' as const },
+  ])(
+    'disables deleting all data while a $scope deletion is stuck',
+    async (dataClear: SetupState['dataClear']): Promise<void> => {
+      setup = setupState({ dataClear });
+      const view = renderPrivacy();
+
+      // A stuck deletion is resumed through its retry, never covered by a new all-data clear:
+      // asking for one runs no phase of the deletion that is already journaled.
+      const deleteAll: HTMLButtonElement = await waitFor(
+        (): HTMLButtonElement =>
+          view.getByRole('button', { name: 'Delete all Focus Lock data' }) as HTMLButtonElement,
+      );
+      expect(deleteAll.disabled).toBe(true);
+      expect(view.getByRole('button', { name: /^Retry .* deletion$/ })).toBeTruthy();
+    },
+  );
+
+  it('disables deleting all data while another deletion is still running', async (): Promise<void> => {
+    let finishLocalClear: () => void = (): void => {};
+    fake.respond(
+      'clearFocusLockData',
+      (): Promise<object> =>
+        new Promise<object>((resolve: (value: object) => void): void => {
+          finishLocalClear = (): void =>
+            resolve({ ok: true, scope: 'local-history', status: 'cleared' });
+        }),
+    );
+    const view = renderPrivacy();
+    await waitFor((): void =>
+      expect(view.getByRole('button', { name: 'Delete local history' })).toBeTruthy(),
+    );
+    const deleteAll: HTMLButtonElement = view.getByRole('button', {
+      name: 'Delete all Focus Lock data',
+    }) as HTMLButtonElement;
+    expect(deleteAll.disabled).toBe(false);
+
+    fireEvent.click(view.getByRole('button', { name: 'Delete local history' }));
+    fireEvent.click(view.getByRole('button', { name: 'Confirm delete local history' }));
+    await waitFor((): void => expect(deleteAll.disabled).toBe(true));
+
+    finishLocalClear();
+    await waitFor((): void =>
+      expect(view.getByRole('status').textContent).toBe('Local history deleted.'),
+    );
+    expect(deleteAll.disabled).toBe(false);
+  });
+
   it('hides remote deletion until local-only storage is authoritative', async (): Promise<void> => {
     setup = setupState({ storageMode: null });
     const view = renderPrivacy();

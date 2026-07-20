@@ -11,7 +11,7 @@ import { parseEventExportResponse } from '../shared/runtime-validation';
 import { localDateStr } from '../shared/time';
 import type { SetupState, StorageMode } from '../shared/types';
 
-type Confirmation = 'local-history' | 'synced-policy' | null;
+type Confirmation = 'local-history' | 'synced-policy' | 'all' | null;
 
 export interface PrivacyDataProps {
   setup: SetupState;
@@ -69,10 +69,57 @@ function DataScope(props: { items: readonly string[]; title: string }): VNode {
   );
 }
 
+const CONFIRMATION_COPY: Record<
+  Exclude<Confirmation, null>,
+  { title: string; confirmLabel: string; success: string }
+> = {
+  'local-history': {
+    title: 'Delete local history?',
+    confirmLabel: 'Confirm delete local history',
+    success: 'Local history deleted.',
+  },
+  'synced-policy': {
+    title: 'Delete remote Sync data?',
+    confirmLabel: 'Confirm delete remote Sync data',
+    success: 'Remote Chrome Sync data deleted.',
+  },
+  all: {
+    title: 'Delete all Focus Lock data?',
+    confirmLabel: 'Confirm delete all Focus Lock data',
+    success: 'All Focus Lock data deleted.',
+  },
+};
+
+/**
+ * What an all-data clear removes, composed from the two item lists the Chrome Sync card shows so
+ * a scope added to either list reaches this dialog without a second copy of it. The current
+ * session state goes with it: the worker ends a running session as part of the clear.
+ */
+function AllDataBody(props: { syncing: boolean }): VNode {
+  return (
+    <>
+      <p>
+        This permanently deletes every piece of Focus Lock data on this device
+        {props.syncing ? ' and the synced copies in Chrome Sync' : ''}:
+      </p>
+      <ul>
+        {[...SYNCED_DATA_ITEMS, ...LOCAL_ONLY_DATA_ITEMS].map(
+          (item: string): VNode => (
+            <li key={item}>{item}</li>
+          ),
+        )}
+        <li>The current session state, which ends a running session</li>
+      </ul>
+      <p>Focus Lock then returns to setup.</p>
+    </>
+  );
+}
+
 function ConfirmationDialog(props: {
   kind: Exclude<Confirmation, null>;
   localOnlyAggregates: boolean;
   pending: boolean;
+  syncing: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }): VNode {
@@ -133,11 +180,8 @@ function ConfirmationDialog(props: {
       document.removeEventListener('click', blockBackgroundClick, true);
     };
   }, [props.onCancel, props.pending]);
-  const local: boolean = props.kind === 'local-history';
-  const title: string = local ? 'Delete local history?' : 'Delete remote Sync data?';
-  const confirmLabel: string = local
-    ? 'Confirm delete local history'
-    : 'Confirm delete remote Sync data';
+  const title: string = CONFIRMATION_COPY[props.kind].title;
+  const confirmLabel: string = CONFIRMATION_COPY[props.kind].confirmLabel;
   return (
     <dialog
       ref={dialog}
@@ -151,7 +195,7 @@ function ConfirmationDialog(props: {
       }}
     >
       <h4>{title}</h4>
-      {local ? (
+      {props.kind === 'local-history' ? (
         <p>
           This permanently deletes full URLs, focus intentions, and detailed session events from
           this device
@@ -159,12 +203,14 @@ function ConfirmationDialog(props: {
           clear a running session, which keeps its intention and the address of every website tab
           open while it runs.
         </p>
-      ) : (
+      ) : props.kind === 'synced-policy' ? (
         <p>
           This permanently deletes remote settings, block and allow lists, site access credit,
           streaks, and domain-level blocked-attempt aggregates from Chrome Sync. Local settings and
           statistics stay on this device.
         </p>
+      ) : (
+        <AllDataBody syncing={props.syncing} />
       )}
       <div class="privacy-confirmation-actions">
         <button
@@ -285,14 +331,11 @@ export function PrivacyData(props: PrivacyDataProps): VNode {
   const confirmDeletion: () => void = (): void => {
     const scope: Confirmation = confirmation;
     if (scope === null) return;
-    void runAction(
-      async (): Promise<string | null> => {
-        const error: string | null = await props.onClearData(scope);
-        if (error === null) setConfirmation(null);
-        return error;
-      },
-      scope === 'local-history' ? 'Local history deleted.' : 'Remote Chrome Sync data deleted.',
-    );
+    void runAction(async (): Promise<string | null> => {
+      const error: string | null = await props.onClearData(scope);
+      if (error === null) setConfirmation(null);
+      return error;
+    }, CONFIRMATION_COPY[scope].success);
   };
 
   const openConfirmation: (kind: Exclude<Confirmation, null>, origin: HTMLButtonElement) => void = (
@@ -448,11 +491,30 @@ export function PrivacyData(props: PrivacyDataProps): VNode {
         </section>
       )}
 
+      <section class="privacy-card privacy-card-destructive" aria-labelledby="all-data-heading">
+        <h3 id="all-data-heading">All Focus Lock data</h3>
+        <p>
+          Delete every Focus Lock record on this device{syncing ? ' and in Chrome Sync' : ''}, end
+          any running session, and start again from setup.
+        </p>
+        <button
+          type="button"
+          class="danger"
+          disabled={pending || dataClearFailure !== null}
+          onClick={(event: TargetedMouseEvent<HTMLButtonElement>): void =>
+            openConfirmation('all', event.currentTarget)
+          }
+        >
+          Delete all Focus Lock data
+        </button>
+      </section>
+
       {confirmation === null ? null : (
         <ConfirmationDialog
           kind={confirmation}
           localOnlyAggregates={localMode}
           pending={pending}
+          syncing={syncing}
           onCancel={(): void => setConfirmation(null)}
           onConfirm={confirmDeletion}
         />
