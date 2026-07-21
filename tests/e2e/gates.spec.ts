@@ -199,7 +199,7 @@ test('pause gate rejects an early confirmation and unblocks after its delay', as
   await expect(page.locator('focus-lock-overlay')).toHaveCount(0);
 });
 
-test('pause gate supports back to work, taking a pause, and resuming now', async ({
+test('pause gate supports keep focusing, taking a pause, and resuming now', async ({
   context,
   extPage,
   siteUrl,
@@ -217,7 +217,7 @@ test('pause gate supports back to work, taking a pause, and resuming now', async
   });
   await expect(pauseButton).toBeEnabled();
   await pauseButton.click();
-  await extPage.getByRole('button', { name: 'Never mind, back to work' }).click();
+  await extPage.getByRole('button', { name: 'Keep focusing' }).click();
   await expect(pauseButton).toBeEnabled();
 
   await pauseButton.click();

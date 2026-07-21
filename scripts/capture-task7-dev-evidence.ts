@@ -289,7 +289,7 @@ async function captureGateAndStats(
         const focusTarget: Locator =
           state === 'typed-gate'
             ? panel.locator('input[type="text"]')
-            : panel.getByRole('button', { name: 'Never mind, back to work' });
+            : panel.getByRole('button', { name: 'Keep focusing' });
         await focusTarget.focus();
         for (const scope of ['full', 'focused'] as const) {
           records.push(

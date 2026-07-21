@@ -43,7 +43,7 @@ export async function captureTask7GateState(input: {
   const focusTarget: Locator =
     input.state === 'typed-gate'
       ? panel.locator('input[type="text"]')
-      : input.page.getByRole('button', { name: 'Never mind, back to work' });
+      : input.page.getByRole('button', { name: 'Keep focusing' });
   for (const themeCase of TASK7_THEME_CASES) {
     for (const viewport of input.viewports) {
       await test.step(`gate ${input.state} ${themeCase.id} ${String(viewport.width)}`, async () => {

@@ -115,7 +115,7 @@ test('popup shows an unlock confirmation and a red End session control', async (
             chrome.extension.getViews({ type: 'popup' })[0]?.document.body.textContent ?? '',
         ),
     )
-    .toContain('Never mind, back to work');
+    .toContain('Keep focusing');
   expect((await sendExtensionRequest(extPage, { type: 'getSnapshot' })).gate?.host).toBe(
     'blocked.example',
   );

@@ -76,7 +76,7 @@ const SCHEDULE_STARTED_TITLE: string = 'Focus schedule started';
 const SCHEDULE_UNTIL_STOPPED_BODY: string = 'Active until you stop it.';
 const CANCEL_GATE_TITLE: string = 'End this session';
 const CANCEL_GATE_CONFIRM: string = 'End the session';
-const CANCEL_GATE_BACK: string = 'Never mind, back to work';
+const CANCEL_GATE_BACK: string = 'Keep focusing';
 const STATS_COMPLETED_MANUALLY: string = 'Completed manually';
 const STATS_ENDED_EARLY: string = 'Ended early';
 
