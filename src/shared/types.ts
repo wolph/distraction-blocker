@@ -318,7 +318,7 @@ export type EndAuthorityV2 =
       gate: GateState & { kind: 'cancel' };
       copy: {
         title: 'End this session';
-        back: 'Never mind, back to work';
+        back: 'Keep focusing';
         phraseLabel: 'Type this to confirm:';
         confirm: EndGateConfirmLabelV2;
         intentionReminder: string | null;

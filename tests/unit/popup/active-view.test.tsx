@@ -55,7 +55,7 @@ function openFriction(gate: Partial<GateState & { kind: 'cancel' }> = {}): EndAu
     },
     copy: {
       title: 'End this session',
-      back: 'Never mind, back to work',
+      back: 'Keep focusing',
       phraseLabel: 'Type this to confirm:',
       confirm: 'End the session',
       intentionReminder: 'write the report',
@@ -330,7 +330,7 @@ describe('ActiveView', (): void => {
     const view = render(h(ActiveView, { snapshot: focusSnap(authority), now: NOW + 9_000 }));
 
     expect(document.activeElement).toBe(
-      view.getByRole('button', { name: 'Never mind, back to work' }),
+      view.getByRole('button', { name: 'Keep focusing' }),
     );
   });
 
@@ -371,7 +371,7 @@ describe('ActiveView', (): void => {
     expect(view.queryByRole('alert')).toBeNull();
 
     const abandon: HTMLButtonElement = view.getByRole('button', {
-      name: 'Never mind, back to work',
+      name: 'Keep focusing',
     }) as HTMLButtonElement;
     fireEvent.click(abandon);
     await waitFor((): void => {
@@ -557,7 +557,7 @@ describe('ActiveView', (): void => {
     }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(true);
     expect(
-      (getByRole('button', { name: 'Never mind, back to work' }) as HTMLButtonElement).disabled,
+      (getByRole('button', { name: 'Keep focusing' }) as HTMLButtonElement).disabled,
     ).toBe(false);
   });
 });

@@ -54,7 +54,7 @@ function openFriction(gate: Partial<GateState & { kind: 'cancel' }> = {}): EndAu
     },
     copy: {
       title: 'End this session',
-      back: 'Never mind, back to work',
+      back: 'Keep focusing',
       phraseLabel: 'Type this to confirm:',
       confirm: 'End the session',
       intentionReminder: 'write the report',
@@ -165,7 +165,7 @@ describe('LifecycleView starting', (): void => {
     expect(rendered.getByText('You said: write the report')).toBeTruthy();
     expect(rendered.getByText('Type this to confirm: let me stop')).toBeTruthy();
     expect(rendered.queryByRole('button', { name: END_SESSION_LABEL })).toBeNull();
-    expect(rendered.getByRole('button', { name: 'Never mind, back to work' })).toBeTruthy();
+    expect(rendered.getByRole('button', { name: 'Keep focusing' })).toBeTruthy();
 
     fireEvent.input(rendered.getByRole('textbox'), { target: { value: 'let me stop' } });
     const confirm: HTMLButtonElement = rendered.getByRole('button', {

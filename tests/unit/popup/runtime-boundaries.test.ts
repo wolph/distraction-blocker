@@ -331,7 +331,7 @@ describe('popup runtime response boundaries', (): void => {
   );
 
   it.each([
-    ['abandonGate' as const, 'Never mind, back to work'],
+    ['abandonGate' as const, 'Keep focusing'],
     ['confirmGate' as const, 'Unlock all sites'],
   ])(
     'treats a malformed %s acknowledgement as an error',

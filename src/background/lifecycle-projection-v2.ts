@@ -52,7 +52,7 @@ export interface SnapshotInputV2 {
 const END_ACTION_LABEL: 'End session' = 'End session';
 const UNLOCK_ACTION_LABEL: 'Unlock' = 'Unlock';
 const GATE_TITLE: 'End this session' = 'End this session';
-const GATE_BACK: 'Never mind, back to work' = 'Never mind, back to work';
+const GATE_BACK: 'Keep focusing' = 'Keep focusing';
 const GATE_PHRASE_LABEL: 'Type this to confirm:' = 'Type this to confirm:';
 const GATE_CONFIRM: 'End the session' = 'End the session';
 const HIDDEN_AUTHORITY: { kind: 'hidden' } = Object.freeze({ kind: 'hidden' });

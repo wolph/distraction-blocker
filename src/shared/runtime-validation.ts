@@ -830,7 +830,7 @@ const UNLOCK_ACTION_LABEL: ClosedEndGateAuthorityV2['copy']['actionLabel'] &
 const OPEN_END_GATE_ACTION: ClosedEndGateAuthorityV2['actions']['open'] = 'open-end-gate';
 const CANCEL_GATE_COPY: Readonly<Omit<OpenEndGateAuthorityV2['copy'], 'intentionReminder'>> = {
   title: 'End this session',
-  back: 'Never mind, back to work',
+  back: 'Keep focusing',
   phraseLabel: 'Type this to confirm:',
   confirm: 'End the session',
 };
