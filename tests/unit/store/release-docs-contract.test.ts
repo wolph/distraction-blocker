@@ -153,11 +153,11 @@ describe('Chrome Web Store release documentation contract', (): void => {
       // whether or not it was blocked. Copy that says only "the pages the session enforced
       // against" describes a smaller set than the one that is kept.
       expect(document, path).not.toContain('addresses of the pages');
-      // No shipped surface starts an all-scope clear: `Confirmation` in `options/PrivacyData.tsx`
-      // admits only local history and synced policy, and the one `'all'` branch there retries a
-      // clear that is already stuck. Copy must not offer deleting all data as the way out.
-      expect(document, path).not.toContain('all Focus Lock data is deleted');
-      expect(document, path).not.toContain('delete all Focus Lock data');
+      // The Privacy and data page now starts an all-scope clear: `Confirmation` in
+      // `options/PrivacyData.tsx` admits `'all'` and routes it through the worker's journal, which
+      // ends at setup. Copy that names the two scoped deletions has to name this one and its end.
+      expect(document, path).toContain('delete all Focus Lock data');
+      expect(document, path).toContain('returns the extension to setup');
     }
   });
 

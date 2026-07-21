@@ -27,7 +27,7 @@ The extension also uses Chrome permissions for local and optional synced storage
 
 ## Sync choice and data controls
 
-Chrome Sync is a setup choice and can be disabled later in Settings > Privacy and data. The same page can export the local event log and separately delete remote Focus Lock data from Chrome Sync after sync is disabled.
+Chrome Sync is a setup choice and can be disabled later in Settings > Privacy and data. The same page can export the local event log and separately delete remote Focus Lock data from Chrome Sync after sync is disabled. It can also delete all Focus Lock data, local and, when sync is on, synced, which ends a running session and returns the extension to setup.
 
 Delete local history removes historical full URLs, focus intentions, and detailed session events from the local event log. In local-only mode, it also removes local aggregate statistics. It does not clear the current live-session runtime, which holds the focus intention and the address of every website tab open while the session runs. A session set to run until stopped holds that runtime until the person ends it. Ending the session clears the intention. It leaves one clear instruction for each of those tabs, each holding that tab's address, and the next session replaces them.
 
