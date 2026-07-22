@@ -665,6 +665,31 @@ describe('Privacy and data', (): void => {
     expect(view.queryByRole('button', { name: 'Delete remote Sync data' })).toBeNull();
   });
 
+  it.each([
+    ['non-array root', '{"events":[]}'],
+    ['malformed event', '[{"t":"attempt","at":1}]'],
+  ])(
+    'does not download an export with a %s',
+    async (_label: string, json: string): Promise<void> => {
+      const anchorClick = vi
+        .spyOn(HTMLAnchorElement.prototype, 'click')
+        .mockImplementation((): void => {});
+      fake.respond('exportEvents', { json });
+      const view = renderPrivacy();
+      await waitFor((): void =>
+        expect(view.getByRole('button', { name: 'Export local event log' })).toBeTruthy(),
+      );
+
+      fireEvent.click(view.getByRole('button', { name: 'Export local event log' }));
+
+      await waitFor((): void =>
+        expect(view.getByRole('alert').textContent).toBe('Could not export the event log.'),
+      );
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
+      expect(anchorClick).not.toHaveBeenCalled();
+    },
+  );
+
   it('exports the local event log and reports worker failures in one alert', async (): Promise<void> => {
     const anchorClick = vi
       .spyOn(HTMLAnchorElement.prototype, 'click')

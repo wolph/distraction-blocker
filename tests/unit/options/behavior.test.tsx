@@ -1,8 +1,7 @@
 /** @vitest-environment jsdom */
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
+import { cleanup, fireEvent, render } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import { BehaviorDefaults, PauseEconomy } from '../../../src/options/Behavior';
-import { Data } from '../../../src/options/Data';
 import { SoundsBadge } from '../../../src/options/SoundsBadge';
 import { DEFAULT_SETTINGS } from '../../../src/shared/constants';
 import type { Settings } from '../../../src/shared/types';
@@ -14,7 +13,6 @@ let fake: ChromeFake;
 beforeEach((): void => {
   fake = installChromeFake();
   fake.respond('previewSound', { ok: true });
-  fake.respond('exportEvents', { json: '[]' });
 });
 
 afterEach((): void => {
@@ -391,61 +389,5 @@ describe('SoundsBadge', () => {
     fireEvent.input(getByLabelText('Master volume'), { target: { value: '40' } });
     const next: Settings = onChange.mock.calls[0]?.[0] as Settings;
     expect(next.sounds.masterVolume).toBeCloseTo(0.4);
-  });
-});
-
-describe('Data', () => {
-  it('settles rejected device id loading with readable feedback', async (): Promise<void> => {
-    fake.storageGet.mockRejectedValue(new Error('storage unavailable'));
-    const { getByRole, queryByText } = render(<Data />);
-
-    await waitFor((): void => {
-      expect(getByRole('alert').textContent).toBe(
-        'Could not load this device id. Reload the page to try again.',
-      );
-    });
-    expect(queryByText('Loading device id.')).toBeNull();
-  });
-
-  it('shows the local device id and exports the event log', async (): Promise<void> => {
-    const createObjectURL = vi.fn((): string => 'blob:fake');
-    const revokeObjectURL = vi.fn();
-    Object.assign(URL, { createObjectURL, revokeObjectURL });
-    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation((): void => {});
-
-    const { getByText, getByRole } = render(<Data />);
-    await waitFor((): void => {
-      expect(getByText('123e4567-e89b-42d3-a456-426614174000')).toBeTruthy();
-    });
-    fireEvent.click(getByRole('button', { name: 'Export event log' }));
-    await waitFor((): void => {
-      expect(fake.sent).toContainEqual({ type: 'exportEvents' });
-    });
-    await waitFor((): void => {
-      expect(createObjectURL).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  it('shows a quiet error and does not download a malformed export response', async (): Promise<void> => {
-    fake.respond('exportEvents', { ok: false, error: 'worker unavailable' });
-    const createObjectURL = vi.fn((): string => 'blob:fake');
-    Object.assign(URL, { createObjectURL });
-    const { getByRole } = render(<Data />);
-    fireEvent.click(getByRole('button', { name: 'Export event log' }));
-    await waitFor((): void => {
-      expect(getByRole('alert').textContent).toBe('Could not export the event log. Try again.');
-    });
-    expect(createObjectURL).not.toHaveBeenCalled();
-  });
-
-  it('shows a quiet error when the export request rejects', async (): Promise<void> => {
-    fake.respond('exportEvents', (): never => {
-      throw new Error('worker unavailable');
-    });
-    const { getByRole } = render(<Data />);
-    fireEvent.click(getByRole('button', { name: 'Export event log' }));
-    await waitFor((): void => {
-      expect(getByRole('alert').textContent).toBe('Could not export the event log. Try again.');
-    });
   });
 });

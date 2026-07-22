@@ -1486,7 +1486,3 @@ export function parseEventExportResponse(value: unknown): EventRecord[] | null {
     return null;
   }
 }
-
-export function isDeviceId(value: unknown): value is string {
-  return isUuid(value);
-}
