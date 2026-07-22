@@ -329,9 +329,7 @@ describe('ActiveView', (): void => {
     const authority: EndAuthorityV2 = openFriction({ requiredPhrase: 'let me stop' });
     const view = render(h(ActiveView, { snapshot: focusSnap(authority), now: NOW + 9_000 }));
 
-    expect(document.activeElement).toBe(
-      view.getByRole('button', { name: 'Keep focusing' }),
-    );
+    expect(document.activeElement).toBe(view.getByRole('button', { name: 'Keep focusing' }));
   });
 
   it('leaves focus alone when the gate opens while something else holds it', (): void => {
@@ -556,9 +554,9 @@ describe('ActiveView', (): void => {
       name: 'End the session',
     }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(true);
-    expect(
-      (getByRole('button', { name: 'Keep focusing' }) as HTMLButtonElement).disabled,
-    ).toBe(false);
+    expect((getByRole('button', { name: 'Keep focusing' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
   });
 });
 
