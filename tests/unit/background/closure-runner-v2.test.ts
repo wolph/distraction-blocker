@@ -372,6 +372,23 @@ describe('runClosureCleanupAttemptV2', (): void => {
     expect(parseRuntimeStateV2(next)).not.toBeNull();
   });
 
+  it('empties documentCommands when the closure journal is removed', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime());
+    const committed: RuntimeStateV2 = await inCleanup(fake);
+    expect(Object.keys(committed.documentCommands).length).toBeGreaterThan(0);
+
+    const next: RuntimeStateV2 = await runClosureCleanupAttemptV2(fake, effectsFake());
+
+    // The clear batch is the command map for as long as the journal lasts. Once every target and
+    // claim is resolved the batch has done its work, and keeping it would keep the address of every
+    // page that was open at the end for as long as the profile stays idle. A page that returns
+    // pulls a fresh clear from the idle runtime instead.
+    expect(next.pendingClosure).toBeNull();
+    expect(next.documentCommands).toEqual({});
+    expect(fake.current().documentCommands).toEqual({});
+    expect(parseRuntimeStateV2(next)).not.toBeNull();
+  });
+
   it('resets a document that has not acknowledged the epoch before clearing it', async (): Promise<void> => {
     const fake: RuntimePortsFakeV2 = fakeFor(closingRuntime({ epochResetAcks: {} }));
     await inCleanup(fake);

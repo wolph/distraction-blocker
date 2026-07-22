@@ -364,6 +364,11 @@ async function reissueClearCommands(
  * budget that waits for them is spent. An unresolved claim is a failed attempt rather than a
  * completion, and a removal that does not persist leaves the journal exactly where it was with the
  * next attempt scheduled.
+ *
+ * The same write empties the command map. The clear batch was the map for as long as the journal
+ * lasted, and once the batch has done its work what it would keep is the address of every page
+ * open at the end, for as long as the profile sits idle. A page that returns pulls a fresh clear
+ * from the idle runtime, so nothing needs the batch after this write.
  */
 async function removeClosureJournal(ports: RuntimePortsV2): Promise<RuntimeStateV2> {
   const closure: CleanupClosureV2 = cleanupClosureOf(ports);
@@ -385,6 +390,7 @@ async function removeClosureJournal(ports: RuntimePortsV2): Promise<RuntimeState
   const next: RuntimeStateV2 = validated({
     ...structuredClone(ports.runtime()),
     pendingClosure: null,
+    documentCommands: {},
   });
   try {
     await ports.writeRuntime(next);
