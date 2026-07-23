@@ -13,7 +13,6 @@
 import type { Locator, Page, Worker } from '@playwright/test';
 import { parseStoredEventLogV2 } from '../../src/background/event-log-v2';
 import type { RuntimeStateV2 } from '../../src/background/runtime-v2-types';
-import { isSettings } from '../../src/shared/runtime-validation';
 import {
   LOCAL_EVENTS,
   LOCAL_RUNTIME,
@@ -23,12 +22,11 @@ import {
   LOCAL_SETTINGS,
   SYNC_SETTINGS,
 } from '../../src/shared/storage-keys';
-import type { SessionEventRecordV2, Settings, SetupState } from '../../src/shared/types';
+import type { SessionEventRecordV2, SetupState } from '../../src/shared/types';
 import {
   type LegacyUpgradeProfile,
-  type LegacyUpgradeSettingsV1,
   legacyUpgradeProfile,
-  legacyUpgradeSettingsV1,
+  legacyUpgradeSettingsMigrated,
 } from '../fixtures/legacy-upgrade-profile';
 import {
   assertNoUnexpectedBrowserDiagnostics,
@@ -62,40 +60,45 @@ function liveWorker(launch: ExtensionLaunch): Worker {
   return launch.context.serviceWorkers()[0] ?? launch.worker;
 }
 
-/** The settings the profile stores once the parser has read them: the bypass defaulted off. */
-function canonicalSettings(): Settings {
-  const legacy: LegacyUpgradeSettingsV1 = legacyUpgradeSettingsV1();
-  return { ...legacy, gate: { ...legacy.gate, allowForceEnd: false } };
-}
-
 interface SeededAreas {
   local: Record<string, unknown>;
   sync: Record<string, unknown>;
 }
 
 /**
- * Replaces both storage areas with the profile and answers what the worker holds a moment later.
- * The running worker reacts to Chrome Sync changes, so the remote area is written first and given
- * a second to settle before the local area, whose seed has to be the last write before the close.
- * The read-back is what proves the seed is what the relaunch will find.
+ * Replaces both storage areas with the profile and answers what the worker holds afterwards.
+ * The running worker reacts to Chrome Sync changes by applying the inbound policy, which writes
+ * local keys, so the remote area goes first and the wait is on the worker serving the fixture's
+ * settings, which is when that reaction has run. The worker ignores local-area changes, so the
+ * local seed is the last write and needs no wait. The read-back is what proves the seed is what
+ * the relaunch will find.
  */
-async function seedProfile(worker: Worker, profile: LegacyUpgradeProfile): Promise<SeededAreas> {
-  return await worker.evaluate(async (seed: LegacyUpgradeProfile): Promise<SeededAreas> => {
-    const settle = async (): Promise<void> =>
-      await new Promise<void>((resolve: () => void): void => {
-        setTimeout(resolve, 1_000);
-      });
+async function seedProfile(
+  launch: ExtensionLaunch,
+  profile: LegacyUpgradeProfile,
+): Promise<SeededAreas> {
+  await launch.worker.evaluate(async (sync: Record<string, unknown>): Promise<void> => {
     await chrome.storage.sync.clear();
-    await chrome.storage.sync.set(seed.sync);
-    await settle();
-    await chrome.storage.local.clear();
-    await chrome.storage.local.set(seed.local);
-    await settle();
-    return {
-      local: await chrome.storage.local.get(null),
-      sync: await chrome.storage.sync.get(null),
-    };
-  }, profile);
+    await chrome.storage.sync.set(sync);
+  }, profile.sync);
+  await expect
+    .poll(
+      async (): Promise<number[]> =>
+        (await sendExtensionRequest(launch.extPage, { type: 'getSettings' })).presetsMin,
+      { timeout: 30_000 },
+    )
+    .toEqual(legacyUpgradeSettingsMigrated().presetsMin);
+  return await launch.worker.evaluate(
+    async (local: Record<string, unknown>): Promise<SeededAreas> => {
+      await chrome.storage.local.clear();
+      await chrome.storage.local.set(local);
+      return {
+        local: await chrome.storage.local.get(null),
+        sync: await chrome.storage.sync.get(null),
+      };
+    },
+    profile.local,
+  );
 }
 
 interface StoredAfterUpgrade {
@@ -127,7 +130,11 @@ async function setupOf(extPage: Page): Promise<SetupState> {
   return await sendExtensionRequest(extPage, { type: 'getSetupState' });
 }
 
-/** Retries the blocked publication through the options page, the way a person would. */
+/**
+ * Retries the blocked publication through the options page, the way a person would. The boot's
+ * own republish has cleared the error before the session ended in every recorded run, so this
+ * branch first executes on a machine loaded enough for the flush to lose that race.
+ */
 async function retryChromeSync(launch: ExtensionLaunch): Promise<void> {
   const optionsPage: Page = await launch.context.newPage();
   await optionsPage.goto(
@@ -154,7 +161,10 @@ test('the 7 September profile boots, migrates once, runs a session, and republis
   const seededEvents: unknown[] = profile.local[LOCAL_EVENTS] as unknown[];
 
   const first: ExtensionLaunch = await restartableExtension.launch();
-  const seeded: SeededAreas = await seedProfile(first.worker, legacyUpgradeProfile());
+  // The epoch the prepared profile's own v2 runtime carries. A v1 migration mints a fresh one, a
+  // v2 replay keeps this one, so it tells the two apart after the relaunch.
+  const epochBefore: string = (await readRuntimeV2(first.worker)).enforcementEpoch;
+  const seeded: SeededAreas = await seedProfile(first, legacyUpgradeProfile());
   // The relaunch must find the profile as modelled. A worker that rewrote a key in reaction to the
   // seed would turn the scenario into a different upgrade than the one it reproduces.
   expect(seeded.local).toEqual(profile.local);
@@ -167,6 +177,10 @@ test('the 7 September profile boots, migrates once, runs a session, and republis
   await expect(second.extPage.getByRole('button', { name: /^Start/ })).toBeVisible();
   await expect(second.extPage.getByText('Setup status unavailable')).toHaveCount(0);
   await expect(second.extPage.getByText(/could not start/)).toHaveCount(0);
+  // The first worker stayed alive between the seed and the close, with its own runtime in memory.
+  // Had one of its writes replaced the seeded v1 runtime, this boot would have replayed a v2
+  // runtime under the old epoch instead of migrating.
+  expect((await readRuntimeV2(liveWorker(second))).enforcementEpoch).not.toBe(epochBefore);
   const bootedSetup: SetupState = await setupOf(second.extPage);
   expect(bootedSetup).toMatchObject({
     completed: true,
@@ -216,9 +230,8 @@ test('the 7 September profile boots, migrates once, runs a session, and republis
     .toBe('idle/null');
 
   const stored: StoredAfterUpgrade = await readStoredAfterUpgrade(liveWorker(second));
-  expect(isSettings(stored.syncSettings)).toBe(true);
-  expect(stored.syncSettings).toEqual(canonicalSettings());
-  expect(stored.local[LOCAL_SETTINGS]).toEqual(canonicalSettings());
+  expect(stored.syncSettings).toEqual(legacyUpgradeSettingsMigrated());
+  expect(stored.local[LOCAL_SETTINGS]).toEqual(legacyUpgradeSettingsMigrated());
   expect(stored.local[LOCAL_RUNTIME]).toMatchObject({ runtimeSchemaVersion: 2, session: null });
   expect(stored.local[LOCAL_RUNTIME_SCHEMA]).toEqual({ runtimeSchemaVersion: 2 });
   expect(stored.local[LOCAL_RUNTIME_MIGRATION]).toBeUndefined();

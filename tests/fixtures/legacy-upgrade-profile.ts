@@ -169,6 +169,15 @@ export function legacyUpgradeSettingsV1(): LegacyUpgradeSettingsV1 {
   };
 }
 
+/**
+ * The same settings once the parser has read them: every customisation kept, the one field the
+ * v1 gate never carried defaulted off. What both storage areas hold after the upgrade.
+ */
+export function legacyUpgradeSettingsMigrated(): Settings {
+  const legacy: LegacyUpgradeSettingsV1 = legacyUpgradeSettingsV1();
+  return { ...legacy, gate: { ...legacy.gate, allowForceEnd: false } };
+}
+
 export function legacyUpgradeLists(): ListsConfig {
   return {
     custom: [

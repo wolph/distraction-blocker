@@ -79,7 +79,7 @@ import {
   legacyUpgradeEventsV1,
   legacyUpgradeProfile,
   legacyUpgradeRuntimeV1,
-  legacyUpgradeSettingsV1,
+  legacyUpgradeSettingsMigrated,
 } from '../../fixtures/legacy-upgrade-profile';
 
 interface BootScenario {
@@ -4009,15 +4009,6 @@ describe('background boot failure channel', (): void => {
 });
 
 describe('legacy upgrade profile', (): void => {
-  /**
-   * The settings the profile stores once the parser has read them: every visible customisation
-   * kept, and the one field the v1 gate never carried defaulted off.
-   */
-  function canonicalSettings(): Settings {
-    const legacy = legacyUpgradeSettingsV1();
-    return { ...legacy, gate: { ...legacy.gate, allowForceEnd: false } };
-  }
-
   /** Seeds both storage areas with the profile and grants website access for the boot. */
   function seedProfile(mutate: (profile: LegacyUpgradeProfile) => void = (): void => {}): void {
     const profile: LegacyUpgradeProfile = legacyUpgradeProfile();
@@ -4060,8 +4051,7 @@ describe('legacy upgrade profile', (): void => {
     await finishBoot();
 
     // Served: the Engine holds the migrated settings and a v2 runtime that kept the v1 statistics.
-    expect(engineSettings()).toEqual(canonicalSettings());
-    expect(engineSettings().gate.allowForceEnd).toBe(false);
+    expect(engineSettings()).toEqual(legacyUpgradeSettingsMigrated());
     const runtime: RuntimeStateV2 = bootedRuntime();
     expect(runtime.runtimeSchemaVersion).toBe(2);
     expect(runtime.session).toBeNull();
@@ -4070,7 +4060,7 @@ describe('legacy upgrade profile', (): void => {
 
     // Persisted: the settings were rewritten in the canonical shape, the direct commit revision
     // embeds them, and the runtime under the marker is v2 with nothing parked or checkpointed.
-    expect(mocks.localState[LOCAL_SETTINGS]).toEqual(canonicalSettings());
+    expect(mocks.localState[LOCAL_SETTINGS]).toEqual(legacyUpgradeSettingsMigrated());
     const commit: { source: string; revision: string } = mocks.localState[LOCAL_POLICY_COMMIT] as {
       source: string;
       revision: string;
@@ -4078,7 +4068,7 @@ describe('legacy upgrade profile', (): void => {
     expect(commit.source).toBe('direct');
     expect(commit.revision.startsWith('policy-v1:')).toBe(true);
     expect(JSON.parse(commit.revision.slice('policy-v1:'.length))).toMatchObject({
-      settings: canonicalSettings(),
+      settings: legacyUpgradeSettingsMigrated(),
     });
     expect(mocks.localState[LOCAL_RUNTIME]).toMatchObject({
       runtimeSchemaVersion: 2,
@@ -4103,12 +4093,18 @@ describe('legacy upgrade profile', (): void => {
     expect(isSetupState(served)).toBe(true);
     expect(served.completed).toBe(true);
 
-    // Nothing republished to Chrome Sync carries the pre-force-end gate.
+    // The outbox the boot reconstructed carries the canonical record, and so does what the writer
+    // publishes from it. The writer flushes on a timer, so the clock is advanced before the
+    // publish is read: without that the loop would run over nothing and could not fail.
+    const journal: SyncJournal = mocks.localState[LOCAL_SYNC_JOURNAL] as SyncJournal;
+    expect(journal.sets[SYNC_SETTINGS]).toEqual(legacyUpgradeSettingsMigrated());
+    await vi.advanceTimersByTimeAsync(10_000);
     const publishedSettings: unknown[] = writtenItems(chrome.storage.sync.set)
       .filter((items: Record<string, unknown>): boolean => Object.hasOwn(items, SYNC_SETTINGS))
       .map((items: Record<string, unknown>): unknown => items[SYNC_SETTINGS]);
+    expect(publishedSettings.length).toBeGreaterThan(0);
     for (const published of publishedSettings) {
-      expect(published).toMatchObject({ gate: { allowForceEnd: false } });
+      expect(published).toEqual(legacyUpgradeSettingsMigrated());
     }
   });
 
@@ -4118,6 +4114,9 @@ describe('legacy upgrade profile', (): void => {
     await finishBoot();
     const settingsAfterFirstBoot: unknown = structuredClone(mocks.localState[LOCAL_SETTINGS]);
     const commitAfterFirstBoot: unknown = structuredClone(mocks.localState[LOCAL_POLICY_COMMIT]);
+    // The first boot did rewrite the record. A repair that never writes would pass the rest of
+    // this test on its own.
+    expect(settingsAfterFirstBoot).toEqual(legacyUpgradeSettingsMigrated());
     vi.mocked(chrome.storage.local.set).mockClear();
     mocks.engineArguments = null;
 
@@ -4129,7 +4128,7 @@ describe('legacy upgrade profile', (): void => {
     expect(mocks.localState[LOCAL_POLICY_COMMIT]).toEqual(commitAfterFirstBoot);
     expect(mocks.localState[LOCAL_RUNTIME_REJECTED]).toBeUndefined();
     expect(mocks.localState[LOCAL_RUNTIME_MIGRATION]).toBeUndefined();
-    expect(engineSettings()).toEqual(canonicalSettings());
+    expect(engineSettings()).toEqual(legacyUpgradeSettingsMigrated());
     expect(bootedRuntime().runtimeSchemaVersion).toBe(2);
   });
 
@@ -4165,6 +4164,11 @@ describe('legacy upgrade profile', (): void => {
       },
     });
     expect(mocks.localState[LOCAL_RUNTIME_REJECTED]).toBeUndefined();
+    // The v1 start record with its null duration is history the log keeps as written.
+    expect(mocks.localState[LOCAL_EVENTS]).toEqual([
+      ...legacyUpgradeEventsV1(),
+      legacyIndefiniteStartedEventV1(startedAt),
+    ]);
     expect(engineSettings().gate.allowForceEnd).toBe(false);
     await expect(dispatchRuntime({ type: 'getSetupState' })).resolves.toEqual({ ok: true });
   });
@@ -4177,7 +4181,8 @@ describe('legacy upgrade profile', (): void => {
 
     await finishBoot();
     await expect(dispatchRuntime({ type: 'getSetupState' })).resolves.toEqual({ ok: true });
-    for (let turn: number = 0; turn < 12; turn += 1) await Promise.resolve();
+    // The Sync writer's flush is a pending timer, and a report from that flush counts too.
+    await vi.runOnlyPendingTimersAsync();
 
     expect(consoleError).not.toHaveBeenCalled();
     expect(mocks.engineArguments).not.toBeNull();
