@@ -157,7 +157,7 @@ function ConfirmationDialog(props: {
           this device
           {props.localOnlyAggregates ? ', plus local-only aggregate statistics' : ''}. It does not
           clear a running session, which keeps its intention and the address of every website tab
-          open while it runs.
+          open while it runs. Ending the session clears them once its cleanup completes.
         </p>
       ) : (
         <p>
