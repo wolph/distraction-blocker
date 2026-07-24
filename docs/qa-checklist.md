@@ -30,7 +30,7 @@ Unit suite: **176 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
 deriving it means collecting every file, which is the expensive half of a run, and a number
 that needs a run to verify is exactly the kind that went stale here four times.
 
-End-to-end suite: **107 scenarios in 23 spec files**, as Playwright itself
+End-to-end suite: **108 scenarios in 24 spec files**, as Playwright itself
 lists them. Asking the runner rather than counting `test(` in the sources is not pedantry: a
 grep undercounts `test.skip`, which is listed and reported, and misses a spec file added
 since the grep was written. Both mistakes were present when this section was first drafted.
@@ -97,6 +97,10 @@ since the grep was written. Both mistakes were present when this section was fir
 - settings reports the indefinite session and discloses that the popup owns it
 - stats reports the indefinite plan and both manual outcomes
 - the indefinite blocked page offers the same End the popup does
+
+### legacy-upgrade.spec.ts (1)
+
+- the 7 September profile boots, migrates once, runs a session, and republishes to Chrome Sync
 
 ### manual-unlock.spec.ts (2)
 

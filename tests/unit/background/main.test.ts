@@ -12,6 +12,7 @@ import { main } from '../../../src/background/main';
 import type { PolicyStorage } from '../../../src/background/policy-storage';
 import { routeMessage } from '../../../src/background/router';
 import { emptyRuntimeV2 } from '../../../src/background/runtime-store-v2';
+import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import { handleSyncChanges, missingSyncDefaults } from '../../../src/background/storage-sync';
 import {
   emptyRuntime,
@@ -43,6 +44,7 @@ import {
   LOCAL_LISTS,
   LOCAL_LISTS_SNAPSHOT,
   LOCAL_ONBOARDING_DRAFT,
+  LOCAL_POLICY_COMMIT,
   LOCAL_RUNTIME,
   LOCAL_RUNTIME_MIGRATION,
   LOCAL_RUNTIME_REJECTED,
@@ -64,8 +66,21 @@ import type {
   ListsConfig,
   MonthlyAgg,
   Settings,
+  SetupState,
   StreakState,
 } from '../../../src/shared/types';
+import {
+  type LegacyUpgradeProfile,
+  type LegacyUpgradeRuntimeV1,
+  type LegacyUpgradeSessionV1,
+  legacyIndefiniteCancelGateV1,
+  legacyIndefiniteSessionV1,
+  legacyIndefiniteStartedEventV1,
+  legacyUpgradeEventsV1,
+  legacyUpgradeProfile,
+  legacyUpgradeRuntimeV1,
+  legacyUpgradeSettingsMigrated,
+} from '../../fixtures/legacy-upgrade-profile';
 
 interface BootScenario {
   journal: SyncJournal;
@@ -3990,5 +4005,186 @@ describe('background boot failure channel', (): void => {
     vi.mocked(routeMessage).mockClear();
     await expect(dispatchRuntime({ type: 'getSetupState' })).resolves.toEqual({ ok: true });
     expect(routeMessage).toHaveBeenCalledOnce();
+  });
+});
+
+describe('legacy upgrade profile', (): void => {
+  /** Seeds both storage areas with the profile and grants website access for the boot. */
+  function seedProfile(mutate: (profile: LegacyUpgradeProfile) => void = (): void => {}): void {
+    const profile: LegacyUpgradeProfile = legacyUpgradeProfile();
+    mutate(profile);
+    mocks.localState = profile.local;
+    mocks.scenario.storedSync = profile.sync;
+    mocks.registrationStatuses = ['ready'];
+  }
+
+  /** The item records every call of one storage `set` mock received since the last clear. */
+  function writtenItems(set: typeof chrome.storage.local.set): Record<string, unknown>[] {
+    return vi
+      .mocked(set)
+      .mock.calls.map(
+        (call: unknown[]): Record<string, unknown> => call[0] as Record<string, unknown>,
+      );
+  }
+
+  /** The local keys every `chrome.storage.local.set` since the last clear touched. */
+  function writtenLocalKeys(): string[] {
+    return writtenItems(chrome.storage.local.set).flatMap(
+      (items: Record<string, unknown>): string[] => Object.keys(items),
+    );
+  }
+
+  function bootedRuntime(): RuntimeStateV2 {
+    return engineRuntime() as unknown as RuntimeStateV2;
+  }
+
+  beforeEach((): void => {
+    // The morning after the profile's last session, which is the day it was read.
+    vi.setSystemTime(new Date(2026, 8, 10, 9, 0));
+  });
+
+  it('boots the 7 September profile, migrates settings once, migrates the stale v1 runtime, and serves setup', async (): Promise<void> => {
+    const seededRuntime: LegacyUpgradeRuntimeV1 = legacyUpgradeRuntimeV1();
+    seedProfile();
+    vi.mocked(routeMessage).mockClear();
+
+    await finishBoot();
+
+    // Served: the Engine holds the migrated settings and a v2 runtime that kept the v1 statistics.
+    expect(engineSettings()).toEqual(legacyUpgradeSettingsMigrated());
+    const runtime: RuntimeStateV2 = bootedRuntime();
+    expect(runtime.runtimeSchemaVersion).toBe(2);
+    expect(runtime.session).toBeNull();
+    expect(runtime.todayAgg).toEqual(seededRuntime.todayAgg);
+    expect(runtime.lastPruneDate).toBe(seededRuntime.lastPruneDate);
+
+    // Persisted: the settings were rewritten in the canonical shape, the direct commit revision
+    // embeds them, and the runtime under the marker is v2 with nothing parked or checkpointed.
+    expect(mocks.localState[LOCAL_SETTINGS]).toEqual(legacyUpgradeSettingsMigrated());
+    const commit: { source: string; revision: string } = mocks.localState[LOCAL_POLICY_COMMIT] as {
+      source: string;
+      revision: string;
+    };
+    expect(commit.source).toBe('direct');
+    expect(commit.revision.startsWith('policy-v1:')).toBe(true);
+    expect(JSON.parse(commit.revision.slice('policy-v1:'.length))).toMatchObject({
+      settings: legacyUpgradeSettingsMigrated(),
+    });
+    expect(mocks.localState[LOCAL_RUNTIME]).toMatchObject({
+      runtimeSchemaVersion: 2,
+      session: null,
+      todayAgg: seededRuntime.todayAgg,
+      lastPruneDate: seededRuntime.lastPruneDate,
+    });
+    expect(mocks.localState[LOCAL_RUNTIME_SCHEMA]).toEqual({ runtimeSchemaVersion: 2 });
+    expect(mocks.localState[LOCAL_RUNTIME_MIGRATION]).toBeUndefined();
+    expect(mocks.localState[LOCAL_RUNTIME_REJECTED]).toBeUndefined();
+    expect(mocks.localState[LOCAL_EVENTS]).toEqual(legacyUpgradeEventsV1());
+    const setup: SetupState = mocks.localState[LOCAL_SETUP] as SetupState;
+    expect(setup).toMatchObject({ completed: true, legacyImported: true, storageMode: 'sync' });
+    expect([null, 'sync-publish-failed']).toContain(setup.storageError);
+
+    // Setup is answered by the router over a Policy Storage that reads the record back whole.
+    vi.mocked(routeMessage).mockClear();
+    await expect(dispatchRuntime({ type: 'getSetupState' })).resolves.toEqual({ ok: true });
+    expect(routeMessage).toHaveBeenCalledOnce();
+    const storage: PolicyStorage = vi.mocked(routeMessage).mock.calls[0]?.[3] as PolicyStorage;
+    const served: SetupState = await storage.loadSetup();
+    expect(isSetupState(served)).toBe(true);
+    expect(served.completed).toBe(true);
+
+    // The outbox the boot reconstructed carries the canonical record, and so does what the writer
+    // publishes from it. The writer flushes on a timer, so the clock is advanced before the
+    // publish is read: without that the loop would run over nothing and could not fail.
+    const journal: SyncJournal = mocks.localState[LOCAL_SYNC_JOURNAL] as SyncJournal;
+    expect(journal.sets[SYNC_SETTINGS]).toEqual(legacyUpgradeSettingsMigrated());
+    await vi.advanceTimersByTimeAsync(10_000);
+    const publishedSettings: unknown[] = writtenItems(chrome.storage.sync.set)
+      .filter((items: Record<string, unknown>): boolean => Object.hasOwn(items, SYNC_SETTINGS))
+      .map((items: Record<string, unknown>): unknown => items[SYNC_SETTINGS]);
+    expect(publishedSettings.length).toBeGreaterThan(0);
+    for (const published of publishedSettings) {
+      expect(published).toEqual(legacyUpgradeSettingsMigrated());
+    }
+  });
+
+  it('boots the profile a second time without writing settings again', async (): Promise<void> => {
+    seedProfile();
+    mocks.registrationStatuses = ['ready', 'ready'];
+    await finishBoot();
+    const settingsAfterFirstBoot: unknown = structuredClone(mocks.localState[LOCAL_SETTINGS]);
+    const commitAfterFirstBoot: unknown = structuredClone(mocks.localState[LOCAL_POLICY_COMMIT]);
+    // The first boot did rewrite the record. A repair that never writes would pass the rest of
+    // this test on its own.
+    expect(settingsAfterFirstBoot).toEqual(legacyUpgradeSettingsMigrated());
+    vi.mocked(chrome.storage.local.set).mockClear();
+    mocks.engineArguments = null;
+
+    await finishBoot();
+
+    expect(writtenLocalKeys()).not.toContain(LOCAL_SETTINGS);
+    expect(writtenLocalKeys()).not.toContain(LOCAL_POLICY_COMMIT);
+    expect(mocks.localState[LOCAL_SETTINGS]).toEqual(settingsAfterFirstBoot);
+    expect(mocks.localState[LOCAL_POLICY_COMMIT]).toEqual(commitAfterFirstBoot);
+    expect(mocks.localState[LOCAL_RUNTIME_REJECTED]).toBeUndefined();
+    expect(mocks.localState[LOCAL_RUNTIME_MIGRATION]).toBeUndefined();
+    expect(engineSettings()).toEqual(legacyUpgradeSettingsMigrated());
+    expect(bootedRuntime().runtimeSchemaVersion).toBe(2);
+  });
+
+  it('carries a v1 until-stopped session over as an active until-stopped v2 session', async (): Promise<void> => {
+    const startedAt: number = Date.now() - 5 * 60_000;
+    const session: LegacyUpgradeSessionV1 = legacyIndefiniteSessionV1(startedAt);
+    seedProfile((profile: LegacyUpgradeProfile): void => {
+      const runtime: LegacyUpgradeRuntimeV1 = legacyUpgradeRuntimeV1();
+      runtime.session = session;
+      runtime.gate = legacyIndefiniteCancelGateV1(startedAt + 60_000);
+      profile.local[LOCAL_RUNTIME] = runtime;
+      profile.local[LOCAL_EVENTS] = [
+        ...legacyUpgradeEventsV1(),
+        legacyIndefiniteStartedEventV1(startedAt),
+      ];
+    });
+
+    await finishBoot();
+
+    const runtime: RuntimeStateV2 = bootedRuntime();
+    expect(runtime.session?.sessionId).toBe(session.sessionId);
+    expect(runtime.session?.config.duration.kind).toBe('until-stopped');
+    expect(runtime.session?.sessionEndsAt).toBeNull();
+    expect(runtime.session?.phase).toBe('focus');
+    expect(runtime.gate).toEqual(legacyIndefiniteCancelGateV1(startedAt + 60_000));
+    expect(runtime.pendingClosure).toBeNull();
+    expect(mocks.localState[LOCAL_RUNTIME]).toMatchObject({
+      runtimeSchemaVersion: 2,
+      session: {
+        sessionId: session.sessionId,
+        sessionEndsAt: null,
+        config: { duration: { kind: 'until-stopped' } },
+      },
+    });
+    expect(mocks.localState[LOCAL_RUNTIME_REJECTED]).toBeUndefined();
+    // The v1 start record with its null duration is history the log keeps as written.
+    expect(mocks.localState[LOCAL_EVENTS]).toEqual([
+      ...legacyUpgradeEventsV1(),
+      legacyIndefiniteStartedEventV1(startedAt),
+    ]);
+    expect(engineSettings().gate.allowForceEnd).toBe(false);
+    await expect(dispatchRuntime({ type: 'getSetupState' })).resolves.toEqual({ ok: true });
+  });
+
+  it('reports nothing on the healthy upgrade path', async (): Promise<void> => {
+    // The e2e diagnostics gate collects every worker console error, so a downgrade-then-upgrade
+    // that reported itself would fail the reproduction scenario on a boot that worked.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation((): void => undefined);
+    seedProfile();
+
+    await finishBoot();
+    await expect(dispatchRuntime({ type: 'getSetupState' })).resolves.toEqual({ ok: true });
+    // The Sync writer's flush is a pending timer, and a report from that flush counts too.
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(mocks.engineArguments).not.toBeNull();
   });
 });
