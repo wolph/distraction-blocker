@@ -12,7 +12,9 @@ import {
   observeSoundMessages,
   sendExtensionRequest,
   startTestSession,
+  startUntilStoppedSession,
   test,
+  waitForLifecycle,
 } from './fixtures';
 
 const PROJECTED_QUOTA_PREFIX: string = 'task7-system-quota:';
@@ -319,12 +321,27 @@ test('Privacy and data deletes all Focus Lock data and returns the extension to 
   extensionId,
   extPage,
 }) => {
+  // The worker refuses an all-data clear while the runtime holds a session, on purpose, so the
+  // page disables the control and says why until the session is ended from the popup.
+  await startUntilStoppedSession(extPage);
   const optionsPage: Page = await context.newPage();
   await optionsPage.goto(`chrome-extension://${extensionId}/src/options/options.html#privacy`);
   await expect(optionsPage.getByRole('heading', { name: 'Privacy and data' })).toBeVisible();
   const deleteAll: Locator = optionsPage.getByRole('button', {
     name: 'Delete all Focus Lock data',
   });
+  await expect(deleteAll).toBeDisabled();
+  await expect(
+    optionsPage.getByText('End the running session before deleting all data.'),
+  ).toBeVisible();
+
+  await extPage.reload();
+  await extPage.getByRole('button', { name: 'End session' }).click();
+  await waitForLifecycle(extPage, 'idle');
+  await expect(deleteAll).toBeEnabled();
+  await expect(
+    optionsPage.getByText('End the running session before deleting all data.'),
+  ).toHaveCount(0);
   await deleteAll.click();
   const dialog: Locator = optionsPage.getByRole('dialog', {
     name: 'Delete all Focus Lock data?',

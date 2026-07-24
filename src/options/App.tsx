@@ -210,6 +210,7 @@ function PrivacySection(props: SectionProps): VNode {
       ) : (
         <PrivacyData
           setup={props.store.setup}
+          snapshot={props.store.snapshot}
           onReconcileWebsiteAccess={props.store.reconcileWebsiteAccess}
           onStorageModeChange={props.store.setStorageMode}
           onRetrySync={props.store.retrySync}

@@ -3,18 +3,21 @@ import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'p
 import { sendRequest } from '../shared/messages';
 import { WEBSITE_ORIGINS } from '../shared/permissions';
 import {
+  ALL_DATA_CLEAR_RUNNING_SESSION_COPY,
   LEGACY_REMOTE_POLICY_DROPPED_COPY,
   LOCAL_ONLY_DATA_ITEMS,
   SYNCED_DATA_ITEMS,
 } from '../shared/privacy-copy';
 import { parseEventExportResponse } from '../shared/runtime-validation';
 import { localDateStr } from '../shared/time';
-import type { SetupState, StorageMode } from '../shared/types';
+import type { SessionSnapshot, SetupState, StorageMode } from '../shared/types';
 
 type Confirmation = 'local-history' | 'synced-policy' | 'all' | null;
 
 export interface PrivacyDataProps {
   setup: SetupState;
+  /** The live snapshot, null until the first load answers. */
+  snapshot: SessionSnapshot | null;
   onReconcileWebsiteAccess: () => Promise<string | null>;
   onStorageModeChange: (next: StorageMode) => Promise<string | null>;
   onRetrySync: () => Promise<string | null>;
@@ -91,16 +94,26 @@ const CONFIRMATION_COPY: Record<
 };
 
 /**
- * What an all-data clear removes, composed from the two item lists the Chrome Sync card shows so
- * a scope added to either list reaches this dialog without a second copy of it. The current
- * session state goes with it: the worker ends a running session as part of the clear.
+ * True while the worker would refuse an all-data clear: its stopped-runtime rule wants no session,
+ * gate, unlock, or pending cleanup, and the snapshot is the page's view of the same runtime. A gate
+ * or an unlock only exists on an active lifecycle (the snapshot validator refuses them otherwise),
+ * so every one of those states reads as a lifecycle that is not idle.
  */
-function AllDataBody(props: { syncing: boolean }): VNode {
+function runtimeHoldsSession(snapshot: SessionSnapshot | null): boolean {
+  return snapshot !== null && snapshot.lifecycle.kind !== 'idle';
+}
+
+/**
+ * What an all-data clear removes, composed from the two item lists the Chrome Sync card shows so
+ * a scope added to either list reaches this dialog without a second copy of it. The Chrome Sync
+ * copies go in every mode: the worker sweeps every Focus Lock key left there, syncing or not.
+ */
+function AllDataBody(): VNode {
   return (
     <>
       <p>
-        This permanently deletes every piece of Focus Lock data on this device
-        {props.syncing ? ' and the synced copies in Chrome Sync' : ''}:
+        This permanently deletes every piece of Focus Lock data on this device and any Focus Lock
+        copies left in Chrome Sync:
       </p>
       <ul>
         {[...SYNCED_DATA_ITEMS, ...LOCAL_ONLY_DATA_ITEMS].map(
@@ -108,9 +121,11 @@ function AllDataBody(props: { syncing: boolean }): VNode {
             <li key={item}>{item}</li>
           ),
         )}
-        <li>The current session state, which ends a running session</li>
       </ul>
-      <p>Focus Lock then returns to setup.</p>
+      <p>
+        Deleting everything is available only while no session is running. Focus Lock then returns
+        to setup.
+      </p>
     </>
   );
 }
@@ -119,7 +134,6 @@ function ConfirmationDialog(props: {
   kind: Exclude<Confirmation, null>;
   localOnlyAggregates: boolean;
   pending: boolean;
-  syncing: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }): VNode {
@@ -210,7 +224,7 @@ function ConfirmationDialog(props: {
           statistics stay on this device.
         </p>
       ) : (
-        <AllDataBody syncing={props.syncing} />
+        <AllDataBody />
       )}
       <div class="privacy-confirmation-actions">
         <button
@@ -355,6 +369,10 @@ export function PrivacyData(props: PrivacyDataProps): VNode {
   const firstSyncFailure: boolean = syncFailure && props.setup.storageMode !== 'sync';
   const dataClearFailure: Exclude<SetupState['dataClear']['scope'], null> | null =
     props.setup.dataClear.status === 'error' ? props.setup.dataClear.scope : null;
+  // A pending clear has a retry alarm armed, and a new all-data request would spend one of its
+  // automatic attempts, so the opener waits for idle rather than only for a stuck one.
+  const dataClearBusy: boolean = props.setup.dataClear.status !== 'idle';
+  const sessionRunning: boolean = runtimeHoldsSession(props.snapshot);
   const visibleError: string | null = actionError ?? durableError(props.setup);
 
   return (
@@ -494,19 +512,22 @@ export function PrivacyData(props: PrivacyDataProps): VNode {
       <section class="privacy-card privacy-card-destructive" aria-labelledby="all-data-heading">
         <h3 id="all-data-heading">All Focus Lock data</h3>
         <p>
-          Delete every Focus Lock record on this device{syncing ? ' and in Chrome Sync' : ''}, end
-          any running session, and start again from setup.
+          Delete every Focus Lock record on this device and any Focus Lock copies left in Chrome
+          Sync, then start again from setup. Available while no session is running.
         </p>
         <button
           type="button"
           class="danger"
-          disabled={pending || dataClearFailure !== null}
+          disabled={pending || dataClearBusy || sessionRunning}
           onClick={(event: TargetedMouseEvent<HTMLButtonElement>): void =>
             openConfirmation('all', event.currentTarget)
           }
         >
           Delete all Focus Lock data
         </button>
+        {sessionRunning ? (
+          <p class="privacy-card-reason">{ALL_DATA_CLEAR_RUNNING_SESSION_COPY}</p>
+        ) : null}
       </section>
 
       {confirmation === null ? null : (
@@ -514,7 +535,6 @@ export function PrivacyData(props: PrivacyDataProps): VNode {
           kind={confirmation}
           localOnlyAggregates={localMode}
           pending={pending}
-          syncing={syncing}
           onCancel={(): void => setConfirmation(null)}
           onConfirm={confirmDeletion}
         />
