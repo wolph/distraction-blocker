@@ -65,7 +65,7 @@ since the grep was written. Both mistakes were present when this section was fir
 - hard sessions reject weakening list changes
 - overlay unlock isolates another site and reblocks after expiry
 - pause gate rejects an early confirmation and unblocks after its delay
-- pause gate supports back to work, taking a pause, and resuming now
+- pause gate supports keep focusing, taking a pause, and resuming now
 - paused UI leaves when the session wall clock ends
 - zero delay removes the wait but still honors the typing setting
 

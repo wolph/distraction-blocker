@@ -296,7 +296,7 @@ describe('popup request errors', (): void => {
   );
 
   it.each([
-    ['abandonGate' as const, 'Never mind, back to work'],
+    ['abandonGate' as const, 'Keep focusing'],
     ['confirmGate' as const, 'Unlock all sites'],
   ])(
     'settles a rejected %s request and allows retry',

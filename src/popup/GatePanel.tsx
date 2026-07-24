@@ -34,7 +34,7 @@ export type GateCommandErrorMapper = (response: unknown, fallback: string) => st
 type PublishedCancelGateCopy = Extract<EndAuthorityV2, { copy: { confirm: string } }>['copy'];
 
 const CANCEL_CONFIRM_LABEL: PublishedCancelGateCopy['confirm'] = 'End the session';
-const BACK_TO_WORK_LABEL: PublishedCancelGateCopy['back'] = 'Never mind, back to work';
+const KEEP_FOCUSING_LABEL: PublishedCancelGateCopy['back'] = 'Keep focusing';
 
 const CONFIRM_LABELS: Record<GateKind, string> = {
   pause: 'Unlock all sites',
@@ -170,7 +170,7 @@ export function GatePanel({
         disabled={pending}
         onClick={abandon}
       >
-        {BACK_TO_WORK_LABEL}
+        {KEEP_FOCUSING_LABEL}
       </button>
       {gate.requiredPhrase !== null ? (
         <label class="gate-phrase">

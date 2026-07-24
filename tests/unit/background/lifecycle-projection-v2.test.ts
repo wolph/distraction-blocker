@@ -186,7 +186,7 @@ describe('endAuthorityV2', (): void => {
       gate,
       copy: {
         title: 'End this session',
-        back: 'Never mind, back to work',
+        back: 'Keep focusing',
         phraseLabel: 'Type this to confirm:',
         confirm: 'End the session',
         intentionReminder: INTENTION,
@@ -209,7 +209,7 @@ describe('endAuthorityV2', (): void => {
       gate,
       copy: {
         title: 'End this session',
-        back: 'Never mind, back to work',
+        back: 'Keep focusing',
         phraseLabel: 'Type this to confirm:',
         confirm: UNLOCK_LABEL,
         intentionReminder: INTENTION,

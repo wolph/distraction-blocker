@@ -36,7 +36,7 @@ Open the popup, choose a duration, enter the task you intend to finish, select c
 - Blacklist mode blocks enabled categories and custom host or URL-regex rules. Whitelist mode blocks the web except for the listed rules.
 - Friction sessions can end early only after a worker-enforced wait and an exact typed sentence. Hard sessions cannot end early, and settings or list changes that would weaken the active lock are rejected.
 - Focus time earns site access credit continuously. The default rate is 5 minutes per 30 focused minutes, capped at 30 minutes. A default spend buys either 5 minutes of access to all sites or a 5-minute unlock for the current registrable site. You can step away from the screen at any time without spending credit.
-- Temporary access actions use the configured deliberation gate, with a 10-second default and an immediate Back to work choice. Access to all sites can be ended early.
+- Temporary access actions use the configured deliberation gate, with a 10-second default and an immediate Keep focusing choice. Access to all sites can be ended early.
 - Cycling alternates focus with short and long breaks. Schedules can start blacklist or whitelist sessions on selected weekdays and local time windows.
 - Options contains category switches, per-site category exclusions, custom domain and URL-regex rules, whitelist rules, schedule entries, site access credit settings, sounds, badge behaviour, and data export.
 
