@@ -28,6 +28,7 @@ Use these exact declarations for the submitted build.
 - [x] Local deletion: Settings > Privacy and data > Delete local history removes historical full URLs, focus intentions, and detailed session events from the local event log. In local-only mode, it also removes local aggregate statistics. It does not clear the current live-session runtime, which holds the focus intention and the address of every website tab open while the session runs. A session set to run until stopped holds that runtime until the person ends it. See Retention for what ending a session clears and what it leaves.
 - [x] Sync disable: Settings > Privacy and data > Sync Focus Lock data across Chrome devices stops future Focus Lock sync writes after the switch is turned off. Existing remote copies are not silently deleted.
 - [x] Separate synced deletion: after sync is off, Settings > Privacy and data > Delete remote Sync data removes Focus Lock's remote settings, lists, site access credit, streaks, and aggregate session totals and domain-level blocked-attempt counts while preserving local settings and statistics.
+- [x] Delete everything: Settings > Privacy and data > Delete all Focus Lock data is the one control that can delete all Focus Lock data. It removes every Focus Lock record from this device and any Focus Lock copies left in Chrome Sync, then returns the extension to setup. It is available while no session is running.
 
 ## Chrome Web Store data-type selections
 

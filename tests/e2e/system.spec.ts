@@ -1,4 +1,4 @@
-import type { Worker } from '@playwright/test';
+import type { Locator, Page, Worker } from '@playwright/test';
 import type { ListsConfig, SessionSnapshot, Settings } from '../../src/shared/types';
 import { beginExpectedWorkerErrorWindow } from './browser-diagnostics';
 import {
@@ -12,7 +12,9 @@ import {
   observeSoundMessages,
   sendExtensionRequest,
   startTestSession,
+  startUntilStoppedSession,
   test,
+  waitForLifecycle,
 } from './fixtures';
 
 const PROJECTED_QUOTA_PREFIX: string = 'task7-system-quota:';
@@ -312,6 +314,52 @@ test('an active schedule window starts a scheduled focus session', async ({ extP
   await expect
     .poll(async (): Promise<string[]> => await notificationIds(worker))
     .not.toHaveLength(0);
+});
+
+test('Privacy and data deletes all Focus Lock data and returns the extension to setup', async ({
+  context,
+  extensionId,
+  extPage,
+}) => {
+  // The worker refuses an all-data clear while the runtime holds a session, on purpose, so the
+  // page disables the control and says why until the session is ended from the popup.
+  await startUntilStoppedSession(extPage);
+  const optionsPage: Page = await context.newPage();
+  await optionsPage.goto(`chrome-extension://${extensionId}/src/options/options.html#privacy`);
+  await expect(optionsPage.getByRole('heading', { name: 'Privacy and data' })).toBeVisible();
+  const deleteAll: Locator = optionsPage.getByRole('button', {
+    name: 'Delete all Focus Lock data',
+  });
+  await expect(deleteAll).toBeDisabled();
+  await expect(
+    optionsPage.getByText('End the running session before deleting all data.'),
+  ).toBeVisible();
+
+  await extPage.reload();
+  await extPage.getByRole('button', { name: 'End session' }).click();
+  await waitForLifecycle(extPage, 'idle');
+  await expect(deleteAll).toBeEnabled();
+  await expect(
+    optionsPage.getByText('End the running session before deleting all data.'),
+  ).toHaveCount(0);
+  await deleteAll.click();
+  const dialog: Locator = optionsPage.getByRole('dialog', {
+    name: 'Delete all Focus Lock data?',
+  });
+  await expect(dialog).toContainText('returns to setup');
+  await dialog.getByRole('button', { name: 'Confirm delete all Focus Lock data' }).click();
+
+  // The worker runs the clear through its journal and ends at setup, so the page reports the
+  // deletion once the journal is gone and the setup record reads as a fresh install.
+  await expect(optionsPage.getByRole('status')).toHaveText('All Focus Lock data deleted.');
+  expect(await sendExtensionRequest(optionsPage, { type: 'getSetupState' })).toMatchObject({
+    completed: false,
+    dataClear: { status: 'idle', scope: null, phase: null },
+  });
+  await extPage.reload();
+  await expect(
+    extPage.getByRole('heading', { name: 'Finish setting up Focus Lock' }),
+  ).toBeVisible();
 });
 
 test('privacy data deletion keeps local and remote scopes separate', async ({

@@ -76,6 +76,8 @@ Focus Lock reads, writes, and deletes the disclosed Chrome Sync data through Chr
 
 Focus Lock sends no extension data to a developer-controlled server. Settings > Privacy and data can export the local event log, disable sync, and separately delete remote Focus Lock data from Chrome Sync. Delete local history removes historical full URLs, focus intentions, and detailed session events from the local event log. In local-only mode, it also removes local aggregate statistics. It does not clear the current live-session runtime, which holds the focus intention and the address of every website tab open while the session runs. A session set to run until stopped holds that runtime until the person ends it. Ending the session clears the intention. It leaves one clear instruction for each of those tabs, each holding that tab's address, and the next session replaces them.
 
+The same page can also delete all Focus Lock data. Delete all Focus Lock data removes every Focus Lock record from this device and any Focus Lock copies left in Chrome Sync, then returns the extension to setup. It is available while no session is running.
+
 ## Privacy and support
 
 - Privacy policy: https://wolph.github.io/distraction-blocker/privacy/

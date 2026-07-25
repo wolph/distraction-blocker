@@ -3,7 +3,6 @@
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import type { VNode } from 'preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Data } from '../../../src/options/Data';
 import { SoundsBadge } from '../../../src/options/SoundsBadge';
 import { type SettingsStore, useSettingsStore } from '../../../src/options/use-settings';
 import {
@@ -51,7 +50,6 @@ describe('Options runtime response boundaries', (): void => {
     fake.respond('getLists', DEFAULT_LISTS);
     fake.respond('getSnapshot', emptySnapshot(0));
     fake.respond('previewSound', { ok: true });
-    fake.respond('exportEvents', { json: '[]' });
   });
 
   afterEach((): void => {
@@ -227,38 +225,6 @@ describe('Options runtime response boundaries', (): void => {
 
     await waitFor((): void => {
       expect(getByRole('alert').textContent).toBe('Could not preview the sound. Try again.');
-    });
-  });
-
-  it.each([
-    ['non-array root', '{"events":[]}'],
-    ['malformed event', '[{"t":"attempt","at":1}]'],
-  ])(
-    'does not download an export with a %s',
-    async (_label: string, json: string): Promise<void> => {
-      const createObjectURL = vi.fn<(blob: Blob) => string>(() => 'blob:test');
-      Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
-      Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
-      fake.respond('exportEvents', { json });
-      const { getByRole } = render(<Data />);
-
-      fireEvent.click(getByRole('button', { name: 'Export event log' }));
-
-      await waitFor((): void => {
-        expect(getByRole('alert').textContent).toBe('Could not export the event log. Try again.');
-      });
-      expect(createObjectURL).not.toHaveBeenCalled();
-    },
-  );
-
-  it('rejects a non-UUID device id with reload guidance', async (): Promise<void> => {
-    fake.storageGet.mockResolvedValue({ deviceId: 'test-device-id' });
-    const { getByRole } = render(<Data />);
-
-    await waitFor((): void => {
-      expect(getByRole('alert').textContent).toBe(
-        'Could not load this device id. Reload the page to try again.',
-      );
     });
   });
 });

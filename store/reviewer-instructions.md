@@ -32,6 +32,10 @@ No account, payment, external service, or test credential is required. The exten
 17. Under Local event log, choose Export local event log. Chrome downloads a JSON file containing the local detailed event log.
 18. Choose Delete local history, then Confirm delete local history. Wait for `Local history deleted.` This removes historical full URLs, focus intentions, and detailed session events from the local event log. Because sync is off, local aggregate statistics are removed too. It does not clear the current live-session runtime, which holds the focus intention and the address of every website tab open while the session runs. A session set to run until stopped holds that runtime until the person ends it. Ending the session clears the intention. It leaves one clear instruction for each of those tabs, each holding that tab's address, and the next session replaces them.
 
+## Reset everything
+
+19. Choose Delete all Focus Lock data, then Confirm delete all Focus Lock data. Wait for `All Focus Lock data deleted.` This is the one control that can delete all Focus Lock data: every Focus Lock record on this device and any Focus Lock copies left in Chrome Sync. It is available while no session is running, so end the session from step 10 first if one is still running. It returns the extension to setup, so the popup asks you to finish setup again. Do this last.
+
 ## Expected boundaries
 
 - Full URLs, focus intentions, detailed events, and live sessions remain in `chrome.storage.local`.

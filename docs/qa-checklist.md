@@ -30,7 +30,7 @@ Unit suite: **176 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
 deriving it means collecting every file, which is the expensive half of a run, and a number
 that needs a run to verify is exactly the kind that went stale here four times.
 
-End-to-end suite: **108 scenarios in 24 spec files**, as Playwright itself
+End-to-end suite: **109 scenarios in 24 spec files**, as Playwright itself
 lists them. Asking the runner rather than counting `test(` in the sources is not pedantry: a
 grep undercounts `test.skip`, which is listed and reported, and misses a spec file added
 since the grep was written. Both mistakes were present when this section was first drafted.
@@ -193,8 +193,9 @@ since the grep was written. Both mistakes were present when this section was fir
 - update publication restores the complete canonical set after a later replacement fails
 - update staging leaves the canonical set untouched after a later write fails
 
-### system.spec.ts (5)
+### system.spec.ts (6)
 
+- Privacy and data deletes all Focus Lock data and returns the extension to setup
 - an active schedule window starts a scheduled focus session
 - badge shows a countdown during focus and clears on completion
 - privacy data deletion keeps local and remote scopes separate

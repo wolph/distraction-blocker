@@ -1,6 +1,10 @@
 import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'preact/hooks';
 import type { Ack, ClearFocusLockDataResponse } from '../shared/messages';
 import { sendRequest } from '../shared/messages';
+import {
+  ALL_DATA_CLEAR_RUNNING_SESSION_COPY,
+  WORKER_ALL_DATA_CLEAR_RUNNING_REFUSAL,
+} from '../shared/privacy-copy';
 import { reloadOnceForInvalidSnapshot } from '../shared/reload-once';
 import {
   ackError,
@@ -150,7 +154,11 @@ function clearDataError(
     value.scope === scope &&
     (value.status === 'pending' || value.status === 'cleared')
   ) {
-    return value.error;
+    // The one refusal a person can act on gets product copy. Every other worker string is the
+    // diagnostic the page has always shown verbatim.
+    return scope === 'all' && value.error === WORKER_ALL_DATA_CLEAR_RUNNING_REFUSAL
+      ? ALL_DATA_CLEAR_RUNNING_SESSION_COPY
+      : value.error;
   }
   return DATA_CLEAR_ERROR_COPY;
 }

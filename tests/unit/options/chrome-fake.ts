@@ -1,4 +1,3 @@
-import { type Mock, vi } from 'vitest';
 import { DEFAULT_SETUP } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
 
@@ -13,8 +12,6 @@ export interface ChromeFake {
   emit(message: unknown): void;
   /** deliver a local storage change to every storage.onChanged listener */
   emitStorageChange(changes: Record<string, chrome.storage.StorageChange>, area?: string): void;
-  /** storage.local.get used by the Data section */
-  storageGet: Mock;
 }
 
 /**
@@ -31,11 +28,6 @@ export function installChromeFake(): ChromeFake {
     area: string,
   ) => void;
   const storageListeners: Set<StorageListener> = new Set();
-  const storageGet: Mock = vi.fn(
-    async (): Promise<Record<string, unknown>> => ({
-      deviceId: '123e4567-e89b-42d3-a456-426614174000',
-    }),
-  );
 
   const fake: unknown = {
     runtime: {
@@ -58,7 +50,7 @@ export function installChromeFake(): ChromeFake {
     },
     storage: {
       local: {
-        get: storageGet,
+        get: async (): Promise<Record<string, unknown>> => ({}),
       },
       onChanged: {
         addListener: (fn: StorageListener): void => {
@@ -87,6 +79,5 @@ export function installChromeFake(): ChromeFake {
     ): void => {
       for (const fn of storageListeners) fn(changes, area);
     },
-    storageGet,
   };
 }

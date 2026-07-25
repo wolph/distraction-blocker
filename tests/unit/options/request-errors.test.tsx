@@ -65,6 +65,7 @@ describe('Options request errors', (): void => {
     const { getAllByRole, getByRole } = render(
       <PrivacyData
         setup={setup}
+        snapshot={null}
         onReconcileWebsiteAccess={async (): Promise<string | null> => null}
         onStorageModeChange={(): Promise<string | null> => pending.promise}
         onRetrySync={async (): Promise<string | null> => null}

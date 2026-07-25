@@ -7,15 +7,17 @@ import {
   DEFAULT_SETTINGS,
   DEFAULT_SETUP,
   emptySnapshot,
+  rulesFromLists,
 } from '../../../src/shared/constants';
 import type { Request } from '../../../src/shared/messages';
 import { WEBSITE_ORIGINS } from '../../../src/shared/permissions';
 import {
+  ALL_DATA_CLEAR_RUNNING_SESSION_COPY,
   LEGACY_REMOTE_POLICY_DROPPED_COPY,
   LOCAL_ONLY_DATA_ITEMS,
   SYNCED_DATA_ITEMS,
 } from '../../../src/shared/privacy-copy';
-import type { SetupState } from '../../../src/shared/types';
+import type { SessionSnapshot, SetupState } from '../../../src/shared/types';
 import type { ChromeFake } from './chrome-fake';
 import { installChromeFake } from './chrome-fake';
 
@@ -36,6 +38,35 @@ function setupState(update: Partial<SetupState> = {}): SetupState {
     blockingRegistration: 'unavailable',
     storageMode: 'sync',
     ...update,
+  };
+}
+
+/** The worker's own refusal for an all-data clear over a runtime that still holds a session. */
+const WORKER_RUNNING_SESSION_REFUSAL: string =
+  'stop the active session and blocking state before deleting all data';
+
+function activeSnapshot(at: number = 30 * 60_000): SessionSnapshot {
+  const startedAt: number = at - 5 * 60_000;
+  const sessionEndsAt: number = startedAt + 25 * 60_000;
+  return {
+    ...emptySnapshot(at),
+    lifecycle: { kind: 'active', endAuthority: { kind: 'hidden' } },
+    phase: 'focus',
+    config: {
+      mode: 'blacklist',
+      strictness: 'hard',
+      duration: { kind: 'timed', minutes: 25 },
+      cycling: null,
+      intention: 'write the report',
+      source: 'manual',
+      scheduleOccurrence: null,
+      rules: rulesFromLists(DEFAULT_LISTS),
+    },
+    startedAt,
+    phaseStartedAt: startedAt,
+    phaseEndsAt: sessionEndsAt,
+    sessionEndsAt,
+    sessionFocusedMs: at - startedAt,
   };
 }
 
@@ -562,6 +593,184 @@ describe('Privacy and data', (): void => {
     expect(syncing.queryByRole('button', { name: 'Delete remote Sync data' })).toBeNull();
   });
 
+  it('confirms deleting all Focus Lock data with every scope named and returns to setup', async (): Promise<void> => {
+    fake.respond('clearFocusLockData', (request: Request): object => {
+      expect(request).toEqual({ type: 'clearFocusLockData', scope: 'all' });
+      setup = setupState({ completed: false, storageMode: null });
+      return { ok: true, scope: 'all', status: 'cleared' };
+    });
+    const view = renderPrivacy();
+    const open: HTMLButtonElement = await waitFor(
+      (): HTMLButtonElement =>
+        view.getByRole('button', { name: 'Delete all Focus Lock data' }) as HTMLButtonElement,
+    );
+    expect(open.disabled).toBe(false);
+
+    fireEvent.click(open);
+    const dialog: HTMLElement = view.getByRole('dialog', { name: 'Delete all Focus Lock data?' });
+    // The body is composed from the same two item lists the Chrome Sync card shows, so a scope
+    // added to either list reaches this dialog without a second copy of it.
+    for (const item of [...SYNCED_DATA_ITEMS, ...LOCAL_ONLY_DATA_ITEMS]) {
+      expect(within(dialog).getByText(item)).toBeTruthy();
+    }
+    expect(dialog.textContent).toContain('any Focus Lock copies left in Chrome Sync');
+    expect(dialog.textContent).toContain('no session is running');
+    expect(dialog.textContent).toContain('returns to setup');
+    expect(dialog.textContent).not.toContain('ends a running session');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(view.queryByRole('dialog')).toBeNull();
+    expect(fake.sent).not.toContainEqual({ type: 'clearFocusLockData', scope: 'all' });
+
+    fireEvent.click(open);
+    fireEvent.click(
+      within(view.getByRole('dialog', { name: 'Delete all Focus Lock data?' })).getByRole(
+        'button',
+        { name: 'Confirm delete all Focus Lock data' },
+      ),
+    );
+    await waitFor((): void =>
+      expect(view.getByRole('status').textContent).toBe('All Focus Lock data deleted.'),
+    );
+    expect(fake.sent).toContainEqual({ type: 'clearFocusLockData', scope: 'all' });
+    expect(view.queryByRole('dialog')).toBeNull();
+  });
+
+  it.each([
+    { status: 'error' as const, scope: 'all' as const, phase: 'browser-reset' as const },
+    { status: 'pending' as const, scope: 'all' as const, phase: 'remote' as const },
+    { status: 'error' as const, scope: 'local-history' as const, phase: 'local' as const },
+    { status: 'error' as const, scope: 'synced-policy' as const, phase: 'remote' as const },
+  ])(
+    'disables deleting all data while a $scope deletion is $status',
+    async (dataClear: SetupState['dataClear']): Promise<void> => {
+      setup = setupState({ dataClear });
+      const view = renderPrivacy();
+
+      // A stuck deletion is resumed through its retry, never covered by a new all-data clear:
+      // asking for one runs no phase of the deletion that is already journalled. A pending one
+      // has a retry alarm armed, and a new request would spend one of its automatic attempts.
+      const deleteAll: HTMLButtonElement = await waitFor(
+        (): HTMLButtonElement =>
+          view.getByRole('button', { name: 'Delete all Focus Lock data' }) as HTMLButtonElement,
+      );
+      expect(deleteAll.disabled).toBe(true);
+      if (dataClear.status === 'error') {
+        expect(view.getByRole('button', { name: /^Retry .* deletion$/ })).toBeTruthy();
+      } else {
+        expect(view.queryByRole('button', { name: /^Retry .* deletion$/ })).toBeNull();
+      }
+    },
+  );
+
+  it.each([
+    ['a session is running', activeSnapshot()],
+    [
+      'a session is cleaning up',
+      {
+        ...emptySnapshot(30 * 60_000),
+        lifecycle: {
+          kind: 'cleanup' as const,
+          journal: 'transition' as const,
+          id: '123e4567-e89b-42d3-a456-426614174000',
+          endAuthority: { kind: 'hidden' as const },
+        },
+      },
+    ],
+    [
+      'a cleanup failed and waits for its retry',
+      {
+        ...emptySnapshot(30 * 60_000),
+        lifecycle: {
+          kind: 'error' as const,
+          code: 'closure-cleanup-failed' as const,
+          retryAvailable: true as const,
+          endAuthority: { kind: 'hidden' as const },
+        },
+      },
+    ],
+  ])(
+    'disables deleting all data while %s and says why',
+    async (_label: string, snapshot: SessionSnapshot): Promise<void> => {
+      fake.respond('getSnapshot', snapshot);
+      const view = renderPrivacy();
+
+      // The worker refuses an all-data clear over a runtime that still holds a session, a gate,
+      // an unlock, or a pending cleanup, and a Hard session must not be escapable through a delete
+      // button. The page says so instead of sending a request the worker will refuse. A gate or
+      // an unlock rides on an active lifecycle, so the active row covers them.
+      const deleteAll: HTMLButtonElement = await waitFor(
+        (): HTMLButtonElement =>
+          view.getByRole('button', { name: 'Delete all Focus Lock data' }) as HTMLButtonElement,
+      );
+      expect(deleteAll.disabled).toBe(true);
+      expect(view.getByText(ALL_DATA_CLEAR_RUNNING_SESSION_COPY)).toBeTruthy();
+
+      act((): void => {
+        fake.emit({ type: 'stateChanged', snapshot: emptySnapshot(31 * 60_000) });
+      });
+      await waitFor((): void => expect(deleteAll.disabled).toBe(false));
+      expect(view.queryByText(ALL_DATA_CLEAR_RUNNING_SESSION_COPY)).toBeNull();
+    },
+  );
+
+  it('gives the worker refusal of a clear over a running session product copy', async (): Promise<void> => {
+    // The page's snapshot can lag the worker, so the refusal can still come back. The fake
+    // answers it the way the worker does, with its own string, and the page has to translate.
+    fake.respond('clearFocusLockData', {
+      ok: false,
+      error: WORKER_RUNNING_SESSION_REFUSAL,
+      scope: 'all',
+      status: 'pending',
+    });
+    const view = renderPrivacy();
+    await waitFor((): void =>
+      expect(view.getByRole('button', { name: 'Delete all Focus Lock data' })).toBeTruthy(),
+    );
+
+    fireEvent.click(view.getByRole('button', { name: 'Delete all Focus Lock data' }));
+    fireEvent.click(
+      within(view.getByRole('dialog', { name: 'Delete all Focus Lock data?' })).getByRole(
+        'button',
+        { name: 'Confirm delete all Focus Lock data' },
+      ),
+    );
+
+    await waitFor((): void =>
+      expect(view.getByRole('alert').textContent).toBe(ALL_DATA_CLEAR_RUNNING_SESSION_COPY),
+    );
+    expect(view.queryByText(WORKER_RUNNING_SESSION_REFUSAL)).toBeNull();
+  });
+
+  it('disables deleting all data while another deletion is still running', async (): Promise<void> => {
+    let finishLocalClear: () => void = (): void => {};
+    fake.respond(
+      'clearFocusLockData',
+      (): Promise<object> =>
+        new Promise<object>((resolve: (value: object) => void): void => {
+          finishLocalClear = (): void =>
+            resolve({ ok: true, scope: 'local-history', status: 'cleared' });
+        }),
+    );
+    const view = renderPrivacy();
+    await waitFor((): void =>
+      expect(view.getByRole('button', { name: 'Delete local history' })).toBeTruthy(),
+    );
+    const deleteAll: HTMLButtonElement = view.getByRole('button', {
+      name: 'Delete all Focus Lock data',
+    }) as HTMLButtonElement;
+    expect(deleteAll.disabled).toBe(false);
+
+    fireEvent.click(view.getByRole('button', { name: 'Delete local history' }));
+    fireEvent.click(view.getByRole('button', { name: 'Confirm delete local history' }));
+    await waitFor((): void => expect(deleteAll.disabled).toBe(true));
+
+    finishLocalClear();
+    await waitFor((): void =>
+      expect(view.getByRole('status').textContent).toBe('Local history deleted.'),
+    );
+    expect(deleteAll.disabled).toBe(false);
+  });
+
   it('hides remote deletion until local-only storage is authoritative', async (): Promise<void> => {
     setup = setupState({ storageMode: null });
     const view = renderPrivacy();
@@ -573,6 +782,31 @@ describe('Privacy and data', (): void => {
 
     expect(view.queryByRole('button', { name: 'Delete remote Sync data' })).toBeNull();
   });
+
+  it.each([
+    ['non-array root', '{"events":[]}'],
+    ['malformed event', '[{"t":"attempt","at":1}]'],
+  ])(
+    'does not download an export with a %s',
+    async (_label: string, json: string): Promise<void> => {
+      const anchorClick = vi
+        .spyOn(HTMLAnchorElement.prototype, 'click')
+        .mockImplementation((): void => {});
+      fake.respond('exportEvents', { json });
+      const view = renderPrivacy();
+      await waitFor((): void =>
+        expect(view.getByRole('button', { name: 'Export local event log' })).toBeTruthy(),
+      );
+
+      fireEvent.click(view.getByRole('button', { name: 'Export local event log' }));
+
+      await waitFor((): void =>
+        expect(view.getByRole('alert').textContent).toBe('Could not export the event log.'),
+      );
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
+      expect(anchorClick).not.toHaveBeenCalled();
+    },
+  );
 
   it('exports the local event log and reports worker failures in one alert', async (): Promise<void> => {
     const anchorClick = vi
