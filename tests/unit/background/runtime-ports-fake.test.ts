@@ -22,6 +22,7 @@ import {
   EPOCH_ID,
   emptyRuntimeV2,
   OTHER_EPOCH_ID,
+  publishedFocusRuntime,
   REQUESTED_AT,
   STARTING_OPERATION_ID,
   TARGET_URL,
@@ -158,4 +159,81 @@ describe('ports fake document model', (): void => {
 
     expect(await send(fake, applyCommand())).toBeUndefined();
   });
+
+  // The three below are the same-epoch rules of `enforcement-state.ts`, which the fake used to skip:
+  // it answered `applied` to every command at the epoch it held, so a command the real page refuses
+  // passed every runner suite (docs/testing-rules.md, rule 3).
+  it('refuses a command at the tuple it holds when the view differs', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor();
+    await send(fake, resetCommand());
+    const cleared: Record<string, unknown> = await send(fake, wire(clearAtActiveTuple()));
+
+    const refused: unknown = await fake.transport.sendToDocument(
+      TAB_ID,
+      DOCUMENT_ID,
+      applyCommand(),
+    );
+
+    expect(cleared.disposition).toBe('applied');
+    expect(refused).toBeUndefined();
+    expect(fake.rejectedAnswers(TAB_ID, DOCUMENT_ID)).toBe(1);
+    expect(fake.documentState(TAB_ID, DOCUMENT_ID)?.presentation).toBe('clear');
+  });
+
+  it('accepts a command strictly above the tuple it holds', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor();
+    await send(fake, resetCommand());
+    await send(fake, wire(clearAtActiveTuple()));
+
+    const applied: Record<string, unknown> = await send(
+      fake,
+      wire(activeCommand({ tabId: TAB_ID, documentId: DOCUMENT_ID, runtimeRevision: 2 })),
+    );
+
+    expect(applied.disposition).toBe('applied');
+    expect(fake.documentState(TAB_ID, DOCUMENT_ID)?.presentation).toBe('active');
+    expect(fake.documentState(TAB_ID, DOCUMENT_ID)?.tuple?.runtimeRevision).toBe(2);
+    expect(fake.rejectedAnswers(TAB_ID, DOCUMENT_ID)).toBe(0);
+  });
+
+  it('starts a seeded document holding the view the runtime maps for it', async (): Promise<void> => {
+    // A stored command with an acknowledgement is the runtime's evidence of what the page applied,
+    // so the document starts on that view and refuses a different view at the same tuple, exactly
+    // as the page it stands in for would.
+    const fake: RuntimePortsFakeV2 = fakeFor(publishedFocusRuntime());
+    const held: FrozenDocumentCommand | undefined =
+      publishedFocusRuntime().documentCommands[documentKey(TAB_ID, DOCUMENT_ID)];
+    if (held === undefined) throw new Error('the fixture maps no command for the document');
+
+    expect(fake.documentState(TAB_ID, DOCUMENT_ID)?.presentation).toBe('active');
+    expect(fake.documentState(TAB_ID, DOCUMENT_ID)?.tuple?.runtimeRevision).toBe(
+      held.runtimeRevision,
+    );
+    expect((await send(fake, wire(held))).disposition).toBe('applied');
+    // The canonical clear at the held tuple: a valid command the page refuses on its view alone.
+    expect(
+      await send(fake, wire({ ...clearAtActiveTuple(), runtimeRevision: held.runtimeRevision })),
+    ).toBeUndefined();
+  });
+
+  it('applies a pulled array in order, the way the router hands it to the page', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = fakeFor();
+
+    fake.applyPulled(TAB_ID, DOCUMENT_ID, [resetCommand(), applyCommand()]);
+
+    expect(fake.documentState(TAB_ID, DOCUMENT_ID)?.enforcementEpoch).toBe(EPOCH_ID);
+    expect(fake.documentState(TAB_ID, DOCUMENT_ID)?.presentation).toBe('active');
+    expect(fake.rejectedAnswers(TAB_ID, DOCUMENT_ID)).toBe(0);
+  });
 });
+
+/** A clear at exactly the tuple `applyCommand` carries, so the two differ only in their view. */
+function clearAtActiveTuple(): FrozenDocumentCommand {
+  const active: FrozenDocumentCommand = activeCommand({ tabId: TAB_ID, documentId: DOCUMENT_ID });
+  return {
+    ...active,
+    presentation: 'clear',
+    verdict: { blocked: false, reason: 'no-session', categoryId: null, matchedPattern: null },
+    overlay: null,
+  };
+}
