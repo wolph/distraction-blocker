@@ -570,7 +570,7 @@ export class SessionControllerV2 {
         await handleTransitionNavigationV2(this.ports, transitionMatcherV2(this.ports), target);
       } else if (runtime.pendingClosure !== null) {
         await handleCleanupNavigationV2(this.ports, target);
-      } else {
+      } else if (!this.idleRuntimeOwesNothing(target)) {
         await this.sendCurrentCommands(target, attemptKind !== null);
       }
       return this.blockedNow(target);
@@ -1427,8 +1427,8 @@ export class SessionControllerV2 {
 
   /**
    * Whether a command is still the one this runtime owes its document. A stored command is current
-   * while the map holds it exactly. A clear the map does not hold, which is every command for a
-   * document the session is not blocking, is current while the tuple it was computed from is the
+   * while the map holds it exactly, and a pause, a break, or a purchased unlock keeps stored clears
+   * that way. A clear the map does not hold is current while the tuple it was computed from is the
    * runtime's and nothing has been stored for that document since.
    */
   private isCurrentDelivery(command: FrozenDocumentCommand): boolean {
@@ -1476,6 +1476,7 @@ export class SessionControllerV2 {
         expectedUrl: target.url,
       });
     }
+    if (this.idleRuntimeOwesNothing(target)) return null;
     // A navigation or a document's own pull names the URL it is on, so a stored command for
     // another URL is refrozen. A sweep only reports what a target already holds: its URL comes
     // from a tab query that may already be behind the navigation it is racing.
@@ -1554,12 +1555,62 @@ export class SessionControllerV2 {
           : null,
     });
     if (!blocked) return command;
+    // A document that already acknowledged this epoch has applied something under it, and the
+    // clear it applied for an allowed page was never stored, so its tuple is not on record. The
+    // page accepts a different view only at a strictly higher tuple, which the current revision
+    // cannot be, so the entry joins through a live commit that advances the whole map. A document
+    // with no acknowledgement holds nothing yet and joins at the current revision.
+    if (
+      runtime.pendingEnforcementTransition === null &&
+      this.hasCurrentEpochAck(target.tabId, target.documentId)
+    ) {
+      return await this.freezeAcknowledgedTarget(runtime, key, command);
+    }
     await this.write({
       ...structuredClone(runtime),
       runtimeRevision,
       documentCommands: { ...structuredClone(runtime.documentCommands), [key]: command },
     });
     return command;
+  }
+
+  /**
+   * True when an idle runtime owes a document nothing. Every command an idle runtime sends is a
+   * clear, so a document that acknowledged this epoch and has no stored entry already shows one,
+   * either the batch clear the cleanup sent it or an idle clear it pulled. The batch clear names
+   * the closed session and an idle clear names the epoch as its reservation, so at the same base
+   * revision the page refuses the idle one, and sending it or answering it buys nothing.
+   */
+  private idleRuntimeOwesNothing(target: { tabId: number; documentId: string }): boolean {
+    const runtime: RuntimeStateV2 = this.ports.runtime();
+    return (
+      runtime.session === null &&
+      runtime.pendingClosure === null &&
+      runtime.pendingEnforcementTransition === null &&
+      runtime.documentCommands[documentCommandKeyV2(target.tabId, target.documentId)] ===
+        undefined &&
+      this.hasCurrentEpochAck(target.tabId, target.documentId)
+    );
+  }
+
+  /**
+   * Adds one blocked command for an acknowledged document through a live commit, so every stored
+   * command and this one land at the next revision and the page takes the new view.
+   */
+  private async freezeAcknowledgedTarget(
+    runtime: RuntimeStateV2,
+    key: string,
+    command: FrozenDocumentCommand,
+  ): Promise<FrozenDocumentCommand> {
+    await this.commitLiveViews({
+      ...structuredClone(runtime),
+      documentCommands: { ...structuredClone(runtime.documentCommands), [key]: command },
+    });
+    const frozen: FrozenDocumentCommand | undefined = this.ports.runtime().documentCommands[key];
+    if (frozen === undefined) {
+      throw new CoreError('invalid-rule', 'a live view lost the target it was built for');
+    }
+    return structuredClone(frozen);
   }
 
   /**

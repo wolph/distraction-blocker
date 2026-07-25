@@ -1763,10 +1763,137 @@ describe('SessionControllerV2 navigation and documents', (): void => {
 
     // A clear nobody applied is still owed, and the retained entry is what the next live refresh
     // resends. Dropping it here would leave the page behind whatever overlay it last rendered.
+    // This passes on the code before the drop existed by construction. It is a guard because a
+    // `dropAcknowledgedClear` that also drops on a `no-receiver` outcome turns it red
+    // (`expected undefined to be 'clear'`), which was run when the drop was written.
     const kept: FrozenDocumentCommand | undefined = ports.current().documentCommands[key];
     expect(kept?.presentation).toBe('clear');
     expect(kept?.expectedUrl).toBe('https://example.org/reading');
     expect(parseRuntimeStateV2(ports.current())).not.toBeNull();
+  });
+
+  // The three below drive the page through the real content state machine (the ports fake runs
+  // `handleContentCommandV2` for every send and `applyPulled` models the router's pull), so the
+  // guard is what the page shows, not what the worker believes. Each path is what
+  // `onHistoryStateUpdated` produces for a single-page app: `blockedForTarget` reads with the
+  // `existing` kind, then the sweep pushes with a null kind.
+  it('re-blocks a page that moves in-document from an allowed URL to a blocked one', async (): Promise<void> => {
+    const { controller, ports } = harness(publishedFocusRuntime());
+    const key: string = documentKey(11, DOC_BLOCKED);
+    const reading: { tabId: number; documentId: string; url: string } = {
+      tabId: 11,
+      documentId: DOC_BLOCKED,
+      url: 'https://example.org/reading',
+    };
+    // The page loads allowed and pulls: it holds a clear at the current tuple, unstored.
+    ports.applyPulled(
+      11,
+      DOC_BLOCKED,
+      await controller.documentCommandsFor(reading, 'navigation', 'deliver'),
+    );
+    await controller.handleNavigation(reading, null);
+    expect(ports.documentState(11, DOC_BLOCKED)?.presentation).toBe('clear');
+    const clearRevision: number | undefined = ports.documentState(11, DOC_BLOCKED)?.tuple
+      ?.runtimeRevision;
+
+    const blocked: { tabId: number; documentId: string; url: string } = {
+      ...reading,
+      url: BLOCKED_URL,
+    };
+    await controller.documentCommandsFor(blocked, 'existing');
+    await controller.handleNavigation(blocked, null);
+
+    // The page accepts only a tuple strictly above the clear it applied, so the blocked command
+    // has to land at a higher revision than that clear, which means the map advanced for it.
+    const stored: FrozenDocumentCommand | undefined = ports.current().documentCommands[key];
+    expect(stored?.verdict.blocked).toBe(true);
+    expect(stored?.runtimeRevision).toBeGreaterThan(clearRevision ?? Number.NaN);
+    expect(ports.documentState(11, DOC_BLOCKED)?.presentation).toBe('active');
+    expect(ports.documentState(11, DOC_BLOCKED)?.tuple?.runtimeRevision).toBe(
+      stored?.runtimeRevision,
+    );
+    expect(ports.rejectedAnswers(11, DOC_BLOCKED)).toBe(0);
+    expect(parseRuntimeStateV2(ports.current())).not.toBeNull();
+  });
+
+  it('re-blocks a page that moves in-document to an allowed URL and back', async (): Promise<void> => {
+    const { controller, ports } = harness(publishedFocusRuntime());
+    const key: string = documentKey(11, DOC_BLOCKED);
+    const blocked: { tabId: number; documentId: string; url: string } = {
+      tabId: 11,
+      documentId: DOC_BLOCKED,
+      url: BLOCKED_URL,
+    };
+    ports.applyPulled(
+      11,
+      DOC_BLOCKED,
+      await controller.documentCommandsFor(blocked, 'navigation', 'deliver'),
+    );
+    await controller.handleNavigation(blocked, null);
+    expect(ports.documentState(11, DOC_BLOCKED)?.presentation).toBe('active');
+
+    const reading: { tabId: number; documentId: string; url: string } = {
+      ...blocked,
+      url: 'https://example.org/reading',
+    };
+    await controller.documentCommandsFor(reading, 'existing');
+    await controller.handleNavigation(reading, null);
+    expect(ports.documentState(11, DOC_BLOCKED)?.presentation).toBe('clear');
+    expect(ports.current().documentCommands[key]).toBeUndefined();
+
+    await controller.documentCommandsFor(blocked, 'existing');
+    await controller.handleNavigation(blocked, null);
+
+    // The drop lost the record of the clear the page applied, so the next blocked command cannot
+    // reuse the revision the page already holds.
+    const stored: FrozenDocumentCommand | undefined = ports.current().documentCommands[key];
+    expect(stored?.verdict.blocked).toBe(true);
+    expect(ports.documentState(11, DOC_BLOCKED)?.presentation).toBe('active');
+    expect(ports.documentState(11, DOC_BLOCKED)?.tuple?.runtimeRevision).toBe(
+      stored?.runtimeRevision,
+    );
+    expect(ports.rejectedAnswers(11, DOC_BLOCKED)).toBe(0);
+    expect(parseRuntimeStateV2(ports.current())).not.toBeNull();
+  });
+
+  it('owes nothing to a page the cleanup cleared once the runtime is idle', async (): Promise<void> => {
+    const { controller, ports } = harness(
+      publishedFocusRuntime({ session: timedFocusSession({ config: flexibleConfig() }) }),
+      { tabs: [{ tabId: 11, url: BLOCKED_URL, documentId: DOC_BLOCKED }] },
+    );
+    const blocked: { tabId: number; documentId: string; url: string } = {
+      tabId: 11,
+      documentId: DOC_BLOCKED,
+      url: BLOCKED_URL,
+    };
+    ports.applyPulled(
+      11,
+      DOC_BLOCKED,
+      await controller.documentCommandsFor(blocked, 'navigation', 'deliver'),
+    );
+    await controller.handleNavigation(blocked, null);
+    expect((await controller.requestSessionEnd()).code).toBe('ok');
+    expect(ports.current().pendingClosure).toBeNull();
+    expect(ports.documentState(11, DOC_BLOCKED)?.presentation).toBe('clear');
+    const sends: number = ports.sends.length;
+
+    // The idle sweep and the boot push both arrive here for a still-open page.
+    await controller.handleNavigation(blocked, null);
+    const pulled: DocumentContentCommand[] = await controller.documentCommandsFor(
+      blocked,
+      'existing',
+      'deliver',
+    );
+    ports.applyPulled(11, DOC_BLOCKED, pulled);
+
+    // The batch clear the page holds names the closed session, and an idle clear names the epoch
+    // as its reservation, so at the same base revision the page refuses the idle one. The page
+    // already shows clear, so an idle runtime owes an acknowledged page nothing at all rather
+    // than a command it will refuse.
+    expect(ports.sends).toHaveLength(sends);
+    expect(pulled).toEqual([]);
+    expect(ports.rejectedAnswers(11, DOC_BLOCKED)).toBe(0);
+    expect(ports.documentState(11, DOC_BLOCKED)?.presentation).toBe('clear');
   });
 
   it('keeps enumerating live targets in the cleanup batch', async (): Promise<void> => {
