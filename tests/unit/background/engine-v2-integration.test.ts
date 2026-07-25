@@ -3,6 +3,11 @@ import { main } from '../../../src/background/main';
 import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validation';
 import { emptyRuntime } from '../../../src/background/stores';
+import {
+  type ContentCommandResultV2,
+  createContentEnforcementState,
+  handleContentCommandV2,
+} from '../../../src/content/enforcement-state';
 import { startSession as startLegacySession } from '../../../src/core/session';
 import {
   DEFAULT_LISTS,
@@ -10,7 +15,10 @@ import {
   DEFAULT_SETUP,
   rulesFromLists,
 } from '../../../src/shared/constants';
-import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
+import type {
+  ContentEnforcementState,
+  DocumentContentCommand,
+} from '../../../src/shared/enforcement-v2';
 import type { Request } from '../../../src/shared/messages';
 import { isEventRecord, isSessionSnapshotV2 } from '../../../src/shared/runtime-validation';
 import {
@@ -34,7 +42,6 @@ import type {
   SessionConfigV2,
   SessionSnapshotV2,
 } from '../../../src/shared/types';
-import { appliedResponseFor, epochResetResponseFor } from './runtime-ports-fake';
 import { pendingTransition, timedFocusSession, transitionRuntime } from './runtime-v2-fixtures';
 
 // The worker imports the content script as a built asset. Under vitest that module would evaluate
@@ -140,6 +147,11 @@ async function bootWorker(
   const sync: Record<string, unknown> = {};
   const syncWrites: Array<Record<string, unknown>> = [];
   const documents: FakeDocument[] = [...(options.documents ?? [])];
+  /** What each `${tabId}:${documentId}` holds, kept by the real content state machine. */
+  const documentStates: Map<string, ContentEnforcementState> = new Map<
+    string,
+    ContentEnforcementState
+  >();
   const alarms: Map<string, AlarmRow> = new Map<string, AlarmRow>();
   const broadcasts: SessionSnapshotV2[] = [];
   const badges: string[] = [];
@@ -375,9 +387,17 @@ async function bootWorker(
           );
           if (row === undefined) throw new Error('Could not establish connection.');
           row.received.push(structuredClone(message));
-          return message.command === 'apply-enforcement'
-            ? appliedResponseFor(message, clock)
-            : epochResetResponseFor(message, clock);
+          // The document answers through the real content state machine, on the URL it is on, so
+          // a command the page refuses is refused here too rather than answered `applied`.
+          const key: string = `${tabId}:${row.documentId}`;
+          const result: ContentCommandResultV2 = handleContentCommandV2(
+            documentStates.get(key) ?? createContentEnforcementState(),
+            message,
+            row.url,
+            clock,
+          );
+          documentStates.set(key, result.state);
+          return result.response ?? undefined;
         },
       ),
       update: vi.fn(async (tabId: number, props: { muted?: boolean }): Promise<unknown> => {
