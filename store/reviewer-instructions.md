@@ -34,7 +34,7 @@ No account, payment, external service, or test credential is required. The exten
 
 ## Reset everything
 
-19. Choose Delete all Focus Lock data, then Confirm delete all Focus Lock data. Wait for `All Focus Lock data deleted.` This is the one control that can delete all Focus Lock data: every Focus Lock record on this device and, when sync is on, the synced copies in Chrome Sync, including the current session state. It returns the extension to setup, so the popup asks you to finish setup again. Do this last.
+19. Choose Delete all Focus Lock data, then Confirm delete all Focus Lock data. Wait for `All Focus Lock data deleted.` This is the one control that can delete all Focus Lock data: every Focus Lock record on this device and any Focus Lock copies left in Chrome Sync. It is available while no session is running, so end the session from step 10 first if one is still running. It returns the extension to setup, so the popup asks you to finish setup again. Do this last.
 
 ## Expected boundaries
 

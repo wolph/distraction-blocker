@@ -156,8 +156,14 @@ describe('Chrome Web Store release documentation contract', (): void => {
       // The Privacy and data page now starts an all-scope clear: `Confirmation` in
       // `options/PrivacyData.tsx` admits `'all'` and routes it through the worker's journal, which
       // ends at setup. Copy that names the two scoped deletions has to name this one and its end.
+      // The worker refuses the clear while the runtime holds a session, a gate, or an unlock
+      // (`assertStoppedRuntimeForAllDataClear`), and it removes the Chrome Sync copies in every
+      // mode, so the copy has to carry both of those as well.
       expect(document, path).toContain('delete all Focus Lock data');
+      expect(document, path).toContain('any Focus Lock copies left in Chrome Sync');
+      expect(document, path).toContain('available while no session is running');
       expect(document, path).toContain('returns the extension to setup');
+      expect(document, path).not.toContain('ends a running session');
     }
   });
 
