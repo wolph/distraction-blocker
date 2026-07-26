@@ -61,7 +61,11 @@ import {
   retryClosureCleanupV2,
   runClosureCleanupAttemptV2,
 } from './closure-runner-v2';
-import { sendDocumentEnforcementCommand, sendEpochResetCommand } from './content-transport-v2';
+import {
+  type DocumentCommandOutcomeV2,
+  sendDocumentEnforcementCommand,
+  sendEpochResetCommand,
+} from './content-transport-v2';
 import type {
   DocumentEnforcementAck,
   DocumentEpochResetAck,
@@ -124,6 +128,9 @@ interface PreparedDocumentCommandsV2 {
   commands: DocumentContentCommand[];
   blocked: boolean;
 }
+
+/** The transport's answer for each command one batch sent, keyed by document. Unsent ones are absent. */
+type DocumentDeliveryOutcomesV2 = ReadonlyMap<string, DocumentCommandOutcomeV2>;
 
 export interface SessionControllerEffectsV2 extends CleanupEffectPortsV2 {
   broadcast(snapshot: SessionSnapshotV2): void;
@@ -563,7 +570,7 @@ export class SessionControllerV2 {
         await handleTransitionNavigationV2(this.ports, transitionMatcherV2(this.ports), target);
       } else if (runtime.pendingClosure !== null) {
         await handleCleanupNavigationV2(this.ports, target);
-      } else {
+      } else if (!this.idleRuntimeOwesNothing(target)) {
         await this.sendCurrentCommands(target, attemptKind !== null);
       }
       return this.blockedNow(target);
@@ -828,7 +835,7 @@ export class SessionControllerV2 {
     base: RuntimeStateV2,
     events: SessionEventRecordV2[] = [],
     bank?: BankState,
-  ): Promise<void> {
+  ): Promise<DocumentDeliveryOutcomesV2> {
     if (base.pendingEnforcementTransition !== null) {
       // A running transition owns its frozen view, so the runner refreezes it under the new tuple
       // and the verification budget is left exactly as it was.
@@ -840,9 +847,11 @@ export class SessionControllerV2 {
       // stage back off any checkpoint the refreeze invalidated and carried the attempt count and
       // the ten-second deadline through, so the pass that reads this row resumes on what is left of
       // the original budget rather than a fresh one.
-      await this.deliverBatch(Object.values(this.ports.runtime().documentCommands));
+      const outcomes: DocumentDeliveryOutcomesV2 = await this.deliverBatch(
+        Object.values(this.ports.runtime().documentCommands),
+      );
       this.publish();
-      return;
+      return outcomes;
     }
     const session: SessionStateV2 | null = base.session;
     const runtimeRevision: number = base.runtimeRevision + 1;
@@ -866,8 +875,11 @@ export class SessionControllerV2 {
       aggregateSets: {},
       aggregateRemoves: [],
     });
-    await this.deliverBatch(Object.values(documentCommands));
+    const outcomes: DocumentDeliveryOutcomesV2 = await this.deliverBatch(
+      Object.values(documentCommands),
+    );
     this.publish();
+    return outcomes;
   }
 
   /** One checkpoint over the current durable row, for the events and the charge it carries. */
@@ -1358,7 +1370,9 @@ export class SessionControllerV2 {
   }
 
   /** Reset independent documents together, then persist all valid answers in one write. */
-  private async deliverBatch(commands: FrozenDocumentCommand[]): Promise<void> {
+  private async deliverBatch(
+    commands: FrozenDocumentCommand[],
+  ): Promise<DocumentDeliveryOutcomesV2> {
     const resets: Array<DocumentEpochResetAck | null> = await Promise.all(
       commands.map(
         async (command: FrozenDocumentCommand): Promise<DocumentEpochResetAck | null> => {
@@ -1394,33 +1408,42 @@ export class SessionControllerV2 {
         epochResetAcks,
       });
     }
+    const outcomes: Map<string, DocumentCommandOutcomeV2> = new Map();
     await Promise.all(
       commands.map(async (command: FrozenDocumentCommand): Promise<void> => {
         if (
           this.isCurrentDelivery(command) &&
           this.hasCurrentEpochAck(command.tabId, command.documentId)
         ) {
-          await sendDocumentEnforcementCommand(this.ports.transport, command);
+          outcomes.set(
+            documentCommandKeyV2(command.tabId, command.documentId),
+            await sendDocumentEnforcementCommand(this.ports.transport, command),
+          );
         }
       }),
     );
-  }
-
-  private isCurrentDelivery(command: FrozenDocumentCommand): boolean {
-    const runtime: RuntimeStateV2 = this.ports.runtime();
-    return (
-      command.enforcementEpoch === runtime.enforcementEpoch &&
-      exactDataEqual(
-        runtime.documentCommands[documentCommandKeyV2(command.tabId, command.documentId)],
-        command,
-      )
-    );
+    return outcomes;
   }
 
   /**
-   * The newest persisted command for one document, freezing one first when the map has none. The
-   * frozen value is durable before it is returned, so no caller ever sees a volatile view.
+   * Whether a command is still the one this runtime owes its document. A stored command is current
+   * while the map holds it exactly, and a pause, a break, or a purchased unlock keeps stored clears
+   * that way. A clear the map does not hold is current while the tuple it was computed from is the
+   * runtime's and nothing has been stored for that document since.
    */
+  private isCurrentDelivery(command: FrozenDocumentCommand): boolean {
+    const runtime: RuntimeStateV2 = this.ports.runtime();
+    if (command.enforcementEpoch !== runtime.enforcementEpoch) return false;
+    const stored: FrozenDocumentCommand | undefined =
+      runtime.documentCommands[documentCommandKeyV2(command.tabId, command.documentId)];
+    if (stored !== undefined) return exactDataEqual(stored, command);
+    return (
+      !command.verdict.blocked &&
+      command.runtimeRevision === runtime.runtimeRevision &&
+      command.basePolicyRevision === runtime.basePolicyRevision
+    );
+  }
+
   /**
    * The command a pulling document is answered with, or null when this runtime owes it none.
    *
@@ -1453,12 +1476,22 @@ export class SessionControllerV2 {
         expectedUrl: target.url,
       });
     }
+    if (this.idleRuntimeOwesNothing(target)) return null;
     // A navigation or a document's own pull names the URL it is on, so a stored command for
     // another URL is refrozen. A sweep only reports what a target already holds: its URL comes
     // from a tab query that may already be behind the navigation it is racing.
     return await this.currentCommandFor(target, attemptKind !== null);
   }
 
+  /**
+   * The command one document must apply outside a cleanup journal. A stored command is answered as
+   * it is, and a stored command for another URL is refrozen. Otherwise the command is computed from
+   * the current tuple, and only a blocked one is persisted before it is returned. An allowed page
+   * gets a clear the map never holds: a stored entry keeps the page address in the runtime for the
+   * rest of the session, and the map is bounded to the documents the session is blocking. The
+   * cleanup batch enumerates the live tabs on its own, so a page the map never held is still
+   * cleared at the end.
+   */
   private async currentCommandFor(
     target: {
       tabId: number;
@@ -1521,12 +1554,63 @@ export class SessionControllerV2 {
             )
           : null,
     });
+    if (!blocked) return command;
+    // A document that already acknowledged this epoch has applied something under it, and the
+    // clear it applied for an allowed page was never stored, so its tuple is not on record. The
+    // page accepts a different view only at a strictly higher tuple, which the current revision
+    // cannot be, so the entry joins through a live commit that advances the whole map. A document
+    // with no acknowledgement holds nothing yet and joins at the current revision.
+    if (
+      runtime.pendingEnforcementTransition === null &&
+      this.hasCurrentEpochAck(target.tabId, target.documentId)
+    ) {
+      return await this.freezeAcknowledgedTarget(runtime, key, command);
+    }
     await this.write({
       ...structuredClone(runtime),
       runtimeRevision,
       documentCommands: { ...structuredClone(runtime.documentCommands), [key]: command },
     });
     return command;
+  }
+
+  /**
+   * True when an idle runtime owes a document nothing. Every command an idle runtime sends is a
+   * clear, so a document that acknowledged this epoch and has no stored entry already shows one,
+   * either the batch clear the cleanup sent it or an idle clear it pulled. The batch clear names
+   * the closed session and an idle clear names the epoch as its reservation, so at the same base
+   * revision the page refuses the idle one, and sending it or answering it buys nothing.
+   */
+  private idleRuntimeOwesNothing(target: { tabId: number; documentId: string }): boolean {
+    const runtime: RuntimeStateV2 = this.ports.runtime();
+    return (
+      runtime.session === null &&
+      runtime.pendingClosure === null &&
+      runtime.pendingEnforcementTransition === null &&
+      runtime.documentCommands[documentCommandKeyV2(target.tabId, target.documentId)] ===
+        undefined &&
+      this.hasCurrentEpochAck(target.tabId, target.documentId)
+    );
+  }
+
+  /**
+   * Adds one blocked command for an acknowledged document through a live commit, so every stored
+   * command and this one land at the next revision and the page takes the new view.
+   */
+  private async freezeAcknowledgedTarget(
+    runtime: RuntimeStateV2,
+    key: string,
+    command: FrozenDocumentCommand,
+  ): Promise<FrozenDocumentCommand> {
+    await this.commitLiveViews({
+      ...structuredClone(runtime),
+      documentCommands: { ...structuredClone(runtime.documentCommands), [key]: command },
+    });
+    const frozen: FrozenDocumentCommand | undefined = this.ports.runtime().documentCommands[key];
+    if (frozen === undefined) {
+      throw new CoreError('invalid-rule', 'a live view lost the target it was built for');
+    }
+    return structuredClone(frozen);
   }
 
   /**
@@ -1563,7 +1647,8 @@ export class SessionControllerV2 {
   /**
    * One live update for a document that navigated within itself. Every command is refrozen at the
    * next revision, with this target's new URL in place, and the command for that target is what
-   * the caller sends.
+   * the caller sends. A target the new URL leaves unblocked is dropped from the map once the page
+   * has applied its clear.
    */
   private async refreezeChangedTarget(
     runtime: RuntimeStateV2,
@@ -1571,7 +1656,7 @@ export class SessionControllerV2 {
     stored: FrozenDocumentCommand,
     url: string,
   ): Promise<FrozenDocumentCommand> {
-    await this.commitLiveViews({
+    const outcomes: DocumentDeliveryOutcomesV2 = await this.commitLiveViews({
       ...structuredClone(runtime),
       documentCommands: {
         ...structuredClone(runtime.documentCommands),
@@ -1582,7 +1667,34 @@ export class SessionControllerV2 {
     if (refrozen === undefined) {
       throw new CoreError('invalid-rule', 'a refrozen live view lost the target it was built for');
     }
+    await this.dropAcknowledgedClear(key, refrozen, outcomes.get(key));
     return structuredClone(refrozen);
+  }
+
+  /**
+   * Drops the entry for a document the session no longer blocks, once the page has applied the
+   * clear the refreeze sent it. A clear nobody applied is still owed, and the retained entry is
+   * what the next live refresh resends. A running transition owns its frozen view, so its map is
+   * left exactly as the runner froze it.
+   */
+  private async dropAcknowledgedClear(
+    key: string,
+    refrozen: FrozenDocumentCommand,
+    outcome: DocumentCommandOutcomeV2 | undefined,
+  ): Promise<void> {
+    const runtime: RuntimeStateV2 = this.ports.runtime();
+    if (
+      refrozen.verdict.blocked ||
+      runtime.pendingEnforcementTransition !== null ||
+      outcome?.kind !== 'applied'
+    ) {
+      return;
+    }
+    const documentCommands: Record<string, FrozenDocumentCommand> = {};
+    for (const [existing, command] of Object.entries(runtime.documentCommands)) {
+      if (existing !== key) documentCommands[existing] = structuredClone(command);
+    }
+    await this.write({ ...structuredClone(runtime), documentCommands });
   }
 
   private resetCommandFor(target: {

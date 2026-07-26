@@ -56,6 +56,26 @@ async function readPersistedTabState(worker: Worker, url: string): Promise<Persi
   }, url);
 }
 
+interface RetainedCommands {
+  closurePending: boolean;
+  documentCommands: number;
+}
+
+/** Whether a closure journal is still stored, and how many document commands the runtime holds. */
+async function readRetainedCommands(worker: Worker): Promise<RetainedCommands> {
+  return await worker.evaluate(async (): Promise<RetainedCommands> => {
+    const stored: Record<string, unknown> = await chrome.storage.local.get('runtime');
+    const runtime = stored.runtime as {
+      pendingClosure?: unknown;
+      documentCommands?: Record<string, unknown>;
+    };
+    return {
+      closurePending: runtime.pendingClosure !== null && runtime.pendingClosure !== undefined,
+      documentCommands: Object.keys(runtime.documentCommands ?? {}).length,
+    };
+  });
+}
+
 async function restoredBlockedPage(launch: ExtensionLaunch, url: string): Promise<Page> {
   await expect
     .poll((): boolean =>
@@ -163,6 +183,13 @@ test('persistent profile restores a blocked muted tab and active countdown after
     .toBe('idle');
   await expect(restoredPage.locator('focus-lock-overlay')).toHaveCount(0);
   await expect(restoredPage.locator('#marker')).toHaveText('plain page');
+  // The end-of-session cleanup empties the command map in the write that removes its journal, so
+  // the idle runtime keeps no page address for the tab it just released.
+  await expect
+    .poll(async (): Promise<RetainedCommands> => await readRetainedCommands(second.worker), {
+      timeout: 15_000,
+    })
+    .toEqual({ closurePending: false, documentCommands: 0 });
 
   const settledTab: PersistedTabState = await readPersistedTabState(second.worker, url);
   expect(settledTab.hasTabState).toBe(false);

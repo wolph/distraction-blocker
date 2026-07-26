@@ -148,11 +148,28 @@ describe('Chrome Web Store release documentation contract', (): void => {
       expect(document, path).toContain('focus intention');
       expect(document, path).toContain('address of every website tab');
       expect(document, path).toContain('run until stopped');
-      // The clear commands a finished cleanup leaves behind cover every enforceable target, and
-      // `classifyEnforcementTargetV2` calls any top-frame http or https document enforceable
-      // whether or not it was blocked. Copy that says only "the pages the session enforced
-      // against" describes a smaller set than the one that is kept.
+      // The cleanup batch covers every enforceable target, and `classifyEnforcementTargetV2` calls
+      // any top-frame http or https document enforceable whether or not it was blocked, so copy
+      // must not shrink that set to the pages the session blocked. The closure runner empties the
+      // command map in the write that removes its journal, so copy has to make that promise as
+      // well, and the older wording that left the batch for the next session to replace is a
+      // description of retention the code no longer has.
+      expect(document, path).toContain('removes every one of them when it completes');
+      // The instructions go, the addresses do not all go with them: `epochResetAcks` keeps the URL
+      // of every tab that answered an epoch reset until an all-data clear rotates the epoch
+      // (`enforcement-persistence-v2.ts`, `DocumentEpochResetAck.url`). Copy has to say so next to
+      // the instruction promise, so a reader does not take "removes every one of them" as "the
+      // addresses are gone". The follow-up that prunes the acks retires this sentence.
+      expect(document, path).toContain(
+        "keeps that tab's address until Focus Lock's data is deleted as a whole",
+      );
+      // The record covers pages opened between sessions too: an idle runtime hands every fresh
+      // top-frame document a reset, and the acknowledgement carries the address. Copy must not
+      // narrow it to session time.
+      expect(document, path).not.toContain('during the session or its cleanup');
       expect(document, path).not.toContain('addresses of the pages');
+      // Lower-cased, because two documents carried the retired sentence in sentence-initial form.
+      expect(document.toLowerCase(), path).not.toContain('the next session replaces them');
       // The Privacy and data page now starts an all-scope clear: `Confirmation` in
       // `options/PrivacyData.tsx` admits `'all'` and routes it through the worker's journal, which
       // ends at setup. Copy that names the two scoped deletions has to name this one and its end.

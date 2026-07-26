@@ -16,6 +16,7 @@ import type {
   ScheduledAlarmV2,
 } from '../../../src/background/alarms-v2';
 import type { ContentTransportPortsV2 } from '../../../src/background/content-transport-v2';
+import type { FrozenDocumentCommand } from '../../../src/background/enforcement-persistence-v2';
 import type { EnforcementTargetPortsV2 } from '../../../src/background/enforcement-targets-v2';
 import {
   assertCommitPreconditionsV2,
@@ -25,11 +26,19 @@ import type { RuntimePortsV2 } from '../../../src/background/runtime-ports-v2';
 import type { CleanupTabClaim, RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validation';
 import type { ScheduleRunnerPortsV2 } from '../../../src/background/schedule-runner-v2';
+import {
+  type ContentCommandResultV2,
+  createContentEnforcementState,
+  handleContentCommandV2,
+} from '../../../src/content/enforcement-state';
 import { ALL_CATEGORIES } from '../../../src/core/categories';
 import type { CompiledMatcher } from '../../../src/core/matcher';
 import { compileSessionMatcher, evaluateUrl } from '../../../src/core/matcher';
 import { DEFAULT_LISTS, DEFAULT_SETTINGS } from '../../../src/shared/constants';
-import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
+import type {
+  ContentEnforcementState,
+  DocumentContentCommand,
+} from '../../../src/shared/enforcement-v2';
 import { CoreError } from '../../../src/shared/errors';
 import type { SoundId } from '../../../src/shared/messages';
 import { localDateStr } from '../../../src/shared/time';
@@ -151,6 +160,16 @@ export interface RuntimePortsFakeV2 extends RuntimePortsV2 {
   respondForDocument(tabId: number, documentId: string, responder: FakeResponderV2): void;
   /** Puts a document in the epoch it would hold after answering that epoch's reset. */
   setDocumentEpoch(tabId: number, documentId: string, epoch: string): void;
+  /** What the document holds, as `src/content/enforcement-state.ts` holds it. Null before any send. */
+  documentState(tabId: number, documentId: string): ContentEnforcementState | null;
+  /** How many commands the document refused, which the page answers with nothing at all. */
+  rejectedAnswers(tabId: number, documentId: string): number;
+  /**
+   * Applies an array the router handed the page from `getBlockState`, in order. A pull never goes
+   * through the transport, so a scenario that pulls has to apply the answer itself, exactly as the
+   * content script does before it renders.
+   */
+  applyPulled(tabId: number, documentId: string, commands: readonly DocumentContentCommand[]): void;
   /** Answers every send that carries one operation ID. Checked before the document responder. */
   respondForOperation(operationId: string, responder: FakeResponderV2): void;
   /** The last runtime this fake persisted, which is what `runtime()` returns. */
@@ -195,7 +214,8 @@ export function createRuntimePortsFakeV2(
     alarms: new Map<AlarmNameV2, ScheduledAlarmV2>(),
     byDocument: new Map<string, FakeResponderV2>(),
     byOperation: new Map<string, FakeResponderV2>(),
-    documentEpochs: seededDocumentEpochs(initial, options.documentEpochs),
+    documents: seededDocumentStates(initial, options.documentEpochs),
+    rejections: new Map<string, number>(),
     holdCommitReplay: false,
   };
   const writes: RuntimeStateV2[] = [];
@@ -364,7 +384,25 @@ export function createRuntimePortsFakeV2(
       state.byDocument.set(`${tabId}:${documentId}`, responder);
     },
     setDocumentEpoch: (tabId: number, documentId: string, epoch: string): void => {
-      state.documentEpochs.set(`${tabId}:${documentId}`, epoch);
+      state.documents.set(`${tabId}:${documentId}`, {
+        ...createContentEnforcementState(),
+        enforcementEpoch: epoch,
+      });
+    },
+    documentState: (tabId: number, documentId: string): ContentEnforcementState | null => {
+      const held: ContentEnforcementState | undefined = state.documents.get(
+        `${tabId}:${documentId}`,
+      );
+      return held === undefined ? null : structuredClone(held);
+    },
+    rejectedAnswers: (tabId: number, documentId: string): number =>
+      state.rejections.get(`${tabId}:${documentId}`) ?? 0,
+    applyPulled: (
+      tabId: number,
+      documentId: string,
+      commands: readonly DocumentContentCommand[],
+    ): void => {
+      for (const command of commands) answerAsDocument(state, tabId, documentId, command);
     },
     respondForOperation: (operationId: string, responder: FakeResponderV2): void => {
       state.byOperation.set(operationId, responder);
@@ -457,8 +495,10 @@ interface FakeStateV2 {
   now: number;
   /** While true, a commit stops after its checkpoint write, as production does before its replay. */
   holdCommitReplay: boolean;
-  /** The enforcement epoch each `${tabId}:${documentId}` currently holds, as the document sees it. */
-  documentEpochs: Map<string, string>;
+  /** What each `${tabId}:${documentId}` holds, kept by the real content state machine. */
+  documents: Map<string, ContentEnforcementState>;
+  /** How many commands each document refused, which the page answers with nothing. */
+  rejections: Map<string, number>;
   ids: string[];
   tabs: FakeTabRowV2[];
   tabSets: FakeTabRowV2[][];
@@ -518,28 +558,56 @@ function transportPorts(state: FakeStateV2, sends: FakeSendV2[]): ContentTranspo
 }
 
 /**
- * The epoch each document holds at seeding. A recorded `epochResetAcks` entry is the runtime's own
+ * What each document holds at seeding. A recorded `epochResetAcks` entry is the runtime's own
  * evidence that the document answered that epoch's reset, so the fake starts it in that epoch and
- * production's `hasEpochAck` skip stays consistent with what the document then answers. An explicit
- * `documentEpochs` option wins, for a scenario that wants a document out of step with the record.
+ * production's `hasEpochAck` skip stays consistent with what the document then answers. A stored
+ * command for that document at that epoch is the evidence of what it applied, so the document
+ * starts on that view and tuple, which is what makes it refuse a different view at the same tuple
+ * the way the page it stands in for would. An explicit `documentEpochs` option wins, for a scenario
+ * that wants a document out of step with the record.
  */
-function seededDocumentEpochs(
+function seededDocumentStates(
   initial: RuntimeStateV2,
   overrides: Record<string, string> | undefined,
-): Map<string, string> {
-  const epochs: Map<string, string> = new Map<string, string>();
+): Map<string, ContentEnforcementState> {
+  const documents: Map<string, ContentEnforcementState> = new Map<
+    string,
+    ContentEnforcementState
+  >();
   for (const [key, ack] of Object.entries(initial.epochResetAcks)) {
-    epochs.set(key, ack.enforcementEpoch);
+    const held: FrozenDocumentCommand | undefined = initial.documentCommands[key];
+    const applied: boolean = held !== undefined && held.enforcementEpoch === ack.enforcementEpoch;
+    documents.set(key, {
+      enforcementEpoch: ack.enforcementEpoch,
+      retiredEnforcementEpochs: [],
+      tuple:
+        held !== undefined && applied
+          ? {
+              enforcementEpoch: held.enforcementEpoch,
+              sessionId: held.sessionId,
+              reservedSessionId: held.reservedSessionId,
+              basePolicyRevision: held.basePolicyRevision,
+              runtimeRevision: held.runtimeRevision,
+            }
+          : null,
+      presentation: held !== undefined && applied ? held.presentation : null,
+      verdict: held !== undefined && applied ? structuredClone(held.verdict) : null,
+      overlay: held !== undefined && applied ? structuredClone(held.overlay) : null,
+    });
   }
-  for (const [key, epoch] of Object.entries(overrides ?? {})) epochs.set(key, epoch);
-  return epochs;
+  for (const [key, epoch] of Object.entries(overrides ?? {})) {
+    documents.set(key, { ...createContentEnforcementState(), enforcementEpoch: epoch });
+  }
+  return documents;
 }
 
 /**
- * What a well-behaved document answers when no responder is scripted for it. A document accepts an
- * enforcement command only for the epoch it currently holds, and it holds an epoch only after it has
- * answered a reset for it, exactly as `src/content/enforcement-state.ts` does. Answering `applied`
- * unconditionally is what let a broken handshake pass unnoticed, so the fake refuses to do it.
+ * What a well-behaved document answers when no responder is scripted for it: whatever the real
+ * content state machine answers. A document accepts an enforcement command only for the epoch it
+ * holds, only at a tuple above the one it holds or at the same tuple with the same view, and it
+ * answers nothing at all to a command it refuses, exactly as `src/content/enforcement-state.ts`
+ * does. The fake used to answer `applied` to every command at the epoch it held, which is how a
+ * command the page refuses passed every runner suite (docs/testing-rules.md, rule 3).
  */
 function defaultDocumentAnswer(
   state: FakeStateV2,
@@ -547,16 +615,32 @@ function defaultDocumentAnswer(
   documentId: string,
   message: DocumentContentCommand,
 ): unknown {
+  return answerAsDocument(state, tabId, documentId, message);
+}
+
+/** Runs one command through the document's own state and records what it answered. */
+function answerAsDocument(
+  state: FakeStateV2,
+  tabId: number,
+  documentId: string,
+  message: DocumentContentCommand,
+): unknown {
   const key: string = `${tabId}:${documentId}`;
-  if (message.command === 'reset-enforcement-epoch') {
-    state.documentEpochs.set(key, message.enforcementEpoch);
-    return epochResetResponseFor(message, state.now);
+  const held: ContentEnforcementState = state.documents.get(key) ?? createContentEnforcementState();
+  // The page reports the URL it is on. The fake has no page, so it reports the URL the command
+  // names: a document whose URL drifted is a scripted deviation through `respondForDocument`.
+  const result: ContentCommandResultV2 = handleContentCommandV2(
+    held,
+    message,
+    message.expectedUrl,
+    state.now,
+  );
+  state.documents.set(key, result.state);
+  if (result.response === null) {
+    state.rejections.set(key, (state.rejections.get(key) ?? 0) + 1);
+    return undefined;
   }
-  const held: string | null = state.documentEpochs.get(key) ?? null;
-  if (held !== message.enforcementEpoch) {
-    return resetRequiredResponseFor(message, held, state.now);
-  }
-  return appliedResponseFor(message, state.now);
+  return result.response;
 }
 
 function alarmPorts(

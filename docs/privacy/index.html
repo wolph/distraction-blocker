@@ -101,7 +101,7 @@
                 aggregate statistics. It does not clear the current live-session runtime, which
                 holds the focus intention and the address of every website tab open while the session
                 runs. A session set to run until stopped holds that runtime until you end it.
-                Retention below says what ending a session clears and what it leaves.
+                Retention below says what ending a session clears.
               </p>
             </div>
           </article>
@@ -183,12 +183,12 @@
               session ends on its own. A session set to run until stopped has no timer, so it lasts
               until you end it. Delete local history does not reach this runtime, which is
               deliberate, because a session cannot keep enforcing if the state it runs on is
-              deleted underneath it. Ending a session clears the session and its intention. It
-              leaves one clear instruction for each website tab that was open at the time, each
-              holding that tab's address, whether or not that tab was blocked. Those instructions
-              are what a returning page checks itself against, so they outlive the session by
-              design. The next session replaces them, and no other Focus Lock control removes them
-              on its own.
+              deleted underneath it. Ending a session clears the session and its intention, and
+              starts a cleanup that sends one clear instruction to each website tab open at the
+              time, whether or not that tab was blocked. Each instruction holds that tab's address
+              while the cleanup runs, and the cleanup removes every one of them when it completes.
+              A record of each tab that received an instruction, in or between sessions, keeps
+              that tab's address until Focus Lock's data is deleted as a whole.
             </dd>
           </div>
           <div>
@@ -233,7 +233,7 @@
     <footer>
       <div>
         <strong>Focus Lock privacy</strong>
-        <span>Last updated July 25, 2026</span>
+        <span>Last updated July 26, 2026</span>
       </div>
       <a href="https://github.com/wolph/distraction-blocker">https://github.com/wolph/distraction-blocker</a>
       <a href="https://github.com/wolph/distraction-blocker/issues">Support and issue reports</a>
