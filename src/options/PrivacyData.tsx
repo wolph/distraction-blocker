@@ -157,7 +157,9 @@ function ConfirmationDialog(props: {
           this device
           {props.localOnlyAggregates ? ', plus local-only aggregate statistics' : ''}. It does not
           clear a running session, which keeps its intention and the address of every website tab
-          open while it runs. Ending the session clears them once its cleanup completes.
+          open while it runs. Ending the session clears the intention and, once its cleanup
+          completes, the instructions it sent to those tabs. A record of each tab that confirmed an
+          instruction keeps that tab's address until Focus Lock's data is deleted as a whole.
         </p>
       ) : (
         <p>

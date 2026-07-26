@@ -155,8 +155,17 @@ describe('Chrome Web Store release documentation contract', (): void => {
       // well, and the older wording that left the batch for the next session to replace is a
       // description of retention the code no longer has.
       expect(document, path).toContain('removes every one of them when it completes');
+      // The instructions go, the addresses do not all go with them: `epochResetAcks` keeps the URL
+      // of every tab that answered an epoch reset until an all-data clear rotates the epoch
+      // (`enforcement-persistence-v2.ts`, `DocumentEpochResetAck.url`). Copy has to say so next to
+      // the instruction promise, so a reader does not take "removes every one of them" as "the
+      // addresses are gone". The follow-up that prunes the acks retires this sentence.
+      expect(document, path).toContain(
+        "keeps that tab's address until Focus Lock's data is deleted as a whole",
+      );
       expect(document, path).not.toContain('addresses of the pages');
-      expect(document, path).not.toContain('the next session replaces them');
+      // Lower-cased, because two documents carried the retired sentence in sentence-initial form.
+      expect(document.toLowerCase(), path).not.toContain('the next session replaces them');
       // No shipped surface starts an all-scope clear: `Confirmation` in `options/PrivacyData.tsx`
       // admits only local history and synced policy, and the one `'all'` branch there retries a
       // clear that is already stuck. Copy must not offer deleting all data as the way out.
