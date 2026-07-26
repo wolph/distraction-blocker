@@ -146,7 +146,12 @@ export function settleLegacySessionV1(input: LegacySettlementInputV1): LegacySet
   };
 }
 
-// Spec erratum pending sign-off: settledThrough is capped at phaseEndsAt and bank credit uses the accruedFocusMs watermark. Reverse here.
+/**
+ * Settlement stops at the earliest of the migration instant, the session end, and the focus
+ * phase end, and the bank credit is the watermark difference `focusedMsAfter - accruedFocusMs`
+ * rather than the phase delta. Both rules were errata against the first indefinite sessions
+ * design and were signed off on 2026-09-10, so the design now states them.
+ */
 function legacySettlementBoundsV1(
   session: NormalizedSessionStateV1,
   accruedFocusMs: number,

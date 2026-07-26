@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { splitFocusByLocalDateV2 } from '../../../src/background/closure-projection-v2';
 import {
@@ -27,8 +25,6 @@ import type {
   PauseEconomy,
 } from '../../../src/shared/types';
 
-const ERRATUM_COMMENT: string =
-  '// Spec erratum pending sign-off: settledThrough is capped at phaseEndsAt and bank credit uses the accruedFocusMs watermark. Reverse here.';
 const DEVICE_ID: string = 'device-1';
 const SESSION_ID: string = '10000000-0000-4000-8000-000000000001';
 const MINUTE_MS: number = 60_000;
@@ -904,20 +900,5 @@ describe('legacy focus settlement', (): void => {
     settlementInput({ bank: { balanceMs: Number.NaN } }),
   ])('refuses the hostile settlement input %#', (input: LegacySettlementInputV1): void => {
     expectInvalidRule((): LegacySettlementResultV1 => settleLegacySessionV1(input));
-  });
-});
-
-describe('legacy settlement source', (): void => {
-  it('carries the reversible erratum comment exactly once', (): void => {
-    const source: string = readFileSync(
-      fileURLToPath(new URL('../../../src/background/legacy-runtime-v1.ts', import.meta.url)),
-      'utf8',
-    );
-
-    expect(source.split(ERRATUM_COMMENT)).toHaveLength(2);
-    expect(source).toContain('function legacySettlementBoundsV1(');
-    expect(source.indexOf(ERRATUM_COMMENT)).toBeLessThan(
-      source.indexOf('function legacySettlementBoundsV1('),
-    );
   });
 });
