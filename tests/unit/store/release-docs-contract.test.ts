@@ -163,6 +163,10 @@ describe('Chrome Web Store release documentation contract', (): void => {
       expect(document, path).toContain(
         "keeps that tab's address until Focus Lock's data is deleted as a whole",
       );
+      // The record covers pages opened between sessions too: an idle runtime hands every fresh
+      // top-frame document a reset, and the acknowledgement carries the address. Copy must not
+      // narrow it to session time.
+      expect(document, path).not.toContain('during the session or its cleanup');
       expect(document, path).not.toContain('addresses of the pages');
       // Lower-cased, because two documents carried the retired sentence in sentence-initial form.
       expect(document.toLowerCase(), path).not.toContain('the next session replaces them');
