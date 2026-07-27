@@ -234,7 +234,11 @@ describe('prepareClosureV2', (): void => {
   });
 
   it.each([
-    ['no durable session', closingRuntime({ session: null, enforcementCheckpoint: null })],
+    // An idle runtime holds no commands either, or the parser refuses it before the closure does.
+    [
+      'no durable session',
+      closingRuntime({ session: null, enforcementCheckpoint: null, documentCommands: {} }),
+    ],
     ['a closure already prepared', null],
   ])(
     'refuses a closure with %s',

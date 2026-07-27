@@ -38,12 +38,10 @@ import { CoreError } from '../../../src/shared/errors';
 import { isSetupState } from '../../../src/shared/runtime-validation';
 import {
   ATTEMPT_DEBOUNCE_KEY,
-  CLEANUP_OPERATION_ID,
   cancelGateState,
   cleanupClosureRuntime,
   cleanupRetryState,
   cleanupTransition,
-  clearCommandMap,
   dailyAgg,
   deferredBlockClaimMap,
   documentKey,
@@ -475,17 +473,8 @@ describe('data clear journal parsing', (): void => {
       resetRuntime({ scheduleUnavailableNoticeToken: `${ENTRY_ID}@${LOCAL_DATE}` }),
     ],
     ['a prune watermark', resetRuntime({ lastPruneDate: LOCAL_DATE })],
-    [
-      'a document command',
-      resetRuntime({
-        documentCommands: clearCommandMap({
-          operationId: CLEANUP_OPERATION_ID,
-          enforcementEpoch: RESET_EPOCH,
-          basePolicyRevision: 0,
-          runtimeRevision: 0,
-        }),
-      }),
-    ],
+    // A document command on an idle runtime is no longer a case here: the runtime parser refuses
+    // it before any journal rule sees it, which `runtime-v2-validation.test.ts` pins.
     [
       'a pending transition',
       transitionRuntime(cleanupTransition('start', 'starting-verified', 'start-abandon')),

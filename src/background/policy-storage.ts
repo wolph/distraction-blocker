@@ -292,10 +292,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * another owner is still driving. A prepared target reservation lives inside a transition and
  * nowhere else, so refusing the transition is what covers it.
  *
- * What a stopped profile legitimately keeps is deliberately not required to be idle. The clear
- * commands an abandoned start's cleanup leaves in `documentCommands`, the epoch acknowledgements,
- * the revisions, and the day's aggregate all survive a stop. Resetting those to the idle projection
- * `data-clear-journal` validates is the clear's own job, not a precondition for running it.
+ * What a stopped profile legitimately keeps is deliberately not required to be idle. The epoch
+ * acknowledgements, the revisions, and the day's aggregate all survive a stop. Resetting those to
+ * the idle projection `data-clear-journal` validates is the clear's own job, not a precondition
+ * for running it.
  */
 function isStoppedRuntimeV2(runtime: RuntimeStateV2): boolean {
   return (

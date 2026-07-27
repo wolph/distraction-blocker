@@ -33,6 +33,7 @@ import {
   deferredClaimKey,
   documentKey,
   ENTRY_ID,
+  EPOCH_ID,
   emptyRuntimeV2,
   epochResetAck,
   epochResetAckMap,
@@ -506,6 +507,30 @@ describe('background runtime epoch, revision, and checkpoint relationships', ():
       }),
     ]);
     expectAccepted([emptyRuntimeV2({ runtimeRevision: 12, documentCommands: {} })]);
+  });
+
+  it('requires an idle runtime with no journal to hold no document commands', (): void => {
+    // Every path that ends a session or a transition empties the map in the write that removes
+    // the journal, so a map on an idle runtime is a page address nothing will ever send to.
+    expectRejected([
+      emptyRuntimeV2({
+        runtimeRevision: CLEAR_RUNTIME_REVISION,
+        documentCommands: clearCommandMap(),
+      }),
+      emptyRuntimeV2({
+        runtimeRevision: CLEAR_RUNTIME_REVISION,
+        documentCommands: clearCommandMap({ sessionId: null, reservedSessionId: EPOCH_ID }),
+      }),
+    ]);
+    expectAccepted([
+      emptyRuntimeV2({ runtimeRevision: CLEAR_RUNTIME_REVISION, documentCommands: {} }),
+      // A retained batch under a durable pause or break is a running session, not an idle one.
+      pausedRuntime(),
+      breakRuntime(),
+      // A cleanup journal owns its batch until the write that removes it.
+      cleanupClosureRuntime(),
+      cleanupTransitionRuntime('start', 'prepared', 'start-abandon'),
+    ]);
   });
 
   it('accepts a resume transition over the retained batch at its older revision', (): void => {

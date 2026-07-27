@@ -419,6 +419,7 @@ function validateDetachedRuntimeStateV2(value: unknown): value is RuntimeStateV2
   return (
     resetAcksAgree(authority) &&
     documentCommandsAgree(authority) &&
+    idleRuntimeHoldsNoCommands(authority) &&
     enforcementCheckpointAgrees(authority) &&
     transitionAgrees(authority) &&
     closureAgrees(authority) &&
@@ -565,6 +566,18 @@ function documentCommandsAgree(authority: RuntimeAuthority): boolean {
         (command.runtimeRevision === authority.runtimeRevision &&
           command.basePolicyRevision === authority.basePolicyRevision)),
   );
+}
+
+/**
+ * An idle runtime holds no document commands. Every write that removes a journal from a runtime
+ * with no session empties the map with it, the closure removal and the abandoned start alike, and
+ * an idle runtime persists a command for no page it is asked about. A command on an idle runtime
+ * is a page address nothing will ever send to, so it is refused rather than carried.
+ */
+function idleRuntimeHoldsNoCommands(authority: RuntimeAuthority): boolean {
+  const idle: boolean =
+    authority.session === null && authority.transition === null && authority.closure === null;
+  return !idle || Object.keys(authority.documentCommands).length === 0;
 }
 
 /**
