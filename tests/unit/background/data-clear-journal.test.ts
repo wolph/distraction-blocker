@@ -166,15 +166,18 @@ function resetCommand(overrides: Partial<FrozenEpochResetCommand> = {}): FrozenE
   };
 }
 
+/** The journal keeps the transport's acknowledgement whole, address included, unlike the runtime. */
 function resetAck(overrides: Partial<DocumentEpochResetAck> = {}): DocumentEpochResetAck {
-  return epochResetAck({
-    operationId: RESET_OPERATION,
-    enforcementEpoch: RESET_EPOCH,
-    tabId: 11,
-    documentId: 'document-1',
+  return {
+    ...epochResetAck({
+      operationId: RESET_OPERATION,
+      enforcementEpoch: RESET_EPOCH,
+      tabId: 11,
+      documentId: 'document-1',
+    }),
     url: TARGET_URL,
     ...overrides,
-  });
+  };
 }
 
 function resetProgress(overrides: Partial<DataClearResetProgress> = {}): DataClearResetProgress {
@@ -442,7 +445,17 @@ describe('data clear journal parsing', (): void => {
     ['a non-zero base revision', resetRuntime({ basePolicyRevision: 1 })],
     ['a non-zero runtime revision', resetRuntime({ runtimeRevision: 1 })],
     ['another enforcement epoch', resetRuntime({ enforcementEpoch: OTHER_OPERATION })],
-    ['a reset acknowledgement', resetRuntime({ epochResetAcks: { [FIRST_KEY]: resetAck() } })],
+    [
+      'a reset acknowledgement',
+      resetRuntime({
+        epochResetAcks: {
+          [FIRST_KEY]: epochResetAck({
+            operationId: RESET_OPERATION,
+            enforcementEpoch: RESET_EPOCH,
+          }),
+        },
+      }),
+    ],
     [
       'a commit checkpoint',
       resetRuntime({ commitCheckpoint: runtimeCommitCheckpoint(resetRuntime()) }),

@@ -677,6 +677,7 @@ describe('handleCleanupNavigationV2', (): void => {
       'apply-enforcement',
     ]);
     expect(Object.keys(fake.current().epochResetAcks)).toContain(documentKey(12, 'document-12'));
+    expect(fake.current().epochResetAcks[documentKey(12, 'document-12')]).not.toHaveProperty('url');
   });
 
   it('ignores a target outside the enforceable set', async (): Promise<void> => {

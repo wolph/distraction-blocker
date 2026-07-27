@@ -20,6 +20,7 @@ import type {
   DocumentEpochResetAck,
   EnforcementCheckpoint,
   EnforcementTargetExclusion,
+  EpochResetAckRecord,
   FrozenDocumentCommand,
   FrozenEpochResetCommand,
 } from './enforcement-persistence-v2';
@@ -74,6 +75,15 @@ const EPOCH_RESET_ACK_KEYS: readonly string[] = [
   'url',
   'handledAt',
 ];
+/** The stored record is the acknowledgement without the page address the transport echoed. */
+const EPOCH_RESET_ACK_RECORD_KEYS: readonly string[] = [
+  'version',
+  'operationId',
+  'enforcementEpoch',
+  'tabId',
+  'documentId',
+  'handledAt',
+];
 const EXCLUSION_KEYS: readonly string[] = ['tabId', 'documentId', 'url', 'reason'];
 const CHECKPOINT_KEYS: readonly string[] = [
   'version',
@@ -107,6 +117,11 @@ export function parseDocumentEnforcementAck(value: unknown): DocumentEnforcement
 export function parseDocumentEpochResetAck(value: unknown): DocumentEpochResetAck | null {
   const snapshot: unknown = snapshotExactData(value)?.value;
   return validateDetachedDocumentEpochResetAck(snapshot) ? snapshot : null;
+}
+
+export function parseEpochResetAckRecord(value: unknown): EpochResetAckRecord | null {
+  const snapshot: unknown = snapshotExactData(value)?.value;
+  return validateDetachedEpochResetAckRecord(snapshot) ? snapshot : null;
 }
 
 export function parseEnforcementTargetExclusion(value: unknown): EnforcementTargetExclusion | null {
@@ -184,6 +199,24 @@ export function validateDetachedDocumentEpochResetAck(
     isNonNegativeInteger(candidate.tabId) &&
     isNonBlankString(candidate.documentId) &&
     isNonBlankString(candidate.url) &&
+    isSafeTimestamp(candidate.handledAt)
+  );
+}
+
+/**
+ * Accepts only already-detached exact plain data from snapshotExactData. A record carrying a `url`
+ * is refused outright: it is the shape a build before the record stored, and the runtime drops it
+ * rather than keeping an address the record exists not to hold.
+ */
+export function validateDetachedEpochResetAckRecord(value: unknown): value is EpochResetAckRecord {
+  const candidate: UnknownRecord | null = exactRecord(value, EPOCH_RESET_ACK_RECORD_KEYS);
+  return (
+    candidate !== null &&
+    candidate.version === 1 &&
+    isUuid(candidate.operationId) &&
+    isUuid(candidate.enforcementEpoch) &&
+    isNonNegativeInteger(candidate.tabId) &&
+    isNonBlankString(candidate.documentId) &&
     isSafeTimestamp(candidate.handledAt)
   );
 }

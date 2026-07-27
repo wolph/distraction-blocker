@@ -338,6 +338,10 @@ describe('driveTransitionV2 start sequence', (): void => {
     expect(firstReset).toBe(0);
     expect(firstReset).toBeLessThan(firstEnforcement);
     expect(Object.keys(fake.current().epochResetAcks).length).toBeGreaterThan(0);
+    // The sweep records that the document acknowledged the epoch and nothing about its page.
+    for (const ack of Object.values(fake.current().epochResetAcks)) {
+      expect(ack).not.toHaveProperty('url');
+    }
   });
 
   it('enters reservation-release cleanup when the audit fails', async (): Promise<void> => {

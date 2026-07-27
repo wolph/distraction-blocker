@@ -8,8 +8,8 @@
 
 import type {
   DocumentEnforcementAck,
-  DocumentEpochResetAck,
   EnforcementCheckpoint,
+  EpochResetAckRecord,
   FrozenDocumentCommand,
 } from '../../../src/background/enforcement-persistence-v2';
 import type {
@@ -1068,24 +1068,22 @@ export function sessionStartedEvent(
   };
 }
 
-export function epochResetAck(
-  overrides: Partial<DocumentEpochResetAck> = {},
-): DocumentEpochResetAck {
+/** What the runtime keeps of one epoch reset acknowledgement: the document and its epoch, no address. */
+export function epochResetAck(overrides: Partial<EpochResetAckRecord> = {}): EpochResetAckRecord {
   return {
     version: 1,
     operationId: OTHER_OPERATION_ID,
     enforcementEpoch: EPOCH_ID,
     tabId: 11,
     documentId: 'document-1',
-    url: TARGET_URL,
     handledAt: REQUESTED_AT,
     ...overrides,
   };
 }
 
 export function epochResetAckMap(
-  overrides: Partial<DocumentEpochResetAck> = {},
-): Record<string, DocumentEpochResetAck> {
+  overrides: Partial<EpochResetAckRecord> = {},
+): Record<string, EpochResetAckRecord> {
   return { [documentKey(11, 'document-1')]: epochResetAck(overrides) };
 }
 

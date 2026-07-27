@@ -47,6 +47,7 @@ import type {
   DocumentEpochResetAck,
   EnforcementCheckpoint,
   EnforcementTargetExclusion,
+  EpochResetAckRecord,
   FrozenDocumentCommand,
   FrozenEpochResetCommand,
 } from './enforcement-persistence-v2';
@@ -62,6 +63,7 @@ import {
   type SweepDriverV2,
   type TargetClassificationV2,
 } from './enforcement-targets-v2';
+import { withEpochResetAckV2 } from './epoch-reset-acks-v2';
 import {
   buildActiveOverlayView,
   buildFrozenDocumentCommandV2,
@@ -1182,7 +1184,7 @@ function sweepDriver(
     },
     hasEpochAck: (tabId: number, documentId: string): boolean => {
       const runtime: RuntimeStateV2 = ports.runtime();
-      const ack: DocumentEpochResetAck | undefined =
+      const ack: EpochResetAckRecord | undefined =
         runtime.epochResetAcks[documentCommandKeyV2(tabId, documentId)];
       return ack !== undefined && ack.enforcementEpoch === runtime.enforcementEpoch;
     },
@@ -1191,10 +1193,7 @@ function sweepDriver(
       await ports.writeRuntime(
         requireValid({
           ...structuredClone(runtime),
-          epochResetAcks: {
-            ...structuredClone(runtime.epochResetAcks),
-            [documentCommandKeyV2(ack.tabId, ack.documentId)]: structuredClone(ack),
-          },
+          epochResetAcks: withEpochResetAckV2(runtime.epochResetAcks, ack),
         }),
       );
     },

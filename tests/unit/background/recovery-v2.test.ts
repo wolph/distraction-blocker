@@ -573,6 +573,10 @@ describe('recovery of a durable session', (): void => {
     expect(sentCommands(test.ports)[0]).toBe('reset-enforcement-epoch');
     expect(test.ports.current().epochResetAcks[`11:${DOC_ONE}`]).toBeDefined();
     expect(test.ports.current().epochResetAcks[`12:${DOC_TWO}`]).toBeDefined();
+    // The record answers one question, whether the document acknowledged this epoch, so the page
+    // address the transport echoes stops at the transport.
+    expect(test.ports.current().epochResetAcks[`11:${DOC_ONE}`]).not.toHaveProperty('url');
+    expect(test.ports.current().epochResetAcks[`12:${DOC_TWO}`]).not.toHaveProperty('url');
   });
 
   it('recovers a migrated session that never had a checkpoint', async (): Promise<void> => {

@@ -367,7 +367,11 @@ describe('background runtime top-level leaves', (): void => {
       withKey(emptyRuntimeV2(), 'basePolicyRevision', 1.5),
       withKey(emptyRuntimeV2(), 'runtimeRevision', -1),
       withKey(emptyRuntimeV2(), 'epochResetAcks', { wrong: epochResetAck() }),
-      withKey(emptyRuntimeV2(), 'epochResetAcks', epochResetAckMap({ url: '' })),
+      // The record carries no page address. One that does is the shape a build before the record
+      // stored, and the runtime refuses it rather than keeping the address it was meant to drop.
+      withKey(emptyRuntimeV2(), 'epochResetAcks', {
+        [documentKey(11, 'document-1')]: withKey(epochResetAck(), 'url', TARGET_URL),
+      }),
     ]);
   });
 

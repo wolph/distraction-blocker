@@ -42,6 +42,7 @@ import {
   enumerateEnforcementTargetsV2,
   type TargetClassificationV2,
 } from './enforcement-targets-v2';
+import { epochResetAcksForTabsV2 } from './epoch-reset-acks-v2';
 import { carryCommitCheckpointProjectionV2, projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
 import type {
@@ -369,6 +370,12 @@ async function reissueClearCommands(
  * lasted, and once the batch has done its work what it would keep is the address of every page
  * open at the end, for as long as the profile sits idle. A page that returns pulls a fresh clear
  * from the idle runtime, so nothing needs the batch after this write.
+ *
+ * The write also drops the acknowledgement records of tabs the browser no longer lists. A tab
+ * closed while the worker was asleep, or renumbered by a browser restart, sends no removal event
+ * this runtime hears, so the end of a session is where those records are bounded. A document in a
+ * tab that is still open keeps its record: the back-forward cache can hand that document back, and
+ * the record is what tells the idle runtime it already holds a clear rather than owing one.
  */
 async function removeClosureJournal(ports: RuntimePortsV2): Promise<RuntimeStateV2> {
   const closure: CleanupClosureV2 = cleanupClosureOf(ports);
@@ -387,10 +394,12 @@ async function removeClosureJournal(ports: RuntimePortsV2): Promise<RuntimeState
     }
     ports.reportError(new CoreError('invalid-rule', `${detail} after its last automatic attempt`));
   }
+  const openTabIds: ReadonlySet<number> = await openTabIdsV2(ports);
   const next: RuntimeStateV2 = validated({
     ...structuredClone(ports.runtime()),
     pendingClosure: null,
     documentCommands: {},
+    epochResetAcks: epochResetAcksForTabsV2(ports.runtime().epochResetAcks, openTabIds),
   });
   try {
     await ports.writeRuntime(next);
@@ -404,6 +413,13 @@ async function removeClosureJournal(ports: RuntimePortsV2): Promise<RuntimeState
     );
   }
   return next;
+}
+
+/** The tabs the browser lists right now, whatever each one shows. */
+async function openTabIdsV2(ports: RuntimePortsV2): Promise<ReadonlySet<number>> {
+  const open: Array<{ tabId: number; url: string | null }> =
+    await ports.targets.queryTopFrameTabs();
+  return new Set<number>(open.map((tab: { tabId: number }): number => tab.tabId));
 }
 
 /** Records the tabs whose captured effects were verified clean, so a retry leaves them alone. */

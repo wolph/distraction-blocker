@@ -25,6 +25,7 @@ import { closeSessionV2, commitClosureV2, runClosureCleanupAttemptV2 } from './c
 import type {
   DocumentEpochResetAck,
   EnforcementCheckpoint,
+  EpochResetAckRecord,
   FrozenDocumentCommand,
   FrozenEpochResetCommand,
 } from './enforcement-persistence-v2';
@@ -37,6 +38,7 @@ import {
   type SweepDriverV2,
   type TargetClassificationV2,
 } from './enforcement-targets-v2';
+import { withEpochResetAckV2 } from './epoch-reset-acks-v2';
 import {
   buildActiveOverlayView,
   buildFrozenDocumentCommandV2,
@@ -441,7 +443,7 @@ function recoveryDriver(
       }),
     hasEpochAck: (tabId: number, documentId: string): boolean => {
       const runtime: RuntimeStateV2 = ports.runtime();
-      const ack: DocumentEpochResetAck | undefined =
+      const ack: EpochResetAckRecord | undefined =
         runtime.epochResetAcks[documentCommandKeyV2(tabId, documentId)];
       return ack !== undefined && ack.enforcementEpoch === runtime.enforcementEpoch;
     },
@@ -449,10 +451,7 @@ function recoveryDriver(
       const runtime: RuntimeStateV2 = ports.runtime();
       await writeRuntime(ports, {
         ...runtime,
-        epochResetAcks: {
-          ...structuredClone(runtime.epochResetAcks),
-          [documentCommandKeyV2(ack.tabId, ack.documentId)]: structuredClone(ack),
-        },
+        epochResetAcks: withEpochResetAckV2(runtime.epochResetAcks, ack),
       });
     },
     transport: ports.transport,

@@ -17,8 +17,8 @@ import type {
   Strictness,
 } from '../shared/types';
 import type {
-  DocumentEpochResetAck,
   EnforcementCheckpoint,
+  EpochResetAckRecord,
   FrozenDocumentCommand,
 } from './enforcement-persistence-v2';
 import type { DeferredBlockClaim, RuntimeTabState } from './runtime-leaf-types';
@@ -198,7 +198,7 @@ export interface RuntimeDomainProjectionV2 {
   accruedFocusMs: number;
   handledScheduleOccurrences: HandledScheduleOccurrence[];
   enforcementEpoch: string;
-  epochResetAcks: Record<string, DocumentEpochResetAck>;
+  epochResetAcks: Record<string, EpochResetAckRecord>;
   basePolicyRevision: number;
   runtimeRevision: number;
   documentCommands: Record<string, FrozenDocumentCommand>;
@@ -267,7 +267,7 @@ export interface RuntimeStateV2 {
   scheduleUnavailableNoticeToken: string | null;
   handledScheduleOccurrences: HandledScheduleOccurrence[];
   enforcementEpoch: string;
-  epochResetAcks: Record<string, DocumentEpochResetAck>;
+  epochResetAcks: Record<string, EpochResetAckRecord>;
   basePolicyRevision: number;
   runtimeRevision: number;
   documentCommands: Record<string, FrozenDocumentCommand>;

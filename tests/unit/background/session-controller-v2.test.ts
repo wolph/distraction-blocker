@@ -1706,6 +1706,146 @@ describe('SessionControllerV2 navigation and documents', (): void => {
     expect(Object.keys(ports.current().epochResetAcks)).toEqual([documentKey(11, DOC_ONE)]);
   });
 
+  it('records an acknowledgement without the page address', async (): Promise<void> => {
+    const { controller, ports } = harness();
+    const pushed: { tabId: number; documentId: string; url: string } = {
+      tabId: 11,
+      documentId: DOC_ONE,
+      url: BLOCKED_URL,
+    };
+    const pulled: { tabId: number; documentId: string; url: string } = {
+      tabId: 12,
+      documentId: 'document-2',
+      url: 'https://example.org/reading',
+    };
+
+    await controller.handleNavigation(pushed, null);
+    ports.applyPulled(
+      12,
+      'document-2',
+      await controller.documentCommandsFor(pulled, 'navigation', 'deliver'),
+    );
+
+    // Every reader of the record asks whether this document acknowledged this epoch. The push
+    // path records the transport's answer and the pull path mints the record itself, and neither
+    // keeps the address the reset named.
+    for (const target of [pushed, pulled]) {
+      const record = ports.current().epochResetAcks[documentKey(target.tabId, target.documentId)];
+      expect(record).toEqual({
+        version: 1,
+        operationId: expect.any(String),
+        enforcementEpoch: ports.current().enforcementEpoch,
+        tabId: target.tabId,
+        documentId: target.documentId,
+        handledAt: expect.any(Number),
+      });
+      expect(record).not.toHaveProperty('url');
+    }
+    expect(ports.rejectedAnswers(11, DOC_ONE)).toBe(0);
+    expect(ports.rejectedAnswers(12, 'document-2')).toBe(0);
+    expect(parseRuntimeStateV2(ports.current())).not.toBeNull();
+  });
+
+  it('forgets the acknowledgements of a closed tab', async (): Promise<void> => {
+    const { controller, ports } = harness(
+      publishedFocusRuntime({
+        epochResetAcks: {
+          ...epochResetAckMap(),
+          [documentKey(12, 'document-2')]: epochResetAck({ tabId: 12, documentId: 'document-2' }),
+          [documentKey(12, 'document-3')]: epochResetAck({ tabId: 12, documentId: 'document-3' }),
+        },
+      }),
+    );
+    const writes: number = ports.writes.length;
+
+    await controller.forgetTab(12);
+
+    // A closed tab's documents are gone, the back-forward cache included, so nothing will ever
+    // ask whether they acknowledged an epoch again. Every other record stays.
+    expect(Object.keys(ports.current().epochResetAcks)).toEqual([documentKey(11, DOC_ONE)]);
+    expect(ports.writes).toHaveLength(writes + 1);
+    expect(parseRuntimeStateV2(ports.current())).not.toBeNull();
+
+    // A tab with no record writes nothing.
+    await controller.forgetTab(99);
+    expect(ports.writes).toHaveLength(writes + 1);
+  });
+
+  it('keeps a restored document acknowledged after cleanup pruned the closed tabs', async (): Promise<void> => {
+    const reading: { tabId: number; documentId: string; url: string } = {
+      tabId: 13,
+      documentId: 'document-13',
+      url: 'https://example.org/reading',
+    };
+    const { controller, ports } = harness(
+      publishedFocusRuntime({ session: timedFocusSession({ config: flexibleConfig() }) }),
+      {
+        tabs: [
+          { tabId: 11, url: BLOCKED_URL, documentId: DOC_BLOCKED },
+          { tabId: reading.tabId, url: reading.url, documentId: reading.documentId },
+        ],
+      },
+    );
+    const blocked: { tabId: number; documentId: string; url: string } = {
+      tabId: 11,
+      documentId: DOC_BLOCKED,
+      url: BLOCKED_URL,
+    };
+    ports.applyPulled(
+      11,
+      DOC_BLOCKED,
+      await controller.documentCommandsFor(blocked, 'navigation', 'deliver'),
+    );
+    await controller.handleNavigation(blocked, null);
+    await controller.handleNavigation(reading, 'navigation');
+    // The published fixture already records tab 11's first document, which stays open too.
+    expect(Object.keys(ports.current().epochResetAcks).sort()).toEqual([
+      documentKey(11, DOC_ONE),
+      documentKey(11, DOC_BLOCKED),
+      documentKey(reading.tabId, reading.documentId),
+    ]);
+    // Tab 13 closes while the worker is asleep, so no removal event reaches the controller.
+    ports.setTabs([{ tabId: 11, url: BLOCKED_URL, documentId: DOC_BLOCKED }]);
+
+    expect((await controller.requestSessionEnd()).code).toBe('ok');
+    expect(ports.current().pendingClosure).toBeNull();
+    expect(ports.current().documentCommands).toEqual({});
+
+    // The completed cleanup keeps every record of the open tab and drops the closed tab's.
+    expect(Object.keys(ports.current().epochResetAcks).sort()).toEqual([
+      documentKey(11, DOC_ONE),
+      documentKey(11, DOC_BLOCKED),
+    ]);
+    // A document in the open tab that comes back from the back-forward cache still holds the
+    // batch clear, so the idle runtime answers it nothing rather than a clear it would refuse.
+    const sends: number = ports.sends.length;
+    const pulled: DocumentContentCommand[] = await controller.documentCommandsFor(
+      blocked,
+      'existing',
+      'deliver',
+    );
+    ports.applyPulled(11, DOC_BLOCKED, pulled);
+    await controller.handleNavigation(blocked, null);
+    expect(pulled).toEqual([]);
+    expect(ports.sends).toHaveLength(sends);
+    expect(ports.rejectedAnswers(11, DOC_BLOCKED)).toBe(0);
+    expect(ports.documentState(11, DOC_BLOCKED)?.presentation).toBe('clear');
+    // A fresh document in that tab has no record, so it is reset and cleared, and accepts both.
+    const fresh: { tabId: number; documentId: string; url: string } = {
+      tabId: 11,
+      documentId: 'document-fresh',
+      url: BLOCKED_URL,
+    };
+    ports.applyPulled(
+      11,
+      'document-fresh',
+      await controller.documentCommandsFor(fresh, 'navigation', 'deliver'),
+    );
+    expect(ports.rejectedAnswers(11, 'document-fresh')).toBe(0);
+    expect(ports.documentState(11, 'document-fresh')?.presentation).toBe('clear');
+    expect(parseRuntimeStateV2(ports.current())).not.toBeNull();
+  });
+
   it('drops the stored command when a blocked document moves to an allowed URL after its clear is acknowledged', async (): Promise<void> => {
     const { controller, ports } = harness(publishedFocusRuntime());
     const key: string = documentKey(11, DOC_BLOCKED);

@@ -4,6 +4,7 @@ import type {
   DocumentEpochResetAck,
   EnforcementCheckpoint,
   EnforcementTargetExclusion,
+  EpochResetAckRecord,
   FrozenDocumentCommand,
 } from '../../../src/background/enforcement-persistence-v2';
 import {
@@ -11,13 +12,16 @@ import {
   parseDocumentEpochResetAck,
   parseEnforcementCheckpoint,
   parseEnforcementTargetExclusion,
+  parseEpochResetAckRecord,
   parseFrozenDocumentCommand,
   validateDetachedDocumentEnforcementAck,
   validateDetachedDocumentEpochResetAck,
   validateDetachedEnforcementCheckpoint,
   validateDetachedEnforcementTargetExclusion,
+  validateDetachedEpochResetAckRecord,
   validateDetachedFrozenDocumentCommand,
 } from '../../../src/background/enforcement-persistence-v2-validation';
+import { epochResetAckRecordV2 } from '../../../src/background/epoch-reset-acks-v2';
 import type { DocumentOverlayView } from '../../../src/shared/enforcement-v2';
 import type { Verdict } from '../../../src/shared/types';
 
@@ -494,6 +498,59 @@ describe('background epoch reset acknowledgement parsing', (): void => {
       epochResetAck({ handledAt: Number.NaN }),
       withoutKey(epochResetAck(), 'enforcementEpoch'),
       new Proxy(epochResetAck(), {}),
+      null,
+    ]);
+  });
+});
+
+/**
+ * The runtime keeps a record of each acknowledgement rather than the acknowledgement itself. Every
+ * reader of `runtime.epochResetAcks` asks one question, whether this document acknowledged this
+ * epoch, so the record is the tab, the document, and the epoch, and never the page address the
+ * transport's acknowledgement echoes.
+ */
+describe('background epoch reset acknowledgement records', (): void => {
+  function ackRecord(overrides: Partial<EpochResetAckRecord> = {}): EpochResetAckRecord {
+    return {
+      version: 1,
+      operationId: OPERATION_ID,
+      enforcementEpoch: EPOCH_ID,
+      tabId: 11,
+      documentId: 'document-1',
+      handledAt: NOW,
+      ...overrides,
+    };
+  }
+
+  it('projects a transport acknowledgement onto a record without its address', (): void => {
+    const record: EpochResetAckRecord = epochResetAckRecordV2(epochResetAck());
+
+    expect(record).toEqual(ackRecord());
+    expect(Object.keys(record)).not.toContain('url');
+    expect(parseEpochResetAckRecord(record)).toEqual(record);
+    expect(validateDetachedEpochResetAckRecord(structuredClone(record))).toBe(true);
+  });
+
+  it('refuses a record that carries an address or any revision authority', (): void => {
+    expectRejected(parseEpochResetAckRecord, [
+      withKey(ackRecord(), 'url', TARGET_URL),
+      epochResetAck(),
+      withKey(ackRecord(), 'basePolicyRevision', 4),
+      withKey(ackRecord(), 'runtimeRevision', 7),
+      withKey(ackRecord(), 'sessionId', SESSION_ID),
+    ]);
+  });
+
+  it('rejects invalid record leaves and hostile roots', (): void => {
+    expectRejected(parseEpochResetAckRecord, [
+      withKey(ackRecord(), 'version', 2),
+      ackRecord({ operationId: 'not-a-uuid' }),
+      ackRecord({ enforcementEpoch: 'not-a-uuid' }),
+      ackRecord({ tabId: 1.5 }),
+      ackRecord({ documentId: '' }),
+      ackRecord({ handledAt: Number.NaN }),
+      withoutKey(ackRecord(), 'enforcementEpoch'),
+      new Proxy(ackRecord(), {}),
       null,
     ]);
   });

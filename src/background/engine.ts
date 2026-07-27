@@ -1343,7 +1343,12 @@ export class Engine {
     return this.persistRuntime();
   }
 
-  /** Purges a closed tab from mute, stopped, and debounce bookkeeping. */
+  /**
+   * Purges a closed tab from mute, stopped, and debounce bookkeeping, and asks the controller to
+   * forget the tab's epoch acknowledgements. Those records are projected domain, so the controller
+   * owns the write: an Engine-side edit would be laid over by the controller's snapshot on the
+   * next persist. A pending all-data clear is about to replace the runtime, so it writes nothing.
+   */
   async dropTab(tabId: number): Promise<void> {
     this.runtime.removedTabTombstones[tabId] = true;
     delete this.runtime.tabStates[tabId];
@@ -1357,6 +1362,7 @@ export class Engine {
       if (claim.tabId === tabId) delete this.runtime.deferredBlockClaims[key];
     }
     await this.persistRuntime();
+    if (!this.allDataClearPending) await this.controller.forgetTab(tabId);
   }
 
   private ensureTabState(tabId: number): RuntimeTabState | null {
