@@ -666,6 +666,45 @@ describe('worker cutover to v2 session authority', (): void => {
     expect(worker.badges).toContain('ON');
   });
 
+  it('keeps only the blocked document in the command map after a start', async (): Promise<void> => {
+    const worker: WorkerHarness = await bootWorker(installedSeed());
+    const blocked: FakeDocument = {
+      tabId: 11,
+      documentId: 'document-1',
+      url: CONTENT_SENDER,
+      received: [],
+    };
+    const allowed: FakeDocument = {
+      tabId: 12,
+      documentId: 'document-2',
+      url: 'https://example.org/reading',
+      received: [],
+    };
+    worker.documents.push(blocked, allowed);
+
+    await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);
+    await worker.settle();
+
+    // The sweep reached both pages, and the runtime keeps the address of the blocked one alone.
+    expect(worker.runtime().session?.sessionId).not.toBeUndefined();
+    expect(Object.keys(worker.runtime().documentCommands)).toEqual([documentKeyOf(blocked)]);
+    expect(allowed.received[0]?.command).toBe('reset-enforcement-epoch');
+    // Every pass of both sweeps sent the allowed page the canonical clear and nothing else.
+    const presentations: string[] = allowed.received
+      .filter((command): boolean => command.command === 'apply-enforcement')
+      .map((command): string =>
+        command.command === 'apply-enforcement' ? command.presentation : 'reset',
+      );
+    expect(presentations.length).toBeGreaterThan(0);
+    expect(presentations.every((presentation: string): boolean => presentation === 'clear')).toBe(
+      true,
+    );
+    expect(Object.keys(worker.runtime().epochResetAcks).sort()).toEqual([
+      documentKeyOf(blocked),
+      documentKeyOf(allowed),
+    ]);
+  });
+
   it('ends an indefinite session as manual-completed with no sound or notice', async (): Promise<void> => {
     const worker: WorkerHarness = await bootWorker(installedSeed());
     await worker.send({ type: 'startSession', config: indefiniteConfig() } as Request);

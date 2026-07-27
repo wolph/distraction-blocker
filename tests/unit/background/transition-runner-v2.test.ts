@@ -24,6 +24,7 @@ import type {
   DocumentContentCommand,
   DocumentEnforcementCommand,
 } from '../../../src/shared/enforcement-v2';
+import { CANONICAL_CLEAR_VERDICT } from '../../../src/shared/enforcement-v2-validation';
 import { CoreError } from '../../../src/shared/errors';
 import {
   appliedResponseFor,
@@ -172,7 +173,7 @@ describe('prepareStartTransitionV2', (): void => {
     expect(fake.alarmCalls).toHaveLength(0);
   });
 
-  it('freezes a starting overlay for a blocked target and none for an allowed one', async (): Promise<void> => {
+  it('freezes a starting overlay for a blocked target and a canonical clear for an allowed one', async (): Promise<void> => {
     const fake: RuntimePortsFakeV2 = fakeFor(seedRuntime());
     await prepareStartTransitionV2(fake, manualCandidate(), 'manual');
     const documents: Record<string, FrozenDocumentCommand> =
@@ -185,8 +186,15 @@ describe('prepareStartTransitionV2', (): void => {
     expect(blocked?.overlay).not.toBeNull();
     expect(blocked?.reservedSessionId).toBe(SESSION_ID);
     expect(blocked?.sessionId).toBeNull();
-    expect(allowed?.verdict.blocked).toBe(false);
+    // An allowed page is frozen as the same clear the controller computes for it later, at the
+    // view's own tuple and identity. The page keeps that view, so a pull at the same tuple after
+    // publication is a command it already holds rather than one it refuses.
+    expect(allowed?.presentation).toBe('clear');
+    expect(allowed?.verdict).toEqual(CANONICAL_CLEAR_VERDICT);
     expect(allowed?.overlay).toBeNull();
+    expect(allowed?.reservedSessionId).toBe(SESSION_ID);
+    expect(allowed?.operationId).toBe(blocked?.operationId);
+    expect(allowed?.runtimeRevision).toBe(blocked?.runtimeRevision);
   });
 
   it('refuses to prepare over a session or a journal', async (): Promise<void> => {
@@ -323,6 +331,44 @@ describe('driveTransitionV2 start sequence', (): void => {
 
     expect(startingSends).toBeGreaterThan(0);
     expect(firstActive).toBeGreaterThan(0);
+  });
+
+  it('publishes only the blocked entries of the active view', async (): Promise<void> => {
+    const { fake, prepared } = await preparedStart();
+    const result: TransitionDriveResultV2 = await driveTransitionV2(fake, prepared.matcher);
+    const lastJournal: PendingEnforcementTransition | undefined = fake.writes
+      .map(
+        (write: RuntimeStateV2): PendingEnforcementTransition | null =>
+          write.pendingEnforcementTransition,
+      )
+      .filter((journal): journal is PendingEnforcementTransition => journal !== null)
+      .at(-1);
+
+    expect(result.kind).toBe('published');
+    // The journal kept the whole view, which is what verification needs: an acknowledgement from
+    // the allowed page proves the content script is registered there. What the session keeps once
+    // the journal is gone is the blocked page alone, so the runtime holds no allowed page address.
+    expect(Object.keys(lastJournal?.activeView?.documents ?? {}).sort()).toEqual([
+      documentKey(11, DOC_ONE),
+      documentKey(12, DOC_TWO),
+    ]);
+    expect(Object.keys(result.runtime.documentCommands)).toEqual([documentKey(11, DOC_ONE)]);
+    expect(fake.current().documentCommands).toEqual(result.runtime.documentCommands);
+    // The allowed page was sent a canonical clear in both phases and refused nothing.
+    const allowedSends: string[] = fake.sends
+      .filter((send: FakeSendV2): boolean => send.documentId === DOC_TWO)
+      .map((send: FakeSendV2): string =>
+        send.message.command === 'apply-enforcement' ? send.message.presentation : 'reset',
+      );
+    expect(allowedSends[0]).toBe('reset');
+    expect(allowedSends.slice(1).every((sent: string): boolean => sent === 'clear')).toBe(true);
+    expect(fake.rejectedAnswers(12, DOC_TWO)).toBe(0);
+    expect(fake.rejectedAnswers(11, DOC_ONE)).toBe(0);
+    expect(fake.documentState(12, DOC_TWO)?.presentation).toBe('clear');
+    expect(fake.documentState(11, DOC_ONE)?.presentation).toBe('active');
+    expect(result.runtime.enforcementCheckpoint?.documents.map((ack): number => ack.tabId)).toEqual(
+      [11, 12],
+    );
   });
 
   it('resets an unacknowledged target before its first enforcement command', async (): Promise<void> => {

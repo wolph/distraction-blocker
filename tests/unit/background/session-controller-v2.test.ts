@@ -1706,6 +1706,55 @@ describe('SessionControllerV2 navigation and documents', (): void => {
     expect(Object.keys(ports.current().epochResetAcks)).toEqual([documentKey(11, DOC_ONE)]);
   });
 
+  it('publishes only the blocked page and lets the allowed page pull a clear it accepts', async (): Promise<void> => {
+    const reading: { tabId: number; documentId: string; url: string } = {
+      tabId: 12,
+      documentId: 'document-2',
+      url: 'https://example.org/reading',
+    };
+    const { controller, ports } = harness(emptyRuntimeV2({ runtimeRevision: 0 }), {
+      tabs: [
+        { tabId: 11, url: BLOCKED_URL, documentId: DOC_ONE },
+        { tabId: reading.tabId, url: reading.url, documentId: reading.documentId },
+      ],
+    });
+
+    expect((await controller.startSession(flexibleConfig())).code).toBe('ok');
+    expect(ports.current().pendingEnforcementTransition).toBeNull();
+
+    // The start sweeps both pages, and the session keeps the blocked one alone.
+    expect(Object.keys(ports.current().documentCommands)).toEqual([documentKey(11, DOC_ONE)]);
+    expect(ports.documentState(11, DOC_ONE)?.presentation).toBe('active');
+    expect(ports.documentState(12, 'document-2')?.presentation).toBe('clear');
+
+    // The allowed page pulls again at the tuple the sweep left it on, then moves within the
+    // document to another allowed URL. Both answers are the clear it already holds or a higher
+    // one, so the page refuses neither and the map stays bounded to the blocked page.
+    ports.applyPulled(
+      12,
+      'document-2',
+      await controller.documentCommandsFor(reading, 'existing', 'deliver'),
+    );
+    await controller.handleNavigation(reading, null);
+    const moved: { tabId: number; documentId: string; url: string } = {
+      ...reading,
+      url: 'https://example.org/other',
+    };
+    ports.applyPulled(
+      12,
+      'document-2',
+      await controller.documentCommandsFor(moved, 'existing', 'deliver'),
+    );
+    await controller.handleNavigation(moved, null);
+
+    expect(ports.rejectedAnswers(12, 'document-2')).toBe(0);
+    expect(ports.rejectedAnswers(11, DOC_ONE)).toBe(0);
+    expect(ports.documentState(12, 'document-2')?.presentation).toBe('clear');
+    expect(ports.documentState(11, DOC_ONE)?.presentation).toBe('active');
+    expect(Object.keys(ports.current().documentCommands)).toEqual([documentKey(11, DOC_ONE)]);
+    expect(parseRuntimeStateV2(ports.current())).not.toBeNull();
+  });
+
   it('records an acknowledgement without the page address', async (): Promise<void> => {
     const { controller, ports } = harness();
     const pushed: { tabId: number; documentId: string; url: string } = {

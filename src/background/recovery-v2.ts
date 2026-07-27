@@ -19,7 +19,11 @@ import { CoreError } from '../shared/errors';
 import { exactDataEqual } from '../shared/exact-data';
 import type { SessionEndReasonV2, SessionStateV2, Verdict } from '../shared/types';
 import { ensurePhaseAlarmV2 } from './alarms-v2';
-import { documentCommandKeyV2, NO_SESSION_VERDICT } from './cleanup-progress-v2';
+import {
+  blockedDocumentCommandsV2,
+  buildFrozenClearCommandV2,
+  documentCommandKeyV2,
+} from './cleanup-progress-v2';
 import { rearmCleanupAlarmV2 } from './cleanup-shared-v2';
 import { closeSessionV2, commitClosureV2, runClosureCleanupAttemptV2 } from './closure-runner-v2';
 import type {
@@ -299,8 +303,12 @@ async function clearNonBlockingPhase(
 }
 
 /**
- * Freezes one complete command set for the current targets and persists it before any send. Every
- * command in the runtime carries one runtime revision, so the whole map is rebuilt at the next one.
+ * Freezes the blocked commands for the current targets and persists them, with the revision every
+ * command of this recovery carries, before any send. Every command in the runtime carries one
+ * runtime revision, so the whole map is rebuilt at the next one. An allowed page's clear is
+ * computed at that revision when the sweep reaches it and never stored: the page keeps the clear,
+ * a later pull at the same tuple is answered the same clear, and the runtime holds no address for
+ * a page the session is not blocking.
  */
 async function freezeRecoveryCommands(
   ports: RuntimePortsV2,
@@ -323,7 +331,11 @@ async function freezeRecoveryCommands(
       target,
     );
   }
-  await writeRuntime(ports, { ...runtime, runtimeRevision, documentCommands: documents });
+  await writeRuntime(ports, {
+    ...runtime,
+    runtimeRevision,
+    documentCommands: blockedDocumentCommandsV2(documents),
+  });
 }
 
 /**
@@ -356,7 +368,10 @@ async function addRecoveryDocument(
   return structuredClone(documents[key] as FrozenDocumentCommand);
 }
 
-/** One frozen command. A focus session enforces its verdict, every other phase clears. */
+/**
+ * One frozen command. A focus session enforces a blocked verdict, and every other page, the
+ * allowed ones under focus included, gets the canonical clear at this recovery's tuple.
+ */
 function recoveryCommand(
   ports: RuntimePortsV2,
   runtime: RuntimeStateV2,
@@ -376,15 +391,21 @@ function recoveryCommand(
     basePolicyRevision: runtime.basePolicyRevision,
     runtimeRevision: identity.runtimeRevision,
   };
-  if (matcher === null) {
-    return buildFrozenDocumentCommandV2({
-      ...base,
-      verdict: structuredClone(NO_SESSION_VERDICT),
-      presentation: 'clear',
-      overlay: null,
-    });
+  const verdict: Verdict | null =
+    matcher === null ? null : ports.verdictFor(matcher, target.url, runtime.unlocks);
+  if (verdict === null || !verdict.blocked) {
+    return buildFrozenClearCommandV2(
+      { tabId: target.tabId, documentId: target.documentId, expectedUrl: target.url },
+      {
+        operationId: base.operationId,
+        enforcementEpoch: base.enforcementEpoch,
+        sessionId: base.sessionId,
+        reservedSessionId: base.reservedSessionId,
+        basePolicyRevision: base.basePolicyRevision,
+        runtimeRevision: base.runtimeRevision,
+      },
+    );
   }
-  const verdict: Verdict = ports.verdictFor(matcher, target.url, runtime.unlocks);
   const economy: ReturnType<RuntimePortsV2['economy']> = ports.economy();
   return buildFrozenDocumentCommandV2({
     ...base,
@@ -424,11 +445,25 @@ function recoveryDriver(
 ): SweepDriverV2 {
   const commandFor = async (target: EnforceableTargetV2): Promise<FrozenDocumentCommand> => {
     const key: string = documentCommandKeyV2(target.tabId, target.documentId);
-    const stored: FrozenDocumentCommand | undefined = ports.runtime().documentCommands[key];
+    const runtime: RuntimeStateV2 = ports.runtime();
+    const stored: FrozenDocumentCommand | undefined = runtime.documentCommands[key];
     if (stored !== undefined && stored.operationId === identity.operationId) {
       return structuredClone(stored);
     }
-    return addRecoveryDocument(ports, matcher, session, identity, target);
+    const blocked: boolean =
+      matcher !== null && ports.verdictFor(matcher, target.url, runtime.unlocks).blocked;
+    if (blocked) return addRecoveryDocument(ports, matcher, session, identity, target);
+    // A page this recovery does not block gets the clear at the revision the freeze made durable.
+    // Nothing is written: the page keeps the clear, and the controller answers the same clear to
+    // a pull at this tuple, so the send is safe without a stored copy.
+    return recoveryCommand(
+      ports,
+      runtime,
+      matcher,
+      session,
+      { ...identity, runtimeRevision: runtime.runtimeRevision },
+      target,
+    );
   };
   return {
     commandFor,

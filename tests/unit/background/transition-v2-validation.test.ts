@@ -14,10 +14,12 @@ import type { SessionEndedEventV2 } from '../../../src/shared/types';
 import {
   ACTIVATION_AT,
   ACTIVE_OPERATION_ID,
+  activeCommand,
   activeCommandMap,
   activeOverlay,
   allowedVerdict,
   BASE_POLICY_REVISION,
+  blockedVerdict,
   budgetEarnedEvent,
   CLEANUP_OPERATION_ID,
   CLEAR_RUNTIME_REVISION,
@@ -26,8 +28,8 @@ import {
   cleanupProgress,
   cleanupRetryState,
   cleanupTransition,
-  clearCommand,
   clearCommandMap,
+  clearVerdict,
   closureProjection,
   documentKey,
   frozenActiveView,
@@ -622,15 +624,19 @@ describe('background transition frozen views', (): void => {
     ]);
   });
 
-  it('keeps each view on its own presentation', (): void => {
+  it('keeps each blocked command on its view presentation and each allowed page on a clear', (): void => {
     expectRejected([
+      // A blocked page frozen as a clear is a page the view stopped blocking without saying so.
       pendingTransition('start', 'prepared', {
         startingView: startView({
-          documents: startingCommandMap({
-            presentation: 'clear',
-            verdict: clearCommand().verdict,
-            overlay: null,
-          }),
+          documents: {
+            ...startingCommandMap(),
+            [documentKey(11, 'document-1')]: startingCommand({
+              presentation: 'clear',
+              verdict: blockedVerdict(),
+              overlay: null,
+            }),
+          },
         }),
       }),
       pendingTransition('start', 'alarm-ready', {
@@ -639,6 +645,37 @@ describe('background transition frozen views', (): void => {
             presentation: 'starting',
             overlay: startingOverlay({ capturedAt: ACTIVATION_AT }),
           }),
+        }),
+      }),
+      // An allowed page under the view's own presentation is the shape the runner no longer
+      // freezes: the page would keep it and refuse the clear the controller computes at the
+      // same tuple after publication.
+      pendingTransition('start', 'prepared', {
+        startingView: startView({
+          documents: {
+            ...startingCommandMap(),
+            [documentKey(12, 'document-2')]: startingCommand({
+              tabId: 12,
+              documentId: 'document-2',
+              expectedUrl: SECOND_TARGET_URL,
+              verdict: allowedVerdict(),
+              overlay: null,
+            }),
+          },
+        }),
+      }),
+      pendingTransition('start', 'alarm-ready', {
+        activeView: frozenActiveView('start', {
+          documents: {
+            ...activeCommandMap(),
+            [documentKey(12, 'document-2')]: activeCommand({
+              tabId: 12,
+              documentId: 'document-2',
+              expectedUrl: SECOND_TARGET_URL,
+              verdict: allowedVerdict(),
+              overlay: null,
+            }),
+          },
         }),
       }),
     ]);
@@ -1243,7 +1280,11 @@ describe('background transition hostile input and detachment', (): void => {
       }),
       pendingTransition('start', 'prepared', {
         startingView: startView({
-          documents: startingCommandMap({ verdict: allowedVerdict(), overlay: null }),
+          documents: startingCommandMap({
+            presentation: 'clear',
+            verdict: clearVerdict(),
+            overlay: null,
+          }),
         }),
       }),
     ]);

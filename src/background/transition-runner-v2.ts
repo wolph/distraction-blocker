@@ -36,7 +36,11 @@ import type {
   Verdict,
 } from '../shared/types';
 import { ensurePhaseAlarmV2, PHASE_ALARM } from './alarms-v2';
-import { documentCommandKeyV2 } from './cleanup-progress-v2';
+import {
+  blockedDocumentCommandsV2,
+  buildFrozenClearCommandV2,
+  documentCommandKeyV2,
+} from './cleanup-progress-v2';
 import {
   type EpochResetOutcomeV2,
   sendDocumentEnforcementCommand,
@@ -557,9 +561,13 @@ async function publishTransition(
   if (checkpoint === null) {
     throw new CoreError('invalid-rule', 'publication needs the candidate enforcement checkpoint');
   }
+  // The journal kept the whole view so verification could audit every open page. The session
+  // keeps only the blocked entries: an allowed page's clear is computed again whenever it pulls,
+  // and a stored copy would hold that page's address for the rest of the session.
   const published: RuntimeStateV2 = {
     ...structuredClone(runtime),
     basePolicyRevision: transition.basePolicyRevision,
+    documentCommands: blockedDocumentCommandsV2(runtime.documentCommands),
     enforcementCheckpoint: structuredClone(checkpoint),
     pendingEnforcementTransition: null,
   };
@@ -750,7 +758,7 @@ export async function refreezeTransitionViewV2(
   const operationId: string = ports.newId();
   const documents: Record<string, FrozenDocumentCommand> = {};
   for (const [key, command] of Object.entries(view.documents)) {
-    documents[key] = refrozenCommand(ports, matcher, base, command, {
+    documents[key] = refrozenCommand(ports, matcher, base, command, phase, {
       operationId,
       runtimeRevision,
       capturedAt: view.capturedAt,
@@ -845,12 +853,17 @@ function verificationRestartPermittedV2(
   );
 }
 
-/** One replacement command at the same target, the new tuple, and the view's frozen capture. */
+/**
+ * One replacement command at the same target, the new tuple, and the view's frozen capture. The
+ * phase decides the shape, not the previous presentation: an allowed page carries a clear in both
+ * phases, and a page the refreeze now blocks needs the overlay of the phase it is in.
+ */
 function refrozenCommand(
   ports: RuntimePortsV2,
   matcher: CompiledMatcher,
   runtime: RuntimeStateV2,
   previous: FrozenDocumentCommand,
+  phase: SweepPhaseV2,
   tuple: { operationId: string; runtimeRevision: number; capturedAt: number },
 ): FrozenDocumentCommand {
   const target: EnforceableTargetV2 = {
@@ -869,8 +882,7 @@ function refrozenCommand(
     sessionId: previous.sessionId ?? previous.reservedSessionId ?? '',
     durable: previous.sessionId !== null,
   };
-  if (previous.presentation === 'starting')
-    return startingCommand(ports, matcher, identity, target);
+  if (phase === 'starting') return startingCommand(ports, matcher, identity, target);
   return activeCommand(
     ports,
     matcher,
@@ -1043,6 +1055,11 @@ async function freezeStartingView(
   };
 }
 
+/**
+ * One starting command. A blocked page gets the starting overlay. An allowed page gets the canonical
+ * clear at the view's tuple and identity: the same command the controller computes for it after
+ * publication, so a pull at that tuple is a view the page already holds and not one it refuses.
+ */
 function startingCommand(
   ports: RuntimePortsV2,
   matcher: CompiledMatcher,
@@ -1050,6 +1067,19 @@ function startingCommand(
   target: EnforceableTargetV2,
 ): FrozenDocumentCommand {
   const verdict: Verdict = ports.verdictFor(matcher, target.url, identity.runtime.unlocks);
+  if (!verdict.blocked) {
+    return buildFrozenClearCommandV2(
+      { tabId: target.tabId, documentId: target.documentId, expectedUrl: target.url },
+      {
+        operationId: identity.operationId,
+        enforcementEpoch: identity.enforcementEpoch,
+        sessionId: identity.durable ? identity.sessionId : null,
+        reservedSessionId: identity.durable ? null : identity.sessionId,
+        basePolicyRevision: identity.basePolicyRevision,
+        runtimeRevision: identity.runtimeRevision,
+      },
+    );
+  }
   const stoppedPage: boolean =
     identity.runtime.tabStates[target.tabId]?.stoppedDocumentId === target.documentId;
   return buildFrozenDocumentCommandV2({
@@ -1106,6 +1136,7 @@ async function freezeActiveView(
   };
 }
 
+/** One active command, with the same canonical clear for an allowed page as the starting one. */
 function activeCommand(
   ports: RuntimePortsV2,
   matcher: CompiledMatcher,
@@ -1113,6 +1144,19 @@ function activeCommand(
   target: EnforceableTargetV2,
 ): FrozenDocumentCommand {
   const verdict: Verdict = ports.verdictFor(matcher, target.url, identity.runtime.unlocks);
+  if (!verdict.blocked) {
+    return buildFrozenClearCommandV2(
+      { tabId: target.tabId, documentId: target.documentId, expectedUrl: target.url },
+      {
+        operationId: identity.operationId,
+        enforcementEpoch: identity.enforcementEpoch,
+        sessionId: identity.session.sessionId,
+        reservedSessionId: null,
+        basePolicyRevision: identity.basePolicyRevision,
+        runtimeRevision: identity.runtimeRevision,
+      },
+    );
+  }
   const stoppedPage: boolean =
     identity.runtime.tabStates[target.tabId]?.stoppedDocumentId === target.documentId;
   const economy = ports.economy();
