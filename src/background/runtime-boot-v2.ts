@@ -141,6 +141,17 @@ export async function bootRuntimeAuthorityV2(
         runtime: await replayRuntimeCheckpointV2(ports, authority.runtime),
         migrated: false,
       };
+    case 'previous-v2':
+      // The store read the previous v2 shape into the current one. It is persisted here, once,
+      // before anything replays from it: the next boot classifies the stored value as plain v2
+      // and writes nothing, the same one-time rewrite discipline the settings repair follows.
+      // Nothing is reported and nothing is parked, because nothing was refused.
+      await ports.saveRuntime(authority.runtime);
+      return {
+        kind: 'v2',
+        runtime: await replayRuntimeCheckpointV2(ports, authority.runtime),
+        migrated: false,
+      };
     case 'rejected':
       return rejectedBoot(ports, authority.reason, authority.raw, storedMigration, null);
     case 'absent':

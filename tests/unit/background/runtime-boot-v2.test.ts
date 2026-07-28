@@ -41,6 +41,10 @@ import type {
   PauseEconomy,
   SessionEventRecordV2,
 } from '../../../src/shared/types';
+import {
+  previousActiveRuntimeProfileV2,
+  previousIdleRuntimeProfileV2,
+} from '../../fixtures/previous-v2-runtime-profile';
 import { indefiniteFocusSession, indefinitePausedSession } from './indefinite-restart-fixtures';
 
 interface BootStorage {
@@ -421,6 +425,67 @@ describe('v2 boot authority', (): void => {
 
     expect(result).toEqual({ kind: 'v2', runtime: stored, migrated: false });
     expect(test.calls.filter((name: string): boolean => V2_WRITE_PORTS.includes(name))).toEqual([]);
+  });
+
+  it('rewrites a runtime in the previous v2 shape once and parks nothing', async (): Promise<void> => {
+    // The owner's storage: idle, 105 acknowledgements carrying an address, 105 clear commands.
+    const raw: unknown = previousIdleRuntimeProfileV2({ date: LOCAL_DATE });
+    const test: BootHarness = harness(
+      emptyStorage({ runtime: raw, marker: { runtimeSchemaVersion: 2 } }),
+    );
+
+    const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
+
+    // Read as plain v2 authority, not as a migration and not as a refusal.
+    expect(result.kind).toBe('v2');
+    expect(result.runtime.session).toBeNull();
+    expect(result.runtime.documentCommands).toEqual({});
+    expect(Object.keys(result.runtime.epochResetAcks)).toHaveLength(105);
+    for (const record of Object.values(result.runtime.epochResetAcks)) {
+      expect(record).not.toHaveProperty('url');
+    }
+    expect(result.runtime.todayAgg).toEqual(
+      previousIdleRuntimeProfileV2({ date: LOCAL_DATE }).todayAgg,
+    );
+    expect(result.runtime.enforcementEpoch).toBe(previousIdleRuntimeProfileV2().enforcementEpoch);
+    expect(test.parked).toEqual([]);
+    expect(test.errors).toEqual([]);
+    // The normalised runtime is persisted exactly once, and that is the only write.
+    expect(test.calls.filter((name: string): boolean => V2_WRITE_PORTS.includes(name))).toEqual([
+      'saveRuntime',
+    ]);
+    expect(test.storage.runtime).toEqual(result.runtime);
+    expect(test.storage.marker).toEqual({ runtimeSchemaVersion: 2 });
+
+    // A second boot over what the first one wrote reads it as-is and writes nothing.
+    const again: BootHarness = harness(test.storage);
+    const second: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(again.ports);
+    expect(second).toEqual({ kind: 'v2', runtime: result.runtime, migrated: false });
+    expect(again.calls.filter((name: string): boolean => V2_WRITE_PORTS.includes(name))).toEqual(
+      [],
+    );
+    expect(again.parked).toEqual([]);
+    expect(again.errors).toEqual([]);
+  });
+
+  it('keeps the session of a mid-session runtime in the previous v2 shape', async (): Promise<void> => {
+    const raw = previousActiveRuntimeProfileV2();
+    const test: BootHarness = harness(
+      emptyStorage({ runtime: raw, marker: { runtimeSchemaVersion: 2 } }),
+    );
+
+    const result: RuntimeBootResultV2 = await bootRuntimeAuthorityV2(test.ports);
+
+    expect(result.kind).toBe('v2');
+    expect(result.runtime.session).toEqual(raw.session);
+    expect(result.runtime.enforcementCheckpoint).toEqual(raw.enforcementCheckpoint);
+    expect(Object.keys(result.runtime.documentCommands)).toEqual(['11:document-1']);
+    expect(result.runtime.todayAgg).toEqual(raw.todayAgg);
+    expect(test.parked).toEqual([]);
+    expect(test.errors).toEqual([]);
+    expect(test.calls.filter((name: string): boolean => V2_WRITE_PORTS.includes(name))).toEqual([
+      'saveRuntime',
+    ]);
   });
 });
 

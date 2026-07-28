@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { FrozenDocumentCommand } from '../../../src/background/enforcement-persistence-v2';
 import { main } from '../../../src/background/main';
 import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
 import { parseRuntimeStateV2 } from '../../../src/background/runtime-v2-validation';
@@ -28,6 +29,7 @@ import {
   LOCAL_LISTS,
   LOCAL_RUNTIME,
   LOCAL_RUNTIME_MIGRATION,
+  LOCAL_RUNTIME_REJECTED,
   LOCAL_RUNTIME_SCHEMA,
   LOCAL_SETTINGS,
   LOCAL_SETUP,
@@ -42,6 +44,20 @@ import type {
   SessionConfigV2,
   SessionSnapshotV2,
 } from '../../../src/shared/types';
+import {
+  PREVIOUS_V2_ALLOWED_DOCUMENT_ID,
+  PREVIOUS_V2_ALLOWED_TAB_ID,
+  PREVIOUS_V2_ALLOWED_URL,
+  PREVIOUS_V2_BLOCKED_DOCUMENT_ID,
+  PREVIOUS_V2_BLOCKED_TAB_ID,
+  PREVIOUS_V2_BLOCKED_URL,
+  previousActiveRuntimeProfileV2,
+  previousIdleRuntimeProfileV2,
+  previousV2ClearCommand,
+  previousV2DocumentId,
+  previousV2TabId,
+  previousV2TabUrl,
+} from '../../fixtures/previous-v2-runtime-profile';
 import { pendingTransition, timedFocusSession, transitionRuntime } from './runtime-v2-fixtures';
 
 // The worker imports the content script as a built asset. Under vitest that module would evaluate
@@ -70,6 +86,8 @@ interface BootOptions {
   canvas?: boolean;
   /** Documents the browser already holds when the worker boots. */
   documents?: FakeDocument[];
+  /** What some of those documents already hold, from a command a previous worker sent them. */
+  heldViews?: Array<[FakeDocument, FrozenDocumentCommand]>;
   /** Arms the registration-audit gate before `main()` runs. */
   holdRegistrationAudit?: boolean;
 }
@@ -107,6 +125,13 @@ interface WorkerHarness {
   writes(): number;
   /** Every mute the worker set, which is the sweep's own effect. */
   mutes(): Array<{ tabId: number; muted: boolean }>;
+  /**
+   * Puts a document on the view and tuple of a command it applied before this worker booted, the
+   * way the real page still holds what the previous build sent it.
+   */
+  holdDocumentView(document: FakeDocument, command: FrozenDocumentCommand): void;
+  /** How many commands the document refused, which the page answers with nothing at all. */
+  rejectedAnswers(document: FakeDocument): number;
   settle(): Promise<void>;
 }
 
@@ -152,6 +177,25 @@ async function bootWorker(
     string,
     ContentEnforcementState
   >();
+  /** How many commands each document refused. */
+  const rejections: Map<string, number> = new Map<string, number>();
+  const holdView = (document: FakeDocument, command: FrozenDocumentCommand): void => {
+    documentStates.set(`${document.tabId}:${document.documentId}`, {
+      enforcementEpoch: command.enforcementEpoch,
+      retiredEnforcementEpochs: [],
+      tuple: {
+        enforcementEpoch: command.enforcementEpoch,
+        sessionId: command.sessionId,
+        reservedSessionId: command.reservedSessionId,
+        basePolicyRevision: command.basePolicyRevision,
+        runtimeRevision: command.runtimeRevision,
+      },
+      presentation: command.presentation,
+      verdict: structuredClone(command.verdict),
+      overlay: structuredClone(command.overlay),
+    });
+  };
+  for (const [document, command] of options.heldViews ?? []) holdView(document, command);
   const alarms: Map<string, AlarmRow> = new Map<string, AlarmRow>();
   const broadcasts: SessionSnapshotV2[] = [];
   const badges: string[] = [];
@@ -397,6 +441,7 @@ async function bootWorker(
             clock,
           );
           documentStates.set(key, result.state);
+          if (result.response === null) rejections.set(key, (rejections.get(key) ?? 0) + 1);
           return result.response ?? undefined;
         },
       ),
@@ -485,6 +530,9 @@ async function bootWorker(
     },
     writes: (): number => localWrites,
     mutes: (): Array<{ tabId: number; muted: boolean }> => [...muteCalls],
+    holdDocumentView: holdView,
+    rejectedAnswers: (document: FakeDocument): number =>
+      rejections.get(`${document.tabId}:${document.documentId}`) ?? 0,
     events: (): Array<Record<string, unknown>> =>
       (local[LOCAL_EVENTS] as Array<Record<string, unknown>> | undefined) ?? [],
     runtime: (): RuntimeStateV2 => {
@@ -585,6 +633,21 @@ function indefiniteConfig(): SessionConfigV2 {
       sessionBlacklist: [],
       sessionAllowlist: [],
     },
+  };
+}
+
+/**
+ * The storage a profile on the previous build carries: everything a booted worker leaves behind,
+ * the committed policy pointer included, with the runtime key holding the previous v2 shape under
+ * the v2 schema marker. A seed with no pointer would take the legacy import at boot, which reads
+ * the runtime through the v1 reader and is not the path a running profile takes.
+ */
+async function previousShapeStorage(runtime: unknown): Promise<Record<string, unknown>> {
+  const booted: WorkerHarness = await bootWorker(installedSeed());
+  return {
+    ...structuredClone(booted.local),
+    [LOCAL_RUNTIME]: structuredClone(runtime),
+    [LOCAL_RUNTIME_SCHEMA]: { runtimeSchemaVersion: 2 },
   };
 }
 
@@ -703,6 +766,97 @@ describe('worker cutover to v2 session authority', (): void => {
       documentKeyOf(blocked),
       documentKeyOf(allowed),
     ]);
+  });
+
+  it('boots the previous v2 runtime shape as its own runtime with no address left', async (): Promise<void> => {
+    // The owner's storage the evening this landed: idle, 105 acknowledgements with an address,
+    // 105 clear commands from the last cleanup. One of those tabs is still open, holding the
+    // batch clear that build sent it.
+    const profile = previousIdleRuntimeProfileV2({ date: localDateStr(NOW) });
+    const open: FakeDocument = {
+      tabId: previousV2TabId(0),
+      documentId: previousV2DocumentId(0),
+      url: previousV2TabUrl(0),
+      received: [],
+    };
+    const worker: WorkerHarness = await bootWorker(await previousShapeStorage(profile), {
+      documents: [open],
+      heldViews: [[open, previousV2ClearCommand(0)]],
+    });
+
+    // Read as this worker's own runtime: nothing parked, nothing replaced, the day kept.
+    expect(worker.local[LOCAL_RUNTIME_REJECTED]).toBeUndefined();
+    const runtime: RuntimeStateV2 = worker.runtime();
+    expect(runtime.session).toBeNull();
+    expect(runtime.enforcementEpoch).toBe(profile.enforcementEpoch);
+    expect(runtime.todayAgg).toEqual(profile.todayAgg);
+    expect(runtime.documentCommands).toEqual({});
+    expect(Object.keys(runtime.epochResetAcks)).toHaveLength(105);
+    for (const record of Object.values(runtime.epochResetAcks)) {
+      expect(record).not.toHaveProperty('url');
+    }
+    expect(worker.broadcasts.at(-1)?.lifecycle.kind).toBe('idle');
+
+    // The open page acknowledged this epoch and holds a clear, so the idle runtime owes it nothing
+    // and hands it nothing it would refuse.
+    const pulled = (await worker.send(
+      { type: 'getBlockState', url: open.url, docState: 'loaded' } as Request,
+      tabSender(open),
+    )) as { commands: DocumentContentCommand[] };
+    await worker.settle();
+    expect(pulled.commands).toEqual([]);
+    expect(worker.rejectedAnswers(open)).toBe(0);
+    expect(
+      open.received.filter((command): boolean => command.command === 'apply-enforcement'),
+    ).toEqual([]);
+  });
+
+  it('boots the previous v2 runtime shape mid-session and re-freezes without a refusal', async (): Promise<void> => {
+    const profile = previousActiveRuntimeProfileV2();
+    const blocked: FakeDocument = {
+      tabId: PREVIOUS_V2_BLOCKED_TAB_ID,
+      documentId: PREVIOUS_V2_BLOCKED_DOCUMENT_ID,
+      url: PREVIOUS_V2_BLOCKED_URL,
+      received: [],
+    };
+    const allowed: FakeDocument = {
+      tabId: PREVIOUS_V2_ALLOWED_TAB_ID,
+      documentId: PREVIOUS_V2_ALLOWED_DOCUMENT_ID,
+      url: PREVIOUS_V2_ALLOWED_URL,
+      received: [],
+    };
+    // Both pages hold what the previous build sent them: the blocked page its overlay, the allowed
+    // page an active presentation with its own verdict, at the published tuple.
+    const worker: WorkerHarness = await bootWorker(await previousShapeStorage(profile), {
+      documents: [blocked, allowed],
+      heldViews: [
+        [blocked, profile.documentCommands[documentKeyOf(blocked)] as FrozenDocumentCommand],
+        [allowed, profile.documentCommands[documentKeyOf(allowed)] as FrozenDocumentCommand],
+      ],
+    });
+
+    expect(worker.local[LOCAL_RUNTIME_REJECTED]).toBeUndefined();
+    const runtime: RuntimeStateV2 = worker.runtime();
+    expect(runtime.session?.sessionId).toBe(profile.session?.sessionId);
+    expect(runtime.session?.phase).toBe('focus');
+    expect(worker.broadcasts.at(-1)?.lifecycle.kind).toBe('active');
+    // Recovery froze the blocked page alone, at a revision above the one both pages held.
+    expect(Object.keys(runtime.documentCommands)).toEqual([documentKeyOf(blocked)]);
+    expect(runtime.runtimeRevision).toBeGreaterThan(profile.runtimeRevision);
+    for (const record of Object.values(runtime.epochResetAcks)) {
+      expect(record).not.toHaveProperty('url');
+    }
+    expect(worker.rejectedAnswers(blocked)).toBe(0);
+    expect(worker.rejectedAnswers(allowed)).toBe(0);
+    const allowedPresentations: string[] = allowed.received
+      .filter((command): boolean => command.command === 'apply-enforcement')
+      .map((command): string =>
+        command.command === 'apply-enforcement' ? command.presentation : 'reset',
+      );
+    expect(allowedPresentations.length).toBeGreaterThan(0);
+    expect(allowedPresentations.every((presentation): boolean => presentation === 'clear')).toBe(
+      true,
+    );
   });
 
   it('ends an indefinite session as manual-completed with no sound or notice', async (): Promise<void> => {
