@@ -488,6 +488,13 @@ describe('Privacy and data', (): void => {
     expect(dialog.textContent).toContain('focus intentions');
     expect(dialog.textContent).toContain('detailed session events');
     expect(dialog.textContent).toContain('local-only aggregate statistics');
+    // The retention sentence is the same promise the release documents make: a running session
+    // keeps the address of each tab it is blocking, and the cleanup that ends it removes every
+    // stored address when it completes.
+    expect(dialog.textContent).toContain('address of each tab it is blocking');
+    expect(dialog.textContent).toContain('removes every stored address when it completes');
+    expect(dialog.textContent).not.toContain('every website tab');
+    expect(dialog.textContent).not.toContain('deleted as a whole');
     fireEvent.click(view.getByRole('button', { name: 'Cancel' }));
     expect(
       fake.sent.some((request: Request): boolean => request.type === 'clearFocusLockData'),
