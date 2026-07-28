@@ -135,21 +135,24 @@ test('persistent profile restores a blocked muted tab and active countdown after
     websiteAccess: 'granted',
     blockingRegistration: 'ready',
   });
+  // The allowed tab is open before the start, so the start's own sweep freezes a view for it and
+  // the runtime has to decide what it keeps of that view when the session publishes.
+  const allowedPage: Page = await first.context.newPage();
+  await allowedPage.goto(allowedUrl, { waitUntil: 'load' });
+  await expect(allowedPage.locator('#marker')).toHaveText('plain page');
   await startTestSession(first.extPage, {
     duration: { kind: 'timed', minutes: 0.5 },
     intention: 'survive browser restart',
   });
+  await expect(allowedPage.locator('focus-lock-overlay')).toHaveCount(0);
   const blockedPage: Page = await first.context.newPage();
   await blockedPage.goto(url, { waitUntil: 'commit' });
   await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
   await expect(blockedPage).toHaveTitle('Locked - Focus Lock');
   await expect(blockedPage.locator('#marker')).toHaveCount(0);
-  const allowedPage: Page = await first.context.newPage();
-  await allowedPage.goto(allowedUrl, { waitUntil: 'load' });
-  await expect(allowedPage.locator('#marker')).toHaveText('plain page');
-  await expect(allowedPage.locator('focus-lock-overlay')).toHaveCount(0);
   // During the session the runtime holds the blocked tab's address and no other. The allowed tab
-  // acknowledged the epoch like every open tab, and its record carries no address.
+  // was swept at the start and acknowledged the epoch like every open tab, and its record
+  // carries no address.
   await expect
     .poll(async (): Promise<RetainedAddresses> => await readRetainedAddresses(first.worker), {
       timeout: 15_000,
