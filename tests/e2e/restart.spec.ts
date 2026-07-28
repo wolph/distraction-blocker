@@ -76,6 +76,34 @@ async function readRetainedCommands(worker: Worker): Promise<RetainedCommands> {
   });
 }
 
+interface RetainedAddresses {
+  /** The page address of every stored document command, sorted. */
+  commandUrls: string[];
+  /** How many epoch acknowledgement records the runtime holds. */
+  acks: number;
+  /** How many of those records carry a page address, which after this slice is always zero. */
+  acksWithUrl: number;
+}
+
+/** Every page address the runtime holds, in its command map and its acknowledgement records. */
+async function readRetainedAddresses(worker: Worker): Promise<RetainedAddresses> {
+  return await worker.evaluate(async (): Promise<RetainedAddresses> => {
+    const stored: Record<string, unknown> = await chrome.storage.local.get('runtime');
+    const runtime = stored.runtime as {
+      documentCommands?: Record<string, { expectedUrl?: unknown }>;
+      epochResetAcks?: Record<string, Record<string, unknown>>;
+    };
+    const acks: Array<Record<string, unknown>> = Object.values(runtime.epochResetAcks ?? {});
+    return {
+      commandUrls: Object.values(runtime.documentCommands ?? {})
+        .map((command: { expectedUrl?: unknown }): string => String(command.expectedUrl))
+        .sort(),
+      acks: acks.length,
+      acksWithUrl: acks.filter((ack: Record<string, unknown>): boolean => 'url' in ack).length,
+    };
+  });
+}
+
 async function restoredBlockedPage(launch: ExtensionLaunch, url: string): Promise<Page> {
   await expect
     .poll((): boolean =>
@@ -94,6 +122,9 @@ test('persistent profile restores a blocked muted tab and active countdown after
   siteUrl,
 }) => {
   const url: string = siteUrl('/plain.html');
+  // The same test server under a host the session does not block: an allowed tab that stays open
+  // through the restart and the cleanup, so the runtime has an address it must not keep.
+  const allowedUrl: string = url.replace('blocked.example', 'other.example');
   const first: ExtensionLaunch = await restartableExtension.launch();
   const setupBefore: SetupState = await sendExtensionRequest(first.extPage, {
     type: 'getSetupState',
@@ -113,6 +144,17 @@ test('persistent profile restores a blocked muted tab and active countdown after
   await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
   await expect(blockedPage).toHaveTitle('Locked - Focus Lock');
   await expect(blockedPage.locator('#marker')).toHaveCount(0);
+  const allowedPage: Page = await first.context.newPage();
+  await allowedPage.goto(allowedUrl, { waitUntil: 'load' });
+  await expect(allowedPage.locator('#marker')).toHaveText('plain page');
+  await expect(allowedPage.locator('focus-lock-overlay')).toHaveCount(0);
+  // During the session the runtime holds the blocked tab's address and no other. The allowed tab
+  // acknowledged the epoch like every open tab, and its record carries no address.
+  await expect
+    .poll(async (): Promise<RetainedAddresses> => await readRetainedAddresses(first.worker), {
+      timeout: 15_000,
+    })
+    .toEqual({ commandUrls: [url], acks: 2, acksWithUrl: 0 });
 
   const before: SessionSnapshot = await sendExtensionRequest(first.extPage, {
     type: 'getSnapshot',
@@ -169,6 +211,12 @@ test('persistent profile restores a blocked muted tab and active countdown after
   expect(tabAfter.frameDocumentId).not.toBeNull();
   expect(tabAfter.muted).toBe(true);
   expect(tabAfter.extensionOwnedMute).toBe(true);
+  // Recovery froze the restored tabs the same way the start did: the blocked one alone.
+  await expect
+    .poll(async (): Promise<string[]> => (await readRetainedAddresses(second.worker)).commandUrls, {
+      timeout: 15_000,
+    })
+    .toEqual([url]);
 
   await expect
     .poll(
@@ -190,6 +238,13 @@ test('persistent profile restores a blocked muted tab and active countdown after
       timeout: 15_000,
     })
     .toEqual({ closurePending: false, documentCommands: 0 });
+
+  // The cleanup dropped the records of the tabs the restart renumbered away and kept an
+  // address-free record for each tab still open.
+  const settledAddresses: RetainedAddresses = await readRetainedAddresses(second.worker);
+  expect(settledAddresses.commandUrls).toEqual([]);
+  expect(settledAddresses.acksWithUrl).toBe(0);
+  expect(settledAddresses.acks).toBeGreaterThan(0);
 
   const settledTab: PersistedTabState = await readPersistedTabState(second.worker, url);
   expect(settledTab.hasTabState).toBe(false);
