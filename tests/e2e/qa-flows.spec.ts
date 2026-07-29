@@ -36,6 +36,7 @@ import {
   startTestSession,
   test,
 } from './fixtures';
+import { openPopupSection, revealSessionActions } from './popup-disclosures';
 import {
   assertStatsVisualEvidenceDirectory,
   assertStatsVisualInventoryCoverage,
@@ -305,6 +306,7 @@ test('popup daily states keep help and long rules contained at native width', as
 
   await extPage.setViewportSize({ width: 340, height: 760 });
   await extPage.reload();
+  await openPopupSection(extPage, 'Session settings');
   await expect(extPage.getByRole('heading', { name: 'What will be blocked' })).toBeVisible();
   await captureTask7Evidence(extPage, 'production-popup-block-340-full');
   const ruleScroll: Locator = extPage.getByRole('region', { name: 'Session rule details' });
@@ -315,7 +317,7 @@ test('popup daily states keep help and long rules contained at native width', as
   ).toBe(true);
   await ruleScroll.focus();
   const startButton: Locator = extPage.getByRole('button', {
-    name: 'Start 25 min - Block selected sites',
+    name: 'Start 25 min focus',
   });
   const startBoundsBefore: { bottom: number; top: number } = await startButton.evaluate(
     (element: Element): { bottom: number; top: number } => {
@@ -405,6 +407,7 @@ test('popup daily states keep help and long rules contained at native width', as
 
   await extPage.bringToFront();
   await extPage.reload();
+  await revealSessionActions(extPage);
   const unlock: Locator = extPage.locator('.spend-button').filter({ hasText: 'Unlock this site' });
   await expect(unlock).toBeDisabled();
   await expect(unlock).toContainText('Open a regular website to unlock it');
@@ -548,6 +551,7 @@ async function captureTask7PopupMatrix(input: {
   for (const themeCase of TASK7_THEME_CASES) {
     await test.step(`popup ${themeCase.id} ${String(input.viewport.width)} block and help states`, async () => {
       await applyTask7ThemeCase(input.page, themeCase, 'popup');
+      await openPopupSection(input.page, 'Session settings');
       await expect(input.page.getByRole('heading', { name: 'What will be blocked' })).toBeVisible();
       await input.capture.capture(
         input.page,

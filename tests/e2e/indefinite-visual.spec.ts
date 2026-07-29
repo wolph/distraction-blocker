@@ -1,3 +1,4 @@
+import { openPopupSection } from './popup-disclosures';
 /**
  * Deterministic visual evidence for the indefinite-session surfaces.
  *
@@ -273,8 +274,8 @@ function popupFixtures(
       prepare: async (page: Page): Promise<void> => {
         await page.getByRole('button', { name: 'Until stopped' }).click();
         // The session type is live now, so the one forced control left is the cycles row,
-        // which sits inside the collapsed cycle options.
-        await page.getByText('Cycle options').click();
+        // which sits inside Session settings.
+        await openPopupSection(page, 'Session settings');
         await expect(page.locator('.forced-control').first()).toBeVisible();
         const forced: Locator = page.locator('.forced-control').first();
         if (state === 'popup-forced-hover') {
@@ -298,6 +299,7 @@ function popupFixtures(
     visible: '.session-type-control',
     prepare: async (page: Page): Promise<void> => {
       await page.getByRole('button', { name: 'Until stopped' }).click();
+      await openPopupSection(page, 'Session settings');
       await expect(page.getByRole('button', { name: 'Hard lock' })).toHaveAttribute(
         'aria-disabled',
         'true',
@@ -332,13 +334,11 @@ function popupFixtures(
     phaseStartedAt: FIXED_NOW - focusedFor,
     sessionFocusedMs: focusedFor,
   };
-  // The active view draws its clock immediately and fills today's focus total from the worker a
-  // moment later, so a capture taken on the clock alone shows the total present or absent depending
-  // on which won the race. Every active state waits on the total instead.
+  // Active captures wait for the core. Daily totals are available through Settings.
   fixtures.set('popup-active-indefinite-focus', {
     setup,
     snapshot: fixedSnapshot(active, theme, runningLong),
-    visible: '.today-line',
+    visible: '.active-core',
   });
   fixtures.set('popup-active-indefinite-pause', {
     setup,
@@ -353,12 +353,12 @@ function popupFixtures(
       sessionFocusedMs: 18 * 60_000,
       bankAccrualPerMs: 0,
     }),
-    visible: '.today-line',
+    visible: '.active-core',
   });
   fixtures.set('popup-active-50-dual-clocks', {
     setup,
     snapshot: cycling,
-    visible: '.today-line',
+    visible: '.active-core',
   });
   fixtures.set('popup-long-copy', {
     setup,
@@ -366,7 +366,7 @@ function popupFixtures(
       ...runningLong,
       config: active.config === null ? null : { ...active.config, intention: LONG_INTENTION },
     }),
-    visible: '.today-line',
+    visible: '.active-core',
   });
 
   const cleanup: Array<[IndefiniteVisualState, 'closure' | 'transition']> = [

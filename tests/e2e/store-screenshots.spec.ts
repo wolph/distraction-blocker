@@ -18,6 +18,7 @@ import {
   sendExtensionRequest,
   test,
 } from './fixtures';
+import { openPopupSection } from './popup-disclosures';
 import { buildStatsVisualSeed, type StatsVisualSeed } from './stats-visual-seeds';
 
 const REPOSITORY_ROOT: string = fileURLToPath(new URL('../../', import.meta.url));
@@ -1044,13 +1045,12 @@ test('captures five truthful release states with category membership in the popu
     await installPageClock(extPage);
     await extPage.goto(`chrome-extension://${extensionId}/src/popup/popup.html`);
     await extPage.getByLabel('Intention').fill(STORE_INTENTION);
+    await openPopupSection(extPage, 'Session settings');
     await expect(extPage.getByRole('button', { name: 'Friction' })).toHaveAttribute(
       'aria-pressed',
       'true',
     );
-    await expect(
-      extPage.getByRole('button', { name: 'Start 25 min - Block selected sites' }),
-    ).toBeVisible();
+    await expect(extPage.getByRole('button', { name: 'Start 25 min focus' })).toBeVisible();
     await expect(extPage.getByText('1 of 7 categories selected')).toBeVisible();
     await expect(extPage.getByText('2 extra blocked rules')).toBeVisible();
     await expect(extPage.getByRole('button', { name: 'Social media' })).toHaveAttribute(

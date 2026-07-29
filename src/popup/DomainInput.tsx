@@ -1,19 +1,23 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
+import { type Dispatch, type StateUpdater, useEffect, useState } from 'preact/hooks';
 
 export interface DomainInputProps {
+  onError?: (error: string | null) => void;
   onAdd: (raw: string) => string | null;
 }
 
-export function DomainInput({ onAdd }: DomainInputProps): VNode {
+export function DomainInput({ onAdd, onError }: DomainInputProps): VNode {
   const [value, setValue]: [string, Dispatch<StateUpdater<string>>] = useState<string>('');
   const [error, setError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
     string | null
   >(null);
 
+  useEffect((): (() => void) => (): void => onError?.(null), [onError]);
+
   const submit: () => void = (): void => {
     const nextError: string | null = onAdd(value);
     setError(nextError);
+    onError?.(nextError);
     if (nextError === null) setValue('');
   };
 
@@ -46,7 +50,7 @@ export function DomainInput({ onAdd }: DomainInputProps): VNode {
           <span>Add</span>
         </button>
       </div>
-      {error !== null ? (
+      {onError === undefined && error !== null ? (
         <p id="session-allow-domain-error" class="form-error" role="alert">
           {error}
         </p>

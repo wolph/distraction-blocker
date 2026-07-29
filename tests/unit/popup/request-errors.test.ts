@@ -28,7 +28,6 @@ import {
   openOptionsPageMock,
   resetChromeFake,
   sendMessageMock,
-  tabsCreateMock,
   tabsQueryMock,
 } from './chrome-fake';
 
@@ -180,18 +179,6 @@ describe('popup request errors', (): void => {
     });
   });
 
-  it('reports a rejected focused-today request without an unhandled rejection', async (): Promise<void> => {
-    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
-      if (request.type === 'getStats') throw new Error('worker disconnected');
-      return { ok: true };
-    });
-    const { getByRole } = render(h(ActiveView, { snapshot: focusSnapshot(), now: NOW }));
-
-    await waitFor((): void => {
-      expect(getByRole('alert').textContent).toBe("Today's focus total is unavailable.");
-    });
-  });
-
   it('reports a rejected active-tab request', async (): Promise<void> => {
     tabsQueryMock.mockRejectedValue(new Error('tabs unavailable'));
     sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
@@ -203,31 +190,6 @@ describe('popup request errors', (): void => {
 
     await waitFor((): void => {
       expect(getByRole('alert').textContent).toBe('Could not identify the active site.');
-    });
-  });
-
-  it('settles a rejected Statistics navigation request and allows retry', async (): Promise<void> => {
-    const pending: Deferred<unknown> = deferred<unknown>();
-    tabsCreateMock.mockReturnValue(pending.promise);
-    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
-      if (request.type === 'getSetupState') return COMPLETED_SETUP;
-      if (request.type === 'getSnapshot') return emptySnapshot(NOW);
-      if (request.type === 'getSettings') return DEFAULT_SETTINGS;
-      if (request.type === 'getLists') return DEFAULT_LISTS;
-      return { ok: true };
-    });
-    const { getByRole } = render(h(App, null));
-    const statistics: HTMLButtonElement = getByRole('button', {
-      name: 'Statistics',
-    }) as HTMLButtonElement;
-
-    fireEvent.click(statistics);
-    expect(statistics.disabled).toBe(true);
-    pending.reject(new Error('tabs unavailable'));
-
-    await waitFor((): void => {
-      expect(getByRole('alert').textContent).toBe('Could not open Statistics. Try again.');
-      expect(statistics.disabled).toBe(false);
     });
   });
 
@@ -243,7 +205,7 @@ describe('popup request errors', (): void => {
     });
     const { getByRole } = render(h(App, null));
     const options: HTMLButtonElement = getByRole('button', {
-      name: 'Options',
+      name: 'Settings',
     }) as HTMLButtonElement;
 
     fireEvent.click(options);
@@ -251,7 +213,7 @@ describe('popup request errors', (): void => {
     pending.reject(new Error('options unavailable'));
 
     await waitFor((): void => {
-      expect(getByRole('alert').textContent).toBe('Could not open Options. Try again.');
+      expect(getByRole('alert').textContent).toBe('Could not open Settings. Try again.');
       expect(options.disabled).toBe(false);
     });
   });
@@ -260,7 +222,7 @@ describe('popup request errors', (): void => {
     [
       'openGate' as const,
       focusSnapshot(),
-      /Unlock all sites 5:00 - costs 5:00 credit/,
+      /Unlock all sites 5:00 access, 5:00 credit/,
       ACTION_FAILED_COPY,
     ],
     ['openEndGate' as const, focusSnapshot(), 'End session', END_FAILED_COPY],

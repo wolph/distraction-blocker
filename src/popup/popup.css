@@ -221,6 +221,7 @@ body {
 }
 
 .start-form {
+  padding: 24px;
   display: grid;
   min-block-size: 0;
   flex: 1 1 auto;
@@ -232,7 +233,7 @@ body {
   display: flex;
   min-height: 0;
   flex-direction: column;
-  gap: 12px;
+  gap: 20px;
   padding-inline-end: 4px;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -766,8 +767,7 @@ body {
   font-size: 12.5px;
 }
 
-/* The work tab picker and the return control push the spend and End controls past the popup's
-   600 px, and the body clips its overflow, so the view is the scroll container. */
+/* The whole view remains scrollable when a short window cannot fit the clock and actions. */
 .active-view {
   display: flex;
   min-block-size: 0;
@@ -1095,11 +1095,25 @@ body {
   line-height: 1.4;
 }
 
+.return-work-destination {
+  display: flex;
+  justify-content: center;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+}
+
 .return-work-title {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.return-work-hostname {
+  flex: none;
+  max-width: 50%;
+  overflow-wrap: anywhere;
 }
 
 /* Outlined rather than filled: the same shape as the two actions above it, marked in red by its
@@ -1211,8 +1225,8 @@ body {
 }
 
 .clock-stack__value {
-  font-size: 34px;
-  font-weight: 700;
+  font-size: 48px;
+  font-weight: 650;
   line-height: 1.1;
   font-variant-numeric: tabular-nums;
 }
@@ -1255,4 +1269,159 @@ body {
   margin: 0;
   font-size: 15px;
   font-weight: 700;
+}
+
+/* The main choice stays visible while optional controls share one native disclosure. */
+.session-disclosure {
+  width: 100%;
+  min-width: 0;
+  color: var(--text);
+}
+
+.session-disclosure > summary {
+  padding: 10px 0;
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.session-disclosure__content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 8px 0 12px;
+  min-width: 0;
+}
+
+/* Explicitly preserve native closed behaviour even with the flex content wrapper. */
+.session-disclosure:not([open]) > .session-disclosure__content {
+  display: none;
+}
+
+.selected-work-tab {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.selected-work-tab .work-target {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.text-button {
+  flex: none;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--focus-strong);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.text-button:disabled {
+  color: var(--text-soft);
+  cursor: default;
+}
+
+.draft-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 6px;
+  color: var(--text-soft);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.active-core {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 14px 0 8px;
+}
+
+.active-core .clock-stack {
+  margin-bottom: 12px;
+}
+
+.session-actions {
+  min-height: 0;
+  flex: 0 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.session-disclosure .mode-control,
+.session-disclosure .rule-summary {
+  border: 0;
+  background: transparent;
+}
+
+.session-disclosure .mode-control,
+.session-disclosure .rule-summary__heading,
+.session-disclosure .rule-summary__scroll {
+  padding-inline: 0;
+}
+
+.session-disclosure .rule-summary__heading {
+  background: transparent;
+  border: 0;
+}
+
+.start-form .session-disclosure .this-tab-button {
+  background: var(--surface);
+  color: var(--text);
+}
+
+@media (max-height: 440px) {
+  .session-actions {
+    flex-shrink: 0;
+    overflow-y: visible;
+  }
+}
+
+.active-core > .text-button {
+  align-self: center;
+}
+
+.session-actions {
+  padding-top: 8px;
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.draft-summary .session-timing {
+  margin: 0;
+}
+
+.clock-stack__label {
+  font-weight: 400;
+}
+
+.spend-button {
+  min-block-size: 62px;
+}
+
+.session-actions .actions {
+  display: grid;
+  grid-auto-rows: 1fr;
+}
+
+/* Keep input focus visible inside the scrolling settings area. */
+.start-form
+:is(.intention-input, .custom-min, .domain-input-row input, .work-tab-label select):focus {
+  outline: 2px solid var(--focus-color);
+  outline-offset: -2px;
 }

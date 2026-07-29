@@ -218,7 +218,7 @@ describe('popup setup routing', (): void => {
     fireEvent.click(enable);
     await waitFor((): void => expect(enable.disabled).toBe(true));
     const statistics: HTMLButtonElement = view.getByRole('button', {
-      name: 'Statistics',
+      name: 'Settings',
     }) as HTMLButtonElement;
     statistics.focus();
     expect(document.activeElement).toBe(statistics);

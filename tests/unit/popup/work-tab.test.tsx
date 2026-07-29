@@ -537,3 +537,104 @@ describe('App partial start', (): void => {
     expect(view.queryByRole('button', { name: START_BUTTON })).toBeNull();
   });
 });
+
+describe('quiet work tab disclosures', (): void => {
+  it('opens and focuses the idle chooser while retaining the selected tab and draft', async (): Promise<void> => {
+    const view: ReturnType<typeof render> = render(
+      <StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />,
+    );
+    await waitFor((): void => expect(workTabSelect(view).disabled).toBe(false));
+    const details: HTMLDetailsElement = view.getByText('Session settings')
+      .parentElement as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    fireEvent.click(view.getByRole('button', { name: 'Change' }));
+    expect(details.open).toBe(true);
+    expect(document.activeElement).toBe(workTabSelect(view));
+    fireEvent.change(workTabSelect(view), { target: { value: '14' } });
+    fireEvent.input(view.getByLabelText('Custom minutes'), { target: { value: '37' } });
+    fireEvent.click(view.getByRole('button', { name: 'Flexible' }));
+    fireEvent.input(view.getByLabelText('Intention'), { target: { value: 'Finish notes' } });
+    details.open = false;
+    fireEvent.click(view.getByRole('button', { name: 'Change' }));
+    expect(workTabSelect(view).value).toBe('14');
+    expect((view.getByLabelText('Custom minutes') as HTMLInputElement).value).toBe('37');
+    expect(view.getByRole('button', { name: 'Flexible' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    expect((view.getByLabelText('Intention') as HTMLInputElement).value).toBe('Finish notes');
+    expect(view.getByRole('button', { name: 'Start 37 min focus' })).toBeTruthy();
+  });
+
+  it('opens and focuses the active chooser and keeps save errors outside collapsed actions', async (): Promise<void> => {
+    answerWith({
+      getWorkTarget: readyTarget,
+      setWorkTarget: (): unknown => ({ ok: false, error: 'Cannot save tab' }),
+    });
+    const view: ReturnType<typeof render> = render(
+      <ActiveView snapshot={activeSnap()} now={NOW} />,
+    );
+    await waitFor((): void => expect(workTabSelect(view).disabled).toBe(false));
+    fireEvent.click(view.getByRole('button', { name: 'Change work tab' }));
+    expect(document.activeElement).toBe(workTabSelect(view));
+    fireEvent.change(workTabSelect(view), { target: { value: '14' } });
+    await waitFor((): void => expect(view.getByRole('alert').textContent).toBe('Cannot save tab'));
+    (view.getByText('Session actions').parentElement as HTMLDetailsElement).open = false;
+    expect(view.getByRole('alert').closest('details')).toBeNull();
+  });
+
+  it('retains an open disclosure on ticks and closes it for a new session', async (): Promise<void> => {
+    answerWith({ getWorkTarget: readyTarget });
+    const snapshot: SessionSnapshotV2 = activeSnap();
+    const view: ReturnType<typeof render> = render(<ActiveView snapshot={snapshot} now={NOW} />);
+    const details: HTMLDetailsElement = view.getByText('Session actions')
+      .parentElement as HTMLDetailsElement;
+    details.open = true;
+    view.rerender(<ActiveView snapshot={{ ...snapshot, at: NOW + 1000 }} now={NOW + 1000} />);
+    expect(details.open).toBe(true);
+    view.rerender(<ActiveView snapshot={{ ...snapshot, startedAt: NOW }} now={NOW + 1000} />);
+    expect(details.open).toBe(false);
+  });
+
+  it('makes phase recovery primary and returning to work secondary', async (): Promise<void> => {
+    answerWith({ getWorkTarget: readyTarget });
+    const snapshot: SessionSnapshotV2 = { ...activeSnap(), phase: 'paused' };
+    const view: ReturnType<typeof render> = render(<ActiveView snapshot={snapshot} now={NOW} />);
+    await waitFor((): void =>
+      expect(view.getByRole('button', { name: /^Back to work/ })).toBeTruthy(),
+    );
+    expect(
+      view.getByRole('button', { name: 'Resume now' }).classList.contains('start-button'),
+    ).toBe(true);
+    expect(
+      view.getByRole('button', { name: /^Back to work/ }).classList.contains('secondary-button'),
+    ).toBe(true);
+    view.rerender(
+      <ActiveView
+        snapshot={{ ...snapshot, phase: 'break', phaseStartedAt: NOW - 120000 }}
+        now={NOW}
+      />,
+    );
+    expect(
+      view
+        .getByRole('button', { name: 'Start next focus early' })
+        .classList.contains('start-button'),
+    ).toBe(true);
+    expect(
+      view.getByRole('button', { name: /^Back to work/ }).classList.contains('secondary-button'),
+    ).toBe(true);
+  });
+
+  it('restores focus to work after the gate ends', async (): Promise<void> => {
+    answerWith({ getWorkTarget: readyTarget });
+    const view: ReturnType<typeof render> = render(
+      <ActiveView snapshot={activeSnap()} now={NOW} />,
+    );
+    await waitFor((): void =>
+      expect(view.getByRole('button', { name: /^Back to work/ })).toBeTruthy(),
+    );
+    view.rerender(<ActiveView snapshot={activeSnap(OPEN_FRICTION)} now={NOW} />);
+    view.getByRole('button', { name: 'Keep focusing' }).focus();
+    view.rerender(<ActiveView snapshot={activeSnap()} now={NOW} />);
+    expect(document.activeElement).toBe(view.getByRole('button', { name: /^Back to work/ }));
+  });
+});

@@ -14,10 +14,12 @@ const DESTINATION_UNAVAILABLE_COPY: string = 'Destination unavailable';
  */
 export function ReturnToWorkButton({
   destination,
+  secondary = false,
   disabled,
   onClick,
 }: {
   destination: WorkDestination;
+  secondary?: boolean;
   disabled: boolean;
   onClick: () => void;
 }): VNode {
@@ -30,17 +32,19 @@ export function ReturnToWorkButton({
   return (
     <button
       type="button"
-      class="start-button return-work-button"
+      class={`${secondary ? 'secondary-button' : 'start-button'} return-work-button`}
       disabled={disabled || !known}
       aria-label={name}
       title={name}
       onClick={onClick}
     >
       <span>{BACK_TO_WORK_LABEL}</span>
-      <span class="return-work-title">{title || hostname || DESTINATION_UNAVAILABLE_COPY}</span>
-      {title !== '' && hostname !== '' ? (
-        <span class="return-work-hostname">{hostname}</span>
-      ) : null}
+      <span class="return-work-destination">
+        <span class="return-work-title">{title || hostname || DESTINATION_UNAVAILABLE_COPY}</span>
+        {title !== '' && hostname !== '' ? (
+          <span class="return-work-hostname"> ({hostname})</span>
+        ) : null}
+      </span>
     </button>
   );
 }

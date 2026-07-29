@@ -21,8 +21,7 @@ import {
 } from '../shared/runtime-validation';
 import { DATA_CLEAR_ERROR_COPY } from '../shared/session-copy';
 import { LOCAL_SETUP } from '../shared/storage-keys';
-import { ThemeControl } from '../shared/ThemeControl';
-import { applyTheme, updateTheme } from '../shared/theme';
+import { applyTheme } from '../shared/theme';
 import type {
   BootFailure,
   ListsConfig,
@@ -63,10 +62,7 @@ function PadlockGlyph(): VNode {
   );
 }
 
-function Header(props: {
-  theme: ThemeMode | null;
-  onThemeChange: (next: ThemeMode) => Promise<string | null>;
-}): VNode {
+function Header(): VNode {
   const [pending, setPending]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
     string | null
   >(null);
@@ -74,17 +70,13 @@ function Header(props: {
     string | null
   >(null);
 
-  const openPage: (destination: 'Statistics' | 'Options') => Promise<void> = async (
-    destination: 'Statistics' | 'Options',
+  const openPage: (destination: 'Settings') => Promise<void> = async (
+    destination: 'Settings',
   ): Promise<void> => {
     setError(null);
     setPending(destination);
     try {
-      if (destination === 'Statistics') {
-        await chrome.tabs.create({ url: chrome.runtime.getURL('src/stats/stats.html') });
-      } else {
-        await chrome.runtime.openOptionsPage();
-      }
+      await chrome.runtime.openOptionsPage();
     } catch {
       setError(`Could not open ${destination}. Try again.`);
     } finally {
@@ -100,27 +92,9 @@ function Header(props: {
         <button
           type="button"
           class="icon-button"
-          aria-label="Statistics"
+          aria-label="Settings"
           disabled={pending !== null}
-          onClick={(): void => void openPage('Statistics')}
-        >
-          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-            <path
-              d="M4 20V10M10 20V4M16 20v-8M22 20H2"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-            />
-          </svg>
-        </button>
-        <ThemeControl mode={props.theme} onChange={props.onThemeChange} className="popup-theme" />
-        <button
-          type="button"
-          class="icon-button"
-          aria-label="Options"
-          disabled={pending !== null}
-          onClick={(): void => void openPage('Options')}
+          onClick={(): void => void openPage('Settings')}
         >
           <svg
             class="settings-cog"
@@ -150,10 +124,10 @@ function Header(props: {
   );
 }
 
-function Footer({ snapshot }: { snapshot: SessionSnapshot }): VNode {
+function Footer({ snapshot }: { snapshot: SessionSnapshot }): VNode | null {
+  if (snapshot.nextSchedule === null) return null;
   return (
     <footer class="footer">
-      <span>{snapshot.attemptsToday} blocked today</span>
       {snapshot.nextSchedule !== null ? (
         <span>{formatNextSchedule(snapshot.nextSchedule.startsAt)}</span>
       ) : null}
@@ -718,14 +692,6 @@ export function App(): VNode {
     if (theme !== null) applyTheme(document.documentElement, theme);
   }, [theme]);
 
-  const saveTheme: (next: ThemeMode) => Promise<string | null> = async (
-    next: ThemeMode,
-  ): Promise<string | null> => {
-    const saveError: string | null = await updateTheme(next);
-    if (saveError === null) setTheme(next);
-    return saveError;
-  };
-
   const journal: SetupState['dataClear'] | null =
     setup === null ? null : allDataJournal(setup.dataClear);
   /**
@@ -742,7 +708,7 @@ export function App(): VNode {
 
   return (
     <div class="app">
-      <Header theme={theme} onThemeChange={saveTheme} />
+      <Header />
       {setupError ? (
         <section class="view snapshot-status snapshot-status--retry" role="alert">
           <span>Setup status unavailable. Reload Focus Lock to try again.</span>

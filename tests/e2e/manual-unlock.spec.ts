@@ -10,6 +10,7 @@ import {
   test,
   waitForLifecycle,
 } from './fixtures';
+import { openPopupSection, revealSessionActions } from './popup-disclosures';
 
 /** Copy the spec fixes, spelled out here rather than imported, so a wording change fails loudly. */
 const UNTIL_STOPPED_LABEL: string = 'Until stopped';
@@ -58,6 +59,7 @@ test('a Friction manual lock survives browser restart and unlocks only through i
   await expect(original.extPage.locator('body')).toHaveCSS('width', '480px');
 
   await original.extPage.getByRole('button', { name: UNTIL_STOPPED_LABEL, exact: true }).click();
+  await openPopupSection(original.extPage, 'Session settings');
   await expect(original.extPage.getByRole('button', { name: 'Hard lock' })).toHaveAttribute(
     'aria-disabled',
     'true',
@@ -74,6 +76,7 @@ test('a Friction manual lock survives browser restart and unlocks only through i
     phaseEndsAt: null,
     sessionEndsAt: null,
   });
+  await revealSessionActions(original.extPage);
   await expect(
     original.extPage.getByRole('button', { name: UNLOCK_LABEL, exact: true }),
   ).toBeVisible();
@@ -96,6 +99,7 @@ test('a Friction manual lock survives browser restart and unlocks only through i
   await expect(stillBlocked.locator('focus-lock-overlay')).toBeAttached();
 
   // Unlock opens the gate, and the gate's confirm reads Unlock as well.
+  await revealSessionActions(restored.extPage);
   await restored.extPage.getByRole('button', { name: UNLOCK_LABEL, exact: true }).click();
   const confirm = restored.extPage.locator('.gate-confirm');
   await expect(confirm).toHaveText(UNLOCK_LABEL);
@@ -129,6 +133,7 @@ test('a Flexible manual start reads Start until stopped and ends at once', async
   await extPage.reload();
 
   await extPage.getByRole('button', { name: UNTIL_STOPPED_LABEL, exact: true }).click();
+  await openPopupSection(extPage, 'Session settings');
   await extPage.getByRole('button', { name: 'Flexible' }).click();
   // The choice opens its explanation popover over the sticky start button. Escape closes it.
   await extPage.keyboard.press('Escape');
@@ -146,6 +151,7 @@ test('a Flexible manual start reads Start until stopped and ends at once', async
   await blocked.goto(siteUrl('/plain.html'), { waitUntil: 'commit' });
   await expect(blocked.locator('focus-lock-overlay')).toBeAttached();
 
+  await revealSessionActions(extPage);
   await extPage.getByRole('button', { name: END_SESSION_LABEL, exact: true }).click();
   await waitForLifecycle(extPage, 'idle', 60_000);
   await expect(blocked.locator('focus-lock-overlay')).not.toBeAttached();

@@ -1,3 +1,4 @@
+import { openPopupSection, revealSessionActions } from './popup-disclosures';
 /**
  * Product flows for the "Until stopped" session, driven through the surfaces a user touches: the
  * popup start form, the blocked page, the toolbar badge, Settings, Stats, and the schedule.
@@ -360,6 +361,7 @@ test('manual until-stopped start keeps the chosen plan and reports it everywhere
 
   await extPage.getByRole('button', { name: UNTIL_STOPPED_LABEL, exact: true }).click();
 
+  await openPopupSection(extPage, 'Session settings');
   const hardLock: Locator = extPage.getByRole('button', { name: 'Hard lock' });
   await expect(hardLock).toHaveAttribute('aria-disabled', 'true');
   await expect(hardLock).toContainText(HARD_UNAVAILABLE_REASON);
@@ -373,7 +375,7 @@ test('manual until-stopped start keeps the chosen plan and reports it everywhere
   await extPage.getByRole('button', { name: 'Flexible' }).click();
   await expect(extPage.getByText(UNTIL_STOPPED_FLEXIBLE_HINT, { exact: true })).toBeVisible();
 
-  await extPage.getByText('Cycle options').click();
+  await openPopupSection(extPage, 'Session settings');
   const forcedCycles: Locator = extPage.getByRole('group', { name: FORCED_CYCLES_LABEL });
   await expect(forcedCycles).toHaveAttribute('aria-disabled', 'true');
   await expect(forcedCycles.getByRole('checkbox')).not.toBeChecked();
@@ -399,6 +401,7 @@ test('manual until-stopped start keeps the chosen plan and reports it everywhere
 
   await expect(clockValue(extPage, FOCUS_TIME_LABEL)).toBeVisible();
   await expect(extPage.locator('.clock-stack__note')).toHaveText(UNTIL_STOPPED_LABEL);
+  await revealSessionActions(extPage);
   await expect(extPage.getByRole('button', { name: END_SESSION_LABEL })).toBeVisible();
   await expect
     .poll(async (): Promise<string> => await readBadgeText(worker))
@@ -506,6 +509,7 @@ test('popup End completes the indefinite session manually and silently', async (
   const completedBefore: number = completedToday(await readRuntimeV2(worker));
 
   const sampled: Promise<SessionLifecycleV2['kind'][]> = sampleLifecyclesUntil(extPage, 'idle');
+  await revealSessionActions(extPage);
   await extPage.getByRole('button', { name: END_SESSION_LABEL }).click();
   expect(await sampled).toEqual(['active', 'cleanup', 'idle']);
   await waitForLifecycle(extPage, 'idle', 60_000);
@@ -556,6 +560,7 @@ test('an indefinite pause freezes focus time and still ends from the popup', asy
     )
     .toBeGreaterThanOrEqual(60_000);
 
+  await revealSessionActions(extPage);
   await extPage.getByRole('button', { name: /^Unlock all sites / }).click();
   const confirmPause: Locator = extPage.getByRole('button', {
     name: 'Unlock all sites',
@@ -580,6 +585,7 @@ test('an indefinite pause freezes focus time and still ends from the popup', asy
     .toBe(firstRead);
   expect(await focusTime.innerText()).toBe(firstRead);
 
+  await revealSessionActions(extPage);
   await extPage.getByRole('button', { name: END_SESSION_LABEL }).click();
   await waitForLifecycle(extPage, 'idle', 60_000);
 
@@ -609,6 +615,7 @@ test('a pause that expires resumes indefinite focus with no end in sight', async
     )
     .toBeGreaterThanOrEqual(6_000);
 
+  await revealSessionActions(extPage);
   await extPage.getByRole('button', { name: /^Unlock all sites / }).click();
   const confirmPause: Locator = extPage.getByRole('button', {
     name: 'Unlock all sites',
@@ -638,10 +645,10 @@ test('a 50 minute popup start makes the total session prominent above its focus 
   extPage,
   worker,
 }) => {
-  await extPage.getByRole('button', { name: '50 deep work', exact: true }).click();
-  await extPage.getByText('Cycle options', { exact: true }).click();
+  await extPage.getByRole('button', { name: '50 min', exact: true }).click();
+  await openPopupSection(extPage, 'Session settings');
   await extPage.getByRole('checkbox', { name: /^Cycles:/ }).check();
-  await extPage.getByRole('button', { name: /^Start 50 min -/ }).click();
+  await extPage.getByRole('button', { name: /^Start 50 min focus$/ }).click();
   const snapshot: SessionSnapshotV2 = await waitForLifecycle(extPage, 'active');
 
   const primaryRow: Locator = extPage.locator(
@@ -684,6 +691,7 @@ async function recordTwoManualEnds(extPage: Page, worker: Worker): Promise<void>
     strictness: 'flexible',
   });
   const timedSessionId: string = await activeSessionId(worker);
+  await revealSessionActions(extPage);
   await extPage.getByRole('button', { name: END_SESSION_LABEL }).click();
   await waitForLifecycle(extPage, 'idle', 60_000);
   const timedEnd: SessionEndedEventV2 = endEventFor(
@@ -695,6 +703,7 @@ async function recordTwoManualEnds(extPage: Page, worker: Worker): Promise<void>
 
   await startUntilStoppedSession(extPage);
   const indefiniteSessionId: string = await activeSessionId(worker);
+  await revealSessionActions(extPage);
   await extPage.getByRole('button', { name: END_SESSION_LABEL }).click();
   await waitForLifecycle(extPage, 'idle', 60_000);
   const indefiniteEnd: SessionEndedEventV2 = endEventFor(
@@ -750,6 +759,7 @@ test('end authority follows the session type a timed session was started with', 
     duration: { kind: 'timed', minutes: 5 },
     strictness: 'friction',
   });
+  await revealSessionActions(extPage);
   await extPage.getByRole('button', { name: END_SESSION_LABEL }).click();
   const gateSnapshot: SessionSnapshotV2 = await expect
     .poll(
@@ -838,6 +848,7 @@ test('a scheduled until-stopped window starts once and never relocks inside itse
 
   await extPage.reload();
   await observeSnapshotBroadcasts(extPage);
+  await revealSessionActions(extPage);
   await extPage.getByRole('button', { name: END_SESSION_LABEL }).click();
   await waitForLifecycle(extPage, 'idle', 60_000);
   expect((await readRuntimeV2(worker)).handledScheduleOccurrences).toContainEqual(
@@ -941,6 +952,7 @@ test('all-data deletion blocks starts and popup retry completes the exhausted re
   const active: SessionSnapshotV2 = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
   if (active.config === null) throw new Error('the started session has no configuration');
   await extPage.reload();
+  await revealSessionActions(extPage);
   await extPage.getByRole('button', { name: END_SESSION_LABEL }).click();
   await waitForLifecycle(extPage, 'idle');
   await interceptDataClear(worker);

@@ -2,6 +2,7 @@ import type { BrowserContext, CDPSession, Page } from '@playwright/test';
 import { cancelPhrase } from '../../src/shared/constants';
 import type { GateState, SessionSnapshot, Settings } from '../../src/shared/types';
 import { expect, sendExtensionRequest, startTestSession, test } from './fixtures';
+import { revealSessionActions } from './popup-disclosures';
 
 async function captureGate(extPage: Page): Promise<GateState> {
   const snapshot: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
@@ -212,12 +213,14 @@ test('pause gate supports keep focusing, taking a pause, and resuming now', asyn
   await expect(page.locator('focus-lock-overlay')).toBeAttached();
   await waitForBank(extPage, pauseMs);
 
+  await revealSessionActions(extPage);
   const pauseButton = extPage.getByRole('button', {
-    name: /^Unlock all sites 0:\d\d - costs 0:\d\d credit$/,
+    name: /^Unlock all sites .*access, .*credit/,
   });
   await expect(pauseButton).toBeEnabled();
   await pauseButton.click();
   await extPage.getByRole('button', { name: 'Keep focusing' }).click();
+  await revealSessionActions(extPage);
   await expect(pauseButton).toBeEnabled();
 
   await pauseButton.click();
@@ -250,9 +253,8 @@ test('paused UI leaves when the session wall clock ends', async ({ extPage }) =>
   await startTestSession(extPage, { duration: { kind: 'timed', minutes: 0.08 } });
   await waitForBank(extPage, pauseMs);
 
-  await extPage
-    .getByRole('button', { name: /^Unlock all sites 0:\d\d - costs 0:\d\d credit$/ })
-    .click();
+  await revealSessionActions(extPage);
+  await extPage.getByRole('button', { name: /^Unlock all sites .*access, .*credit/ }).click();
   await extPage.getByRole('button', { name: 'Unlock all sites', exact: true }).click();
   // The worker answers getSnapshot off its mutation queue on purpose, because serializing the read
   // made it reject for the whole of any storage transition. So a read taken the instant a command
@@ -542,6 +544,10 @@ test('a newly blocked domain replaces an unlock gate and rejects the old confirm
     .toBe(true);
   await clickClosedShadowButton(context, second, 'Unlock this site');
   await expect(second.locator('focus-lock-overlay')).toHaveCount(0);
+  // Clearing the overlay precedes the stopped document's reload. Keep the test server alive
+  // until the restored page has loaded, so fixture teardown cannot refuse that request.
+  await expect(second.locator('#marker')).toHaveText('plain page');
+  await second.waitForLoadState('load');
   await expect(first.locator('focus-lock-overlay')).toBeAttached();
   const after: SessionSnapshot = await sendExtensionRequest(extPage, { type: 'getSnapshot' });
   expect(after.activeUnlocks.map((unlock): string => unlock.host)).toEqual(['other.example']);

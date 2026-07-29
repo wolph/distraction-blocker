@@ -248,17 +248,13 @@ describe('effectiveTimedMinutes', (): void => {
 });
 
 describe('startLabel', (): void => {
-  it('names the duration and the blocking mode for timed drafts', (): void => {
+  it('names the duration for timed focus', (): void => {
     const draft: StartDraft = baseDraft();
 
-    expect(startLabel(draft)).toBe('Start 25 min - Block selected sites');
-    expect(startLabel({ ...draft, mode: 'whitelist' })).toBe(
-      'Start 25 min - Allow selected sites only',
-    );
-    expect(startLabel(setCustomMinutes(draft, '40'))).toBe('Start 40 min - Block selected sites');
-    expect(startLabel(setCustomMinutes(draft, '0'))).toBe(
-      'Start invalid time - Block selected sites',
-    );
+    expect(startLabel(draft)).toBe('Start 25 min focus');
+    expect(startLabel({ ...draft, mode: 'whitelist' })).toBe('Start 25 min focus');
+    expect(startLabel(setCustomMinutes(draft, '40'))).toBe('Start 40 min focus');
+    expect(startLabel(setCustomMinutes(draft, '0'))).toBe('Start invalid time focus');
   });
 
   it('names the indefinite plan by its session type', (): void => {

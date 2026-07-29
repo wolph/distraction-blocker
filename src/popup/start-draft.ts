@@ -1,9 +1,5 @@
 import { isRelativeMinuteDuration } from '../shared/numeric-validation';
-import {
-  LOCK_UNTIL_MANUAL_UNLOCK_LABEL,
-  MODE_LABELS,
-  START_UNTIL_STOPPED_LABEL,
-} from '../shared/session-copy';
+import { LOCK_UNTIL_MANUAL_UNLOCK_LABEL, START_UNTIL_STOPPED_LABEL } from '../shared/session-copy';
 import type {
   CycleConfig,
   ListsConfig,
@@ -142,7 +138,7 @@ export function startLabel(draft: StartDraft): string {
   }
   const minutes: number | null = effectiveTimedMinutes(draft);
   const durationLabel: string = minutes === null ? INVALID_DURATION_LABEL : `${minutes} min`;
-  return `Start ${durationLabel} - ${MODE_LABELS[draft.mode]}`;
+  return `Start ${durationLabel} focus`;
 }
 
 /** null when the timed draft has no usable length. Until stopped always submits. */

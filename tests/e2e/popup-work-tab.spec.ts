@@ -2,6 +2,7 @@ import type { Page, Worker } from '@playwright/test';
 import type { ListsConfig, SessionSnapshotV2 } from '../../src/shared/types';
 import type { WorkTargetResult } from '../../src/shared/work-target';
 import { expect, sendExtensionRequest, test, waitForLifecycle } from './fixtures';
+import { openPopupSection } from './popup-disclosures';
 
 interface TabIdentity {
   tabId: number;
@@ -53,13 +54,14 @@ test('the popup defaults to the current work tab and can replace a closed target
   await workPage.bringToFront();
   await extPage.reload();
 
+  await openPopupSection(extPage, 'Session settings');
   const workTab = extPage.getByLabel('Work tab', { exact: true });
   await expect(workTab).toHaveValue(String(work.tabId));
   await workTab.selectOption('');
   await extPage.getByRole('button', { name: 'Use this tab', exact: true }).click();
   await expect(workTab).toHaveValue(String(work.tabId));
   await extPage.getByLabel('Intention').fill('Write the first assertion');
-  await extPage.getByRole('button', { name: /^Start 25 min -/ }).click();
+  await extPage.getByRole('button', { name: /^Start 25 min focus$/ }).click();
 
   await expect(extPage.getByRole('button', { name: /^Back to work:/ })).toBeEnabled();
   await expect(extPage.getByRole('button', { name: /^Back to work:/ })).toHaveAccessibleName(
@@ -77,7 +79,8 @@ test('the popup defaults to the current work tab and can replace a closed target
   await replacement.bringToFront();
   await extPage.reload();
 
-  await expect(extPage.getByText('Choose or replace your work tab.')).toBeVisible();
+  await extPage.getByRole('button', { name: 'Choose work tab', exact: true }).click();
+  await expect(extPage.getByLabel('Work tab', { exact: true })).toBeFocused();
   await extPage.getByRole('button', { name: 'Use this tab', exact: true }).click();
   await expect
     .poll(async (): Promise<string | null> => {
@@ -85,7 +88,9 @@ test('the popup defaults to the current work tab and can replace a closed target
       return current.ok ? current.title : null;
     })
     .toBe('Finish the example');
-  await expect(extPage.getByText('Work tab: Finish the example')).toBeVisible();
+  await expect(extPage.getByRole('button', { name: /^Back to work:/ })).toHaveAccessibleName(
+    'Back to work: Finish the example (other.example)',
+  );
 
   await extPage.getByRole('button', { name: /^Back to work:/ }).click();
   await expect

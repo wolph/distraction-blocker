@@ -176,7 +176,7 @@ afterEach((): void => {
 });
 
 describe('ActiveView', (): void => {
-  it('renders the labelled clocks, intention, bank meter, and spend buttons in focus', async (): Promise<void> => {
+  it('renders the labelled clocks, intention, credit amount, and spend buttons in focus', async (): Promise<void> => {
     const { container, getByText, getByRole } = render(
       h(ActiveView, { snapshot: focusSnap(), now: NOW }),
     );
@@ -186,19 +186,20 @@ describe('ActiveView', (): void => {
     expect(getByText('45:00')).toBeTruthy();
     expect(getByText(TOTAL_SESSION_CLOCK_LABEL)).toBeTruthy();
     expect(getByText('write the report')).toBeTruthy();
-    expect(container.querySelector('.meter-fill')).toBeTruthy();
+    expect(container.querySelector('.meter-fill')).toBeNull();
     expect(getByText('10:00 site access credit')).toBeTruthy();
-    expect(getByRole('button', { name: /Unlock this site 5:00 - costs 5:00 credit/ })).toBeTruthy();
-    expect(getByRole('button', { name: /Unlock all sites 5:00 - costs 5:00 credit/ })).toBeTruthy();
+    expect(getByRole('button', { name: /Unlock this site 5:00 access, 5:00 credit/ })).toBeTruthy();
+    expect(getByRole('button', { name: /Unlock all sites 5:00 access, 5:00 credit/ })).toBeTruthy();
     await waitFor((): void => {
-      expect(getByText('52 min focused today')).toBeTruthy();
+      expect(container.querySelector('.today-line')).toBeNull();
+      expect(sendMessageMock).not.toHaveBeenCalledWith({ type: 'getStats', days: 1 });
     });
   });
 
   it('spends pause and unlock through the v2 channel', async (): Promise<void> => {
     const pauseView = render(h(ActiveView, { snapshot: focusSnap(), now: NOW }));
     const pause: HTMLButtonElement = pauseView.getByRole('button', {
-      name: /Unlock all sites 5:00 - costs 5:00 credit/,
+      name: /Unlock all sites 5:00 access, 5:00 credit/,
     }) as HTMLButtonElement;
     fireEvent.click(pause);
     await waitFor((): void => {
@@ -211,7 +212,7 @@ describe('ActiveView', (): void => {
 
     const unlockView = render(h(ActiveView, { snapshot: focusSnap(), now: NOW }));
     const unlock: HTMLButtonElement = unlockView.getByRole('button', {
-      name: /Unlock this site 5:00 - costs 5:00 credit/,
+      name: /Unlock this site 5:00 access, 5:00 credit/,
     }) as HTMLButtonElement;
     await waitFor((): void => expect(unlock.disabled).toBe(false));
     fireEvent.click(unlock);
@@ -578,7 +579,7 @@ function spendControls(container: Element): {
 
 /** The sub-line under a spend control: its disabled reason, or the active host. */
 function spendSub(button: HTMLButtonElement): string | null {
-  return button.querySelector('.spend-sub')?.textContent ?? null;
+  return button.querySelector('.spend-reason')?.textContent ?? null;
 }
 
 function unaffordableSnap(endAuthority: EndAuthorityV2 = CLOSED_FRICTION): SessionSnapshotV2 {
@@ -607,7 +608,8 @@ describe('ActiveView disabled reasons', (): void => {
     tabsQueryMock.mockResolvedValue([{ url: 'https://www.youtube.com/watch?v=1' }]);
     const ready = render(h(ActiveView, { snapshot: focusSnap(), now: NOW }));
     await waitFor((): void => {
-      expect(spendSub(spendControls(ready.container).unlock)).toBe('youtube.com');
+      expect(spendSub(spendControls(ready.container).unlock)).toBeNull();
+      expect(spendControls(ready.container).unlock.textContent).toContain('youtube.com');
     });
     expect(spendControls(ready.container).unlock.disabled).toBe(false);
     ready.unmount();
@@ -722,5 +724,28 @@ describe('ActiveView disabled reasons', (): void => {
     await waitFor((): void => {
       expect(spendSub(spendControls(container).pause)).toBe('Credit earning is turned off');
     });
+  });
+});
+
+describe('quiet session actions', (): void => {
+  it('keeps actions collapsed and gates outside the disclosure', (): void => {
+    const view: ReturnType<typeof render> = render(
+      <ActiveView snapshot={focusSnap(openFriction())} now={NOW} />,
+    );
+    const details: HTMLDetailsElement = view.getByText('Session actions')
+      .parentElement as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    expect(view.getByRole('button', { name: 'Keep focusing' }).closest('details')).toBeNull();
+    expect(
+      sendMessageMock.mock.calls.some(
+        ([request]: unknown[]): boolean => (request as AnyRequest).type === 'getStats',
+      ),
+    ).toBe(false);
+  });
+
+  it('offers a chooser for a missing work target', (): void => {
+    const view: ReturnType<typeof render> = render(<ActiveView snapshot={focusSnap()} now={NOW} />);
+    fireEvent.click(view.getByRole('button', { name: 'Choose work tab' }));
+    expect((view.getByText('Session actions').parentElement as HTMLDetailsElement).open).toBe(true);
   });
 });

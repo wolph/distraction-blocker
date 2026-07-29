@@ -32,7 +32,7 @@ vi.mock('../../../src/core/categories', () => ({
 import { StartForm } from '../../../src/popup/StartForm';
 
 const SETTINGS: SettingsV2 = { ...DEFAULT_SETTINGS, schedule: [] };
-const TIMED_START_LABEL: string = 'Start 25 min - Block selected sites';
+const TIMED_START_LABEL: string = 'Start 25 min focus';
 const FORCED_CYCLES_LABEL: string = 'Cycles forced by Until stopped';
 const FRICTION_HINT: string = untilStoppedHint('friction', DEFAULT_SETTINGS.gate);
 const FLEXIBLE_HINT: string = untilStoppedHint('flexible', DEFAULT_SETTINGS.gate);
@@ -116,7 +116,7 @@ describe('StartForm duration and forced controls', (): void => {
     expect(view.queryByText(FRICTION_HINT)).toBeNull();
     expect(view.getByRole('button', { name: START_UNTIL_STOPPED_LABEL })).toBeTruthy();
 
-    fireEvent.click(view.getByRole('button', { name: '25 focus' }));
+    fireEvent.click(view.getByRole('button', { name: '25 min' }));
 
     // The type chosen during the detour is the draft's type, and Hard is available again.
     expect(view.getByRole('button', { name: 'Flexible' }).getAttribute('aria-pressed')).toBe(
@@ -132,7 +132,7 @@ describe('StartForm duration and forced controls', (): void => {
     const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
-    fireEvent.click(view.getByRole('button', { name: '25 focus' }));
+    fireEvent.click(view.getByRole('button', { name: '25 min' }));
 
     expect(view.queryByRole('group', { name: FORCED_CYCLES_LABEL })).toBeNull();
     expect(view.getByRole('button', { name: 'Friction' }).getAttribute('aria-pressed')).toBe(
@@ -155,7 +155,7 @@ describe('StartForm duration and forced controls', (): void => {
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
 
     expect((view.getByLabelText('Custom minutes') as HTMLInputElement).value).toBe('45');
-    expect(view.getByRole('button', { name: 'Start 45 min - Block selected sites' })).toBeTruthy();
+    expect(view.getByRole('button', { name: 'Start 45 min focus' })).toBeTruthy();
   });
 
   it('restores a non-default session type and cycle choice after the detour', (): void => {
@@ -164,7 +164,7 @@ describe('StartForm duration and forced controls', (): void => {
     fireEvent.click(view.getByRole('button', { name: 'Hard lock' }));
     fireEvent.click(view.getByRole('checkbox'));
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
-    fireEvent.click(view.getByRole('button', { name: '25 focus' }));
+    fireEvent.click(view.getByRole('button', { name: '25 min' }));
 
     expect(view.getByRole('button', { name: 'Hard lock' }).getAttribute('aria-pressed')).toBe(
       'true',
@@ -176,15 +176,15 @@ describe('StartForm duration and forced controls', (): void => {
   it('keeps the stored preset when custom minutes are typed during the detour', (): void => {
     const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
-    fireEvent.click(view.getByRole('button', { name: '50 deep work' }));
+    fireEvent.click(view.getByRole('button', { name: '50 min' }));
     fireEvent.click(view.getByRole('button', { name: UNTIL_STOPPED_LABEL }));
     fireEvent.input(view.getByLabelText('Custom minutes'), { target: { value: '7' } });
 
-    expect(view.getByRole('button', { name: 'Start 7 min - Block selected sites' })).toBeTruthy();
+    expect(view.getByRole('button', { name: 'Start 7 min focus' })).toBeTruthy();
 
     fireEvent.input(view.getByLabelText('Custom minutes'), { target: { value: '' } });
 
-    expect(view.getByRole('button', { name: 'Start 50 min - Block selected sites' })).toBeTruthy();
+    expect(view.getByRole('button', { name: 'Start 50 min focus' })).toBeTruthy();
   });
 });
 
@@ -199,7 +199,7 @@ describe('StartForm presets and the timed hint', (): void => {
   it('turns cycles off for deep work, keeps them for the other presets, and follows the checkbox', async (): Promise<void> => {
     const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
-    fireEvent.click(view.getByRole('button', { name: '50 deep work' }));
+    fireEvent.click(view.getByRole('button', { name: '50 min' }));
 
     expect(view.getByRole('status').textContent).toBe('50 min uninterrupted focus');
     expect((view.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
@@ -209,13 +209,13 @@ describe('StartForm presets and the timed hint', (): void => {
     expect(view.getByRole('status').textContent).toBe('50 min total, with 25 min focus blocks');
     expect((view.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
 
-    fireEvent.click(view.getByRole('button', { name: '15 short' }));
+    fireEvent.click(view.getByRole('button', { name: '15 min' }));
 
     expect(view.getByRole('status').textContent).toBe('15 min uninterrupted focus');
     expect((view.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
 
-    fireEvent.click(view.getByRole('button', { name: '50 deep work' }));
-    fireEvent.click(view.getByRole('button', { name: 'Start 50 min - Block selected sites' }));
+    fireEvent.click(view.getByRole('button', { name: '50 min' }));
+    fireEvent.click(view.getByRole('button', { name: 'Start 50 min focus' }));
 
     await waitFor((): void => expect(startRequests()).toHaveLength(1));
     expect(startRequests()[0]?.config.duration).toEqual({ kind: 'timed', minutes: 50 });
@@ -302,9 +302,7 @@ describe('StartForm start command', (): void => {
     const view = render(<StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />);
 
     fireEvent.input(view.getByLabelText('Custom minutes'), { target: { value: '0' } });
-    fireEvent.click(
-      view.getByRole('button', { name: 'Start invalid time - Block selected sites' }),
-    );
+    fireEvent.click(view.getByRole('button', { name: 'Start invalid time focus' }));
 
     expect(view.getByRole('alert').textContent).toContain('session length');
     expect(startRequests()).toHaveLength(0);
@@ -550,4 +548,50 @@ describe('StartForm settings link, list rebase, and layout', (): void => {
     expect(actions.contains(alert)).toBe(true);
     expect(scroll.contains(alert)).toBe(false);
   });
+});
+
+describe('quiet session settings', (): void => {
+  it('starts collapsed and opens the chooser from Change', (): void => {
+    const view: ReturnType<typeof render> = render(
+      <StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />,
+    );
+    const details: HTMLDetailsElement = view.getByText('Session settings')
+      .parentElement as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    fireEvent.click(view.getByRole('button', { name: 'Change' }));
+    expect(details.open).toBe(true);
+  });
+
+  it('keeps custom minutes across collapse and opens invalid duration for correction', async (): Promise<void> => {
+    const view: ReturnType<typeof render> = render(
+      <StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />,
+    );
+    const details: HTMLDetailsElement = view.getByText('Session settings')
+      .parentElement as HTMLDetailsElement;
+    details.open = true;
+    const custom: HTMLInputElement = view.getByRole('spinbutton', {
+      name: 'Custom minutes',
+    }) as HTMLInputElement;
+    fireEvent.input(custom, { target: { value: '0' } });
+    details.open = false;
+    fireEvent.click(view.getByRole('button', { name: /^Start/ }));
+    expect(details.open).toBe(true);
+    expect(custom.value).toBe('0');
+    await waitFor((): void => expect(document.activeElement).toBe(custom));
+    expect(view.getByRole('alert').closest('details')).toBeNull();
+  });
+});
+
+it('keeps invalid allowed-domain feedback outside collapsed settings', (): void => {
+  const view: ReturnType<typeof render> = render(
+    <StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />,
+  );
+  const details: HTMLDetailsElement = view.getByText('Session settings')
+    .parentElement as HTMLDetailsElement;
+  details.open = true;
+  fireEvent.click(view.getByRole('radio', { name: /Allow selected sites only/ }));
+  fireEvent.input(view.getByLabelText('Add an allowed domain'), { target: { value: 'http://[' } });
+  fireEvent.click(view.getByRole('button', { name: 'Add allowed domain' }));
+  details.open = false;
+  expect(view.getByRole('alert').closest('details')).toBeNull();
 });

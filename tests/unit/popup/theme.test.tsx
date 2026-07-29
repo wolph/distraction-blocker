@@ -1,7 +1,5 @@
 /** @vitest-environment jsdom */
 import './chrome-fake';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from '../../../src/popup/App';
@@ -13,7 +11,7 @@ import {
 } from '../../../src/shared/constants';
 import type { Request, StatsBundle } from '../../../src/shared/messages';
 import type { SessionSnapshot, SetupState } from '../../../src/shared/types';
-import { emitMessage, resetChromeFake, sendMessageMock } from './chrome-fake';
+import { emitMessage, openOptionsPageMock, resetChromeFake, sendMessageMock } from './chrome-fake';
 
 const stats: StatsBundle = {
   days: [],
@@ -86,80 +84,25 @@ beforeEach((): void => {
 
 afterEach((): void => cleanup());
 
-describe('popup theme control', (): void => {
-  it('loads the shared ThemeControl states in the popup entrypoint', (): void => {
-    const source: string = readFileSync(resolve('src/popup/main.tsx'), 'utf8');
-    expect(source).toContain("import '../shared/theme-control.css';");
+describe('popup theme application', (): void => {
+  it('keeps only Settings in the header and makes no statistics request', async (): Promise<void> => {
+    const view: ReturnType<typeof render> = render(<App />);
+    await waitFor((): void => expect(document.documentElement.dataset.theme).toBe('auto'));
+    const header: HTMLElement = view.container.querySelector('header') as HTMLElement;
+    expect(header.querySelectorAll('button')).toHaveLength(1);
+    fireEvent.click(view.getByRole('button', { name: 'Settings' }));
+    expect(openOptionsPageMock).toHaveBeenCalledOnce();
+    expect(view.queryByRole('button', { name: 'Statistics' })).toBeNull();
+    expect(view.queryByRole('button', { name: /Theme:/ })).toBeNull();
+    expect(sendMessageMock).not.toHaveBeenCalledWith({ type: 'getStats', days: 1 });
   });
 
-  it('cycles requests from snapshot state and uses a distinct settings cog', async (): Promise<void> => {
-    const { getByRole, container } = render(<App />);
-    const theme: HTMLButtonElement = await waitFor((): HTMLButtonElement => {
-      const button: HTMLButtonElement = getByRole('button', {
-        name: /Theme: Auto.*Switch to Light/i,
-      }) as HTMLButtonElement;
-      expect(button.disabled).toBe(false);
-      return button;
-    });
-    expect(container.querySelector('svg.settings-cog[data-icon="settings"]')).toBeTruthy();
-    fireEvent.click(theme);
-    await waitFor((): void =>
-      expect(sendMessageMock).toHaveBeenCalledWith({ type: 'updateTheme', theme: 'light' }),
-    );
-    const darkButton: HTMLButtonElement = await waitFor((): HTMLButtonElement => {
-      const button: HTMLButtonElement = getByRole('button', {
-        name: /Theme: Light.*Switch to Dark/i,
-      }) as HTMLButtonElement;
-      expect(button.disabled).toBe(false);
-      return button;
-    });
-    fireEvent.click(darkButton);
-    await waitFor((): void =>
-      expect(sendMessageMock).toHaveBeenCalledWith({ type: 'updateTheme', theme: 'dark' }),
-    );
-    const autoButton: HTMLButtonElement = await waitFor((): HTMLButtonElement => {
-      const button: HTMLButtonElement = getByRole('button', {
-        name: /Theme: Dark.*Switch to Auto/i,
-      }) as HTMLButtonElement;
-      expect(button.disabled).toBe(false);
-      return button;
-    });
-    fireEvent.click(autoButton);
-    await waitFor((): void =>
-      expect(sendMessageMock).toHaveBeenCalledWith({ type: 'updateTheme', theme: 'auto' }),
-    );
-  });
-
-  it('follows a live snapshot theme', async (): Promise<void> => {
-    const { container } = render(<App />);
-    await waitFor((): void =>
-      expect(container.querySelector('[data-icon="theme-auto"]')).toBeTruthy(),
-    );
-    emitMessage({ type: 'stateChanged', snapshot: activeSnapshot('dark') });
-    await waitFor((): void =>
-      expect(container.querySelector('[data-icon="theme-dark"]')).toBeTruthy(),
-    );
-    await waitFor((): void => expect(document.documentElement.dataset.theme).toBe('dark'));
-  });
-
-  it('retains the snapshot theme and reports a rejected update', async (): Promise<void> => {
-    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
-      if (request.type === 'getSetupState') return COMPLETED_SETUP;
-      if (request.type === 'getSnapshot') return activeSnapshot();
-      if (request.type === 'getStats') return stats;
-      if (request.type === 'updateTheme') return { ok: false, error: 'theme denied' };
-      return { ok: true };
-    });
-    const { getByRole, container } = render(<App />);
-    const theme: HTMLButtonElement = await waitFor((): HTMLButtonElement => {
-      const button: HTMLButtonElement = getByRole('button', {
-        name: /Theme:/i,
-      }) as HTMLButtonElement;
-      expect(button.disabled).toBe(false);
-      return button;
-    });
-    fireEvent.click(theme);
-    await waitFor((): void => expect(getByRole('alert').textContent).toBe('theme denied'));
-    expect(container.querySelector('[data-icon="theme-auto"]')).toBeTruthy();
+  it('follows live light, dark and auto snapshot themes without a header control', async (): Promise<void> => {
+    render(<App />);
+    await waitFor((): void => expect(document.documentElement.dataset.theme).toBe('auto'));
+    for (const theme of ['dark', 'light', 'auto'] as const) {
+      emitMessage({ type: 'stateChanged', snapshot: activeSnapshot(theme) });
+      await waitFor((): void => expect(document.documentElement.dataset.theme).toBe(theme));
+    }
   });
 });

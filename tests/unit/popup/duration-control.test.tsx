@@ -7,11 +7,7 @@ import { cleanup, fireEvent, render, within } from '@testing-library/preact';
 import { afterEach, describe, expect, it, type Mock, vi } from 'vitest';
 import { DurationControl } from '../../../src/popup/DurationControl';
 import type { DraftDuration } from '../../../src/popup/start-draft';
-import {
-  DEEP_WORK_NOTE,
-  INFINITY_GLYPH,
-  UNTIL_STOPPED_LABEL,
-} from '../../../src/shared/session-copy';
+import { DEEP_WORK_NOTE, UNTIL_STOPPED_LABEL } from '../../../src/shared/session-copy';
 
 const PRESETS: readonly [number, number, number] = [15, 25, 50];
 
@@ -37,10 +33,10 @@ describe('DurationControl', (): void => {
     const group: HTMLElement = view.getByRole('group', { name: 'Session length' });
     const chips: HTMLElement[] = within(group).getAllByRole('button');
     expect(chips.map((chip: HTMLElement): string | null => chip.textContent)).toEqual([
-      '15 short',
-      '25 focus',
-      '50 deep work',
-      INFINITY_GLYPH,
+      '15 min',
+      '25 min',
+      '50 min',
+      UNTIL_STOPPED_LABEL,
     ]);
     const custom: HTMLInputElement = within(group).getByLabelText(
       'Custom minutes',
@@ -48,19 +44,19 @@ describe('DurationControl', (): void => {
     expect(custom.type).toBe('number');
   });
 
-  it('names the infinity chip Until stopped and explains deep work on hover only', (): void => {
+  it('labels the indefinite chip Until stopped and explains deep work on hover only', (): void => {
     const view = render(
       <DurationControl presets={PRESETS} value={timed(25, '')} onChange={vi.fn()} />,
     );
 
     const infinity: HTMLElement = view.getByRole('button', { name: UNTIL_STOPPED_LABEL });
-    expect(infinity.textContent).toBe(INFINITY_GLYPH);
+    expect(infinity.textContent).toBe(UNTIL_STOPPED_LABEL);
     expect(infinity.getAttribute('title')).toBe(UNTIL_STOPPED_LABEL);
 
-    const deepWork: HTMLElement = view.getByRole('button', { name: '50 deep work' });
+    const deepWork: HTMLElement = view.getByRole('button', { name: '50 min' });
     expect(deepWork.getAttribute('title')).toBe(DEEP_WORK_NOTE);
     expect(deepWork.getAttribute('aria-label')).toBeNull();
-    expect(view.getByRole('button', { name: '15 short' }).getAttribute('title')).toBeNull();
+    expect(view.getByRole('button', { name: '15 min' }).getAttribute('title')).toBeNull();
   });
 
   it('emits the clicked preset and clears typed custom minutes', (): void => {
@@ -69,7 +65,7 @@ describe('DurationControl', (): void => {
       <DurationControl presets={PRESETS} value={timed(25, '42')} onChange={onChange} />,
     );
 
-    fireEvent.click(view.getByRole('button', { name: '50 deep work' }));
+    fireEvent.click(view.getByRole('button', { name: '50 min' }));
 
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith({ kind: 'timed', presetMin: 50, customMin: '' });
@@ -155,9 +151,7 @@ describe('DurationControl', (): void => {
       <DurationControl presets={PRESETS} value={timed(25, '42')} onChange={onChange} />,
     );
 
-    expect(view.getByRole('button', { name: '25 focus' }).getAttribute('aria-pressed')).toBe(
-      'false',
-    );
+    expect(view.getByRole('button', { name: '25 min' }).getAttribute('aria-pressed')).toBe('false');
     expect(
       view.getByRole('button', { name: UNTIL_STOPPED_LABEL }).getAttribute('aria-pressed'),
     ).toBe('false');

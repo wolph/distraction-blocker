@@ -1,12 +1,16 @@
 import type { VNode } from 'preact';
-import { type Dispatch, type StateUpdater, useEffect, useRef, useState } from 'preact/hooks';
+import {
+  type Dispatch,
+  type StateUpdater,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'preact/hooks';
 import { getDomain } from 'tldts';
 import { type AccessAvailability, accessAvailability } from '../shared/budget-display';
 import { MIN_BREAK_BEFORE_EARLY_MS } from '../shared/constants';
 import { growBank } from '../shared/live';
-import type { StatsBundle } from '../shared/messages';
-import { sendRequest } from '../shared/messages';
-import { isStatsBundle } from '../shared/runtime-validation';
 import { ACTION_FAILED_COPY, RETURN_TO_WORK_FAILED_COPY } from '../shared/session-copy';
 import { formatClock } from '../shared/time';
 import type { EndAuthorityV2, GateState, SessionSnapshotV2 } from '../shared/types';
@@ -67,31 +71,6 @@ function useActiveHost(): ActiveHostState {
   return state;
 }
 
-/** Today's focus total. Stats reads are a non-session request, so they stay on sendRequest. */
-function useFocusedTodayMs(): { ms: number | null; error: boolean } {
-  const [ms, setMs]: [number | null, Dispatch<StateUpdater<number | null>>] = useState<
-    number | null
-  >(null);
-  const [error, setError]: [boolean, Dispatch<StateUpdater<boolean>>] = useState<boolean>(false);
-  useEffect((): void => {
-    void sendRequest({ type: 'getStats', days: 1 })
-      .then((bundle: StatsBundle): void => {
-        if (isStatsBundle(bundle)) {
-          setMs(bundle.totals.focusMsToday);
-          setError(false);
-        } else {
-          setMs(null);
-          setError(true);
-        }
-      })
-      .catch((): void => {
-        setMs(null);
-        setError(true);
-      });
-  }, []);
-  return { ms, error };
-}
-
 /** The open cancel gate carried by End authority, absent for every other authority. */
 function endGateOf(authority: EndAuthorityV2): GateState | null {
   return authority.kind === 'friction-gate' ? authority.gate : null;
@@ -109,12 +88,17 @@ function SpendButton({
   onClick: () => void;
 }): VNode {
   return (
-    <button type="button" class="spend-button" disabled={disabledReason !== null} onClick={onClick}>
+    <button
+      type="button"
+      class="spend-button"
+      aria-label={[label, sub, disabledReason].filter(Boolean).join(' ')}
+      disabled={disabledReason !== null}
+      onClick={onClick}
+    >
       <span class="spend-label">{label}</span>
+      {sub !== null ? <span class="spend-sub">{sub}</span> : null}
       {disabledReason !== null ? (
-        <span class="spend-sub">{disabledReason}</span>
-      ) : sub !== null ? (
-        <span class="spend-sub">{sub}</span>
+        <span class="spend-sub spend-reason">{disabledReason}</span>
       ) : null}
     </button>
   );
@@ -137,10 +121,9 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
   });
   const activeSite: ActiveHostState = useActiveHost();
   const activeHost: string | null = activeSite.status === 'ready' ? activeSite.host : null;
-  const focusedToday: { ms: number | null; error: boolean } = useFocusedTodayMs();
   const work: WorkTargetState = useWorkTarget(snapshot);
 
-  /** Grown to `now` so the meter moves between published snapshots. */
+  /** Grown to `now` so the credit amount stays current between snapshots. */
   const bankMs: number = growBank(
     snapshot.bankMs,
     snapshot.bankAccrualPerMs,
@@ -148,10 +131,35 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
     snapshot.at,
     now,
   );
-  const bankFill: number = snapshot.bankCapMs > 0 ? Math.min(1, bankMs / snapshot.bankCapMs) : 0;
   const intention: string = snapshot.config?.intention ?? '';
   const authority: EndAuthorityV2 = snapshot.lifecycle.endAuthority;
   const activeGate: GateState | null = snapshot.gate ?? endGateOf(authority);
+
+  const actionsRef: { current: HTMLDetailsElement | null } = useRef<HTMLDetailsElement>(null);
+  const [focusRequest, setFocusRequest]: [number, Dispatch<StateUpdater<number>>] =
+    useState<number>(0);
+  const [workLoadError, setWorkLoadError]: [string | null, Dispatch<StateUpdater<string | null>>] =
+    useState<string | null>(null);
+  const [workError, setWorkError]: [string | null, Dispatch<StateUpdater<string | null>>] =
+    useState<string | null>(null);
+  const previousGate: { current: GateState | null } = useRef<GateState | null>(activeGate);
+  useLayoutEffect((): void => {
+    if (actionsRef.current !== null) actionsRef.current.open = false;
+  }, [snapshot.startedAt]);
+  useLayoutEffect((): void => {
+    if (
+      previousGate.current !== null &&
+      activeGate === null &&
+      document.activeElement === document.body
+    ) {
+      viewRef.current?.querySelector<HTMLElement>('.active-core button:enabled')?.focus();
+    }
+    previousGate.current = activeGate;
+  }, [activeGate]);
+  const chooseWorkTab: () => void = (): void => {
+    if (actionsRef.current !== null) actionsRef.current.open = true;
+    setFocusRequest((previous: number): number => previous + 1);
+  };
 
   /**
    * Each spend control counts to its own cost within the current focus block, or explains why
@@ -211,7 +219,7 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
       breakEarlyVisible ? (
         <button
           type="button"
-          class="spend-button"
+          class="start-button"
           disabled={command.pending}
           onClick={(): void =>
             void command.run({ type: 'startNextFocusEarly' }, ACTION_FAILED_COPY)
@@ -223,8 +231,8 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
     ) : (
       <>
         <SpendButton
-          label={`Unlock this site ${formatClock(snapshot.unlockCostMs)} - costs ${formatClock(snapshot.unlockCostMs)} credit`}
-          sub={activeHost}
+          label="Unlock this site"
+          sub={`${formatClock(snapshot.unlockCostMs)} access, ${formatClock(snapshot.unlockCostMs)} credit${activeHost === null ? '' : ` - ${activeHost}`}`}
           disabledReason={unlockDisabledReason}
           onClick={(): void =>
             void command.run(
@@ -234,8 +242,8 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
           }
         />
         <SpendButton
-          label={`Unlock all sites ${formatClock(snapshot.pauseCostMs)} - costs ${formatClock(snapshot.pauseCostMs)} credit`}
-          sub={null}
+          label="Unlock all sites"
+          sub={`${formatClock(snapshot.pauseCostMs)} access, ${formatClock(snapshot.pauseCostMs)} credit`}
           disabledReason={pauseDisabledReason}
           onClick={(): void =>
             void command.run({ type: 'openGate', gate: 'pause', host: null }, ACTION_FAILED_COPY)
@@ -246,38 +254,72 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
 
   return (
     <section ref={viewRef} class="view active-view">
-      <ClockStack snapshot={snapshot} now={now} />
-      {intention !== '' ? <p class="intention-line">{intention}</p> : null}
-      <WorkTabControl snapshot={snapshot} work={work} disabled={command.pending} />
-      {returnDestination !== null ? (
-        <ReturnToWorkButton
-          destination={returnDestination}
-          disabled={command.pending}
-          onClick={(): void => {
-            void returnToWork();
-          }}
-        />
-      ) : null}
-      {focusedToday.ms !== null ? (
-        <p class="today-line">{Math.floor(focusedToday.ms / 60_000)} min focused today</p>
-      ) : focusedToday.error ? (
-        <p class="form-error" role="alert">
-          Today's focus total is unavailable.
-        </p>
-      ) : null}
+      <div class="active-core">
+        <ClockStack snapshot={snapshot} now={now} />
+        {intention !== '' ? <p class="intention-line">{intention}</p> : null}
+        {activeGate === null && snapshot.phase !== 'focus' ? phaseControls : null}
+        {returnDestination !== null ? (
+          <ReturnToWorkButton
+            destination={returnDestination}
+            secondary={snapshot.phase === 'paused' || breakEarlyVisible}
+            disabled={command.pending}
+            onClick={(): void => void returnToWork()}
+          />
+        ) : activeGate === null ? (
+          <button
+            type="button"
+            class={
+              snapshot.phase === 'paused' || breakEarlyVisible ? 'secondary-button' : 'start-button'
+            }
+            disabled={command.pending}
+            onClick={chooseWorkTab}
+          >
+            Choose work tab
+          </button>
+        ) : null}
+        {returnDestination !== null ? (
+          <button
+            type="button"
+            class="text-button"
+            disabled={command.pending}
+            onClick={chooseWorkTab}
+          >
+            Change work tab
+          </button>
+        ) : null}
+      </div>
       {activeSite.status === 'error' ? (
         <p class="form-error" role="alert">
           Could not identify the active site.
         </p>
       ) : null}
 
-      <div class="meter">
-        <div class="meter-bar">
-          <div class="meter-fill" style={{ width: `${bankFill * 100}%` }} />
+      <details class="session-disclosure session-actions" ref={actionsRef}>
+        <summary>Session actions</summary>
+        <div class="session-disclosure__content">
+          <span class="meter-label">{formatClock(bankMs)} site access credit</span>
+          {activeGate === null ? (
+            <div class="actions">
+              {snapshot.phase === 'focus' ? phaseControls : null}
+              {endAction}
+            </div>
+          ) : null}
+          <WorkTabControl
+            snapshot={snapshot}
+            work={work}
+            disabled={command.pending || activeGate !== null}
+            onError={setWorkError}
+            onLoadError={setWorkLoadError}
+            focusRequest={focusRequest}
+          />
         </div>
-        <span class="meter-label">{formatClock(bankMs)} site access credit</span>
-      </div>
-
+      </details>
+      {workLoadError !== null ? <p class="form-error">{workLoadError}</p> : null}
+      {workError !== null ? (
+        <p class="form-error" role="alert">
+          {workError}
+        </p>
+      ) : null}
       {activeGate !== null ? (
         <GatePanel
           key={gateIdentity(activeGate)}
@@ -289,11 +331,6 @@ export function ActiveView({ snapshot, now }: ActiveViewProps): VNode {
           sendCommand={sendGateCommand}
           commandError={mapGateError}
         />
-      ) : phaseControls !== null || endAction !== null ? (
-        <div class="actions">
-          {phaseControls}
-          {endAction}
-        </div>
       ) : null}
       {command.error !== null ? (
         <p class="form-error" role="alert">

@@ -142,7 +142,7 @@ describe('popup runtime response boundaries', (): void => {
       ),
     ).toBe(false);
 
-    fireEvent.click(getByRole('button', { name: 'Start 25 min - Block selected sites' }));
+    fireEvent.click(getByRole('button', { name: 'Start 25 min focus' }));
     await waitFor((): void => {
       expect(getByText(START_FAILED_COPY)).toBeTruthy();
     });
@@ -160,7 +160,7 @@ describe('popup runtime response boundaries', (): void => {
     const { getByRole } = render(h(App, null));
 
     await waitFor((): void => {
-      expect(getByRole('button', { name: 'Start 25 min - Block selected sites' })).toBeTruthy();
+      expect(getByRole('button', { name: 'Start 25 min focus' })).toBeTruthy();
       expect(getByRole('alert').textContent).toMatch(/reload the popup/i);
     });
   });
@@ -281,7 +281,7 @@ describe('popup runtime response boundaries', (): void => {
       h(StartForm, { settings: DEFAULT_SETTINGS, lists: DEFAULT_LISTS }),
     );
 
-    fireEvent.click(getByRole('button', { name: 'Start 25 min - Block selected sites' }));
+    fireEvent.click(getByRole('button', { name: 'Start 25 min focus' }));
 
     await waitFor((): void => {
       expect(getByRole('alert').textContent).toBe('Could not start session. Try again.');
@@ -365,18 +365,4 @@ describe('popup runtime response boundaries', (): void => {
       });
     },
   );
-
-  it('rejects a malformed focused-today total', async (): Promise<void> => {
-    sendMessageMock.mockImplementation(async (request: Request): Promise<unknown> => {
-      if (request.type === 'getStats') {
-        return { ...STATS, totals: { ...STATS.totals, focusMsToday: Number.NaN } };
-      }
-      return { ok: true };
-    });
-    const { getByRole } = render(h(ActiveView, { snapshot: activeSnapshot('focus'), now: NOW }));
-
-    await waitFor((): void => {
-      expect(getByRole('alert').textContent).toBe("Today's focus total is unavailable.");
-    });
-  });
 });

@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test';
 import type { Settings } from '../../src/shared/types';
 import { expect, sendExtensionRequest, startTestSession, test } from './fixtures';
+import { revealSessionActions } from './popup-disclosures';
 
 test('popup shows an unlock confirmation and a red End session control', async ({
   context,
@@ -20,6 +21,8 @@ test('popup shows an unlock confirmation and a red End session control', async (
   await site.goto(siteUrl('/plain.html'));
   await startTestSession(extPage, { duration: { kind: 'timed', minutes: 5 } });
   await expect(site.locator('focus-lock-overlay')).toBeAttached();
+  await expect(extPage.getByRole('button', { name: 'End session', exact: true })).toBeHidden();
+  await revealSessionActions(extPage);
   await expect(extPage.getByRole('button', { name: 'End session', exact: true })).toBeVisible();
   for (const theme of ['light', 'dark']) {
     await extPage.evaluate((value: string): void => {
@@ -85,11 +88,14 @@ test('popup shows an unlock confirmation and a red End session control', async (
       async (): Promise<string | null> =>
         extPage.evaluate((): string | null => {
           const popup: Window | undefined = chrome.extension.getViews({ type: 'popup' })[0];
+          const details: HTMLDetailsElement | null | undefined =
+            popup?.document.querySelector('.active-view details');
+          if (details && !details.open) details.querySelector('summary')?.click();
           const button: HTMLButtonElement | undefined = Array.from(
             popup?.document.querySelectorAll('button') ?? [],
           ).find(
             (element: HTMLButtonElement): boolean =>
-              element.textContent?.includes('Unlock this site 5:00 - costs 5:00 credit') === true,
+              element.textContent?.includes('Unlock this site') === true,
           );
           if (button === undefined || button.disabled) return null;
           return button.textContent;
@@ -102,7 +108,7 @@ test('popup shows an unlock confirmation and a red End session control', async (
       popup?.document.querySelectorAll('button') ?? [],
     ).find(
       (element: HTMLButtonElement): boolean =>
-        element.textContent?.includes('Unlock this site 5:00 - costs 5:00 credit') === true,
+        element.textContent?.includes('Unlock this site') === true,
     );
     if (button === undefined) throw new Error('Missing native popup unlock button');
     button.click();

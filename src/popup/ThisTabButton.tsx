@@ -20,6 +20,7 @@ export interface ThisTabButtonProps {
   rules?: SessionRuleSnapshot;
   /** Changes whenever the owner's choice changes, so a stale lookup cannot overrule a newer one. */
   choiceKey: string;
+  onError?: (error: string | null) => void;
   onSelect: (tabId: number) => void;
 }
 
@@ -34,6 +35,7 @@ export function ThisTabButton({
   rules,
   choiceKey,
   onSelect,
+  onError,
 }: ThisTabButtonProps): VNode {
   const current: WorkTab | undefined = work.tabs.find(
     (tab: WorkTab): boolean => tab.tabId === work.context?.activeTabId,
@@ -84,6 +86,9 @@ export function ThisTabButton({
       }
     }
   };
+  useEffect((): void => {
+    onError?.(error);
+  }, [error, onError]);
   const hint: string = pending
     ? CHECKING_CURRENT_TAB_HINT
     : (error ??

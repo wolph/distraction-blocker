@@ -92,16 +92,22 @@ test('the active view scrolls its controls into the real toolbar popup', async (
       (): { viewport: number; scrollable: boolean; endBottom: number; scrolled: number } => {
         const popup: Window | undefined = chrome.extension.getViews({ type: 'popup' })[0];
         if (popup === undefined) throw new Error('the toolbar popup is not open');
+        const details: HTMLDetailsElement | null =
+          popup.document.querySelector('.active-view details');
+        details?.querySelector('summary')?.click();
         const view: HTMLElement | null = popup.document.querySelector('.active-view');
         const end: HTMLElement | null = popup.document.querySelector('.end-session-button');
         if (view === null || end === null) throw new Error('the active view did not render');
+        end.scrollIntoView({ block: 'nearest' });
         const scrollable: boolean = view.scrollHeight > view.clientHeight;
-        view.scrollTop = view.scrollHeight;
+        const scrolled: number = Array.from(
+          popup.document.querySelectorAll<HTMLElement>('.active-view, .active-view *'),
+        ).reduce((sum: number, element: HTMLElement): number => sum + element.scrollTop, 0);
         return {
           viewport: popup.innerHeight,
           scrollable,
           endBottom: end.getBoundingClientRect().bottom,
-          scrolled: view.scrollTop,
+          scrolled,
         };
       },
     );

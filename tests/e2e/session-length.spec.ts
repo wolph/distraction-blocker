@@ -16,10 +16,10 @@ function clockValue(page: Page, label: string): Locator {
 }
 
 test('50 deep work starts one uninterrupted 50 minute block', async ({ extPage }) => {
-  await extPage.getByRole('button', { name: '50 deep work', exact: true }).click();
+  await extPage.getByRole('button', { name: '50 min', exact: true }).click();
   await expect(extPage.locator('.session-timing')).toHaveText('50 min uninterrupted focus');
 
-  await extPage.getByRole('button', { name: /^Start 50 min -/ }).click();
+  await extPage.getByRole('button', { name: /^Start 50 min focus$/ }).click();
   const snapshot: SessionSnapshotV2 = await waitForLifecycle(extPage, 'active');
 
   expect(snapshot.config?.duration).toEqual({ kind: 'timed', minutes: 50 });
@@ -47,12 +47,12 @@ test('25 focus keeps cycling and shows the focus phase beside the total session'
   ).toEqual({ ok: true });
   await extPage.reload();
 
-  await extPage.getByRole('button', { name: '25 focus', exact: true }).click();
+  await extPage.getByRole('button', { name: '25 min', exact: true }).click();
   await expect(extPage.locator('.session-timing')).toHaveText(
     '25 min total, with 10 min focus blocks',
   );
 
-  await extPage.getByRole('button', { name: /^Start 25 min -/ }).click();
+  await extPage.getByRole('button', { name: /^Start 25 min focus$/ }).click();
   const snapshot: SessionSnapshotV2 = await waitForLifecycle(extPage, 'active');
 
   expect(snapshot.config?.duration).toEqual({ kind: 'timed', minutes: 25 });
