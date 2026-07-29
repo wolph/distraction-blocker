@@ -27,6 +27,26 @@ export interface DocumentEnforcementAck {
   handledAt: number;
 }
 
+/**
+ * What a checkpoint keeps of an enforcement acknowledgement. The one reader after publication
+ * matches a record on its tab and document and replaces it whole, so the record is the transport's
+ * answer without the page address it echoed, for the same reason `EpochResetAckRecord` carries
+ * none: a checkpoint lives for the session, and every audited page is in it, blocked or not.
+ */
+export interface DocumentEnforcementAckRecord {
+  version: 1;
+  operationId: string;
+  enforcementEpoch: string;
+  sessionId: string | null;
+  reservedSessionId: string | null;
+  basePolicyRevision: number;
+  runtimeRevision: number;
+  tabId: number;
+  documentId: string;
+  verdict: Verdict;
+  handledAt: number;
+}
+
 export interface DocumentEpochResetAck {
   version: 1;
   operationId: string;
@@ -70,6 +90,6 @@ export interface EnforcementCheckpoint {
   registrationAuditedAt: number;
   completedAt: number;
   targetGeneration: number;
-  documents: DocumentEnforcementAck[];
+  documents: DocumentEnforcementAckRecord[];
   exclusions: EnforcementTargetExclusion[];
 }

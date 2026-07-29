@@ -17,6 +17,7 @@ import {
 } from '../shared/v2-domain-intrinsics';
 import type {
   DocumentEnforcementAck,
+  DocumentEnforcementAckRecord,
   DocumentEpochResetAck,
   EnforcementCheckpoint,
   EnforcementTargetExclusion,
@@ -66,6 +67,20 @@ const ENFORCEMENT_ACK_KEYS: readonly string[] = [
   'verdict',
   'handledAt',
 ];
+/** The checkpoint's record is the acknowledgement without the page address the transport echoed. */
+const ENFORCEMENT_ACK_RECORD_KEYS: readonly string[] = [
+  'version',
+  'operationId',
+  'enforcementEpoch',
+  'sessionId',
+  'reservedSessionId',
+  'basePolicyRevision',
+  'runtimeRevision',
+  'tabId',
+  'documentId',
+  'verdict',
+  'handledAt',
+];
 const EPOCH_RESET_ACK_KEYS: readonly string[] = [
   'version',
   'operationId',
@@ -112,6 +127,13 @@ export function parseFrozenDocumentCommand(value: unknown): FrozenDocumentComman
 export function parseDocumentEnforcementAck(value: unknown): DocumentEnforcementAck | null {
   const snapshot: unknown = snapshotExactData(value)?.value;
   return validateDetachedDocumentEnforcementAck(snapshot) ? snapshot : null;
+}
+
+export function parseDocumentEnforcementAckRecord(
+  value: unknown,
+): DocumentEnforcementAckRecord | null {
+  const snapshot: unknown = snapshotExactData(value)?.value;
+  return validateDetachedDocumentEnforcementAckRecord(snapshot) ? snapshot : null;
 }
 
 export function parseDocumentEpochResetAck(value: unknown): DocumentEpochResetAck | null {
@@ -186,6 +208,30 @@ export function validateDetachedDocumentEnforcementAck(
   );
 }
 
+/**
+ * Accepts only already-detached exact plain data from snapshotExactData. A record carrying a `url`
+ * is refused: it is the shape a build before the record stored, and every reader of a checkpoint
+ * matches on the tab and the document, never on the address.
+ */
+export function validateDetachedDocumentEnforcementAckRecord(
+  value: unknown,
+): value is DocumentEnforcementAckRecord {
+  const candidate: UnknownRecord | null = exactRecord(value, ENFORCEMENT_ACK_RECORD_KEYS);
+  return (
+    candidate !== null &&
+    candidate.version === 1 &&
+    isUuid(candidate.operationId) &&
+    isUuid(candidate.enforcementEpoch) &&
+    canonicalSessionIdentity(candidate.sessionId, candidate.reservedSessionId) !== null &&
+    isNonNegativeInteger(candidate.basePolicyRevision) &&
+    isNonNegativeInteger(candidate.runtimeRevision) &&
+    isNonNegativeInteger(candidate.tabId) &&
+    isNonBlankString(candidate.documentId) &&
+    validateDetachedVerdict(candidate.verdict) &&
+    isSafeTimestamp(candidate.handledAt)
+  );
+}
+
 /** Accepts only already-detached exact plain data from snapshotExactData. */
 export function validateDetachedDocumentEpochResetAck(
   value: unknown,
@@ -249,7 +295,7 @@ export function validateDetachedEnforcementCheckpoint(
   const documents: unknown = candidate.documents;
   const exclusions: unknown = candidate.exclusions;
   if (
-    !everyDenseEntry(documents, validateDetachedDocumentEnforcementAck) ||
+    !everyDenseEntry(documents, validateDetachedDocumentEnforcementAckRecord) ||
     !everyDenseEntry(exclusions, validateDetachedEnforcementTargetExclusion)
   ) {
     return false;
@@ -290,7 +336,7 @@ function checkpointHeader(candidate: UnknownRecord): CheckpointHeader | null {
  */
 function acknowledgementsAgree(
   header: CheckpointHeader,
-  documents: readonly DocumentEnforcementAck[],
+  documents: readonly DocumentEnforcementAckRecord[],
 ): boolean {
   const operationRevision: number | undefined = documents[0]?.runtimeRevision;
   const identities: Set<string> = new Set<string>();
@@ -312,11 +358,11 @@ function acknowledgementsAgree(
 
 /** One top-frame tab target is either acknowledged or excluded, never both. */
 function exclusionsAgree(
-  documents: readonly DocumentEnforcementAck[],
+  documents: readonly DocumentEnforcementAckRecord[],
   exclusions: readonly EnforcementTargetExclusion[],
 ): boolean {
   const acknowledgedTabs: Set<number> = new Set<number>(
-    documents.map((acknowledgement: DocumentEnforcementAck): number => acknowledgement.tabId),
+    documents.map((record: DocumentEnforcementAckRecord): number => record.tabId),
   );
   const identities: Set<string> = new Set<string>();
   for (const exclusion of exclusions) {

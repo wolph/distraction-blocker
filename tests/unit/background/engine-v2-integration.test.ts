@@ -749,8 +749,10 @@ describe('worker cutover to v2 session authority', (): void => {
     await worker.settle();
 
     // The sweep reached both pages, and the runtime keeps the address of the blocked one alone.
+    // The rule is about the runtime, so the whole stored value is read, not two of its fields.
     expect(worker.runtime().session?.sessionId).not.toBeUndefined();
     expect(Object.keys(worker.runtime().documentCommands)).toEqual([documentKeyOf(blocked)]);
+    expect(JSON.stringify(worker.runtime())).not.toContain(allowed.url);
     expect(allowed.received[0]?.command).toBe('reset-enforcement-epoch');
     // Every pass of both sweeps sent the allowed page the canonical clear and nothing else.
     const presentations: string[] = allowed.received

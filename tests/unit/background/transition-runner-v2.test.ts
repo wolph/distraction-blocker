@@ -369,6 +369,12 @@ describe('driveTransitionV2 start sequence', (): void => {
     expect(result.runtime.enforcementCheckpoint?.documents.map((ack): number => ack.tabId)).toEqual(
       [11, 12],
     );
+    // The audit keeps a record per page and no page address, so the published runtime holds the
+    // allowed page's address nowhere at all.
+    for (const record of result.runtime.enforcementCheckpoint?.documents ?? []) {
+      expect(record).not.toHaveProperty('url');
+    }
+    expect(JSON.stringify(result.runtime)).not.toContain(OTHER_URL);
   });
 
   it('resets an unacknowledged target before its first enforcement command', async (): Promise<void> => {

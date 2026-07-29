@@ -565,6 +565,13 @@ function transportPorts(state: FakeStateV2, sends: FakeSendV2[]): ContentTranspo
  * starts on that view and tuple, which is what makes it refuse a different view at the same tuple
  * the way the page it stands in for would. An explicit `documentEpochs` option wins, for a scenario
  * that wants a document out of step with the record.
+ *
+ * A document with a record and no stored command is seeded on no tuple, which accepts any command.
+ * That is more permissive than the page: after a start the allowed pages of a published runtime
+ * have exactly that record and no entry, and the real page holds its clear at the published tuple
+ * and refuses a different view there (docs/testing-rules.md, rule 3). A scenario about that page
+ * has to put it on its view first, through `applyPulled` or a scripted responder, rather than take
+ * this seed's acceptance for the page's.
  */
 function seededDocumentStates(
   initial: RuntimeStateV2,

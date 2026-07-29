@@ -1722,8 +1722,10 @@ describe('SessionControllerV2 navigation and documents', (): void => {
     expect((await controller.startSession(flexibleConfig())).code).toBe('ok');
     expect(ports.current().pendingEnforcementTransition).toBeNull();
 
-    // The start sweeps both pages, and the session keeps the blocked one alone.
+    // The start sweeps both pages, and the session keeps the blocked one alone. The rule is about
+    // the runtime, so the whole persisted value is read rather than the map on its own.
     expect(Object.keys(ports.current().documentCommands)).toEqual([documentKey(11, DOC_ONE)]);
+    expect(JSON.stringify(ports.current())).not.toContain(reading.url);
     expect(ports.documentState(11, DOC_ONE)?.presentation).toBe('active');
     expect(ports.documentState(12, 'document-2')?.presentation).toBe('clear');
 
@@ -2229,7 +2231,10 @@ describe('SessionControllerV2 navigation and documents', (): void => {
       handledAt: ports.now(),
     };
     await controller.recordDocumentAck(refreshed);
-    expect(ports.current().enforcementCheckpoint?.documents).toContainEqual(refreshed);
+    // The checkpoint keeps the record of the answer, which is the answer without its address.
+    const { url: _url, ...refreshedRecord } = refreshed;
+    expect(ports.current().enforcementCheckpoint?.documents).toContainEqual(refreshedRecord);
+    expect(JSON.stringify(ports.current().enforcementCheckpoint)).not.toContain(refreshed.url);
 
     // An ack for a document the checkpoint never verified adds nothing.
     const before: RuntimeStateV2 = ports.current();

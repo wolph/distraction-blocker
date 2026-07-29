@@ -13,7 +13,7 @@ import {
   waitForActiveSession,
 } from './fixtures';
 
-test.setTimeout(60_000);
+test.setTimeout(180_000);
 
 function expectNoDiagnostics(diagnostics: BrowserDiagnostics): void {
   expect((): void => assertNoUnexpectedBrowserDiagnostics(diagnostics)).not.toThrow();
@@ -83,9 +83,14 @@ interface RetainedAddresses {
   acks: number;
   /** How many of those records carry a page address, which after this slice is always zero. */
   acksWithUrl: number;
+  /**
+   * The whole stored runtime as JSON. The promise is about the runtime, not about two of its
+   * fields, so the address assertions run against this rather than against the fields above.
+   */
+  serialized: string;
 }
 
-/** Every page address the runtime holds, in its command map and its acknowledgement records. */
+/** Every page address the runtime holds, in its command map, its records, and as a whole. */
 async function readRetainedAddresses(worker: Worker): Promise<RetainedAddresses> {
   return await worker.evaluate(async (): Promise<RetainedAddresses> => {
     const stored: Record<string, unknown> = await chrome.storage.local.get('runtime');
@@ -100,6 +105,7 @@ async function readRetainedAddresses(worker: Worker): Promise<RetainedAddresses>
         .sort(),
       acks: acks.length,
       acksWithUrl: acks.filter((ack: Record<string, unknown>): boolean => 'url' in ack).length,
+      serialized: JSON.stringify(stored.runtime),
     };
   });
 }
@@ -152,12 +158,19 @@ test('persistent profile restores a blocked muted tab and active countdown after
   await expect(blockedPage.locator('#marker')).toHaveCount(0);
   // During the session the runtime holds the blocked tab's address and no other. The allowed tab
   // was swept at the start and acknowledged the epoch like every open tab, and its record
-  // carries no address.
+  // carries no address. Nothing else in the runtime, the start's audit included, holds it either.
   await expect
-    .poll(async (): Promise<RetainedAddresses> => await readRetainedAddresses(first.worker), {
-      timeout: 15_000,
-    })
+    .poll(
+      async (): Promise<Omit<RetainedAddresses, 'serialized'>> => {
+        const { serialized: _serialized, ...fields } = await readRetainedAddresses(first.worker);
+        return fields;
+      },
+      { timeout: 15_000 },
+    )
     .toEqual({ commandUrls: [url], acks: 2, acksWithUrl: 0 });
+  const duringSession: RetainedAddresses = await readRetainedAddresses(first.worker);
+  expect(duringSession.serialized).toContain(url);
+  expect(duringSession.serialized).not.toContain(allowedUrl);
 
   const before: SessionSnapshot = await sendExtensionRequest(first.extPage, {
     type: 'getSnapshot',
@@ -248,6 +261,19 @@ test('persistent profile restores a blocked muted tab and active countdown after
   expect(settledAddresses.commandUrls).toEqual([]);
   expect(settledAddresses.acksWithUrl).toBe(0);
   expect(settledAddresses.acks).toBeGreaterThan(0);
+  expect(settledAddresses.serialized).not.toContain(allowedUrl);
+  // No address of any tab remains in the runtime once the cleanup is done. The one field the
+  // cleanup does not reach is the attempt debounce, keyed by tab and URL, which the minute tick
+  // prunes thirty seconds after the attempt, so this waits for that tick.
+  await expect
+    .poll(
+      async (): Promise<boolean> => {
+        const retained: RetainedAddresses = await readRetainedAddresses(second.worker);
+        return retained.serialized.includes(url) || retained.serialized.includes(allowedUrl);
+      },
+      { timeout: 120_000 },
+    )
+    .toBe(false);
 
   const settledTab: PersistedTabState = await readPersistedTabState(second.worker, url);
   expect(settledTab.hasTabState).toBe(false);

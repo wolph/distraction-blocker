@@ -66,8 +66,10 @@ import {
   sendDocumentEnforcementCommand,
   sendEpochResetCommand,
 } from './content-transport-v2';
+import { documentEnforcementAckRecordV2 } from './enforcement-ack-records-v2';
 import type {
   DocumentEnforcementAck,
+  DocumentEnforcementAckRecord,
   DocumentEpochResetAck,
   EnforcementCheckpoint,
   EpochResetAckRecord,
@@ -671,14 +673,14 @@ export class SessionControllerV2 {
       // A target the checkpoint never verified gains no record here: the runners own which
       // documents one operation acknowledged, and this path only refreshes what they wrote.
       const named: boolean = checkpoint.documents.some(
-        (stored: DocumentEnforcementAck): boolean =>
+        (stored: DocumentEnforcementAckRecord): boolean =>
           stored.tabId === ack.tabId && stored.documentId === ack.documentId,
       );
       if (!named) return;
-      const documents: DocumentEnforcementAck[] = checkpoint.documents.map(
-        (stored: DocumentEnforcementAck): DocumentEnforcementAck =>
+      const documents: DocumentEnforcementAckRecord[] = checkpoint.documents.map(
+        (stored: DocumentEnforcementAckRecord): DocumentEnforcementAckRecord =>
           stored.tabId === ack.tabId && stored.documentId === ack.documentId
-            ? structuredClone(ack)
+            ? documentEnforcementAckRecordV2(ack)
             : structuredClone(stored),
       );
       await this.write({

@@ -26,6 +26,7 @@ import {
 } from './cleanup-progress-v2';
 import { rearmCleanupAlarmV2 } from './cleanup-shared-v2';
 import { closeSessionV2, commitClosureV2, runClosureCleanupAttemptV2 } from './closure-runner-v2';
+import { checkpointDocumentsV2 } from './enforcement-ack-records-v2';
 import type {
   DocumentEpochResetAck,
   EnforcementCheckpoint,
@@ -514,7 +515,7 @@ async function writeRecoveryCheckpoint(
     registrationAuditedAt: identity.capturedAt,
     completedAt: attempt.completedAt,
     targetGeneration: attempt.generation,
-    documents: structuredClone([...attempt.documents]),
+    documents: checkpointDocumentsV2(attempt.documents),
     exclusions: structuredClone([...attempt.exclusions]),
   };
   await writeRuntime(ports, { ...runtime, enforcementCheckpoint: checkpoint });

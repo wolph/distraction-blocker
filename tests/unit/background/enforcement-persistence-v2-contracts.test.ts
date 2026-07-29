@@ -1,6 +1,7 @@
 import { describe, expectTypeOf, it } from 'vitest';
 import type {
   DocumentEnforcementAck,
+  DocumentEnforcementAckRecord,
   DocumentEpochResetAck,
   EnforcementCheckpoint,
   EnforcementTargetExclusion,
@@ -73,8 +74,14 @@ describe('background enforcement persistence v2 contracts', (): void => {
       registrationAuditedAt: number;
       completedAt: number;
       targetGeneration: number;
-      documents: DocumentEnforcementAck[];
+      documents: DocumentEnforcementAckRecord[];
       exclusions: EnforcementTargetExclusion[];
     }>();
+  });
+
+  it('keeps the checkpoint acknowledgement record free of the page address', (): void => {
+    expectTypeOf<DocumentEnforcementAckRecord>().toEqualTypeOf<
+      Omit<DocumentEnforcementAck, 'url'>
+    >();
   });
 });

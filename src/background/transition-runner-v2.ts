@@ -46,6 +46,7 @@ import {
   sendDocumentEnforcementCommand,
   sendEpochResetCommand,
 } from './content-transport-v2';
+import { checkpointDocumentsV2 } from './enforcement-ack-records-v2';
 import type {
   DocumentEnforcementAck,
   DocumentEpochResetAck,
@@ -1339,7 +1340,7 @@ function checkpointFor(
     registrationAuditedAt: timing.auditedAt,
     completedAt: timing.auditedAt,
     targetGeneration: timing.generation,
-    documents: structuredClone([...documents]),
+    documents: checkpointDocumentsV2(documents),
     exclusions: structuredClone([...exclusions]),
   };
 }

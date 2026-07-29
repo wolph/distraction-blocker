@@ -7,7 +7,7 @@
  */
 
 import type {
-  DocumentEnforcementAck,
+  DocumentEnforcementAckRecord,
   EnforcementCheckpoint,
   EpochResetAckRecord,
   FrozenDocumentCommand,
@@ -783,9 +783,10 @@ export function preparedReservationMap(): Record<string, PreparedTargetReservati
   };
 }
 
+/** What a checkpoint keeps of one acknowledgement: the transport's answer without the address. */
 export function enforcementAck(
-  overrides: Partial<DocumentEnforcementAck> = {},
-): DocumentEnforcementAck {
+  overrides: Partial<DocumentEnforcementAckRecord> = {},
+): DocumentEnforcementAckRecord {
   return {
     version: 1,
     operationId: STARTING_OPERATION_ID,
@@ -796,7 +797,6 @@ export function enforcementAck(
     runtimeRevision: START_ACTIVE_REVISION,
     tabId: 11,
     documentId: 'document-1',
-    url: TARGET_URL,
     verdict: blockedVerdict(),
     handledAt: ACTIVATION_AT,
     ...overrides,

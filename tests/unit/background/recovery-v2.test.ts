@@ -568,10 +568,15 @@ describe('recovery of a durable session', (): void => {
     expect(test.ports.rejectedAnswers(11, DOC_ONE)).toBe(0);
     expect(test.ports.documentState(12, DOC_TWO)?.presentation).toBe('clear');
     expect(test.ports.documentState(11, DOC_ONE)?.presentation).toBe('active');
-    // Verification still audited the allowed page: its acknowledgement is in the checkpoint.
+    // Verification still audited the allowed page: its record is in the checkpoint, and like every
+    // record there it names the page and not its address.
     expect(
       result.runtime.enforcementCheckpoint?.documents.map((ack): number => ack.tabId).sort(),
     ).toEqual([11, 12]);
+    for (const record of result.runtime.enforcementCheckpoint?.documents ?? []) {
+      expect(record).not.toHaveProperty('url');
+    }
+    expect(JSON.stringify(result.runtime)).not.toContain(OTHER_URL);
   });
 
   it('persists every recovery command before it sends one', async (): Promise<void> => {

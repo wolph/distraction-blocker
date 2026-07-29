@@ -478,7 +478,12 @@ describe('v2 boot authority', (): void => {
 
     expect(result.kind).toBe('v2');
     expect(result.runtime.session).toEqual(raw.session);
-    expect(result.runtime.enforcementCheckpoint).toEqual(raw.enforcementCheckpoint);
+    // The audit's records keep the page and lose the address, like every other record.
+    expect(result.runtime.enforcementCheckpoint).toEqual({
+      ...raw.enforcementCheckpoint,
+      documents: raw.enforcementCheckpoint?.documents.map(({ url: _url, ...record }) => record),
+    });
+    expect(JSON.stringify(result.runtime)).not.toContain('example.org/reading');
     expect(Object.keys(result.runtime.documentCommands)).toEqual(['11:document-1']);
     expect(result.runtime.todayAgg).toEqual(raw.todayAgg);
     expect(test.parked).toEqual([]);

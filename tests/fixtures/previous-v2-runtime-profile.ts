@@ -14,6 +14,8 @@
  */
 
 import type {
+  DocumentEnforcementAckRecord,
+  EnforcementCheckpoint,
   EpochResetAckRecord,
   FrozenDocumentCommand,
 } from '../../src/background/enforcement-persistence-v2';
@@ -33,9 +35,22 @@ export interface PreviousEpochResetAckV2 extends EpochResetAckRecord {
   url: string;
 }
 
-/** A v2 runtime whose acknowledgements are the previous build's, address included. */
-export type PreviousRuntimeProfileV2 = Omit<RuntimeStateV2, 'epochResetAcks'> & {
+/** The checkpoint record the previous build stored: the transport's acknowledgement, address included. */
+export interface PreviousDocumentEnforcementAckV2 extends DocumentEnforcementAckRecord {
+  url: string;
+}
+
+export type PreviousEnforcementCheckpointV2 = Omit<EnforcementCheckpoint, 'documents'> & {
+  documents: PreviousDocumentEnforcementAckV2[];
+};
+
+/** A v2 runtime whose acknowledgements and audit records are the previous build's, address included. */
+export type PreviousRuntimeProfileV2 = Omit<
+  RuntimeStateV2,
+  'epochResetAcks' | 'enforcementCheckpoint'
+> & {
   epochResetAcks: Record<string, PreviousEpochResetAckV2>;
+  enforcementCheckpoint: PreviousEnforcementCheckpointV2 | null;
 };
 
 export const PREVIOUS_V2_EPOCH: string = '30000000-0000-4000-8000-0000000000aa';
@@ -228,9 +243,28 @@ export function previousActiveRuntimeProfileV2(
       handledAt: base.session?.startedAt ?? PREVIOUS_V2_READ_AT,
     };
   }
+  const checkpoint: EnforcementCheckpoint | null = base.enforcementCheckpoint;
+  if (checkpoint === null) throw new Error('the published fixture lost its checkpoint');
   return {
     ...base,
     epochResetAcks: acks,
+    // The previous build audited both pages and kept each record with the page's address.
+    enforcementCheckpoint: {
+      ...checkpoint,
+      documents: [
+        {
+          ...structuredClone(checkpoint.documents[0] as DocumentEnforcementAckRecord),
+          url: PREVIOUS_V2_BLOCKED_URL,
+        },
+        {
+          ...structuredClone(checkpoint.documents[0] as DocumentEnforcementAckRecord),
+          tabId: PREVIOUS_V2_ALLOWED_TAB_ID,
+          documentId: PREVIOUS_V2_ALLOWED_DOCUMENT_ID,
+          verdict: allowedVerdict(),
+          url: PREVIOUS_V2_ALLOWED_URL,
+        },
+      ],
+    },
     documentCommands: {
       [blockedKey]: { ...structuredClone(blocked), expectedUrl: PREVIOUS_V2_BLOCKED_URL },
       [allowedKey]: activeCommand({
