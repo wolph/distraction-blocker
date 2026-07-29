@@ -61,7 +61,6 @@ import {
   startLabel,
   toSessionConfigV2,
 } from './start-draft';
-import { ThisTabButton } from './ThisTabButton';
 import { useWorkTabs, type WorkTabsState } from './use-work-tabs';
 
 interface ModeChoice {
@@ -127,11 +126,14 @@ export function StartForm({
   const [draft, setDraft]: [StartDraft, Dispatch<StateUpdater<StartDraft>>] = useState<StartDraft>(
     (): StartDraft => createStartDraft(settings, lists),
   );
+  const formRef: { current: HTMLElement | null } = useRef<HTMLElement | null>(null);
   const settingsRef: { current: HTMLDetailsElement | null } = useRef<HTMLDetailsElement>(null);
   const [focusField, setFocusField]: [string | null, Dispatch<StateUpdater<string | null>>] =
     useState<string | null>(null);
   const revealField: (selector: string) => void = (selector: string): void => {
-    if (settingsRef.current !== null) settingsRef.current.open = true;
+    const disclosure: HTMLDetailsElement | null =
+      formRef.current?.querySelector(selector)?.closest('details') ?? null;
+    if (disclosure !== null) disclosure.open = true;
     setFocusField(selector);
   };
   /** Listed under the draft's rules, so the proposal matches what the start will capture. */
@@ -139,7 +141,7 @@ export function StartForm({
   useLayoutEffect((): void => {
     if (focusField === null) return;
     const field: HTMLElement | null =
-      settingsRef.current?.querySelector<HTMLElement>(focusField) ?? null;
+      formRef.current?.querySelector<HTMLElement>(focusField) ?? null;
     if (field?.matches(':disabled')) return;
     field?.focus();
     field?.scrollIntoView?.({ block: 'nearest' });
@@ -165,9 +167,6 @@ export function StartForm({
   >(null);
   const [domainError, setDomainError]: [string | null, Dispatch<StateUpdater<string | null>>] =
     useState<string | null>(null);
-  const [tabError, setTabError]: [string | null, Dispatch<StateUpdater<string | null>>] = useState<
-    string | null
-  >(null);
   const [starting, setStarting]: [boolean, Dispatch<StateUpdater<boolean>>] =
     useState<boolean>(false);
 
@@ -180,7 +179,7 @@ export function StartForm({
   const strictness: Strictness = effectiveStrictness(draft);
   const timedMinutes: number | null = effectiveTimedMinutes(draft);
   /**
-   * The plan under the presets. Hard never survives an indefinite draft, so the until-stopped
+   * The plan beside Start. Hard never survives an indefinite draft, so the until-stopped
    * branch only ever names the other two types. An unusable timed length shows no hint.
    */
   const durationHint: string | null = indefinite
@@ -289,13 +288,38 @@ export function StartForm({
     </label>
   );
 
+  const currentTab: WorkTab | undefined = work.tabs.find(
+    (tab: WorkTab): boolean => tab.tabId === work.context?.activeTabId,
+  );
+
   return (
-    <section class="view start-form">
+    <section class="view start-form" ref={formRef}>
+      <div class="start-form__actions">
+        <button
+          type="button"
+          class="start-button"
+          disabled={starting}
+          onClick={(): void => void start()}
+        >
+          {startLabel(draft)}
+        </button>
+        <DraftSummary draft={draft} durationHint={durationHint} />
+        {domainError !== null ? (
+          <p id="session-allow-domain-error" class="form-error" role="alert">
+            {domainError}
+          </p>
+        ) : null}
+        {work.error !== null ? <p class="form-error">{work.error}</p> : null}
+        {error !== null ? (
+          <p class="form-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+      </div>
       <div class="start-form__scroll">
         <div class="field-control">
           <span class="field-label">Session length</span>
           <DurationControl
-            presetsOnly
             presets={settings.presetsMin}
             value={draft.duration}
             onChange={(next: DraftDuration): void =>
@@ -337,30 +361,8 @@ export function StartForm({
         <details class="session-disclosure" ref={settingsRef}>
           <summary>Session settings</summary>
           <div class="session-disclosure__content">
-            <span class="field-label">Custom duration</span>
-            <DurationControl
-              customOnly
-              presets={settings.presetsMin}
-              value={draft.duration}
-              onChange={(next: DraftDuration): void =>
-                setDraft((current: StartDraft): StartDraft => applyDraftDuration(current, next))
-              }
-            />
-            <ThisTabButton
-              key={draft.mode}
-              onError={setTabError}
-              choiceKey={workTabId}
-              mode={draft.mode}
-              rules={draft.rules}
-              work={work}
-              disabled={starting}
-              onSelect={(tabId: number): void => {
-                explicitChoice.current = true;
-                setWorkTabId(String(tabId));
-              }}
-            />
             <label class="work-tab-label">
-              Or choose another tab
+              Choose a work tab
               <select
                 aria-label="Work tab"
                 value={workTabId}
@@ -370,18 +372,23 @@ export function StartForm({
                   setWorkTabId((event.currentTarget as HTMLSelectElement).value);
                 }}
               >
+                {currentTab !== undefined ? (
+                  <option value={currentTab.tabId}>{currentTab.title} (Current)</option>
+                ) : null}
                 <option value="">{NO_WORK_TAB_OPTION}</option>
                 {workTabId !== '' &&
                 !work.tabs.some((tab: WorkTab): boolean => String(tab.tabId) === workTabId) ? (
                   <option value={workTabId}>{WORK_TAB_UNAVAILABLE_OPTION}</option>
                 ) : null}
-                {work.tabs.map(
-                  (tab: WorkTab): VNode => (
-                    <option key={tab.tabId} value={tab.tabId}>
-                      {tab.title}
-                    </option>
-                  ),
-                )}
+                {work.tabs
+                  .filter((tab: WorkTab): boolean => tab.tabId !== currentTab?.tabId)
+                  .map(
+                    (tab: WorkTab): VNode => (
+                      <option key={tab.tabId} value={tab.tabId}>
+                        {tab.title}
+                      </option>
+                    ),
+                  )}
               </select>
             </label>
 
@@ -426,34 +433,6 @@ export function StartForm({
             )}
           </div>
         </details>
-      </div>
-
-      <div class="start-form__actions">
-        <DraftSummary draft={draft} durationHint={durationHint} />
-        <button
-          type="button"
-          class="start-button"
-          disabled={starting}
-          onClick={(): void => void start()}
-        >
-          {startLabel(draft)}
-        </button>
-        {domainError !== null ? (
-          <p id="session-allow-domain-error" class="form-error" role="alert">
-            {domainError}
-          </p>
-        ) : null}
-        {tabError !== null ? (
-          <p class="form-error" role="alert">
-            {tabError}
-          </p>
-        ) : null}
-        {work.error !== null ? <p class="form-error">{work.error}</p> : null}
-        {error !== null ? (
-          <p class="form-error" role="alert">
-            {error}
-          </p>
-        ) : null}
       </div>
     </section>
   );

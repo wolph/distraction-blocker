@@ -225,8 +225,8 @@ body {
   display: grid;
   min-block-size: 0;
   flex: 1 1 auto;
-  grid-template-rows: minmax(0, 1fr) auto;
-  gap: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 16px;
 }
 
 .start-form__scroll {
@@ -260,7 +260,7 @@ body {
   font-weight: 650;
 }
 
-/* The plan under the presets: "50 min uninterrupted focus" or the until-stopped hint. */
+/* The plan beside Start: "50 min uninterrupted focus" or the until-stopped hint. */
 .session-timing {
   margin: -6px 0 0;
   color: var(--text-soft);
@@ -748,12 +748,12 @@ body {
 .start-form__actions {
   position: sticky;
   z-index: 5;
-  bottom: 0;
+  top: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin: 0 -4px -4px;
-  padding: 8px 4px 4px;
+  margin: 0 -4px;
+  padding: 0 4px 4px;
   background: var(--bg);
 }
 

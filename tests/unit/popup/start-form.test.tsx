@@ -562,7 +562,7 @@ describe('quiet session settings', (): void => {
     expect(details.open).toBe(true);
   });
 
-  it('keeps custom minutes across collapse and opens invalid duration for correction', async (): Promise<void> => {
+  it('keeps custom minutes visible and focuses invalid duration without opening settings', async (): Promise<void> => {
     const view: ReturnType<typeof render> = render(
       <StartForm settings={SETTINGS} lists={DEFAULT_LISTS} />,
     );
@@ -575,7 +575,7 @@ describe('quiet session settings', (): void => {
     fireEvent.input(custom, { target: { value: '0' } });
     details.open = false;
     fireEvent.click(view.getByRole('button', { name: /^Start/ }));
-    expect(details.open).toBe(true);
+    expect(details.open).toBe(false);
     expect(custom.value).toBe('0');
     await waitFor((): void => expect(document.activeElement).toBe(custom));
     expect(view.getByRole('alert').closest('details')).toBeNull();

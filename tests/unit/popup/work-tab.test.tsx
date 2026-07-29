@@ -225,76 +225,34 @@ describe('StartForm work tab', (): void => {
     });
   });
 
-  it('uses the current eligible tab explicitly without losing the alternative choice', async (): Promise<void> => {
-    const view = render(h(StartForm, { settings: SETTINGS, lists: DEFAULT_LISTS }));
-    await waitFor((): void => expect(workTabSelect(view).value).toBe('12'));
-
-    fireEvent.change(workTabSelect(view), { target: { value: '14' } });
-    fireEvent.click(view.getByRole('button', { name: 'Use this tab' }));
-    await waitFor((): void => expect(workTabSelect(view).value).toBe('12'));
-
+  it('puts the current tab first and preserves an explicit alternative after refresh', async (): Promise<void> => {
     tabsQueryMock.mockResolvedValue([{ id: 14, windowId: 3 }]);
-    emitMessage({ type: 'workTargetChanged' });
-    await waitFor((): void =>
-      expect(view.getByRole('button', { name: 'Use this tab' }).textContent).toContain(
-        'Use this tab',
-      ),
+    const view: ReturnType<typeof render> = render(
+      h(StartForm, { settings: SETTINGS, lists: DEFAULT_LISTS }),
     );
-    expect(workTabSelect(view).value).toBe('12');
-  });
-
-  it('rechecks the current tab at the moment the shortcut is used', async (): Promise<void> => {
-    const view = render(h(StartForm, { settings: SETTINGS, lists: DEFAULT_LISTS }));
-    await waitFor((): void => expect(workTabSelect(view).value).toBe('12'));
-
-    tabsQueryMock.mockResolvedValue([{ id: 14, windowId: 3 }]);
-    fireEvent.click(view.getByRole('button', { name: 'Use this tab' }));
     await waitFor((): void => expect(workTabSelect(view).value).toBe('14'));
-
-    tabsQueryMock.mockResolvedValue([{ id: 99, windowId: 3 }]);
-    fireEvent.click(view.getByRole('button', { name: 'Use this tab' }));
-    await waitFor((): void =>
-      expect(
-        view.getByText('This tab is not available for work. Choose another open tab.'),
-      ).toBeDefined(),
-    );
-    expect(workTabSelect(view).value).toBe('14');
+    expect(workTabSelect(view).options[0]?.textContent).toBe('Notes (Current)');
+    expect(view.queryByRole('button', { name: 'Use this tab' })).toBeNull();
+    fireEvent.change(workTabSelect(view), { target: { value: '12' } });
+    emitMessage({ type: 'workTargetChanged' });
+    await waitFor((): void => expect(workTabSelect(view).disabled).toBe(false));
+    expect(workTabSelect(view).value).toBe('12');
+    expect(workTabSelect(view).options[0]?.textContent).toBe('Notes (Current)');
   });
 
-  it('preserves a newer explicit choice while a current-tab lookup is pending', async (): Promise<void> => {
-    const view = render(h(StartForm, { settings: SETTINGS, lists: DEFAULT_LISTS }));
-    await waitFor((): void => expect(workTabSelect(view).value).toBe('12'));
-
-    let resolveActive: (value: chrome.tabs.Tab[]) => void = (): void => {};
-    tabsQueryMock.mockImplementation(
-      async (): Promise<chrome.tabs.Tab[]> =>
-        new Promise<chrome.tabs.Tab[]>((resolve: (value: chrome.tabs.Tab[]) => void): void => {
-          resolveActive = resolve;
-        }),
-    );
-    fireEvent.click(view.getByRole('button', { name: 'Use this tab' }));
-    await waitFor((): void => expect(view.getByText('Checking current tab...')).toBeDefined());
-    fireEvent.change(workTabSelect(view), { target: { value: '14' } });
-    await act(async (): Promise<void> => {
-      resolveActive([{ id: 12, windowId: 3 } as chrome.tabs.Tab]);
-    });
-    await waitFor((): void => expect(view.queryByText('Checking current tab...')).toBeNull());
-    expect(workTabSelect(view).value).toBe('14');
-  });
-
-  it('explains an ineligible current tab while retaining eligible alternatives', async (): Promise<void> => {
+  it('omits an ineligible current tab while retaining eligible alternatives', async (): Promise<void> => {
     answerWith({
       getWorkTabs: (): unknown => ({ ok: true, tabs: [{ tabId: 14, title: 'Notes' }] }),
     });
     const view = render(h(StartForm, { settings: SETTINGS, lists: DEFAULT_LISTS }));
 
     await waitFor((): void => expect(view.getByText('Notes')).toBeDefined());
-    expect((view.getByRole('button', { name: 'Use this tab' }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    expect(workTabSelect(view).value).toBe('');
     expect(
-      view.getByText('This tab is not available for work. Choose another open tab.'),
-    ).toBeDefined();
+      Array.from(workTabSelect(view).options).some(
+        (option: HTMLOptionElement): boolean => option.textContent?.includes('(Current)') === true,
+      ),
+    ).toBe(false);
 
     fireEvent.change(workTabSelect(view), { target: { value: '14' } });
     fireEvent.click(view.getByRole('button', { name: START_BUTTON }));

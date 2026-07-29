@@ -10,13 +10,18 @@ test('the compact start form preserves edited settings and submits the visible p
   const summary: Locator = extPage.locator('summary').filter({ hasText: /^Session settings$/ });
   const custom: Locator = extPage.getByRole('spinbutton', { name: 'Custom minutes' });
   await expect(summary).toBeVisible();
-  await expect(custom).toBeHidden();
+  await expect(extPage.locator('.start-form > :first-child .start-button')).toBeVisible();
+  await expect(extPage.locator('.duration-control > :last-child')).toHaveAttribute(
+    'aria-label',
+    'Custom minutes',
+  );
+  await expect(custom).toBeVisible();
   await expect(extPage.getByRole('button', { name: 'Statistics' })).toHaveCount(0);
   await extPage.getByLabel('Intention').fill('Review the release notes');
   await openPopupSection(extPage, 'Session settings');
   await custom.fill('37');
   await summary.click();
-  await expect(custom).toBeHidden();
+  await expect(custom).toBeVisible();
   await expect(
     extPage.getByRole('button', { name: 'Start 37 min focus', exact: true }),
   ).toBeVisible();
@@ -44,6 +49,7 @@ test('an invalid custom duration reveals and focuses its field', async ({ extPag
   await extPage.getByRole('button', { name: /^Start / }).click();
   await expect(custom).toBeVisible();
   await expect(custom).toBeFocused();
+  await expect(extPage.locator('.session-disclosure')).not.toHaveAttribute('open');
   await expect(extPage.getByRole('alert')).toContainText('greater than zero');
 });
 

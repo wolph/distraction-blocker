@@ -58,7 +58,11 @@ test('the popup defaults to the current work tab and can replace a closed target
   const workTab = extPage.getByLabel('Work tab', { exact: true });
   await expect(workTab).toHaveValue(String(work.tabId));
   await workTab.selectOption('');
-  await extPage.getByRole('button', { name: 'Use this tab', exact: true }).click();
+  await expect(extPage.getByRole('button', { name: 'Use this tab', exact: true })).toHaveCount(0);
+  await expect(workTab.locator('option').first()).toHaveText(
+    'Write the generator example (Current)',
+  );
+  await workTab.selectOption(String(work.tabId));
   await expect(workTab).toHaveValue(String(work.tabId));
   await extPage.getByLabel('Intention').fill('Write the first assertion');
   await extPage.getByRole('button', { name: /^Start 25 min focus$/ }).click();
