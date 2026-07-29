@@ -99,9 +99,9 @@
                 Delete local history removes historical full URLs, focus intentions, and detailed
                 session events from the local event log. In local-only mode, it also removes local
                 aggregate statistics. It does not clear the current live-session runtime, which
-                holds the focus intention and the address of every website tab open while the session
-                runs. A session set to run until stopped holds that runtime until you end it.
-                Retention below says what ending a session clears.
+                holds the focus intention and the address of each tab the session is blocking. A
+                session set to run until stopped holds that runtime until you end it. Retention
+                below says what ending a session clears.
               </p>
             </div>
           </article>
@@ -178,17 +178,16 @@
           <div>
             <dt>The running session</dt>
             <dd>
-              The runtime of a running session holds the focus intention and the address of every
-              website tab open while it runs, and it lasts as long as that session lasts. A timed
+              The runtime of a running session holds the focus intention and the address of each
+              tab the session is blocking, and it lasts as long as that session lasts. A timed
               session ends on its own. A session set to run until stopped has no timer, so it lasts
               until you end it. Delete local history does not reach this runtime, which is
               deliberate, because a session cannot keep enforcing if the state it runs on is
               deleted underneath it. Ending a session clears the session and its intention, and
               starts a cleanup that sends one clear instruction to each website tab open at the
               time, whether or not that tab was blocked. Each instruction holds that tab's address
-              while the cleanup runs, and the cleanup removes every one of them when it completes.
-              A record of each tab that received an instruction, in or between sessions, keeps
-              that tab's address until Focus Lock's data is deleted as a whole.
+              while the cleanup runs, and the cleanup removes every stored address when it
+              completes.
             </dd>
           </div>
           <div>
@@ -233,7 +232,7 @@
     <footer>
       <div>
         <strong>Focus Lock privacy</strong>
-        <span>Last updated July 26, 2026</span>
+        <span>Last updated July 28, 2026</span>
       </div>
       <a href="https://github.com/wolph/distraction-blocker">https://github.com/wolph/distraction-blocker</a>
       <a href="https://github.com/wolph/distraction-blocker/issues">Support and issue reports</a>

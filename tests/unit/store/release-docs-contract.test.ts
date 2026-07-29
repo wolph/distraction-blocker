@@ -146,26 +146,30 @@ describe('Chrome Web Store release documentation contract', (): void => {
       // session there was always a timer, so "remains until that live state ends" was a bound. It
       // is not one now, and copy that stops at the old phrasing has to fail here.
       expect(document, path).toContain('focus intention');
-      expect(document, path).toContain('address of every website tab');
+      // The runtime persists a command only for a blocked page (`currentCommandFor`), publishes
+      // only the blocked entries of a start's view (`publishTransition`), freezes only blocked
+      // commands on recovery (`freezeRecoveryCommands`), and keeps epoch acknowledgements as
+      // records with no address (`EpochResetAckRecord`). So the address a session holds is each
+      // blocked tab's, and copy that says every open tab describes retention the code no longer
+      // has.
+      expect(document, path).toContain('address of each tab');
+      expect(document, path).toContain('is blocking');
+      expect(document, path).not.toContain('address of every website tab');
       expect(document, path).toContain('run until stopped');
       // The cleanup batch covers every enforceable target, and `classifyEnforcementTargetV2` calls
       // any top-frame http or https document enforceable whether or not it was blocked, so copy
-      // must not shrink that set to the pages the session blocked. The closure runner empties the
-      // command map in the write that removes its journal, so copy has to make that promise as
-      // well, and the older wording that left the batch for the next session to replace is a
-      // description of retention the code no longer has.
-      expect(document, path).toContain('removes every one of them when it completes');
-      // The instructions go, the addresses do not all go with them: `epochResetAcks` keeps the URL
-      // of every tab that answered an epoch reset until an all-data clear rotates the epoch
-      // (`enforcement-persistence-v2.ts`, `DocumentEpochResetAck.url`). Copy has to say so next to
-      // the instruction promise, so a reader does not take "removes every one of them" as "the
-      // addresses are gone". The follow-up that prunes the acks retires this sentence.
-      expect(document, path).toContain(
+      // must not shrink that set to the pages the session blocked.
+      expect(document, path).toContain('whether or not that tab was blocked');
+      // The closure runner empties the command map and prunes the acknowledgement records of
+      // closed tabs in the write that removes its journal, and the records that stay hold no
+      // address, so the cleanup's completion is where every stored address goes. The older
+      // wording that left the batch for the next session to replace, and the sentence that said
+      // an acknowledgement record kept the address until an all-data clear, both describe
+      // retention the code no longer has.
+      expect(document, path).toContain('removes every stored address when it completes');
+      expect(document, path).not.toContain(
         "keeps that tab's address until Focus Lock's data is deleted as a whole",
       );
-      // The record covers pages opened between sessions too: an idle runtime hands every fresh
-      // top-frame document a reset, and the acknowledgement carries the address. Copy must not
-      // narrow it to session time.
       expect(document, path).not.toContain('during the session or its cleanup');
       expect(document, path).not.toContain('addresses of the pages');
       // Lower-cased, because two documents carried the retired sentence in sentence-initial form.

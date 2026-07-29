@@ -601,15 +601,23 @@ async function handOffClosure(
   });
 }
 
-/** Clears a resolved transition that owes no closure, retaining the durable clear tuple. */
+/**
+ * Clears a resolved transition that owes no closure, retaining the durable clear tuple. An
+ * abandoned start leaves an idle runtime, and the same write empties the command map: the batch
+ * has done its work, and an idle runtime that kept it would keep the address of every page open
+ * at the time. A restored resume keeps its batch, because the session is still running its pause
+ * or break and the retained clears are what a live refresh refreezes until that phase ends.
+ */
 async function clearTransition(
   ports: RuntimePortsV2,
   checkpointId: string,
 ): Promise<RuntimeStateV2> {
   const runtime: RuntimeStateV2 = ports.runtime();
+  const abandoned: boolean = runtime.pendingEnforcementTransition?.cleanupCause === 'start-abandon';
   const next: RuntimeStateV2 = validated({
     ...structuredClone(runtime),
     pendingEnforcementTransition: null,
+    ...(abandoned ? { documentCommands: {} } : {}),
   });
   return ports.commit({
     checkpointId,

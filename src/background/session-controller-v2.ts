@@ -66,13 +66,17 @@ import {
   sendDocumentEnforcementCommand,
   sendEpochResetCommand,
 } from './content-transport-v2';
+import { documentEnforcementAckRecordV2 } from './enforcement-ack-records-v2';
 import type {
   DocumentEnforcementAck,
+  DocumentEnforcementAckRecord,
   DocumentEpochResetAck,
   EnforcementCheckpoint,
+  EpochResetAckRecord,
   FrozenDocumentCommand,
 } from './enforcement-persistence-v2';
 import { classifyEnforcementTargetV2, type TargetClassificationV2 } from './enforcement-targets-v2';
+import { epochResetAckRecordV2, withoutTabEpochResetAcksV2 } from './epoch-reset-acks-v2';
 import { buildSessionSnapshotV2 } from './lifecycle-projection-v2';
 import {
   buildActiveOverlayView,
@@ -669,20 +673,39 @@ export class SessionControllerV2 {
       // A target the checkpoint never verified gains no record here: the runners own which
       // documents one operation acknowledged, and this path only refreshes what they wrote.
       const named: boolean = checkpoint.documents.some(
-        (stored: DocumentEnforcementAck): boolean =>
+        (stored: DocumentEnforcementAckRecord): boolean =>
           stored.tabId === ack.tabId && stored.documentId === ack.documentId,
       );
       if (!named) return;
-      const documents: DocumentEnforcementAck[] = checkpoint.documents.map(
-        (stored: DocumentEnforcementAck): DocumentEnforcementAck =>
+      const documents: DocumentEnforcementAckRecord[] = checkpoint.documents.map(
+        (stored: DocumentEnforcementAckRecord): DocumentEnforcementAckRecord =>
           stored.tabId === ack.tabId && stored.documentId === ack.documentId
-            ? structuredClone(ack)
+            ? documentEnforcementAckRecordV2(ack)
             : structuredClone(stored),
       );
       await this.write({
         ...structuredClone(runtime),
         enforcementCheckpoint: { ...structuredClone(checkpoint), documents },
       });
+    });
+  }
+
+  /**
+   * Drops the acknowledgement records of a tab the browser closed. Its documents are gone, the
+   * back-forward cache included, so nothing will ask whether they acknowledged an epoch again, and
+   * a record kept past that is a closed tab the runtime still remembers. The command map is left
+   * alone: a cleanup batch or a transition view owns it while a journal lasts, and a session's
+   * live refresh refreezes whatever it holds.
+   */
+  async forgetTab(tabId: number): Promise<void> {
+    await this.enqueue(async (): Promise<void> => {
+      const runtime: RuntimeStateV2 = this.ports.runtime();
+      const epochResetAcks: Record<string, EpochResetAckRecord> = withoutTabEpochResetAcksV2(
+        runtime.epochResetAcks,
+        tabId,
+      );
+      if (Object.keys(epochResetAcks).length === Object.keys(runtime.epochResetAcks).length) return;
+      await this.write({ ...structuredClone(runtime), epochResetAcks });
     });
   }
 
@@ -1399,7 +1422,8 @@ export class SessionControllerV2 {
     );
     for (const ack of resets) {
       if (ack !== null && ack.enforcementEpoch === runtime.enforcementEpoch) {
-        epochResetAcks[documentCommandKeyV2(ack.tabId, ack.documentId)] = structuredClone(ack);
+        epochResetAcks[documentCommandKeyV2(ack.tabId, ack.documentId)] =
+          epochResetAckRecordV2(ack);
       }
     }
     if (!exactDataEqual(epochResetAcks, runtime.epochResetAcks)) {
@@ -1625,13 +1649,12 @@ export class SessionControllerV2 {
     url: string;
   }): Promise<ReturnType<typeof buildFrozenEpochResetCommandV2>> {
     const reset: ReturnType<typeof buildFrozenEpochResetCommandV2> = this.resetCommandFor(target);
-    const ack: DocumentEpochResetAck = {
+    const ack: EpochResetAckRecord = {
       version: 1,
       operationId: reset.operationId,
       enforcementEpoch: reset.enforcementEpoch,
       tabId: reset.tabId,
       documentId: reset.documentId,
-      url: reset.expectedUrl,
       handledAt: this.ports.now(),
     };
     await this.write({
@@ -1713,7 +1736,8 @@ export class SessionControllerV2 {
 
   private hasCurrentEpochAck(tabId: number, documentId: string): boolean {
     const runtime: RuntimeStateV2 = this.ports.runtime();
-    const ack = runtime.epochResetAcks[documentCommandKeyV2(tabId, documentId)];
+    const ack: EpochResetAckRecord | undefined =
+      runtime.epochResetAcks[documentCommandKeyV2(tabId, documentId)];
     return ack !== undefined && ack.enforcementEpoch === runtime.enforcementEpoch;
   }
 

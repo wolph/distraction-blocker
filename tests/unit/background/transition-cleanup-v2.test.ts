@@ -338,6 +338,8 @@ describe('runTransitionCleanupAttemptV2', (): void => {
     const fake: RuntimePortsFakeV2 = await inCleanup(preCommitRuntime(), 'start-abandon');
     const clearRevision: number = storedProgress(fake).clearRuntimeRevision;
     const baseRevision: number = fake.current().basePolicyRevision;
+    // The batch was frozen after the audit, so the map is the batch for as long as the journal lasts.
+    expect(Object.keys(fake.current().documentCommands).length).toBeGreaterThan(0);
     const resolved: RuntimeStateV2 = await runTransitionCleanupAttemptV2(fake, effectsFake());
 
     expect(resolved.pendingEnforcementTransition).toBeNull();
@@ -348,6 +350,33 @@ describe('runTransitionCleanupAttemptV2', (): void => {
     expect(resolved.handledScheduleOccurrences).toEqual(
       preCommitRuntime().handledScheduleOccurrences,
     );
+    // An abandoned start leaves an idle runtime, and an idle runtime holds no commands: the batch
+    // has done its work, and keeping it would keep the address of every page open at the time.
+    expect(resolved.documentCommands).toEqual({});
+    expect(fake.current().documentCommands).toEqual({});
+    expect(fake.commits.at(-1)?.projection.documentCommands).toEqual({});
+    expect(parseRuntimeStateV2(resolved)).not.toBeNull();
+  });
+
+  it('keeps the retained clears when a resume is restored', async (): Promise<void> => {
+    const fake: RuntimePortsFakeV2 = await inCleanup(
+      transitionRuntime(pendingTransition('resume', 'registration-audited'), {
+        session: pausedSession(),
+      }),
+      'resume-restore',
+    );
+    const batch: Record<string, FrozenDocumentCommand> = structuredClone(
+      storedProgress(fake).clearCommands,
+    );
+    expect(Object.keys(batch).length).toBeGreaterThan(0);
+
+    const resolved: RuntimeStateV2 = await runTransitionCleanupAttemptV2(fake, effectsFake());
+
+    // The session is still running its pause, so the runtime is not idle and the clears it
+    // retains are what a live refresh refreezes until the pause ends.
+    expect(resolved.pendingEnforcementTransition).toBeNull();
+    expect(resolved.session?.phase).toBe('paused');
+    expect(resolved.documentCommands).toEqual(batch);
   });
 
   it('restores a resume by recreating the saved phase alarm before the commit', async (): Promise<void> => {
@@ -677,6 +706,7 @@ describe('handleCleanupNavigationV2', (): void => {
       'apply-enforcement',
     ]);
     expect(Object.keys(fake.current().epochResetAcks)).toContain(documentKey(12, 'document-12'));
+    expect(fake.current().epochResetAcks[documentKey(12, 'document-12')]).not.toHaveProperty('url');
   });
 
   it('ignores a target outside the enforceable set', async (): Promise<void> => {

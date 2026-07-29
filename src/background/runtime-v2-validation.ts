@@ -29,13 +29,13 @@ import {
   validateDetachedRuntimeTabState,
 } from './cleanup-closure-v2-validation';
 import type {
-  DocumentEpochResetAck,
   EnforcementCheckpoint,
+  EpochResetAckRecord,
   FrozenDocumentCommand,
 } from './enforcement-persistence-v2';
 import {
-  validateDetachedDocumentEpochResetAck,
   validateDetachedEnforcementCheckpoint,
+  validateDetachedEpochResetAckRecord,
   validateDetachedFrozenDocumentCommand,
 } from './enforcement-persistence-v2-validation';
 import type { DeferredBlockClaim, RuntimeTabState } from './runtime-leaf-types';
@@ -59,7 +59,7 @@ interface RuntimeAuthority {
   session: SessionStateV2 | null;
   handledScheduleOccurrences: HandledScheduleOccurrence[];
   enforcementEpoch: string;
-  epochResetAcks: Record<string, DocumentEpochResetAck>;
+  epochResetAcks: Record<string, EpochResetAckRecord>;
   basePolicyRevision: number;
   runtimeRevision: number;
   documentCommands: Record<string, FrozenDocumentCommand>;
@@ -419,6 +419,7 @@ function validateDetachedRuntimeStateV2(value: unknown): value is RuntimeStateV2
   return (
     resetAcksAgree(authority) &&
     documentCommandsAgree(authority) &&
+    idleRuntimeHoldsNoCommands(authority) &&
     enforcementCheckpointAgrees(authority) &&
     transitionAgrees(authority) &&
     closureAgrees(authority) &&
@@ -443,9 +444,9 @@ function runtimeAuthority(candidate: UnknownRecord): RuntimeAuthority | null {
   ) {
     return null;
   }
-  const epochResetAcks: Record<string, DocumentEpochResetAck> | null = detachedIdentityMap(
+  const epochResetAcks: Record<string, EpochResetAckRecord> | null = detachedIdentityMap(
     candidate.epochResetAcks,
-    validateDetachedDocumentEpochResetAck,
+    validateDetachedEpochResetAckRecord,
   );
   const documentCommands: Record<string, FrozenDocumentCommand> | null = detachedIdentityMap(
     candidate.documentCommands,
@@ -545,7 +546,7 @@ function validateDetachedHandledOccurrenceLog(
 /** Every stored acknowledgement is current-epoch authority, and carries no runtime revision. */
 function resetAcksAgree(authority: RuntimeAuthority): boolean {
   return Object.values(authority.epochResetAcks).every(
-    (ack: DocumentEpochResetAck): boolean => ack.enforcementEpoch === authority.enforcementEpoch,
+    (ack: EpochResetAckRecord): boolean => ack.enforcementEpoch === authority.enforcementEpoch,
   );
 }
 
@@ -565,6 +566,18 @@ function documentCommandsAgree(authority: RuntimeAuthority): boolean {
         (command.runtimeRevision === authority.runtimeRevision &&
           command.basePolicyRevision === authority.basePolicyRevision)),
   );
+}
+
+/**
+ * An idle runtime holds no document commands. Every write that removes a journal from a runtime
+ * with no session empties the map with it, the closure removal and the abandoned start alike, and
+ * an idle runtime persists a command for no page it is asked about. A command on an idle runtime
+ * is a page address nothing will ever send to, so it is refused rather than carried.
+ */
+function idleRuntimeHoldsNoCommands(authority: RuntimeAuthority): boolean {
+  const idle: boolean =
+    authority.session === null && authority.transition === null && authority.closure === null;
+  return !idle || Object.keys(authority.documentCommands).length === 0;
 }
 
 /**

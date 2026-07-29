@@ -24,7 +24,36 @@ import {
   LOCAL_RUNTIME_SCHEMA,
 } from '../../../src/shared/storage-keys';
 import { localDateStr } from '../../../src/shared/time';
-import { commitCheckpointRuntime, EPOCH_ID, publishedFocusRuntime } from './runtime-v2-fixtures';
+import {
+  PREVIOUS_V2_ALLOWED_DOCUMENT_ID,
+  PREVIOUS_V2_ALLOWED_TAB_ID,
+  PREVIOUS_V2_ALLOWED_URL,
+  PREVIOUS_V2_BLOCKED_DOCUMENT_ID,
+  PREVIOUS_V2_BLOCKED_TAB_ID,
+  PREVIOUS_V2_TAB_COUNT,
+  previousActiveRuntimeProfileV2,
+  previousIdleRuntimeProfileV2,
+  previousV2ClearCommand,
+  previousV2DocumentKey,
+  previousV2EpochResetAck,
+} from '../../fixtures/previous-v2-runtime-profile';
+import {
+  activeCommand,
+  allowedVerdict,
+  cleanupClosureRuntime,
+  cleanupTransition,
+  commitCheckpointRuntime,
+  documentKey,
+  EPOCH_ID,
+  epochResetAck,
+  epochResetAckMap,
+  OTHER_EPOCH_ID,
+  pendingTransition,
+  publishedFocusRuntime,
+  SECOND_TARGET_URL,
+  startingCommand,
+  transitionRuntime,
+} from './runtime-v2-fixtures';
 
 const NOW: number = new Date(2026, 8, 2, 9, 0, 0, 0).getTime();
 const GENERATION_ID: string = 'generation-one';
@@ -331,6 +360,294 @@ describe('stored runtime classification', (): void => {
     expect(authority.kind).toBe('rejected');
     expect(authority.kind === 'rejected' ? authority.reason : null).toBe('invalid-v2');
     expect(authority.kind === 'rejected' ? authority.raw : null).toBe(raw);
+  });
+});
+
+/**
+ * The shape the build before address-free records stored, modelled on a real profile. Every reader
+ * of the runtime is strict, so the storage boundary normalises this one shape on the way in and
+ * the boot reader persists the result once. Nothing written is ever in the previous shape again.
+ */
+describe('stored runtime in the previous v2 shape', (): void => {
+  /** A prepared start whose allowed page sits in the view under the old presentation. */
+  function preparedWithAllowed(): RuntimeStateV2 {
+    const prepared: RuntimeStateV2 = transitionRuntime(pendingTransition('start', 'prepared'));
+    const transition = prepared.pendingEnforcementTransition;
+    if (transition === null) throw new Error('expected a prepared transition');
+    const allowedKey: string = documentKey(12, 'document-2');
+    const oldAllowed = startingCommand({
+      tabId: 12,
+      documentId: 'document-2',
+      expectedUrl: SECOND_TARGET_URL,
+      operationId: transition.startingOperationId,
+      runtimeRevision: transition.startingView.runtimeRevision,
+      verdict: allowedVerdict(),
+      overlay: null,
+    });
+    return {
+      ...prepared,
+      pendingEnforcementTransition: {
+        ...transition,
+        startingView: {
+          ...transition.startingView,
+          documents: { ...transition.startingView.documents, [allowedKey]: oldAllowed },
+        },
+      },
+      documentCommands: { ...prepared.documentCommands, [allowedKey]: oldAllowed },
+    };
+  }
+
+  it('reads an idle profile with no address and no commands', (): void => {
+    const raw: unknown = previousIdleRuntimeProfileV2();
+    const authority: StoredRuntimeAuthority = classifyStoredRuntime(raw, MARKER);
+
+    expect(authority.kind).toBe('previous-v2');
+    if (authority.kind !== 'previous-v2') throw new Error('expected the previous shape');
+    const runtime: RuntimeStateV2 = authority.runtime;
+    expect(parseRuntimeStateV2(runtime)).toEqual(runtime);
+    // Every acknowledgement stays, as the record of the epoch its document holds, and no record
+    // carries the address it was earned on.
+    expect(Object.keys(runtime.epochResetAcks)).toHaveLength(PREVIOUS_V2_TAB_COUNT);
+    for (const [key, record] of Object.entries(runtime.epochResetAcks)) {
+      const index: number = Number(key.split(':')[0]) - 100;
+      const { url: _url, ...expected } = previousV2EpochResetAck(index);
+      expect(record).toEqual(expected);
+      expect(record).not.toHaveProperty('url');
+    }
+    // An idle runtime holds no commands. The batch was the last cleanup's and has done its work.
+    expect(runtime.documentCommands).toEqual({});
+    expect(runtime.session).toBeNull();
+    expect(runtime.todayAgg).toEqual(previousIdleRuntimeProfileV2().todayAgg);
+    expect(runtime.runtimeRevision).toBe(previousIdleRuntimeProfileV2().runtimeRevision);
+    expect(runtime.basePolicyRevision).toBe(previousIdleRuntimeProfileV2().basePolicyRevision);
+    expect(runtime.enforcementEpoch).toBe(previousIdleRuntimeProfileV2().enforcementEpoch);
+  });
+
+  it('reads a mid-session profile with its session and its blocked entry alone', (): void => {
+    const raw: unknown = previousActiveRuntimeProfileV2();
+    const authority: StoredRuntimeAuthority = classifyStoredRuntime(raw, MARKER);
+
+    expect(authority.kind).toBe('previous-v2');
+    if (authority.kind !== 'previous-v2') throw new Error('expected the previous shape');
+    const runtime: RuntimeStateV2 = authority.runtime;
+    expect(parseRuntimeStateV2(runtime)).toEqual(runtime);
+    expect(runtime.session).toEqual(previousActiveRuntimeProfileV2().session);
+    // The audit's records lose their address the way the acknowledgements do, and nothing else.
+    const previousCheckpoint = previousActiveRuntimeProfileV2().enforcementCheckpoint;
+    expect(runtime.enforcementCheckpoint).toEqual({
+      ...previousCheckpoint,
+      documents: previousCheckpoint?.documents.map(({ url: _url, ...record }) => record),
+    });
+    expect(JSON.stringify(runtime)).not.toContain(PREVIOUS_V2_ALLOWED_URL);
+    // The blocked page keeps its command, the allowed page under the old active shape loses it,
+    // which is what a session persists now.
+    expect(Object.keys(runtime.documentCommands)).toEqual([
+      documentKey(PREVIOUS_V2_BLOCKED_TAB_ID, PREVIOUS_V2_BLOCKED_DOCUMENT_ID),
+    ]);
+    expect(runtime.documentCommands[documentKey(11, PREVIOUS_V2_BLOCKED_DOCUMENT_ID)]).toEqual(
+      previousActiveRuntimeProfileV2().documentCommands[documentKey(11, 'document-1')],
+    );
+    for (const record of Object.values(runtime.epochResetAcks)) {
+      expect(record).not.toHaveProperty('url');
+    }
+    expect(Object.keys(runtime.epochResetAcks).sort()).toEqual([
+      documentKey(PREVIOUS_V2_BLOCKED_TAB_ID, PREVIOUS_V2_BLOCKED_DOCUMENT_ID),
+      documentKey(PREVIOUS_V2_ALLOWED_TAB_ID, PREVIOUS_V2_ALLOWED_DOCUMENT_ID),
+    ]);
+  });
+
+  it('leaves a cleanup batch exactly as its journal froze it', (): void => {
+    // A cleanup journal owns the map and the parser requires the two to be equal, so only the
+    // acknowledgements are normalised under one.
+    const closing: RuntimeStateV2 = cleanupClosureRuntime({ epochResetAcks: epochResetAckMap() });
+    const raw: unknown = {
+      ...closing,
+      epochResetAcks: {
+        [documentKey(11, 'document-1')]: { ...epochResetAck(), url: 'https://example.com/path' },
+      },
+    };
+    const authority: StoredRuntimeAuthority = classifyStoredRuntime(raw, MARKER);
+
+    expect(authority.kind).toBe('previous-v2');
+    if (authority.kind !== 'previous-v2') throw new Error('expected the previous shape');
+    expect(authority.runtime.documentCommands).toEqual(closing.documentCommands);
+    expect(authority.runtime.pendingClosure).toEqual(closing.pendingClosure);
+    expect(authority.runtime.epochResetAcks).toEqual(epochResetAckMap());
+  });
+
+  it('reads a transition view with each allowed page as the canonical clear', (): void => {
+    // The previous build froze an allowed page under the view's own presentation. The view
+    // validator now requires the clear, so the entry is read as the clear the runner would freeze
+    // today, in the view and in the map that mirrors it.
+    const prepared: RuntimeStateV2 = transitionRuntime(pendingTransition('start', 'prepared'));
+    const transition = prepared.pendingEnforcementTransition;
+    if (transition === null) throw new Error('expected a prepared transition');
+    const allowedKey: string = documentKey(12, 'document-2');
+    const oldAllowed = startingCommand({
+      tabId: 12,
+      documentId: 'document-2',
+      expectedUrl: SECOND_TARGET_URL,
+      operationId: transition.startingOperationId,
+      runtimeRevision: transition.startingView.runtimeRevision,
+      verdict: allowedVerdict(),
+      overlay: null,
+    });
+    const raw: unknown = {
+      ...prepared,
+      pendingEnforcementTransition: {
+        ...transition,
+        startingView: {
+          ...transition.startingView,
+          documents: { ...transition.startingView.documents, [allowedKey]: oldAllowed },
+        },
+      },
+      documentCommands: { ...prepared.documentCommands, [allowedKey]: oldAllowed },
+    };
+    expect(parseRuntimeStateV2(raw)).toBeNull();
+
+    const authority: StoredRuntimeAuthority = classifyStoredRuntime(raw, MARKER);
+
+    expect(authority.kind).toBe('previous-v2');
+    if (authority.kind !== 'previous-v2') throw new Error('expected the previous shape');
+    const read = authority.runtime.pendingEnforcementTransition?.startingView.documents[allowedKey];
+    expect(read?.presentation).toBe('clear');
+    expect(read?.verdict).toEqual({
+      blocked: false,
+      reason: 'no-session',
+      categoryId: null,
+      matchedPattern: null,
+    });
+    expect(read?.overlay).toBeNull();
+    expect(read?.runtimeRevision).toBe(oldAllowed.runtimeRevision);
+    expect(authority.runtime.documentCommands[allowedKey]).toEqual(read);
+    expect(authority.runtime.documentCommands[documentKey(11, 'document-1')]).toEqual(
+      prepared.documentCommands[documentKey(11, 'document-1')],
+    );
+  });
+
+  it('reads a cleanup-stage transition view with its allowed page as the canonical clear too', (): void => {
+    // The validator checks the starting view at every stage, cleanup included, so a previous-shape
+    // runtime stored inside a start-abandon cleanup reads its view rewritten while the batch it
+    // owns, and the map that equals it, stay exactly as frozen.
+    const cleaning: RuntimeStateV2 = transitionRuntime(
+      cleanupTransition('start', 'prepared', 'start-abandon'),
+    );
+    const transition = cleaning.pendingEnforcementTransition;
+    if (transition === null) throw new Error('expected a cleanup transition');
+    const allowedKey: string = documentKey(12, 'document-2');
+    const oldAllowed = startingCommand({
+      tabId: 12,
+      documentId: 'document-2',
+      expectedUrl: SECOND_TARGET_URL,
+      operationId: transition.startingOperationId,
+      runtimeRevision: transition.startingView.runtimeRevision,
+      verdict: allowedVerdict(),
+      overlay: null,
+    });
+    const raw: unknown = {
+      ...cleaning,
+      pendingEnforcementTransition: {
+        ...transition,
+        startingView: {
+          ...transition.startingView,
+          documents: { ...transition.startingView.documents, [allowedKey]: oldAllowed },
+        },
+      },
+    };
+    expect(parseRuntimeStateV2(raw)).toBeNull();
+
+    const authority: StoredRuntimeAuthority = classifyStoredRuntime(raw, MARKER);
+
+    expect(authority.kind).toBe('previous-v2');
+    if (authority.kind !== 'previous-v2') throw new Error('expected the previous shape');
+    const read = authority.runtime.pendingEnforcementTransition?.startingView.documents[allowedKey];
+    expect(read?.presentation).toBe('clear');
+    expect(authority.runtime.documentCommands).toEqual(cleaning.documentCommands);
+    expect(authority.runtime.pendingEnforcementTransition?.cleanupProgress).toEqual(
+      transition.cleanupProgress,
+    );
+  });
+
+  it('keeps a runtime already in the current shape as plain v2 authority', (): void => {
+    const runtime: RuntimeStateV2 = publishedFocusRuntime();
+
+    expect(classifyStoredRuntime(runtime, MARKER)).toEqual({ kind: 'v2', runtime });
+  });
+
+  it('still refuses a value the normalised shape cannot make valid', (): void => {
+    const broken: unknown = { ...previousIdleRuntimeProfileV2(), session: 'broken' };
+    const hostile: unknown = {
+      ...previousIdleRuntimeProfileV2(),
+      epochResetAcks: { [previousV2DocumentKey(0)]: { ...previousV2EpochResetAck(0), tabId: -1 } },
+    };
+
+    expect(classifyStoredRuntime(broken, MARKER).kind).toBe('rejected');
+    expect(classifyStoredRuntime(hostile, MARKER).kind).toBe('rejected');
+    // The reader drops or rewrites only an entry the strict parser would accept on its own, so a
+    // corrupt map cannot be turned into a valid one on the way in. Each of these is refused by the
+    // strict parser as stored, and stays refused.
+    const idle = previousIdleRuntimeProfileV2({ count: 1 });
+    const junkEntries: unknown = {
+      ...idle,
+      documentCommands: { junk: 1, other: { verdict: 'x' } },
+    };
+    const otherEpochEntry: unknown = {
+      ...idle,
+      documentCommands: {
+        [previousV2DocumentKey(0)]: {
+          ...previousV2ClearCommand(0),
+          enforcementEpoch: OTHER_EPOCH_ID,
+        },
+      },
+    };
+    const withAllowed: RuntimeStateV2 = preparedWithAllowed();
+    const view = withAllowed.pendingEnforcementTransition?.startingView;
+    const garbageAllowed: unknown = {
+      ...withAllowed,
+      pendingEnforcementTransition: {
+        ...withAllowed.pendingEnforcementTransition,
+        startingView: {
+          ...view,
+          documents: {
+            ...view?.documents,
+            [documentKey(12, 'document-2')]: {
+              ...view?.documents[documentKey(12, 'document-2')],
+              presentation: 'garbage',
+              verdict: { blocked: false },
+              overlay: { anything: true },
+            },
+          },
+        },
+      },
+    };
+    const numericUrl: unknown = {
+      ...idle,
+      epochResetAcks: {
+        [previousV2DocumentKey(0)]: { ...previousV2EpochResetAck(0), url: 123 },
+      },
+    };
+    for (const value of [junkEntries, otherEpochEntry, garbageAllowed, numericUrl]) {
+      expect(parseRuntimeStateV2(value)).toBeNull();
+      expect(classifyStoredRuntime(value, MARKER).kind).toBe('rejected');
+    }
+    // An active command for an allowed page outside any view is dropped, never rewritten, so a
+    // session runtime whose only entry is allowed reads as an empty map.
+    const allowedOnly: unknown = {
+      ...previousActiveRuntimeProfileV2(),
+      documentCommands: {
+        [documentKey(12, 'document-2')]: activeCommand({
+          tabId: 12,
+          documentId: 'document-2',
+          expectedUrl: SECOND_TARGET_URL,
+          verdict: allowedVerdict(),
+          overlay: null,
+        }),
+      },
+    };
+    const authority: StoredRuntimeAuthority = classifyStoredRuntime(allowedOnly, MARKER);
+    expect(authority.kind === 'previous-v2' ? authority.runtime.documentCommands : null).toEqual(
+      {},
+    );
   });
 });
 

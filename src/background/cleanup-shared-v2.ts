@@ -33,12 +33,17 @@ import {
   sendDocumentEnforcementCommand,
   sendEpochResetCommand,
 } from './content-transport-v2';
-import type { DocumentEpochResetAck, FrozenDocumentCommand } from './enforcement-persistence-v2';
+import type {
+  DocumentEpochResetAck,
+  EpochResetAckRecord,
+  FrozenDocumentCommand,
+} from './enforcement-persistence-v2';
 import {
   classifyEnforcementTargetV2,
   enumerateEnforcementTargetsV2,
   type TargetClassificationV2,
 } from './enforcement-targets-v2';
+import { withEpochResetAckV2 } from './epoch-reset-acks-v2';
 import { buildFrozenEpochResetCommandV2 } from './overlay-view-v2';
 import { carryCommitCheckpointProjectionV2, projectRuntimeDomainV2 } from './runtime-checkpoint-v2';
 import type { RuntimePortsV2 } from './runtime-ports-v2';
@@ -206,7 +211,7 @@ export async function resetAndClearDocumentV2(
   policy: CleanupSendPolicyV2 = OVERLAID_SEND_POLICY,
 ): Promise<string | null> {
   const runtime: RuntimeStateV2 = ports.runtime();
-  const ack: DocumentEpochResetAck | undefined = runtime.epochResetAcks[key];
+  const ack: EpochResetAckRecord | undefined = runtime.epochResetAcks[key];
   if (ack === undefined || ack.enforcementEpoch !== runtime.enforcementEpoch) {
     const reset: EpochResetOutcomeV2 = await sendEpochResetCommand(
       ports.transport,
@@ -285,10 +290,7 @@ async function recordEpochAckV2(ports: RuntimePortsV2, ack: DocumentEpochResetAc
   await ports.writeRuntime(
     validatedCleanupRuntimeV2({
       ...structuredClone(runtime),
-      epochResetAcks: {
-        ...structuredClone(runtime.epochResetAcks),
-        [documentCommandKeyV2(ack.tabId, ack.documentId)]: structuredClone(ack),
-      },
+      epochResetAcks: withEpochResetAckV2(runtime.epochResetAcks, ack),
     }),
   );
 }

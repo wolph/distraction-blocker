@@ -1551,6 +1551,31 @@ describe('Engine', () => {
     expect(lastSavedRuntime(h).tabStates).toEqual({});
   });
 
+  it('forgets the epoch acknowledgements of a dropped tab', async (): Promise<void> => {
+    const runtime: RuntimeStateV2 = emptyRuntimeV2Fixture(T0);
+    for (const [tabId, documentId] of [
+      [7, 'document-7'],
+      [8, 'document-8'],
+    ] as ReadonlyArray<[number, string]>) {
+      runtime.epochResetAcks[`${tabId}:${documentId}`] = {
+        version: 1,
+        operationId: '20000000-0000-4000-8000-000000000001',
+        enforcementEpoch: TEST_EPOCH,
+        tabId,
+        documentId,
+        handledAt: T0,
+      };
+    }
+    const h: Harness = makeEngine({ runtime });
+
+    await h.engine.dropTab(7);
+
+    // The record is the controller's, so the drop reaches it through a controller write rather
+    // than through the fields the Engine lays over its own snapshot.
+    expect(Object.keys(lastSavedRuntime(h).epochResetAcks)).toEqual(['8:document-8']);
+    expect(Object.keys(currentRuntime(h).epochResetAcks)).toEqual(['8:document-8']);
+  });
+
   it('applies a durable tab removal tombstone before deferred claims after restart', async (): Promise<void> => {
     const runtime: RuntimeStateV2 = activeRuntimeV2();
     runtime.tabStates[7] = {

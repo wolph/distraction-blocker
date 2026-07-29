@@ -15,6 +15,7 @@ import type { CleanupEffectPortsV2 } from '../../../src/background/transition-cl
 import { focusedMsAtV2 } from '../../../src/core/session-v2';
 import { CLEANUP_MAX_AUTOMATIC_ATTEMPTS } from '../../../src/shared/constants';
 import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
+import { CANONICAL_CLEAR_VERDICT } from '../../../src/shared/enforcement-v2-validation';
 import { CoreError } from '../../../src/shared/errors';
 import type { SessionStateV2 } from '../../../src/shared/types';
 import {
@@ -523,15 +524,59 @@ describe('recovery of a durable session', (): void => {
       published.basePolicyRevision,
     );
     expect(result.runtime.runtimeRevision).toBeGreaterThan(published.runtimeRevision);
-    expect(commands).toHaveLength(2);
+    // Only the blocked page is stored. The allowed page's clear is computed for the sweep and
+    // never persisted, so the runtime holds no address for it.
+    expect(commands).toHaveLength(1);
     for (const command of commands) {
       expect(command.operationId).toBe(IDS[0]);
       expect(command.presentation).toBe('active');
+      expect(command.verdict.blocked).toBe(true);
+      expect(command.tabId).toBe(11);
       expect(command.runtimeRevision).toBe(result.runtime.runtimeRevision);
       expect(command.basePolicyRevision).toBe(published.basePolicyRevision);
       expect(command.sessionId).toBe(SESSION_ID);
       expect(command.reservedSessionId).toBeNull();
     }
+  });
+
+  it('stores no command for an allowed page and sends it a clear the page accepts', async (): Promise<void> => {
+    // No scripted responders: each document answers through the real content state machine.
+    const test: RecoveryHarness = harness(publishedFocusRuntime());
+
+    const result: RecoveryResultV2 = await recoverRuntimeV2(test.ports, test.effects);
+    const sent: FakeSendV2[] = test.ports.sends.filter(
+      (send: FakeSendV2): boolean => send.documentId === DOC_TWO,
+    );
+    const clear: DocumentContentCommand | undefined = sent.find(
+      (send: FakeSendV2): boolean => send.message.command === 'apply-enforcement',
+    )?.message;
+
+    expect(result.kind).toBe('published');
+    expect(Object.keys(result.runtime.documentCommands)).toEqual([`11:${DOC_ONE}`]);
+    // The clear the allowed page received is the one the controller computes for it later: the
+    // canonical clear at the recovery's operation and revision, under the session's identity.
+    expect(clear?.command === 'apply-enforcement' ? clear.presentation : null).toBe('clear');
+    expect(clear?.command === 'apply-enforcement' ? clear.verdict : null).toEqual(
+      CANONICAL_CLEAR_VERDICT,
+    );
+    expect(clear?.operationId).toBe(IDS[0]);
+    expect(clear?.command === 'apply-enforcement' ? clear.runtimeRevision : null).toBe(
+      result.runtime.runtimeRevision,
+    );
+    expect(clear?.command === 'apply-enforcement' ? clear.sessionId : null).toBe(SESSION_ID);
+    expect(test.ports.rejectedAnswers(12, DOC_TWO)).toBe(0);
+    expect(test.ports.rejectedAnswers(11, DOC_ONE)).toBe(0);
+    expect(test.ports.documentState(12, DOC_TWO)?.presentation).toBe('clear');
+    expect(test.ports.documentState(11, DOC_ONE)?.presentation).toBe('active');
+    // Verification still audited the allowed page: its record is in the checkpoint, and like every
+    // record there it names the page and not its address.
+    expect(
+      result.runtime.enforcementCheckpoint?.documents.map((ack): number => ack.tabId).sort(),
+    ).toEqual([11, 12]);
+    for (const record of result.runtime.enforcementCheckpoint?.documents ?? []) {
+      expect(record).not.toHaveProperty('url');
+    }
+    expect(JSON.stringify(result.runtime)).not.toContain(OTHER_URL);
   });
 
   it('persists every recovery command before it sends one', async (): Promise<void> => {
@@ -555,8 +600,11 @@ describe('recovery of a durable session', (): void => {
 
     await recoverRuntimeV2(test.ports, test.effects);
 
-    // The whole set is already durable when the very first message leaves the worker.
-    expect(durableAtFirstSend[0]).toHaveLength(2);
+    // Every stored command is already durable when the very first message leaves the worker. The
+    // allowed page's clear is never stored: the revision it carries is the one this write made
+    // durable, and a page that holds a clear at that tuple is answered the same clear again.
+    expect(durableAtFirstSend[0]).toHaveLength(1);
+    expect(durableAtFirstSend[0]?.[0]?.verdict.blocked).toBe(true);
     expect(
       durableAtFirstSend[0]?.every(
         (command: FrozenDocumentCommand): boolean => command.operationId === IDS[0],
@@ -573,6 +621,10 @@ describe('recovery of a durable session', (): void => {
     expect(sentCommands(test.ports)[0]).toBe('reset-enforcement-epoch');
     expect(test.ports.current().epochResetAcks[`11:${DOC_ONE}`]).toBeDefined();
     expect(test.ports.current().epochResetAcks[`12:${DOC_TWO}`]).toBeDefined();
+    // The record answers one question, whether the document acknowledged this epoch, so the page
+    // address the transport echoes stops at the transport.
+    expect(test.ports.current().epochResetAcks[`11:${DOC_ONE}`]).not.toHaveProperty('url');
+    expect(test.ports.current().epochResetAcks[`12:${DOC_TWO}`]).not.toHaveProperty('url');
   });
 
   it('recovers a migrated session that never had a checkpoint', async (): Promise<void> => {
@@ -583,7 +635,7 @@ describe('recovery of a durable session', (): void => {
 
     expect(result.kind).toBe('published');
     expect(result.runtime.enforcementCheckpoint?.kind).toBe('recovery');
-    expect(commandsOf(result.runtime)).toHaveLength(2);
+    expect(commandsOf(result.runtime)).toHaveLength(1);
   });
 
   it('keeps a live pause unblocked with no checkpoint', async (): Promise<void> => {
@@ -597,12 +649,15 @@ describe('recovery of a durable session', (): void => {
     expect(result.kind).toBe('published');
     expect(result.runtime.enforcementCheckpoint).toBeNull();
     expect(result.runtime.session?.phase).toBe('paused');
+    // A pause blocks nothing, so nothing is stored, and every page is sent a computed clear.
+    expect(commandsOf(result.runtime)).toEqual([]);
     expect(
-      commandsOf(result.runtime).every(
-        (command: FrozenDocumentCommand): boolean => command.presentation === 'clear',
-      ),
-    ).toBe(true);
-    expect(sentCommands(test.ports)).toContain('apply-enforcement');
+      test.ports.sends
+        .filter((send: FakeSendV2): boolean => send.message.command === 'apply-enforcement')
+        .map((send: FakeSendV2): string =>
+          send.message.command === 'apply-enforcement' ? send.message.presentation : 'reset',
+        ),
+    ).toEqual(['clear', 'clear']);
   });
 
   it('keeps a live break unblocked with no checkpoint', async (): Promise<void> => {

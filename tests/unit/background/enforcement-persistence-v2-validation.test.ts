@@ -1,23 +1,31 @@
 import { describe, expect, it } from 'vitest';
+import { documentEnforcementAckRecordV2 } from '../../../src/background/enforcement-ack-records-v2';
 import type {
   DocumentEnforcementAck,
+  DocumentEnforcementAckRecord,
   DocumentEpochResetAck,
   EnforcementCheckpoint,
   EnforcementTargetExclusion,
+  EpochResetAckRecord,
   FrozenDocumentCommand,
 } from '../../../src/background/enforcement-persistence-v2';
 import {
   parseDocumentEnforcementAck,
+  parseDocumentEnforcementAckRecord,
   parseDocumentEpochResetAck,
   parseEnforcementCheckpoint,
   parseEnforcementTargetExclusion,
+  parseEpochResetAckRecord,
   parseFrozenDocumentCommand,
   validateDetachedDocumentEnforcementAck,
+  validateDetachedDocumentEnforcementAckRecord,
   validateDetachedDocumentEpochResetAck,
   validateDetachedEnforcementCheckpoint,
   validateDetachedEnforcementTargetExclusion,
+  validateDetachedEpochResetAckRecord,
   validateDetachedFrozenDocumentCommand,
 } from '../../../src/background/enforcement-persistence-v2-validation';
+import { epochResetAckRecordV2 } from '../../../src/background/epoch-reset-acks-v2';
 import type { DocumentOverlayView } from '../../../src/shared/enforcement-v2';
 import type { Verdict } from '../../../src/shared/types';
 
@@ -229,6 +237,21 @@ function exclusion(
   };
 }
 
+/** The checkpoint's own record of an acknowledgement, which is the transport's without `url`. */
+function ackRecord(
+  overrides: Partial<DocumentEnforcementAckRecord> = {},
+): DocumentEnforcementAckRecord {
+  const { url: _url, ...record } = enforcementAck();
+  return { ...record, ...overrides };
+}
+
+function secondRecord(
+  overrides: Partial<DocumentEnforcementAckRecord> = {},
+): DocumentEnforcementAckRecord {
+  const { url: _url, ...record } = secondAck();
+  return { ...record, ...overrides };
+}
+
 function checkpoint(overrides: Partial<EnforcementCheckpoint> = {}): EnforcementCheckpoint {
   return {
     version: 1,
@@ -240,7 +263,7 @@ function checkpoint(overrides: Partial<EnforcementCheckpoint> = {}): Enforcement
     registrationAuditedAt: AUDITED_AT,
     completedAt: COMPLETED_AT,
     targetGeneration: 3,
-    documents: [enforcementAck(), secondAck()],
+    documents: [ackRecord(), secondRecord()],
     exclusions: [exclusion()],
     ...overrides,
   };
@@ -499,6 +522,59 @@ describe('background epoch reset acknowledgement parsing', (): void => {
   });
 });
 
+/**
+ * The runtime keeps a record of each acknowledgement rather than the acknowledgement itself. Every
+ * reader of `runtime.epochResetAcks` asks one question, whether this document acknowledged this
+ * epoch, so the record is the tab, the document, and the epoch, and never the page address the
+ * transport's acknowledgement echoes.
+ */
+describe('background epoch reset acknowledgement records', (): void => {
+  function ackRecord(overrides: Partial<EpochResetAckRecord> = {}): EpochResetAckRecord {
+    return {
+      version: 1,
+      operationId: OPERATION_ID,
+      enforcementEpoch: EPOCH_ID,
+      tabId: 11,
+      documentId: 'document-1',
+      handledAt: NOW,
+      ...overrides,
+    };
+  }
+
+  it('projects a transport acknowledgement onto a record without its address', (): void => {
+    const record: EpochResetAckRecord = epochResetAckRecordV2(epochResetAck());
+
+    expect(record).toEqual(ackRecord());
+    expect(Object.keys(record)).not.toContain('url');
+    expect(parseEpochResetAckRecord(record)).toEqual(record);
+    expect(validateDetachedEpochResetAckRecord(structuredClone(record))).toBe(true);
+  });
+
+  it('refuses a record that carries an address or any revision authority', (): void => {
+    expectRejected(parseEpochResetAckRecord, [
+      withKey(ackRecord(), 'url', TARGET_URL),
+      epochResetAck(),
+      withKey(ackRecord(), 'basePolicyRevision', 4),
+      withKey(ackRecord(), 'runtimeRevision', 7),
+      withKey(ackRecord(), 'sessionId', SESSION_ID),
+    ]);
+  });
+
+  it('rejects invalid record leaves and hostile roots', (): void => {
+    expectRejected(parseEpochResetAckRecord, [
+      withKey(ackRecord(), 'version', 2),
+      ackRecord({ operationId: 'not-a-uuid' }),
+      ackRecord({ enforcementEpoch: 'not-a-uuid' }),
+      ackRecord({ tabId: 1.5 }),
+      ackRecord({ documentId: '' }),
+      ackRecord({ handledAt: Number.NaN }),
+      withoutKey(ackRecord(), 'enforcementEpoch'),
+      new Proxy(ackRecord(), {}),
+      null,
+    ]);
+  });
+});
+
 describe('background enforcement target exclusion parsing', (): void => {
   it('accepts known-unsupported targets with and without a document identity', (): void => {
     for (const value of [exclusion(), exclusion({ documentId: null })]) {
@@ -535,6 +611,36 @@ describe('background enforcement target exclusion parsing', (): void => {
   });
 });
 
+/**
+ * A checkpoint keeps a record of each acknowledgement, not the acknowledgement itself. Its one
+ * reader matches on tab and document, so the record is the transport's answer without the page
+ * address, for the same reason the epoch acknowledgement record carries none.
+ */
+describe('background enforcement acknowledgement records', (): void => {
+  it('projects a transport acknowledgement onto a record without its address', (): void => {
+    const record: DocumentEnforcementAckRecord = documentEnforcementAckRecordV2(enforcementAck());
+
+    expect(record).toEqual(ackRecord());
+    expect(Object.keys(record)).not.toContain('url');
+    expect(parseDocumentEnforcementAckRecord(record)).toEqual(record);
+    expect(validateDetachedDocumentEnforcementAckRecord(structuredClone(record))).toBe(true);
+  });
+
+  it('refuses a record that carries an address, and a checkpoint holding one', (): void => {
+    expectRejected(parseDocumentEnforcementAckRecord, [
+      withKey(ackRecord(), 'url', TARGET_URL),
+      enforcementAck(),
+      withoutKey(ackRecord(), 'verdict'),
+      ackRecord({ tabId: -1 }),
+      null,
+    ]);
+    expectRejected(parseEnforcementCheckpoint, [
+      checkpoint({ documents: [enforcementAck(), secondRecord()] }),
+      checkpoint({ documents: [ackRecord(), secondAck()] }),
+    ]);
+  });
+});
+
 describe('background enforcement checkpoint parsing', (): void => {
   it('accepts an intrinsically consistent checkpoint and keeps empty collections', (): void => {
     const empty: EnforcementCheckpoint = checkpoint({ documents: [], exclusions: [] });
@@ -553,27 +659,27 @@ describe('background enforcement checkpoint parsing', (): void => {
   it('accepts a starting checkpoint whose acknowledgements carry the reserved identity', (): void => {
     const reserved: EnforcementCheckpoint = checkpoint({
       documents: [
-        enforcementAck({ sessionId: null, reservedSessionId: SESSION_ID, runtimeRevision: 0 }),
-        secondAck({ sessionId: null, reservedSessionId: SESSION_ID, runtimeRevision: 0 }),
+        ackRecord({ sessionId: null, reservedSessionId: SESSION_ID, runtimeRevision: 0 }),
+        secondRecord({ sessionId: null, reservedSessionId: SESSION_ID, runtimeRevision: 0 }),
       ],
     });
 
     expect(parseEnforcementCheckpoint(reserved)).toEqual(reserved);
     expectRejected(parseEnforcementCheckpoint, [
       checkpoint({
-        documents: [enforcementAck({ sessionId: null, reservedSessionId: OTHER_SESSION_ID })],
+        documents: [ackRecord({ sessionId: null, reservedSessionId: OTHER_SESSION_ID })],
       }),
-      checkpoint({ documents: [enforcementAck({ sessionId: OTHER_SESSION_ID })] }),
+      checkpoint({ documents: [ackRecord({ sessionId: OTHER_SESSION_ID })] }),
     ]);
   });
 
   it('does not reject document or exclusion array order', (): void => {
     const forward: EnforcementCheckpoint = checkpoint({
-      documents: [enforcementAck(), secondAck()],
+      documents: [ackRecord(), secondRecord()],
       exclusions: [exclusion(), exclusion({ tabId: 22, documentId: null })],
     });
     const reversed: EnforcementCheckpoint = checkpoint({
-      documents: [secondAck(), enforcementAck()],
+      documents: [secondRecord(), ackRecord()],
       exclusions: [exclusion({ tabId: 22, documentId: null }), exclusion()],
     });
 
@@ -583,8 +689,8 @@ describe('background enforcement checkpoint parsing', (): void => {
 
   it('requires unique exact tab and document identities', (): void => {
     expectRejected(parseEnforcementCheckpoint, [
-      checkpoint({ documents: [enforcementAck(), enforcementAck()] }),
-      checkpoint({ documents: [enforcementAck(), enforcementAck({ url: 'https://other.test/' })] }),
+      checkpoint({ documents: [ackRecord(), ackRecord()] }),
+      checkpoint({ documents: [ackRecord(), ackRecord({ handledAt: COMPLETED_AT })] }),
       checkpoint({ exclusions: [exclusion(), exclusion()] }),
       checkpoint({
         exclusions: [exclusion({ documentId: null }), exclusion({ documentId: null })],
@@ -631,15 +737,15 @@ describe('background enforcement checkpoint parsing', (): void => {
     for (const revision of [0, 7, 4_096]) {
       const shared: EnforcementCheckpoint = checkpoint({
         documents: [
-          enforcementAck({ runtimeRevision: revision }),
-          secondAck({ runtimeRevision: revision }),
+          ackRecord({ runtimeRevision: revision }),
+          secondRecord({ runtimeRevision: revision }),
         ],
       });
       expect(parseEnforcementCheckpoint(shared)).toEqual(shared);
     }
     expectRejected(parseEnforcementCheckpoint, [
-      checkpoint({ documents: [enforcementAck(), secondAck({ runtimeRevision: 8 })] }),
-      checkpoint({ documents: [enforcementAck({ runtimeRevision: 0 }), secondAck()] }),
+      checkpoint({ documents: [ackRecord(), secondRecord({ runtimeRevision: 8 })] }),
+      checkpoint({ documents: [ackRecord({ runtimeRevision: 0 }), secondRecord()] }),
     ]);
   });
 
@@ -670,15 +776,15 @@ describe('background enforcement checkpoint parsing', (): void => {
 
   it('accepts acknowledgements handled outside the audit and completion times', (): void => {
     const early: EnforcementCheckpoint = checkpoint({
-      documents: [enforcementAck({ handledAt: AUDITED_AT - 1 })],
+      documents: [ackRecord({ handledAt: AUDITED_AT - 1 })],
     });
     const late: EnforcementCheckpoint = checkpoint({
-      documents: [enforcementAck({ handledAt: COMPLETED_AT + 1 })],
+      documents: [ackRecord({ handledAt: COMPLETED_AT + 1 })],
     });
     const spread: EnforcementCheckpoint = checkpoint({
       documents: [
-        enforcementAck({ handledAt: AUDITED_AT - 60_000 }),
-        secondAck({ handledAt: COMPLETED_AT + 60_000 }),
+        ackRecord({ handledAt: AUDITED_AT - 60_000 }),
+        secondRecord({ handledAt: COMPLETED_AT + 60_000 }),
       ],
     });
 
@@ -742,10 +848,10 @@ describe('background enforcement checkpoint parsing', (): void => {
   });
 
   it('rejects a document array that grows while it is inspected', (): void => {
-    const documents: DocumentEnforcementAck[] = [enforcementAck()];
-    const growing: DocumentEnforcementAck[] = new Proxy(documents, {
-      ownKeys: (target: DocumentEnforcementAck[]): ArrayLike<string | symbol> => {
-        target.push(secondAck());
+    const documents: DocumentEnforcementAckRecord[] = [ackRecord()];
+    const growing: DocumentEnforcementAckRecord[] = new Proxy(documents, {
+      ownKeys: (target: DocumentEnforcementAckRecord[]): ArrayLike<string | symbol> => {
+        target.push(secondRecord());
         return Reflect.ownKeys(target);
       },
     });
@@ -756,18 +862,19 @@ describe('background enforcement checkpoint parsing', (): void => {
   });
 
   it('detaches parsed checkpoints in both directions', (): void => {
-    const first: DocumentEnforcementAck = enforcementAck();
-    const source: EnforcementCheckpoint = checkpoint({ documents: [first, secondAck()] });
+    const first: DocumentEnforcementAckRecord = ackRecord();
+    const source: EnforcementCheckpoint = checkpoint({ documents: [first, secondRecord()] });
     const parsed: EnforcementCheckpoint = parseEnforcementCheckpoint(
       source,
     ) as EnforcementCheckpoint;
-    const parsedFirst: DocumentEnforcementAck = parsed.documents[0] as DocumentEnforcementAck;
+    const parsedFirst: DocumentEnforcementAckRecord = parsed
+      .documents[0] as DocumentEnforcementAckRecord;
 
     expect(parsed).toEqual(source);
     expect(parsed.documents).not.toBe(source.documents);
 
-    first.url = 'https://mutated.test/';
-    expect(parsedFirst.url).toBe(TARGET_URL);
+    first.documentId = 'mutated-document';
+    expect(parsedFirst.documentId).toBe('document-1');
     parsed.exclusions.pop();
     expect(source.exclusions).toHaveLength(1);
   });

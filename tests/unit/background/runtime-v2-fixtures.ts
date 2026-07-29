@@ -7,9 +7,9 @@
  */
 
 import type {
-  DocumentEnforcementAck,
-  DocumentEpochResetAck,
+  DocumentEnforcementAckRecord,
   EnforcementCheckpoint,
+  EpochResetAckRecord,
   FrozenDocumentCommand,
 } from '../../../src/background/enforcement-persistence-v2';
 import type {
@@ -396,6 +396,11 @@ export function allowedVerdict(overrides: Partial<Verdict> = {}): Verdict {
   };
 }
 
+/** The one verdict a clear command carries, written out rather than imported from production. */
+export function clearVerdict(): Verdict {
+  return { blocked: false, reason: 'no-session', categoryId: null, matchedPattern: null };
+}
+
 export function sessionCategories(): Record<CategoryId, boolean> {
   return {
     social: true,
@@ -668,7 +673,10 @@ export function activeCommand(
   });
 }
 
-/** One blocked document that carries the frozen overlay and one allowed document that does not. */
+/**
+ * One blocked document that carries the frozen overlay and one allowed document frozen as the
+ * canonical clear, which is the only shape a view holds for a page it does not block.
+ */
 export function startingCommandMap(
   overrides: Partial<FrozenDocumentCommand> = {},
   capturedAt: number = REQUESTED_AT,
@@ -682,7 +690,8 @@ export function startingCommandMap(
       tabId: 12,
       documentId: 'document-2',
       expectedUrl: SECOND_TARGET_URL,
-      verdict: allowedVerdict(),
+      presentation: 'clear',
+      verdict: clearVerdict(),
       overlay: null,
       ...overrides,
     }),
@@ -703,7 +712,8 @@ export function activeCommandMap(
       tabId: 12,
       documentId: 'document-2',
       expectedUrl: SECOND_TARGET_URL,
-      verdict: allowedVerdict(),
+      presentation: 'clear',
+      verdict: clearVerdict(),
       overlay: null,
       ...overrides,
     }),
@@ -773,9 +783,10 @@ export function preparedReservationMap(): Record<string, PreparedTargetReservati
   };
 }
 
+/** What a checkpoint keeps of one acknowledgement: the transport's answer without the address. */
 export function enforcementAck(
-  overrides: Partial<DocumentEnforcementAck> = {},
-): DocumentEnforcementAck {
+  overrides: Partial<DocumentEnforcementAckRecord> = {},
+): DocumentEnforcementAckRecord {
   return {
     version: 1,
     operationId: STARTING_OPERATION_ID,
@@ -786,7 +797,6 @@ export function enforcementAck(
     runtimeRevision: START_ACTIVE_REVISION,
     tabId: 11,
     documentId: 'document-1',
-    url: TARGET_URL,
     verdict: blockedVerdict(),
     handledAt: ACTIVATION_AT,
     ...overrides,
@@ -1068,24 +1078,22 @@ export function sessionStartedEvent(
   };
 }
 
-export function epochResetAck(
-  overrides: Partial<DocumentEpochResetAck> = {},
-): DocumentEpochResetAck {
+/** What the runtime keeps of one epoch reset acknowledgement: the document and its epoch, no address. */
+export function epochResetAck(overrides: Partial<EpochResetAckRecord> = {}): EpochResetAckRecord {
   return {
     version: 1,
     operationId: OTHER_OPERATION_ID,
     enforcementEpoch: EPOCH_ID,
     tabId: 11,
     documentId: 'document-1',
-    url: TARGET_URL,
     handledAt: REQUESTED_AT,
     ...overrides,
   };
 }
 
 export function epochResetAckMap(
-  overrides: Partial<DocumentEpochResetAck> = {},
-): Record<string, DocumentEpochResetAck> {
+  overrides: Partial<EpochResetAckRecord> = {},
+): Record<string, EpochResetAckRecord> {
   return { [documentKey(11, 'document-1')]: epochResetAck(overrides) };
 }
 

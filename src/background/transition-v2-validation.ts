@@ -1,5 +1,5 @@
 import { MAX_FINAL_FRESHNESS_ATTEMPTS } from '../shared/constants';
-import type { DocumentOverlayView } from '../shared/enforcement-v2';
+import type { DocumentOverlayView, EnforcementPresentation } from '../shared/enforcement-v2';
 import { canonicalSessionIdentity } from '../shared/enforcement-v2-validation';
 import { snapshotExactData } from '../shared/exact-data';
 import { isRelativeMinuteDuration } from '../shared/numeric-validation';
@@ -470,8 +470,11 @@ function validateDetachedFrozenTransitionView(
 }
 
 /**
- * One frozen command repeats its view's operation tuple and presentation, names the transition
- * session in the form its phase allows, and carries no regenerated capture time.
+ * One frozen command repeats its view's operation tuple, names the transition session in the form
+ * its phase allows, and carries no regenerated capture time. A blocked command carries the view's
+ * presentation. An allowed page carries the canonical clear instead: it is the command the
+ * controller computes for that page after publication, so the page holds a view a later pull at
+ * the same tuple repeats rather than one it refuses, and the runner freezes nothing else for it.
  */
 function commandRepeatsView(
   command: FrozenDocumentCommand,
@@ -480,12 +483,15 @@ function commandRepeatsView(
   expectation: ViewExpectation,
 ): boolean {
   const durable: boolean = command.sessionId !== null;
+  const presentation: EnforcementPresentation = command.verdict.blocked
+    ? expectation.presentation
+    : 'clear';
   return (
     command.operationId === expectation.operationId &&
     command.enforcementEpoch === expectation.enforcementEpoch &&
     command.basePolicyRevision === expectation.basePolicyRevision &&
     command.runtimeRevision === runtimeRevision &&
-    command.presentation === expectation.presentation &&
+    command.presentation === presentation &&
     durable === expectation.durableSession &&
     canonicalSessionIdentity(command.sessionId, command.reservedSessionId) ===
       expectation.sessionId &&

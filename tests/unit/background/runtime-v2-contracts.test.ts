@@ -1,7 +1,7 @@
 import { describe, expectTypeOf, it } from 'vitest';
 import type {
-  DocumentEpochResetAck,
   EnforcementCheckpoint,
+  EpochResetAckRecord,
   FrozenDocumentCommand,
 } from '../../../src/background/enforcement-persistence-v2';
 import type {
@@ -252,7 +252,7 @@ describe('background runtime v2 leaf contracts', (): void => {
       accruedFocusMs: number;
       handledScheduleOccurrences: HandledScheduleOccurrence[];
       enforcementEpoch: string;
-      epochResetAcks: Record<string, DocumentEpochResetAck>;
+      epochResetAcks: Record<string, EpochResetAckRecord>;
       basePolicyRevision: number;
       runtimeRevision: number;
       documentCommands: Record<string, FrozenDocumentCommand>;
@@ -283,7 +283,7 @@ describe('background runtime v2 leaf contracts', (): void => {
       scheduleUnavailableNoticeToken: string | null;
       handledScheduleOccurrences: HandledScheduleOccurrence[];
       enforcementEpoch: string;
-      epochResetAcks: Record<string, DocumentEpochResetAck>;
+      epochResetAcks: Record<string, EpochResetAckRecord>;
       basePolicyRevision: number;
       runtimeRevision: number;
       documentCommands: Record<string, FrozenDocumentCommand>;

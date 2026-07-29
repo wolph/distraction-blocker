@@ -262,12 +262,27 @@ test('a worker restart during indefinite focus recovers the same session', async
   expect(recovery.operationId).not.toBe(activation.operationId);
   // The blocked document answered the command this recovery replayed, under the recovery's own
   // operation. A checkpoint that named the tab without an acknowledgement would be a session that
-  // believes it is enforcing a page it never reached.
+  // believes it is enforcing a page it never reached. The record names the tab, not the address,
+  // so the tab is looked up from the browser.
+  const blockedTabId: number = await liveWorker(restarted).evaluate(
+    async (targetUrl: string): Promise<number> => {
+      const tab: chrome.tabs.Tab | undefined = (await chrome.tabs.query({})).find(
+        (candidate: chrome.tabs.Tab): boolean => candidate.url === targetUrl,
+      );
+      if (tab?.id === undefined) throw new Error(`blocked tab not found: ${targetUrl}`);
+      return tab.id;
+    },
+    url,
+  );
   expect(
     recovery.documents.filter(
-      (ack): boolean => ack.url === url && ack.operationId === recovery.operationId,
+      (record): boolean =>
+        record.tabId === blockedTabId &&
+        record.verdict.blocked &&
+        record.operationId === recovery.operationId,
     ),
   ).not.toHaveLength(0);
+  expect(JSON.stringify(recovery)).not.toContain(url);
   await expect(blockedPage.locator('focus-lock-overlay')).toBeAttached();
 
   await expect

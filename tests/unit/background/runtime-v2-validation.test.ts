@@ -33,6 +33,7 @@ import {
   deferredClaimKey,
   documentKey,
   ENTRY_ID,
+  EPOCH_ID,
   emptyRuntimeV2,
   epochResetAck,
   epochResetAckMap,
@@ -367,7 +368,11 @@ describe('background runtime top-level leaves', (): void => {
       withKey(emptyRuntimeV2(), 'basePolicyRevision', 1.5),
       withKey(emptyRuntimeV2(), 'runtimeRevision', -1),
       withKey(emptyRuntimeV2(), 'epochResetAcks', { wrong: epochResetAck() }),
-      withKey(emptyRuntimeV2(), 'epochResetAcks', epochResetAckMap({ url: '' })),
+      // The record carries no page address. One that does is the shape a build before the record
+      // stored, and the runtime refuses it rather than keeping the address it was meant to drop.
+      withKey(emptyRuntimeV2(), 'epochResetAcks', {
+        [documentKey(11, 'document-1')]: withKey(epochResetAck(), 'url', TARGET_URL),
+      }),
     ]);
   });
 
@@ -502,6 +507,30 @@ describe('background runtime epoch, revision, and checkpoint relationships', ():
       }),
     ]);
     expectAccepted([emptyRuntimeV2({ runtimeRevision: 12, documentCommands: {} })]);
+  });
+
+  it('requires an idle runtime with no journal to hold no document commands', (): void => {
+    // Every path that ends a session or a transition empties the map in the write that removes
+    // the journal, so a map on an idle runtime is a page address nothing will ever send to.
+    expectRejected([
+      emptyRuntimeV2({
+        runtimeRevision: CLEAR_RUNTIME_REVISION,
+        documentCommands: clearCommandMap(),
+      }),
+      emptyRuntimeV2({
+        runtimeRevision: CLEAR_RUNTIME_REVISION,
+        documentCommands: clearCommandMap({ sessionId: null, reservedSessionId: EPOCH_ID }),
+      }),
+    ]);
+    expectAccepted([
+      emptyRuntimeV2({ runtimeRevision: CLEAR_RUNTIME_REVISION, documentCommands: {} }),
+      // A retained batch under a durable pause or break is a running session, not an idle one.
+      pausedRuntime(),
+      breakRuntime(),
+      // A cleanup journal owns its batch until the write that removes it.
+      cleanupClosureRuntime(),
+      cleanupTransitionRuntime('start', 'prepared', 'start-abandon'),
+    ]);
   });
 
   it('accepts a resume transition over the retained batch at its older revision', (): void => {

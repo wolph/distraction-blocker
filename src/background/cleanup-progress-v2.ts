@@ -80,6 +80,22 @@ export interface CleanupBatchReplacementV2 {
   at: number;
 }
 
+/**
+ * The entries of a frozen view a session keeps once the view's journal is gone. A blocked page's
+ * command is what a live refresh refreezes and what re-blocks the page after an unlock lapses. An
+ * allowed page's command is a canonical clear the controller computes again on demand, so storing
+ * it would keep that page's address in the runtime for nothing.
+ */
+export function blockedDocumentCommandsV2(
+  commands: Record<string, FrozenDocumentCommand>,
+): Record<string, FrozenDocumentCommand> {
+  const blocked: Record<string, FrozenDocumentCommand> = {};
+  for (const [key, command] of Object.entries(commands)) {
+    if (command.verdict.blocked) blocked[key] = structuredClone(command);
+  }
+  return blocked;
+}
+
 /** The map key for document authority, everywhere in the v2 runtime. */
 export function documentCommandKeyV2(tabId: number, documentId: string): string {
   if (!isNonNegativeInteger(tabId)) {

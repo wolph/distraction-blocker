@@ -39,6 +39,8 @@ import {
   commitCheckpointRuntime,
   dailyAgg,
   documentKey,
+  epochResetAck,
+  epochResetAckMap,
   LOCAL_DATE,
   OTHER_OPERATION_ID,
   publishedFocusRuntime,
@@ -232,7 +234,11 @@ describe('prepareClosureV2', (): void => {
   });
 
   it.each([
-    ['no durable session', closingRuntime({ session: null, enforcementCheckpoint: null })],
+    // An idle runtime holds no commands either, or the parser refuses it before the closure does.
+    [
+      'no durable session',
+      closingRuntime({ session: null, enforcementCheckpoint: null, documentCommands: {} }),
+    ],
     ['a closure already prepared', null],
   ])(
     'refuses a closure with %s',
@@ -386,6 +392,36 @@ describe('runClosureCleanupAttemptV2', (): void => {
     expect(next.pendingClosure).toBeNull();
     expect(next.documentCommands).toEqual({});
     expect(fake.current().documentCommands).toEqual({});
+    expect(parseRuntimeStateV2(next)).not.toBeNull();
+  });
+
+  it('drops the acknowledgements of tabs the browser no longer lists when it removes the journal', async (): Promise<void> => {
+    // Tab 11 is open and in the batch. Tab 13 answered a reset earlier in the session and was
+    // closed while the worker was not listening, so no removal event ever pruned it.
+    const fake: RuntimePortsFakeV2 = fakeFor(
+      closingRuntime({
+        epochResetAcks: {
+          ...epochResetAckMap(),
+          [documentKey(13, 'document-13')]: epochResetAck({ tabId: 13, documentId: 'document-13' }),
+        },
+      }),
+    );
+    await inCleanup(fake);
+
+    const next: RuntimeStateV2 = await runClosureCleanupAttemptV2(fake, effectsFake());
+
+    // The same write that removes the journal and empties the command map bounds the record to
+    // the tabs the browser still has. A document in an open tab keeps its acknowledgement, which
+    // is what lets one restored from the back-forward cache pull an empty answer rather than a
+    // clear it would refuse.
+    expect(next.pendingClosure).toBeNull();
+    expect(Object.keys(next.epochResetAcks)).toEqual([documentKey(11, DOC_ONE)]);
+    expect(fake.current().epochResetAcks).toEqual(next.epochResetAcks);
+    const removal: RuntimeStateV2 | undefined = fake.writes.find(
+      (write: RuntimeStateV2): boolean =>
+        write.pendingClosure === null && Object.keys(write.documentCommands).length === 0,
+    );
+    expect(removal?.epochResetAcks).toEqual(next.epochResetAcks);
     expect(parseRuntimeStateV2(next)).not.toBeNull();
   });
 
@@ -623,6 +659,7 @@ describe('runClosureCleanupAttemptV2', (): void => {
     ]);
     expect(discovered[0]?.message.enforcementEpoch).toBe(fake.current().enforcementEpoch);
     expect(Object.keys(fake.current().epochResetAcks)).toContain(documentKey(12, 'document-2'));
+    expect(fake.current().epochResetAcks[documentKey(12, 'document-2')]).not.toHaveProperty('url');
   });
 
   it("records a write that throws mid-attempt as this attempt's failure", async (): Promise<void> => {

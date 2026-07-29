@@ -13,6 +13,7 @@ import { type ExactDataSnapshot, snapshotExactData } from '../shared/exact-data'
 import { LOCAL_RUNTIME, LOCAL_RUNTIME_SCHEMA } from '../shared/storage-keys';
 import { localDateStr } from '../shared/time';
 import { isRecord, isSafeTimestamp } from '../shared/v2-domain-intrinsics';
+import { normalisePreviousRuntimeShapeV2 } from './previous-runtime-shape-v2';
 import type { RuntimeStateV2 } from './runtime-v2-types';
 import { isRuntimeSchemaMarkerValue, parseRuntimeStateV2 } from './runtime-v2-validation';
 import { readStoredRuntimeRaw } from './stores';
@@ -69,6 +70,12 @@ const RUNTIME_SCHEMA_MARKER_V2: RuntimeSchemaMarkerV2 = { runtimeSchemaVersion: 
 export type StoredRuntimeAuthority =
   | { kind: 'absent' }
   | { kind: 'v2'; runtime: RuntimeStateV2 }
+  /**
+   * A v2 runtime stored in the previous shape, read through `normalisePreviousRuntimeShapeV2` and
+   * accepted by the strict parser afterwards. The runtime is authority as it stands, and the boot
+   * reader persists it once so the next read finds the current shape.
+   */
+  | { kind: 'previous-v2'; runtime: RuntimeStateV2 }
   /**
    * `staleMarker` is true when the v2 schema marker already sat over this v1 value, which is what
    * a downgrade to a v1 build followed by an upgrade leaves behind. The value still migrates, and
@@ -157,6 +164,12 @@ export function classifyStoredRuntime(
   const snapshot: ExactDataSnapshot | null = snapshotExactData(raw);
   if (snapshot === null) return { kind: 'rejected', reason: 'invalid-v2', raw };
   if (isRecord(snapshot.value) && declaresV2Shape(snapshot.value)) {
+    // One earlier v2 shape is read rather than refused. The rewrite is pure and the strict parser
+    // still has the last word, so a value it cannot make valid is rejected exactly as before.
+    const previous: RuntimeStateV2 | null = parseRuntimeStateV2(
+      normalisePreviousRuntimeShapeV2(snapshot.value),
+    );
+    if (previous !== null) return { kind: 'previous-v2', runtime: previous };
     return { kind: 'rejected', reason: 'invalid-v2', raw };
   }
   if (isRecord(snapshot.value) && isLegacyRuntimeShapeV1(snapshot.value)) {

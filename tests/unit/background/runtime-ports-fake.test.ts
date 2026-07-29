@@ -109,7 +109,6 @@ describe('ports fake document model', (): void => {
           enforcementEpoch: EPOCH_ID,
           tabId: TAB_ID,
           documentId: DOCUMENT_ID,
-          url: TARGET_URL,
           handledAt: REQUESTED_AT - 1_000,
         },
       },

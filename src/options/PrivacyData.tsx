@@ -214,11 +214,9 @@ function ConfirmationDialog(props: {
           This permanently deletes full URLs, focus intentions, and detailed session events from
           this device
           {props.localOnlyAggregates ? ', plus local-only aggregate statistics' : ''}. It does not
-          clear a running session, which keeps its intention and the address of every website tab
-          open while it runs. Ending the session clears the intention and, once its cleanup
-          completes, the instructions it sent to those tabs. A record of each tab that received an
-          instruction, in or between sessions, keeps that tab's address until Focus Lock's data is
-          deleted as a whole.
+          clear a running session, which keeps its intention and the address of each tab it is
+          blocking. Ending the session clears the intention and starts a cleanup that clears every
+          open website tab, and the cleanup removes every stored address when it completes.
         </p>
       ) : props.kind === 'synced-policy' ? (
         <p>

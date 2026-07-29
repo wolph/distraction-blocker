@@ -38,12 +38,10 @@ import { CoreError } from '../../../src/shared/errors';
 import { isSetupState } from '../../../src/shared/runtime-validation';
 import {
   ATTEMPT_DEBOUNCE_KEY,
-  CLEANUP_OPERATION_ID,
   cancelGateState,
   cleanupClosureRuntime,
   cleanupRetryState,
   cleanupTransition,
-  clearCommandMap,
   dailyAgg,
   deferredBlockClaimMap,
   documentKey,
@@ -166,15 +164,18 @@ function resetCommand(overrides: Partial<FrozenEpochResetCommand> = {}): FrozenE
   };
 }
 
+/** The journal keeps the transport's acknowledgement whole, address included, unlike the runtime. */
 function resetAck(overrides: Partial<DocumentEpochResetAck> = {}): DocumentEpochResetAck {
-  return epochResetAck({
-    operationId: RESET_OPERATION,
-    enforcementEpoch: RESET_EPOCH,
-    tabId: 11,
-    documentId: 'document-1',
+  return {
+    ...epochResetAck({
+      operationId: RESET_OPERATION,
+      enforcementEpoch: RESET_EPOCH,
+      tabId: 11,
+      documentId: 'document-1',
+    }),
     url: TARGET_URL,
     ...overrides,
-  });
+  };
 }
 
 function resetProgress(overrides: Partial<DataClearResetProgress> = {}): DataClearResetProgress {
@@ -442,7 +443,17 @@ describe('data clear journal parsing', (): void => {
     ['a non-zero base revision', resetRuntime({ basePolicyRevision: 1 })],
     ['a non-zero runtime revision', resetRuntime({ runtimeRevision: 1 })],
     ['another enforcement epoch', resetRuntime({ enforcementEpoch: OTHER_OPERATION })],
-    ['a reset acknowledgement', resetRuntime({ epochResetAcks: { [FIRST_KEY]: resetAck() } })],
+    [
+      'a reset acknowledgement',
+      resetRuntime({
+        epochResetAcks: {
+          [FIRST_KEY]: epochResetAck({
+            operationId: RESET_OPERATION,
+            enforcementEpoch: RESET_EPOCH,
+          }),
+        },
+      }),
+    ],
     [
       'a commit checkpoint',
       resetRuntime({ commitCheckpoint: runtimeCommitCheckpoint(resetRuntime()) }),
@@ -462,17 +473,8 @@ describe('data clear journal parsing', (): void => {
       resetRuntime({ scheduleUnavailableNoticeToken: `${ENTRY_ID}@${LOCAL_DATE}` }),
     ],
     ['a prune watermark', resetRuntime({ lastPruneDate: LOCAL_DATE })],
-    [
-      'a document command',
-      resetRuntime({
-        documentCommands: clearCommandMap({
-          operationId: CLEANUP_OPERATION_ID,
-          enforcementEpoch: RESET_EPOCH,
-          basePolicyRevision: 0,
-          runtimeRevision: 0,
-        }),
-      }),
-    ],
+    // A document command on an idle runtime is no longer a case here: the runtime parser refuses
+    // it before any journal rule sees it, which `runtime-v2-validation.test.ts` pins.
     [
       'a pending transition',
       transitionRuntime(cleanupTransition('start', 'starting-verified', 'start-abandon')),
