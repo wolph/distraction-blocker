@@ -1,0 +1,50 @@
+{
+  "capturedAt": "2026-09-12T09:32:51.150Z",
+  "sourceCommit": "03a56547e76b1efdeb164fa03038eecacb87f0c2",
+  "distSha256": "9e418b373248d19eb17e48ebb1858aaaf861e95e7f8f6759e421c3f0d5307641",
+  "packageLockSha256": "89f34a4ea5e5c2a399b33b3f9118cadb16b267fe970467e9c0f600981b9e1102",
+  "captureScriptSha256": "b761c081d81f4b491ce9395575404e574615e599f4e7557e7b6b1d4af82d22eb",
+  "version": "0.1.0",
+  "toolchain": {
+    "node": "24.18.0",
+    "chromium": "151.0.7922.34",
+    "ffmpeg": "ffmpeg version 8.1.2 Copyright (c) 2000-2026 the FFmpeg developers"
+  },
+  "files": {
+    "focus-session.png": {
+      "bytes": 29355,
+      "sha256": "420ec8ee73018a938253d5c3fbc15c7ea765f2cfbff83040bd27bcc3b1d328f3"
+    },
+    "blocked-page.png": {
+      "bytes": 44929,
+      "sha256": "45a05b230c10b77e24af62148a015141f4f183560a6c9cbabacc7fe609e1110c"
+    },
+    "progress.png": {
+      "bytes": 69564,
+      "sha256": "16a85e23dac298523bee704faaa7210c3e87ddaf1e65f809e7735a3016a20f40"
+    },
+    "demo-poster.png": {
+      "bytes": 44929,
+      "sha256": "45a05b230c10b77e24af62148a015141f4f183560a6c9cbabacc7fe609e1110c"
+    },
+    "demo.gif": {
+      "bytes": 101950,
+      "sha256": "513c5f54a0b504cf4c8662efd9fa0521a33388d522d9494c81344287c782d88c"
+    }
+  },
+  "demonstration": [
+    "Fresh isolated Playwright Chromium extension profile with website permission fixture. No personal browser data.",
+    "Real extension UI and controls, light theme. No UI text, CSS or screenshots are replaced.",
+    "Session: 25 minutes, Finish the proposal. A local demonstration document is the actual selected work tab.",
+    "Progress: seeded one-hour completed session and one blocked attempt yesterday. The current session is real.",
+    "GIF: 80 screenshots at 8 fps, 10 seconds. Work document for 2 seconds, blocked page for 4, returned work document for 4.",
+    "Browser chrome is outside the captures. Popup viewport 480x600. Block and demo 960x640. Stats overview 1280x1028.",
+    "The blocking overlay applies to an already loaded local blocked.example page. Back to work activates the original allowed tab."
+  ],
+  "reproductionInstructions": [
+    "env -i PATH=\"$PATH\" TMPDIR=\"${TMPDIR:-/tmp}\" node scripts/gen-icons.mjs",
+    "env -i PATH=\"$PATH\" TMPDIR=\"${TMPDIR:-/tmp}\" node node_modules/vite/bin/vite.js build",
+    "env -i PATH=\"$PATH\" TMPDIR=\"${TMPDIR:-/tmp}\" TZ=Europe/Amsterdam UPDATE_README_MEDIA=1 node node_modules/@playwright/test/cli.js test tests/e2e/readme-media.spec.ts -g 'captures the README product tour'",
+    "env -i PATH=\"$PATH\" TMPDIR=\"${TMPDIR:-/tmp}\" node node_modules/@playwright/test/cli.js test tests/e2e/readme-media.spec.ts -g 'validates the README media inventory'"
+  ]
+}

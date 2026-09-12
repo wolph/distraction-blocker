@@ -1,72 +1,92 @@
+<div align="center">
+
+<img src="https://github.com/wolph/distraction-blocker/raw/refs/heads/master/assets/icons/idle-128.png" width="48" height="48" alt="">
+
 # Focus Lock
 
-Focus Lock is a Chrome extension for focus sessions that blocks distracting sites without redirecting them. It checks top-level navigations and replaces blocked pages with the Focus Lock blocking surface, overlays and mutes already-open blocked tabs without reloading them, handles single-page app URL changes, earns capped site access credit for temporary access behind a deliberation gate, and restores scheduled sessions and local session state after the Manifest V3 worker wakes again.
+### Stay with the task you chose.
 
-## Research foundation
+Block distracting websites, keep your next step in view, and get back to work with one click.
 
-The defaults are evidence-informed, not a treatment claim. A short deliberation gate is based on the [one sec field experiment in PNAS](https://www.pnas.org/doi/abs/10.1073/pnas.2213114120) and its [longitudinal CHI follow-up](https://dl.acm.org/doi/10.1145/3613904.3642370). Scheduled breaks are supported by the [Biwer et al. comparison of systematic and self-regulated breaks](https://bpspsychub.onlinelibrary.wiley.com/doi/abs/10.1111/bjep.12593), while the [Albulescu et al. meta-analysis](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0272460) supports short breaks for vigor and fatigue more clearly than for performance. Visible time follows the adult ADHD time-perception evidence summarized in this [peer-reviewed review](https://pmc.ncbi.nlm.nih.gov/articles/PMC9962130/). Precommitted strictness follows the drift documented by [Not Now, Ask Later](https://dl.acm.org/doi/fullHtml/10.1145/3411764.3445695). No published trial establishes Focus Lock itself, a 25/5 optimum for adults with ADHD, a 52/17 rule, a 90-minute biological work cycle, a 23-minute refocus time, or a benefit from completion sounds. Those claims are deliberately absent from the UI.
+**[Get started](#get-started)** | [Take the tour](#a-little-help-staying-on-track) | [Your privacy](#your-browsing-stays-yours)
 
-## Install from source
+</div>
 
-You need Node.js 22, npm, and a Chromium-based Chrome installation.
+<picture>
+  <source media="(prefers-reduced-motion: reduce)" srcset="https://github.com/wolph/distraction-blocker/raw/refs/heads/master/docs/images/focus-lock/readme/demo-poster.png">
+  <img src="https://github.com/wolph/distraction-blocker/raw/refs/heads/master/docs/images/focus-lock/readme/demo.gif" width="960" alt="A distracting page is blocked. Back to work returns to the chosen proposal tab.">
+</picture>
 
-```bash
+*A short detour, then back to the task. [View the still image](https://github.com/wolph/distraction-blocker/raw/refs/heads/master/docs/images/focus-lock/readme/demo-poster.png).* Screenshots and demo use an isolated browser profile with demonstration data.
+
+## A little help staying on track
+
+### Choose what gets your attention
+
+Name the task you want to finish, choose a duration, and select the sites to put aside. Start with a 15, 25 or 50-minute session, enter your own duration, or keep focusing until you choose to stop.
+
+Block distracting categories and individual sites, or allow only the sites you need. Choose a Flexible session, add Friction before ending early, or commit to a timed Hard lock.
+
+<p align="center">
+  <img src="https://github.com/wolph/distraction-blocker/raw/refs/heads/master/docs/images/focus-lock/readme/focus-session.png" width="480" alt="Focus Lock session controls with the task Finish the proposal, a focus duration and a chosen work tab.">
+</p>
+
+### Catch the detour and return to work
+
+Open a blocked site and Focus Lock puts your task back in front of you. **Back to work** takes you straight to your chosen tab. Choose another work tab from the lockscreen whenever you need to.
+
+Search open tabs by title or website when the right one is buried. Selecting a work tab does not exempt it from your blocking rules.
+
+Pages you already had open are covered and muted in place. When blocking ends, their forms, scroll position and page state remain. A freshly blocked navigation reloads when access returns.
+
+![A blocked page keeps Finish the proposal visible, with a Back to work button pointing to the work tab.](https://github.com/wolph/distraction-blocker/raw/refs/heads/master/docs/images/focus-lock/readme/blocked-page.png)
+
+### Find a rhythm that fits your day
+
+Schedule focus sessions, alternate work with breaks, or earn site access credit for a temporary unlock. You can always step away from the screen without spending credit.
+
+See focused time, session history and patterns in Statistics. Use the record to adjust your routine, whether that means a shorter session or fewer distractions next time.
+
+![Focus statistics with a modest demonstration history, showing focused time and completed sessions.](https://github.com/wolph/distraction-blocker/raw/refs/heads/master/docs/images/focus-lock/readme/progress.png)
+
+## Get started
+
+Install from source with **Node.js 24.15+ (24.x)**, npm and Google Chrome:
+
+```sh
+git clone https://github.com/wolph/distraction-blocker.git
+cd distraction-blocker
 npm ci
 npm run build
 ```
 
-Then load the built extension:
+1. Open `chrome://extensions` and enable **Developer mode**.
+2. Choose **Load unpacked**, then select the generated `dist` directory.
+3. Pin Focus Lock from Chrome's Extensions menu and open it to complete setup.
+4. Enter your task, choose what to block, and start your first session.
 
-1. Open `chrome://extensions`.
-2. Turn on Developer mode.
-3. Click Load unpacked and select this repository's `dist` directory.
-4. Open the Focus Lock details page and turn on Allow in Incognito if you want blocking in incognito windows.
-5. Pin Focus Lock from Chrome's Extensions menu if you want the session state and countdown visible on the toolbar.
+For incognito blocking, enable **Allow in Incognito** on the extension's details page. After rebuilding, click **Reload** there to use the updated files.
 
-The manifest contains a fixed public key, so unpacked builds keep the same extension ID. That stable ID is required for Chrome Sync to associate installs consistently. Sync also requires Chrome profiles signed into the same Google account with extension sync enabled. Allow in Incognito is a per-profile Chrome permission and must be enabled manually.
+## Your browsing stays yours
 
-The corresponding `key.pem` must remain untracked. A maintainer must back it up outside Git in a password manager or synced secret store. The repository can verify the ignore rule and matching public key, but it cannot verify the external backup.
+Focus Lock sends no extension data to a developer-controlled server. Full URLs, focus intentions, detailed events and live sessions stay in your local Chrome profile.
 
-After another build, use the Reload button on `chrome://extensions` to load the new files.
+Chrome Sync is optional. If you enable it during setup, it shares settings, lists, site access credit, streaks and aggregate statistics. Live sessions do not move between devices.
 
-## Usage
+**[Read the privacy disclosures](https://github.com/wolph/distraction-blocker/blob/master/store/privacy-disclosures.md)** | [Report a problem](https://github.com/wolph/distraction-blocker/issues)
 
-Open the popup, choose a duration, enter the task you intend to finish, select categories, and start focusing. The default presets are 15, 25, and 50 minutes. The 50-minute preset is labeled as a preference rather than a scientific optimum.
+## What to know before you start
 
-- Blacklist mode blocks enabled categories and custom host or URL-regex rules. Whitelist mode blocks the web except for the listed rules.
-- Friction sessions can end early only after a worker-enforced wait and an exact typed sentence. Hard sessions cannot end early, and settings or list changes that would weaken the active lock are rejected.
-- Focus time earns site access credit continuously. The default rate is 5 minutes per 30 focused minutes, capped at 30 minutes. A default spend buys either 5 minutes of access to all sites or a 5-minute unlock for the current registrable site. You can step away from the screen at any time without spending credit.
-- Temporary access actions use the configured deliberation gate, with a 10-second default and an immediate Keep focusing choice. Access to all sites can be ended early.
-- Cycling alternates focus with short and long breaks. Schedules can start blacklist or whitelist sessions on selected weekdays and local time windows.
-- Options contains category switches, per-site category exclusions, custom domain and URL-regex rules, whitelist rules, schedule entries, site access credit settings, sounds, badge behaviour, and data export.
+Focus Lock blocks websites in Chrome, not other apps or devices. It cannot block Chrome's internal pages or the Chrome Web Store, and you can disable the extension yourself. A page can load before blocking applies if Chrome has not woken the blocking worker.
 
-Fresh blocked navigations show an opaque locked document. A page that was already open receives an overlay and is muted in place. When blocking ends, the existing page retains its form, scroll, and JavaScript state. A navigation that was stopped reloads so the requested page can render.
+Blocking covers whole tabs. It does not block embedded widgets on otherwise allowed pages.
 
-## Returning to work
+Hard lock prevents ending a timed session through Focus Lock's controls. It cannot stop you disabling the extension. The defaults draw on published research. Its findings and limits are collected below.
 
-The lockscreen shows your next step, the time until the next break or the session end, and one Back to work button. It activates the chosen tab and its window without navigating away from either page. Long tasks wrap, and the overlay scrolls independently of the blocked page.
+## More details
 
-Open Need a break or site access? for credit and temporary access options. Each action shows its own cost and the time needed to afford it. When the credit limit or the remaining focus time makes a spend unavailable, the screen explains why instead of counting down to a button that stays disabled.
-
-Choose a work tab directly on the lockscreen. The chooser uses almost the whole window and shows recently active tabs first. Each row includes its title, domain, cached favicon and a consistent colour for that domain. Search by title or domain to narrow the list, then select a tab to return to it. Only visible rows and a small buffer are rendered, keeping the list small even with thousands of tabs. Arrow Down moves from search into the results. Home and End reach the first and last result. Escape closes the chooser. Change work tab opens the list again.
-
-Back to work shows the destination title and domain on the button. Long titles are shortened visually, with the full destination available to screen readers and on hover. Favicons come from Chrome's local cache. Reading the list and icons does not activate sleeping tabs. A closed or newly blocked work tab cannot be used as a return destination. A work tab never bypasses your blocklist or whitelist.
-
-The work-tab reference stays in worker-only `chrome.storage.session`. It survives a service-worker restart but is cleared when Chrome restarts or the extension reloads. Choose the tab again after a restart. The saved focus session and site access credit use their existing storage and continue independently.
-
-## Screenshots
-
-The screenshots use an isolated Chrome profile with demonstration data.
-
-![Choose a work tab directly on the lockscreen](https://raw.githubusercontent.com/WoLpH/distraction-blocker/master/docs/images/focus-lock/work-tab-picker.png)
-
-| Active popup | Existing-page overlay | Deliberation gate |
-| --- | --- | --- |
-| ![Active focus popup](https://raw.githubusercontent.com/WoLpH/distraction-blocker/master/docs/images/focus-lock/popup-active.png) | ![Blocked existing page overlay](https://raw.githubusercontent.com/WoLpH/distraction-blocker/master/docs/images/focus-lock/overlay.png) | ![Deliberation gate](https://raw.githubusercontent.com/WoLpH/distraction-blocker/master/docs/images/focus-lock/gate.png) |
-| Options | Stats | |
-| ![Options page](https://raw.githubusercontent.com/WoLpH/distraction-blocker/master/docs/images/focus-lock/options.png) | ![Stats page](https://raw.githubusercontent.com/WoLpH/distraction-blocker/master/docs/images/focus-lock/stats.png) | |
-
-## Stats and storage
+<details>
+<summary><strong>Privacy, storage and deleting your data</strong></summary>
 
 The stats page reports focus time, blocked attempts, resisted gates, site access credit spending, recent sessions, hourly and daily activity, streaks, and freeze tokens. The options page can export the detailed local event log as JSON.
 
@@ -78,12 +98,19 @@ Focus Lock sends no extension data to a developer-controlled server. Settings > 
 
 The same page can also delete all Focus Lock data. Delete all Focus Lock data removes every Focus Lock record from this device and any Focus Lock copies left in Chrome Sync, then returns the extension to setup. It is available while no session is running.
 
-## Privacy and support
 
-- Privacy policy: https://wolph.github.io/distraction-blocker/privacy/
-- Support and issue reports: https://github.com/WoLpH/distraction-blocker/issues
+</details>
 
-## Development
+<details>
+<summary><strong>Research behind the defaults</strong></summary>
+
+The defaults are evidence-informed, not a treatment claim. A short deliberation gate is based on the [one sec field experiment in PNAS](https://www.pnas.org/doi/abs/10.1073/pnas.2213114120) and its [longitudinal CHI follow-up](https://dl.acm.org/doi/10.1145/3613904.3642370). Scheduled breaks are supported by the [Biwer et al. comparison of systematic and self-regulated breaks](https://bpspsychub.onlinelibrary.wiley.com/doi/abs/10.1111/bjep.12593), while the [Albulescu et al. meta-analysis](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0272460) supports short breaks for vigour and fatigue more clearly than for performance. Visible time follows the adult ADHD time-perception evidence summarised in this [peer-reviewed review](https://pmc.ncbi.nlm.nih.gov/articles/PMC9962130/). Precommitted strictness follows the drift documented by [Not Now, Ask Later](https://dl.acm.org/doi/fullHtml/10.1145/3411764.3445695). No published trial establishes Focus Lock itself, a 25/5 optimum for adults with ADHD, a 52/17 rule, a 90-minute biological work cycle, a 23-minute refocus time, or a benefit from completion sounds. Those claims are deliberately absent from the UI.
+
+
+</details>
+
+<details>
+<summary><strong>Development and media capture</strong></summary>
 
 | Command | Purpose |
 | --- | --- |
@@ -102,16 +129,9 @@ Before adding tests, read [docs/testing-rules.md](docs/testing-rules.md). It is 
 
 Before preparing a Chrome Web Store submission, read [docs/release-candidate-gate.md](docs/release-candidate-gate.md). It is ten ordered steps with the symptom each failure presents, because most of them fail in more than one way and several look like product defects while being the opposite.
 
-## Known limitations and non-goals
 
-- The user can disable the extension at `chrome://extensions`. No
-  extension can prevent that without enterprise policy. The design
-  accepts it: research says the enemy is uninstall drift, and the
-  mitigation is the tool staying pleasant enough to keep (documented
-  tip for the determined: a local `ExtensionInstallForcelist` policy,
-  out of scope).
-- Chrome only, top-level frames only, no embedded-widget blocking.
-- `chrome://` pages and the Web Store cannot host content scripts.
-- Sync cross-machine is eventually consistent, bank drift accepted.
-- Does not block other apps, other browsers, or the phone. Not a
-  parental control, trivially bypassable by a motivated admin user.
+The manifest contains a fixed public key so unpacked builds keep the same extension ID. Chrome Sync requires profiles signed into the same Google account with extension sync enabled. Keep the corresponding private signing key untracked and backed up outside Git.
+
+To regenerate the README screenshots and demo, see [the media capture instructions](docs/images/focus-lock/readme/README.md).
+
+</details>
