@@ -76,6 +76,11 @@ import { emptyRuntimeV2 } from './runtime-store-v2';
 import type { RuntimeStateV2 } from './runtime-v2-types';
 import { parseRuntimeStateV2 } from './runtime-v2-validation';
 import {
+  hasScheduleIntentions,
+  settingsForSync,
+  settingsWithLocalIntentions,
+} from './settings-sync';
+import {
   type AggregateStorage,
   type LocalAggregatePruneCheckpoint,
   pruneAndRollup,
@@ -109,6 +114,12 @@ import { SyncQuotaError } from './sync-quota-shared';
 import { SyncEchoes, type SyncJournal, SyncWriter } from './sync-writer';
 
 const SYNC_FLUSH_MS: number = 10_000;
+const LOCAL_SCHEDULE_CLEANUP_READ: string = 'scheduleIntentionCleanupRead';
+
+/** A failed remote read must not turn an idle profile into a full local-policy republication. */
+interface ScheduleCleanupReadCheckpoint {
+  reconstructPublication: boolean;
+}
 const POLICY_LOCAL_KEYS: readonly string[] = [
   LOCAL_SETTINGS,
   LOCAL_LISTS,
@@ -256,6 +267,7 @@ interface FirstSyncPublicationCheckpoint {
 }
 
 const FOCUS_LOCK_LOCAL_EXACT_KEYS: readonly string[] = [
+  LOCAL_SCHEDULE_CLEANUP_READ,
   LOCAL_RUNTIME,
   LOCAL_RUNTIME_SCHEMA,
   LOCAL_RUNTIME_MIGRATION,
@@ -563,6 +575,16 @@ function parseJournal(value: unknown, removalOnly: boolean): SyncJournal {
   return { sets: structuredClone(value.sets), removes: [...value.removes] };
 }
 
+function journalForSync(journal: SyncJournal): SyncJournal {
+  const settings: unknown = journal.sets[SYNC_SETTINGS];
+  if (settings === undefined) return journal;
+  const parsed: StoredSettingsParseResult = parseStoredSettings(settings);
+  const sets: Record<string, unknown> = { ...journal.sets };
+  if (parsed.valid) sets[SYNC_SETTINGS] = settingsForSync(parsed.settings);
+  else delete sets[SYNC_SETTINGS];
+  return { ...journal, sets };
+}
+
 function journalEmpty(journal: SyncJournal): boolean {
   return Object.keys(journal.sets).length === 0 && journal.removes.length === 0;
 }
@@ -834,9 +856,11 @@ export function createPolicyStorage(
     journal: SyncJournal,
     additionalItems: Record<string, unknown> = {},
   ): Promise<void> {
+    journal = journalForSync(journal);
     const setup: SetupState = await loadSetupInternal();
     const blocked: BlockedAggregatePublications = await loadBlockedAggregatePublications();
     const hasBlocked: boolean = !blockedAggregatePublicationsEmpty(blocked);
+    const cleanupReadPending: boolean = (await loadScheduleCleanupRead()) !== null;
     const empty: boolean = journalEmpty(journal);
     await verifiedWrite(
       {
@@ -845,12 +869,13 @@ export function createPolicyStorage(
         ...(empty && mode === 'sync' ? { [LOCAL_AGGREGATE_TOMBSTONES]: [] } : {}),
         [LOCAL_SETUP]: {
           ...setup,
-          syncWriteStatus: hasBlocked ? 'error' : empty ? 'idle' : 'pending',
-          storageError: hasBlocked
-            ? 'sync-publish-failed'
-            : empty && setup.storageError === 'sync-publish-failed'
-              ? null
-              : setup.storageError,
+          syncWriteStatus: hasBlocked || cleanupReadPending ? 'error' : empty ? 'idle' : 'pending',
+          storageError:
+            hasBlocked || cleanupReadPending
+              ? 'sync-publish-failed'
+              : empty && setup.storageError === 'sync-publish-failed'
+                ? null
+                : setup.storageError,
         },
       },
       'sync publication journal',
@@ -932,7 +957,8 @@ export function createPolicyStorage(
     snapshot: PolicySnapshot,
     aggregateItems: Record<string, unknown> = {},
   ): Promise<SyncJournal> {
-    assertSyncItemWithinQuota(SYNC_SETTINGS, snapshot.settings);
+    const settings: Settings = settingsForSync(snapshot.settings);
+    assertSyncItemWithinQuota(SYNC_SETTINGS, settings);
     assertSyncItemWithinQuota(SYNC_BANK, snapshot.bank);
     if (snapshot.streak !== null) assertSyncItemWithinQuota(SYNC_STREAK, snapshot.streak);
     const lists: ListsSyncEncoding = await encodeListsForSync(snapshot.lists);
@@ -957,7 +983,7 @@ export function createPolicyStorage(
     for (const key of aggregateRemoves) delete normalizedAggregates[key];
     return {
       sets: {
-        [SYNC_SETTINGS]: snapshot.settings,
+        [SYNC_SETTINGS]: settings,
         ...lists.sets,
         [SYNC_BANK]: snapshot.bank,
         ...(snapshot.streak === null ? {} : { [SYNC_STREAK]: snapshot.streak }),
@@ -977,14 +1003,19 @@ export function createPolicyStorage(
   }
 
   async function createPublisher(initial: SyncJournal): Promise<SyncWriter> {
+    const projected: SyncJournal = journalForSync(initial);
+    if (!valuesEqual(projected, initial)) await persistPublicationJournal(projected);
+    initial = projected;
     const writer: SyncWriter = new SyncWriter(
       SYNC_FLUSH_MS,
       (items: Record<string, unknown>): Promise<void> =>
         setSyncItemsWithinQuota(
           Object.fromEntries(
             Object.entries(items).map(([key, value]: [string, unknown]): [string, unknown] => {
-              echoes.remember(key, value);
-              return [key, value];
+              const outgoing: unknown =
+                key === SYNC_SETTINGS ? settingsForSync(readStoredSettingsPolicy(value)) : value;
+              echoes.remember(key, outgoing);
+              return [key, outgoing];
             }),
           ),
           sync,
@@ -1026,7 +1057,7 @@ export function createPolicyStorage(
     if (setup.syncWriteStatus === 'idle') return;
     try {
       const persisted: SyncJournal = sanitizeSyncJournal(
-        await loadedJournal(LOCAL_SYNC_JOURNAL, false),
+        journalForSync(await loadedJournal(LOCAL_SYNC_JOURNAL, false)),
       ).journal;
       if (firstSyncPublication !== null && setup.storageMode !== 'sync') {
         await persistPublicationJournal(persisted);
@@ -1280,7 +1311,7 @@ export function createPolicyStorage(
         };
         await verifiedWrite(
           {
-            [LOCAL_SYNC_JOURNAL]: record.journal,
+            [LOCAL_SYNC_JOURNAL]: journalForSync(record.journal),
             [LOCAL_SETUP]: setup,
           },
           'repaired committed legacy migration',
@@ -1295,13 +1326,79 @@ export function createPolicyStorage(
     await repairStoredSettingsShape();
     if (setup.storageMode === 'sync') {
       firstCheckpointComplete = true;
-      if (setup.syncWriteStatus === 'idle') await ensurePublisher();
-      else await reconstructPendingOutbox(setup);
+      const cleanupRead: ScheduleCleanupReadCheckpoint | null = await loadScheduleCleanupRead();
+      if (setup.syncWriteStatus === 'idle' || cleanupRead?.reconstructPublication === false) {
+        await ensurePublisher();
+      } else await reconstructPendingOutbox(setup);
+      await cleanRemoteScheduleIntentions(false);
       initialized = true;
       return;
     }
     if (setup.syncWriteStatus !== 'idle') await reconstructPendingOutbox(setup);
     initialized = true;
+  }
+
+  async function loadScheduleCleanupRead(): Promise<ScheduleCleanupReadCheckpoint | null> {
+    const stored: Record<string, unknown> = await local.get(LOCAL_SCHEDULE_CLEANUP_READ);
+    const value: unknown = stored[LOCAL_SCHEDULE_CLEANUP_READ];
+    if (value === undefined) return null;
+    if (
+      !isRecord(value) ||
+      !hasExactKeys(value, ['reconstructPublication']) ||
+      typeof value.reconstructPublication !== 'boolean'
+    ) {
+      throw new Error('invalid schedule intention cleanup checkpoint');
+    }
+    return { reconstructPublication: value.reconstructPublication };
+  }
+
+  /** Include this promotion in the same verified write as the authority it must recover. */
+  async function publicationRecoveryItems(): Promise<Record<string, unknown>> {
+    if (mode !== 'sync') return {};
+    const checkpoint: ScheduleCleanupReadCheckpoint | null = await loadScheduleCleanupRead();
+    return checkpoint !== null && !checkpoint.reconstructPublication
+      ? { [LOCAL_SCHEDULE_CLEANUP_READ]: { reconstructPublication: true } }
+      : {};
+  }
+
+  async function cleanRemoteScheduleIntentions(throwReadError: boolean): Promise<void> {
+    const checkpoint: ScheduleCleanupReadCheckpoint | null = await loadScheduleCleanupRead();
+    let remote: Record<string, unknown>;
+    try {
+      remote = await sync.get(SYNC_SETTINGS);
+    } catch (error: unknown) {
+      const setup: SetupState = await loadSetupInternal();
+      await verifiedWrite(
+        {
+          [LOCAL_SCHEDULE_CLEANUP_READ]: checkpoint ?? {
+            reconstructPublication: setup.syncWriteStatus !== 'idle',
+          },
+          [LOCAL_SETUP]: {
+            ...setup,
+            syncWriteStatus: 'error',
+            storageError: 'sync-publish-failed',
+          },
+        },
+        'pending schedule intention cleanup read',
+      );
+      if (throwReadError) throw error;
+      return;
+    }
+    const writer: SyncWriter = await ensurePublisher();
+    if (hasScheduleIntentions(remote[SYNC_SETTINGS]) && !writer.hasPending(SYNC_SETTINGS)) {
+      const parsed: StoredSettingsParseResult = parseStoredSettings(remote[SYNC_SETTINGS]);
+      const settings: Settings = parsed.valid
+        ? parsed.settings
+        : (await loadSnapshotInternal()).settings;
+      await queuePolicyInternal('settings', settings);
+    }
+    if (checkpoint !== null) {
+      await verifiedRemove(
+        [LOCAL_SCHEDULE_CLEANUP_READ],
+        'completed schedule intention cleanup read',
+      );
+      await writer.whenJournalDurable();
+    }
   }
 
   /**
@@ -1359,7 +1456,11 @@ export function createPolicyStorage(
     const writer: SyncWriter = await ensurePublisher();
     const remoteKey: string = syncKey(key);
     if (value === null) writer.remove(remoteKey);
-    else writer.queue(remoteKey, value);
+    else
+      writer.queue(
+        remoteKey,
+        key === 'settings' ? settingsForSync(readStoredSettingsPolicy(value)) : value,
+      );
     await writer.whenJournalDurable();
   }
 
@@ -1377,7 +1478,13 @@ export function createPolicyStorage(
     if (unique.size === 0) return;
     const snapshot: PolicySnapshot = await loadSnapshotInternal();
     try {
-      await saveSetupInternal({ ...setup, syncWriteStatus: 'pending' });
+      await verifiedWrite(
+        {
+          ...(await publicationRecoveryItems()),
+          [LOCAL_SETUP]: { ...setup, syncWriteStatus: 'pending' },
+        },
+        'corrective publication intent',
+      );
       for (const key of unique) await queuePolicyInternal(key, snapshot[key]);
     } catch (error: unknown) {
       const current: SetupState = await loadSetupInternal();
@@ -1402,6 +1509,7 @@ export function createPolicyStorage(
     await verifiedWrite(
       {
         [localKey(key)]: value,
+        ...(await publicationRecoveryItems()),
         [LOCAL_SETUP]: { ...setup, syncWriteStatus: 'pending' },
       },
       `${key} policy and pending sync status`,
@@ -1581,8 +1689,10 @@ export function createPolicyStorage(
     if (setup.dataClear.status !== 'idle') {
       throw new Error('finish or retry the pending data deletion before retrying Sync');
     }
-    if (setup.syncWriteStatus === 'idle') return;
-    await reconstructPendingOutbox(setup, true);
+    const cleanupRead: ScheduleCleanupReadCheckpoint | null = await loadScheduleCleanupRead();
+    if (cleanupRead !== null) await cleanRemoteScheduleIntentions(true);
+    if (setup.syncWriteStatus === 'idle' && cleanupRead === null) return;
+    if (cleanupRead?.reconstructPublication !== false) await reconstructPendingOutbox(setup, true);
     const writer: SyncWriter = await ensurePublisher();
     writer.resume();
     await writer.flushNow();
@@ -1639,6 +1749,10 @@ export function createPolicyStorage(
       publisher?.discardPendingAfterDurableJournalCommit();
       mode = 'local';
       firstCheckpointComplete = false;
+      await verifiedRemove(
+        [LOCAL_SCHEDULE_CLEANUP_READ],
+        'abandoned schedule intention cleanup read',
+      );
       if (firstSyncPublication !== null) await removeFirstSyncPublication();
     } catch (error: unknown) {
       if (mode === 'sync' && publisher !== null) publisher.resume();
@@ -1732,14 +1846,22 @@ export function createPolicyStorage(
     for (const [key, value] of Object.entries(changes)) {
       if (!isPolicyKey(key)) throw new Error(`invalid inbound policy key ${JSON.stringify(key)}`);
       assertPolicyValue(key, value);
-      items[localKey(key)] = value;
+      items[localKey(key)] =
+        key === 'settings'
+          ? settingsWithLocalIntentions(
+              readStoredSettingsPolicy(value),
+              (await loadSnapshotInternal()).settings,
+            )
+          : value;
     }
     if (Object.keys(items).length === 0) return;
     const writer: SyncWriter = await ensurePublisher();
     const reconcileKeys: Set<string> = new Set(pendingRemoteKeys);
     const reconcileSettings: boolean =
       changes.settings !== undefined &&
-      (reconcileKeys.has(SYNC_SETTINGS) || writer.hasPending(SYNC_SETTINGS));
+      (reconcileKeys.has(SYNC_SETTINGS) ||
+        writer.hasPending(SYNC_SETTINGS) ||
+        hasScheduleIntentions(changes.settings));
     const reconcileLists: boolean =
       changes.lists !== undefined &&
       LIST_SYNC_KEYS.some(
@@ -1779,7 +1901,11 @@ export function createPolicyStorage(
             if (value === null) removes.add(key);
             else sets[key] = value;
           };
-          if (reconcileSettings) replace(SYNC_SETTINGS, changes.settings);
+          if (reconcileSettings)
+            replace(
+              SYNC_SETTINGS,
+              settingsForSync(readStoredSettingsPolicy(items[LOCAL_SETTINGS])),
+            );
           if (reconcileBank) replace(SYNC_BANK, changes.bank);
           if (reconcileStreak) replace(SYNC_STREAK, changes.streak);
           if (reconcileLists && listEncoding !== null) {
@@ -1920,6 +2046,7 @@ export function createPolicyStorage(
     storedSync: Record<string, unknown>,
   ): Promise<void> {
     await ensureInitialized();
+    journal = journalForSync(journal);
     const pointerStored: Record<string, unknown> = await local.get(LOCAL_POLICY_COMMIT);
     const existingPointer: PolicyCommit | null = parsePolicyCommit(
       pointerStored[LOCAL_POLICY_COMMIT],
@@ -1978,7 +2105,7 @@ export function createPolicyStorage(
       }
       const setup: SetupState = await loadSetupInternal();
       if (!setup.legacyImported || setup.storageError !== null) {
-        const committedJournal: SyncJournal = record.journal;
+        const committedJournal: SyncJournal = journalForSync(record.journal);
         const migratedSetup: SetupState = {
           ...setup,
           storageMode: null,
@@ -2783,6 +2910,7 @@ export function createPolicyStorage(
       await verifiedWrite(
         {
           [key]: normalized,
+          ...(await publicationRecoveryItems()),
           [LOCAL_AGGREGATE_TOMBSTONES]: tombstones,
           [LOCAL_SETUP]: { ...setup, syncWriteStatus: 'pending' },
         },
@@ -2863,6 +2991,7 @@ export function createPolicyStorage(
       await verifiedWrite(
         {
           [LOCAL_AGGREGATE_TOMBSTONES]: tombstones,
+          ...(await publicationRecoveryItems()),
           [LOCAL_BLOCKED_AGGREGATE_PUBLICATIONS]: blocked,
           [LOCAL_SETUP]: {
             ...setup,
@@ -2950,6 +3079,7 @@ export function createPolicyStorage(
       await verifiedWrite(
         {
           [LOCAL_AGGREGATE_PRUNE]: checkpoint,
+          ...(await publicationRecoveryItems()),
           ...(writer === null
             ? {}
             : {

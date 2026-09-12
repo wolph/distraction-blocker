@@ -7,6 +7,7 @@ import {
   isListSyncKey,
 } from './list-sync-codec';
 import type { PolicySnapshot, PolicyValueByKey } from './policy-storage';
+import { hasScheduleIntentions, settingsWithLocalIntentions } from './settings-sync';
 import {
   parseBank,
   parseLiveLists,
@@ -99,7 +100,10 @@ async function transactionalPolicyChanges(
     if (!parsedSettings.valid) {
       malformed.add('settings');
     } else if (parsedSettings.changed || parsedSettings.legacy) {
-      candidate.settings = parsedSettings.settings;
+      candidate.settings = settingsWithLocalIntentions(
+        parsedSettings.settings,
+        engine.getSettings(),
+      );
     }
   }
 
@@ -205,7 +209,13 @@ async function handleTransactionalSyncChanges(
   if (candidate.lists !== undefined) candidateKeys.push('lists');
   if (candidate.bank !== undefined) candidateKeys.push('bank');
   if (candidate.streak !== undefined) candidateKeys.push('streak');
-  if (candidateKeys.length === 0) return;
+  const needsIntentionCleanup: boolean =
+    !parsed.malformed.has('settings') && hasScheduleIntentions(changes[SYNC_SETTINGS]?.newValue);
+  if (candidateKeys.length === 0) {
+    if (needsIntentionCleanup)
+      await queueVerifiedPolicyCorrections(new Set(['settings']), transaction);
+    return;
+  }
   if (engine.transactSyncedPolicy !== undefined) {
     const result: Ack = await engine.transactSyncedPolicy(
       candidate,
@@ -221,6 +231,9 @@ async function handleTransactionalSyncChanges(
     );
     if (!result.ok) {
       await queueVerifiedPolicyCorrections(new Set(candidateKeys), transaction);
+    } else if (needsIntentionCleanup) {
+      // The accepted settings are now local authority, including edits that waited for admission.
+      await queueVerifiedPolicyCorrections(new Set(['settings']), transaction);
     }
     return;
   }
@@ -282,7 +295,8 @@ async function applySettingsChange(
   await correctRejectedChange(
     SYNC_SETTINGS,
     settings,
-    (incoming: Settings): Promise<Ack> => engine.applySyncedSettings(incoming),
+    (incoming: Settings): Promise<Ack> =>
+      engine.applySyncedSettings(settingsWithLocalIntentions(incoming, engine.getSettings())),
     (): Settings => engine.getSettings(),
     queueSync,
   );

@@ -99,6 +99,7 @@ import {
   type SessionControllerEffectsV2,
   SessionControllerV2,
 } from './session-controller-v2';
+import { settingsWithLocalIntentions } from './settings-sync';
 import {
   type DeferredBlockClaim,
   type RuntimeTabState,
@@ -1673,6 +1674,12 @@ export class Engine {
       const admittedAt: number = this.ports.now();
       try {
         if (this.dirty) await this.commit(admittedAt);
+        if (changes.settings !== undefined) {
+          changes = {
+            ...changes,
+            settings: settingsWithLocalIntentions(changes.settings, this.settings),
+          };
+        }
         const preview: Ack & { accepted?: Partial<PolicyValueByKey> } =
           await this.previewSyncedPolicyNow(changes, reconcilePendingLists);
         if (!preview.ok) return preview;

@@ -31,6 +31,99 @@ function makeEngine(overrides: Partial<SyncChangeEngine> = {}): SyncChangeEngine
 }
 
 describe('handleSyncChanges', () => {
+  it.each(['', 'remote private task'])(
+    'merges incoming schedule intentions before the engine transaction (%s)',
+    async (remoteIntention: string): Promise<void> => {
+      const entry: Settings['schedule'][number] = {
+        id: 'morning',
+        days: [1],
+        start: '09:00',
+        end: '10:00',
+        duration: { kind: 'window' },
+        mode: 'blacklist',
+        strictness: 'friction',
+        cycling: null,
+        intention: 'local private task',
+        enabled: true,
+      };
+      const current: Settings = { ...DEFAULT_SETTINGS, schedule: [entry] };
+      const incoming: Settings = {
+        ...DEFAULT_SETTINGS,
+        schedule: [
+          { ...entry, id: 'new', days: [2], intention: remoteIntention },
+          { ...entry, start: '09:30', intention: remoteIntention },
+        ],
+      };
+      const transactSyncedPolicy = vi.fn().mockResolvedValue({ ok: true });
+      const transaction: SyncPolicyTransaction = {
+        inboundSyncAllowed: vi.fn().mockResolvedValue(true),
+        loadSnapshot: vi.fn(),
+        mirrorAcceptedRemotePolicy: vi.fn(),
+        queueVerifiedRemoteCorrections: vi.fn(),
+      };
+      await handleSyncChanges(
+        makeEngine({ getSettings: (): Settings => current, transactSyncedPolicy }),
+        { [SYNC_SETTINGS]: { newValue: incoming } },
+        new SyncEchoes(),
+        vi.fn(),
+        false,
+        undefined,
+        transaction,
+      );
+      expect(transactSyncedPolicy).toHaveBeenCalledWith(
+        {
+          settings: {
+            ...incoming,
+            schedule: [
+              { ...incoming.schedule[0], intention: '' },
+              { ...incoming.schedule[1], intention: 'local private task' },
+            ],
+          },
+        },
+        false,
+        expect.any(Function),
+      );
+      if (remoteIntention !== '')
+        expect(transaction.queueVerifiedRemoteCorrections).toHaveBeenCalledWith(['settings']);
+    },
+  );
+
+  it('scrubs a remote intention even when the incoming settings equal the local settings', async (): Promise<void> => {
+    const current: Settings = {
+      ...DEFAULT_SETTINGS,
+      schedule: [
+        {
+          id: 'morning',
+          days: [1],
+          start: '09:00',
+          end: '10:00',
+          duration: { kind: 'window' },
+          mode: 'blacklist',
+          strictness: 'friction',
+          cycling: null,
+          intention: 'same private task',
+          enabled: true,
+        },
+      ],
+    };
+    const transaction: SyncPolicyTransaction = {
+      inboundSyncAllowed: vi.fn().mockResolvedValue(true),
+      loadSnapshot: vi.fn(),
+      mirrorAcceptedRemotePolicy: vi.fn(),
+      queueVerifiedRemoteCorrections: vi.fn(),
+    };
+    await handleSyncChanges(
+      makeEngine({ getSettings: (): Settings => current, transactSyncedPolicy: vi.fn() }),
+      { [SYNC_SETTINGS]: { newValue: current } },
+      new SyncEchoes(),
+      vi.fn(),
+      false,
+      undefined,
+      transaction,
+    );
+    expect(transaction.queueVerifiedRemoteCorrections).toHaveBeenCalledWith(['settings']);
+  });
+
   it('accepts mixed-version authoritative settings and mirrors only the canonical shape', async (): Promise<void> => {
     const { allowForceEnd: _nested, ...v1Gate } = DEFAULT_SETTINGS.gate;
     const legacy: Record<string, unknown> = {

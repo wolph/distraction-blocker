@@ -731,6 +731,55 @@ describe('Engine', () => {
     expect(h.engine.getSettings()).toEqual(remote);
   });
 
+  it('preserves the latest local schedule intention when an incoming transaction waits behind a local edit', async (): Promise<void> => {
+    let releaseSave: () => void = (): void => undefined;
+    const saveBlocked: Promise<void> = new Promise((resolve: () => void): void => {
+      releaseSave = resolve;
+    });
+    let signalSave: () => void = (): void => undefined;
+    const saveStarted: Promise<void> = new Promise((resolve: () => void): void => {
+      signalSave = resolve;
+    });
+    const entry: Settings['schedule'][number] = {
+      id: 'morning',
+      days: [1],
+      start: '09:00',
+      end: '10:00',
+      duration: { kind: 'window' },
+      mode: 'blacklist',
+      strictness: 'friction',
+      cycling: null,
+      intention: 'earlier local task',
+      enabled: false,
+    };
+    const h: Harness = makeEngine({
+      settings: { ...DEFAULT_SETTINGS, schedule: [entry] },
+      savePolicy: async (): Promise<void> => {
+        signalSave();
+        await saveBlocked;
+      },
+    });
+    const incoming: Settings = { ...h.engine.getSettings(), theme: 'dark' };
+    const local: Settings = {
+      ...h.engine.getSettings(),
+      schedule: [{ ...entry, intention: 'latest local task' }],
+    };
+    const updating: Promise<Ack> = h.engine.updateSettings(local);
+    await saveStarted;
+    const mirror = vi.fn().mockResolvedValue(undefined);
+    const inbound: Promise<Ack> = h.engine.transactSyncedPolicy(
+      { settings: incoming },
+      false,
+      mirror,
+    );
+    releaseSave();
+    await expect(updating).resolves.toEqual({ ok: true });
+    await expect(inbound).resolves.toEqual({ ok: true });
+    const expected: Settings = { ...incoming, schedule: local.schedule };
+    expect(mirror).toHaveBeenCalledWith({ settings: expected });
+    expect(h.engine.getSettings()).toEqual(expected);
+  });
+
   it('does not answer a persisted snapshot while an admitted policy mutation is active', async (): Promise<void> => {
     let releasePolicySave: () => void = (): void => undefined;
     const policySaveBlocked: Promise<void> = new Promise((resolve: () => void): void => {

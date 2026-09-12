@@ -26,9 +26,11 @@ import {
   type PolicySnapshot,
   type PolicyStorage,
   type PolicyStorageDataClearPorts,
+  type PolicyValueByKey,
 } from '../../../src/background/policy-storage';
 import { emptyRuntimeV2 as emptyStoreRuntimeV2 } from '../../../src/background/runtime-store-v2';
 import type { RuntimeStateV2 } from '../../../src/background/runtime-v2-types';
+import { handleSyncChanges, type SyncChangeEngine } from '../../../src/background/storage-sync';
 import { emptyRuntime, type LegacyRuntimeStateV1 } from '../../../src/background/stores';
 import type { SyncJournal } from '../../../src/background/sync-writer';
 import { capAttempts, emptyDaily, rollupMonth } from '../../../src/core/stats';
@@ -411,6 +413,422 @@ describe('PolicyStorage', (): void => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  function scheduledSettings(intention: string = 'private work'): Settings {
+    return {
+      ...DEFAULT_SETTINGS,
+      schedule: [
+        {
+          id: 'morning',
+          days: [1],
+          start: '09:00',
+          end: '10:00',
+          duration: { kind: 'window' },
+          mode: 'blacklist',
+          strictness: 'friction',
+          cycling: null,
+          intention,
+          enabled: true,
+        },
+      ],
+    };
+  }
+
+  function expectPrivateSync(sync: FakeStorage): void {
+    const payloads: Record<string, unknown>[] = setPayloads(sync.area);
+    expect(payloads.length).toBeGreaterThan(0);
+    for (const payload of payloads) {
+      const settings: Settings | undefined = payload[SYNC_SETTINGS] as Settings | undefined;
+      for (const entry of settings?.schedule ?? []) expect(entry.intention).toBe('');
+    }
+  }
+
+  it('keeps scheduled intention text local during first publication and subsequent edits', async (): Promise<void> => {
+    const settings: Settings = scheduledSettings('private work'.repeat(2000));
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy({ ...DEFAULT_SETUP, storageMode: 'local' }),
+      [LOCAL_SETTINGS]: settings,
+    });
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.enableSync();
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(settings);
+    expectPrivateSync(sync);
+    const updated: Settings = scheduledSettings('new private work');
+    await storage.setPolicy('settings', updated);
+    await storage.retrySync();
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(updated);
+    expect(sync.state.values[SYNC_SETTINGS]).toEqual(scheduledSettings(''));
+    expectPrivateSync(sync);
+  });
+
+  it('preserves local intentions by stable ID when remote schedules reorder, add and remove entries', async (): Promise<void> => {
+    const settings: Settings = scheduledSettings();
+    const localEntry: Settings['schedule'][number] | undefined = settings.schedule[0];
+    if (localEntry === undefined) throw new Error('scheduled fixture is empty');
+    settings.schedule.push({
+      ...localEntry,
+      id: 'deleted',
+      days: [3],
+      intention: 'removed task',
+    });
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy({ ...DEFAULT_SETUP, storageMode: 'sync' }),
+      [LOCAL_SETTINGS]: settings,
+    });
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    const incoming: Settings = scheduledSettings('other device private work');
+    const remoteEntry: Settings['schedule'][number] | undefined = incoming.schedule[0];
+    if (remoteEntry === undefined) throw new Error('scheduled fixture is empty');
+    remoteEntry.start = '09:30';
+    incoming.schedule.unshift({
+      ...remoteEntry,
+      id: 'new',
+      days: [2],
+      intention: 'other new task',
+    });
+    await storage.mirrorAcceptedRemotePolicy({ settings: incoming });
+    const stored: Settings = (await storage.loadSnapshot()).settings;
+    expect(
+      stored.schedule.map((entry: Settings['schedule'][number]): [string, string, string] => [
+        entry.id,
+        entry.intention,
+        entry.start,
+      ]),
+    ).toEqual([
+      ['new', '', '09:30'],
+      ['morning', 'private work', '09:30'],
+    ]);
+    await storage.retrySync();
+    expectPrivateSync(sync);
+  });
+
+  it.each(['idle', 'pending', 'error'] as const)(
+    'cleans legacy remote scheduled intentions at startup with %s outbox',
+    async (status: 'idle' | 'pending' | 'error'): Promise<void> => {
+      const localSettings: Settings = scheduledSettings();
+      const remoteSettings: Settings = {
+        ...scheduledSettings('legacy remote private work'),
+        theme: 'dark',
+      };
+      const local: FakeStorage = fakeStorage({
+        ...localPolicy({ ...DEFAULT_SETUP, storageMode: 'sync', syncWriteStatus: status }),
+        [LOCAL_SETTINGS]: localSettings,
+        [LOCAL_SYNC_JOURNAL]:
+          status === 'idle'
+            ? { sets: {}, removes: [] }
+            : {
+                sets: { [SYNC_SETTINGS]: localSettings },
+                removes: [],
+              },
+      });
+      const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: remoteSettings });
+      const storage: PolicyStorage = policyStorage(local, sync);
+      await storage.initialize();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(local.state.values[LOCAL_SETTINGS]).toEqual(localSettings);
+      expect(sync.state.values[SYNC_SETTINGS]).toEqual({
+        ...(status === 'idle' ? remoteSettings : localSettings),
+        schedule: scheduledSettings('').schedule,
+      });
+      expectPrivateSync(sync);
+    },
+  );
+
+  it('retries privacy cleanup after a failed remote write and worker restart', async (): Promise<void> => {
+    const settings: Settings = scheduledSettings();
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy({ ...DEFAULT_SETUP, storageMode: 'sync' }),
+      [LOCAL_SETTINGS]: settings,
+    });
+    const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: settings });
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    sync.state.failSet = new Error('offline');
+    await expect(storage.retrySync()).rejects.toThrow('offline');
+    expect((await storage.loadSetup()).syncWriteStatus).toBe('error');
+    vi.clearAllTimers();
+    sync.state.failSet = null;
+    const restarted: PolicyStorage = policyStorage(local, sync);
+    await restarted.initialize();
+    await restarted.retrySync();
+    expect(sync.state.values[SYNC_SETTINGS]).toEqual(scheduledSettings(''));
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(settings);
+    expectPrivateSync(sync);
+  });
+
+  it('never republishes intention text from an idle legacy journal', async (): Promise<void> => {
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy({ ...DEFAULT_SETUP, storageMode: 'sync' }),
+      [LOCAL_SETTINGS]: scheduledSettings(),
+      [LOCAL_SYNC_JOURNAL]: {
+        sets: { [SYNC_SETTINGS]: scheduledSettings('old queued secret') },
+        removes: [],
+      },
+    });
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    expect((local.state.values[LOCAL_SYNC_JOURNAL] as SyncJournal).sets[SYNC_SETTINGS]).toEqual(
+      scheduledSettings(''),
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    expectPrivateSync(sync);
+    expect(local.state.values[LOCAL_SETTINGS]).toEqual(scheduledSettings());
+  });
+
+  it('replaces malformed legacy remote settings containing intentions with a safe local projection', async (): Promise<void> => {
+    const local: FakeStorage = fakeStorage({
+      ...localPolicy({ ...DEFAULT_SETUP, storageMode: 'sync' }),
+      [LOCAL_SETTINGS]: scheduledSettings(),
+    });
+    const sync: FakeStorage = fakeStorage({
+      [SYNC_SETTINGS]: { ...scheduledSettings('remote secret'), unknown: true },
+    });
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    await storage.retrySync();
+    expect(sync.state.values[SYNC_SETTINGS]).toEqual(scheduledSettings(''));
+    expectPrivateSync(sync);
+  });
+
+  it.each(['publishing', 'remote-complete'] as const)(
+    'cleans a legacy first-publication checkpoint in phase %s before enabling Sync',
+    async (phase: 'publishing' | 'remote-complete'): Promise<void> => {
+      const settings: Settings = scheduledSettings();
+      const publication: SyncJournal = {
+        sets: {
+          [SYNC_SETTINGS]: settings,
+          [SYNC_LISTS]: DEFAULT_LISTS,
+          [SYNC_BANK]: SNAPSHOT.bank,
+          [SYNC_STREAK]: STREAK,
+        },
+        removes: [],
+      };
+      const local: FakeStorage = fakeStorage({
+        ...localPolicy({ ...DEFAULT_SETUP, storageMode: 'local', syncWriteStatus: 'error' }),
+        [LOCAL_SETTINGS]: settings,
+        [LOCAL_SYNC_JOURNAL]: publication,
+        [LOCAL_FIRST_SYNC_PUBLICATION]: { version: 1, phase, publication },
+      });
+      const sync: FakeStorage = fakeStorage(publication.sets);
+      const storage: PolicyStorage = policyStorage(local, sync);
+      await storage.initialize();
+      expect(sync.area.set).not.toHaveBeenCalled();
+      for (const items of writesTouching(local, LOCAL_SYNC_JOURNAL)) {
+        const journal: SyncJournal = items[LOCAL_SYNC_JOURNAL] as SyncJournal;
+        const outgoing: Settings | undefined = journal.sets[SYNC_SETTINGS] as Settings | undefined;
+        expect(outgoing?.schedule[0]?.intention ?? '').toBe('');
+      }
+      await storage.enableSync();
+      expectPrivateSync(sync);
+      expect(local.state.values[LOCAL_SETTINGS]).toEqual(settings);
+      expect(sync.state.values[SYNC_SETTINGS]).toEqual(scheduledSettings(''));
+      expect(local.state.values[LOCAL_FIRST_SYNC_PUBLICATION]).toBeUndefined();
+    },
+  );
+
+  it.each(['retry', 'restart'] as const)(
+    'boots from local policy when the privacy cleanup read fails and recovers through %s without overwriting remote preferences',
+    async (recovery: 'retry' | 'restart'): Promise<void> => {
+      const localSettings: Settings = scheduledSettings('local task');
+      const local: FakeStorage = fakeStorage({
+        ...localPolicy({ ...DEFAULT_SETUP, storageMode: 'sync' }),
+        [LOCAL_SETTINGS]: localSettings,
+      });
+      const remote: Settings = { ...scheduledSettings('remote task'), theme: 'dark' };
+      const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: remote });
+      sync.state.failGet = new Error('remote read unavailable');
+      const storage: PolicyStorage = policyStorage(local, sync);
+      await expect(storage.initialize()).resolves.toBeUndefined();
+      expect((await storage.loadSnapshot()).settings).toEqual(localSettings);
+      expect(await storage.loadSetup()).toMatchObject({
+        syncWriteStatus: 'error',
+        storageError: 'sync-publish-failed',
+      });
+      await expect(storage.retrySync()).rejects.toThrow('remote read unavailable');
+      vi.clearAllTimers();
+      const restarted: PolicyStorage = policyStorage(local, sync);
+      await expect(restarted.initialize()).resolves.toBeUndefined();
+      expect(await restarted.loadSetup()).toMatchObject({ syncWriteStatus: 'error' });
+      expect(local.state.values.scheduleIntentionCleanupRead).toEqual({
+        reconstructPublication: false,
+      });
+      sync.state.failGet = null;
+      const recovered: PolicyStorage =
+        recovery === 'retry' ? restarted : policyStorage(local, sync);
+      if (recovery === 'retry') await recovered.retrySync();
+      else {
+        await recovered.initialize();
+        await vi.advanceTimersByTimeAsync(10_000);
+      }
+      expect(local.state.values.scheduleIntentionCleanupRead).toBeUndefined();
+      expect(sync.state.values[SYNC_SETTINGS]).toEqual({
+        ...remote,
+        schedule: scheduledSettings('').schedule,
+      });
+      expect((await recovered.loadSnapshot()).settings).toEqual(localSettings);
+      expect(await recovered.loadSetup()).toMatchObject({
+        syncWriteStatus: 'idle',
+        storageError: null,
+      });
+      expectPrivateSync(sync);
+    },
+  );
+
+  it('keeps policy authority unchanged when atomic cleanup-marker promotion fails', async (): Promise<void> => {
+    const local: FakeStorage = fakeStorage(localPolicy({ ...DEFAULT_SETUP, storageMode: 'sync' }));
+    const sync: FakeStorage = fakeStorage({ [SYNC_SETTINGS]: DEFAULT_SETTINGS });
+    sync.state.failGet = new Error('remote read unavailable');
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    let rejectPromotion: boolean = true;
+    vi.mocked(local.area.set).mockImplementation(
+      async (items: Record<string, unknown>): Promise<void> => {
+        const marker: unknown = items.scheduleIntentionCleanupRead;
+        if (
+          rejectPromotion &&
+          typeof marker === 'object' &&
+          marker !== null &&
+          'reconstructPublication' in marker &&
+          marker.reconstructPublication === true
+        )
+          throw new Error('checkpoint write failed');
+        Object.assign(local.state.values, structuredClone(items));
+      },
+    );
+    await expect(
+      storage.setPolicy('settings', { ...DEFAULT_SETTINGS, theme: 'dark' }),
+    ).rejects.toThrow('checkpoint write failed');
+    expect((await storage.loadSnapshot()).settings).toEqual(DEFAULT_SETTINGS);
+    expect(local.state.values.scheduleIntentionCleanupRead).toEqual({
+      reconstructPublication: false,
+    });
+    rejectPromotion = false;
+    sync.state.failGet = null;
+    vi.clearAllTimers();
+    const restarted: PolicyStorage = policyStorage(local, sync);
+    await restarted.initialize();
+    await restarted.retrySync();
+    expect(sync.state.values[SYNC_SETTINGS]).toEqual(DEFAULT_SETTINGS);
+  });
+
+  it.each(['save', 'remove', 'prune', 'policy'] as const)(
+    'recovers %s publication after its authority commits while cleanup is awaiting a read',
+    async (action: 'save' | 'remove' | 'prune' | 'policy'): Promise<void> => {
+      const key: string = syncAggKey('device-a', '2026-05-01');
+      const monthKey: string = 'aggm:device-a:2026-05';
+      const aggregate: DailyAgg = { ...emptyDaily('2026-05-01'), focusMs: 42_000 };
+      const local: FakeStorage = fakeStorage({
+        ...localPolicy({ ...DEFAULT_SETUP, storageMode: 'sync' }),
+        [key]: aggregate,
+      });
+      const sync: FakeStorage = fakeStorage({ [key]: aggregate });
+      sync.state.failGet = new Error('remote read unavailable');
+      const storage: PolicyStorage = policyStorage(local, sync);
+      await storage.initialize();
+      sync.state.failGet = null;
+      let rejectJournal: boolean = true;
+      vi.mocked(local.area.set).mockImplementation(
+        async (items: Record<string, unknown>): Promise<void> => {
+          const journal: SyncJournal | undefined = items[LOCAL_SYNC_JOURNAL] as
+            | SyncJournal
+            | undefined;
+          if (
+            rejectJournal &&
+            journal !== undefined &&
+            (Object.keys(journal.sets).length > 0 || journal.removes.length > 0)
+          )
+            throw new Error('journal unavailable');
+          Object.assign(local.state.values, structuredClone(items));
+        },
+      );
+      const change: Promise<void> =
+        action === 'save'
+          ? storage.saveAggregate(key, { ...aggregate, focusMs: 84_000 })
+          : action === 'remove'
+            ? storage.removeAggregate(key)
+            : action === 'policy'
+              ? storage.setPolicy('settings', { ...DEFAULT_SETTINGS, theme: 'dark' })
+              : storage.pruneRemoteHistory('device-a', 90, new Date(2026, 7, 31, 12, 0).getTime());
+      await expect(change).rejects.toThrow('journal unavailable');
+      expect(local.state.values.scheduleIntentionCleanupRead).toEqual({
+        reconstructPublication: true,
+      });
+      rejectJournal = false;
+      vi.clearAllTimers();
+      const restarted: PolicyStorage = createPolicyStorage(
+        local.area,
+        sync.area,
+        {
+          loadAggregateItems: async (): Promise<Record<string, unknown>> =>
+            Object.fromEntries(
+              Object.entries(local.state.values).filter(
+                ([storedKey]: [string, unknown]): boolean =>
+                  storedKey.startsWith('agg:') || storedKey.startsWith('aggm:'),
+              ),
+            ),
+        },
+        DIRECT_ALL_DATA_CLEAR_BARRIER,
+      );
+      await restarted.initialize();
+      await restarted.retrySync();
+      if (action === 'save') expect(sync.state.values[key]).toMatchObject({ focusMs: 84_000 });
+      else if (action === 'policy')
+        expect(sync.state.values[SYNC_SETTINGS]).toEqual({ ...DEFAULT_SETTINGS, theme: 'dark' });
+      else expect(sync.state.values[key]).toBeUndefined();
+      if (action === 'prune')
+        expect(sync.state.values[monthKey]).toMatchObject({ focusMs: 42_000 });
+      expect(await restarted.loadSetup()).toMatchObject({
+        syncWriteStatus: 'idle',
+        storageError: null,
+      });
+    },
+  );
+
+  it('keeps the accepted remote policy when intention cleanup waits behind engine admission', async (): Promise<void> => {
+    const local: FakeStorage = fakeStorage(localPolicy({ ...DEFAULT_SETUP, storageMode: 'sync' }));
+    const sync: FakeStorage = fakeStorage();
+    const storage: PolicyStorage = policyStorage(local, sync);
+    await storage.initialize();
+    const incoming: Settings = { ...scheduledSettings('remote private task'), theme: 'dark' };
+    sync.state.values[SYNC_SETTINGS] = incoming;
+    const engine: SyncChangeEngine = {
+      getSettings: (): Settings => DEFAULT_SETTINGS,
+      getLists: (): ListsConfig => DEFAULT_LISTS,
+      applySyncedSettings: vi.fn(),
+      applySyncedLists: vi.fn(),
+      applySyncedBank: vi.fn(),
+      applySyncedStreak: vi.fn(),
+      transactSyncedPolicy: async (
+        accepted: Partial<PolicyValueByKey>,
+        _reconcile: boolean,
+        mirror: (accepted: Partial<PolicyValueByKey>) => Promise<void>,
+      ): Promise<{ ok: true }> => {
+        await vi.advanceTimersByTimeAsync(10_000);
+        await mirror(accepted);
+        return { ok: true };
+      },
+    };
+    await handleSyncChanges(
+      engine,
+      { [SYNC_SETTINGS]: { newValue: incoming } },
+      {
+        consume: (key: string, value: unknown): boolean => storage.consumeRemoteEcho(key, value),
+      },
+      vi.fn(),
+      false,
+      undefined,
+      storage,
+    );
+    const expected: Settings = { ...incoming, schedule: scheduledSettings('').schedule };
+    expect((await storage.loadSnapshot()).settings).toEqual(expected);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(sync.state.values[SYNC_SETTINGS]).toEqual(expected);
+    expectPrivateSync(sync);
   });
 
   it('initializes an unconfirmed clean profile without any Sync API call', async (): Promise<void> => {
@@ -2562,7 +2980,7 @@ describe('PolicyStorage', (): void => {
       ...DEFAULT_SETTINGS,
       schedule: [
         {
-          id: 'too-large',
+          id: 'x'.repeat(20_000),
           days: [1],
           start: '09:00',
           end: '10:00',
@@ -2570,7 +2988,7 @@ describe('PolicyStorage', (): void => {
           mode: 'blacklist' as const,
           strictness: 'friction' as const,
           cycling: null,
-          intention: 'x'.repeat(20_000),
+          intention: 'local task',
           enabled: true,
         },
       ],
@@ -2593,7 +3011,7 @@ describe('PolicyStorage', (): void => {
       ...DEFAULT_SETTINGS,
       schedule: [
         {
-          id: 'too-large-after-sync',
+          id: 'x'.repeat(20_000),
           days: [1],
           start: '09:00',
           end: '10:00',
@@ -2601,7 +3019,7 @@ describe('PolicyStorage', (): void => {
           mode: 'blacklist' as const,
           strictness: 'friction' as const,
           cycling: null,
-          intention: 'x'.repeat(20_000),
+          intention: 'local task',
           enabled: true,
         },
       ],
@@ -4896,6 +5314,7 @@ describe('PolicyStorage', (): void => {
       const local: FakeStorage = fakeStorage({
         ...allDataLocal(),
         'agg:device-id:2026-08-31': { stale: true },
+        scheduleIntentionCleanupRead: { reconstructPublication: false },
       });
       const sync: FakeStorage = fakeStorage({});
       const stub: ClearPortsStub = clearPorts();
@@ -4912,6 +5331,7 @@ describe('PolicyStorage', (): void => {
       expect(local.state.values[LOCAL_DEVICE_ID]).toBeUndefined();
       expect(local.state.values[LOCAL_INSTALL_MARKER]).toBeUndefined();
       expect(local.state.values['agg:device-id:2026-08-31']).toBeUndefined();
+      expect(local.state.values.scheduleIntentionCleanupRead).toBeUndefined();
       expect(local.state.values.unrelated).toBe('keep');
       expect(storedAllDataJournal(local)).toEqual(
         seededAllDataJournal({
