@@ -1,4 +1,14 @@
 {
+  "files": {
+    "includes": [
+      "**",
+      "!!dist",
+      "!!dist-pages",
+      "!!release",
+      "!!test-results",
+      "!!playwright-report"
+    ]
+  },
   "formatter": {
     "indentStyle": "space",
     "lineWidth": 100

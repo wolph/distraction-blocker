@@ -37,7 +37,11 @@ import {
   monitorBrowserContext,
 } from './browser-diagnostics';
 import { closeContextOnSetupFailure } from './context-cleanup';
-import { createPermissionGrantDist, resolveExtensionDist } from './extension-dist';
+import {
+  createIsolatedExtensionDist,
+  resolveExtensionDist,
+  withPermissionGrantManifest,
+} from './extension-dist';
 import { startServer, type TestServer } from './server';
 
 interface ExtFixtures {
@@ -300,7 +304,6 @@ const WEBSITE_ACCESS_GRANT_INTERVAL_MS: number = 100;
 async function grantProfileWebsiteAccess(
   profileDir: string,
   baseDist: string,
-  grantDist: string,
   diagnostics: BrowserDiagnostics,
   environment: LaunchEnvironmentV2 = {},
 ): Promise<void> {
@@ -311,40 +314,42 @@ async function grantProfileWebsiteAccess(
     diagnostics,
     environment,
   );
-  await sendExtensionRequest(optionalLaunch.extPage, { type: 'getSetupState' });
-  await optionalLaunch.context.close();
-  const grantingLaunch: ExtensionLaunch = await extensionLaunch(
-    profileDir,
-    false,
-    grantDist,
-    diagnostics,
-    environment,
-  );
-  // Chrome applies the granting manifest's host permissions on its own schedule, and reconciling
-  // once assumed they were already in place. A reconcile that ran too early persisted a denial,
-  // and the launch that followed failed with "could not prepare website access". The reconcile is
-  // now repeated until it reports the grant, which is a wait on the condition it is there to
-  // establish. The caller still verifies the result, so a profile that never grants fails there.
-  for (let attempt: number = 0; attempt < WEBSITE_ACCESS_GRANT_ATTEMPTS; attempt += 1) {
-    const reconciled = await sendExtensionRequest(grantingLaunch.extPage, {
-      type: 'reconcileWebsiteAccess',
-    });
-    if (reconciled.ok && reconciled.granted) break;
-    await new Promise<void>((resolve: () => void): void => {
-      setTimeout(resolve, WEBSITE_ACCESS_GRANT_INTERVAL_MS);
-    });
+  try {
+    await sendExtensionRequest(optionalLaunch.extPage, { type: 'getSetupState' });
+  } finally {
+    await optionalLaunch.context.close();
   }
-  await grantingLaunch.context.close();
+  await withPermissionGrantManifest(baseDist, async (grantDist: string): Promise<void> => {
+    const grantingLaunch: ExtensionLaunch = await extensionLaunch(
+      profileDir,
+      false,
+      grantDist,
+      diagnostics,
+      environment,
+    );
+    try {
+      for (let attempt: number = 0; attempt < WEBSITE_ACCESS_GRANT_ATTEMPTS; attempt += 1) {
+        const reconciled = await sendExtensionRequest(grantingLaunch.extPage, {
+          type: 'reconcileWebsiteAccess',
+        });
+        if (reconciled.ok && reconciled.granted) break;
+        await new Promise<void>((resolve: () => void): void => {
+          setTimeout(resolve, WEBSITE_ACCESS_GRANT_INTERVAL_MS);
+        });
+      }
+    } finally {
+      await grantingLaunch.context.close();
+    }
+  });
 }
 
 async function completedExtensionLaunch(
   profileDir: string,
   baseDist: string,
-  grantDist: string,
   diagnostics: BrowserDiagnostics,
   environment: LaunchEnvironmentV2 = {},
 ): Promise<ExtensionLaunch> {
-  await grantProfileWebsiteAccess(profileDir, baseDist, grantDist, diagnostics, environment);
+  await grantProfileWebsiteAccess(profileDir, baseDist, diagnostics, environment);
   const launch: ExtensionLaunch = await extensionLaunch(
     profileDir,
     false,
@@ -390,15 +395,13 @@ export const test = base.extend<ExtFixtures>({
   context: async ({ extensionTimezone, extensionDeterministicPaint }, use, testInfo) => {
     const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
     const profileDir: string = testInfo.outputPath('default-profile');
-    const baseDist: string = resolveExtensionDist();
-    const grantDist: string = await createPermissionGrantDist(
-      testInfo.outputPath('permission-grant-dist'),
-      baseDist,
+    const baseDist: string = await createIsolatedExtensionDist(
+      testInfo.outputPath('unpacked-dist'),
+      resolveExtensionDist(),
     );
     const launch: ExtensionLaunch = await completedExtensionLaunch(
       profileDir,
       baseDist,
-      grantDist,
       diagnostics,
       { timezoneId: extensionTimezone, deterministicPaint: extensionDeterministicPaint },
     );
@@ -445,10 +448,9 @@ export const test = base.extend<ExtFixtures>({
   ) => {
     const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
     const profileDir: string = testInfo.outputPath('restart-profile');
-    const baseDist: string = resolveExtensionDist();
-    const grantDist: string = await createPermissionGrantDist(
-      testInfo.outputPath('restart-permission-grant-dist'),
-      baseDist,
+    const baseDist: string = await createIsolatedExtensionDist(
+      testInfo.outputPath('restart-unpacked-dist'),
+      resolveExtensionDist(),
     );
     const environment: LaunchEnvironmentV2 = {
       timezoneId: extensionTimezone,
@@ -457,7 +459,6 @@ export const test = base.extend<ExtFixtures>({
     const prepared: ExtensionLaunch = await completedExtensionLaunch(
       profileDir,
       baseDist,
-      grantDist,
       diagnostics,
       environment,
     );
@@ -488,10 +489,9 @@ export const test = base.extend<ExtFixtures>({
   ) => {
     const diagnostics: BrowserDiagnostics = createBrowserDiagnostics();
     const profileDir: string = testInfo.outputPath('fresh-install-profile');
-    const baseDist: string = resolveExtensionDist();
-    const grantDist: string = await createPermissionGrantDist(
-      testInfo.outputPath('fresh-permission-grant-dist'),
-      baseDist,
+    const baseDist: string = await createIsolatedExtensionDist(
+      testInfo.outputPath('fresh-unpacked-dist'),
+      resolveExtensionDist(),
     );
     let current: FreshInstallLaunch | null = null;
     const requireCurrent = (): FreshInstallLaunch => {
@@ -550,7 +550,7 @@ export const test = base.extend<ExtFixtures>({
       );
     const grantWebsiteAccess = async (): Promise<FreshInstallLaunch> => {
       await close();
-      await grantProfileWebsiteAccess(profileDir, baseDist, grantDist, diagnostics, {
+      await grantProfileWebsiteAccess(profileDir, baseDist, diagnostics, {
         timezoneId: extensionTimezone,
         deterministicPaint: extensionDeterministicPaint,
       });

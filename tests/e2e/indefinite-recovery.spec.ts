@@ -47,6 +47,7 @@ import {
   test,
   waitForLifecycle,
 } from './fixtures';
+import { revealSessionActions } from './popup-disclosures';
 
 /**
  * A relaunch costs several browser starts, a recovery, and sometimes a closure cleanup, and these
@@ -215,6 +216,7 @@ async function takePause(extPage: Page, pauseMs: number): Promise<SessionSnapsho
   await expect
     .poll(async (): Promise<number> => (await snapshotOf(extPage)).bankMs, { timeout: 30_000 })
     .toBeGreaterThanOrEqual(pauseMs);
+  await revealSessionActions(extPage);
   await extPage.getByRole('button', { name: /^Unlock all sites / }).click();
   const confirm = extPage.getByRole('button', { name: 'Unlock all sites', exact: true });
   await expect(confirm).toBeEnabled();
@@ -340,6 +342,7 @@ test('a browser relaunch during indefinite focus keeps the session and counts th
   const restored: Page = await restoredPage(second, url);
   await expect(restored.locator('focus-lock-overlay')).toBeAttached();
 
+  await revealSessionActions(second.extPage);
   await second.extPage.getByRole('button', { name: END_SESSION_LABEL }).click();
   await waitForLifecycle(second.extPage, 'idle', 60_000);
   const ended: SessionEndedEventV2 = endEventFor(

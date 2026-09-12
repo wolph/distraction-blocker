@@ -106,8 +106,10 @@ Write the commit hash down now. Every later step is reported against it.
 NO_COLOR=1 npm run check
 ```
 
-That is `biome check . && tsc --noEmit && vitest run && npm run build`, in that order, stopping at
-the first failure.
+That is `biome check . && tsc --noEmit && vitest run && npm run build:store`, in that order, stopping at
+the first failure. The store build omits the manifest key that ordinary unpacked builds use for a
+stable local extension ID. `npm run store:package` uses that same build mode, and the package
+validator rejects any manifest key.
 
 **Proves:** formatting and lint, types, the whole unit suite, deterministic icon generation, and a
 production build. It cannot run a Playwright spec: `vitest.config.ts` includes only

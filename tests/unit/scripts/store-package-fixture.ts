@@ -95,7 +95,6 @@ export function validManifest(): Record<string, unknown> {
     name: 'Focus Lock',
     version: '0.1.0',
     description: 'Focus sessions that lock distracting sites, with earned site access credit.',
-    key: 'public-extension-identity',
     icons: { '128': 'assets/icons/idle-128.png' },
     action: { default_popup: 'src/popup/popup.html' },
     background: { service_worker: 'service-worker-loader.js', type: 'module' },

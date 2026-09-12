@@ -53,7 +53,7 @@ function normalizedDocument(path: string): string {
 async function releaseManifest(): Promise<ReleaseManifest> {
   const resolved: unknown = await manifestDefinition;
   if (typeof resolved === 'function') {
-    return (await resolved({ command: 'build', mode: 'production' })) as ReleaseManifest;
+    return (await resolved({ command: 'build', mode: 'store' })) as ReleaseManifest;
   }
   return resolved as ReleaseManifest;
 }

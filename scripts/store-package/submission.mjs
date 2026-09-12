@@ -112,6 +112,10 @@ function validateChromeVersion(version) {
 
 export function validateBuiltManifest(manifest, submission) {
   assert(isObject(manifest), 'Built manifest must be an object');
+  assert(
+    !Object.hasOwn(manifest, 'key'),
+    'Built manifest key is forbidden in Chrome Web Store submissions',
+  );
   assertString(manifest.version, 'Built manifest version');
   validateChromeVersion(manifest.version);
   assertString(manifest.description, 'Built manifest description');

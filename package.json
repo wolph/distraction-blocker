@@ -8,6 +8,7 @@
     "dev": "vite",
     "gen-icons": "node scripts/gen-icons.mjs",
     "build": "npm run gen-icons && vite build",
+    "build:store": "npm run gen-icons && vite build --mode store",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "format": "biome check --write .",
@@ -20,8 +21,8 @@
     "stats:evidence": "STATS_EVIDENCE_DIR=artifacts/stats-task5/production playwright test tests/e2e/qa-flows.spec.ts -g \"Task 5 Stats responsive evidence matrix\"",
     "qa:validate": "node scripts/qa-checklist.mjs --check",
     "store:validate": "node scripts/validate-store-package.mjs",
-    "store:package": "npm run build && node scripts/validate-store-package.mjs --zip",
-    "check": "biome check . && tsc --noEmit && vitest run && npm run build"
+    "store:package": "npm run build:store && node scripts/validate-store-package.mjs --zip",
+    "check": "biome check . && tsc --noEmit && vitest run && npm run build:store"
   },
   "license": "UNLICENSED",
   "engines": {

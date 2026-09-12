@@ -115,13 +115,14 @@ The defaults are evidence-informed, not a treatment claim. A short deliberation 
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Start Vite development mode |
-| `npm run build` | Build the unpacked extension into `dist` |
+| `npm run build` | Build the unpacked extension into `dist` with a stable local extension ID |
+| `npm run build:store` | Build the Chrome Web Store extension into `dist` without a manifest key |
 | `npm run typecheck` | Run strict TypeScript checks |
 | `npm run lint` | Check formatting and lint rules with Biome |
 | `npm run format` | Apply Biome formatting fixes |
 | `npm test` | Run the Vitest unit and component suite |
 | `npm run e2e` | Build and run Playwright against an isolated Chromium profile |
-| `npm run check` | Run Biome, TypeScript, Vitest, and a production build |
+| `npm run check` | Run Biome, TypeScript, Vitest, and a Chrome Web Store build |
 
 The end-to-end suite uses local test pages and an isolated browser profile. It does not need your normal Chrome profile.
 
@@ -130,7 +131,7 @@ Before adding tests, read [docs/testing-rules.md](docs/testing-rules.md). It is 
 Before preparing a Chrome Web Store submission, read [docs/release-candidate-gate.md](docs/release-candidate-gate.md). It is ten ordered steps with the symptom each failure presents, because most of them fail in more than one way and several look like product defects while being the opposite.
 
 
-The manifest contains a fixed public key so unpacked builds keep the same extension ID. Chrome Sync requires profiles signed into the same Google account with extension sync enabled. Keep the corresponding private signing key untracked and backed up outside Git.
+`npm run dev` and `npm run build` include a fixed public key so unpacked builds keep the same extension ID. `npm run build:store` omits that key for Chrome Web Store submissions. `npm run store:package` uses the store build and rejects packages containing a manifest key. Chrome Sync requires profiles signed into the same Google account with extension sync enabled. Keep the corresponding private signing key untracked and backed up outside Git.
 
 To regenerate the README screenshots and demo, see [the media capture instructions](docs/images/focus-lock/readme/README.md).
 

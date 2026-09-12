@@ -90,10 +90,23 @@ afterEach((): void => {
 
 describe('submission manifest and assets', (): void => {
   // Builds a complete release fixture on disk, so it needs more than the default timeout.
-  it('accepts a valid release fixture with optional all-sites access and a public key', (): void => {
+  it('accepts a valid release fixture with optional all-sites access and no key', (): void => {
     const result: ReturnType<typeof runValidator> = validate(fixture());
     expect(result.status, output(result)).toBe(0);
   });
+
+  it.each(['public-extension-identity', '', null])(
+    'rejects any manifest key field (%s)',
+    (key: unknown): void => {
+      const root: string = fixture();
+      mutateManifest(root, (manifest: Record<string, unknown>): void => {
+        manifest.key = key;
+      });
+      const result: ReturnType<typeof runValidator> = validate(root);
+      expect(result.status).not.toBe(0);
+      expect(output(result)).toContain('manifest key is forbidden');
+    },
+  );
 
   it('allows the optional marquee asset to be omitted', (): void => {
     const root: string = fixture();
@@ -1121,9 +1134,14 @@ describe('package creation and repository integration', (): void => {
       readFileSync(resolve('package.json'), 'utf8'),
     ) as Record<string, unknown>;
     const scripts: Record<string, unknown> = packageJson.scripts as Record<string, unknown>;
+    expect(scripts.build).toBe('npm run gen-icons && vite build');
+    expect(scripts['build:store']).toBe('npm run gen-icons && vite build --mode store');
+    expect(scripts.check).toBe(
+      'biome check . && tsc --noEmit && vitest run && npm run build:store',
+    );
     expect(scripts['store:validate']).toBe('node scripts/validate-store-package.mjs');
     expect(scripts['store:package']).toBe(
-      'npm run build && node scripts/validate-store-package.mjs --zip',
+      'npm run build:store && node scripts/validate-store-package.mjs --zip',
     );
     expect(readFileSync(resolve('.gitignore'), 'utf8').split(/\r?\n/u)).toContain('release/');
     expect(readFileSync(resolve('vite.config.ts'), 'utf8')).toMatch(

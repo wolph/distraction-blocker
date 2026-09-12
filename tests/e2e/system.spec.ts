@@ -16,6 +16,7 @@ import {
   test,
   waitForLifecycle,
 } from './fixtures';
+import { revealSessionActions } from './popup-disclosures';
 
 const PROJECTED_QUOTA_PREFIX: string = 'task7-system-quota:';
 
@@ -336,6 +337,7 @@ test('Privacy and data deletes all Focus Lock data and returns the extension to 
   ).toBeVisible();
 
   await extPage.reload();
+  await revealSessionActions(extPage);
   await extPage.getByRole('button', { name: 'End session' }).click();
   await waitForLifecycle(extPage, 'idle');
   await expect(deleteAll).toBeEnabled();
