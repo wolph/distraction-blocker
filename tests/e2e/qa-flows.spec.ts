@@ -95,8 +95,12 @@ const THEME_LABEL: Readonly<Record<ThemeMode, string>> = {
 };
 
 async function expectPageTheme(page: Page, theme: ThemeMode): Promise<void> {
-  const next: ThemeMode = NEXT_THEME[theme];
   await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+}
+
+async function expectPageThemeControl(page: Page, theme: ThemeMode): Promise<void> {
+  await expectPageTheme(page, theme);
+  const next: ThemeMode = NEXT_THEME[theme];
   await expect(
     page.getByRole('button', {
       name: `Theme: ${THEME_LABEL[theme]}. Switch to ${THEME_LABEL[next]}`,
@@ -1242,6 +1246,7 @@ async function captureTask7UnsupportedMatrix(input: {
     await test.step(`popup ${themeCase.id} ${String(input.viewport.width)} unsupported-tab reason`, async () => {
       await input.page.bringToFront();
       await applyTask7ThemeCase(input.page, themeCase, 'popup');
+      await revealSessionActions(input.page);
       const unsupported: Locator = input.page
         .locator('.spend-button')
         .filter({ hasText: 'Unlock this site' });
@@ -1973,36 +1978,37 @@ test('theme cycle persists across extension pages and live overlay hosts without
   await expectOverlayTheme(normalOverlay, 'auto');
   await expectOverlayTheme(stoppedOverlay, 'auto');
 
-  await extPage.getByRole('button', { name: 'Theme: Auto. Switch to Light' }).click();
-  await expectPageTheme(extPage, 'light');
-  await expectOverlayTheme(normalOverlay, 'light');
-  await expectOverlayTheme(stoppedOverlay, 'light');
-
   const optionsPage: Page = await context.newPage();
   await optionsPage.goto(`chrome-extension://${extensionId}/src/options/options.html`);
-  await expectPageTheme(optionsPage, 'light');
+  await expectPageThemeControl(optionsPage, 'auto');
   let optionsNavigations: number = 0;
   optionsPage.on('framenavigated', (frame: Frame): void => {
     if (frame === optionsPage.mainFrame()) optionsNavigations += 1;
   });
 
+  await optionsPage.getByRole('button', { name: 'Theme: Auto. Switch to Light' }).click();
+  await expectPageThemeControl(optionsPage, 'light');
+  await expectPageTheme(extPage, 'light');
+  await expectOverlayTheme(normalOverlay, 'light');
+  await expectOverlayTheme(stoppedOverlay, 'light');
+
   await optionsPage.getByRole('button', { name: 'Theme: Light. Switch to Dark' }).click();
-  await expectPageTheme(optionsPage, 'dark');
+  await expectPageThemeControl(optionsPage, 'dark');
   await expectPageTheme(extPage, 'dark');
   await expectOverlayTheme(normalOverlay, 'dark');
   await expectOverlayTheme(stoppedOverlay, 'dark');
 
   const statsPage: Page = await context.newPage();
   await statsPage.goto(`chrome-extension://${extensionId}/src/stats/stats.html`);
-  await expectPageTheme(statsPage, 'dark');
+  await expectPageThemeControl(statsPage, 'dark');
   let statsNavigations: number = 0;
   statsPage.on('framenavigated', (frame: Frame): void => {
     if (frame === statsPage.mainFrame()) statsNavigations += 1;
   });
 
   await statsPage.getByRole('button', { name: 'Theme: Dark. Switch to Auto' }).click();
-  await expectPageTheme(statsPage, 'auto');
-  await expectPageTheme(optionsPage, 'auto');
+  await expectPageThemeControl(statsPage, 'auto');
+  await expectPageThemeControl(optionsPage, 'auto');
   await expectPageTheme(extPage, 'auto');
   await expectOverlayTheme(normalOverlay, 'auto');
   await expectOverlayTheme(stoppedOverlay, 'auto');
