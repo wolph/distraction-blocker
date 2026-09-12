@@ -36,11 +36,12 @@ Select the dashboard categories that cover the handled data above:
 
 - [x] Web history, for full URLs and blocked navigation records.
 - [x] User activity, for detailed session and gate events and the user's blocking interactions.
-- [x] User-provided content, for text entered in the focus intention field.
 - [ ] Website content, because Focus Lock injects its packaged blocking interface without reading or collecting text, images, forms, messages, or other resources supplied by the website.
 - [ ] Personally identifiable information, health information, financial and payment information, authentication information, personal communications, and location are not requested or used as Focus Lock features.
 
 Focus Lock does not ask users to enter sensitive information. A user can put arbitrary text in a focus intention, so that text receives the same local-only treatment regardless of its contents.
+
+The dashboard has no separate User-provided content category. Describe the focus intention field in the single-purpose explanation and privacy policy. Do not treat the absence of a separate checkbox as a reason to omit that data from the disclosures.
 
 ## Single purpose and Limited Use
 

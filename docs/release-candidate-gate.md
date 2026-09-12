@@ -217,9 +217,14 @@ moved since the last release.
 
 ```bash
 TZ=Europe/Amsterdam STORE_SCREENSHOT_EXPECT_HOST_TIMEZONE=Europe/Amsterdam \
-  UPDATE_STORE_SCREENSHOTS=1 npx playwright test tests/e2e/store-screenshots.spec.ts
+  UPDATE_STORE_SCREENSHOTS=1 npx playwright test tests/e2e/store-screenshots.spec.ts \
+  -g "captures five truthful release states"
+TZ=Europe/Amsterdam npx playwright test tests/e2e/store-screenshots.spec.ts
 git diff --stat store/assets/screenshots/
 ```
+
+Capture first, then run the whole file. The inventory and timezone checks appear before the capture
+test, so a single unfiltered update run checks the old images before replacing them.
 
 **Proves:** the five canonical PNGs are regenerated from the current build at 1280x800, opaque, with
 the exact capture geometry the spec annotates, and the host and worker clocks agree on

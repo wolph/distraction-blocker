@@ -275,7 +275,8 @@ describe('Chrome Web Store release documentation contract', (): void => {
 
     expect(disclosures).toMatch(/^- \[x\] Web history,/m);
     expect(disclosures).toMatch(/^- \[x\] User activity,/m);
-    expect(disclosures).toMatch(/^- \[x\] User-provided content,/m);
+    expect(disclosures).toMatch(/^- \[x\] User-generated intentions:/m);
+    expect(disclosures).not.toMatch(/^- \[[ x]\] User-provided content[,:]/m);
     expect(disclosures).toMatch(/^- \[ \] Website content[,:]/m);
     expect(disclosures).not.toMatch(/^- \[x\] Website content[,:]/m);
     expect(disclosures).toContain('packaged blocking interface');
