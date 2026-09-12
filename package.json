@@ -1,56 +1,56 @@
 {
-  "dependencies": {
-    "preact": "10.27.0",
-    "tldts": "7.0.10"
-  },
-  "description": "Focus Lock: focus sessions that lock distracting sites, with earned site access credit.",
-  "devDependencies": {
-    "@babel/parser": "7.28.0",
-    "@babel/traverse": "7.28.0",
-    "@biomejs/biome": "2.1.3",
-    "@crxjs/vite-plugin": "2.0.3",
-    "@playwright/test": "1.54.2",
-    "@preact/preset-vite": "2.10.2",
-    "@resvg/resvg-js": "2.6.2",
-    "@testing-library/preact": "3.2.4",
-    "@types/chrome": "0.1.1",
-    "@types/pngjs": "6.0.5",
-    "css-tree": "3.1.0",
-    "html-validate": "9.7.1",
-    "jsdom": "26.1.0",
-    "pngjs": "7.0.0",
-    "typescript": "5.9.2",
-    "vite": "7.0.6",
-    "vitest": "3.2.4",
-    "yaml": "2.8.0",
-    "yauzl": "3.2.0",
-    "yazl": "3.3.1"
-  },
-  "engines": {
-    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
-  },
-  "license": "UNLICENSED",
   "name": "distraction-blocker",
+  "version": "0.1.0",
+  "description": "Focus Lock: focus sessions that lock distracting sites, with earned site access credit.",
   "private": true,
+  "type": "module",
   "scripts": {
-    "build": "npm run gen-icons && vite build",
-    "check": "biome check . && tsc --noEmit && vitest run && npm run build",
     "dev": "vite",
-    "e2e": "npm run store:package && playwright test",
-    "format": "biome check --write .",
     "gen-icons": "node scripts/gen-icons.mjs",
+    "build": "npm run gen-icons && vite build",
+    "typecheck": "tsc --noEmit",
     "lint": "biome check .",
+    "format": "biome check --write .",
+    "test": "vitest run",
+    "e2e": "npm run store:package && playwright test",
     "pages:build": "node scripts/build-pages.mjs",
     "pages:validate": "npm run pages:build && node scripts/validate-pages.mjs && html-validate 'dist-pages/**/*.html'",
     "qa:checklist": "node scripts/qa-checklist.mjs",
-    "qa:validate": "node scripts/qa-checklist.mjs --check",
     "stats:dev-evidence": "STATS_DEV_EVIDENCE_DIR=artifacts/stats-task5/dev node --experimental-strip-types scripts/capture-stats-dev-evidence.ts",
     "stats:evidence": "STATS_EVIDENCE_DIR=artifacts/stats-task5/production playwright test tests/e2e/qa-flows.spec.ts -g \"Task 5 Stats responsive evidence matrix\"",
-    "store:package": "npm run build && node scripts/validate-store-package.mjs --zip",
+    "qa:validate": "node scripts/qa-checklist.mjs --check",
     "store:validate": "node scripts/validate-store-package.mjs",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "store:package": "npm run build && node scripts/validate-store-package.mjs --zip",
+    "check": "biome check . && tsc --noEmit && vitest run && npm run build"
   },
-  "type": "module",
-  "version": "0.1.0"
+  "license": "UNLICENSED",
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+  },
+  "dependencies": {
+    "preact": "^10.29.8",
+    "tldts": "^7.4.11"
+  },
+  "devDependencies": {
+    "@babel/parser": "^7.29.8",
+    "@babel/traverse": "^7.29.8",
+    "@biomejs/biome": "^2.5.11",
+    "@crxjs/vite-plugin": "^2.7.1",
+    "@playwright/test": "^1.62.1",
+    "@preact/preset-vite": "^2.10.6",
+    "@resvg/resvg-js": "^2.6.2",
+    "@testing-library/preact": "^3.2.4",
+    "@types/chrome": "^0.2.7",
+    "@types/pngjs": "^6.0.5",
+    "css-tree": "^3.2.1",
+    "html-validate": "^11.11.0",
+    "jsdom": "^30.0.1",
+    "pngjs": "^7.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.11",
+    "yaml": "^2.9.0",
+    "yauzl": "^3.4.0",
+    "yazl": "^3.3.1"
+  }
 }
