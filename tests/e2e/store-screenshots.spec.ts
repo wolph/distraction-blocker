@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { CDPSession, Page, TestInfo, Worker } from '@playwright/test';
+import type { CDPSession, Locator, Page, TestInfo, Worker } from '@playwright/test';
 import { PNG } from 'pngjs';
 import type { FrozenDocumentCommand } from '../../src/background/enforcement-persistence-v2';
 import type { RuntimeStateV2 } from '../../src/background/runtime-v2-types';
@@ -288,6 +288,15 @@ async function captureStoreScreenshot(
     await page.addStyleTag({
       content: '::-webkit-scrollbar { width: 0 !important; height: 0 !important; }',
     });
+    // Layout changes can move a radio beneath the last click's pointer and change native paint.
+    await page.mouse.move(1, 1);
+    await page.evaluate((): void => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    });
+    const interactiveRadios: Locator = page.locator('input[type="radio"]:is(:hover, :focus)');
+    const interactiveLabels: Locator = page.locator('label:is(:hover, :focus, :focus-within)');
+    await expect(interactiveRadios).toHaveCount(0);
+    await expect(interactiveLabels).toHaveCount(0);
     await page.evaluate(async (): Promise<void> => {
       await document.fonts.ready;
       await new Promise<void>((resolve: () => void): void => {
@@ -298,6 +307,17 @@ async function captureStoreScreenshot(
       await storeViewportMetadata(page);
     expect({ height: viewport.height, width: viewport.width }).toEqual(geometry.viewport);
     expect(viewport.deviceScaleFactor).toBeCloseTo(geometry.deviceScaleFactor, 5);
+    test.info().annotations.push({
+      type: 'store-capture-interaction',
+      description: JSON.stringify({
+        file,
+        pointer: { x: 1, y: 1 },
+        interactiveRadios: await interactiveRadios.count(),
+        interactiveLabels: await interactiveLabels.count(),
+      }),
+    });
+    await expect(interactiveRadios).toHaveCount(0);
+    await expect(interactiveLabels).toHaveCount(0);
     const screenshot = await session.send('Page.captureScreenshot', {
       captureBeyondViewport: true,
       clip: {
@@ -1068,7 +1088,6 @@ test('captures five truthful release states with category membership in the popu
       }),
     ).toBeVisible();
     await frictionButton.press('Escape');
-    await frictionButton.evaluate((element: HTMLElement): void => element.blur());
     const popupGeometry = await extPage.evaluate(
       (): {
         clientHeight: number;
@@ -1207,9 +1226,6 @@ test('captures five truthful release states with category membership in the popu
     } finally {
       await accessibilitySession.detach();
     }
-    await blockedPage.evaluate((): void => {
-      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-    });
     await captureStoreScreenshot(
       blockedPage,
       captureDirectory,
@@ -1263,9 +1279,6 @@ test('captures five truthful release states with category membership in the popu
     await expect(
       launch.onboardingPage.getByText('Read and change all your data on all websites'),
     ).toBeVisible();
-    await launch.onboardingPage.evaluate((): void => {
-      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-    });
     await captureStoreScreenshot(
       launch.onboardingPage,
       captureDirectory,

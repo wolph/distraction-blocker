@@ -31,7 +31,7 @@ test('the toolbar popup opens at its intended size without viewport emulation', 
     .poll(async (): Promise<boolean> => {
       return await extPage.evaluate((): boolean => {
         const popup: Window | undefined = chrome.extension.getViews({ type: 'popup' })[0];
-        return popup?.document.querySelector('.start-button') !== null;
+        return popup !== undefined && popup.document.querySelector('.start-button') !== null;
       });
     })
     .toBe(true);
@@ -80,7 +80,7 @@ test('the active view scrolls its controls into the real toolbar popup', async (
     .poll(async (): Promise<boolean> => {
       return await extPage.evaluate((): boolean => {
         const popup: Window | undefined = chrome.extension.getViews({ type: 'popup' })[0];
-        return popup?.document.querySelector('.end-session-button') !== null;
+        return popup !== undefined && popup.document.querySelector('.end-session-button') !== null;
       });
     })
     .toBe(true);
