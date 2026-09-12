@@ -11,21 +11,21 @@ No account, payment, external service, or test credential is required. The exten
 
 ## Start a short Flexible session and trigger a block
 
-5. Click the Focus Lock toolbar icon. In Custom minutes, enter `2`. In Intention, enter `Chrome Web Store review`.
-6. Choose Flexible under Session type. Keep Block selected sites as the blocking mode. Confirm Social media is selected under What will be blocked.
-7. Choose Start 2 min - Block selected sites.
+5. Click the Focus Lock toolbar icon. Enter `2` in the minutes field beside the session length presets. In Intention, enter `Chrome Web Store review`.
+6. Expand Session settings. Choose Flexible under Session type. Keep Block selected sites as the blocking mode. Confirm Social media is selected under What will be blocked.
+7. Choose Start 2 min focus.
 8. After the session starts, open a new normal top-level tab and navigate to `https://x.com/`.
-9. Confirm the blocking surface shows the intention, countdown, blocked-attempt count, and provenance text `Blocked by Social media: x.com`. Provenance identifies the exact rule source and matched domain. x.com is an unaffiliated example from the bundled Social media list. If the review environment cannot reach it or rewrites the URL, navigate to another domain shown in that list and substitute the final registrable host in the expected provenance text.
+9. Confirm the blocking surface shows the intention, countdown, and rule text `Blocked by Social media: x.com`. The rule text identifies the source and matched domain. x.com is an unaffiliated example from the bundled Social media list. If the review environment cannot reach it or rewrites the URL, navigate to another domain shown in that list and substitute the final registrable host in the expected rule text.
 10. Click the Focus Lock toolbar icon and choose End session. Flexible ends immediately without a wait or typed phrase. Focus Lock removes the blocking surface. If the document was stopped during navigation, the tab reloads so the requested page can render.
 
 ## Inspect Statistics
 
-11. In the popup header, choose the Statistics button. Confirm Your focus record opens and Attempts blocked today includes the navigation from step 8.
+11. In the popup header, choose Settings, then choose Overview in the page navigation. Confirm Your focus record opens and Attempts blocked today includes the navigation from step 8.
 12. In Recent sessions on this machine, confirm the `Chrome Web Store review` intention appears with an ended early outcome and a manual source marker.
 
 ## Verify sync and deletion controls
 
-13. Open Options from the Focus Lock popup, then choose Privacy and data in the product navigation.
+13. Choose Privacy and data in the page navigation. If the page has closed, reopen it through Settings in the Focus Lock popup.
 14. Confirm the page distinguishes Synced data from Local only data and states that nothing is sent to the Focus Lock developer.
 15. Turn off Sync Focus Lock data across Chrome devices. Wait for the status `Chrome Sync disabled.` Disabling sync stops later writes but intentionally keeps any existing remote copy until the separate deletion action.
 16. Under Remote Sync data, choose Delete remote Sync data, then Confirm delete remote Sync data. Wait for `Remote Chrome Sync data deleted.` Local settings and statistics remain on this device.

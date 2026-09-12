@@ -1,6 +1,6 @@
-import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -20,7 +20,9 @@ function assert(condition, message) {
 
 /** @param {string} filePath */
 export async function sha256(filePath) {
-  return createHash('sha256').update(await readFile(filePath)).digest('hex');
+  return createHash('sha256')
+    .update(await readFile(filePath))
+    .digest('hex');
 }
 
 /** @template T @param {readonly T[]} values @returns {T[]} */
@@ -40,14 +42,15 @@ export function parseArchiveListing(listing) {
     .split('\n')
     .filter(Boolean)
     .map((line) => {
-      const match = /^(\S+)\s+\S+\s+(\d+)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s+(.+)$/.exec(
-        line,
-      );
+      const match = /^(\S+)\s+\S+\s+(\d+)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s+(.+)$/.exec(line);
       assert(match !== null, `could not parse archive member listing: ${line}`);
       const permissions = match[1];
       const sizeText = match[2];
       const name = match[3];
-      assert(permissions !== undefined && sizeText !== undefined && name !== undefined, 'invalid listing');
+      assert(
+        permissions !== undefined && sizeText !== undefined && name !== undefined,
+        'invalid listing',
+      );
       /** @type {Record<string, ArchiveMemberType>} */
       const memberTypes = {
         '-': 'file',
@@ -104,7 +107,10 @@ export function validateArchiveMembers(members, manifest, manifestBytes, archive
       `tracked manifest contains unsafe artifact path: ${artifact.path}`,
     );
     const memberName = `./${artifact.path}`;
-    assert(!expected.has(memberName), `tracked manifest contains duplicate artifact: ${artifact.path}`);
+    assert(
+      !expected.has(memberName),
+      `tracked manifest contains duplicate artifact: ${artifact.path}`,
+    );
     expected.set(memberName, { size: artifact.bytes, type: 'file' });
   }
 
@@ -130,7 +136,10 @@ export function validateArchiveMembers(members, manifest, manifestBytes, archive
       member.type === declaration.type,
       `archive member type differs from tracked manifest: ${member.name}`,
     );
-    assert(Number.isSafeInteger(member.size) && member.size >= 0, `invalid member size: ${member.name}`);
+    assert(
+      Number.isSafeInteger(member.size) && member.size >= 0,
+      `invalid member size: ${member.name}`,
+    );
     assert(
       member.size <= ARCHIVE_LIMITS.maxFileBytes,
       `archive member exceeds ${ARCHIVE_LIMITS.maxFileBytes} bytes: ${member.name}`,
@@ -191,7 +200,10 @@ export async function validateArchive(evidenceRoot, archiveName, manifestName, e
   /** @type {ArtifactManifest} */
   const trackedManifest = JSON.parse(trackedManifestContents.toString('utf8'));
   const archiveStats = await stat(archivePath);
-  assert((await sha256(archivePath)) === archiveName.slice(0, 64), `${archiveName} hash is incorrect`);
+  assert(
+    (await sha256(archivePath)) === archiveName.slice(0, 64),
+    `${archiveName} hash is incorrect`,
+  );
   const members = listArchiveMembers(archivePath);
   validateArchiveMembers(
     members,
@@ -204,17 +216,13 @@ export async function validateArchive(evidenceRoot, archiveName, manifestName, e
   try {
     execFileSync(
       'tar',
-      [
-        '-xzf',
-        archivePath,
-        '--no-same-owner',
-        '--no-same-permissions',
-        '-C',
-        extractionDirectory,
-      ],
+      ['-xzf', archivePath, '--no-same-owner', '--no-same-permissions', '-C', extractionDirectory],
       { env: { ...process.env, LC_ALL: 'C' } },
     );
-    assert((await sha256(archivePath)) === archiveName.slice(0, 64), `${archiveName} changed during verification`);
+    assert(
+      (await sha256(archivePath)) === archiveName.slice(0, 64),
+      `${archiveName} changed during verification`,
+    );
     const extractedManifestPath = path.join(extractionDirectory, 'manifest.json');
     assert(
       (await sha256(extractedManifestPath)) === (await sha256(trackedManifestPath)),

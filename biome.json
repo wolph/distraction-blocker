@@ -13,5 +13,16 @@
     "formatter": {
       "quoteStyle": "single"
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": [
+        "docs/qa-artifacts/onboarding-task6/manifests/dev-server-manifest.json",
+        "docs/qa-artifacts/onboarding-task6/manifests/production-manifest.json"
+      ],
+      "formatter": {
+        "enabled": false
+      }
+    }
+  ]
 }
