@@ -7,10 +7,22 @@
  */
 import { endAuthorityV2 } from '../../src/background/lifecycle-projection-v2';
 import { buildActiveOverlayView } from '../../src/background/overlay-view-v2';
-import { accrue, spend } from '../../src/core/budget';
+import { accrue, msUntilAffordable, spend } from '../../src/core/budget';
 import { ALL_CATEGORIES } from '../../src/core/categories';
-import { type CompiledMatcher, compileSessionMatcher, evaluateUrl } from '../../src/core/matcher';
-import { advanceSessionV2, focusedMsAtV2, startSessionV2 } from '../../src/core/session-v2';
+import {
+  type CompiledMatcher,
+  compileMatcher,
+  compileSessionMatcher,
+  evaluateUrl,
+} from '../../src/core/matcher';
+import {
+  advanceSessionV2,
+  assertCanStartNextFocusEarlyV2,
+  beginPauseV2,
+  commitResumeV2,
+  focusedMsAtV2,
+  startSessionV2,
+} from '../../src/core/session-v2';
 import {
   DEFAULT_LISTS,
   DEFAULT_SETTINGS,
@@ -19,12 +31,15 @@ import {
 } from '../../src/shared/constants';
 import type { DocumentContentCommand, DocumentOverlayView } from '../../src/shared/enforcement-v2';
 import { CANONICAL_CLEAR_VERDICT } from '../../src/shared/enforcement-v2-validation';
+import { CoreError } from '../../src/shared/errors';
 import type { Broadcast, Request, ResponseMap } from '../../src/shared/messages';
 import type {
   BankState,
   GateState,
   ListsConfig,
   SessionConfigV2,
+  SessionMode,
+  SessionRuleSnapshot,
   SessionSnapshotV2,
   SessionStateV2,
   Settings,
@@ -223,6 +238,12 @@ export function createDemoEngine(now: () => number): DemoEngine {
       endSession();
       return;
     }
+    if (result.kind === 'resume-required') {
+      state.session = commitResumeV2(result.state, at);
+      publish();
+      broadcast({ type: 'reevaluate' });
+      return;
+    }
     if (result.state !== session) {
       state.session = result.state;
       publish();
@@ -319,6 +340,30 @@ export function createDemoEngine(now: () => number): DemoEngine {
         }),
       );
 
+  /**
+   * The popup's pre-start listing: no session exists yet, so eligibility comes from the draft
+   * policy the popup is about to start with, not from the live session's matcher (there is none).
+   */
+  const preStartWorkTabs = (
+    mode: SessionMode,
+    rules: SessionRuleSnapshot | undefined,
+  ): WorkTab[] => {
+    const matcher: CompiledMatcher =
+      rules === undefined
+        ? compileMatcher(state.lists, ALL_CATEGORIES, mode)
+        : compileSessionMatcher(rules, ALL_CATEGORIES, mode);
+    return state.strip.tabs
+      .filter((tab: DemoTab): boolean => !evaluateUrl(matcher, tab.url, [], now()).blocked)
+      .map(
+        (tab: DemoTab): WorkTab => ({
+          tabId: tab.tabId,
+          title: tab.title,
+          hostname: hostnameOf(tab),
+          lastAccessed: now(),
+        }),
+      );
+  };
+
   const openGate = (kind: GateState['kind'], host: string | null): void => {
     const at: number = now();
     state.gate = {
@@ -377,7 +422,9 @@ export function createDemoEngine(now: () => number): DemoEngine {
         publish();
         return { ok: true };
       case 'getWorkTabs':
-        return { ok: true, tabs: eligibleWorkTabs() };
+        return 'sessionId' in request
+          ? { ok: true, tabs: eligibleWorkTabs() }
+          : { ok: true, tabs: preStartWorkTabs(request.mode, request.rules) };
       case 'getWorkTarget': {
         const session: SessionStateV2 | null = state.session;
         if (session === null) return { ok: true, sessionId: null, state: 'missing', title: null };
@@ -465,7 +512,8 @@ export function createDemoEngine(now: () => number): DemoEngine {
         return { ok: true, code: 'ok' };
       }
       case 'confirmGate': {
-        if (state.session === null) return NOT_ACTIVE;
+        const session: SessionStateV2 | null = state.session;
+        if (session === null) return NOT_ACTIVE;
         const refusal = gateReady(request.expectedGate);
         if (refusal !== null) return refusal;
         const gate: GateState = state.gate as GateState;
@@ -477,12 +525,19 @@ export function createDemoEngine(now: () => number): DemoEngine {
         }
         const cost: number =
           gate.kind === 'pause' ? state.settings.pause.pauseMs : state.settings.pause.unlockMs;
+        if (msUntilAffordable(state.bank, cost, state.settings.pause) > 0) {
+          return {
+            ok: false,
+            code: 'end-not-allowed',
+            error: 'Not enough site access credit yet.',
+          };
+        }
         state.bank = spend(state.bank, cost);
-        if (gate.kind === 'unlockSite' && gate.host !== null)
-          state.unlocks = [
-            ...state.unlocks,
-            { host: gate.host, until: now() + state.settings.pause.unlockMs },
-          ];
+        if (gate.kind === 'pause') {
+          state.session = beginPauseV2(session, now(), state.settings.pause.pauseMs);
+        } else if (gate.host !== null) {
+          state.unlocks = [...state.unlocks, { host: gate.host, until: now() + cost }];
+        }
         state.gate = null;
         publish();
         broadcast({ type: 'reevaluate' });
@@ -495,9 +550,31 @@ export function createDemoEngine(now: () => number): DemoEngine {
         endSession();
         return { ok: true, code: 'ok' };
       }
-      case 'resumeFromPause':
-      case 'startNextFocusEarly':
-        return state.session === null ? NOT_ACTIVE : { ok: true, code: 'ok' };
+      case 'resumeFromPause': {
+        const session: SessionStateV2 | null = state.session;
+        if (session === null) return NOT_ACTIVE;
+        if (session.phase !== 'paused')
+          return { ok: false, code: 'end-not-allowed', error: 'No pause is active.' };
+        state.session = commitResumeV2(session, now());
+        publish();
+        broadcast({ type: 'reevaluate' });
+        return { ok: true, code: 'ok' };
+      }
+      case 'startNextFocusEarly': {
+        const session: SessionStateV2 | null = state.session;
+        if (session === null) return NOT_ACTIVE;
+        try {
+          assertCanStartNextFocusEarlyV2(session, now());
+        } catch (error: unknown) {
+          const message: string =
+            error instanceof CoreError ? error.message : 'That break cannot end early yet.';
+          return { ok: false, code: 'end-not-allowed', error: message };
+        }
+        state.session = commitResumeV2(session, now());
+        publish();
+        broadcast({ type: 'reevaluate' });
+        return { ok: true, code: 'ok' };
+      }
       default:
         throw new Error(`demo engine does not handle ${request.type}`);
     }

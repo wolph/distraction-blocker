@@ -1,36 +1,51 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createDemoEngine, type DemoEngine, type DemoEvent } from '../../../docs/site/engine';
+import { DEMO_WINDOW_ID } from '../../../docs/site/tabs-model';
 import type { DocumentContentCommand } from '../../../src/shared/enforcement-v2';
 import type { Broadcast, Request, ResponseMap } from '../../../src/shared/messages';
 import { isSessionSnapshotV2, isSetupState } from '../../../src/shared/runtime-validation';
-import type { SessionConfigV2, SessionSnapshotV2 } from '../../../src/shared/types';
+import type {
+  GateState,
+  ListsConfig,
+  SessionConfigV2,
+  SessionRuleSnapshot,
+  SessionSnapshotV2,
+} from '../../../src/shared/types';
 
 let clock: number;
 let engine: DemoEngine;
 
-function startRequest(engine: DemoEngine): Promise<ResponseMap['startSession']> {
+/** The demo's one draft policy: the baked-in custom rules, no categories, no session extras. */
+function draftRules(lists: ListsConfig): SessionRuleSnapshot {
+  return {
+    baselineRevision: 'demo',
+    baselineCategories: lists.categories,
+    categories: lists.categories,
+    exclusions: {},
+    permanentBlacklist: lists.custom,
+    permanentAllowlist: lists.whitelist,
+    sessionBlacklist: [],
+    sessionAllowlist: [],
+  };
+}
+
+function startRequest(
+  engine: DemoEngine,
+  minutes: number = 25,
+): Promise<ResponseMap['startSession']> {
   return engine
     .handle({ type: 'getLists' })
-    .then(async (lists): Promise<ResponseMap['startSession']> => {
+    .then(async (lists: ListsConfig): Promise<ResponseMap['startSession']> => {
       const settings = await engine.handle({ type: 'getSettings' });
       const config: SessionConfigV2 = {
         mode: 'blacklist',
         strictness: 'friction',
-        duration: { kind: 'timed', minutes: 25 },
+        duration: { kind: 'timed', minutes },
         cycling: null,
         intention: 'Finish the proposal',
         source: 'manual',
         scheduleOccurrence: null,
-        rules: {
-          baselineRevision: 'demo',
-          baselineCategories: lists.categories,
-          categories: lists.categories,
-          exclusions: {},
-          permanentBlacklist: lists.custom,
-          permanentAllowlist: lists.whitelist,
-          sessionBlacklist: [],
-          sessionAllowlist: [],
-        },
+        rules: draftRules(lists),
       };
       void settings;
       return engine.handle({ type: 'startSession', config, workTabId: 11, windowId: 1 });
@@ -180,5 +195,91 @@ describe('demo engine session', () => {
       command: 'apply-enforcement',
       presentation: 'clear',
     });
+  });
+});
+
+describe('demo engine work tab preview before a session', () => {
+  it('filters the pre-start listing by the requested policy, not the live session', async (): Promise<void> => {
+    const lists = await engine.handle({ type: 'getLists' });
+    const blacklisted = await engine.handle({
+      type: 'getWorkTabs',
+      mode: 'blacklist',
+      windowId: DEMO_WINDOW_ID,
+      rules: draftRules(lists),
+    });
+    expect(blacklisted).toEqual({
+      ok: true,
+      tabs: [
+        { tabId: 11, title: 'Proposal draft', hostname: 'proposal.example', lastAccessed: clock },
+      ],
+    });
+
+    const whitelisted = await engine.handle({
+      type: 'getWorkTabs',
+      mode: 'whitelist',
+      windowId: DEMO_WINDOW_ID,
+    });
+    expect(whitelisted).toEqual({ ok: true, tabs: [] });
+  });
+});
+
+describe('demo engine pause economy', () => {
+  it('pauses on Unlock all sites once affordable, then resumes and blocks again', async (): Promise<void> => {
+    await startRequest(engine, 60);
+    clock += 30 * 60_000;
+    expect(await engine.handle({ type: 'openGate', gate: 'pause', host: null })).toEqual({
+      ok: true,
+      code: 'ok',
+    });
+    const opened: SessionSnapshotV2 = await engine.handle({ type: 'getSnapshot' });
+    const gate: GateState | null = opened.gate;
+    if (gate === null) throw new Error('gate missing');
+    clock += 10_000;
+    engine.tick();
+    expect(
+      await engine.handle({ type: 'confirmGate', typedPhrase: null, expectedGate: gate }),
+    ).toEqual({ ok: true, code: 'ok' });
+
+    const paused: SessionSnapshotV2 = await engine.handle({ type: 'getSnapshot' });
+    expect(paused.phase).toBe('paused');
+    const blockedWhilePaused = await engine.handle({
+      type: 'getBlockState',
+      url: 'https://headlines.example/',
+      docState: 'loaded',
+    });
+    expect(blockedWhilePaused.commands.at(-1)).toMatchObject({
+      command: 'apply-enforcement',
+      presentation: 'clear',
+    });
+
+    expect(await engine.handle({ type: 'resumeFromPause' })).toEqual({ ok: true, code: 'ok' });
+    const resumed: SessionSnapshotV2 = await engine.handle({ type: 'getSnapshot' });
+    expect(resumed.phase).toBe('focus');
+    const blockedAfterResume = await engine.handle({
+      type: 'getBlockState',
+      url: 'https://headlines.example/',
+      docState: 'loaded',
+    });
+    expect(blockedAfterResume.commands.at(-1)).toMatchObject({
+      command: 'apply-enforcement',
+      presentation: 'active',
+    });
+  });
+
+  it('refuses to confirm a pause gate the bank cannot yet afford', async (): Promise<void> => {
+    await startRequest(engine, 60);
+    expect(await engine.handle({ type: 'openGate', gate: 'pause', host: null })).toEqual({
+      ok: true,
+      code: 'ok',
+    });
+    const opened: SessionSnapshotV2 = await engine.handle({ type: 'getSnapshot' });
+    const gate: GateState | null = opened.gate;
+    if (gate === null) throw new Error('gate missing');
+    clock += 10_000;
+    engine.tick();
+    expect(
+      await engine.handle({ type: 'confirmGate', typedPhrase: null, expectedGate: gate }),
+    ).toMatchObject({ ok: false, code: 'end-not-allowed' });
+    expect((await engine.handle({ type: 'getSnapshot' })).phase).toBe('focus');
   });
 });
