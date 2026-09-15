@@ -59,11 +59,14 @@ Unchanged from 0.1.0, captured at `2026-09-12T12:38:33.853Z`.
 | 04-stats.png | `4bcb2e4a9661269b00a86f1d6d2c30be7b644d3a99d21d05ac6cd9f1722da5e4` |
 | 05-privacy-data.png | `fb9bbf2970dca94e03df8edeb74467c002a26ec6bb2fddbc07760c2c61e99589` |
 
-## Outstanding submission steps
+## Submission
 
-- The 128 pixel store icon on the listing was removed from the draft and has not been replaced. The
-  listing cannot be submitted until the new icon at `assets/icons/idle-128.png` is uploaded, and
-  the Submit for review button stays disabled while the field is empty. The published listing still
-  shows the old grey icon, because the draft was never saved.
-- The 0.1.1 archive has not been uploaded to the dashboard package tab.
-- Submission has not been made.
+Submitted for review on 15 September 2026. The item status is Pending review, and
+"Publish automatically after it has passed review" was left checked, so publication follows
+approval without another visit to the dashboard.
+
+- The listing store icon was replaced with the 128 pixel build output and the draft was saved.
+- `release/focus-lock-0.1.1.zip` was uploaded on the package tab. The dashboard reports draft
+  version 0.1.1 against published version 0.1.0.
+- Google's own dialog warns that review can take up to several weeks, so the published version stays
+  0.1.0 until it passes. Nothing here represents approval by Google.
