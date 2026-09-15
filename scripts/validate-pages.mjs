@@ -11,12 +11,30 @@ const SITE_PREFIX = '/distraction-blocker/';
 const PRIVACY_URL = `${SITE_ORIGIN}${SITE_PREFIX}privacy/`;
 const REPOSITORY_URL = 'https://github.com/wolph/distraction-blocker';
 const PAGE_URL_EXPRESSION = '$' + '{{ steps.deployment.outputs.page_url }}';
-const EXPECTED_OUTPUT_FILES = [
+const PRIVACY_OUTPUT_FILES = [
   '404.html',
   'privacy/404.html',
   'privacy/index.html',
   'privacy/style.css',
 ];
+const SITE_OUTPUT_FILES = [
+  'assets/main.css',
+  'assets/main.js',
+  'assets/tab.js',
+  'images/blocked-page.png',
+  'images/focus-session.png',
+  'images/progress.png',
+  'index.html',
+  'tab.html',
+];
+const EXPECTED_OUTPUT_FILES = [...PRIVACY_OUTPUT_FILES, ...SITE_OUTPUT_FILES].sort();
+
+/** The privacy policy must produce no request at all. The site may load its own files. */
+function policyFor(relativeHtmlPath) {
+  return relativeHtmlPath.startsWith('privacy/') || relativeHtmlPath === '404.html'
+    ? 'no-requests'
+    : 'same-site-only';
+}
 const EXPECTED_BUILD_STEPS = [
   { uses: 'actions/checkout@v7' },
   {
@@ -32,18 +50,6 @@ const EXPECTED_DEPLOY_STEPS = [{ id: 'deployment', uses: 'actions/deploy-pages@v
 const FORBIDDEN_PROSE_PUNCTUATION = /[“”„‟‘’‚‛—–−‑‒…;]/u;
 const REQUEST_PRODUCING_SELECTOR =
   'script, iframe, img, audio, video, source, track, object, embed, form';
-const SAFE_NON_URL_ATTRIBUTES = new Set([
-  'aria-hidden',
-  'aria-label',
-  'aria-labelledby',
-  'charset',
-  'class',
-  'content',
-  'id',
-  'lang',
-  'name',
-  'rel',
-]);
 const URL_BEARING_ATTRIBUTES = new Set([
   'about',
   'action',
@@ -74,13 +80,6 @@ const URL_BEARING_ATTRIBUTES = new Set([
   'usemap',
   'vocab',
   'xlink:href',
-]);
-const ALLOWED_EXTERNAL_ANCHOR_URLS = new Set([
-  REPOSITORY_URL,
-  `${REPOSITORY_URL}/issues`,
-  'https://policies.google.com/privacy',
-  'https://www.google.com/chrome/terms/',
-  'https://developer.chrome.com/docs/webstore/program-policies/user-data-faq/',
 ]);
 const ALLOWED_CSS_AT_RULES = new Set(['media']);
 const ALLOWED_CSS_FUNCTIONS = new Set([
@@ -338,7 +337,8 @@ function urlToOutputPath(url, outputDirectory) {
     `Broken same-site link outside ${SITE_PREFIX}: ${url.href}`,
   );
   const relativePath = decodeURIComponent(url.pathname.slice(SITE_PREFIX.length));
-  const normalizedPath = relativePath.endsWith('/') ? `${relativePath}index.html` : relativePath;
+  const normalizedPath =
+    relativePath === '' || relativePath.endsWith('/') ? `${relativePath}index.html` : relativePath;
   const outputPath = resolve(outputDirectory, normalizedPath);
   assert(
     isInside(outputPath, outputDirectory),
@@ -350,8 +350,8 @@ function urlToOutputPath(url, outputDirectory) {
 function validateSameSiteLinks(document, htmlPath, outputDirectory) {
   const currentRelativePath = relative(outputDirectory, htmlPath).split(sep).join('/');
   const currentUrl = new URL(currentRelativePath, `${SITE_ORIGIN}${SITE_PREFIX}`);
-  for (const element of document.querySelectorAll('[href]')) {
-    const href = element.getAttribute('href');
+  for (const element of document.querySelectorAll('[href], [src]')) {
+    const href = element.getAttribute('href') ?? element.getAttribute('src');
     if (!href || /^(?:mailto|tel|data):/u.test(href)) continue;
     const targetUrl = new URL(href, currentUrl);
     if (targetUrl.origin !== SITE_ORIGIN) continue;
@@ -376,6 +376,7 @@ function validateSameSiteLinks(document, htmlPath, outputDirectory) {
 }
 
 function validateResources(document, relativeHtmlPath) {
+  const policy = policyFor(relativeHtmlPath);
   assert(
     document.querySelector('base') === null,
     `HTML base elements are forbidden in dist-pages/${relativeHtmlPath}`,
@@ -384,10 +385,28 @@ function validateResources(document, relativeHtmlPath) {
     document.querySelector('style') === null,
     `Inline style elements are forbidden in dist-pages/${relativeHtmlPath}`,
   );
-  assert(
-    document.querySelectorAll(REQUEST_PRODUCING_SELECTOR).length === 0,
-    `Request-producing HTML elements are forbidden in dist-pages/${relativeHtmlPath}`,
-  );
+  if (policy === 'no-requests') {
+    assert(
+      document.querySelectorAll(REQUEST_PRODUCING_SELECTOR).length === 0,
+      `Request-producing HTML elements are forbidden in dist-pages/${relativeHtmlPath}`,
+    );
+  } else {
+    assert(
+      document.querySelectorAll('iframe, object, embed, form, audio, video, source, track')
+        .length === 0,
+      `Only scripts, stylesheets and images may load in dist-pages/${relativeHtmlPath}`,
+    );
+    for (const script of document.querySelectorAll('script')) {
+      assert(
+        script.textContent.trim() === '',
+        `Inline scripts are forbidden in dist-pages/${relativeHtmlPath}`,
+      );
+      assert(
+        script.getAttribute('type') === 'module',
+        `Scripts must be modules in dist-pages/${relativeHtmlPath}`,
+      );
+    }
+  }
   for (const element of document.querySelectorAll('*')) {
     for (const attribute of element.attributes) {
       const attributeName = attribute.name.toLowerCase();
@@ -404,51 +423,60 @@ function validateResources(document, relativeHtmlPath) {
         attributeName !== 'ping',
         `Ping attributes are forbidden in dist-pages/${relativeHtmlPath}`,
       );
-      if (URL_BEARING_ATTRIBUTES.has(attributeName)) {
-        const compactValue = stripUrlControlCharacters(attributeValue);
-        const isDataIcon =
-          element.localName === 'link' &&
-          element.getAttribute('rel') === 'icon' &&
-          attributeName === 'href' &&
-          attributeValue === 'data:,';
-        assert(
-          isDataIcon || !/^(?:data|javascript|vbscript):/iu.test(compactValue),
-          `Executable URL scheme is forbidden in dist-pages/${relativeHtmlPath}`,
-        );
+      if (!URL_BEARING_ATTRIBUTES.has(attributeName)) continue;
+      const compactValue = stripUrlControlCharacters(attributeValue);
+      const isDataIcon =
+        element.localName === 'link' &&
+        element.getAttribute('rel') === 'icon' &&
+        attributeName === 'href' &&
+        attributeValue === 'data:,';
+      assert(
+        isDataIcon || !/^(?:data|javascript|vbscript):/iu.test(compactValue),
+        `Executable URL scheme is forbidden in dist-pages/${relativeHtmlPath}`,
+      );
+      if (policy === 'no-requests') {
         assert(
           attributeName === 'href' && ['a', 'link'].includes(element.localName),
           `Unapproved URL-bearing attribute ${attribute.name} in dist-pages/${relativeHtmlPath}`,
         );
-        if (element.localName === 'a') {
-          const isLocalHref =
-            attributeValue.startsWith('#') ||
-            attributeValue.startsWith('./') ||
-            attributeValue.startsWith(SITE_PREFIX);
-          assert(
-            isLocalHref || ALLOWED_EXTERNAL_ANCHOR_URLS.has(attributeValue),
-            `Anchor URL is outside the local and approved external contract: ${attributeValue}`,
-          );
-        }
         continue;
       }
+      const approved =
+        (attributeName === 'href' && ['a', 'link'].includes(element.localName)) ||
+        (attributeName === 'src' && ['script', 'img'].includes(element.localName));
       assert(
-        SAFE_NON_URL_ATTRIBUTES.has(attributeName),
-        `Unapproved HTML attribute ${attribute.name} in dist-pages/${relativeHtmlPath}`,
+        approved,
+        `Unapproved URL-bearing attribute ${attribute.name} in dist-pages/${relativeHtmlPath}`,
       );
+      if (
+        !isDataIcon &&
+        (attributeName === 'src' || (attributeName === 'href' && element.localName === 'link'))
+      ) {
+        const resolved = new URL(compactValue, `${SITE_ORIGIN}${SITE_PREFIX}${relativeHtmlPath}`);
+        assert(
+          resolved.origin === SITE_ORIGIN && resolved.pathname.startsWith(SITE_PREFIX),
+          `Resource must be same-site in dist-pages/${relativeHtmlPath}: ${attributeValue}`,
+        );
+      }
     }
   }
-  const expectedStylesheet =
-    relativeHtmlPath === 'privacy/index.html'
-      ? './style.css'
-      : '/distraction-blocker/privacy/style.css';
+
+  // Privacy pages keep the original exact pin: one file, one stylesheet, one canonical URL. The
+  // site's own pages are pinned by the staged output file list instead (EXPECTED_OUTPUT_FILES),
+  // since tab.html carries no stylesheet and Task 5 still owns its final shape.
   const stylesheets = [];
   for (const link of document.querySelectorAll('link[href]')) {
     const rel = link.getAttribute('rel');
     const href = link.getAttribute('href');
     if (rel === 'canonical') {
+      const hasCanonical =
+        relativeHtmlPath === 'privacy/index.html' || relativeHtmlPath === 'index.html';
+      const expectedCanonical =
+        relativeHtmlPath === 'privacy/index.html' ? PRIVACY_URL : `${SITE_ORIGIN}${SITE_PREFIX}`;
+      assert(hasCanonical, `Unexpected link resource in dist-pages/${relativeHtmlPath}`);
       assert(
-        relativeHtmlPath === 'privacy/index.html' && href === PRIVACY_URL,
-        `Unexpected link resource in dist-pages/${relativeHtmlPath}`,
+        href === expectedCanonical,
+        `Unexpected canonical URL in dist-pages/${relativeHtmlPath}`,
       );
       continue;
     }
@@ -459,10 +487,21 @@ function validateResources(document, relativeHtmlPath) {
     assert(rel === 'stylesheet', `Unexpected link resource in dist-pages/${relativeHtmlPath}`);
     stylesheets.push(href);
   }
-  assert(
-    isDeepStrictEqual(stylesheets, [expectedStylesheet]),
-    `Stylesheet resource must be exactly ${expectedStylesheet} in dist-pages/${relativeHtmlPath}`,
-  );
+  if (policy === 'no-requests') {
+    const expectedStylesheet =
+      relativeHtmlPath === 'privacy/index.html'
+        ? './style.css'
+        : '/distraction-blocker/privacy/style.css';
+    assert(
+      isDeepStrictEqual(stylesheets, [expectedStylesheet]),
+      `Stylesheet resource must be exactly ${expectedStylesheet} in dist-pages/${relativeHtmlPath}`,
+    );
+  } else {
+    assert(
+      stylesheets.length <= 1,
+      `At most one stylesheet may load in dist-pages/${relativeHtmlPath}`,
+    );
+  }
 }
 
 function validatePrivacyMetadata(document, stylesheet) {

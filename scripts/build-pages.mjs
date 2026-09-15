@@ -1,4 +1,4 @@
-import { copyFileSync, lstatSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, realpathSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 
 const rootDirectory = realpathSync(resolve(process.cwd()));
@@ -56,7 +56,10 @@ const sourceRealPath = realpathSync(sourceDirectory);
 
 for (const filename of sourceFiles) assertRegularSource(filename, sourceRealPath);
 
-rmSync(outputDirectory, { recursive: true, force: true });
+assert(
+  existsSync(outputDirectory),
+  'Run the Vite pages build before build-pages.mjs: dist-pages is missing',
+);
 mkdirSync(privacyOutputDirectory, { recursive: true });
 
 for (const filename of sourceFiles) {

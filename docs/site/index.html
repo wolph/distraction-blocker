@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Try Focus Lock in your browser: start a focus session, meet the lockscreen, and get back to work.">
+    <link rel="icon" href="data:,">
+    <link rel="canonical" href="https://wolph.github.io/distraction-blocker/">
+    <link rel="stylesheet" href="./site.css">
+    <title>Focus Lock</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#demo">Skip to the demo</a>
+    <header class="page-header">
+      <div class="header-inner">
+        <p class="eyebrow">Focus Lock for Chrome</p>
+        <h1>Stay with the task you chose.</h1>
+        <p class="lede">
+          Block distracting websites, keep your next step in view, and get back to work with one
+          click. Try it below. Nothing is installed and nothing leaves this page.
+        </p>
+        <p class="actions">
+          <a class="button button-primary" href="https://chromewebstore.google.com/detail/focus-lock/lfhgncahaaenflajfdolbkgiglppdgjm">Install from the Chrome Web Store</a>
+          <a class="button" href="#demo">Try the demo</a>
+        </p>
+      </div>
+    </header>
+    <main id="main-content">
+      <section id="demo" class="demo" aria-labelledby="demo-heading">
+        <h2 id="demo-heading">Try a focus session</h2>
+        <p class="demo-note">
+          Time runs sixty times faster here, so a 25 minute session ends in 25 seconds.
+        </p>
+        <div class="demo-layout">
+          <section id="browser" class="browser" aria-label="A pretend browser window"></section>
+          <ol id="guide" class="guide" aria-label="What to try"></ol>
+        </div>
+        <div id="popup-panel" class="popup-panel" hidden>
+          <div id="popup" class="popup"></div>
+        </div>
+      </section>
+      <section class="tour" aria-labelledby="tour-heading">
+        <h2 id="tour-heading">What it looks like in Chrome</h2>
+        <figure>
+          <img src="/distraction-blocker/images/focus-session.png" width="480" height="320" alt="Focus Lock session controls with the task Finish the proposal, a focus duration and a chosen work tab.">
+          <figcaption>Name the task, choose a duration, and select the sites to put aside.</figcaption>
+        </figure>
+        <figure>
+          <img src="/distraction-blocker/images/blocked-page.png" width="960" height="640" alt="A blocked page keeps Finish the proposal visible, with a Back to work button pointing to the work tab.">
+          <figcaption>Open a blocked site and Focus Lock puts your task back in front of you.</figcaption>
+        </figure>
+        <figure>
+          <img src="/distraction-blocker/images/progress.png" width="960" height="640" alt="Focus statistics with a modest demonstration history, showing focused time and completed sessions.">
+          <figcaption>See focused time, session history and patterns in Statistics.</figcaption>
+        </figure>
+      </section>
+      <section class="privacy" aria-labelledby="privacy-heading">
+        <h2 id="privacy-heading">Your browsing stays yours</h2>
+        <p>
+          Focus Lock sends no extension data to a developer-controlled server. Full URLs, focus
+          intentions, detailed events and live sessions stay in your local Chrome profile.
+        </p>
+        <p>
+          <a href="./privacy/">Read the privacy policy</a> or
+          <a href="https://github.com/wolph/distraction-blocker#get-started">install from source</a>.
+        </p>
+      </section>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
