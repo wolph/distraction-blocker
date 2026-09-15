@@ -8,6 +8,8 @@
   --accent: #236ed2;
   --accent-ink: #ffffff;
   --good: #1d8a4a;
+  --chrome-bg: #e9edf2;
+  --tab-bg: #f2f4f7;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 16px;
   line-height: 1.5;
@@ -36,7 +38,14 @@ html {
     --paper: #121a15;
     --panel: #1a241e;
     --line: #2c3a31;
-    --accent-ink: #ffffff;
+    /* Chrome's default button text colour (`buttontext`) follows `color-scheme` rather than the
+       inherited `color`, so a fixed light --accent read at 3.2:1 against this dark panel. A
+       lighter accent and a dark accent-ink keep the outline button, the primary button and the
+       toolbar icon all readable. */
+    --accent: #7fb3ff;
+    --accent-ink: #0a1930;
+    --chrome-bg: #0c110d;
+    --tab-bg: #141d17;
   }
 }
 html[data-theme="dark"] {
@@ -46,7 +55,10 @@ html[data-theme="dark"] {
   --paper: #121a15;
   --panel: #1a241e;
   --line: #2c3a31;
-  --accent-ink: #ffffff;
+  --accent: #7fb3ff;
+  --accent-ink: #0a1930;
+  --chrome-bg: #0c110d;
+  --tab-bg: #141d17;
 }
 body {
   margin: 0;
@@ -89,7 +101,14 @@ h1 {
   color: var(--muted);
   max-width: 60ch;
 }
-.actions {
+/*
+ * Named .hero-actions rather than the more obvious .actions: popup.css defines its own .actions
+ * for the popup's session-start buttons (width: 100%, flex-direction: column), and with site.css
+ * now loaded after popup.css in the bundle (see the html rule above), a shared class name would
+ * apply whichever rule is declared last to *both* the hero buttons and the embedded popup's own
+ * buttons, picking one layout for two unrelated components.
+ */
+.hero-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
@@ -144,12 +163,16 @@ figcaption {
   display: flex;
   gap: 4px;
   padding: 8px 8px 0;
-  background: #e9edf2;
+  background: var(--chrome-bg);
 }
 .tab {
   border: 1px solid var(--line);
   border-bottom: none;
-  background: #f2f4f7;
+  background: var(--tab-bg);
+  /* Buttons take their text colour from the UA's `buttontext`, not from inherited `color`, and
+     `buttontext` follows `color-scheme` (light chrome regardless of --tab-bg in dark mode without
+     this), so the inactive Headlines/Videos labels read as light-on-light without it. */
+  color: var(--ink);
   padding: 6px 14px;
   border-radius: 8px 8px 0 0;
   cursor: pointer;
@@ -172,7 +195,7 @@ figcaption {
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 6px 12px;
-  color: var(--muted);
+  color: var(--ink);
   font-size: 0.9rem;
 }
 .extension-icon {
