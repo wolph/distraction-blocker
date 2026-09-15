@@ -19,6 +19,13 @@ import { PNG } from 'pngjs';
 import type { DailyAgg, ListsConfig, Settings, SetupState } from '../../src/shared/types';
 import { assertNoUnexpectedBrowserDiagnostics } from './browser-diagnostics';
 import {
+  type AccessibilityNode,
+  type AccessibilityProperty,
+  type AccessibilityTree,
+  type FrameTree,
+  findFrameId,
+} from './cdp-accessibility';
+import {
   browserDiagnosticsFor,
   expect,
   sendExtensionRequest,
@@ -54,32 +61,6 @@ interface MediaProvenance {
   files: Record<string, { bytes: number; sha256: string }>;
   demonstration: string[];
   reproductionInstructions: string[];
-}
-
-interface AccessibilityProperty {
-  name?: string;
-  value?: { value?: unknown };
-}
-
-interface AccessibilityNode {
-  backendDOMNodeId?: number;
-  role?: { value?: unknown };
-  name?: { value?: unknown };
-  properties?: AccessibilityProperty[];
-}
-
-interface AccessibilityTree {
-  nodes: AccessibilityNode[];
-}
-
-/** A tab iframe on the demo page, addressed by the CDP frame tree, one id and url per frame. */
-interface FrameTreeNode {
-  frame: { id: string; url: string };
-  childFrames?: FrameTreeNode[];
-}
-
-interface FrameTree {
-  frameTree: FrameTreeNode;
 }
 
 function cleanEnvironment(): NodeJS.ProcessEnv {
@@ -184,16 +165,6 @@ async function waitForWorkTarget(page: Page): Promise<void> {
   } finally {
     await session.detach();
   }
-}
-
-/** Depth first search of a CDP frame tree for the frame whose URL ends with the given suffix. */
-function findFrameId(node: FrameTreeNode, urlSuffix: string): string | undefined {
-  if (node.frame.url.endsWith(urlSuffix)) return node.frame.id;
-  for (const child of node.childFrames ?? []) {
-    const found: string | undefined = findFrameId(child, urlSuffix);
-    if (found !== undefined) return found;
-  }
-  return undefined;
 }
 
 /**
@@ -480,17 +451,19 @@ test.describe('README capture', (): void => {
       files: {},
       demonstration: [
         'Fresh isolated Playwright Chromium extension profile with website permission fixture. No personal browser data.',
-        'Real extension UI and controls, light theme. No UI text, CSS or screenshots are replaced.',
+        'focus-session.png, blocked-page.png and progress.png: the real extension UI and controls, light theme, in a real Chrome tab. No UI text, CSS or screenshots are replaced.',
         'Session: 25 minutes, Finish the proposal. A local demonstration document is the actual selected work tab.',
         'Progress: seeded one-hour completed session and one blocked attempt yesterday. The current session is real.',
-        'GIF: 80 screenshots at 8 fps, 10 seconds. Work document for 2 seconds, blocked page for 4, returned work document for 4.',
-        'Recorded from the interactive demo at https://wolph.github.io/distraction-blocker/.',
-        `Browser chrome is outside the captures. Popup viewport 480x600. Block and demo 960x640. Stats overview 1280x${statsHeight}.`,
-        'The blocking overlay applies to an already loaded local blocked.example page. Back to work activates the original allowed tab.',
+        'demo-poster.png and demo.gif are recorded from the interactive demo page at https://wolph.github.io/distraction-blocker/, which runs the same popup and lockscreen inside fake browser tabs made from iframes, not real Chrome tabs.',
+        'GIF: 80 screenshots at 8 fps, 10 seconds. Work document for 2 seconds, the Headlines lockscreen for 4, the returned work document for 4.',
+        `Native Chrome browser chrome is outside every capture. The demo captures do include the fake tab strip and toolbar drawn by the demo page itself, since that is ordinary page content, not real browser chrome. Popup viewport 480x600. Block and demo 960x640. Stats overview 1280x${statsHeight}.`,
+        "In blocked-page.png the blocking overlay applies to an already loaded local blocked.example page, and pressing Back to work there activates that page's original Chrome tab. In demo.gif, pressing Back to work switches the fake tab strip on the demo page to the work tab, a state change inside one Chrome tab rather than a switch between Chrome tabs.",
       ],
       reproductionInstructions: [
         `${CLEAN_ENVIRONMENT} node scripts/gen-icons.mjs`,
         `${CLEAN_ENVIRONMENT} node node_modules/vite/bin/vite.js build`,
+        `${CLEAN_ENVIRONMENT} node node_modules/vite/bin/vite.js build --config vite.pages.config.ts`,
+        `${CLEAN_ENVIRONMENT} node scripts/build-pages.mjs`,
         `${CLEAN_ENVIRONMENT} TZ=Europe/Amsterdam UPDATE_README_MEDIA=1 node node_modules/@playwright/test/cli.js test tests/e2e/readme-media.spec.ts -g 'captures the README product tour'`,
         `${CLEAN_ENVIRONMENT} node node_modules/@playwright/test/cli.js test tests/e2e/readme-media.spec.ts -g 'validates the README media inventory'`,
       ],
