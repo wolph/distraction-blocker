@@ -9,12 +9,18 @@ export interface ClockRealm {
 
 export interface DemoClock {
   now(): number;
+  /** The real-time instant `now()` counts from, so a second realm installed with this same value
+   * reports the same accelerated time regardless of when it happened to install. */
+  base: number;
   uninstall(): void;
 }
 
-export function installDemoClock(realm: ClockRealm, speed: number): DemoClock {
+export function installDemoClock(
+  realm: ClockRealm,
+  speed: number,
+  base: number = realm.Date.now(),
+): DemoClock {
   const RealDate: DateConstructor = realm.Date;
-  const base: number = RealDate.now();
   const now = (): number => base + Math.round((RealDate.now() - base) * speed);
   const DemoDate = function (this: Date, ...args: unknown[]): Date | string {
     if (!new.target) return new RealDate(now()).toString();
@@ -29,6 +35,7 @@ export function installDemoClock(realm: ClockRealm, speed: number): DemoClock {
   realm.Date = DemoDate;
   return {
     now,
+    base,
     uninstall: (): void => {
       realm.Date = RealDate;
     },

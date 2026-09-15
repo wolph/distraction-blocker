@@ -5,6 +5,9 @@ export interface DemoBridge {
   handle(request: Request): Promise<unknown>;
   subscribe(tabId: number, listener: (message: Broadcast) => void): () => void;
   clockSpeed: number;
+  /** The parent page's demo clock base, so a tab realm's own clock shares the parent's timeline
+   * instead of starting a fraction of a real second behind it. */
+  clockBase: number;
 }
 
 export const DEMO_BRIDGE_KEY: '__focusLockDemo' = '__focusLockDemo';

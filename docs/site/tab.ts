@@ -76,7 +76,9 @@ function windowFacade(url: string): Window {
 
 const tab: DemoTab = currentTab();
 const bridge: DemoBridge = bridgeFromParent();
-installDemoClock(window, bridge.clockSpeed);
+// Shares the parent page's clock base so this tab's countdown reads the same demo time as the
+// popup instead of starting a fraction of a real second behind it.
+installDemoClock(window, bridge.clockSpeed, bridge.clockBase);
 renderPage(tab);
 
 const listeners: Set<

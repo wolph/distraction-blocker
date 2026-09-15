@@ -6,13 +6,28 @@
 import type { Broadcast, Request } from '../../src/shared/messages';
 import { DEMO_BRIDGE_KEY, type DemoBridge } from './demo-protocol';
 import type { DemoEngine } from './engine';
-import { activeTab, DEMO_WINDOW_ID } from './tabs-model';
+import { activeTab, DEMO_WINDOW_ID, type DemoTab } from './tabs-model';
 
 type MessageListener = (
   message: unknown,
   sender: unknown,
   respond: (value: unknown) => void,
 ) => boolean | undefined;
+
+/** The subset of `chrome.*` the popup calls: messaging, the active tab, and the current window. */
+interface PopupChromeShim {
+  runtime: {
+    sendMessage(request: unknown): Promise<unknown>;
+    onMessage: {
+      addListener(listener: MessageListener): void;
+      removeListener(listener: MessageListener): void;
+    };
+    openOptionsPage(): Promise<void>;
+  };
+  tabs: { query(): Promise<chrome.tabs.Tab[]> };
+  windows: { getCurrent(): Promise<{ id: number }> };
+  storage: { onChanged: { addListener(): void; removeListener(): void } };
+}
 
 function listenerSet<T>(): { add(listener: T): void; remove(listener: T): void; all(): T[] } {
   const listeners: Set<T> = new Set<T>();
@@ -28,13 +43,14 @@ function listenerSet<T>(): { add(listener: T): void; remove(listener: T): void; 
 }
 
 export function installPopupChrome(engine: DemoEngine, realm: Window): void {
-  const messageListeners = listenerSet<MessageListener>();
+  const messageListeners: ReturnType<typeof listenerSet<MessageListener>> =
+    listenerSet<MessageListener>();
   engine.onBroadcast((message: Broadcast): void => {
     for (const listener of messageListeners.all()) listener(message, {}, (): void => undefined);
   });
-  const tabs = {
+  const tabs: { query: () => Promise<chrome.tabs.Tab[]> } = {
     query: async (): Promise<chrome.tabs.Tab[]> => {
-      const tab = activeTab(engine.strip());
+      const tab: DemoTab = activeTab(engine.strip());
       return [
         {
           id: tab.tabId,
@@ -56,13 +72,16 @@ export function installPopupChrome(engine: DemoEngine, realm: Window): void {
       ];
     },
   };
-  const shim = {
+  const shim: PopupChromeShim = {
     runtime: {
       sendMessage: async (request: unknown): Promise<unknown> =>
         engine.handle(request as Extract<Request, { type: Request['type'] }>),
       onMessage: { addListener: messageListeners.add, removeListener: messageListeners.remove },
+      // The spec's no-op: the demo has no options page, so this sets a tooltip on the popup panel
+      // instead of the real extension's tab-opening behaviour and never alerts the visitor.
       openOptionsPage: async (): Promise<void> => {
-        realm.alert('The options page is not part of this demo.');
+        const panel: HTMLElement | null = realm.document.getElementById('popup-panel');
+        if (panel !== null) panel.title = 'The options page is not part of this demo.';
       },
     },
     tabs,
@@ -74,13 +93,19 @@ export function installPopupChrome(engine: DemoEngine, realm: Window): void {
   (realm as unknown as { chrome: unknown }).chrome = shim;
 }
 
-export function publishBridge(engine: DemoEngine, realm: Window, clockSpeed: number): void {
+export function publishBridge(
+  engine: DemoEngine,
+  realm: Window,
+  clockSpeed: number,
+  clockBase: number,
+): void {
   const bridge: DemoBridge = {
     handle: (request: Request): Promise<unknown> =>
       engine.handle(request as Extract<Request, { type: Request['type'] }>),
     subscribe: (_tabId: number, listener: (message: Broadcast) => void): (() => void) =>
       engine.onBroadcast(listener),
     clockSpeed,
+    clockBase,
   };
   (realm as unknown as Record<string, unknown>)[DEMO_BRIDGE_KEY] = bridge;
 }
