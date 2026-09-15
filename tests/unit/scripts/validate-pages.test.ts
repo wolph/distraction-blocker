@@ -191,6 +191,9 @@ function sourceFixture(): string {
     '.skip-link { transform: translateY(-180%); }\n.skip-link:focus { transform: translateY(0); }\n',
   );
   write(join(path, 'docs', 'privacy', '404.html'), VALID_NOT_FOUND_HTML);
+  write(join(path, 'docs', 'images', 'focus-lock', 'readme', 'focus-session.png'), 'stub');
+  write(join(path, 'docs', 'images', 'focus-lock', 'readme', 'blocked-page.png'), 'stub');
+  write(join(path, 'docs', 'images', 'focus-lock', 'readme', 'progress.png'), 'stub');
   // build-pages.mjs now assumes the Vite pages build already staged dist-pages.
   mkdirSync(join(path, 'dist-pages'), { recursive: true });
   return path;
@@ -441,6 +444,19 @@ describe('Pages validation', () => {
       ),
     );
     expectValidationFailure(path, /exact repository URL/i);
+  });
+
+  it('rejects a meta refresh redirect on a privacy page', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'privacy', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '</head>',
+        '<meta http-equiv="refresh" content="0;url=https://tracker.example/collect"></head>',
+      ),
+    );
+    expectValidationFailure(path, /unapproved html attribute/i);
   });
 
   it('rejects the old privacy page title', (): void => {
@@ -731,6 +747,19 @@ describe('Pages validation', () => {
     expectValidationFailure(path, /only scripts, stylesheets and images/i);
   });
 
+  it('rejects a meta refresh redirect on a site page', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '</head>',
+        '<meta http-equiv="refresh" content="0;url=https://tracker.example/collect"></head>',
+      ),
+    );
+    expectValidationFailure(path, /unapproved html attribute/i);
+  });
+
   it('rejects an unlisted external anchor on a site page', (): void => {
     const path: string = fixture();
     const htmlPath: string = join(path, 'dist-pages', 'index.html');
@@ -775,6 +804,13 @@ describe('Pages validation', () => {
 
   it('accepts the real built site', (): void => {
     const projectRoot: string = resolve('.');
+    // Builds into an isolated output directory rather than the project's own dist-pages: this test
+    // runs a real Vite build inside the unit suite, and a concurrently running e2e run also builds
+    // and empties dist-pages, so sharing one directory between them is a race. PAGES_OUTPUT_DIR
+    // points build-pages.mjs and validate-pages.mjs at this directory instead of resolving
+    // dist-pages from cwd, and --outDir does the same for the Vite build itself.
+    const outputDirectory: string = mkdtempSync(join(tmpdir(), 'focus-lock-pages-real-build-'));
+    fixtures.push(outputDirectory);
     const viteBuildResult: ReturnType<typeof spawnSync> = spawnSync(
       process.execPath,
       [
@@ -782,17 +818,32 @@ describe('Pages validation', () => {
         'build',
         '--config',
         'vite.pages.config.ts',
+        '--outDir',
+        outputDirectory,
       ],
       { cwd: projectRoot, encoding: 'utf8' },
     );
     expect(viteBuildResult.status, String(viteBuildResult.stderr)).toBe(0);
-    const buildResult: ReturnType<typeof spawnSync> = build(projectRoot);
+    const env: NodeJS.ProcessEnv = { ...process.env, PAGES_OUTPUT_DIR: outputDirectory };
+    const buildResult: ReturnType<typeof spawnSync> = spawnSync(
+      process.execPath,
+      [BUILD_SCRIPT_PATH],
+      {
+        cwd: projectRoot,
+        encoding: 'utf8',
+        env,
+      },
+    );
     expect(buildResult.status, String(buildResult.stderr)).toBe(0);
-    const validationResult: ReturnType<typeof spawnSync> = validate(projectRoot);
+    const validationResult: ReturnType<typeof spawnSync> = spawnSync(
+      process.execPath,
+      [SCRIPT_PATH],
+      { cwd: projectRoot, encoding: 'utf8', env },
+    );
     expect(validationResult.status, String(validationResult.stderr)).toBe(0);
   });
 
-  it('builds only regular files in both 404 locations', (): void => {
+  it('builds only regular files in both 404 locations, plus the copied tour images', (): void => {
     const path: string = sourceFixture();
     const result: ReturnType<typeof spawnSync> = build(path);
     expect(result.status, String(result.stderr)).toBe(0);
@@ -802,12 +853,20 @@ describe('Pages validation', () => {
       join(outputDirectory, 'privacy', '404.html'),
       join(outputDirectory, 'privacy', 'index.html'),
       join(outputDirectory, 'privacy', 'style.css'),
+      join(outputDirectory, 'images', 'focus-session.png'),
+      join(outputDirectory, 'images', 'blocked-page.png'),
+      join(outputDirectory, 'images', 'progress.png'),
     ];
-    expect(readdirSync(outputDirectory).sort()).toEqual(['404.html', 'privacy']);
+    expect(readdirSync(outputDirectory).sort()).toEqual(['404.html', 'images', 'privacy']);
     expect(readdirSync(join(outputDirectory, 'privacy')).sort()).toEqual([
       '404.html',
       'index.html',
       'style.css',
+    ]);
+    expect(readdirSync(join(outputDirectory, 'images')).sort()).toEqual([
+      'blocked-page.png',
+      'focus-session.png',
+      'progress.png',
     ]);
     for (const outputPath of outputFiles) {
       expect(lstatSync(outputPath).isFile()).toBe(true);
@@ -909,6 +968,11 @@ describe('Pages validation', () => {
     );
     expect(packageJson.scripts['pages:validate']).toBe(
       "npm run pages:build && node scripts/validate-pages.mjs && html-validate 'dist-pages/**/*.html'",
+    );
+    // e2e builds the site before Playwright runs, so site-demo.spec.ts never serves a missing or
+    // stale dist-pages against a checkout where only `npm run e2e` has been run.
+    expect(packageJson.scripts.e2e).toBe(
+      'npm run store:package && npm run pages:build && playwright test',
     );
   });
 });

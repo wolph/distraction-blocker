@@ -51,6 +51,45 @@ const EXPECTED_DEPLOY_STEPS = [{ id: 'deployment', uses: 'actions/deploy-pages@v
 const FORBIDDEN_PROSE_PUNCTUATION = /[“”„‟‘’‚‛—–−‑‒…;]/u;
 const REQUEST_PRODUCING_SELECTOR =
   'script, iframe, img, audio, video, source, track, object, embed, form';
+/**
+ * The privacy policy's non-URL attribute allowlist, restored exactly as the pre-refactor validator
+ * enforced it. Losing this catch-all is what let `<meta http-equiv="refresh"
+ * content="0;url=https://tracker.example/collect">` validate silently: `http-equiv` and `content`
+ * are not URL-bearing attributes, so nothing inspected them at all once the fallback assertion that
+ * every other attribute is on this list was dropped.
+ */
+const SAFE_NON_URL_ATTRIBUTES = new Set([
+  'aria-hidden',
+  'aria-label',
+  'aria-labelledby',
+  'charset',
+  'class',
+  'content',
+  'id',
+  'lang',
+  'name',
+  'rel',
+]);
+/** The site policy's non-URL attribute allowlist: every non-URL attribute the built site
+ * (index.html, tab.html) actually uses, plus the aria-* and data-* families a Preact-rendered
+ * popup may add at runtime that the static markup here does not show. */
+const SITE_SAFE_NON_URL_ATTRIBUTES = new Set([
+  'alt',
+  'charset',
+  'class',
+  'content',
+  'crossorigin',
+  'for',
+  'height',
+  'hidden',
+  'id',
+  'lang',
+  'name',
+  'rel',
+  'role',
+  'type',
+  'width',
+]);
 const URL_BEARING_ATTRIBUTES = new Set([
   'about',
   'action',
@@ -254,8 +293,18 @@ function validateWorkflow(rootDirectory) {
   );
 }
 
+/** Where the staged site lives. Defaults to dist-pages under the project root, but the real-build
+ * unit test points this at an isolated temp directory with PAGES_OUTPUT_DIR, the same override
+ * build-pages.mjs honours, so it never collides with a concurrently running e2e build that also
+ * empties and rewrites dist-pages. */
+function resolveOutputDirectory(rootDirectory) {
+  return process.env.PAGES_OUTPUT_DIR
+    ? resolve(process.env.PAGES_OUTPUT_DIR)
+    : join(rootDirectory, 'dist-pages');
+}
+
 function inspectStagedTree(rootDirectory) {
-  const outputDirectory = join(rootDirectory, 'dist-pages');
+  const outputDirectory = resolveOutputDirectory(rootDirectory);
   assert(existsSync(outputDirectory), 'Missing required directory: dist-pages');
   const outputStat = lstatSync(outputDirectory);
   assert(!outputStat.isSymbolicLink(), 'Staged directory must not be a symbolic link: dist-pages');
@@ -405,8 +454,13 @@ function isDataIconAttribute(element, attributeName, attributeValue) {
   );
 }
 
-/** Runs `visit` for every URL-bearing attribute, after the checks common to both policies. */
-function forEachUrlBearingAttribute(document, relativeHtmlPath, visit) {
+/**
+ * Runs `visit` for every URL-bearing attribute, after the checks common to both policies. Every
+ * attribute that is not URL-bearing must still be on the policy's own non-URL allowlist: an
+ * attribute in neither set, `http-equiv` on a `<meta>` being the case that motivated this, fails
+ * loudly instead of passing through unexamined.
+ */
+function forEachUrlBearingAttribute(document, relativeHtmlPath, isSafeNonUrlAttribute, visit) {
   for (const element of document.querySelectorAll('*')) {
     for (const attribute of element.attributes) {
       const attributeName = attribute.name.toLowerCase();
@@ -423,7 +477,13 @@ function forEachUrlBearingAttribute(document, relativeHtmlPath, visit) {
         attributeName !== 'ping',
         `Ping attributes are forbidden in dist-pages/${relativeHtmlPath}`,
       );
-      if (!URL_BEARING_ATTRIBUTES.has(attributeName)) continue;
+      if (!URL_BEARING_ATTRIBUTES.has(attributeName)) {
+        assert(
+          isSafeNonUrlAttribute(attributeName),
+          `Unapproved HTML attribute ${attribute.name} in dist-pages/${relativeHtmlPath}`,
+        );
+        continue;
+      }
       const compactValue = stripUrlControlCharacters(attributeValue);
       const isDataIcon = isDataIconAttribute(element, attributeName, attributeValue);
       assert(
@@ -469,6 +529,7 @@ function validateNoRequestResources(document, relativeHtmlPath) {
   forEachUrlBearingAttribute(
     document,
     relativeHtmlPath,
+    (attributeName) => SAFE_NON_URL_ATTRIBUTES.has(attributeName),
     ({ element, attribute, attributeName, attributeValue }) => {
       assert(
         attributeName === 'href' && ['a', 'link'].includes(element.localName),
@@ -553,15 +614,23 @@ function validateSameSiteResources(document, relativeHtmlPath) {
       `Scripts must be modules in dist-pages/${relativeHtmlPath}`,
     );
   }
-  forEachUrlBearingAttribute(document, relativeHtmlPath, (attributeInfo) => {
-    assertApprovedSameSiteAttribute(
-      attributeInfo.element,
-      attributeInfo.attribute,
-      attributeInfo.attributeName,
-      relativeHtmlPath,
-    );
-    assertSameSiteAnchorOrResource(attributeInfo, relativeHtmlPath);
-  });
+  forEachUrlBearingAttribute(
+    document,
+    relativeHtmlPath,
+    (attributeName) =>
+      SITE_SAFE_NON_URL_ATTRIBUTES.has(attributeName) ||
+      attributeName.startsWith('aria-') ||
+      attributeName.startsWith('data-'),
+    (attributeInfo) => {
+      assertApprovedSameSiteAttribute(
+        attributeInfo.element,
+        attributeInfo.attribute,
+        attributeInfo.attributeName,
+        relativeHtmlPath,
+      );
+      assertSameSiteAnchorOrResource(attributeInfo, relativeHtmlPath);
+    },
+  );
   const canonicalAllowed = relativeHtmlPath === 'index.html';
   const stylesheets = collectStylesheetLinks(
     document,
@@ -693,7 +762,7 @@ async function main() {
   const rootDirectory = realpathSync(resolve(process.cwd()));
   validateWorkflow(rootDirectory);
   validateStagedSite(rootDirectory);
-  await validateHtml(rootDirectory, join(rootDirectory, 'dist-pages'));
+  await validateHtml(rootDirectory, resolveOutputDirectory(rootDirectory));
   console.log('Pages artifact is valid.');
 }
 

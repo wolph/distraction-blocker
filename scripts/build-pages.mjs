@@ -3,9 +3,19 @@ import { join, resolve, sep } from 'node:path';
 
 const rootDirectory = realpathSync(resolve(process.cwd()));
 const sourceDirectory = join(rootDirectory, 'docs', 'privacy');
-const outputDirectory = join(rootDirectory, 'dist-pages');
+const tourImageSourceDirectory = join(rootDirectory, 'docs', 'images', 'focus-lock', 'readme');
+// The real-build unit test points this at an isolated temp directory with PAGES_OUTPUT_DIR, so a
+// concurrently running e2e build (which also writes dist-pages) cannot empty this one out from
+// under it. validate-pages.mjs honours the same override.
+const outputDirectory = process.env.PAGES_OUTPUT_DIR
+  ? resolve(process.env.PAGES_OUTPUT_DIR)
+  : join(rootDirectory, 'dist-pages');
 const privacyOutputDirectory = join(outputDirectory, 'privacy');
+const tourImageOutputDirectory = join(outputDirectory, 'images');
 const sourceFiles = ['index.html', 'style.css', '404.html'];
+// The three README product-tour screenshots, copied from the one place the README itself reads
+// them (docs/images/focus-lock/readme/) so the site never carries a second, driftable copy.
+const tourImageFiles = ['focus-session.png', 'blocked-page.png', 'progress.png'];
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -35,35 +45,56 @@ function assertRealDirectoryComponents(relativeComponents) {
   }
 }
 
-function assertRegularSource(filename, sourceRealPath) {
-  const sourcePath = join(sourceDirectory, filename);
+function assertRegularSource(directory, filename, sourceRealPath) {
+  const sourcePath = join(directory, filename);
   const sourceStat = lstatSync(sourcePath);
-  assert(!sourceStat.isSymbolicLink(), `Privacy source must not be a symbolic link: ${sourcePath}`);
-  assert(sourceStat.isFile(), `Privacy source must be a regular file: ${sourcePath}`);
-  assert(sourceStat.nlink === 1, `Privacy source must not be a hard link: ${sourcePath}`);
+  assert(!sourceStat.isSymbolicLink(), `Source must not be a symbolic link: ${sourcePath}`);
+  assert(sourceStat.isFile(), `Source must be a regular file: ${sourcePath}`);
+  assert(sourceStat.nlink === 1, `Source must not be a hard link: ${sourcePath}`);
   assert(
     isInside(realpathSync(sourcePath), sourceRealPath),
-    `Privacy source resolves outside docs/privacy: ${sourcePath}`,
+    `Source resolves outside its directory: ${sourcePath}`,
   );
   assert(
     isInside(realpathSync(sourcePath), rootDirectory),
-    `Privacy source resolves outside the project root: ${sourcePath}`,
+    `Source resolves outside the project root: ${sourcePath}`,
+  );
+}
+
+function assertRegularOutput(outputPath, outputRealPath) {
+  const outputStat = lstatSync(outputPath);
+  assert(outputStat.isFile(), `Pages output must be a regular file: ${outputPath}`);
+  assert(outputStat.nlink === 1, `Pages output must not be a hard link: ${outputPath}`);
+  assert(
+    isInside(realpathSync(outputPath), outputRealPath),
+    `Pages output resolves outside dist-pages: ${outputPath}`,
   );
 }
 
 assertRealDirectoryComponents(['docs', 'privacy']);
 const sourceRealPath = realpathSync(sourceDirectory);
 
-for (const filename of sourceFiles) assertRegularSource(filename, sourceRealPath);
+for (const filename of sourceFiles) assertRegularSource(sourceDirectory, filename, sourceRealPath);
+
+assertRealDirectoryComponents(['docs', 'images', 'focus-lock', 'readme']);
+const tourImageSourceRealPath = realpathSync(tourImageSourceDirectory);
+
+for (const filename of tourImageFiles)
+  assertRegularSource(tourImageSourceDirectory, filename, tourImageSourceRealPath);
 
 assert(
   existsSync(outputDirectory),
-  'Run the Vite pages build before build-pages.mjs: dist-pages is missing',
+  `Run the Vite pages build before build-pages.mjs: ${outputDirectory} is missing`,
 );
 mkdirSync(privacyOutputDirectory, { recursive: true });
+mkdirSync(tourImageOutputDirectory, { recursive: true });
 
 for (const filename of sourceFiles) {
   copyFileSync(join(sourceDirectory, filename), join(privacyOutputDirectory, filename));
+}
+
+for (const filename of tourImageFiles) {
+  copyFileSync(join(tourImageSourceDirectory, filename), join(tourImageOutputDirectory, filename));
 }
 
 copyFileSync(join(sourceDirectory, '404.html'), join(outputDirectory, '404.html'));
@@ -75,12 +106,8 @@ for (const relativePath of [
   'privacy/index.html',
   'privacy/style.css',
 ]) {
-  const outputPath = join(outputDirectory, relativePath);
-  const outputStat = lstatSync(outputPath);
-  assert(outputStat.isFile(), `Pages output must be a regular file: ${outputPath}`);
-  assert(outputStat.nlink === 1, `Pages output must not be a hard link: ${outputPath}`);
-  assert(
-    isInside(realpathSync(outputPath), outputRealPath),
-    `Pages output resolves outside dist-pages: ${outputPath}`,
-  );
+  assertRegularOutput(join(outputDirectory, relativePath), outputRealPath);
+}
+for (const filename of tourImageFiles) {
+  assertRegularOutput(join(tourImageOutputDirectory, filename), outputRealPath);
 }
