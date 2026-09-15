@@ -175,6 +175,7 @@ function fixture(): string {
   write(join(path, 'dist-pages', 'assets', 'main.css'), VALID_SITE_CSS);
   write(join(path, 'dist-pages', 'assets', 'main.js'), '');
   write(join(path, 'dist-pages', 'assets', 'tab.js'), '');
+  write(join(path, 'dist-pages', 'assets', 'enforcement-v2-validation.js'), '');
   write(join(path, 'dist-pages', 'images', 'focus-session.png'), 'stub');
   write(join(path, 'dist-pages', 'images', 'blocked-page.png'), 'stub');
   write(join(path, 'dist-pages', 'images', 'progress.png'), 'stub');

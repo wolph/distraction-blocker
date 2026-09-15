@@ -117,8 +117,15 @@ installDocumentEnforcement({
   document,
   window: windowFacade(tab.url),
   now: Date.now,
+  // `bridge.handle` runs in the parent page's realm (it closes over the engine defined there), so
+  // its resolved commands are plain objects built from the parent's own Object and Array. The
+  // enforcement loop's parser checks a value's prototype against this realm's Object.prototype and
+  // silently rejects anything else, exactly as it must reject a message a hostile page forged with
+  // a foreign prototype. `structuredClone`, called here in the tab's own realm, rebuilds the value
+  // with this realm's own constructors, the same normalisation `chrome.runtime.sendMessage` gives
+  // the real extension for free by serialising across the process boundary.
   requestVerdict: async (url: string, docState: 'fresh' | 'loaded'): Promise<unknown> =>
-    await bridge.handle({ type: 'getBlockState', url, docState }),
+    structuredClone(await bridge.handle({ type: 'getBlockState', url, docState })),
   addMessageListener: (
     listener: (
       message: unknown,

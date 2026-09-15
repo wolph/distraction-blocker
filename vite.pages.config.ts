@@ -18,7 +18,11 @@ export default defineConfig({
   build: {
     outDir: '../../dist-pages',
     emptyOutDir: true,
-    modulePreload: { polyfill: false },
+    // false, not { polyfill: false }: main.tsx and tab.ts now share a chunk (both reach
+    // src/shared/enforcement-v2-validation transitively), so Vite would inject a
+    // <link rel="modulepreload"> for it. The pages validator's resource policy allows only
+    // script, stylesheet and image links, so the preload hint has to be off rather than allowed.
+    modulePreload: false,
     rollupOptions: {
       // Rollup resolves bare relative entry paths against process.cwd(), not against `root`, so
       // these must be absolute.
