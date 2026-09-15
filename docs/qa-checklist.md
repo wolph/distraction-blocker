@@ -25,12 +25,12 @@ Derived by `node scripts/qa-checklist.mjs`, guarded by
 is asked of the runner, or of the glob the runner is configured with, so a stale one fails a
 test rather than misleading a reader.
 
-Unit suite: **178 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
+Unit suite: **181 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
 `vitest.config.ts` declares. The number of individual test cases is deliberately not recorded:
 deriving it means collecting every file, which is the expensive half of a run, and a number
 that needs a run to verify is exactly the kind that went stale here four times.
 
-End-to-end suite: **114 scenarios in 26 spec files**, as Playwright itself
+End-to-end suite: **115 scenarios in 27 spec files**, as Playwright itself
 lists them. Asking the runner rather than counting `test(` in the sources is not pedantry: a
 grep undercounts `test.skip`, which is listed and reported, and misses a spec file added
 since the grep was written. Both mistakes were present when this section was first drafted.
@@ -178,6 +178,10 @@ since the grep was written. Both mistakes were present when this section was fir
 
 - 25 focus keeps cycling and shows the focus phase beside the total session
 - 50 deep work starts one uninterrupted 50 minute block
+
+### site-demo.spec.ts (1)
+
+- a visitor starts a session, meets the lockscreen, and returns to the draft
 
 ### smoke.spec.ts (10)
 
