@@ -283,3 +283,47 @@ describe('demo engine pause economy', () => {
     expect((await engine.handle({ type: 'getSnapshot' })).phase).toBe('focus');
   });
 });
+
+describe('demo engine publish throttling', () => {
+  it('publishes only when something observable changes', async (): Promise<void> => {
+    const lists = await engine.handle({ type: 'getLists' });
+    const config: SessionConfigV2 = {
+      mode: 'blacklist',
+      strictness: 'friction',
+      duration: { kind: 'timed', minutes: 60 },
+      cycling: { focusMin: 10, shortBreakMin: 5, longBreakMin: 15, longEvery: 4 },
+      intention: 'Finish the proposal',
+      source: 'manual',
+      scheduleOccurrence: null,
+      rules: draftRules(lists),
+    };
+    await engine.handle({ type: 'startSession', config, workTabId: 11, windowId: 1 });
+
+    const broadcasts: Broadcast[] = [];
+    engine.onBroadcast((message: Broadcast): void => {
+      broadcasts.push(message);
+    });
+    for (let i: number = 0; i < 10; i++) {
+      await engine.handle({ type: 'getSnapshot' });
+    }
+    expect(broadcasts).toEqual([]);
+
+    clock += 10 * 60_000;
+    await engine.handle({ type: 'getSnapshot' });
+    expect(broadcasts.map((message: Broadcast): string => message.type)).toEqual([
+      'stateChanged',
+      'reevaluate',
+    ]);
+  });
+
+  it('publishes a throttled credit tick, without a reevaluate, when only the bank moves', async (): Promise<void> => {
+    await startRequest(engine, 60);
+    const broadcasts: Broadcast[] = [];
+    engine.onBroadcast((message: Broadcast): void => {
+      broadcasts.push(message);
+    });
+    clock += 1_500;
+    await engine.handle({ type: 'getSnapshot' });
+    expect(broadcasts.map((message: Broadcast): string => message.type)).toEqual(['stateChanged']);
+  });
+});

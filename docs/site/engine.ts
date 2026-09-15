@@ -32,6 +32,7 @@ import {
 import type { DocumentContentCommand, DocumentOverlayView } from '../../src/shared/enforcement-v2';
 import { CANONICAL_CLEAR_VERDICT } from '../../src/shared/enforcement-v2-validation';
 import { CoreError } from '../../src/shared/errors';
+import { exactDataEqual } from '../../src/shared/exact-data';
 import type { Broadcast, Request, ResponseMap } from '../../src/shared/messages';
 import type {
   BankState,
@@ -93,12 +94,17 @@ interface EngineState {
   bank: BankState;
   /** focus ms already turned into bank credit, so settle() accrues only the elapsed remainder. */
   accruedFocusMs: number;
+  /** when settle() last published for credit accrual alone, so that tick is throttled to 1/s. */
+  lastCreditPublishAt: number;
   unlocks: SiteUnlock[];
   workTabId: number | null;
   enforcementEpoch: string;
   runtimeRevision: number;
   attemptsToday: number;
 }
+
+/** How often settle() may publish for credit accrual alone, with nothing else observable to report. */
+const CREDIT_PUBLISH_INTERVAL_MS: number = 1_000;
 
 const DEMO_LISTS: ListsConfig = {
   ...DEFAULT_LISTS,
@@ -136,6 +142,7 @@ export function createDemoEngine(now: () => number): DemoEngine {
     gate: null,
     bank: { balanceMs: 0 },
     accruedFocusMs: 0,
+    lastCreditPublishAt: 0,
     unlocks: [],
     workTabId: null,
     enforcementEpoch: uuid(),
@@ -221,16 +228,26 @@ export function createDemoEngine(now: () => number): DemoEngine {
     state.accruedFocusMs = focusedMs;
   };
 
+  /**
+   * Settles the session through `now()`. `handle()` calls this on every request and a reevaluate
+   * broadcast makes every open tab call `getBlockState`, which calls `handle()` again, so publishing
+   * on every call would loop the demo tab forever. `advanceSessionV2` always hands back a fresh
+   * clone even when nothing moved, so reference inequality cannot tell "changed" from "settled
+   * again at the same instant": only a value comparison on the fields a viewer can actually observe
+   * can. `exactDataEqual` on the whole session state stands in for that comparison in one call,
+   * because every field the phase machine can move (phase, its boundaries, the cycle index, even
+   * `focusedMs`) already lives on that object, and nothing else about a settle changes it.
+   */
   const settle = (): void => {
     const session: SessionStateV2 | null = state.session;
     if (session === null) return;
     const at: number = now();
+    const gateWasOpen: boolean = state.gate !== null;
     if (
       state.gate !== null &&
       state.gate.openedAt + GATE_EXPIRY_MS + state.settings.gate.delayMs <= at
     ) {
       state.gate = null;
-      publish();
     }
     accrueFocusCredit(session, at);
     const result = advanceSessionV2(session, at);
@@ -244,10 +261,18 @@ export function createDemoEngine(now: () => number): DemoEngine {
       broadcast({ type: 'reevaluate' });
       return;
     }
-    if (result.state !== session) {
-      state.session = result.state;
+    state.session = result.state;
+    const gateIsOpen: boolean = state.gate !== null;
+    if (gateWasOpen !== gateIsOpen || !exactDataEqual(session, result.state)) {
       publish();
       broadcast({ type: 'reevaluate' });
+      return;
+    }
+    // Nothing a viewer can see moved, but the bank may have: publish that alone, throttled to once
+    // a demo second, so the popup's credit line still advances without waking every open tab.
+    if (at - state.lastCreditPublishAt >= CREDIT_PUBLISH_INTERVAL_MS) {
+      state.lastCreditPublishAt = at;
+      publish();
     }
   };
 
@@ -471,6 +496,7 @@ export function createDemoEngine(now: () => number): DemoEngine {
         state.session = session;
         state.matcher = compileSessionMatcher(config.rules, ALL_CATEGORIES, config.mode);
         state.accruedFocusMs = 0;
+        state.lastCreditPublishAt = now();
         state.workTabId = 'workTabId' in request ? request.workTabId : null;
         state.enforcementEpoch = uuid();
         publish();
