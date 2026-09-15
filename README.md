@@ -8,6 +8,9 @@
 
 Block distracting websites, keep your next step in view, and get back to work with one click.
 
+<a href="https://chromewebstore.google.com/detail/focus-lock/lfhgncahaaenflajfdolbkgiglppdgjm"><img src="https://img.shields.io/badge/Chrome%20Web%20Store-Install%20Focus%20Lock-236ed2?logo=googlechrome&logoColor=white" alt="Install Focus Lock from the Chrome Web Store"></a>
+<a href="https://wolph.github.io/distraction-blocker/"><img src="https://img.shields.io/badge/Try%20it-Interactive%20demo-1d8a4a" alt="Try the interactive demo"></a>
+
 **[Get started](#get-started)** | [Take the tour](#a-little-help-staying-on-track) | [Your privacy](#your-browsing-stays-yours)
 
 </div>
