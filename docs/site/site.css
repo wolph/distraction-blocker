@@ -12,6 +12,42 @@
   font-size: 16px;
   line-height: 1.5;
 }
+/*
+ * popup.css's own html rule (scrollbar-width: none; block-size: 100%) is written for the
+ * extension's fixed 480x600 popup window, and this stylesheet loads after popup.css in the
+ * bundle, so without a rule here that reset would win the cascade tie on the landing page's own
+ * html element too: no scrollbar and a height clamp neither belongs on a scrolling document.
+ */
+html {
+  scrollbar-width: auto;
+  block-size: auto;
+}
+/*
+ * The popup sets data-theme and an inline color-scheme on document.documentElement, which on this
+ * page is the landing page's own html element, so a visitor in dark mode (or with the popup's
+ * theme switched to dark) needs a dark palette for the page's own tokens too, or the page keeps
+ * rendering light text-on-paper under UI chrome that has gone dark.
+ */
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ink: #e7efe9;
+    --muted: #9db2a4;
+    --paper: #121a15;
+    --panel: #1a241e;
+    --line: #2c3a31;
+    --accent-ink: #ffffff;
+  }
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --ink: #e7efe9;
+  --muted: #9db2a4;
+  --paper: #121a15;
+  --panel: #1a241e;
+  --line: #2c3a31;
+  --accent-ink: #ffffff;
+}
 body {
   margin: 0;
   background: var(--paper);
