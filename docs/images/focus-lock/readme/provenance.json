@@ -3,7 +3,7 @@
   "sourceCommit": "336caeb35e8de9839738157beb3aa4ecf6f40e54",
   "distSha256": "21ac89600d1ec198343d2a3c1846aaaf21007b58a643fc07c02366a0f1c36f82",
   "packageLockSha256": "8af5957ccc846d292c27f40b42b464c5b6b19a2ca783a399534109c804de8aea",
-  "captureScriptSha256": "7cc64dff32112756d8bf6f6be5506a07979b24b6f5b4ae1c2881af780d831ff1",
+  "captureScriptSha256": "863426c46663a9798afba7d26b7623ba40f6e6ac37dda2a13d6339e2f467980e",
   "version": "0.1.1",
   "toolchain": {
     "node": "24.18.0",
@@ -37,7 +37,7 @@
     "focus-session.png, blocked-page.png and progress.png: the real extension UI and controls, light theme, in a real Chrome tab. No UI text, CSS or screenshots are replaced.",
     "Session: 25 minutes, Finish the proposal. A local demonstration document is the actual selected work tab.",
     "Progress: seeded one-hour completed session and one blocked attempt yesterday. The current session is real.",
-    "demo-poster.png and demo.gif are recorded from the interactive demo page at https://wolph.github.io/distraction-blocker/, which runs the same popup and lockscreen inside fake browser tabs made from iframes, not real Chrome tabs.",
+    "demo-poster.png and demo.gif are recorded from the interactive demo page at https://wolph.github.io/distraction-blocker/, which renders that same popup directly on the page and mounts that same lockscreen inside each fake browser tab's own iframe, none of them real Chrome tabs.",
     "GIF: 80 screenshots at 8 fps, 10 seconds. Work document for 2 seconds, the Headlines lockscreen for 4, the returned work document for 4.",
     "Native Chrome browser chrome is outside every capture. The demo captures do include the fake tab strip and toolbar drawn by the demo page itself, since that is ordinary page content, not real browser chrome. Popup viewport 480x600. Block and demo 960x640. Stats overview 1280x1028.",
     "In blocked-page.png the blocking overlay applies to an already loaded local blocked.example page, and pressing Back to work there activates that page's original Chrome tab. In demo.gif, pressing Back to work switches the fake tab strip on the demo page to the work tab, a state change inside one Chrome tab rather than a switch between Chrome tabs."

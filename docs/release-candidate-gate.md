@@ -365,8 +365,9 @@ version, what each step produced rather than that it passed, the archive path an
 recaptured screenshot digests, and the manual-gate items still outstanding.
 
 **Re-read the archive digest here rather than carrying step 4's forward.** Step 7 is
-`store:package && playwright test`, so it repackages, and the file step 4 inspected has been rebuilt
-since. Nothing fails to warn you: the gate passes, the checklist is signed, and the recorded digest
+`store:package && pages:build && playwright test`, so it repackages, and the file step 4 inspected
+has been rebuilt since. Nothing fails to warn you: the gate passes, the checklist is signed, and the
+recorded digest
 simply names an archive that no longer exists, which anyone checking it later cannot reproduce.
 Record the digest of the archive that exists at the end of the gate, which is the one a reviewer
 would download.
