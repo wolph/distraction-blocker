@@ -4,7 +4,17 @@ import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import type { CDPSession, Page, Route, Worker } from '@playwright/test';
+import {
+  type Browser,
+  type CDPSession,
+  type ConsoleMessage,
+  chromium,
+  type FrameLocator,
+  type Locator,
+  type Page,
+  type Route,
+  type Worker,
+} from '@playwright/test';
 import { PNG } from 'pngjs';
 import type { DailyAgg, ListsConfig, Settings, SetupState } from '../../src/shared/types';
 import { assertNoUnexpectedBrowserDiagnostics } from './browser-diagnostics';
@@ -15,6 +25,7 @@ import {
   test,
   waitForActiveSession,
 } from './fixtures';
+import { type PagesServer, startPagesServer } from './pages-server';
 import { openPopupSection } from './popup-disclosures';
 import { buildStatsVisualSeed, type StatsVisualSeed } from './stats-visual-seeds';
 
@@ -45,14 +56,30 @@ interface MediaProvenance {
   reproductionInstructions: string[];
 }
 
+interface AccessibilityProperty {
+  name?: string;
+  value?: { value?: unknown };
+}
+
 interface AccessibilityNode {
   backendDOMNodeId?: number;
   role?: { value?: unknown };
   name?: { value?: unknown };
+  properties?: AccessibilityProperty[];
 }
 
 interface AccessibilityTree {
   nodes: AccessibilityNode[];
+}
+
+/** A tab iframe on the demo page, addressed by the CDP frame tree, one id and url per frame. */
+interface FrameTreeNode {
+  frame: { id: string; url: string };
+  childFrames?: FrameTreeNode[];
+}
+
+interface FrameTree {
+  frameTree: FrameTreeNode;
 }
 
 function cleanEnvironment(): NodeJS.ProcessEnv {
@@ -141,28 +168,6 @@ async function seedProgress(extPage: Page, worker: Worker): Promise<void> {
   }, seed);
 }
 
-async function clickBackToWork(page: Page): Promise<void> {
-  const session: CDPSession = await page.context().newCDPSession(page);
-  try {
-    const tree: AccessibilityTree = await session.send('Accessibility.getFullAXTree');
-    const button: AccessibilityNode | undefined = tree.nodes.find(
-      (node: AccessibilityNode): boolean =>
-        node.role?.value === 'button' && String(node.name?.value).startsWith('Back to work:'),
-    );
-    if (button?.backendDOMNodeId === undefined) throw new Error('Back to work is unavailable');
-    const box: { model: { content: number[] } } = await session.send('DOM.getBoxModel', {
-      backendNodeId: button.backendDOMNodeId,
-    });
-    const [left, top, right, , , bottom] = box.model.content;
-    if (left === undefined || top === undefined || right === undefined || bottom === undefined) {
-      throw new Error('Back to work has no clickable bounds');
-    }
-    await page.mouse.click((left + right) / 2, (top + bottom) / 2);
-  } finally {
-    await session.detach();
-  }
-}
-
 async function waitForWorkTarget(page: Page): Promise<void> {
   const session: CDPSession = await page.context().newCDPSession(page);
   try {
@@ -181,37 +186,146 @@ async function waitForWorkTarget(page: Page): Promise<void> {
   }
 }
 
-async function recordDemo(
-  work: Page,
-  blocked: Page,
-  worker: Worker,
-  frames: string,
-): Promise<void> {
-  await mkdir(frames, { recursive: true });
-  const workTabId: number = await worker.evaluate(async (url: string): Promise<number> => {
-    const tabs: chrome.tabs.Tab[] = await chrome.tabs.query({ url });
-    const tabId: number | undefined = tabs[0]?.id;
-    if (tabId === undefined) throw new Error('The original work tab is missing');
-    return tabId;
-  }, work.url());
-  await work.bringToFront();
-  const started: number = performance.now();
-  for (let frame: number = 0; frame < 80; frame += 1) {
-    if (frame === 16) await blocked.bringToFront();
-    if (frame === 48) {
-      await clickBackToWork(blocked);
-      await expect
-        .poll(async (): Promise<boolean> => {
-          return await worker.evaluate(async (tabId: number): Promise<boolean> => {
-            const tab: chrome.tabs.Tab = await chrome.tabs.get(tabId);
-            return tab.active;
-          }, workTabId);
-        })
-        .toBe(true);
+/** Depth first search of a CDP frame tree for the frame whose URL ends with the given suffix. */
+function findFrameId(node: FrameTreeNode, urlSuffix: string): string | undefined {
+  if (node.frame.url.endsWith(urlSuffix)) return node.frame.id;
+  for (const child of node.childFrames ?? []) {
+    const found: string | undefined = findFrameId(child, urlSuffix);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+/**
+ * Polls the demo tab iframe's own accessibility tree for an enabled button with the given name,
+ * without clicking it. The lockscreen's Back to work button starts disabled until the demo engine
+ * records a work target for the session, so the poster capture waits on this before the screenshot,
+ * the same readiness gate tests/e2e/site-demo.spec.ts polls for immediately before its own click.
+ */
+async function waitForDemoLockTarget(page: Page, tabId: number, name: string): Promise<void> {
+  const session: CDPSession = await page.context().newCDPSession(page);
+  try {
+    await session.send('Page.enable');
+    const frameTree: FrameTree = await session.send('Page.getFrameTree');
+    const frameId: string | undefined = findFrameId(frameTree.frameTree, `tab=${String(tabId)}`);
+    if (frameId === undefined) throw new Error(`demo tab iframe not found: ${String(tabId)}`);
+    await expect
+      .poll(
+        async (): Promise<boolean> => {
+          const tree: AccessibilityTree = await session.send('Accessibility.getFullAXTree', {
+            frameId,
+          });
+          const node: AccessibilityNode | undefined = tree.nodes.find(
+            (candidate: AccessibilityNode): boolean =>
+              candidate.role?.value === 'button' && String(candidate.name?.value).startsWith(name),
+          );
+          if (node === undefined) return false;
+          const disabled: boolean =
+            node.properties?.some(
+              (property: AccessibilityProperty): boolean =>
+                property.name === 'disabled' && property.value?.value === true,
+            ) ?? false;
+          return !disabled;
+        },
+        { timeout: 10_000 },
+      )
+      .toBe(true);
+  } finally {
+    await session.detach();
+  }
+}
+
+/**
+ * Clicks a button inside the demo tab iframe's lockscreen, which mounts in a closed shadow root
+ * (src/content/overlay-host.ts). A closed shadow root refuses .shadowRoot to every piece of page
+ * JavaScript, Playwright locators included, so no CSS or role locator can reach in. The CDP
+ * Accessibility domain, scoped to the iframe's own frame, still reports the button and its
+ * on-screen box, matching clickLockscreenButton in tests/e2e/site-demo.spec.ts.
+ */
+async function clickDemoLockscreenButton(page: Page, tabId: number, name: string): Promise<void> {
+  const session: CDPSession = await page.context().newCDPSession(page);
+  try {
+    await session.send('Page.enable');
+    const frameTree: FrameTree = await session.send('Page.getFrameTree');
+    const frameId: string | undefined = findFrameId(frameTree.frameTree, `tab=${String(tabId)}`);
+    if (frameId === undefined) throw new Error(`demo tab iframe not found: ${String(tabId)}`);
+    const tree: AccessibilityTree = await session.send('Accessibility.getFullAXTree', { frameId });
+    const button: AccessibilityNode | undefined = tree.nodes.find(
+      (node: AccessibilityNode): boolean =>
+        node.role?.value === 'button' && String(node.name?.value).startsWith(name),
+    );
+    if (button?.backendDOMNodeId === undefined) throw new Error(`demo button unavailable: ${name}`);
+    const box: { model: { content: number[] } } = await session.send('DOM.getBoxModel', {
+      backendNodeId: button.backendDOMNodeId,
+    });
+    const [left, top, right, , , bottom] = box.model.content;
+    if (left === undefined || top === undefined || right === undefined || bottom === undefined) {
+      throw new Error(`demo button has no clickable bounds: ${name}`);
     }
-    const visible: Page = frame >= 16 && frame < 48 ? blocked : work;
-    await visible.screenshot({ path: path.join(frames, `${String(frame).padStart(3, '0')}.png`) });
-    await delay(Math.max(0, started + ((frame + 1) * 1_000) / 8 - performance.now()));
+    await page.mouse.click((left + right) / 2, (top + bottom) / 2);
+  } finally {
+    await session.detach();
+  }
+}
+
+/**
+ * Records demo.gif and demo-poster.png from the interactive demo page rather than the extension,
+ * so the README hero shows the same three beats a site visitor clicks through: the popup open with
+ * the intention typed, the Headlines lockscreen, and the draft tab after Back to work. The frame
+ * timing (80 screenshots at 8 fps, switching state at frame 16 and frame 48) and the ffmpeg
+ * encoding downstream of this function are unchanged from the extension-driven recording.
+ */
+async function recordSiteDemo(directory: string, frames: string): Promise<void> {
+  const server: PagesServer = await startPagesServer();
+  try {
+    const browser: Browser = await chromium.launch();
+    try {
+      const page: Page = await browser.newPage();
+      const errors: string[] = [];
+      page.on('pageerror', (error: Error): void => {
+        errors.push(error.message);
+      });
+      page.on('console', (message: ConsoleMessage): void => {
+        if (message.type() === 'error') errors.push(message.text());
+      });
+      await preparePage(page, PAGE_SIZE);
+      await page.goto(server.url);
+
+      const draft: FrameLocator = page.frameLocator('iframe[data-tab-id="11"]');
+      await draft.locator('#draft').fill('Section one: why this matters.');
+      await page.getByRole('button', { name: 'Open Focus Lock' }).click();
+      const popup: Locator = page.locator('#popup');
+      await popup.getByLabel('Intention').fill(INTENTION);
+      await expect(popup.locator('.work-target')).toHaveText(/Proposal draft/);
+      await popup.getByRole('button', { name: /^Start/ }).click();
+      await expect(page.locator('[data-beat="start"]')).toHaveClass(/guide-done/);
+
+      await mkdir(frames, { recursive: true });
+      const started: number = performance.now();
+      for (let frame: number = 0; frame < 80; frame += 1) {
+        if (frame === 16) {
+          await page.getByRole('button', { name: 'Headlines' }).click();
+          const headlines: FrameLocator = page.frameLocator('iframe[data-tab-id="12"]');
+          await expect(headlines.locator('focus-lock-overlay')).toBeAttached();
+          await expect(page.locator('[data-beat="blocked"]')).toHaveClass(/guide-done/);
+          await waitForDemoLockTarget(page, 12, 'Back to work');
+          await capture(page, directory, 'demo-poster.png');
+        }
+        if (frame === 48) {
+          await clickDemoLockscreenButton(page, 12, 'Back to work');
+          await expect(page.locator('button.tab-active')).toHaveText('Proposal draft');
+          await expect(draft.locator('#draft')).toHaveValue('Section one: why this matters.');
+          await expect(page.locator('[data-beat="back"]')).toHaveClass(/guide-done/);
+        }
+        await page.screenshot({ path: path.join(frames, `${String(frame).padStart(3, '0')}.png`) });
+        await delay(Math.max(0, started + ((frame + 1) * 1_000) / 8 - performance.now()));
+      }
+      expect(errors).toEqual([]);
+    } finally {
+      await browser.close();
+    }
+  } finally {
+    await server.close();
   }
 }
 
@@ -315,8 +429,7 @@ test.describe('README capture', (): void => {
     await expect(extPage.getByRole('button', { name: /^Back to work:/ })).toBeEnabled();
     await waitForWorkTarget(blocked);
     await capture(blocked, directory, 'blocked-page.png');
-    await capture(blocked, directory, 'demo-poster.png');
-    await recordDemo(work, blocked, worker, path.join(directory, 'frames'));
+    await recordSiteDemo(directory, path.join(directory, 'frames'));
     command('ffmpeg', [
       '-hide_banner',
       '-loglevel',
@@ -371,6 +484,7 @@ test.describe('README capture', (): void => {
         'Session: 25 minutes, Finish the proposal. A local demonstration document is the actual selected work tab.',
         'Progress: seeded one-hour completed session and one blocked attempt yesterday. The current session is real.',
         'GIF: 80 screenshots at 8 fps, 10 seconds. Work document for 2 seconds, blocked page for 4, returned work document for 4.',
+        'Recorded from the interactive demo at https://wolph.github.io/distraction-blocker/.',
         `Browser chrome is outside the captures. Popup viewport 480x600. Block and demo 960x640. Stats overview 1280x${statsHeight}.`,
         'The blocking overlay applies to an already loaded local blocked.example page. Back to work activates the original allowed tab.',
       ],

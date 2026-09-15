@@ -1,35 +1,35 @@
 {
-  "capturedAt": "2026-09-12T09:32:51.150Z",
-  "sourceCommit": "03a56547e76b1efdeb164fa03038eecacb87f0c2",
-  "distSha256": "9e418b373248d19eb17e48ebb1858aaaf861e95e7f8f6759e421c3f0d5307641",
-  "packageLockSha256": "89f34a4ea5e5c2a399b33b3f9118cadb16b267fe970467e9c0f600981b9e1102",
-  "captureScriptSha256": "b761c081d81f4b491ce9395575404e574615e599f4e7557e7b6b1d4af82d22eb",
-  "version": "0.1.0",
+  "capturedAt": "2026-09-15T16:58:21.369Z",
+  "sourceCommit": "336caeb35e8de9839738157beb3aa4ecf6f40e54",
+  "distSha256": "21ac89600d1ec198343d2a3c1846aaaf21007b58a643fc07c02366a0f1c36f82",
+  "packageLockSha256": "8af5957ccc846d292c27f40b42b464c5b6b19a2ca783a399534109c804de8aea",
+  "captureScriptSha256": "c3a9483bc66228720f22809cf41ebb8aa09318d5ce89b6b3620cc21c4dfce96d",
+  "version": "0.1.1",
   "toolchain": {
     "node": "24.18.0",
     "chromium": "151.0.7922.34",
-    "ffmpeg": "ffmpeg version 8.1.2 Copyright (c) 2000-2026 the FFmpeg developers"
+    "ffmpeg": "ffmpeg version 9.0.1 Copyright (c) 2000-2026 the FFmpeg developers"
   },
   "files": {
     "focus-session.png": {
-      "bytes": 29355,
-      "sha256": "420ec8ee73018a938253d5c3fbc15c7ea765f2cfbff83040bd27bcc3b1d328f3"
+      "bytes": 29357,
+      "sha256": "b69b23c3587d23c458484feefa90341ccd46c96368e272f89f1a4427cfd981e1"
     },
     "blocked-page.png": {
-      "bytes": 44929,
-      "sha256": "45a05b230c10b77e24af62148a015141f4f183560a6c9cbabacc7fe609e1110c"
+      "bytes": 45128,
+      "sha256": "5af7e137a480fc563939dd9524571471a33671cafa91e90aeb544b5cd0c60e8b"
     },
     "progress.png": {
-      "bytes": 69564,
-      "sha256": "16a85e23dac298523bee704faaa7210c3e87ddaf1e65f809e7735a3016a20f40"
+      "bytes": 69432,
+      "sha256": "88846cd21bd334055564efeda5ced5801f42d24e800cbb196bfdc2a306bd564a"
     },
     "demo-poster.png": {
-      "bytes": 44929,
-      "sha256": "45a05b230c10b77e24af62148a015141f4f183560a6c9cbabacc7fe609e1110c"
+      "bytes": 89134,
+      "sha256": "839c30e84b8a3e9bc731bfe0002295f26dc6f61749c5045db7d99f0f7d84d1ad"
     },
     "demo.gif": {
-      "bytes": 101950,
-      "sha256": "513c5f54a0b504cf4c8662efd9fa0521a33388d522d9494c81344287c782d88c"
+      "bytes": 153214,
+      "sha256": "1b8c7f2c33b61492ae6037710e4fff46e45e4eb6c52b644023bab0725444a571"
     }
   },
   "demonstration": [
@@ -38,6 +38,7 @@
     "Session: 25 minutes, Finish the proposal. A local demonstration document is the actual selected work tab.",
     "Progress: seeded one-hour completed session and one blocked attempt yesterday. The current session is real.",
     "GIF: 80 screenshots at 8 fps, 10 seconds. Work document for 2 seconds, blocked page for 4, returned work document for 4.",
+    "Recorded from the interactive demo at https://wolph.github.io/distraction-blocker/.",
     "Browser chrome is outside the captures. Popup viewport 480x600. Block and demo 960x640. Stats overview 1280x1028.",
     "The blocking overlay applies to an already loaded local blocked.example page. Back to work activates the original allowed tab."
   ],
