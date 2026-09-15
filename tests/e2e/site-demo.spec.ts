@@ -14,6 +14,13 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import {
+  type AccessibilityNode,
+  type AccessibilityProperty,
+  type AccessibilityTree,
+  type FrameTree,
+  findFrameId,
+} from './cdp-accessibility';
 import { type PagesServer, startPagesServer } from './pages-server';
 
 let server: PagesServer;
@@ -28,22 +35,6 @@ test.afterAll(async (): Promise<void> => {
   await browser.close();
   await server.close();
 });
-
-/** The frame tree node shape this file reads: an id and url, and nested child frames. */
-interface FrameTreeNode {
-  frame: { id: string; url: string };
-  childFrames?: FrameTreeNode[];
-}
-
-/** Depth-first search for the frame whose URL ends with the given suffix. */
-function findFrameId(node: FrameTreeNode, urlSuffix: string): string | undefined {
-  if (node.frame.url.endsWith(urlSuffix)) return node.frame.id;
-  for (const child of node.childFrames ?? []) {
-    const found: string | undefined = findFrameId(child, urlSuffix);
-    if (found !== undefined) return found;
-  }
-  return undefined;
-}
 
 /**
  * Clicks a button inside a tab iframe's lockscreen, which mounts in a closed shadow root
@@ -64,7 +55,7 @@ async function clickLockscreenButton(
   const session: CDPSession = await context.newCDPSession(page);
   try {
     await session.send('Page.enable');
-    const frameTree = await session.send('Page.getFrameTree');
+    const frameTree: FrameTree = await session.send('Page.getFrameTree');
     const frameId: string | undefined = findFrameId(frameTree.frameTree, `tab=${String(tabId)}`);
     if (frameId === undefined) throw new Error(`tab iframe not found: ${String(tabId)}`);
     let backendNodeId: number | undefined;
@@ -73,16 +64,19 @@ async function clickLockscreenButton(
     await expect
       .poll(
         async (): Promise<boolean> => {
-          const tree = await session.send('Accessibility.getFullAXTree', { frameId });
-          const node = tree.nodes.find(
-            (candidate): boolean =>
+          const tree: AccessibilityTree = await session.send('Accessibility.getFullAXTree', {
+            frameId,
+          });
+          const node: AccessibilityNode | undefined = tree.nodes.find(
+            (candidate: AccessibilityNode): boolean =>
               candidate.role?.value === 'button' &&
-              candidate.name?.value?.startsWith(accessibleName) === true,
+              String(candidate.name?.value).startsWith(accessibleName),
           );
           if (node === undefined) return false;
           const disabled: boolean =
             node.properties?.some(
-              (property): boolean => property.name === 'disabled' && property.value.value === true,
+              (property: AccessibilityProperty): boolean =>
+                property.name === 'disabled' && property.value?.value === true,
             ) ?? false;
           if (disabled) return false;
           backendNodeId = node.backendDOMNodeId;
@@ -92,7 +86,9 @@ async function clickLockscreenButton(
       )
       .toBe(true);
     if (backendNodeId === undefined) throw new Error(`button not found: ${accessibleName}`);
-    const box = await session.send('DOM.getBoxModel', { backendNodeId });
+    const box: { model: { content: number[] } } = await session.send('DOM.getBoxModel', {
+      backendNodeId,
+    });
     const [left, top, right, , , bottom] = box.model.content;
     if (left === undefined || top === undefined || right === undefined || bottom === undefined) {
       throw new Error(`button has no content box: ${accessibleName}`);
@@ -126,6 +122,10 @@ test('a visitor starts a session, meets the lockscreen, and returns to the draft
   await expect(popup.locator('.work-target')).toHaveText(/Proposal draft/);
   await popup.getByRole('button', { name: /^Start/ }).click();
   await expect(page.locator('[data-beat="start"]')).toHaveClass(/guide-done/);
+  // Starting a session makes every tab, Headlines and Videos included, re-request a verdict while
+  // still hidden. None of that is the visitor meeting the lockscreen, so the beat must stay open
+  // until the Headlines tab is actually clicked below.
+  await expect(page.locator('[data-beat="blocked"]')).not.toHaveClass(/guide-done/);
 
   await page.getByRole('button', { name: 'Headlines' }).click();
   const headlines: FrameLocator = page.frameLocator('iframe[data-tab-id="12"]');
