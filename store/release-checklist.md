@@ -1,35 +1,55 @@
-# Chrome Web Store release candidate 0.1.0
+# Chrome Web Store release candidate 0.1.1
 
-Candidate source: `5a8d58bd95b6076ce0ee56ac8961332f0afb95d7`. Verified on 12 September 2026 with Node.js 24.18.0 and Chrome for Testing 151.0.7922.34.
+Candidate source: `2c6f6f6f0638c300c80698b6bb83a92667da659c`. Verified on 15 September 2026 with
+Node.js 24.18.0 and Chrome for Testing 151.0.7922.34.
+
+This candidate fixes the defect that made 0.1.0 unusable for anyone with a discarded or
+not-yet-loaded tab open: Chrome refuses the content-script injection for such a tab without naming
+a URL, the registration sweep treated that refusal as fatal, and Retry could not clear it because
+the tab stayed unloaded.
 
 ## Verification
 
-- Lint and TypeScript passed. All 177 unit files passed, with 4,825 tests passed and eight skipped.
-- Store build, package validation, QA inventory and privacy-page validation passed.
-- Both packaged-installation scenarios passed.
-- The full browser suite passed 111 scenarios, with three expected skips.
-- The skipped scenarios cover an unreachable registration-audit state and two opt-in visual capture commands. No local-midnight schedule guard was triggered.
-- All four focused native-popup, narrow-layout and scroll-reachability scenarios passed. The native width assertion remains exactly 480 pixels.
-- All 28 focused popup layout and control unit tests passed.
-- Visual inspection covered full-page and component screenshots at 1200, 768 and 375 pixels, hover states and a 375 by 400 pixel viewport. Inner scrolling remained available. No browser errors were recorded.
-- All five Store screenshots were recaptured from this build. All nine screenshot checks passed, including strict PNG comparison under the isolated timezone case.
-- Browser verification retained the same 40-file build inventory before and after each recorded stage.
-- The public [privacy policy](https://wolph.github.io/distraction-blocker/privacy/) returned HTTP 200 and matched the validated local page.
+This candidate was gated on the fast path rather than the full release gate, at the request of the
+person releasing it. What that covers, and what it does not, is recorded below rather than implied.
 
-The popup root disables its unused scrollbar to avoid phantom scrollbar padding in affected Chrome autosizing. Inner scroll containers keep their existing behaviour. The corresponding [Chromium fix](https://chromium.googlesource.com/chromium/src/third_party/+/4280dbe5760dad58f95abd1ebc1b0b0f06948be6) documents the browser regression.
+- Biome and TypeScript passed. All 178 unit files passed, with 4,843 tests passed and eight
+  skipped.
+- `npm run chrome:messages` passed, so every Chrome refusal message the sweep matches by text still
+  exists verbatim in Chromium main.
+- The keyless store build, package validation, QA inventory and privacy-page validation passed.
+- The packaged-installation scenario passed against the archive recorded below.
+- The store icon is the 128 pixel build output byte for byte, which the package validator enforces.
+
+## What this candidate does not certify
+
+- **The full browser suite was not run.** Five scenarios fail on a clean baseline build of
+  committed master and are expected to fail on this branch too: `indefinite-recovery.spec.ts` at
+  lines 297 and 538, `qa-flows.spec.ts` at lines 1392 and 1942, and `system.spec.ts` at line 319.
+  Three of them wait on the popup after a worker or browser restart. The first CI browser job on
+  this branch will be red on them, and that redness predates this release.
+- **The five store screenshots were not recaptured.** They are the 0.1.0 captures, and their
+  recorded provenance digest no longer matches this build. They were read against the shipping
+  interface before being kept: the popup summary in `01-start-session.png` is collapsed, so the
+  larger category membership does not appear in it, and `03-onboarding.png` shows the permission
+  step rather than the starting-lists step. The blocklist growth in this release is therefore not
+  visible in any of the five.
+- **Human review of all five screenshots remains outstanding**, as it was for 0.1.0.
+  [Release gate step 5](../docs/release-candidate-gate.md#step-5-recapture-the-five-canonical-screenshots)
+  requires a person to look at them.
+- Store review and publication remain pending. None of this represents approval by Google.
 
 ## Package
 
-- Archive: `release/focus-lock-0.1.0.zip`
-- SHA-256: `834dc061f388463df6a7e6761305602138c206362a8392604169701738f1967b`
-- Build tree SHA-256: `4e99bfe767180f01d03d1ebd142ecd5693f4c216a051d728562210ecc1f3f620`
-- The archive contains 40 files, each byte-identical to its counterpart in `dist/`.
-- All eight manifest references and 50 HTML asset references resolve.
-- The Store manifest omits the development key. Package validation rejects a manifest key, unexpected files and missing assets.
+- Archive: `release/focus-lock-0.1.1.zip`
+- SHA-256: `557bedc7af2322b44ee501d8e31e109b8886207cc0364649943b994798683a93`
+- Build tree SHA-256: `91afe4f4b647837ff423e32f37e9cfcdd51530097e6b1ac55d4dca9a400ff7de`
+- The archive contains 41 files, one more than 0.1.0, which is the added host-search module.
+- The store manifest omits the development key.
 
 ## Screenshots
 
-Captured at `2026-09-12T12:38:33.853Z`. The capture uses declared demonstration data and clears pointer hover and keyboard focus before recording native controls.
+Unchanged from 0.1.0, captured at `2026-09-12T12:38:33.853Z`.
 
 | Screenshot | SHA-256 |
 | --- | --- |
@@ -41,6 +61,9 @@ Captured at `2026-09-12T12:38:33.853Z`. The capture uses declared demonstration 
 
 ## Outstanding submission steps
 
-- Human review of all five screenshots remains outstanding. [Release gate step 5](../docs/release-candidate-gate.md#step-5-recapture-the-five-canonical-screenshots) explicitly requires a person to look at them.
-- The Chrome Web Store item is a saved draft. The final package and all five screenshots have been uploaded from the files identified above. Submission remains pending the human screenshot review.
-- Store review and publication remain pending. These checks do not represent approval by Google.
+- The 128 pixel store icon on the listing was removed from the draft and has not been replaced. The
+  listing cannot be submitted until the new icon at `assets/icons/idle-128.png` is uploaded, and
+  the Submit for review button stays disabled while the field is empty. The published listing still
+  shows the old grey icon, because the draft was never saved.
+- The 0.1.1 archive has not been uploaded to the dashboard package tab.
+- Submission has not been made.
