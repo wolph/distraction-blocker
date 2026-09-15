@@ -1,6 +1,7 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
 import { ALL_CATEGORIES } from '../core/categories';
+import { HostBrowser } from '../shared/HostBrowser';
 import type { CategoryId, CategoryList, ListsConfig } from '../shared/types';
 
 export interface CategoriesProps {
@@ -216,8 +217,13 @@ export function Categories(props: CategoriesProps): VNode {
                     Deselect all
                   </button>
                 </fieldset>
-                <ul class="cat-hosts">
-                  {category.hosts.map((host: string): VNode => {
+                <HostBrowser
+                  hosts={category.hosts}
+                  title={category.title}
+                  regionLabel={`${category.title} sites`}
+                  regionClass="cat-hosts-scroll"
+                  listClass="cat-hosts"
+                  renderHost={(host: string): VNode => {
                     const active: boolean = !excluded.includes(host);
                     return (
                       <li key={host}>
@@ -233,8 +239,8 @@ export function Categories(props: CategoriesProps): VNode {
                         </label>
                       </li>
                     );
-                  })}
-                </ul>
+                  }}
+                />
               </div>
             ) : null}
           </div>

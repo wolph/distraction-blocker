@@ -60,6 +60,25 @@ function saturatedGreenRatio(png: PNG): number {
   return saturatedGreenPixels / totalPixels;
 }
 
+function dominantOpaqueColor(png: PNG): string {
+  const counts: Map<string, number> = new Map();
+  for (let index: number = 0; index < png.data.length; index += 4) {
+    if ((png.data.at(index + 3) ?? 0) !== 255) continue;
+    const color: string = [0, 1, 2]
+      .map((offset: number): string => (png.data.at(index + offset) ?? 0).toString(16))
+      .map((channel: string): string => channel.padStart(2, '0'))
+      .join('');
+    counts.set(color, (counts.get(color) ?? 0) + 1);
+  }
+
+  let dominant: string = '';
+  let dominantCount: number = 0;
+  for (const [color, count] of counts) {
+    if (count > dominantCount) [dominant, dominantCount] = [color, count];
+  }
+  return `#${dominant}`;
+}
+
 function minimumAlpha(png: PNG): number {
   let alpha: number = 255;
   for (let index: number = 3; index < png.data.length; index += 4) {
@@ -216,6 +235,14 @@ describe('Chrome Web Store brand assets', () => {
     expect(minimumAlpha(png)).toBe(255);
     expect(saturatedGreenRatio(png)).toBeGreaterThan(0.85);
     expect(createHash('sha256').update(file).digest('hex')).toBe(asset.sha256);
+  });
+
+  it('fills the store icon with the small promo tile green', (): void => {
+    const promo: PNG = PNG.sync.read(readFileSync('store/assets/small-promo-440x280.png'));
+    const icon: PNG = PNG.sync.read(readFileSync('assets/icons/idle-128.png'));
+
+    expect(dominantOpaqueColor(promo)).toBe('#2ebf58');
+    expect(dominantOpaqueColor(icon)).toBe(dominantOpaqueColor(promo));
   });
 
   it('rejects ancillary chunks, bad CRCs, truncation, and trailing bytes', (): void => {

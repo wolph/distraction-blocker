@@ -1,6 +1,6 @@
 {
   "name": "distraction-blocker",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Focus Lock: focus sessions that lock distracting sites, with earned site access credit.",
   "private": true,
   "type": "module",
@@ -20,6 +20,7 @@
     "stats:dev-evidence": "STATS_DEV_EVIDENCE_DIR=artifacts/stats-task5/dev node --experimental-strip-types scripts/capture-stats-dev-evidence.ts",
     "stats:evidence": "STATS_EVIDENCE_DIR=artifacts/stats-task5/production playwright test tests/e2e/qa-flows.spec.ts -g \"Task 5 Stats responsive evidence matrix\"",
     "qa:validate": "node scripts/qa-checklist.mjs --check",
+    "chrome:messages": "node scripts/verify-chrome-injection-errors.mjs",
     "store:validate": "node scripts/validate-store-package.mjs",
     "store:package": "npm run build:store && node scripts/validate-store-package.mjs --zip",
     "check": "biome check . && tsc --noEmit && vitest run && npm run build:store"

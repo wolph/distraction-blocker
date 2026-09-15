@@ -609,6 +609,13 @@ body {
   padding-inline-start: 12px;
 }
 
+.rule-membership__more {
+  margin: -4px 0 8px;
+  padding-inline-start: 16px;
+  color: var(--text-soft, var(--muted, inherit));
+  font-size: 0.85em;
+}
+
 .rule-item {
   display: grid;
   min-width: 0;

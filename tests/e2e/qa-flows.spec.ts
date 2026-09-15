@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
@@ -17,7 +18,13 @@ import {
   type StatsEvidenceRun,
 } from '../../scripts/stats-safe-output';
 import { verifyStatsEvidenceDirectory } from '../../scripts/verify-stats-evidence';
-import type { ListsConfig, SessionSnapshot, Settings, ThemeMode } from '../../src/shared/types';
+import type {
+  CategoryList,
+  ListsConfig,
+  SessionSnapshot,
+  Settings,
+  ThemeMode,
+} from '../../src/shared/types';
 import {
   assertNoUnexpectedBrowserDiagnostics,
   type BrowserDiagnostics,
@@ -108,6 +115,12 @@ async function expectPageThemeControl(page: Page, theme: ThemeMode): Promise<voi
   ).toBeEnabled();
 }
 
+/** The bundled Social media list the Options counts are read from, so a list edit moves them too. */
+const SOCIAL_SITE_COUNT: number = (
+  JSON.parse(
+    readFileSync(path.resolve(import.meta.dirname, '../../src/lists/social.json'), 'utf8'),
+  ) as CategoryList
+).hosts.length;
 const STOPPED_DOCUMENT_TITLE: string = 'Locked - Focus Lock';
 
 /**
@@ -428,11 +441,11 @@ test('Options exposes destination saving, category states, and scoped privacy co
   await optionsPage.goto(`chrome-extension://${extensionId}/src/options/options.html#blocking`);
   await expect(optionsPage.getByRole('heading', { name: 'Blocking' })).toBeVisible();
   const socialRow: Locator = optionsPage.locator('.cat-row').filter({ hasText: 'Social media' });
-  await expect(socialRow.getByText('Selected 12')).toBeVisible();
+  await expect(socialRow.getByText(`Selected ${SOCIAL_SITE_COUNT}`)).toBeVisible();
   await expect(socialRow.getByText('Deselected 0')).toBeVisible();
   const socialState: Locator = socialRow.locator('xpath=following-sibling::p[1]');
   await expect(socialState).toContainText('Category off');
-  await expect(socialState).toContainText('12 included when enabled');
+  await expect(socialState).toContainText(`${SOCIAL_SITE_COUNT} included when enabled`);
   const categoryStateGaps: number[] = await optionsPage
     .locator('.category-state')
     .evaluateAll((states: Element[]): number[] =>
@@ -453,12 +466,12 @@ test('Options exposes destination saving, category states, and scoped privacy co
 
   await socialRow.getByRole('button', { name: 'Show Social media sites' }).click();
   await optionsPage.getByRole('checkbox', { name: 'facebook.com' }).uncheck();
-  await expect(socialRow.getByText('Selected 11')).toBeVisible();
+  await expect(socialRow.getByText(`Selected ${SOCIAL_SITE_COUNT - 1}`)).toBeVisible();
   await expect(socialRow.getByText('Deselected 1')).toBeVisible();
   await expect(socialState).toContainText('Category off');
-  await expect(socialState).toContainText('11 included when enabled');
+  await expect(socialState).toContainText(`${SOCIAL_SITE_COUNT - 1} included when enabled`);
   await socialRow.getByRole('checkbox', { name: 'Social media' }).check();
-  await expect(socialState).toHaveText('11 sites included');
+  await expect(socialState).toHaveText(`${SOCIAL_SITE_COUNT - 1} sites included`);
   const saveBar: Locator = optionsPage.locator('.dirty-save-bar');
   await expect(saveBar.getByText('Unsaved changes')).toBeVisible();
   expect(
@@ -471,7 +484,7 @@ test('Options exposes destination saving, category states, and scoped privacy co
   await saveBar.getByRole('button', { name: 'Discard changes' }).click();
   await expect(saveBar.getByText('No unsaved changes')).toBeVisible();
   await expect(socialState).toContainText('Category off');
-  await expect(socialState).toContainText('12 included when enabled');
+  await expect(socialState).toContainText(`${SOCIAL_SITE_COUNT} included when enabled`);
 
   await optionsPage.getByRole('link', { name: 'Privacy and data' }).click();
   await expect(optionsPage.getByRole('heading', { name: 'Privacy and data' })).toBeVisible();

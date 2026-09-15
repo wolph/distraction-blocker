@@ -50,6 +50,13 @@ function plural(count: number, singular: string, pluralValue: string): string {
   return count === 1 ? singular : pluralValue;
 }
 
+/**
+ * Category membership rows rendered in the popup. A bundled category holds hundreds of hosts and
+ * every row here is a popover trigger, so the summary names the first few and counts the rest.
+ * Settings is where the whole list is searchable.
+ */
+const MEMBERSHIP_PREVIEW: number = 8;
+
 function RuleDetail({
   kind,
   pattern,
@@ -148,15 +155,23 @@ function BlockRules({
                   </span>
                 </button>
                 {enabled ? (
-                  <ul class="rule-membership" aria-label={`${category.title} sites`}>
-                    {effectiveHosts.map(
-                      (host: string): VNode => (
-                        <li key={host}>
-                          <RuleDetail kind="domain" pattern={host} />
-                        </li>
-                      ),
-                    )}
-                  </ul>
+                  <>
+                    <ul class="rule-membership" aria-label={`${category.title} sites`}>
+                      {effectiveHosts.slice(0, MEMBERSHIP_PREVIEW).map(
+                        (host: string): VNode => (
+                          <li key={host}>
+                            <RuleDetail kind="domain" pattern={host} />
+                          </li>
+                        ),
+                      )}
+                    </ul>
+                    {effectiveHosts.length > MEMBERSHIP_PREVIEW ? (
+                      <p class="rule-membership__more">
+                        and {effectiveHosts.length - MEMBERSHIP_PREVIEW} more{' '}
+                        {plural(effectiveHosts.length - MEMBERSHIP_PREVIEW, 'site', 'sites')}
+                      </p>
+                    ) : null}
+                  </>
                 ) : null}
               </section>
             );

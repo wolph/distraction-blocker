@@ -1449,6 +1449,11 @@ export async function reloadClaimedDocuments(claims: readonly CleanupTabClaim[])
   }
 }
 
+/**
+ * Refusals Chrome gives for a tab nobody can act on. They are dropped without a report so a sweep
+ * over many open tabs stays quiet. Any other refusal is reported with the tab URL, so the next
+ * unknown one is diagnosable from the console instead of from a store review.
+ */
 function isIgnorableInjectionFailure(error: unknown): boolean {
   const message: string = error instanceof Error ? error.message : String(error);
   return (
@@ -1457,13 +1462,36 @@ function isIgnorableInjectionFailure(error: unknown): boolean {
     message.includes('No tab with id') ||
     message.includes('The tab was closed') ||
     // A main frame that failed to load has no document to script, and it stays that way until the
-    // user navigates again, which the registered script covers. Reporting it says nothing anyone
-    // can act on, and it fires for every open error page on every registration sweep.
-    message.includes('is showing error page')
+    // user navigates again, which the registered script covers.
+    message.includes('is showing error page') ||
+    // With the tabs permission Chrome names the URL in every host-permission denial. This URL-less
+    // variant comes only from a main frame with no committed URL and no pending navigation: a
+    // discarded or not-yet-loaded restored tab. There is no document to script, and the registered
+    // script covers the tab once it loads.
+    message.includes('Cannot access contents of the page.')
   );
 }
 
-/** Inject the registered content asset into eligible documents already open. */
+class ExistingTabInjectionError extends Error {
+  constructor(tab: chrome.tabs.Tab, cause: unknown) {
+    const reason: string = cause instanceof Error ? cause.message : String(cause);
+    super(`could not inject into open tab ${tab.url ?? '(unknown url)'}: ${reason}`, { cause });
+    this.name = 'ExistingTabInjectionError';
+  }
+}
+
+/**
+ * Inject the registered content asset into eligible documents already open.
+ *
+ * This is best-effort coverage of tabs that were open before registration. Registration itself is
+ * what enables blocking, and every tab the sweep cannot reach is covered by the registered script
+ * on its next navigation. A refusal for one tab therefore never fails the sweep: a production
+ * release did exactly that for a tab Chrome had unloaded, and Retry could not clear it because the
+ * tab stayed unloaded. Chrome also refuses policy-blocked hosts and other states it never documents,
+ * so no list of known messages is complete. Unknown refusals are reported, not fatal.
+ *
+ * Only a failure to enumerate tabs at all is fatal: without the tabs API the extension cannot block.
+ */
 export async function injectIntoExistingTabs(
   file: string,
   reportError: (error: unknown) => void,
@@ -1478,7 +1506,6 @@ export async function injectIntoExistingTabs(
     return false;
   }
   const injectedTabIds: Set<number> = new Set<number>();
-  let complete: boolean = true;
   for (const tab of tabs) {
     if (tab.id === undefined || injectedTabIds.has(tab.id)) continue;
     injectedTabIds.add(tab.id);
@@ -1489,10 +1516,9 @@ export async function injectIntoExistingTabs(
       });
     } catch (error: unknown) {
       if (!isIgnorableInjectionFailure(error)) {
-        complete = false;
-        reportError(error);
+        reportError(new ExistingTabInjectionError(tab, error));
       }
     }
   }
-  return complete;
+  return true;
 }

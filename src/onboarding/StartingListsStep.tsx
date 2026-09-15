@@ -1,6 +1,7 @@
 import type { VNode } from 'preact';
 import { type Dispatch, type StateUpdater, useState } from 'preact/hooks';
 import { ALL_CATEGORIES } from '../core/categories';
+import { HostBrowser } from '../shared/HostBrowser';
 import { MODE_LABELS } from '../shared/session-copy';
 import type { CategoryId, CategoryList, ListsConfig } from '../shared/types';
 
@@ -74,19 +75,15 @@ export function StartingListsStep(props: StartingListsStepProps): VNode {
                 </button>
               </div>
               {open ? (
-                <section
-                  id={regionId}
-                  class="category-domains-scroll"
-                  aria-label={`${category.title} domains`}
-                >
-                  <ul>
-                    {category.hosts.map(
-                      (host: string): VNode => (
-                        <li key={host}>{host}</li>
-                      ),
-                    )}
-                  </ul>
-                </section>
+                <HostBrowser
+                  hosts={category.hosts}
+                  title={category.title}
+                  regionId={regionId}
+                  regionLabel={`${category.title} domains`}
+                  regionClass="category-domains-scroll"
+                  listClass="category-domains"
+                  renderHost={(host: string): VNode => <li key={host}>{host}</li>}
+                />
               ) : null}
             </div>
           );

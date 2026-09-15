@@ -8,7 +8,7 @@ export default defineManifest(
   ({ mode }: ConfigEnv): Manifest => ({
     manifest_version: 3,
     name: 'Focus Lock',
-    version: '0.1.0',
+    version: '0.1.1',
     description: 'Focus sessions that lock distracting sites, with earned site access credit.',
     ...(mode === 'store' ? {} : { key: MANIFEST_KEY }),
     icons: {

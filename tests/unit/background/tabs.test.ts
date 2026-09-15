@@ -424,7 +424,10 @@ describe('injectIntoExistingTabs', () => {
     });
   });
 
-  it('ignores an explicit protected-page failure but reports unexpected injection failures', async (): Promise<void> => {
+  it('ignores an explicit protected-page failure and reports an unexpected one with its tab URL without failing the sweep', async (): Promise<void> => {
+    // A refusal for one open tab is never a registration failure. Registration is what enables
+    // blocking, and the tab is covered on its next navigation. The refusal is still reported, with
+    // the URL, so an unknown Chrome message is diagnosable from the console.
     const protectedFailure: Error = new Error('The extensions gallery cannot be scripted.');
     const unexpectedFailure: Error = new Error('service worker unavailable');
     const reportError = vi.fn();
@@ -433,14 +436,21 @@ describe('injectIntoExistingTabs', () => {
       .mockRejectedValueOnce(protectedFailure)
       .mockRejectedValueOnce(unexpectedFailure);
     vi.stubGlobal('chrome', {
-      tabs: { query: vi.fn().mockResolvedValue([{ id: 7 }, { id: 8 }]) },
+      tabs: {
+        query: vi.fn().mockResolvedValue([{ id: 7 }, { id: 8, url: 'https://example.com/a' }]),
+      },
       scripting: { executeScript },
     });
 
-    await expect(injectIntoExistingTabs('assets/content.js', reportError)).resolves.toBe(false);
+    await expect(injectIntoExistingTabs('assets/content.js', reportError)).resolves.toBe(true);
 
     expect(reportError).toHaveBeenCalledOnce();
-    expect(reportError).toHaveBeenCalledWith(unexpectedFailure);
+    const reported: unknown = reportError.mock.calls[0]?.[0];
+    expect(reported).toBeInstanceOf(Error);
+    expect((reported as Error).message).toBe(
+      'could not inject into open tab https://example.com/a: service worker unavailable',
+    );
+    expect((reported as Error).cause).toBe(unexpectedFailure);
   });
 
   it('treats only protected-page and vanished-tab failures as a complete injection sweep', async (): Promise<void> => {
@@ -494,7 +504,7 @@ describe('injectIntoExistingTabs', () => {
     expect(chrome.scripting.executeScript).not.toHaveBeenCalled();
   });
 
-  it('reports missing host permission but ignores a vanished tab during injection', async (): Promise<void> => {
+  it('reports a missing host permission without failing the sweep and ignores a vanished tab', async (): Promise<void> => {
     const missingPermission: Error = new Error('Missing host permission for the tab');
     const vanishedTab: Error = new Error('No tab with id: 8.');
     const reportError = vi.fn();
@@ -508,13 +518,35 @@ describe('injectIntoExistingTabs', () => {
       },
     });
 
-    await expect(injectIntoExistingTabs('assets/content.js', reportError)).resolves.toBe(false);
+    await expect(injectIntoExistingTabs('assets/content.js', reportError)).resolves.toBe(true);
 
     expect(reportError).toHaveBeenCalledOnce();
-    expect(reportError).toHaveBeenCalledWith(missingPermission);
+    const reported: Error = reportError.mock.calls[0]?.[0] as Error;
+    expect(reported.cause).toBe(missingPermission);
   });
 
-  it('reports a generic inaccessible HTTP page instead of assuming it is protected', async (): Promise<void> => {
+  it('treats a tab with no committed document as nothing to inject into', async (): Promise<void> => {
+    // Chrome names the URL in every host-permission denial once the extension holds the tabs
+    // permission. The URL-less variant comes only from a main frame with no committed URL and no
+    // pending navigation: a discarded or not-yet-loaded restored tab. The registered script covers
+    // it once it loads, so it must not fail setup.
+    const emptyFrame: Error = new Error(
+      'Cannot access contents of the page. Extension manifest must request permission to access the respective host.',
+    );
+    const reportError = vi.fn();
+    vi.stubGlobal('chrome', {
+      tabs: { query: vi.fn().mockResolvedValue([{ id: 7 }, { id: 8 }]) },
+      scripting: {
+        executeScript: vi.fn().mockResolvedValueOnce([]).mockRejectedValueOnce(emptyFrame),
+      },
+    });
+
+    await expect(injectIntoExistingTabs('assets/content.js', reportError)).resolves.toBe(true);
+
+    expect(reportError).not.toHaveBeenCalled();
+  });
+
+  it('reports a URL-naming access denial instead of assuming it is protected, without failing the sweep', async (): Promise<void> => {
     const failure: Error = new Error(
       'Cannot access contents of url "https://example.com/". Extension manifest must request permission to access this host.',
     );
@@ -524,9 +556,11 @@ describe('injectIntoExistingTabs', () => {
       scripting: { executeScript: vi.fn().mockRejectedValue(failure) },
     });
 
-    await expect(injectIntoExistingTabs('assets/content.js', reportError)).resolves.toBe(false);
+    await expect(injectIntoExistingTabs('assets/content.js', reportError)).resolves.toBe(true);
 
-    expect(reportError).toHaveBeenCalledWith(failure);
+    expect(reportError).toHaveBeenCalledOnce();
+    const reported: Error = reportError.mock.calls[0]?.[0] as Error;
+    expect(reported.cause).toBe(failure);
   });
 });
 

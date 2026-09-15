@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ALL_CATEGORIES } from '../../../src/core/categories';
+import { HOST_PAGE_SIZE } from '../../../src/core/host-search';
 import { Categories } from '../../../src/options/Categories';
 import { DEFAULT_LISTS } from '../../../src/shared/constants';
 import type { CategoryList, ListsConfig } from '../../../src/shared/types';
@@ -85,6 +86,48 @@ describe('Categories', () => {
 
     expect(getAllByText('Category off')).toHaveLength(ALL_CATEGORIES.length);
     expect(getAllByText(`${social.hosts.length} included when enabled`).length).toBeGreaterThan(0);
+  });
+
+  it('renders one page of a large category and reaches the rest through its search', (): void => {
+    const news: CategoryList = ALL_CATEGORIES.find(
+      (category: CategoryList): boolean => category.id === 'news',
+    ) as CategoryList;
+    const beyondFirstPage: string = news.hosts[news.hosts.length - 1] as string;
+    expect(news.hosts.indexOf(beyondFirstPage)).toBeGreaterThanOrEqual(HOST_PAGE_SIZE);
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      categories: { ...DEFAULT_LISTS.categories, news: true },
+    };
+    const onChange = vi.fn();
+    const { getByLabelText, getByRole } = render(<Categories lists={lists} onChange={onChange} />);
+
+    fireEvent.click(getByRole('button', { name: 'Show News sites' }));
+    const region: HTMLElement = getByRole('region', { name: 'News sites' });
+    expect(region.querySelectorAll('input[type="checkbox"]')).toHaveLength(HOST_PAGE_SIZE);
+    expect((): HTMLElement => getByLabelText(beyondFirstPage)).toThrow();
+
+    fireEvent.input(getByLabelText('Search News sites'), { target: { value: beyondFirstPage } });
+    fireEvent.click(getByLabelText(beyondFirstPage));
+
+    const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
+    expect(next.exclusions.news).toEqual([beyondFirstPage]);
+  });
+
+  it('keeps the category bulk actions on the whole category while a search narrows the view', (): void => {
+    const news: CategoryList = ALL_CATEGORIES.find(
+      (category: CategoryList): boolean => category.id === 'news',
+    ) as CategoryList;
+    const onChange = vi.fn();
+    const { getByLabelText, getByRole } = render(
+      <Categories lists={DEFAULT_LISTS} onChange={onChange} />,
+    );
+
+    fireEvent.click(getByRole('button', { name: 'Show News sites' }));
+    fireEvent.input(getByLabelText('Search News sites'), { target: { value: 'bbc' } });
+    fireEvent.click(getByRole('button', { name: 'Deselect all News sites' }));
+
+    const next: ListsConfig = onChange.mock.calls[0]?.[0] as ListsConfig;
+    expect(next.exclusions.news).toEqual(news.hosts);
   });
 
   it('toggling a category on fires onChange with the toggle set', (): void => {

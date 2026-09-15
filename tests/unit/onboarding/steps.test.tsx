@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { cleanup, fireEvent, render } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ALL_CATEGORIES } from '../../../src/core/categories';
+import { HOST_PAGE_SIZE } from '../../../src/core/host-search';
 import { StartingListsStep } from '../../../src/onboarding/StartingListsStep';
 import { SyncChoiceStep } from '../../../src/onboarding/SyncChoiceStep';
 import { WebsiteAccessStep } from '../../../src/onboarding/WebsiteAccessStep';
@@ -39,8 +40,63 @@ describe('StartingListsStep', (): void => {
         domains.querySelectorAll('li'),
         (item: Element): string | null => item.textContent,
       ),
-    ).toEqual(social.hosts);
+    ).toEqual(social.hosts.slice(0, HOST_PAGE_SIZE));
     expect(domains.classList.contains('category-domains-scroll')).toBe(true);
+    expect(view.getByRole('status').textContent).toBe(
+      `Showing ${HOST_PAGE_SIZE} of ${social.hosts.length} sites. Search to narrow the list.`,
+    );
+  });
+
+  it('reaches a host past the first page through the search field', (): void => {
+    const social: CategoryList = ALL_CATEGORIES.find(
+      (category: CategoryList): boolean => category.id === 'social',
+    ) as CategoryList;
+    const beyondFirstPage: string = social.hosts[social.hosts.length - 1] as string;
+    expect(social.hosts.indexOf(beyondFirstPage)).toBeGreaterThanOrEqual(HOST_PAGE_SIZE);
+    const view = render(
+      <StartingListsStep
+        lists={structuredClone(DEFAULT_LISTS)}
+        pending={false}
+        onListsChange={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(view.getByRole('button', { name: 'Show Social media sites' }));
+    expect(view.queryByText(beyondFirstPage)).toBeNull();
+    fireEvent.input(view.getByLabelText('Search Social media sites'), {
+      target: { value: beyondFirstPage },
+    });
+
+    const domains: HTMLElement = view.getByRole('region', { name: 'Social media domains' });
+    expect(
+      Array.from(
+        domains.querySelectorAll('li'),
+        (item: Element): string | null => item.textContent,
+      ),
+    ).toEqual([beyondFirstPage]);
+    expect(view.getByRole('status').textContent).toBe(`Showing 1 of ${social.hosts.length} sites.`);
+  });
+
+  it('says so when a search matches no site in the category', (): void => {
+    const view = render(
+      <StartingListsStep
+        lists={structuredClone(DEFAULT_LISTS)}
+        pending={false}
+        onListsChange={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(view.getByRole('button', { name: 'Show Social media sites' }));
+    fireEvent.input(view.getByLabelText('Search Social media sites'), {
+      target: { value: 'no-such-site.example' },
+    });
+
+    expect(view.getByRole('status').textContent).toBe('No Social media site matches your search.');
+    expect(
+      view.getByRole('region', { name: 'Social media domains' }).querySelectorAll('li'),
+    ).toHaveLength(0);
   });
 
   it('changes only the selected category without discarding list rules', (): void => {

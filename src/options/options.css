@@ -531,6 +531,20 @@ table.rules th {
   columns: 2;
 }
 
+.cat-hosts-scroll {
+  max-width: 100%;
+  max-height: min(20rem, 45vh);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-top: 1px solid var(--border);
+}
+
+.cat-hosts-scroll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .day-pills {
   display: flex;
   gap: 4px;

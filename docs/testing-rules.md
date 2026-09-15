@@ -1,4 +1,4 @@
-# Six rules for tests in this repository
+# Seven rules for tests in this repository
 
 Each of these was learned the expensive way on one branch. They are written with the evidence that
 earned them, because the evidence is the part that makes them stick.
@@ -141,6 +141,42 @@ rewriting them to satisfy a rule about English would break them. Say so when you
 a scan rather than passing over them silently, so the next reader knows the call was made and by
 whom.
 
+## 7. A mocked browser never refuses, so match its real refusals against its source
+
+The unit suite stubs `chrome.*` with functions that succeed. That is a fake more permissive than
+the real thing, and rule 3 already names the cost. This rule is about the specific place it bit:
+code that recognises a browser failure by its message text.
+
+The first store release failed "Enable website blocking" for a user who had granted the
+permission. The registration sweep injected the content script into every open tab, one tab had no
+document because Chrome had unloaded it, and Chrome refused with a message the sweep did not
+recognise. The sweep treated the unknown refusal as a failed registration, the setup page said
+blocking could not be enabled, and Retry could never clear it because the tab stayed unloaded. Every
+unit test around that code was green, because none of the stubs had ever produced a real Chrome
+message.
+
+Three things follow, and the repository now runs all three.
+
+- **Read the browser's source, not its documentation.** Chromium names the URL in every
+  host-permission denial once the extension holds the `tabs` permission, and emits the URL-less
+  variant only for a main frame with nothing to inject into. That is in
+  `extensions/browser/scripting_utils.cc`, not in any developer guide. The unit test for the
+  refusal quotes Chrome's exact string, with a comment saying where it came from.
+- **Pin the strings to Chromium main.** `npm run chrome:messages` fetches the Chromium files that
+  define each recognised message and fails when one no longer matches verbatim. It runs in CI, so a
+  rename in Chromium fails a build here before it fails a user.
+- **Never let one tab's refusal decide a setup outcome.** The message list can never be complete,
+  because Chrome adds refusals it does not document. The sweep now reports an unknown refusal with
+  the tab URL and carries on, because registration is what enables blocking and every open tab is
+  covered on its next navigation. A refusal list is a way to keep the console quiet, not a gate.
+
+The browser suite under `tests/e2e` runs on every push and pull request now, in four shards, against
+the packaged build. It could not have caught this particular refusal: Chrome for Testing crashes
+when Playwright is attached to a tab that `chrome.tabs.discard` unloads, and a restored session
+reloads its tabs before the sweep runs. So the guard for this class is the source pin and the
+design change, and the browser suite is there for every refusal that a real Chrome does produce
+under a fixture.
+
 ## The common thread
 
 The first five are the same question asked at different scales. **Is the thing you checked the
@@ -151,3 +187,6 @@ next to the one you asked, and all five come back green until the day, or the ho
 The sixth is the same question about the words rather than the code. A comment that explains the
 wrong thing, or explains the right thing in prose nobody edits to the standard the documents get,
 is a check on the reader's understanding that nothing runs.
+
+The seventh is the same question about the browser. A stub that never refuses answers a question
+about your own code, and the user's Chrome answers the one you meant.

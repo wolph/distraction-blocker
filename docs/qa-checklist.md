@@ -25,7 +25,7 @@ Derived by `node scripts/qa-checklist.mjs`, guarded by
 is asked of the runner, or of the glob the runner is configured with, so a stale one fails a
 test rather than misleading a reader.
 
-Unit suite: **177 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
+Unit suite: **178 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
 `vitest.config.ts` declares. The number of individual test cases is deliberately not recorded:
 deriving it means collecting every file, which is the expensive half of a run, and a number
 that needs a run to verify is exactly the kind that went stale here four times.
@@ -381,8 +381,8 @@ durable form of the claim.
 - [ ] Confirm the pinned-toolbar badge appearance in a real browser window, and preserve the capture
       somewhere tracked. The previous capture is gone, as recorded under Evidence that was not
       preserved. The drawing itself is machine-verified, because `npm run build` regenerates the four
-      icons from `padlock.svg` deterministically and the check gate fails if they change, but no
-      automated check can confirm how the badge looks pinned to a real toolbar.
+      icons from `padlock.svg` and `brand.svg` deterministically and the check gate fails if they
+      change, but no automated check can confirm how the badge looks pinned to a real toolbar.
 
 ## Evidence that was not preserved
 

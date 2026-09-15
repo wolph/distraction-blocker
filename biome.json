@@ -2,12 +2,18 @@
   "files": {
     "includes": [
       "**",
-      "!!dist",
-      "!!dist-pages",
-      "!!release",
-      "!!test-results",
-      "!!playwright-report"
+      "!!**/dist",
+      "!!**/dist-pages",
+      "!!**/release",
+      "!!**/test-results",
+      "!!**/playwright-report",
+      "!!**/.worktrees"
     ]
+  },
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
   },
   "formatter": {
     "indentStyle": "space",

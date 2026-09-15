@@ -16,7 +16,14 @@ import type { ListsConfig, Settings } from '../../../src/shared/types';
 vi.mock('../../../src/core/categories', () => ({
   ALL_CATEGORIES: [
     { id: 'social', title: 'Social media', hosts: ['facebook.com', 'instagram.com'] },
-    { id: 'video', title: 'Video and streaming', hosts: ['youtube.com'] },
+    {
+      id: 'video',
+      title: 'Video and streaming',
+      hosts: Array.from(
+        { length: 11 },
+        (_: unknown, index: number): string => `video${index}.example`,
+      ),
+    },
   ],
 }));
 
@@ -65,6 +72,44 @@ describe('session draft helpers', (): void => {
 });
 
 describe('RuleSummary', (): void => {
+  it('names the first few sites of a large category and counts the rest', (): void => {
+    const lists: ListsConfig = {
+      ...DEFAULT_LISTS,
+      categories: { ...DEFAULT_LISTS.categories, video: true },
+      exclusions: { video: ['video0.example'] },
+    };
+    const view = render(
+      <RuleSummary
+        draft={createSessionDraft(DEFAULT_SETTINGS, lists)}
+        lists={lists}
+        categoriesEditable={true}
+        onCategoryToggle={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    expect(view.getByRole('button', { name: 'Video and streaming' }).textContent).toContain(
+      '10 sites',
+    );
+    const membership: HTMLElement = view.getByRole('list', { name: 'Video and streaming sites' });
+    expect(
+      Array.from(
+        membership.querySelectorAll('.rule-value'),
+        (item: Element): string | null => item.textContent,
+      ),
+    ).toEqual([
+      'video1.example',
+      'video2.example',
+      'video3.example',
+      'video4.example',
+      'video5.example',
+      'video6.example',
+      'video7.example',
+      'video8.example',
+    ]);
+    expect(view.getByText('and 2 more sites')).toBeTruthy();
+  });
+
   it('shows category counts, exact membership, exceptions, host rules, and regex rules in block mode', (): void => {
     const lists: ListsConfig = {
       ...DEFAULT_LISTS,

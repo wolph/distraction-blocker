@@ -23,7 +23,14 @@ export async function createIsolatedExtensionDist(
     throw new Error('the isolated extension directory must be outside the source build');
   }
   await mkdir(path.dirname(output), { recursive: true });
-  await cp(baseDist, output, { recursive: true, force: false, errorOnExist: true });
+  // Dereference: a base directory that is itself a symbolic link would otherwise be copied as a
+  // link, and the manifest write below would land in the real build every later scenario loads.
+  await cp(baseDist, output, {
+    recursive: true,
+    dereference: true,
+    force: false,
+    errorOnExist: true,
+  });
   return output;
 }
 

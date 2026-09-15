@@ -130,6 +130,21 @@ production build. It cannot run a Playwright spec: `vitest.config.ts` includes o
 - **Build.** A real outage. The chunking warning about a module both statically and dynamically
   imported is not a failure and does not block.
 
+Then, with network access:
+
+```bash
+npm run chrome:messages
+```
+
+**Proves:** every Chrome refusal message the registration sweep recognises by text, and the
+host-permission denial that must keep naming the URL, still exist verbatim in Chromium main. CI runs
+the same check.
+
+**A failure means:** Chromium renamed a message. Read the current text at the path the script
+prints, update `isIgnorableInjectionFailure` in `src/background/tabs.ts` and its unit test, and
+run the script again. Do not skip it: a renamed message turns a harmless refusal into a reported
+one on every user's console.
+
 ## Step 2. Derived-inventory check
 
 ```bash
@@ -279,6 +294,14 @@ blocks submission absolutely.
 ```bash
 NO_COLOR=1 npm run e2e
 ```
+
+**CI runs this suite too.** The `browser` job in `.github/workflows/ci.yml` packages the build and
+runs `playwright test` in four shards on every push to `master` and `release/**`, every `v*` tag,
+and every pull request, uploading traces and profiles from failed scenarios. A release branch whose
+CI is red is not a candidate, whatever this local run says. CI sets
+`FOCUS_LOCK_SKIP_RELEASE_CAPTURES=1`, which drops `store-screenshots.spec.ts`: those scenarios
+compare byte-exact PNGs captured on this machine and refuse any other build. The local run stays in
+the gate because it is the only run that covers them.
 
 **`npm run e2e` is `npm run store:package && playwright test`.** It packages first, so a packaging
 failure here is not one red test, it is the entire gate failing before a single browser opens, and

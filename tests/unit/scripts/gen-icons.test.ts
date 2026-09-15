@@ -1,17 +1,43 @@
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { Resvg } from '@resvg/resvg-js';
 import { PNG } from 'pngjs';
 import { afterEach, describe, expect, it } from 'vitest';
 
+type IconSource = {
+  name: string;
+  sizes: readonly number[];
+};
+
 const fixtures: string[] = [];
 const SCRIPT_PATH: string = resolve('scripts/gen-icons.mjs');
+const ICON_SOURCES: readonly IconSource[] = [
+  { name: 'padlock.svg', sizes: [16, 32] },
+  { name: 'brand.svg', sizes: [48, 128] },
+];
+const SOURCE_NAMES: readonly string[] = ICON_SOURCES.map(
+  (source: IconSource): string => source.name,
+);
 
 function fixture(): string {
   const path: string = mkdtempSync(join(tmpdir(), 'focus-lock-icons-'));
   fixtures.push(path);
   return path;
+}
+
+function copySources(iconDirectory: string, names: readonly string[]): void {
+  mkdirSync(iconDirectory, { recursive: true });
+  for (const name of names) cpSync(join('assets', 'icons', name), join(iconDirectory, name));
 }
 
 function generate(cwd: string): ReturnType<typeof spawnSync> {
@@ -68,21 +94,37 @@ describe('icon generation', () => {
   it('restores stale static icons before build can consume them', (): void => {
     const path: string = fixture();
     const iconDirectory: string = join(path, 'assets', 'icons');
-    mkdirSync(iconDirectory, { recursive: true });
-    cpSync('assets/icons/padlock.svg', join(iconDirectory, 'padlock.svg'));
+    copySources(iconDirectory, SOURCE_NAMES);
     expect(generate(path).status).toBe(0);
-    const iconPath: string = join(iconDirectory, 'idle-16.png');
-    const expected: Buffer = readFileSync(iconPath);
-    writeFileSync(iconPath, Buffer.from('stale'));
+    const iconPaths: string[] = ['idle-16.png', 'idle-128.png'].map((name: string): string =>
+      join(iconDirectory, name),
+    );
+    const expected: Buffer[] = iconPaths.map((iconPath: string): Buffer => readFileSync(iconPath));
+    for (const iconPath of iconPaths) writeFileSync(iconPath, Buffer.from('stale'));
     expect(generate(path).status).toBe(0);
-    expect(readFileSync(iconPath)).toEqual(expected);
+    expect(iconPaths.map((iconPath: string): Buffer => readFileSync(iconPath))).toEqual(expected);
+  });
+
+  it.each(ICON_SOURCES)('renders $name at its manifest sizes', (source: IconSource): void => {
+    const path: string = fixture();
+    const iconDirectory: string = join(path, 'assets', 'icons');
+    copySources(iconDirectory, SOURCE_NAMES);
+    expect(generate(path).status).toBe(0);
+
+    const svg: Buffer = readFileSync(join('assets', 'icons', source.name));
+    for (const size of source.sizes) {
+      const expected: Buffer = new Resvg(svg, { fitTo: { mode: 'width', value: size } })
+        .render()
+        .asPng();
+      const actual: Buffer = readFileSync(join(iconDirectory, `idle-${size}.png`));
+      expect(actual.equals(expected), `idle-${size}.png must render ${source.name}`).toBe(true);
+    }
   });
 
   it('keeps the 128 px visible mark inside the centered 96 px store safe area', (): void => {
     const path: string = fixture();
     const iconDirectory: string = join(path, 'assets', 'icons');
-    mkdirSync(iconDirectory, { recursive: true });
-    cpSync('assets/icons/padlock.svg', join(iconDirectory, 'padlock.svg'));
+    copySources(iconDirectory, SOURCE_NAMES);
 
     expect(generate(path).status).toBe(0);
 
@@ -111,7 +153,20 @@ describe('icon generation', () => {
     ).toBe(true);
   });
 
-  it('exits nonzero when the canonical source is absent', (): void => {
-    expect(generate(fixture()).status).not.toBe(0);
-  });
+  it.each(SOURCE_NAMES)(
+    'exits nonzero before writing any icon when %s is absent',
+    (missing: string): void => {
+      const path: string = fixture();
+      const iconDirectory: string = join(path, 'assets', 'icons');
+      copySources(
+        iconDirectory,
+        SOURCE_NAMES.filter((name: string): boolean => name !== missing),
+      );
+
+      expect(generate(path).status).not.toBe(0);
+      expect(
+        readdirSync(iconDirectory).filter((name: string): boolean => name.endsWith('.png')),
+      ).toEqual([]);
+    },
+  );
 });

@@ -1,0 +1,58 @@
+.host-browser {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.host-browser__field {
+  display: block;
+  margin-top: 8px;
+}
+
+.host-browser__search {
+  width: 100%;
+  max-width: 320px;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.95em;
+}
+
+.host-browser__search:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/*
+ * Specific enough to beat the page-wide [role="status"] notice styling on the onboarding page,
+ * which paints a filled panel. This line is a count under a search field, not a notice.
+ */
+p.host-browser__status[role="status"] {
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--muted, var(--text-soft, inherit));
+  font-size: 0.85em;
+}
+
+/* The onboarding page has no rule of its own for this, and the search label is hidden on both. */
+.host-browser .visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* A search that matches nothing leaves the region empty, so it takes no room. */
+.host-browser__scroll:empty {
+  display: none;
+}

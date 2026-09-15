@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <title>Focus Lock</title>
+  <!-- store and install icon: the small promo tile's green, padlock, and progress ring on a 96 px tile inside Chrome's 16 px transparent margin -->
+  <rect x="16" y="16" width="96" height="96" rx="20" fill="#2ebf58" />
+  <!-- ring and padlock share one scale about the centre so the ring clears the tile edge -->
+  <g transform="translate(64 64) scale(0.82) translate(-64 -64)">
+    <g fill="none" stroke-width="7" stroke-linecap="round">
+      <path d="M 96.9 83 A 38 38 0 1 1 60.03 26.21" stroke="#116331" />
+      <path d="M 71.9 26.83 A 38 38 0 0 1 101.17 71.9" stroke="#93f195" />
+    </g>
+    <path d="M 53.5 61 V 53.6 A 10.5 10.5 0 0 1 74.5 53.6 V 61" fill="none" stroke="#ffffff" stroke-width="6" />
+    <rect x="46" y="58.5" width="36" height="29" rx="4" fill="#ffffff" />
+    <circle cx="64" cy="70" r="3.6" fill="#2ebf58" />
+    <path d="M 62.4 71 H 65.6 L 66.2 80 H 61.8 Z" fill="#2ebf58" />
+  </g>
+</svg>
