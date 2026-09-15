@@ -14,24 +14,22 @@ export function createBrowserView(
   onPopupToggle: () => void,
 ): BrowserView {
   const frames: Map<number, HTMLIFrameElement> = new Map<number, HTMLIFrameElement>();
+  // One button per tab, created once in mount() and never replaced. The demo clock ticks every
+  // 250ms, and every tick that changes engine state re-runs render() through onBroadcast: rebuilding
+  // the strip on each render (the previous approach) replaced the node under a visitor's pointer
+  // mid-click and dropped a human-speed tab click a few times in ten. Toggling classes and
+  // attributes on the same long-lived elements keeps the click target stable and keeps keyboard
+  // focus on whichever button already had it.
+  const buttons: Map<number, HTMLButtonElement> = new Map<number, HTMLButtonElement>();
   let strip: HTMLElement = document.createElement('div');
   let viewport: HTMLElement = document.createElement('div');
 
-  const render = (): void => {
+  const render: () => void = (): void => {
     const model: TabStrip = engine.strip();
-    strip.innerHTML = '';
-    for (const tab of model.tabs) {
-      const button: HTMLButtonElement = document.createElement('button');
-      button.type = 'button';
-      button.className = tab.tabId === model.activeTabId ? 'tab tab-active' : 'tab';
-      button.textContent = tab.title;
-      button.setAttribute('aria-pressed', tab.tabId === model.activeTabId ? 'true' : 'false');
-      button.dataset.tabId = String(tab.tabId);
-      button.addEventListener('click', (): void => {
-        engine.activate(tab.tabId);
-        render();
-      });
-      strip.append(button);
+    for (const [tabId, button] of buttons) {
+      const active: boolean = tabId === model.activeTabId;
+      button.classList.toggle('tab-active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
     }
     for (const [tabId, frame] of frames) frame.hidden = tabId !== model.activeTabId;
   };
@@ -42,6 +40,21 @@ export function createBrowserView(
       strip = document.createElement('div');
       strip.className = 'tab-strip';
       strip.setAttribute('role', 'tablist');
+      buttons.clear();
+      for (const tab of engine.strip().tabs) {
+        const button: HTMLButtonElement = document.createElement('button');
+        button.type = 'button';
+        button.className = 'tab';
+        button.textContent = tab.title;
+        button.setAttribute('aria-pressed', 'false');
+        button.dataset.tabId = String(tab.tabId);
+        button.addEventListener('click', (): void => {
+          engine.activate(tab.tabId);
+          render();
+        });
+        buttons.set(tab.tabId, button);
+        strip.append(button);
+      }
       const toolbar: HTMLElement = document.createElement('div');
       toolbar.className = 'toolbar';
       const address: HTMLElement = document.createElement('div');
