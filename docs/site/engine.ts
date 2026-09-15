@@ -51,6 +51,7 @@ import type {
 import type { WorkTab } from '../../src/shared/work-target';
 import {
   activateTab,
+  activeTab,
   createTabStrip,
   type DemoTab,
   hostnameOf,
@@ -525,7 +526,13 @@ export function createDemoEngine(now: () => number): DemoEngine {
       }
       case 'openGate': {
         if (state.session === null) return NOT_ACTIVE;
-        openGate(request.gate, request.host);
+        // The lockscreen reports the document's own hostname, which in a demo tab is this
+        // page's host, not the fictional one the tab is pretending to be. The document that
+        // sent this request is always the active tab, so the demo trusts that instead of the
+        // client-supplied host.
+        const host: string | null =
+          request.gate === 'unlockSite' ? hostnameOf(activeTab(state.strip)) : null;
+        openGate(request.gate, host);
         return { ok: true, code: 'ok' };
       }
       case 'abandonGate': {

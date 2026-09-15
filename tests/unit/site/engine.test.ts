@@ -266,6 +266,43 @@ describe('demo engine pause economy', () => {
     });
   });
 
+  it('unlocks the host of the active tab, not the host the request named', async (): Promise<void> => {
+    await startRequest(engine, 60);
+    engine.activate(12);
+    clock += 30 * 60_000;
+    expect(
+      await engine.handle({ type: 'openGate', gate: 'unlockSite', host: 'localhost' }),
+    ).toEqual({ ok: true, code: 'ok' });
+    const opened: SessionSnapshotV2 = await engine.handle({ type: 'getSnapshot' });
+    const gate: GateState | null = opened.gate;
+    if (gate === null) throw new Error('gate missing');
+    expect(gate).toMatchObject({ kind: 'unlockSite', host: 'headlines.example' });
+    clock += 10_000;
+    engine.tick();
+    expect(
+      await engine.handle({ type: 'confirmGate', typedPhrase: null, expectedGate: gate }),
+    ).toEqual({ ok: true, code: 'ok' });
+
+    const headlines = await engine.handle({
+      type: 'getBlockState',
+      url: 'https://headlines.example/',
+      docState: 'loaded',
+    });
+    expect(headlines.commands.at(-1)).toMatchObject({
+      command: 'apply-enforcement',
+      presentation: 'clear',
+    });
+    const videos = await engine.handle({
+      type: 'getBlockState',
+      url: 'https://videos.example/',
+      docState: 'loaded',
+    });
+    expect(videos.commands.at(-1)).toMatchObject({
+      command: 'apply-enforcement',
+      presentation: 'active',
+    });
+  });
+
   it('refuses to confirm a pause gate the bank cannot yet afford', async (): Promise<void> => {
     await startRequest(engine, 60);
     expect(await engine.handle({ type: 'openGate', gate: 'pause', host: null })).toEqual({
