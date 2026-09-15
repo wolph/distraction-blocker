@@ -28,12 +28,18 @@ export function createGuide(root: HTMLOListElement): Guide {
     root.append(item);
   }
   items.get('start')?.classList.add('guide-current');
+  // A beat that has already finished stays finished: a later re-trigger of the same event (the
+  // engine can emit `blocked` more than once, for instance) must not replay the transition, and
+  // must never hand `guide-current` back to a beat that is itself already done.
+  const doneBeats: Set<Beat['id']> = new Set<Beat['id']>();
   const done = (id: Beat['id'], next: Beat['id'] | null): void => {
+    if (doneBeats.has(id)) return;
+    doneBeats.add(id);
     const item: HTMLLIElement | undefined = items.get(id);
     if (item === undefined) return;
     item.classList.remove('guide-current');
     item.classList.add('guide-done');
-    if (next !== null) items.get(next)?.classList.add('guide-current');
+    if (next !== null && !doneBeats.has(next)) items.get(next)?.classList.add('guide-current');
   };
   return {
     advance: (event: DemoEvent): void => {

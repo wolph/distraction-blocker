@@ -10,6 +10,8 @@ import type {
   SessionConfigV2,
   SessionRuleSnapshot,
   SessionSnapshotV2,
+  Settings,
+  SetupState,
 } from '../../../src/shared/types';
 
 let clock: number;
@@ -36,7 +38,7 @@ function startRequest(
   return engine
     .handle({ type: 'getLists' })
     .then(async (lists: ListsConfig): Promise<ResponseMap['startSession']> => {
-      const settings = await engine.handle({ type: 'getSettings' });
+      const settings: Settings = await engine.handle({ type: 'getSettings' });
       const config: SessionConfigV2 = {
         mode: 'blacklist',
         strictness: 'friction',
@@ -59,7 +61,7 @@ beforeEach((): void => {
 
 describe('demo engine setup answers', () => {
   it('reports a completed setup with website access granted', async (): Promise<void> => {
-    const setup = await engine.handle({ type: 'getSetupState' });
+    const setup: SetupState = await engine.handle({ type: 'getSetupState' });
     expect(isSetupState(setup)).toBe(true);
     expect(setup).toMatchObject({
       completed: true,
@@ -70,7 +72,7 @@ describe('demo engine setup answers', () => {
   });
 
   it('blocks the two distracting hosts through custom rules', async (): Promise<void> => {
-    const lists = await engine.handle({ type: 'getLists' });
+    const lists: ListsConfig = await engine.handle({ type: 'getLists' });
     expect(lists.custom).toEqual([
       { kind: 'host', pattern: 'headlines.example' },
       { kind: 'host', pattern: 'videos.example' },
@@ -78,7 +80,7 @@ describe('demo engine setup answers', () => {
   });
 
   it('answers an idle snapshot the popup accepts', async (): Promise<void> => {
-    const snapshot = await engine.handle({ type: 'getSnapshot' });
+    const snapshot: SessionSnapshotV2 = await engine.handle({ type: 'getSnapshot' });
     expect(isSessionSnapshotV2(snapshot)).toBe(true);
     expect(snapshot.lifecycle.kind).toBe('idle');
   });
@@ -90,6 +92,12 @@ describe('demo engine setup answers', () => {
         { type: 'exportEvents' }
       >),
     ).rejects.toThrow('demo engine does not handle exportEvents');
+  });
+
+  it('answers the work tab icon lookup with no icon', async (): Promise<void> => {
+    expect(
+      await engine.handle({ type: 'getWorkTabIcon', sessionId: 'demo-session', tabId: 11 }),
+    ).toEqual({ ok: true, icon: null });
   });
 });
 
@@ -103,7 +111,7 @@ describe('demo engine session', () => {
     engine.onEvent((event: DemoEvent): void => {
       events.push(event);
     });
-    const started = await startRequest(engine);
+    const started: ResponseMap['startSession'] = await startRequest(engine);
     expect(started).toEqual({ ok: true, code: 'ok' });
     expect(broadcasts.map((message): string => message.type)).toEqual([
       'stateChanged',
@@ -117,7 +125,10 @@ describe('demo engine session', () => {
     expect(snapshot.lifecycle.kind).toBe('active');
     expect(snapshot.config?.intention).toBe('Finish the proposal');
 
-    const blocked = await engine.handle({
+    // Tab 11 (Proposal draft, the work tab) is active by default: a hidden tab's own verdict still
+    // reports blocked in its content commands, since the real lockscreen mounts in every tab, but
+    // it must not read as the visitor meeting the lockscreen.
+    const blocked: ResponseMap['getBlockState'] = await engine.handle({
       type: 'getBlockState',
       url: 'https://headlines.example/',
       docState: 'loaded',
@@ -127,18 +138,43 @@ describe('demo engine session', () => {
       'reset-enforcement-epoch',
       'apply-enforcement',
     ]);
-    const apply = commands[1];
+    const apply: DocumentContentCommand | undefined = commands[1];
     expect(apply?.command === 'apply-enforcement' && apply.verdict.blocked).toBe(true);
     expect(apply?.command === 'apply-enforcement' && apply.overlay?.presentation).toBe('active');
-    expect(events.at(-1)).toEqual({ type: 'blocked', tabId: 12 });
+    expect(events).toEqual([{ type: 'sessionStarted' }]);
 
-    const allowed = await engine.handle({
+    const allowed: ResponseMap['getBlockState'] = await engine.handle({
       type: 'getBlockState',
       url: 'https://proposal.example/draft',
       docState: 'loaded',
     });
-    const clear = allowed.commands[1];
+    const clear: DocumentContentCommand | undefined = allowed.commands[1];
     expect(clear?.command === 'apply-enforcement' && clear.presentation).toBe('clear');
+  });
+
+  it('reports blocked only for the active tab', async (): Promise<void> => {
+    const events: DemoEvent[] = [];
+    engine.onEvent((event: DemoEvent): void => {
+      events.push(event);
+    });
+    await startRequest(engine);
+
+    // The reevaluate broadcast this start fired makes every open tab request its own verdict,
+    // Headlines included, even though the visitor has not clicked it. None of that is the beat.
+    await engine.handle({
+      type: 'getBlockState',
+      url: 'https://headlines.example/',
+      docState: 'loaded',
+    });
+    await engine.handle({
+      type: 'getBlockState',
+      url: 'https://videos.example/',
+      docState: 'loaded',
+    });
+    expect(events.some((event: DemoEvent): boolean => event.type === 'blocked')).toBe(false);
+
+    engine.activate(12);
+    expect(events).toEqual([{ type: 'sessionStarted' }, { type: 'blocked', tabId: 12 }]);
   });
 
   it('returns to the chosen work tab', async (): Promise<void> => {
@@ -148,7 +184,7 @@ describe('demo engine session', () => {
     engine.onEvent((event: DemoEvent): void => {
       events.push(event);
     });
-    const target = await engine.handle({ type: 'getWorkTarget' });
+    const target: ResponseMap['getWorkTarget'] = await engine.handle({ type: 'getWorkTarget' });
     if (!target.ok || target.sessionId === null) throw new Error('work target unavailable');
     expect(target).toMatchObject({ state: 'ready', title: 'Proposal draft' });
     expect(await engine.handle({ type: 'returnToWork', sessionId: target.sessionId })).toEqual({
@@ -163,7 +199,7 @@ describe('demo engine session', () => {
     expect(await engine.handle({ type: 'openEndGate' })).toEqual({ ok: true, code: 'ok' });
     const withGate: SessionSnapshotV2 = await engine.handle({ type: 'getSnapshot' });
     expect(withGate.gate?.kind).toBe('cancel');
-    const gate = withGate.gate;
+    const gate: GateState | null = withGate.gate;
     if (gate === null) throw new Error('gate missing');
     expect(
       await engine.handle({ type: 'confirmGate', typedPhrase: null, expectedGate: gate }),
@@ -186,7 +222,7 @@ describe('demo engine session', () => {
     engine.tick();
     expect((await engine.handle({ type: 'getSnapshot' })).lifecycle.kind).toBe('idle');
     expect(events.at(-1)).toEqual({ type: 'sessionEnded' });
-    const after = await engine.handle({
+    const after: ResponseMap['getBlockState'] = await engine.handle({
       type: 'getBlockState',
       url: 'https://headlines.example/',
       docState: 'loaded',
@@ -200,8 +236,8 @@ describe('demo engine session', () => {
 
 describe('demo engine work tab preview before a session', () => {
   it('filters the pre-start listing by the requested policy, not the live session', async (): Promise<void> => {
-    const lists = await engine.handle({ type: 'getLists' });
-    const blacklisted = await engine.handle({
+    const lists: ListsConfig = await engine.handle({ type: 'getLists' });
+    const blacklisted: ResponseMap['getWorkTabs'] = await engine.handle({
       type: 'getWorkTabs',
       mode: 'blacklist',
       windowId: DEMO_WINDOW_ID,
@@ -214,7 +250,7 @@ describe('demo engine work tab preview before a session', () => {
       ],
     });
 
-    const whitelisted = await engine.handle({
+    const whitelisted: ResponseMap['getWorkTabs'] = await engine.handle({
       type: 'getWorkTabs',
       mode: 'whitelist',
       windowId: DEMO_WINDOW_ID,
@@ -242,7 +278,7 @@ describe('demo engine pause economy', () => {
 
     const paused: SessionSnapshotV2 = await engine.handle({ type: 'getSnapshot' });
     expect(paused.phase).toBe('paused');
-    const blockedWhilePaused = await engine.handle({
+    const blockedWhilePaused: ResponseMap['getBlockState'] = await engine.handle({
       type: 'getBlockState',
       url: 'https://headlines.example/',
       docState: 'loaded',
@@ -255,7 +291,7 @@ describe('demo engine pause economy', () => {
     expect(await engine.handle({ type: 'resumeFromPause' })).toEqual({ ok: true, code: 'ok' });
     const resumed: SessionSnapshotV2 = await engine.handle({ type: 'getSnapshot' });
     expect(resumed.phase).toBe('focus');
-    const blockedAfterResume = await engine.handle({
+    const blockedAfterResume: ResponseMap['getBlockState'] = await engine.handle({
       type: 'getBlockState',
       url: 'https://headlines.example/',
       docState: 'loaded',
@@ -283,7 +319,7 @@ describe('demo engine pause economy', () => {
       await engine.handle({ type: 'confirmGate', typedPhrase: null, expectedGate: gate }),
     ).toEqual({ ok: true, code: 'ok' });
 
-    const headlines = await engine.handle({
+    const headlines: ResponseMap['getBlockState'] = await engine.handle({
       type: 'getBlockState',
       url: 'https://headlines.example/',
       docState: 'loaded',
@@ -292,7 +328,7 @@ describe('demo engine pause economy', () => {
       command: 'apply-enforcement',
       presentation: 'clear',
     });
-    const videos = await engine.handle({
+    const videos: ResponseMap['getBlockState'] = await engine.handle({
       type: 'getBlockState',
       url: 'https://videos.example/',
       docState: 'loaded',
@@ -323,7 +359,7 @@ describe('demo engine pause economy', () => {
 
 describe('demo engine publish throttling', () => {
   it('publishes only when something observable changes', async (): Promise<void> => {
-    const lists = await engine.handle({ type: 'getLists' });
+    const lists: ListsConfig = await engine.handle({ type: 'getLists' });
     const config: SessionConfigV2 = {
       mode: 'blacklist',
       strictness: 'friction',

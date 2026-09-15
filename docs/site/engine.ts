@@ -21,6 +21,7 @@ import {
   beginPauseV2,
   commitResumeV2,
   focusedMsAtV2,
+  type SessionAdvanceResultV2,
   startSessionV2,
 } from '../../src/core/session-v2';
 import {
@@ -251,7 +252,7 @@ export function createDemoEngine(now: () => number): DemoEngine {
       state.gate = null;
     }
     accrueFocusCredit(session, at);
-    const result = advanceSessionV2(session, at);
+    const result: SessionAdvanceResultV2 = advanceSessionV2(session, at);
     if (result.kind === 'timer-completed') {
       endSession();
       return;
@@ -332,7 +333,11 @@ export function createDemoEngine(now: () => number): DemoEngine {
     });
     if (tab !== undefined) {
       state.attemptsToday += 1;
-      emit({ type: 'blocked', tabId: tab.tabId });
+      // Every open tab re-requests a verdict on every reevaluate broadcast, hidden ones included,
+      // so a blocked distraction tab that never becomes active would otherwise fire this on session
+      // start. The guide's beat is the visitor meeting the lockscreen, which only the active tab
+      // shows, so this reports blocked only for the tab the visitor is actually looking at.
+      if (tab.tabId === state.strip.activeTabId) emit({ type: 'blocked', tabId: tab.tabId });
     }
     return [
       reset,
@@ -451,6 +456,10 @@ export function createDemoEngine(now: () => number): DemoEngine {
         return 'sessionId' in request
           ? { ok: true, tabs: eligibleWorkTabs() }
           : { ok: true, tabs: preStartWorkTabs(request.mode, request.rules) };
+      // The demo has no favicon service to ask, so every tab answers with no icon rather than
+      // leaving the work tab picker's request unanswered and its throw silent.
+      case 'getWorkTabIcon':
+        return { ok: true, icon: null };
       case 'getWorkTarget': {
         const session: SessionStateV2 | null = state.session;
         if (session === null) return { ok: true, sessionId: null, state: 'missing', title: null };
@@ -547,7 +556,7 @@ export function createDemoEngine(now: () => number): DemoEngine {
       case 'confirmGate': {
         const session: SessionStateV2 | null = state.session;
         if (session === null) return NOT_ACTIVE;
-        const refusal = gateReady(request.expectedGate);
+        const refusal: ResponseMap['confirmGate'] | null = gateReady(request.expectedGate);
         if (refusal !== null) return refusal;
         const gate: GateState = state.gate as GateState;
         if (gate.requiredPhrase !== null && request.typedPhrase !== gate.requiredPhrase)
@@ -619,6 +628,10 @@ export function createDemoEngine(now: () => number): DemoEngine {
     activate: (tabId: number): void => {
       state.strip = activateTab(state.strip, tabId);
       broadcast({ type: 'workTargetChanged' });
+      // Clicking into a tab that is already blocked meets the lockscreen immediately, with no
+      // further getBlockState round trip required to notice it, so the guide advances here too.
+      const tab: DemoTab | null = tabById(state.strip, tabId);
+      if (tab !== null && verdictFor(tab.url).blocked) emit({ type: 'blocked', tabId });
     },
     onBroadcast: (listener: (message: Broadcast) => void): (() => void) => {
       broadcastListeners.add(listener);
