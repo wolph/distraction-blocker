@@ -264,39 +264,40 @@ async function recordSiteDemo(directory: string, frames: string): Promise<void> 
       await preparePage(page, PAGE_SIZE);
       await page.goto(server.url);
 
-      // The demo boots mid-session on the blocked Headlines tab, so the first frame is the
-      // lockscreen itself. Back to work returns to the draft, then the popup ends the session.
+      // The demo opens idle on the Headlines tab. The popup is opened with the intention typed
+      // before the loop, Start locks the page the visitor is on, and Back to work returns to the
+      // draft.
       const draft: FrameLocator = page.frameLocator('iframe[data-tab-id="11"]');
       const headlines: FrameLocator = page.frameLocator('iframe[data-tab-id="12"]');
-      await expect(headlines.locator('focus-lock-overlay')).toBeAttached();
-      await waitForDemoLockTarget(page, 12, 'Back to work');
+      await expect(headlines.locator('focus-lock-overlay')).not.toBeAttached();
+      await page.getByRole('button', { name: 'Open Focus Lock' }).click();
+      const popup: Locator = page.locator('#popup');
+      await popup.getByLabel('Intention').fill(INTENTION);
+      // Headlines is not an eligible work tab, so nothing is preselected: pick the draft.
+      await popup.getByRole('button', { name: 'Change' }).click();
+      await popup.getByLabel('Work tab').selectOption('11');
+      await expect(popup.locator('.work-target')).toHaveText(/Proposal draft/);
+
+      await page.locator('#browser').scrollIntoViewIfNeeded();
 
       await mkdir(frames, { recursive: true });
       const started: number = performance.now();
       for (let frame: number = 0; frame < 80; frame += 1) {
-        if (frame === 8) await capture(page, directory, 'demo-poster.png');
-        if (frame === 24) {
+        if (frame === 16) {
+          await popup.getByRole('button', { name: /^Start/ }).click();
+          await expect(headlines.locator('focus-lock-overlay')).toBeAttached();
+          await expect(page.locator('[data-beat="start"]')).toHaveClass(/guide-done/);
+          // Close the popup panel so the lockscreen underneath is what the frames show.
+          await page.getByRole('button', { name: 'Open Focus Lock' }).click();
+          await expect(page.locator('#popup-panel')).toBeHidden();
+          await waitForDemoLockTarget(page, 12, 'Back to work');
+        }
+        if (frame === 28) await capture(page, directory, 'demo-poster.png');
+        if (frame === 48) {
           await clickDemoLockscreenButton(page, 12, 'Back to work');
           await expect(page.locator('button.tab-active')).toHaveText('Proposal draft');
           await expect(page.locator('[data-beat="back"]')).toHaveClass(/guide-done/);
           await draft.locator('#draft').fill('Section one: why this matters.');
-        }
-        if (frame === 48) {
-          await page.getByRole('button', { name: 'Open Focus Lock' }).click();
-          const popup: Locator = page.locator('#popup');
-          await popup
-            .locator('summary')
-            .filter({ hasText: /^Session actions$/ })
-            .click();
-          await expect(popup.getByRole('button', { name: 'End session' })).toBeVisible();
-        }
-        if (frame === 64) {
-          const popup: Locator = page.locator('#popup');
-          await popup.getByRole('button', { name: 'End session' }).click();
-          const confirm: Locator = popup.getByRole('button', { name: 'End the session' });
-          await expect(confirm).toBeEnabled({ timeout: 10_000 });
-          await confirm.click();
-          await expect(page.locator('[data-beat="session"]')).toHaveClass(/guide-done/);
         }
         await page.screenshot({ path: path.join(frames, `${String(frame).padStart(3, '0')}.png`) });
         await delay(Math.max(0, started + ((frame + 1) * 1_000) / 8 - performance.now()));
@@ -465,7 +466,7 @@ test.describe('README capture', (): void => {
         'Session: 25 minutes, Finish the proposal. A local demonstration document is the actual selected work tab.',
         'Progress: seeded one-hour completed session and one blocked attempt yesterday. The current session is real.',
         "demo-poster.png and demo.gif are recorded from the interactive demo page at https://wolph.github.io/distraction-blocker/, which renders that same popup directly on the page and mounts that same lockscreen inside each fake browser tab's own iframe, none of them real Chrome tabs.",
-        'GIF: 80 screenshots at 8 fps, 10 seconds. The Headlines lockscreen for 3 seconds, the returned work document for 3, the popup showing the running session for 2, and the popup ending it for 2.',
+        'GIF: 80 screenshots at 8 fps, 10 seconds. The popup open on the idle Headlines tab for 2 seconds, Start locking that tab and the lockscreen for 4, the returned work document for 4.',
         `Native Chrome browser chrome is outside every capture. The demo captures do include the fake tab strip and toolbar drawn by the demo page itself, since that is ordinary page content, not real browser chrome. Popup viewport 480x600. Block and demo 960x640. Stats overview 1280x${statsHeight}.`,
         "In blocked-page.png the blocking overlay applies to an already loaded local blocked.example page, and pressing Back to work there activates that page's original Chrome tab. In demo.gif, pressing Back to work switches the fake tab strip on the demo page to the work tab, a state change inside one Chrome tab rather than a switch between Chrome tabs.",
       ],

@@ -1,9 +1,9 @@
 {
-  "capturedAt": "2026-09-16T13:40:31.464Z",
-  "sourceCommit": "328f3a53594b917040412779264b4db7886a55c7",
+  "capturedAt": "2026-09-16T15:42:39.892Z",
+  "sourceCommit": "a7bc980895deb811c14f67647661147589f6738e",
   "distSha256": "a25a6050c7181c081b424954332ffcde798628219088da393a629df42f48d00c",
   "packageLockSha256": "8af5957ccc846d292c27f40b42b464c5b6b19a2ca783a399534109c804de8aea",
-  "captureScriptSha256": "9d1723e35806e898405fced2ff2b8836a808135f57314b83bc5f2d483fcd19d3",
+  "captureScriptSha256": "3f23e9897eb028fd124fb5d68f2739d901c037faaa49a1d42575cf38b7f65268",
   "version": "0.1.1",
   "toolchain": {
     "node": "24.18.0",
@@ -16,20 +16,20 @@
       "sha256": "420ec8ee73018a938253d5c3fbc15c7ea765f2cfbff83040bd27bcc3b1d328f3"
     },
     "blocked-page.png": {
-      "bytes": 45148,
-      "sha256": "6f1348dc6543e72499f0be14a92caad8451770032872779a6332e3310d6b52e8"
+      "bytes": 45081,
+      "sha256": "062b01d78ad47a5c4bbebb6707333a1c7d464d93252fa088b11b9d0f1e2f8dc4"
     },
     "progress.png": {
       "bytes": 68790,
       "sha256": "1a8773ff26d5660a8f812c54c049f52e66b75be774a80d254ca8239799cb5da7"
     },
     "demo-poster.png": {
-      "bytes": 102414,
-      "sha256": "c9c8a53302f5630052eda1eb0cf9ac3f32629701c10e789298e95ea71b0fec3a"
+      "bytes": 95835,
+      "sha256": "7753a08d9210e6de9f126696b0e57fdf126973749b78e8e794622660e21f43bb"
     },
     "demo.gif": {
-      "bytes": 231631,
-      "sha256": "09e2fb6bc41a3775d15274477cf175a93ed07df8d4bd915e7d576ed5faf5ce2a"
+      "bytes": 221914,
+      "sha256": "2ea4f168a27721a4198ae7ac12f1c415414b62467d6094608e1306be7cb4c844"
     }
   },
   "demonstration": [
@@ -38,7 +38,7 @@
     "Session: 25 minutes, Finish the proposal. A local demonstration document is the actual selected work tab.",
     "Progress: seeded one-hour completed session and one blocked attempt yesterday. The current session is real.",
     "demo-poster.png and demo.gif are recorded from the interactive demo page at https://wolph.github.io/distraction-blocker/, which renders that same popup directly on the page and mounts that same lockscreen inside each fake browser tab's own iframe, none of them real Chrome tabs.",
-    "GIF: 80 screenshots at 8 fps, 10 seconds. The Headlines lockscreen for 3 seconds, the returned work document for 3, the popup showing the running session for 2, and the popup ending it for 2.",
+    "GIF: 80 screenshots at 8 fps, 10 seconds. The popup open on the idle Headlines tab for 2 seconds, Start locking that tab and the lockscreen for 4, the returned work document for 4.",
     "Native Chrome browser chrome is outside every capture. The demo captures do include the fake tab strip and toolbar drawn by the demo page itself, since that is ordinary page content, not real browser chrome. Popup viewport 480x600. Block and demo 960x640. Stats overview 1280x1028.",
     "In blocked-page.png the blocking overlay applies to an already loaded local blocked.example page, and pressing Back to work there activates that page's original Chrome tab. In demo.gif, pressing Back to work switches the fake tab strip on the demo page to the work tab, a state change inside one Chrome tab rather than a switch between Chrome tabs."
   ],
