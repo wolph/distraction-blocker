@@ -12,6 +12,7 @@ import { type DemoClock, installDemoClock } from './clock';
 import { DEMO_CLOCK_SPEED, TAB_ID_PARAM } from './demo-protocol';
 import { createDemoEngine, type DemoEngine, type DemoEvent } from './engine';
 import { createGuide, type Guide } from './guide';
+import { seedDemoSession } from './seed';
 import type { DemoTab } from './tabs-model';
 
 function required<T extends HTMLElement>(id: string): T {
@@ -42,6 +43,8 @@ const browser: BrowserView = createBrowserView(
   togglePopup,
 );
 browser.mount(required('browser'));
+// The demo boots mid-session on a blocked tab, so the lockscreen is the first thing a visitor sees.
+void seedDemoSession(engine, 11, 12).then((): void => browser.render());
 
 const guide: Guide = createGuide(required<HTMLOListElement>('guide'));
 engine.onEvent((event: DemoEvent): void => {

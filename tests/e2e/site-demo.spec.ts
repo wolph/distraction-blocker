@@ -52,6 +52,8 @@ async function clickLockscreenButton(
   tabId: number,
   accessibleName: string,
 ): Promise<void> {
+  // A mouse click lands in viewport coordinates, so the iframe must be on screen first.
+  await page.locator(`iframe[data-tab-id="${String(tabId)}"]`).scrollIntoViewIfNeeded();
   const session: CDPSession = await context.newCDPSession(page);
   try {
     await session.send('Page.enable');
@@ -99,7 +101,7 @@ async function clickLockscreenButton(
   }
 }
 
-test('a visitor starts a session, meets the lockscreen, and returns to the draft', async (): Promise<void> => {
+test('a visitor lands on a blocked page, returns to the draft, ends the session and starts their own', async (): Promise<void> => {
   const page: Page = await browser.newPage();
   const errors: string[] = [];
   page.on('pageerror', (error: Error): void => {
@@ -110,32 +112,46 @@ test('a visitor starts a session, meets the lockscreen, and returns to the draft
   });
   await page.goto(server.url);
 
+  // Beat 1: the demo boots mid-session on the Headlines tab, so the lockscreen is on screen.
+  const icon: Locator = page.getByRole('button', { name: 'Open Focus Lock' });
+  await expect(icon).toHaveAttribute('data-locked', 'true');
+  await expect(page.locator('button.tab-active')).toHaveText('Headlines');
+  const headlines: FrameLocator = page.frameLocator('iframe[data-tab-id="12"]');
+  await expect(headlines.locator('focus-lock-overlay')).toBeAttached();
+  await expect(page.locator('[data-beat="back"]')).toHaveClass(/guide-current/);
+  await clickLockscreenButton(page.context(), page, 12, 'Back to work');
+  await expect(page.locator('button.tab-active')).toHaveText('Proposal draft');
+  await expect(page.locator('[data-beat="back"]')).toHaveClass(/guide-done/);
   const work: FrameLocator = page.frameLocator('iframe[data-tab-id="11"]');
   await work.locator('#draft').fill('Section one: why this matters.');
 
-  await page.getByRole('button', { name: 'Open Focus Lock' }).click();
+  // Beat 2: the popup shows the running session, and End goes through the Friction gate.
+  await icon.click();
   const popup: Locator = page.locator('#popup');
+  // The End control lives in the popup's Session actions disclosure, closed by default.
+  await popup
+    .locator('summary')
+    .filter({ hasText: /^Session actions$/ })
+    .click();
+  await popup.getByRole('button', { name: 'End session' }).click();
+  const confirm: Locator = popup.getByRole('button', { name: 'End the session' });
+  await expect(confirm).toBeEnabled({ timeout: 10_000 });
+  await confirm.click();
+  await expect(icon).toHaveAttribute('data-locked', 'false');
+  await expect(page.locator('[data-beat="session"]')).toHaveClass(/guide-done/);
+  await expect(headlines.locator('focus-lock-overlay')).not.toBeAttached();
+
+  // Beat 3: the visitor starts their own session from the real popup.
   await popup.getByLabel('Intention').fill('Finish the proposal');
   // The popup auto-selects the active tab as the work target once its own lookup of eligible
-  // tabs resolves. Starting before that lookup settles starts with no work target at all, which
-  // leaves the lockscreen's Back to work control permanently reading Choose a work tab.
+  // tabs resolves. Starting before that lookup settles starts with no work target at all.
   await expect(popup.locator('.work-target')).toHaveText(/Proposal draft/);
   await popup.getByRole('button', { name: /^Start/ }).click();
+  await expect(icon).toHaveAttribute('data-locked', 'true');
   await expect(page.locator('[data-beat="start"]')).toHaveClass(/guide-done/);
-  // Starting a session makes every tab, Headlines and Videos included, re-request a verdict while
-  // still hidden. None of that is the visitor meeting the lockscreen, so the beat must stay open
-  // until the Headlines tab is actually clicked below.
-  await expect(page.locator('[data-beat="blocked"]')).not.toHaveClass(/guide-done/);
-
   await page.getByRole('button', { name: 'Headlines' }).click();
-  const headlines: FrameLocator = page.frameLocator('iframe[data-tab-id="12"]');
   await expect(headlines.locator('focus-lock-overlay')).toBeAttached();
-  await expect(page.locator('[data-beat="blocked"]')).toHaveClass(/guide-done/);
-
-  await clickLockscreenButton(page.context(), page, 12, 'Back to work');
-  await expect(page.locator('button.tab-active')).toHaveText('Proposal draft');
   await expect(work.locator('#draft')).toHaveValue('Section one: why this matters.');
-  await expect(page.locator('[data-beat="back"]')).toHaveClass(/guide-done/);
 
   expect(errors).toEqual([]);
 });

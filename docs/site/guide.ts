@@ -2,14 +2,23 @@
 import type { DemoEvent } from './engine';
 
 interface Beat {
-  id: 'start' | 'blocked' | 'back';
+  id: 'back' | 'session' | 'start';
   text: string;
 }
 
 const BEATS: readonly Beat[] = [
-  { id: 'start', text: 'Click the Focus Lock icon, name your task, and press Start.' },
-  { id: 'blocked', text: 'Open the Headlines tab and meet the lockscreen.' },
-  { id: 'back', text: 'Press Back to work. Your draft is right where you left it.' },
+  {
+    id: 'back',
+    text: 'You landed on a blocked site mid-session. Press Back to work to return to your draft.',
+  },
+  {
+    id: 'session',
+    text: 'Click the Focus Lock icon in the toolbar to see the running session, then end it.',
+  },
+  {
+    id: 'start',
+    text: 'Start your own: name a task, pick a duration, press Start, and open Headlines again.',
+  },
 ];
 
 export interface Guide {
@@ -27,10 +36,9 @@ export function createGuide(root: HTMLOListElement): Guide {
     items.set(beat.id, item);
     root.append(item);
   }
-  items.get('start')?.classList.add('guide-current');
-  // A beat that has already finished stays finished: a later re-trigger of the same event (the
-  // engine can emit `blocked` more than once, for instance) must not replay the transition, and
-  // must never hand `guide-current` back to a beat that is itself already done.
+  items.get('back')?.classList.add('guide-current');
+  // A beat that has already finished stays finished: the engine can emit the same event more than
+  // once, and a replay must never hand guide-current back to a beat that is already done.
   const doneBeats: Set<Beat['id']> = new Set<Beat['id']>();
   const done = (id: Beat['id'], next: Beat['id'] | null): void => {
     if (doneBeats.has(id)) return;
@@ -43,9 +51,9 @@ export function createGuide(root: HTMLOListElement): Guide {
   };
   return {
     advance: (event: DemoEvent): void => {
-      if (event.type === 'sessionStarted') done('start', 'blocked');
-      if (event.type === 'blocked') done('blocked', 'back');
-      if (event.type === 'returnedToWork') done('back', null);
+      if (event.type === 'returnedToWork') done('back', 'session');
+      if (event.type === 'sessionEnded') done('session', 'start');
+      if (event.type === 'sessionStarted' && doneBeats.has('session')) done('start', null);
     },
   };
 }
