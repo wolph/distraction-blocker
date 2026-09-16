@@ -21,6 +21,7 @@ const SITE_OUTPUT_FILES = [
   'assets/enforcement-v2-validation.js',
   'assets/main.css',
   'assets/main.js',
+  'assets/tab.css',
   'assets/tab.js',
   'images/blocked-page.png',
   'images/focus-session.png',

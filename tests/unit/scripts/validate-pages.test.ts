@@ -143,6 +143,7 @@ const VALID_TAB_HTML: string = `<!DOCTYPE html>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/distraction-blocker/assets/tab.css">
     <title>Demo tab</title>
   </head>
   <body>
@@ -173,6 +174,7 @@ function fixture(): string {
   write(join(path, 'dist-pages', 'index.html'), VALID_SITE_HTML);
   write(join(path, 'dist-pages', 'tab.html'), VALID_TAB_HTML);
   write(join(path, 'dist-pages', 'assets', 'main.css'), VALID_SITE_CSS);
+  write(join(path, 'dist-pages', 'assets', 'tab.css'), VALID_SITE_CSS);
   write(join(path, 'dist-pages', 'assets', 'main.js'), '');
   write(join(path, 'dist-pages', 'assets', 'tab.js'), '');
   write(join(path, 'dist-pages', 'assets', 'enforcement-v2-validation.js'), '');
