@@ -13,3 +13,4 @@ playwright-report/
 .playwright-mcp/
 .remember/
 .worktrees/
+.claude/worktrees/
