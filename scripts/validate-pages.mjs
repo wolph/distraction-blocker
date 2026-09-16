@@ -555,9 +555,7 @@ function validateNoRequestResources(document, relativeHtmlPath) {
     PRIVACY_URL,
   );
   const expectedStylesheet =
-    relativeHtmlPath === 'privacy/index.html'
-      ? './style.css'
-      : '/focus-lock/privacy/style.css';
+    relativeHtmlPath === 'privacy/index.html' ? './style.css' : '/focus-lock/privacy/style.css';
   assert(
     isDeepStrictEqual(stylesheets, [expectedStylesheet]),
     `Stylesheet resource must be exactly ${expectedStylesheet} in dist-pages/${relativeHtmlPath}`,
