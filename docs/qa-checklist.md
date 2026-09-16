@@ -25,7 +25,7 @@ Derived by `node scripts/qa-checklist.mjs`, guarded by
 is asked of the runner, or of the glob the runner is configured with, so a stale one fails a
 test rather than misleading a reader.
 
-Unit suite: **181 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
+Unit suite: **182 files** matching `tests/unit/**/*.test.{ts,tsx}`, the pattern
 `vitest.config.ts` declares. The number of individual test cases is deliberately not recorded:
 deriving it means collecting every file, which is the expensive half of a run, and a number
 that needs a run to verify is exactly the kind that went stale here four times.
@@ -181,7 +181,7 @@ since the grep was written. Both mistakes were present when this section was fir
 
 ### site-demo.spec.ts (1)
 
-- a visitor starts a session, meets the lockscreen, and returns to the draft
+- a visitor lands on a blocked page, returns to the draft, ends the session and starts their own
 
 ### smoke.spec.ts (10)
 
