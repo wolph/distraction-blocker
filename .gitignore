@@ -14,3 +14,5 @@ playwright-report/
 .remember/
 .worktrees/
 .claude/worktrees/
+# /brag video output: rendered locally, never committed
+brag-output*/

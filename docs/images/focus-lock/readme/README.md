@@ -1,6 +1,6 @@
 # README product tour media
 
-The README uses fresh captures from two sources. `focus-session.png`, `blocked-page.png` and `progress.png` come from the extension running in an isolated Playwright Chromium profile. `demo-poster.png` and `demo.gif` come from the interactive demo page at https://wolph.github.io/distraction-blocker/, which renders that same popup directly on the page and mounts that same lockscreen inside each fake browser tab's own iframe. The example task is "Finish the proposal". The work document and recorded history are demonstration data. Both sources render the product's own interface and handle the session and Back to work actions themselves.
+The README uses fresh captures from two sources. `focus-session.png`, `blocked-page.png` and `progress.png` come from the extension running in an isolated Playwright Chromium profile. `demo-poster.png` and `demo.gif` come from the interactive demo page at https://wolph.github.io/focus-lock/, which renders that same popup directly on the page and mounts that same lockscreen inside each fake browser tab's own iframe. The example task is "Finish the proposal". The work document and recorded history are demonstration data. Both sources render the product's own interface and handle the session and Back to work actions themselves.
 
 | File | Capture |
 | --- | --- |

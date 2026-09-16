@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://github.com/wolph/distraction-blocker/raw/refs/heads/master/assets/icons/idle-128.png" width="48" height="48" alt="">
+<img src="https://github.com/wolph/focus-lock/raw/refs/heads/master/assets/icons/idle-128.png" width="48" height="48" alt="">
 
 # Focus Lock
 
@@ -10,18 +10,18 @@ Block distracting websites, keep your next step in view, and get back to work wi
 
 <a href="https://chromewebstore.google.com/detail/focus-lock/lfhgncahaaenflajfdolbkgiglppdgjm"><img src="https://img.shields.io/chrome-web-store/v/lfhgncahaaenflajfdolbkgiglppdgjm?label=Chrome%20Web%20Store&logo=googlechrome&logoColor=white" alt="Install Focus Lock from the Chrome Web Store"></a>
 
-**[Try the interactive demo](https://wolph.github.io/distraction-blocker/)**
+**[Try the interactive demo](https://wolph.github.io/focus-lock/)**
 
 **[Get started](#get-started)** | [Take the tour](#a-little-help-staying-on-track) | [Your privacy](#your-browsing-stays-yours)
 
 </div>
 
 <picture>
-  <source media="(prefers-reduced-motion: reduce)" srcset="https://github.com/wolph/distraction-blocker/raw/refs/heads/master/docs/images/focus-lock/readme/demo-poster.png">
-  <img src="https://github.com/wolph/distraction-blocker/raw/refs/heads/master/docs/images/focus-lock/readme/demo.gif" width="960" alt="A distracting page is blocked. Back to work returns to the chosen proposal tab.">
+  <source media="(prefers-reduced-motion: reduce)" srcset="https://github.com/wolph/focus-lock/raw/refs/heads/master/docs/images/focus-lock/readme/demo-poster.png">
+  <img src="https://github.com/wolph/focus-lock/raw/refs/heads/master/docs/images/focus-lock/readme/demo.gif" width="960" alt="A distracting page is blocked. Back to work returns to the chosen proposal tab.">
 </picture>
 
-*A short detour, then back to the task. [View the still image](https://github.com/wolph/distraction-blocker/raw/refs/heads/master/docs/images/focus-lock/readme/demo-poster.png).* Screenshots and demo use an isolated browser profile with demonstration data.
+*A short detour, then back to the task. [View the still image](https://github.com/wolph/focus-lock/raw/refs/heads/master/docs/images/focus-lock/readme/demo-poster.png).* Screenshots and demo use an isolated browser profile with demonstration data.
 
 ## A little help staying on track
 
@@ -32,7 +32,7 @@ Name the task you want to finish, choose a duration, and select the sites to put
 Block distracting categories and individual sites, or allow only the sites you need. Choose a Flexible session, add Friction before ending early, or commit to a timed Hard lock.
 
 <p align="center">
-  <img src="https://github.com/wolph/distraction-blocker/raw/refs/heads/master/docs/images/focus-lock/readme/focus-session.png" width="480" alt="Focus Lock session controls with the task Finish the proposal, a focus duration and a chosen work tab.">
+  <img src="https://github.com/wolph/focus-lock/raw/refs/heads/master/docs/images/focus-lock/readme/focus-session.png" width="480" alt="Focus Lock session controls with the task Finish the proposal, a focus duration and a chosen work tab.">
 </p>
 
 ### Catch the detour and return to work
@@ -43,7 +43,7 @@ Search open tabs by title or website when the right one is buried. Selecting a w
 
 Pages you already had open are covered and muted in place. When blocking ends, their forms, scroll position and page state remain. A freshly blocked navigation reloads when access returns.
 
-![A blocked page keeps Finish the proposal visible, with a Back to work button pointing to the work tab.](https://github.com/wolph/distraction-blocker/raw/refs/heads/master/docs/images/focus-lock/readme/blocked-page.png)
+![A blocked page keeps Finish the proposal visible, with a Back to work button pointing to the work tab.](https://github.com/wolph/focus-lock/raw/refs/heads/master/docs/images/focus-lock/readme/blocked-page.png)
 
 ### Find a rhythm that fits your day
 
@@ -51,15 +51,15 @@ Schedule focus sessions, alternate work with breaks, or earn site access credit 
 
 See focused time, session history and patterns in Statistics. Use the record to adjust your routine, whether that means a shorter session or fewer distractions next time.
 
-![Focus statistics with a modest demonstration history, showing focused time and completed sessions.](https://github.com/wolph/distraction-blocker/raw/refs/heads/master/docs/images/focus-lock/readme/progress.png)
+![Focus statistics with a modest demonstration history, showing focused time and completed sessions.](https://github.com/wolph/focus-lock/raw/refs/heads/master/docs/images/focus-lock/readme/progress.png)
 
 ## Get started
 
 Install from source with **Node.js 24.15+ (24.x)**, npm and Google Chrome:
 
 ```sh
-git clone https://github.com/wolph/distraction-blocker.git
-cd distraction-blocker
+git clone https://github.com/wolph/focus-lock.git
+cd focus-lock
 npm ci
 npm run build
 ```
@@ -77,7 +77,7 @@ Focus Lock sends no extension data to a developer-controlled server. Full URLs, 
 
 Chrome Sync is optional. If you enable it during setup, it shares settings, lists, site access credit, streaks and aggregate statistics. Live sessions do not move between devices.
 
-**[Read the privacy disclosures](https://github.com/wolph/distraction-blocker/blob/master/store/privacy-disclosures.md)** | [Report a problem](https://github.com/wolph/distraction-blocker/issues)
+**[Read the privacy disclosures](https://github.com/wolph/focus-lock/blob/master/store/privacy-disclosures.md)** | [Report a problem](https://github.com/wolph/focus-lock/issues)
 
 ## What to know before you start
 

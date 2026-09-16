@@ -17,7 +17,7 @@ If Chrome Sync is enabled after setup confirmation, it receives settings, block 
 
 Focus Lock reads, writes, and deletes the disclosed Chrome Sync data through Chrome's extension APIs. The developer does not receive or retain a separate copy.
 
-Privacy policy: https://wolph.github.io/distraction-blocker/privacy/
+Privacy policy: https://wolph.github.io/focus-lock/privacy/
 
 ## Permissions
 
@@ -40,6 +40,6 @@ Blocking is enforced by the extension's service worker. If Chrome has not woken 
 - Focus Lock cannot prevent a user from disabling the extension and does not block other browsers, apps, or devices.
 - Chrome Sync is eventually consistent, so aggregate totals can briefly differ between devices.
 
-Support and issue reports: https://github.com/WoLpH/distraction-blocker/issues
+Support and issue reports: https://github.com/wolph/focus-lock/issues
 
-Source code: https://github.com/WoLpH/distraction-blocker
+Source code: https://github.com/wolph/focus-lock

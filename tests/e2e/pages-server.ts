@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT: string = fileURLToPath(new URL('../../dist-pages/', import.meta.url));
-const PREFIX: string = '/distraction-blocker/';
+const PREFIX: string = '/focus-lock/';
 const TYPES: Readonly<Record<string, string>> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',

@@ -11,7 +11,7 @@ import {
 } from './files.mjs';
 import { validateExtensionOriginFetch, validateTransportAllowlist } from './transport.mjs';
 
-const PRIVACY_URL = 'https://wolph.github.io/distraction-blocker/privacy/';
+const PRIVACY_URL = 'https://wolph.github.io/focus-lock/privacy/';
 const SCREENSHOTS = [
   'store/assets/screenshots/01-start-session.png',
   'store/assets/screenshots/02-blocked-page.png',

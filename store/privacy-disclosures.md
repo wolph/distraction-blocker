@@ -75,9 +75,9 @@ Before the first deployment, this check is expected to fail because GitHub Pages
 the privacy policy:
 
 ```console
-curl --fail --silent --show-error https://wolph.github.io/distraction-blocker/privacy/ > /dev/null
+curl --fail --silent --show-error https://wolph.github.io/focus-lock/privacy/ > /dev/null
 ```
 
 After the Pages workflow deploys successfully, the command should exit with status 0.
 
-Privacy policy URL: https://wolph.github.io/distraction-blocker/privacy/
+Privacy policy URL: https://wolph.github.io/focus-lock/privacy/

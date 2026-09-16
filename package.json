@@ -1,5 +1,5 @@
 {
-  "name": "distraction-blocker",
+  "name": "focus-lock",
   "version": "0.1.1",
   "description": "Focus Lock: focus sessions that lock distracting sites, with earned site access credit.",
   "private": true,

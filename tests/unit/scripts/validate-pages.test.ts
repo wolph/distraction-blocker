@@ -80,7 +80,7 @@ const VALID_PRIVACY_HTML: string = `<!DOCTYPE html>
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="canonical" href="https://wolph.github.io/distraction-blocker/privacy/">
+    <link rel="canonical" href="https://wolph.github.io/focus-lock/privacy/">
     <link rel="stylesheet" href="./style.css">
     <title>Focus Lock Privacy Policy</title>
   </head>
@@ -89,7 +89,7 @@ const VALID_PRIVACY_HTML: string = `<!DOCTYPE html>
     <main id="details">
       <h1>Focus Lock Privacy</h1>
       <p>Policy text uses plain punctuation.</p>
-      <a href="https://github.com/wolph/distraction-blocker">https://github.com/wolph/distraction-blocker</a>
+      <a href="https://github.com/wolph/focus-lock">https://github.com/wolph/focus-lock</a>
     </main>
   </body>
 </html>
@@ -100,13 +100,13 @@ const VALID_NOT_FOUND_HTML: string = `<!DOCTYPE html>
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="stylesheet" href="/distraction-blocker/privacy/style.css">
+    <link rel="stylesheet" href="/focus-lock/privacy/style.css">
     <title>Focus Lock Privacy - Page not found</title>
   </head>
   <body>
     <main>
       <h1>Page not found</h1>
-      <a href="/distraction-blocker/privacy/">Read the Focus Lock privacy policy</a>
+      <a href="/focus-lock/privacy/">Read the Focus Lock privacy policy</a>
     </main>
   </body>
 </html>
@@ -118,8 +118,8 @@ const VALID_SITE_HTML: string = `<!DOCTYPE html>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="icon" href="data:,">
-    <link rel="canonical" href="https://wolph.github.io/distraction-blocker/">
-    <link rel="stylesheet" href="/distraction-blocker/assets/main.css">
+    <link rel="canonical" href="https://wolph.github.io/focus-lock/">
+    <link rel="stylesheet" href="/focus-lock/assets/main.css">
     <title>Focus Lock</title>
   </head>
   <body>
@@ -127,12 +127,12 @@ const VALID_SITE_HTML: string = `<!DOCTYPE html>
       <h1>Stay with the task you chose.</h1>
       <p>
         <a href="https://chromewebstore.google.com/detail/focus-lock/lfhgncahaaenflajfdolbkgiglppdgjm">Install</a>
-        <a href="https://github.com/wolph/distraction-blocker#get-started">Source</a>
-        <a href="/distraction-blocker/privacy/">Privacy policy</a>
+        <a href="https://github.com/wolph/focus-lock#get-started">Source</a>
+        <a href="/focus-lock/privacy/">Privacy policy</a>
       </p>
-      <img src="/distraction-blocker/images/focus-session.png" width="10" height="10" alt="Demo">
+      <img src="/focus-lock/images/focus-session.png" width="10" height="10" alt="Demo">
     </main>
-    <script type="module" src="/distraction-blocker/assets/main.js"></script>
+    <script type="module" src="/focus-lock/assets/main.js"></script>
   </body>
 </html>
 `;
@@ -143,12 +143,12 @@ const VALID_TAB_HTML: string = `<!DOCTYPE html>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="/distraction-blocker/assets/tab.css">
+    <link rel="stylesheet" href="/focus-lock/assets/tab.css">
     <title>Demo tab</title>
   </head>
   <body>
     <main id="tab-content"></main>
-    <script type="module" src="/distraction-blocker/assets/tab.js"></script>
+    <script type="module" src="/focus-lock/assets/tab.js"></script>
   </body>
 </html>
 `;
@@ -441,8 +441,8 @@ describe('Pages validation', () => {
     write(
       htmlPath,
       readFileSync(htmlPath, 'utf8').replace(
-        'https://github.com/wolph/distraction-blocker',
-        'https://github.com/wolph/distraction-blocker/issues',
+        'https://github.com/wolph/focus-lock',
+        'https://github.com/wolph/focus-lock/issues',
       ),
     );
     expectValidationFailure(path, /exact repository URL/i);
@@ -584,8 +584,8 @@ describe('Pages validation', () => {
     write(
       htmlPath,
       readFileSync(htmlPath, 'utf8').replace(
-        '<a href="https://github.com/wolph/distraction-blocker">',
-        '<a href="https://github.com/wolph/distraction-blocker" ping="https://analytics.example/collect">',
+        '<a href="https://github.com/wolph/focus-lock">',
+        '<a href="https://github.com/wolph/focus-lock" ping="https://analytics.example/collect">',
       ),
     );
     expectValidationFailure(path, /ping attribute/i);
@@ -703,7 +703,7 @@ describe('Pages validation', () => {
     write(
       htmlPath,
       readFileSync(htmlPath, 'utf8').replace(
-        '/distraction-blocker/assets/main.css',
+        '/focus-lock/assets/main.css',
         'https://analytics.example/main.css',
       ),
     );
@@ -743,7 +743,7 @@ describe('Pages validation', () => {
       htmlPath,
       readFileSync(htmlPath, 'utf8').replace(
         '</main>',
-        '<iframe src="/distraction-blocker/tab.html"></iframe></main>',
+        '<iframe src="/focus-lock/tab.html"></iframe></main>',
       ),
     );
     expectValidationFailure(path, /only scripts, stylesheets and images/i);

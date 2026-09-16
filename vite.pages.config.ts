@@ -13,7 +13,7 @@ const siteRoot: string = resolve(currentDirectory, 'docs/site');
  */
 export default defineConfig({
   root: siteRoot,
-  base: '/distraction-blocker/',
+  base: '/focus-lock/',
   plugins: [preact()],
   build: {
     outDir: '../../dist-pages',

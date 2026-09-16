@@ -7,9 +7,9 @@ import { JSDOM } from 'jsdom';
 import { parse } from 'yaml';
 
 const SITE_ORIGIN = 'https://wolph.github.io';
-const SITE_PREFIX = '/distraction-blocker/';
+const SITE_PREFIX = '/focus-lock/';
 const PRIVACY_URL = `${SITE_ORIGIN}${SITE_PREFIX}privacy/`;
-const REPOSITORY_URL = 'https://github.com/wolph/distraction-blocker';
+const REPOSITORY_URL = 'https://github.com/wolph/focus-lock';
 const PAGE_URL_EXPRESSION = '$' + '{{ steps.deployment.outputs.page_url }}';
 const PRIVACY_OUTPUT_FILES = [
   '404.html',
@@ -557,7 +557,7 @@ function validateNoRequestResources(document, relativeHtmlPath) {
   const expectedStylesheet =
     relativeHtmlPath === 'privacy/index.html'
       ? './style.css'
-      : '/distraction-blocker/privacy/style.css';
+      : '/focus-lock/privacy/style.css';
   assert(
     isDeepStrictEqual(stylesheets, [expectedStylesheet]),
     `Stylesheet resource must be exactly ${expectedStylesheet} in dist-pages/${relativeHtmlPath}`,

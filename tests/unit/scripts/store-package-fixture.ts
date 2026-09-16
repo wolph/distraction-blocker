@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { deflateRawSync } from 'node:zlib';
 import { PNG } from 'pngjs';
 
-export const PRIVACY_URL: string = 'https://wolph.github.io/distraction-blocker/privacy/';
+export const PRIVACY_URL: string = 'https://wolph.github.io/focus-lock/privacy/';
 export const SCREENSHOTS: string[] = [
   'store/assets/screenshots/01-start-session.png',
   'store/assets/screenshots/02-blocked-page.png',

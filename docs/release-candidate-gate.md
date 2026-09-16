@@ -415,13 +415,13 @@ for the directory, the constant and the writer before believing it.
 
 The gate makes the branch a release candidate. It does not make the listing submittable, because the
 privacy policy URL in `store/listing.md` and `store/privacy-disclosures.md` points at
-`https://wolph.github.io/distraction-blocker/privacy/`, and `.github/workflows/pages.yml` publishes
+`https://wolph.github.io/focus-lock/privacy/`, and `.github/workflows/pages.yml` publishes
 that page only on a push to `master`. The URL 404s until the branch merges and the workflow runs.
 
 So the order at the end is: gate passes, branch merges to `master`, Pages workflow deploys, then
 
 ```bash
-curl --fail --silent --show-error https://wolph.github.io/distraction-blocker/privacy/ > /dev/null
+curl --fail --silent --show-error https://wolph.github.io/focus-lock/privacy/ > /dev/null
 ```
 
 and only then is the listing's privacy URL a true claim. No amount of gating on a branch can bring
