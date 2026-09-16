@@ -85,6 +85,8 @@ jobs:
       - name: Package the build under test
         # The suite loads the extension from the packaged output, as npm run e2e does.
         run: npm run store:package
+      - name: Build the Pages site under test
+        run: npm run pages:build
       - name: Run the browser suite
         env:
           NO_COLOR: '1'

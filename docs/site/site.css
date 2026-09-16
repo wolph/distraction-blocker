@@ -1,0 +1,316 @@
+:root {
+  color-scheme: light;
+  --ink: #1b1f24;
+  --muted: #5a6470;
+  --paper: #f7f8fa;
+  --panel: #ffffff;
+  --line: #d9dee5;
+  --accent: #236ed2;
+  --accent-ink: #ffffff;
+  --good: #1d8a4a;
+  --chrome-bg: #e9edf2;
+  --tab-bg: #f2f4f7;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+/*
+ * popup.css's own html rule (scrollbar-width: none; block-size: 100%) is written for the
+ * extension's fixed 480x600 popup window, and this stylesheet loads after popup.css in the
+ * bundle, so without a rule here that reset would win the cascade tie on the landing page's own
+ * html element too: no scrollbar and a height clamp neither belongs on a scrolling document.
+ */
+html {
+  scrollbar-width: auto;
+  block-size: auto;
+}
+/*
+ * The popup sets data-theme and an inline color-scheme on document.documentElement, which on this
+ * page is the landing page's own html element, so a visitor in dark mode (or with the popup's
+ * theme switched to dark) needs a dark palette for the page's own tokens too, or the page keeps
+ * rendering light text-on-paper under UI chrome that has gone dark.
+ */
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ink: #e7efe9;
+    --muted: #9db2a4;
+    --paper: #121a15;
+    --panel: #1a241e;
+    --line: #2c3a31;
+    /* Chrome's default button text colour (`buttontext`) follows `color-scheme` rather than the
+       inherited `color`, so a fixed light --accent read at 3.2:1 against this dark panel. A
+       lighter accent and a dark accent-ink keep the outline button, the primary button and the
+       toolbar icon all readable. */
+    --accent: #7fb3ff;
+    --accent-ink: #0a1930;
+    --chrome-bg: #0c110d;
+    --tab-bg: #141d17;
+  }
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --ink: #e7efe9;
+  --muted: #9db2a4;
+  --paper: #121a15;
+  --panel: #1a241e;
+  --line: #2c3a31;
+  --accent: #7fb3ff;
+  --accent-ink: #0a1930;
+  --chrome-bg: #0c110d;
+  --tab-bg: #141d17;
+}
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+}
+.skip-link {
+  position: absolute;
+  left: -999px;
+}
+.skip-link:focus {
+  left: 16px;
+  top: 16px;
+  background: var(--panel);
+  padding: 8px;
+}
+.page-header {
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.header-inner,
+main {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 32px 16px;
+}
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin: 0;
+}
+h1 {
+  font-size: 2.4rem;
+  margin: 8px 0;
+}
+.lede {
+  font-size: 1.15rem;
+  color: var(--muted);
+  max-width: 60ch;
+}
+/*
+ * Named .hero-actions rather than the more obvious .actions: popup.css defines its own .actions
+ * for the popup's session-start buttons (width: 100%, flex-direction: column), and with site.css
+ * now loaded after popup.css in the bundle (see the html rule above), a shared class name would
+ * apply whichever rule is declared last to *both* the hero buttons and the embedded popup's own
+ * buttons, picking one layout for two unrelated components.
+ */
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.button {
+  display: inline-block;
+  padding: 10px 18px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+.button-primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.demo-note {
+  color: var(--muted);
+}
+.demo-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(220px, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+@media (max-width: 800px) {
+  .demo-layout {
+    grid-template-columns: 1fr;
+  }
+}
+.tour figure {
+  margin: 24px 0;
+}
+.tour img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+figcaption {
+  color: var(--muted);
+}
+.browser {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+.tab-strip {
+  display: flex;
+  gap: 4px;
+  padding: 8px 8px 0;
+  background: var(--chrome-bg);
+}
+.tab {
+  border: 1px solid var(--line);
+  border-bottom: none;
+  background: var(--tab-bg);
+  /* Buttons take their text colour from the UA's `buttontext`, not from inherited `color`, and
+     `buttontext` follows `color-scheme` (light chrome regardless of --tab-bg in dark mode without
+     this), so the inactive Headlines/Videos labels read as light-on-light without it. */
+  color: var(--ink);
+  padding: 6px 14px;
+  border-radius: 8px 8px 0 0;
+  cursor: pointer;
+  font: inherit;
+}
+.tab-active {
+  background: var(--panel);
+  font-weight: 600;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.address {
+  flex: 1;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 12px;
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+.extension-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 700;
+  cursor: pointer;
+}
+.viewport {
+  position: relative;
+  height: 480px;
+}
+.viewport iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
+.viewport iframe[hidden] {
+  display: none;
+}
+.popup-panel {
+  position: absolute;
+  z-index: 5;
+  right: 24px;
+  margin-top: -440px;
+  /* Caps at the popup's real 480px width, but a narrow viewport (a 375px phone against a right:
+     24px anchor) would otherwise push the left edge off-screen, so it shrinks to fit with matching
+     side margins instead. The panel scrolls internally past that point, since .popup underneath
+     keeps the real popup's fixed 480px so it still looks like the extension, not a squeezed copy. */
+  width: min(480px, calc(100vw - 48px));
+  max-height: 600px;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+}
+.popup-panel[hidden] {
+  display: none;
+}
+.demo {
+  position: relative;
+}
+.guide {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 12px;
+  counter-reset: beat;
+}
+.guide-step {
+  counter-increment: beat;
+  padding: 12px 12px 12px 44px;
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+}
+.guide-step::before {
+  content: counter(beat);
+  position: absolute;
+  left: 12px;
+  top: 10px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--line);
+  color: var(--ink);
+  text-align: center;
+  font-weight: 700;
+}
+.guide-current {
+  color: var(--ink);
+  border-color: var(--accent);
+}
+.guide-current::before {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.guide-done {
+  text-decoration: line-through;
+}
+.guide-done::before {
+  background: var(--good);
+  color: var(--accent-ink);
+  content: "\2713";
+}
+.popup {
+  width: 480px;
+  background: var(--bg);
+}
+/*
+ * popup.css styles the bare `body` selector for the extension's own 480x600 popup window. Loaded
+ * on this page it also matches the page's own `<body>`, so without a rule here the whole landing
+ * page would inherit the popup's fixed width, clipped height and 14px type. `.popup` above already
+ * matches the popup's own size for the panel's content. This rule outranks the bled-in `body`
+ * selector on specificity alone and restores the page body to its own layout.
+ */
+html body {
+  margin: 0;
+  width: auto;
+  max-inline-size: none;
+  block-size: auto;
+  min-block-size: 0;
+  overflow: visible;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}

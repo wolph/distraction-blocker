@@ -14,5 +14,13 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src", "tests", "scripts", "manifest.config.ts", "vite.config.ts"]
+  "include": [
+    "src",
+    "tests",
+    "scripts",
+    "docs/site",
+    "manifest.config.ts",
+    "vite.config.ts",
+    "vite.pages.config.ts"
+  ]
 }

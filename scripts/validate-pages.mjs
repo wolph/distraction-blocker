@@ -11,12 +11,31 @@ const SITE_PREFIX = '/distraction-blocker/';
 const PRIVACY_URL = `${SITE_ORIGIN}${SITE_PREFIX}privacy/`;
 const REPOSITORY_URL = 'https://github.com/wolph/distraction-blocker';
 const PAGE_URL_EXPRESSION = '$' + '{{ steps.deployment.outputs.page_url }}';
-const EXPECTED_OUTPUT_FILES = [
+const PRIVACY_OUTPUT_FILES = [
   '404.html',
   'privacy/404.html',
   'privacy/index.html',
   'privacy/style.css',
 ];
+const SITE_OUTPUT_FILES = [
+  'assets/enforcement-v2-validation.js',
+  'assets/main.css',
+  'assets/main.js',
+  'assets/tab.js',
+  'images/blocked-page.png',
+  'images/focus-session.png',
+  'images/progress.png',
+  'index.html',
+  'tab.html',
+];
+const EXPECTED_OUTPUT_FILES = [...PRIVACY_OUTPUT_FILES, ...SITE_OUTPUT_FILES].sort();
+
+/** The privacy policy must produce no request at all. The site may load its own files. */
+function policyFor(relativeHtmlPath) {
+  return relativeHtmlPath.startsWith('privacy/') || relativeHtmlPath === '404.html'
+    ? 'no-requests'
+    : 'same-site-only';
+}
 const EXPECTED_BUILD_STEPS = [
   { uses: 'actions/checkout@v7' },
   {
@@ -32,6 +51,13 @@ const EXPECTED_DEPLOY_STEPS = [{ id: 'deployment', uses: 'actions/deploy-pages@v
 const FORBIDDEN_PROSE_PUNCTUATION = /[“”„‟‘’‚‛—–−‑‒…;]/u;
 const REQUEST_PRODUCING_SELECTOR =
   'script, iframe, img, audio, video, source, track, object, embed, form';
+/**
+ * The privacy policy's non-URL attribute allowlist, restored exactly as the pre-refactor validator
+ * enforced it. Losing this catch-all is what let `<meta http-equiv="refresh"
+ * content="0;url=https://tracker.example/collect">` validate silently: `http-equiv` and `content`
+ * are not URL-bearing attributes, so nothing inspected them at all once the fallback assertion that
+ * every other attribute is on this list was dropped.
+ */
 const SAFE_NON_URL_ATTRIBUTES = new Set([
   'aria-hidden',
   'aria-label',
@@ -43,6 +69,26 @@ const SAFE_NON_URL_ATTRIBUTES = new Set([
   'lang',
   'name',
   'rel',
+]);
+/** The site policy's non-URL attribute allowlist: every non-URL attribute the built site
+ * (index.html, tab.html) actually uses, plus the aria-* and data-* families a Preact-rendered
+ * popup may add at runtime that the static markup here does not show. */
+const SITE_SAFE_NON_URL_ATTRIBUTES = new Set([
+  'alt',
+  'charset',
+  'class',
+  'content',
+  'crossorigin',
+  'for',
+  'height',
+  'hidden',
+  'id',
+  'lang',
+  'name',
+  'rel',
+  'role',
+  'type',
+  'width',
 ]);
 const URL_BEARING_ATTRIBUTES = new Set([
   'about',
@@ -82,6 +128,8 @@ const ALLOWED_EXTERNAL_ANCHOR_URLS = new Set([
   'https://www.google.com/chrome/terms/',
   'https://developer.chrome.com/docs/webstore/program-policies/user-data-faq/',
 ]);
+const SITE_INSTALL_URL =
+  'https://chromewebstore.google.com/detail/focus-lock/lfhgncahaaenflajfdolbkgiglppdgjm';
 const ALLOWED_CSS_AT_RULES = new Set(['media']);
 const ALLOWED_CSS_FUNCTIONS = new Set([
   'calc',
@@ -245,8 +293,18 @@ function validateWorkflow(rootDirectory) {
   );
 }
 
+/** Where the staged site lives. Defaults to dist-pages under the project root, but the real-build
+ * unit test points this at an isolated temp directory with PAGES_OUTPUT_DIR, the same override
+ * build-pages.mjs honours, so it never collides with a concurrently running e2e build that also
+ * empties and rewrites dist-pages. */
+function resolveOutputDirectory(rootDirectory) {
+  return process.env.PAGES_OUTPUT_DIR
+    ? resolve(process.env.PAGES_OUTPUT_DIR)
+    : join(rootDirectory, 'dist-pages');
+}
+
 function inspectStagedTree(rootDirectory) {
-  const outputDirectory = join(rootDirectory, 'dist-pages');
+  const outputDirectory = resolveOutputDirectory(rootDirectory);
   assert(existsSync(outputDirectory), 'Missing required directory: dist-pages');
   const outputStat = lstatSync(outputDirectory);
   assert(!outputStat.isSymbolicLink(), 'Staged directory must not be a symbolic link: dist-pages');
@@ -338,7 +396,8 @@ function urlToOutputPath(url, outputDirectory) {
     `Broken same-site link outside ${SITE_PREFIX}: ${url.href}`,
   );
   const relativePath = decodeURIComponent(url.pathname.slice(SITE_PREFIX.length));
-  const normalizedPath = relativePath.endsWith('/') ? `${relativePath}index.html` : relativePath;
+  const normalizedPath =
+    relativePath === '' || relativePath.endsWith('/') ? `${relativePath}index.html` : relativePath;
   const outputPath = resolve(outputDirectory, normalizedPath);
   assert(
     isInside(outputPath, outputDirectory),
@@ -350,8 +409,8 @@ function urlToOutputPath(url, outputDirectory) {
 function validateSameSiteLinks(document, htmlPath, outputDirectory) {
   const currentRelativePath = relative(outputDirectory, htmlPath).split(sep).join('/');
   const currentUrl = new URL(currentRelativePath, `${SITE_ORIGIN}${SITE_PREFIX}`);
-  for (const element of document.querySelectorAll('[href]')) {
-    const href = element.getAttribute('href');
+  for (const element of document.querySelectorAll('[href], [src]')) {
+    const href = element.getAttribute('href') ?? element.getAttribute('src');
     if (!href || /^(?:mailto|tel|data):/u.test(href)) continue;
     const targetUrl = new URL(href, currentUrl);
     if (targetUrl.origin !== SITE_ORIGIN) continue;
@@ -375,7 +434,7 @@ function validateSameSiteLinks(document, htmlPath, outputDirectory) {
   }
 }
 
-function validateResources(document, relativeHtmlPath) {
+function assertNoInlineStyling(document, relativeHtmlPath) {
   assert(
     document.querySelector('base') === null,
     `HTML base elements are forbidden in dist-pages/${relativeHtmlPath}`,
@@ -384,10 +443,24 @@ function validateResources(document, relativeHtmlPath) {
     document.querySelector('style') === null,
     `Inline style elements are forbidden in dist-pages/${relativeHtmlPath}`,
   );
-  assert(
-    document.querySelectorAll(REQUEST_PRODUCING_SELECTOR).length === 0,
-    `Request-producing HTML elements are forbidden in dist-pages/${relativeHtmlPath}`,
+}
+
+function isDataIconAttribute(element, attributeName, attributeValue) {
+  return (
+    element.localName === 'link' &&
+    element.getAttribute('rel') === 'icon' &&
+    attributeName === 'href' &&
+    attributeValue === 'data:,'
   );
+}
+
+/**
+ * Runs `visit` for every URL-bearing attribute, after the checks common to both policies. Every
+ * attribute that is not URL-bearing must still be on the policy's own non-URL allowlist: an
+ * attribute in neither set, `http-equiv` on a `<meta>` being the case that motivated this, fails
+ * loudly instead of passing through unexamined.
+ */
+function forEachUrlBearingAttribute(document, relativeHtmlPath, isSafeNonUrlAttribute, visit) {
   for (const element of document.querySelectorAll('*')) {
     for (const attribute of element.attributes) {
       const attributeName = attribute.name.toLowerCase();
@@ -404,51 +477,35 @@ function validateResources(document, relativeHtmlPath) {
         attributeName !== 'ping',
         `Ping attributes are forbidden in dist-pages/${relativeHtmlPath}`,
       );
-      if (URL_BEARING_ATTRIBUTES.has(attributeName)) {
-        const compactValue = stripUrlControlCharacters(attributeValue);
-        const isDataIcon =
-          element.localName === 'link' &&
-          element.getAttribute('rel') === 'icon' &&
-          attributeName === 'href' &&
-          attributeValue === 'data:,';
+      if (!URL_BEARING_ATTRIBUTES.has(attributeName)) {
         assert(
-          isDataIcon || !/^(?:data|javascript|vbscript):/iu.test(compactValue),
-          `Executable URL scheme is forbidden in dist-pages/${relativeHtmlPath}`,
+          isSafeNonUrlAttribute(attributeName),
+          `Unapproved HTML attribute ${attribute.name} in dist-pages/${relativeHtmlPath}`,
         );
-        assert(
-          attributeName === 'href' && ['a', 'link'].includes(element.localName),
-          `Unapproved URL-bearing attribute ${attribute.name} in dist-pages/${relativeHtmlPath}`,
-        );
-        if (element.localName === 'a') {
-          const isLocalHref =
-            attributeValue.startsWith('#') ||
-            attributeValue.startsWith('./') ||
-            attributeValue.startsWith(SITE_PREFIX);
-          assert(
-            isLocalHref || ALLOWED_EXTERNAL_ANCHOR_URLS.has(attributeValue),
-            `Anchor URL is outside the local and approved external contract: ${attributeValue}`,
-          );
-        }
         continue;
       }
+      const compactValue = stripUrlControlCharacters(attributeValue);
+      const isDataIcon = isDataIconAttribute(element, attributeName, attributeValue);
       assert(
-        SAFE_NON_URL_ATTRIBUTES.has(attributeName),
-        `Unapproved HTML attribute ${attribute.name} in dist-pages/${relativeHtmlPath}`,
+        isDataIcon || !/^(?:data|javascript|vbscript):/iu.test(compactValue),
+        `Executable URL scheme is forbidden in dist-pages/${relativeHtmlPath}`,
       );
+      visit({ element, attribute, attributeName, attributeValue, compactValue, isDataIcon });
     }
   }
-  const expectedStylesheet =
-    relativeHtmlPath === 'privacy/index.html'
-      ? './style.css'
-      : '/distraction-blocker/privacy/style.css';
+}
+
+/** Collects `<link rel="stylesheet">` hrefs, checking the icon and (if allowed) canonical link. */
+function collectStylesheetLinks(document, relativeHtmlPath, canonicalAllowed, expectedCanonical) {
   const stylesheets = [];
   for (const link of document.querySelectorAll('link[href]')) {
     const rel = link.getAttribute('rel');
     const href = link.getAttribute('href');
     if (rel === 'canonical') {
+      assert(canonicalAllowed, `Unexpected link resource in dist-pages/${relativeHtmlPath}`);
       assert(
-        relativeHtmlPath === 'privacy/index.html' && href === PRIVACY_URL,
-        `Unexpected link resource in dist-pages/${relativeHtmlPath}`,
+        href === expectedCanonical,
+        `Unexpected canonical URL in dist-pages/${relativeHtmlPath}`,
       );
       continue;
     }
@@ -459,10 +516,165 @@ function validateResources(document, relativeHtmlPath) {
     assert(rel === 'stylesheet', `Unexpected link resource in dist-pages/${relativeHtmlPath}`);
     stylesheets.push(href);
   }
+  return stylesheets;
+}
+
+/** The privacy policy: no request-producing element, and anchors follow the local/approved list. */
+function validateNoRequestResources(document, relativeHtmlPath) {
+  assertNoInlineStyling(document, relativeHtmlPath);
+  assert(
+    document.querySelectorAll(REQUEST_PRODUCING_SELECTOR).length === 0,
+    `Request-producing HTML elements are forbidden in dist-pages/${relativeHtmlPath}`,
+  );
+  forEachUrlBearingAttribute(
+    document,
+    relativeHtmlPath,
+    (attributeName) => SAFE_NON_URL_ATTRIBUTES.has(attributeName),
+    ({ element, attribute, attributeName, attributeValue }) => {
+      assert(
+        attributeName === 'href' && ['a', 'link'].includes(element.localName),
+        `Unapproved URL-bearing attribute ${attribute.name} in dist-pages/${relativeHtmlPath}`,
+      );
+      if (element.localName !== 'a') return;
+      const isLocalHref =
+        attributeValue.startsWith('#') ||
+        attributeValue.startsWith('./') ||
+        attributeValue.startsWith(SITE_PREFIX);
+      assert(
+        isLocalHref || ALLOWED_EXTERNAL_ANCHOR_URLS.has(attributeValue),
+        `Anchor URL is outside the local and approved external contract: ${attributeValue}`,
+      );
+    },
+  );
+  const canonicalAllowed = relativeHtmlPath === 'privacy/index.html';
+  const stylesheets = collectStylesheetLinks(
+    document,
+    relativeHtmlPath,
+    canonicalAllowed,
+    PRIVACY_URL,
+  );
+  const expectedStylesheet =
+    relativeHtmlPath === 'privacy/index.html'
+      ? './style.css'
+      : '/distraction-blocker/privacy/style.css';
   assert(
     isDeepStrictEqual(stylesheets, [expectedStylesheet]),
     `Stylesheet resource must be exactly ${expectedStylesheet} in dist-pages/${relativeHtmlPath}`,
   );
+}
+
+function assertApprovedSameSiteAttribute(element, attribute, attributeName, relativeHtmlPath) {
+  const approved =
+    (attributeName === 'href' && ['a', 'link'].includes(element.localName)) ||
+    (attributeName === 'src' && ['script', 'img'].includes(element.localName));
+  assert(
+    approved,
+    `Unapproved URL-bearing attribute ${attribute.name} in dist-pages/${relativeHtmlPath}`,
+  );
+}
+
+/** Anchors may point off-site only to the install page or the repository. Everything else that
+ * loads a resource (a script src, an img src, a stylesheet href) must resolve same-site. */
+function assertSameSiteAnchorOrResource(attributeInfo, relativeHtmlPath) {
+  const { element, attributeName, attributeValue, compactValue, isDataIcon } = attributeInfo;
+  const base = `${SITE_ORIGIN}${SITE_PREFIX}${relativeHtmlPath}`;
+  if (attributeName === 'href' && element.localName === 'a') {
+    const resolved = new URL(compactValue, base);
+    const isApprovedExternal =
+      attributeValue === SITE_INSTALL_URL || attributeValue.startsWith(REPOSITORY_URL);
+    assert(
+      resolved.origin === SITE_ORIGIN || isApprovedExternal,
+      `Anchor URL is outside the local and approved external contract in dist-pages/${relativeHtmlPath}: ${attributeValue}`,
+    );
+    return;
+  }
+  if (isDataIcon) return;
+  const resolved = new URL(compactValue, base);
+  assert(
+    resolved.origin === SITE_ORIGIN && resolved.pathname.startsWith(SITE_PREFIX),
+    `Resource must be same-site in dist-pages/${relativeHtmlPath}: ${attributeValue}`,
+  );
+}
+
+/** The site policy: only scripts, stylesheets and images load, same-site, plus approved anchors. */
+function validateSameSiteResources(document, relativeHtmlPath) {
+  assertNoInlineStyling(document, relativeHtmlPath);
+  assert(
+    document.querySelectorAll('iframe, object, embed, form, audio, video, source, track').length ===
+      0,
+    `Only scripts, stylesheets and images may load in dist-pages/${relativeHtmlPath}`,
+  );
+  for (const script of document.querySelectorAll('script')) {
+    assert(
+      script.textContent.trim() === '',
+      `Inline scripts are forbidden in dist-pages/${relativeHtmlPath}`,
+    );
+    assert(
+      script.getAttribute('type') === 'module',
+      `Scripts must be modules in dist-pages/${relativeHtmlPath}`,
+    );
+  }
+  forEachUrlBearingAttribute(
+    document,
+    relativeHtmlPath,
+    (attributeName) =>
+      SITE_SAFE_NON_URL_ATTRIBUTES.has(attributeName) ||
+      attributeName.startsWith('aria-') ||
+      attributeName.startsWith('data-'),
+    (attributeInfo) => {
+      assertApprovedSameSiteAttribute(
+        attributeInfo.element,
+        attributeInfo.attribute,
+        attributeInfo.attributeName,
+        relativeHtmlPath,
+      );
+      assertSameSiteAnchorOrResource(attributeInfo, relativeHtmlPath);
+    },
+  );
+  const canonicalAllowed = relativeHtmlPath === 'index.html';
+  const stylesheets = collectStylesheetLinks(
+    document,
+    relativeHtmlPath,
+    canonicalAllowed,
+    `${SITE_ORIGIN}${SITE_PREFIX}`,
+  );
+  assert(
+    stylesheets.length <= 1,
+    `At most one stylesheet may load in dist-pages/${relativeHtmlPath}`,
+  );
+}
+
+function validateResources(document, relativeHtmlPath) {
+  const policy = policyFor(relativeHtmlPath);
+  if (policy === 'no-requests') {
+    validateNoRequestResources(document, relativeHtmlPath);
+  } else {
+    validateSameSiteResources(document, relativeHtmlPath);
+  }
+}
+
+/** The site stylesheet may load its own assets but never a cross-origin url() or an @import. */
+function validateSiteStylesheetContents(stylesheet, relativeCssPath) {
+  let stylesheetAst;
+  try {
+    stylesheetAst = parseCss(stylesheet, { parseCustomProperty: true });
+  } catch (error) {
+    throw new Error(
+      `Site stylesheet parsing failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  walkCss(stylesheetAst, (node) => {
+    assert(
+      node.type !== 'Atrule' || node.name !== 'import',
+      `Site stylesheet must not use @import in dist-pages/${relativeCssPath}`,
+    );
+    if (node.type !== 'Url') return;
+    const value = stripUrlControlCharacters(node.value);
+    assert(
+      !/^(?:https?:|\/\/)/iu.test(value),
+      `Site stylesheet must not load a cross-origin url() in dist-pages/${relativeCssPath}: ${node.value}`,
+    );
+  });
 }
 
 function validatePrivacyMetadata(document, stylesheet) {
@@ -521,6 +733,7 @@ function validateStagedSite(rootDirectory) {
   const outputDirectory = inspectStagedTree(rootDirectory);
   const privacyHtml = readFileSync(join(outputDirectory, 'privacy', 'index.html'), 'utf8');
   const stylesheet = readFileSync(join(outputDirectory, 'privacy', 'style.css'), 'utf8');
+  const siteStylesheet = readFileSync(join(outputDirectory, 'assets', 'main.css'), 'utf8');
   const privacyNotFoundHtml = readFileSync(join(outputDirectory, 'privacy', '404.html'), 'utf8');
   const rootNotFoundHtml = readFileSync(join(outputDirectory, '404.html'), 'utf8');
   assert(
@@ -530,6 +743,7 @@ function validateStagedSite(rootDirectory) {
 
   const privacyDocument = new JSDOM(privacyHtml, { url: PRIVACY_URL }).window.document;
   validatePrivacyMetadata(privacyDocument, stylesheet);
+  validateSiteStylesheetContents(siteStylesheet, 'assets/main.css');
   for (const htmlPath of htmlFiles(outputDirectory)) {
     const html = readFileSync(htmlPath, 'utf8');
     const relativePath = relative(outputDirectory, htmlPath).split(sep).join('/');
@@ -548,7 +762,7 @@ async function main() {
   const rootDirectory = realpathSync(resolve(process.cwd()));
   validateWorkflow(rootDirectory);
   validateStagedSite(rootDirectory);
-  await validateHtml(rootDirectory, join(rootDirectory, 'dist-pages'));
+  await validateHtml(rootDirectory, resolveOutputDirectory(rootDirectory));
   console.log('Pages artifact is valid.');
 }
 

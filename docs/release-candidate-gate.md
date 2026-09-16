@@ -303,10 +303,10 @@ CI is red is not a candidate, whatever this local run says. CI sets
 compare byte-exact PNGs captured on this machine and refuse any other build. The local run stays in
 the gate because it is the only run that covers them.
 
-**`npm run e2e` is `npm run store:package && playwright test`.** It packages first, so a packaging
-failure here is not one red test, it is the entire gate failing before a single browser opens, and
-the error you see will be from the packager rather than from a scenario. Read the first failure, not
-the last.
+**`npm run e2e` is `npm run store:package && npm run pages:build && playwright test`.** It packages
+and builds the Pages site first, so a packaging or Pages build failure here is not one red test, it
+is the entire gate failing before a single browser opens, and the error you see will be from the
+packager or the Pages build rather than from a scenario. Read the first failure, not the last.
 
 **The visual capture inside this suite takes about 25 minutes on an idle machine and does not
 finish on a busy one.** Budget for it, and do not start it if anyone else is working.
@@ -365,8 +365,9 @@ version, what each step produced rather than that it passed, the archive path an
 recaptured screenshot digests, and the manual-gate items still outstanding.
 
 **Re-read the archive digest here rather than carrying step 4's forward.** Step 7 is
-`store:package && playwright test`, so it repackages, and the file step 4 inspected has been rebuilt
-since. Nothing fails to warn you: the gate passes, the checklist is signed, and the recorded digest
+`store:package && pages:build && playwright test`, so it repackages, and the file step 4 inspected
+has been rebuilt since. Nothing fails to warn you: the gate passes, the checklist is signed, and the
+recorded digest
 simply names an archive that no longer exists, which anyone checking it later cannot reproduce.
 Record the digest of the archive that exists at the end of the gate, which is the one a reviewer
 would download.

@@ -112,6 +112,48 @@ const VALID_NOT_FOUND_HTML: string = `<!DOCTYPE html>
 </html>
 `;
 
+const VALID_SITE_HTML: string = `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="data:,">
+    <link rel="canonical" href="https://wolph.github.io/distraction-blocker/">
+    <link rel="stylesheet" href="/distraction-blocker/assets/main.css">
+    <title>Focus Lock</title>
+  </head>
+  <body>
+    <main id="main-content">
+      <h1>Stay with the task you chose.</h1>
+      <p>
+        <a href="https://chromewebstore.google.com/detail/focus-lock/lfhgncahaaenflajfdolbkgiglppdgjm">Install</a>
+        <a href="https://github.com/wolph/distraction-blocker#get-started">Source</a>
+        <a href="/distraction-blocker/privacy/">Privacy policy</a>
+      </p>
+      <img src="/distraction-blocker/images/focus-session.png" width="10" height="10" alt="Demo">
+    </main>
+    <script type="module" src="/distraction-blocker/assets/main.js"></script>
+  </body>
+</html>
+`;
+
+const VALID_TAB_HTML: string = `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="data:,">
+    <title>Demo tab</title>
+  </head>
+  <body>
+    <main id="tab-content"></main>
+    <script type="module" src="/distraction-blocker/assets/tab.js"></script>
+  </body>
+</html>
+`;
+
+const VALID_SITE_CSS: string = 'body { margin: 0; }\n';
+
 function write(path: string, contents: string): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, contents);
@@ -128,6 +170,15 @@ function fixture(): string {
   );
   write(join(path, 'dist-pages', 'privacy', '404.html'), VALID_NOT_FOUND_HTML);
   write(join(path, 'dist-pages', '404.html'), VALID_NOT_FOUND_HTML);
+  write(join(path, 'dist-pages', 'index.html'), VALID_SITE_HTML);
+  write(join(path, 'dist-pages', 'tab.html'), VALID_TAB_HTML);
+  write(join(path, 'dist-pages', 'assets', 'main.css'), VALID_SITE_CSS);
+  write(join(path, 'dist-pages', 'assets', 'main.js'), '');
+  write(join(path, 'dist-pages', 'assets', 'tab.js'), '');
+  write(join(path, 'dist-pages', 'assets', 'enforcement-v2-validation.js'), '');
+  write(join(path, 'dist-pages', 'images', 'focus-session.png'), 'stub');
+  write(join(path, 'dist-pages', 'images', 'blocked-page.png'), 'stub');
+  write(join(path, 'dist-pages', 'images', 'progress.png'), 'stub');
   return path;
 }
 
@@ -140,6 +191,11 @@ function sourceFixture(): string {
     '.skip-link { transform: translateY(-180%); }\n.skip-link:focus { transform: translateY(0); }\n',
   );
   write(join(path, 'docs', 'privacy', '404.html'), VALID_NOT_FOUND_HTML);
+  write(join(path, 'docs', 'images', 'focus-lock', 'readme', 'focus-session.png'), 'stub');
+  write(join(path, 'docs', 'images', 'focus-lock', 'readme', 'blocked-page.png'), 'stub');
+  write(join(path, 'docs', 'images', 'focus-lock', 'readme', 'progress.png'), 'stub');
+  // build-pages.mjs now assumes the Vite pages build already staged dist-pages.
+  mkdirSync(join(path, 'dist-pages'), { recursive: true });
   return path;
 }
 
@@ -390,6 +446,19 @@ describe('Pages validation', () => {
     expectValidationFailure(path, /exact repository URL/i);
   });
 
+  it('rejects a meta refresh redirect on a privacy page', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'privacy', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '</head>',
+        '<meta http-equiv="refresh" content="0;url=https://tracker.example/collect"></head>',
+      ),
+    );
+    expectValidationFailure(path, /unapproved html attribute/i);
+  });
+
   it('rejects the old privacy page title', (): void => {
     const path: string = fixture();
     const htmlPath: string = join(path, 'dist-pages', 'privacy', 'index.html');
@@ -600,7 +669,181 @@ describe('Pages validation', () => {
     expect(result.status, String(result.stderr)).toBe(0);
   });
 
-  it('builds only regular files in both 404 locations', (): void => {
+  it('rejects a cross-site script src on a site page', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '</body>',
+        '<script type="module" src="https://analytics.example/track.js"></script></body>',
+      ),
+    );
+    expectValidationFailure(path, /resource must be same-site/i);
+  });
+
+  it('rejects a cross-site img src on a site page', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '</main>',
+        '<img src="https://analytics.example/pixel.png" alt=""></main>',
+      ),
+    );
+    expectValidationFailure(path, /resource must be same-site/i);
+  });
+
+  it('rejects a cross-site stylesheet href on a site page', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '/distraction-blocker/assets/main.css',
+        'https://analytics.example/main.css',
+      ),
+    );
+    expectValidationFailure(path, /resource must be same-site/i);
+  });
+
+  it('rejects an inline script on a site page', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '</body>',
+        '<script type="module">alert(1)</script></body>',
+      ),
+    );
+    expectValidationFailure(path, /inline scripts are forbidden/i);
+  });
+
+  it('rejects a style attribute on a site page', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '<main id="main-content">',
+        '<main id="main-content" style="color: red">',
+      ),
+    );
+    expectValidationFailure(path, /style attribute/i);
+  });
+
+  it('rejects an iframe on a site page', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '</main>',
+        '<iframe src="/distraction-blocker/tab.html"></iframe></main>',
+      ),
+    );
+    expectValidationFailure(path, /only scripts, stylesheets and images/i);
+  });
+
+  it('rejects a meta refresh redirect on a site page', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '</head>',
+        '<meta http-equiv="refresh" content="0;url=https://tracker.example/collect"></head>',
+      ),
+    );
+    expectValidationFailure(path, /unapproved html attribute/i);
+  });
+
+  it('rejects an unlisted external anchor on a site page', (): void => {
+    const path: string = fixture();
+    const htmlPath: string = join(path, 'dist-pages', 'index.html');
+    write(
+      htmlPath,
+      readFileSync(htmlPath, 'utf8').replace(
+        '</main>',
+        '<a href="https://example.com/unlisted">Unlisted</a></main>',
+      ),
+    );
+    expectValidationFailure(
+      path,
+      /anchor url is outside the local and approved external contract/i,
+    );
+  });
+
+  it('rejects an @import in the site stylesheet', (): void => {
+    const path: string = fixture();
+    const stylesheetPath: string = join(path, 'dist-pages', 'assets', 'main.css');
+    write(
+      stylesheetPath,
+      `@import url("https://analytics.example/style.css");\n${readFileSync(stylesheetPath, 'utf8')}`,
+    );
+    expectValidationFailure(path, /site stylesheet must not use @import/i);
+  });
+
+  it('rejects a cross-origin url() in the site stylesheet', (): void => {
+    const path: string = fixture();
+    const stylesheetPath: string = join(path, 'dist-pages', 'assets', 'main.css');
+    write(
+      stylesheetPath,
+      `${readFileSync(stylesheetPath, 'utf8')}.evil { background: url(https://analytics.example/pixel.png); }\n`,
+    );
+    expectValidationFailure(path, /site stylesheet must not load a cross-origin url/i);
+  });
+
+  it('rejects an unexpected staged file', (): void => {
+    const path: string = fixture();
+    write(join(path, 'dist-pages', 'extra.txt'), 'stub');
+    expectValidationFailure(path, /staged site must contain only/i);
+  });
+
+  it('accepts the real built site', (): void => {
+    const projectRoot: string = resolve('.');
+    // Builds into an isolated output directory rather than the project's own dist-pages: this test
+    // runs a real Vite build inside the unit suite, and a concurrently running e2e run also builds
+    // and empties dist-pages, so sharing one directory between them is a race. PAGES_OUTPUT_DIR
+    // points build-pages.mjs and validate-pages.mjs at this directory instead of resolving
+    // dist-pages from cwd, and --outDir does the same for the Vite build itself.
+    const outputDirectory: string = mkdtempSync(join(tmpdir(), 'focus-lock-pages-real-build-'));
+    fixtures.push(outputDirectory);
+    const viteBuildResult: ReturnType<typeof spawnSync> = spawnSync(
+      process.execPath,
+      [
+        resolve('node_modules', 'vite', 'bin', 'vite.js'),
+        'build',
+        '--config',
+        'vite.pages.config.ts',
+        '--outDir',
+        outputDirectory,
+      ],
+      { cwd: projectRoot, encoding: 'utf8' },
+    );
+    expect(viteBuildResult.status, String(viteBuildResult.stderr)).toBe(0);
+    const env: NodeJS.ProcessEnv = { ...process.env, PAGES_OUTPUT_DIR: outputDirectory };
+    const buildResult: ReturnType<typeof spawnSync> = spawnSync(
+      process.execPath,
+      [BUILD_SCRIPT_PATH],
+      {
+        cwd: projectRoot,
+        encoding: 'utf8',
+        env,
+      },
+    );
+    expect(buildResult.status, String(buildResult.stderr)).toBe(0);
+    const validationResult: ReturnType<typeof spawnSync> = spawnSync(
+      process.execPath,
+      [SCRIPT_PATH],
+      { cwd: projectRoot, encoding: 'utf8', env },
+    );
+    expect(validationResult.status, String(validationResult.stderr)).toBe(0);
+  });
+
+  it('builds only regular files in both 404 locations, plus the copied tour images', (): void => {
     const path: string = sourceFixture();
     const result: ReturnType<typeof spawnSync> = build(path);
     expect(result.status, String(result.stderr)).toBe(0);
@@ -610,12 +853,20 @@ describe('Pages validation', () => {
       join(outputDirectory, 'privacy', '404.html'),
       join(outputDirectory, 'privacy', 'index.html'),
       join(outputDirectory, 'privacy', 'style.css'),
+      join(outputDirectory, 'images', 'focus-session.png'),
+      join(outputDirectory, 'images', 'blocked-page.png'),
+      join(outputDirectory, 'images', 'progress.png'),
     ];
-    expect(readdirSync(outputDirectory).sort()).toEqual(['404.html', 'privacy']);
+    expect(readdirSync(outputDirectory).sort()).toEqual(['404.html', 'images', 'privacy']);
     expect(readdirSync(join(outputDirectory, 'privacy')).sort()).toEqual([
       '404.html',
       'index.html',
       'style.css',
+    ]);
+    expect(readdirSync(join(outputDirectory, 'images')).sort()).toEqual([
+      'blocked-page.png',
+      'focus-session.png',
+      'progress.png',
     ]);
     for (const outputPath of outputFiles) {
       expect(lstatSync(outputPath).isFile()).toBe(true);
@@ -712,9 +963,16 @@ describe('Pages validation', () => {
     const packageJson: { scripts: Record<string, string> } = JSON.parse(
       readFileSync('package.json', 'utf8'),
     ) as { scripts: Record<string, string> };
-    expect(packageJson.scripts['pages:build']).toBe('node scripts/build-pages.mjs');
+    expect(packageJson.scripts['pages:build']).toBe(
+      'vite build --config vite.pages.config.ts && node scripts/build-pages.mjs',
+    );
     expect(packageJson.scripts['pages:validate']).toBe(
       "npm run pages:build && node scripts/validate-pages.mjs && html-validate 'dist-pages/**/*.html'",
+    );
+    // e2e builds the site before Playwright runs, so site-demo.spec.ts never serves a missing or
+    // stale dist-pages against a checkout where only `npm run e2e` has been run.
+    expect(packageJson.scripts.e2e).toBe(
+      'npm run store:package && npm run pages:build && playwright test',
     );
   });
 });
