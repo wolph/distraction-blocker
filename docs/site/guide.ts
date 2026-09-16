@@ -2,23 +2,17 @@
 import type { DemoEvent } from './engine';
 
 interface Beat {
-  id: 'back' | 'session' | 'start';
+  id: 'start' | 'back' | 'end';
   text: string;
 }
 
 const BEATS: readonly Beat[] = [
   {
-    id: 'back',
-    text: 'You landed on a blocked site mid-session. Press Back to work to return to your draft.',
-  },
-  {
-    id: 'session',
-    text: 'Click the Focus Lock icon in the toolbar to see the running session, then end it.',
-  },
-  {
     id: 'start',
-    text: 'Start your own: name a task, pick a duration, press Start, and open Headlines again.',
+    text: 'Click the Focus Lock icon, name your task, choose your draft as the work tab, and press Start. The site you are on locks.',
   },
+  { id: 'back', text: 'Press Back to work. Your draft is right where you left it.' },
+  { id: 'end', text: 'Open Focus Lock again and end the session when you are done.' },
 ];
 
 export interface Guide {
@@ -36,7 +30,7 @@ export function createGuide(root: HTMLOListElement): Guide {
     items.set(beat.id, item);
     root.append(item);
   }
-  items.get('back')?.classList.add('guide-current');
+  items.get('start')?.classList.add('guide-current');
   // A beat that has already finished stays finished: the engine can emit the same event more than
   // once, and a replay must never hand guide-current back to a beat that is already done.
   const doneBeats: Set<Beat['id']> = new Set<Beat['id']>();
@@ -51,9 +45,9 @@ export function createGuide(root: HTMLOListElement): Guide {
   };
   return {
     advance: (event: DemoEvent): void => {
-      if (event.type === 'returnedToWork') done('back', 'session');
-      if (event.type === 'sessionEnded') done('session', 'start');
-      if (event.type === 'sessionStarted' && doneBeats.has('session')) done('start', null);
+      if (event.type === 'sessionStarted') done('start', 'back');
+      if (event.type === 'returnedToWork' && doneBeats.has('start')) done('back', 'end');
+      if (event.type === 'sessionEnded' && doneBeats.has('back')) done('end', null);
     },
   };
 }

@@ -101,7 +101,7 @@ async function clickLockscreenButton(
   }
 }
 
-test('a visitor lands on a blocked page, returns to the draft, ends the session and starts their own', async (): Promise<void> => {
+test('a visitor locks the site they are on, returns to the draft, and ends the session', async (): Promise<void> => {
   const page: Page = await browser.newPage();
   const errors: string[] = [];
   page.on('pageerror', (error: Error): void => {
@@ -112,23 +112,36 @@ test('a visitor lands on a blocked page, returns to the draft, ends the session 
   });
   await page.goto(server.url);
 
-  // Beat 1: the demo boots mid-session on the Headlines tab, so the lockscreen is on screen.
+  // The demo opens idle on the Headlines tab: nothing is locked until the visitor locks it.
   const icon: Locator = page.getByRole('button', { name: 'Open Focus Lock' });
-  await expect(icon).toHaveAttribute('data-locked', 'true');
+  await expect(icon).toHaveAttribute('data-locked', 'false');
   await expect(page.locator('button.tab-active')).toHaveText('Headlines');
   const headlines: FrameLocator = page.frameLocator('iframe[data-tab-id="12"]');
+  await expect(headlines.locator('focus-lock-overlay')).not.toBeAttached();
+  await expect(page.locator('[data-beat="start"]')).toHaveClass(/guide-current/);
+
+  // Beat 1: start from the real popup. The site the visitor is on locks at once.
+  await icon.click();
+  const popup: Locator = page.locator('#popup');
+  await popup.getByLabel('Intention').fill('Finish the proposal');
+  // Headlines is not an eligible work tab, so nothing is preselected: pick the draft.
+  await popup.getByRole('button', { name: 'Change' }).click();
+  await popup.getByLabel('Work tab').selectOption('11');
+  await expect(popup.locator('.work-target')).toHaveText(/Proposal draft/);
+  await popup.getByRole('button', { name: /^Start/ }).click();
+  await expect(icon).toHaveAttribute('data-locked', 'true');
   await expect(headlines.locator('focus-lock-overlay')).toBeAttached();
-  await expect(page.locator('[data-beat="back"]')).toHaveClass(/guide-current/);
+  await expect(page.locator('[data-beat="start"]')).toHaveClass(/guide-done/);
+
+  // Beat 2: the lockscreen's own Back to work returns to the draft.
   await clickLockscreenButton(page.context(), page, 12, 'Back to work');
   await expect(page.locator('button.tab-active')).toHaveText('Proposal draft');
   await expect(page.locator('[data-beat="back"]')).toHaveClass(/guide-done/);
   const work: FrameLocator = page.frameLocator('iframe[data-tab-id="11"]');
   await work.locator('#draft').fill('Section one: why this matters.');
 
-  // Beat 2: the popup shows the running session, and End goes through the Friction gate.
+  // Beat 3: end the session through the popup's Friction gate.
   await icon.click();
-  const popup: Locator = page.locator('#popup');
-  // The End control lives in the popup's Session actions disclosure, closed by default.
   await popup
     .locator('summary')
     .filter({ hasText: /^Session actions$/ })
@@ -138,19 +151,8 @@ test('a visitor lands on a blocked page, returns to the draft, ends the session 
   await expect(confirm).toBeEnabled({ timeout: 10_000 });
   await confirm.click();
   await expect(icon).toHaveAttribute('data-locked', 'false');
-  await expect(page.locator('[data-beat="session"]')).toHaveClass(/guide-done/);
+  await expect(page.locator('[data-beat="end"]')).toHaveClass(/guide-done/);
   await expect(headlines.locator('focus-lock-overlay')).not.toBeAttached();
-
-  // Beat 3: the visitor starts their own session from the real popup.
-  await popup.getByLabel('Intention').fill('Finish the proposal');
-  // The popup auto-selects the active tab as the work target once its own lookup of eligible
-  // tabs resolves. Starting before that lookup settles starts with no work target at all.
-  await expect(popup.locator('.work-target')).toHaveText(/Proposal draft/);
-  await popup.getByRole('button', { name: /^Start/ }).click();
-  await expect(icon).toHaveAttribute('data-locked', 'true');
-  await expect(page.locator('[data-beat="start"]')).toHaveClass(/guide-done/);
-  await page.getByRole('button', { name: 'Headlines' }).click();
-  await expect(headlines.locator('focus-lock-overlay')).toBeAttached();
   await expect(work.locator('#draft')).toHaveValue('Section one: why this matters.');
 
   expect(errors).toEqual([]);
