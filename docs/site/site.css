@@ -199,14 +199,26 @@ figcaption {
   font-size: 0.9rem;
 }
 .extension-icon {
+  width: 36px;
+  height: 36px;
+  padding: 2px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.extension-icon:hover,
+.extension-icon:focus-visible {
+  border-color: var(--line);
+  background: var(--tab-bg);
+}
+.extension-icon svg {
+  display: block;
   width: 32px;
   height: 32px;
-  border-radius: 8px;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: var(--accent-ink);
-  font-weight: 700;
-  cursor: pointer;
 }
 .viewport {
   position: relative;

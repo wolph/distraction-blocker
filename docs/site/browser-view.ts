@@ -1,4 +1,6 @@
 /** The pretend browser: a tab strip, a toolbar with the Focus Lock icon, one iframe per tab. */
+import type { Broadcast } from '../../src/shared/messages';
+import { isLocked, renderBrandIcon } from './brand-icon';
 import type { DemoEngine } from './engine';
 import type { DemoTab, TabStrip } from './tabs-model';
 
@@ -63,7 +65,12 @@ export function createBrowserView(
       icon.type = 'button';
       icon.className = 'extension-icon';
       icon.setAttribute('aria-label', 'Open Focus Lock');
-      icon.textContent = 'FL';
+      const setLocked: (locked: boolean) => void = (locked: boolean): void => {
+        icon.replaceChildren(renderBrandIcon(locked));
+        icon.dataset.locked = locked ? 'true' : 'false';
+        icon.title = locked ? 'Focus Lock: sites are locked' : 'Focus Lock: no session running';
+      };
+      setLocked(false);
       icon.addEventListener('click', onPopupToggle);
       toolbar.append(address, icon);
       viewport = document.createElement('div');
@@ -77,7 +84,8 @@ export function createBrowserView(
         viewport.append(frame);
       }
       root.append(strip, toolbar, viewport);
-      engine.onBroadcast((): void => {
+      engine.onBroadcast((message: Broadcast): void => {
+        if (message.type === 'stateChanged') setLocked(isLocked(message.snapshot));
         const active: DemoTab | undefined = engine
           .strip()
           .tabs.find((tab: DemoTab): boolean => tab.tabId === engine.strip().activeTabId);
